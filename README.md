@@ -33,19 +33,24 @@ DeepSeek 一次性输出：
 
 **两个必须同时使用，缺一不可。**
 
-## 环境变量
+## 配置 API Key
 
-| 变量 | 必填 | 说明 |
-|------|:----:|------|
-| `DEEPSEEK_API_KEY` | 否 | DeepSeek API Key（也可在网页「AI 设置」或 Telegram `/setkey` 临时填写） |
-| `TELEGRAM_BOT_TOKEN` | 否 | Telegram Bot Token（不填则不启用 Telegram 机器人） |
+API Key 写在 `src/main/resources/application.yaml` 里（该文件已被 `.gitignore` 排除，**不会提交到 Git**）：
 
-Windows（PowerShell）示例：
+```yaml
+spring:
+  ai:
+    deepseek:
+      api-key: "sk-你的key"
 
-```powershell
-$env:DEEPSEEK_API_KEY = "sk-xxxxxxxx"
-$env:TELEGRAM_BOT_TOKEN = "123456:ABC..."
+galgame:
+  api-key: "sk-你的key"
+  telegram-bot-token: ""   # 需要 Telegram 机器人时填写，留空则禁用
 ```
+
+> 仓库内提供 `application.example.yaml` 模板：克隆后复制为 `application.yaml`，再填入自己的 Key 即可。
+>
+> 也可以完全不写 Key：网页聊天在「AI 设置」里填、Telegram 用 `/setkey` 填。
 
 ## 使用步骤
 
@@ -106,7 +111,7 @@ custom:
 
 ## Telegram 机器人（可选）
 
-配置 `TELEGRAM_BOT_TOKEN` 后启动，Bot 会自动注册（走 `galgame.telegram-proxy-*` 代理）。支持：
+在 `application.yaml` 里填写 `telegram-bot-token` 后启动，Bot 会自动注册（走 `galgame.telegram-proxy-*` 代理）。支持：
 
 | 命令 | 说明 |
 |------|------|

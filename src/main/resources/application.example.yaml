@@ -3,8 +3,8 @@ spring:
     name: Springai
   ai:
     deepseek:
-      # API Key 从环境变量 DEEPSEEK_API_KEY 读取，未设置时为空（可在页面「AI 设置」临时填写）
-      api-key: ${DEEPSEEK_API_KEY:}
+      # 你的 DeepSeek API Key（复制本文件为 application.yaml 后填写）
+      api-key: "sk-你的key"
       base-url: https://api.deepseek.com
       chat:
         options:
@@ -13,7 +13,7 @@ spring:
 gpt-sovits:
   base-url: http://127.0.0.1:9880
   # 女主的参考音频（用作音色克隆），需放在 GPT-SoVITS 项目里
-  ref-audio-path: "F:/Java/Springai/src/main/resources/nat002_077.ogg"
+  ref-audio-path: "参考音频路径.wav"
   # 参考音频里说的内容（和音频内容一致）
   prompt-text: "もちろん全員じゃなくあくまで一部の人なんだけどその一部の人の威力が凄まじくて"
   # 参考音频语言：zh / ja / en
@@ -27,20 +27,20 @@ gpt-sovits:
   cleanup-interval-ms: 600000
 
 galgame:
-  # 一套 API 的 Key（对话 + 语音识别共用）—— 从环境变量 DEEPSEEK_API_KEY 读取，勿硬编码
-  api-key: ${DEEPSEEK_API_KEY:}
+  # 一套 API 的 Key（对话 + 语音识别共用）
+  api-key: "sk-你的key"
   # 一套 API 的地址（OpenAI 兼容格式），各家可换
   api-base-url: "https://api.deepseek.com"
   # 对话模型
   chat-model: "deepseek-v4-flash"
   # Telegram Bot
-  # Bot Token —— 从环境变量 TELEGRAM_BOT_TOKEN 读取，勿硬编码
-  telegram-bot-token: ${TELEGRAM_BOT_TOKEN:}
+  # Bot Token —— 需要 Telegram 机器人时填写（留空则禁用机器人）
+  telegram-bot-token: ""
   telegram-bot-username: "natsume_siki_bot"
   # Telegram API 被墙，走本地代理
   telegram-proxy-host: "127.0.0.1"
   telegram-proxy-port: 10809
   # ffmpeg 路径（GPT-SoVITS 自带，用于 wav -> ogg/opus）
-  ffmpeg-path: "E:/GPT-SoVITS-v2pro-20250604/runtime/ffmpeg.exe"
+  ffmpeg-path: "你的ffmpeg路径/ffmpeg.exe"
   # 控制台公网地址（cloudflared 隧道，重启会变，需更新）
-  console-url: "https://diff-beautifully-connected-treasury.trycloudflare.com"
+  console-url: ""
