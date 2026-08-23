@@ -1,14 +1,6 @@
 spring:
   application:
     name: Springai
-  ai:
-    deepseek:
-      # 任意 OpenAI 兼容服务商的 Key（复制本文件为 application.yaml 后填写）
-      api-key: "sk-你的key"
-      base-url: https://api.deepseek.com
-      chat:
-        options:
-          model: deepseek-v4-flash
 
 gpt-sovits:
   base-url: http://127.0.0.1:9880
@@ -27,7 +19,7 @@ gpt-sovits:
   cleanup-interval-ms: 600000
 
 galgame:
-  # 一套 API 的 Key（对话 + 语音识别共用）
+  # 一套 API 的 Key（OpenAI 兼容，可换任意服务商；网页聊天的 Key 在网页「AI 设置」里填，此处仅供 Telegram 机器人使用）
   api-key: "sk-你的key"
   # 一套 API 的地址（OpenAI 兼容格式），各家可换
   api-base-url: "https://api.deepseek.com"

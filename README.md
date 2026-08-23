@@ -37,17 +37,13 @@ DeepSeek 一次性输出：
 
 接口走的是 **OpenAI 兼容格式**，所以 Key **不一定是 DeepSeek 的**——任何兼容服务商都能用，只需把 Key、地址、模型名换成对应的即可。
 
+> 注意：**网页聊天**的 Key 在网页「AI 设置」里填（存浏览器，不读配置文件）；下面 `application.yaml` 里的配置**仅供 Telegram 机器人**使用。
+
 API Key 写在 `src/main/resources/application.yaml` 里（该文件已被 `.gitignore` 排除，**不会提交到 Git**）：
 
 ```yaml
-spring:
-  ai:
-    deepseek:
-      api-key: "sk-你的key"                  # 任意 OpenAI 兼容服务商的 Key
-      base-url: https://api.deepseek.com       # 对应服务商的地址
-
 galgame:
-  api-key: "sk-你的key"                       # 同上
+  api-key: "sk-你的key"                       # 任意 OpenAI 兼容服务商的 Key
   api-base-url: "https://api.deepseek.com"     # 对应服务商的地址
   chat-model: "deepseek-v4-flash"              # 对应服务商的模型名
   telegram-bot-token: ""                       # 需要 Telegram 机器人时填写，留空则禁用
