@@ -197,8 +197,5 @@ src/main/resources/
 | 项目 | 用途 | 链接 |
 |------|------|------|
 | GPT-SoVITS | 女主语音合成（音色克隆 + TTS） | <https://github.com/RVC-Boss/GPT-SoVITS> |
-| Spring Boot | 应用框架 | <https://spring.io/projects/spring-boot> |
-| Spring AI | LLM 接入 | <https://spring.io/projects/spring-ai> |
-| Telegram Bots | Telegram 机器人 SDK | <https://github.com/rubenlagus/TelegramBots> |
 
 > 语音合成部分依赖 GPT-SoVITS 的 `api_v2.py` 接口，使用前请先启动 GPT-SoVITS 服务（见上文「使用步骤」）。GPT-SoVITS 的模型与代码版权归其原作者（RVC-Boss）所有。
