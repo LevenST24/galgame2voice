@@ -72,11 +72,11 @@ galgame:
 
 本项目本身不含语音合成能力，语音由 [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 提供，请先按其官方说明安装。
 
-1. 把训练好的 `.ckpt` 放进 GPT-SoVITS 项目的 `GPT_weights_v2/` 文件夹
-2. 把 `.pth` 放进 `SoVITS_weights_v2/` 文件夹
-3. 启动接口：
+1. 把训练好的 `.ckpt` 放进 GPT-SoVITS 项目的 `GPT_weights_v2ProPlus/` 文件夹
+2. 把 `.pth` 放进 `SoVITS_weights_v2ProPlus/` 文件夹
+3. 启动接口（Windows 下用自带 runtime 的 Python）：
    ```bash
-   python api_v2.py
+   .\runtime\python.exe api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS/configs/tts_infer.yaml
    ```
    默认监听 `http://127.0.0.1:9880`
 
@@ -112,9 +112,9 @@ gpt-sovits:
 
 ```yaml
 custom:
-  t2s_weights_path: GPT_weights_v2/siki2-e50.ckpt
-  version: v2
-  vits_weights_path: SoVITS_weights_v2/siki_e20_s10280.pth
+  t2s_weights_path: GPT_weights_v2ProPlus/siki2-e50.ckpt
+  version: v2ProPlus
+  vits_weights_path: SoVITS_weights_v2ProPlus/siki_e20_s10280.pth
 ```
 
 > 注意：`ref-audio-path` 和各权重路径都是相对 GPT-SoVITS 项目根目录的路径，且这些文件要放在 GPT-SoVITS 服务器上。
