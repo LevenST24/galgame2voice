@@ -22,7 +22,7 @@ DeepSeek 一次性输出：
    └─ japanese（日文台词）→ 喂给 GPT-SoVITS 合成语音 → 播放
 ```
 
-因此最关键的一点是：**让大模型按 JSON 格式输出双语内容**（已在 `AiConfiguration` 中通过系统提示词实现）。
+因此最关键的一点是：**让大模型按 JSON 格式输出双语内容**（通过 `AiModelManager` 里的系统提示词实现）。
 
 ## 训练得到的两个模型文件
 
@@ -39,7 +39,7 @@ DeepSeek 一次性输出：
 
 > 注意：**网页聊天**的 Key 在网页「AI 设置」里填（存浏览器，不读配置文件）；下面 `application.yaml` 里的配置**仅供 Telegram 机器人**使用。
 
-API Key 写在 `src/main/resources/application.yaml` 里（该文件已被 `.gitignore` 排除，**不会提交到 Git**）：
+先把 `application.example.yaml` 复制一份并重命名为 `application.yaml`，然后填入你的 Key：
 
 ```yaml
 galgame:
@@ -58,8 +58,6 @@ galgame:
 | 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus` |
 | OpenAI | `https://api.openai.com/v1` | `gpt-4o` |
 
-> 仓库内提供 `application.example.yaml` 模板：克隆后复制为 `application.yaml`，再填入自己的 Key 即可。
->
 > 也可以完全不写 Key：网页聊天在「AI 设置」里填、Telegram 用 `/setkey` 填。
 
 ## 使用步骤
@@ -177,7 +175,7 @@ src/main/java/org/example/springai/
     ├── TelegramBotConfig.java      # Bot 注册与代理配置
     └── TelegramGalBot.java         # Telegram 消息/语音处理
 src/main/resources/
-├── application.yaml                # 配置文件
+├── application.example.yaml        # 配置模板（复制为 application.yaml）
 ├── nat002_077.ogg                  # 参考音频
 └── static/
     ├── index.html                  # 聊天页面
