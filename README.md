@@ -87,8 +87,8 @@ galgame:
 ### 3. 获取本项目并配置
 
 ```bash
-git clone https://github.com/zako0721/LJH.git
-cd LJH
+git clone https://github.com/zako0721/galgame_ai.git
+cd galgame_ai
 ```
 
 1. 按上文「配置 API Key」复制配置模板并填入你的 Key
