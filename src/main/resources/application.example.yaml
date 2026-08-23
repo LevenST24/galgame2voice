@@ -29,10 +29,10 @@ galgame:
   # Bot Token —— 需要 Telegram 机器人时填写（留空则禁用机器人）
   telegram-bot-token: ""
   telegram-bot-username: "natsume_siki_bot"
-  # Telegram API 被墙，走本地代理
+  # Telegram 代理（访问 Telegram API 用，按需填写）
   telegram-proxy-host: "127.0.0.1"
   telegram-proxy-port: 10809
   # ffmpeg 路径（GPT-SoVITS 自带，用于 wav -> ogg/opus）
   ffmpeg-path: "你的ffmpeg路径/ffmpeg.exe"
-  # 控制台公网地址（cloudflared 隧道，重启会变，需更新）
+  # 控制台公网地址（用于 Telegram /console 链接，可用 cloudflared 等内网穿透工具）
   console-url: ""

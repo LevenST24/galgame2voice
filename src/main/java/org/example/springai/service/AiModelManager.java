@@ -41,8 +41,8 @@ public class AiModelManager {
             """;
 
     /**
-     * 无状态调用：每次用前端传来的 key/base-url/model 构建客户端并请求模型。
-     * 配置由前端 localStorage 管理，后端不落库、不缓存（方案一）。
+     * 无状态调用：每次用前端传来的 key/base-url/model 构建客户端并请求模型，
+     * 后端不落库、不缓存。
      */
     public String chat(String userPrompt, String apiKey, String baseUrl, String model) {
         try {
