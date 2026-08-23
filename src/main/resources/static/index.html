@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>四季夏目</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+            background: #f2f4f7;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .container {
+            width: 880px;
+            max-width: 100%;
+            height: 90vh;
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            display: flex;
+            overflow: hidden;
+        }
+        .chat-area {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            padding: 16px 20px;
+            background: #fff;
+            border-bottom: 1px solid #e5e7eb;
+            color: #111;
+            text-align: left;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            background: #fafbfc;
+        }
+        .msg {
+            max-width: 70%;
+            padding: 10px 14px;
+            border-radius: 8px;
+            line-height: 1.6;
+            font-size: 14px;
+            word-break: break-word;
+        }
+        .msg.user {
+            align-self: flex-end;
+            background: #1677ff;
+            color: #fff;
+            border-bottom-right-radius: 2px;
+        }
+        .msg.bot {
+            align-self: flex-start;
+            background: #fff;
+            color: #333;
+            border: 1px solid #e5e7eb;
+            border-bottom-left-radius: 2px;
+        }
+        .msg .ja {
+            font-size: 12px;
+            color: #999;
+            margin-top: 4px;
+        }
+        .msg.user .ja { color: rgba(255,255,255,0.75); }
+        .input-bar {
+            display: flex;
+            padding: 12px 16px;
+            gap: 8px;
+            border-top: 1px solid #e5e7eb;
+            background: #fff;
+        }
+        .input-bar input {
+            flex: 1;
+            padding: 10px 12px;
+            border: 1px solid #d0d5dd;
+            border-radius: 6px;
+            outline: none;
+            font-size: 14px;
+        }
+        .input-bar input:focus { border-color: #1677ff; }
+        .input-bar button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            background: #1677ff;
+            color: #fff;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .input-bar button:hover { background: #4096ff; }
+        .input-bar button:disabled { background: #a0c4ff; cursor: not-allowed; }
+        .sidebar {
+            width: 270px;
+            flex-shrink: 0;
+            border-left: 1px solid #e5e7eb;
+            background: #fafbfc;
+            padding: 16px;
+            overflow-y: auto;
+            font-size: 13px;
+            color: #444;
+        }
+        .sidebar h3 {
+            font-size: 14px;
+            color: #111;
+            margin-bottom: 14px;
+        }
+        .param-group {
+            margin-bottom: 14px;
+        }
+        .param-group .label {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 5px;
+        }
+        .param-group .label .name { color: #333; font-weight: 500; }
+        .param-group .label .hint { color: #999; font-size: 11px; }
+        .param-group input[type=number], .param-group select {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid #d0d5dd;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .param-group input[type=range] {
+            width: 100%;
+        }
+        .group-title {
+            font-size: 12px;
+            color: #666;
+            margin: 2px 0 8px;
+        }
+        .group-title .hint { color: #999; font-size: 11px; }
+        .save-btn {
+            width: 100%;
+            padding: 8px;
+            border: none;
+            border-radius: 6px;
+            background: #1677ff;
+            color: #fff;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .save-btn:hover { background: #4096ff; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="chat-area">
+            <div class="header">四季夏目</div>
+            <div class="messages" id="messages"></div>
+            <div class="input-bar">
+                <input id="input" placeholder="输入你想说的话..." autocomplete="off">
+                <button id="send">发送</button>
+            </div>
+        </div>
+        <div class="sidebar">
+            <h3>语音设置</h3>
+            <div class="param-group">
+                <div class="label"><span class="name">切分方式</span></div>
+                <select id="split">
+                    <option value="cut1" selected>凑四句一切</option>
+                    <option value="cut0">不切</option>
+                    <option value="cut2">凑50字一切</option>
+                    <option value="cut3">按中文句号</option>
+                    <option value="cut4">按英文句号</option>
+                    <option value="cut5">按标点切</option>
+                </select>
+            </div>
+            <div class="param-group">
+                <div class="label"><span class="name">语速</span><span class="hint">越高越快</span></div>
+                <input type="range" id="speed" min="0.5" max="2" step="0.05" value="1.0">
+                <div class="label"><span></span><span class="hint">当前 <span id="speedVal">1.00</span></span></div>
+            </div>
+            <div class="param-group">
+                <div class="label"><span class="name">句间停顿</span><span class="hint">秒</span></div>
+                <input type="number" id="interval" value="0.3" min="0" max="5" step="0.1">
+            </div>
+            <div class="param-group">
+                <div class="label"><span class="name">自然度</span><span class="hint" id="naturalVal">标准</span></div>
+                <input type="range" id="natural" min="0" max="100" step="5" value="50">
+                <div class="label"><span style="color:#999;font-size:11px">稳定</span><span style="color:#999;font-size:11px">自然</span></div>
+            </div>
+            <div class="param-group">
+                <div class="label"><span class="name">固定音色</span><span class="hint">-1随机</span></div>
+                <input type="number" id="seed" value="-1" min="-1" step="1">
+            </div>
+            <h3 style="margin-top:20px">AI 设置</h3>
+            <div class="param-group">
+                <div class="label"><span class="name">供应商</span></div>
+                <select id="provider">
+                    <option value="deepseek" selected>DeepSeek</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="qwen">通义千问（阿里）</option>
+                    <option value="zhipu">智谱 GLM</option>
+                    <option value="kimi">Kimi（月之暗面）</option>
+                    <option value="doubao">豆包（字节）</option>
+                    <option value="spark">讯飞星火</option>
+                    <option value="qianfan">百度千帆</option>
+                    <option value="minimax">MiniMax</option>
+                    <option value="gemini">Gemini（Google）</option>
+                    <option value="groq">Groq</option>
+                    <option value="xai">xAI (Grok)</option>
+                    <option value="custom">自定义</option>
+                </select>
+            </div>
+            <div class="param-group">
+                <div class="label"><span class="name">API Key</span></div>
+                <input type="text" id="apiKey" placeholder="sk-...">
+            </div>
+            <div class="param-group">
+                <div class="label"><span class="name">接口地址</span></div>
+                <input type="text" id="baseUrl" value="https://api.deepseek.com">
+            </div>
+            <div class="param-group">
+                <div class="label"><span class="name">模型</span></div>
+                <input type="text" id="model" value="deepseek-v4-pro" placeholder="如 deepseek-v4-pro / gpt-4o">
+            </div>
+            <button id="saveAiConfig" class="save-btn">保存设置</button>
+            <div id="aiConfigMsg" style="margin-top:8px;font-size:11px;color:#52c41a;"></div>
+        </div>
+    </div>
+
+    <script>
+        const messages = document.getElementById('messages');
+        const input = document.getElementById('input');
+        const sendBtn = document.getElementById('send');
+        const speed = document.getElementById('speed');
+        const speedVal = document.getElementById('speedVal');
+        const natural = document.getElementById('natural');
+        const naturalVal = document.getElementById('naturalVal');
+
+        speed.addEventListener('input', () => {
+            speedVal.textContent = parseFloat(speed.value).toFixed(2);
+        });
+        natural.addEventListener('input', () => {
+            const n = parseFloat(natural.value);
+            naturalVal.textContent = n <= 33 ? '稳定' : (n <= 66 ? '标准' : '自然');
+        });
+
+        const provider = document.getElementById('provider');
+        const apiKeyInput = document.getElementById('apiKey');
+        const baseUrlInput = document.getElementById('baseUrl');
+        const modelSelect = document.getElementById('model');
+        const saveAiConfigBtn = document.getElementById('saveAiConfig');
+        const aiConfigMsg = document.getElementById('aiConfigMsg');
+
+        const providers = {
+            deepseek: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-pro' },
+            openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' },
+            qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
+            zhipu: { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-plus' },
+            kimi: { baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k' },
+            doubao: { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-1-5-pro-32k-250115' },
+            spark: { baseUrl: 'https://spark-api-open.xf-yun.com/v1', model: 'generalv3.5' },
+            qianfan: { baseUrl: 'https://qianfan.baidubce.com/v2', model: 'ernie-4.0-8k' },
+            minimax: { baseUrl: 'https://api.minimax.chat/v1', model: 'abab6.5s-chat' },
+            gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/', model: 'gemini-2.0-flash' },
+            groq: { baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile' },
+            xai: { baseUrl: 'https://api.x.ai/v1', model: 'grok-2' }
+        };
+
+        provider.addEventListener('change', () => {
+            const p = providers[provider.value];
+            if (p) {
+                baseUrlInput.value = p.baseUrl;
+                modelSelect.value = p.model;
+            }
+        });
+
+        function getAiConfig() {
+            try {
+                return JSON.parse(localStorage.getItem('aiConfig')) || {};
+            } catch (e) {
+                return {};
+            }
+        }
+
+        function loadAiConfig() {
+            const c = getAiConfig();
+            if (c.apiKey) apiKeyInput.value = c.apiKey;
+            if (c.baseUrl) baseUrlInput.value = c.baseUrl;
+            if (c.model) modelSelect.value = c.model;
+        }
+
+        saveAiConfigBtn.addEventListener('click', () => {
+            const c = {
+                apiKey: apiKeyInput.value.trim(),
+                baseUrl: baseUrlInput.value.trim(),
+                model: modelSelect.value.trim()
+            };
+            localStorage.setItem('aiConfig', JSON.stringify(c));
+            aiConfigMsg.textContent = '已保存到浏览器 ✓';
+        });
+
+        loadAiConfig();
+
+        function addMessage(text, who, japanese) {
+            const div = document.createElement('div');
+            div.className = 'msg ' + who;
+            div.textContent = text;
+            if (japanese) {
+                const ja = document.createElement('div');
+                ja.className = 'ja';
+                ja.textContent = japanese;
+                div.appendChild(ja);
+            }
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        function playAudio(url) {
+            if (!url) return;
+            const audio = new Audio(url);
+            audio.play().catch(e => console.warn('音频播放被拦截或失败:', e));
+        }
+
+        function collectOptions() {
+            const p = new URLSearchParams();
+            const n = parseFloat(natural.value);
+            p.set('textSplitMethod', document.getElementById('split').value);
+            p.set('speedFactor', speed.value);
+            p.set('fragmentInterval', document.getElementById('interval').value);
+            // 自然度 0~100 映射到 GPT 采样参数（越大越自然多变）
+            p.set('topK', 1 + Math.round(n * 0.3));
+            p.set('topP', (0.7 + n * 0.003).toFixed(2));
+            p.set('temperature', (0.8 + n * 0.004).toFixed(2));
+            p.set('seed', document.getElementById('seed').value);
+            return p.toString();
+        }
+
+        async function send() {
+            const text = input.value.trim();
+            if (!text) return;
+            addMessage(text, 'user');
+            input.value = '';
+            sendBtn.disabled = true;
+
+            try {
+                const qs = 'prompt=' + encodeURIComponent(text) + '&' + collectOptions();
+                const cfg = getAiConfig();
+                const resp = await fetch('/ai/chat?' + qs, {
+                    headers: {
+                        'X-Api-Key': cfg.apiKey || '',
+                        'X-Base-Url': cfg.baseUrl || '',
+                        'X-Model': cfg.model || ''
+                    }
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    addMessage(data.message || ('请求失败(HTTP ' + resp.status + ')'), 'bot');
+                    return;
+                }
+                addMessage(data.chinese || '(无回复)', 'bot', data.japanese);
+                playAudio(data.audioUrl);
+            } catch (e) {
+                addMessage('出错了，请稍后再试', 'bot');
+            } finally {
+                sendBtn.disabled = false;
+                input.focus();
+            }
+        }
+
+        sendBtn.addEventListener('click', send);
+        input.addEventListener('keydown', e => {
+            if (e.key === 'Enter') send();
+        });
+    </script>
+</body>
+</html>
