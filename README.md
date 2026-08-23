@@ -60,11 +60,19 @@ galgame:
 
 > 也可以完全不写 Key：网页聊天在「AI 设置」里填、Telegram 用 `/setkey` 填。
 
+## 环境要求
+
+- **Java 17** 或更高版本
+- **GPT-SoVITS**（语音合成服务，需单独安装）
+- Maven 已随项目内置（`mvnw`），无需单独安装
+
 ## 使用步骤
 
-### 1. 启动 GPT-SoVITS 的 API
+### 1. 安装并启动 GPT-SoVITS
 
-1. 把 `.ckpt` 放进 GPT-SoVITS 项目的 `GPT_weights_v2/` 文件夹
+本项目本身不含语音合成能力，语音由 [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 提供，请先按其官方说明安装。
+
+1. 把训练好的 `.ckpt` 放进 GPT-SoVITS 项目的 `GPT_weights_v2/` 文件夹
 2. 把 `.pth` 放进 `SoVITS_weights_v2/` 文件夹
 3. 启动接口：
    ```bash
@@ -74,11 +82,17 @@ galgame:
 
 ### 2. 准备女主参考音频
 
-准备一段女主**干净、无杂音**的几秒原声，以及它对应的文字内容。
+准备一段女主**干净、无杂音**的几秒原声，以及它对应的文字内容（放在 GPT-SoVITS 项目里）。
 
-### 3. 修改配置
+### 3. 获取本项目并配置
 
-#### 3.1 编辑 `src/main/resources/application.yaml` 中的 `gpt-sovits` 配置：
+```bash
+git clone https://github.com/zako0721/LJH.git
+cd LJH
+```
+
+1. 按上文「配置 API Key」复制配置模板并填入你的 Key
+2. 编辑 `application.yaml` 里的 `gpt-sovits` 配置：
 
 ```yaml
 gpt-sovits:
@@ -89,7 +103,7 @@ gpt-sovits:
   text-lang: ja
 ```
 
-#### 3.2 配置合成模型（重要）
+### 4. 配置合成模型（重要）
 
 新版 api_v2.py 的 `/tts` 接口**不再通过请求体传模型权重**，而是从
 `GPT_SoVITS/configs/tts_infer.yaml` 的 `custom` 段加载模型。请把该文件
@@ -105,13 +119,13 @@ custom:
 
 > 注意：`ref-audio-path` 和各权重路径都是相对 GPT-SoVITS 项目根目录的路径，且这些文件要放在 GPT-SoVITS 服务器上。
 
-### 4. 启动后端
+### 5. 启动后端
 
 ```bash
 ./mvnw spring-boot:run
 ```
 
-### 5. 打开聊天页面
+### 6. 打开聊天页面
 
 浏览器访问：`http://localhost:8080/`
 
