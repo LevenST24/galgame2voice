@@ -3,7 +3,7 @@ spring:
     name: Springai
   ai:
     deepseek:
-      # 你的 DeepSeek API Key（复制本文件为 application.yaml 后填写）
+      # 任意 OpenAI 兼容服务商的 Key（复制本文件为 application.yaml 后填写）
       api-key: "sk-你的key"
       base-url: https://api.deepseek.com
       chat:

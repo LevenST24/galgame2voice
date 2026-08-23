@@ -2,7 +2,7 @@
 
 > 中文显示 + 日文语音的 Galgame 女主聊天机器人，支持网页与 Telegram 两种入口。
 
-一个基于 Spring Boot 的 AI 聊天应用，集成 **DeepSeek** 对话模型与 **GPT-SoVITS** 语音合成，扮演《星光咖啡馆与死神之蝶》（喫茶ステラと死神の蝶）中的角色「四季夏目」与玩家对话：
+一个基于 Spring Boot 的 AI 聊天应用，集成大语言模型（DeepSeek 等 **OpenAI 兼容**接口，可换任意服务商）与 **GPT-SoVITS** 语音合成，扮演《星光咖啡馆与死神之蝶》（喫茶ステラと死神の蝶）中的角色「四季夏目」与玩家对话：
 
 - 🗣️ 让大模型按 JSON 输出「中文台词 + 日文台词」
 - 🀄 中文用于页面 / 聊天显示
@@ -35,18 +35,32 @@ DeepSeek 一次性输出：
 
 ## 配置 API Key
 
+接口走的是 **OpenAI 兼容格式**，所以 Key **不一定是 DeepSeek 的**——任何兼容服务商都能用，只需把 Key、地址、模型名换成对应的即可。
+
 API Key 写在 `src/main/resources/application.yaml` 里（该文件已被 `.gitignore` 排除，**不会提交到 Git**）：
 
 ```yaml
 spring:
   ai:
     deepseek:
-      api-key: "sk-你的key"
+      api-key: "sk-你的key"                  # 任意 OpenAI 兼容服务商的 Key
+      base-url: https://api.deepseek.com       # 对应服务商的地址
 
 galgame:
-  api-key: "sk-你的key"
-  telegram-bot-token: ""   # 需要 Telegram 机器人时填写，留空则禁用
+  api-key: "sk-你的key"                       # 同上
+  api-base-url: "https://api.deepseek.com"     # 对应服务商的地址
+  chat-model: "deepseek-v4-flash"              # 对应服务商的模型名
+  telegram-bot-token: ""                       # 需要 Telegram 机器人时填写，留空则禁用
 ```
+
+常用服务商示例：
+
+| 服务商 | `api-base-url` | 模型示例 |
+|--------|----------------|----------|
+| DeepSeek | `https://api.deepseek.com` | `deepseek-chat` |
+| 月之暗面 Moonshot | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus` |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o` |
 
 > 仓库内提供 `application.example.yaml` 模板：克隆后复制为 `application.yaml`，再填入自己的 Key 即可。
 >
