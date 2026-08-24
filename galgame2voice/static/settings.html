@@ -6,23 +6,25 @@
     <title>galgame2voice - 控制台与系统配置</title>
     <link rel="stylesheet" href="/static/css/style.css">
     <style>
-        /* Extended Console Styles */
+        /* Extended Console Styles - Premium Dark Anime Theme */
         :root {
             --sidebar-width: 240px;
-            --card-border: #e2e8f0;
-            --card-bg: #ffffff;
-            --muted-bg: #f8fafc;
-            --text-dark: #0f172a;
-            --text-muted: #64748b;
-            --primary-accent: #6366f1;
-            --primary-hover: #4f46e5;
-            --success-accent: #10b981;
-            --warning-accent: #f59e0b;
-            --danger-accent: #ef4444;
+            --card-border: rgba(120, 130, 180, 0.15);
+            --card-bg: rgba(18, 22, 42, 0.85);
+            --muted-bg: rgba(24, 30, 56, 0.6);
+            --text-dark: #e2e8f0;
+            --text-muted: #94a3b8;
+            --primary-accent: #c084fc;
+            --primary-hover: #a855f7;
+            --success-accent: #34d399;
+            --warning-accent: #fbbf24;
+            --danger-accent: #f87171;
+            --c-bg: #0a0e1a;
+            --c-surface: rgba(18, 22, 42, 0.95);
         }
 
         body {
-            background-color: #f1f5f9;
+            background-color: var(--c-bg);
             color: var(--text-dark);
             margin: 0;
             padding: 0;
@@ -30,6 +32,8 @@
             justify-content: center;
             align-items: flex-start;
             min-height: 100vh;
+            font-family: 'Noto Sans SC', 'M PLUS Rounded 1c', system-ui, -apple-system, sans-serif;
+            -webkit-font-smoothing: antialiased;
         }
 
         .console-wrapper {
@@ -38,8 +42,10 @@
             min-height: 100vh;
             display: flex;
             flex-direction: column;
-            background: #ffffff;
-            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01);
+            background: var(--c-surface);
+            border-left: 1px solid var(--card-border);
+            border-right: 1px solid var(--card-border);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
         }
 
         /* Top Navbar */
@@ -47,8 +53,9 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 16px 24px;
-            background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%);
+            padding: 14px 24px;
+            background: linear-gradient(135deg, #0e1224 0%, #161b36 100%);
+            border-bottom: 1px solid var(--card-border);
             color: #ffffff;
         }
 
@@ -114,7 +121,7 @@
         /* Sidebar Navigation */
         .console-sidebar {
             width: var(--sidebar-width);
-            background: #fafbfc;
+            background: rgba(14, 18, 36, 0.7);
             border-right: 1px solid var(--card-border);
             padding: 20px 12px;
             display: flex;
@@ -128,26 +135,29 @@
             gap: 10px;
             padding: 10px 14px;
             color: var(--text-muted);
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 600;
             border-radius: 8px;
             cursor: pointer;
-            border: none;
+            border: 1px solid transparent;
             background: transparent;
             width: 100%;
             text-align: left;
             transition: all 0.15s ease-in-out;
+            font-family: inherit;
         }
 
         .nav-item:hover {
             color: var(--primary-accent);
-            background-color: #f1f5f9;
+            background-color: rgba(192, 132, 252, 0.08);
+            border-color: rgba(192, 132, 252, 0.15);
         }
 
         .nav-item.active {
             color: #ffffff;
-            background: var(--primary-accent);
-            box-shadow: 0 4px 6px -1px rgba(99, 102, 241, 0.25);
+            background: linear-gradient(135deg, rgba(192, 132, 252, 0.35), rgba(244, 114, 182, 0.25));
+            border-color: rgba(192, 132, 252, 0.4);
+            box-shadow: 0 4px 12px rgba(192, 132, 252, 0.15);
         }
 
         .nav-item .icon {
@@ -159,7 +169,7 @@
             flex: 1;
             padding: 24px 32px;
             overflow-y: auto;
-            background: #ffffff;
+            background: transparent;
         }
 
         .tab-panel {
@@ -186,7 +196,7 @@
         }
 
         .panel-title {
-            font-size: 20px;
+            font-size: 18px;
             font-weight: 700;
             color: var(--text-dark);
             display: flex;
@@ -195,7 +205,7 @@
         }
 
         .panel-subtitle {
-            font-size: 13px;
+            font-size: 12px;
             color: var(--text-muted);
             margin-top: 4px;
         }
@@ -222,15 +232,15 @@
         }
 
         .status-card:hover {
-            border-color: #cbd5e1;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+            border-color: rgba(192, 132, 252, 0.3);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
         }
 
         .status-card-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 700;
             color: var(--text-muted);
             text-transform: uppercase;
@@ -262,7 +272,7 @@
         }
 
         .section-title {
-            font-size: 15px;
+            font-size: 14px;
             font-weight: 700;
             margin-bottom: 16px;
             color: var(--text-dark);
@@ -292,9 +302,9 @@
         }
 
         .form-label {
-            font-size: 13px;
+            font-size: 12px;
             font-weight: 600;
-            color: #334155;
+            color: #cbd5e1;
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -310,18 +320,19 @@
             width: 100%;
             padding: 9px 12px;
             font-size: 13px;
-            border: 1px solid #cbd5e1;
+            border: 1px solid rgba(120, 130, 180, 0.2);
             border-radius: 8px;
-            background: #ffffff;
+            background: rgba(14, 18, 36, 0.8);
             color: var(--text-dark);
             box-sizing: border-box;
             outline: none;
             transition: all 0.2s;
+            font-family: inherit;
         }
 
         .form-input:focus, .form-select:focus, .form-textarea:focus {
             border-color: var(--primary-accent);
-            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+            box-shadow: 0 0 0 3px rgba(192, 132, 252, 0.15);
         }
 
         .form-input-with-btn {

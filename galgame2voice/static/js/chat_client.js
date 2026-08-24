@@ -1,26 +1,22 @@
 /**
- * ChatClient - Commercial-Grade Galgame Immersion & SSE Bilingual Streaming Client
- * Features:
- *  - Dual Mode (🌸 Galgame Visual Novel Immersion Mode & 💬 Classic Chat Stream Mode)
- *  - Galgame Interaction Triad: AutoModeController, SkipController, LogDrawerController
- *  - Dynamic Emotion Engine (EmotionManager) driving 6-archetype avatar emoji & breathing halo aura
- *  - Robust SSE Parser for 'event: text', 'event: audio_chunk', 'event: done', 'event: error'
- *  - Web Audio API AnalyserNode soundwave visualizer & dynamic equalizer
- *  - Top Capsule Controls: instant voice switcher, live GPT-SoVITS status & latency, volume gain, mute toggle, reset
- *  - Slide-out Frosted Backlog Drawer with per-sentence audio replay
+ * Galgame2Voice - High-End Anime/Galgame Cinematic Chat Client
+ * 
+ * Modular architecture:
+ *  - AutoModeController: Auto-progression state machine
+ *  - SkipController: Typewriter & audio fast-forward
+ *  - EmotionManager: Emotion aura & avatar transitions
+ *  - LogDrawerController: Backlog drawer & replay manager
+ *  - ChatApp: Main SSE client & event orchestrator
  */
 
 // ============================================================================
-// 1. Galgame Immersion Controllers
+// 1. Core Immersion Controllers
 // ============================================================================
 
-/**
- * AutoModeController - Manages automatic dialogue progression after voice playback.
- */
 class AutoModeController {
     constructor(options = {}) {
         this.enabled = false;
-        this.delayMs = options.defaultDelayMs || 1500; // 1.5s reading interval
+        this.delayMs = options.defaultDelayMs || 1500;
         this.timer = null;
         this.onAdvance = options.onAdvance || null;
         this.btnEl = options.btnEl || null;
@@ -59,11 +55,11 @@ class AutoModeController {
         if (!this.btnEl) return;
         if (this.enabled) {
             this.btnEl.classList.add('active');
-            const textEl = this.btnEl.querySelector('.btn-text');
+            const textEl = this.btnEl.querySelector('.btn-text') || this.btnEl;
             if (textEl) textEl.textContent = 'AUTO [ON]';
         } else {
             this.btnEl.classList.remove('active');
-            const textEl = this.btnEl.querySelector('.btn-text');
+            const textEl = this.btnEl.querySelector('.btn-text') || this.btnEl;
             if (textEl) textEl.textContent = 'AUTO';
         }
     }
@@ -86,9 +82,6 @@ class AutoModeController {
     }
 }
 
-/**
- * SkipController - Fast skips typewriter text and waits.
- */
 class SkipController {
     constructor(options = {}) {
         this.btnEl = options.btnEl || null;
@@ -112,17 +105,15 @@ class SkipController {
     }
 }
 
-/**
- * EmotionManager - Handles 6 emotion archetypes & visual aura/avatar transitions.
- */
 class EmotionManager {
     static EMOTIONS = {
-        gentle: { name: '温柔', emoji: '🌸😊', tag: '🌸 温柔' },
-        shy: { name: '害羞', emoji: '😳', tag: '😳 害羞' },
-        happy: { name: '开心', emoji: '✨😄', tag: '✨ 开心' },
-        tsundere: { name: '傲娇', emoji: '😤', tag: '😤 傲娇' },
-        cool: { name: '高冷', emoji: '❄️', tag: '❄️ 高冷' },
-        sad: { name: '难过', emoji: '🥺', tag: '🥺 难过' },
+        gentle:   { name: '温柔', emoji: '🌸', tag: '温柔' },
+        shy:      { name: '害羞', emoji: '😳', tag: '害羞' },
+        happy:    { name: '开心', emoji: '✨', tag: '开心' },
+        tsundere: { name: '傲娇', emoji: '😤', tag: '傲娇' },
+        cool:     { name: '高冷', emoji: '❄️', tag: '高冷' },
+        sad:      { name: '难过', emoji: '🥺', tag: '难过' },
+        normal:   { name: '平静', emoji: '🌸', tag: '平静' }
     };
 
     constructor(options = {}) {
@@ -134,11 +125,8 @@ class EmotionManager {
 
     setEmotion(emotion) {
         const emo = (emotion || 'gentle').toLowerCase();
-        if (!EmotionManager.EMOTIONS[emo]) {
-            return;
-        }
+        const info = EmotionManager.EMOTIONS[emo] || EmotionManager.EMOTIONS.gentle;
         this.currentEmotion = emo;
-        const info = EmotionManager.EMOTIONS[emo];
 
         const backdrop = this.backdropEl || document.querySelector('.character-backdrop');
         if (backdrop) {
@@ -165,9 +153,6 @@ class EmotionManager {
     }
 }
 
-/**
- * LogDrawerController - Handles slide-out Backlog drawer and per-sentence voice replay.
- */
 class LogDrawerController {
     constructor(options = {}) {
         this.drawerEl = options.drawerEl || null;
@@ -231,7 +216,7 @@ class LogDrawerController {
                 if (!backdrop.classList.contains('open')) {
                     backdrop.style.display = 'none';
                 }
-            }, 350);
+            }, 300);
         }
     }
 
@@ -241,7 +226,7 @@ class LogDrawerController {
         body.innerHTML = '';
         const history = this.getHistory();
         if (!history || history.length === 0) {
-            body.innerHTML = '<div style="text-align: center; color: #94a3b8; padding: 40px 20px;">暂无历史对话记录</div>';
+            body.innerHTML = '<div style="text-align: center; color: var(--c-text-faint); padding: 40px 20px; font-size: 13px;">暂无历史对话记录</div>';
             return;
         }
 
@@ -274,7 +259,7 @@ class LogDrawerController {
                 ${hasAudio ? `
                     <div class="log-item-actions">
                         <button type="button" class="btn-log-replay" data-index="${idx}" title="重新播放此句语音">
-                            <span>🔊 重播</span>
+                            ▶️ 重播
                         </button>
                     </div>
                 ` : ''}
@@ -306,13 +291,12 @@ class LogDrawerController {
     }
 }
 
-
 // ============================================================================
-// 2. Main DOM & Lifecycle Initialization
+// 2. Application Setup & Lifecycle
 // ============================================================================
 
 document.addEventListener('DOMContentLoaded', () => {
-    // 1. DOM Elements
+    // 1. Elements
     const vnView = document.getElementById('vn-view');
     const chatView = document.getElementById('chat-view');
     const btnModeVn = document.getElementById('btn-mode-vn');
@@ -324,14 +308,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const sendBtn = document.getElementById('send-btn');
     const resetContextBtn = document.getElementById('reset-context-btn');
 
-    // Visual Novel Stage Elements
-    const vnDialogueBox = document.querySelector('.vn-dialogue-box');
     const vnCharacterName = document.getElementById('vn-character-name');
     const vnTextJa = document.getElementById('vn-text-ja');
     const vnTextZh = document.getElementById('vn-text-zh');
     const vnAudioStatus = document.getElementById('vn-audio-status');
     const vnAudioEqualizer = document.getElementById('vn-audio-equalizer');
     const vnEmotionBadge = document.getElementById('vn-emotion-badge');
+    const vnAffectionBadge = document.getElementById('vn-affection-badge');
+
     const btnVnAuto = document.getElementById('btn-vn-auto');
     const btnVnSkip = document.getElementById('btn-vn-skip');
     const btnVnLog = document.getElementById('btn-vn-log');
@@ -339,7 +323,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnVnDownload = document.getElementById('btn-vn-download');
     const btnVnHistory = document.getElementById('btn-vn-history');
 
-    // Log Drawer Elements
     const logDrawer = document.getElementById('vn-log-drawer');
     const logDrawerBackdrop = document.getElementById('log-drawer-backdrop');
     const logDrawerBody = document.getElementById('log-drawer-body');
@@ -347,31 +330,30 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnCloseLogDrawer2 = document.getElementById('btn-close-log-drawer-2');
     const btnClearLogHistory = document.getElementById('btn-clear-log-history');
 
-    // Header Capsule Controls
     const quickVoiceSelect = document.getElementById('quick-voice-select');
     const sovitsStatusBadge = document.getElementById('sovits-status-badge');
     const muteToggleBtn = document.getElementById('mute-toggle-btn');
     const volumeSlider = document.getElementById('volume-slider');
     const volumeLabel = document.getElementById('volume-label');
+    const affectionLabel = document.getElementById('affection-label');
 
-    // Legacy History Modal Elements (Retained for compatibility)
     const historyModal = document.getElementById('history-modal');
     const historyModalBody = document.getElementById('history-modal-body');
     const btnCloseHistory = document.getElementById('btn-close-history');
     const btnCloseHistory2 = document.getElementById('btn-close-history-2');
     const btnClearHistoryModal = document.getElementById('btn-clear-history-modal');
 
-    // 2. State & Session
+    // 2. Session & State
     let sessionId = localStorage.getItem('g2v_session_id') || ('sess_' + Math.random().toString(36).substring(2, 10));
     localStorage.setItem('g2v_session_id', sessionId);
 
-    let currentMode = localStorage.getItem('g2v_view_mode') || 'vn'; // 'vn' | 'chat'
+    let currentMode = localStorage.getItem('g2v_view_mode') || 'vn';
     let isStreaming = false;
     let abortController = null;
     let lastVoiceData = null;
     let currentDialogueHistory = [];
 
-    // Typewriter State & Skip Support
+    // Typewriter state
     let typewriterTimer = null;
     let pendingFullTextJa = '';
     let pendingFullTextZh = '';
@@ -389,6 +371,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    const vnDialogueBox = document.querySelector('.vn-dialogue-box');
     if (vnDialogueBox) {
         vnDialogueBox.addEventListener('click', (e) => {
             if (!e.target.closest('button') && !e.target.closest('select')) {
@@ -396,28 +379,16 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
-    if (vnView) {
-        vnView.addEventListener('click', (e) => {
-            if (!e.target.closest('button') && !e.target.closest('select')) {
-                skipTypewriter();
-            }
-        });
-    }
 
-    // 3. Audio Player Instance & Equalizer Attachment
-    const audioPlayer = new StreamingAudioPlayer({
-        crossFadeDuration: 0.025, // 25ms optimal zero DC-offset cross-fade
+    // 3. Audio Player Instance
+    const audioPlayer = new (window.StreamingAudioPlayer || StreamingAudioPlayer)({
+        crossFadeDuration: 0.025,
         equalizerElement: vnAudioEqualizer,
         onStatusChange: (statusText, isPlaying) => {
-            if (vnAudioStatus) {
-                vnAudioStatus.textContent = statusText;
-            }
+            if (vnAudioStatus) vnAudioStatus.textContent = statusText;
             if (vnAudioEqualizer) {
-                if (isPlaying) {
-                    vnAudioEqualizer.classList.add('playing');
-                } else {
-                    vnAudioEqualizer.classList.remove('playing');
-                }
+                if (isPlaying) vnAudioEqualizer.classList.add('playing');
+                else vnAudioEqualizer.classList.remove('playing');
             }
         },
         onError: (err) => {
@@ -430,7 +401,6 @@ document.addEventListener('DOMContentLoaded', () => {
         audioPlayer.attachEqualizer(vnAudioEqualizer);
     }
 
-    // Auto-unlock Web Audio context on user interaction
     const unlockAudio = () => {
         audioPlayer.initContext();
         document.removeEventListener('click', unlockAudio);
@@ -439,7 +409,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('click', unlockAudio);
     document.addEventListener('keydown', unlockAudio);
 
-    // 4. Instantiate Controllers
+    // 4. Controllers
     const emotionManager = new EmotionManager({
         backdropEl: document.querySelector('.character-backdrop'),
         avatarEmojiEl: document.querySelector('.avatar-emoji'),
@@ -450,7 +420,6 @@ document.addEventListener('DOMContentLoaded', () => {
         defaultDelayMs: 1500,
         btnEl: btnVnAuto,
         onAdvance: () => {
-            console.log('[AutoMode] Dialogue finished, auto-advance ready');
             if (vnAudioStatus) vnAudioStatus.textContent = '自动推进就绪';
         }
     });
@@ -460,7 +429,7 @@ document.addEventListener('DOMContentLoaded', () => {
         onSkip: () => {
             skipTypewriter();
             audioPlayer.interrupt();
-            if (vnAudioStatus) vnAudioStatus.textContent = '已跳过等待';
+            if (vnAudioStatus) vnAudioStatus.textContent = '已跳过';
         }
     });
 
@@ -495,17 +464,17 @@ document.addEventListener('DOMContentLoaded', () => {
         onClearHistory: handleResetContext
     });
 
-    // Wire audioPlayer queue empty event to autoModeController
     audioPlayer.onQueueEmpty = () => {
         autoModeController.onAudioQueueFinished();
     };
 
-    // Expose instances for verification & debugging
+    // Expose for testing & debug
     window.autoModeController = autoModeController;
     window.skipController = skipController;
     window.emotionManager = emotionManager;
     window.logDrawerController = logDrawerController;
     window.audioPlayer = audioPlayer;
+    window.skipTypewriter = skipTypewriter;
 
     // 5. Dual View Mode Switching
     function setViewMode(mode) {
@@ -529,12 +498,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnModeChat) btnModeChat.addEventListener('click', () => setViewMode('chat'));
     setViewMode(currentMode);
 
-    // 6. Volume & Mute Controls
+    // 6. Volume & Mute
     if (muteToggleBtn) {
         muteToggleBtn.addEventListener('click', () => {
             const isMuted = !audioPlayer.isMuted;
             audioPlayer.setMuted(isMuted);
-            muteToggleBtn.textContent = isMuted ? '🔇' : '🔊';
+            muteToggleBtn.classList.toggle('muted', isMuted);
             muteToggleBtn.title = isMuted ? '点击取消静音' : '点击静音';
         });
     }
@@ -542,20 +511,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (volumeSlider) {
         volumeSlider.addEventListener('input', (e) => {
             const val = parseInt(e.target.value, 10);
-            const factor = val / 100;
-            audioPlayer.setVolume(factor);
-            if (volumeLabel) volumeLabel.textContent = `${val}%`;
+            audioPlayer.setVolume(val / 100);
+            if (volumeLabel) volumeLabel.textContent = `${val}`;
             if (audioPlayer.isMuted && val > 0) {
                 audioPlayer.setMuted(false);
-                if (muteToggleBtn) {
-                    muteToggleBtn.textContent = '🔊';
-                    muteToggleBtn.title = '点击静音';
-                }
+                if (muteToggleBtn) muteToggleBtn.classList.remove('muted');
             }
         });
     }
 
-    // 7. Quick Character Dropdown
+    // 7. Voice Profiles Dropdown
     async function loadVoiceProfiles() {
         if (!quickVoiceSelect) return;
         try {
@@ -578,6 +543,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (activeProfile) {
                     if (vnCharacterName) vnCharacterName.textContent = activeProfile.name;
                     logDrawerController.characterName = activeProfile.name;
+                    const charInline = document.querySelector('.character-name-inline');
+                    if (charInline) charInline.textContent = activeProfile.name;
                 }
             }
         } catch (err) {
@@ -598,6 +565,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (resp.ok) {
                     const selectedText = quickVoiceSelect.options[quickVoiceSelect.selectedIndex].text;
                     if (vnCharacterName) vnCharacterName.textContent = selectedText;
+                    const charInline = document.querySelector('.character-name-inline');
+                    if (charInline) charInline.textContent = selectedText;
                     logDrawerController.characterName = selectedText;
                     appendSystemMessage(`已切换角色音色为: ${selectedText}`);
                 }
@@ -607,7 +576,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // 8. System Health Status with Live Latency Check
+    // 8. System Status
     async function checkSystemStatus() {
         if (!sovitsStatusBadge) return;
         try {
@@ -621,11 +590,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const textEl = sovitsStatusBadge.querySelector('.status-text');
                 if (textEl) {
                     textEl.textContent = isOnline
-                        ? (latency ? `GPT-SoVITS 在线 (${latency}ms)` : 'GPT-SoVITS 在线')
+                        ? (latency ? `GPT-SoVITS (${latency}ms)` : 'GPT-SoVITS 在线')
                         : 'GPT-SoVITS 离线';
                 }
-            } else {
-                throw new Error('Non-200 response');
             }
         } catch (e) {
             sovitsStatusBadge.className = 'badge badge-danger';
@@ -634,7 +601,37 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // 9. Load Chat History
+    // 9. Affection Display
+    function updateAffectionDisplay(aff) {
+        if (!aff) return;
+        const level = aff.level || aff.affection_level || 1;
+        const name = aff.level_name || '初识';
+        const score = aff.score !== undefined ? aff.score : (aff.affection_score !== undefined ? aff.affection_score : 0);
+        
+        if (affectionLabel) {
+            affectionLabel.textContent = `Lv.${level} ${name} (${score}/100)`;
+        }
+        if (vnAffectionBadge) {
+            vnAffectionBadge.textContent = `Lv.${level}`;
+        }
+    }
+
+    async function fetchInitialAffection() {
+        try {
+            const res = await fetch('/api/affection');
+            if (res.ok) {
+                const data = await res.json();
+                updateAffectionDisplay(data);
+                if (data.current_emotion) {
+                    emotionManager.setEmotion(data.current_emotion);
+                }
+            }
+        } catch (e) {
+            console.debug('Failed to fetch initial affection:', e);
+        }
+    }
+
+    // 10. Chat History
     async function loadHistory() {
         try {
             const resp = await fetch(`/api/chat/history?session_id=${encodeURIComponent(sessionId)}&limit=50`);
@@ -653,12 +650,12 @@ document.addEventListener('DOMContentLoaded', () => {
                             renderCompletedAssistantMessage({
                                 chinese: msg.content_chinese || '',
                                 japanese: msg.content_japanese || '',
-                                audio_url: msg.audio_url || ''
+                                audio_url: msg.audio_url || '',
+                                chunks: msg.chunks || []
                             });
                         }
                     });
 
-                    // Set Visual Novel state to last assistant message
                     if (lastAssistantMsg) {
                         if (vnTextJa) vnTextJa.textContent = lastAssistantMsg.content_japanese || '……';
                         if (vnTextZh) vnTextZh.textContent = `（${lastAssistantMsg.content_chinese || ''}）`;
@@ -666,6 +663,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         pendingFullTextZh = lastAssistantMsg.content_chinese || '';
                         lastVoiceData = {
                             audio_url: lastAssistantMsg.audio_url,
+                            chunks: lastAssistantMsg.chunks,
                             sentence: lastAssistantMsg.content_japanese
                         };
                         if (lastAssistantMsg.emotion) {
@@ -680,42 +678,16 @@ document.addEventListener('DOMContentLoaded', () => {
         await fetchInitialAffection();
     }
 
-    // Affection Display Helper
-    function updateAffectionDisplay(aff) {
-        if (!aff) return;
-        const label = `Lv.${aff.level || 1} ${aff.level_name || '初识'} (${aff.score !== undefined ? aff.score : 0}/100)`;
-        const headerBadge = document.getElementById('affection-label');
-        if (headerBadge) headerBadge.textContent = label;
-        const vnBadge = document.getElementById('vn-affection-badge');
-        if (vnBadge) vnBadge.textContent = `❤️ Lv.${aff.level || 1}`;
-    }
-
-    async function fetchInitialAffection() {
-        try {
-            const res = await fetch('/api/affection');
-            if (res.ok) {
-                const data = await res.json();
-                updateAffectionDisplay(data);
-                if (data.current_emotion && emotionManager) {
-                    emotionManager.setEmotion(data.current_emotion);
-                }
-            }
-        } catch (e) {
-            console.debug('Failed to fetch initial affection:', e);
-        }
-    }
-
-    // 10. Replay & Download Master Audio
+    // 11. Download Audio
     function downloadAudioFile(audioUrl, defaultName = 'voice_master.wav') {
         if (!audioUrl) {
-            console.warn('No audio URL provided for download.');
+            alert('暂无可下载的语音母带');
             return;
         }
         const a = document.createElement('a');
         a.href = audioUrl;
         const parts = audioUrl.split('/');
-        const filename = parts[parts.length - 1] || defaultName;
-        a.download = filename;
+        a.download = parts[parts.length - 1] || defaultName;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -751,34 +723,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!targetUrl && lastVoiceData.chunks && lastVoiceData.chunks.length > 0) {
                     targetUrl = lastVoiceData.chunks[0].audio_url;
                 }
-                if (targetUrl) {
-                    downloadAudioFile(targetUrl, 'full_dialogue.wav');
-                } else {
-                    alert('暂无可下载的语音母带');
-                }
+                downloadAudioFile(targetUrl, 'dialogue.wav');
             } else {
                 alert('暂无可下载的语音母带');
             }
         });
     }
 
-    // 11. Legacy Backlog History Modal & Backwards-Compatibility
     if (btnVnHistory) {
         btnVnHistory.addEventListener('click', () => {
             logDrawerController.open();
         });
-    }
-
-    function closeHistoryModal() {
-        if (historyModal) historyModal.style.display = 'none';
-        logDrawerController.close();
-    }
-
-    if (btnCloseHistory) btnCloseHistory.addEventListener('click', closeHistoryModal);
-    if (btnCloseHistory2) btnCloseHistory2.addEventListener('click', closeHistoryModal);
-
-    function renderHistoryModal() {
-        logDrawerController.render();
     }
 
     // 12. Reset Context
@@ -799,7 +754,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (chatLog) {
             chatLog.innerHTML = `
                 <div class="message system-message glass-card">
-                    🌸 已开启新的对话会话。双语流式对话与低延迟日配语音合成引擎已就绪。
+                    已开启新的会话。
                 </div>
             `;
         }
@@ -809,13 +764,16 @@ document.addEventListener('DOMContentLoaded', () => {
         pendingFullTextZh = '';
         lastVoiceData = null;
         emotionManager.setEmotion('gentle');
-        closeHistoryModal();
+        logDrawerController.close();
+        if (historyModal) historyModal.style.display = 'none';
     }
 
     if (resetContextBtn) resetContextBtn.addEventListener('click', handleResetContext);
     if (btnClearHistoryModal) btnClearHistoryModal.addEventListener('click', handleResetContext);
+    if (btnCloseHistory) btnCloseHistory.addEventListener('click', () => { if (historyModal) historyModal.style.display = 'none'; });
+    if (btnCloseHistory2) btnCloseHistory2.addEventListener('click', () => { if (historyModal) historyModal.style.display = 'none'; });
 
-    // 13. Quick Chips Click
+    // 13. Quick Chips
     document.querySelectorAll('.quick-chip').forEach(chip => {
         chip.addEventListener('click', () => {
             const prompt = chip.getAttribute('data-prompt');
@@ -827,7 +785,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // 14. Submit & SSE Streaming
+    // 14. Streaming Chat Form Submit
     if (chatForm) {
         chatForm.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -841,18 +799,15 @@ document.addEventListener('DOMContentLoaded', () => {
             if (sendBtn) sendBtn.disabled = true;
             isStreaming = true;
 
-            // Stop ongoing audio playback, timer, and reset
             audioPlayer.interrupt();
             autoModeController.cancel();
             skipTypewriter();
 
             const timeNow = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-            // Append user message
             appendUserMessage(text);
             currentDialogueHistory.push({ role: 'user', content_chinese: text, timestamp: timeNow });
 
-            // Visual Novel mode loading state
             if (vnTextJa) vnTextJa.textContent = '……正在思考中……';
             if (vnTextZh) vnTextZh.textContent = `「${text}」`;
             if (vnAudioStatus) vnAudioStatus.textContent = '正在思考并合成语音...';
@@ -860,7 +815,6 @@ document.addEventListener('DOMContentLoaded', () => {
             pendingFullTextJa = '';
             pendingFullTextZh = '';
 
-            // Prepare placeholder assistant message in Chat View
             const assistantHolder = createAssistantMessageHolder();
             if (chatLog) {
                 chatLog.appendChild(assistantHolder.element);
@@ -902,7 +856,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     buffer += decoder.decode(value, { stream: true });
                     const lines = buffer.split('\n');
-                    buffer = lines.pop(); // Keep incomplete line
+                    buffer = lines.pop();
 
                     for (const line of lines) {
                         const trimmed = line.trim();
@@ -911,13 +865,11 @@ document.addEventListener('DOMContentLoaded', () => {
                             continue;
                         }
 
-                        // 1. Check SSE Event Line
                         if (trimmed.startsWith('event:')) {
                             currentEventType = trimmed.substring(6).trim();
                             continue;
                         }
 
-                        // 2. Check SSE Data Line
                         if (trimmed.startsWith('data:')) {
                             const jsonStr = trimmed.substring(5).trim();
                             if (jsonStr === '[DONE]') continue;
@@ -925,13 +877,11 @@ document.addEventListener('DOMContentLoaded', () => {
                             try {
                                 const payload = JSON.parse(jsonStr);
 
-                                // Check for emotion update
                                 if (payload.emotion) {
                                     lastEmotion = payload.emotion;
                                     emotionManager.setEmotion(payload.emotion);
                                 }
 
-                                // Case A: Text Event (Chinese streaming delta/full)
                                 if (currentEventType === 'text' || payload.delta_chinese !== undefined || payload.full_chinese !== undefined) {
                                     const delta = payload.delta_chinese || '';
                                     if (payload.full_chinese) {
@@ -940,15 +890,9 @@ document.addEventListener('DOMContentLoaded', () => {
                                         fullChinese += delta;
                                     }
                                     pendingFullTextZh = fullChinese;
-
                                     assistantHolder.update(fullChinese, fullJapanese);
-
-                                    if (vnTextZh) {
-                                        vnTextZh.textContent = `（${fullChinese}）`;
-                                    }
-                                }
-                                // Case B: Audio Chunk Event (Sentence ready for TTS playback)
-                                else if (currentEventType === 'audio_chunk' || (payload.audio_url && payload.index !== undefined)) {
+                                    if (vnTextZh) vnTextZh.textContent = `（${fullChinese}）`;
+                                } else if (currentEventType === 'audio_chunk' || (payload.audio_url && payload.index !== undefined)) {
                                     lastAudioUrl = payload.audio_url;
                                     const chunkObj = {
                                         index: payload.index !== undefined ? payload.index : currentMessageChunks.length,
@@ -968,11 +912,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                         sentence: fullJapanese
                                     };
                                     assistantHolder.update(fullChinese, fullJapanese);
-
                                     audioPlayer.enqueue(chunkObj);
-                                }
-                                // Case C: Final Done Event
-                                else if (currentEventType === 'done' || (payload.chinese && payload.japanese)) {
+                                } else if (currentEventType === 'done' || (payload.chinese && payload.japanese)) {
                                     if (payload.chinese) fullChinese = payload.chinese;
                                     if (payload.japanese) fullJapanese = payload.japanese;
                                     if (payload.emotion) {
@@ -1002,9 +943,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                                     if (vnTextJa && fullJapanese) vnTextJa.textContent = fullJapanese;
                                     if (vnTextZh && fullChinese) vnTextZh.textContent = `（${fullChinese}）`;
-                                }
-                                // Case D: Error Event
-                                else if (currentEventType === 'error' || payload.error) {
+                                } else if (currentEventType === 'error' || payload.error) {
                                     const errMsg = payload.error || payload.message || '未知异常';
                                     console.error('SSE backend error:', errMsg);
                                     appendSystemMessage(`❌ 服务异常: ${errMsg}`);
@@ -1016,7 +955,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                // Finished response stream
                 assistantHolder.finish({
                     audio_url: lastAudioUrl,
                     chunks: currentMessageChunks,
@@ -1054,7 +992,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // 15. Message DOM Builders
+    // 15. Helper Renderers
     function appendUserMessage(text) {
         if (!chatLog) return;
         const msgDiv = document.createElement('div');
@@ -1076,16 +1014,14 @@ document.addEventListener('DOMContentLoaded', () => {
     function createAssistantMessageHolder() {
         const msgDiv = document.createElement('div');
         msgDiv.className = 'message assistant-message';
-        const characterName = (vnCharacterName && vnCharacterName.textContent) || 'AI 伴侣';
+        const characterName = (vnCharacterName && vnCharacterName.textContent) || '四季夏目';
         msgDiv.innerHTML = `
-            <div style="font-size: 11px; font-weight: 700; color: var(--primary-purple); margin-bottom: 4px;">
-                ${escapeHtml(characterName)}
-            </div>
-            <div class="msg-ja" style="font-size: 15px; font-weight: 700; color: #0f172a; margin-bottom: 4px; display: none;"></div>
-            <div class="msg-zh" style="font-size: 13px; color: #475569;">思考中...</div>
-            <div class="msg-actions" style="margin-top: 8px; display: none;">
-                <button type="button" class="btn-play-bubble vn-action-btn" title="连续播放所有语音分句">▶️ 播放台词</button>
-                <button type="button" class="btn-download-bubble vn-action-btn" title="下载合并母带音频 (WAV)">💾 下载母带</button>
+            <div class="msg-speaker">${escapeHtml(characterName)}</div>
+            <div class="msg-ja" style="display: none;"></div>
+            <div class="msg-zh">思考中...</div>
+            <div class="msg-actions" style="display: none;">
+                <button type="button" class="btn-play-bubble vn-action-btn" title="播放台词">▶️ 播放</button>
+                <button type="button" class="btn-download-bubble vn-action-btn" title="下载母带">💾 下载</button>
             </div>
         `;
 
@@ -1105,12 +1041,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             },
             finish: (audioInfo) => {
-                if (audioInfo) {
+                if (audioInfo && (audioInfo.audio_url || (audioInfo.chunks && audioInfo.chunks.length > 0))) {
                     actionsEl.style.display = 'flex';
-                    actionsEl.style.gap = '8px';
                     playBtn.onclick = () => {
                         audioPlayer.interrupt();
-                        if (typeof audioInfo === 'object' && audioInfo.chunks && audioInfo.chunks.length > 0) {
+                        if (audioInfo.chunks && audioInfo.chunks.length > 0) {
                             audioInfo.chunks.forEach((chunk, i) => {
                                 audioPlayer.enqueue({
                                     index: chunk.index !== undefined ? chunk.index : i,
@@ -1118,34 +1053,19 @@ document.addEventListener('DOMContentLoaded', () => {
                                     sentence: chunk.sentence || ''
                                 });
                             });
-                        } else if (typeof audioInfo === 'object' && audioInfo.audio_url) {
+                        } else if (audioInfo.audio_url) {
                             audioPlayer.enqueue({
                                 index: 0,
                                 audio_url: audioInfo.audio_url,
                                 sentence: audioInfo.sentence || jaEl.textContent || ''
-                            });
-                        } else if (typeof audioInfo === 'string') {
-                            audioPlayer.enqueue({
-                                index: 0,
-                                audio_url: audioInfo,
-                                sentence: jaEl.textContent || ''
                             });
                         }
                     };
 
                     if (downloadBtn) {
                         downloadBtn.onclick = () => {
-                            let url = '';
-                            if (typeof audioInfo === 'object') {
-                                url = audioInfo.audio_url || (audioInfo.chunks && audioInfo.chunks[0] && audioInfo.chunks[0].audio_url) || '';
-                            } else if (typeof audioInfo === 'string') {
-                                url = audioInfo;
-                            }
-                            if (url) {
-                                downloadAudioFile(url, 'full_dialogue.wav');
-                            } else {
-                                alert('暂无可下载的语音母带');
-                            }
+                            let url = audioInfo.audio_url || (audioInfo.chunks && audioInfo.chunks[0] && audioInfo.chunks[0].audio_url) || '';
+                            if (url) downloadAudioFile(url, 'full_dialogue.wav');
                         };
                     }
                 }
@@ -1174,14 +1094,14 @@ document.addEventListener('DOMContentLoaded', () => {
             .replace(/'/g, '&#039;');
     }
 
-    // 16. Initial Load & Polling
+    // Initial Load
     checkSystemStatus();
     loadVoiceProfiles();
     loadHistory();
     setInterval(checkSystemStatus, 5000);
 });
 
-// Export classes for module environments (Node / Jest / Testing)
+// Export classes for testing
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         AutoModeController,

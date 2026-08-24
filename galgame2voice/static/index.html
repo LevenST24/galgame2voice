@@ -3,92 +3,113 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🌸 Galgame2Voice - 二次元智能语音伴侣</title>
+    <title>Galgame2Voice — 二次元智能语音伴侣</title>
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700;800&family=Noto+Sans+SC:wght@300;400;500;700&family=Noto+Serif+JP:wght@400;500;700&display=swap" rel="stylesheet">
 </head>
 <body class="galgame-theme" id="galgame2voice-app">
+
+    <!-- ═══════════════ Ambient Background Layers ═══════════════ -->
+    <div class="ambient-bg">
+        <div class="ambient-orb orb-1"></div>
+        <div class="ambient-orb orb-2"></div>
+        <div class="ambient-orb orb-3"></div>
+        <div class="ambient-particles"></div>
+    </div>
+
     <div class="main-wrapper galgame2voice">
-        <!-- 🌸 Top Navigation & Control Capsule -->
+        <!-- ═══════════════ Top Bar ═══════════════ -->
         <header class="app-header glass-card">
             <div class="brand-section">
-                <span class="brand-icon">🌸</span>
-                <div class="brand-texts">
-                    <span class="brand-title">Galgame2Voice</span>
-                    <span class="brand-sub">AI Voice Companion</span>
+                <div class="brand-sakura">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M12 2C12 2 14.5 5.5 14.5 8.5C14.5 10.5 13.5 12 12 12C10.5 12 9.5 10.5 9.5 8.5C9.5 5.5 12 2 12 2Z" fill="currentColor" opacity="0.6"/>
+                        <path d="M12 12C12 12 15.5 9.5 18 10.5C20 11.3 21 13 20 14.5C19 16 17 16 15 15C12.5 13.8 12 12 12 12Z" fill="currentColor" opacity="0.5"/>
+                        <path d="M12 12C12 12 15 15 14.5 17.5C14 20 12.5 21 11 20.5C9.5 20 9 18 10 16C11 14 12 12 12 12Z" fill="currentColor" opacity="0.4"/>
+                        <path d="M12 12C12 12 8.5 15 6 14.5C3.5 14 2.5 12 3.5 10.5C4.5 9 6.5 9 8.5 10C10.5 11 12 12 12 12Z" fill="currentColor" opacity="0.45"/>
+                        <path d="M12 12C12 12 9 9 9.5 6.5C10 4 11.5 3 13 3.5C14.5 4 15 6 14 8C13 10 12 12 12 12Z" fill="currentColor" opacity="0.55"/>
+                        <circle cx="12" cy="12" r="2" fill="currentColor" opacity="0.8"/>
+                    </svg>
                 </div>
+                <span class="brand-title">Galgame2Voice</span>
             </div>
 
-            <!-- Middle: Status & Character Switcher -->
             <div class="header-controls">
-                <!-- Character Dropdown -->
-                <div class="control-pill voice-select-pill" title="切换角色音色">
-                    <span class="pill-icon">🎭</span>
+                <!-- Voice Profile Selector -->
+                <div class="control-pill voice-select-pill">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
                     <select id="quick-voice-select" class="voice-dropdown" aria-label="选择伴侣角色">
-                        <option value="">加载角色中...</option>
+                        <option value="">加载中...</option>
                     </select>
                 </div>
 
-                <!-- Affection Status Badge -->
-                <div id="affection-badge" class="control-pill affection-pill" title="当前伴侣好感度与羁绊">
-                    <span class="pill-icon">❤️</span>
+                <!-- Affection Badge -->
+                <div id="affection-badge" class="control-pill affection-pill" title="好感度">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
                     <span id="affection-label" class="affection-label">Lv.1 初识 (0/100)</span>
                 </div>
 
                 <!-- GPT-SoVITS Status -->
-                <div id="sovits-status-badge" class="badge badge-loading" title="GPT-SoVITS 推理引擎状态">
+                <div id="sovits-status-badge" class="badge badge-loading" title="GPT-SoVITS 状态">
                     <span class="status-dot"></span>
                     <span class="status-text">检测中...</span>
                 </div>
 
-                <!-- Master Volume Slider -->
-                <div class="control-pill volume-pill" title="调节语音音量">
-                    <button type="button" id="mute-toggle-btn" class="icon-btn" title="静音开关">🔊</button>
-                    <input type="range" id="volume-slider" min="0" max="100" value="100" class="volume-slider" title="音量调节">
-                    <span id="volume-label" class="volume-label">100%</span>
+                <!-- Volume -->
+                <div class="control-pill volume-pill">
+                    <button type="button" id="mute-toggle-btn" class="icon-btn mute-btn" title="静音开关">
+                        <svg class="vol-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                    </button>
+                    <input type="range" id="volume-slider" min="0" max="100" value="100" class="volume-slider" title="音量">
+                    <span id="volume-label" class="volume-label">100</span>
                 </div>
             </div>
 
-            <!-- Right: View Switcher & Console -->
             <div class="header-actions">
                 <div class="mode-toggle-group">
-                    <button type="button" id="btn-mode-vn" class="btn-mode active" title="Galgame 视觉小说沉浸模式">🌸 视觉小说</button>
-                    <button type="button" id="btn-mode-chat" class="btn-mode" title="现代对话流气泡模式">💬 对话流</button>
+                    <button type="button" id="btn-mode-vn" class="btn-mode active" title="视觉小说模式">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                        <span>剧场</span>
+                    </button>
+                    <button type="button" id="btn-mode-chat" class="btn-mode" title="对话流模式">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                        <span>对话</span>
+                    </button>
                 </div>
-                <a href="/settings.html" class="nav-console-btn" title="进入高级设置控制台">⚙️ 设置</a>
+                <a href="/settings.html" class="nav-console-btn" title="设置">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                </a>
             </div>
         </header>
 
-        <!-- 🎭 STAGE AREA: Dual Mode Container -->
+        <!-- ═══════════════ Stage Container ═══════════════ -->
         <main class="stage-container">
-            <!-- ================= MODE 1: Galgame Visual Novel Mode ================= -->
+            <!-- ────── Mode 1: Visual Novel ────── -->
             <section id="vn-view" class="vn-stage-view">
-                <!-- Character Standee / Avatar Backdrop -->
+                <!-- Character Portrait Area -->
                 <div class="character-backdrop">
                     <div class="character-glow-circle"></div>
                     <div class="character-avatar-wrapper">
                         <div class="avatar-frame">
-                            <span class="avatar-emoji">👧</span>
+                            <span class="avatar-emoji">🌸</span>
                         </div>
                         <div class="character-aura"></div>
                     </div>
+                    <div class="character-name-float" id="vn-character-name">四季夏目</div>
                 </div>
 
-                <!-- Classic Galgame Frosted Dialogue Box -->
+                <!-- Dialogue Box -->
                 <div class="vn-dialogue-box glass-card">
                     <div class="vn-box-header">
                         <div class="vn-name-tag">
                             <span class="tag-diamond">◆</span>
-                            <span id="vn-character-name" class="character-name">四季夏目 (Shiki Natsume)</span>
-                            <span id="vn-affection-badge" class="affection-badge" title="好感度羁绊">❤️ Lv.1</span>
-                            <span id="vn-emotion-badge" class="emotion-badge" data-emotion="normal">🌸 平静</span>
-                            <span class="tag-diamond">◆</span>
+                            <span class="character-name-inline">四季夏目</span>
+                            <span id="vn-affection-badge" class="affection-badge-sm">Lv.1</span>
+                            <span id="vn-emotion-badge" class="emotion-badge" data-emotion="normal">平静</span>
                         </div>
-
-                        <!-- Voice Equalizer Animation -->
-                        <div id="vn-audio-equalizer" class="audio-equalizer-bars" title="语音声波实时反馈">
+                        <div id="vn-audio-equalizer" class="audio-equalizer-bars" title="声波">
                             <span class="bar bar-1"></span>
                             <span class="bar bar-2"></span>
                             <span class="bar bar-3"></span>
@@ -97,125 +118,105 @@
                         </div>
                     </div>
 
-                    <!-- Main Dialogue Text -->
                     <div class="vn-dialogue-content">
-                        <!-- Japanese Line -->
                         <div id="vn-text-ja" class="dialogue-line-ja">
-                            とりあえず、今日見たことは忘れて、わかった?
+                            ねえ、今日はどんなことがあったの？
                         </div>
-                        <!-- Chinese Subtitle -->
                         <div id="vn-text-zh" class="dialogue-line-zh">
-                            （总之，今天看到的事情请务必保密忘掉，明白了吗？）
+                            （呐，今天发生了什么有趣的事情吗？）
                         </div>
                     </div>
 
-                    <!-- Footer Action Bar -->
                     <div class="vn-box-footer">
-                        <div class="vn-status-hint">
-                            <span id="vn-audio-status" class="status-indicator-text">音频就绪</span>
-                        </div>
+                        <span id="vn-audio-status" class="status-indicator-text">音频就绪</span>
                         <div class="vn-action-buttons">
-                            <button type="button" id="btn-vn-auto" class="vn-action-btn vn-toggle-btn" title="自动播放模式 (语音播完后 1.5s 自动推进)">
-                                <span class="btn-icon">▶️</span>
+                            <button type="button" id="btn-vn-auto" class="vn-action-btn vn-toggle-btn" title="自动播放">
                                 <span class="btn-text">AUTO</span>
                             </button>
-                            <button type="button" id="btn-vn-skip" class="vn-action-btn" title="快速跳过当前打字机与等待">
-                                <span class="btn-icon">⏩</span>
+                            <button type="button" id="btn-vn-skip" class="vn-action-btn" title="跳过">
                                 <span class="btn-text">SKIP</span>
                             </button>
-                            <button type="button" id="btn-vn-log" class="vn-action-btn" title="打开历史剧情回溯抽屉">
-                                <span class="btn-icon">📜</span>
+                            <button type="button" id="btn-vn-log" class="vn-action-btn" title="历史">
                                 <span class="btn-text">LOG</span>
                             </button>
-                            <button type="button" id="btn-vn-replay" class="vn-action-btn" title="重新播放当前台词配音">
-                                <span>🔄 重播</span>
+                            <span class="vn-btn-divider"></span>
+                            <button type="button" id="btn-vn-replay" class="vn-action-btn" title="重新播放当前台词">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                                <span>重新播放</span>
                             </button>
                             <button type="button" id="btn-vn-download" class="vn-action-btn" title="下载合并母带音频 (WAV)">
-                                <span>💾 下载母带</span>
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                <span>下载母带</span>
                             </button>
-                            <button type="button" id="btn-vn-history" class="vn-action-btn" style="display: none;" title="查看历史对话回溯">
-                                <span>📜 对话记录</span>
-                            </button>
+                            <button type="button" id="btn-vn-history" class="vn-action-btn" style="display:none;" title="历史">LOG</button>
                         </div>
                     </div>
                 </div>
             </section>
 
-            <!-- ================= MODE 2: Classic Chat Flow Mode ================= -->
-            <section id="chat-view" class="chat-stage-view" style="display: none;">
+            <!-- ────── Mode 2: Chat Flow ────── -->
+            <section id="chat-view" class="chat-stage-view" style="display:none;">
                 <div id="chat-log" class="chat-bubbles-container">
                     <div class="message system-message glass-card">
-                        🌸 欢迎来到 Galgame2Voice！双语流式对话与低延迟日配语音合成引擎已就绪。
+                        欢迎回来，双语流式对话与日配语音引擎已就绪。
                     </div>
                 </div>
             </section>
         </main>
 
-        <!-- 📝 Quick Prompt Chips & Input Bar -->
+        <!-- ═══════════════ Input Footer ═══════════════ -->
         <footer class="app-footer">
-            <!-- Quick Chips -->
             <div class="quick-chips-bar">
-                <span class="chip-label">✨ 快捷提问:</span>
-                <button type="button" class="quick-chip" data-prompt="夏目，今天咖啡店有什么特别推荐吗？">☕ 咖啡推荐</button>
-                <button type="button" class="quick-chip" data-prompt="早上好呀！今天心情怎么样？">☀️ 晨间问候</button>
-                <button type="button" class="quick-chip" data-prompt="可以教我一句日常常用的日语吗？">📖 日语教学</button>
-                <button type="button" class="quick-chip" data-prompt="能为我推荐一部好看的恋爱或治愈系动漫吗？">🎬 动漫推荐</button>
+                <button type="button" class="quick-chip" data-prompt="夏目，今天咖啡店有什么特别推荐吗？">咖啡推荐</button>
+                <button type="button" class="quick-chip" data-prompt="早上好呀！今天心情怎么样？">晨间问候</button>
+                <button type="button" class="quick-chip" data-prompt="可以教我一句日常常用的日语吗？">日语教学</button>
+                <button type="button" class="quick-chip" data-prompt="能为我推荐一部好看的恋爱或治愈系动漫吗？">动漫推荐</button>
             </div>
-
-            <!-- Input Bar -->
             <form id="chat-form" class="input-glass-container">
-                <button type="button" id="reset-context-btn" class="btn-input-action" title="清空上下文，开启新会话">
-                    🔄
+                <button type="button" id="reset-context-btn" class="btn-input-action" title="重置会话">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
                 </button>
-                <input 
-                    type="text" 
-                    id="prompt-input" 
-                    class="prompt-input-field" 
-                    placeholder="输入想对她说的话... (按 Enter 发送)" 
-                    autocomplete="off" 
+                <input
+                    type="text"
+                    id="prompt-input"
+                    class="prompt-input-field"
+                    placeholder="输入想对她说的话..."
+                    autocomplete="off"
                     required
                 />
                 <button type="submit" id="send-btn" class="send-action-btn">
-                    <span>发送</span>
-                    <span class="send-arrow">➔</span>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                 </button>
             </form>
         </footer>
+    </div>
 
-        <!-- 📜 Galgame Log Drawer (侧边滑出毛玻璃抽屉) -->
-        <div id="log-drawer-backdrop" class="drawer-backdrop" style="display: none;">
-            <aside id="vn-log-drawer" class="vn-log-drawer glass-card">
-                <div class="drawer-header">
-                    <div class="drawer-title">
-                        <span class="drawer-icon">📜</span>
-                        <span class="drawer-title-text">历史剧情回溯 (Backlog)</span>
-                    </div>
-                    <button type="button" id="btn-close-log-drawer" class="drawer-close-btn" title="关闭抽屉">&times;</button>
-                </div>
-                <div id="log-drawer-body" class="drawer-body">
-                    <!-- 动态渲染历史消息条目，每条 Assistant 消息均带独立的 🔊 重播按钮 -->
-                </div>
-                <div class="drawer-footer">
-                    <button type="button" id="btn-clear-log-history" class="btn-danger-outline">清空历史记忆</button>
-                    <button type="button" id="btn-close-log-drawer-2" class="btn-primary-sm">关闭</button>
-                </div>
-            </aside>
-        </div>
+    <!-- ═══════════════ Log Drawer ═══════════════ -->
+    <div id="log-drawer-backdrop" class="drawer-backdrop" style="display:none;">
+        <aside id="vn-log-drawer" class="vn-log-drawer glass-card">
+            <div class="drawer-header">
+                <span class="drawer-title-text">历史对话</span>
+                <button type="button" id="btn-close-log-drawer" class="drawer-close-btn">&times;</button>
+            </div>
+            <div id="log-drawer-body" class="drawer-body"></div>
+            <div class="drawer-footer">
+                <button type="button" id="btn-clear-log-history" class="btn-danger-outline">清空记忆</button>
+                <button type="button" id="btn-close-log-drawer-2" class="btn-primary-sm">关闭</button>
+            </div>
+        </aside>
+    </div>
 
-        <!-- 📜 History Modal -->
-        <div id="history-modal" class="modal-backdrop" style="display: none;">
-            <div class="modal-card glass-card">
-                <div class="modal-header">
-                    <h3>📜 历史对话记录 (Backlog)</h3>
-                    <button type="button" id="btn-close-history" class="modal-close-btn">&times;</button>
-                </div>
-                <div id="history-modal-body" class="modal-body">
-                    <!-- Loaded dynamically -->
-                </div>
-                <div class="modal-footer">
-                    <button type="button" id="btn-clear-history-modal" class="btn-danger-outline">清空历史记忆</button>
-                    <button type="button" id="btn-close-history-2" class="btn-primary-sm">关闭</button>
-                </div>
+    <!-- ═══════════════ History Modal (retained for compatibility) ═══════════════ -->
+    <div id="history-modal" class="modal-backdrop" style="display:none;">
+        <div class="modal-card glass-card">
+            <div class="modal-header">
+                <h3>历史对话</h3>
+                <button type="button" id="btn-close-history" class="modal-close-btn">&times;</button>
+            </div>
+            <div id="history-modal-body" class="modal-body"></div>
+            <div class="modal-footer">
+                <button type="button" id="btn-clear-history-modal" class="btn-danger-outline">清空记忆</button>
+                <button type="button" id="btn-close-history-2" class="btn-primary-sm">关闭</button>
             </div>
         </div>
     </div>
