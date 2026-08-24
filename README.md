@@ -1,215 +1,136 @@
-# 星光咖啡馆与死神之蝶 · 四季夏目 聊天 AI
+# 星光咖啡馆与死神之蝶 · 四季夏目 聊天 AI (Galgame2Voice)
 
-> 中文显示 + 日文语音的 Galgame 女主聊天机器人，支持网页与 Telegram 两种入口。
+> 中文显示 + 日文流式语音的 Galgame 女主聊天伴侣，基于 Python / FastAPI 构建，深度协同 **GPT-SoVITS**。
 
-一个基于 Spring Boot 的 AI 聊天应用，集成大语言模型（DeepSeek 等 **OpenAI 兼容**接口，可换任意服务商）与 **GPT-SoVITS** 语音合成，扮演《星光咖啡馆与死神之蝶》（喫茶ステラと死神の蝶）中的角色「四季夏目」与玩家对话：
+`galgame2voice` 是一个轻量级、高性能的 Python/FastAPI 伴侣扩展服务，无缝集成主流大语言模型与 **GPT-SoVITS v2** 语音合成引擎，扮演《星光咖啡馆与死神之蝶》（喫茶ステラと死神の蝶）角色「四季夏目」等 Galgame 角色与玩家进行实时双语互动：
 
-- 🗣️ 让大模型按 JSON 输出「中文台词 + 日文台词」
-- 🀄 中文用于页面 / 聊天显示
-- 🇯🇵 日文喂给 GPT-SoVITS 合成女主语音并播放
-- 💬 网页聊天界面（`/`）与 Telegram 机器人两种入口
-- 🎛️ 网页控制台（`/settings.html`）与 Telegram 命令，支持多用户独立配置
+- 🗣️ **双语流式输出**：大模型按流式 JSON 输出「中文台词 + 日文台词」
+- 🀄 **低延迟中文渲染**：流式输出中文内容并在网页界面实时逐字呈现
+- 🇯🇵 **分句并发语音合成**：日文台词按句自动切分，后台并发队列调用 GPT-SoVITS 合成高质量音频并流式播放
+- 💬 **双通道交互**：提供现代化 Web 聊天界面（`/`）与 Telegram 机器人双向语音/文本互动
+- 🎛️ **可视化管理控制台**：现代化 Web 配置后台（`/settings.html`），支持 10+ 家主流 LLM/STT 服务商管理、音色方案热切换、动态延迟测速与密钥脱敏保护
+- 🛡️ **安全加固**：控制台访问 Token 校验、SSRF 凭据外泄防护、XSS 过滤与默认 `127.0.0.1` 本地绑定
 
-## 核心思路
+---
 
-GPT-SoVITS **不会翻译，只会照着文本念**。所以要做到"显示中文、口播日文"，链路是：
+## 核心架构与处理链路
 
 ```
-用户输入
-   ↓
-DeepSeek 一次性输出：
-   ├─ chinese（中文台词）→ 显示在页面
-   └─ japanese（日文台词）→ 喂给 GPT-SoVITS 合成语音 → 播放
+[用户提问]
+   │
+   ▼
+[FastAPI / LLM 流式引擎]
+   │
+   ├─► 增量中文流 (SSE: text) ─────────────────────► [前端 Web 界面即时显示]
+   │
+   └─► 日文分句检测 (StreamingBilingualParser)
+         │
+         ▼
+     [异步并发队列 asyncio.Queue]
+         │
+         ▼
+     [GPT-SoVITS 客户端 (Mutex 互斥合成)] ────────► [前端 Web Audio 队列连续播放]
 ```
 
-因此最关键的一点是：**让大模型按 JSON 格式输出双语内容**（通过 `AiModelManager` 里的系统提示词实现）。
+---
 
-## 训练得到的两个模型文件
+## 支持的模型服务商 (10+ 预置模板)
 
-| 文件 | 作用 |
-|------|------|
-| `xxx.ckpt`（GPT 模型） | 音色克隆，决定"像不像女主" |
-| `xxx.pth`（SoVITS 模型） | 语音合成，决定"清不清楚、自不自然" |
+内置主流大语言模型与语音识别 (STT) 服务商配置模板：
 
-**两个必须同时使用，缺一不可。**
+| 服务商 | 协议类型 | 默认对话模型 | 支持 STT 语音识别 |
+|--------|---------|-------------|------------------|
+| **DeepSeek** | OpenAI 兼容 | `deepseek-chat` / `deepseek-reasoner` | 搭配系统 STT |
+| **OpenAI** | 官方/兼容 | `gpt-4o` / `gpt-4o-mini` | `whisper-1` |
+| **Anthropic** | 官方 Messages 原生 | `claude-3-5-sonnet-latest` | 搭配系统 STT |
+| **通义千问 (Qwen)** | DashScope 兼容 | `qwen-plus` / `qwen-max` | `qwen-audio-asr` |
+| **智谱 GLM** | 官方 PAAS 兼容 | `glm-4-plus` / `glm-4-air` | 搭配系统 STT |
+| **月之暗面 (Moonshot)** | OpenAI 兼容 | `moonshot-v1-8k` | 搭配系统 STT |
+| **硅基流动 (SiliconFlow)** | OpenAI 兼容 | `deepseek-ai/DeepSeek-V3` | `FunAudioLLM/SenseVoiceSmall` |
+| **Groq** | OpenAI 兼容 | `llama-3.3-70b-versatile` | `whisper-large-v3` |
+| **xAI (Grok)** | OpenAI 兼容 | `grok-2` | 搭配系统 STT |
+| **Google Gemini** | OpenAI 兼容 | `gemini-2.0-flash` | 搭配系统 STT |
+| **字节豆包 (Doubao)** | 火山方舟兼容 | `doubao-1-5-pro-32k-250115` | 搭配系统 STT |
+| **自定义 / Ollama** | 本地/私有网关 | 自定义模型名 | 自定义 STT |
 
-## 配置 API Key
-
-接口走的是 **OpenAI 兼容格式**，所以 Key **不一定是 DeepSeek 的**——任何兼容服务商都能用，只需把 Key、地址、模型名换成对应的即可。
-
-> 注意：**网页聊天**的 Key 在网页「AI 设置」里填（存浏览器，不读配置文件）；下面 `application.yaml` 里的配置**仅供 Telegram 机器人**使用。
-
-先把 `application.example.yaml` 复制一份并重命名为 `application.yaml`，然后填入你的 Key：
-
-```yaml
-galgame:
-  api-key: "sk-你的key"                       # 任意 OpenAI 兼容服务商的 Key
-  api-base-url: "https://api.deepseek.com"     # 对应服务商的地址
-  chat-model: "deepseek-v4-flash"              # 对应服务商的模型名
-  telegram-bot-token: ""                       # 需要 Telegram 机器人时填写，留空则禁用
-```
-
-常用服务商示例：
-
-| 服务商 | `api-base-url` | 模型示例 |
-|--------|----------------|----------|
-| DeepSeek | `https://api.deepseek.com` | `deepseek-chat` |
-| 月之暗面 Moonshot | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
-| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus` |
-| OpenAI | `https://api.openai.com/v1` | `gpt-4o` |
-
-> 也可以完全不写 Key：网页聊天在「AI 设置」里填、Telegram 用 `/setkey` 填。
+---
 
 ## 环境要求
 
-- **Java 17** 或更高版本
-- **GPT-SoVITS**（语音合成服务，需单独安装）
-- Maven 已随项目内置（`mvnw`），无需单独安装
+- **Python 3.10** 或更高版本（支持 `uv`、`pip` 或 Conda 虚拟环境）
+- **GPT-SoVITS**（语音合成推理服务端，建议 v2 / v2ProPlus）
+- **FFmpeg**（可选，用于 Telegram 语音消息 OGG/Opus 与 16kHz WAV 双向转码）
 
-## 使用步骤
+---
 
-### 1. 安装并启动 GPT-SoVITS
+## 快速上手
 
-本项目本身不含语音合成能力，语音由 [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 提供，请先按其官方说明安装。
+### 1. 启动 GPT-SoVITS 后端
 
-1. 把训练好的 `.ckpt` 放进 GPT-SoVITS 项目的 `GPT_weights_v2ProPlus/` 文件夹
-2. 把 `.pth` 放进 `SoVITS_weights_v2ProPlus/` 文件夹
-3. 启动接口（Windows 下用自带 runtime 的 Python）：
-   ```bash
-   .\runtime\python.exe api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS/configs/tts_infer.yaml
-   ```
-   默认监听 `http://127.0.0.1:9880`
-
-### 2. 准备女主参考音频
-
-准备一段女主**干净、无杂音**的几秒原声，以及它对应的文字内容（放在 GPT-SoVITS 项目里）。
-
-### 3. 获取本项目并配置
+确保 GPT-SoVITS `api_v2.py` 已正常启动并监听在 `http://127.0.0.1:9880`：
 
 ```bash
-git clone https://github.com/zako0721/galgame_ai.git
-cd galgame_ai
+# 进入 GPT-SoVITS 根目录
+python api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS/configs/tts_infer.yaml
 ```
 
-1. 按上文「配置 API Key」复制配置模板并填入你的 Key
-2. 编辑 `application.yaml` 里的 `gpt-sovits` 配置：
+### 2. 启动 Galgame2Voice 伴侣服务
 
-```yaml
-gpt-sovits:
-  base-url: http://127.0.0.1:9880
-  ref-audio-path: 参考音频路径.wav   # 相对 GPT-SoVITS 项目根目录
-  prompt-text: 参考音频对应的文本
-  prompt-lang: ja
-  text-lang: ja
-```
-
-### 4. 配置合成模型（重要）
-
-新版 api_v2.py 的 `/tts` 接口**不再通过请求体传模型权重**，而是从
-`GPT_SoVITS/configs/tts_infer.yaml` 的 `custom` 段加载模型。请把该文件
-`custom` 段里的 `t2s_weights_path`（GPT 模型 .ckpt）和 `vits_weights_path`
-（SoVITS 模型 .pth）改成你训练好的女主模型：
-
-```yaml
-custom:
-  t2s_weights_path: GPT_weights_v2ProPlus/siki2-e50.ckpt
-  version: v2ProPlus
-  vits_weights_path: SoVITS_weights_v2ProPlus/siki_e20_s10280.pth
-```
-
-> 注意：`ref-audio-path` 和各权重路径都是相对 GPT-SoVITS 项目根目录的路径，且这些文件要放在 GPT-SoVITS 服务器上。
-
-### 5. 启动后端
+在项目根目录下直接运行 Windows 批处理脚本（自动检测 Python/uv 环境与依赖）：
 
 ```bash
-./mvnw spring-boot:run
+# 启动服务（默认监听 http://127.0.0.1:8080）
+.\start-galgame2voice.bat
+
+# 停止服务
+.\stop-galgame2voice.bat
+
+# 重启服务
+.\restart-galgame2voice.bat
 ```
 
-### 6. 打开聊天页面
+或者使用 Python 原生命令行：
 
-浏览器访问：`http://localhost:8080/`
+```bash
+# 安装依赖
+pip install -r requirements.txt
 
-输入中文，页面会显示中文回复，同时自动播放女主日文语音。
-
-## Telegram 机器人（可选）
-
-在 `application.yaml` 里填写 `telegram-bot-token` 后启动，Bot 会自动注册（走 `galgame.telegram-proxy-*` 代理）。支持：
-
-| 命令 | 说明 |
-|------|------|
-| `/model` / `/voice` | 查看当前模型 / 语音设置 |
-| `/setkey` `/seturl` `/setmodel` `/setsttmodel` | 设置 API Key / 地址 / 对话模型 / 语音识别模型 |
-| `/setbatch` `/speed` `/temp` `/settopk` `/settopp` `/setseed` `/setsplit` | 设置 TTS 参数 |
-| `/console` | 获取你的专属网页控制台链接 |
-| `/help` | 帮助 |
-
-支持直接发文字或语音（语音先经 STT 转文字再对话），回复为文本 + 日文语音条。
-
-> Telegram API 在国内需代理，默认走 `127.0.0.1:10809`，可在 `application.yaml` 的 `galgame.telegram-proxy-*` 修改。
-
-## 网页控制台
-
-启动后访问 `http://localhost:8080/settings.html`，输入 Telegram 里 `/console` 获得的 token，即可在网页上管理自己的 API / TTS 配置。
-
-## API 说明
-
-### GET /ai/chat
-
-参数：`prompt`（用户输入）
-
-返回 JSON：
-```json
-{
-  "chinese": "显示的中文台词",
-  "japanese": "日文台词",
-  "audioUrl": "/audio/tts_xxx.wav"
-}
+# 启动 FastAPI 服务
+uvicorn galgame2voice.main:app --host 127.0.0.1 --port 8080 --reload
 ```
 
-## 项目结构
+启动后即可通过浏览器访问：
+- **聊天主界面**：[http://127.0.0.1:8080/](http://127.0.0.1:8080/)
+- **管理控制台**：[http://127.0.0.1:8080/settings.html](http://127.0.0.1:8080/settings.html)
+- **OpenAPI 接口文档**：[http://127.0.0.1:8080/docs](http://127.0.0.1:8080/docs)
 
+---
+
+## Telegram 机器人配置
+
+1. 打开管理控制台 [http://127.0.0.1:8080/settings.html](http://127.0.0.1:8080/settings.html) ➔ **Telegram 设置**
+2. 填入从 `@BotFather` 获取的 `Bot Token`
+3. 若在国内网络环境下，勾选 **启用 HTTP/SOCKS5 代理**（例如 `127.0.0.1:10809`）
+4. 保存配置后服务自动启动长轮询，支持以下指令：
+   - `/start` - 查看欢迎语并初始化角色
+   - `/reset` - 清空当前上下文历史
+   - `/voice` - 查看/切换音色配置
+   - `/model` - 查看当前 LLM / STT 模型
+   - `/console` - 在私聊中安全获取专属后台管理链接
+   - 🎙️ **直接发送语音**：机器人自动转码识别、调用大模型并回复女主语音
+
+---
+
+## 运行自动化测试
+
+项目内置完整的 Pytest 自动化测试套件（覆盖数据库持久化、模型适配器、分句算法、GPT-SoVITS 互斥客户端与 SSE 流式管道）：
+
+```bash
+python -m pytest -v
 ```
-src/main/java/org/example/springai/
-├── SpringaiApplication.java        # 启动类
-├── config/
-│   ├── AudioCleanupTask.java       # 定时清理过期音频
-│   ├── ConfigStore.java            # 多租户配置存储（configs/<chatId>.json）
-│   ├── GalgameConfig.java          # 全局默认配置（持久化 galgame-config.json）
-│   ├── GptSovitsProperties.java    # GPT-SoVITS 配置
-│   └── WebConfig.java              # /audio/** 静态资源映射
-├── controller/
-│   ├── AiController.java           # 网页聊天接口
-│   └── ConfigController.java       # 控制台配置读写接口
-├── service/
-│   ├── AiModelManager.java         # DeepSeek 客户端 + 角色系统提示词
-│   ├── ChatService.java            # 解析双语 JSON
-│   ├── GptSovitsService.java       # 调用 GPT-SoVITS /tts
-│   └── TtsOptions.java             # TTS 参数
-└── telegram/
-    ├── TelegramBotConfig.java      # Bot 注册与代理配置
-    └── TelegramGalBot.java         # Telegram 消息/语音处理
-src/main/resources/
-├── application.example.yaml        # 配置模板（复制为 application.yaml）
-├── nat002_077.ogg                  # 参考音频
-└── static/
-    ├── index.html                  # 聊天页面
-    └── settings.html               # 网页控制台
-```
 
-## 技术栈
+---
 
-- Spring Boot 4.0.7 / Java 17
-- Spring AI 2.0.0（DeepSeek）
-- GPT-SoVITS（api_v2.py 语音合成）
-- Telegram Bots（telegrambots 6.9.7.1）
-- Jackson 2.17 / Lombok
+## 开源许可
 
-## 致谢
-
-本项目使用了以下开源项目，特此致谢：
-
-| 项目 | 用途 | 链接 |
-|------|------|------|
-| GPT-SoVITS | 女主语音合成（音色克隆 + TTS） | <https://github.com/RVC-Boss/GPT-SoVITS> |
-
-> 语音合成部分依赖 GPT-SoVITS 的 `api_v2.py` 接口，使用前请先启动 GPT-SoVITS 服务（见上文「使用步骤」）。GPT-SoVITS 的模型与代码版权归其原作者（RVC-Boss）所有。
+本项目遵循 MIT License 开源。

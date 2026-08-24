@@ -1,0 +1,2581 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>galgame2voice - 控制台与系统配置</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        /* Extended Console Styles */
+        :root {
+            --sidebar-width: 240px;
+            --card-border: #e2e8f0;
+            --card-bg: #ffffff;
+            --muted-bg: #f8fafc;
+            --text-dark: #0f172a;
+            --text-muted: #64748b;
+            --primary-accent: #6366f1;
+            --primary-hover: #4f46e5;
+            --success-accent: #10b981;
+            --warning-accent: #f59e0b;
+            --danger-accent: #ef4444;
+        }
+
+        body {
+            background-color: #f1f5f9;
+            color: var(--text-dark);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+        }
+
+        .console-wrapper {
+            width: 100%;
+            max-width: 1200px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            background: #ffffff;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01);
+        }
+
+        /* Top Navbar */
+        .console-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 24px;
+            background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%);
+            color: #ffffff;
+        }
+
+        .brand-box {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .brand-box .logo-icon {
+            font-size: 26px;
+        }
+
+        .brand-box .title {
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .brand-box .subtitle {
+            font-size: 12px;
+            color: #c7d2fe;
+            background: rgba(255, 255, 255, 0.15);
+            padding: 2px 8px;
+            border-radius: 6px;
+            margin-left: 6px;
+        }
+
+        .header-nav-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .btn-header-action {
+            background: rgba(255, 255, 255, 0.12);
+            color: #ffffff;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-header-action:hover {
+            background: rgba(255, 255, 255, 0.25);
+            transform: translateY(-1px);
+        }
+
+        /* Layout Body */
+        .console-layout {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        /* Sidebar Navigation */
+        .console-sidebar {
+            width: var(--sidebar-width);
+            background: #fafbfc;
+            border-right: 1px solid var(--card-border);
+            padding: 20px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            color: var(--text-muted);
+            font-size: 14px;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            width: 100%;
+            text-align: left;
+            transition: all 0.15s ease-in-out;
+        }
+
+        .nav-item:hover {
+            color: var(--primary-accent);
+            background-color: #f1f5f9;
+        }
+
+        .nav-item.active {
+            color: #ffffff;
+            background: var(--primary-accent);
+            box-shadow: 0 4px 6px -1px rgba(99, 102, 241, 0.25);
+        }
+
+        .nav-item .icon {
+            font-size: 16px;
+        }
+
+        /* Main Content Panel */
+        .console-content {
+            flex: 1;
+            padding: 24px 32px;
+            overflow-y: auto;
+            background: #ffffff;
+        }
+
+        .tab-panel {
+            display: none;
+        }
+
+        .tab-panel.active {
+            display: block;
+            animation: fadeIn 0.2s ease-in-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .panel-header {
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--card-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .panel-title {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--text-dark);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .panel-subtitle {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        /* Dashboard Metric Cards Grid */
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .status-card {
+            background: var(--muted-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 16px 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.2s;
+        }
+
+        .status-card:hover {
+            border-color: #cbd5e1;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+        }
+
+        .status-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .status-card-val {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-dark);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-card-sub {
+            font-size: 12px;
+            color: var(--text-muted);
+            word-break: break-all;
+        }
+
+        /* Form Components */
+        .form-section {
+            background: var(--muted-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 24px;
+        }
+
+        .section-title {
+            font-size: 15px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            color: var(--text-dark);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .form-group.col-span-2 {
+            grid-column: span 2;
+        }
+
+        .form-group.col-full {
+            grid-column: 1 / -1;
+        }
+
+        .form-label {
+            font-size: 13px;
+            font-weight: 600;
+            color: #334155;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .form-label .val-display {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--primary-accent);
+        }
+
+        .form-input, .form-select, .form-textarea {
+            width: 100%;
+            padding: 9px 12px;
+            font-size: 13px;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            background: #ffffff;
+            color: var(--text-dark);
+            box-sizing: border-box;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        .form-input:focus, .form-select:focus, .form-textarea:focus {
+            border-color: var(--primary-accent);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+        }
+
+        .form-input-with-btn {
+            display: flex;
+            gap: 8px;
+        }
+
+        .form-input-with-btn .form-input {
+            flex: 1;
+        }
+
+        .form-help {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .form-textarea {
+            resize: vertical;
+            min-height: 80px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        /* Sliders */
+        .range-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .range-slider {
+            flex: 1;
+            accent-color: var(--primary-accent);
+            cursor: pointer;
+        }
+
+        .range-num-input {
+            width: 70px;
+            padding: 6px 8px;
+            font-size: 13px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            text-align: center;
+        }
+
+        /* Preset Select Buttons */
+        .preset-btn-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+
+        .btn-preset {
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            color: #334155;
+            padding: 8px 14px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-preset:hover {
+            border-color: var(--primary-accent);
+            color: var(--primary-accent);
+            background: #eef2ff;
+        }
+
+        .btn-preset.active {
+            background: #e0e7ff;
+            color: #4338ca;
+            border-color: #818cf8;
+        }
+
+        /* Tables & Lists */
+        .table-responsive {
+            overflow-x: auto;
+            border-radius: 8px;
+            border: 1px solid var(--card-border);
+            margin-bottom: 16px;
+        }
+
+        .custom-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            text-align: left;
+        }
+
+        .custom-table th {
+            background: #f8fafc;
+            padding: 10px 14px;
+            font-weight: 700;
+            color: #475569;
+            border-bottom: 1px solid var(--card-border);
+        }
+
+        .custom-table td {
+            padding: 12px 14px;
+            border-bottom: 1px solid #f1f5f9;
+            color: #1e293b;
+        }
+
+        .custom-table tr:hover td {
+            background: #f8fafc;
+        }
+
+        /* Character Cards Grid */
+        .profile-cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .profile-card {
+            background: #ffffff;
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            transition: all 0.2s;
+            position: relative;
+        }
+
+        .profile-card.active-profile {
+            border: 2px solid var(--primary-accent);
+            background: #faf5ff;
+        }
+
+        .profile-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .profile-card-title {
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--text-dark);
+        }
+
+        .profile-card-desc {
+            font-size: 12px;
+            color: var(--text-muted);
+            line-height: 1.4;
+        }
+
+        .profile-meta-list {
+            font-size: 11px;
+            color: #475569;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            background: #f8fafc;
+            padding: 8px 10px;
+            border-radius: 6px;
+            font-family: monospace;
+        }
+
+        .profile-card-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 6px;
+        }
+
+        /* Buttons */
+        .btn-action-sm {
+            padding: 5px 10px;
+            font-size: 12px;
+            border-radius: 6px;
+            font-weight: 600;
+            border: 1px solid transparent;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.15s;
+        }
+
+        .btn-action-primary {
+            background: var(--primary-accent);
+            color: #ffffff;
+        }
+
+        .btn-action-primary:hover {
+            background: var(--primary-hover);
+        }
+
+        .btn-action-secondary {
+            background: #ffffff;
+            color: #334155;
+            border-color: #cbd5e1;
+        }
+
+        .btn-action-secondary:hover {
+            background: #f1f5f9;
+            border-color: #94a3b8;
+        }
+
+        .btn-action-success {
+            background: #10b981;
+            color: #ffffff;
+        }
+
+        .btn-action-success:hover {
+            background: #059669;
+        }
+
+        .btn-action-danger {
+            background: #fee2e2;
+            color: #991b1b;
+            border-color: #fca5a5;
+        }
+
+        .btn-action-danger:hover {
+            background: #fecaca;
+        }
+
+        /* Modal Overlay & Card */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            padding: 16px;
+        }
+
+        .modal-card {
+            background: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            width: 100%;
+            max-width: 680px;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            animation: modalPop 0.2s ease-out;
+        }
+
+        @keyframes modalPop {
+            from { transform: scale(0.95); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 20px;
+            border-bottom: 1px solid #e2e8f0;
+            background: #f8fafc;
+        }
+
+        .modal-header h3 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 700;
+            color: #1e293b;
+        }
+
+        .btn-close {
+            background: none;
+            border: none;
+            font-size: 22px;
+            cursor: pointer;
+            color: #64748b;
+            line-height: 1;
+        }
+
+        .btn-close:hover {
+            color: #0f172a;
+        }
+
+        .modal-body {
+            padding: 16px 20px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .modal-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 20px;
+            border-top: 1px solid #e2e8f0;
+            background: #f8fafc;
+        }
+
+        .fs-list-box {
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            max-height: 340px;
+            overflow-y: auto;
+            background: #ffffff;
+        }
+
+        .fs-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            border-bottom: 1px solid #f1f5f9;
+            cursor: pointer;
+            transition: background 0.1s;
+            font-size: 13px;
+        }
+
+        .fs-item:hover {
+            background: #f0fdf4;
+        }
+
+        .fs-item.fs-dir:hover {
+            background: #eff6ff;
+        }
+
+        .fs-item-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .fs-item-name {
+            font-weight: 500;
+            color: #1e293b;
+        }
+
+        .fs-drive-btn {
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 12px;
+            border: 1px solid #cbd5e1;
+            background: #ffffff;
+            cursor: pointer;
+        }
+
+        .fs-drive-btn.active {
+            background: var(--primary-accent);
+            color: #ffffff;
+            border-color: var(--primary-accent);
+        }
+
+        .btn-group-right {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        /* Badges */
+        .badge-status {
+            padding: 3px 8px;
+            border-radius: 9999px;
+            font-size: 11px;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .badge-green {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .badge-red {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .badge-yellow {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .badge-indigo {
+            background: #ede9fe;
+            color: #5b21b6;
+        }
+
+        .badge-gray {
+            background: #f1f5f9;
+            color: #475569;
+        }
+
+        /* Toast Notifications */
+        #toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .toast-msg {
+            padding: 12px 18px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #ffffff;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            animation: slideIn 0.2s ease-out;
+            max-width: 380px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .toast-success { background: #059669; }
+        .toast-error { background: #dc2626; }
+        .toast-info { background: #4f46e5; }
+        .toast-warning { background: #d97706; }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        /* Responsive Mobile Adjustments */
+        @media (max-width: 768px) {
+            .console-layout {
+                flex-direction: column;
+            }
+            .console-sidebar {
+                width: 100%;
+                flex-direction: row;
+                overflow-x: auto;
+                padding: 10px;
+                border-right: none;
+                border-bottom: 1px solid var(--card-border);
+            }
+            .console-content {
+                padding: 16px;
+            }
+            .form-grid {
+                grid-template-columns: 1fr;
+            }
+            .form-group.col-span-2 {
+                grid-column: span 1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="console-wrapper">
+        <!-- Top Navbar -->
+        <header class="console-header">
+            <div class="brand-box">
+                <span class="logo-icon">🎮</span>
+                <span class="title">galgame2voice 管理控制台</span>
+                <span class="subtitle">v2.0.0</span>
+            </div>
+            <div class="header-nav-actions">
+                <button id="btn-global-refresh" class="btn-header-action" title="刷新系统全部状态">
+                    🔄 刷新诊断
+                </button>
+                <a href="/" class="btn-header-action" title="返回对话界面">
+                    💬 返回对话
+                </a>
+            </div>
+        </header>
+
+        <!-- Main Body -->
+        <div class="console-layout">
+            <!-- Navigation Sidebar -->
+            <nav class="console-sidebar">
+                <button class="nav-item active" data-tab="dashboard">
+                    <span class="icon">📊</span>
+                    <span>系统状态看板</span>
+                </button>
+                <button class="nav-item" data-tab="providers">
+                    <span class="icon">🤖</span>
+                    <span>LLM / STT 模型</span>
+                </button>
+                <button class="nav-item" data-tab="voice">
+                    <span class="icon">🎙️</span>
+                    <span>角色音色管理</span>
+                </button>
+                <button class="nav-item" data-tab="inference">
+                    <span class="icon">⚙️</span>
+                    <span>推理与切分参数</span>
+                </button>
+                <button class="nav-item" data-tab="telegram">
+                    <span class="icon">✈️</span>
+                    <span>Telegram 机器人</span>
+                </button>
+                <button class="nav-item" data-tab="security">
+                    <span class="icon">🔒</span>
+                    <span>安全与密钥控制</span>
+                </button>
+            </nav>
+
+            <!-- Content Area -->
+            <main class="console-content">
+                <!-- ================= TAB 1: SYSTEM DASHBOARD ================= -->
+                <section id="tab-dashboard" class="tab-panel active">
+                    <div class="panel-header">
+                        <div>
+                            <h2 class="panel-title">📊 系统运行状态</h2>
+                            <p class="panel-subtitle">实时诊断 GPT-SoVITS、当前模型、音色、系统性能与存储情况</p>
+                        </div>
+                        <div>
+                            <label style="font-size: 12px; color: var(--text-muted); cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+                                <input type="checkbox" id="auto-refresh-toggle" checked> 自动刷新 (5s)
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Status Cards Grid -->
+                    <div class="status-grid">
+                        <div class="status-card">
+                            <div class="status-card-header">
+                                <span>GPT-SoVITS 状态</span>
+                                <span id="dash-sovits-badge" class="badge-status badge-yellow">检测中</span>
+                            </div>
+                            <div class="status-card-val" id="dash-sovits-status">连接中...</div>
+                            <div class="status-card-sub" id="dash-sovits-url">http://127.0.0.1:9880</div>
+                        </div>
+
+                        <div class="status-card">
+                            <div class="status-card-header">
+                                <span>当前活动大模型</span>
+                                <span id="dash-provider-badge" class="badge-status badge-indigo">Active</span>
+                            </div>
+                            <div class="status-card-val" id="dash-provider-name">-</div>
+                            <div class="status-card-sub" id="dash-provider-model">-</div>
+                        </div>
+
+                        <div class="status-card">
+                            <div class="status-card-header">
+                                <span>当前活动音色</span>
+                                <span class="badge-status badge-indigo">Voice</span>
+                            </div>
+                            <div class="status-card-val" id="dash-voice-name">-</div>
+                            <div class="status-card-sub" id="dash-voice-weights">-</div>
+                        </div>
+
+                        <div class="status-card">
+                            <div class="status-card-header">
+                                <span>Telegram 机器人</span>
+                                <span id="dash-tg-badge" class="badge-status badge-gray">未启用</span>
+                            </div>
+                            <div class="status-card-val" id="dash-tg-status">-</div>
+                            <div class="status-card-sub" id="dash-tg-username">@natsume_siki_bot</div>
+                        </div>
+
+                        <div class="status-card">
+                            <div class="status-card-header">
+                                <span>系统运行时间</span>
+                                <span class="badge-status badge-green">Running</span>
+                            </div>
+                            <div class="status-card-val" id="dash-uptime">0s</div>
+                            <div class="status-card-sub" id="dash-process-info">PID: - | Python: -</div>
+                        </div>
+
+                        <div class="status-card">
+                            <div class="status-card-header">
+                                <span>内存与音频存储</span>
+                                <span class="badge-status badge-gray">Storage</span>
+                            </div>
+                            <div class="status-card-val" id="dash-storage-info">-</div>
+                            <div class="status-card-sub" id="dash-db-info">SQLite WAL: Connected</div>
+                        </div>
+                    </div>
+
+                    <!-- Fast Action Shortcuts -->
+                    <div class="form-section">
+                        <div class="section-title">⚡ 快速操作</div>
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <button id="btn-quick-test-tts" class="btn-action-sm btn-action-primary">🎙️ 测试语音合成</button>
+                            <button id="btn-quick-test-llm" class="btn-action-sm btn-action-secondary">⚡ 测试大模型连通性</button>
+                            <button id="btn-reset-chat-context" class="btn-action-sm btn-action-danger">🔄 重置对话上下文</button>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ================= TAB 2: PROVIDER MANAGEMENT ================= -->
+                <section id="tab-providers" class="tab-panel">
+                    <div class="panel-header">
+                        <div>
+                            <h2 class="panel-title">🤖 LLM / STT 模型提供商配置</h2>
+                            <p class="panel-subtitle">支持 Google Gemini, OpenAI, DeepSeek, Anthropic Claude, xAI (Grok), 智谱 GLM, 通义千问及本地自定义模型 (Ollama/vLLM)</p>
+                        </div>
+                        <button id="btn-add-provider-toggle" class="btn-action-sm btn-action-primary">
+                            ➕ 添加提供商
+                        </button>
+                    </div>
+
+                    <!-- Configured Providers Table -->
+                    <div class="form-section">
+                        <div class="section-title">📋 已配置的提供商列表</div>
+                        <div class="table-responsive">
+                            <table class="custom-table" id="providers-table">
+                                <thead>
+                                    <tr>
+                                        <th>状态</th>
+                                        <th>标识 (ID)</th>
+                                        <th>名称</th>
+                                        <th>API 地址</th>
+                                        <th>对话模型</th>
+                                        <th>API 密钥 (已脱敏)</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="providers-table-body">
+                                    <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">加载中...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Provider Edit / Create Form -->
+                    <div class="form-section" id="provider-form-box">
+                        <div class="section-title" id="provider-form-title">✏️ 编辑 / 添加提供商配置</div>
+
+                        <div class="form-group" style="margin-bottom: 14px;">
+                            <label class="form-label">内置预设模板 (自动填充参数):</label>
+                            <select id="provider-preset-select" class="form-select">
+                                <option value="">-- 选择预设模板快速配置 --</option>
+                            </select>
+                        </div>
+
+                        <form id="provider-form">
+                            <div class="form-grid">
+                                <div class="form-group">
+                                    <label class="form-label">提供商 ID (唯一键):</label>
+                                    <input type="text" id="prov-id" class="form-input" placeholder="例如: deepseek, openai, custom" required>
+                                    <span class="form-help">英文小写字母与下划线</span>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">显示名称:</label>
+                                    <input type="text" id="prov-name" class="form-input" placeholder="例如: DeepSeek" required>
+                                </div>
+
+                                <div class="form-group col-span-2">
+                                    <label class="form-label">API 基础地址 (Base URL):</label>
+                                    <input type="url" id="prov-base-url" class="form-input" placeholder="例如: https://api.deepseek.com" required>
+                                </div>
+
+                                <div class="form-group col-span-2">
+                                    <label class="form-label">API Key (密钥):</label>
+                                    <div class="form-input-with-btn">
+                                        <input type="password" id="prov-api-key" class="form-input" placeholder="sk-**** (留空或保持掩码则保留原密钥)">
+                                        <button type="button" id="btn-toggle-prov-key" class="btn-action-sm btn-action-secondary">👁️</button>
+                                    </div>
+                                    <span class="form-help">安全提示：密钥在传输与显示中已脱敏掩码，留空或包含 **** 提交时不改变原密钥</span>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">对话模型 (Chat Model):</label>
+                                    <div class="form-input-with-btn">
+                                        <input type="text" id="prov-chat-model" class="form-input" list="chat-models-datalist" placeholder="例如: deepseek-chat" required>
+                                        <button type="button" id="btn-fetch-prov-models" class="btn-action-sm btn-action-secondary" title="在线拉取可用模型列表">🔍 发现模型</button>
+                                    </div>
+                                    <datalist id="chat-models-datalist"></datalist>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">语音识别模型 (STT Model, 可选):</label>
+                                    <input type="text" id="prov-stt-model" class="form-input" placeholder="例如: whisper-1, SenseVoiceSmall">
+                                </div>
+
+                                <div class="form-group col-full">
+                                    <label class="form-label">自定义 HTTP 请求头 (JSON 格式, 可选):</label>
+                                    <textarea id="prov-custom-headers" class="form-textarea" placeholder='{"HTTP-Referer": "https://galgame2voice", "X-Title": "galgame2voice"}'></textarea>
+                                </div>
+
+                                <div class="form-group col-full">
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer;">
+                                        <input type="checkbox" id="prov-is-active"> 设为当前全局活动 LLM 提供商
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="btn-group-right">
+                                <button type="button" id="btn-test-prov-connection" class="btn-action-sm btn-action-secondary">
+                                    ⚡ 测试连通性与延迟
+                                </button>
+                                <button type="submit" class="btn-action-sm btn-action-primary">
+                                    💾 保存提供商
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </section>
+
+                <!-- ================= TAB 3: VOICE PROFILE MANAGEMENT ================= -->
+                <section id="tab-voice" class="tab-panel">
+                    <div class="panel-header">
+                        <div>
+                            <h2 class="panel-title">🎙️ 角色音色与模型管理</h2>
+                            <p class="panel-subtitle">配置 GPT-SoVITS 角色模型权重（.ckpt / .pth）、参考音频、提示词与专属人设</p>
+                        </div>
+                        <button id="btn-add-profile-toggle" class="btn-action-sm btn-action-primary">
+                            ➕ 新增角色音色
+                        </button>
+                    </div>
+
+                    <!-- Voice Profile Grid -->
+                    <div class="profile-cards-grid" id="voice-profiles-grid">
+                        <!-- Rendered by JS -->
+                    </div>
+
+                    <!-- Voice Profile Edit Form -->
+                    <div class="form-section" id="voice-form-box">
+                        <div class="section-title" id="voice-form-title">✏️ 编辑 / 新增角色音色</div>
+                        <form id="voice-profile-form">
+                            <input type="hidden" id="voice-profile-id" value="">
+                            <div class="form-grid">
+                                <div class="form-group">
+                                    <label class="form-label">角色名称:</label>
+                                    <input type="text" id="voice-name" class="form-input" placeholder="例如: 四季夏目 (Shiki Natsume)" required>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">角色描述:</label>
+                                    <input type="text" id="voice-desc" class="form-input" placeholder="例如: 《星光咖啡馆与死神之蝶》高冷毒舌店员">
+                                </div>
+
+                                <div class="form-group col-span-2">
+                                    <label class="form-label">GPT 权重文件 (.ckpt):</label>
+                                    <div class="form-input-with-btn">
+                                        <input type="text" id="voice-gpt-path" class="form-input" placeholder="例如: E:\GPT-SoVITS-v2pro-20250604\GPT_weights_v2ProPlus\siki2-e50.ckpt" required>
+                                        <button type="button" id="btn-browse-gpt" class="btn-action-sm btn-action-primary" title="弹出 Windows 本地文件选择窗口">🖥️ 打开选择</button>
+                                        <button type="button" id="btn-fs-gpt" class="btn-action-sm btn-action-secondary" title="在网页端浏览目录文件">📁 目录浏览</button>
+                                    </div>
+                                    <span class="form-help">支持点击打开本地文件夹直接选中 .ckpt 权重文件</span>
+                                </div>
+
+                                <div class="form-group col-span-2">
+                                    <label class="form-label">SoVITS 权重文件 (.pth):</label>
+                                    <div class="form-input-with-btn">
+                                        <input type="text" id="voice-sovits-path" class="form-input" placeholder="例如: E:\GPT-SoVITS-v2pro-20250604\SoVITS_weights_v2ProPlus\siki_e20_s10280.pth" required>
+                                        <button type="button" id="btn-browse-sovits" class="btn-action-sm btn-action-primary" title="弹出 Windows 本地文件选择窗口">🖥️ 打开选择</button>
+                                        <button type="button" id="btn-fs-sovits" class="btn-action-sm btn-action-secondary" title="在网页端浏览目录文件">📁 目录浏览</button>
+                                    </div>
+                                    <span class="form-help">支持点击打开本地文件夹直接选中 .pth 权重文件</span>
+                                </div>
+
+                                <div class="form-group col-span-2">
+                                    <label class="form-label">参考音频文件路径 (.wav / .ogg / .mp3):</label>
+                                    <div class="form-input-with-btn">
+                                        <input type="text" id="voice-ref-audio" class="form-input" placeholder="例如: E:\yuzusoft\cafeStella\sikivoice\nat002_032.ogg" required>
+                                        <button type="button" id="btn-browse-audio" class="btn-action-sm btn-action-primary" title="弹出 Windows 本地文件选择窗口">🖥️ 打开选择</button>
+                                        <button type="button" id="btn-fs-audio" class="btn-action-sm btn-action-secondary" title="在网页端浏览目录文件">📁 目录浏览</button>
+                                    </div>
+                                    <span class="form-help">支持点击打开本地文件夹直接选中 3~10 秒的高清参考音频</span>
+                                </div>
+
+                                <div class="form-group col-span-2">
+                                    <label class="form-label">参考音频对应台词文本 (Prompt Text):</label>
+                                    <textarea id="voice-prompt-text" class="form-textarea" placeholder="例如: もちろん全員じゃなくあくまで一部の人なんだけど..." required></textarea>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">参考音频语种:</label>
+                                    <select id="voice-prompt-lang" class="form-select">
+                                        <option value="ja" selected>日语 (ja)</option>
+                                        <option value="zh">中文 (zh)</option>
+                                        <option value="en">英语 (en)</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">合成目标语种:</label>
+                                    <select id="voice-text-lang" class="form-select">
+                                        <option value="ja" selected>日语 (ja)</option>
+                                        <option value="zh">中文 (zh)</option>
+                                        <option value="en">英语 (en)</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group col-full">
+                                    <label class="form-label">角色专属 System Prompt 人设模板:</label>
+                                    <textarea id="voice-system-prompt" class="form-textarea" style="min-height: 120px;" placeholder="设定角色的说话风格、性格与双语 JSON 格式指令..."></textarea>
+                                </div>
+
+                                <div class="form-group col-full">
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer;">
+                                        <input type="checkbox" id="voice-is-default"> 设为默认初始音色
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="btn-group-right">
+                                <button type="button" id="btn-cancel-voice-edit" class="btn-action-sm btn-action-secondary">取消</button>
+                                <button type="submit" class="btn-action-sm btn-action-primary">💾 保存角色音色</button>
+                            </div>
+                        </form>
+                    </div>
+                </section>
+
+                <!-- ================= TAB 4: INFERENCE TUNING ================= -->
+                <section id="tab-inference" class="tab-panel">
+                    <div class="panel-header">
+                        <div>
+                            <h2 class="panel-title">⚙️ GPT-SoVITS 推理与切分参数调优</h2>
+                            <p class="panel-subtitle">精细调节采样温度、语速、Top-K/P、切片算法以在音质与延迟之间取得最佳平衡</p>
+                        </div>
+                    </div>
+
+                    <!-- Presets Selector -->
+                    <div class="form-section">
+                        <div class="section-title">🎯 预设参数模板 (一键调节)</div>
+                        <div class="preset-btn-group">
+                            <button class="btn-preset" id="preset-high-quality">
+                                🌟 高音质预设 (High Quality)
+                            </button>
+                            <button class="btn-preset active" id="preset-balanced">
+                                ⚖️ 平衡预设 (Balanced)
+                            </button>
+                            <button class="btn-preset" id="preset-low-latency">
+                                ⚡ 极低延迟预设 (Low Latency)
+                            </button>
+                        </div>
+                        <p class="form-help">提示：点击预设将自动更新下方全部旋钮参数，点击“保存参数”持久化到 SQLite 数据库中。</p>
+                    </div>
+
+                    <!-- Parameter Knobs Form -->
+                    <div class="form-section">
+                        <div class="section-title">🎛️ 核心推理与切片旋钮</div>
+                        <form id="inference-config-form">
+                            <div class="form-grid">
+                                <div class="form-group col-span-2">
+                                    <label class="form-label">
+                                        <span>文本切分策略 (Text Split Method):</span>
+                                    </label>
+                                    <select id="param-text-split-method" class="form-select">
+                                        <option value="cut0">cut0 - 不切分 (单句完整生成)</option>
+                                        <option value="cut1" selected>cut1 - 凑四句切 (默认推荐，适合常规对话)</option>
+                                        <option value="cut2">cut2 - 凑50字切 (按字符长度切分)</option>
+                                        <option value="cut3">cut3 - 按中日标点切 (推荐，标点处分割并流式推流)</option>
+                                        <option value="cut4">cut4 - 按英文标点切 (英文环境断句)</option>
+                                        <option value="cut5">cut5 - 按所有标点切 (极致低延迟碎片切分)</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">
+                                        <span>语速倍率 (Speed Factor):</span>
+                                        <span class="val-display" id="val-speed">1.0</span>
+                                    </label>
+                                    <div class="range-container">
+                                        <input type="range" id="param-speed-factor" class="range-slider" min="0.5" max="2.0" step="0.05" value="1.0">
+                                        <input type="number" id="num-speed-factor" class="range-num-input" min="0.5" max="2.0" step="0.05" value="1.0">
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">
+                                        <span>采样温度 (Temperature):</span>
+                                        <span class="val-display" id="val-temp">1.0</span>
+                                    </label>
+                                    <div class="range-container">
+                                        <input type="range" id="param-temperature" class="range-slider" min="0.1" max="2.0" step="0.05" value="1.0">
+                                        <input type="number" id="num-temperature" class="range-num-input" min="0.1" max="2.0" step="0.05" value="1.0">
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">
+                                        <span>Top-K 采样:</span>
+                                        <span class="val-display" id="val-topk">15</span>
+                                    </label>
+                                    <div class="range-container">
+                                        <input type="range" id="param-top-k" class="range-slider" min="1" max="50" step="1" value="15">
+                                        <input type="number" id="num-top-k" class="range-num-input" min="1" max="50" step="1" value="15">
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">
+                                        <span>Top-P 采样:</span>
+                                        <span class="val-display" id="val-topp">1.0</span>
+                                    </label>
+                                    <div class="range-container">
+                                        <input type="range" id="param-top-p" class="range-slider" min="0.1" max="1.0" step="0.05" value="1.0">
+                                        <input type="number" id="num-top-p" class="range-num-input" min="0.1" max="1.0" step="0.05" value="1.0">
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">
+                                        <span>分片合并静音间隔 (Fragment Interval):</span>
+                                        <span class="val-display" id="val-fragment">0.3s</span>
+                                    </label>
+                                    <div class="range-container">
+                                        <input type="range" id="param-fragment-interval" class="range-slider" min="0.0" max="1.0" step="0.05" value="0.3">
+                                        <input type="number" id="num-fragment-interval" class="range-num-input" min="0.0" max="1.0" step="0.05" value="0.3">
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">随机种子 (Seed, -1 为完全随机):</label>
+                                    <input type="number" id="param-seed" class="form-input" value="-1">
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">推理 Batch Size (1~8):</label>
+                                    <input type="number" id="param-batch-size" class="form-input" min="1" max="8" value="1">
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">对话历史上下文保留轮数:</label>
+                                    <input type="number" id="param-max-history" class="form-input" min="1" max="50" value="10">
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">临时音频文件保留时长 (分钟):</label>
+                                    <input type="number" id="param-audio-retention" class="form-input" min="1" max="1440" value="30">
+                                </div>
+
+                                <div class="form-group col-span-2">
+                                    <label class="form-label">GPT-SoVITS 后端服务地址:</label>
+                                    <input type="url" id="param-sovits-url" class="form-input" value="http://127.0.0.1:9880" required>
+                                </div>
+                            </div>
+
+                            <div class="btn-group-right">
+                                <button type="submit" class="btn-action-sm btn-action-primary">
+                                    💾 保存推理与切分参数
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </section>
+
+                <!-- ================= TAB 5: TELEGRAM BOT ================= -->
+                <section id="tab-telegram" class="tab-panel">
+                    <div class="panel-header">
+                        <div>
+                            <h2 class="panel-title">✈️ Telegram 机器人配置</h2>
+                            <p class="panel-subtitle">配置 Telegram Bot Token、网络代理、语音消息 STT 转写与即时文字/后台语音队列推送</p>
+                        </div>
+                    </div>
+
+                    <div class="form-section">
+                        <div class="section-title">🤖 Bot 凭证与网络设置</div>
+                        <form id="telegram-config-form">
+                            <div class="form-grid">
+                                <div class="form-group col-span-2">
+                                    <label class="form-label">Telegram Bot API Token:</label>
+                                    <div class="form-input-with-btn">
+                                        <input type="password" id="tg-bot-token" class="form-input" placeholder="例如: 123456789:ABCdefGhI (保持掩码则不修改)">
+                                        <button type="button" id="btn-toggle-tg-token" class="btn-action-sm btn-action-secondary">👁️</button>
+                                    </div>
+                                    <span class="form-help">从 @BotFather 获取的访问令牌，前端显示为脱敏掩码</span>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">机器人用户名 (Username):</label>
+                                    <input type="text" id="tg-bot-username" class="form-input" placeholder="例如: natsume_siki_bot">
+                                </div>
+
+                                <div class="form-group col-full">
+                                    <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer;">
+                                        <input type="checkbox" id="tg-proxy-enabled"> 启用网络代理 (访问 Telegram API)
+                                    </label>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">代理主机 (Proxy Host):</label>
+                                    <input type="text" id="tg-proxy-host" class="form-input" value="127.0.0.1">
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">代理端口 (Proxy Port):</label>
+                                    <input type="number" id="tg-proxy-port" class="form-input" value="10809">
+                                </div>
+                            </div>
+
+                            <div class="btn-group-right">
+                                <button type="button" id="btn-test-telegram-token" class="btn-action-sm btn-action-secondary">
+                                    📡 测试 Bot Token 与网络连接
+                                </button>
+                                <button type="submit" class="btn-action-sm btn-action-primary">
+                                    💾 保存 Telegram 配置
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </section>
+
+                <!-- ================= TAB 6: SECURITY & DIAGNOSTICS ================= -->
+                <section id="tab-security" class="tab-panel">
+                    <div class="panel-header">
+                        <div>
+                            <h2 class="panel-title">🔒 安全控制与日志审计</h2>
+                            <p class="panel-subtitle">端到端 API Key 脱敏机制、零泄漏日志过滤与诊断审计</p>
+                        </div>
+                    </div>
+
+                    <div class="form-section">
+                        <div class="section-title">🛡️ 凭据脱敏安全规范说明</div>
+                        <ul style="font-size: 13px; line-height: 1.8; color: #334155; padding-left: 20px;">
+                            <li><strong>前端脱敏传输：</strong> 所有 API Key（如 OpenAI、DeepSeek、Telegram Token）在返回前端时均经过 <code>mask_api_key</code> 过滤为 <code>sk-****cdef</code> 或 <code>123****fGhI</code>。</li>
+                            <li><strong>保留旧密钥更新机制：</strong> 表单提交时若保持掩码或留空，系统后端将自动保留数据库中现有的原始密钥，避免重复录入与意外覆盖。</li>
+                            <li><strong>日志零泄漏过滤器：</strong> 内置 <code>MaskingFilter</code> 会对所有控制台标准输出、文件日志以及 Uvicorn 请求日志中的密钥、Token、Bearer 标头进行正则擦除。</li>
+                            <li><strong>URL 安全：</strong> 密钥与 Token 严禁在 URL Query 参数中明文传输。</li>
+                        </ul>
+                    </div>
+
+                    <div class="form-section">
+                        <div class="section-title">🔍 原始诊断遥测 JSON (System Telemetry)</div>
+                        <pre id="raw-telemetry-json" style="background: #0f172a; color: #38bdf8; padding: 14px; border-radius: 8px; font-size: 12px; max-height: 280px; overflow: auto; font-family: monospace;">加载中...</pre>
+                    </div>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container"></div>
+
+    <!-- Hidden Audio Player for Synthesis Preview -->
+    <audio id="preview-audio-player" style="display: none;"></audio>
+
+    <!-- Console JavaScript Logic -->
+    <script>
+        // State store
+        const state = {
+            settings: {},
+            providers: [],
+            presets: [],
+            voiceProfiles: [],
+            activeProfileId: 1,
+            activeProvider: null,
+            telemetry: null,
+            autoRefreshTimer: null
+        };
+
+        // HTML Sanitizer to prevent XSS
+        function escapeHtml(str) {
+            if (str === null || str === undefined) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        // Toast Helper
+        function showToast(message, type = 'info', duration = 3500) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast-msg toast-${type}`;
+            const icons = { success: '✅', error: '❌', info: 'ℹ️', warning: '⚠️' };
+            toast.innerHTML = `<span>${icons[type] || 'ℹ️'}</span> <span>${escapeHtml(message)}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateX(100%)';
+                toast.style.transition = 'all 0.3s';
+                setTimeout(() => toast.remove(), 300);
+            }, duration);
+        }
+
+        // Tab Navigation
+        document.querySelectorAll('.nav-item').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+                btn.classList.add('active');
+                const tabId = btn.getAttribute('data-tab');
+                const targetPanel = document.getElementById(`tab-${tabId}`);
+                if (targetPanel) targetPanel.classList.add('active');
+            });
+        });
+
+        // Setup Range Slider sync with number input
+        function bindSliderAndNumber(sliderId, numId, displayId, suffix = '') {
+            const slider = document.getElementById(sliderId);
+            const num = document.getElementById(numId);
+            const display = document.getElementById(displayId);
+            if (!slider || !num) return;
+
+            const update = (val) => {
+                slider.value = val;
+                num.value = val;
+                if (display) display.textContent = `${val}${suffix}`;
+            };
+
+            slider.addEventListener('input', (e) => update(e.target.value));
+            num.addEventListener('input', (e) => update(e.target.value));
+        }
+
+        bindSliderAndNumber('param-speed-factor', 'num-speed-factor', 'val-speed');
+        bindSliderAndNumber('param-temperature', 'num-temperature', 'val-temp');
+        bindSliderAndNumber('param-top-k', 'num-top-k', 'val-topk');
+        bindSliderAndNumber('param-top-p', 'num-top-p', 'val-topp');
+        bindSliderAndNumber('param-fragment-interval', 'num-fragment-interval', 'val-fragment', 's');
+
+        // Toggle Key Visibility Helper
+        function bindKeyToggle(btnId, inputId) {
+            const btn = document.getElementById(btnId);
+            const input = document.getElementById(inputId);
+            if (!btn || !input) return;
+            btn.addEventListener('click', () => {
+                if (input.type === 'password') {
+                    input.type = 'text';
+                    btn.textContent = '🔒';
+                } else {
+                    input.type = 'password';
+                    btn.textContent = '👁️';
+                }
+            });
+        }
+
+        bindKeyToggle('btn-toggle-prov-key', 'prov-api-key');
+        bindKeyToggle('btn-toggle-tg-token', 'tg-bot-token');
+
+        // ================= API FETCHERS & RENDERERS =================
+
+        // 1. Fetch System Telemetry
+        async function fetchSystemTelemetry() {
+            try {
+                const resp = await fetch('/api/system/status');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                state.telemetry = data;
+
+                // Update Raw Telemetry Box
+                const rawBox = document.getElementById('raw-telemetry-json');
+                if (rawBox) rawBox.textContent = JSON.stringify(data, null, 2);
+
+                // Update Dashboard Cards
+                const sovitsBadge = document.getElementById('dash-sovits-badge');
+                const sovitsStatus = document.getElementById('dash-sovits-status');
+                const sovitsUrl = document.getElementById('dash-sovits-url');
+
+                if (data.gpt_sovits) {
+                    sovitsUrl.textContent = data.gpt_sovits.base_url || 'http://127.0.0.1:9880';
+                    if (data.gpt_sovits.status === 'reachable') {
+                        sovitsBadge.className = 'badge-status badge-green';
+                        sovitsBadge.textContent = '在线 (Online)';
+                        sovitsStatus.textContent = `正常 (${data.gpt_sovits.latency_ms || 0} ms)`;
+                    } else {
+                        sovitsBadge.className = 'badge-status badge-red';
+                        sovitsBadge.textContent = '离线 (Offline)';
+                        sovitsStatus.textContent = '不可达 (Unreachable)';
+                    }
+                }
+
+                // App Uptime & Storage
+                if (data.app) {
+                    const uptimeSec = Math.round(data.app.uptime_seconds || 0);
+                    const hours = Math.floor(uptimeSec / 3600);
+                    const mins = Math.floor((uptimeSec % 3600) / 60);
+                    const secs = uptimeSec % 60;
+                    document.getElementById('dash-uptime').textContent = `${hours}h ${mins}m ${secs}s`;
+                    document.getElementById('dash-process-info').textContent = 
+                        `PID: ${data.app.pid} | Python: ${data.app.python_version} | 内存: ${data.app.memory_usage_mb || 0} MB`;
+                }
+
+                if (data.storage) {
+                    document.getElementById('dash-storage-info').textContent = 
+                        `音频: ${data.storage.audio_files_count} 文件 (${data.storage.audio_dir_size_mb} MB)`;
+                }
+
+                // Telegram Telemetry
+                if (data.telegram) {
+                    const tgBadge = document.getElementById('dash-tg-badge');
+                    const tgStatus = document.getElementById('dash-tg-status');
+                    if (data.telegram.enabled) {
+                        tgBadge.className = 'badge-status badge-green';
+                        tgBadge.textContent = '运行中';
+                        tgStatus.textContent = '已连接';
+                    } else {
+                        tgBadge.className = 'badge-status badge-gray';
+                        tgBadge.textContent = '未启用';
+                        tgStatus.textContent = 'Disabled';
+                    }
+                }
+            } catch (err) {
+                console.warn('Failed to fetch telemetry:', err);
+            }
+        }
+
+        // 2. Fetch Global Config & Active Provider
+        async function fetchGlobalConfig() {
+            try {
+                const resp = await fetch('/api/config');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                state.settings = data.settings || {};
+                state.activeProvider = data.active_provider || null;
+
+                // Update Dashboard Active Provider Card
+                if (state.activeProvider) {
+                    document.getElementById('dash-provider-name').textContent = state.activeProvider.name;
+                    document.getElementById('dash-provider-model').textContent = `${state.activeProvider.chat_model} (${state.activeProvider.id})`;
+                } else if (state.settings.active_provider_id) {
+                    document.getElementById('dash-provider-name').textContent = state.settings.active_provider_id;
+                    document.getElementById('dash-provider-model').textContent = state.settings.active_provider_id;
+                }
+
+                // Populate Inference Parameters Form
+                const s = state.settings;
+                if (s.text_split_method) document.getElementById('param-text-split-method').value = s.text_split_method;
+                if (s.speed_factor !== undefined) {
+                    document.getElementById('param-speed-factor').value = s.speed_factor;
+                    document.getElementById('num-speed-factor').value = s.speed_factor;
+                    document.getElementById('val-speed').textContent = s.speed_factor;
+                }
+                if (s.temperature !== undefined) {
+                    document.getElementById('param-temperature').value = s.temperature;
+                    document.getElementById('num-temperature').value = s.temperature;
+                    document.getElementById('val-temp').textContent = s.temperature;
+                }
+                if (s.top_k !== undefined) {
+                    document.getElementById('param-top-k').value = s.top_k;
+                    document.getElementById('num-top-k').value = s.top_k;
+                    document.getElementById('val-topk').textContent = s.top_k;
+                }
+                if (s.top_p !== undefined) {
+                    document.getElementById('param-top-p').value = s.top_p;
+                    document.getElementById('num-top-p').value = s.top_p;
+                    document.getElementById('val-topp').textContent = s.top_p;
+                }
+                if (s.fragment_interval !== undefined) {
+                    document.getElementById('param-fragment-interval').value = s.fragment_interval;
+                    document.getElementById('num-fragment-interval').value = s.fragment_interval;
+                    document.getElementById('val-fragment').textContent = `${s.fragment_interval}s`;
+                }
+                if (s.seed !== undefined) document.getElementById('param-seed').value = s.seed;
+                if (s.batch_size !== undefined) document.getElementById('param-batch-size').value = s.batch_size;
+                if (s.max_history_messages !== undefined) document.getElementById('param-max-history').value = s.max_history_messages;
+                if (s.audio_retention_minutes !== undefined) document.getElementById('param-audio-retention').value = s.audio_retention_minutes;
+                if (s.gpt_sovits_url) document.getElementById('param-sovits-url').value = s.gpt_sovits_url;
+
+                // Populate Telegram Form
+                if (s.telegram_bot_token) document.getElementById('tg-bot-token').value = s.telegram_bot_token;
+                if (s.telegram_bot_username) {
+                    document.getElementById('tg-bot-username').value = s.telegram_bot_username;
+                    document.getElementById('dash-tg-username').textContent = `@${s.telegram_bot_username}`;
+                }
+                if (s.telegram_proxy_enabled !== undefined) document.getElementById('tg-proxy-enabled').checked = Boolean(s.telegram_proxy_enabled);
+                if (s.telegram_proxy_host) document.getElementById('tg-proxy-host').value = s.telegram_proxy_host;
+                if (s.telegram_proxy_port) document.getElementById('tg-proxy-port').value = s.telegram_proxy_port;
+
+            } catch (err) {
+                console.error('Failed to fetch config:', err);
+                showToast(`加载配置失败: ${err.message}`, 'error');
+            }
+        }
+
+        // 3. Fetch Providers & Presets
+        async function fetchProviders() {
+            try {
+                const resp = await fetch('/api/providers');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                state.providers = data.providers || [];
+                state.presets = data.presets || [];
+
+                // Render Preset Selector Dropdown
+                const presetSelect = document.getElementById('provider-preset-select');
+                if (presetSelect) {
+                    presetSelect.innerHTML = '<option value="">-- 选择预设模板快速配置 --</option>';
+                    state.presets.forEach(p => {
+                        const opt = document.createElement('option');
+                        opt.value = p.id;
+                        opt.textContent = `${p.name} (${p.default_chat_model})`;
+                        presetSelect.appendChild(opt);
+                    });
+                }
+
+                // Render Providers Table
+                renderProvidersTable();
+            } catch (err) {
+                console.error('Failed to fetch providers:', err);
+                showToast(`加载提供商失败: ${err.message}`, 'error');
+            }
+        }
+
+        function renderProvidersTable() {
+            const tbody = document.getElementById('providers-table-body');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+
+            if (state.providers.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">暂无提供商配置</td></tr>';
+                return;
+            }
+
+            state.providers.forEach(p => {
+                const tr = document.createElement('tr');
+                const isActive = p.is_active || (state.settings && state.settings.active_provider_id === p.id);
+                
+                tr.innerHTML = `
+                    <td>
+                        <span class="badge-status ${isActive ? 'badge-green' : 'badge-gray'}">
+                            ${isActive ? '● 当前活动' : '○ 备用'}
+                        </span>
+                    </td>
+                    <td><code>${escapeHtml(p.id)}</code></td>
+                    <td><strong>${escapeHtml(p.name)}</strong></td>
+                    <td style="font-size: 12px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(p.api_base_url)}">${escapeHtml(p.api_base_url)}</td>
+                    <td><code>${escapeHtml(p.chat_model)}</code></td>
+                    <td><code>${escapeHtml(p.api_key || '<无密钥>')}</code></td>
+                    <td>
+                        <div style="display: flex; gap: 6px;">
+                            ${!isActive ? `<button class="btn-action-sm btn-action-success btn-activate-prov" data-id="${escapeHtml(p.id)}" title="设为活动提供商">启用</button>` : ''}
+                            <button class="btn-action-sm btn-action-secondary btn-edit-prov" data-id="${escapeHtml(p.id)}">编辑</button>
+                            <button class="btn-action-sm btn-action-danger btn-delete-prov" data-id="${escapeHtml(p.id)}">删除</button>
+                        </div>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            // Bind Table Action Buttons
+            tbody.querySelectorAll('.btn-activate-prov').forEach(b => {
+                b.addEventListener('click', () => activateProvider(b.getAttribute('data-id')));
+            });
+            tbody.querySelectorAll('.btn-edit-prov').forEach(b => {
+                b.addEventListener('click', () => editProvider(b.getAttribute('data-id')));
+            });
+            tbody.querySelectorAll('.btn-delete-prov').forEach(b => {
+                b.addEventListener('click', () => deleteProvider(b.getAttribute('data-id')));
+            });
+        }
+
+        // 4. Fetch Voice Profiles
+        async function fetchVoiceProfiles() {
+            try {
+                const resp = await fetch('/api/voice/profiles');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                state.voiceProfiles = data.profiles || [];
+                state.activeProfileId = data.active_profile_id || 1;
+
+                renderVoiceProfiles();
+            } catch (err) {
+                console.error('Failed to fetch voice profiles:', err);
+                showToast(`加载角色音色失败: ${err.message}`, 'error');
+            }
+        }
+
+        function renderVoiceProfiles() {
+            const grid = document.getElementById('voice-profiles-grid');
+            if (!grid) return;
+            grid.innerHTML = '';
+
+            state.voiceProfiles.forEach(vp => {
+                const isActive = (vp.id === state.activeProfileId);
+                const card = document.createElement('div');
+                card.className = `profile-card ${isActive ? 'active-profile' : ''}`;
+
+                if (isActive) {
+                    const voiceNameEl = document.getElementById('dash-voice-name');
+                    if (voiceNameEl) voiceNameEl.textContent = vp.name;
+                    const voiceWeightsEl = document.getElementById('dash-voice-weights');
+                    if (voiceWeightsEl && vp.gpt_weights_path) {
+                        voiceWeightsEl.textContent = `${vp.gpt_weights_path.split('/').pop()}`;
+                    }
+                }
+
+                card.innerHTML = `
+                    <div class="profile-card-header">
+                        <span class="profile-card-title">${escapeHtml(vp.name)}</span>
+                        <span class="badge-status ${isActive ? 'badge-green' : 'badge-gray'}">
+                            ${isActive ? '● 当前活动音色' : '可选'}
+                        </span>
+                    </div>
+                    <div class="profile-card-desc">${escapeHtml(vp.description || '暂无描述')}</div>
+                    <div class="profile-meta-list">
+                        <div><strong>GPT:</strong> ${escapeHtml(vp.gpt_weights_path)}</div>
+                        <div><strong>SoVITS:</strong> ${escapeHtml(vp.sovits_weights_path)}</div>
+                        <div><strong>参考音频:</strong> ${escapeHtml(vp.ref_audio_path || vp.refer_audio_path || '-')}</div>
+                        <div><strong>语种:</strong> ${escapeHtml(vp.prompt_lang || 'ja')} ➔ ${escapeHtml(vp.text_lang || 'ja')}</div>
+                    </div>
+                    <div class="profile-card-actions">
+                        ${!isActive ? `<button class="btn-action-sm btn-action-primary btn-switch-voice" data-id="${escapeHtml(vp.id)}">🚀 切换为此音色</button>` : `<span class="badge-status badge-indigo" style="align-self: center;">已加载在后端</span>`}
+                        <button class="btn-action-sm btn-action-secondary btn-test-voice-preview" data-id="${escapeHtml(vp.id)}">🔊 试听</button>
+                        <button class="btn-action-sm btn-action-secondary btn-edit-voice" data-id="${escapeHtml(vp.id)}">✏️ 编辑</button>
+                        ${state.voiceProfiles.length > 1 ? `<button class="btn-action-sm btn-action-danger btn-delete-voice" data-id="${escapeHtml(vp.id)}">🗑️</button>` : ''}
+                    </div>
+                `;
+                grid.appendChild(card);
+            });
+
+            // Bind Profile Actions
+            grid.querySelectorAll('.btn-switch-voice').forEach(b => {
+                b.addEventListener('click', () => switchVoiceProfile(parseInt(b.getAttribute('data-id'), 10)));
+            });
+            grid.querySelectorAll('.btn-test-voice-preview').forEach(b => {
+                b.addEventListener('click', () => testVoicePreview(parseInt(b.getAttribute('data-id'), 10)));
+            });
+            grid.querySelectorAll('.btn-edit-voice').forEach(b => {
+                b.addEventListener('click', () => editVoiceProfile(parseInt(b.getAttribute('data-id'), 10)));
+            });
+            grid.querySelectorAll('.btn-delete-voice').forEach(b => {
+                b.addEventListener('click', () => deleteVoiceProfile(parseInt(b.getAttribute('data-id'), 10)));
+            });
+        }
+
+        // ================= PROVIDER ACTIONS =================
+
+        // Preset dropdown change
+        document.getElementById('provider-preset-select').addEventListener('change', (e) => {
+            const pid = e.target.value;
+            if (!pid) return;
+            const preset = state.presets.find(p => p.id === pid);
+            if (!preset) return;
+
+            document.getElementById('prov-id').value = preset.id;
+            document.getElementById('prov-name').value = preset.name;
+            document.getElementById('prov-base-url').value = preset.default_base_url;
+            document.getElementById('prov-chat-model').value = preset.default_chat_model;
+            document.getElementById('prov-stt-model').value = preset.default_stt_model || '';
+            document.getElementById('prov-api-key').value = '';
+            document.getElementById('prov-api-key').placeholder = 'sk-**** (留空或保持掩码则保留原密钥)';
+
+            // Populate datalist with preset models
+            const datalist = document.getElementById('chat-models-datalist');
+            datalist.innerHTML = '';
+            if (preset.preset_models) {
+                preset.preset_models.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m;
+                    datalist.appendChild(opt);
+                });
+            }
+            showToast(`已加载 ${preset.name} 预设模板`, 'info');
+        });
+
+        // Edit Provider
+        function editProvider(provId) {
+            const p = state.providers.find(x => x.id === provId);
+            if (!p) return;
+
+            document.getElementById('provider-form-title').textContent = `✏️ 编辑提供商: ${p.name}`;
+            document.getElementById('prov-id').value = p.id;
+            document.getElementById('prov-id').readOnly = true;
+            document.getElementById('prov-name').value = p.name;
+            document.getElementById('prov-base-url').value = p.api_base_url;
+            document.getElementById('prov-api-key').value = p.api_key || '';
+            document.getElementById('prov-chat-model').value = p.chat_model;
+            document.getElementById('prov-stt-model').value = p.stt_model || '';
+            document.getElementById('prov-custom-headers').value = p.custom_headers ? JSON.stringify(p.custom_headers, null, 2) : '{}';
+            document.getElementById('prov-is-active').checked = Boolean(p.is_active);
+
+            document.getElementById('provider-form-box').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // Add Provider Toggle
+        document.getElementById('btn-add-provider-toggle').addEventListener('click', () => {
+            document.getElementById('provider-form-title').textContent = '➕ 添加提供商配置';
+            document.getElementById('prov-id').value = '';
+            document.getElementById('prov-id').readOnly = false;
+            document.getElementById('prov-name').value = '';
+            document.getElementById('prov-base-url').value = 'https://api.openai.com/v1';
+            document.getElementById('prov-api-key').value = '';
+            document.getElementById('prov-chat-model').value = 'gpt-4o-mini';
+            document.getElementById('prov-stt-model').value = '';
+            document.getElementById('prov-custom-headers').value = '{}';
+            document.getElementById('prov-is-active').checked = false;
+            document.getElementById('provider-form-box').scrollIntoView({ behavior: 'smooth' });
+        });
+
+        // Activate Provider
+        async function activateProvider(provId) {
+            try {
+                showToast(`正在激活提供商 ${provId}...`, 'info');
+                const resp = await fetch(`/api/providers/${provId}/activate`, { method: 'POST' });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                showToast(`成功激活提供商 ${provId}！`, 'success');
+                await fetchGlobalConfig();
+                await fetchProviders();
+            } catch (err) {
+                showToast(`激活失败: ${err.message}`, 'error');
+            }
+        }
+
+        // Delete Provider
+        async function deleteProvider(provId) {
+            if (!confirm(`确定要删除提供商 [${provId}] 吗？`)) return;
+            try {
+                const resp = await fetch(`/api/providers/${provId}`, { method: 'DELETE' });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                showToast(`成功删除提供商 ${provId}`, 'success');
+                await fetchProviders();
+                await fetchGlobalConfig();
+            } catch (err) {
+                showToast(`删除失败: ${err.message}`, 'error');
+            }
+        }
+
+        // Test Provider Connection
+        document.getElementById('btn-test-prov-connection').addEventListener('click', async () => {
+            const provId = document.getElementById('prov-id').value.trim();
+            const baseUrl = document.getElementById('prov-base-url').value.trim();
+            const apiKey = document.getElementById('prov-api-key').value.trim();
+            const model = document.getElementById('prov-chat-model').value.trim();
+
+            let customHeaders = {};
+            try {
+                const hText = document.getElementById('prov-custom-headers').value.trim();
+                if (hText) customHeaders = JSON.parse(hText);
+            } catch (e) {
+                showToast('自定义请求头 JSON 格式无效', 'warning');
+                return;
+            }
+
+            showToast('正在探测模型服务连通性...', 'info');
+            try {
+                const resp = await fetch('/api/providers/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: provId,
+                        provider_type: provId,
+                        base_url: baseUrl,
+                        api_key: apiKey,
+                        model: model,
+                        custom_headers: customHeaders
+                    })
+                });
+                const result = await resp.json();
+                if (result.success) {
+                    showToast(`连接成功！延迟: ${result.latency_ms || 0} ms (${result.message})`, 'success');
+                } else {
+                    showToast(`连通性测试失败: ${result.message}`, 'error', 5000);
+                }
+            } catch (err) {
+                showToast(`测试请求异常: ${err.message}`, 'error');
+            }
+        });
+
+        // Fetch Provider Models Live Discovery
+        document.getElementById('btn-fetch-prov-models').addEventListener('click', async () => {
+            const provId = document.getElementById('prov-id').value.trim();
+            if (!provId) {
+                showToast('请先输入提供商 ID', 'warning');
+                return;
+            }
+            showToast(`正在从 ${provId} 拉取可用模型列表...`, 'info');
+            try {
+                const resp = await fetch(`/api/providers/${provId}/models`);
+                const data = await resp.json();
+                const datalist = document.getElementById('chat-models-datalist');
+                datalist.innerHTML = '';
+                if (data.models && data.models.length > 0) {
+                    data.models.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m;
+                        datalist.appendChild(opt);
+                    });
+                    showToast(`成功获取到 ${data.models.length} 个模型！`, 'success');
+                } else {
+                    showToast('未返回模型列表，请手动输入', 'warning');
+                }
+            } catch (err) {
+                showToast(`获取模型列表失败: ${err.message}`, 'error');
+            }
+        });
+
+        // Save / Submit Provider
+        document.getElementById('provider-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const provId = document.getElementById('prov-id').value.trim();
+            const name = document.getElementById('prov-name').value.trim();
+            const baseUrl = document.getElementById('prov-base-url').value.trim();
+            const apiKey = document.getElementById('prov-api-key').value.trim();
+            const chatModel = document.getElementById('prov-chat-model').value.trim();
+            const sttModel = document.getElementById('prov-stt-model').value.trim();
+            const isActive = document.getElementById('prov-is-active').checked;
+
+            let customHeaders = {};
+            try {
+                const hText = document.getElementById('prov-custom-headers').value.trim();
+                if (hText) customHeaders = JSON.parse(hText);
+            } catch (e) {
+                showToast('自定义请求头 JSON 格式无效', 'error');
+                return;
+            }
+
+            try {
+                const resp = await fetch('/api/providers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: provId,
+                        name: name,
+                        api_base_url: baseUrl,
+                        api_key: apiKey,
+                        chat_model: chatModel,
+                        stt_model: sttModel,
+                        is_active: isActive,
+                        custom_headers: customHeaders
+                    })
+                });
+
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                showToast(`提供商 [${name}] 保存成功！`, 'success');
+                await fetchProviders();
+                await fetchGlobalConfig();
+            } catch (err) {
+                showToast(`保存提供商失败: ${err.message}`, 'error');
+            }
+        });
+
+        // ================= VOICE PROFILE ACTIONS =================
+
+        // Switch Active Voice Profile
+        async function switchVoiceProfile(profileId) {
+            try {
+                showToast(`正在切换音色模型 (ID: ${profileId})...`, 'info');
+                const resp = await fetch('/api/voice/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ profile_id: profileId })
+                });
+                const res = await resp.json();
+                if (!resp.ok) throw new Error(res.detail || `HTTP ${resp.status}`);
+                showToast(`音色已成功切换为：${res.profile}！`, 'success');
+                await fetchVoiceProfiles();
+                await fetchSystemTelemetry();
+            } catch (err) {
+                showToast(`音色切换失败: ${err.message}`, 'error', 5000);
+            }
+        }
+
+        // Test Voice Preview Synthesis
+        async function testVoicePreview(profileId) {
+            const vp = state.voiceProfiles.find(x => x.id === profileId);
+            const textToSpeak = vp ? (vp.prompt_text || 'こんにちは、今日もよろしくお願いします。') : 'こんにちは！';
+            showToast(`正在试听合成音色...`, 'info');
+            try {
+                const resp = await fetch('/api/voice/synthesize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: textToSpeak,
+                        speed: 1.0,
+                        text_language: vp ? vp.text_lang : 'ja'
+                    })
+                });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const blob = await resp.blob();
+                const audioUrl = URL.createObjectURL(blob);
+                const audio = document.getElementById('preview-audio-player');
+                audio.src = audioUrl;
+                audio.play();
+                showToast('正在播放试听语音...', 'success');
+            } catch (err) {
+                showToast(`试听合成失败: ${err.message}`, 'error');
+            }
+        }
+
+        // Edit Voice Profile
+        function editVoiceProfile(profileId) {
+            const vp = state.voiceProfiles.find(x => x.id === profileId);
+            if (!vp) return;
+
+            document.getElementById('voice-form-title').textContent = `✏️ 编辑音色: ${vp.name}`;
+            document.getElementById('voice-profile-id').value = vp.id;
+            document.getElementById('voice-name').value = vp.name;
+            document.getElementById('voice-desc').value = vp.description || '';
+            document.getElementById('voice-gpt-path').value = vp.gpt_weights_path;
+            document.getElementById('voice-sovits-path').value = vp.sovits_weights_path;
+            document.getElementById('voice-ref-audio').value = vp.ref_audio_path || vp.refer_audio_path || '';
+            document.getElementById('voice-prompt-text').value = vp.prompt_text || vp.refer_text || '';
+            document.getElementById('voice-prompt-lang').value = vp.prompt_lang || vp.refer_language || 'ja';
+            document.getElementById('voice-text-lang').value = vp.text_lang || 'ja';
+            document.getElementById('voice-system-prompt').value = vp.system_prompt || '';
+            document.getElementById('voice-is-default').checked = Boolean(vp.is_default);
+
+            document.getElementById('voice-form-box').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // Add Voice Profile Toggle
+        document.getElementById('btn-add-profile-toggle').addEventListener('click', () => {
+            document.getElementById('voice-form-title').textContent = '➕ 新增角色音色';
+            document.getElementById('voice-profile-id').value = '';
+            document.getElementById('voice-name').value = '';
+            document.getElementById('voice-desc').value = '';
+            document.getElementById('voice-gpt-path').value = 'GPT_weights_v2ProPlus/character.ckpt';
+            document.getElementById('voice-sovits-path').value = 'SoVITS_weights_v2ProPlus/character.pth';
+            document.getElementById('voice-ref-audio').value = 'sample.ogg';
+            document.getElementById('voice-prompt-text').value = '';
+            document.getElementById('voice-prompt-lang').value = 'ja';
+            document.getElementById('voice-text-lang').value = 'ja';
+            document.getElementById('voice-system-prompt').value = '';
+            document.getElementById('voice-is-default').checked = false;
+            document.getElementById('voice-form-box').scrollIntoView({ behavior: 'smooth' });
+        });
+
+        // Cancel Voice Edit
+        document.getElementById('btn-cancel-voice-edit').addEventListener('click', () => {
+            document.getElementById('voice-profile-form').reset();
+            document.getElementById('voice-profile-id').value = '';
+        });
+
+        // Delete Voice Profile
+        async function deleteVoiceProfile(profileId) {
+            if (!confirm(`确定要删除此音色配置 (ID: ${profileId}) 吗？`)) return;
+            try {
+                const resp = await fetch(`/api/voice/profiles/${profileId}`, { method: 'DELETE' });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                showToast(`成功删除音色 ID: ${profileId}`, 'success');
+                await fetchVoiceProfiles();
+            } catch (err) {
+                showToast(`删除音色失败: ${err.message}`, 'error');
+            }
+        }
+
+        // Save Voice Profile Form Submit
+        document.getElementById('voice-profile-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const profileId = document.getElementById('voice-profile-id').value;
+            const name = document.getElementById('voice-name').value.trim();
+            const desc = document.getElementById('voice-desc').value.trim();
+            const gptPath = document.getElementById('voice-gpt-path').value.trim();
+            const sovitsPath = document.getElementById('voice-sovits-path').value.trim();
+            const refAudio = document.getElementById('voice-ref-audio').value.trim();
+            const promptText = document.getElementById('voice-prompt-text').value.trim();
+            const promptLang = document.getElementById('voice-prompt-lang').value;
+            const textLang = document.getElementById('voice-text-lang').value;
+            const sysPrompt = document.getElementById('voice-system-prompt').value;
+            const isDefault = document.getElementById('voice-is-default').checked;
+
+            const payload = {
+                name: name,
+                description: desc,
+                gpt_weights_path: gptPath,
+                sovits_weights_path: sovitsPath,
+                refer_audio_path: refAudio,
+                ref_audio_path: refAudio,
+                refer_text: promptText,
+                prompt_text: promptText,
+                refer_language: promptLang,
+                prompt_lang: promptLang,
+                text_lang: textLang,
+                system_prompt: sysPrompt,
+                is_default: isDefault
+            };
+
+            try {
+                let resp;
+                if (profileId) {
+                    // Update
+                    resp = await fetch(`/api/voice/profiles/${profileId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                } else {
+                    // Create
+                    resp = await fetch('/api/voice/profiles', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                }
+
+                if (!resp.ok) {
+                    const errJson = await resp.json();
+                    throw new Error(errJson.detail || `HTTP ${resp.status}`);
+                }
+                showToast(`角色音色 [${name}] 保存成功！`, 'success');
+                document.getElementById('voice-profile-form').reset();
+                document.getElementById('voice-profile-id').value = '';
+                await fetchVoiceProfiles();
+            } catch (err) {
+                showToast(`保存音色失败: ${err.message}`, 'error');
+            }
+        });
+
+        // ================= INFERENCE & PRESET ACTIONS =================
+
+        // Preset Tuning Buttons
+        function applyInferencePreset(type) {
+            document.querySelectorAll('.btn-preset').forEach(b => b.classList.remove('active'));
+            if (type === 'high_quality') {
+                document.getElementById('preset-high-quality').classList.add('active');
+                document.getElementById('param-text-split-method').value = 'cut3';
+                updateKnob('param-speed-factor', 'num-speed-factor', 'val-speed', 1.0);
+                updateKnob('param-temperature', 'num-temperature', 'val-temp', 1.0);
+                updateKnob('param-top-k', 'num-top-k', 'val-topk', 15);
+                updateKnob('param-top-p', 'num-top-p', 'val-topp', 1.0);
+                updateKnob('param-fragment-interval', 'num-fragment-interval', 'val-fragment', 0.3, 's');
+                showToast('已应用：高音质预设 (cut3, temp 1.0, top_k 15)', 'info');
+            } else if (type === 'balanced') {
+                document.getElementById('preset-balanced').classList.add('active');
+                document.getElementById('param-text-split-method').value = 'cut1';
+                updateKnob('param-speed-factor', 'num-speed-factor', 'val-speed', 1.0);
+                updateKnob('param-temperature', 'num-temperature', 'val-temp', 1.0);
+                updateKnob('param-top-k', 'num-top-k', 'val-topk', 15);
+                updateKnob('param-top-p', 'num-top-p', 'val-topp', 1.0);
+                updateKnob('param-fragment-interval', 'num-fragment-interval', 'val-fragment', 0.3, 's');
+                showToast('已应用：平衡预设 (cut1, temp 1.0, top_k 15)', 'info');
+            } else if (type === 'low_latency') {
+                document.getElementById('preset-low-latency').classList.add('active');
+                document.getElementById('param-text-split-method').value = 'cut5';
+                updateKnob('param-speed-factor', 'num-speed-factor', 'val-speed', 1.05);
+                updateKnob('param-temperature', 'num-temperature', 'val-temp', 0.8);
+                updateKnob('param-top-k', 'num-top-k', 'val-topk', 10);
+                updateKnob('param-top-p', 'num-top-p', 'val-topp', 0.9);
+                updateKnob('param-fragment-interval', 'num-fragment-interval', 'val-fragment', 0.2, 's');
+                showToast('已应用：极低延迟预设 (cut5, temp 0.8, top_k 10, speed 1.05)', 'info');
+            }
+        }
+
+        function updateKnob(sliderId, numId, displayId, val, suffix = '') {
+            document.getElementById(sliderId).value = val;
+            document.getElementById(numId).value = val;
+            document.getElementById(displayId).textContent = `${val}${suffix}`;
+        }
+
+        document.getElementById('preset-high-quality').addEventListener('click', () => applyInferencePreset('high_quality'));
+        document.getElementById('preset-balanced').addEventListener('click', () => applyInferencePreset('balanced'));
+        document.getElementById('preset-low-latency').addEventListener('click', () => applyInferencePreset('low_latency'));
+
+        // Save Inference Parameters
+        document.getElementById('inference-config-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const updates = {
+                text_split_method: document.getElementById('param-text-split-method').value,
+                speed_factor: parseFloat(document.getElementById('num-speed-factor').value),
+                temperature: parseFloat(document.getElementById('num-temperature').value),
+                top_k: parseInt(document.getElementById('num-top-k').value, 10),
+                top_p: parseFloat(document.getElementById('num-top-p').value),
+                fragment_interval: parseFloat(document.getElementById('num-fragment-interval').value),
+                seed: parseInt(document.getElementById('param-seed').value, 10),
+                batch_size: parseInt(document.getElementById('param-batch-size').value, 10),
+                max_history_messages: parseInt(document.getElementById('param-max-history').value, 10),
+                audio_retention_minutes: parseInt(document.getElementById('param-audio-retention').value, 10),
+                gpt_sovits_url: document.getElementById('param-sovits-url').value.trim()
+            };
+
+            try {
+                const resp = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ settings: updates })
+                });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                showToast('推理参数已保存并同步至 SQLite！', 'success');
+                await fetchGlobalConfig();
+                await fetchSystemTelemetry();
+            } catch (err) {
+                showToast(`保存推理参数失败: ${err.message}`, 'error');
+            }
+        });
+
+        // ================= TELEGRAM BOT ACTIONS =================
+
+        // Test Telegram Connection
+        document.getElementById('btn-test-telegram-token').addEventListener('click', async () => {
+            const token = document.getElementById('tg-bot-token').value.trim();
+            const proxyEnabled = document.getElementById('tg-proxy-enabled').checked;
+            const proxyHost = document.getElementById('tg-proxy-host').value.trim();
+            const proxyPort = parseInt(document.getElementById('tg-proxy-port').value, 10);
+
+            showToast('正在测试 Telegram Bot 连通性...', 'info');
+            try {
+                const resp = await fetch('/api/telegram/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token: token,
+                        proxy_enabled: proxyEnabled,
+                        proxy_host: proxyHost,
+                        proxy_port: proxyPort
+                    })
+                });
+                const result = await resp.json();
+                if (result.success) {
+                    showToast(`${result.message} (延迟: ${result.latency_ms || 0} ms)`, 'success');
+                    if (result.bot_info && result.bot_info.username) {
+                        document.getElementById('tg-bot-username').value = result.bot_info.username;
+                    }
+                } else {
+                    showToast(`Telegram 测试失败: ${result.message}`, 'error', 5000);
+                }
+            } catch (err) {
+                showToast(`Telegram 测试异常: ${err.message}`, 'error');
+            }
+        });
+
+        // Save Telegram Settings
+        document.getElementById('telegram-config-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const token = document.getElementById('tg-bot-token').value.trim();
+            const username = document.getElementById('tg-bot-username').value.trim();
+            const proxyEnabled = document.getElementById('tg-proxy-enabled').checked;
+            const proxyHost = document.getElementById('tg-proxy-host').value.trim();
+            const proxyPort = parseInt(document.getElementById('tg-proxy-port').value, 10);
+
+            const updates = {
+                telegram_bot_token: token,
+                telegram_bot_username: username,
+                telegram_proxy_enabled: proxyEnabled,
+                telegram_proxy_host: proxyHost,
+                telegram_proxy_port: proxyPort
+            };
+
+            try {
+                const resp = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ settings: updates })
+                });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                showToast('Telegram 配置保存成功！', 'success');
+                await fetchGlobalConfig();
+                await fetchSystemTelemetry();
+            } catch (err) {
+                showToast(`保存 Telegram 配置失败: ${err.message}`, 'error');
+            }
+        });
+
+        // ================= GLOBAL SHORTCUTS & REFRESH =================
+
+        // Global Refresh Button
+        document.getElementById('btn-global-refresh').addEventListener('click', async () => {
+            showToast('正在刷新系统全量遥测与配置...', 'info');
+            await fetchSystemTelemetry();
+            await fetchGlobalConfig();
+            await fetchProviders();
+            await fetchVoiceProfiles();
+            showToast('系统状态已是最新', 'success');
+        });
+
+        // Quick Action: Test TTS
+        document.getElementById('btn-quick-test-tts').addEventListener('click', () => {
+            testVoicePreview(state.activeProfileId);
+        });
+
+        // Quick Action: Test LLM
+        document.getElementById('btn-quick-test-llm').addEventListener('click', () => {
+            const activeId = (state.activeProvider && state.activeProvider.id) || (state.settings && state.settings.active_provider_id) || 'deepseek';
+            showToast(`正在测试活动大模型 [${activeId}] 连通性...`, 'info');
+            fetch('/api/providers/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: activeId })
+            }).then(r => r.json()).then(res => {
+                if (res.success) {
+                    showToast(`大模型连通性良好！延迟: ${res.latency_ms || 0} ms`, 'success');
+                } else {
+                    showToast(`大模型连接失败: ${res.message}`, 'error');
+                }
+            }).catch(e => showToast(`测试异常: ${e.message}`, 'error'));
+        });
+
+        // Quick Action: Reset Context
+        document.getElementById('btn-reset-chat-context').addEventListener('click', async () => {
+            if (!confirm('确定要清空默认会话的全部历史记录吗？')) return;
+            try {
+                const resp = await fetch('/ai/chat/reset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: 'default' })
+                });
+                if (resp.ok) {
+                    showToast('已成功重置对话上下文！', 'success');
+                } else {
+                    showToast('重置对话失败', 'error');
+                }
+            } catch (e) {
+                showToast(`重置异常: ${e.message}`, 'error');
+            }
+        });
+
+        // ================= FILE EXPLORER & LOCAL BROWSER =================
+        let currentFsTargetInput = null;
+        let currentFsFileType = 'all';
+        let currentFsPath = '';
+
+        async function openNativeFileDialog(fileType, targetInputId) {
+            const targetInput = document.getElementById(targetInputId);
+            const initialDir = targetInput && targetInput.value ? targetInput.value : '';
+            showToast('正在打开本地文件选择窗口...', 'info');
+            try {
+                const resp = await fetch('/api/voice/browse-file', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file_type: fileType, initial_dir: initialDir })
+                });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    if (data.selected_path) {
+                        targetInput.value = data.selected_path;
+                        showToast(`已成功选中: ${data.selected_path.split(/[\\\\/]/).pop()}`, 'success');
+                    } else {
+                        showToast('未选择文件或已取消', 'info');
+                    }
+                } else {
+                    openWebFileExplorer(fileType, targetInputId);
+                }
+            } catch (err) {
+                console.warn('Native picker failed, opening web explorer:', err);
+                openWebFileExplorer(fileType, targetInputId);
+            }
+        }
+
+        async function openWebFileExplorer(fileType, targetInputId) {
+            currentFsTargetInput = document.getElementById(targetInputId);
+            currentFsFileType = fileType;
+            const modal = document.getElementById('file-explorer-modal');
+            modal.style.display = 'flex';
+
+            let initPath = currentFsTargetInput && currentFsTargetInput.value ? currentFsTargetInput.value : '';
+            await loadFsDirectory(initPath);
+            await loadDiscoveredModels(fileType);
+        }
+
+        async function loadFsDirectory(path) {
+            const loading = document.getElementById('fs-items-loading');
+            const dirList = document.getElementById('fs-directories-list');
+            const fileList = document.getElementById('fs-files-list');
+            const pathInput = document.getElementById('fs-current-path');
+            const driveContainer = document.getElementById('drive-selector');
+
+            loading.style.display = 'block';
+            dirList.innerHTML = '';
+            fileList.innerHTML = '';
+
+            try {
+                const url = `/api/voice/fs-browse?file_type=${encodeURIComponent(currentFsFileType)}` + (path ? `&path=${encodeURIComponent(path)}` : '');
+                const resp = await fetch(url);
+                const data = await resp.json();
+                loading.style.display = 'none';
+
+                if (data.error) {
+                    dirList.innerHTML = `<div style="padding: 12px; color: #ef4444;">${data.error}</div>`;
+                    return;
+                }
+
+                currentFsPath = data.current_path;
+                pathInput.value = data.current_path;
+
+                // Render drives
+                driveContainer.innerHTML = '';
+                (data.drives || []).forEach(drive => {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = `fs-drive-btn ${data.current_path.toUpperCase().startsWith(drive.toUpperCase()) ? 'active' : ''}`;
+                    btn.textContent = drive;
+                    btn.onclick = () => loadFsDirectory(drive);
+                    driveContainer.appendChild(btn);
+                });
+
+                // Render directories
+                if (data.directories && data.directories.length > 0) {
+                    data.directories.forEach(d => {
+                        const item = document.createElement('div');
+                        item.className = 'fs-item fs-dir';
+                        item.innerHTML = `
+                            <div class="fs-item-left">
+                                <span>📁</span>
+                                <span class="fs-item-name">${escapeHtml(d.name)}</span>
+                            </div>
+                            <span style="font-size: 11px; color: var(--text-muted);">文件夹</span>
+                        `;
+                        item.onclick = () => loadFsDirectory(d.path);
+                        dirList.appendChild(item);
+                    });
+                }
+
+                // Render files
+                if (data.files && data.files.length > 0) {
+                    data.files.forEach(f => {
+                        const item = document.createElement('div');
+                        item.className = 'fs-item';
+                        const sizeKb = Math.round((f.size_bytes || 0) / 1024);
+                        const sizeMb = (sizeKb / 1024).toFixed(1);
+                        const sizeStr = sizeMb > 1 ? `${sizeMb} MB` : `${sizeKb} KB`;
+
+                        item.innerHTML = `
+                            <div class="fs-item-left">
+                                <span>${f.name.endsWith('.ckpt') || f.name.endsWith('.pth') ? '📦' : '🎵'}</span>
+                                <span class="fs-item-name" style="color: var(--primary-accent); font-weight: 600;">${escapeHtml(f.name)}</span>
+                            </div>
+                            <span style="font-size: 11px; color: var(--text-muted);">${sizeStr}</span>
+                        `;
+                        item.onclick = () => {
+                            if (currentFsTargetInput) {
+                                currentFsTargetInput.value = f.path;
+                                showToast(`已选中: ${f.name}`, 'success');
+                            }
+                            closeFileExplorer();
+                        };
+                        fileList.appendChild(item);
+                    });
+                } else if (!data.directories || data.directories.length === 0) {
+                    fileList.innerHTML = '<div style="padding: 16px; text-align: center; color: var(--text-muted);">此目录下无匹配的文件</div>';
+                }
+            } catch (err) {
+                loading.style.display = 'none';
+                dirList.innerHTML = `<div style="padding: 12px; color: #ef4444;">加载目录失败: ${err.message}</div>`;
+            }
+        }
+
+        async function loadDiscoveredModels(fileType) {
+            const fastBox = document.getElementById('fs-fast-select-box');
+            const fastItems = document.getElementById('fs-fast-items');
+            try {
+                const resp = await fetch('/api/voice/scan-models');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                let items = [];
+                if (fileType === 'gpt') items = data.gpt_weights || [];
+                else if (fileType === 'sovits') items = data.sovits_weights || [];
+                else if (fileType === 'audio') items = data.audio_files || [];
+                else items = [...(data.gpt_weights || []), ...(data.sovits_weights || []), ...(data.audio_files || [])];
+
+                if (items.length > 0) {
+                    fastBox.style.display = 'block';
+                    fastItems.innerHTML = '';
+                    items.forEach(it => {
+                        const chip = document.createElement('button');
+                        chip.type = 'button';
+                        chip.className = 'btn-action-sm btn-action-secondary';
+                        chip.style.fontSize = '11px';
+                        chip.textContent = `${it.name.endsWith('.ckpt') ? '📦 ' : it.name.endsWith('.pth') ? '🧠 ' : '🎵 '}${it.name}`;
+                        chip.title = it.path;
+                        chip.onclick = () => {
+                            if (currentFsTargetInput) {
+                                currentFsTargetInput.value = it.path;
+                                showToast(`已选中: ${it.name}`, 'success');
+                            }
+                            closeFileExplorer();
+                        };
+                        fastItems.appendChild(chip);
+                    });
+                } else {
+                    fastBox.style.display = 'none';
+                }
+            } catch (e) {
+                fastBox.style.display = 'none';
+            }
+        }
+
+        function closeFileExplorer() {
+            document.getElementById('file-explorer-modal').style.display = 'none';
+        }
+
+        // Up directory button
+        document.getElementById('btn-fs-up').addEventListener('click', () => {
+            if (!currentFsPath) return;
+            const parts = currentFsPath.replace(/[\\\\/]+$/, '').split(/[\\\\/]/);
+            if (parts.length > 1) {
+                parts.pop();
+                let parent = parts.join('\\');
+                if (parts.length === 1 && parts[0].endsWith(':')) parent += '\\';
+                loadFsDirectory(parent || '\\');
+            }
+        });
+
+        document.getElementById('btn-close-file-modal').addEventListener('click', closeFileExplorer);
+        document.getElementById('btn-cancel-file-modal').addEventListener('click', closeFileExplorer);
+        document.getElementById('btn-native-dialog-modal').addEventListener('click', async () => {
+            if (currentFsTargetInput) {
+                const targetId = currentFsTargetInput.id;
+                const fileType = currentFsFileType;
+                closeFileExplorer();
+                await openNativeFileDialog(fileType, targetId);
+            }
+        });
+
+        // Event listeners for voice profile browse buttons
+        document.getElementById('btn-browse-gpt').addEventListener('click', () => openNativeFileDialog('gpt', 'voice-gpt-path'));
+        document.getElementById('btn-fs-gpt').addEventListener('click', () => openWebFileExplorer('gpt', 'voice-gpt-path'));
+
+        document.getElementById('btn-browse-sovits').addEventListener('click', () => openNativeFileDialog('sovits', 'voice-sovits-path'));
+        document.getElementById('btn-fs-sovits').addEventListener('click', () => openWebFileExplorer('sovits', 'voice-sovits-path'));
+
+        document.getElementById('btn-browse-audio').addEventListener('click', () => openNativeFileDialog('audio', 'voice-ref-audio'));
+        document.getElementById('btn-fs-audio').addEventListener('click', () => openWebFileExplorer('audio', 'voice-ref-audio'));
+
+        // Auto Refresh Management
+        const autoRefreshToggle = document.getElementById('auto-refresh-toggle');
+        function setupAutoRefresh() {
+            if (state.autoRefreshTimer) clearInterval(state.autoRefreshTimer);
+            if (autoRefreshToggle && autoRefreshToggle.checked) {
+                state.autoRefreshTimer = setInterval(() => {
+                    fetchSystemTelemetry();
+                }, 5000);
+            }
+        }
+
+        if (autoRefreshToggle) {
+            autoRefreshToggle.addEventListener('change', setupAutoRefresh);
+        }
+
+        // ================= INITIALIZATION =================
+        window.addEventListener('DOMContentLoaded', async () => {
+            await fetchSystemTelemetry();
+            await fetchGlobalConfig();
+            await fetchProviders();
+            await fetchVoiceProfiles();
+            setupAutoRefresh();
+        });
+    </script>
+
+    <!-- File Explorer Modal -->
+    <div id="file-explorer-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3 id="modal-title">📁 本地文件与模型选择器</h3>
+                <button type="button" id="btn-close-file-modal" class="btn-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Drive selector & Path Breadcrumbs -->
+                <div style="display: flex; gap: 8px; margin-bottom: 12px; align-items: center;">
+                    <div id="drive-selector" style="display: flex; gap: 6px;"></div>
+                    <input type="text" id="fs-current-path" class="form-input" style="font-size: 12px; flex: 1;" readonly>
+                    <button type="button" id="btn-fs-up" class="btn-action-sm btn-action-secondary" title="上一级目录">⬆️ 上一级</button>
+                </div>
+                <!-- Discovered / Fast Select Section -->
+                <div id="fs-fast-select-box" style="margin-bottom: 12px; display: none;">
+                    <label class="form-label" style="font-size: 12px;">⚡ 快速发现的模型与音频 (点击直接填入):</label>
+                    <div id="fs-fast-items" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
+                </div>
+                <!-- File Tree / List -->
+                <div id="fs-list-container" class="fs-list-box">
+                    <div id="fs-items-loading" style="text-align: center; padding: 20px; color: var(--text-muted);">加载中...</div>
+                    <div id="fs-directories-list"></div>
+                    <div id="fs-files-list"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" id="btn-native-dialog-modal" class="btn-action-sm btn-action-primary">🖥️ 弹出 Windows 资源管理器选择</button>
+                <button type="button" id="btn-cancel-file-modal" class="btn-action-sm btn-action-secondary">关闭</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

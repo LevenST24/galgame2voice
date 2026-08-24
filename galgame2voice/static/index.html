@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🌸 Galgame2Voice - 二次元智能语音伴侣</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body class="galgame-theme" id="galgame2voice-app">
+    <div class="main-wrapper galgame2voice">
+        <!-- 🌸 Top Navigation & Control Capsule -->
+        <header class="app-header glass-card">
+            <div class="brand-section">
+                <span class="brand-icon">🌸</span>
+                <div class="brand-texts">
+                    <span class="brand-title">Galgame2Voice</span>
+                    <span class="brand-sub">AI Voice Companion</span>
+                </div>
+            </div>
+
+            <!-- Middle: Status & Character Switcher -->
+            <div class="header-controls">
+                <!-- Character Dropdown -->
+                <div class="control-pill voice-select-pill" title="切换角色音色">
+                    <span class="pill-icon">🎭</span>
+                    <select id="quick-voice-select" class="voice-dropdown" aria-label="选择伴侣角色">
+                        <option value="">加载角色中...</option>
+                    </select>
+                </div>
+
+                <!-- GPT-SoVITS Status -->
+                <div id="sovits-status-badge" class="badge badge-loading" title="GPT-SoVITS 推理引擎状态">
+                    <span class="status-dot"></span>
+                    <span class="status-text">检测中...</span>
+                </div>
+
+                <!-- Master Volume Slider -->
+                <div class="control-pill volume-pill" title="调节语音音量">
+                    <button type="button" id="mute-toggle-btn" class="icon-btn" title="静音开关">🔊</button>
+                    <input type="range" id="volume-slider" min="0" max="100" value="100" class="volume-slider" title="音量调节">
+                    <span id="volume-label" class="volume-label">100%</span>
+                </div>
+            </div>
+
+            <!-- Right: View Switcher & Console -->
+            <div class="header-actions">
+                <div class="mode-toggle-group">
+                    <button type="button" id="btn-mode-vn" class="btn-mode active" title="Galgame 视觉小说沉浸模式">🌸 视觉小说</button>
+                    <button type="button" id="btn-mode-chat" class="btn-mode" title="现代对话流气泡模式">💬 对话流</button>
+                </div>
+                <a href="/settings.html" class="nav-console-btn" title="进入高级设置控制台">⚙️ 设置</a>
+            </div>
+        </header>
+
+        <!-- 🎭 STAGE AREA: Dual Mode Container -->
+        <main class="stage-container">
+            <!-- ================= MODE 1: Galgame Visual Novel Mode ================= -->
+            <section id="vn-view" class="vn-stage-view">
+                <!-- Character Standee / Avatar Backdrop -->
+                <div class="character-backdrop">
+                    <div class="character-glow-circle"></div>
+                    <div class="character-avatar-wrapper">
+                        <div class="avatar-frame">
+                            <span class="avatar-emoji">👧</span>
+                        </div>
+                        <div class="character-aura"></div>
+                    </div>
+                </div>
+
+                <!-- Classic Galgame Frosted Dialogue Box -->
+                <div class="vn-dialogue-box glass-card">
+                    <div class="vn-box-header">
+                        <div class="vn-name-tag">
+                            <span class="tag-diamond">◆</span>
+                            <span id="vn-character-name" class="character-name">四季夏目 (Shiki Natsume)</span>
+                            <span class="tag-diamond">◆</span>
+                        </div>
+
+                        <!-- Voice Equalizer Animation -->
+                        <div id="vn-audio-equalizer" class="audio-equalizer-bars" title="语音声波实时反馈">
+                            <span class="bar bar-1"></span>
+                            <span class="bar bar-2"></span>
+                            <span class="bar bar-3"></span>
+                            <span class="bar bar-4"></span>
+                            <span class="bar bar-5"></span>
+                        </div>
+                    </div>
+
+                    <!-- Main Dialogue Text -->
+                    <div class="vn-dialogue-content">
+                        <!-- Japanese Line -->
+                        <div id="vn-text-ja" class="dialogue-line-ja">
+                            とりあえず、今日見たことは忘れて、わかった?
+                        </div>
+                        <!-- Chinese Subtitle -->
+                        <div id="vn-text-zh" class="dialogue-line-zh">
+                            （总之，今天看到的事情请务必保密忘掉，明白了吗？）
+                        </div>
+                    </div>
+
+                    <!-- Footer Action Bar -->
+                    <div class="vn-box-footer">
+                        <div class="vn-status-hint">
+                            <span id="vn-audio-status" class="status-indicator-text">音频就绪</span>
+                        </div>
+                        <div class="vn-action-buttons">
+                            <button type="button" id="btn-vn-replay" class="vn-action-btn" title="重新播放当前台词配音">
+                                <span>▶️ 重新播放</span>
+                            </button>
+                            <button type="button" id="btn-vn-download" class="vn-action-btn" title="下载合并母带音频 (WAV)">
+                                <span>💾 下载母带</span>
+                            </button>
+                            <button type="button" id="btn-vn-history" class="vn-action-btn" title="查看历史对话回溯">
+                                <span>📜 对话记录</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================= MODE 2: Classic Chat Flow Mode ================= -->
+            <section id="chat-view" class="chat-stage-view" style="display: none;">
+                <div id="chat-log" class="chat-bubbles-container">
+                    <div class="message system-message glass-card">
+                        🌸 欢迎来到 Galgame2Voice！双语流式对话与低延迟日配语音合成引擎已就绪。
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- 📝 Quick Prompt Chips & Input Bar -->
+        <footer class="app-footer">
+            <!-- Quick Chips -->
+            <div class="quick-chips-bar">
+                <span class="chip-label">✨ 快捷提问:</span>
+                <button type="button" class="quick-chip" data-prompt="夏目，今天咖啡店有什么特别推荐吗？">☕ 咖啡推荐</button>
+                <button type="button" class="quick-chip" data-prompt="早上好呀！今天心情怎么样？">☀️ 晨间问候</button>
+                <button type="button" class="quick-chip" data-prompt="可以教我一句日常常用的日语吗？">📖 日语教学</button>
+                <button type="button" class="quick-chip" data-prompt="能为我推荐一部好看的恋爱或治愈系动漫吗？">🎬 动漫推荐</button>
+            </div>
+
+            <!-- Input Bar -->
+            <form id="chat-form" class="input-glass-container">
+                <button type="button" id="reset-context-btn" class="btn-input-action" title="清空上下文，开启新会话">
+                    🔄
+                </button>
+                <input 
+                    type="text" 
+                    id="prompt-input" 
+                    class="prompt-input-field" 
+                    placeholder="输入想对她说的话... (按 Enter 发送)" 
+                    autocomplete="off" 
+                    required
+                />
+                <button type="submit" id="send-btn" class="send-action-btn">
+                    <span>发送</span>
+                    <span class="send-arrow">➔</span>
+                </button>
+            </form>
+        </footer>
+
+        <!-- 📜 History Modal -->
+        <div id="history-modal" class="modal-backdrop" style="display: none;">
+            <div class="modal-card glass-card">
+                <div class="modal-header">
+                    <h3>📜 历史对话记录 (Backlog)</h3>
+                    <button type="button" id="btn-close-history" class="modal-close-btn">&times;</button>
+                </div>
+                <div id="history-modal-body" class="modal-body">
+                    <!-- Loaded dynamically -->
+                </div>
+                <div class="modal-footer">
+                    <button type="button" id="btn-clear-history-modal" class="btn-danger-outline">清空历史记忆</button>
+                    <button type="button" id="btn-close-history-2" class="btn-primary-sm">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="/static/js/audio_player.js"></script>
+    <script src="/static/js/chat_client.js"></script>
+</body>
+</html>
