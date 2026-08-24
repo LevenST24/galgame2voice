@@ -13,17 +13,22 @@ set "PYTHONIOENCODING=utf-8"
 set "SCRIPT_DIR=%~dp0"
 
 REM 1. Detect Python Environment
-set "PYTHON_EXE=python"
+set "PYTHON_EXE="
 if exist "%~dp0.venv\Scripts\python.exe" set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
 if exist "%~dp0venv\Scripts\python.exe" set "PYTHON_EXE=%~dp0venv\Scripts\python.exe"
 
-where %PYTHON_EXE% >nul 2>nul
-if !errorlevel! neq 0 (
-    echo [ERROR] Python not found on system!
-    pause
-    endlocal
-    exit /b 1
+if not defined PYTHON_EXE (
+    where python >nul 2>nul
+    if !errorlevel! neq 0 (
+        echo [ERROR] Python not found on system!
+        pause
+        endlocal
+        exit /b 1
+    )
+    set "PYTHON_EXE=python"
 )
+
+echo [OK] Python detected: %PYTHON_EXE%
 
 REM 2. Runtime Directories
 if not exist "logs" mkdir logs
