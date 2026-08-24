@@ -2,22 +2,21 @@
 chcp 65001 >nul
 setlocal enabledelayedexpansion
 
-title Stop Galgame2Voice
+title 停止 Galgame2Voice
 echo ========================================================
-echo        [INFO] Stopping Galgame2Voice and GPT-SoVITS
+echo        正在停止 Galgame2Voice 与 GPT-SoVITS
 echo ========================================================
 echo.
 
 cd /d "%~dp0"
 set "PYTHONIOENCODING=utf-8"
-set "SCRIPT_DIR=%~dp0"
 
-REM 1. Terminate Galgame2Voice Port 8080 and active port
-echo [1/2] Closing Galgame2Voice [Port 8080]
+REM 1. 终止 Galgame2Voice 服务 (端口 8080 及动态端口)
+echo [1/2] 正在关闭 Galgame2Voice 服务 [端口 8080]...
 for /f "tokens=4,5" %%a in ('netstat -ano ^| findstr ":8080"') do (
     if "%%a"=="LISTENING" (
         taskkill /f /t /pid %%b >nul 2>&1
-        echo   [OK] Closed port 8080 process PID: %%b
+        echo   [OK] 已终止端口 8080 进程 PID: %%b
     )
 )
 if exist "data\active_port.txt" (
@@ -37,12 +36,12 @@ if exist "galgame2voice.pid" (
     del /f /q galgame2voice.pid >nul 2>&1
 )
 
-REM 2. Terminate GPT-SoVITS Port 9880
-echo [2/2] Closing GPT-SoVITS [Port 9880]
+REM 2. 终止 GPT-SoVITS 语音引擎 (端口 9880, 释放显存)
+echo [2/2] 正在关闭 GPT-SoVITS 语音引擎 [端口 9880]...
 for /f "tokens=4,5" %%a in ('netstat -ano ^| findstr ":9880"') do (
     if "%%a"=="LISTENING" (
         taskkill /f /t /pid %%b >nul 2>&1
-        echo   [OK] Closed port 9880 process PID: %%b
+        echo   [OK] 已终止端口 9880 进程 PID: %%b
     )
 )
 if exist "gptsovits.pid" (
@@ -60,7 +59,7 @@ if exist "gpt_sovits.pid" (
 
 echo.
 echo ========================================================
-echo   [OK] All services stopped, ports and VRAM released!
+echo   [OK] 全部服务已停止，端口已释放，显存已归还！
 echo ========================================================
 echo.
 

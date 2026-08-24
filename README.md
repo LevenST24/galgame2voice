@@ -76,18 +76,17 @@ python api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS/configs/tts_infer.yaml
 
 ### 2. 启动 Galgame2Voice 伴侣服务
 
-在项目根目录下直接运行 Windows 批处理脚本（自动检测 Python/uv 环境与依赖）：
+在项目根目录下直接运行 Windows 批处理脚本（自动检测 Python 环境与依赖）：
 
 ```bash
-# 启动服务（默认监听 http://127.0.0.1:8080）
-.\start-galgame2voice.bat
+# 一键启动（自动检测并拉起 GPT-SoVITS，等待模型就绪，启动服务并打开浏览器）
+.\启动.bat
 
-# 停止服务
-.\stop-galgame2voice.bat
-
-# 重启服务
-.\restart-galgame2voice.bat
+# 一键停止（释放 8080/9880 端口与全部显存）
+.\停止.bat
 ```
+
+启动器会自动完成：GPT-SoVITS 引擎检测与后台拉起（就绪等待 + 日志落盘）、端口冲突自动降级、健康轮询与浏览器自动打开。
 
 或者使用 Python 原生命令行：
 

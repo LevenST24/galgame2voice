@@ -1,12 +1,17 @@
 /**
- * Galgame2Voice - High-End Anime/Galgame Cinematic Chat Client
- * 
- * Modular architecture:
- *  - AutoModeController: Auto-progression state machine
- *  - SkipController: Typewriter & audio fast-forward
- *  - EmotionManager: Emotion aura & avatar transitions
- *  - LogDrawerController: Backlog drawer & replay manager
- *  - ChatApp: Main SSE client & event orchestrator
+ * Galgame2Voice - 高端二次元剧场感聊天客户端 (v2 加固版)
+ *
+ * v2 修复的核心缺陷:
+ *  - 流式期间可随时「停止」(send 按钮变红中止, abortController 真正生效)
+ *  - 网络错误后 "思考中..." 不再永久卡死, 气泡显示失败状态并可重发
+ *  - 后端 audio_chunk_error 事件有明确的 UI 反馈(跳过该句并提示), 不再无声断流
+ *  - 状态轮询感知页面可见性(后台标签页不再空耗请求)
+ *  - 音色切换失败会回滚下拉框并提示, 不再 UI 与后端状态不一致
+ *  - LOG 抽屉时间戳等动态内容统一 escapeHtml, 消除注入面
+ *
+ * 模块:
+ *  - AutoModeController / SkipController / EmotionManager / LogDrawerController
+ *  - ChatApp: SSE 客户端与事件编排
  */
 
 // ============================================================================
@@ -253,7 +258,7 @@ class LogDrawerController {
             card.innerHTML = `
                 <div class="log-item-header">
                     <span class="log-item-speaker">${this.escapeHtml(speakerName)}</span>
-                    <span class="log-item-time">${timeStr}</span>
+                    <span class="log-item-time">${this.escapeHtml(timeStr)}</span>
                 </div>
                 ${contentHtml}
                 ${hasAudio ? `
@@ -316,12 +321,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const vnEmotionBadge = document.getElementById('vn-emotion-badge');
     const vnAffectionBadge = document.getElementById('vn-affection-badge');
 
-    const btnVnAuto = document.getElementById('btn-vn-auto');
     const btnVnSkip = document.getElementById('btn-vn-skip');
     const btnVnLog = document.getElementById('btn-vn-log');
     const btnVnReplay = document.getElementById('btn-vn-replay');
     const btnVnDownload = document.getElementById('btn-vn-download');
-    const btnVnHistory = document.getElementById('btn-vn-history');
 
     const logDrawer = document.getElementById('vn-log-drawer');
     const logDrawerBackdrop = document.getElementById('log-drawer-backdrop');
@@ -337,14 +340,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const volumeLabel = document.getElementById('volume-label');
     const affectionLabel = document.getElementById('affection-label');
 
-    const historyModal = document.getElementById('history-modal');
-    const historyModalBody = document.getElementById('history-modal-body');
-    const btnCloseHistory = document.getElementById('btn-close-history');
-    const btnCloseHistory2 = document.getElementById('btn-close-history-2');
-    const btnClearHistoryModal = document.getElementById('btn-clear-history-modal');
-
     // 2. Session & State
-    let sessionId = localStorage.getItem('g2v_session_id') || ('sess_' + Math.random().toString(36).substring(2, 10));
+    let sessionId = localStorage.getItem('g2v_session_id') ||
+        ('sess_' + (window.crypto && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).substring(2, 10)));
     localStorage.setItem('g2v_session_id', sessionId);
 
     let currentMode = localStorage.getItem('g2v_view_mode') || 'vn';
@@ -352,6 +350,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let abortController = null;
     let lastVoiceData = null;
     let currentDialogueHistory = [];
+    let lastUserPrompt = ''; // for one-click resend after failure
 
     // Typewriter state
     let typewriterTimer = null;
@@ -381,6 +380,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // 3. Audio Player Instance
+    let audioFailureNoticeCount = 0;
     const audioPlayer = new (window.StreamingAudioPlayer || StreamingAudioPlayer)({
         crossFadeDuration: 0.025,
         equalizerElement: vnAudioEqualizer,
@@ -391,9 +391,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 else vnAudioEqualizer.classList.remove('playing');
             }
         },
-        onError: (err) => {
-            console.error('Audio playback error:', err);
-            if (vnAudioStatus) vnAudioStatus.textContent = '音频异常';
+        onError: (err, item) => {
+            // 单句音频失败已被播放器自动跳过, 队列继续。这里只做一次性提示。
+            console.warn('[Audio] 跳过一句失败音频:', item && item.url, err);
+            if (audioFailureNoticeCount < 1) {
+                audioFailureNoticeCount += 1;
+                appendSystemMessage('⚠️ 有语音片段加载失败，已自动跳过并继续播放后续内容。');
+            }
         }
     });
 
@@ -414,14 +418,6 @@ document.addEventListener('DOMContentLoaded', () => {
         backdropEl: document.querySelector('.character-backdrop'),
         avatarEmojiEl: document.querySelector('.avatar-emoji'),
         badgeEl: vnEmotionBadge,
-    });
-
-    const autoModeController = new AutoModeController({
-        defaultDelayMs: 1500,
-        btnEl: btnVnAuto,
-        onAdvance: () => {
-            if (vnAudioStatus) vnAudioStatus.textContent = '自动推进就绪';
-        }
     });
 
     const skipController = new SkipController({
@@ -465,11 +461,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     audioPlayer.onQueueEmpty = () => {
-        autoModeController.onAudioQueueFinished();
+        if (vnAudioStatus) vnAudioStatus.textContent = '就绪';
     };
 
     // Expose for testing & debug
-    window.autoModeController = autoModeController;
     window.skipController = skipController;
     window.emotionManager = emotionManager;
     window.logDrawerController = logDrawerController;
@@ -546,9 +541,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     const charInline = document.querySelector('.character-name-inline');
                     if (charInline) charInline.textContent = activeProfile.name;
                 }
+            } else {
+                throw new Error('HTTP ' + resp.status);
             }
         } catch (err) {
             console.warn('Failed to load voice profiles:', err);
+            quickVoiceSelect.innerHTML = '<option value="">音色加载失败</option>';
+            quickVoiceSelect.disabled = true;
         }
     }
 
@@ -556,6 +555,8 @@ document.addEventListener('DOMContentLoaded', () => {
         quickVoiceSelect.addEventListener('change', async (e) => {
             const profileId = parseInt(e.target.value, 10);
             if (!profileId) return;
+            const previousValue = quickVoiceSelect.dataset.lastValue || '';
+            quickVoiceSelect.disabled = true;
             try {
                 const resp = await fetch('/api/voice/switch', {
                     method: 'POST',
@@ -569,14 +570,29 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (charInline) charInline.textContent = selectedText;
                     logDrawerController.characterName = selectedText;
                     appendSystemMessage(`已切换角色音色为: ${selectedText}`);
+                    quickVoiceSelect.dataset.lastValue = String(profileId);
+                } else {
+                    const errData = await resp.json().catch(() => ({}));
+                    throw new Error(errData.detail || `HTTP ${resp.status}`);
                 }
             } catch (err) {
                 console.error('Failed to switch voice profile:', err);
+                appendSystemMessage(`❌ 音色切换失败: ${err.message}，已恢复原音色`);
+                // 恢复原来的选择, 保持 UI 与后端一致
+                if (previousValue) {
+                    quickVoiceSelect.value = previousValue;
+                }
+            } finally {
+                quickVoiceSelect.disabled = false;
             }
         });
+        // 记录初始值供失败回滚
+        setTimeout(() => {
+            if (quickVoiceSelect.value) quickVoiceSelect.dataset.lastValue = quickVoiceSelect.value;
+        }, 800);
     }
 
-    // 8. System Status
+    // 8. System Status (visibility-aware polling)
     async function checkSystemStatus() {
         if (!sovitsStatusBadge) return;
         try {
@@ -587,6 +603,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const latency = data.gpt_sovits && data.gpt_sovits.latency_ms ? Math.round(data.gpt_sovits.latency_ms) : null;
 
                 sovitsStatusBadge.className = 'badge ' + (isOnline ? 'badge-success' : 'badge-danger');
+                sovitsStatusBadge.title = isOnline
+                    ? (data.gpt_sovits.base_url || '')
+                    : ('GPT-SoVITS 无法连接: ' + ((data.gpt_sovits && data.gpt_sovits.error) || '请检查语音引擎是否已启动'));
                 const textEl = sovitsStatusBadge.querySelector('.status-text');
                 if (textEl) {
                     textEl.textContent = isOnline
@@ -597,9 +616,29 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
             sovitsStatusBadge.className = 'badge badge-danger';
             const textEl = sovitsStatusBadge.querySelector('.status-text');
-            if (textEl) textEl.textContent = 'GPT-SoVITS 离线';
+            if (textEl) textEl.textContent = '服务连接中断';
         }
     }
+
+    let statusPollTimer = null;
+    function startStatusPolling() {
+        if (statusPollTimer) return;
+        statusPollTimer = setInterval(checkSystemStatus, 5000);
+    }
+    function stopStatusPolling() {
+        if (statusPollTimer) {
+            clearInterval(statusPollTimer);
+            statusPollTimer = null;
+        }
+    }
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            stopStatusPolling();
+        } else {
+            checkSystemStatus();
+            startStatusPolling();
+        }
+    });
 
     // 9. Affection Display
     function updateAffectionDisplay(aff) {
@@ -607,7 +646,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const level = aff.level || aff.affection_level || 1;
         const name = aff.level_name || '初识';
         const score = aff.score !== undefined ? aff.score : (aff.affection_score !== undefined ? aff.affection_score : 0);
-        
+
         if (affectionLabel) {
             affectionLabel.textContent = `Lv.${level} ${name} (${score}/100)`;
         }
@@ -681,7 +720,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 11. Download Audio
     function downloadAudioFile(audioUrl, defaultName = 'voice_master.wav') {
         if (!audioUrl) {
-            alert('暂无可下载的语音母带');
+            appendSystemMessage('暂无可下载的语音母带');
             return;
         }
         const a = document.createElement('a');
@@ -718,21 +757,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (btnVnDownload) {
         btnVnDownload.addEventListener('click', () => {
-            if (lastVoiceData) {
-                let targetUrl = lastVoiceData.audio_url;
-                if (!targetUrl && lastVoiceData.chunks && lastVoiceData.chunks.length > 0) {
-                    targetUrl = lastVoiceData.chunks[0].audio_url;
-                }
-                downloadAudioFile(targetUrl, 'dialogue.wav');
+            if (lastVoiceData && lastVoiceData.audio_url) {
+                downloadAudioFile(lastVoiceData.audio_url, 'dialogue.wav');
             } else {
-                alert('暂无可下载的语音母带');
+                appendSystemMessage('母带音频尚未生成（可能语音仍在合成或已失败）');
             }
-        });
-    }
-
-    if (btnVnHistory) {
-        btnVnHistory.addEventListener('click', () => {
-            logDrawerController.open();
         });
     }
 
@@ -740,14 +769,13 @@ document.addEventListener('DOMContentLoaded', () => {
     async function handleResetContext() {
         if (!confirm('确定要清空当前对话上下文并开启新会话吗？')) return;
         audioPlayer.interrupt();
-        autoModeController.cancel();
         try {
             await fetch(`/api/chat/history?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
         } catch (e) {
             console.warn('Failed to delete remote history:', e);
         }
 
-        sessionId = 'sess_' + Math.random().toString(36).substring(2, 10);
+        sessionId = 'sess_' + (window.crypto && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).substring(2, 10));
         localStorage.setItem('g2v_session_id', sessionId);
         currentDialogueHistory = [];
 
@@ -765,13 +793,9 @@ document.addEventListener('DOMContentLoaded', () => {
         lastVoiceData = null;
         emotionManager.setEmotion('gentle');
         logDrawerController.close();
-        if (historyModal) historyModal.style.display = 'none';
     }
 
     if (resetContextBtn) resetContextBtn.addEventListener('click', handleResetContext);
-    if (btnClearHistoryModal) btnClearHistoryModal.addEventListener('click', handleResetContext);
-    if (btnCloseHistory) btnCloseHistory.addEventListener('click', () => { if (historyModal) historyModal.style.display = 'none'; });
-    if (btnCloseHistory2) btnCloseHistory2.addEventListener('click', () => { if (historyModal) historyModal.style.display = 'none'; });
 
     // 13. Quick Chips
     document.querySelectorAll('.quick-chip').forEach(chip => {
@@ -785,25 +809,43 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // 14. Streaming Chat Form Submit
+    // 14. Streaming Chat Form Submit (with working stop button)
+    function setStreamingUI(streaming) {
+        isStreaming = streaming;
+        if (promptInput) {
+            promptInput.disabled = streaming;
+            if (!streaming) promptInput.focus();
+        }
+        if (sendBtn) {
+            sendBtn.disabled = false; // streaming 时作为「停止」按钮必须可点
+            sendBtn.classList.toggle('streaming', streaming);
+            sendBtn.title = streaming ? '点击停止生成' : '发送';
+        }
+    }
+
+    if (sendBtn) {
+        sendBtn.addEventListener('click', () => {
+            if (isStreaming && abortController) {
+                abortController.abort();
+            }
+        });
+    }
+
     if (chatForm) {
         chatForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const text = promptInput ? promptInput.value.trim() : '';
             if (!text || isStreaming) return;
 
-            if (promptInput) {
-                promptInput.value = '';
-                promptInput.disabled = true;
-            }
-            if (sendBtn) sendBtn.disabled = true;
-            isStreaming = true;
+            if (promptInput) promptInput.value = '';
+            setStreamingUI(true);
+            audioFailureNoticeCount = 0;
 
             audioPlayer.interrupt();
-            autoModeController.cancel();
             skipTypewriter();
 
             const timeNow = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            lastUserPrompt = text;
 
             appendUserMessage(text);
             currentDialogueHistory.push({ role: 'user', content_chinese: text, timestamp: timeNow });
@@ -828,6 +870,7 @@ document.addEventListener('DOMContentLoaded', () => {
             let lastAudioUrl = '';
             let lastEmotion = 'gentle';
             let currentMessageChunks = [];
+            let sawError = false;
 
             try {
                 const resp = await fetch('/api/chat/stream', {
@@ -842,7 +885,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
 
                 if (!resp.ok) {
-                    throw new Error(`HTTP error ${resp.status}`);
+                    const errText = await resp.text().catch(() => '');
+                    throw new Error(`HTTP ${resp.status}${errText ? `: ${errText.slice(0, 120)}` : ''}`);
                 }
 
                 const reader = resp.body.getReader();
@@ -913,6 +957,10 @@ document.addEventListener('DOMContentLoaded', () => {
                                     };
                                     assistantHolder.update(fullChinese, fullJapanese);
                                     audioPlayer.enqueue(chunkObj);
+                                } else if (currentEventType === 'audio_chunk_error') {
+                                    // 单句合成失败: 后端已跳过, 前端提示并继续
+                                    console.warn('音频片段合成失败:', payload.error);
+                                    assistantHolder.markChunkError(payload.index);
                                 } else if (currentEventType === 'done' || (payload.chinese && payload.japanese)) {
                                     if (payload.chinese) fullChinese = payload.chinese;
                                     if (payload.japanese) fullJapanese = payload.japanese;
@@ -946,7 +994,9 @@ document.addEventListener('DOMContentLoaded', () => {
                                 } else if (currentEventType === 'error' || payload.error) {
                                     const errMsg = payload.error || payload.message || '未知异常';
                                     console.error('SSE backend error:', errMsg);
+                                    sawError = true;
                                     appendSystemMessage(`❌ 服务异常: ${errMsg}`);
+                                    assistantHolder.fail(`生成失败: ${errMsg}`);
                                 }
                             } catch (pErr) {
                                 console.warn('JSON parse error on SSE line:', pErr, jsonStr);
@@ -955,39 +1005,63 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                assistantHolder.finish({
-                    audio_url: lastAudioUrl,
-                    chunks: currentMessageChunks,
-                    sentence: fullJapanese
-                });
+                // 只有正常完成且无错误时才标记完成
+                if (!sawError && (fullChinese || currentMessageChunks.length > 0)) {
+                    assistantHolder.finish({
+                        audio_url: lastAudioUrl,
+                        chunks: currentMessageChunks,
+                        sentence: fullJapanese
+                    });
 
-                const assistantEntry = {
-                    role: 'assistant',
-                    content_chinese: fullChinese,
-                    content_japanese: fullJapanese,
-                    audio_url: lastAudioUrl,
-                    chunks: currentMessageChunks,
-                    emotion: lastEmotion,
-                    timestamp: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                };
-                currentDialogueHistory.push(assistantEntry);
+                    const assistantEntry = {
+                        role: 'assistant',
+                        content_chinese: fullChinese,
+                        content_japanese: fullJapanese,
+                        audio_url: lastAudioUrl,
+                        chunks: currentMessageChunks,
+                        emotion: lastEmotion,
+                        timestamp: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                    };
+                    currentDialogueHistory.push(assistantEntry);
 
-                if (vnTextJa) vnTextJa.textContent = fullJapanese || fullChinese || '……';
-                if (vnTextZh) vnTextZh.textContent = fullJapanese ? `（${fullChinese}）` : '';
+                    if (vnTextJa) vnTextJa.textContent = fullJapanese || fullChinese || '……';
+                    if (vnTextZh) vnTextZh.textContent = fullJapanese ? `（${fullChinese}）` : '';
+                } else if (!sawError) {
+                    // 流结束但没有任何内容
+                    assistantHolder.fail('回复为空，请检查大模型配置后重试');
+                    appendSystemMessage('⚠️ 本次回复为空，请到设置页检查模型服务商配置。');
+                }
 
             } catch (err) {
-                if (err.name !== 'AbortError') {
+                if (err.name === 'AbortError') {
+                    // 用户主动停止: 把已收到的内容标记为完成态
+                    assistantHolder.finish({
+                        audio_url: lastAudioUrl,
+                        chunks: currentMessageChunks,
+                        sentence: fullJapanese
+                    });
+                    appendSystemMessage('⏹️ 已停止生成');
+                    if (fullChinese || currentMessageChunks.length > 0) {
+                        currentDialogueHistory.push({
+                            role: 'assistant',
+                            content_chinese: fullChinese,
+                            content_japanese: fullJapanese,
+                            audio_url: lastAudioUrl,
+                            chunks: currentMessageChunks,
+                            emotion: lastEmotion,
+                            timestamp: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                        });
+                    }
+                } else {
                     console.error('Chat stream error:', err);
                     appendSystemMessage(`❌ 对话请求失败: ${err.message}`);
-                    if (vnTextJa) vnTextJa.textContent = '发生网络或服务异常，请重试';
+                    assistantHolder.fail(`请求失败: ${err.message}`);
+                    assistantHolder.showResend(text);
+                    if (vnTextJa) vnTextJa.textContent = '发生网络或服务异常';
                 }
             } finally {
-                isStreaming = false;
-                if (promptInput) {
-                    promptInput.disabled = false;
-                    promptInput.focus();
-                }
-                if (sendBtn) sendBtn.disabled = false;
+                abortController = null;
+                setStreamingUI(false);
             }
         });
     }
@@ -1040,7 +1114,45 @@ document.addEventListener('DOMContentLoaded', () => {
                     jaEl.style.display = 'block';
                 }
             },
+            markChunkError: (index) => {
+                // 轻提示: 在气泡内追加一行跳过说明(不阻塞后续播放)
+                const notice = document.createElement('div');
+                notice.className = 'msg-chunk-error';
+                notice.textContent = `（第 ${(index !== undefined ? index + 1 : '?')} 句语音合成失败，已跳过）`;
+                notice.style.cssText = 'font-size:11px;color:var(--c-text-faint, #999);margin-top:4px;';
+                zhEl.parentElement.insertBefore(notice, actionsEl);
+            },
+            fail: (reason) => {
+                // 替换掉 "思考中...", 不再永久卡死
+                if (zhEl.textContent === '思考中...') {
+                    zhEl.textContent = reason || '生成失败';
+                    zhEl.style.opacity = '0.75';
+                } else if (reason) {
+                    const errDiv = document.createElement('div');
+                    errDiv.className = 'msg-error-note';
+                    errDiv.textContent = reason;
+                    errDiv.style.cssText = 'font-size:12px;color:#e07a7a;margin-top:4px;';
+                    msgDiv.appendChild(errDiv);
+                }
+            },
+            showResend: (originalText) => {
+                const resendBtn = document.createElement('button');
+                resendBtn.type = 'button';
+                resendBtn.className = 'vn-action-btn';
+                resendBtn.textContent = '🔄 重新发送';
+                resendBtn.style.cssText = 'margin-top:6px;font-size:12px;';
+                resendBtn.addEventListener('click', () => {
+                    if (promptInput && !isStreaming) {
+                        promptInput.value = originalText;
+                        chatForm.dispatchEvent(new Event('submit', { cancelable: true }));
+                    }
+                });
+                msgDiv.appendChild(resendBtn);
+            },
             finish: (audioInfo) => {
+                if (zhEl.textContent === '思考中...') {
+                    zhEl.textContent = '（无文本内容）';
+                }
                 if (audioInfo && (audioInfo.audio_url || (audioInfo.chunks && audioInfo.chunks.length > 0))) {
                     actionsEl.style.display = 'flex';
                     playBtn.onclick = () => {
@@ -1066,6 +1178,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         downloadBtn.onclick = () => {
                             let url = audioInfo.audio_url || (audioInfo.chunks && audioInfo.chunks[0] && audioInfo.chunks[0].audio_url) || '';
                             if (url) downloadAudioFile(url, 'full_dialogue.wav');
+                            else appendSystemMessage('暂无可下载音频');
                         };
                     }
                 }
@@ -1098,7 +1211,7 @@ document.addEventListener('DOMContentLoaded', () => {
     checkSystemStatus();
     loadVoiceProfiles();
     loadHistory();
-    setInterval(checkSystemStatus, 5000);
+    startStatusPolling();
 });
 
 // Export classes for testing

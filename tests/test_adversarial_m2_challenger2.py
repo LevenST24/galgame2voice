@@ -397,7 +397,7 @@ class TestFrontendDOMStructure:
         assert 'id="vn-audio-equalizer"' in content
         assert 'id="vn-audio-status"' in content
         assert 'id="btn-vn-replay"' in content
-        assert 'id="btn-vn-history"' in content
+        assert 'id="btn-vn-log"' in content
 
         # 3. Top Capsule Bar controls
         assert 'id="quick-voice-select"' in content
@@ -406,9 +406,9 @@ class TestFrontendDOMStructure:
         assert 'id="mute-toggle-btn"' in content
         assert 'id="reset-context-btn"' in content
 
-        # 4. History modal
-        assert 'id="history-modal"' in content
-        assert 'id="history-modal-body"' in content
+        # 4. History log drawer
+        assert 'id="log-drawer-backdrop"' in content
+        assert 'id="log-drawer-body"' in content
 
     def test_css_contains_glassmorphism_aura_and_equalizer_animations(self):
         """Verify CSS contains backdrop filters, auraPulse keyframes, and equalizer bar styling."""

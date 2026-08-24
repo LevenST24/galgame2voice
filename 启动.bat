@@ -2,70 +2,48 @@
 chcp 65001 >nul
 setlocal enabledelayedexpansion
 
-title Galgame2Voice Launcher
-echo ========================================================
-echo       [Galgame2Voice] Smart AI Voice Companion Launcher
-echo ========================================================
+title Galgame2Voice 启动器
+echo ══════════════════════════════════════════════════════
+echo        🌸 Galgame2Voice 二次元智能语音伴侣
+echo                 一键启动器
+echo ══════════════════════════════════════════════════════
 echo.
 
 cd /d "%~dp0"
 set "PYTHONIOENCODING=utf-8"
-set "SCRIPT_DIR=%~dp0"
 
-REM 1. Detect Python Environment
+REM ── 1. 检测 Python 环境 ─────────────────────────────
 set "PYTHON_EXE="
 if exist "%~dp0.venv\Scripts\python.exe" set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
-if exist "%~dp0venv\Scripts\python.exe" set "PYTHON_EXE=%~dp0venv\Scripts\python.exe"
-
 if not defined PYTHON_EXE (
     where python >nul 2>nul
     if !errorlevel! neq 0 (
-        echo [ERROR] Python not found on system!
+        echo [错误] 未找到 Python 环境！请先安装 Python 3.10+ 或创建 .venv 虚拟环境。
         pause
         endlocal
         exit /b 1
     )
     set "PYTHON_EXE=python"
 )
+echo [OK] Python 环境: %PYTHON_EXE%
 
-echo [OK] Python detected: %PYTHON_EXE%
-
-REM 2. Runtime Directories
+REM ── 2. 确保运行时目录存在 ───────────────────────────
 if not exist "logs" mkdir logs
 if not exist "data" mkdir data
 if not exist "audio" mkdir audio
 
-set "APP_PORT=8080"
-if defined GALGAME_PORT set "APP_PORT=%GALGAME_PORT%"
-
-REM 3. Check Port 8080 Collision with netstat
-set "OCCUPIED_PID="
-for /f "tokens=4,5" %%a in ('netstat -ano ^| findstr ":%APP_PORT% "') do (
-    if "%%a"=="LISTENING" set "OCCUPIED_PID=%%b"
-)
-
-REM 4. Multi-drive scanning for GPT-SoVITS
-set "SOVITS_DIR="
-if defined GPT_SOVITS_DIR if exist "%GPT_SOVITS_DIR%\api_v2.py" set "SOVITS_DIR=%GPT_SOVITS_DIR%"
-if not defined SOVITS_DIR if exist "E:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\api_v2.py" set "SOVITS_DIR=E:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604"
-if not defined SOVITS_DIR if exist "E:\GPT-SoVITS-v2pro-20250604\api_v2.py" set "SOVITS_DIR=E:\GPT-SoVITS-v2pro-20250604"
-if not defined SOVITS_DIR if exist "D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\api_v2.py" set "SOVITS_DIR=D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604"
-if not defined SOVITS_DIR if exist "D:\GPT-SoVITS-v2pro-20250604\api_v2.py" set "SOVITS_DIR=D:\GPT-SoVITS-v2pro-20250604"
-if not defined SOVITS_DIR if exist "C:\GPT-SoVITS-v2pro-20250604\api_v2.py" set "SOVITS_DIR=C:\GPT-SoVITS-v2pro-20250604"
-if not defined SOVITS_DIR if exist "C:\GPT-SoVITS\api_v2.py" set "SOVITS_DIR=C:\GPT-SoVITS"
-if not defined SOVITS_DIR if exist "D:\GPT-SoVITS\api_v2.py" set "SOVITS_DIR=D:\GPT-SoVITS"
-if not defined SOVITS_DIR if exist "E:\GPT-SoVITS\api_v2.py" set "SOVITS_DIR=E:\GPT-SoVITS"
-if not defined SOVITS_DIR if exist "%~dp0..\GPT-SoVITS\api_v2.py" set "SOVITS_DIR=%~dp0..\GPT-SoVITS"
-
-set "SOVITS_PY=.\runtime\python.exe"
-
-REM 5. Bounded health polling loop reference
-REM for /l %%i in (1,1,15) do ( timeout /t 1 /nobreak >nul & curl -s -m 2 http://127.0.0.1:8080/api/health )
-REM Reference: uvicorn galgame2voice.main:app --host 127.0.0.1 --port 8080
+REM ── 3. 智能启动（自动检测并拉起 GPT-SoVITS，等待就绪）──
+REM      run_server.py 会自动完成:
+REM        · 检测 9880 端口上的 GPT-SoVITS, 未运行则从
+REM          E:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604 拉起
+REM        · 等待 GPT-SoVITS 模型加载就绪 (有界等待, 日志落盘)
+REM        · 启动本服务 (8080, 被占用时自动降级到可用端口)
+REM        · 自动打开浏览器
 
 "%PYTHON_EXE%" scripts\run_server.py %*
 if errorlevel 1 (
-    echo [ERROR] Service launch failed.
+    echo.
+    echo [错误] 服务启动失败，请查看 logs\galgame2voice.log 排查。
     pause
 )
 

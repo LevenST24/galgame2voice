@@ -8,11 +8,13 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from typing import Any, Dict, List, Optional, Union
 from fastapi import APIRouter, HTTPException, Query, status, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db
 from galgame2voice.database.models import (
@@ -342,6 +344,12 @@ async def fs_browse(
     path: Optional[str] = Query(None, description="Directory path to explore"),
     file_type: Optional[str] = Query("all", description="'gpt', 'sovits', 'audio', or 'all'"),
 ):
+    result = await asyncio.to_thread(_fs_browse_sync, path, file_type)
+    return result
+
+
+def _fs_browse_sync(path: Optional[str], file_type: Optional[str]) -> Dict[str, Any]:
+    """Blocking directory listing (runs in a worker thread)."""
     import string
 
     # 1. Available drives (Windows)
@@ -413,36 +421,61 @@ async def fs_browse(
     }
 
 
-@router.get(
-    "/scan-models",
-    summary="Auto-Scan Discovered Models & Audios",
-    description="Scans standard GPT-SoVITS and data directories for model weights and audio samples.",
-)
-async def scan_discovered_models():
-    # Common search roots
-    candidate_roots = [
+# ============================================================================
+# Model Scanning (thread-offloaded + TTL cached)
+# ============================================================================
+
+_scan_cache: Dict[str, Any] = {}
+_SCAN_TTL_SECONDS = 60.0
+
+
+def _discover_gpt_sovits_roots() -> List[str]:
+    """Builds candidate GPT-SoVITS install roots from env + known layouts."""
+    import glob
+    roots: List[str] = []
+
+    env_dir = os.environ.get("GPT_SOVITS_DIR")
+    if env_dir:
+        roots.append(env_dir)
+
+    # Known user installation + generic drive layouts.
+    roots.extend([
         r"E:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604",
-        r"E:\GPT-SoVITS-v2pro-20250604",
-        r"C:\GPT-SoVITS",
-        r"E:\yuzusoft",
-        os.path.abspath("."),
-        os.path.abspath("data"),
-        os.path.abspath("audio"),
-    ]
+        r"D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604",
+        r"C:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604",
+    ])
+    # Generic drive fallbacks for renamed versions.
+    for drive in ("C", "D", "E", "F"):
+        roots.extend(glob.glob(rf"{drive}:\GPT-SoVITS*\GPT-SoVITS*"))
+        roots.extend(glob.glob(rf"{drive}:\GPT-SoVITS*"))
+    return roots
 
-    gpt_weights = []
-    sovits_weights = []
-    audio_files = []
 
+def _scan_models_sync() -> Dict[str, List[Dict[str, Any]]]:
+    """Blocking filesystem scan for weights & reference audio (worker thread)."""
+    candidate_roots: List[str] = []
+    for root in _discover_gpt_sovits_roots():
+        if root not in candidate_roots and os.path.isdir(root):
+            candidate_roots.append(root)
+
+    # Also scan the app's own directories for user-copied assets.
+    settings = get_settings()
+    candidate_roots.extend([
+        str(settings.project_root),
+        str(settings.project_root / "data"),
+        str(settings.project_root / "audio"),
+    ])
+
+    gpt_weights: List[Dict[str, Any]] = []
+    sovits_weights: List[Dict[str, Any]] = []
+    audio_files: List[Dict[str, Any]] = []
     seen = set()
 
     for root_dir in candidate_roots:
-        if not os.path.exists(root_dir):
-            continue
         try:
             for root, dirs, filenames in os.walk(root_dir):
-                # Avoid scanning deep venvs or .git
-                dirs[:] = [d for d in dirs if d not in (".git", "node_modules", ".venv", "__pycache__", "runtime")]
+                # Skip venvs, repos and caches — huge and irrelevant.
+                dirs[:] = [d for d in dirs if d not in (".git", "node_modules", ".venv", "venv", "__pycache__", "runtime", ".pytest_cache")]
                 for fname in filenames:
                     ext = os.path.splitext(fname)[1].lower()
                     full_path = os.path.join(root, fname)
@@ -456,7 +489,7 @@ async def scan_discovered_models():
                         sovits_weights.append({"name": fname, "path": full_path})
                     elif ext in (".wav", ".ogg", ".mp3", ".flac"):
                         audio_files.append({"name": fname, "path": full_path})
-        except Exception:
+        except OSError:
             continue
 
     return {
@@ -464,6 +497,22 @@ async def scan_discovered_models():
         "sovits_weights": sovits_weights[:50],
         "audio_files": audio_files[:50],
     }
+
+
+@router.get(
+    "/scan-models",
+    summary="Auto-Scan Discovered Models & Audios",
+    description="Scans standard GPT-SoVITS and data directories for model weights and audio samples. Results cached 60s.",
+)
+async def scan_discovered_models():
+    now = time.monotonic()
+    cached = _scan_cache.get("result")
+    if cached is not None and now - cached[0] < _SCAN_TTL_SECONDS:
+        return cached[1]
+
+    result = await asyncio.to_thread(_scan_models_sync)
+    _scan_cache["result"] = (now, result)
+    return result
 
 
 @router.get(

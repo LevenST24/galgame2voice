@@ -92,7 +92,29 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error("Failed to initialize database: %s", exc, exc_info=True)
 
-    # 4. Start Background Audio Cleanup Loop
+    # 4. Initialize shared GPT-SoVITS client (single inference mutex app-wide).
+    #    The DB's gpt_sovits_url takes priority over the .env default so the
+    #    settings console is the source of truth.
+    try:
+        from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client
+        from galgame2voice.database import crud
+        from galgame2voice.database.session import get_db
+        sovits_url = None
+        try:
+            async with get_db(settings.db_path) as conn:
+                db_settings = await crud.get_settings_raw(conn)
+                if db_settings and getattr(db_settings, "gpt_sovits_url", None):
+                    sovits_url = db_settings.gpt_sovits_url
+        except Exception as exc:
+            logger.warning("Could not read gpt_sovits_url from DB: %s", exc)
+        client = get_gpt_sovits_client()
+        if sovits_url and sovits_url.rstrip("/") != client.base_url:
+            await client.set_base_url(sovits_url)
+        logger.info("GPT-SoVITS client initialized (endpoint: %s)", client.base_url)
+    except Exception as exc:
+        logger.error("Failed to initialize GPT-SoVITS client: %s", exc, exc_info=True)
+
+    # 5. Start Background Audio Cleanup Loop
     cleanup_task = asyncio.create_task(
         _audio_cleanup_loop(
             audio_dir=settings.audio_dir,
@@ -115,6 +137,13 @@ async def lifespan(app: FastAPI):
         await cleanup_task
     except asyncio.CancelledError:
         pass
+
+    # Release the shared GPT-SoVITS connection pool.
+    try:
+        from galgame2voice.services.gpt_sovits_client import close_gpt_sovits_client
+        await close_gpt_sovits_client()
+    except Exception as exc:
+        logger.debug("Error closing GPT-SoVITS client: %s", exc)
 
     logger.info("Shutting down %s...", settings.app_name)
     logger.info("Graceful shutdown complete.")

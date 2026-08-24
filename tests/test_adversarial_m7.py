@@ -811,22 +811,25 @@ class TestOriginalRequestAcceptanceCriteria:
 
     def test_ac_windows_scripts_exist_and_structure(self):
         """
-        AC: start-galgame2voice.bat and stop-galgame2voice.bat properly launch and terminate Python service.
+        AC: 启动.bat and 停止.bat properly launch and terminate the Python service.
         """
         project_root = Path(__file__).resolve().parent.parent
-        start_bat = project_root / "start-galgame2voice.bat"
-        stop_bat = project_root / "stop-galgame2voice.bat"
-        restart_bat = project_root / "restart-galgame2voice.bat"
+        start_bat = project_root / "启动.bat"
+        stop_bat = project_root / "停止.bat"
+        launcher_py = project_root / "scripts" / "run_server.py"
 
-        assert start_bat.exists(), "start-galgame2voice.bat missing"
-        assert stop_bat.exists(), "stop-galgame2voice.bat missing"
-        assert restart_bat.exists(), "restart-galgame2voice.bat missing"
+        assert start_bat.exists(), "启动.bat missing"
+        assert stop_bat.exists(), "停止.bat missing"
+        assert launcher_py.exists(), "scripts/run_server.py missing"
 
         content_start = start_bat.read_text(encoding="utf-8", errors="ignore")
         content_stop = stop_bat.read_text(encoding="utf-8", errors="ignore")
+        content_launcher = launcher_py.read_text(encoding="utf-8", errors="ignore")
 
         assert "python" in content_start.lower() or "uvicorn" in content_start.lower() or "call" in content_start.lower()
-        assert "taskkill" in content_stop.lower() or "scripts" in content_stop.lower()
+        assert "run_server.py" in content_start
+        assert "uvicorn" in content_launcher
+        assert "taskkill" in content_stop.lower()
 
     @pytest.mark.asyncio
     async def test_ac_health_and_status_endpoints(self, m7_db_path, m7_mock_gpt):

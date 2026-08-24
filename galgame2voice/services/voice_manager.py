@@ -21,6 +21,7 @@ from galgame2voice.database.models import (
 )
 from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
+    get_gpt_sovits_client,
     clean_japanese_parentheses,
     resolve_tts_options,
 )
@@ -32,6 +33,9 @@ class VoiceManager:
     """
     Coordinates character voice profile management and atomic model switching with GPT-SoVITS.
     Ensures thread-safe operations via an inference mutex and atomic SQLite persistence.
+
+    By default binds to the application-wide shared GptSovitsClient singleton so
+    that synthesis and switching are serialized against the GPU by a single lock.
     """
 
     def __init__(
@@ -50,7 +54,8 @@ class VoiceManager:
             # MockGptSovitsServer or test simulator
             self.client = GptSovitsClient(server=gpt_sovits_client_or_server)
         else:
-            self.client = GptSovitsClient(base_url=settings.gpt_sovits_base_url)
+            # Shared application singleton: one lock to rule them all.
+            self.client = get_gpt_sovits_client()
 
     @property
     def lock(self) -> asyncio.Lock:

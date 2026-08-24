@@ -2,6 +2,17 @@
 Chat Service and Streaming Bilingual Pipeline for galgame2voice.
 Coordinates LLM streaming, incremental JSON bilingual parsing,
 sentence boundary splitting, and low-latency TTS audio generation.
+
+Pipeline hardening (v2.1):
+  - Producer/worker tasks are ALWAYS reaped in a finally block (no orphan tasks
+    leaking the inference lock after an SSE client disconnects).
+  - TTS sentence failures emit an `audio_chunk_error` SSE event instead of
+    being silently swallowed, so the frontend can skip that sentence and keep
+    playing the rest.
+  - The event pump blocks on the queue (1s heartbeat only for cancel
+    responsiveness) instead of busy-polling every 50ms.
+  - WAV concatenation runs in a worker thread so the event loop never freezes.
+  - Memory fact extraction runs in a true background task, off the TTFT path.
 """
 
 import asyncio
@@ -9,6 +20,8 @@ import json
 import logging
 import re
 import time
+import uuid
+import wave
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 from pathlib import Path
 
@@ -28,6 +41,9 @@ from galgame2voice.services.metrics_collector import get_metrics_collector, Metr
 from galgame2voice.utils.text_splitter import split_japanese_sentences
 
 logger = logging.getLogger("galgame2voice.services.chat_service")
+
+# Internal sentinel marking "this pipeline stage has finished producing events".
+_SENTINEL = object()
 
 
 # ============================================================================
@@ -53,10 +69,7 @@ def classify_emotion(
 ) -> str:
     """
     Determines character emotion archetype ('gentle', 'shy', 'happy', 'tsundere', 'cool', 'sad').
-    Priority:
-      1. explicit_emotion if valid
-      2. Deterministic keyword scanning over combined Chinese and Japanese text
-      3. Fallback to 'gentle'
+    Priority: explicit_emotion > deterministic keyword scan > 'gentle' fallback.
     """
     if explicit_emotion:
         clean = explicit_emotion.strip().lower()
@@ -149,7 +162,6 @@ class StreamingBilingualParser:
                 self.emotion_extracted = raw_emo
 
         # 1. Incremental Chinese Extraction
-        # Look for "chinese" : "..."
         ch_match = re.search(r'"chinese"\s*:\s*"((?:[^"\\]|\\.)*)', sanitized)
         if ch_match:
             raw_ch = ch_match.group(1)
@@ -163,7 +175,6 @@ class StreamingBilingualParser:
             # Fallback check: If the stream does not look like JSON after some tokens
             if not self.chinese_extracted and len(sanitized) > 15 and not sanitized.lstrip().startswith("{"):
                 self.is_plain_text_fallback = True
-                # Check for "中文：" or "中文:"
                 ch_fallback = re.search(r'(?:中文|Chinese)[:：]\s*(.*?)(?:(?:日文|Japanese)[:：]|$)', sanitized, flags=re.DOTALL | re.IGNORECASE)
                 if ch_fallback:
                     current_ch = ch_fallback.group(1).strip()
@@ -290,6 +301,28 @@ class ChatService:
         self.memory_service = MemoryService(db_path=self.db_path)
         self.affection_service = AffectionService(db_path=self.db_path)
         self.metrics_collector = metrics_collector or get_metrics_collector(db_path=self.db_path)
+        # Strong references for fire-and-forget background tasks (prevent GC mid-flight).
+        self._bg_tasks: set = set()
+
+    def _spawn_background(self, coro) -> None:
+        """Runs a coroutine in the background with strong ref + error logging."""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    async def _extract_memory_safe(
+        self, user_id: str, profile_id: Optional[int], message_text: str, message_id: int
+    ) -> None:
+        """Background memory fact extraction that never raises."""
+        try:
+            await self.memory_service.process_user_message(
+                user_id=user_id,
+                character_id=profile_id,
+                message_text=message_text,
+                source_message_id=message_id,
+            )
+        except Exception as mem_err:
+            logger.warning("Memory fact extraction failed: %s", mem_err)
 
     async def _get_active_llm_adapter(self, conn: Optional[aiosqlite.Connection] = None, provider_id: Optional[str] = None) -> Tuple[BaseLLMAdapter, str]:
         """
@@ -320,10 +353,8 @@ class ChatService:
                 chat_model = provider.chat_model or "gpt-4o-mini"
                 return adapter, chat_model
 
-            # Fallback to OpenAI default if no provider registered
             adapter = get_llm_adapter("openai")
             return adapter, "gpt-4o-mini"
-
 
     async def _prepare_messages(
         self,
@@ -381,6 +412,30 @@ class ChatService:
             memory_prompt_block=memory_block,
         )
 
+    def _concat_wav_files(self, chunk_paths: List[str], output_path: Path) -> bool:
+        """Synchronous WAV concatenation — ALWAYS run via asyncio.to_thread()."""
+        data = []
+        params = None
+        for local_p_str in chunk_paths:
+            if not local_p_str:
+                continue
+            p = Path(local_p_str)
+            if p.exists():
+                try:
+                    with wave.open(str(p), "rb") as w:
+                        if params is None:
+                            params = w.getparams()
+                        data.append(w.readframes(w.getnframes()))
+                except Exception as exc:
+                    logger.debug("Skipping unreadable WAV chunk %s: %s", p, exc)
+        if data and params:
+            with wave.open(str(output_path), "wb") as w_out:
+                w_out.setparams(params)
+                for d in data:
+                    w_out.writeframes(d)
+            return True
+        return False
+
     async def stream_chat(
         self,
         prompt: str,
@@ -394,10 +449,13 @@ class ChatService:
         Asynchronously streams bilingual SSE events:
           - text: incremental Chinese delta tokens
           - audio_chunk: synthesized sentence audio URL and index
+          - audio_chunk_error: a sentence failed to synthesize (frontend skips it)
           - done: final complete Chinese/Japanese text and full audio URL
           - error: error detail if an exception occurs
+
+        All background tasks are guaranteed to be reaped in the finally block,
+        even when the SSE consumer disconnects mid-stream.
         """
-        start_time = time.time()
         t_start = time.perf_counter()
         ttft_ms = 0.0
         tts_first_chunk_ms = 0.0
@@ -405,8 +463,9 @@ class ChatService:
         tts_generated_chunks = 0
 
         parser = StreamingBilingualParser()
-        chunk_index = 0
         audio_chunks: List[Dict[str, Any]] = []
+        producer_task: Optional[asyncio.Task] = None
+        worker_task: Optional[asyncio.Task] = None
 
         if cancel_event and cancel_event.is_set():
             logger.info("Stream chat cancelled before starting for session %s", session_id)
@@ -429,77 +488,81 @@ class ChatService:
                 user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
                 profile_id = active_prof.id if active_prof else None
 
-                # Extract user memory facts in background
-                try:
-                    await self.memory_service.process_user_message(
-                        user_id=user_id,
-                        character_id=profile_id,
-                        message_text=prompt,
-                        source_message_id=user_msg.id,
-                        conn=conn,
-                    )
-                except Exception as mem_err:
-                    logger.warning("Memory fact extraction failed: %s", mem_err)
+                # Extract user memory facts in a TRUE background task (off TTFT path)
+                self._spawn_background(
+                    self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
+                )
 
                 adapter, model_name = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
                 messages = await self._prepare_messages(conn, session_id, prompt, character_name)
 
-
             tts_queue: asyncio.Queue = asyncio.Queue()
-            event_out_queue: asyncio.Queue = asyncio.Queue()
-            producer_done = asyncio.Event()
+            event_queue: asyncio.Queue = asyncio.Queue()
+            final_result: Dict[str, Any] = {}
 
             # Background TTS Consumer Worker
             async def tts_worker():
                 nonlocal tts_first_chunk_ms, tts_cached_chunks, tts_generated_chunks
                 chunk_index = 0
-                while True:
-                    sentence = await tts_queue.get()
-                    if sentence is None:
-                        tts_queue.task_done()
-                        break
-                    if not sentence.strip():
-                        tts_queue.task_done()
-                        continue
-                    if cancel_event and cancel_event.is_set():
-                        tts_queue.task_done()
-                        break
+                try:
+                    while True:
+                        sentence = await tts_queue.get()
+                        try:
+                            if sentence is None:
+                                break
+                            if not sentence.strip():
+                                continue
+                            if cancel_event and cancel_event.is_set():
+                                break
 
-                    try:
-                        audio_url, local_path, _ = await self.tts_service.synthesize_to_file(
-                            sentence,
-                            options=tts_options,
-                            filename_prefix=f"chunk_{chunk_index}",
-                        )
-                        if tts_first_chunk_ms == 0.0:
-                            tts_first_chunk_ms = (time.perf_counter() - t_start) * 1000.0
-                        if "/audio/cache/" in str(audio_url):
-                            tts_cached_chunks += 1
-                        else:
-                            tts_generated_chunks += 1
+                            try:
+                                audio_url, local_path, _ = await self.tts_service.synthesize_to_file(
+                                    sentence,
+                                    options=tts_options,
+                                    filename_prefix=f"chunk_{chunk_index}",
+                                )
+                                if tts_first_chunk_ms == 0.0:
+                                    tts_first_chunk_ms = (time.perf_counter() - t_start) * 1000.0
+                                if "/audio/cache/" in str(audio_url):
+                                    tts_cached_chunks += 1
+                                else:
+                                    tts_generated_chunks += 1
 
-                        chunk_data = {
-                            "index": chunk_index,
-                            "audio_url": audio_url,
-                            "sentence": sentence,
-                            "local_path": str(local_path),
-                        }
-                        audio_chunks.append(chunk_data)
-                        await event_out_queue.put({
-                            "event": "audio_chunk",
-                            "data": {
-                                "index": chunk_index,
-                                "audio_url": audio_url,
-                                "sentence": sentence,
-                            },
-                        })
-                        chunk_index += 1
-                    except Exception as e:
-                        logger.warning("Failed to synthesize audio chunk %d for sentence '%s': %s", chunk_index, sentence, e)
-                    finally:
-                        tts_queue.task_done()
-
-            worker_task = asyncio.create_task(tts_worker())
+                                chunk_data = {
+                                    "index": chunk_index,
+                                    "audio_url": audio_url,
+                                    "sentence": sentence,
+                                    "local_path": str(local_path),
+                                }
+                                audio_chunks.append(chunk_data)
+                                await event_queue.put({
+                                    "event": "audio_chunk",
+                                    "data": {
+                                        "index": chunk_index,
+                                        "audio_url": audio_url,
+                                        "sentence": sentence,
+                                    },
+                                })
+                            except Exception as tts_err:
+                                # Surface the failure to the frontend instead of
+                                # silently dropping the sentence.
+                                logger.warning(
+                                    "Failed to synthesize audio chunk %d for sentence '%s': %s",
+                                    chunk_index, sentence, tts_err,
+                                )
+                                await event_queue.put({
+                                    "event": "audio_chunk_error",
+                                    "data": {
+                                        "index": chunk_index,
+                                        "sentence": sentence,
+                                        "error": str(tts_err)[:200],
+                                    },
+                                })
+                            chunk_index += 1
+                        finally:
+                            tts_queue.task_done()
+                finally:
+                    await event_queue.put(_SENTINEL)
 
             # LLM Stream Producer
             async def llm_producer():
@@ -514,7 +577,7 @@ class ChatService:
                             if ttft_ms == 0.0:
                                 ttft_ms = (time.perf_counter() - t_start) * 1000.0
                             current_emo = parser.emotion_extracted or classify_emotion(parser.chinese_extracted, parser.japanese_extracted)
-                            await event_out_queue.put({
+                            await event_queue.put({
                                 "event": "text",
                                 "data": {
                                     "delta_chinese": delta_ch,
@@ -526,12 +589,14 @@ class ChatService:
                             await tts_queue.put(sentence)
 
                     full_ch, full_ja, rem_sentences = parser.finalize()
+                    final_result["chinese"] = full_ch
+                    final_result["japanese"] = full_ja
                     if len(full_ch) > parser.emitted_chinese_len:
                         rem_ch = full_ch[parser.emitted_chinese_len:]
                         if ttft_ms == 0.0:
                             ttft_ms = (time.perf_counter() - t_start) * 1000.0
                         current_emo = parser.emotion_extracted or classify_emotion(full_ch, full_ja)
-                        await event_out_queue.put({
+                        await event_queue.put({
                             "event": "text",
                             "data": {
                                 "delta_chinese": rem_ch,
@@ -543,73 +608,61 @@ class ChatService:
                         await tts_queue.put(sentence)
                 except Exception as exc:
                     logger.error("LLM Producer error: %s", exc)
-                    await event_out_queue.put({"event": "error", "data": {"error": str(exc)}})
+                    await event_queue.put({"event": "error", "data": {"error": str(exc)}})
                 finally:
                     await tts_queue.put(None)
-                    producer_done.set()
+                    await event_queue.put(_SENTINEL)
 
             producer_task = asyncio.create_task(llm_producer())
+            worker_task = asyncio.create_task(tts_worker())
 
-            while True:
-                if producer_done.is_set() and worker_task.done() and event_out_queue.empty():
-                    break
-
+            # Event pump: block on queue with 1s heartbeat (only for cancel responsiveness).
+            sentinels_received = 0
+            error_seen = False
+            while sentinels_received < 2:
                 try:
-                    event = await asyncio.wait_for(event_out_queue.get(), timeout=0.05)
-                    yield event
-                    event_out_queue.task_done()
-                    if event.get("event") == "error":
-                        producer_task.cancel()
-                        worker_task.cancel()
-                        return
+                    event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
                 except asyncio.TimeoutError:
                     if cancel_event and cancel_event.is_set():
                         break
                     continue
 
-            if cancel_event and cancel_event.is_set():
-                logger.info("Stream chat cancelled for session %s", session_id)
-                producer_task.cancel()
-                worker_task.cancel()
+                if event is _SENTINEL:
+                    sentinels_received += 1
+                    continue
+
+                yield event
+                if event.get("event") == "error":
+                    error_seen = True
+                    break
+
+            if error_seen or (cancel_event and cancel_event.is_set()):
+                logger.info("Stream chat ended early (error=%s, cancelled=%s) for session %s",
+                            error_seen, bool(cancel_event and cancel_event.is_set()), session_id)
                 return
 
-            # Ensure both tasks are finished
-            await producer_task
-            await worker_task
+            # Ensure both tasks are fully finished before touching shared state.
+            await asyncio.gather(producer_task, worker_task, return_exceptions=True)
 
-            full_chinese, full_japanese, _ = parser.finalize()
+            full_chinese = final_result.get("chinese") or parser.chinese_extracted
+            full_japanese = final_result.get("japanese") or parser.japanese_extracted
             final_emotion = classify_emotion(full_chinese, full_japanese, parser.emotion_extracted)
+
+            # Concatenate chunks into a master WAV in a worker thread.
             total_audio_url = ""
             if audio_chunks:
                 if len(audio_chunks) == 1:
                     total_audio_url = audio_chunks[0]["audio_url"]
                 else:
                     try:
-                        import wave
-                        import uuid
                         full_filename = f"full_{uuid.uuid4().hex[:12]}.wav"
                         full_path = self.tts_service.audio_dir / full_filename
-                        
-                        data = []
-                        params = None
-                        for c in audio_chunks:
-                            local_p_str = c.get("local_path", "")
-                            if local_p_str:
-                                p = Path(local_p_str)
-                                if p.exists():
-                                    with wave.open(str(p), "rb") as w:
-                                        if params is None:
-                                             params = w.getparams()
-                                        data.append(w.readframes(w.getnframes()))
-                        
-                        if data and params:
-                            with wave.open(str(full_path), "wb") as w_out:
-                                w_out.setparams(params)
-                                for d in data:
-                                    w_out.writeframes(d)
-                            total_audio_url = f"/audio/{full_filename}"
-                        else:
-                            total_audio_url = audio_chunks[0]["audio_url"]
+                        ok = await asyncio.to_thread(
+                            self._concat_wav_files,
+                            [c.get("local_path", "") for c in audio_chunks],
+                            full_path,
+                        )
+                        total_audio_url = f"/audio/{full_filename}" if ok else audio_chunks[0]["audio_url"]
                     except Exception as cat_err:
                         logger.warning("Failed to concatenate audio chunks: %s", cat_err)
                         total_audio_url = audio_chunks[0]["audio_url"]
@@ -697,6 +750,22 @@ class ChatService:
                 "event": "error",
                 "data": {"error": str(exc)}
             }
+        finally:
+            # Reap producer/worker no matter how we exited (normal end, error,
+            # client disconnect, or cancellation). This prevents orphan tasks
+            # from holding the TTS inference lock forever.
+            for task in (producer_task, worker_task):
+                if task is not None and not task.done():
+                    task.cancel()
+            for task in (producer_task, worker_task):
+                if task is None:
+                    continue
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as task_exc:
+                    logger.debug("Pipeline task ended with exception: %s", task_exc)
 
     async def chat_sync(
         self,
@@ -709,7 +778,6 @@ class ChatService:
         """
         Synchronous non-streaming bilingual completion and TTS synthesis.
         """
-        start_time = time.time()
         t_start = time.perf_counter()
         async with get_db(self.db_path) as conn:
             sess_obj = await crud.get_or_create_session(conn, session_id)
@@ -726,17 +794,10 @@ class ChatService:
             user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
             profile_id = active_prof.id if active_prof else None
 
-            # Extract user memory facts
-            try:
-                await self.memory_service.process_user_message(
-                    user_id=user_id,
-                    character_id=profile_id,
-                    message_text=prompt,
-                    source_message_id=user_msg.id,
-                    conn=conn,
-                )
-            except Exception as mem_err:
-                logger.warning("Memory fact extraction failed in chat_sync: %s", mem_err)
+            # Extract user memory facts in background
+            self._spawn_background(
+                self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
+            )
 
             adapter, model_name = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
             messages = await self._prepare_messages(conn, session_id, prompt, character_name)

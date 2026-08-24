@@ -373,7 +373,7 @@
             width: 70px;
             padding: 6px 8px;
             font-size: 13px;
-            border: 1px solid #cbd5e1;
+            border: 1px solid var(--card-border);
             border-radius: 6px;
             text-align: center;
         }
@@ -387,9 +387,9 @@
         }
 
         .btn-preset {
-            background: #ffffff;
-            border: 1px solid #cbd5e1;
-            color: #334155;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            color: var(--text-dark);
             padding: 8px 14px;
             border-radius: 8px;
             font-size: 13px;
@@ -429,21 +429,21 @@
         }
 
         .custom-table th {
-            background: #f8fafc;
+            background: var(--muted-bg);
             padding: 10px 14px;
             font-weight: 700;
-            color: #475569;
+            color: var(--text-muted);
             border-bottom: 1px solid var(--card-border);
         }
 
         .custom-table td {
             padding: 12px 14px;
-            border-bottom: 1px solid #f1f5f9;
-            color: #1e293b;
+            border-bottom: 1px solid var(--card-border);
+            color: var(--text-dark);
         }
 
         .custom-table tr:hover td {
-            background: #f8fafc;
+            background: var(--muted-bg);
         }
 
         /* Character Cards Grid */
@@ -455,7 +455,7 @@
         }
 
         .profile-card {
-            background: #ffffff;
+            background: var(--card-bg);
             border: 1px solid var(--card-border);
             border-radius: 12px;
             padding: 16px;
@@ -491,11 +491,11 @@
 
         .profile-meta-list {
             font-size: 11px;
-            color: #475569;
+            color: var(--text-muted);
             display: flex;
             flex-direction: column;
             gap: 3px;
-            background: #f8fafc;
+            background: var(--muted-bg);
             padding: 8px 10px;
             border-radius: 6px;
             font-family: monospace;
@@ -508,6 +508,80 @@
         }
 
         /* Buttons */
+        /* Unified button system (used by memory / affection / gallery panels) */
+        .btn {
+            padding: 7px 14px;
+            font-size: 13px;
+            border-radius: 8px;
+            font-weight: 600;
+            border: 1px solid var(--card-border);
+            background: var(--card-bg);
+            color: var(--text-dark);
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.15s;
+        }
+        .btn:hover { border-color: var(--primary-accent); color: var(--primary-accent); }
+        .btn-primary {
+            background: var(--primary-accent);
+            border-color: var(--primary-accent);
+            color: #fff;
+        }
+        .btn-primary:hover { background: var(--primary-hover); color: #fff; }
+        .btn-outline { background: transparent; }
+        .btn-sm { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
+
+        /* Unified form controls (used by memory / affection panels) */
+        .form-control {
+            width: 100%;
+            padding: 8px 12px;
+            font-size: 13px;
+            border-radius: 8px;
+            border: 1px solid var(--card-border);
+            background: rgba(10, 14, 26, 0.6);
+            color: var(--text-dark);
+            box-sizing: border-box;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        .form-control:focus { border-color: var(--primary-accent); }
+        .form-control::placeholder { color: var(--text-muted); }
+
+        /* Status card labels (memory / affection panels) */
+        .status-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+        .status-value {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-dark);
+        }
+
+        /* Simple table (memory panel) */
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .table th {
+            text-align: left;
+            padding: 10px 12px;
+            color: var(--text-muted);
+            font-weight: 600;
+            border-bottom: 1px solid var(--card-border);
+        }
+        .table td {
+            padding: 10px 12px;
+            color: var(--text-dark);
+            border-bottom: 1px solid var(--card-border);
+        }
+
         .btn-action-sm {
             padding: 5px 10px;
             font-size: 12px;
@@ -531,13 +605,13 @@
         }
 
         .btn-action-secondary {
-            background: #ffffff;
-            color: #334155;
-            border-color: #cbd5e1;
+            background: var(--card-bg);
+            color: var(--text-dark);
+            border-color: var(--card-border);
         }
 
         .btn-action-secondary:hover {
-            background: #f1f5f9;
+            background: var(--muted-bg);
             border-color: #94a3b8;
         }
 
@@ -577,7 +651,7 @@
         }
 
         .modal-card {
-            background: #ffffff;
+            background: var(--card-bg);
             border-radius: 12px;
             box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
             width: 100%;
@@ -599,15 +673,15 @@
             align-items: center;
             justify-content: space-between;
             padding: 14px 20px;
-            border-bottom: 1px solid #e2e8f0;
-            background: #f8fafc;
+            border-bottom: 1px solid var(--card-border);
+            background: var(--muted-bg);
         }
 
         .modal-header h3 {
             margin: 0;
             font-size: 16px;
             font-weight: 700;
-            color: #1e293b;
+            color: var(--text-dark);
         }
 
         .btn-close {
@@ -615,12 +689,12 @@
             border: none;
             font-size: 22px;
             cursor: pointer;
-            color: #64748b;
+            color: var(--text-muted);
             line-height: 1;
         }
 
         .btn-close:hover {
-            color: #0f172a;
+            color: var(--text-dark);
         }
 
         .modal-body {
@@ -634,16 +708,16 @@
             align-items: center;
             justify-content: space-between;
             padding: 12px 20px;
-            border-top: 1px solid #e2e8f0;
-            background: #f8fafc;
+            border-top: 1px solid var(--card-border);
+            background: var(--muted-bg);
         }
 
         .fs-list-box {
-            border: 1px solid #e2e8f0;
+            border: 1px solid var(--card-border);
             border-radius: 8px;
             max-height: 340px;
             overflow-y: auto;
-            background: #ffffff;
+            background: var(--card-bg);
         }
 
         .fs-item {
@@ -651,7 +725,7 @@
             align-items: center;
             justify-content: space-between;
             padding: 8px 12px;
-            border-bottom: 1px solid #f1f5f9;
+            border-bottom: 1px solid var(--card-border);
             cursor: pointer;
             transition: background 0.1s;
             font-size: 13px;
@@ -676,7 +750,7 @@
 
         .fs-item-name {
             font-weight: 500;
-            color: #1e293b;
+            color: var(--text-dark);
         }
 
         .fs-drive-btn {
@@ -684,8 +758,8 @@
             border-radius: 6px;
             font-weight: 600;
             font-size: 12px;
-            border: 1px solid #cbd5e1;
-            background: #ffffff;
+            border: 1px solid var(--card-border);
+            background: var(--card-bg);
             cursor: pointer;
         }
 
@@ -734,8 +808,8 @@
         }
 
         .badge-gray {
-            background: #f1f5f9;
-            color: #475569;
+            background: var(--muted-bg);
+            color: var(--text-muted);
         }
 
         /* Toast Notifications */
@@ -968,7 +1042,7 @@
                         <!-- Provider Distribution & Latency Trend Flexbox -->
                         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 16px;">
                             <!-- Provider Token Share -->
-                            <div style="background: #ffffff; border: 1px solid var(--card-border); border-radius: 8px; padding: 14px;">
+                            <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 14px;">
                                 <div style="font-size: 13px; font-weight: 700; color: var(--text-dark); margin-bottom: 10px; display: flex; justify-content: space-between;">
                                     <span>🤖 模型提供商 Token 占比</span>
                                     <span style="font-size: 11px; color: var(--text-muted);">实时分布</span>
@@ -979,7 +1053,7 @@
                             </div>
 
                             <!-- Latency Trend Curve -->
-                            <div style="background: #ffffff; border: 1px solid var(--card-border); border-radius: 8px; padding: 14px;">
+                            <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 14px;">
                                 <div style="font-size: 13px; font-weight: 700; color: var(--text-dark); margin-bottom: 10px; display: flex; justify-content: space-between;">
                                     <span>📈 近 30 次请求延迟趋势</span>
                                     <div style="display: flex; gap: 8px; font-size: 10px;">
@@ -1005,19 +1079,19 @@
                             </div>
                         </div>
                         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;">
-                            <div style="background: #ffffff; border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 14px;">
+                            <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 14px;">
                                 <div style="font-size: 11px; color: var(--text-muted);">已缓存音频文件</div>
                                 <div style="font-size: 16px; font-weight: 700; color: var(--text-dark);" id="tts-cache-file-count">0 个</div>
                             </div>
-                            <div style="background: #ffffff; border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 14px;">
+                            <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 14px;">
                                 <div style="font-size: 11px; color: var(--text-muted);">磁盘占用容量</div>
                                 <div style="font-size: 16px; font-weight: 700; color: var(--text-dark);" id="tts-cache-disk-size">0.00 MB</div>
                             </div>
-                            <div style="background: #ffffff; border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 14px;">
+                            <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 14px;">
                                 <div style="font-size: 11px; color: var(--text-muted);">缓存命中总次数</div>
                                 <div style="font-size: 16px; font-weight: 700; color: var(--success-accent);" id="tts-cache-hits-total">0 次</div>
                             </div>
-                            <div style="background: #ffffff; border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 14px;">
+                            <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 14px;">
                                 <div style="font-size: 11px; color: var(--text-muted);">零延迟加速率</div>
                                 <div style="font-size: 16px; font-weight: 700; color: var(--primary-accent);" id="tts-cache-speedup-ratio">100%</div>
                             </div>
@@ -1441,6 +1515,7 @@
                             </div>
                         </form>
                     </div>
+                </section>
                 <!-- ================= TAB: MEMORY & AFFECTION ================= -->
                 <section id="tab-memory" class="tab-panel">
                     <div class="panel-header">
@@ -1517,7 +1592,7 @@
                         </p>
 
                         <!-- Add Memory Form -->
-                        <form id="add-memory-form" style="background: #f8fafc; padding: 14px; border-radius: 8px; border: 1px solid var(--card-border); margin-bottom: 16px;">
+                        <form id="add-memory-form" style="background: var(--muted-bg); padding: 14px; border-radius: 8px; border: 1px solid var(--card-border); margin-bottom: 16px;">
                             <div style="font-weight: 600; font-size: 13px; margin-bottom: 10px; color: var(--text-dark);">➕ 手动添加事实记忆</div>
                             <div class="form-row" style="display: flex; gap: 12px; flex-wrap: wrap;">
                                 <div class="form-group" style="flex: 1; min-width: 130px;">
@@ -1546,7 +1621,7 @@
                         <div class="table-responsive" style="overflow-x: auto;">
                             <table class="table" style="width: 100%; border-collapse: collapse; font-size: 13px;">
                                 <thead>
-                                    <tr style="background: #f1f5f9; text-align: left;">
+                                    <tr style="background: var(--muted-bg); text-align: left;">
                                         <th style="padding: 8px 12px;">ID</th>
                                         <th style="padding: 8px 12px;">类别</th>
                                         <th style="padding: 8px 12px;">键名</th>
@@ -1585,7 +1660,7 @@
 
                     <div class="form-section">
                         <div class="section-title">🛡️ 凭据脱敏安全规范说明</div>
-                        <ul style="font-size: 13px; line-height: 1.8; color: #334155; padding-left: 20px;">
+                        <ul style="font-size: 13px; line-height: 1.8; color: var(--text-dark); padding-left: 20px;">
                             <li><strong>前端脱敏传输：</strong> 所有 API Key（如 OpenAI、DeepSeek、Telegram Token）在返回前端时均经过 <code>mask_api_key</code> 过滤为 <code>sk-****cdef</code> 或 <code>123****fGhI</code>。</li>
                             <li><strong>保留旧密钥更新机制：</strong> 表单提交时若保持掩码或留空，系统后端将自动保留数据库中现有的原始密钥，避免重复录入与意外覆盖。</li>
                             <li><strong>日志零泄漏过滤器：</strong> 内置 <code>MaskingFilter</code> 会对所有控制台标准输出、文件日志以及 Uvicorn 请求日志中的密钥、Token、Bearer 标头进行正则擦除。</li>
@@ -1946,7 +2021,9 @@
                     if (voiceNameEl) voiceNameEl.textContent = vp.name;
                     const voiceWeightsEl = document.getElementById('dash-voice-weights');
                     if (voiceWeightsEl && vp.gpt_weights_path) {
-                        voiceWeightsEl.textContent = `${vp.gpt_weights_path.split('/').pop()}`;
+                        // Handle both Windows backslash and POSIX slash paths.
+                        const parts = String(vp.gpt_weights_path).split(/[\\/]/);
+                        voiceWeightsEl.textContent = parts[parts.length - 1];
                     }
                 }
 
@@ -2235,6 +2312,9 @@
                 const blob = await resp.blob();
                 const audioUrl = URL.createObjectURL(blob);
                 const audio = document.getElementById('preview-audio-player');
+                // Revoke previous object URL to prevent memory leaks.
+                if (audio.dataset.objectUrl) URL.revokeObjectURL(audio.dataset.objectUrl);
+                audio.dataset.objectUrl = audioUrl;
                 audio.src = audioUrl;
                 audio.play();
                 showToast('正在播放试听语音...', 'success');
@@ -2410,19 +2490,30 @@
         // Save Inference Parameters
         document.getElementById('inference-config-form').addEventListener('submit', async (e) => {
             e.preventDefault();
+            // Safe numeric parsers: empty/invalid input falls back to null (server keeps old value).
+            const num = (id, radix = 10) => {
+                const v = parseInt(document.getElementById(id).value, radix);
+                return Number.isFinite(v) ? v : null;
+            };
+            const float = (id) => {
+                const v = parseFloat(document.getElementById(id).value);
+                return Number.isFinite(v) ? v : null;
+            };
             const updates = {
                 text_split_method: document.getElementById('param-text-split-method').value,
-                speed_factor: parseFloat(document.getElementById('num-speed-factor').value),
-                temperature: parseFloat(document.getElementById('num-temperature').value),
-                top_k: parseInt(document.getElementById('num-top-k').value, 10),
-                top_p: parseFloat(document.getElementById('num-top-p').value),
-                fragment_interval: parseFloat(document.getElementById('num-fragment-interval').value),
-                seed: parseInt(document.getElementById('param-seed').value, 10),
-                batch_size: parseInt(document.getElementById('param-batch-size').value, 10),
-                max_history_messages: parseInt(document.getElementById('param-max-history').value, 10),
-                audio_retention_minutes: parseInt(document.getElementById('param-audio-retention').value, 10),
+                speed_factor: float('num-speed-factor'),
+                temperature: float('num-temperature'),
+                top_k: num('num-top-k'),
+                top_p: float('num-top-p'),
+                fragment_interval: float('num-fragment-interval'),
+                seed: num('param-seed'),
+                batch_size: num('param-batch-size'),
+                max_history_messages: num('param-max-history'),
+                audio_retention_minutes: num('param-audio-retention'),
                 gpt_sovits_url: document.getElementById('param-sovits-url').value.trim()
             };
+            // Drop null entries so we never overwrite server settings with null.
+            Object.keys(updates).forEach(k => { if (updates[k] === null) delete updates[k]; });
 
             try {
                 const resp = await fetch('/api/config', {
@@ -2544,15 +2635,11 @@
         document.getElementById('btn-reset-chat-context').addEventListener('click', async () => {
             if (!confirm('确定要清空默认会话的全部历史记录吗？')) return;
             try {
-                const resp = await fetch('/ai/chat/reset', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ session_id: 'default' })
-                });
+                const resp = await fetch('/api/chat/history?session_id=default', { method: 'DELETE' });
                 if (resp.ok) {
                     showToast('已成功重置对话上下文！', 'success');
                 } else {
-                    showToast('重置对话失败', 'error');
+                    showToast('重置对话失败 (HTTP ' + resp.status + ')', 'error');
                 }
             } catch (e) {
                 showToast(`重置异常: ${e.message}`, 'error');
@@ -2620,7 +2707,7 @@
                 loading.style.display = 'none';
 
                 if (data.error) {
-                    dirList.innerHTML = `<div style="padding: 12px; color: #ef4444;">${data.error}</div>`;
+                    dirList.innerHTML = `<div style="padding: 12px; color: #ef4444;">${escapeHtml(data.error)}</div>`;
                     return;
                 }
 
@@ -2685,7 +2772,7 @@
                 }
             } catch (err) {
                 loading.style.display = 'none';
-                dirList.innerHTML = `<div style="padding: 12px; color: #ef4444;">加载目录失败: ${err.message}</div>`;
+                dirList.innerHTML = `<div style="padding: 12px; color: #ef4444;">加载目录失败: ${escapeHtml(err.message)}</div>`;
             }
         }
 
@@ -2823,11 +2910,16 @@
                         <td style="padding: 8px 12px; color: var(--text-muted);">${escapeHtml(m.recall_count)} 次</td>
                         <td style="padding: 8px 12px; color: var(--text-muted); font-size: 12px;">${escapeHtml(dateStr)}</td>
                         <td style="padding: 8px 12px; text-align: center;">
-                            <button type="button" class="btn btn-sm btn-outline" style="color: #ef4444; border-color: #fca5a5; padding: 2px 6px; font-size: 11px;" onclick="deleteMemoryItem(${m.id})">删除</button>
+                            <button type="button" class="btn btn-sm btn-outline" style="color: #ef4444; border-color: #fca5a5; padding: 2px 6px; font-size: 11px;" data-del-memory="${escapeHtml(String(m.id))}">删除</button>
                         </td>
                     </tr>
                 `;
             }).join('');
+
+            // Event delegation instead of inline onclick (XSS-safe, consistent style).
+            tbody.querySelectorAll('[data-del-memory]').forEach(btn => {
+                btn.addEventListener('click', () => deleteMemoryItem(btn.getAttribute('data-del-memory')));
+            });
         }
 
         async function deleteMemoryItem(memId) {
@@ -2889,7 +2981,7 @@
             container.innerHTML = dialogues.map(d => {
                 const statusBadge = d.is_unlocked
                     ? '<span style="background: #10b98120; color: #10b981; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600;">🔓 已解锁</span>'
-                    : '<span style="background: #64748b20; color: #64748b; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600;">🔒 未解锁</span>';
+                    : '<span style="background: #64748b20; color: var(--text-muted); padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600;">🔒 未解锁</span>';
 
                 const emotionIcon = {
                     gentle: '🌸 温柔', shy: '😳 害羞', tsundere: '💢 傲娇', happy: '✨ 开心',
@@ -2899,13 +2991,13 @@
                 const blurStyle = d.is_unlocked ? '' : 'filter: blur(4px); user-select: none;';
 
                 return `
-                    <div style="background: #ffffff; border: 1px solid var(--card-border); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                    <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <span style="font-weight: 600; font-size: 13px; color: var(--text-dark);">${escapeHtml(d.title)}</span>
                             <div>${statusBadge}</div>
                         </div>
                         <div style="font-size: 11px; color: var(--text-muted);">状态: ${emotionIcon} | ${escapeHtml(d.unlock_condition)}</div>
-                        <div style="${blurStyle} background: #f8fafc; border-radius: 6px; padding: 8px; font-size: 12px;">
+                        <div style="${blurStyle} background: var(--muted-bg); border-radius: 6px; padding: 8px; font-size: 12px;">
                             <div style="color: var(--primary-accent); font-weight: 500; margin-bottom: 4px;">${escapeHtml(d.japanese)}</div>
                             <div style="color: var(--text-dark);">${escapeHtml(d.chinese)}</div>
                         </div>
@@ -3126,7 +3218,7 @@
                         <span><strong>${escapeHtml(p.name || p.provider_id)}</strong> <span style="color: var(--text-muted);">(${p.request_count} 次)</span></span>
                         <span><strong>${p.total_tokens.toLocaleString()} tok</strong> (${p.percentage}%)</span>
                     </div>
-                    <div style="background: #f1f5f9; border-radius: 9999px; height: 6px; overflow: hidden;">
+                    <div style="background: var(--muted-bg); border-radius: 9999px; height: 6px; overflow: hidden;">
                         <div style="background: ${color}; width: ${Math.min(100, Math.max(2, p.percentage))}%; height: 100%;"></div>
                     </div>
                 `;
@@ -3224,14 +3316,17 @@
 
         // ================= INITIALIZATION =================
         window.addEventListener('DOMContentLoaded', async () => {
-            await fetchSystemTelemetry();
-            await fetchMetricsAndCache();
-            await fetchGlobalConfig();
-            await fetchProviders();
-            await fetchVoiceProfiles();
-            await fetchMemories();
-            await fetchAffection();
-            await fetchDialogueGallery();
+            // Parallel init: 8 independent fetches, no serial waterfall.
+            await Promise.allSettled([
+                fetchSystemTelemetry(),
+                fetchMetricsAndCache(),
+                fetchGlobalConfig(),
+                fetchProviders(),
+                fetchVoiceProfiles(),
+                fetchMemories(),
+                fetchAffection(),
+                fetchDialogueGallery(),
+            ]);
             setupAutoRefresh();
         });
     </script>

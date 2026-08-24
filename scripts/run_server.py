@@ -46,23 +46,28 @@ def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
 
 
 def find_gpt_sovits_directory() -> Path | None:
-    """Probes candidate paths for local GPT-SoVITS installation."""
-    candidates = []
+    """Probes candidate paths for local GPT-SoVITS installation (known path first)."""
+    import glob
+
+    candidates: list[Path] = []
+
+    # 1. Explicit env override
     env_dir = os.environ.get("GPT_SOVITS_DIR")
     if env_dir:
         candidates.append(Path(env_dir))
 
+    # 2. User's known installation (nested layout) — probed first for speed.
     candidates.extend([
         Path(r"E:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604"),
         Path(r"E:\GPT-SoVITS-v2pro-20250604"),
-        Path(r"D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604"),
-        Path(r"D:\GPT-SoVITS-v2pro-20250604"),
-        Path(r"C:\GPT-SoVITS-v2pro-20250604"),
-        Path(r"C:\GPT-SoVITS"),
-        Path(r"D:\GPT-SoVITS"),
-        Path(r"E:\GPT-SoVITS"),
-        PROJECT_ROOT.parent / "GPT-SoVITS",
     ])
+
+    # 3. Generic drive patterns for other versions / drives.
+    for drive in ("D", "E", "C", "F"):
+        candidates.extend(Path(p) for p in glob.glob(rf"{drive}:\GPT-SoVITS*\GPT-SoVITS*"))
+        candidates.extend(Path(p) for p in glob.glob(rf"{drive}:\GPT-SoVITS*"))
+    candidates.append(PROJECT_ROOT.parent / "GPT-SoVITS")
+
     for p in candidates:
         if (p / "api_v2.py").exists():
             return p
@@ -115,15 +120,19 @@ def ensure_gpt_sovits_running():
         (PROJECT_ROOT / "gptsovits.pid").write_text(str(proc.pid), encoding="utf-8")
         print(f"      {GREEN}[OK]{RESET} 已在后台启动 GPT-SoVITS (PID: {proc.pid})，日志保存至 logs/gpt_sovits.log")
 
-        # Readiness check with progress dots
-        print(f"      {CYAN}[..]{RESET} 正在等待 GPT-SoVITS 模型加载入显存 (初次加载约需 10~20 秒)...")
-        for i in range(50):
+        # Readiness check with progress dots (bounded: 120s, model load 10~60s typical).
+        print(f"      {CYAN}[..]{RESET} 正在等待 GPT-SoVITS 模型加载入显存 (最长 120 秒)...")
+        for i in range(240):
             time.sleep(0.5)
             if is_port_in_use(9880):
+                print()
                 print(f"      {GREEN}[OK]{RESET} GPT-SoVITS 语音引擎已就绪 (http://127.0.0.1:9880/)")
                 break
+            if i % 4 == 0:
+                print(".", end="", flush=True)
         else:
-            print(f"      {YELLOW}[提示]{RESET} GPT-SoVITS 模型仍在后台加载中，稍后就绪即可自动开始合成。")
+            print()
+            print(f"      {YELLOW}[提示]{RESET} GPT-SoVITS 模型仍在后台加载中 (详见 logs/gpt_sovits.log)，本服务将先行启动。")
     except Exception as e:
         print(f"      {RED}[WARN]{RESET} 启动 GPT-SoVITS 失败: {e}")
 

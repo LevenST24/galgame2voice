@@ -241,52 +241,55 @@ class TestBatchScriptHardening:
     """Stress tests for Windows cmd.exe syntax quirks, path escaping, and robustness."""
 
     def test_all_batch_files_exist_and_non_empty(self):
-        """Check all 10 lifecycle scripts exist and are non-empty."""
+        """Check the canonical lifecycle scripts exist and are non-empty."""
         scripts = [
             PROJECT_ROOT / "启动.bat",
             PROJECT_ROOT / "停止.bat",
-            PROJECT_ROOT / "start.bat",
-            PROJECT_ROOT / "stop.bat",
-            PROJECT_ROOT / "start-galgame2voice.bat",
-            PROJECT_ROOT / "stop-galgame2voice.bat",
-            PROJECT_ROOT / "restart-galgame2voice.bat",
-            SCRIPTS_DIR / "start-galgame2voice.bat",
-            SCRIPTS_DIR / "stop-galgame2voice.bat",
-            SCRIPTS_DIR / "restart-galgame2voice.bat",
+            SCRIPTS_DIR / "run_server.py",
         ]
         for script in scripts:
             assert script.exists(), f"Missing script: {script}"
             content = script.read_text(encoding="utf-8")
             assert len(content.strip()) > 0, f"Empty script: {script}"
 
+    def test_legacy_duplicate_scripts_removed(self):
+        """Verify the legacy duplicated wrapper scripts were consolidated away."""
+        removed = [
+            PROJECT_ROOT / "start.bat",
+            PROJECT_ROOT / "stop.bat",
+            PROJECT_ROOT / "start-galgame2voice.bat",
+            PROJECT_ROOT / "stop-galgame2voice.bat",
+            PROJECT_ROOT / "restart-galgame2voice.bat",
+        ]
+        for script in removed:
+            assert not script.exists(), f"Legacy script should be removed: {script}"
+
     def test_working_directory_switch_safety(self):
         """Verify scripts safely switch working directory using `%~dp0`."""
-        for script in (PROJECT_ROOT / "启动.bat", PROJECT_ROOT / "停止.bat", SCRIPTS_DIR / "start-galgame2voice.bat"):
+        for script in (PROJECT_ROOT / "启动.bat", PROJECT_ROOT / "停止.bat"):
             content = script.read_text(encoding="utf-8", errors="ignore")
             assert 'cd /d "%~dp0"' in content or 'pushd "%~dp0.."' in content
 
     def test_delayed_expansion_isolated(self):
         """Verify delayed expansion is properly scoped with setlocal enabledelayedexpansion."""
-        for script in (PROJECT_ROOT / "启动.bat", PROJECT_ROOT / "停止.bat", SCRIPTS_DIR / "start-galgame2voice.bat", SCRIPTS_DIR / "stop-galgame2voice.bat"):
+        for script in (PROJECT_ROOT / "启动.bat", PROJECT_ROOT / "停止.bat"):
             content = script.read_text(encoding="utf-8", errors="ignore")
             assert "setlocal enabledelayedexpansion" in content.lower()
             assert "endlocal" in content.lower()
 
     def test_gpt_sovits_discovery_locations(self):
-        """Verify candidate directories cover E:, D:, C: and relative paths."""
-        content = (PROJECT_ROOT / "启动.bat").read_text(encoding="utf-8", errors="ignore")
-        assert "%GPT_SOVITS_DIR%" in content or "GPT_SOVITS_DIR" in content
+        """Verify run_server.py probes env override plus the known GPT-SoVITS install path."""
+        content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
+        assert "GPT_SOVITS_DIR" in content
         assert "E:\\GPT-SoVITS-v2pro-20250604" in content
-        assert "D:\\GPT-SoVITS" in content
-        assert "C:\\GPT-SoVITS" in content
-        assert "..\\GPT-SoVITS" in content
+        # Generic drive globbing covers D:/C: installations of any version.
+        assert "GPT-SoVITS*" in content
 
-    def test_curl_health_polling_bounded(self):
-        """Verify health check polling in 启动.bat has bounded loop iterations."""
-        content = (PROJECT_ROOT / "启动.bat").read_text(encoding="utf-8", errors="ignore")
-        assert "for /l" in content.lower()
-        assert "/api/health" in content
-        assert "timeout /t 1" in content.lower()
+    def test_health_polling_bounded(self):
+        """Verify run_server.py readiness wait uses bounded loops (no infinite spin)."""
+        content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
+        assert "for i in range(240)" in content  # 120s bounded GPT-SoVITS readiness wait
+        assert "for _ in range(30)" in content   # 9s bounded browser-open wait
 
 
 # ============================================================================

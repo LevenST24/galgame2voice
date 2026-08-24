@@ -50,31 +50,26 @@ Galgame2Voice is a high-performance, lightweight Python/FastAPI companion extens
 ## Code Layout
 ```
 galgame2voice/
-├── 启动.bat                        # Root Chinese one-click launcher
-├── 停止.bat                        # Root Chinese one-click stop script
-├── start.bat                       # Wrapper invoking 启动.bat
-├── stop.bat                        # Wrapper invoking 停止.bat
-├── start-galgame2voice.bat         # Developer wrapper
-├── stop-galgame2voice.bat          # Developer wrapper
-├── restart-galgame2voice.bat       # Developer wrapper
+├── 启动.bat                        # One-click launcher (delegates to run_server.py)
+├── 停止.bat                        # One-click stop (kills 8080/9880, frees VRAM)
 ├── scripts/
-│   ├── start-galgame2voice.bat     # English developer startup script
-│   ├── stop-galgame2voice.bat      # English developer stop script
-│   └── restart-galgame2voice.bat   # English developer restart script
+│   └── run_server.py               # Smart launcher: GPT-SoVITS discovery & spawn,
+│                                    #   bounded readiness wait, port fallback, browser open
 ├── galgame2voice/
-│   ├── main.py                     # FastAPI app factory, lifespan, routing, static mounts
+│   ├── main.py                     # FastAPI app factory, lifespan (shared client init/teardown)
 │   ├── config.py                   # Pydantic v2 Settings
 │   ├── database/                   # SQLite schema, migrations, CRUD (WAL mode)
 │   ├── adapters/                   # LLM & STT Provider Adapter Layer
 │   ├── routers/                    # health, config, voice, chat routers
-│   ├── services/                   # chat_service, gpt_sovits_client, voice_manager, session_manager
+│   ├── services/                   # chat_service, gpt_sovits_client (shared singleton),
+│   │                               #   tts_service, voice_manager, session_manager
 │   ├── static/                     # Web UI
 │   │   ├── index.html              # Dual-mode stage, Top capsule bar, Dialogue box
-│   │   ├── settings.html           # Web management console
+│   │   ├── settings.html           # Web management console (dark unified design)
 │   │   ├── css/style.css           # Design system, glassmorphism, animations
 │   │   └── js/
-│   │       ├── audio_player.js     # Web Audio API player with AnalyserNode
-│   │       └── chat_client.js      # ChatClient, SSE parser, view mode switcher
+│   │       ├── audio_player.js     # Web Audio API player (deadlock-free queue, retry)
+│   │       └── chat_client.js      # SSE parser, stop button, error recovery
 │   └── telegram_bot/               # Telegram bot handlers & async task queue
 └── tests/                          # 415+ automated test cases
 ```

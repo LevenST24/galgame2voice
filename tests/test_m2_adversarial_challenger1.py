@@ -181,7 +181,7 @@ class TestFrontendAssetsAndDOMStructure:
         assert 'id="vn-audio-equalizer"' in content
         assert 'id="vn-audio-status"' in content
         assert 'id="btn-vn-replay"' in content
-        assert 'id="btn-vn-history"' in content
+        assert 'id="btn-vn-log"' in content
 
         # Classic Chat Mode elements
         assert 'id="chat-view"' in content

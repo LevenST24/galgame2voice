@@ -94,7 +94,7 @@ async def get_config():
 @router.post(
     "/config",
     summary="Update Global Configuration",
-    description="Updates system configuration values in SQLite persistence.",
+    description="Updates system configuration values in SQLite persistence. GPT-SoVITS URL changes are applied live (no restart needed).",
 )
 async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, Any]]):
     update_data: Dict[str, Any] = {}
@@ -109,18 +109,29 @@ async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, 
         # Filter valid settings fields for update
         valid_fields = SettingsUpdate.model_fields.keys()
         sanitized_updates = {k: v for k, v in update_data.items() if k in valid_fields}
-        
+
         if sanitized_updates:
             update_model = SettingsUpdate(**sanitized_updates)
             updated_settings = await crud.update_settings(conn, update_model)
         else:
             updated_settings = await crud.get_settings(conn, mask=True)
 
-        return {
-            "status": "success",
-            "updated_count": len(sanitized_updates) if sanitized_updates else len(update_data),
-            "settings": updated_settings.model_dump(),
-        }
+    # Hot-apply GPT-SoVITS endpoint change to the shared client so the new URL
+    # takes effect immediately (previously this setting was saved but never used).
+    new_sovits_url = sanitized_updates.get("gpt_sovits_url")
+    if new_sovits_url:
+        try:
+            from galgame2voice.services.gpt_sovits_client import reload_gpt_sovits_client_base_url
+            await reload_gpt_sovits_client_base_url(str(new_sovits_url))
+            logger.info("GPT-SoVITS endpoint hot-applied: %s", new_sovits_url)
+        except Exception as exc:
+            logger.error("Failed to hot-apply GPT-SoVITS URL '%s': %s", new_sovits_url, exc)
+
+    return {
+        "status": "success",
+        "updated_count": len(sanitized_updates) if sanitized_updates else len(update_data),
+        "settings": updated_settings.model_dump(),
+    }
 
 
 # ============================================================================

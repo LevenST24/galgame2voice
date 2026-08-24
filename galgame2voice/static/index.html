@@ -5,9 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Galgame2Voice — 二次元智能语音伴侣</title>
     <link rel="stylesheet" href="/static/css/style.css">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;500;700;800&family=Noto+Sans+SC:wght@300;400;500;700&family=Noto+Serif+JP:wght@400;500;700&display=swap" rel="stylesheet">
 </head>
 <body class="galgame-theme" id="galgame2voice-app">
 
@@ -130,13 +127,10 @@
                     <div class="vn-box-footer">
                         <span id="vn-audio-status" class="status-indicator-text">音频就绪</span>
                         <div class="vn-action-buttons">
-                            <button type="button" id="btn-vn-auto" class="vn-action-btn vn-toggle-btn" title="自动播放">
-                                <span class="btn-text">AUTO</span>
-                            </button>
-                            <button type="button" id="btn-vn-skip" class="vn-action-btn" title="跳过">
+                            <button type="button" id="btn-vn-skip" class="vn-action-btn" title="跳过当前语音">
                                 <span class="btn-text">SKIP</span>
                             </button>
-                            <button type="button" id="btn-vn-log" class="vn-action-btn" title="历史">
+                            <button type="button" id="btn-vn-log" class="vn-action-btn" title="历史对话">
                                 <span class="btn-text">LOG</span>
                             </button>
                             <span class="vn-btn-divider"></span>
@@ -148,7 +142,6 @@
                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                                 <span>下载母带</span>
                             </button>
-                            <button type="button" id="btn-vn-history" class="vn-action-btn" style="display:none;" title="历史">LOG</button>
                         </div>
                     </div>
                 </div>
@@ -204,21 +197,6 @@
                 <button type="button" id="btn-close-log-drawer-2" class="btn-primary-sm">关闭</button>
             </div>
         </aside>
-    </div>
-
-    <!-- ═══════════════ History Modal (retained for compatibility) ═══════════════ -->
-    <div id="history-modal" class="modal-backdrop" style="display:none;">
-        <div class="modal-card glass-card">
-            <div class="modal-header">
-                <h3>历史对话</h3>
-                <button type="button" id="btn-close-history" class="modal-close-btn">&times;</button>
-            </div>
-            <div id="history-modal-body" class="modal-body"></div>
-            <div class="modal-footer">
-                <button type="button" id="btn-clear-history-modal" class="btn-danger-outline">清空记忆</button>
-                <button type="button" id="btn-close-history-2" class="btn-primary-sm">关闭</button>
-            </div>
-        </div>
     </div>
 
     <!-- Scripts -->

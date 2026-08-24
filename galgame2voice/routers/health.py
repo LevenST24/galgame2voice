@@ -1,14 +1,18 @@
 """
 Health check and system diagnostic router for galgame2voice.
 Provides /api/health, /status, and /api/system/status endpoints.
+
+All filesystem scans run in worker threads and are cached with a TTL so the
+5-second frontend status poll never blocks the event loop.
 """
 
+import asyncio
 import os
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 from fastapi import APIRouter, Request, status
@@ -17,6 +21,11 @@ from pydantic import BaseModel, Field
 from galgame2voice.config import get_settings
 
 router = APIRouter(tags=["Health & Diagnostics"])
+
+# Directory metrics are cached: the settings console polls every few seconds,
+# and scanning thousands of cache files each time would freeze the event loop.
+_DIR_METRICS_TTL_SECONDS = 15.0
+_dir_metrics_cache: Dict[str, Tuple[float, Tuple[int, float]]] = {}
 
 
 class HealthResponse(BaseModel):
@@ -87,54 +96,89 @@ class SystemStatusResponse(BaseModel):
 
 async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
     """
-    Asynchronously checks GPT-SoVITS backend reachability with a 2.0s timeout.
-    Does not raise exceptions on connection failure.
+    Checks GPT-SoVITS reachability through the shared singleton client pool
+    (GET / — api_v2 answers on the root path). 3s connect/read budget:
+    long enough for a busy GPU to answer, short enough for a 5s poll.
+    HTTP 200/400 counts as reachable; other codes / network errors do not.
     """
-    target_url = f"{base_url.rstrip('/')}/control"
     t0 = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=0.6, trust_env=False) as client:
-            resp = await client.get(target_url)
-            latency = round((time.perf_counter() - t0) * 1000, 2)
-            # GPT-SoVITS /control returns 200 or 400 ("command is required") when active
-            if resp.status_code in (200, 400):
+        from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client
+        client = get_gpt_sovits_client()
+
+        target = base_url.rstrip("/")
+        if target and target != client.base_url:
+            # One-shot probe against an explicitly different URL.
+            # Connect budget 1s: healthy local engines connect in <50ms;
+            # some VPN/TUN stacks delay loopback refusals to ~2s, so a tight
+            # budget converts "engine down" into a fast unreachable verdict.
+            timeout = httpx.Timeout(connect=1.0, read=2.5, write=2.5, pool=2.5)
+            async with httpx.AsyncClient(trust_env=False, timeout=timeout) as one_shot:
+                resp = await one_shot.get(f"{target}/")
+                latency = round((time.perf_counter() - t0) * 1000, 2)
+                if resp.status_code in (200, 400):
+                    return GptSovitsTelemetry(
+                        status="reachable", base_url=base_url, latency_ms=latency, error=None)
                 return GptSovitsTelemetry(
-                    status="reachable",
-                    base_url=base_url,
-                    latency_ms=latency,
-                    error=None,
-                )
-            else:
-                return GptSovitsTelemetry(
-                    status="unreachable",
-                    base_url=base_url,
-                    latency_ms=latency,
-                    error=f"Unexpected status code: {resp.status_code}",
-                )
+                    status="unreachable", base_url=base_url, latency_ms=latency,
+                    error=f"Unexpected status code: {resp.status_code}")
+
+        result = await client.check_health()
+        latency = round((time.perf_counter() - t0) * 1000, 2)
+        reachable = bool(result.get("connected"))
+        return GptSovitsTelemetry(
+            status="reachable" if reachable else "unreachable",
+            base_url=client.base_url,
+            latency_ms=latency,
+            error=result.get("error"),
+        )
     except Exception as exc:
         latency = round((time.perf_counter() - t0) * 1000, 2)
         return GptSovitsTelemetry(
             status="unreachable",
             base_url=base_url,
             latency_ms=latency,
-            error=type(exc).__name__,
+            error=f"{type(exc).__name__}: {exc}",
         )
 
 
-def _get_dir_metrics(directory: Path) -> tuple[int, float]:
-    """Calculates file count and total size in MB for a given directory."""
+def _scan_dir_sync(directory: Path) -> Tuple[int, float]:
+    """Blocking recursive file count + size scan (runs in a worker thread)."""
     if not directory.exists() or not directory.is_dir():
         return 0, 0.0
     count = 0
     total_bytes = 0
     try:
         for p in directory.rglob("*"):
-            if p.is_file():
-                count += 1
-                total_bytes += p.stat().st_size
+            try:
+                if p.is_file():
+                    count += 1
+                    total_bytes += p.stat().st_size
+            except OSError:
+                continue
     except OSError:
         pass
     return count, round(total_bytes / (1024 * 1024), 2)
+
+
+async def _get_dir_metrics_cached(directory: Path) -> Tuple[int, float]:
+    """TTL-cached directory metrics computed off the event loop."""
+    key = str(directory)
+    now = time.monotonic()
+    cached = _dir_metrics_cache.get(key)
+    if cached is not None:
+        stamp, value = cached
+        if now - stamp < _DIR_METRICS_TTL_SECONDS:
+            return value
+    value = await asyncio.to_thread(_scan_dir_sync, directory)
+    _dir_metrics_cache[key] = (now, value)
+    return value
+
+
+# Backward-compatible sync alias (kept for existing tooling/tests).
+def _get_dir_metrics(directory: Path) -> Tuple[int, float]:
+    """Synchronous directory metrics — blocking, prefer _get_dir_metrics_cached."""
+    return _scan_dir_sync(directory)
 
 
 def _get_process_memory_mb() -> Optional[float]:
@@ -167,7 +211,7 @@ async def health_check(request: Request):
 @router.get("/status", response_model=LegacyStatusResponse, summary="Legacy Status Endpoint")
 async def legacy_status(request: Request):
     """
-    Legacy Spring Boot compatibility endpoint.
+    Legacy compatibility endpoint.
     Performs quick reachability probe to GPT-SoVITS.
     """
     settings = get_settings()
@@ -199,8 +243,16 @@ async def system_status(request: Request):
         datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat(),
     )
 
-    # 1. GPT-SoVITS Reachability Probe
-    gpt_probe = await _probe_gpt_sovits(settings.gpt_sovits_base_url)
+    # 1-4 gathered in PARALLEL: the GPT-SoVITS probe (network-bound) overlaps
+    # with the storage scans (thread-bound) so total latency = max, not sum.
+    gpt_probe_task = asyncio.create_task(_probe_gpt_sovits(settings.gpt_sovits_base_url))
+    audio_metrics_task = asyncio.create_task(_get_dir_metrics_cached(settings.audio_dir))
+    data_metrics_task = asyncio.create_task(_get_dir_metrics_cached(settings.data_dir))
+    memory_task = asyncio.create_task(asyncio.to_thread(_get_process_memory_mb))
+
+    gpt_probe = await gpt_probe_task
+    audio_count, audio_size_mb = await audio_metrics_task
+    _, data_size_mb = await data_metrics_task
 
     # 2. Database Status Check
     db_exists = settings.db_path.exists()
@@ -211,8 +263,6 @@ async def system_status(request: Request):
     )
 
     # 3. Storage Metrics
-    audio_count, audio_size_mb = _get_dir_metrics(settings.audio_dir)
-    _, data_size_mb = _get_dir_metrics(settings.data_dir)
     storage_telemetry = StorageTelemetry(
         audio_files_count=audio_count,
         audio_dir_size_mb=audio_size_mb,
@@ -227,7 +277,7 @@ async def system_status(request: Request):
         start_time=start_time_iso,
         python_version=sys.version.split()[0],
         pid=os.getpid(),
-        memory_usage_mb=_get_process_memory_mb(),
+        memory_usage_mb=await memory_task,
     )
 
     # 5. Telegram Status

@@ -208,7 +208,7 @@ class TestLifecycleAdversarialAndPid:
     """Adversarial stress-testing of Windows batch script logic, PID recovery, and port conflicts."""
 
     def test_stale_pid_recovery_in_stop_script(self):
-        """Verify stop-galgame2voice.bat gracefully handles non-existent stale PID without hanging."""
+        """Verify 停止.bat gracefully handles non-existent stale PID without hanging."""
         if sys.platform != "win32":
             pytest.skip("Windows batch execution requires Windows")
 
@@ -217,10 +217,11 @@ class TestLifecycleAdversarialAndPid:
         assert PID_FILE.exists()
 
         res = subprocess.run(
-            ["cmd.exe", "/c", str(SCRIPTS_DIR / "stop-galgame2voice.bat")],
+            ["cmd.exe", "/c", str(PROJECT_ROOT / "停止.bat")],
             cwd=str(PROJECT_ROOT),
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         assert res.returncode == 0
@@ -228,17 +229,18 @@ class TestLifecycleAdversarialAndPid:
         assert not PID_FILE.exists()
 
     def test_corrupt_pid_file_handling(self):
-        """Verify stop-galgame2voice.bat handles corrupted PID files (alphanumeric garbage, empty)."""
+        """Verify 停止.bat handles corrupted PID files (alphanumeric garbage, empty)."""
         if sys.platform != "win32":
             pytest.skip("Windows batch execution requires Windows")
 
         # Case 1: Text garbage
         PID_FILE.write_text("INVALID_PID_GARBAGE\n", encoding="utf-8")
         res = subprocess.run(
-            ["cmd.exe", "/c", str(SCRIPTS_DIR / "stop-galgame2voice.bat")],
+            ["cmd.exe", "/c", str(PROJECT_ROOT / "停止.bat")],
             cwd=str(PROJECT_ROOT),
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         assert res.returncode == 0
@@ -248,10 +250,11 @@ class TestLifecycleAdversarialAndPid:
         # Case 2: Empty PID file
         PID_FILE.write_text("", encoding="utf-8")
         res = subprocess.run(
-            ["cmd.exe", "/c", str(SCRIPTS_DIR / "stop-galgame2voice.bat")],
+            ["cmd.exe", "/c", str(PROJECT_ROOT / "停止.bat")],
             cwd=str(PROJECT_ROOT),
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         assert res.returncode == 0
@@ -330,26 +333,27 @@ class TestProcessTerminationAndLifespan:
         )
 
         try:
-            # Wait for server to become responsive
+            # Wait for server to become responsive with direct loopback connection
             online = False
-            for _ in range(15):
-                time.sleep(0.5)
-                try:
-                    r = httpx.get(f"http://127.0.0.1:{test_port}/api/health", timeout=1.0)
-                    if r.status_code == 200:
-                        online = True
-                        break
-                except Exception:
-                    pass
+            with httpx.Client(trust_env=False, timeout=5.0) as client:
+                for _ in range(15):
+                    time.sleep(0.5)
+                    try:
+                        r = client.get(f"http://127.0.0.1:{test_port}/api/health")
+                        if r.status_code == 200:
+                            online = True
+                            break
+                    except Exception:
+                        pass
 
-            assert online, "Subprocess server failed to start within 7.5 seconds"
+                assert online, "Subprocess server failed to start within 7.5 seconds"
 
-            # Query system status
-            r_sys = httpx.get(f"http://127.0.0.1:{test_port}/api/system/status", timeout=2.0)
-            assert r_sys.status_code == 200
-            data = r_sys.json()
-            assert data["app"]["name"] == "galgame2voice"
-            assert isinstance(data["app"]["pid"], int) and data["app"]["pid"] > 0
+                # Query system status
+                r_sys = client.get(f"http://127.0.0.1:{test_port}/api/system/status")
+                assert r_sys.status_code == 200
+                data = r_sys.json()
+                assert data["app"]["name"] == "galgame2voice"
+                assert isinstance(data["app"]["pid"], int) and data["app"]["pid"] > 0
 
         finally:
             # Send termination signal
