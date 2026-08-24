@@ -12,13 +12,23 @@ cd /d "%~dp0"
 set "PYTHONIOENCODING=utf-8"
 set "SCRIPT_DIR=%~dp0"
 
-REM 1. Terminate Galgame2Voice Port 8080
+REM 1. Terminate Galgame2Voice Port 8080 and active port
 echo [1/2] Closing Galgame2Voice [Port 8080]
 for /f "tokens=4,5" %%a in ('netstat -ano ^| findstr ":8080"') do (
     if "%%a"=="LISTENING" (
         taskkill /f /t /pid %%b >nul 2>&1
         echo   [OK] Closed port 8080 process PID: %%b
     )
+)
+if exist "data\active_port.txt" (
+    set /p DYN_PORT=<data\active_port.txt
+    set "DYN_PORT=!DYN_PORT: =!"
+    if defined DYN_PORT if not "!DYN_PORT!"=="8080" (
+        for /f "tokens=4,5" %%a in ('netstat -ano ^| findstr ":!DYN_PORT!"') do (
+            if "%%a"=="LISTENING" taskkill /f /t /pid %%b >nul 2>&1
+        )
+    )
+    del /f /q "data\active_port.txt" >nul 2>&1
 )
 if exist "galgame2voice.pid" (
     set /p SAVED_PID=<galgame2voice.pid

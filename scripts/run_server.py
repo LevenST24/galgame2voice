@@ -112,6 +112,31 @@ def ensure_gpt_sovits_running():
         print(f"      {RED}[WARN]{RESET} 启动 GPT-SoVITS 失败: {e}")
 
 
+def find_available_port(preferred_port: int = 8080, host: str = "127.0.0.1") -> int:
+    """Finds a bindable TCP port starting from preferred_port with graceful fallbacks."""
+    candidates = [preferred_port, 8081, 8082, 8085, 8088, 8888, 18080, 28080]
+    # Remove duplicates preserving order
+    seen = set()
+    unique_candidates = [p for p in candidates if not (p in seen or seen.add(p))]
+
+    for p in unique_candidates:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((host, p))
+                return p
+        except OSError:
+            continue
+
+    # Fallback to OS assigned free port
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host, 0))
+            return s.getsockname()[1]
+    except Exception:
+        return preferred_port
+
+
 def auto_open_browser(port: int = 8080):
     """Background thread that waits for the server to be ready, then launches the browser."""
     def _runner():
@@ -136,10 +161,37 @@ def main():
     # Step 1: GPT-SoVITS
     ensure_gpt_sovits_running()
 
-    # Step 2: Auto Open Browser
-    print(f"{CYAN}[2/2] 正在启动 Galgame2Voice 伴侣服务 (端口 8080)...{RESET}")
-    auto_open_browser(8080)
-    print(f"      {GREEN}[OK]{RESET} 正在为您打开默认浏览器: http://127.0.0.1:8080/\n")
+    # Step 2: Determine & Probe Port
+    preferred_port = 8080
+    if os.environ.get("GALGAME_PORT"):
+        try:
+            preferred_port = int(os.environ["GALGAME_PORT"])
+        except ValueError:
+            pass
+
+    # Parse CLI --port if provided
+    for i, arg in enumerate(sys.argv):
+        if arg == "--port" and i + 1 < len(sys.argv):
+            try:
+                preferred_port = int(sys.argv[i + 1])
+            except ValueError:
+                pass
+
+    active_port = find_available_port(preferred_port)
+    if active_port != preferred_port:
+        print(f"{YELLOW}[提示] 默认端口 {preferred_port} 无法绑定 (可能被系统代理或其他程序占用)，已自动切换至可用端口: {active_port}{RESET}")
+
+    # Save active port & PID for clean shutdown
+    try:
+        (PROJECT_ROOT / "data" / "active_port.txt").write_text(str(active_port), encoding="utf-8")
+        (PROJECT_ROOT / "galgame2voice.pid").write_text(str(os.getpid()), encoding="utf-8")
+    except Exception:
+        pass
+
+    # Step 3: Auto Open Browser
+    print(f"{CYAN}[2/2] 正在启动 Galgame2Voice 伴侣服务 (端口 {active_port})...{RESET}")
+    auto_open_browser(active_port)
+    print(f"      {GREEN}[OK]{RESET} 正在为您打开默认浏览器: http://127.0.0.1:{active_port}/\n")
 
     print(f"{GREEN}{BOLD}{'='*68}{RESET}")
     print(f"{GREEN}{BOLD}  🎉 服务运行中！您可以在浏览器中畅享与二次元伴侣的互动。{RESET}")
@@ -147,7 +199,7 @@ def main():
     print(f"{GREEN}{BOLD}{'='*68}{RESET}\n")
 
     import uvicorn
-    uvicorn.run("galgame2voice.main:app", host="127.0.0.1", port=8080, log_level="info")
+    uvicorn.run("galgame2voice.main:app", host="127.0.0.1", port=active_port, log_level="info")
 
 
 if __name__ == "__main__":

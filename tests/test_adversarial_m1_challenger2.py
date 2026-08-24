@@ -303,13 +303,22 @@ class TestEndToEndBatchShutdown:
         Execute 停止.bat.
         Verify both processes are forcefully terminated and ports are released.
         """
-        # First check if 8080 or 9880 are currently occupied; if so skip to avoid killing system processes
+        # First check if 8080 or 9880 can be bound; if not skip to avoid killing system processes or crashing on WSAEACCES
+        def is_bindable(port):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    s.bind(("127.0.0.1", port))
+                    return True
+            except OSError:
+                return False
+
         def is_open(port):
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 return s.connect_ex(("127.0.0.1", port)) == 0
 
-        if is_open(8080) or is_open(9880):
-            pytest.skip("Port 8080 or 9880 is currently occupied by active service.")
+        if not is_bindable(8080) or not is_bindable(9880):
+            pytest.skip("Port 8080 or 9880 cannot be bound (occupied or restricted by system).")
 
         # Spawn mock listener 8080
         p8080 = subprocess.Popen([
