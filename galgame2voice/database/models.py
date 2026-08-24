@@ -268,3 +268,182 @@ class TtsOptions(BaseModel):
     batch_size: int = Field(default=1, ge=1, le=16)
     text_split_method: str = "cut1"
     fragment_interval: float = Field(default=0.3, ge=0.0, le=5.0)
+
+
+# ==================== TTS Cache & Metrics Models ====================
+
+class TtsCacheEntry(BaseModel):
+    cache_key: str
+    text: str
+    clean_text: str
+    voice_profile_id: Optional[int] = 1
+    params_hash: str
+    file_path: str
+    file_size: int
+    duration_ms: int = 0
+    hit_count: int = 0
+    created_at: Optional[str] = None
+    last_accessed_at: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CacheStatsResponse(BaseModel):
+    total_files: int = 0
+    total_size_bytes: int = 0
+    total_size_mb: float = 0.0
+    total_hits: int = 0
+    total_misses: int = 0
+    hit_rate_percent: float = 0.0
+
+
+class TokenUsageMetric(BaseModel):
+    id: Optional[int] = None
+    timestamp: Optional[str] = None
+    session_id: str = "default"
+    channel: str = "web"
+    provider_id: str = "deepseek"
+    model_name: str = "deepseek-chat"
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost: float = 0.0
+    ttft_ms: float = 0.0
+    tts_first_chunk_ms: float = 0.0
+    total_latency_ms: float = 0.0
+    tts_cached_chunks: int = 0
+    tts_generated_chunks: int = 0
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MetricsOverviewResponse(BaseModel):
+    total_requests: int = 0
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    estimated_cost_cny: float = 0.0
+    avg_ttft_ms: float = 0.0
+    avg_tts_first_chunk_ms: float = 0.0
+    avg_total_latency_ms: float = 0.0
+    cache_stats: CacheStatsResponse = Field(default_factory=CacheStatsResponse)
+
+
+class ProviderMetricItem(BaseModel):
+    provider_id: str
+    name: str
+    request_count: int = 0
+    total_tokens: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    percentage: float = 0.0
+
+
+class ProvidersMetricsResponse(BaseModel):
+    providers: List[ProviderMetricItem] = Field(default_factory=list)
+
+
+class LatencyTrendItem(BaseModel):
+    timestamp: str
+    ttft_ms: float
+    tts_first_chunk_ms: float
+    total_latency_ms: float
+    model_name: str = ""
+    provider_id: str = ""
+
+
+class LatencyTrendResponse(BaseModel):
+    trend: List[LatencyTrendItem] = Field(default_factory=list)
+
+
+# ==================== Memory & Affection Models ====================
+
+class UserMemoryBase(BaseModel):
+    user_id: str = "default_user"
+    character_id: Optional[int] = 1
+    category: str = "preference"  # 'nickname', 'preference', 'promise', 'identity', 'event', 'taboo'
+    fact_key: str
+    fact_value: str
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    source_message_id: Optional[int] = None
+    recall_count: int = 0
+    last_recalled_at: Optional[str] = None
+
+
+class UserMemoryCreate(UserMemoryBase):
+    pass
+
+
+class UserMemoryUpdate(BaseModel):
+    category: Optional[str] = None
+    fact_key: Optional[str] = None
+    fact_value: Optional[str] = None
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    recall_count: Optional[int] = None
+    last_recalled_at: Optional[str] = None
+
+
+class UserMemoryInDB(UserMemoryBase):
+    id: int
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserMemoryResponse(UserMemoryInDB):
+    pass
+
+
+class CharacterAffectionBase(BaseModel):
+    user_id: str = "default_user"
+    character_id: int = 1
+    affection_score: int = Field(default=0, ge=0, le=100)
+    affection_level: int = Field(default=1, ge=1, le=5)
+    current_emotion: str = "normal"
+    interaction_count: int = 0
+    daily_points_earned: int = 0
+    last_interaction_date: str = ""
+    unlocked_dialogues: List[str] = Field(default_factory=list)
+    custom_nickname: Optional[str] = None
+
+
+class CharacterAffectionCreate(CharacterAffectionBase):
+    pass
+
+
+class CharacterAffectionUpdate(BaseModel):
+    affection_score: Optional[int] = Field(default=None, ge=0, le=100)
+    affection_level: Optional[int] = Field(default=None, ge=1, le=5)
+    current_emotion: Optional[str] = None
+    interaction_count: Optional[int] = None
+    daily_points_earned: Optional[int] = None
+    last_interaction_date: Optional[str] = None
+    unlocked_dialogues: Optional[List[str]] = None
+    custom_nickname: Optional[str] = None
+
+
+class CharacterAffectionInDB(BaseModel):
+    id: int
+    user_id: str = "default_user"
+    character_id: int = 1
+    affection_score: int = 0
+    affection_level: int = 1
+    current_emotion: str = "normal"
+    interaction_count: int = 0
+    daily_points_earned: int = 0
+    last_interaction_date: str = ""
+    unlocked_dialogues: str = "[]"
+    custom_nickname: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CharacterAffectionResponse(CharacterAffectionBase):
+    id: int
+    level_name: str = "初识/生疏"
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+

@@ -362,6 +362,41 @@ CREATE TABLE IF NOT EXISTS session_messages (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_session_id ON session_messages(session_id);
+
+CREATE TABLE IF NOT EXISTS user_memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL DEFAULT 'default_user',
+    character_id INTEGER DEFAULT 1,
+    category TEXT NOT NULL DEFAULT 'preference',
+    fact_key TEXT NOT NULL,
+    fact_value TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 1.0,
+    source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    recall_count INTEGER NOT NULL DEFAULT 0,
+    last_recalled_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_user_memories_user_cat ON user_memories(user_id, category);
+CREATE INDEX IF NOT EXISTS idx_user_memories_char_key ON user_memories(character_id, fact_key);
+
+CREATE TABLE IF NOT EXISTS character_affection (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL DEFAULT 'default_user',
+    character_id INTEGER NOT NULL DEFAULT 1,
+    affection_score INTEGER NOT NULL DEFAULT 0,
+    affection_level INTEGER NOT NULL DEFAULT 1,
+    current_emotion TEXT NOT NULL DEFAULT 'normal',
+    interaction_count INTEGER NOT NULL DEFAULT 0,
+    daily_points_earned INTEGER NOT NULL DEFAULT 0,
+    last_interaction_date TEXT NOT NULL DEFAULT '',
+    unlocked_dialogues TEXT NOT NULL DEFAULT '[]',
+    custom_nickname TEXT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, character_id)
+);
+CREATE INDEX IF NOT EXISTS idx_affection_user_char ON character_affection(user_id, character_id);
 """
 
 
@@ -389,7 +424,10 @@ def isolate_test_database(monkeypatch):
     
     monkeypatch.setenv("GALGAME2VOICE_DB_PATH", path)
     monkeypatch.setenv("GALGAME_DB_PATH", path)
+    from galgame2voice.routers.chat import set_chat_service
+    set_chat_service(None)
     yield path
+    set_chat_service(None)
     if os.path.exists(path):
         try:
             os.remove(path)

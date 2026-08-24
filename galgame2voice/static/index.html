@@ -31,6 +31,12 @@
                     </select>
                 </div>
 
+                <!-- Affection Status Badge -->
+                <div id="affection-badge" class="control-pill affection-pill" title="当前伴侣好感度与羁绊">
+                    <span class="pill-icon">❤️</span>
+                    <span id="affection-label" class="affection-label">Lv.1 初识 (0/100)</span>
+                </div>
+
                 <!-- GPT-SoVITS Status -->
                 <div id="sovits-status-badge" class="badge badge-loading" title="GPT-SoVITS 推理引擎状态">
                     <span class="status-dot"></span>
@@ -76,6 +82,8 @@
                         <div class="vn-name-tag">
                             <span class="tag-diamond">◆</span>
                             <span id="vn-character-name" class="character-name">四季夏目 (Shiki Natsume)</span>
+                            <span id="vn-affection-badge" class="affection-badge" title="好感度羁绊">❤️ Lv.1</span>
+                            <span id="vn-emotion-badge" class="emotion-badge" data-emotion="normal">🌸 平静</span>
                             <span class="tag-diamond">◆</span>
                         </div>
 
@@ -107,13 +115,25 @@
                             <span id="vn-audio-status" class="status-indicator-text">音频就绪</span>
                         </div>
                         <div class="vn-action-buttons">
+                            <button type="button" id="btn-vn-auto" class="vn-action-btn vn-toggle-btn" title="自动播放模式 (语音播完后 1.5s 自动推进)">
+                                <span class="btn-icon">▶️</span>
+                                <span class="btn-text">AUTO</span>
+                            </button>
+                            <button type="button" id="btn-vn-skip" class="vn-action-btn" title="快速跳过当前打字机与等待">
+                                <span class="btn-icon">⏩</span>
+                                <span class="btn-text">SKIP</span>
+                            </button>
+                            <button type="button" id="btn-vn-log" class="vn-action-btn" title="打开历史剧情回溯抽屉">
+                                <span class="btn-icon">📜</span>
+                                <span class="btn-text">LOG</span>
+                            </button>
                             <button type="button" id="btn-vn-replay" class="vn-action-btn" title="重新播放当前台词配音">
-                                <span>▶️ 重新播放</span>
+                                <span>🔄 重播</span>
                             </button>
                             <button type="button" id="btn-vn-download" class="vn-action-btn" title="下载合并母带音频 (WAV)">
                                 <span>💾 下载母带</span>
                             </button>
-                            <button type="button" id="btn-vn-history" class="vn-action-btn" title="查看历史对话回溯">
+                            <button type="button" id="btn-vn-history" class="vn-action-btn" style="display: none;" title="查看历史对话回溯">
                                 <span>📜 对话记录</span>
                             </button>
                         </div>
@@ -161,6 +181,26 @@
                 </button>
             </form>
         </footer>
+
+        <!-- 📜 Galgame Log Drawer (侧边滑出毛玻璃抽屉) -->
+        <div id="log-drawer-backdrop" class="drawer-backdrop" style="display: none;">
+            <aside id="vn-log-drawer" class="vn-log-drawer glass-card">
+                <div class="drawer-header">
+                    <div class="drawer-title">
+                        <span class="drawer-icon">📜</span>
+                        <span class="drawer-title-text">历史剧情回溯 (Backlog)</span>
+                    </div>
+                    <button type="button" id="btn-close-log-drawer" class="drawer-close-btn" title="关闭抽屉">&times;</button>
+                </div>
+                <div id="log-drawer-body" class="drawer-body">
+                    <!-- 动态渲染历史消息条目，每条 Assistant 消息均带独立的 🔊 重播按钮 -->
+                </div>
+                <div class="drawer-footer">
+                    <button type="button" id="btn-clear-log-history" class="btn-danger-outline">清空历史记忆</button>
+                    <button type="button" id="btn-close-log-drawer-2" class="btn-primary-sm">关闭</button>
+                </div>
+            </aside>
+        </div>
 
         <!-- 📜 History Modal -->
         <div id="history-modal" class="modal-backdrop" style="display: none;">

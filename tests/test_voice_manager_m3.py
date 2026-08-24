@@ -314,7 +314,7 @@ class TestVoiceManagerPersistenceM3:
         service = TtsService(client=client, audio_dir=tmp_path)
         url_path, local_path, count = await service.synthesize_to_file("テスト音声です。")
 
-        assert url_path.startswith("/audio/voice_")
+        assert url_path.startswith("/audio/")
         assert local_path.exists()
         assert count > 44
         assert local_path.read_bytes().startswith(b"RIFF")

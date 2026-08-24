@@ -275,59 +275,61 @@ class TestSSEStreamingProtocol:
             return (mock_llm, "mock-model")
         chat_service._get_active_llm_adapter = _mock_adapter
         set_chat_service(chat_service)
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as c:
+                resp = await c.post(
+                    "/api/chat/stream",
+                    json={"session_id": "test_m2_sess", "prompt": "你好", "stream": True}
+                )
+                assert resp.status_code == 200
+                assert "text/event-stream" in resp.headers.get("content-type", "")
 
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
-            resp = await c.post(
-                "/api/chat/stream",
-                json={"session_id": "test_m2_sess", "prompt": "你好", "stream": True}
-            )
-            assert resp.status_code == 200
-            assert "text/event-stream" in resp.headers.get("content-type", "")
+                body = resp.text
+                assert "event: text" in body
+                assert "event: audio_chunk" in body
+                assert "event: done" in body
 
-            body = resp.text
-            assert "event: text" in body
-            assert "event: audio_chunk" in body
-            assert "event: done" in body
+                # Parse SSE lines
+                lines = body.split("\n")
+                events = []
+                current_event = "message"
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        current_event = "message"
+                        continue
+                    if line.startswith("event:"):
+                        current_event = line.replace("event:", "").strip()
+                    elif line.startswith("data:"):
+                        data_str = line.replace("data:", "").strip()
+                        if data_str != "[DONE]":
+                            parsed = json.loads(data_str)
+                            events.append((current_event, parsed))
 
-            # Parse SSE lines
-            lines = body.split("\n")
-            events = []
-            current_event = "message"
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    current_event = "message"
-                    continue
-                if line.startswith("event:"):
-                    current_event = line.replace("event:", "").strip()
-                elif line.startswith("data:"):
-                    data_str = line.replace("data:", "").strip()
-                    if data_str != "[DONE]":
-                        parsed = json.loads(data_str)
-                        events.append((current_event, parsed))
+                # Verify text events exist
+                text_events = [e for e in events if e[0] == "text"]
+                assert len(text_events) > 0
+                for _, payload in text_events:
+                    assert "delta_chinese" in payload or "full_chinese" in payload
 
-            # Verify text events exist
-            text_events = [e for e in events if e[0] == "text"]
-            assert len(text_events) > 0
-            for _, payload in text_events:
-                assert "delta_chinese" in payload or "full_chinese" in payload
+                # Verify audio_chunk events exist
+                audio_events = [e for e in events if e[0] == "audio_chunk"]
+                assert len(audio_events) > 0
+                for _, payload in audio_events:
+                    assert "audio_url" in payload
+                    assert "index" in payload
+                    assert "sentence" in payload
 
-            # Verify audio_chunk events exist
-            audio_events = [e for e in events if e[0] == "audio_chunk"]
-            assert len(audio_events) > 0
-            for _, payload in audio_events:
-                assert "audio_url" in payload
-                assert "index" in payload
-                assert "sentence" in payload
-
-            # Verify done event exists
-            done_events = [e for e in events if e[0] == "done"]
-            assert len(done_events) == 1
-            _, done_payload = done_events[0]
-            assert "chinese" in done_payload
-            assert "japanese" in done_payload
-            assert "audio_url" in done_payload
+                # Verify done event exists
+                done_events = [e for e in events if e[0] == "done"]
+                assert len(done_events) == 1
+                _, done_payload = done_events[0]
+                assert "chinese" in done_payload
+                assert "japanese" in done_payload
+                assert "audio_url" in done_payload
+        finally:
+            set_chat_service(None)
 
     @pytest.mark.asyncio
     async def test_sse_stream_error_handling_when_llm_fails(self, temp_db_path, mock_gpt_sovits, tmp_path):
@@ -355,16 +357,18 @@ class TestSSEStreamingProtocol:
             return (FailingLLM(api_key="", base_url=""), "mock")
         chat_service._get_active_llm_adapter = _mock_adapter
         set_chat_service(chat_service)
-
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
-            resp = await c.post(
-                "/api/chat/stream",
-                json={"session_id": "test_err_sess", "prompt": "fail test", "stream": True}
-            )
-            assert resp.status_code == 200
-            body = resp.text
-            assert "event: error" in body or "error" in body.lower()
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as c:
+                resp = await c.post(
+                    "/api/chat/stream",
+                    json={"session_id": "test_err_sess", "prompt": "fail test", "stream": True}
+                )
+                assert resp.status_code == 200
+                body = resp.text
+                assert "event: error" in body or "error" in body.lower()
+        finally:
+            set_chat_service(None)
 
 
 # ============================================================================

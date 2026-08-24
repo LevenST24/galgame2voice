@@ -22,9 +22,56 @@ from galgame2voice.database.models import MessageCreate
 from galgame2voice.database.session import get_db
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.services.session_manager import SessionManager
+from galgame2voice.services.memory_service import MemoryService
+from galgame2voice.services.affection_service import AffectionService
+from galgame2voice.services.metrics_collector import get_metrics_collector, MetricsCollector
 from galgame2voice.utils.text_splitter import split_japanese_sentences
 
 logger = logging.getLogger("galgame2voice.services.chat_service")
+
+
+# ============================================================================
+# Emotion Taxonomy & Classifier
+# ============================================================================
+
+EMOTION_KEYWORDS: Dict[str, List[str]] = {
+    "tsundere": ["傲娇", "才不是", "才没有", "べ、別に", "勘違い", "ツン", "哼", "才不会", "別にあんた", "不要误会", "谁要你管"],
+    "shy": ["害羞", "脸红", "照れ", "恥ずか", "///", "……///", "笨蛋", "讨厌", "えっと", "ばか"],
+    "happy": ["开心", "高兴", "嬉し", "わーい", "やった", "笑", "喜ぶ", "大好き", "太好了", "ありがとう", "耶", "哈哈", "好棒"],
+    "cool": ["冷淡", "高冷", "无聊", "くだらない", "別に", "静かに", "冷静", "ふん", "无所谓", "随你便"],
+    "sad": ["难过", "伤心", "悲し", "泣く", "寂しい", "抱歉", "ごめん", "辛い", "对不起", "呜呜", "痛い"],
+    "gentle": ["温柔", "ふふ", "大丈夫", "よしよし", "微笑", "慢点", "摸摸头", "乖", "優しい", "好的", "没关系", "请放心"],
+}
+
+VALID_EMOTIONS = {"gentle", "shy", "happy", "tsundere", "cool", "sad"}
+
+
+def classify_emotion(
+    chinese: str = "",
+    japanese: str = "",
+    explicit_emotion: Optional[str] = None,
+) -> str:
+    """
+    Determines character emotion archetype ('gentle', 'shy', 'happy', 'tsundere', 'cool', 'sad').
+    Priority:
+      1. explicit_emotion if valid
+      2. Deterministic keyword scanning over combined Chinese and Japanese text
+      3. Fallback to 'gentle'
+    """
+    if explicit_emotion:
+        clean = explicit_emotion.strip().lower()
+        if clean in VALID_EMOTIONS:
+            return clean
+
+    combined = f"{chinese} {japanese}".strip()
+    if not combined:
+        return "gentle"
+
+    for emo, keywords in EMOTION_KEYWORDS.items():
+        if any(kw in combined for kw in keywords):
+            return emo
+
+    return "gentle"
 
 
 # ============================================================================
@@ -34,7 +81,7 @@ logger = logging.getLogger("galgame2voice.services.chat_service")
 class StreamingBilingualParser:
     """
     Incremental state machine for parsing streaming LLM output tokens into
-    immediate Chinese delta text and completed Japanese sentence chunks.
+    immediate Chinese delta text, emotion state, and completed Japanese sentence chunks.
     Robust against markdown code fences, unescaped characters, partial JSON tokens,
     Unicode escape sequences split across chunks, and non-JSON fallback text.
     """
@@ -43,6 +90,7 @@ class StreamingBilingualParser:
         self.buffer: str = ""
         self.chinese_extracted: str = ""
         self.japanese_extracted: str = ""
+        self.emotion_extracted: str = ""
         self.emitted_chinese_len: int = 0
         self.emitted_japanese_len: int = 0
         self.is_plain_text_fallback: bool = False
@@ -74,6 +122,10 @@ class StreamingBilingualParser:
                 .replace('\\\\', '\\')
             )
 
+    def get_emotion(self) -> str:
+        """Returns the classified emotion for current extracted content."""
+        return classify_emotion(self.chinese_extracted, self.japanese_extracted, self.emotion_extracted)
+
     def feed_chunk(self, chunk: str) -> Tuple[str, List[str]]:
         """
         Feeds an incoming stream token chunk.
@@ -88,6 +140,13 @@ class StreamingBilingualParser:
 
         new_chinese_delta = ""
         new_sentences: List[str] = []
+
+        # 0. Emotion Extraction
+        emo_match = re.search(r'"emotion"\s*:\s*"([a-zA-Z]+)"?', sanitized)
+        if emo_match:
+            raw_emo = emo_match.group(1).lower()
+            if raw_emo in VALID_EMOTIONS:
+                self.emotion_extracted = raw_emo
 
         # 1. Incremental Chinese Extraction
         # Look for "chinese" : "..."
@@ -164,6 +223,8 @@ class StreamingBilingualParser:
             if isinstance(parsed, dict):
                 self.chinese_extracted = parsed.get("chinese", self.chinese_extracted)
                 self.japanese_extracted = parsed.get("japanese", self.japanese_extracted)
+                if "emotion" in parsed and str(parsed["emotion"]).lower() in VALID_EMOTIONS:
+                    self.emotion_extracted = str(parsed["emotion"]).lower()
         except Exception:
             # Try regex extraction for unclosed JSON
             ch_match = re.search(r'"chinese"\s*:\s*"((?:[^"\\]|\\.)*)', sanitized)
@@ -172,6 +233,11 @@ class StreamingBilingualParser:
             ja_match = re.search(r'"japanese"\s*:\s*"((?:[^"\\]|\\.)*)', sanitized)
             if ja_match:
                 self.japanese_extracted = self._unescape_json_string(ja_match.group(1))
+            emo_match = re.search(r'"emotion"\s*:\s*"([a-zA-Z]+)"?', sanitized)
+            if emo_match:
+                raw_emo = emo_match.group(1).lower()
+                if raw_emo in VALID_EMOTIONS:
+                    self.emotion_extracted = raw_emo
 
             # Fallback for structured text without valid JSON
             if not self.chinese_extracted and not self.japanese_extracted:
@@ -185,6 +251,8 @@ class StreamingBilingualParser:
                     self.chinese_extracted = sanitized
                 if not self.japanese_extracted:
                     self.japanese_extracted = self.chinese_extracted
+
+        self.emotion_extracted = classify_emotion(self.chinese_extracted, self.japanese_extracted, self.emotion_extracted)
 
         remaining_sentences: List[str] = []
         if self.japanese_extracted:
@@ -213,11 +281,15 @@ class ChatService:
         self,
         tts_service: Optional[TtsService] = None,
         db_path: Optional[Union[str, Path]] = None,
+        metrics_collector: Optional[MetricsCollector] = None,
     ):
-        settings = get_settings()
+        from galgame2voice.database.session import get_database_path
         self.tts_service = tts_service or TtsService()
-        self.db_path = str(db_path or settings.db_path)
+        self.db_path = str(db_path or get_database_path())
         self.session_manager = SessionManager(db_path=self.db_path)
+        self.memory_service = MemoryService(db_path=self.db_path)
+        self.affection_service = AffectionService(db_path=self.db_path)
+        self.metrics_collector = metrics_collector or get_metrics_collector(db_path=self.db_path)
 
     async def _get_active_llm_adapter(self, conn: Optional[aiosqlite.Connection] = None, provider_id: Optional[str] = None) -> Tuple[BaseLLMAdapter, str]:
         """
@@ -262,6 +334,7 @@ class ChatService:
     ) -> List[ChatMessage]:
         """
         Constructs system prompt and conversation history messages for LLM using SessionManager.
+        Injects dynamically recalled memories and character affection status into prompt context.
         """
         active_profile = await crud.get_active_voice_profile(conn)
         system_prompt = (
@@ -274,12 +347,38 @@ class ChatService:
         settings_raw = await crud.get_settings_raw(conn)
         max_history = settings_raw.max_history_messages if settings_raw else 10
 
+        session = await crud.get_session(conn, session_id)
+        user_id = session.user_id if session and session.user_id else "default_user"
+        profile_id = active_profile.id if active_profile else 1
+
+        # RAG memory retrieval & affection context injection
+        try:
+            recalled_memories = await self.memory_service.retrieve_relevant_memories(
+                user_id=user_id,
+                character_id=profile_id,
+                prompt=user_prompt,
+                top_k=5,
+                conn=conn,
+            )
+            affection = await crud.get_or_create_character_affection(conn, user_id=user_id, character_id=profile_id)
+            aff_info = {
+                "level": affection.affection_level,
+                "level_name": affection.level_name,
+                "emotion": affection.current_emotion,
+                "nickname": affection.custom_nickname,
+            }
+            memory_block = self.memory_service.format_memory_prompt_block(recalled_memories, aff_info)
+        except Exception as e:
+            logger.warning("Failed to retrieve memories for prompt injection: %s", e)
+            memory_block = None
+
         return await self.session_manager.build_chat_messages(
             session_id=session_id,
             user_prompt=user_prompt,
             character_name=char_name,
             custom_system_prompt=system_prompt,
             max_messages=max_history,
+            memory_prompt_block=memory_block,
         )
 
     async def stream_chat(
@@ -299,6 +398,12 @@ class ChatService:
           - error: error detail if an exception occurs
         """
         start_time = time.time()
+        t_start = time.perf_counter()
+        ttft_ms = 0.0
+        tts_first_chunk_ms = 0.0
+        tts_cached_chunks = 0
+        tts_generated_chunks = 0
+
         parser = StreamingBilingualParser()
         chunk_index = 0
         audio_chunks: List[Dict[str, Any]] = []
@@ -310,8 +415,8 @@ class ChatService:
         try:
             async with get_db(self.db_path) as conn:
                 # Ensure session exists and record user message
-                await crud.get_or_create_session(conn, session_id)
-                await crud.add_message(conn, MessageCreate(
+                sess_obj = await crud.get_or_create_session(conn, session_id)
+                user_msg = await crud.add_message(conn, MessageCreate(
                     session_id=session_id,
                     role="user",
                     content_chinese=prompt,
@@ -319,6 +424,22 @@ class ChatService:
                     audio_url="",
                     latency_ms=0,
                 ))
+
+                active_prof = await crud.get_active_voice_profile(conn)
+                user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
+                profile_id = active_prof.id if active_prof else None
+
+                # Extract user memory facts in background
+                try:
+                    await self.memory_service.process_user_message(
+                        user_id=user_id,
+                        character_id=profile_id,
+                        message_text=prompt,
+                        source_message_id=user_msg.id,
+                        conn=conn,
+                    )
+                except Exception as mem_err:
+                    logger.warning("Memory fact extraction failed: %s", mem_err)
 
                 adapter, model_name = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
                 messages = await self._prepare_messages(conn, session_id, prompt, character_name)
@@ -330,6 +451,7 @@ class ChatService:
 
             # Background TTS Consumer Worker
             async def tts_worker():
+                nonlocal tts_first_chunk_ms, tts_cached_chunks, tts_generated_chunks
                 chunk_index = 0
                 while True:
                     sentence = await tts_queue.get()
@@ -349,6 +471,13 @@ class ChatService:
                             options=tts_options,
                             filename_prefix=f"chunk_{chunk_index}",
                         )
+                        if tts_first_chunk_ms == 0.0:
+                            tts_first_chunk_ms = (time.perf_counter() - t_start) * 1000.0
+                        if "/audio/cache/" in str(audio_url):
+                            tts_cached_chunks += 1
+                        else:
+                            tts_generated_chunks += 1
+
                         chunk_data = {
                             "index": chunk_index,
                             "audio_url": audio_url,
@@ -374,6 +503,7 @@ class ChatService:
 
             # LLM Stream Producer
             async def llm_producer():
+                nonlocal ttft_ms
                 try:
                     stream_gen = adapter.stream_chat(messages, model=model_name)
                     async for token in stream_gen:
@@ -381,11 +511,15 @@ class ChatService:
                             break
                         delta_ch, completed_sentences = parser.feed_chunk(token)
                         if delta_ch:
+                            if ttft_ms == 0.0:
+                                ttft_ms = (time.perf_counter() - t_start) * 1000.0
+                            current_emo = parser.emotion_extracted or classify_emotion(parser.chinese_extracted, parser.japanese_extracted)
                             await event_out_queue.put({
                                 "event": "text",
                                 "data": {
                                     "delta_chinese": delta_ch,
                                     "full_chinese": parser.chinese_extracted,
+                                    "emotion": current_emo,
                                 }
                             })
                         for sentence in completed_sentences:
@@ -394,11 +528,15 @@ class ChatService:
                     full_ch, full_ja, rem_sentences = parser.finalize()
                     if len(full_ch) > parser.emitted_chinese_len:
                         rem_ch = full_ch[parser.emitted_chinese_len:]
+                        if ttft_ms == 0.0:
+                            ttft_ms = (time.perf_counter() - t_start) * 1000.0
+                        current_emo = parser.emotion_extracted or classify_emotion(full_ch, full_ja)
                         await event_out_queue.put({
                             "event": "text",
                             "data": {
                                 "delta_chinese": rem_ch,
                                 "full_chinese": full_ch,
+                                "emotion": current_emo,
                             }
                         })
                     for sentence in rem_sentences:
@@ -440,6 +578,7 @@ class ChatService:
             await worker_task
 
             full_chinese, full_japanese, _ = parser.finalize()
+            final_emotion = classify_emotion(full_chinese, full_japanese, parser.emotion_extracted)
             total_audio_url = ""
             if audio_chunks:
                 if len(audio_chunks) == 1:
@@ -460,7 +599,7 @@ class ChatService:
                                 if p.exists():
                                     with wave.open(str(p), "rb") as w:
                                         if params is None:
-                                            params = w.getparams()
+                                             params = w.getparams()
                                         data.append(w.readframes(w.getnframes()))
                         
                         if data and params:
@@ -475,7 +614,30 @@ class ChatService:
                         logger.warning("Failed to concatenate audio chunks: %s", cat_err)
                         total_audio_url = audio_chunks[0]["audio_url"]
 
-            total_latency = int((time.time() - start_time) * 1000)
+            total_latency = int((time.perf_counter() - t_start) * 1000)
+            if ttft_ms == 0.0:
+                ttft_ms = float(total_latency)
+            if tts_first_chunk_ms == 0.0:
+                tts_first_chunk_ms = float(total_latency)
+
+            # Calculate and record token and latency metrics
+            prompt_text = "".join([getattr(m, "content", "") for m in messages])
+            prompt_tokens = self.metrics_collector.estimate_tokens(prompt_text)
+            completion_tokens = self.metrics_collector.estimate_tokens(full_chinese + full_japanese)
+
+            metric_record = await self.metrics_collector.record_metric(
+                session_id=session_id,
+                channel="web",
+                provider_id=provider_id or "deepseek",
+                model_name=model_name or "deepseek-chat",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                ttft_ms=ttft_ms,
+                tts_first_chunk_ms=tts_first_chunk_ms,
+                total_latency_ms=float(total_latency),
+                tts_cached_chunks=tts_cached_chunks,
+                tts_generated_chunks=tts_generated_chunks,
+            )
 
             # Persist assistant message in DB
             async with get_db(self.db_path) as conn:
@@ -494,12 +656,34 @@ class ChatService:
                 for i, c in enumerate(audio_chunks)
             ]
 
+            # Affection State Machine update
+            try:
+                affection_res = await self.affection_service.handle_turn_affection(
+                    user_id=user_id,
+                    character_id=profile_id,
+                    user_text=prompt,
+                    assistant_text=full_chinese,
+                )
+                final_emotion = affection_res.get("emotion", final_emotion)
+            except Exception as aff_err:
+                logger.warning("Affection update in stream_chat failed: %s", aff_err)
+                affection_res = {
+                    "score": 0,
+                    "level": 1,
+                    "level_name": "初识/生疏",
+                    "emotion": final_emotion,
+                    "points_earned": 0,
+                }
+
             # Emit final done event
             yield {
                 "event": "done",
                 "data": {
                     "chinese": full_chinese,
                     "japanese": full_japanese,
+                    "emotion": final_emotion,
+                    "affection": affection_res,
+                    "metrics": metric_record,
                     "audio_url": total_audio_url,
                     "total_audio_url": total_audio_url,
                     "chunks": clean_chunks,
@@ -526,9 +710,10 @@ class ChatService:
         Synchronous non-streaming bilingual completion and TTS synthesis.
         """
         start_time = time.time()
+        t_start = time.perf_counter()
         async with get_db(self.db_path) as conn:
-            await crud.get_or_create_session(conn, session_id)
-            await crud.add_message(conn, MessageCreate(
+            sess_obj = await crud.get_or_create_session(conn, session_id)
+            user_msg = await crud.add_message(conn, MessageCreate(
                 session_id=session_id,
                 role="user",
                 content_chinese=prompt,
@@ -537,11 +722,28 @@ class ChatService:
                 latency_ms=0,
             ))
 
+            active_prof = await crud.get_active_voice_profile(conn)
+            user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
+            profile_id = active_prof.id if active_prof else None
+
+            # Extract user memory facts
+            try:
+                await self.memory_service.process_user_message(
+                    user_id=user_id,
+                    character_id=profile_id,
+                    message_text=prompt,
+                    source_message_id=user_msg.id,
+                    conn=conn,
+                )
+            except Exception as mem_err:
+                logger.warning("Memory fact extraction failed in chat_sync: %s", mem_err)
+
             adapter, model_name = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
             messages = await self._prepare_messages(conn, session_id, prompt, character_name)
 
-
+        t_llm_start = time.perf_counter()
         llm_response = await adapter.chat(messages, model=model_name)
+        ttft_ms = (time.perf_counter() - t_llm_start) * 1000.0
         raw_text = llm_response.content
 
         # Parse bilingual response
@@ -554,19 +756,68 @@ class ChatService:
         if not japanese:
             japanese = chinese
 
+        final_emotion = classify_emotion(chinese, japanese, parser.emotion_extracted)
+
+        # Affection update
+        try:
+            affection_res = await self.affection_service.handle_turn_affection(
+                user_id=user_id,
+                character_id=profile_id,
+                user_text=prompt,
+                assistant_text=chinese,
+            )
+            final_emotion = affection_res.get("emotion", final_emotion)
+        except Exception as aff_err:
+            logger.warning("Affection update in chat_sync failed: %s", aff_err)
+            affection_res = {
+                "score": 0,
+                "level": 1,
+                "level_name": "初识/生疏",
+                "emotion": final_emotion,
+                "points_earned": 0,
+            }
+
         # Synthesize full audio
         audio_url = ""
+        tts_first_chunk_ms = 0.0
+        tts_cached_chunks = 0
+        tts_generated_chunks = 0
         if japanese.strip():
             try:
+                t_tts_start = time.perf_counter()
                 audio_url, _, _ = await self.tts_service.synthesize_to_file(
                     japanese,
                     options=tts_options,
                     filename_prefix="voice",
                 )
+                tts_first_chunk_ms = (time.perf_counter() - t_tts_start) * 1000.0
+                if "/audio/cache/" in str(audio_url):
+                    tts_cached_chunks = 1
+                else:
+                    tts_generated_chunks = 1
             except Exception as e:
                 logger.warning("TTS synthesis in chat_sync failed: %s", e)
 
-        latency_ms = int((time.time() - start_time) * 1000)
+        latency_ms = int((time.perf_counter() - t_start) * 1000)
+
+        # Token and Latency Telemetry
+        prompt_text = "".join([getattr(m, "content", "") for m in messages])
+        prompt_tokens = self.metrics_collector.estimate_tokens(prompt_text)
+        completion_tokens = self.metrics_collector.estimate_tokens(chinese + japanese)
+
+        metric_record = await self.metrics_collector.record_metric(
+            session_id=session_id,
+            channel="web",
+            provider_id=provider_id or "deepseek",
+            model_name=model_name or "deepseek-chat",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            ttft_ms=ttft_ms,
+            tts_first_chunk_ms=tts_first_chunk_ms,
+            total_latency_ms=float(latency_ms),
+            tts_cached_chunks=tts_cached_chunks,
+            tts_generated_chunks=tts_generated_chunks,
+        )
 
         # Save assistant message to DB
         async with get_db(self.db_path) as conn:
@@ -583,6 +834,9 @@ class ChatService:
             "session_id": session_id,
             "chinese": chinese,
             "japanese": japanese,
+            "emotion": final_emotion,
+            "affection": affection_res,
+            "metrics": metric_record,
             "audio_url": audio_url,
             "audioUrl": audio_url,
             "latency_ms": latency_ms,
@@ -593,4 +847,7 @@ __all__ = [
     "StreamingBilingualParser",
     "ChatService",
     "split_japanese_sentences",
+    "classify_emotion",
+    "EMOTION_KEYWORDS",
+    "VALID_EMOTIONS",
 ]

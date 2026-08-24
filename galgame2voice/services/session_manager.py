@@ -17,6 +17,7 @@ class SessionTurn(BaseModel):
     role: str = Field(..., description="'user' or 'assistant'")
     content_chinese: str = Field(default="")
     content_japanese: str = Field(default="")
+    emotion: str = Field(default="gentle", description="Emotion archetype: gentle, shy, happy, tsundere, cool, sad")
     raw_content: Optional[str] = None
     audio_url: str = Field(default="")
     latency_ms: int = Field(default=0)
@@ -31,7 +32,7 @@ class SessionManager:
     DEFAULT_SYSTEM_TEMPLATE = (
         "你是一个Galgame二次元伴侣角色【{character_name}】。\n"
         "请始终输出如下 JSON 格式，不要包含 Markdown 标记或多余文字：\n"
-        "{{\"chinese\": \"给玩家看的中文内容\", \"japanese\": \"对应的口语化日语音频台词\"}}"
+        "{{\"chinese\": \"给玩家看的中文内容\", \"japanese\": \"对应的口语化日语音频台词\", \"emotion\": \"gentle|shy|happy|tsundere|cool|sad\"}}"
     )
 
     def __init__(
@@ -63,6 +64,7 @@ class SessionManager:
         raw: Optional[str] = None,
         audio_url: str = "",
         latency_ms: int = 0,
+        emotion: str = "gentle",
     ) -> SessionTurn:
         """Persists a new conversation turn to SQLite."""
         async with get_db(self.db_path) as db:
@@ -95,6 +97,7 @@ class SessionManager:
             role=role,
             content_chinese=chinese,
             content_japanese=japanese,
+            emotion=emotion,
             raw_content=raw,
             audio_url=audio_url,
             latency_ms=latency_ms,
@@ -177,11 +180,13 @@ class SessionManager:
         history: List[SessionTurn],
         new_user_prompt: Optional[str] = None,
         system_template: Optional[str] = None,
+        memory_prompt_block: Optional[str] = None,
     ) -> List[Dict[str, str]]:
         """
         Constructs system prompt and formatted OpenAI-compatible message list.
         User messages are formatted as plain text; assistant messages as bilingual JSON.
         Ensures new_user_prompt is never duplicated.
+        Injects optional long-term memory & affection context block into system prompt.
         """
         tpl = system_template or self.system_template
 
@@ -196,16 +201,22 @@ class SessionManager:
         else:
             system_content = tpl
 
+        if memory_prompt_block and memory_prompt_block.strip():
+            system_content = f"{system_content}\n\n{memory_prompt_block.strip()}"
+
         messages = [{"role": "system", "content": system_content}]
 
         for turn in history:
             if turn.role == "user":
                 content = turn.content_chinese or turn.raw_content or ""
             else:
-                content = turn.raw_content or json.dumps(
-                    {"chinese": turn.content_chinese, "japanese": turn.content_japanese},
-                    ensure_ascii=False,
-                )
+                data_dict = {
+                    "chinese": turn.content_chinese,
+                    "japanese": turn.content_japanese,
+                }
+                if getattr(turn, "emotion", None):
+                    data_dict["emotion"] = turn.emotion
+                content = turn.raw_content or json.dumps(data_dict, ensure_ascii=False)
             messages.append({"role": turn.role, "content": content})
 
         # Append new_user_prompt only if it is not already the last message in history
@@ -224,6 +235,7 @@ class SessionManager:
         custom_system_prompt: Optional[str] = None,
         max_messages: int = 10,
         max_tokens: int = 2000,
+        memory_prompt_block: Optional[str] = None,
     ) -> List[ChatMessage]:
         """High-level helper returning List[ChatMessage] for BaseLLMAdapter."""
         history = await self.get_history(session_id, max_messages=max_messages, max_tokens=max_tokens)
@@ -232,8 +244,10 @@ class SessionManager:
             history=history,
             new_user_prompt=user_prompt,
             system_template=custom_system_prompt,
+            memory_prompt_block=memory_prompt_block,
         )
         return [ChatMessage(role=m["role"], content=m["content"]) for m in dict_msgs]
+
 
 
 __all__ = ["SessionTurn", "SessionManager"]

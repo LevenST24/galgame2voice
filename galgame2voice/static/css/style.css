@@ -321,21 +321,69 @@ body.galgame-theme {
     align-items: center;
     justify-content: center;
     pointer-events: none;
+    --aura-color: rgba(236, 72, 153, 0.25);
+    --aura-speed: 4.0s;
+    --aura-scale-min: 0.9;
+    --aura-scale-max: 1.15;
+    transition: --aura-color 0.8s ease, --aura-speed 0.8s ease;
+}
+
+.character-backdrop.emotion-gentle {
+    --aura-color: rgba(236, 72, 153, 0.25);
+    --aura-speed: 4.0s;
+    --aura-scale-min: 0.9;
+    --aura-scale-max: 1.15;
+}
+
+.character-backdrop.emotion-shy {
+    --aura-color: rgba(251, 113, 133, 0.45);
+    --aura-speed: 2.2s;
+    --aura-scale-min: 0.92;
+    --aura-scale-max: 1.25;
+}
+
+.character-backdrop.emotion-happy {
+    --aura-color: rgba(251, 191, 36, 0.4);
+    --aura-speed: 2.0s;
+    --aura-scale-min: 0.95;
+    --aura-scale-max: 1.22;
+}
+
+.character-backdrop.emotion-tsundere {
+    --aura-color: rgba(236, 72, 153, 0.45);
+    --aura-speed: 2.8s;
+    --aura-scale-min: 0.9;
+    --aura-scale-max: 1.18;
+}
+
+.character-backdrop.emotion-cool {
+    --aura-color: rgba(96, 165, 250, 0.35);
+    --aura-speed: 5.0s;
+    --aura-scale-min: 0.92;
+    --aura-scale-max: 1.1;
+}
+
+.character-backdrop.emotion-sad {
+    --aura-color: rgba(148, 163, 184, 0.35);
+    --aura-speed: 4.5s;
+    --aura-scale-min: 0.88;
+    --aura-scale-max: 1.08;
 }
 
 .character-glow-circle {
     position: absolute;
-    width: 400px;
-    height: 400px;
+    width: 420px;
+    height: 420px;
     border-radius: 50%;
-    background: radial-gradient(circle, rgba(236, 72, 153, 0.22) 0%, rgba(139, 92, 246, 0.12) 50%, transparent 70%);
+    background: radial-gradient(circle, var(--aura-color) 0%, transparent 70%);
     filter: blur(25px);
-    animation: auraPulse 4s ease-in-out infinite alternate;
+    animation: dynamicAuraPulse var(--aura-speed) ease-in-out infinite alternate;
+    transition: background 0.8s ease, filter 0.8s ease;
 }
 
-@keyframes auraPulse {
-    0% { transform: scale(0.9); opacity: 0.6; }
-    100% { transform: scale(1.15); opacity: 1; }
+@keyframes dynamicAuraPulse {
+    0% { transform: scale(var(--aura-scale-min)); opacity: 0.6; }
+    100% { transform: scale(var(--aura-scale-max)); opacity: 1; }
 }
 
 .character-avatar-wrapper {
@@ -418,6 +466,50 @@ body.galgame-theme {
     font-size: 14px;
     color: #fdf2f8;
     letter-spacing: 0.5px;
+}
+
+.emotion-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: var(--radius-full);
+    background: rgba(236, 72, 153, 0.25);
+    border: 1px solid rgba(244, 114, 182, 0.4);
+    color: #fbcfe8;
+    transition: all 0.3s ease;
+}
+
+.emotion-badge[data-emotion="shy"] {
+    background: rgba(251, 113, 133, 0.35);
+    border-color: rgba(251, 113, 133, 0.5);
+    color: #ffe4e6;
+}
+
+.emotion-badge[data-emotion="happy"] {
+    background: rgba(251, 191, 36, 0.35);
+    border-color: rgba(251, 191, 36, 0.5);
+    color: #fef3c7;
+}
+
+.emotion-badge[data-emotion="tsundere"] {
+    background: rgba(236, 72, 153, 0.35);
+    border-color: rgba(236, 72, 153, 0.5);
+    color: #fdf2f8;
+}
+
+.emotion-badge[data-emotion="cool"] {
+    background: rgba(96, 165, 250, 0.35);
+    border-color: rgba(96, 165, 250, 0.5);
+    color: #e0f2fe;
+}
+
+.emotion-badge[data-emotion="sad"] {
+    background: rgba(148, 163, 184, 0.35);
+    border-color: rgba(148, 163, 184, 0.5);
+    color: #f1f5f9;
 }
 
 /* Audio Equalizer Bars (Dynamic & Animated) */
@@ -513,6 +605,19 @@ body.galgame-theme {
 
 .vn-action-btn:active {
     transform: translateY(0);
+}
+
+.vn-action-btn.active, .vn-toggle-btn.active {
+    background: var(--primary-gradient);
+    border-color: rgba(255, 255, 255, 0.4);
+    color: #ffffff;
+    box-shadow: 0 0 16px rgba(236, 72, 153, 0.5);
+    animation: activeGlowPulse 2s ease-in-out infinite alternate;
+}
+
+@keyframes activeGlowPulse {
+    0% { box-shadow: 0 0 8px rgba(236, 72, 153, 0.4); }
+    100% { box-shadow: 0 0 20px rgba(236, 72, 153, 0.8); }
 }
 
 .msg-actions {
@@ -788,4 +893,192 @@ body.galgame-theme {
     font-size: 12px;
     font-weight: 600;
     cursor: pointer;
+}
+
+/* ================= 📜 GALGAME LOG DRAWER (SLIDE-OUT BACKLOG) ================= */
+.drawer-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    z-index: 120;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+}
+
+.drawer-backdrop.active, .drawer-backdrop.open {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.vn-log-drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 480px;
+    max-width: 90vw;
+    background: rgba(15, 23, 42, 0.88);
+    backdrop-filter: blur(28px);
+    -webkit-backdrop-filter: blur(28px);
+    border-left: 1.5px solid var(--border-dialogue);
+    box-shadow: -10px 0 35px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    z-index: 121;
+    transform: translateX(100%);
+    transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    color: #ffffff;
+}
+
+.vn-log-drawer.open, .drawer-backdrop.active .vn-log-drawer, .drawer-backdrop.open .vn-log-drawer {
+    transform: translateX(0);
+}
+
+.drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 24px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.drawer-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 16px;
+    font-weight: 800;
+    background: var(--primary-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.drawer-close-btn {
+    background: none;
+    border: none;
+    color: #94a3b8;
+    font-size: 24px;
+    cursor: pointer;
+    line-height: 1;
+    transition: color 0.15s, transform 0.15s;
+}
+
+.drawer-close-btn:hover {
+    color: #ffffff;
+    transform: scale(1.15);
+}
+
+.drawer-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.drawer-footer {
+    padding: 14px 20px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(15, 23, 42, 0.6);
+}
+
+/* Log Item Entry */
+.log-item-card {
+    padding: 12px 16px;
+    border-radius: var(--radius-lg);
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: all 0.2s ease;
+}
+
+.log-item-card:hover {
+    background: rgba(255, 255, 255, 0.09);
+    border-color: rgba(236, 72, 153, 0.35);
+}
+
+.log-item-card.log-user {
+    border-left: 3px solid var(--primary-pink);
+}
+
+.log-item-card.log-assistant {
+    border-left: 3px solid var(--primary-purple);
+}
+
+.log-item-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+}
+
+.log-item-speaker {
+    font-weight: 700;
+}
+
+.log-user .log-item-speaker {
+    color: var(--primary-pink);
+}
+
+.log-assistant .log-item-speaker {
+    color: #c084fc;
+}
+
+.log-item-time {
+    color: #64748b;
+    font-size: 10px;
+}
+
+.log-item-ja {
+    font-size: 14px;
+    font-weight: 600;
+    color: #fbcfe8;
+    line-height: 1.5;
+}
+
+.log-item-zh {
+    font-size: 13px;
+    color: #cbd5e1;
+    line-height: 1.4;
+}
+
+.log-item-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 4px;
+}
+
+.btn-log-replay {
+    background: rgba(236, 72, 153, 0.15);
+    border: 1px solid rgba(236, 72, 153, 0.35);
+    color: #f472b6;
+    padding: 3px 10px;
+    border-radius: var(--radius-full);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.2s ease;
+}
+
+.btn-log-replay:hover {
+    background: var(--primary-gradient);
+    border-color: transparent;
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(236, 72, 153, 0.4);
+    transform: translateY(-1px);
 }

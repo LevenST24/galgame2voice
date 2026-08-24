@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
-from galgame2voice.database.session import get_db
+from galgame2voice.database.session import get_db, get_database_path
 
 logger = logging.getLogger("galgame2voice.routers.chat")
 
@@ -23,20 +23,24 @@ router = APIRouter(tags=["chat"])
 
 # Module-level ChatService instance
 _chat_service: Optional[ChatService] = None
+_explicit_chat_service: Optional[ChatService] = None
 
 
 def get_chat_service() -> ChatService:
     """Returns singleton ChatService instance."""
-    global _chat_service
-    if _chat_service is None:
-        _chat_service = ChatService()
+    global _chat_service, _explicit_chat_service
+    if _explicit_chat_service is not None:
+        return _explicit_chat_service
+    db_path = get_database_path()
+    if _chat_service is None or str(_chat_service.db_path) != str(db_path):
+        _chat_service = ChatService(db_path=db_path)
     return _chat_service
 
 
-def set_chat_service(service: ChatService) -> None:
+def set_chat_service(service: Optional[ChatService]) -> None:
     """Overrides singleton ChatService instance (e.g. in tests)."""
-    global _chat_service
-    _chat_service = service
+    global _explicit_chat_service
+    _explicit_chat_service = service
 
 
 # ============================================================================

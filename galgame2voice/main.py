@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from galgame2voice.config import get_settings
-from galgame2voice.routers import chat, config, health, voice
+from galgame2voice.routers import chat, config, health, voice, memory, affection, metrics
 from galgame2voice.utils.logger import setup_logger
 
 
@@ -26,7 +26,7 @@ logger = logging.getLogger("galgame2voice.main")
 
 
 async def _audio_cleanup_loop(audio_dir: Path, retention_minutes: int, interval_seconds: int):
-    """Periodically removes audio files exceeding retention duration."""
+    """Periodically removes ephemeral audio files exceeding retention duration while protecting persistent cache."""
     logger.info("Started background audio cleanup worker (retention=%d min, interval=%d sec)",
                 retention_minutes, interval_seconds)
     while True:
@@ -37,6 +37,9 @@ async def _audio_cleanup_loop(audio_dir: Path, retention_minutes: int, interval_
             cleaned_count = 0
             if audio_dir.exists():
                 for f in audio_dir.iterdir():
+                    # Strictly protect cache directory and non-file entries
+                    if f.is_dir() or f.name.lower() == "cache":
+                        continue
                     if f.is_file() and f.suffix.lower() in (".wav", ".ogg", ".mp3", ".opus"):
                         try:
                             if f.stat().st_mtime < cutoff:
@@ -144,6 +147,9 @@ def create_app() -> FastAPI:
     app.include_router(config.router)
     app.include_router(voice.router)
     app.include_router(chat.router)
+    app.include_router(memory.router)
+    app.include_router(affection.router)
+    app.include_router(metrics.router)
 
 
     # 3. Mount Static Audio Storage Directory

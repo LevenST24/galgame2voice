@@ -88,13 +88,13 @@ async def convert_ogg_to_wav(
         raise ValueError(f"Audio conversion failed: {exc}") from exc
     finally:
         for p in (in_path, out_path):
-            for _ in range(5):
+            for _ in range(10):
                 try:
                     if p.exists():
                         p.unlink(missing_ok=True)
                     break
                 except OSError:
-                    await asyncio.sleep(0.02)
+                    await asyncio.sleep(0.05)
 
 
 async def convert_wav_to_ogg(
@@ -132,11 +132,13 @@ async def convert_wav_to_ogg(
         return out_path.read_bytes()
     finally:
         for p in (in_path, out_path):
-            try:
-                if p.exists():
-                    p.unlink()
-            except OSError:
-                pass
+            for _ in range(10):
+                try:
+                    if p.exists():
+                        p.unlink(missing_ok=True)
+                    break
+                except OSError:
+                    await asyncio.sleep(0.05)
 
 
 __all__ = [

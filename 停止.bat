@@ -14,7 +14,7 @@ set "SCRIPT_DIR=%~dp0"
 
 REM 1. Terminate Galgame2Voice Port 8080
 echo [1/2] Closing Galgame2Voice [Port 8080]
-for /f "tokens=4,5" %%a in ('netstat -ano ^| findstr ":8080 "') do (
+for /f "tokens=4,5" %%a in ('netstat -ano ^| findstr ":8080"') do (
     if "%%a"=="LISTENING" (
         taskkill /f /t /pid %%b >nul 2>&1
         echo   [OK] Closed port 8080 process PID: %%b
@@ -29,7 +29,7 @@ if exist "galgame2voice.pid" (
 
 REM 2. Terminate GPT-SoVITS Port 9880
 echo [2/2] Closing GPT-SoVITS [Port 9880]
-for /f "tokens=4,5" %%a in ('netstat -ano ^| findstr ":9880 "') do (
+for /f "tokens=4,5" %%a in ('netstat -ano ^| findstr ":9880"') do (
     if "%%a"=="LISTENING" (
         taskkill /f /t /pid %%b >nul 2>&1
         echo   [OK] Closed port 9880 process PID: %%b
@@ -40,6 +40,12 @@ if exist "gptsovits.pid" (
     set "SOVITS_PID=!SOVITS_PID: =!"
     if defined SOVITS_PID taskkill /f /t /pid !SOVITS_PID! >nul 2>&1
     del /f /q gptsovits.pid >nul 2>&1
+)
+if exist "gpt_sovits.pid" (
+    set /p SOVITS_PID=<gpt_sovits.pid
+    set "SOVITS_PID=!SOVITS_PID: =!"
+    if defined SOVITS_PID taskkill /f /t /pid !SOVITS_PID! >nul 2>&1
+    del /f /q gpt_sovits.pid >nul 2>&1
 )
 
 echo.

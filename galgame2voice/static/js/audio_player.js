@@ -14,7 +14,7 @@
 
 class StreamingAudioPlayer {
     constructor(options = {}) {
-        this.crossFadeDuration = options.crossFadeDuration || 0.04; // 40ms cross-fade
+        this.crossFadeDuration = options.crossFadeDuration || 0.025; // 25ms zero DC-offset cross-fade
         this.audioCtx = null;
         this.masterGain = null;
         this.analyser = null;
@@ -219,7 +219,7 @@ class StreamingAudioPlayer {
 
         const now = this.audioCtx.currentTime;
         if (this.nextStartTime < now) {
-            this.nextStartTime = now + 0.05; // 50ms lead-in buffer
+            this.nextStartTime = now + 0.02; // 20ms lead-in for sub-500ms TTFB
         }
 
         while (this.queue.length > 0) {
@@ -234,17 +234,27 @@ class StreamingAudioPlayer {
             const startTime = this.nextStartTime;
             const duration = buffer.duration;
 
-            // Create Audio Source and Gain Node for cross-fading
+            // Create Audio Source and Gain Node for zero DC-offset cross-fading
             const source = this.audioCtx.createBufferSource();
             source.buffer = buffer;
 
             const chunkGain = this.audioCtx.createGain();
-            chunkGain.gain.setValueAtTime(0, startTime);
-            // Cross-fade in
-            chunkGain.gain.linearRampToValueAtTime(1.0, Math.min(startTime + this.crossFadeDuration, startTime + duration / 2));
-            // Cross-fade out
-            chunkGain.gain.setValueAtTime(1.0, Math.max(startTime, startTime + duration - this.crossFadeDuration));
-            chunkGain.gain.linearRampToValueAtTime(0.01, startTime + duration);
+            const fadeDur = this.crossFadeDuration; // 25ms
+            chunkGain.gain.setValueAtTime(0.0001, startTime);
+            try {
+                chunkGain.gain.exponentialRampToValueAtTime(1.0, Math.min(startTime + fadeDur, startTime + duration / 2));
+            } catch (e) {
+                chunkGain.gain.linearRampToValueAtTime(1.0, Math.min(startTime + fadeDur, startTime + duration / 2));
+            }
+
+            // Cross-fade out to zero to eliminate DC pop
+            const fadeOutStart = Math.max(startTime + fadeDur, startTime + duration - fadeDur);
+            chunkGain.gain.setValueAtTime(1.0, fadeOutStart);
+            try {
+                chunkGain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+            } catch (e) {
+                chunkGain.gain.linearRampToValueAtTime(0.0, startTime + duration);
+            }
 
             source.connect(chunkGain);
             chunkGain.connect(this.masterGain);
@@ -291,7 +301,11 @@ class StreamingAudioPlayer {
 
         for (const s of this.activeSources) {
             try {
-                s.source.stop(0);
+                if (s.chunkGain && this.audioCtx) {
+                    s.chunkGain.gain.setValueAtTime(s.chunkGain.gain.value, this.audioCtx.currentTime);
+                    s.chunkGain.gain.linearRampToValueAtTime(0.0, this.audioCtx.currentTime + 0.015);
+                }
+                s.source.stop(this.audioCtx ? this.audioCtx.currentTime + 0.015 : 0);
                 s.source.disconnect();
                 s.chunkGain.disconnect();
             } catch (e) {
