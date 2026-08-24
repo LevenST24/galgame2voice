@@ -1,2 +1,5 @@
 @echo off
-call "%~dp0停止.bat" %*
+setlocal
+cd /d "%~dp0"
+call "停止.bat" %*
+endlocal
