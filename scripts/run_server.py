@@ -82,7 +82,7 @@ def ensure_gpt_sovits_running():
         return
 
     print(f"      {YELLOW}[..]{RESET} 定位到 GPT-SoVITS: {sovits_dir}")
-    print(f"      {YELLOW}[..]{RESET} 正在后台启动 GPT-SoVITS API 服务...")
+    print(f"      {YELLOW}[..]{RESET} 正在后台拉起 GPT-SoVITS API 引擎...")
 
     python_exe = sovits_dir / "runtime" / "python.exe"
     if not python_exe.exists():
@@ -97,17 +97,33 @@ def ensure_gpt_sovits_running():
     ]
 
     try:
+        log_file = PROJECT_ROOT / "logs" / "gpt_sovits.log"
+        log_fp = open(log_file, "a", encoding="utf-8")
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        env = os.environ.copy()
+        env["PATH"] = str(sovits_dir / "runtime") + ";" + str(sovits_dir / "runtime" / "Scripts") + ";" + env.get("PATH", "")
+        env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.Popen(
             cmd,
             cwd=str(sovits_dir),
+            env=env,
             creationflags=flags,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_fp,
+            stderr=log_fp,
             stdin=subprocess.DEVNULL,
         )
         (PROJECT_ROOT / "gptsovits.pid").write_text(str(proc.pid), encoding="utf-8")
-        print(f"      {GREEN}[OK]{RESET} 已在后台静默拉起 GPT-SoVITS (PID: {proc.pid})")
+        print(f"      {GREEN}[OK]{RESET} 已在后台启动 GPT-SoVITS (PID: {proc.pid})，日志保存至 logs/gpt_sovits.log")
+
+        # Readiness check with progress dots
+        print(f"      {CYAN}[..]{RESET} 正在等待 GPT-SoVITS 模型加载入显存 (初次加载约需 10~20 秒)...")
+        for i in range(50):
+            time.sleep(0.5)
+            if is_port_in_use(9880):
+                print(f"      {GREEN}[OK]{RESET} GPT-SoVITS 语音引擎已就绪 (http://127.0.0.1:9880/)")
+                break
+        else:
+            print(f"      {YELLOW}[提示]{RESET} GPT-SoVITS 模型仍在后台加载中，稍后就绪即可自动开始合成。")
     except Exception as e:
         print(f"      {RED}[WARN]{RESET} 启动 GPT-SoVITS 失败: {e}")
 

@@ -248,7 +248,7 @@ class GptSovitsClient:
                 method, url, json=json_data, params=params, timeout=self.timeout
             )
         else:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(trust_env=False, timeout=self.timeout) as client:
                 return await client.request(
                     method, url, json=json_data, params=params
                 )
@@ -261,7 +261,7 @@ class GptSovitsClient:
         """Probes GPT-SoVITS backend reachability."""
         try:
             resp = await self._request("GET", "/control")
-            if resp.status_code == 200:
+            if resp.status_code in (200, 400):
                 return {
                     "connected": True,
                     "status": "running",
@@ -274,7 +274,7 @@ class GptSovitsClient:
 
         try:
             resp = await self._request("GET", "/")
-            if resp.status_code == 200:
+            if resp.status_code in (200, 400, 404):
                 return {
                     "connected": True,
                     "status": "running",
@@ -507,7 +507,7 @@ class GptSovitsClient:
                     yield content[i:i + chunk_size]
             else:
                 url = f"{self.base_url}/tts"
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with httpx.AsyncClient(trust_env=False, timeout=self.timeout) as client:
                     async with client.stream("POST", url, json=payload) as resp:
                         if resp.status_code != 200:
                             err_bytes = await resp.aread()

@@ -90,13 +90,14 @@ async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
     Asynchronously checks GPT-SoVITS backend reachability with a 2.0s timeout.
     Does not raise exceptions on connection failure.
     """
-    target_url = f"{base_url.rstrip('/')}/openapi.json"
+    target_url = f"{base_url.rstrip('/')}/control"
     t0 = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=0.8, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=0.6, trust_env=False) as client:
             resp = await client.get(target_url)
             latency = round((time.perf_counter() - t0) * 1000, 2)
-            if resp.status_code == 200:
+            # GPT-SoVITS /control returns 200 or 400 ("command is required") when active
+            if resp.status_code in (200, 400):
                 return GptSovitsTelemetry(
                     status="reachable",
                     base_url=base_url,
