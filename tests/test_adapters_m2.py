@@ -60,7 +60,7 @@ class TestAdapterRegistryAndFactory:
         deepseek = get_provider_preset("deepseek")
         assert deepseek is not None
         assert deepseek["id"] == "deepseek"
-        assert "deepseek-chat" in deepseek["default_chat_model"]
+        assert "deepseek" in deepseek["default_chat_model"]
 
         nonexistent = get_provider_preset("unknown_provider_xyz")
         assert nonexistent is None

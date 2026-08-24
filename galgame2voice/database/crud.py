@@ -237,14 +237,14 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     count = count_row[0] if count_row else 0
     if count == 0:
         presets = [
-            ("gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash", "", 1),
-            ("openai", "OpenAI", "https://api.openai.com/v1", "gpt-4o", "whisper-1", 0),
-            ("deepseek", "DeepSeek", "https://api.deepseek.com", "deepseek-chat", "", 0),
-            ("anthropic", "Anthropic Claude", "https://api.anthropic.com/v1", "claude-3-7-sonnet-latest", "", 0),
-            ("xai", "xAI (Grok)", "https://api.x.ai/v1", "grok-2-latest", "", 0),
-            ("glm", "智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4-plus", "", 0),
-            ("qwen", "通义千问 (Qwen)", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-max-latest", "qwen-audio-asr", 0),
-            ("custom", "自定义 / 本地模型 (Ollama / vLLM)", "http://127.0.0.1:11434/v1", "deepseek-r1:14b", "", 0)
+            ("gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.7-flash", "", 1),
+            ("openai", "OpenAI", "https://api.openai.com/v1", "gpt-5.6-sol", "whisper-1", 0),
+            ("deepseek", "DeepSeek", "https://api.deepseek.com", "deepseek-v4-pro", "", 0),
+            ("anthropic", "Anthropic Claude", "https://api.anthropic.com/v1", "claude-5-sonnet-latest", "", 0),
+            ("xai", "xAI (Grok)", "https://api.x.ai/v1", "grok-4.6", "", 0),
+            ("glm", "智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-5.3", "", 0),
+            ("qwen", "通义千问 (Qwen)", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.8-max", "qwen-audio-asr", 0),
+            ("custom", "自定义 / 本地模型 (Ollama / vLLM)", "http://127.0.0.1:11434/v1", "deepseek-v4:latest", "", 0)
         ]
         for p in presets:
             await conn.execute("""
