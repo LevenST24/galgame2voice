@@ -247,18 +247,21 @@ def main():
 
     print(f"{GREEN}{BOLD}{'='*68}{RESET}")
     print(f"{GREEN}{BOLD}  🎉 服务运行中！您可以在浏览器中畅享与二次元伴侣的互动。{RESET}")
-    print(f"{GREEN}{BOLD}  💡 关闭此窗口即可停止服务，或随时双击「停止.bat」完全释放。{RESET}")
-    print(f"{GREEN}{BOLD}{'='*68}{RESET}\n")
-
     try:
         import uvicorn
         uvicorn.run("galgame2voice.main:app", host="127.0.0.1", port=active_port, log_level="info")
+    except (KeyboardInterrupt, SystemExit):
+        print(f"\n{YELLOW}[提示] 服务已正常停止。{RESET}")
+    except Exception as e:
+        print(f"\n{RED}[错误] 服务运行异常: {e}{RESET}")
+        sys.exit(1)
     finally:
         try:
             (PROJECT_ROOT / "data" / "active_port.txt").unlink(missing_ok=True)
             (PROJECT_ROOT / "galgame2voice.pid").unlink(missing_ok=True)
         except Exception:
             pass
+    sys.exit(0)
 
 
 if __name__ == "__main__":

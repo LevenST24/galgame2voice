@@ -41,9 +41,10 @@ REM        · 启动本服务 (8080, 被占用时自动降级到可用端口)
 REM        · 自动打开浏览器
 
 "%PYTHON_EXE%" scripts\run_server.py %*
-if errorlevel 1 (
+set "EXIT_CODE=%errorlevel%"
+if %EXIT_CODE% neq 0 if %EXIT_CODE% neq 130 if %EXIT_CODE% neq 3221225786 (
     echo.
-    echo [错误] 服务启动失败，请查看 logs\galgame2voice.log 排查。
+    echo [错误] 服务异常退出 (错误代码: %EXIT_CODE%)，请查看 logs\galgame2voice.log 排查。
     pause
 )
 
