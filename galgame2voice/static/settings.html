@@ -1684,6 +1684,40 @@
     <audio id="preview-audio-player" style="display: none;"></audio>
 
     <!-- Console JavaScript Logic -->
+
+
+    <!-- File Explorer Modal -->
+    <div id="file-explorer-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3 id="modal-title">📁 本地文件与模型选择器</h3>
+                <button type="button" id="btn-close-file-modal" class="btn-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Drive selector & Path Breadcrumbs -->
+                <div style="display: flex; gap: 8px; margin-bottom: 12px; align-items: center;">
+                    <div id="drive-selector" style="display: flex; gap: 6px;"></div>
+                    <input type="text" id="fs-current-path" class="form-input" style="font-size: 12px; flex: 1;" readonly>
+                    <button type="button" id="btn-fs-up" class="btn-action-sm btn-action-secondary" title="上一级目录">⬆️ 上一级</button>
+                </div>
+                <!-- Discovered / Fast Select Section -->
+                <div id="fs-fast-select-box" style="margin-bottom: 12px; display: none;">
+                    <label class="form-label" style="font-size: 12px;">⚡ 快速发现的模型与音频 (点击直接填入):</label>
+                    <div id="fs-fast-items" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
+                </div>
+                <!-- File Tree / List -->
+                <div id="fs-list-container" class="fs-list-box">
+                    <div id="fs-items-loading" style="text-align: center; padding: 20px; color: var(--text-muted);">加载中...</div>
+                    <div id="fs-directories-list"></div>
+                    <div id="fs-files-list"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" id="btn-native-dialog-modal" class="btn-action-sm btn-action-primary">🖥️ 弹出 Windows 资源管理器选择</button>
+                <button type="button" id="btn-cancel-file-modal" class="btn-action-sm btn-action-secondary">关闭</button>
+            </div>
+        </div>
+    </div>
     <script>
         // State store
         const state = {
@@ -3315,53 +3349,34 @@
         });
 
         // ================= INITIALIZATION =================
-        window.addEventListener('DOMContentLoaded', async () => {
-            // Parallel init: 8 independent fetches, no serial waterfall.
-            await Promise.allSettled([
-                fetchSystemTelemetry(),
-                fetchMetricsAndCache(),
-                fetchGlobalConfig(),
-                fetchProviders(),
-                fetchVoiceProfiles(),
-                fetchMemories(),
-                fetchAffection(),
-                fetchDialogueGallery(),
-            ]);
-            setupAutoRefresh();
-        });
+        // Robust init: runs immediately if DOM is already parsed, otherwise
+        // waits for DOMContentLoaded. Immune to script-position / timing issues.
+        async function initSettingsConsole() {
+            try {
+                // Parallel init: 8 independent fetches, no serial waterfall.
+                await Promise.allSettled([
+                    fetchSystemTelemetry(),
+                    fetchMetricsAndCache(),
+                    fetchGlobalConfig(),
+                    fetchProviders(),
+                    fetchVoiceProfiles(),
+                    fetchMemories(),
+                    fetchAffection(),
+                    fetchDialogueGallery(),
+                ]);
+            } catch (err) {
+                console.error('Settings console initialization error:', err);
+            } finally {
+                setupAutoRefresh();
+            }
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initSettingsConsole);
+        } else {
+            initSettingsConsole();
+        }
     </script>
 
-    <!-- File Explorer Modal -->
-    <div id="file-explorer-modal" class="modal-overlay" style="display: none;">
-        <div class="modal-card">
-            <div class="modal-header">
-                <h3 id="modal-title">📁 本地文件与模型选择器</h3>
-                <button type="button" id="btn-close-file-modal" class="btn-close">&times;</button>
-            </div>
-            <div class="modal-body">
-                <!-- Drive selector & Path Breadcrumbs -->
-                <div style="display: flex; gap: 8px; margin-bottom: 12px; align-items: center;">
-                    <div id="drive-selector" style="display: flex; gap: 6px;"></div>
-                    <input type="text" id="fs-current-path" class="form-input" style="font-size: 12px; flex: 1;" readonly>
-                    <button type="button" id="btn-fs-up" class="btn-action-sm btn-action-secondary" title="上一级目录">⬆️ 上一级</button>
-                </div>
-                <!-- Discovered / Fast Select Section -->
-                <div id="fs-fast-select-box" style="margin-bottom: 12px; display: none;">
-                    <label class="form-label" style="font-size: 12px;">⚡ 快速发现的模型与音频 (点击直接填入):</label>
-                    <div id="fs-fast-items" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
-                </div>
-                <!-- File Tree / List -->
-                <div id="fs-list-container" class="fs-list-box">
-                    <div id="fs-items-loading" style="text-align: center; padding: 20px; color: var(--text-muted);">加载中...</div>
-                    <div id="fs-directories-list"></div>
-                    <div id="fs-files-list"></div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" id="btn-native-dialog-modal" class="btn-action-sm btn-action-primary">🖥️ 弹出 Windows 资源管理器选择</button>
-                <button type="button" id="btn-cancel-file-modal" class="btn-action-sm btn-action-secondary">关闭</button>
-            </div>
-        </div>
-    </div>
 </body>
 </html>
