@@ -74,6 +74,34 @@ def find_gpt_sovits_directory() -> Path | None:
     return None
 
 
+def check_system_memory():
+    """Checks free physical memory and prints advisory if system RAM is constrained."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            free_gb = stat.ullAvailPhys / (1024 ** 3)
+            if free_gb < 1.8:
+                print(f"      {YELLOW}[内存提示]{RESET} 当前系统空闲物理内存约 {free_gb:.1f} GB。建议关闭高内存占用的后台应用以确保语音合成流畅。")
+    except Exception:
+        pass
+
+
 def ensure_gpt_sovits_running():
     """Checks port 9880; if not running, discovers and launches GPT-SoVITS API daemon."""
     print(f"{CYAN}[1/2] 正在检测 GPT-SoVITS 语音推理引擎 (端口 9880)...{RESET}")
@@ -81,6 +109,7 @@ def ensure_gpt_sovits_running():
         print(f"      {GREEN}[OK]{RESET} GPT-SoVITS 语音引擎已在运行")
         return
 
+    check_system_memory()
     sovits_dir = find_gpt_sovits_directory()
     if not sovits_dir:
         print(f"      {YELLOW}[提示]{RESET} 未自动定位到 GPT-SoVITS 目录，若已在其他终端运行请忽略。")
@@ -140,7 +169,6 @@ def ensure_gpt_sovits_running():
 def find_available_port(preferred_port: int = 8080, host: str = "127.0.0.1") -> int:
     """Finds a bindable TCP port starting from preferred_port with graceful fallbacks."""
     candidates = [preferred_port, 8081, 8082, 8085, 8088, 8888, 18080, 28080]
-    # Remove duplicates preserving order
     seen = set()
     unique_candidates = [p for p in candidates if not (p in seen or seen.add(p))]
 
@@ -153,7 +181,6 @@ def find_available_port(preferred_port: int = 8080, host: str = "127.0.0.1") -> 
         except OSError:
             continue
 
-    # Fallback to OS assigned free port
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind((host, 0))
@@ -223,8 +250,15 @@ def main():
     print(f"{GREEN}{BOLD}  💡 关闭此窗口即可停止服务，或随时双击「停止.bat」完全释放。{RESET}")
     print(f"{GREEN}{BOLD}{'='*68}{RESET}\n")
 
-    import uvicorn
-    uvicorn.run("galgame2voice.main:app", host="127.0.0.1", port=active_port, log_level="info")
+    try:
+        import uvicorn
+        uvicorn.run("galgame2voice.main:app", host="127.0.0.1", port=active_port, log_level="info")
+    finally:
+        try:
+            (PROJECT_ROOT / "data" / "active_port.txt").unlink(missing_ok=True)
+            (PROJECT_ROOT / "galgame2voice.pid").unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

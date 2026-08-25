@@ -160,14 +160,20 @@ class TtsCacheManager:
                 pass
             return None
 
-        # Asynchronously touch SQLite metadata
+        # Asynchronously touch SQLite metadata in background (non-blocking for blazing sub-1ms hits)
+        async def _touch_metadata():
+            try:
+                async with get_db(self.db_path) as conn:
+                    entry = await crud.get_tts_cache_entry(conn, cache_key)
+                    if entry:
+                        await crud.touch_tts_cache_entry(conn, cache_key)
+            except Exception as exc:
+                logger.debug("Non-critical: could not touch tts_cache_entry: %s", exc)
+
         try:
-            async with get_db(self.db_path) as conn:
-                entry = await crud.get_tts_cache_entry(conn, cache_key)
-                if entry:
-                    await crud.touch_tts_cache_entry(conn, cache_key)
-        except Exception as exc:
-            logger.debug("Non-critical: could not touch tts_cache_entry: %s", exc)
+            asyncio.create_task(_touch_metadata())
+        except RuntimeError:
+            pass
 
         try:
             audio_bytes = await asyncio.to_thread(file_path.read_bytes)
@@ -199,8 +205,13 @@ class TtsCacheManager:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         file_path = self.cache_dir / f"{cache_key}.wav"
 
-        # Write to file
-        await asyncio.to_thread(file_path.write_bytes, audio_bytes)
+        # Atomic write to file via temp file to prevent 0-byte/corrupt files
+        def _atomic_write():
+            tmp_path = file_path.with_suffix(f".tmp.{os.getpid()}_{int(time.time()*1000)}.wav")
+            tmp_path.write_bytes(audio_bytes)
+            tmp_path.replace(file_path)
+
+        await asyncio.to_thread(_atomic_write)
         file_size = len(audio_bytes)
         url_path = f"/audio/cache/{cache_key}.wav"
 
