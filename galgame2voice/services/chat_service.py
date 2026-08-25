@@ -324,9 +324,9 @@ class ChatService:
         except Exception as mem_err:
             logger.warning("Memory fact extraction failed: %s", mem_err)
 
-    async def _get_active_llm_adapter(self, conn: Optional[aiosqlite.Connection] = None, provider_id: Optional[str] = None) -> Tuple[BaseLLMAdapter, str]:
+    async def _get_active_llm_adapter(self, conn: Optional[aiosqlite.Connection] = None, provider_id: Optional[str] = None) -> Tuple[BaseLLMAdapter, str, str]:
         """
-        Loads the configured or requested LLM adapter and target chat model from DB.
+        Loads the configured or requested LLM adapter, target chat model, and resolved provider ID from DB.
         """
         if conn is not None:
             if provider_id:
@@ -337,10 +337,10 @@ class ChatService:
             if provider:
                 adapter = get_llm_adapter(provider)
                 chat_model = provider.chat_model or "gpt-4o-mini"
-                return adapter, chat_model
+                return adapter, chat_model, provider.id
 
             adapter = get_llm_adapter("openai")
-            return adapter, "gpt-4o-mini"
+            return adapter, "gpt-4o-mini", "openai"
 
         async with get_db(self.db_path) as local_conn:
             if provider_id:
@@ -351,10 +351,10 @@ class ChatService:
             if provider:
                 adapter = get_llm_adapter(provider)
                 chat_model = provider.chat_model or "gpt-4o-mini"
-                return adapter, chat_model
+                return adapter, chat_model, provider.id
 
             adapter = get_llm_adapter("openai")
-            return adapter, "gpt-4o-mini"
+            return adapter, "gpt-4o-mini", "openai"
 
     async def _prepare_messages(
         self,
@@ -493,7 +493,13 @@ class ChatService:
                     self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
                 )
 
-                adapter, model_name = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
+                res = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
+                if isinstance(res, (tuple, list)) and len(res) >= 3:
+                    adapter, model_name, actual_provider_id = res[0], res[1], res[2]
+                else:
+                    adapter, model_name = res[0], res[1]
+                    active_p = await crud.get_active_provider_raw(conn)
+                    actual_provider_id = provider_id or getattr(adapter, "provider_type", None) or (active_p.id if active_p else "custom")
                 messages = await self._prepare_messages(conn, session_id, prompt, character_name)
 
             tts_queue: asyncio.Queue = asyncio.Queue()
@@ -681,8 +687,8 @@ class ChatService:
             metric_record = await self.metrics_collector.record_metric(
                 session_id=session_id,
                 channel="web",
-                provider_id=provider_id or "deepseek",
-                model_name=model_name or "deepseek-chat",
+                provider_id=actual_provider_id,
+                model_name=model_name,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 ttft_ms=ttft_ms,
@@ -799,7 +805,13 @@ class ChatService:
                 self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
             )
 
-            adapter, model_name = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
+            res = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
+            if isinstance(res, (tuple, list)) and len(res) >= 3:
+                adapter, model_name, actual_provider_id = res[0], res[1], res[2]
+            else:
+                adapter, model_name = res[0], res[1]
+                active_p = await crud.get_active_provider_raw(conn)
+                actual_provider_id = provider_id or getattr(adapter, "provider_type", None) or (active_p.id if active_p else "custom")
             messages = await self._prepare_messages(conn, session_id, prompt, character_name)
 
         t_llm_start = time.perf_counter()
@@ -869,8 +881,8 @@ class ChatService:
         metric_record = await self.metrics_collector.record_metric(
             session_id=session_id,
             channel="web",
-            provider_id=provider_id or "deepseek",
-            model_name=model_name or "deepseek-chat",
+            provider_id=actual_provider_id,
+            model_name=model_name,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             ttft_ms=ttft_ms,
