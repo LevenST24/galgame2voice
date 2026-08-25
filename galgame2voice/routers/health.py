@@ -114,7 +114,10 @@ async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
             # budget converts "engine down" into a fast unreachable verdict.
             timeout = httpx.Timeout(connect=1.0, read=2.5, write=2.5, pool=2.5)
             async with httpx.AsyncClient(trust_env=False, timeout=timeout) as one_shot:
-                resp = await one_shot.get(f"{target}/")
+                try:
+                    resp = await one_shot.get(f"{target}/control")
+                except Exception:
+                    resp = await one_shot.get(f"{target}/")
                 latency = round((time.perf_counter() - t0) * 1000, 2)
                 if resp.status_code in (200, 400):
                     return GptSovitsTelemetry(

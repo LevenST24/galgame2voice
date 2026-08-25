@@ -276,17 +276,24 @@ class GptSovitsClient:
 
     async def check_health(self) -> Dict[str, Any]:
         """
-        Probes GPT-SoVITS reachability via GET / (api_v2 root returns status JSON).
-        HTTP 200/400 proves the engine is alive; other codes are suspicious.
+        Probes GPT-SoVITS reachability via GET /control (api_v2 control endpoint returns 400 when active).
+        HTTP 200/400 proves the engine is alive and listening; other codes / network errors are unreachable.
         Dispatches through the mock server when one is configured (tests).
         """
         try:
             if self.server is not None and hasattr(self.server, "handle_request"):
-                resp = await self.server.handle_request("GET", "/")
+                try:
+                    resp = await self.server.handle_request("GET", "/control")
+                except Exception:
+                    resp = await self.server.handle_request("GET", "/")
             else:
                 client = self._get_http_client()
-                url = f"{self.base_url}/"
-                resp = await client.get(url, timeout=HEALTH_TIMEOUT)
+                url = f"{self.base_url}/control"
+                try:
+                    resp = await client.get(url, timeout=HEALTH_TIMEOUT)
+                except Exception:
+                    # Fallback to GET / if /control fails
+                    resp = await client.get(f"{self.base_url}/", timeout=HEALTH_TIMEOUT)
 
             if resp.status_code in (200, 400):
                 return {
