@@ -329,7 +329,9 @@ body.galgame-theme {
 .stage-container {
     flex: 1;
     min-height: 0;
+    width: 100%;
     display: flex;
+    flex-direction: column;
     position: relative;
     overflow: hidden;
 }
@@ -613,17 +615,25 @@ body.galgame-theme {
    CHAT FLOW MODE
    ═══════════════════════════════════════════════════════════════ */
 .chat-stage-view {
+    flex: 1;
     width: 100%;
+    max-width: 860px;
+    margin: 0 auto;
     height: 100%;
-    overflow: hidden;
-}
-.chat-bubbles-container {
-    height: 100%;
-    overflow-y: auto;
-    padding: 16px 8px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    overflow: hidden;
+    position: relative;
+}
+.chat-bubbles-container {
+    flex: 1;
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    padding: 16px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
     scroll-behavior: smooth;
 }
 .chat-bubbles-container::-webkit-scrollbar { width: 4px; }
@@ -632,12 +642,13 @@ body.galgame-theme {
 
 /* ─── Messages ─── */
 .message {
-    max-width: 85%;
-    padding: 12px 16px;
+    max-width: 80%;
+    padding: 12px 18px;
     border-radius: var(--r-lg);
-    font-size: 13px;
-    line-height: 1.6;
+    font-size: 13.5px;
+    line-height: 1.65;
     animation: msgSlideIn 0.3s var(--ease);
+    word-break: break-word;
 }
 @keyframes msgSlideIn {
     from { opacity: 0; transform: translateY(8px); }
@@ -651,25 +662,36 @@ body.galgame-theme {
 
 .user-message {
     align-self: flex-end;
-    background: linear-gradient(135deg, rgba(192,132,252,0.2), rgba(244,114,182,0.15));
-    border: 1px solid rgba(192,132,252,0.15);
-    color: var(--c-text);
+    margin-left: auto;
+    margin-right: 0;
+    background: linear-gradient(135deg, rgba(192,132,252,0.28), rgba(244,114,182,0.2));
+    border: 1px solid rgba(192,132,252,0.25);
+    color: #ffffff;
+    border-bottom-right-radius: 4px;
+    box-shadow: 0 4px 16px rgba(192,132,252,0.1);
 }
 .assistant-message {
     align-self: flex-start;
+    margin-right: auto;
+    margin-left: 0;
     background: var(--c-surface);
     border: 1px solid var(--c-glass-border);
     color: var(--c-text);
+    border-bottom-left-radius: 4px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.25);
 }
 .system-message {
     align-self: center;
+    margin: 4px auto;
     text-align: center;
-    font-size: 11px;
+    font-size: 11.5px;
     color: var(--c-text-dim);
     background: var(--c-surface-lt);
     border: 1px solid var(--c-glass-border);
-    padding: 8px 16px;
-    max-width: 70%;
+    padding: 6px 18px;
+    border-radius: var(--r-full);
+    max-width: 85%;
+    display: inline-block;
 }
 
 /* Chat assistant message inner structure */
