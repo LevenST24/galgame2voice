@@ -418,8 +418,8 @@ class TestTelegramBotRealModules:
         # 1. Main Console rendering
         r_console = await handlers.handle_console(DummyUpdate(), DummyContext())
         assert "控制台" in r_console
-        assert "当前角色" in r_console
-        assert "好感状态" in r_console
+        assert "角色音色" in r_console
+        assert "角色好感" in r_console
 
         # 2. Callback Mock
         class MockQuery:
@@ -444,7 +444,11 @@ class TestTelegramBotRealModules:
                 self.effective_chat = type("Chat", (), {"id": chat_id})()
 
         # Test Sub-menus
-        for menu_key in ["menu_voice", "menu_speed", "menu_model", "menu_affection", "menu_main"]:
+        for menu_key in [
+            "menu_voice", "menu_model", "menu_tts", "menu_speed", "menu_temp",
+            "menu_split", "menu_sampling", "menu_batch", "menu_interval",
+            "menu_history", "menu_metrics", "menu_affection", "menu_main"
+        ]:
             cb_update = CallbackUpdate(menu_key)
             await handlers.handle_callback_query(cb_update, DummyContext())
             assert cb_update.callback_query.answered is True
@@ -455,7 +459,40 @@ class TestTelegramBotRealModules:
         await handlers.handle_callback_query(cb_speed, DummyContext())
         assert "1.2" in (cb_speed.callback_query.answer_text or "")
 
+        cb_temp = CallbackUpdate("set_temp_1.0")
+        await handlers.handle_callback_query(cb_temp, DummyContext())
+        assert "1.0" in (cb_temp.callback_query.answer_text or "")
+
+        cb_split = CallbackUpdate("set_split_cut2")
+        await handlers.handle_callback_query(cb_split, DummyContext())
+        assert "cut2" in (cb_split.callback_query.answer_text or "")
+
+        cb_topk = CallbackUpdate("set_topk_20")
+        await handlers.handle_callback_query(cb_topk, DummyContext())
+        assert "20" in (cb_topk.callback_query.answer_text or "")
+
+        cb_topp = CallbackUpdate("set_topp_0.9")
+        await handlers.handle_callback_query(cb_topp, DummyContext())
+        assert "0.9" in (cb_topp.callback_query.answer_text or "")
+
+        cb_batch = CallbackUpdate("set_batch_2")
+        await handlers.handle_callback_query(cb_batch, DummyContext())
+        assert "2" in (cb_batch.callback_query.answer_text or "")
+
+        cb_interval = CallbackUpdate("set_interval_0.5")
+        await handlers.handle_callback_query(cb_interval, DummyContext())
+        assert "0.5" in (cb_interval.callback_query.answer_text or "")
+
+        cb_history = CallbackUpdate("set_history_20")
+        await handlers.handle_callback_query(cb_history, DummyContext())
+        assert "20" in (cb_history.callback_query.answer_text or "")
+
+        cb_cache = CallbackUpdate("action_clear_cache")
+        await handlers.handle_callback_query(cb_cache, DummyContext())
+        assert "缓存" in (cb_cache.callback_query.answer_text or "")
+
         cb_reset = CallbackUpdate("action_reset")
         await handlers.handle_callback_query(cb_reset, DummyContext())
         assert "清空" in (cb_reset.callback_query.answer_text or "")
+
 
