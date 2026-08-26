@@ -19,6 +19,8 @@ from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, Field
 
 from galgame2voice.config import get_settings
+from galgame2voice.database.session import get_db
+from galgame2voice.database import crud
 
 router = APIRouter(tags=["Health & Diagnostics"])
 
@@ -284,9 +286,21 @@ async def system_status(request: Request):
     )
 
     # 5. Telegram Status
+    tg_running = False
+    try:
+        from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
+        tg_mgr = get_telegram_bot_manager(db_path=settings.db_path)
+        tg_running = getattr(tg_mgr, "is_running", False)
+    except Exception:
+        tg_running = False
+
+    async with get_db(settings.db_path) as conn:
+        db_s = await crud.get_settings_raw(conn)
+        has_token = bool(db_s and db_s.telegram_bot_token and db_s.telegram_bot_token.strip())
+
     tg_telemetry = TelegramTelemetry(
-        enabled=settings.telegram_enabled,
-        status="running" if settings.telegram_enabled else "disabled",
+        enabled=tg_running or has_token or settings.telegram_enabled,
+        status="running" if tg_running else ("disabled" if not has_token else "standby"),
     )
 
     overall_status = "healthy" if gpt_probe.status == "reachable" else "degraded"

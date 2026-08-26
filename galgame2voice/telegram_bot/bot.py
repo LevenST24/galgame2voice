@@ -36,7 +36,7 @@ def validate_bot_token(token: Optional[str]) -> bool:
     """
     if not token:
         return False
-    t = str(token).strip()
+    t = str(token).replace(" ", "").strip()
     if len(t) < 10 or "invalid" in t.lower() or ":" not in t:
         return False
     return True
@@ -66,14 +66,14 @@ class TelegramBotManager:
         async with get_db(self.db_path) as conn:
             settings = await crud.get_settings_raw(conn)
 
-        token = settings.telegram_bot_token.strip() if settings and settings.telegram_bot_token else ""
+        token = settings.telegram_bot_token.replace(" ", "").replace("\r", "").replace("\n", "").strip() if settings and settings.telegram_bot_token else ""
         if not token:
             logger.info("Telegram Bot token is empty; skipping bot startup.")
             return False
 
         if not validate_bot_token(token):
-            logger.error("Invalid Telegram Bot Token configured: %s", token[:5] + "****" if len(token) >= 5 else "****")
-            raise ValueError("Invalid Telegram Bot Token")
+            logger.warning("Invalid Telegram Bot Token configured: %s", token[:5] + "****" if len(token) >= 5 else "****")
+            return False
 
         if not HAS_TELEGRAM:
             logger.warning("python-telegram-bot is not installed; Telegram Bot service running in mock/standby mode.")

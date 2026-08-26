@@ -1865,10 +1865,14 @@
                 if (data.telegram) {
                     const tgBadge = document.getElementById('dash-tg-badge');
                     const tgStatus = document.getElementById('dash-tg-status');
-                    if (data.telegram.enabled) {
+                    if (data.telegram.status === 'running') {
                         tgBadge.className = 'badge-status badge-green';
                         tgBadge.textContent = '运行中';
-                        tgStatus.textContent = '已连接';
+                        tgStatus.textContent = '已连接 (Online)';
+                    } else if (data.telegram.status === 'standby' || data.telegram.enabled) {
+                        tgBadge.className = 'badge-status badge-yellow';
+                        tgBadge.textContent = '已配置';
+                        tgStatus.textContent = '待命 (Standby)';
                     } else {
                         tgBadge.className = 'badge-status badge-gray';
                         tgBadge.textContent = '未启用';

@@ -127,6 +127,18 @@ async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, 
         except Exception as exc:
             logger.error("Failed to hot-apply GPT-SoVITS URL '%s': %s", new_sovits_url, exc)
 
+    # Hot-reload Telegram Bot service when Telegram credentials/proxy change
+    tg_keys = {"telegram_bot_token", "telegram_bot_username", "telegram_proxy_enabled", "telegram_proxy_host", "telegram_proxy_port"}
+    if any(k in sanitized_updates for k in tg_keys):
+        try:
+            from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
+            tg_manager = get_telegram_bot_manager()
+            await tg_manager.stop()
+            await tg_manager.start()
+            logger.info("Telegram Bot service hot-reloaded with new configuration.")
+        except Exception as exc:
+            logger.warning("Failed to hot-reload Telegram Bot: %s", exc)
+
     return {
         "status": "success",
         "updated_count": len(sanitized_updates) if sanitized_updates else len(update_data),

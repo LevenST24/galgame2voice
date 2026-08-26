@@ -120,6 +120,16 @@ async def lifespan(app: FastAPI):
         )
     )
 
+    # 6. Start Telegram Bot Background Polling (if configured)
+    try:
+        from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
+        tg_manager = get_telegram_bot_manager(db_path=settings.db_path)
+        tg_started = await tg_manager.start()
+        if tg_started:
+            logger.info("Telegram Bot background polling started successfully.")
+    except Exception as exc:
+        logger.warning("Telegram Bot auto-start on boot skipped or failed: %s", exc)
+
     logger.info(
         "Service startup complete. Listening on http://%s:%d",
         settings.host,
@@ -134,6 +144,13 @@ async def lifespan(app: FastAPI):
         await cleanup_task
     except asyncio.CancelledError:
         pass
+
+    # Stop Telegram Bot
+    try:
+        from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
+        await get_telegram_bot_manager().stop()
+    except Exception as exc:
+        logger.debug("Error stopping Telegram Bot: %s", exc)
 
     # Release the shared GPT-SoVITS connection pool.
     try:
