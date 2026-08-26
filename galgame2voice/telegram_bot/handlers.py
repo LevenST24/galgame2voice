@@ -166,24 +166,37 @@ class TelegramBotHandlers:
         return text, reply_markup
 
     async def build_model_menu(self) -> Tuple[str, Any]:
-        """Constructs sub-menu for switching active LLM provider."""
+        """Constructs sub-menu for switching active LLM provider with API key safety indicators."""
         providers = []
         active_id = None
         try:
             async with get_db(self.db_path) as conn:
-                providers = await crud.list_providers(conn)
+                providers = await crud.list_providers(conn, mask=False)
                 active = await crud.get_active_provider(conn)
                 active_id = active.id if active else None
         except Exception as exc:
             logger.error("Database read failed in build_model_menu: %s", exc)
 
-        text = "🤖 【切换大模型提供商】\n请选择活跃的 LLM 接口供应商："
+        text = (
+            "🤖 【切换大模型提供商】\n"
+            "请选择活跃的 LLM 接口供应商（已进行 API Key 状态校验）："
+        )
         keyboard = []
         temp_row = []
         for prov in providers:
             is_cur = (active_id is not None and prov.id == active_id)
-            prefix = "🟢 " if is_cur else "⚪ "
-            suffix = " (当前)" if is_cur else ""
+            has_key = bool(prov.api_key and prov.api_key.strip())
+
+            if is_cur:
+                prefix = "🟢 "
+                suffix = " (当前)"
+            elif has_key or prov.id == "custom":
+                prefix = "⚪ "
+                suffix = " ✓"
+            else:
+                prefix = "⚠️ "
+                suffix = " (未配Key)"
+
             btn = InlineKeyboardButton(f"{prefix}{prov.name}{suffix}", callback_data=f"set_model_{prov.id}")
             if is_cur:
                 if temp_row:
@@ -802,19 +815,40 @@ class TelegramBotHandlers:
             elif data.startswith("set_model_"):
                 provider_id = data.replace("set_model_", "")
                 prov_name = provider_id
+                switched = False
+                err_msg = None
                 try:
                     async with get_db(self.db_path) as conn:
-                        await crud.set_active_provider(conn, provider_id)
-                        prov = await crud.get_provider(conn, provider_id)
-                        if prov:
+                        prov = await crud.get_provider_raw(conn, provider_id)
+                        if not prov:
+                            err_msg = "❌ 该模型提供商不存在！"
+                        else:
                             prov_name = prov.name
+                            has_key = bool(prov.api_key and prov.api_key.strip())
+                            if provider_id != "custom" and not has_key:
+                                err_msg = (
+                                    f"⚠️ 无法激活 {prov_name}：未配置 API Key！\n\n"
+                                    f"请先在管理网页端为 {prov_name} 填入有效 Key，或切换至已配置 Key 的模型。"
+                                )
+                            else:
+                                await crud.set_active_provider(conn, provider_id)
+                                switched = True
                 except Exception as exc:
                     logger.warning("Model switch exception: %s", exc)
-                if hasattr(query, "answer"):
-                    await query.answer(f"🤖 已激活大模型: {prov_name}", show_alert=True)
-                text, markup = await self.build_main_console(chat_id)
-                if hasattr(query, "edit_message_text"):
-                    await query.edit_message_text(text=text, reply_markup=markup)
+                    err_msg = f"切换模型异常: {exc}"
+
+                if err_msg:
+                    if hasattr(query, "answer"):
+                        await query.answer(err_msg, show_alert=True)
+                    text, markup = await self.build_model_menu()
+                    if hasattr(query, "edit_message_text"):
+                        await query.edit_message_text(text=text, reply_markup=markup)
+                else:
+                    if hasattr(query, "answer"):
+                        await query.answer(f"🤖 已激活大模型: {prov_name}", show_alert=True)
+                    text, markup = await self.build_main_console(chat_id)
+                    if hasattr(query, "edit_message_text"):
+                        await query.edit_message_text(text=text, reply_markup=markup)
 
             elif data == "menu_metrics":
                 text, markup = await self.build_metrics_menu()

@@ -491,6 +491,17 @@ class TestTelegramBotRealModules:
         await handlers.handle_callback_query(cb_cache, DummyContext())
         assert "缓存" in (cb_cache.callback_query.answer_text or "")
 
+        # Test Model switch with API Key validation
+        # 1. Cloud model without API key -> must reject
+        cb_model_nokey = CallbackUpdate("set_model_openai")
+        await handlers.handle_callback_query(cb_model_nokey, DummyContext())
+        assert "未配置 API Key" in (cb_model_nokey.callback_query.answer_text or "")
+
+        # 2. Custom model or model with API key -> must succeed
+        cb_model_custom = CallbackUpdate("set_model_custom")
+        await handlers.handle_callback_query(cb_model_custom, DummyContext())
+        assert "已激活大模型" in (cb_model_custom.callback_query.answer_text or "")
+
         cb_reset = CallbackUpdate("action_reset")
         await handlers.handle_callback_query(cb_reset, DummyContext())
         assert "清空" in (cb_reset.callback_query.answer_text or "")
