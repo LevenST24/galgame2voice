@@ -72,12 +72,14 @@ class AnthropicAdapter(BaseLLMAdapter):
         user_assistant_msgs: List[Dict[str, str]] = []
 
         for m in messages:
-            if m.role == "system":
-                system_content = (system_content + "\n" + m.content).strip() if system_content else m.content
+            role = m.role if hasattr(m, "role") else m.get("role")
+            content = m.content if hasattr(m, "content") else m.get("content")
+            if role == "system":
+                system_content = (system_content + "\n" + content).strip() if system_content else content
             else:
                 user_assistant_msgs.append({
-                    "role": "user" if m.role == "user" else "assistant",
-                    "content": m.content,
+                    "role": "user" if role == "user" else "assistant",
+                    "content": content,
                 })
 
         # Anthropic requires at least one user message

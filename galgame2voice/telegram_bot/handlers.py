@@ -243,50 +243,65 @@ class TelegramBotHandlers:
             adapter, model_name, _provider_id = await self.chat_service.get_active_llm_adapter(conn=conn)
             messages = await self.chat_service.prepare_messages(conn, session_id, text)
 
-        llm_response = await adapter.chat(messages, model=model_name)
-        raw_text = llm_response.content
+        try:
+            llm_response = await adapter.chat(messages, model=model_name)
+            raw_text = llm_response.content
 
-        parser = StreamingBilingualParser()
-        parser.feed_chunk(raw_text)
-        chinese, japanese, _ = parser.finalize()
+            parser = StreamingBilingualParser()
+            parser.feed_chunk(raw_text)
+            chinese, japanese, _ = parser.finalize()
 
-        if not chinese:
-            chinese = raw_text
-        if not japanese:
-            japanese = chinese
+            if not chinese:
+                chinese = raw_text
+            if not japanese:
+                japanese = chinese
 
-        # 3. Send text reply immediately
-        await bot.send_message(chat_id=chat_id, text=chinese)
+            # 3. Send text reply immediately
+            await bot.send_message(chat_id=chat_id, text=chinese)
 
-        # 4. Immediately persist assistant message to DB to maintain dialogue history
-        async with get_db(self.db_path) as conn:
-            await crud.add_message(conn, MessageCreate(
-                session_id=session_id,
-                role="assistant",
-                content_chinese=chinese,
-                content_japanese=japanese,
-                audio_url="",
-                latency_ms=0,
-            ))
+            # 4. Immediately persist assistant message to DB to maintain dialogue history
+            async with get_db(self.db_path) as conn:
+                await crud.add_message(conn, MessageCreate(
+                    session_id=session_id,
+                    role="assistant",
+                    content_chinese=chinese,
+                    content_japanese=japanese,
+                    audio_url="",
+                    latency_ms=0,
+                ))
 
-        # 5. Schedule background voice synthesis task
-        async def background_voice_worker():
+            # 5. Schedule background voice synthesis task
+            async def background_voice_worker():
+                try:
+                    # Synthesize Japanese text to WAV bytes
+                    wav_bytes = await self.tts_service.synthesize(japanese)
+                    # Convert WAV to OGG/Opus for Telegram voice note
+                    ogg_bytes = await convert_wav_to_ogg(wav_bytes)
+                    # Send voice note
+                    await bot.send_voice(chat_id=chat_id, voice=ogg_bytes, caption=japanese)
+                except asyncio.CancelledError:
+                    logger.info("Voice synthesis cancelled for chat_id=%d", chat_id)
+                    return
+                except Exception as exc:
+                    logger.error("Voice synthesis failed for chat_id=%d: %s", chat_id, exc)
+
+            task = asyncio.create_task(background_voice_worker())
+            self.user_tasks[chat_id] = task
+            return task
+
+        except Exception as exc:
+            logger.error("Error generating LLM reply for chat_id=%d: %s", chat_id, exc, exc_info=True)
             try:
-                # Synthesize Japanese text to WAV bytes
-                wav_bytes = await self.tts_service.synthesize(japanese)
-                # Convert WAV to OGG/Opus for Telegram voice note
-                ogg_bytes = await convert_wav_to_ogg(wav_bytes)
-                # Send voice note
-                await bot.send_voice(chat_id=chat_id, voice=ogg_bytes, caption=japanese)
-            except asyncio.CancelledError:
-                logger.info("Voice synthesis cancelled for chat_id=%d", chat_id)
-                return
-            except Exception as exc:
-                logger.error("Voice synthesis failed for chat_id=%d: %s", chat_id, exc)
-
-        task = asyncio.create_task(background_voice_worker())
-        self.user_tasks[chat_id] = task
-        return task
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"抱歉，大模型生成回复失败: {exc}\n请在管理控制台检查当前模型提供商配置或 API Key。"
+                )
+            except Exception as send_err:
+                logger.error("Failed to send error notification to Telegram chat_id=%d: %s", chat_id, send_err)
+            
+            # Return a resolved task
+            async def _noop(): pass
+            return asyncio.create_task(_noop())
 
     async def handle_text_message(self, update: Any, context: Any) -> Optional[asyncio.Task]:
         """Handler for normal text messages."""

@@ -79,7 +79,13 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         url = f"{self.base_url}/chat/completions"
         payload: Dict[str, Any] = {
             "model": model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [
+                {
+                    "role": m.role if hasattr(m, "role") else m.get("role"),
+                    "content": m.content if hasattr(m, "content") else m.get("content"),
+                }
+                for m in messages
+            ],
             "temperature": temperature,
         }
         for k, v in kwargs.items():
@@ -161,7 +167,13 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         url = f"{self.base_url}/chat/completions"
         payload: Dict[str, Any] = {
             "model": model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [
+                {
+                    "role": m.role if hasattr(m, "role") else m.get("role"),
+                    "content": m.content if hasattr(m, "content") else m.get("content"),
+                }
+                for m in messages
+            ],
             "temperature": temperature,
             "stream": True,
         }
