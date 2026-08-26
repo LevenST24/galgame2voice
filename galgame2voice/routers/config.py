@@ -399,42 +399,67 @@ async def test_telegram_bot(req: TelegramTestRequest):
     if not token:
         return {"success": False, "message": "未配置 Telegram Bot Token"}
 
-    proxy_url = None
+    proxy_urls = []
     if req.proxy_enabled and req.proxy_host and req.proxy_port:
-        proxy_url = f"http://{req.proxy_host}:{req.proxy_port}"
+        host = str(req.proxy_host).strip()
+        port = str(req.proxy_port).strip()
+        if host.startswith("http://") or host.startswith("https://") or host.startswith("socks5://") or host.startswith("socks4://"):
+            proxy_urls = [f"{host}:{port}" if ":" not in host.split("//")[-1] else host]
+        else:
+            proxy_urls = [f"http://{host}:{port}", f"socks5://{host}:{port}"]
+    else:
+        proxy_urls = [None]
 
     t0 = time.perf_counter()
-    try:
-        proxies = proxy_url if proxy_url else None
-        async with httpx.AsyncClient(proxy=proxies, timeout=5.0) as client:
-            resp = await client.get(f"https://api.telegram.org/bot{token}/getMe")
-            latency = round((time.perf_counter() - t0) * 1000, 2)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("ok"):
-                    bot_user = data.get("result", {}).get("username", "")
-                    return {
-                        "success": True,
-                        "message": f"连接成功！Bot: @{bot_user}",
-                        "latency_ms": latency,
-                        "bot_info": data.get("result"),
-                    }
+    last_err = None
+    for p_url in proxy_urls:
+        try:
+            async with httpx.AsyncClient(proxy=p_url, timeout=6.0) as client:
+                resp = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+                latency = round((time.perf_counter() - t0) * 1000, 2)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("ok"):
+                        bot_user = data.get("result", {}).get("username", "")
+                        return {
+                            "success": True,
+                            "message": f"连接成功！Bot: @{bot_user}",
+                            "latency_ms": latency,
+                            "bot_info": data.get("result"),
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "message": f"Telegram API 错误: {data.get('description', '未知错误')}",
+                            "latency_ms": latency,
+                        }
                 else:
+                    data = {}
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        pass
+                    err_desc = data.get("description") if isinstance(data, dict) else f"HTTP {resp.status_code}"
                     return {
                         "success": False,
-                        "message": f"Telegram API 错误: {data.get('description', '未知错误')}",
+                        "message": f"Telegram 验证失败 ({resp.status_code}): {err_desc}",
                         "latency_ms": latency,
                     }
-            else:
-                return {
-                    "success": False,
-                    "message": f"Telegram HTTP 状态码异常: {resp.status_code}",
-                    "latency_ms": latency,
-                }
-    except Exception as exc:
-        latency = round((time.perf_counter() - t0) * 1000, 2)
+        except Exception as exc:
+            last_err = exc
+            continue
+
+    latency = round((time.perf_counter() - t0) * 1000, 2)
+    err_msg = str(last_err)
+    if "ConnectError" in str(type(last_err)) or "10061" in err_msg or "refused" in err_msg.lower():
+        hint = f"连接被拒绝。请检查代理端口是否填写正确（例如 v2rayN 常用 10808，Clash 常用 7890）且代理客户端处于运行状态。"
         return {
             "success": False,
-            "message": f"连接失败: {type(exc).__name__} - {str(exc)}",
+            "message": f"代理连接失败: {hint}",
             "latency_ms": latency,
         }
+    return {
+        "success": False,
+        "message": f"连接失败: {type(last_err).__name__} - {err_msg}",
+        "latency_ms": latency,
+    }

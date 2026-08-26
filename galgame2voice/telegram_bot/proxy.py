@@ -15,18 +15,20 @@ logger = logging.getLogger("galgame2voice.telegram_bot.proxy")
 def get_proxy_url(settings: Optional[SettingsInDB] = None, proxy_str: Optional[str] = None) -> Optional[str]:
     """
     Constructs normalized proxy URL from settings or explicit proxy string.
-    Returns e.g. 'http://127.0.0.1:10809' or 'socks5://127.0.0.1:10808', or None if disabled.
+    Returns e.g. 'http://127.0.0.1:10808' or 'socks5://127.0.0.1:10808', or None if disabled.
     """
     if proxy_str:
         p = proxy_str.strip()
         if p:
-            if not (p.startswith("http://") or p.startswith("https://") or p.startswith("socks5://")):
+            if not (p.startswith("http://") or p.startswith("https://") or p.startswith("socks5://") or p.startswith("socks4://")):
                 p = f"http://{p}"
             return p
 
     if settings and getattr(settings, "telegram_proxy_enabled", 0):
-        host = getattr(settings, "telegram_proxy_host", "127.0.0.1") or "127.0.0.1"
-        port = getattr(settings, "telegram_proxy_port", 10809) or 10809
+        host = str(getattr(settings, "telegram_proxy_host", "127.0.0.1") or "127.0.0.1").strip()
+        port = str(getattr(settings, "telegram_proxy_port", 10808) or 10808).strip()
+        if host.startswith("http://") or host.startswith("https://") or host.startswith("socks5://") or host.startswith("socks4://"):
+            return f"{host}:{port}" if ":" not in host.split("//")[-1] else host
         return f"http://{host}:{port}"
 
     return None
