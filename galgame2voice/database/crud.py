@@ -434,7 +434,7 @@ async def update_settings(conn: aiosqlite.Connection, updates: SettingsUpdate) -
         if k == "telegram_bot_token":
             if v is not None and not is_masked_key(str(v)):
                 fields.append(f"{k} = ?")
-                values.append(str(v).strip())
+                values.append(str(v).replace(" ", "").replace("\r", "").replace("\n", "").strip())
         elif k == "console_token":
             if v is not None and not is_masked_key(str(v)):
                 fields.append(f"{k} = ?")

@@ -390,11 +390,13 @@ async def activate_provider(provider_id: str):
     description="Probes Telegram getMe API endpoint with configured token and optional proxy.",
 )
 async def test_telegram_bot(req: TelegramTestRequest):
-    token = req.token or req.bot_token or ""
+    token = (req.token or req.bot_token or "").strip()
     if not token or "****" in token:
         async with get_db() as conn:
             stored_settings = await crud.get_settings_raw(conn)
-            token = stored_settings.telegram_bot_token
+            token = stored_settings.telegram_bot_token or ""
+
+    token = token.replace(" ", "").replace("\r", "").replace("\n", "").strip()
 
     if not token:
         return {"success": False, "message": "未配置 Telegram Bot Token"}
@@ -433,6 +435,18 @@ async def test_telegram_bot(req: TelegramTestRequest):
                             "message": f"Telegram API 错误: {data.get('description', '未知错误')}",
                             "latency_ms": latency,
                         }
+                elif resp.status_code == 401:
+                    return {
+                        "success": False,
+                        "message": "Telegram 验证失败 (401 Unauthorized): Token 错误或已失效，请在 Telegram 中私聊 @BotFather 发送 /token 重新获取最新 Token",
+                        "latency_ms": latency,
+                    }
+                elif resp.status_code == 404:
+                    return {
+                        "success": False,
+                        "message": "Telegram 验证失败 (404 Not Found): 无效的 Bot Token 格式，请检查 Token 是否包含多余字符或从 @BotFather 完整复制",
+                        "latency_ms": latency,
+                    }
                 else:
                     data = {}
                     try:
