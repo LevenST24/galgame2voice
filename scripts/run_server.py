@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import socket
+import atexit
 import threading
 import webbrowser
 import subprocess
