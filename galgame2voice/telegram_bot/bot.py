@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 try:
-    from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, filters
+    from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
     from telegram.request import HTTPXRequest
     HAS_TELEGRAM = True
 except ImportError:
@@ -18,6 +18,7 @@ except ImportError:
     ApplicationBuilder = Any
     CommandHandler = Any
     MessageHandler = Any
+    CallbackQueryHandler = Any
     filters = Any
     HTTPXRequest = Any
 
@@ -100,8 +101,11 @@ class TelegramBotManager:
         self.app.add_handler(CommandHandler("reset", self.handlers.handle_reset))
         self.app.add_handler(CommandHandler("voice", self.handlers.handle_voice))
         self.app.add_handler(CommandHandler("model", self.handlers.handle_model))
-        self.app.add_handler(CommandHandler("console", self.handlers.handle_console))
+        self.app.add_handler(CommandHandler(["console", "menu", "settings"], self.handlers.handle_console))
         self.app.add_handler(CommandHandler("help", self.handlers.handle_help))
+
+        # Register callback query handler for inline keyboard buttons
+        self.app.add_handler(CallbackQueryHandler(self.handlers.handle_callback_query))
 
         # Register message handlers
         self.app.add_handler(MessageHandler(filters.VOICE, self.handlers.handle_voice_message))

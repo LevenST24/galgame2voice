@@ -43,8 +43,8 @@ class MockBotClient:
         self.sent_messages: List[Dict[str, Any]] = []
         self.sent_voices: List[Dict[str, Any]] = []
 
-    async def send_message(self, chat_id: int, text: str) -> Dict[str, Any]:
-        msg = {"chat_id": chat_id, "text": text}
+    async def send_message(self, chat_id: int, text: str, reply_markup: Optional[Any] = None, **kwargs: Any) -> Dict[str, Any]:
+        msg = {"chat_id": chat_id, "text": text, "reply_markup": reply_markup}
         self.sent_messages.append(msg)
         return msg
 
@@ -399,3 +399,63 @@ class TestTelegramBotRealModules:
         # Stop test
         await manager.stop()
         assert manager.is_running is False
+
+    @pytest.mark.asyncio
+    async def test_telegram_bot_inline_keyboard_console_and_callbacks(self, temp_db_path):
+        """Validates that the native inline keyboard console and all callback sub-menus work seamlessly."""
+        handlers = TelegramBotHandlers(db_path=temp_db_path)
+        client = MockBotClient()
+
+        class DummyUpdate:
+            def __init__(self, chat_id=1002):
+                self.effective_chat = type("Chat", (), {"id": chat_id})()
+                self.message = None
+
+        class DummyContext:
+            def __init__(self):
+                self.bot = client
+
+        # 1. Main Console rendering
+        r_console = await handlers.handle_console(DummyUpdate(), DummyContext())
+        assert "控制台" in r_console
+        assert "当前角色" in r_console
+        assert "好感状态" in r_console
+
+        # 2. Callback Mock
+        class MockQuery:
+            def __init__(self, data):
+                self.data = data
+                self.answered = False
+                self.answer_text = None
+                self.edited_text = None
+                self.edited_markup = None
+
+            async def answer(self, text=None, show_alert=False):
+                self.answered = True
+                self.answer_text = text
+
+            async def edit_message_text(self, text, reply_markup=None):
+                self.edited_text = text
+                self.edited_markup = reply_markup
+
+        class CallbackUpdate:
+            def __init__(self, data, chat_id=1002):
+                self.callback_query = MockQuery(data)
+                self.effective_chat = type("Chat", (), {"id": chat_id})()
+
+        # Test Sub-menus
+        for menu_key in ["menu_voice", "menu_speed", "menu_model", "menu_affection", "menu_main"]:
+            cb_update = CallbackUpdate(menu_key)
+            await handlers.handle_callback_query(cb_update, DummyContext())
+            assert cb_update.callback_query.answered is True
+            assert cb_update.callback_query.edited_text is not None
+
+        # Test Actions
+        cb_speed = CallbackUpdate("set_speed_1.2")
+        await handlers.handle_callback_query(cb_speed, DummyContext())
+        assert "1.2" in (cb_speed.callback_query.answer_text or "")
+
+        cb_reset = CallbackUpdate("action_reset")
+        await handlers.handle_callback_query(cb_reset, DummyContext())
+        assert "清空" in (cb_reset.callback_query.answer_text or "")
+

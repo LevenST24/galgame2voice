@@ -10,22 +10,25 @@ Implements:
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from telegram import Update
-    from telegram.ext import ContextTypes
+    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram.ext import ContextTypes, CallbackQueryHandler
     HAS_TELEGRAM = True
 except ImportError:
     HAS_TELEGRAM = False
     Update = Any
+    InlineKeyboardButton = Any
+    InlineKeyboardMarkup = Any
     class _ContextTypes:
         DEFAULT_TYPE = Any
     ContextTypes = _ContextTypes
+    CallbackQueryHandler = Any
 
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
-from galgame2voice.database.models import MessageCreate
+from galgame2voice.database.models import MessageCreate, SettingsUpdate
 from galgame2voice.services.chat_service import ChatService, StreamingBilingualParser
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.adapters.registry import get_stt_adapter
@@ -36,7 +39,8 @@ logger = logging.getLogger("galgame2voice.telegram_bot.handlers")
 
 class TelegramBotHandlers:
     """
-    Coordinates message handling, voice note processing, and per-user background task tracking.
+    Coordinates message handling, voice note processing, per-user background task tracking,
+    and native Telegram Inline Keyboard Interactive Console.
     """
 
     def __init__(
@@ -58,17 +62,318 @@ class TelegramBotHandlers:
             task.cancel()
             logger.info("Cancelled ongoing voice synthesis task for chat_id=%d", chat_id)
 
+    async def build_main_console(self, chat_id: int) -> Tuple[str, Any]:
+        """Constructs the rich text and inline keyboard for the Telegram Interactive Console."""
+        profile = None
+        settings = None
+        provider = None
+        affection = None
+        msg_count = 0
+
+        try:
+            async with get_db(self.db_path) as conn:
+                profile = await crud.get_active_voice_profile(conn)
+                settings = await crud.get_settings_raw(conn)
+                provider = await crud.get_active_provider(conn, mask=True)
+                profile_id = profile.id if profile else 1
+                try:
+                    affection = await crud.get_or_create_character_affection(
+                        conn, user_id=str(chat_id), character_id=profile_id
+                    )
+                except Exception:
+                    affection = None
+                try:
+                    msgs = await crud.get_session_messages(conn, f"tg_{chat_id}")
+                    msg_count = len(msgs)
+                except Exception:
+                    msg_count = 0
+        except Exception as exc:
+            logger.debug("Database read failed in build_main_console: %s", exc)
+
+        char_name = profile.name if profile else "四季夏目 (默认)"
+        speed = getattr(settings, "speed_factor", 1.05) if settings else 1.05
+        split_m = getattr(settings, "text_split_method", "cut5") if settings else "cut5"
+        prov_name = f"{provider.name} ({provider.chat_model})" if provider else "未配置"
+        aff_str = f"Lv.{affection.affection_level} {affection.level_name} ({affection.current_emotion})" if affection else "Lv.1 初识"
+
+        text = (
+            "🎮 【Galgame2Voice 交互控制台】\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"🌸 当前角色: {char_name}\n"
+            f"⚡ 语音语速: {speed}x | 切分: {split_m}\n"
+            f"🤖 对话模型: {prov_name}\n"
+            f"💖 好感状态: {aff_str}\n"
+            f"💬 对话轮数: {msg_count} 轮\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💡 点击下方内联按钮直接在手机端快捷设置："
+        )
+
+        reply_markup = None
+        if HAS_TELEGRAM and InlineKeyboardButton and InlineKeyboardMarkup:
+            keyboard = [
+                [
+                    InlineKeyboardButton("🎭 切换角色音色", callback_data="menu_voice"),
+                    InlineKeyboardButton("⚡ 调节语音语速", callback_data="menu_speed"),
+                ],
+                [
+                    InlineKeyboardButton("🤖 切换大模型", callback_data="menu_model"),
+                    InlineKeyboardButton("💖 好感度档案", callback_data="menu_affection"),
+                ],
+                [
+                    InlineKeyboardButton("🗑️ 清空当前对话", callback_data="action_reset"),
+                    InlineKeyboardButton("🔄 刷新控制台", callback_data="menu_refresh"),
+                ],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+        return text, reply_markup
+
+    async def build_voice_menu(self) -> Tuple[str, Any]:
+        """Constructs sub-menu for switching voice profiles."""
+        profiles = []
+        active_id = None
+        try:
+            async with get_db(self.db_path) as conn:
+                profiles = await crud.get_all_voice_profiles(conn)
+                active = await crud.get_active_voice_profile(conn)
+                active_id = active.id if active else None
+        except Exception as exc:
+            logger.debug("Database read failed in build_voice_menu: %s", exc)
+
+        text = "🎭 【选择角色音色】\n请点击下方按钮切换你想对话的角色："
+        keyboard = []
+        for p in profiles:
+            is_cur = (p.id == active_id)
+            prefix = "🌸 " if is_cur else "▫️ "
+            suffix = " (当前)" if is_cur else ""
+            keyboard.append([InlineKeyboardButton(f"{prefix}{p.name}{suffix}", callback_data=f"set_voice_{p.id}")])
+
+        keyboard.append([InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main")])
+        reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+        return text, reply_markup
+
+    async def build_speed_menu(self) -> Tuple[str, Any]:
+        """Constructs sub-menu for adjusting voice speed factor."""
+        current_speed = 1.05
+        try:
+            async with get_db(self.db_path) as conn:
+                settings = await crud.get_settings_raw(conn)
+                current_speed = getattr(settings, "speed_factor", 1.05) if settings else 1.05
+        except Exception as exc:
+            logger.debug("Database read failed in build_speed_menu: %s", exc)
+
+        text = f"⚡ 【调节语音语速】\n当前语速: {current_speed}x\n请选择你期望的发音语速："
+        speeds = [0.8, 0.9, 1.0, 1.05, 1.1, 1.2, 1.3, 1.5]
+        row1 = []
+        row2 = []
+        for s in speeds[:4]:
+            mark = "✓ " if abs(current_speed - s) < 0.01 else ""
+            row1.append(InlineKeyboardButton(f"{mark}{s}x", callback_data=f"set_speed_{s}"))
+        for s in speeds[4:]:
+            mark = "✓ " if abs(current_speed - s) < 0.01 else ""
+            row2.append(InlineKeyboardButton(f"{mark}{s}x", callback_data=f"set_speed_{s}"))
+
+        keyboard = [row1, row2, [InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main")]]
+        reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+        return text, reply_markup
+
+    async def build_model_menu(self) -> Tuple[str, Any]:
+        """Constructs sub-menu for switching active LLM provider."""
+        providers = []
+        active_id = None
+        try:
+            async with get_db(self.db_path) as conn:
+                providers = await crud.get_all_providers(conn)
+                active = await crud.get_active_provider(conn)
+                active_id = active.id if active else None
+        except Exception as exc:
+            logger.debug("Database read failed in build_model_menu: %s", exc)
+
+        text = "🤖 【切换大模型提供商】\n请选择活跃的 LLM 接口供应商："
+        keyboard = []
+        for prov in providers:
+            is_cur = (prov.id == active_id)
+            prefix = "🟢 " if is_cur else "⚪ "
+            suffix = " (当前)" if is_cur else ""
+            keyboard.append([InlineKeyboardButton(f"{prefix}{prov.name}{suffix}", callback_data=f"set_model_{prov.id}")])
+
+        keyboard.append([InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main")])
+        reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+        return text, reply_markup
+
+    async def build_affection_menu(self, chat_id: int) -> Tuple[str, Any]:
+        """Constructs sub-menu for displaying affection details and emotion."""
+        profile = None
+        affection = None
+        msg_count = 0
+        try:
+            async with get_db(self.db_path) as conn:
+                profile = await crud.get_active_voice_profile(conn)
+                profile_id = profile.id if profile else 1
+                try:
+                    affection = await crud.get_or_create_character_affection(
+                        conn, user_id=str(chat_id), character_id=profile_id
+                    )
+                except Exception:
+                    affection = None
+                try:
+                    msgs = await crud.get_session_messages(conn, f"tg_{chat_id}")
+                    msg_count = len(msgs)
+                except Exception:
+                    msg_count = 0
+        except Exception as exc:
+            logger.debug("Database read failed in build_affection_menu: %s", exc)
+
+        char_name = profile.name if profile else "四季夏目"
+        aff_level = affection.affection_level if affection else 1
+        aff_name = affection.level_name if affection else "初识"
+        aff_pts = affection.affection_score if affection else 0
+        aff_emo = affection.current_emotion if affection else "平静"
+        aff_nick = affection.custom_nickname if (affection and affection.custom_nickname) else "未设定"
+
+        text = (
+            f"💖 【{char_name} 的好感度档案】\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"• 好感等级: Lv.{aff_level}（{aff_name}）\n"
+            f"• 好感点数: {aff_pts} pts\n"
+            f"• 当前心境: {aff_emo}\n"
+            f"• 你的昵称: {aff_nick}\n"
+            f"• 累计对话: {msg_count} 轮\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💡 与角色多互动交流可以提升好感度并解锁更亲密的专属语音！"
+        )
+        keyboard = [
+            [InlineKeyboardButton("🔄 刷新好感档案", callback_data="menu_affection")],
+            [InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+        return text, reply_markup
+
+    async def handle_callback_query(self, update: Any, context: Optional[Any] = None) -> None:
+        """Handles inline button clicks in Telegram."""
+        query = getattr(update, "callback_query", None)
+        if not query:
+            return
+        data = getattr(query, "data", "") or ""
+        chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
+
+        try:
+            if data in ("menu_main", "menu_refresh"):
+                text, markup = await self.build_main_console(chat_id)
+                if hasattr(query, "answer"):
+                    await query.answer("已刷新控制台" if data == "menu_refresh" else None)
+                if hasattr(query, "edit_message_text"):
+                    await query.edit_message_text(text=text, reply_markup=markup)
+
+            elif data == "menu_voice":
+                text, markup = await self.build_voice_menu()
+                if hasattr(query, "answer"):
+                    await query.answer()
+                if hasattr(query, "edit_message_text"):
+                    await query.edit_message_text(text=text, reply_markup=markup)
+
+            elif data.startswith("set_voice_"):
+                profile_id = int(data.split("_")[-1])
+                char_name = "目标角色"
+                try:
+                    async with get_db(self.db_path) as conn:
+                        from galgame2voice.services.voice_manager import get_voice_manager
+                        await get_voice_manager().switch_active_profile(profile_id)
+                        profile = await crud.get_voice_profile(conn, profile_id)
+                        if profile:
+                            char_name = profile.name
+                except Exception as exc:
+                    logger.warning("Voice switch exception: %s", exc)
+                if hasattr(query, "answer"):
+                    await query.answer(f"🌸 音色已切换为: {char_name}", show_alert=True)
+                text, markup = await self.build_main_console(chat_id)
+                if hasattr(query, "edit_message_text"):
+                    await query.edit_message_text(text=text, reply_markup=markup)
+
+            elif data == "menu_speed":
+                text, markup = await self.build_speed_menu()
+                if hasattr(query, "answer"):
+                    await query.answer()
+                if hasattr(query, "edit_message_text"):
+                    await query.edit_message_text(text=text, reply_markup=markup)
+
+            elif data.startswith("set_speed_"):
+                new_speed = float(data.split("_")[-1])
+                try:
+                    async with get_db(self.db_path) as conn:
+                        await crud.update_settings(conn, SettingsUpdate(speed_factor=new_speed))
+                except Exception as exc:
+                    logger.warning("Speed update exception: %s", exc)
+                if hasattr(query, "answer"):
+                    await query.answer(f"⚡ 语速已调整为: {new_speed}x", show_alert=True)
+                text, markup = await self.build_main_console(chat_id)
+                if hasattr(query, "edit_message_text"):
+                    await query.edit_message_text(text=text, reply_markup=markup)
+
+            elif data == "menu_model":
+                text, markup = await self.build_model_menu()
+                if hasattr(query, "answer"):
+                    await query.answer()
+                if hasattr(query, "edit_message_text"):
+                    await query.edit_message_text(text=text, reply_markup=markup)
+
+            elif data.startswith("set_model_"):
+                provider_id = data.replace("set_model_", "")
+                prov_name = provider_id
+                try:
+                    async with get_db(self.db_path) as conn:
+                        await crud.set_active_provider(conn, provider_id)
+                        prov = await crud.get_provider(conn, provider_id)
+                        if prov:
+                            prov_name = prov.name
+                except Exception as exc:
+                    logger.warning("Model switch exception: %s", exc)
+                if hasattr(query, "answer"):
+                    await query.answer(f"🤖 已激活大模型: {prov_name}", show_alert=True)
+                text, markup = await self.build_main_console(chat_id)
+                if hasattr(query, "edit_message_text"):
+                    await query.edit_message_text(text=text, reply_markup=markup)
+
+            elif data == "menu_affection":
+                text, markup = await self.build_affection_menu(chat_id)
+                if hasattr(query, "answer"):
+                    await query.answer()
+                if hasattr(query, "edit_message_text"):
+                    await query.edit_message_text(text=text, reply_markup=markup)
+
+            elif data == "action_reset":
+                session_id = f"tg_{chat_id}"
+                self.cancel_user_task(chat_id)
+                try:
+                    async with get_db(self.db_path) as conn:
+                        await crud.clear_session_messages(conn, session_id)
+                except Exception as exc:
+                    logger.warning("Could not clear session: %s", exc)
+                if hasattr(query, "answer"):
+                    await query.answer("🗑️ 当前会话记忆已清空！", show_alert=True)
+                text, markup = await self.build_main_console(chat_id)
+                if hasattr(query, "edit_message_text"):
+                    await query.edit_message_text(text=text, reply_markup=markup)
+
+        except Exception as exc:
+            logger.error("Error processing callback query '%s': %s", data, exc, exc_info=True)
+            if hasattr(query, "answer"):
+                try:
+                    await query.answer(f"操作异常: {exc}", show_alert=True)
+                except Exception:
+                    pass
+
     async def handle_start(self, update: Any, context: Optional[Any] = None) -> str:
         """Handler for /start command."""
         reply = (
             "你好！我是你的二次元AI伴侣。\n"
-            "随时发文字或语音与我对话吧！\n\n"
-            "支持的指令：\n"
-            "• /reset - 清空对话历史\n"
+            "随时发送文字或语音消息与我对话吧！\n\n"
+            "🎮 支持的快捷指令：\n"
+            "• /console - 打开原生交互控制台（音色/语速/模型快捷切换）\n"
             "• /voice - 查看当前音色与语音设置\n"
             "• /model - 查看模型与接口配置\n"
-            "• /console - 获取专属网页控制台链接\n"
-            "• /help - 查看完整帮助"
+            "• /reset - 清空当前对话历史\n"
+            "• /help - 查看完整帮助信息"
         )
         if hasattr(update, "message") and update.message:
             await update.message.reply_text(reply)
@@ -107,8 +412,8 @@ class TelegramBotHandlers:
         except Exception as exc:
             logger.debug("Database read failed in handle_voice: %s", exc)
 
-        profile_name = profile.name if profile else "Arona (默认)"
-        speed = getattr(settings, "speed_factor", 1.0) if settings else 1.0
+        profile_name = profile.name if profile else "四季夏目 (默认)"
+        speed = getattr(settings, "speed_factor", 1.05) if settings else 1.05
         temp = getattr(settings, "temperature", 0.8) if settings else 0.8
         split_m = getattr(settings, "text_split_method", "cut5") if settings else "cut5"
         batch_s = getattr(settings, "batch_size", 1) if settings else 1
@@ -119,7 +424,8 @@ class TelegramBotHandlers:
             f"• 语速: {speed}x\n"
             f"• 温度: {temp}\n"
             f"• 切分方式: {split_m}\n"
-            f"• 批量大小: {batch_s}"
+            f"• 批量大小: {batch_s}\n\n"
+            f"💡 发送 /console 可直接在手机端点击按钮切换音色与调节语速！"
         )
         if hasattr(update, "message") and update.message:
             await update.message.reply_text(reply)
@@ -143,7 +449,8 @@ class TelegramBotHandlers:
                 f"• 接口地址: {provider.api_base_url}\n"
                 f"• API Key: {provider.api_key}\n"
                 f"• 对话模型: {provider.chat_model}\n"
-                f"• 语音识别模型: {provider.stt_model or '(未配置)'}"
+                f"• 语音识别模型: {provider.stt_model or '(未配置)'}\n\n"
+                f"💡 发送 /console 可直接在手机端点击按钮无缝切换大模型！"
             )
         else:
             reply = "未找到已配置的活跃提供商。"
@@ -155,52 +462,33 @@ class TelegramBotHandlers:
         return reply
 
     async def handle_console(self, update: Any, context: Optional[Any] = None) -> str:
-        """Handler for /console command (Restricted to private chat and authorized admin)."""
-        chat_type = getattr(getattr(update, "effective_chat", None), "type", "private")
-        if chat_type != "private":
-            reply = "安全限制：控制台链接包含管理员权限令牌，仅支持在私聊中获取！"
-            if hasattr(update, "message") and update.message:
-                await update.message.reply_text(reply)
-            return reply
-
-        settings = None
-        try:
-            async with get_db(self.db_path) as conn:
-                settings = await crud.get_settings_raw(conn)
-        except Exception as exc:
-            logger.debug("Database read failed in handle_console: %s", exc)
-
-        # Admin ID whitelist check if configured
-        user_id = str(getattr(getattr(update, "effective_user", None), "id", ""))
-        admin_ids_str = getattr(settings, "telegram_admin_ids", "") if settings else ""
-        if admin_ids_str:
-            admin_list = [a.strip() for a in admin_ids_str.split(",") if a.strip()]
-            if admin_list and user_id not in admin_list:
-                reply = "权限不足：当前 Telegram 用户未在管理员白名单中。"
-                if hasattr(update, "message") and update.message:
-                    await update.message.reply_text(reply)
-                return reply
-
-        base_url = settings.console_url.rstrip("/") if settings and settings.console_url else "http://localhost:8080"
-        token = settings.console_token if settings else ""
-        link = f"{base_url}/settings.html?token={token}" if token else f"{base_url}/settings.html"
-        reply = f"你的专属控制台链接（请勿泄露给他人）：\n{link}"
+        """Handler for /console, /menu, /settings command rendering native Inline Keyboard Console."""
+        chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
+        text, markup = await self.build_main_console(chat_id)
 
         if hasattr(update, "message") and update.message:
-            await update.message.reply_text(reply)
+            if markup:
+                await update.message.reply_text(text, reply_markup=markup)
+            else:
+                await update.message.reply_text(text)
         elif hasattr(update, "effective_chat") and update.effective_chat and context and hasattr(context, "bot"):
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=reply)
-        return reply
+            try:
+                if markup:
+                    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
+                else:
+                    await context.bot.send_message(chat_id=chat_id, text=text)
+            except TypeError:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+        return text
 
     async def handle_help(self, update: Any, context: Optional[Any] = None) -> str:
         """Handler for /help command."""
         reply = (
             "【支持的指令】\n"
-            "/start - 启动并查看欢迎语\n"
-            "/reset - 清空当前对话上下文\n"
+            "/console - 打开原生交互控制台（音色/语速/模型切换）\n"
             "/voice - 查看当前音色与语音设置\n"
             "/model - 查看当前 LLM / STT 模型设置\n"
-            "/console - 获取专属网页控制台链接（仅限私聊）\n"
+            "/reset - 清空当前对话上下文\n"
             "/help - 查看此帮助信息"
         )
         if hasattr(update, "message") and update.message:
@@ -211,7 +499,7 @@ class TelegramBotHandlers:
 
     async def handle_unknown(self, update: Any, context: Optional[Any] = None) -> str:
         """Handler for unknown commands."""
-        reply = "未知指令，支持 /start, /reset, /voice, /help"
+        reply = "未知指令，支持 /console, /voice, /model, /reset, /help"
         if hasattr(update, "message") and update.message:
             await update.message.reply_text(reply)
         elif hasattr(update, "effective_chat") and update.effective_chat and context and hasattr(context, "bot"):
