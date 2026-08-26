@@ -275,10 +275,14 @@ class TelegramBotHandlers:
                 try:
                     # Synthesize Japanese text to WAV bytes
                     wav_bytes = await self.tts_service.synthesize(japanese)
+                    if not wav_bytes:
+                        logger.warning("TTS synthesis returned empty bytes for chat_id=%d", chat_id)
+                        return
+
                     # Convert WAV to OGG/Opus for Telegram voice note
                     ogg_bytes = await convert_wav_to_ogg(wav_bytes)
-                    # Send voice note
                     await bot.send_voice(chat_id=chat_id, voice=ogg_bytes, caption=japanese)
+
                 except asyncio.CancelledError:
                     logger.info("Voice synthesis cancelled for chat_id=%d", chat_id)
                     return
