@@ -50,7 +50,6 @@ class TtsService:
             cache_dir=self.audio_dir / "cache",
             db_path=settings.db_path,
         )
-        self._active_profile_opts_cache: Optional[Dict[str, Any]] = None
 
     async def _populate_voice_profile_opts(self, opts: Dict[str, Any]) -> Dict[str, Any]:
         """Auto-populates active voice profile parameters if missing."""
@@ -151,7 +150,9 @@ class TtsService:
                     # caller still gets usable audio.
                     logger.warning("TTS cache put failed, writing ephemeral file instead: %s", exc)
 
-        # Ephemeral non-cached file write
+        # Ephemeral non-cached file write (also reached when use_cache=False)
+        if not use_cache:
+            audio_bytes = await self.client.synthesize(text, options=opts)
         filename = f"{filename_prefix}_{uuid.uuid4().hex[:12]}.wav"
         file_path = self.audio_dir / filename
         await asyncio.to_thread(file_path.write_bytes, audio_bytes)

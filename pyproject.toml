@@ -50,10 +50,3 @@ galgame2voice = "galgame2voice.main:run"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["galgame2voice*"]
-
-[tool.pytest.ini_options]
-minversion = "8.0"
-addopts = "-v --tb=short"
-testpaths = ["tests"]
-asyncio_mode = "auto"
-python_files = ["test_*.py"]

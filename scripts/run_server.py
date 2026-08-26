@@ -37,6 +37,120 @@ MAGENTA = "\033[95m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
+_SPAWNED_SOVITS_PROC = None
+_WINDOWS_JOB_HANDLE = None
+
+
+def setup_windows_job_object():
+    """
+    Creates a Windows Job Object configured with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
+    Any child process assigned to this job object will be automatically and atomically
+    terminated by the Windows kernel when the parent process exits (even on window close X,
+    Ctrl+C, taskkill, or power off).
+    """
+    global _WINDOWS_JOB_HANDLE
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+        JobObjectExtendedLimitInformation = 9
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+                ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryLimit", ctypes.c_size_t),
+                ("PeakJobMemoryLimit", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.windll.kernel32
+        h_job = kernel32.CreateJobObjectW(None, None)
+        if not h_job:
+            return None
+
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+        res = kernel32.SetInformationJobObject(
+            h_job,
+            JobObjectExtendedLimitInformation,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        )
+        if not res:
+            kernel32.CloseHandle(h_job)
+            return None
+
+        _WINDOWS_JOB_HANDLE = h_job
+        return h_job
+    except Exception:
+        return None
+
+
+def assign_process_to_job(proc):
+    """Assigns a spawned child process to the Windows Job Object."""
+    if sys.platform != "win32" or not _WINDOWS_JOB_HANDLE:
+        return False
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        if hasattr(proc, "_handle") and proc._handle:
+            return bool(kernel32.AssignProcessToJobObject(_WINDOWS_JOB_HANDLE, proc._handle))
+    except Exception:
+        pass
+    return False
+
+
+def cleanup_subprocesses():
+    """Explicitly stops spawned subprocesses and cleans runtime tracking files."""
+    global _SPAWNED_SOVITS_PROC
+    if _SPAWNED_SOVITS_PROC is not None:
+        try:
+            if _SPAWNED_SOVITS_PROC.poll() is None:
+                _SPAWNED_SOVITS_PROC.terminate()
+                try:
+                    _SPAWNED_SOVITS_PROC.wait(timeout=1.5)
+                except subprocess.TimeoutExpired:
+                    _SPAWNED_SOVITS_PROC.kill()
+        except Exception:
+            pass
+        _SPAWNED_SOVITS_PROC = None
+
+    try:
+        (PROJECT_ROOT / "data" / "active_port.txt").unlink(missing_ok=True)
+        (PROJECT_ROOT / "galgame2voice.pid").unlink(missing_ok=True)
+        (PROJECT_ROOT / "gptsovits.pid").unlink(missing_ok=True)
+    except Exception:
+        pass
+
 
 def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
     """Checks if a TCP port is open and listening."""
@@ -146,8 +260,10 @@ def ensure_gpt_sovits_running():
             stderr=log_fp,
             stdin=subprocess.DEVNULL,
         )
+        _SPAWNED_SOVITS_PROC = proc
+        assign_process_to_job(proc)
         (PROJECT_ROOT / "gptsovits.pid").write_text(str(proc.pid), encoding="utf-8")
-        print(f"      {GREEN}[OK]{RESET} 已在后台启动 GPT-SoVITS (PID: {proc.pid})，日志保存至 logs/gpt_sovits.log")
+        print(f"      {GREEN}[OK]{RESET} 已在后台启动 GPT-SoVITS (PID: {proc.pid})，进程与主窗口已安全绑定联动")
 
         # Readiness check with progress dots (bounded: 120s, model load 10~60s typical).
         print(f"      {CYAN}[..]{RESET} 正在等待 GPT-SoVITS 模型加载入显存 (最长 120 秒)...")
@@ -210,6 +326,10 @@ def main():
     print(f"{MAGENTA}{BOLD}        🌸 Galgame2Voice - 二次元智能语音伴侣 一键启动器{RESET}")
     print(f"{MAGENTA}{BOLD}{'='*68}{RESET}\n")
 
+    # Step 0: Setup OS-level process tree binding
+    setup_windows_job_object()
+    atexit.register(cleanup_subprocesses)
+
     # Step 1: GPT-SoVITS
     ensure_gpt_sovits_running()
 
@@ -247,20 +367,18 @@ def main():
 
     print(f"{GREEN}{BOLD}{'='*68}{RESET}")
     print(f"{GREEN}{BOLD}  🎉 服务运行中！您可以在浏览器中畅享与二次元伴侣的互动。{RESET}")
+    print(f"{GREEN}{BOLD}  💡 直接关闭此控制台窗口即可自动安全退出并释放全部 GPU 显存。{RESET}")
+    print(f"{GREEN}{BOLD}{'='*68}{RESET}\n")
     try:
         import uvicorn
         uvicorn.run("galgame2voice.main:app", host="127.0.0.1", port=active_port, log_level="info")
     except (KeyboardInterrupt, SystemExit):
-        print(f"\n{YELLOW}[提示] 服务已正常停止。{RESET}")
+        print(f"\n{YELLOW}[提示] 服务已正常停止，正在释放资源...{RESET}")
     except Exception as e:
         print(f"\n{RED}[错误] 服务运行异常: {e}{RESET}")
         sys.exit(1)
     finally:
-        try:
-            (PROJECT_ROOT / "data" / "active_port.txt").unlink(missing_ok=True)
-            (PROJECT_ROOT / "galgame2voice.pid").unlink(missing_ok=True)
-        except Exception:
-            pass
+        cleanup_subprocesses()
     sys.exit(0)
 
 

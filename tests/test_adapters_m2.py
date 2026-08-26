@@ -148,9 +148,11 @@ class TestAdaptersExecutionWithMockServer:
         assert res.success is True
         assert res.latency_ms is not None
 
-        bad_adapter = GLMLLMAdapter(api_key="sk-invalid", client_override=mock_llm_server)
+        mock_llm_server.set_error(401, "Invalid API key")
+        bad_adapter = GLMLLMAdapter(api_key="sk-valid-key", client_override=mock_llm_server)
         res_bad = await bad_adapter.test_connection()
         assert res_bad.success is False
+        mock_llm_server.set_error(None)
 
     @pytest.mark.asyncio
     async def test_llm_list_models_mock(self, mock_llm_server):

@@ -240,8 +240,8 @@ class TelegramBotHandlers:
                 audio_url="",
                 latency_ms=0,
             ))
-            adapter, model_name = await self.chat_service._get_active_llm_adapter(conn=conn)
-            messages = await self.chat_service._prepare_messages(conn, session_id, text)
+            adapter, model_name, _provider_id = await self.chat_service.get_active_llm_adapter(conn=conn)
+            messages = await self.chat_service.prepare_messages(conn, session_id, text)
 
         llm_response = await adapter.chat(messages, model=model_name)
         raw_text = llm_response.content

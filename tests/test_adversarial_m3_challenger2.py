@@ -564,9 +564,9 @@ class TestTokenPricingAndConcurrentTelemetry:
         cost_usd_oai, _ = collector.calculate_cost("openai", "gpt-future-99", 1_000_000, 1_000_000)
         assert cost_usd_oai == 0.750000
 
-        # Anthropic default is (0.80, 4.00)
+        # Anthropic default is (3.00, 15.00) for Claude Sonnet/Haiku hybrid fallback
         cost_usd_ant, _ = collector.calculate_cost("anthropic", "claude-future-x", 1_000_000, 1_000_000)
-        assert cost_usd_ant == 4.800000
+        assert cost_usd_ant == 18.000000
 
         # 3. None / Empty provider or model
         cost_usd_none, _ = collector.calculate_cost("", "", 1_000_000, 1_000_000)

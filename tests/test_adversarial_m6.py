@@ -234,12 +234,12 @@ class TestTelegramBotAdversarial:
         mock_bot = MockBot()
 
         # Mock adapter chat to return JSON
-        with patch.object(handlers.chat_service, "_get_active_llm_adapter") as mock_adapter_getter:
+        with patch.object(handlers.chat_service, "get_active_llm_adapter") as mock_adapter_getter:
             mock_adapter = AsyncMock()
             mock_response = AsyncMock()
             mock_response.content = '{"chinese": "回复内容", "japanese": "返事の内容"}'
             mock_adapter.chat.return_value = mock_response
-            mock_adapter_getter.return_value = (mock_adapter, "mock-model")
+            mock_adapter_getter.return_value = (mock_adapter, "mock-model", "mock-provider")
 
             # Fire 5 rapid messages for same user
             tasks = []

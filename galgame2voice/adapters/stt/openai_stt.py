@@ -42,7 +42,7 @@ class OpenAICompatibleSTTAdapter(BaseSTTAdapter):
         self.default_model = default_model
 
     def _validate_credentials(self) -> None:
-        if not self.api_key or "invalid" in self.api_key.lower():
+        if not self.api_key:
             raise ValueError("Authentication error: Invalid API key")
 
     async def transcribe(
@@ -118,17 +118,10 @@ class OpenAICompatibleSTTAdapter(BaseSTTAdapter):
         """
         Tests STT connectivity and credentials.
         """
-        if not self.api_key or "invalid" in self.api_key.lower():
+        if not self.api_key:
             return TestResult(
                 success=False,
                 message="STT Auth failed: Invalid API key",
-                latency_ms=None,
-            )
-
-        if "unreachable" in self.base_url.lower():
-            return TestResult(
-                success=False,
-                message=f"STT Connection error: Target host unreachable ({self.base_url})",
                 latency_ms=None,
             )
 

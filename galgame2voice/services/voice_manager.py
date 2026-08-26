@@ -22,8 +22,6 @@ from galgame2voice.database.models import (
 from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
     get_gpt_sovits_client,
-    clean_japanese_parentheses,
-    resolve_tts_options,
 )
 
 logger = logging.getLogger("galgame2voice.services.voice_manager")
@@ -121,7 +119,12 @@ class VoiceManager:
                 if row:
                     profile_obj = VoiceProfileResponse(**dict(row))
                 else:
-                    logger.warning("Voice profile name '%s' not found in database; treating as raw object if possible", target)
+                    logger.warning("Voice profile name '%s' not found in database", target)
+
+        # Bail out if the target failed to resolve to an actual profile object
+        if isinstance(profile_obj, str):
+            logger.error("Cannot switch voice profile: unresolved string target '%s'", profile_obj)
+            return False
 
         # 2. Execute 3-step atomic model switch with auto-rollback
         success = await self.client.switch_voice_profile(profile_obj)

@@ -356,6 +356,18 @@ class ChatService:
             adapter = get_llm_adapter("openai")
             return adapter, "gpt-4o-mini", "openai"
 
+    async def get_active_llm_adapter(
+        self,
+        conn: Optional[aiosqlite.Connection] = None,
+        provider_id: Optional[str] = None,
+    ) -> Tuple[BaseLLMAdapter, str, str]:
+        """Public interface for getting the active LLM adapter.
+
+        Returns (adapter, chat_model, provider_id). External callers (e.g. the
+        Telegram bot) should use this instead of the private _get_active_llm_adapter.
+        """
+        return await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
+
     async def _prepare_messages(
         self,
         conn: aiosqlite.Connection,
@@ -411,6 +423,20 @@ class ChatService:
             max_messages=max_history,
             memory_prompt_block=memory_block,
         )
+
+    async def prepare_messages(
+        self,
+        conn: aiosqlite.Connection,
+        session_id: str,
+        user_prompt: str,
+        character_name: Optional[str] = None,
+    ) -> List[ChatMessage]:
+        """Public interface for preparing chat messages.
+
+        External callers (e.g. the Telegram bot) should use this instead of the
+        private _prepare_messages.
+        """
+        return await self._prepare_messages(conn, session_id, user_prompt, character_name)
 
     def _concat_wav_files(self, chunk_paths: List[str], output_path: Path) -> bool:
         """Synchronous WAV concatenation — ALWAYS run via asyncio.to_thread()."""

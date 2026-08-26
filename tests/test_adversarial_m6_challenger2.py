@@ -120,7 +120,7 @@ class TestMultiUserConcurrencyAndIsolation:
         async def mock_synthesize(text, *args, **kwargs):
             return b"RIFF\x24\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x08\x00\x00" + b"\x00" * 100
 
-        with patch.object(handlers.chat_service, "_get_active_llm_adapter", return_value=(mock_adapter, "mock-model")), \
+        with patch.object(handlers.chat_service, "get_active_llm_adapter", return_value=(mock_adapter, "mock-model", "mock-provider")), \
              patch.object(handlers.tts_service, "synthesize", side_effect=mock_synthesize):
             async def user_worker(user_idx: int):
                 chat_id = 10000 + user_idx
@@ -188,7 +188,7 @@ class TestMultiUserConcurrencyAndIsolation:
             mock_adapter = AsyncMock()
             mock_adapter.chat.return_value = AsyncMock(content='{"chinese": "回答", "japanese": "返事"}')
 
-            with patch.object(handlers.chat_service, "_get_active_llm_adapter", return_value=(mock_adapter, "mock-model")):
+            with patch.object(handlers.chat_service, "get_active_llm_adapter", return_value=(mock_adapter, "mock-model", "mock-provider")):
                 # 1. Spawn slow tasks for users 1002..1010
                 other_tasks = []
                 for uid in range(1002, 1011):
@@ -244,7 +244,7 @@ class TestMultiUserConcurrencyAndIsolation:
         mock_adapter = AsyncMock()
         mock_adapter.chat.return_value = AsyncMock(content='{"chinese": "你好", "japanese": "こんにちは"}')
 
-        with patch.object(handlers.chat_service, "_get_active_llm_adapter", return_value=(mock_adapter, "mock-model")):
+        with patch.object(handlers.chat_service, "get_active_llm_adapter", return_value=(mock_adapter, "mock-model", "mock-provider")):
             async def send_msg_worker():
                 for i in range(5):
                     t = await handlers.process_text_chat(chat_id, f"Race message {i}", bot_client)
@@ -323,18 +323,18 @@ class TestAudioConverterAdversarial:
     async def test_missing_ffmpeg_simulation(self):
         """
         Simulate missing ffmpeg binary (is_ffmpeg_available returns False).
-        Verifies fallback behavior without crashing.
+        Missing ffmpeg must fail loudly instead of silently producing wrong audio.
         """
         with patch("galgame2voice.utils.audio_converter.is_ffmpeg_available", return_value=False):
-            # 1. convert_ogg_to_wav with missing ffmpeg
+            # 1. convert_ogg_to_wav with missing ffmpeg -> loud failure
             valid_fake_ogg = b"OggS\x00\x02\x00\x00" + b"\x00" * 50
-            wav_out = await convert_ogg_to_wav(valid_fake_ogg, ffmpeg_path="non_existent_ffmpeg")
-            assert wav_out.startswith(b"RIFF")
+            with pytest.raises(RuntimeError, match="ffmpeg executable not found"):
+                await convert_ogg_to_wav(valid_fake_ogg, ffmpeg_path="non_existent_ffmpeg")
 
-            # 2. convert_wav_to_ogg with missing ffmpeg
+            # 2. convert_wav_to_ogg with missing ffmpeg -> loud failure
             sample_wav = b"RIFF\x24\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x08\x00\x00"
-            ogg_out = await convert_wav_to_ogg(sample_wav, ffmpeg_path="non_existent_ffmpeg")
-            assert ogg_out == sample_wav
+            with pytest.raises(RuntimeError, match="ffmpeg executable not found"):
+                await convert_wav_to_ogg(sample_wav, ffmpeg_path="non_existent_ffmpeg")
 
     @pytest.mark.asyncio
     async def test_ffmpeg_subprocess_crash_and_nonzero_exit_code(self):
@@ -492,7 +492,7 @@ class TestTelegramVoiceHandlerErrorRecovery:
         mock_adapter.chat.return_value = AsyncMock(content='{"chinese": "这是文字回复", "japanese": "テキスト返信"}')
 
         # TTS fails
-        with patch.object(handlers.chat_service, "_get_active_llm_adapter", return_value=(mock_adapter, "mock-model")):
+        with patch.object(handlers.chat_service, "get_active_llm_adapter", return_value=(mock_adapter, "mock-model", "mock-provider")):
             with patch.object(handlers.tts_service, "synthesize", side_effect=ConnectionError("GPT-SoVITS connection refused on port 9880")):
                 task = await handlers.process_text_chat(chat_id, "你好", bot_client)
 
@@ -569,7 +569,7 @@ class TestEndToEndConcurrentVoicePipelineStress:
             return b"RIFF\x24\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x08\x00\x00" + b"\x00" * 100
 
         with patch("galgame2voice.telegram_bot.handlers.get_stt_adapter", return_value=mock_stt), \
-             patch.object(handlers.chat_service, "_get_active_llm_adapter", return_value=(mock_llm, "mock-model")), \
+             patch.object(handlers.chat_service, "get_active_llm_adapter", return_value=(mock_llm, "mock-model", "mock-provider")), \
              patch.object(handlers.tts_service, "synthesize", side_effect=mock_tts):
 
             async def voice_user_worker(uid: int):
@@ -639,7 +639,7 @@ class TestEndToEndConcurrentVoicePipelineStress:
         async def mock_tts(text, *args, **kwargs):
             return b"RIFF\x24\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x08\x00\x00" + b"\x00" * 50
 
-        with patch.object(handlers.chat_service, "_get_active_llm_adapter", return_value=(mock_llm, "mock-model")), \
+        with patch.object(handlers.chat_service, "get_active_llm_adapter", return_value=(mock_llm, "mock-model", "mock-provider")), \
              patch.object(handlers.tts_service, "synthesize", side_effect=mock_tts):
 
             for t_idx in range(turn_count):

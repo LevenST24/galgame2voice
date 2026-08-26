@@ -24,10 +24,9 @@ class TestLifecycleScriptsTier1:
     """Tier 1: Validation of script files, syntax blocks, and command presence."""
 
     def test_script_files_exist(self):
-        """Verifies the two canonical lifecycle scripts and the launcher exist."""
+        """Verifies the sole canonical lifecycle script and the launcher exist."""
         required_scripts = [
             PROJECT_ROOT / "启动.bat",
-            PROJECT_ROOT / "停止.bat",
             SCRIPTS_DIR / "run_server.py",
         ]
         for script in required_scripts:
@@ -35,8 +34,9 @@ class TestLifecycleScriptsTier1:
             assert script.is_file(), f"Script is not a file: {script}"
 
     def test_no_legacy_duplicate_scripts(self):
-        """Verifies the legacy duplicated scripts have been removed (simplicity)."""
+        """Verifies redundant/legacy scripts have been removed for pure single-file simplicity."""
         removed = [
+            PROJECT_ROOT / "停止.bat",
             PROJECT_ROOT / "start.bat",
             PROJECT_ROOT / "stop.bat",
             PROJECT_ROOT / "start-galgame2voice.bat",
@@ -47,7 +47,7 @@ class TestLifecycleScriptsTier1:
             SCRIPTS_DIR / "restart-galgame2voice.bat",
         ]
         for path in removed:
-            assert not path.exists(), f"Legacy duplicate script should have been removed: {path}"
+            assert not path.exists(), f"Redundant/legacy script should be removed: {path}"
 
     def test_scripts_utf8_encoding(self):
         """Verify all batch scripts can be read as valid UTF-8 without decoding errors."""
@@ -73,11 +73,13 @@ class TestLifecycleScriptsTier1:
         assert "errorlevel" in content.lower()
         assert ".venv" in content
 
-    def test_stop_script_contains_taskkill_logic(self):
-        """Verifies stop script contains process termination logic (taskkill)."""
-        content = (PROJECT_ROOT / "停止.bat").read_text(encoding="utf-8", errors="ignore")
-        assert "taskkill" in content.lower()
-        assert "/pid" in content.lower() or "/im" in content.lower()
+    def test_launcher_job_object_process_tree_binding(self):
+        """Verifies run_server.py implements Windows Job Object process tree linkage."""
+        content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
+        assert "setup_windows_job_object" in content
+        assert "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE" in content
+        assert "assign_process_to_job" in content
+        assert "cleanup_subprocesses" in content
 
     def test_launcher_discovers_gpt_sovits(self):
         """Verifies run_server.py probes the known GPT-SoVITS install path and env override."""
@@ -92,14 +94,6 @@ class TestLifecycleScriptsTier1:
         assert "is_port_in_use(9880)" in content
         assert "gpt_sovits.log" in content  # engine logs must not be discarded
 
-    def test_stop_script_kills_8080_and_9880_with_tree_flag(self):
-        """Verifies 停止.bat terminates both port 8080 and 9880 with /t flag for VRAM release."""
-        content = (PROJECT_ROOT / "停止.bat").read_text(encoding="utf-8", errors="ignore")
-        assert ":8080" in content
-        assert ":9880" in content
-        assert "/t" in content.lower()
-        assert "galgame2voice.pid" in content
-
 
 # ============================================================================
 # Tier 2: Boundary, Path Escaping, Port Collision & Syntax Checks
@@ -112,7 +106,6 @@ class TestLifecycleScriptsTier2:
         """Verifies setlocal is initialized and endlocal is called before exit points."""
         test_scripts = [
             PROJECT_ROOT / "启动.bat",
-            PROJECT_ROOT / "停止.bat",
         ]
         for path in test_scripts:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -131,15 +124,9 @@ class TestLifecycleScriptsTier2:
         content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
         assert "find_available_port" in content
 
-    def test_stop_script_handles_port_extraction(self):
-        """Verifies stop script safely parses PID column from netstat output."""
-        content = (PROJECT_ROOT / "停止.bat").read_text(encoding="utf-8", errors="ignore")
-        assert "netstat" in content.lower()
-        assert "tokens=" in content.lower()
-
     def test_no_hardcoded_admin_privilege_required(self):
         """Verifies scripts do not execute commands that arbitrarily force administrative elevation."""
-        for path in (PROJECT_ROOT / "启动.bat", PROJECT_ROOT / "停止.bat"):
+        for path in [PROJECT_ROOT / "启动.bat"]:
             content = path.read_text(encoding="utf-8", errors="ignore").lower()
             assert "powershell -verb runas" not in content
             assert "runas /user:" not in content
@@ -167,10 +154,9 @@ class TestLifecycleScriptsTier2:
         """Verify cmd.exe can parse and execute lifecycle batch scripts without syntax crashes."""
         scripts = [
             PROJECT_ROOT / "启动.bat",
-            PROJECT_ROOT / "停止.bat",
         ]
 
-        # 1. Static analysis: check for dangerous unescaped parentheses in echo statements inside parenthesized blocks
+        # Static analysis: check for dangerous unescaped parentheses in echo statements inside parenthesized blocks
         for script in scripts:
             content = script.read_text(encoding="utf-8", errors="ignore")
             lines = content.splitlines()
@@ -180,20 +166,6 @@ class TestLifecycleScriptsTier2:
                     assert not re.search(r'\([^)]*\)\.', stripped), (
                         f"{script.name}:{line_no} contains unescaped trailing period after closing paren: {stripped}"
                     )
-
-        # 2. Dynamic execution: test stop script when idle (should exit code 0 without parse errors)
-        result = subprocess.run(
-            f'"{PROJECT_ROOT / "停止.bat"}"',
-            shell=True,
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10
-        )
-        combined_output = ((result.stdout or "") + (result.stderr or "")).lower()
-        assert "was unexpected at this time" not in combined_output
-        assert "syntax error" not in combined_output
-        assert result.returncode == 0, f"停止.bat failed with exit code {result.returncode}"
 
     def test_netstat_parsing_logic(self):
         """Verify regex/token parsing logic used in batch scripts to extract listening PID."""

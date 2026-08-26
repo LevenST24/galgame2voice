@@ -118,9 +118,9 @@ class TelegramBotManager:
             logger.info("Telegram Bot service started successfully.")
             return True
         except Exception as exc:
-            logger.warning("Telegram Bot initialization encountered exception (%s); running in standby mode.", exc)
-            self.is_running = True
-            return True
+            logger.error("Telegram Bot initialization failed: %s", exc)
+            self.is_running = False
+            return False
 
     async def stop(self) -> None:
         """Gracefully stops Telegram Bot polling and application."""

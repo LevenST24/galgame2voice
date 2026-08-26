@@ -326,9 +326,9 @@ class TestSessionManagerAdversarial:
         sm = SessionManager(m6_temp_db)
         session_id = "sess-giant-blob"
 
-        giant_text = "长" * 100_000  # ~50,000 tokens
+        giant_text = "长" * 100_000  # ~110,000 tokens (1.1 per CJK char)
         est_tokens = sm.estimate_tokens(giant_text)
-        assert est_tokens == 50_000
+        assert est_tokens == 110_001
 
         await sm.add_turn(session_id, "user", giant_text, "Ja")
         await sm.add_turn(session_id, "assistant", "短回复", "はい")
@@ -346,26 +346,26 @@ class TestSessionManagerAdversarial:
         sm = SessionManager(m6_temp_db)
         session_id = "sess-mixed-tokens"
 
-        # Turn 0: 200 tokens
+        # Turn 0: ~441 tokens (400 CJK * 1.1 + 1)
         await sm.add_turn(session_id, "user", "一" * 400, "Ja")
-        # Turn 1: 5 tokens
+        # Turn 1: ~12 tokens (10 CJK * 1.1 + 1)
         await sm.add_turn(session_id, "assistant", "二" * 10, "Ja")
-        # Turn 2: 100 tokens
+        # Turn 2: ~221 tokens (200 CJK * 1.1 + 1)
         await sm.add_turn(session_id, "user", "三" * 200, "Ja")
-        # Turn 3: 10 tokens
+        # Turn 3: ~23 tokens (20 CJK * 1.1 + 1)
         await sm.add_turn(session_id, "assistant", "四" * 20, "Ja")
 
-        # Total tokens = ~315 tokens.
-        # If max_tokens is 150: Turn 0 (200) should be popped. Remaining (Turn 1, 2, 3) = 115 <= 150.
-        hist_150 = await sm.get_history(session_id, max_tokens=150)
-        assert len(hist_150) == 3
-        assert hist_150[0].content_chinese.startswith("二")
-        assert hist_150[-1].content_chinese.startswith("四")
+        # Total tokens = 701 (Turn0=442, Turn1=13, Turn2=222, Turn3=24).
+        # Budget 300: pop Turn 0 (442) -> remaining 259 <= 300. Keeps Turns 1-3.
+        hist_300 = await sm.get_history(session_id, max_tokens=300)
+        assert len(hist_300) == 3
+        assert hist_300[0].content_chinese.startswith("二")
+        assert hist_300[-1].content_chinese.startswith("四")
 
-        # If max_tokens is 30: Turn 0, 1, 2 should be popped. Remaining = Turn 3 (10 tokens).
-        hist_30 = await sm.get_history(session_id, max_tokens=30)
-        assert len(hist_30) == 1
-        assert hist_30[0].content_chinese.startswith("四")
+        # Budget 50: pop Turns 0-2 -> only Turn 3 (24 tokens) fits.
+        hist_50 = await sm.get_history(session_id, max_tokens=50)
+        assert len(hist_50) == 1
+        assert hist_50[0].content_chinese.startswith("四")
 
     @pytest.mark.asyncio
     async def test_extreme_unicode_and_adversarial_strings(self, m6_temp_db):
@@ -496,7 +496,7 @@ class TestTelegramBotAdversarial:
             content='{"chinese": "回复内容", "japanese": "返事"}',
             usage={"total_tokens": 20},
         )
-        handlers.chat_service._get_active_llm_adapter = AsyncMock(return_value=(mock_adapter, "mock-model"))
+        handlers.chat_service.get_active_llm_adapter = AsyncMock(return_value=(mock_adapter, "mock-model", "mock-provider"))
 
         tasks: List[asyncio.Task] = []
         for i in range(30):
@@ -538,7 +538,7 @@ class TestTelegramBotAdversarial:
             content='{"chinese": "收到", "japanese": "了解"}',
             usage={"total_tokens": 10},
         )
-        handlers.chat_service._get_active_llm_adapter = AsyncMock(return_value=(mock_adapter, "mock-model"))
+        handlers.chat_service.get_active_llm_adapter = AsyncMock(return_value=(mock_adapter, "mock-model", "mock-provider"))
 
         async def simulate_user_traffic(user_chat_id: int):
             user_tasks = []
@@ -572,7 +572,7 @@ class TestTelegramBotAdversarial:
             content='{"chinese": "这是文本回复", "japanese": "音声エラーテスト"}',
             usage={"total_tokens": 15},
         )
-        handlers.chat_service._get_active_llm_adapter = AsyncMock(return_value=(mock_adapter, "mock-model"))
+        handlers.chat_service.get_active_llm_adapter = AsyncMock(return_value=(mock_adapter, "mock-model", "mock-provider"))
 
         task = await handlers.process_text_chat(77701, "测试TTS故障", bot_client)
         await task  # Task should handle exception and terminate without unhandled re-raise
@@ -614,7 +614,54 @@ class TestTelegramBotAdversarial:
 
     @pytest.mark.asyncio
     async def test_telegram_bot_manager_rapid_lifecycle(self, m6_temp_db):
-        """Rapidly start and stop TelegramBotManager, ensuring active tasks are cancelled on stop."""
+        """Rapidly start and stop TelegramBotManager with a mocked Telegram app (no network)."""
+
+        class FakeUpdater:
+            def __init__(self):
+                self.running = False
+                self.polls = 0
+
+            async def start_polling(self, drop_pending_updates=True):
+                self.running = True
+                self.polls += 1
+
+            async def stop(self):
+                self.running = False
+
+        class FakeApplication:
+            def __init__(self):
+                self.running = False
+                self.updater = FakeUpdater()
+                self.registered = []
+
+            def add_handler(self, handler):
+                self.registered.append(handler)
+
+            async def initialize(self):
+                pass
+
+            async def start(self):
+                self.running = True
+
+            async def stop(self):
+                self.running = False
+
+            async def shutdown(self):
+                pass
+
+        class FakeBuilder:
+            def token(self, t):
+                return self
+
+            def request(self, r):
+                return self
+
+            def get_updates_request(self, r):
+                return self
+
+            def build(self):
+                return FakeApplication()
+
         manager = TelegramBotManager(db_path=m6_temp_db)
 
         from galgame2voice.database.models import SettingsUpdate
@@ -622,24 +669,74 @@ class TestTelegramBotAdversarial:
         async with aiosqlite.connect(m6_temp_db) as conn:
             await crud.update_settings(conn, SettingsUpdate(telegram_bot_token="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"))
 
-        # Start and stop 5 times in rapid succession
-        for _ in range(5):
+        with patch("galgame2voice.telegram_bot.bot.ApplicationBuilder", FakeBuilder):
+            # Start and stop 5 times in rapid succession
+            for _ in range(5):
+                started = await manager.start()
+                assert started is True
+                assert manager.is_running is True
+
+                # Register a dummy running voice task
+                async def dummy_slow_task():
+                    await asyncio.sleep(10.0)
+
+                t = asyncio.create_task(dummy_slow_task())
+                manager.handlers.user_tasks[12345] = t
+
+                # Stop manager
+                await manager.stop()
+                assert manager.is_running is False
+                await asyncio.sleep(0.005)
+                assert t.cancelled() or t.done() or (hasattr(t, "cancelling") and t.cancelling() > 0)
+
+    @pytest.mark.asyncio
+    async def test_telegram_bot_start_failure_reports_false(self, m6_temp_db):
+        """Init/start failure must surface as False + is_running=False (no silent standby)."""
+
+        class ExplodingApplication:
+            def __init__(self):
+                self.running = False
+                self.updater = None
+
+            def add_handler(self, handler):
+                pass
+
+            async def initialize(self):
+                raise RuntimeError("Simulated Telegram API rejection")
+
+            async def start(self):
+                self.running = True
+
+            async def stop(self):
+                self.running = False
+
+            async def shutdown(self):
+                pass
+
+        class ExplodingBuilder:
+            def token(self, t):
+                return self
+
+            def request(self, r):
+                return self
+
+            def get_updates_request(self, r):
+                return self
+
+            def build(self):
+                return ExplodingApplication()
+
+        manager = TelegramBotManager(db_path=m6_temp_db)
+
+        from galgame2voice.database.models import SettingsUpdate
+        from galgame2voice.database import crud
+        async with aiosqlite.connect(m6_temp_db) as conn:
+            await crud.update_settings(conn, SettingsUpdate(telegram_bot_token="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"))
+
+        with patch("galgame2voice.telegram_bot.bot.ApplicationBuilder", ExplodingBuilder):
             started = await manager.start()
-            assert started is True
-            assert manager.is_running is True
-
-            # Register a dummy running voice task
-            async def dummy_slow_task():
-                await asyncio.sleep(10.0)
-
-            t = asyncio.create_task(dummy_slow_task())
-            manager.handlers.user_tasks[12345] = t
-
-            # Stop manager
-            await manager.stop()
+            assert started is False
             assert manager.is_running is False
-            await asyncio.sleep(0.005)
-            assert t.cancelled() or t.done() or (hasattr(t, "cancelling") and t.cancelling() > 0)
 
     def test_adversarial_bot_token_formats(self):
         """Test validate_bot_token against various boundary and malformed inputs."""

@@ -59,7 +59,8 @@ from galgame2voice.routers.chat import sse_event_formatter
 from galgame2voice.services.chat_service import ChatService, StreamingBilingualParser
 from galgame2voice.services.session_manager import SessionManager, SessionTurn
 from galgame2voice.services.tts_service import TtsService
-from galgame2voice.services.voice_manager import GptSovitsClient, VoiceManager, clean_japanese_parentheses
+from galgame2voice.services.voice_manager import GptSovitsClient, VoiceManager
+from galgame2voice.services.gpt_sovits_client import clean_japanese_parentheses
 from galgame2voice.telegram_bot import TelegramBotHandlers, validate_bot_token
 from galgame2voice.utils.logger import MaskingFilter
 from tests.conftest import MockGptSovitsServer, MockLLMServer, DATABASE_SCHEMA_SQL, mask_secret
@@ -811,25 +812,23 @@ class TestOriginalRequestAcceptanceCriteria:
 
     def test_ac_windows_scripts_exist_and_structure(self):
         """
-        AC: 启动.bat and 停止.bat properly launch and terminate the Python service.
+        AC: 启动.bat and run_server.py properly launch and manage the service lifecycle.
         """
         project_root = Path(__file__).resolve().parent.parent
         start_bat = project_root / "启动.bat"
-        stop_bat = project_root / "停止.bat"
         launcher_py = project_root / "scripts" / "run_server.py"
 
         assert start_bat.exists(), "启动.bat missing"
-        assert stop_bat.exists(), "停止.bat missing"
+        assert not (project_root / "停止.bat").exists(), "停止.bat should be removed for zero redundancy"
         assert launcher_py.exists(), "scripts/run_server.py missing"
 
         content_start = start_bat.read_text(encoding="utf-8", errors="ignore")
-        content_stop = stop_bat.read_text(encoding="utf-8", errors="ignore")
         content_launcher = launcher_py.read_text(encoding="utf-8", errors="ignore")
 
         assert "python" in content_start.lower() or "uvicorn" in content_start.lower() or "call" in content_start.lower()
         assert "run_server.py" in content_start
         assert "uvicorn" in content_launcher
-        assert "taskkill" in content_stop.lower()
+        assert "setup_windows_job_object" in content_launcher
 
     @pytest.mark.asyncio
     async def test_ac_health_and_status_endpoints(self, m7_db_path, m7_mock_gpt):

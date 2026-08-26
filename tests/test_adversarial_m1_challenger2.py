@@ -125,12 +125,12 @@ while True:
         3. Using `/T` guarantees that multi-worker pipelines (e.g. GPT-SoVITS inference subprocesses)
            are fully terminated, preventing orphaned GPU memory leaks.
         """
-        # Inspect 停止.bat and scripts/stop-galgame2voice.bat for /T flag
-        tingzhi_content = (PROJECT_ROOT / "停止.bat").read_text(encoding="utf-8", errors="ignore")
-        assert "/t" in tingzhi_content.lower(), "停止.bat must include /t flag for tree termination"
-        assert "/f" in tingzhi_content.lower(), "停止.bat must include /f flag for forced termination"
-        assert ":9880" in tingzhi_content, "停止.bat must target GPT-SoVITS port 9880"
-        assert ":8080" in tingzhi_content, "停止.bat must target Galgame2Voice port 8080"
+        # Inspect scripts/run_server.py for Job Object and cleanup logic
+        launcher_content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
+        assert "setup_windows_job_object" in launcher_content, "run_server.py must setup Windows Job Object"
+        assert "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE" in launcher_content, "run_server.py must include KILL_ON_JOB_CLOSE flag"
+        assert "assign_process_to_job" in launcher_content, "run_server.py must assign child processes to job"
+        assert "cleanup_subprocesses" in launcher_content, "run_server.py must have cleanup_subprocesses"
 
 
 # ============================================================================
@@ -244,7 +244,6 @@ class TestBatchScriptHardening:
         """Check the canonical lifecycle scripts exist and are non-empty."""
         scripts = [
             PROJECT_ROOT / "启动.bat",
-            PROJECT_ROOT / "停止.bat",
             SCRIPTS_DIR / "run_server.py",
         ]
         for script in scripts:
@@ -253,8 +252,9 @@ class TestBatchScriptHardening:
             assert len(content.strip()) > 0, f"Empty script: {script}"
 
     def test_legacy_duplicate_scripts_removed(self):
-        """Verify the legacy duplicated wrapper scripts were consolidated away."""
+        """Verify redundant/legacy scripts were consolidated away."""
         removed = [
+            PROJECT_ROOT / "停止.bat",
             PROJECT_ROOT / "start.bat",
             PROJECT_ROOT / "stop.bat",
             PROJECT_ROOT / "start-galgame2voice.bat",
@@ -266,13 +266,13 @@ class TestBatchScriptHardening:
 
     def test_working_directory_switch_safety(self):
         """Verify scripts safely switch working directory using `%~dp0`."""
-        for script in (PROJECT_ROOT / "启动.bat", PROJECT_ROOT / "停止.bat"):
+        for script in [PROJECT_ROOT / "启动.bat"]:
             content = script.read_text(encoding="utf-8", errors="ignore")
             assert 'cd /d "%~dp0"' in content or 'pushd "%~dp0.."' in content
 
     def test_delayed_expansion_isolated(self):
         """Verify delayed expansion is properly scoped with setlocal enabledelayedexpansion."""
-        for script in (PROJECT_ROOT / "启动.bat", PROJECT_ROOT / "停止.bat"):
+        for script in [PROJECT_ROOT / "启动.bat"]:
             content = script.read_text(encoding="utf-8", errors="ignore")
             assert "setlocal enabledelayedexpansion" in content.lower()
             assert "endlocal" in content.lower()
@@ -297,80 +297,28 @@ class TestBatchScriptHardening:
 # ============================================================================
 
 class TestEndToEndBatchShutdown:
-    """Empirically test 停止.bat against real processes running on ports 8080 and 9880."""
+    """Empirically test launcher shutdown and cleanup logic."""
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Requires Windows OS")
-    def test_tingzhi_bat_kills_both_8080_and_9880_processes(self, tmp_path):
+    def test_launcher_cleanup_subprocesses(self, tmp_path):
         """
-        Start two background processes listening on 8080 and 9880.
-        Execute 停止.bat.
-        Verify both processes are forcefully terminated and ports are released.
+        Verify launcher cleanup_subprocesses removes pid files and handles mock processes.
         """
-        # First check if 8080 or 9880 can be bound; if not skip to avoid killing system processes or crashing on WSAEACCES
-        def is_bindable(port):
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    s.bind(("127.0.0.1", port))
-                    return True
-            except OSError:
-                return False
+        from scripts.run_server import cleanup_subprocesses
 
-        def is_open(port):
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                return s.connect_ex(("127.0.0.1", port)) == 0
-
-        if not is_bindable(8080) or not is_bindable(9880):
-            pytest.skip("Port 8080 or 9880 cannot be bound (occupied or restricted by system).")
-
-        # Spawn mock listener 8080
-        p8080 = subprocess.Popen([
-            sys.executable, "-c",
-            "import socket, time; s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('127.0.0.1', 8080)); s.listen(50); time.sleep(60)"
-        ])
-        # Spawn mock listener 9880
-        p9880 = subprocess.Popen([
-            sys.executable, "-c",
-            "import socket, time; s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('127.0.0.1', 9880)); s.listen(50); time.sleep(60)"
-        ])
-
-        # Write dummy PID files
         pid_file = PROJECT_ROOT / "galgame2voice.pid"
-        pid_file.write_text(str(p8080.pid), encoding="utf-8")
+        port_file = PROJECT_ROOT / "data" / "active_port.txt"
+        sovits_pid = PROJECT_ROOT / "gptsovits.pid"
 
-        # Wait for ports to be listening
-        for _ in range(30):
-            if is_open(8080) and is_open(9880):
-                break
-            time.sleep(0.1)
+        pid_file.write_text("12345", encoding="utf-8")
+        sovits_pid.write_text("54321", encoding="utf-8")
+        port_file.write_text("8080", encoding="utf-8")
 
-        assert is_open(8080), "Mock 8080 failed to start"
-        assert is_open(9880), "Mock 9880 failed to start"
+        cleanup_subprocesses()
 
-        try:
-            # Execute 停止.bat
-            stop_bat = PROJECT_ROOT / "停止.bat"
-            res = subprocess.run(
-                [str(stop_bat)],
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=10
-            )
-            assert res.returncode == 0
-            assert "已停止 Galgame2Voice 服务" in (res.stdout or "") or res.returncode == 0
-
-            # Verify ports freed
-            time.sleep(0.5)
-            assert not is_open(8080), "Port 8080 was not closed by 停止.bat"
-            assert not is_open(9880), "Port 9880 was not closed by 停止.bat"
-            assert not pid_file.exists(), "galgame2voice.pid was not removed by 停止.bat"
-        finally:
-            # Cleanup safeguard
-            p8080.kill()
-            p9880.kill()
-            if pid_file.exists():
-                pid_file.unlink()
+        assert not pid_file.exists()
+        assert not sovits_pid.exists()
+        assert not port_file.exists()
 
     def test_outbound_connection_to_remote_8080_not_killed(self):
         """

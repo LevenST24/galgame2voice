@@ -175,19 +175,19 @@ class TestCorsSecurityAndHeaders:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             preflight_headers = {
-                "Origin": "http://localhost:3000",
+                "Origin": "http://localhost:8080",
                 "Access-Control-Request-Method": "POST",
                 "Access-Control-Request-Headers": "Content-Type, Authorization, X-Requested-With",
             }
             res = await client.options("/api/health", headers=preflight_headers)
             assert res.status_code == 200
-            assert res.headers.get("access-control-allow-origin") in ("*", "http://localhost:3000")
+            assert res.headers.get("access-control-allow-origin") == "http://localhost:8080"
             assert "access-control-allow-methods" in res.headers
             assert "access-control-allow-headers" in res.headers
 
     @pytest.mark.asyncio
     async def test_cors_preflight_arbitrary_origin(self):
-        """Verify preflight with arbitrary external origin under wildcard config."""
+        """Verify arbitrary external origins are rejected (CORS tightened to localhost only)."""
         app = create_app()
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -196,8 +196,9 @@ class TestCorsSecurityAndHeaders:
                 "Access-Control-Request-Method": "GET",
             }
             res = await client.options("/api/system/status", headers=preflight_headers)
-            assert res.status_code == 200
-            assert res.headers.get("access-control-allow-origin") in ("*", "https://external-dashboard.example.com")
+            # Tightened CORS must NOT grant access to arbitrary external origins
+            assert res.headers.get("access-control-allow-origin") != "https://external-dashboard.example.com"
+            assert res.headers.get("access-control-allow-origin") != "*"
 
 
 # ============================================================================
@@ -207,59 +208,30 @@ class TestCorsSecurityAndHeaders:
 class TestLifecycleAdversarialAndPid:
     """Adversarial stress-testing of Windows batch script logic, PID recovery, and port conflicts."""
 
-    def test_stale_pid_recovery_in_stop_script(self):
-        """Verify 停止.bat gracefully handles non-existent stale PID without hanging."""
-        if sys.platform != "win32":
-            pytest.skip("Windows batch execution requires Windows")
+    def test_stale_pid_recovery_in_launcher(self):
+        """Verify launcher cleanup_subprocesses gracefully handles non-existent stale PID without hanging."""
+        from scripts.run_server import cleanup_subprocesses
 
         # Write stale dead PID
         PID_FILE.write_text("99999999\n", encoding="utf-8")
         assert PID_FILE.exists()
 
-        res = subprocess.run(
-            ["cmd.exe", "/c", str(PROJECT_ROOT / "停止.bat")],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-        )
-        assert res.returncode == 0
-        # Should have cleaned up the stale PID file
+        cleanup_subprocesses()
         assert not PID_FILE.exists()
 
     def test_corrupt_pid_file_handling(self):
-        """Verify 停止.bat handles corrupted PID files (alphanumeric garbage, empty)."""
-        if sys.platform != "win32":
-            pytest.skip("Windows batch execution requires Windows")
+        """Verify launcher handles corrupted PID files (alphanumeric garbage, empty)."""
+        from scripts.run_server import cleanup_subprocesses
 
         # Case 1: Text garbage
         PID_FILE.write_text("INVALID_PID_GARBAGE\n", encoding="utf-8")
-        res = subprocess.run(
-            ["cmd.exe", "/c", str(PROJECT_ROOT / "停止.bat")],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-        )
-        assert res.returncode == 0
-        if PID_FILE.exists():
-            PID_FILE.unlink()
+        cleanup_subprocesses()
+        assert not PID_FILE.exists()
 
         # Case 2: Empty PID file
         PID_FILE.write_text("", encoding="utf-8")
-        res = subprocess.run(
-            ["cmd.exe", "/c", str(PROJECT_ROOT / "停止.bat")],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-        )
-        assert res.returncode == 0
-        if PID_FILE.exists():
-            PID_FILE.unlink()
+        cleanup_subprocesses()
+        assert not PID_FILE.exists()
 
     def test_port_collision_detection_logic(self):
         """Verify that when a port is actively occupied, port scanning identifies the collision."""

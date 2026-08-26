@@ -4,7 +4,6 @@ Manages 5-tier intimacy levels, scoring rules, daily rate limits,
 emotional state transitions, and interactive easter egg voicelines.
 """
 
-import json
 import logging
 from typing import List, Dict, Any, Optional, Tuple, Union
 from pathlib import Path
@@ -133,22 +132,17 @@ class AffectionService:
     def calculate_level(self, score: int) -> Tuple[int, str]:
         """Calculates intimacy level and tier name based on total affection score."""
         score = max(0, min(100, score))
-        if score >= 80:
-            return 5, "恋慕/誓约"
-        elif score >= 60:
-            return 4, "亲密/依赖"
-        elif score >= 40:
-            return 3, "友好/信任"
-        elif score >= 20:
-            return 2, "熟悉/同伴"
-        return 1, "初识/生疏"
+        for level, tier in sorted(self.LEVEL_TIERS.items(), key=lambda x: x[0], reverse=True):
+            if score >= tier["min_score"]:
+                return level, tier["name"]
+        return 1, self.LEVEL_TIERS[1]["name"]
 
     def calculate_turn_points(self, user_text: str, assistant_text: str = "") -> Tuple[int, List[str]]:
         """Calculates turn affection points and reason tags."""
         points = 1
         reasons = ["base_turn", "base_interaction (+1)"]
 
-        combined = f"{user_text} {assistant_text}".lower()
+        combined = user_text.lower()
 
         # Check compliments
         has_compliment = any(kw.lower() in combined for kw in self.COMPLIMENT_KEYWORDS)
@@ -309,8 +303,7 @@ class AffectionService:
         """
         Returns full list of milestone and easter egg dialogues with unlock status.
         """
-        db_path = self.db_path or get_database_path()
-        async with get_db(db_path) as conn:
+        async with get_db(self.db_path) as conn:
             aff = await crud.get_or_create_character_affection(conn, user_id, character_id)
 
         unlocked_set = set(aff.unlocked_dialogues)

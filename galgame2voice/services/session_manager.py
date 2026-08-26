@@ -5,12 +5,12 @@ Multi-turn Conversational Memory, Sliding Window Truncation, and Prompt Templati
 from typing import List, Dict, Any, Optional, Union
 from pathlib import Path
 import json
-import re
 import aiosqlite
 from pydantic import BaseModel, Field
 
 from galgame2voice.adapters.base import ChatMessage
 from galgame2voice.database.session import get_database_path, get_db
+from galgame2voice.services.metrics_collector import MetricsCollector
 
 
 class SessionTurn(BaseModel):
@@ -46,14 +46,10 @@ class SessionManager:
     def estimate_tokens(self, text: str) -> int:
         """
         Estimates token count for mixed CJK / English text.
-        Returns 0 for empty string, ~1 token per 2 CJK characters / 4 Latin characters.
+        Delegates to MetricsCollector.estimate_tokens so token budgeting stays
+        consistent with the telemetry pipeline (CJK * 1.1 + non-CJK / 3.5).
         """
-        if not text:
-            return 0
-        cjk_count = len(re.findall(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', text))
-        other_count = len(text) - cjk_count
-        tokens = (cjk_count + 1) // 2 + (other_count + 3) // 4
-        return max(1, tokens)
+        return MetricsCollector.estimate_tokens(self, text)
 
     async def add_turn(
         self,
@@ -107,7 +103,7 @@ class SessionManager:
         self,
         session_id: str,
         max_messages: int = 10,
-        max_tokens: int = 2000,
+        max_tokens: int = 8000,
     ) -> List[SessionTurn]:
         """
         Retrieves chronological history with two-stage sliding window:
@@ -234,7 +230,7 @@ class SessionManager:
         character_name: Optional[str] = None,
         custom_system_prompt: Optional[str] = None,
         max_messages: int = 10,
-        max_tokens: int = 2000,
+        max_tokens: int = 8000,
         memory_prompt_block: Optional[str] = None,
     ) -> List[ChatMessage]:
         """High-level helper returning List[ChatMessage] for BaseLLMAdapter."""

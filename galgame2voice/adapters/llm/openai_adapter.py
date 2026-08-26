@@ -40,7 +40,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
     def _validate_credentials(self) -> None:
         """Validates presence and syntax of API key."""
-        if not self.api_key or "invalid" in self.api_key.lower():
+        if not self.api_key:
             raise ValueError("Authentication error: Invalid API key")
 
     async def chat(
@@ -210,21 +210,20 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         """
         Tests connectivity and validates API credentials against the provider.
         """
-        if not self.api_key or "invalid" in self.api_key.lower():
+        if not self.api_key:
             return TestResult(
                 success=False,
                 message="Authentication failed: Invalid API key",
                 latency_ms=None,
             )
 
-        if "unreachable" in self.base_url.lower():
-            return TestResult(
-                success=False,
-                message=f"Connection error: Target host unreachable ({self.base_url})",
-                latency_ms=None,
-            )
-
         if self.mock_server:
+            if self.mock_server.force_error_code:
+                return TestResult(
+                    success=False,
+                    message=f"Mocked error ({self.mock_server.force_error_code}): {self.mock_server.force_error_message}",
+                    latency_ms=None,
+                )
             return TestResult(
                 success=True,
                 message=f"Connected successfully to {self.base_url}",
@@ -320,5 +319,5 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     raise
                 pass
 
-        # Return reasonable default list if model listing endpoint is not supported
-        return ["gpt-4o", "gpt-4o-mini", "deepseek-chat"]
+        # Provider does not support the model listing endpoint
+        return []

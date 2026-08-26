@@ -33,7 +33,6 @@ class TtsCacheManager:
         db_path: Optional[Union[str, Path]] = None,
         max_cache_mb: int = 1024,
         max_entries: int = 5000,
-        ttl_days: int = 30,
     ):
         settings = get_settings()
         self.audio_root = Path(settings.audio_dir)
@@ -41,13 +40,20 @@ class TtsCacheManager:
         self.db_path = str(db_path or settings.db_path)
         self.max_cache_mb = max_cache_mb
         self.max_entries = max_entries
-        self.ttl_days = ttl_days
-        
+
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         self._hits: int = 0
         self._misses: int = 0
         self._lock = asyncio.Lock()
+        # Strong references for fire-and-forget background tasks (prevent GC mid-flight).
+        self._bg_tasks: set = set()
+
+    def _spawn_background(self, coro) -> None:
+        """Runs a coroutine in the background with strong ref (prevents GC mid-flight)."""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     def compute_cache_key(
         self,
@@ -171,7 +177,7 @@ class TtsCacheManager:
                 logger.debug("Non-critical: could not touch tts_cache_entry: %s", exc)
 
         try:
-            asyncio.create_task(_touch_metadata())
+            self._spawn_background(_touch_metadata())
         except RuntimeError:
             pass
 
@@ -233,7 +239,7 @@ class TtsCacheManager:
             logger.warning("Failed to insert tts_cache_entry in DB: %s", exc)
 
         # Trigger background pruning if cache exceeds limits
-        asyncio.create_task(self._check_and_prune())
+        self._spawn_background(self._check_and_prune())
 
         return url_path, file_path, file_size
 
@@ -244,7 +250,6 @@ class TtsCacheManager:
                 await self.prune(
                     max_mb=self.max_cache_mb,
                     max_entries=self.max_entries,
-                    ttl_days=self.ttl_days,
                 )
         except Exception as exc:
             logger.debug("Error during automatic cache pruning: %s", exc)
@@ -253,15 +258,13 @@ class TtsCacheManager:
         self,
         max_mb: Optional[int] = None,
         max_entries: Optional[int] = None,
-        ttl_days: Optional[int] = None,
     ) -> int:
         """
-        Performs LRU and TTL pruning of cache files when limits are exceeded.
+        Performs LRU pruning of cache files when limits are exceeded.
         Returns number of pruned entries.
         """
         limit_mb = max_mb or self.max_cache_mb
         limit_entries = max_entries or self.max_entries
-        ttl = ttl_days or self.ttl_days
         limit_bytes = limit_mb * 1024 * 1024
 
         pruned_count = 0
@@ -336,17 +339,18 @@ class TtsCacheManager:
         total_size_mb = db_stats["total_size_mb"]
         db_hits = db_stats["total_hits"]
 
-        combined_hits = max(self._hits, db_hits)
-        total_requests = combined_hits + self._misses
-        hit_rate = round((combined_hits / total_requests * 100.0), 2) if total_requests > 0 else 0.0
+        # Report memory hits and db hits separately
+        hit_rate = self._hits / (self._hits + self._misses) if (self._hits + self._misses) > 0 else 0.0
 
         return {
             "total_files": total_files,
             "total_size_bytes": total_size_bytes,
             "total_size_mb": total_size_mb,
-            "total_hits": combined_hits,
+            "total_hits": self._hits,
             "total_misses": self._misses,
-            "hit_rate_percent": hit_rate,
+            "hit_rate_percent": round(hit_rate * 100.0, 2),
+            "memory_hits": self._hits,
+            "db_hits": db_hits,
         }
 
 
@@ -363,3 +367,9 @@ def get_tts_cache_manager(
     if _tts_cache_manager_instance is None:
         _tts_cache_manager_instance = TtsCacheManager(cache_dir=cache_dir, db_path=db_path)
     return _tts_cache_manager_instance
+
+
+def reset_tts_cache_manager() -> None:
+    """Resets the singleton for test isolation."""
+    global _tts_cache_manager_instance
+    _tts_cache_manager_instance = None

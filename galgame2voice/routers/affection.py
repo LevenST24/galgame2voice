@@ -19,7 +19,7 @@ logger = logging.getLogger("galgame2voice.routers.affection")
 
 router = APIRouter(prefix="/api/affection", tags=["affection"])
 
-_affection_service = AffectionService()
+
 
 
 class AffectionUpdateRequest(BaseModel):

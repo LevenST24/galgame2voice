@@ -18,7 +18,10 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from galgame2voice.config import get_settings
+from galgame2voice.database import crud
+from galgame2voice.database.session import get_db, init_db
 from galgame2voice.routers import chat, config, health, voice, memory, affection, metrics
+from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
 from galgame2voice.utils.logger import setup_logger
 
 
@@ -84,11 +87,8 @@ async def lifespan(app: FastAPI):
 
     # 3. Initialize SQLite Database Schema (WAL Mode)
     try:
-        from galgame2voice.database.session import init_db
         await init_db(settings.db_path)
         logger.info("Database initialized successfully at %s", settings.db_path)
-    except ImportError:
-        logger.warning("Database module not yet installed; running in memory/standby mode.")
     except Exception as exc:
         logger.error("Failed to initialize database: %s", exc, exc_info=True)
 
@@ -96,9 +96,6 @@ async def lifespan(app: FastAPI):
     #    The DB's gpt_sovits_url takes priority over the .env default so the
     #    settings console is the source of truth.
     try:
-        from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client
-        from galgame2voice.database import crud
-        from galgame2voice.database.session import get_db
         sovits_url = None
         try:
             async with get_db(settings.db_path) as conn:
@@ -140,7 +137,6 @@ async def lifespan(app: FastAPI):
 
     # Release the shared GPT-SoVITS connection pool.
     try:
-        from galgame2voice.services.gpt_sovits_client import close_gpt_sovits_client
         await close_gpt_sovits_client()
     except Exception as exc:
         logger.debug("Error closing GPT-SoVITS client: %s", exc)

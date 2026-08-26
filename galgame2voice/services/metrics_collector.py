@@ -6,7 +6,6 @@ Employs a dual-tier architecture: an in-memory ring buffer for instant UI querie
 and SQLite persistent storage for long-term historical analytics.
 """
 
-import asyncio
 from collections import deque
 from datetime import datetime, timezone
 import logging
@@ -25,47 +24,52 @@ MODEL_PRICING_MAP: Dict[str, Dict[str, Tuple[float, float]]] = {
     "deepseek": {
         "default": (0.14, 0.28),
         "deepseek-chat": (0.14, 0.28),
-        "deepseek-v3": (0.14, 0.28),
-        "deepseek-v4-pro": (0.14, 0.28),
+        "deepseek-reasoner": (0.55, 2.19),
     },
     "openai": {
         "default": (0.15, 0.60),
         "gpt-4o-mini": (0.15, 0.60),
         "gpt-4o": (2.50, 10.00),
-        "gpt-5.6-sol": (2.00, 8.00),
+        "o3-mini": (1.10, 4.40),
     },
     "gemini": {
         "default": (0.075, 0.30),
-        "gemini-1.5-flash": (0.075, 0.30),
-        "gemini-2.0-flash": (0.075, 0.30),
-        "gemini-3.7-flash": (0.075, 0.30),
+        "gemini-2.5-flash": (0.15, 0.60),
+        "gemini-2.5-pro": (1.25, 10.00),
+        "gemini-2.0-flash": (0.10, 0.40),
     },
     "anthropic": {
-        "default": (0.80, 4.00),
-        "claude-3-5-haiku": (0.80, 4.00),
-        "claude-3-5-sonnet": (3.00, 15.00),
-        "claude-5-sonnet-latest": (3.00, 15.00),
+        "default": (3.00, 15.00),
+        "claude-sonnet-4-20250514": (3.00, 15.00),
+        "claude-haiku-4-20250414": (0.80, 4.00),
+        "claude-3-5-sonnet-20241022": (3.00, 15.00),
     },
     "qwen": {
         "default": (0.05, 0.20),
-        "qwen-turbo": (0.05, 0.20),
-        "qwen3.8-max": (0.20, 0.60),
+        "qwen-max-latest": (0.20, 0.60),
+        "qwen-plus-latest": (0.05, 0.20),
     },
     "glm": {
-        "default": (0.01, 0.01),
+        "default": (0.05, 0.05),
+        "glm-4-plus": (0.05, 0.05),
         "glm-4-flash": (0.01, 0.01),
-        "glm-5.3": (0.05, 0.05),
     },
     "xai": {
-        "default": (5.00, 15.00),
-        "grok-beta": (5.00, 15.00),
-        "grok-4.6": (5.00, 15.00),
+        "default": (3.00, 15.00),
+        "grok-3": (3.00, 15.00),
+        "grok-3-mini": (0.30, 0.50),
     },
     "siliconflow": {
         "default": (0.14, 0.28),
     },
     "groq": {
         "default": (0.59, 0.79),
+    },
+    "moonshot": {
+        "default": (0.20, 0.60),
+    },
+    "custom": {
+        "default": (0.0, 0.0),  # Local models have no API cost
     },
 }
 
@@ -83,7 +87,6 @@ class MetricsCollector:
         settings = get_settings()
         self.db_path = str(db_path or settings.db_path)
         self.ring_buffer: deque = deque(maxlen=ring_buffer_size)
-        self._lock = asyncio.Lock()
 
     def calculate_cost(
         self,
@@ -271,3 +274,9 @@ def get_metrics_collector(db_path: Optional[Union[str, Path]] = None) -> Metrics
     if _metrics_collector_instance is None:
         _metrics_collector_instance = MetricsCollector(db_path=db_path)
     return _metrics_collector_instance
+
+
+def reset_metrics_collector() -> None:
+    """Resets the singleton for test isolation."""
+    global _metrics_collector_instance
+    _metrics_collector_instance = None

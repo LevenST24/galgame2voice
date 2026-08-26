@@ -5,7 +5,6 @@ system parameter separation, and content_block_delta streaming.
 """
 
 import json
-import logging
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -14,11 +13,9 @@ import httpx
 from galgame2voice.adapters.base import (
     BaseLLMAdapter,
     ChatMessage,
-    ChatResponse,
+    LLMResponse,
     TestResult,
 )
-
-logger = logging.getLogger("galgame2voice.adapters.llm.anthropic_adapter")
 
 
 class AnthropicAdapter(BaseLLMAdapter):
@@ -27,7 +24,7 @@ class AnthropicAdapter(BaseLLMAdapter):
     """
 
     DEFAULT_BASE_URL = "https://api.anthropic.com/v1"
-    DEFAULT_MODEL = "claude-3-5-sonnet-latest"
+    DEFAULT_MODEL = "claude-sonnet-4-20250514"
     ANTHROPIC_VERSION = "2023-06-01"
 
     def __init__(
@@ -46,6 +43,9 @@ class AnthropicAdapter(BaseLLMAdapter):
             custom_headers=custom_headers,
             **kwargs,
         )
+        # BaseLLMAdapter stores extra kwargs in extra_config; set these explicitly.
+        self.default_model = default_model
+        self.custom_headers = custom_headers or {}
 
     def _get_headers(self) -> Dict[str, str]:
         headers = {
@@ -106,7 +106,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         model: Optional[str] = None,
         temperature: float = 0.7,
         **kwargs: Any,
-    ) -> ChatResponse:
+    ) -> LLMResponse:
         """Executes non-streaming chat completion via Anthropic /messages endpoint."""
         url = f"{self.base_url}/messages" if not self.base_url.endswith("/messages") else self.base_url
         payload = self._prepare_anthropic_payload(
@@ -125,7 +125,7 @@ class AnthropicAdapter(BaseLLMAdapter):
             for block in data.get("content", []):
                 if block.get("type") == "text":
                     content += block.get("text", "")
-            return ChatResponse(content=content, raw=data)
+            return LLMResponse(content=content, usage=None)
 
         async with httpx.AsyncClient(timeout=timeout_s) as client:
             resp = await client.post(url, json=payload, headers=headers)
@@ -138,7 +138,7 @@ class AnthropicAdapter(BaseLLMAdapter):
             for block in data.get("content", []):
                 if block.get("type") == "text":
                     content += block.get("text", "")
-            return ChatResponse(content=content, raw=data)
+            return LLMResponse(content=content, usage=None)
 
     async def stream_chat(
         self,
@@ -203,11 +203,12 @@ class AnthropicAdapter(BaseLLMAdapter):
     async def list_models(self) -> List[str]:
         """Returns known Anthropic Claude models."""
         return [
-            "claude-3-5-sonnet-latest",
-            "claude-3-5-haiku-latest",
-            "claude-3-opus-latest",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307",
+            "claude-opus-4-20250514",
+            "claude-sonnet-4-20250514",
+            "claude-haiku-4-20250414",
+            "claude-3-7-sonnet-20250224",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-haiku-20241022",
         ]
 
     async def test_connection(self, model: Optional[str] = None) -> TestResult:

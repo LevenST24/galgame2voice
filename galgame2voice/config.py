@@ -43,7 +43,8 @@ class Settings(BaseSettings):
 
     # CORS Security Configuration
     cors_origins: List[str] = Field(
-        default=["*"], description="Allowed origins for CORS middleware"
+        default=["http://127.0.0.1:8080", "http://localhost:8080"],
+        description="Allowed origins for CORS middleware",
     )
     cors_allow_credentials: bool = Field(
         default=True, description="Allow credentials in CORS requests"

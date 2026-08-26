@@ -24,12 +24,26 @@ from galgame2voice.services.chat_service import (
     StreamingBilingualParser,
 )
 
+from galgame2voice.services.affection_service import AffectionService
+from galgame2voice.services.memory_service import MemoryService
+from galgame2voice.services.session_manager import SessionManager, SessionTurn
+from galgame2voice.services.metrics_collector import MetricsCollector, get_metrics_collector
+from galgame2voice.services.tts_cache_manager import TtsCacheManager, get_tts_cache_manager
+
 __all__ = [
     "GptSovitsClient",
     "VoiceManager",
     "TtsService",
     "ChatService",
     "StreamingBilingualParser",
+    "AffectionService",
+    "MemoryService",
+    "SessionManager",
+    "SessionTurn",
+    "MetricsCollector",
+    "TtsCacheManager",
+    "get_metrics_collector",
+    "get_tts_cache_manager",
     "clean_japanese_parentheses",
     "resolve_tts_options",
     "SLICING_METHODS",

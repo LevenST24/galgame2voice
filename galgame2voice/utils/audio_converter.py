@@ -47,8 +47,7 @@ async def convert_ogg_to_wav(
     if not ogg_bytes or len(ogg_bytes) < 12:
         raise ValueError("Audio payload is empty or too short")
 
-    # Fast check for known mock / corrupt payload
-    if ogg_bytes == b"CORRUPT_NOT_AUDIO" or not (
+    if not (
         ogg_bytes.startswith(b"OggS") or ogg_bytes.startswith(b"RIFF") or len(ogg_bytes) > 44
     ):
         raise ValueError("Corrupted or unsupported audio format")
@@ -59,9 +58,10 @@ async def convert_ogg_to_wav(
 
     ffmpeg_bin = ffmpeg_path or "ffmpeg"
     if not is_ffmpeg_available(ffmpeg_bin):
-        # Fallback: if ffmpeg is missing in test environment, verify header and return dummy WAV
-        logger.warning("ffmpeg executable not found on PATH; returning mock-compatible WAV")
-        return b"RIFF\x24\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x08\x00\x00" + (b"\x00\x7f" * 100)
+        raise RuntimeError(
+            f"ffmpeg executable not found: '{ffmpeg_bin}'. "
+            "Install ffmpeg and ensure it is on PATH, or provide ffmpeg_path."
+        )
 
     # Execute ffmpeg with temporary files for cross-platform stability
     with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as in_file, \
@@ -110,8 +110,10 @@ async def convert_wav_to_ogg(
 
     ffmpeg_bin = ffmpeg_path or "ffmpeg"
     if not is_ffmpeg_available(ffmpeg_bin):
-        # Return wav_bytes as fallback if ffmpeg is unavailable in mock environment
-        return wav_bytes
+        raise RuntimeError(
+            f"ffmpeg executable not found: '{ffmpeg_bin}'. "
+            "Install ffmpeg and ensure it is on PATH, or provide ffmpeg_path."
+        )
 
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as in_file, \
          tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as out_file:
