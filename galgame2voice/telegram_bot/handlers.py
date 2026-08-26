@@ -134,16 +134,16 @@ class TelegramBotHandlers:
         active_id = None
         try:
             async with get_db(self.db_path) as conn:
-                profiles = await crud.get_all_voice_profiles(conn)
+                profiles = await crud.list_voice_profiles(conn)
                 active = await crud.get_active_voice_profile(conn)
                 active_id = active.id if active else None
         except Exception as exc:
-            logger.debug("Database read failed in build_voice_menu: %s", exc)
+            logger.error("Database read failed in build_voice_menu: %s", exc)
 
         text = "🎭 【选择角色音色】\n请点击下方按钮切换你想对话的角色："
         keyboard = []
         for p in profiles:
-            is_cur = (p.id == active_id)
+            is_cur = (active_id is not None and p.id == active_id)
             prefix = "🌸 " if is_cur else "▫️ "
             suffix = " (当前)" if is_cur else ""
             keyboard.append([InlineKeyboardButton(f"{prefix}{p.name}{suffix}", callback_data=f"set_voice_{p.id}")])
@@ -160,7 +160,7 @@ class TelegramBotHandlers:
                 settings = await crud.get_settings_raw(conn)
                 current_speed = getattr(settings, "speed_factor", 1.05) if settings else 1.05
         except Exception as exc:
-            logger.debug("Database read failed in build_speed_menu: %s", exc)
+            logger.error("Database read failed in build_speed_menu: %s", exc)
 
         text = f"⚡ 【调节语音语速】\n当前语速: {current_speed}x\n请选择你期望的发音语速："
         speeds = [0.8, 0.9, 1.0, 1.05, 1.1, 1.2, 1.3, 1.5]
@@ -183,19 +183,34 @@ class TelegramBotHandlers:
         active_id = None
         try:
             async with get_db(self.db_path) as conn:
-                providers = await crud.get_all_providers(conn)
+                providers = await crud.list_providers(conn)
                 active = await crud.get_active_provider(conn)
                 active_id = active.id if active else None
         except Exception as exc:
-            logger.debug("Database read failed in build_model_menu: %s", exc)
+            logger.error("Database read failed in build_model_menu: %s", exc)
 
         text = "🤖 【切换大模型提供商】\n请选择活跃的 LLM 接口供应商："
         keyboard = []
+        # Create 2-column buttons for neat layout
+        temp_row = []
         for prov in providers:
-            is_cur = (prov.id == active_id)
+            is_cur = (active_id is not None and prov.id == active_id)
             prefix = "🟢 " if is_cur else "⚪ "
             suffix = " (当前)" if is_cur else ""
-            keyboard.append([InlineKeyboardButton(f"{prefix}{prov.name}{suffix}", callback_data=f"set_model_{prov.id}")])
+            btn = InlineKeyboardButton(f"{prefix}{prov.name}{suffix}", callback_data=f"set_model_{prov.id}")
+            if is_cur:
+                # Active provider on its own prominent row
+                if temp_row:
+                    keyboard.append(temp_row)
+                    temp_row = []
+                keyboard.append([btn])
+            else:
+                temp_row.append(btn)
+                if len(temp_row) == 2:
+                    keyboard.append(temp_row)
+                    temp_row = []
+        if temp_row:
+            keyboard.append(temp_row)
 
         keyboard.append([InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main")])
         reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
