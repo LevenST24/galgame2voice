@@ -307,15 +307,22 @@ def find_available_port(preferred_port: int = 8080, host: str = "127.0.0.1") -> 
 
 
 def auto_open_browser(port: int = 8080):
-    """Background thread that waits for the server to be ready, then launches the browser."""
+    """Background thread that waits for the HTTP service to answer, then launches the browser."""
+    import urllib.request
+
     def _runner():
+        health_url = f"http://127.0.0.1:{port}/api/health"
         url = f"http://127.0.0.1:{port}/"
+        # Wait until the app actually responds (port-in-use alone can race uvicorn startup)
         for _ in range(30):
             time.sleep(0.3)
-            if is_port_in_use(port):
-                time.sleep(0.5)
-                webbrowser.open(url)
-                break
+            try:
+                with urllib.request.urlopen(health_url, timeout=1.0):
+                    time.sleep(0.3)
+                    webbrowser.open(url)
+                    break
+            except Exception:
+                continue
 
     t = threading.Thread(target=_runner, daemon=True)
     t.start()

@@ -105,6 +105,7 @@ class StreamingAudioPlayer {
 
     attachEqualizer(el) {
         this.equalizerElement = el;
+        this._cachedBars = el ? Array.from(el.querySelectorAll('.bar')) : [];
     }
 
     _startVisualizerLoop() {
@@ -116,16 +117,14 @@ class StreamingAudioPlayer {
                 return;
             }
             const data = this.getFrequencyData();
-            if (data && this.equalizerElement) {
-                const bars = this.equalizerElement.querySelectorAll('.bar');
-                if (bars && bars.length > 0) {
-                    const step = Math.max(1, Math.floor(data.length / bars.length));
-                    bars.forEach((bar, i) => {
-                        const val = data[i * step] || 0;
-                        const heightPx = Math.max(4, Math.round(4 + (val / 255) * 18));
-                        bar.style.height = `${heightPx}px`;
-                    });
-                }
+            if (data && this._cachedBars && this._cachedBars.length > 0) {
+                const bars = this._cachedBars;
+                const step = Math.max(1, Math.floor(data.length / bars.length));
+                bars.forEach((bar, i) => {
+                    const val = data[i * step] || 0;
+                    const heightPx = Math.max(4, Math.round(4 + (val / 255) * 18));
+                    bar.style.height = `${heightPx}px`;
+                });
             }
             this.animFrameId = requestAnimationFrame(render);
         };
@@ -141,9 +140,8 @@ class StreamingAudioPlayer {
     }
 
     _resetEqualizerBars() {
-        if (this.equalizerElement) {
-            const bars = this.equalizerElement.querySelectorAll('.bar');
-            bars.forEach(bar => { bar.style.height = '4px'; });
+        if (this._cachedBars) {
+            this._cachedBars.forEach(bar => { bar.style.height = '4px'; });
         }
     }
 
@@ -252,8 +250,8 @@ class StreamingAudioPlayer {
             if (this.isPlaying) {
                 this.isPlaying = false;
                 this._stopVisualizerLoop();
-                this._notifyStatus('就绪', false);
             }
+            this._notifyStatus('就绪', false);
             if (this.onQueueEmpty) this.onQueueEmpty();
         }
     }
@@ -328,7 +326,7 @@ class StreamingAudioPlayer {
                 if (nextItem.sessionId === this.currentSessionId) {
                     const desc = nextItem.sentence ? nextItem.sentence : ('段落 #' + (nextItem.index + 1));
                     this._notifyStatus('播放中: ' + desc, true);
-                    if (this.onChunkStart) this.onChunkStart(nextItem);
+                    if (this.onChunkStart) this.onChunkStart({ ...nextItem, duration: buffer.duration });
                 }
             }, delayMs);
 

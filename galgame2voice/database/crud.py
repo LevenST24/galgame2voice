@@ -1037,6 +1037,19 @@ async def record_memory_recall(conn: aiosqlite.Connection, memory_id: int) -> No
     await conn.commit()
 
 
+async def record_memory_recall_batch(conn: aiosqlite.Connection, memory_ids: List[int]) -> None:
+    """Records recall for multiple memories in a single transaction."""
+    ids = list(dict.fromkeys(memory_ids))
+    if not ids:
+        return
+    await conn.executemany("""
+        UPDATE user_memories
+        SET recall_count = recall_count + 1, last_recalled_at = CURRENT_TIMESTAMP
+        WHERE id = ?;
+    """, [(mid,) for mid in ids])
+    await conn.commit()
+
+
 # ==================== Character Affection CRUD ====================
 
 def calculate_affection_level(score: int) -> Tuple[int, str]:

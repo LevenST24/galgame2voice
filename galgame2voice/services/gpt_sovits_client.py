@@ -249,8 +249,18 @@ class GptSovitsClient:
             return
         logger.info("GPT-SoVITS base URL changing: %s -> %s", self.base_url, new_url)
         self.base_url = new_url
-        # Drop pooled connections bound to the old host.
-        await self.aclose()
+        # Swap the client atomically; close the old pool lazily so any in-flight
+        # request still holding it can finish instead of failing mid-stream.
+        old_client = self._client
+        self._client = None
+        if old_client is not None and not old_client.is_closed:
+            async def _close_late():
+                try:
+                    await asyncio.sleep(5.0)
+                    await old_client.aclose()
+                except Exception:
+                    pass
+            asyncio.create_task(_close_late())
 
     async def _request(
         self,

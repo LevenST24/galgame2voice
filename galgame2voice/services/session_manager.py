@@ -49,7 +49,7 @@ class SessionManager:
         Delegates to MetricsCollector.estimate_tokens so token budgeting stays
         consistent with the telemetry pipeline (CJK * 1.1 + non-CJK / 3.5).
         """
-        return MetricsCollector.estimate_tokens(self, text)
+        return MetricsCollector.estimate_tokens(text)
 
     async def add_turn(
         self,

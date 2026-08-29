@@ -21,7 +21,8 @@
 class AutoModeController {
     constructor(options = {}) {
         this.enabled = false;
-        this.delayMs = options.defaultDelayMs || 1500;
+        this.defaultDelayMs = options.defaultDelayMs !== undefined ? options.defaultDelayMs : 1500;
+        this.delayMs = this.defaultDelayMs;
         this.timer = null;
         this.onAdvance = options.onAdvance || null;
         this.btnEl = options.btnEl || null;
@@ -69,14 +70,25 @@ class AutoModeController {
         }
     }
 
-    onAudioQueueFinished() {
+    calculateDelay(charCount = 0, audioDuration = 0) {
+        const defaultDelay = this.defaultDelayMs !== undefined ? this.defaultDelayMs : (this.delayMs || 1500);
+        if (defaultDelay < 500) {
+            return defaultDelay;
+        }
+        const count = typeof charCount === 'number' ? charCount : 0;
+        return Math.min(6000, Math.max(1200, (defaultDelay || 1500) + (count * 45)));
+    }
+
+    onAudioQueueFinished(charCount, audioDuration) {
         if (!this.enabled) return;
         if (this.timer) clearTimeout(this.timer);
+        const delay = this.calculateDelay(charCount, audioDuration);
+        this.delayMs = delay;
         this.timer = setTimeout(() => {
             if (this.enabled && this.onAdvance) {
                 this.onAdvance();
             }
-        }, this.delayMs);
+        }, delay);
     }
 
     cancel() {
@@ -129,8 +141,12 @@ class EmotionManager {
     }
 
     setEmotion(emotion) {
-        const emo = (emotion || 'gentle').toLowerCase();
-        const info = EmotionManager.EMOTIONS[emo] || EmotionManager.EMOTIONS.gentle;
+        if (!emotion || typeof emotion !== 'string') return;
+        const emo = emotion.toLowerCase();
+        if (!EmotionManager.EMOTIONS[emo]) {
+            return;
+        }
+        const info = EmotionManager.EMOTIONS[emo];
         this.currentEmotion = emo;
 
         const backdrop = this.backdropEl || document.querySelector('.character-backdrop');
@@ -167,7 +183,9 @@ class LogDrawerController {
         this.btnClose = options.btnClose || null;
         this.btnClose2 = options.btnClose2 || null;
         this.btnClear = options.btnClear || null;
+        this.btnReplayAll = options.btnReplayAll || null;
         this.onReplayAudio = options.onReplayAudio || null;
+        this.onReplayAll = options.onReplayAll || null;
         this.onClearHistory = options.onClearHistory || null;
         this.getHistory = options.getHistory || (() => []);
         this.characterName = options.characterName || '四季夏目';
@@ -195,6 +213,20 @@ class LogDrawerController {
         }
         if (this.btnClear && this.onClearHistory) {
             this.btnClear.addEventListener('click', () => this.onClearHistory());
+        }
+        if (this.btnReplayAll) {
+            this.btnReplayAll.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.replayAllHistory();
+            });
+        }
+    }
+
+    replayAllHistory() {
+        const history = this.getHistory();
+        if (!history || history.length === 0) return;
+        if (this.onReplayAll) {
+            this.onReplayAll(history);
         }
     }
 
@@ -321,6 +353,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const vnEmotionBadge = document.getElementById('vn-emotion-badge');
     const vnAffectionBadge = document.getElementById('vn-affection-badge');
 
+    const btnVnAuto = document.getElementById('btn-vn-auto');
     const btnVnSkip = document.getElementById('btn-vn-skip');
     const btnVnLog = document.getElementById('btn-vn-log');
     const btnVnReplay = document.getElementById('btn-vn-replay');
@@ -332,6 +365,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnCloseLogDrawer = document.getElementById('btn-close-log-drawer');
     const btnCloseLogDrawer2 = document.getElementById('btn-close-log-drawer-2');
     const btnClearLogHistory = document.getElementById('btn-clear-log-history');
+    const btnLogReplayAll = document.getElementById('btn-log-replay-all');
 
     const quickVoiceSelect = document.getElementById('quick-voice-select');
     const sovitsStatusBadge = document.getElementById('sovits-status-badge');
@@ -356,6 +390,35 @@ document.addEventListener('DOMContentLoaded', () => {
     let typewriterTimer = null;
     let pendingFullTextJa = '';
     let pendingFullTextZh = '';
+
+    function startTypewriter(textJa, durationSec) {
+        if (typewriterTimer) {
+            clearTimeout(typewriterTimer);
+            typewriterTimer = null;
+        }
+        if (!textJa || !vnTextJa) return;
+
+        pendingFullTextJa = textJa;
+        const totalChars = textJa.length;
+        if (totalChars === 0) return;
+
+        const durationMs = (durationSec && durationSec > 0) ? (durationSec * 1000) : (totalChars * 80);
+        const intervalMs = Math.max(20, Math.floor(durationMs / totalChars));
+
+        let currentIndex = 0;
+        vnTextJa.textContent = '';
+
+        function step() {
+            currentIndex++;
+            vnTextJa.textContent = textJa.slice(0, currentIndex);
+            if (currentIndex < totalChars) {
+                typewriterTimer = setTimeout(step, intervalMs);
+            } else {
+                typewriterTimer = null;
+            }
+        }
+        step();
+    }
 
     function skipTypewriter() {
         if (typewriterTimer) {
@@ -391,6 +454,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 else vnAudioEqualizer.classList.remove('playing');
             }
         },
+        onChunkStart: (chunk) => {
+            if (chunk && chunk.sentence) {
+                startTypewriter(chunk.sentence, chunk.duration);
+            }
+        },
         onError: (err, item) => {
             // 单句音频失败已被播放器自动跳过, 队列继续。这里只做一次性提示。
             console.warn('[Audio] 跳过一句失败音频:', item && item.url, err);
@@ -420,6 +488,14 @@ document.addEventListener('DOMContentLoaded', () => {
         badgeEl: vnEmotionBadge,
     });
 
+    const autoModeController = new AutoModeController({
+        defaultDelayMs: 1500,
+        btnEl: btnVnAuto,
+        onAdvance: () => {
+            console.log('[AutoMode] 对话阅读完成');
+        }
+    });
+
     const skipController = new SkipController({
         btnEl: btnVnSkip,
         onSkip: () => {
@@ -437,6 +513,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btnClose: btnCloseLogDrawer,
         btnClose2: btnCloseLogDrawer2,
         btnClear: btnClearLogHistory,
+        btnReplayAll: btnLogReplayAll,
         getHistory: () => currentDialogueHistory,
         characterName: (vnCharacterName && vnCharacterName.textContent) || '四季夏目',
         onReplayAudio: (item) => {
@@ -457,18 +534,48 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
         },
+        onReplayAll: (historyList) => {
+            audioPlayer.interrupt();
+            let globalChunkIndex = 0;
+            historyList.forEach((item) => {
+                if (item.role === 'assistant') {
+                    if (item.chunks && item.chunks.length > 0) {
+                        item.chunks.forEach((chunk) => {
+                            audioPlayer.enqueue({
+                                index: globalChunkIndex++,
+                                audio_url: chunk.audio_url,
+                                sentence: chunk.sentence || ''
+                            });
+                        });
+                    } else if (item.audio_url) {
+                        audioPlayer.enqueue({
+                            index: globalChunkIndex++,
+                            audio_url: item.audio_url,
+                            sentence: item.content_japanese || ''
+                        });
+                    }
+                }
+            });
+        },
         onClearHistory: handleResetContext
     });
 
     audioPlayer.onQueueEmpty = () => {
         if (vnAudioStatus) vnAudioStatus.textContent = '就绪';
+        if (autoModeController && autoModeController.enabled) {
+            const charCount = (pendingFullTextJa || pendingFullTextZh || '').length;
+            autoModeController.onAudioQueueFinished(charCount);
+        }
     };
 
     // Expose for testing & debug
+    window.autoModeController = autoModeController;
+    window.autoController = autoModeController;
     window.skipController = skipController;
     window.emotionManager = emotionManager;
     window.logDrawerController = logDrawerController;
     window.audioPlayer = audioPlayer;
+    window.startTypewriter = startTypewriter;
     window.skipTypewriter = skipTypewriter;
 
     // 5. Dual View Mode Switching
@@ -593,8 +700,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // 8. System Status (visibility-aware polling)
+    let statusCheckInFlight = false;
     async function checkSystemStatus() {
-        if (!sovitsStatusBadge) return;
+        if (!sovitsStatusBadge || statusCheckInFlight) return;
+        statusCheckInFlight = true;
         try {
             const resp = await fetch('/api/system/status');
             if (resp.ok) {
@@ -617,6 +726,8 @@ document.addEventListener('DOMContentLoaded', () => {
             sovitsStatusBadge.className = 'badge badge-danger';
             const textEl = sovitsStatusBadge.querySelector('.status-text');
             if (textEl) textEl.textContent = '服务连接中断';
+        } finally {
+            statusCheckInFlight = false;
         }
     }
 
@@ -926,7 +1037,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     emotionManager.setEmotion(payload.emotion);
                                 }
 
-                                if (currentEventType === 'text' || payload.delta_chinese !== undefined || payload.full_chinese !== undefined) {
+                                if (currentEventType === 'text' || (currentEventType === 'message' && (payload.delta_chinese !== undefined || payload.full_chinese !== undefined))) {
                                     const delta = payload.delta_chinese || '';
                                     if (payload.full_chinese) {
                                         fullChinese = payload.full_chinese;
@@ -936,7 +1047,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     pendingFullTextZh = fullChinese;
                                     assistantHolder.update(fullChinese, fullJapanese);
                                     if (vnTextZh) vnTextZh.textContent = `（${fullChinese}）`;
-                                } else if (currentEventType === 'audio_chunk' || (payload.audio_url && payload.index !== undefined)) {
+                                } else if (currentEventType === 'audio_chunk' || (currentEventType === 'message' && payload.audio_url && payload.index !== undefined)) {
                                     lastAudioUrl = payload.audio_url;
                                     const chunkObj = {
                                         index: payload.index !== undefined ? payload.index : currentMessageChunks.length,
@@ -961,7 +1072,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     // 单句合成失败: 后端已跳过, 前端提示并继续
                                     console.warn('音频片段合成失败:', payload.error);
                                     assistantHolder.markChunkError(payload.index);
-                                } else if (currentEventType === 'done' || (payload.chinese && payload.japanese)) {
+                                } else if (currentEventType === 'done' || (currentEventType === 'message' && payload.chinese && payload.japanese)) {
                                     if (payload.chinese) fullChinese = payload.chinese;
                                     if (payload.japanese) fullJapanese = payload.japanese;
                                     if (payload.emotion) {
@@ -1034,7 +1145,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
             } catch (err) {
                 if (err.name === 'AbortError') {
-                    // 用户主动停止: 把已收到的内容标记为完成态
+                    // 用户主动停止: 中止已排队的音频抓取/播放, 再把已收到的内容标记为完成态
+                    if (audioPlayer && typeof audioPlayer.interrupt === 'function') {
+                        audioPlayer.interrupt();
+                    }
                     assistantHolder.finish({
                         audio_url: lastAudioUrl,
                         chunks: currentMessageChunks,

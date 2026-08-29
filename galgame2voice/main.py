@@ -14,8 +14,10 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import MutableHeaders
 
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
@@ -183,6 +185,27 @@ def create_app() -> FastAPI:
         allow_methods=settings.cors_allow_methods,
         allow_headers=settings.cors_allow_headers,
     )
+
+    # Compress large static/JS/CSS payloads (settings.html alone is ~170 KB).
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+    # Cache static assets and generated audio for an hour so browsers stop
+    # re-downloading them on every load.
+    class _StaticCacheControlMiddleware:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] == "http" and scope.get("path", "").startswith(("/static/", "/audio/")):
+                async def send_with_cache(message):
+                    if message["type"] == "http.response.start":
+                        MutableHeaders(scope=message).setdefault("Cache-Control", "public, max-age=3600")
+                    await send(message)
+                await self.app(scope, receive, send_with_cache)
+                return
+            await self.app(scope, receive, send)
+
+    app.add_middleware(_StaticCacheControlMiddleware)
 
     # 2. Register API Routers
     app.include_router(health.router)

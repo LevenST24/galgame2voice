@@ -596,9 +596,12 @@ body.galgame-theme {
     color: var(--c-accent);
 }
 .vn-action-btn:hover svg { stroke: var(--c-accent); }
-.vn-action-btn.active {
+.vn-action-btn.active,
+#btn-vn-auto.active {
     background: var(--c-accent-dim);
     color: var(--c-accent);
+    border: 1px solid rgba(192, 132, 252, 0.4);
+    box-shadow: 0 0 10px var(--c-accent-glow);
     animation: activePulse 2s ease-in-out infinite;
 }
 @keyframes activePulse {

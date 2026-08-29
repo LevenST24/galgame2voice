@@ -55,4 +55,4 @@ if !EXIT_CODE! neq 0 (
 )
 
 endlocal
-exit /b 0
+exit /b !EXIT_CODE!

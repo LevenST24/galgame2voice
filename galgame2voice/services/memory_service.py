@@ -255,15 +255,14 @@ class MemoryService:
                 selected.append(m)
                 seen_keys.add(m.fact_key)
 
-        # 4. Asynchronously record recall timestamp & count
+        # 4. Asynchronously record recall timestamp & count (single batched transaction)
         try:
+            selected_ids = [sel.id for sel in selected]
             if conn is not None:
-                for sel in selected:
-                    await crud.record_memory_recall(conn, sel.id)
+                await crud.record_memory_recall_batch(conn, selected_ids)
             else:
                 async with get_db(self.db_path) as local_conn:
-                    for sel in selected:
-                        await crud.record_memory_recall(local_conn, sel.id)
+                    await crud.record_memory_recall_batch(local_conn, selected_ids)
         except Exception as e:
             logger.warning("Failed to record memory recall count: %s", e)
 

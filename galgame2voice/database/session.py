@@ -14,6 +14,9 @@ import aiosqlite
 
 DEFAULT_DB_PATH = "data/galgame2voice.db"
 _init_lock = asyncio.Lock()
+# journal_mode=WAL is persistent in the database file; remember paths already
+# in WAL so per-connection setup skips the (lock-taking) SET.
+_wal_confirmed_paths: set[str] = set()
 
 
 def get_database_path() -> str:
@@ -28,10 +31,16 @@ def get_database_path() -> str:
         return DEFAULT_DB_PATH
 
 
-async def configure_connection(conn: aiosqlite.Connection) -> None:
+async def configure_connection(conn: aiosqlite.Connection, resolved_path: Optional[str] = None) -> None:
     """Configure SQLite pragmas for performance and data integrity."""
     conn.row_factory = aiosqlite.Row
-    await conn.execute("PRAGMA journal_mode = WAL;")
+    key = str(os.path.abspath(resolved_path)) if resolved_path else None
+    if key is None or key not in _wal_confirmed_paths:
+        mode = (await (await conn.execute("PRAGMA journal_mode;")).fetchone())[0]
+        if str(mode).lower() != "wal":
+            await conn.execute("PRAGMA journal_mode = WAL;")
+        if key is not None:
+            _wal_confirmed_paths.add(key)
     await conn.execute("PRAGMA foreign_keys = ON;")
     await conn.execute("PRAGMA busy_timeout = 5000;")
     await conn.execute("PRAGMA synchronous = NORMAL;")
@@ -45,7 +54,7 @@ async def get_db(db_path: Optional[Union[str, Path]] = None) -> AsyncGenerator[a
     if parent_dir:
         os.makedirs(parent_dir, exist_ok=True)
     async with aiosqlite.connect(resolved_path, timeout=30.0) as conn:
-        await configure_connection(conn)
+        await configure_connection(conn, resolved_path)
         yield conn
 
 

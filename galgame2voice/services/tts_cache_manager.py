@@ -35,6 +35,7 @@ class TtsCacheManager:
         max_cache_mb: int = 1024,
         max_entries: int = 5000,
         max_mem_entries: int = 128,
+        max_mem_mb: int = 64,
     ):
         settings = get_settings()
         self.audio_root = Path(settings.audio_dir)
@@ -43,6 +44,7 @@ class TtsCacheManager:
         self.max_cache_mb = max_cache_mb
         self.max_entries = max_entries
         self.max_mem_entries = max_mem_entries
+        self.max_mem_bytes = max(max_mem_mb, 1) * 1024 * 1024
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -51,8 +53,34 @@ class TtsCacheManager:
         self._lock = asyncio.Lock()
         # High-speed In-Memory LRU Cache layer (<0.1ms access time)
         self._mem_cache: OrderedDict[str, bytes] = OrderedDict()
+        self._mem_bytes_total: int = 0
+        self._touch_throttle: Dict[str, float] = {}
         # Strong references for fire-and-forget background tasks (prevent GC mid-flight).
         self._bg_tasks: set = set()
+
+    def _mem_cache_discard(self, cache_key: str) -> None:
+        evicted = self._mem_cache.pop(cache_key, None)
+        if evicted is not None:
+            self._mem_bytes_total -= len(evicted)
+        self._touch_throttle.pop(cache_key, None)
+
+    def _mem_cache_clear(self) -> None:
+        self._mem_cache.clear()
+        self._mem_bytes_total = 0
+        self._touch_throttle.clear()
+
+    def _mem_cache_store(self, cache_key: str, audio_bytes: bytes) -> None:
+        self._mem_cache_discard(cache_key)
+        self._mem_cache[cache_key] = audio_bytes
+        self._mem_bytes_total += len(audio_bytes)
+        self._mem_cache.move_to_end(cache_key)
+        # Byte-based cap with entry-count fallback; newest entry always retained.
+        while len(self._mem_cache) > 1 and (
+            len(self._mem_cache) > self.max_mem_entries
+            or self._mem_bytes_total > self.max_mem_bytes
+        ):
+            _, evicted = self._mem_cache.popitem(last=False)
+            self._mem_bytes_total -= len(evicted)
 
     def _spawn_background(self, coro) -> None:
         """Runs a coroutine in the background with strong ref (prevents GC mid-flight)."""
@@ -152,22 +180,28 @@ class TtsCacheManager:
     async def get(self, cache_key: str) -> Optional[Tuple[bytes, str, int]]:
         """
         Retrieves cached audio bytes and URL for the given cache key.
-        Checks high-speed memory cache first, verifying disk file integrity.
+        Checks high-speed in-memory LRU cache first (<0.01ms), falling back to disk (<15ms).
         Returns (audio_bytes, url_path, file_size) if hit, None if miss.
         """
         url_path = f"/audio/cache/{cache_key}.wav"
         file_path = self.cache_dir / f"{cache_key}.wav"
 
-        # Verify disk file presence and non-zero size
+        # Verify disk file presence and non-zero size to detect manual unlinking or corruption
         if not file_path.exists():
-            self._mem_cache.pop(cache_key, None)
+            self._mem_cache_discard(cache_key)
             self._misses += 1
             return None
 
-        file_size = file_path.stat().st_size
+        try:
+            file_size = file_path.stat().st_size
+        except OSError:
+            self._mem_cache_discard(cache_key)
+            self._misses += 1
+            return None
+
         if file_size == 0:
             # Corrupted 0-byte file on disk -> evict from memory cache and delete
-            self._mem_cache.pop(cache_key, None)
+            self._mem_cache_discard(cache_key)
             self._misses += 1
             try:
                 file_path.unlink(missing_ok=True)
@@ -175,53 +209,53 @@ class TtsCacheManager:
                 pass
             return None
 
-        # 1. Fast path: In-Memory LRU Cache hit (<0.1ms)
+        # 1. Fast path: In-Memory LRU Cache hit (<0.01ms, pure RAM dictionary lookup)
         if cache_key in self._mem_cache:
             audio_bytes = self._mem_cache[cache_key]
             self._mem_cache.move_to_end(cache_key)
             self._hits += 1
 
-            async def _touch_metadata_mem():
+            now = time.time()
+            if cache_key not in self._touch_throttle or (now - self._touch_throttle[cache_key] > 5.0):
+                self._touch_throttle[cache_key] = now
+                async def _touch_metadata_mem():
+                    try:
+                        loop = asyncio.get_running_loop()
+                        if not loop.is_running() or loop.is_closed():
+                            return
+                        async with get_db(self.db_path) as conn:
+                            await crud.touch_tts_cache_entry(conn, cache_key)
+                    except Exception:
+                        pass
+                self._spawn_background(_touch_metadata_mem())
+            return audio_bytes, url_path, len(audio_bytes)
+
+        # 2. Slow path: Disk & SQLite cache
+        now = time.time()
+        if cache_key not in self._touch_throttle or (now - self._touch_throttle[cache_key] > 5.0):
+            self._touch_throttle[cache_key] = now
+            async def _touch_metadata():
                 try:
                     loop = asyncio.get_running_loop()
                     if not loop.is_running() or loop.is_closed():
                         return
                     async with get_db(self.db_path) as conn:
-                        await crud.touch_tts_cache_entry(conn, cache_key)
-                except Exception:
-                    pass
-            self._spawn_background(_touch_metadata_mem())
-            return audio_bytes, url_path, len(audio_bytes)
+                        entry = await crud.get_tts_cache_entry(conn, cache_key)
+                        if entry:
+                            await crud.touch_tts_cache_entry(conn, cache_key)
+                except Exception as exc:
+                    logger.debug("Non-critical: could not touch tts_cache_entry: %s", exc)
 
-        # 2. Slow path: Disk & SQLite cache
-
-        # Asynchronously touch SQLite metadata in background (non-blocking for blazing sub-1ms hits)
-        async def _touch_metadata():
             try:
-                loop = asyncio.get_running_loop()
-                if not loop.is_running() or loop.is_closed():
-                    return
-                async with get_db(self.db_path) as conn:
-                    entry = await crud.get_tts_cache_entry(conn, cache_key)
-                    if entry:
-                        await crud.touch_tts_cache_entry(conn, cache_key)
-            except Exception as exc:
-                logger.debug("Non-critical: could not touch tts_cache_entry: %s", exc)
-
-        try:
-            self._spawn_background(_touch_metadata())
-        except RuntimeError:
-            pass
+                self._spawn_background(_touch_metadata())
+            except RuntimeError:
+                pass
 
         try:
             audio_bytes = await asyncio.to_thread(file_path.read_bytes)
             self._hits += 1
             # Populate In-Memory LRU Cache
-            self._mem_cache[cache_key] = audio_bytes
-            self._mem_cache.move_to_end(cache_key)
-            if len(self._mem_cache) > self.max_mem_entries:
-                self._mem_cache.popitem(last=False)
-
+            self._mem_cache_store(cache_key, audio_bytes)
             return audio_bytes, url_path, len(audio_bytes)
         except Exception as e:
             logger.warning("Failed to read cache file %s: %s", file_path, e)
@@ -249,10 +283,7 @@ class TtsCacheManager:
         file_path = self.cache_dir / f"{cache_key}.wav"
 
         # Update In-Memory LRU Cache
-        self._mem_cache[cache_key] = audio_bytes
-        self._mem_cache.move_to_end(cache_key)
-        if len(self._mem_cache) > self.max_mem_entries:
-            self._mem_cache.popitem(last=False)
+        self._mem_cache_store(cache_key, audio_bytes)
 
         # Atomic write to file via temp file to prevent 0-byte/corrupt files
         def _atomic_write():
@@ -331,12 +362,12 @@ class TtsCacheManager:
 
                 file_p = Path(entry.file_path)
                 try:
-                    if file_p.exists():
-                        file_p.unlink(missing_ok=True)
+                    await asyncio.to_thread(lambda: file_p.unlink(missing_ok=True) if file_p.exists() else None)
                 except Exception:
                     pass
 
                 await crud.delete_tts_cache_entry(conn, entry.cache_key)
+                self._mem_cache_discard(entry.cache_key)
                 total_bytes -= entry.file_size
                 total_files -= 1
                 pruned_count += 1
@@ -353,20 +384,27 @@ class TtsCacheManager:
         freed_bytes = 0
         deleted_count = 0
 
-        if self.cache_dir.exists():
-            for f in self.cache_dir.iterdir():
-                if f.is_file():
-                    try:
-                        freed_bytes += f.stat().st_size
-                        f.unlink(missing_ok=True)
-                        deleted_count += 1
-                    except Exception as e:
-                        logger.warning("Failed to delete cache file %s: %s", f, e)
+        def _scan_and_delete() -> Tuple[int, int]:
+            freed = 0
+            count = 0
+            if self.cache_dir.exists():
+                for f in self.cache_dir.iterdir():
+                    if f.is_file():
+                        try:
+                            freed += f.stat().st_size
+                            f.unlink(missing_ok=True)
+                            count += 1
+                        except Exception as e:
+                            logger.warning("Failed to delete cache file %s: %s", f, e)
+            return freed, count
+
+        freed_bytes, deleted_count = await asyncio.to_thread(_scan_and_delete)
 
         async with get_db(self.db_path) as conn:
             await crud.clear_all_tts_cache_entries(conn)
 
         self._mem_cache.clear()
+        self._mem_bytes_total = 0
         self._hits = 0
         self._misses = 0
         freed_mb = round(freed_bytes / (1024 * 1024), 2)

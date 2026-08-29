@@ -671,6 +671,29 @@ class ChatService:
             if error_seen or (cancel_event and cancel_event.is_set()):
                 logger.info("Stream chat ended early (error=%s, cancelled=%s) for session %s",
                             error_seen, bool(cancel_event and cancel_event.is_set()), session_id)
+                # Reap producer/worker before persisting so TTS synthesis stops
+                # promptly and no task writes concurrently.
+                for task in (producer_task, worker_task):
+                    if task is not None and not task.done():
+                        task.cancel()
+                await asyncio.gather(producer_task, worker_task, return_exceptions=True)
+                # Persist the partial reply the user already saw so the turn is
+                # not silently dropped from history (the user message was saved).
+                partial_ch = final_result.get("chinese") or parser.chinese_extracted
+                partial_ja = final_result.get("japanese") or parser.japanese_extracted
+                if partial_ch or partial_ja:
+                    try:
+                        async with get_db(self.db_path) as conn:
+                            await crud.add_message(conn, MessageCreate(
+                                session_id=session_id,
+                                role="assistant",
+                                content_chinese=partial_ch,
+                                content_japanese=partial_ja,
+                                audio_url="",
+                                latency_ms=int((time.perf_counter() - t_start) * 1000),
+                            ))
+                    except Exception as persist_err:
+                        logger.warning("Failed to persist partial assistant message: %s", persist_err)
                 return
 
             # Ensure both tasks are fully finished before touching shared state.

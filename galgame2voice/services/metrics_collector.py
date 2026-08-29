@@ -110,7 +110,8 @@ class MetricsCollector:
 
         return round(cost_usd, 6), round(cost_cny, 4)
 
-    def estimate_tokens(self, text: str) -> int:
+    @staticmethod
+    def estimate_tokens(text: str) -> int:
         """
         Estimates token count with high accuracy across mixed CJK and Latin scripts.
         """

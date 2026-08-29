@@ -127,6 +127,9 @@
                     <div class="vn-box-footer">
                         <span id="vn-audio-status" class="status-indicator-text">音频就绪</span>
                         <div class="vn-action-buttons">
+                            <button type="button" id="btn-vn-auto" class="vn-action-btn" title="自动播放模式">
+                                <span class="btn-text">AUTO</span>
+                            </button>
                             <button type="button" id="btn-vn-skip" class="vn-action-btn" title="跳过当前语音">
                                 <span class="btn-text">SKIP</span>
                             </button>
@@ -193,6 +196,7 @@
             </div>
             <div id="log-drawer-body" class="drawer-body"></div>
             <div class="drawer-footer">
+                <button type="button" id="btn-log-replay-all" class="btn-primary-sm" title="一键顺序回放所有历史语音">全量回放</button>
                 <button type="button" id="btn-clear-log-history" class="btn-danger-outline">清空记忆</button>
                 <button type="button" id="btn-close-log-drawer-2" class="btn-primary-sm">关闭</button>
             </div>
