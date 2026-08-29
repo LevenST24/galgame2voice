@@ -28,7 +28,7 @@ except ImportError:
 
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
-from galgame2voice.database.models import MessageCreate, SettingsUpdate
+from galgame2voice.database.models import MessageCreate, SettingsUpdate, CharacterAffectionUpdate
 from galgame2voice.services.chat_service import ChatService, StreamingBilingualParser
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.adapters.registry import get_stt_adapter
@@ -595,7 +595,7 @@ class TelegramBotHandlers:
             f"• 你的昵称: {aff_nick}\n"
             f"• 累计对话: {msg_count} 轮\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "💡 与角色多互动交流可以提升好感度并解锁更亲密的专属语音！"
+            "💡 发送 `/nickname <你的称呼>` 可随时更改夏目对你的专属称呼！"
         )
         keyboard = [
             [InlineKeyboardButton("🔄 刷新好感档案", callback_data="menu_affection")],
@@ -908,6 +908,7 @@ class TelegramBotHandlers:
             "• /console - 打开原生交互控制台（音色/语速/模型快捷切换）\n"
             "• /voice - 查看当前音色与语音设置\n"
             "• /model - 查看模型与接口配置\n"
+            "• /nickname <称呼> - 设置角色对你的专属称呼\n"
             "• /reset - 清空当前对话历史\n"
             "• /help - 查看完整帮助信息"
         )
@@ -915,6 +916,48 @@ class TelegramBotHandlers:
             await update.message.reply_text(reply)
         elif hasattr(update, "effective_chat") and update.effective_chat and context and hasattr(context, "bot"):
             await context.bot.send_message(chat_id=update.effective_chat.id, text=reply)
+        return reply
+
+    async def handle_nickname(self, update: Any, context: Optional[Any] = None) -> str:
+        """Handler for /nickname command to customize user nickname for character affection."""
+        chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
+        raw_text = ""
+        if hasattr(update, "message") and update.message and update.message.text:
+            raw_text = update.message.text.strip()
+
+        parts = raw_text.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            reply = (
+                "🌸 【设置你的专属称呼】\n"
+                "用法: `/nickname <你的称呼>`\n"
+                "例如: `/nickname 昂晴` 或 `/nickname 欧尼酱`\n\n"
+                "设置后，二次元伴侣会在对话中用这个名字称呼你哦！"
+            )
+        else:
+            new_nick = parts[1].strip()[:20]
+            try:
+                async with get_db(self.db_path) as conn:
+                    profile = await crud.get_active_voice_profile(conn)
+                    profile_id = profile.id if profile else 1
+                    # Ensure affection row exists
+                    await crud.get_or_create_character_affection(
+                        conn, user_id=str(chat_id), character_id=profile_id
+                    )
+                    await crud.update_character_affection(
+                        conn,
+                        user_id=str(chat_id),
+                        character_id=profile_id,
+                        updates=CharacterAffectionUpdate(custom_nickname=new_nick),
+                    )
+                reply = f"🌸 称呼已成功更新为「{new_nick}」！\n夏目在接下来的对话中就会这样称呼你啦~"
+            except Exception as exc:
+                logger.error("Failed to update nickname: %s", exc)
+                reply = f"❌ 更新称呼失败: {exc}"
+
+        if hasattr(update, "message") and update.message:
+            await update.message.reply_text(reply)
+        elif hasattr(update, "effective_chat") and update.effective_chat and context and hasattr(context, "bot"):
+            await context.bot.send_message(chat_id=chat_id, text=reply)
         return reply
 
     async def handle_reset(self, update: Any, context: Optional[Any] = None) -> str:
@@ -1020,12 +1063,13 @@ class TelegramBotHandlers:
     async def handle_help(self, update: Any, context: Optional[Any] = None) -> str:
         """Handler for /help command."""
         reply = (
-            "【支持的指令】\n"
-            "/console - 打开原生交互控制台（音色/语速/模型切换）\n"
-            "/voice - 查看当前音色与语音设置\n"
-            "/model - 查看当前 LLM / STT 模型设置\n"
-            "/reset - 清空当前对话上下文\n"
-            "/help - 查看此帮助信息"
+            "【支持的快捷指令】\n"
+            "• /console - 打开原生交互控制台（音色/语速/模型切换）\n"
+            "• /voice - 查看当前音色与语音设置\n"
+            "• /model - 查看当前 LLM / STT 模型设置\n"
+            "• /nickname <称呼> - 设置角色对你的专属称呼\n"
+            "• /reset - 清空当前对话上下文\n"
+            "• /help - 查看此帮助信息"
         )
         if hasattr(update, "message") and update.message:
             await update.message.reply_text(reply)
@@ -1035,7 +1079,7 @@ class TelegramBotHandlers:
 
     async def handle_unknown(self, update: Any, context: Optional[Any] = None) -> str:
         """Handler for unknown commands."""
-        reply = "未知指令，支持 /console, /voice, /model, /reset, /help"
+        reply = "未知指令，支持 /console, /voice, /model, /nickname, /reset, /help"
         if hasattr(update, "message") and update.message:
             await update.message.reply_text(reply)
         elif hasattr(update, "effective_chat") and update.effective_chat and context and hasattr(context, "bot"):
@@ -1045,6 +1089,7 @@ class TelegramBotHandlers:
     async def process_text_chat(self, chat_id: int, text: str, bot: Any) -> asyncio.Task:
         """
         Executes immediate text reply, immediately persists assistant turn to DB,
+        extracts long-term memory facts, updates character affection state,
         and schedules background voice generation.
         Returns the spawned background voice asyncio.Task.
         """
@@ -1064,6 +1109,20 @@ class TelegramBotHandlers:
                 audio_url="",
                 latency_ms=0,
             ))
+            # Extract and persist facts into long-term memory
+            profile = await crud.get_active_voice_profile(conn)
+            profile_id = profile.id if profile else 1
+            try:
+                if hasattr(self.chat_service, "memory_service"):
+                    await self.chat_service.memory_service.extract_and_save_facts(
+                        user_id=str(chat_id),
+                        text=text,
+                        character_id=profile_id,
+                        conn=conn,
+                    )
+            except Exception as mem_err:
+                logger.debug("Telegram non-critical memory extraction exception: %s", mem_err)
+
             adapter, model_name, _provider_id = await self.chat_service.get_active_llm_adapter(conn=conn)
             messages = await self.chat_service.prepare_messages(conn, session_id, text)
 
@@ -1083,7 +1142,7 @@ class TelegramBotHandlers:
             # 3. Send text reply immediately
             await bot.send_message(chat_id=chat_id, text=chinese)
 
-            # 4. Immediately persist assistant message to DB to maintain dialogue history
+            # 4. Immediately persist assistant message to DB & process affection progression
             async with get_db(self.db_path) as conn:
                 await crud.add_message(conn, MessageCreate(
                     session_id=session_id,
@@ -1093,6 +1152,17 @@ class TelegramBotHandlers:
                     audio_url="",
                     latency_ms=0,
                 ))
+                try:
+                    if hasattr(self.chat_service, "affection_service"):
+                        await self.chat_service.affection_service.process_turn(
+                            user_id=str(chat_id),
+                            character_id=profile_id,
+                            user_text=text,
+                            bot_text=chinese,
+                            conn=conn,
+                        )
+                except Exception as aff_err:
+                    logger.debug("Telegram non-critical affection update exception: %s", aff_err)
 
             # 5. Schedule background voice synthesis task
             async def background_voice_worker():

@@ -180,7 +180,11 @@ class TestTtsCacheLifecycleAndPerformance:
         url, path, _ = await tts_svc.synthesize_to_file(text)
         assert mock_client.call_count == 1
 
-        # Corrupt file by truncating to 0 bytes
+        # Corrupt cache file by truncating to 0 bytes
+        cache_key, _, _ = mgr.compute_cache_key(text)
+        cache_file = mgr.cache_dir / f"{cache_key}.wav"
+        if cache_file.exists():
+            cache_file.write_bytes(b"")
         path.write_bytes(b"")
 
         # Next call detects 0-byte corrupt file, re-synthesizes, and updates cache

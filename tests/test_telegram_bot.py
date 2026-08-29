@@ -383,7 +383,28 @@ class TestTelegramBotRealModules:
         assert "控制台" in r_console
 
         r_help = await handlers.handle_help(DummyUpdate(), DummyContext())
-        assert "支持的指令" in r_help
+        assert "支持的快捷指令" in r_help
+
+        # Test /nickname command
+        r_nick_usage = await handlers.handle_nickname(DummyUpdate(), DummyContext())
+        assert "设置你的专属称呼" in r_nick_usage
+
+        class DummyMessageUpdate:
+            def __init__(self, text):
+                self.effective_chat = type("Chat", (), {"id": 1001})()
+                self.message = type("Message", (), {
+                    "text": text,
+                    "reply_text": self._reply_text
+                })()
+                self.replied = []
+
+            async def _reply_text(self, text, **kwargs):
+                self.replied.append(text)
+
+        update_nick = DummyMessageUpdate("/nickname 昂晴")
+        r_nick_set = await handlers.handle_nickname(update_nick, DummyContext())
+        assert "昂晴" in r_nick_set
+        assert "更新为" in r_nick_set
 
         r_unknown = await handlers.handle_unknown(DummyUpdate(), DummyContext())
         assert "未知指令" in r_unknown

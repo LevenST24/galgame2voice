@@ -101,6 +101,7 @@ class TelegramBotManager:
         self.app.add_handler(CommandHandler("reset", self.handlers.handle_reset))
         self.app.add_handler(CommandHandler("voice", self.handlers.handle_voice))
         self.app.add_handler(CommandHandler("model", self.handlers.handle_model))
+        self.app.add_handler(CommandHandler(["nickname", "name"], self.handlers.handle_nickname))
         self.app.add_handler(CommandHandler(["console", "menu", "settings"], self.handlers.handle_console))
         self.app.add_handler(CommandHandler("help", self.handlers.handle_help))
 

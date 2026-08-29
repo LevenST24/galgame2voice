@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -33,6 +34,7 @@ class TtsCacheManager:
         db_path: Optional[Union[str, Path]] = None,
         max_cache_mb: int = 1024,
         max_entries: int = 5000,
+        max_mem_entries: int = 128,
     ):
         settings = get_settings()
         self.audio_root = Path(settings.audio_dir)
@@ -40,12 +42,15 @@ class TtsCacheManager:
         self.db_path = str(db_path or settings.db_path)
         self.max_cache_mb = max_cache_mb
         self.max_entries = max_entries
+        self.max_mem_entries = max_mem_entries
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         self._hits: int = 0
         self._misses: int = 0
         self._lock = asyncio.Lock()
+        # High-speed In-Memory LRU Cache layer (<0.1ms access time)
+        self._mem_cache: OrderedDict[str, bytes] = OrderedDict()
         # Strong references for fire-and-forget background tasks (prevent GC mid-flight).
         self._bg_tasks: set = set()
 
@@ -147,18 +152,22 @@ class TtsCacheManager:
     async def get(self, cache_key: str) -> Optional[Tuple[bytes, str, int]]:
         """
         Retrieves cached audio bytes and URL for the given cache key.
+        Checks high-speed memory cache first, verifying disk file integrity.
         Returns (audio_bytes, url_path, file_size) if hit, None if miss.
-        Executes in <50ms.
         """
+        url_path = f"/audio/cache/{cache_key}.wav"
         file_path = self.cache_dir / f"{cache_key}.wav"
-        
+
+        # Verify disk file presence and non-zero size
         if not file_path.exists():
+            self._mem_cache.pop(cache_key, None)
             self._misses += 1
             return None
 
         file_size = file_path.stat().st_size
         if file_size == 0:
-            # Corrupted 0-byte file
+            # Corrupted 0-byte file on disk -> evict from memory cache and delete
+            self._mem_cache.pop(cache_key, None)
             self._misses += 1
             try:
                 file_path.unlink(missing_ok=True)
@@ -166,9 +175,32 @@ class TtsCacheManager:
                 pass
             return None
 
+        # 1. Fast path: In-Memory LRU Cache hit (<0.1ms)
+        if cache_key in self._mem_cache:
+            audio_bytes = self._mem_cache[cache_key]
+            self._mem_cache.move_to_end(cache_key)
+            self._hits += 1
+
+            async def _touch_metadata_mem():
+                try:
+                    loop = asyncio.get_running_loop()
+                    if not loop.is_running() or loop.is_closed():
+                        return
+                    async with get_db(self.db_path) as conn:
+                        await crud.touch_tts_cache_entry(conn, cache_key)
+                except Exception:
+                    pass
+            self._spawn_background(_touch_metadata_mem())
+            return audio_bytes, url_path, len(audio_bytes)
+
+        # 2. Slow path: Disk & SQLite cache
+
         # Asynchronously touch SQLite metadata in background (non-blocking for blazing sub-1ms hits)
         async def _touch_metadata():
             try:
+                loop = asyncio.get_running_loop()
+                if not loop.is_running() or loop.is_closed():
+                    return
                 async with get_db(self.db_path) as conn:
                     entry = await crud.get_tts_cache_entry(conn, cache_key)
                     if entry:
@@ -184,7 +216,12 @@ class TtsCacheManager:
         try:
             audio_bytes = await asyncio.to_thread(file_path.read_bytes)
             self._hits += 1
-            url_path = f"/audio/cache/{cache_key}.wav"
+            # Populate In-Memory LRU Cache
+            self._mem_cache[cache_key] = audio_bytes
+            self._mem_cache.move_to_end(cache_key)
+            if len(self._mem_cache) > self.max_mem_entries:
+                self._mem_cache.popitem(last=False)
+
             return audio_bytes, url_path, len(audio_bytes)
         except Exception as e:
             logger.warning("Failed to read cache file %s: %s", file_path, e)
@@ -202,7 +239,7 @@ class TtsCacheManager:
         duration_ms: int = 0,
     ) -> Tuple[str, Path, int]:
         """
-        Persists synthesized audio bytes to disk and registers metadata in SQLite.
+        Persists synthesized audio bytes to disk, memory cache, and registers metadata in SQLite.
         Returns (url_path, local_file_path, byte_count).
         """
         if not audio_bytes:
@@ -210,6 +247,12 @@ class TtsCacheManager:
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         file_path = self.cache_dir / f"{cache_key}.wav"
+
+        # Update In-Memory LRU Cache
+        self._mem_cache[cache_key] = audio_bytes
+        self._mem_cache.move_to_end(cache_key)
+        if len(self._mem_cache) > self.max_mem_entries:
+            self._mem_cache.popitem(last=False)
 
         # Atomic write to file via temp file to prevent 0-byte/corrupt files
         def _atomic_write():
@@ -323,6 +366,7 @@ class TtsCacheManager:
         async with get_db(self.db_path) as conn:
             await crud.clear_all_tts_cache_entries(conn)
 
+        self._mem_cache.clear()
         self._hits = 0
         self._misses = 0
         freed_mb = round(freed_bytes / (1024 * 1024), 2)
