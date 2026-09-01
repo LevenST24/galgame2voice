@@ -12,7 +12,9 @@ Single shared async client with:
 
 import asyncio
 import logging
+import os
 import re
+import tempfile
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
@@ -92,36 +94,104 @@ TTS_PRESETS: Dict[str, Dict[str, Any]] = {
 }
 
 
+# Range constraints for user-supplied TTS options (mirrors TtsOptions model).
+_TTS_NUMERIC_RANGES = {
+    "speed_factor": (0.1, 3.0, float),
+    "speed": (0.1, 3.0, float),
+    "top_k": (1, 100, int),
+    "top_p": (0.0, 1.0, float),
+    "temperature": (0.0, 2.0, float),
+    "batch_size": (1, 16, int),
+    "fragment_interval": (0.0, 5.0, float),
+    "seed": (-1, 2**31 - 1, int),
+}
+_TTS_STRING_MAXLEN = {
+    "text_lang": 32,
+    "prompt_lang": 32,
+    "text_language": 32,
+    "prompt_language": 32,
+    "refer_language": 32,
+    "text_split_method": 64,
+    "how_to_cut": 64,
+    "cut_option": 64,
+    "ref_audio_path": 512,
+    "refer_audio_path": 512,
+    "prompt_text": 500,
+    "refer_text": 500,
+}
+
+
+def validate_user_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Validates untrusted TTS options at the API boundary.
+    Raises ValueError on out-of-range numerics, oversized/控制字符 strings.
+    Returns the input unchanged when valid.
+    """
+    if not options:
+        return {}
+    if not isinstance(options, dict):
+        raise ValueError("tts_options 必须是对象")
+    for key, value in options.items():
+        if key in _TTS_NUMERIC_RANGES:
+            low, high, caster = _TTS_NUMERIC_RANGES[key]
+            try:
+                num = caster(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"TTS 参数 {key} 必须是数字")
+            if not (low <= num <= high):
+                raise ValueError(f"TTS 参数 {key} 超出允许范围 [{low}, {high}]")
+        elif key in _TTS_STRING_MAXLEN:
+            s = str(value)
+            if len(s) > _TTS_STRING_MAXLEN[key]:
+                raise ValueError(f"TTS 参数 {key} 长度超限 (最多 {_TTS_STRING_MAXLEN[key]} 字符)")
+            if "\x00" in s:
+                raise ValueError(f"TTS 参数 {key} 含有非法控制字符")
+    return options
+
+
 def resolve_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Merges preset defaults with user-supplied TTS inference options.
     Normalizes parameter keys to official GPT-SoVITS api_v2.py format.
+    Numeric values are clamped to their legal ranges as defense in depth.
     """
     options = options or {}
     preset_key = str(options.get("preset", "balanced")).lower().replace(" ", "_")
     base_params = dict(TTS_PRESETS.get(preset_key, TTS_PRESETS["balanced"]))
 
-    speed_val = options.get("speed_factor", options.get("speed", base_params.get("speed_factor", 1.0)))
-    text_lang_val = str(options.get("text_lang", options.get("text_language", "ja")))
-    prompt_lang_val = str(options.get("prompt_lang", options.get("prompt_language", options.get("refer_language", "ja"))))
-    split_val = str(options.get("text_split_method", options.get("how_to_cut", options.get("cut_option", base_params.get("text_split_method", "cut5")))))
+    def _clamped(key: str, value: Any, fallback: Any) -> Any:
+        low, high, caster = _TTS_NUMERIC_RANGES[key]
+        try:
+            num = caster(value)
+        except (TypeError, ValueError):
+            num = caster(fallback)
+        return max(low, min(high, num))
+
+    speed_val = _clamped(
+        "speed_factor",
+        options.get("speed_factor", options.get("speed", base_params.get("speed_factor", 1.0))),
+        base_params.get("speed_factor", 1.0),
+    )
+    text_lang_val = str(options.get("text_lang", options.get("text_language", "ja")))[:32]
+    prompt_lang_val = str(options.get("prompt_lang", options.get("prompt_language", options.get("refer_language", "ja"))))[:32]
+    split_val = str(options.get("text_split_method", options.get("how_to_cut", options.get("cut_option", base_params.get("text_split_method", "cut5")))))[:64]
 
     merged = {
-        "speed_factor": float(speed_val),
-        "speed": float(speed_val),  # alias kept for backwards compatibility
-        "top_k": int(options.get("top_k", base_params.get("top_k", 15))),
-        "top_p": float(options.get("top_p", base_params.get("top_p", 1.0))),
-        "temperature": float(options.get("temperature", base_params.get("temperature", 1.0))),
+        "speed_factor": speed_val,
+        "speed": speed_val,  # alias kept for backwards compatibility
+        "top_k": int(_clamped("top_k", options.get("top_k", base_params.get("top_k", 15)), base_params.get("top_k", 15))),
+        "top_p": _clamped("top_p", options.get("top_p", base_params.get("top_p", 1.0)), base_params.get("top_p", 1.0)),
+        "temperature": _clamped("temperature", options.get("temperature", base_params.get("temperature", 1.0)), base_params.get("temperature", 1.0)),
         "text_lang": text_lang_val,
         "text_language": text_lang_val,  # alias
         "prompt_lang": prompt_lang_val,
         "prompt_language": prompt_lang_val,  # alias
         "text_split_method": split_val,
-        "batch_size": int(options.get("batch_size", base_params.get("batch_size", 1))),
-        "seed": int(options.get("seed", -1)),
-        "fragment_interval": float(options.get("fragment_interval", 0.3)),
-        "ref_audio_path": options.get("ref_audio_path", options.get("refer_audio_path", "")),
-        "prompt_text": options.get("prompt_text", options.get("refer_text", "")),
+        "batch_size": int(_clamped("batch_size", options.get("batch_size", base_params.get("batch_size", 1)), base_params.get("batch_size", 1))),
+        "seed": int(_clamped("seed", options.get("seed", -1), -1)),
+        "fragment_interval": _clamped("fragment_interval", options.get("fragment_interval", 0.3), 0.3),
+        "ref_audio_path": str(options.get("ref_audio_path", options.get("refer_audio_path", "")))[:512],
+        "prompt_text": str(options.get("prompt_text", options.get("refer_text", "")))[:500],
     }
 
     # streaming_mode: accept bool or int (1/2/3 presets), normalized to bool later.
@@ -221,6 +291,12 @@ class GptSovitsClient:
         self.current_refer_text: Optional[str] = None
         self.current_refer_language: Optional[str] = None
 
+        # In-flight request tracking for hot URL swaps: the old connection
+        # pool is closed once in-flight requests drain or the grace period
+        # expires, whichever comes first (read timeout is up to 300s).
+        self._inflight_requests = 0
+        self._close_task: Optional[asyncio.Task] = None
+
     # ------------------------------------------------------------------
     # Connection pool lifecycle
     # ------------------------------------------------------------------
@@ -249,18 +325,31 @@ class GptSovitsClient:
             return
         logger.info("GPT-SoVITS base URL changing: %s -> %s", self.base_url, new_url)
         self.base_url = new_url
-        # Swap the client atomically; close the old pool lazily so any in-flight
-        # request still holding it can finish instead of failing mid-stream.
+        # Swap the client atomically; drain in-flight requests (or give up
+        # after a grace period) before closing the old pool so ongoing
+        # synthesis streams are not cut off mid-read.
         old_client = self._client
         self._client = None
         if old_client is not None and not old_client.is_closed:
-            async def _close_late():
+            grace = float(os.getenv("GALGAME2VOICE_CLIENT_CLOSE_GRACE_SECONDS", "30") or 30)
+
+            async def _close_when_drained():
                 try:
-                    await asyncio.sleep(5.0)
+                    loop = asyncio.get_running_loop()
+                    deadline = loop.time() + grace
+                    while self._inflight_requests > 0 and loop.time() < deadline:
+                        await asyncio.sleep(0.25)
+                except Exception:
+                    pass
+                try:
                     await old_client.aclose()
                 except Exception:
                     pass
-            asyncio.create_task(_close_late())
+
+            # Keep a strong reference so the task cannot be garbage collected.
+            if self._close_task is not None and not self._close_task.done():
+                self._close_task.cancel()
+            self._close_task = asyncio.create_task(_close_when_drained())
 
     async def _request(
         self,
@@ -516,7 +605,11 @@ class GptSovitsClient:
             while True:
                 attempt += 1
                 try:
-                    resp = await self._request("POST", "/tts", json_data=payload)
+                    self._inflight_requests += 1
+                    try:
+                        resp = await self._request("POST", "/tts", json_data=payload)
+                    finally:
+                        self._inflight_requests -= 1
                     if resp.status_code != 200:
                         raise RuntimeError(f"TTS synthesis failed with status {resp.status_code}: {resp.text[:300]}")
                     if not resp.content:
@@ -540,38 +633,55 @@ class GptSovitsClient:
     ) -> AsyncGenerator[bytes, None]:
         """
         Streams synthesized audio in binary chunks.
-        The inference lock is held while the HTTP stream is open; abandoning the
-        generator (GeneratorExit) releases both the connection and the lock.
+
+        The inference lock is only held while the synthesis response is being
+        downloaded into a spooled buffer; the chunks are then yielded to the
+        caller AFTER the lock is released, so a slow HTTP consumer can no
+        longer stall the global GPU serialization point.
         """
-        async with self.lock:
-            cleaned_text = clean_japanese_parentheses(text)
-            if not cleaned_text:
-                raise ValueError("Text is empty after cleaning stage directions")
+        cleaned_text = clean_japanese_parentheses(text)
+        if not cleaned_text:
+            raise ValueError("Text is empty after cleaning stage directions")
 
-            opts = dict(options or {})
-            opts["streaming_mode"] = True
-            payload = self._build_tts_payload(cleaned_text, opts)
-            payload["streaming_mode"] = True
+        opts = dict(options or {})
+        opts["streaming_mode"] = True
+        payload = self._build_tts_payload(cleaned_text, opts)
+        payload["streaming_mode"] = True
 
+        buffer = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
+        try:
             if self.server is not None and hasattr(self.server, "handle_request"):
-                resp = await self.server.handle_request("POST", "/tts", json_data=payload)
-                if resp.status_code != 200:
-                    raise RuntimeError(f"TTS synthesis failed with status {resp.status_code}: {resp.text}")
-                content = resp.content
-                for i in range(0, len(content), chunk_size):
-                    yield content[i:i + chunk_size]
+                async with self.lock:
+                    resp = await self.server.handle_request("POST", "/tts", json_data=payload)
+                    if resp.status_code != 200:
+                        raise RuntimeError(f"TTS synthesis failed with status {resp.status_code}: {resp.text}")
+                    buffer.write(resp.content)
             else:
                 url = f"{self.base_url}/tts"
                 client = self._get_http_client()
-                async with client.stream("POST", url, json=payload, timeout=TTS_TIMEOUT) as resp:
-                    if resp.status_code != 200:
-                        err_bytes = await resp.aread()
-                        raise RuntimeError(
-                            f"TTS synthesis failed with status {resp.status_code}: {err_bytes.decode('utf-8', errors='ignore')[:300]}"
-                        )
-                    async for chunk in resp.aiter_bytes(chunk_size=chunk_size):
-                        if chunk:
-                            yield chunk
+                async with self.lock:
+                    self._inflight_requests += 1
+                    try:
+                        async with client.stream("POST", url, json=payload, timeout=TTS_TIMEOUT) as resp:
+                            if resp.status_code != 200:
+                                err_bytes = await resp.aread()
+                                raise RuntimeError(
+                                    f"TTS synthesis failed with status {resp.status_code}: {err_bytes.decode('utf-8', errors='ignore')[:300]}"
+                                )
+                            async for chunk in resp.aiter_bytes(chunk_size=65536):
+                                if chunk:
+                                    buffer.write(chunk)
+                    finally:
+                        self._inflight_requests -= 1
+
+            buffer.seek(0)
+            while True:
+                chunk = buffer.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            buffer.close()
 
 
 # ============================================================================

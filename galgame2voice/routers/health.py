@@ -25,6 +25,19 @@ from galgame2voice.security.auth import require_auth
 
 router = APIRouter(tags=["Health & Diagnostics"])
 
+
+async def get_effective_sovits_url() -> str:
+    """Returns the hot-reloadable GPT-SoVITS URL from DB settings, falling
+    back to the env default — the same source the runtime traffic uses."""
+    try:
+        async with get_db() as conn:
+            db_settings = await crud.get_settings_raw(conn)
+        if db_settings and getattr(db_settings, "gpt_sovits_url", ""):
+            return db_settings.gpt_sovits_url
+    except Exception:
+        pass
+    return get_settings().gpt_sovits_base_url
+
 # Directory metrics are cached: the settings console polls every few seconds,
 # and scanning thousands of cache files each time would freeze the event loop.
 _DIR_METRICS_TTL_SECONDS = 15.0
@@ -221,7 +234,7 @@ async def legacy_status(request: Request):
     Performs quick reachability probe to GPT-SoVITS.
     """
     settings = get_settings()
-    probe = await _probe_gpt_sovits(settings.gpt_sovits_base_url)
+    probe = await _probe_gpt_sovits(await get_effective_sovits_url())
     return LegacyStatusResponse(
         status="ok",
         app=settings.app_name,
@@ -252,7 +265,7 @@ async def system_status(request: Request):
 
     # 1-4 gathered in PARALLEL: the GPT-SoVITS probe (network-bound) overlaps
     # with the storage scans (thread-bound) so total latency = max, not sum.
-    gpt_probe_task = asyncio.create_task(_probe_gpt_sovits(settings.gpt_sovits_base_url))
+    gpt_probe_task = asyncio.create_task(_probe_gpt_sovits(await get_effective_sovits_url()))
     audio_metrics_task = asyncio.create_task(_get_dir_metrics_cached(settings.audio_dir))
     data_metrics_task = asyncio.create_task(_get_dir_metrics_cached(settings.data_dir))
     memory_task = asyncio.create_task(asyncio.to_thread(_get_process_memory_mb))

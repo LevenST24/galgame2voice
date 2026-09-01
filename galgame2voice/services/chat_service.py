@@ -550,8 +550,10 @@ class ChatService:
                 )
                 messages = await self._prepare_messages(conn, session_id, prompt, character_name)
 
-            tts_queue: asyncio.Queue = asyncio.Queue()
-            event_queue: asyncio.Queue = asyncio.Queue()
+            # Bounded queues provide real backpressure: a slow SSE consumer
+            # throttles the pipeline instead of growing memory without limit.
+            tts_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+            event_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
             final_result: Dict[str, Any] = {}
 
             # Background TTS Consumer Worker
@@ -635,7 +637,6 @@ class ChatService:
                                 "event": "text",
                                 "data": {
                                     "delta_chinese": delta_ch,
-                                    "full_chinese": parser.chinese_extracted,
                                     "emotion": current_emo,
                                 }
                             })
@@ -654,7 +655,6 @@ class ChatService:
                             "event": "text",
                             "data": {
                                 "delta_chinese": rem_ch,
-                                "full_chinese": full_ch,
                                 "emotion": current_emo,
                             }
                         })
@@ -716,6 +716,17 @@ class ChatService:
                             ))
                     except Exception as persist_err:
                         logger.warning("Failed to persist partial assistant message: %s", persist_err)
+                if cancel_event and cancel_event.is_set():
+                    # Explicit truncated done so the client can distinguish
+                    # "user stopped" from a broken connection.
+                    yield {
+                        "event": "done",
+                        "data": {
+                            "truncated": True,
+                            "chinese": partial_ch or "",
+                            "japanese": partial_ja or "",
+                        }
+                    }
                 return
 
             # Ensure both tasks are fully finished before touching shared state.
@@ -803,6 +814,7 @@ class ChatService:
             yield {
                 "event": "done",
                 "data": {
+                    "truncated": False,
                     "chinese": full_chinese,
                     "japanese": full_japanese,
                     "emotion": final_emotion,

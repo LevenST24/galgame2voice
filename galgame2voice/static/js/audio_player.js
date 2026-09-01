@@ -32,6 +32,7 @@ class StreamingAudioPlayer {
         this.currentSessionId = 0;
         this._scheduleRetryTimer = null;
         this._resumePromise = null;
+        this._sessionAbort = new AbortController();
 
         this.equalizerElement = options.equalizerElement || null;
         this.animFrameId = null;
@@ -147,17 +148,22 @@ class StreamingAudioPlayer {
 
     /**
      * fetch with timeout + bounded retry. Throws on final failure.
+     * Also aborts immediately when the session is interrupted.
      */
     async _fetchWithRetry(url, sessionId) {
         let lastErr = null;
+        const sessionSignal = this._sessionAbort ? this._sessionAbort.signal : undefined;
         for (let attempt = 0; attempt <= this.maxFetchRetries; attempt++) {
             if (this.currentSessionId !== sessionId) {
                 throw new Error('interrupted');
             }
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), this.fetchTimeoutMs);
+            const signal = (typeof AbortSignal !== 'undefined' && AbortSignal.any && sessionSignal)
+                ? AbortSignal.any([controller.signal, sessionSignal])
+                : controller.signal;
             try {
-                const response = await fetch(url, { signal: controller.signal });
+                const response = await fetch(url, { signal });
                 if (!response.ok) {
                     throw new Error('HTTP ' + response.status);
                 }
@@ -165,6 +171,7 @@ class StreamingAudioPlayer {
             } catch (err) {
                 lastErr = err;
                 if (err.message === 'interrupted') throw err;
+                if (this.currentSessionId !== sessionId) throw new Error('interrupted');
                 if (attempt < this.maxFetchRetries) {
                     console.warn(`[AudioPlayer] 音频拉取失败 (第${attempt + 1}次): ${err.message}，重试中...`);
                     await new Promise(r => setTimeout(r, 600));
@@ -341,10 +348,16 @@ class StreamingAudioPlayer {
     }
 
     /**
-     * Immediately stops active playback and clears queued audio chunks.
+     * Immediately stops active playback, aborts in-flight audio downloads,
+     * and clears queued audio chunks.
      */
     interrupt() {
         this.currentSessionId += 1;
+        // Abort any in-flight chunk downloads tied to the previous session.
+        if (this._sessionAbort) {
+            try { this._sessionAbort.abort(); } catch (e) { /* ignore */ }
+        }
+        this._sessionAbort = new AbortController();
         this.queue = [];
         if (this._scheduleRetryTimer) {
             clearTimeout(this._scheduleRetryTimer);
@@ -389,6 +402,20 @@ class StreamingAudioPlayer {
     _notifyStatus(statusText, isPlaying) {
         if (this.onStatusChange) {
             this.onStatusChange(statusText, isPlaying);
+        }
+    }
+
+    /**
+     * Releases Web Audio resources (nodes are disconnected first).
+     * The player can be reused afterwards: initContext() re-creates the context.
+     */
+    async close() {
+        this.interrupt();
+        if (this.audioCtx) {
+            try { await this.audioCtx.close(); } catch (e) { /* ignore */ }
+            this.audioCtx = null;
+            this.masterGain = null;
+            this.analyser = null;
         }
     }
 }

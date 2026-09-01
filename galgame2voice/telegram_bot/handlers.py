@@ -902,8 +902,18 @@ class TelegramBotHandlers:
                         cleared_count = await crud.clear_all_tts_cache_entries(conn)
                 except Exception as exc:
                     logger.warning("Clear cache exception: %s", exc)
+                # Also evict cached audio files from disk, not just DB metadata.
+                disk_cleared = 0
+                try:
+                    from galgame2voice.services.tts_cache_manager import get_tts_cache_manager
+                    disk_cleared, _ = await get_tts_cache_manager().clear()
+                except Exception as exc:
+                    logger.warning("Disk cache clear exception: %s", exc)
                 if hasattr(query, "answer"):
-                    await query.answer(f"🧹 本地语音缓存已清空 (清理了 {cleared_count} 条记录)！", show_alert=True)
+                    await query.answer(
+                        f"🧹 本地语音缓存已清空 (清理了 {cleared_count} 条记录, {disk_cleared} 个磁盘文件)！",
+                        show_alert=True,
+                    )
                 text, markup = await self.build_metrics_menu()
                 if hasattr(query, "edit_message_text"):
                     await query.edit_message_text(text=text, reply_markup=markup)

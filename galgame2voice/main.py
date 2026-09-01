@@ -24,6 +24,7 @@ from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.routers import chat, config, health, voice, memory, affection, metrics
 from galgame2voice.security.auth import require_auth
+from galgame2voice.security.rate_limit import RateLimitMiddleware
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
 from galgame2voice.utils.logger import setup_logger
 
@@ -31,13 +32,22 @@ from galgame2voice.utils.logger import setup_logger
 logger = logging.getLogger("galgame2voice.main")
 
 
-async def _audio_cleanup_loop(audio_dir: Path, retention_minutes: int, interval_seconds: int):
-    """Periodically removes ephemeral audio files exceeding retention duration while protecting persistent cache."""
-    logger.info("Started background audio cleanup worker (retention=%d min, interval=%d sec)",
-                retention_minutes, interval_seconds)
+async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int):
+    """Periodically removes ephemeral audio files exceeding retention duration while protecting persistent cache.
+
+    The retention duration is re-read from DB settings each cycle so console
+    edits to audio_retention_minutes take effect without a restart."""
+    logger.info("Started background audio cleanup worker (interval=%d sec)", interval_seconds)
     while True:
         try:
             await asyncio.sleep(interval_seconds)
+            try:
+                async with get_db() as conn:
+                    db_settings = await crud.get_settings_raw(conn)
+                retention_minutes = int(getattr(db_settings, "audio_retention_minutes", 30) or 30)
+            except Exception as exc:
+                logger.debug("Falling back to default audio retention: %s", exc)
+                retention_minutes = 30
             now = time.time()
             cutoff = now - (retention_minutes * 60)
 
@@ -94,11 +104,10 @@ async def lifespan(app: FastAPI):
                 settings.data_dir, settings.audio_dir, settings.logs_dir)
 
     # 3. Initialize SQLite Database Schema (WAL Mode)
-    try:
-        await init_db(settings.db_path)
-        logger.info("Database initialized successfully at %s", settings.db_path)
-    except Exception as exc:
-        logger.error("Failed to initialize database: %s", exc, exc_info=True)
+    # Fail-fast: a broken database must not silently degrade into a
+    # half-functional service that reports healthy.
+    await init_db(settings.db_path)
+    logger.info("Database initialized successfully at %s", settings.db_path)
 
     # 4. Initialize shared GPT-SoVITS client (single inference mutex app-wide).
     #    The DB's gpt_sovits_url takes priority over the .env default so the
@@ -123,7 +132,6 @@ async def lifespan(app: FastAPI):
     cleanup_task = asyncio.create_task(
         _audio_cleanup_loop(
             audio_dir=settings.audio_dir,
-            retention_minutes=settings.audio_retention_minutes,
             interval_seconds=settings.audio_cleanup_interval_seconds,
         )
     )
@@ -192,20 +200,32 @@ def create_app() -> FastAPI:
         allow_headers=settings.cors_allow_headers,
     )
 
+    # Request rate limiting (outermost middleware). 429s bypassing CORS is
+    # acceptable: the console is same-origin.
+    app.add_middleware(RateLimitMiddleware)
+
     # Compress large static/JS/CSS payloads (settings.html alone is ~170 KB).
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
-    # Cache static assets and generated audio for an hour so browsers stop
-    # re-downloading them on every load.
+    # Cache headers: static assets are safe to cache for an hour (cache-busted
+    # with ?v= query params), but user-generated audio is private.
     class _StaticCacheControlMiddleware:
         def __init__(self, app):
             self.app = app
 
         async def __call__(self, scope, receive, send):
-            if scope["type"] == "http" and scope.get("path", "").startswith(("/static/", "/audio/")):
+            path = scope.get("path", "") if scope["type"] == "http" else ""
+            if path.startswith("/static/"):
+                cache_value = "public, max-age=3600"
+            elif path.startswith("/audio/"):
+                cache_value = "private, max-age=0"
+            else:
+                cache_value = None
+
+            if cache_value:
                 async def send_with_cache(message):
                     if message["type"] == "http.response.start":
-                        MutableHeaders(scope=message).setdefault("Cache-Control", "public, max-age=3600")
+                        MutableHeaders(scope=message).setdefault("Cache-Control", cache_value)
                     await send(message)
                 await self.app(scope, receive, send_with_cache)
                 return

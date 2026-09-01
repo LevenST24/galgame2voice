@@ -381,6 +381,7 @@ CREATE TABLE IF NOT EXISTS user_memories (
 );
 CREATE INDEX IF NOT EXISTS idx_user_memories_user_cat ON user_memories(user_id, category);
 CREATE INDEX IF NOT EXISTS idx_user_memories_char_key ON user_memories(character_id, fact_key);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_user_memories_key ON user_memories(user_id, character_id, fact_key);
 
 CREATE TABLE IF NOT EXISTS character_affection (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

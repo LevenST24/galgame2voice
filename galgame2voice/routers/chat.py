@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from galgame2voice.services.chat_service import ChatService
+from galgame2voice.services.gpt_sovits_client import validate_user_tts_options
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path
@@ -20,6 +21,9 @@ from galgame2voice.database.session import get_db, get_database_path
 logger = logging.getLogger("galgame2voice.routers.chat")
 
 router = APIRouter(tags=["chat"])
+
+PROMPT_MAX_LENGTH = 4000
+SESSION_ID_MAX_LENGTH = 128
 
 # Module-level ChatService instance
 _chat_service: Optional[ChatService] = None
@@ -48,12 +52,12 @@ def set_chat_service(service: Optional[ChatService]) -> None:
 # ============================================================================
 
 class ChatRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, description="User prompt text")
-    session_id: str = Field(default="default", description="Conversation session identifier")
-    character_name: Optional[str] = Field(default=None, description="Character persona name override")
-    provider_id: Optional[str] = Field(default=None, description="LLM provider ID override")
+    prompt: str = Field(..., min_length=1, max_length=PROMPT_MAX_LENGTH, description="User prompt text")
+    session_id: str = Field(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Conversation session identifier")
+    character_name: Optional[str] = Field(default=None, max_length=100, description="Character persona name override")
+    provider_id: Optional[str] = Field(default=None, max_length=64, description="LLM provider ID override")
     tts_options: Optional[Dict[str, Any]] = Field(default=None, description="Inference parameters (speed, top_k, etc.)")
-    preset: Optional[str] = Field(default=None, description="TTS Preset name (high_quality, balanced, low_latency)")
+    preset: Optional[str] = Field(default=None, max_length=64, description="TTS Preset name (high_quality, balanced, low_latency)")
 
 
 # ============================================================================
@@ -75,17 +79,25 @@ async def sse_event_formatter(event_generator: AsyncGenerator[Dict[str, Any], No
         yield f"event: error\ndata: {err_data}\n\n"
 
 
+def _validate_chat_request(req: ChatRequest) -> None:
+    if not req.prompt or not req.prompt.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Prompt cannot be empty",
+        )
+    try:
+        validate_user_tts_options(req.tts_options)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+
 @router.post("/api/chat/stream", summary="Real-time SSE bilingual streaming chat")
 async def chat_stream_endpoint(req: ChatRequest):
     """
     Server-Sent Events endpoint streaming real-time Chinese delta text
     and synthesized Japanese audio chunks.
     """
-    if not req.prompt or not req.prompt.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Prompt cannot be empty",
-        )
+    _validate_chat_request(req)
 
     tts_opts = dict(req.tts_options or {})
     if req.preset:
@@ -120,11 +132,7 @@ async def chat_sync_endpoint(req: ChatRequest):
     """
     Non-streaming synchronous chat completion returning bilingual text and audio URL.
     """
-    if not req.prompt or not req.prompt.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Prompt cannot be empty",
-        )
+    _validate_chat_request(req)
 
     tts_opts = dict(req.tts_options or {})
     if req.preset:
@@ -143,10 +151,10 @@ async def chat_sync_endpoint(req: ChatRequest):
 
 @router.get("/ai/chat", summary="Legacy GET chat completion endpoint")
 async def legacy_get_chat(
-    prompt: str = Query(..., min_length=1, description="Prompt text"),
-    session_id: str = Query(default="default", description="Session ID"),
-    character_name: Optional[str] = Query(default=None, description="Character name"),
-    preset: Optional[str] = Query(default=None, description="TTS preset"),
+    prompt: str = Query(..., min_length=1, max_length=PROMPT_MAX_LENGTH, description="Prompt text"),
+    session_id: str = Query(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Session ID"),
+    character_name: Optional[str] = Query(default=None, max_length=100, description="Character name"),
+    preset: Optional[str] = Query(default=None, max_length=64, description="TTS preset"),
 ):
     """
     Legacy backward-compatible GET endpoint for simple chat queries.

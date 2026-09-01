@@ -633,7 +633,14 @@
                 if (audio.dataset.objectUrl) URL.revokeObjectURL(audio.dataset.objectUrl);
                 audio.dataset.objectUrl = audioUrl;
                 audio.src = audioUrl;
-                audio.play();
+                audio.play().catch(err => console.warn('Preview playback failed:', err));
+                audio.addEventListener('ended', () => {
+                    if (audio.dataset.objectUrl) {
+                        URL.revokeObjectURL(audio.dataset.objectUrl);
+                        delete audio.dataset.objectUrl;
+                        audio.src = '';
+                    }
+                }, { once: true });
                 showToast('正在播放试听语音...', 'success');
             } catch (err) {
                 showToast(`试听合成失败: ${err.message}`, 'error');
@@ -1172,13 +1179,22 @@
 
         // Auto Refresh Management
         const autoRefreshToggle = document.getElementById('auto-refresh-toggle');
+        let telemetryPollInFlight = false;
+        async function pollTelemetryOnce() {
+            // Skip if the previous round is still in flight: a slow response
+            // must never overwrite fresher state with stale data.
+            if (telemetryPollInFlight) return;
+            telemetryPollInFlight = true;
+            try {
+                await Promise.allSettled([fetchSystemTelemetry(), fetchMetricsAndCache()]);
+            } finally {
+                telemetryPollInFlight = false;
+            }
+        }
         function setupAutoRefresh() {
             if (state.autoRefreshTimer) clearInterval(state.autoRefreshTimer);
             if (autoRefreshToggle && autoRefreshToggle.checked) {
-                state.autoRefreshTimer = setInterval(() => {
-                    fetchSystemTelemetry();
-                    fetchMetricsAndCache();
-                }, 5000);
+                state.autoRefreshTimer = setInterval(pollTelemetryOnce, 5000);
             }
         }
 

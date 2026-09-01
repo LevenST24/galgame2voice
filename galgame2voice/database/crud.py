@@ -381,6 +381,24 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     except Exception:
         pass
 
+    # 5b. user_memories uniqueness: normalize legacy NULL character ids and
+    # remove duplicate (user, character, fact_key) rows before adding a unique
+    # index, so concurrent upserts can rely on ON CONFLICT semantics.
+    try:
+        await conn.execute("UPDATE user_memories SET character_id = 1 WHERE character_id IS NULL;")
+        await conn.execute("""
+            DELETE FROM user_memories
+            WHERE id NOT IN (
+                SELECT MAX(id) FROM user_memories
+                GROUP BY user_id, character_id, fact_key
+            );
+        """)
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_user_memories_key ON user_memories(user_id, character_id, fact_key);"
+        )
+    except Exception:
+        pass
+
     # 6. Guarantee a console token exists so the API is never left unauthenticated.
     #    The freshly generated token is logged once so the owner can retrieve it.
     try:
@@ -1072,23 +1090,30 @@ async def clear_memories(
 
 async def upsert_memory(conn: aiosqlite.Connection, memory: UserMemoryCreate) -> UserMemoryResponse:
     conn.row_factory = aiosqlite.Row
-    cursor = await conn.execute("""
-        SELECT id FROM user_memories
-        WHERE user_id = ? AND (character_id = ? OR (character_id IS NULL AND ? IS NULL)) AND fact_key = ?;
-    """, (memory.user_id, memory.character_id, memory.character_id, memory.fact_key))
-    row = await cursor.fetchone()
+    character_id = memory.character_id if memory.character_id is not None else 1
+    await conn.execute("""
+        INSERT INTO user_memories (
+            user_id, character_id, category, fact_key, fact_value,
+            confidence, source_message_id, recall_count, last_recalled_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)
+        ON CONFLICT(user_id, character_id, fact_key) DO UPDATE SET
+            fact_value = excluded.fact_value,
+            category = excluded.category,
+            confidence = excluded.confidence,
+            source_message_id = COALESCE(excluded.source_message_id, source_message_id),
+            updated_at = CURRENT_TIMESTAMP;
+    """, (
+        memory.user_id, character_id, memory.category, memory.fact_key, memory.fact_value,
+        memory.confidence, memory.source_message_id,
+    ))
+    await conn.commit()
 
-    if row:
-        mem_id = row["id"]
-        await conn.execute("""
-            UPDATE user_memories
-            SET fact_value = ?, category = ?, confidence = ?, source_message_id = COALESCE(?, source_message_id), updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?;
-        """, (memory.fact_value, memory.category, memory.confidence, memory.source_message_id, mem_id))
-        await conn.commit()
-        return await get_memory(conn, mem_id)
-    else:
-        return await create_memory(conn, memory)
+    cursor = await conn.execute(
+        "SELECT id FROM user_memories WHERE user_id = ? AND character_id = ? AND fact_key = ?;",
+        (memory.user_id, character_id, memory.fact_key),
+    )
+    row = await cursor.fetchone()
+    return await get_memory(conn, row["id"]) if row else await get_memory(conn, 0)
 
 
 async def record_memory_recall(conn: aiosqlite.Connection, memory_id: int) -> None:
@@ -1281,41 +1306,61 @@ async def increment_affection(
     """
     Increments affection with daily cap checking.
     Returns (updated_affection, actual_points_gained, did_level_up).
+
+    The counters are advanced with SQL expressions computed from the row at
+    write time, so concurrent increments can't silently overwrite each other.
     """
     from datetime import date
     today = today_date_str or date.today().isoformat()
     current = await get_or_create_character_affection(conn, user_id, character_id)
 
-    old_level = current.affection_level
-    old_score = current.affection_score
+    # Serialize read+write against other writers so both the counters and the
+    # reported gain are exact under concurrency.
+    await conn.execute("BEGIN IMMEDIATE")
+    try:
+        cursor = await conn.execute(
+            "SELECT affection_score, affection_level FROM character_affection "
+            "WHERE user_id = ? AND character_id = ?;",
+            (user_id, character_id),
+        )
+        row = await cursor.fetchone()
+        old_score = row[0] if row else current.affection_score
+        old_level = row[1] if row else current.affection_level
 
-    # Check daily cap
-    daily_earned = current.daily_points_earned if current.last_interaction_date == today else 0
-    remaining_daily = max(0, daily_limit - daily_earned)
-    actual_gain = min(max(0, delta_points), remaining_daily)
-
-    new_score = min(100, old_score + actual_gain)
-    new_level, _ = calculate_affection_level(new_score)
-    new_daily = daily_earned + actual_gain
-    new_interaction = current.interaction_count + 1
-    new_emotion = emotion or current.current_emotion
-
-    level_up = new_level > old_level
-
-    await conn.execute("""
-        UPDATE character_affection
-        SET affection_score = ?,
-            affection_level = ?,
-            current_emotion = ?,
-            interaction_count = ?,
-            daily_points_earned = ?,
-            last_interaction_date = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = ? AND character_id = ?;
-    """, (new_score, new_level, new_emotion, new_interaction, new_daily, today, user_id, character_id))
-    await conn.commit()
+        await conn.execute("""
+            UPDATE character_affection
+            SET interaction_count = interaction_count + 1,
+                last_interaction_date = ?,
+                daily_points_earned =
+                    (CASE WHEN last_interaction_date = ? THEN daily_points_earned ELSE 0 END)
+                    + MAX(0, MIN(?, ? - (CASE WHEN last_interaction_date = ? THEN daily_points_earned ELSE 0 END))),
+                affection_score = MIN(100,
+                    affection_score
+                    + MAX(0, MIN(?, ? - (CASE WHEN last_interaction_date = ? THEN daily_points_earned ELSE 0 END)))),
+                current_emotion = COALESCE(?, current_emotion),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND character_id = ?;
+        """, (today, today, max(0, delta_points), daily_limit, today,
+              max(0, delta_points), daily_limit, today, emotion, user_id, character_id))
+        await conn.commit()
+    except Exception:
+        await conn.execute("ROLLBACK")
+        raise
 
     updated = await get_or_create_character_affection(conn, user_id, character_id)
+
+    new_level, _ = calculate_affection_level(updated.affection_score)
+    if new_level != updated.affection_level:
+        await conn.execute(
+            "UPDATE character_affection SET affection_level = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE user_id = ? AND character_id = ?;",
+            (new_level, user_id, character_id),
+        )
+        await conn.commit()
+        updated = await get_or_create_character_affection(conn, user_id, character_id)
+
+    actual_gain = max(0, updated.affection_score - old_score)
+    level_up = new_level > old_level
     return updated, actual_gain, level_up
 
 

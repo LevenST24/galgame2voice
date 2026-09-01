@@ -25,6 +25,7 @@ from galgame2voice.database.models import (
 from galgame2voice.services.gpt_sovits_client import (
     clean_japanese_parentheses,
     resolve_tts_options,
+    validate_user_tts_options,
     TTS_PRESETS,
     SLICING_METHODS,
 )
@@ -62,15 +63,15 @@ class VoiceSwitchRequest(BaseModel):
 
 
 class SynthesizeRequest(BaseModel):
-    text: str = Field(..., min_length=1)
+    text: str = Field(..., min_length=1, max_length=2000)
     options: Optional[Dict[str, Any]] = None
-    speed: Optional[float] = None
-    top_k: Optional[int] = None
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    text_language: Optional[str] = None
-    cut_option: Optional[str] = None
-    preset: Optional[str] = None
+    speed: Optional[float] = Field(default=None, ge=0.1, le=3.0)
+    top_k: Optional[int] = Field(default=None, ge=1, le=100)
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+    top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    text_language: Optional[str] = Field(default=None, max_length=32)
+    cut_option: Optional[str] = Field(default=None, max_length=64)
+    preset: Optional[str] = Field(default=None, max_length=64)
     stream: bool = False
 
 
@@ -271,6 +272,11 @@ async def synthesize_speech(req: SynthesizeRequest):
         options["cut_option"] = req.cut_option
     if req.preset is not None:
         options["preset"] = req.preset
+
+    try:
+        validate_user_tts_options(options)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
     manager = get_voice_manager()
 

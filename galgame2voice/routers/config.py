@@ -23,6 +23,7 @@ from galgame2voice.adapters.registry import (
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
 from galgame2voice.database.models import (
+    SettingsInDB,
     SettingsResponse,
     SettingsUpdate,
     ProviderCreate,
@@ -30,6 +31,7 @@ from galgame2voice.database.models import (
     ProviderResponse,
 )
 from galgame2voice.security import url_guard
+from galgame2voice.telegram_bot.proxy import get_proxy_url
 
 logger = logging.getLogger("galgame2voice.routers.config")
 router = APIRouter(prefix="/api", tags=["Configuration & Providers"])
@@ -440,13 +442,17 @@ async def test_telegram_bot(req: TelegramTestRequest):
         return {"success": False, "message": "未配置 Telegram Bot Token"}
 
     proxy_urls = []
-    if req.proxy_enabled and req.proxy_host and req.proxy_port:
-        host = str(req.proxy_host).strip()
-        port = str(req.proxy_port).strip()
-        if host.startswith("http://") or host.startswith("https://") or host.startswith("socks5://") or host.startswith("socks4://"):
-            proxy_urls = [f"{host}:{port}" if ":" not in host.split("//")[-1] else host]
-        else:
-            proxy_urls = [f"http://{host}:{port}", f"socks5://{host}:{port}"]
+    if req.proxy_enabled:
+        # Build the proxy URL through the exact same code path the bot uses at
+        # runtime, so "test passes" implies "runtime works".
+        pseudo_settings = SettingsInDB(
+            id=1,
+            telegram_proxy_enabled=True,
+            telegram_proxy_host=req.proxy_host or "127.0.0.1",
+            telegram_proxy_port=req.proxy_port or 10809,
+        )
+        single = get_proxy_url(pseudo_settings)
+        proxy_urls = [single] if single else [None]
     else:
         proxy_urls = [None]
 

@@ -879,6 +879,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // 12. Reset Context
     async function handleResetContext() {
         if (!confirm('确定要清空当前对话上下文并开启新会话吗？')) return;
+        // Abort any in-flight stream first so a late reply cannot "resurrect"
+        // into the freshly created session.
+        if (abortController) {
+            abortController.abort();
+            abortController = null;
+        }
         audioPlayer.interrupt();
         try {
             await fetch(`/api/chat/history?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
@@ -982,6 +988,8 @@ document.addEventListener('DOMContentLoaded', () => {
             let lastEmotion = 'gentle';
             let currentMessageChunks = [];
             let sawError = false;
+            let receivedDone = false;
+            let truncated = false;
 
             try {
                 const resp = await fetch('/api/chat/stream', {
@@ -1073,6 +1081,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                     console.warn('音频片段合成失败:', payload.error);
                                     assistantHolder.markChunkError(payload.index);
                                 } else if (currentEventType === 'done' || (currentEventType === 'message' && payload.chinese && payload.japanese)) {
+                                    receivedDone = true;
+                                    truncated = Boolean(payload.truncated);
                                     if (payload.chinese) fullChinese = payload.chinese;
                                     if (payload.japanese) fullJapanese = payload.japanese;
                                     if (payload.emotion) {
@@ -1116,8 +1126,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                // 只有正常完成且无错误时才标记完成
-                if (!sawError && (fullChinese || currentMessageChunks.length > 0)) {
+                // 协议级完成判定: 只有收到 done 事件才算正常结束;
+                // 断流/超时导致的部分回复标记为"已中断", 避免截断被当作完整结果。
+                if (receivedDone && !sawError && !truncated) {
                     assistantHolder.finish({
                         audio_url: lastAudioUrl,
                         chunks: currentMessageChunks,
@@ -1137,6 +1148,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     if (vnTextJa) vnTextJa.textContent = fullJapanese || fullChinese || '……';
                     if (vnTextZh) vnTextZh.textContent = fullJapanese ? `（${fullChinese}）` : '';
+                } else if (receivedDone && truncated && !sawError) {
+                    // 用户主动停止: 服务端已持久化部分回复
+                    assistantHolder.finish({
+                        audio_url: lastAudioUrl,
+                        chunks: currentMessageChunks,
+                        sentence: fullJapanese
+                    });
+                    appendSystemMessage('⏹️ 已停止生成（部分内容已保留）');
+                } else if (!sawError && (fullChinese || currentMessageChunks.length > 0)) {
+                    // 流断开但从未收到 done: 内容可能不完整
+                    assistantHolder.finish({
+                        audio_url: lastAudioUrl,
+                        chunks: currentMessageChunks,
+                        sentence: fullJapanese
+                    });
+                    appendSystemMessage('⚠️ 连接中断，本次回复可能不完整。');
                 } else if (!sawError) {
                     // 流结束但没有任何内容
                     assistantHolder.fail('回复为空，请检查大模型配置后重试');
