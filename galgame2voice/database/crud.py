@@ -485,7 +485,9 @@ async def get_settings(conn: aiosqlite.Connection, mask: bool = True) -> Setting
 
 
 async def update_settings(conn: aiosqlite.Connection, updates: SettingsUpdate) -> SettingsResponse:
-    current = await get_settings_raw(conn)
+    # Ensure the settings row exists before updating: on a fresh DB this seeds
+    # schema + row, otherwise the UPDATE below (WHERE id = 1) is a silent no-op.
+    await get_settings_raw(conn)
     fields = []
     values = []
 
@@ -1319,13 +1321,13 @@ async def increment_affection(
     await conn.execute("BEGIN IMMEDIATE")
     try:
         cursor = await conn.execute(
-            "SELECT affection_score, affection_level FROM character_affection "
-            "WHERE user_id = ? AND character_id = ?;",
+            "SELECT affection_score, affection_level, daily_points_earned, last_interaction_date "
+            "FROM character_affection WHERE user_id = ? AND character_id = ?;",
             (user_id, character_id),
         )
         row = await cursor.fetchone()
-        old_score = row[0] if row else current.affection_score
         old_level = row[1] if row else current.affection_level
+        daily_before = (row[2] if row and row[3] == today else 0)
 
         await conn.execute("""
             UPDATE character_affection
@@ -1359,7 +1361,10 @@ async def increment_affection(
         await conn.commit()
         updated = await get_or_create_character_affection(conn, user_id, character_id)
 
-    actual_gain = max(0, updated.affection_score - old_score)
+    # "actual_gain" counts points charged against the daily budget (matching
+    # the historical contract), which may exceed the raw score delta when the
+    # score is clamped at 100.
+    actual_gain = max(0, updated.daily_points_earned - daily_before) if updated.last_interaction_date == today else 0
     level_up = new_level > old_level
     return updated, actual_gain, level_up
 

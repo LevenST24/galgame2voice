@@ -148,8 +148,12 @@ class TestFastApiAdversarialEndpoints:
             assert res.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_high_concurrency_burst(self):
-        """Stress-test /api/health with 200 simultaneous async requests."""
+    async def test_high_concurrency_burst(self, monkeypatch):
+        """Stress-test /api/health with 200 simultaneous async requests.
+
+        The production rate limiter is disabled for this raw-throughput test
+        (a 200-request burst legitimately triggers 429s otherwise)."""
+        monkeypatch.setenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", "1")
         app = create_app()
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

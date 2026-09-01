@@ -82,11 +82,13 @@ class TestLifecycleScriptsTier1:
         assert "cleanup_subprocesses" in content
 
     def test_launcher_discovers_gpt_sovits(self):
-        """Verifies run_server.py probes the known GPT-SoVITS install path and env override."""
+        """Verifies run_server.py discovers GPT-SoVITS via env overrides, not hardcoded drive letters."""
         content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
         assert "GPT_SOVITS_DIR" in content
-        assert "E:\\GPT-SoVITS-v2pro-20250604" in content
+        assert "GALGAME2VOICE_DATA_ROOT" in content
         assert "api_v2.py" in content
+        # Machine-specific hardcoded install paths must be gone
+        assert "E:\\GPT-SoVITS-v2pro-20250604" not in content
 
     def test_launcher_waits_for_sovits_readiness(self):
         """Verifies run_server.py performs a bounded readiness wait after spawning GPT-SoVITS."""

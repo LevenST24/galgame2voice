@@ -166,18 +166,16 @@ def find_gpt_sovits_directory() -> Path | None:
 
     candidates: list[Path] = []
 
-    # 1. Explicit env override
+    # 1. Explicit env overrides
     env_dir = os.environ.get("GPT_SOVITS_DIR")
     if env_dir:
         candidates.append(Path(env_dir))
+    # Legacy known-installation hints (kept as low-priority fallbacks only)
+    for extra in (os.environ.get("GALGAME2VOICE_DATA_ROOT"),):
+        if extra:
+            candidates.append(Path(extra))
 
-    # 2. User's known installation (nested layout) — probed first for speed.
-    candidates.extend([
-        Path(r"E:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604"),
-        Path(r"E:\GPT-SoVITS-v2pro-20250604"),
-    ])
-
-    # 3. Generic drive patterns for other versions / drives.
+    # 2. Generic drive patterns for other versions / drives.
     for drive in ("D", "E", "C", "F"):
         candidates.extend(Path(p) for p in glob.glob(rf"{drive}:\GPT-SoVITS*\GPT-SoVITS*"))
         candidates.extend(Path(p) for p in glob.glob(rf"{drive}:\GPT-SoVITS*"))

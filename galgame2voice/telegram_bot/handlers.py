@@ -853,7 +853,6 @@ class TelegramBotHandlers:
             elif data.startswith("set_model_"):
                 provider_id = data.replace("set_model_", "")
                 prov_name = provider_id
-                switched = False
                 err_msg = None
                 try:
                     async with get_db(self.db_path) as conn:
@@ -870,7 +869,6 @@ class TelegramBotHandlers:
                                 )
                             else:
                                 await crud.set_active_provider(conn, provider_id)
-                                switched = True
                 except Exception as exc:
                     logger.warning("Model switch exception: %s", exc)
                     err_msg = f"切换模型异常: {exc}"

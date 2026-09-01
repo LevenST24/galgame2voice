@@ -19,7 +19,7 @@ Galgame2Voice is a high-performance, lightweight Python/FastAPI companion extens
 | 6 | Web Audio API Frequency Visualizer | `AnalyserNode` real-time frequency spectrum sampling driving jumping soundwave bars in sync with character voice. | M2 | ORIGINAL_REQUEST §R2 |
 | 7 | SSE Stream Protocol Alignment | Align `chat_client.js` with backend SSE events (`event: text`, `event: audio_chunk`, `event: done`). | M2 | Explorer 2 Survey |
 | 8 | Test Asset Compatibility | Add `.chat-container` / `.app-container` alias classes in `style.css` for M4 test suite. | M2 | Explorer 2 Survey |
-| 9 | 100% Automated Test Regression | 599+ tests across Milestones 1~7 and adversarial stress suites passing with 0 failures, 0 errors. | M3 | ORIGINAL_REQUEST §R3 |
+| 9 | 100% Automated Test Regression | 640+ tests across Milestones 1~8 and adversarial stress suites passing with 0 failures, 0 errors. | M3 | ORIGINAL_REQUEST §R3 |
 | 10 | Forensic Integrity Verification | Forensic auditor verifies zero hardcoding, zero facade mocks, and 100% authentic implementations. | M4 | System Prompt |
 
 ## Milestones
@@ -27,7 +27,7 @@ Galgame2Voice is a high-performance, lightweight Python/FastAPI companion extens
 |---|------|-------|-------------|--------|
 | M1 | One-Click Automation Suite | Root `启动.bat`, GPT-SoVITS path detection, Job Object process tree linkage, automatic VRAM cleanup. | none | DONE |
 | M2 | Commercial Immersion Frontend UI | Visual Novel mode, Chat Stream mode, Top Capsule bar, AnalyserNode visualizer, SSE stream parser, Master Audio download button. | M1 | DONE |
-| M3 | Full Test Suite Hardening & 100% Pass | Full pytest execution (599+ tests), test runner verification, edge case regression hardening. | M2 | DONE |
+| M3 | Full Test Suite Hardening & 100% Pass | Full pytest execution (640+ tests), test runner verification, edge case regression hardening. | M2 | DONE |
 | M4 | Forensic Integrity Victory Audit | Comprehensive static and runtime forensic audit verifying genuine implementation and zero cheating. | M3 | DONE |
 
 ## Interface Contracts
@@ -70,5 +70,5 @@ galgame2voice/
 │   │       ├── audio_player.js     # Web Audio API player (deadlock-free queue, retry)
 │   │       └── chat_client.js      # SSE parser, stop button, error recovery
 │   └── telegram_bot/               # Telegram bot handlers & async task queue
-└── tests/                          # 415+ automated test cases
+└── tests/                          # 640+ automated test cases
 ```

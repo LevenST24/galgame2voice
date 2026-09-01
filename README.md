@@ -9,7 +9,7 @@
 - 🇯🇵 **分句并发语音合成**：日文台词按句自动切分，后台并发队列调用 GPT-SoVITS 合成高质量音频并流式播放
 - 💬 **双通道交互**：提供现代化 Web 聊天界面（`/`）与 Telegram 机器人双向语音/文本互动
 - 🎛️ **可视化管理控制台**：现代化 Web 配置后台（`/settings.html`），支持 10+ 家主流 LLM/STT 服务商管理、音色方案热切换、动态延迟测速与密钥脱敏保护
-- 🛡️ **安全加固**：控制台访问 Token 校验、SSRF 凭据外泄防护、XSS 过滤与默认 `127.0.0.1` 本地绑定
+- 🛡️ **安全加固**：控制台访问 Token 认证（Bearer + 常量时间比较）、LLM 接口 SSRF 防护（私网/环回/云元数据网段拦截）、输入长度与参数范围校验、请求限流、密钥脱敏返回，默认 `127.0.0.1` 本地绑定。详见 [SECURITY.md](SECURITY.md)
 
 ---
 
@@ -89,8 +89,8 @@ python api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS/configs/tts_infer.yaml
 或者使用 Python 原生命令行：
 
 ```bash
-# 安装依赖
-pip install -r requirements.txt
+# 安装依赖（推荐 uv，或使用 pip install -e .）
+uv sync
 
 # 启动 FastAPI 服务
 uvicorn galgame2voice.main:app --host 127.0.0.1 --port 8080 --reload
@@ -99,7 +99,10 @@ uvicorn galgame2voice.main:app --host 127.0.0.1 --port 8080 --reload
 启动后即可通过浏览器访问：
 - **聊天主界面**：[http://127.0.0.1:8080/](http://127.0.0.1:8080/)
 - **管理控制台**：[http://127.0.0.1:8080/settings.html](http://127.0.0.1:8080/settings.html)
-- **OpenAPI 接口文档**：[http://127.0.0.1:8080/docs](http://127.0.0.1:8080/docs)
+- **OpenAPI 接口文档**：默认关闭，需要时设置环境变量 `GALGAME2VOICE_ENABLE_DOCS=true` 开启
+
+> 🔑 首次启动会自动生成控制台访问 Token 并打印在启动日志中（也可通过
+> `GALGAME2VOICE_CONSOLE_TOKEN` 环境变量固定）。前端首次访问时输入一次即可。
 
 ---
 
@@ -107,8 +110,9 @@ uvicorn galgame2voice.main:app --host 127.0.0.1 --port 8080 --reload
 
 1. 打开管理控制台 [http://127.0.0.1:8080/settings.html](http://127.0.0.1:8080/settings.html) ➔ **Telegram 设置**
 2. 填入从 `@BotFather` 获取的 `Bot Token`
-3. 若在国内网络环境下，勾选 **启用 HTTP/SOCKS5 代理**（例如 `127.0.0.1:10809`）
-4. 保存配置后服务自动启动长轮询，支持以下指令：
+3. 配置 **管理员 ID 白名单**（`telegram_admin_ids` 或环境变量 `TELEGRAM_ADMIN_IDS`，逗号分隔）：未配置时任何人都可执行全局管理命令，强烈建议配置
+4. 若在国内网络环境下，勾选 **启用 HTTP/SOCKS5 代理**（例如 `127.0.0.1:10809`）
+5. 保存配置后服务自动启动长轮询，支持以下指令：
    - `/start` - 查看欢迎语并初始化角色
    - `/reset` - 清空当前上下文历史
    - `/voice` - 查看/切换音色配置

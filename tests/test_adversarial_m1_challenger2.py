@@ -278,10 +278,11 @@ class TestBatchScriptHardening:
             assert "endlocal" in content.lower()
 
     def test_gpt_sovits_discovery_locations(self):
-        """Verify run_server.py probes env override plus the known GPT-SoVITS install path."""
+        """Verify run_server.py probes env overrides; machine-specific paths must be gone."""
         content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
         assert "GPT_SOVITS_DIR" in content
-        assert "E:\\GPT-SoVITS-v2pro-20250604" in content
+        assert "GALGAME2VOICE_DATA_ROOT" in content
+        assert "E:\\GPT-SoVITS-v2pro-20250604" not in content
         # Generic drive globbing covers D:/C: installations of any version.
         assert "GPT-SoVITS*" in content
 

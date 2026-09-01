@@ -59,14 +59,6 @@ htmlcov/
 Thumbs.db
 desktop.ini
 
-# Legacy Java (if any lingering files)
-target/
-.mvn/
-pom.xml
-mvnw
-mvnw.cmd
-src/
-
 # Temporary agent scratchpads
 .agents/
 
