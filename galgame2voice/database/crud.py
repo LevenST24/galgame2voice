@@ -407,16 +407,20 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
 # ==================== Settings CRUD ====================
 
 def mask_custom_headers(headers: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Mask sensitive authentication headers inside custom_headers dictionary."""
+    """Mask sensitive authentication headers inside custom_headers dictionary.
+
+    Uses an exact-name list plus a substring heuristic so names like
+    X-Auth-Token or X-Signature are also masked instead of leaking verbatim.
+    """
     if not headers or not isinstance(headers, dict):
         return {}
     masked = {}
     sensitive_keys = {"authorization", "cookie", "x-api-key", "api-key", "token", "secret", "proxy-authorization"}
+    sensitive_substrings = ("key", "token", "secret", "auth", "bearer", "credential", "password", "signature")
     for k, v in headers.items():
-        if str(k).lower() in sensitive_keys:
-            masked[k] = mask_api_key(str(v))
-        else:
-            masked[k] = v
+        key_lower = str(k).lower()
+        is_sensitive = key_lower in sensitive_keys or any(s in key_lower for s in sensitive_substrings)
+        masked[k] = mask_api_key(str(v)) if is_sensitive else v
     return masked
 
 
@@ -597,6 +601,7 @@ async def get_active_provider(conn: aiosqlite.Connection, mask: bool = True) -> 
     d = raw.model_dump()
     if mask:
         d["api_key"] = mask_api_key(raw.api_key)
+        d["custom_headers"] = mask_custom_headers(raw.custom_headers)
     return ProviderResponse(**d)
 
 
@@ -634,8 +639,15 @@ async def update_provider(conn: aiosqlite.Connection, provider_id: str, updates:
                 fields.append("api_key = ?")
                 values.append(str(v).strip())
         elif k == "custom_headers":
+            # Merge per-entry: masked values (****) coming back from the UI
+            # must never overwrite the stored secrets they were masked from.
+            merged = dict(current.custom_headers or {})
+            for hk, hv in (v or {}).items():
+                if isinstance(hv, str) and "****" in hv:
+                    continue
+                merged[hk] = hv
             fields.append("custom_headers = ?")
-            values.append(json.dumps(v))
+            values.append(json.dumps(merged))
         elif k == "is_active":
             fields.append("is_active = ?")
             values.append(1 if v else 0)

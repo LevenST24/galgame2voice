@@ -214,7 +214,9 @@ class TestConfigAndProviderRouterEndpoints:
             assert presets_resp.status_code == 200
             assert len(presets_resp.json()["presets"]) >= 8
 
-            # 3. POST /api/providers (Create new provider)
+            # 3. POST /api/providers (Create new provider) — opt in to private
+            # endpoints first since this scenario targets a local Ollama URL.
+            await client.post("/api/config", json={"allow_private_llm_endpoints": True})
             create_resp = await client.post("/api/providers", json={
                 "id": "my_custom_provider",
                 "name": "My Custom AI",

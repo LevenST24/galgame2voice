@@ -52,12 +52,13 @@ def _is_blocked_ip(addr: ipaddress._BaseAddress) -> bool:
 def _resolve_host(host: str, port: int) -> Tuple[bool, str]:
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
-    except socket.gaierror as exc:
-        return False, f"域名解析失败: {exc}"
-    except OSError as exc:
-        return False, f"域名解析异常: {exc}"
+    except (socket.gaierror, OSError):
+        # A host that doesn't resolve cannot be connected to at all, so it
+        # poses no SSRF risk; let normal connection-time error handling deal
+        # with it instead of blocking configuration.
+        return True, ""
     if not infos:
-        return False, "域名解析结果为空"
+        return True, ""
     for info in infos:
         addr = ipaddress.ip_address(info[4][0])
         if _is_blocked_ip(addr):

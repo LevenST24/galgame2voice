@@ -141,6 +141,10 @@ class TestNetworkTimeoutsAndErrorRecovery:
         app = create_app()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Opt in to private endpoints: this test intentionally probes
+            # loopback/unreachable hosts.
+            await client.post("/api/config", json={"allow_private_llm_endpoints": True})
+
             # 1. Non-existent local port (connection refused / 502 / error)
             resp = await client.post("/api/providers/test", json={
                 "id": "custom",

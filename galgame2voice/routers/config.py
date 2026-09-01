@@ -4,6 +4,7 @@ Provides REST endpoints for global settings, provider configurations,
 real-time connectivity testing, and model discovery.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -28,9 +29,27 @@ from galgame2voice.database.models import (
     ProviderUpdate,
     ProviderResponse,
 )
+from galgame2voice.security import url_guard
 
 logger = logging.getLogger("galgame2voice.routers.config")
 router = APIRouter(prefix="/api", tags=["Configuration & Providers"])
+
+
+async def _allow_private_endpoints() -> bool:
+    async with get_db() as conn:
+        settings = await crud.get_settings_raw(conn)
+    return bool(getattr(settings, "allow_private_llm_endpoints", False))
+
+
+async def _enforce_llm_url_guard(base_url: Optional[str]) -> None:
+    """Rejects LLM provider base URLs that resolve to loopback/private ranges
+    unless the operator explicitly enabled private endpoints."""
+    if not base_url:
+        return
+    allow_private = await _allow_private_endpoints()
+    ok, reason = await asyncio.to_thread(url_guard.validate_llm_base_url, base_url, allow_private)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
 
 
 class ConfigPayload(BaseModel):
@@ -212,6 +231,7 @@ async def create_or_update_provider(provider_data: Dict[str, Any]):
             if "api_base_url" in provider_data or "base_url" in provider_data:
                 url_val = provider_data.get("api_base_url") or provider_data.get("base_url")
                 if url_val is not None:
+                    await _enforce_llm_url_guard(url_val)
                     update_kwargs["api_base_url"] = url_val
             if "api_key" in provider_data and provider_data["api_key"] is not None:
                 update_kwargs["api_key"] = provider_data["api_key"]
@@ -233,9 +253,11 @@ async def create_or_update_provider(provider_data: Dict[str, Any]):
             # Preset default values if not provided
             preset = get_provider_preset(provider_id)
             name = provider_data.get("name") or (preset["name"] if preset else provider_id.capitalize())
+            user_supplied_url = provider_data.get("api_base_url") or provider_data.get("base_url")
+            if user_supplied_url:
+                await _enforce_llm_url_guard(user_supplied_url)
             base_url = (
-                provider_data.get("api_base_url")
-                or provider_data.get("base_url")
+                user_supplied_url
                 or (preset["default_base_url"] if preset else "https://api.openai.com/v1")
             )
             chat_model = (
@@ -311,6 +333,10 @@ async def test_provider(req: ProviderTestRequest):
                     base_url = stored.api_base_url
                 if not model:
                     model = stored.chat_model
+
+    # SSRF guard: the effective base_url (explicit or stored) must pass the
+    # private-network check before any credentials are attached to the request.
+    await _enforce_llm_url_guard(base_url)
 
     # Instantiate adapter via factory
     adapter = get_llm_adapter(
