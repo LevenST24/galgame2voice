@@ -324,6 +324,31 @@ class ChatService:
         except Exception as mem_err:
             logger.warning("Memory fact extraction failed: %s", mem_err)
 
+    async def _resolve_adapter_triple(
+        self,
+        res: Tuple[BaseLLMAdapter, str, Optional[str]],
+        conn: aiosqlite.Connection,
+        provider_id: Optional[str],
+    ) -> Tuple[BaseLLMAdapter, str, str]:
+        """Normalizes the adapter-factory result into (adapter, model, provider_id)."""
+        if isinstance(res, (tuple, list)) and len(res) >= 3:
+            return res[0], res[1], res[2]
+        adapter, model_name = res[0], res[1]
+        active_p = await crud.get_active_provider_raw(conn)
+        actual_provider_id = provider_id or getattr(adapter, "provider_type", None) or (active_p.id if active_p else "custom")
+        return adapter, model_name, actual_provider_id
+
+    @staticmethod
+    def _affection_fallback(emotion: str) -> Dict[str, Any]:
+        """Neutral affection payload used when the affection update fails."""
+        return {
+            "score": 0,
+            "level": 1,
+            "level_name": "初识/生疏",
+            "emotion": emotion,
+            "points_earned": 0,
+        }
+
     async def _get_active_llm_adapter(self, conn: Optional[aiosqlite.Connection] = None, provider_id: Optional[str] = None) -> Tuple[BaseLLMAdapter, str, str]:
         """
         Loads the configured or requested LLM adapter, target chat model, and resolved provider ID from DB.
@@ -520,12 +545,9 @@ class ChatService:
                 )
 
                 res = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
-                if isinstance(res, (tuple, list)) and len(res) >= 3:
-                    adapter, model_name, actual_provider_id = res[0], res[1], res[2]
-                else:
-                    adapter, model_name = res[0], res[1]
-                    active_p = await crud.get_active_provider_raw(conn)
-                    actual_provider_id = provider_id or getattr(adapter, "provider_type", None) or (active_p.id if active_p else "custom")
+                adapter, model_name, actual_provider_id = await self._resolve_adapter_triple(
+                    res, conn, provider_id
+                )
                 messages = await self._prepare_messages(conn, session_id, prompt, character_name)
 
             tts_queue: asyncio.Queue = asyncio.Queue()
@@ -775,13 +797,7 @@ class ChatService:
                 final_emotion = affection_res.get("emotion", final_emotion)
             except Exception as aff_err:
                 logger.warning("Affection update in stream_chat failed: %s", aff_err)
-                affection_res = {
-                    "score": 0,
-                    "level": 1,
-                    "level_name": "初识/生疏",
-                    "emotion": final_emotion,
-                    "points_earned": 0,
-                }
+                affection_res = self._affection_fallback(final_emotion)
 
             # Emit final done event
             yield {
@@ -855,12 +871,9 @@ class ChatService:
             )
 
             res = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
-            if isinstance(res, (tuple, list)) and len(res) >= 3:
-                adapter, model_name, actual_provider_id = res[0], res[1], res[2]
-            else:
-                adapter, model_name = res[0], res[1]
-                active_p = await crud.get_active_provider_raw(conn)
-                actual_provider_id = provider_id or getattr(adapter, "provider_type", None) or (active_p.id if active_p else "custom")
+            adapter, model_name, actual_provider_id = await self._resolve_adapter_triple(
+                res, conn, provider_id
+            )
             messages = await self._prepare_messages(conn, session_id, prompt, character_name)
 
         t_llm_start = time.perf_counter()
@@ -891,13 +904,7 @@ class ChatService:
             final_emotion = affection_res.get("emotion", final_emotion)
         except Exception as aff_err:
             logger.warning("Affection update in chat_sync failed: %s", aff_err)
-            affection_res = {
-                "score": 0,
-                "level": 1,
-                "level_name": "初识/生疏",
-                "emotion": final_emotion,
-                "points_earned": 0,
-            }
+            affection_res = self._affection_fallback(final_emotion)
 
         # Synthesize full audio
         audio_url = ""

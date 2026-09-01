@@ -39,19 +39,24 @@ async def _audio_cleanup_loop(audio_dir: Path, retention_minutes: int, interval_
             await asyncio.sleep(interval_seconds)
             now = time.time()
             cutoff = now - (retention_minutes * 60)
-            cleaned_count = 0
-            if audio_dir.exists():
-                for f in audio_dir.iterdir():
-                    # Strictly protect cache directory and non-file entries
-                    if f.is_dir() or f.name.lower() == "cache":
-                        continue
-                    if f.is_file() and f.suffix.lower() in (".wav", ".ogg", ".mp3", ".opus"):
-                        try:
-                            if f.stat().st_mtime < cutoff:
-                                f.unlink()
-                                cleaned_count += 1
-                        except Exception as e:
-                            logger.debug("Failed to remove audio file %s: %s", f, e)
+
+            def _scan_and_clean() -> int:
+                cleaned = 0
+                if audio_dir.exists():
+                    for f in audio_dir.iterdir():
+                        # Strictly protect cache directory and non-file entries
+                        if f.is_dir() or f.name.lower() == "cache":
+                            continue
+                        if f.is_file() and f.suffix.lower() in (".wav", ".ogg", ".mp3", ".opus"):
+                            try:
+                                if f.stat().st_mtime < cutoff:
+                                    f.unlink()
+                                    cleaned += 1
+                            except Exception as e:
+                                logger.debug("Failed to remove audio file %s: %s", f, e)
+                return cleaned
+
+            cleaned_count = await asyncio.to_thread(_scan_and_clean)
             if cleaned_count > 0:
                 logger.info("Audio cleanup removed %d expired audio files.", cleaned_count)
         except asyncio.CancelledError:

@@ -154,6 +154,51 @@ PROVIDER_PRESETS: Dict[str, Dict[str, Any]] = {
         ],
         "description": "本地或私有部署的 OpenAI 兼容推理服务 (Ollama, vLLM, LMStudio)",
     },
+    "groq": {
+        "id": "groq",
+        "name": "Groq",
+        "default_base_url": "https://api.groq.com/openai/v1",
+        "default_chat_model": "llama-3.3-70b-versatile",
+        "default_stt_model": "whisper-large-v3",
+        "adapter_class": GroqLLMAdapter,
+        "stt_adapter_class": OpenAICompatibleSTTAdapter,
+        "preset_models": [
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "mixtral-8x7b-32768",
+        ],
+        "description": "Groq 超低延迟推理 (Llama 3.3 / 3.1, Whisper large-v3)",
+    },
+    "siliconflow": {
+        "id": "siliconflow",
+        "name": "SiliconFlow 硅基流动",
+        "default_base_url": "https://api.siliconflow.cn/v1",
+        "default_chat_model": "deepseek-ai/DeepSeek-V3",
+        "default_stt_model": "FunAudioLLM/SenseVoiceSmall",
+        "adapter_class": SiliconFlowLLMAdapter,
+        "stt_adapter_class": SiliconFlowSTTAdapter,
+        "preset_models": [
+            "deepseek-ai/DeepSeek-V3",
+            "Qwen/Qwen2.5-72B-Instruct",
+            "THUDM/glm-4-9b-chat",
+        ],
+        "description": "硅基流动聚合推理平台 (DeepSeek-V3, Qwen2.5 系列)",
+    },
+    "moonshot": {
+        "id": "moonshot",
+        "name": "Moonshot 月之暗面 (Kimi)",
+        "default_base_url": "https://api.moonshot.cn/v1",
+        "default_chat_model": "moonshot-v1-32k",
+        "default_stt_model": "",
+        "adapter_class": MoonshotLLMAdapter,
+        "stt_adapter_class": None,
+        "preset_models": [
+            "moonshot-v1-8k",
+            "moonshot-v1-32k",
+            "moonshot-v1-128k",
+        ],
+        "description": "月之暗面 Kimi 官方 API (moonshot-v1 长上下文系列)",
+    },
 }
 
 
@@ -189,35 +234,25 @@ def get_provider_preset(provider_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
+# Derived from PROVIDER_PRESETS so provider metadata and adapter routing
+# can never drift apart.
 ADAPTER_CLASS_MAP: Dict[str, Tuple[Type[BaseLLMAdapter], str]] = {
-    "gemini": (GeminiLLMAdapter, "https://generativelanguage.googleapis.com/v1beta/openai"),
-    "openai": (OpenAICompatibleLLMAdapter, "https://api.openai.com/v1"),
-    "deepseek": (DeepSeekLLMAdapter, "https://api.deepseek.com"),
-    "anthropic": (AnthropicAdapter, "https://api.anthropic.com/v1"),
-    "xai": (XAILLMAdapter, "https://api.x.ai/v1"),
-    "glm": (GLMLLMAdapter, "https://open.bigmodel.cn/api/paas/v4"),
-    "qwen": (QwenLLMAdapter, "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-    "custom": (CustomLLMAdapter, "http://127.0.0.1:11434/v1"),
-    "groq": (GroqLLMAdapter, "https://api.groq.com/openai/v1"),
-    "siliconflow": (SiliconFlowLLMAdapter, "https://api.siliconflow.cn/v1"),
-    "moonshot": (MoonshotLLMAdapter, "https://api.moonshot.cn/v1"),
+    pid: (p["adapter_class"], p["default_base_url"])
+    for pid, p in PROVIDER_PRESETS.items()
 }
 
 
-def get_llm_adapter(
+def _resolve_provider_request(
     provider_id_or_config: Union[str, Dict[str, Any], Any],
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
-    **kwargs: Any,
-) -> BaseLLMAdapter:
-    """
-    Factory function instantiating appropriate LLM adapter based on provider ID or config.
-    """
+    api_key: Optional[str],
+    base_url: Optional[str],
+    kwargs: Dict[str, Any],
+) -> Tuple[str, str, Optional[str]]:
+    """Normalizes provider id, api key, and base url from id/dict/object config."""
     provider_id = "openai"
     key = api_key or ""
     url = base_url
 
-    # Check if a model/config object or dict was passed
     if isinstance(provider_id_or_config, str):
         provider_id = provider_id_or_config.lower()
     elif isinstance(provider_id_or_config, dict):
@@ -234,6 +269,20 @@ def get_llm_adapter(
         custom_headers = getattr(provider_id_or_config, "custom_headers", None)
         if custom_headers and "custom_headers" not in kwargs:
             kwargs["custom_headers"] = custom_headers
+
+    return provider_id, key, url
+
+
+def get_llm_adapter(
+    provider_id_or_config: Union[str, Dict[str, Any], Any],
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    **kwargs: Any,
+) -> BaseLLMAdapter:
+    """
+    Factory function instantiating appropriate LLM adapter based on provider ID or config.
+    """
+    provider_id, key, url = _resolve_provider_request(provider_id_or_config, api_key, base_url, kwargs)
 
     if provider_id in ADAPTER_CLASS_MAP:
         adapter_cls, default_url = ADAPTER_CLASS_MAP[provider_id]
@@ -260,26 +309,7 @@ def get_stt_adapter(
     """
     Factory function instantiating appropriate STT adapter based on provider ID or config.
     """
-    provider_id = "openai"
-    key = api_key or ""
-    url = base_url
-
-    if isinstance(provider_id_or_config, str):
-        provider_id = provider_id_or_config.lower()
-    elif isinstance(provider_id_or_config, dict):
-        provider_id = str(provider_id_or_config.get("provider_type") or provider_id_or_config.get("id") or "openai").lower()
-        key = key or provider_id_or_config.get("api_key", "")
-        url = url or provider_id_or_config.get("api_base_url") or provider_id_or_config.get("base_url")
-        custom_headers = provider_id_or_config.get("custom_headers")
-        if custom_headers and "custom_headers" not in kwargs:
-            kwargs["custom_headers"] = custom_headers
-    elif hasattr(provider_id_or_config, "id"):
-        provider_id = str(getattr(provider_id_or_config, "provider_type", None) or getattr(provider_id_or_config, "id", "openai")).lower()
-        key = key or getattr(provider_id_or_config, "api_key", "")
-        url = url or getattr(provider_id_or_config, "api_base_url", None) or getattr(provider_id_or_config, "base_url", None)
-        custom_headers = getattr(provider_id_or_config, "custom_headers", None)
-        if custom_headers and "custom_headers" not in kwargs:
-            kwargs["custom_headers"] = custom_headers
+    provider_id, key, url = _resolve_provider_request(provider_id_or_config, api_key, base_url, kwargs)
 
     if provider_id == "siliconflow":
         target_url = url or "https://api.siliconflow.cn/v1"
