@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -23,6 +23,7 @@ from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.routers import chat, config, health, voice, memory, affection, metrics
+from galgame2voice.security.auth import require_auth
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
 from galgame2voice.utils.logger import setup_logger
 
@@ -178,8 +179,8 @@ def create_app() -> FastAPI:
         description="Lightweight Python/FastAPI companion extension patch for GPT-SoVITS",
         version=settings.app_version,
         lifespan=lifespan,
-        docs_url="/docs",
-        redoc_url="/redoc",
+        docs_url="/docs" if settings.enable_docs else None,
+        redoc_url="/redoc" if settings.enable_docs else None,
     )
 
     # 1. Configure CORS Middleware
@@ -212,14 +213,15 @@ def create_app() -> FastAPI:
 
     app.add_middleware(_StaticCacheControlMiddleware)
 
-    # 2. Register API Routers
+    # 2. Register API Routers (all management/data routes require console token auth)
+    auth_deps = [Depends(require_auth)]
     app.include_router(health.router)
-    app.include_router(config.router)
-    app.include_router(voice.router)
-    app.include_router(chat.router)
-    app.include_router(memory.router)
-    app.include_router(affection.router)
-    app.include_router(metrics.router)
+    app.include_router(config.router, dependencies=auth_deps)
+    app.include_router(voice.router, dependencies=auth_deps)
+    app.include_router(chat.router, dependencies=auth_deps)
+    app.include_router(memory.router, dependencies=auth_deps)
+    app.include_router(affection.router, dependencies=auth_deps)
+    app.include_router(metrics.router, dependencies=auth_deps)
 
 
     # 3. Mount Static Audio Storage Directory

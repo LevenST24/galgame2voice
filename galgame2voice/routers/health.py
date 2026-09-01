@@ -15,12 +15,13 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import httpx
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
 
 from galgame2voice.config import get_settings
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
+from galgame2voice.security.auth import require_auth
 
 router = APIRouter(tags=["Health & Diagnostics"])
 
@@ -233,6 +234,7 @@ async def legacy_status(request: Request):
     "/api/system/status",
     response_model=SystemStatusResponse,
     summary="Comprehensive System Diagnostics",
+    dependencies=[Depends(require_auth)],
 )
 async def system_status(request: Request):
     """

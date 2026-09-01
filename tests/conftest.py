@@ -280,6 +280,8 @@ CREATE TABLE IF NOT EXISTS settings (
     telegram_proxy_host TEXT NOT NULL DEFAULT '127.0.0.1',
     telegram_proxy_port INTEGER NOT NULL DEFAULT 10809,
     telegram_proxy_enabled INTEGER NOT NULL DEFAULT 0,
+    telegram_admin_ids TEXT NOT NULL DEFAULT '',
+    allow_private_llm_endpoints INTEGER NOT NULL DEFAULT 0,
     console_token TEXT NOT NULL DEFAULT 'test_console_token',
     console_url TEXT NOT NULL DEFAULT '',
     max_history_messages INTEGER NOT NULL DEFAULT 10,
@@ -415,6 +417,9 @@ def mock_llm_server():
 @pytest.fixture(autouse=True)
 def isolate_test_database(monkeypatch):
     """Ensures every test runs against an isolated temporary SQLite database."""
+    # The test suite drives the app through raw ASGI clients without console
+    # tokens; dedicated auth tests re-enable authentication themselves.
+    monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "1")
     fd, path = tempfile.mkstemp(suffix=".db", prefix="test_auto_iso_")
     os.close(fd)
     conn = sqlite3.connect(path)

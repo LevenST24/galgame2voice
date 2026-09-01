@@ -26,6 +26,18 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", description="Logging level")
     log_to_file: bool = Field(default=True, description="Enable rotating file logging")
 
+    # Security
+    console_token: Optional[str] = Field(
+        default=None,
+        description="Console access token override (GALGAME2VOICE_CONSOLE_TOKEN); DB token used when unset",
+    )
+    enable_docs: bool = Field(
+        default=False, description="Expose /docs and /redoc (disable in production)"
+    )
+    auth_disabled: bool = Field(
+        default=False, description="Disable console token auth (tests/local dev only)"
+    )
+
     # Project Root & Directory Paths
     # Project root defaults to the parent directory of the inner package
     project_root: Path = Field(

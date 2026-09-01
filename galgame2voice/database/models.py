@@ -29,6 +29,8 @@ class SettingsBase(BaseModel):
     telegram_proxy_host: str = "127.0.0.1"
     telegram_proxy_port: int = Field(default=10809, ge=1, le=65535)
     telegram_proxy_enabled: bool = False
+    telegram_admin_ids: str = ""  # Comma-separated Telegram user IDs allowed to run admin commands
+    allow_private_llm_endpoints: bool = False  # Permit private/loopback LLM provider base URLs
     console_url: str = ""
     max_history_messages: int = Field(default=10, ge=1, le=100)
 
@@ -53,6 +55,8 @@ class SettingsUpdate(BaseModel):
     telegram_proxy_host: Optional[str] = None
     telegram_proxy_port: Optional[int] = Field(default=None, ge=1, le=65535)
     telegram_proxy_enabled: Optional[bool] = None
+    telegram_admin_ids: Optional[str] = None
+    allow_private_llm_endpoints: Optional[bool] = None
     console_url: Optional[str] = None
     max_history_messages: Optional[int] = Field(default=None, ge=1, le=100)
 

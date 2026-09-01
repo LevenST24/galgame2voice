@@ -3,7 +3,9 @@ Asynchronous CRUD operations for SQLite persistence in galgame2voice.
 Handles schema migrations, seed initializations, data queries, and key masking.
 """
 
+import hmac
 import json
+import logging
 import sqlite3
 import uuid
 from typing import List, Optional, Dict, Any, Tuple
@@ -21,6 +23,9 @@ from galgame2voice.database.models import (
     TtsCacheEntry, CacheStatsResponse, TokenUsageMetric, MetricsOverviewResponse,
     ProviderMetricItem, ProvidersMetricsResponse, LatencyTrendItem, LatencyTrendResponse
 )
+
+
+logger = logging.getLogger("galgame2voice.database.crud")
 
 
 def mask_api_key(key: Optional[str]) -> str:
@@ -363,6 +368,38 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     except Exception:
         pass
 
+    # 5. Schema migration for settings table (new security columns)
+    try:
+        cursor = await conn.execute("PRAGMA table_info(settings);")
+        existing_settings_cols = {r["name"] for r in await cursor.fetchall()}
+        for col, col_type in [
+            ("telegram_admin_ids", "TEXT NOT NULL DEFAULT ''"),
+            ("allow_private_llm_endpoints", "INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            if col not in existing_settings_cols:
+                await conn.execute(f"ALTER TABLE settings ADD COLUMN {col} {col_type};")
+    except Exception:
+        pass
+
+    # 6. Guarantee a console token exists so the API is never left unauthenticated.
+    #    The freshly generated token is logged once so the owner can retrieve it.
+    try:
+        cursor = await conn.execute("SELECT console_token FROM settings WHERE id = 1;")
+        row = await cursor.fetchone()
+        if row is not None and not str(row["console_token"] or "").strip():
+            new_token = uuid.uuid4().hex
+            await conn.execute(
+                "UPDATE settings SET console_token = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1;",
+                (new_token,),
+            )
+            logger.warning(
+                "No console token was configured; generated a new one and stored it in the DB. "
+                "Console token: %s (also overridable via GALGAME2VOICE_CONSOLE_TOKEN env var)",
+                new_token,
+            )
+    except Exception:
+        pass
+
     await conn.commit()
 
 
@@ -395,6 +432,7 @@ async def get_settings_raw(conn: aiosqlite.Connection) -> SettingsInDB:
         if row:
             data = dict(row)
             data["telegram_proxy_enabled"] = bool(data.get("telegram_proxy_enabled", 0))
+            data["allow_private_llm_endpoints"] = bool(data.get("allow_private_llm_endpoints", 0))
             return SettingsInDB(**data)
     except Exception:
         pass
@@ -442,6 +480,16 @@ async def update_settings(conn: aiosqlite.Connection, updates: SettingsUpdate) -
         elif k == "telegram_proxy_enabled":
             fields.append(f"{k} = ?")
             values.append(1 if v else 0)
+        elif k == "allow_private_llm_endpoints":
+            fields.append(f"{k} = ?")
+            values.append(1 if v else 0)
+        elif k == "telegram_admin_ids":
+            ids = ",".join(
+                part.strip() for part in str(v or "").replace("，", ",").split(",")
+                if part.strip().isdigit()
+            )
+            fields.append(f"{k} = ?")
+            values.append(ids)
         else:
             fields.append(f"{k} = ?")
             values.append(v)
@@ -470,7 +518,10 @@ async def verify_console_token(conn: aiosqlite.Connection, token: str) -> bool:
     row = await cursor.fetchone()
     if not row:
         return False
-    return row["console_token"] == token
+    stored = str(row["console_token"] or "")
+    if not stored:
+        return False
+    return hmac.compare_digest(stored, token)
 
 
 # ==================== Provider CRUD ====================

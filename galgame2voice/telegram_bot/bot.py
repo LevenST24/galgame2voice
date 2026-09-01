@@ -5,7 +5,8 @@ Manages python-telegram-bot Application instance, token validation, polling, and
 
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+import os
+from typing import Any, Dict, List, Optional
 import httpx
 
 try:
@@ -43,6 +44,18 @@ def validate_bot_token(token: Optional[str]) -> bool:
     return True
 
 
+def parse_admin_ids(raw: Optional[str]) -> List[int]:
+    """Parses a comma-separated list of Telegram user IDs."""
+    if not raw:
+        return []
+    ids = []
+    for part in str(raw).replace("，", ",").split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.append(int(part))
+    return ids
+
+
 class TelegramBotManager:
     """
     Manages Telegram Bot async application lifecycle, handlers, and background polling.
@@ -77,9 +90,20 @@ class TelegramBotManager:
             return False
 
         if not HAS_TELEGRAM:
-            logger.warning("python-telegram-bot is not installed; Telegram Bot service running in mock/standby mode.")
-            self.is_running = True
-            return True
+            logger.warning("python-telegram-bot is not installed; Telegram Bot service is DISABLED.")
+            self.is_running = False
+            return False
+
+        admin_ids = parse_admin_ids(getattr(settings, "telegram_admin_ids", "") or "")
+        admin_ids.extend(parse_admin_ids(os.getenv("TELEGRAM_ADMIN_IDS", "")))
+        self.handlers.admin_ids = set(admin_ids)
+        if admin_ids:
+            logger.info("Telegram admin whitelist active with %d user(s).", len(admin_ids))
+        else:
+            logger.warning(
+                "No telegram_admin_ids configured: management commands are open to EVERYONE. "
+                "Set them in the console or the TELEGRAM_ADMIN_IDS env var."
+            )
 
         proxy_url = get_proxy_url(settings)
         req_kwargs = get_telegram_request_kwargs(proxy_url)
@@ -118,7 +142,8 @@ class TelegramBotManager:
             await self.app.initialize()
             await self.app.start()
             if hasattr(self.app, "updater") and self.app.updater:
-                await self.app.updater.start_polling(drop_pending_updates=True)
+                drop_pending = os.getenv("TELEGRAM_DROP_PENDING_UPDATES", "").strip().lower() in ("1", "true", "yes")
+                await self.app.updater.start_polling(drop_pending_updates=drop_pending)
             self.is_running = True
             logger.info("Telegram Bot service started successfully.")
             return True
