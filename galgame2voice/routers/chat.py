@@ -17,6 +17,7 @@ from galgame2voice.services.gpt_sovits_client import validate_user_tts_options
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path
+from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.routers.chat")
 
@@ -75,7 +76,8 @@ async def sse_event_formatter(event_generator: AsyncGenerator[Dict[str, Any], No
         logger.info("SSE client disconnected from stream.")
     except Exception as exc:
         logger.error("Error during SSE streaming: %s", exc, exc_info=True)
-        err_data = json.dumps({"error": str(exc)}, ensure_ascii=False)
+        safe_err = sanitize_error_detail(exc)
+        err_data = json.dumps({"error": safe_err or "Streaming encountered an internal error"}, ensure_ascii=False)
         yield f"event: error\ndata: {err_data}\n\n"
 
 

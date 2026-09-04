@@ -27,6 +27,7 @@ from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
 from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from galgame2voice.telegram_bot.proxy import get_proxy_url, get_telegram_request_kwargs
+from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.telegram_bot.bot")
 
@@ -192,7 +193,8 @@ class TelegramBotManager:
                         return {"success": True, "message": f"Connected to @{username}", "info": data.get("result")}
                 return {"success": False, "message": f"Telegram API error (code {resp.status_code})"}
         except Exception as exc:
-            return {"success": False, "message": f"Network connection failed: {exc}"}
+            safe_err = sanitize_error_detail(exc)
+            return {"success": False, "message": f"Network connection failed: {safe_err}"}
 
 
 _global_bot_manager: Optional[TelegramBotManager] = None

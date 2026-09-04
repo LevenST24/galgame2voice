@@ -186,6 +186,8 @@ class TestTtsCacheLifecycleAndPerformance:
         if cache_file.exists():
             cache_file.write_bytes(b"")
         path.write_bytes(b"")
+        # In M2 two-tier architecture, evict from Tier 1 memory cache to test Tier 2 disk corruption recovery
+        mgr._mem_cache_discard(cache_key)
 
         # Next call detects 0-byte corrupt file, re-synthesizes, and updates cache
         audio = await tts_svc.synthesize(text)

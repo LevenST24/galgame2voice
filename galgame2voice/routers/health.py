@@ -274,12 +274,18 @@ async def system_status(request: Request):
     audio_count, audio_size_mb = await audio_metrics_task
     _, data_size_mb = await data_metrics_task
 
-    # 2. Database Status Check
+    # 2. Database Status Check (Normalized Relative Path)
     db_exists = settings.db_path.exists()
+    try:
+        rel_db_path = settings.db_path.relative_to(settings.project_root).as_posix()
+    except Exception:
+        # Safe relative path fallback when testing with temp paths outside project_root
+        rel_db_path = f"{settings.data_dir_name}/{settings.db_path.name}"
+
     db_telemetry = DatabaseTelemetry(
         status="connected" if db_exists else "initializing",
         wal_mode=True,
-        path=str(settings.db_path),
+        path=rel_db_path,
     )
 
     # 3. Storage Metrics

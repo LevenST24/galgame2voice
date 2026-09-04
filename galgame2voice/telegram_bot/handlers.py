@@ -33,6 +33,7 @@ from galgame2voice.services.chat_service import ChatService, StreamingBilingualP
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.adapters.registry import get_stt_adapter
 from galgame2voice.utils.audio_converter import convert_ogg_to_wav, convert_wav_to_ogg
+from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.telegram_bot.handlers")
 
@@ -200,7 +201,7 @@ class TelegramBotHandlers:
         active_id = None
         try:
             async with get_db(self.db_path) as conn:
-                providers = await crud.list_providers(conn, mask=False)
+                providers = await crud.list_providers(conn, mask=True)
                 active = await crud.get_active_provider(conn)
                 active_id = active.id if active else None
         except Exception as exc:
@@ -941,7 +942,8 @@ class TelegramBotHandlers:
             logger.error("Error processing callback query '%s': %s", data, exc, exc_info=True)
             if hasattr(query, "answer"):
                 try:
-                    await query.answer(f"操作异常: {exc}", show_alert=True)
+                    safe_err = sanitize_error_detail(exc)
+                    await query.answer(f"操作异常: {safe_err}" if safe_err else "操作异常，请重试", show_alert=True)
                 except Exception:
                     pass
 
@@ -998,7 +1000,8 @@ class TelegramBotHandlers:
                 reply = f"🌸 称呼已成功更新为「{new_nick}」！\n夏目在接下来的对话中就会这样称呼你啦~"
             except Exception as exc:
                 logger.error("Failed to update nickname: %s", exc)
-                reply = f"❌ 更新称呼失败: {exc}"
+                safe_err = sanitize_error_detail(exc)
+                reply = f"❌ 更新称呼失败: {safe_err}" if safe_err else "❌ 更新称呼失败，请稍后重试！"
 
         if hasattr(update, "message") and update.message:
             await update.message.reply_text(reply)
@@ -1236,10 +1239,12 @@ class TelegramBotHandlers:
 
         except Exception as exc:
             logger.error("Error generating LLM reply for chat_id=%d: %s", chat_id, exc, exc_info=True)
+            safe_err = sanitize_error_detail(exc)
+            err_detail = f": {safe_err}" if safe_err else ""
             try:
                 await bot.send_message(
                     chat_id=chat_id,
-                    text=f"抱歉，大模型生成回复失败: {exc}\n请在管理控制台检查当前模型提供商配置或 API Key。"
+                    text=f"抱歉，大模型生成回复失败{err_detail}\n请在管理控制台检查当前模型提供商配置或 API Key。"
                 )
             except Exception as send_err:
                 logger.error("Failed to send error notification to Telegram chat_id=%d: %s", chat_id, send_err)

@@ -13,6 +13,7 @@ from typing import AsyncIterator, Dict, Any, List, Optional
 import httpx
 
 from galgame2voice.adapters.base import BaseLLMAdapter, ChatMessage, LLMResponse, TestResult
+from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.adapters.llm.openai")
 
@@ -458,7 +459,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 latency_ms = round((time.perf_counter() - t0) * 1000, 2)
                 return TestResult(
                     success=False,
-                    message=f"Connection error: {type(exc).__name__} - {exc}",
+                    message=f"Connection error: {type(exc).__name__} - {sanitize_error_detail(exc)}",
                     latency_ms=latency_ms,
                 )
 

@@ -20,6 +20,7 @@ from galgame2voice.adapters.base import (
     LLMResponse,
     TestResult,
 )
+from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.adapters.llm.anthropic")
 
@@ -401,6 +402,6 @@ class AnthropicAdapter(BaseLLMAdapter):
             latency = (time.time() - t0) * 1000
             return TestResult(
                 success=False,
-                message=f"Anthropic connection failed: {exc}",
+                message=f"Anthropic connection failed: {sanitize_error_detail(exc)}",
                 latency_ms=latency,
             )

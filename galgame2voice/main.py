@@ -174,6 +174,13 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.debug("Error closing GPT-SoVITS client: %s", exc)
 
+    # Safe SQLite WAL truncation checkpoint
+    try:
+        async with get_db(settings.db_path) as conn:
+            await conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    except Exception as exc:
+        logger.debug("WAL checkpoint on shutdown: %s", exc)
+
     logger.info("Shutting down %s...", settings.app_name)
     logger.info("Graceful shutdown complete.")
 

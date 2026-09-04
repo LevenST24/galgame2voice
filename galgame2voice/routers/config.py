@@ -32,6 +32,7 @@ from galgame2voice.database.models import (
 )
 from galgame2voice.security import url_guard
 from galgame2voice.telegram_bot.proxy import get_proxy_url
+from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.routers.config")
 router = APIRouter(prefix="/api", tags=["Configuration & Providers"])
@@ -388,7 +389,7 @@ async def get_provider_models(provider_id: str):
             logger.warning("Failed to list models for provider %s: %s", provider_id, exc)
             preset = get_provider_preset(provider_id)
             fallback = preset["preset_models"] if preset else [stored.chat_model]
-            return {"provider_id": provider_id, "models": fallback, "warning": str(exc)}
+            return {"provider_id": provider_id, "models": fallback, "warning": sanitize_error_detail(exc)}
 
 
 @router.post(
@@ -508,8 +509,8 @@ async def test_telegram_bot(req: TelegramTestRequest):
             continue
 
     latency = round((time.perf_counter() - t0) * 1000, 2)
-    err_msg = str(last_err)
-    if "ConnectError" in str(type(last_err)) or "10061" in err_msg or "refused" in err_msg.lower():
+    sanitized_err_msg = sanitize_error_detail(last_err)
+    if "ConnectError" in str(type(last_err)) or "10061" in sanitized_err_msg or "refused" in sanitized_err_msg.lower():
         hint = f"连接被拒绝。请检查代理端口是否填写正确（例如 v2rayN 常用 10808，Clash 常用 7890）且代理客户端处于运行状态。"
         return {
             "success": False,
@@ -518,6 +519,6 @@ async def test_telegram_bot(req: TelegramTestRequest):
         }
     return {
         "success": False,
-        "message": f"连接失败: {type(last_err).__name__} - {err_msg}",
+        "message": f"连接失败: {type(last_err).__name__} - {sanitized_err_msg}",
         "latency_ms": latency,
     }

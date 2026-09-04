@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -84,9 +85,23 @@ class TtsCacheManager:
 
     def _spawn_background(self, coro) -> None:
         """Runs a coroutine in the background with strong ref (prevents GC mid-flight)."""
-        task = asyncio.create_task(coro)
-        self._bg_tasks.add(task)
-        task.add_done_callback(self._bg_tasks.discard)
+        try:
+            task = asyncio.create_task(coro)
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
+        except RuntimeError:
+            pass
+
+    async def _touch_db_async(self, cache_key: str) -> None:
+        """Asynchronously updates last_accessed_at in the database for the given cache key."""
+        try:
+            loop = asyncio.get_running_loop()
+            if not loop.is_running() or loop.is_closed():
+                return
+            async with get_db(self.db_path) as conn:
+                await crud.touch_tts_cache_entry(conn, cache_key)
+        except Exception as exc:
+            logger.debug("Non-critical: could not touch tts_cache_entry: %s", exc)
 
     def compute_cache_key(
         self,
@@ -180,86 +195,69 @@ class TtsCacheManager:
     async def get(self, cache_key: str) -> Optional[Tuple[bytes, str, int]]:
         """
         Retrieves cached audio bytes and URL for the given cache key.
-        Checks high-speed in-memory LRU cache first (<0.01ms), falling back to disk (<15ms).
+        Checks high-speed in-memory LRU cache first (<0.005ms), falling back to disk (<15ms).
         Returns (audio_bytes, url_path, file_size) if hit, None if miss.
         """
         url_path = f"/audio/cache/{cache_key}.wav"
+
+        # 1. Fast path: In-Memory LRU Cache hit (<0.005ms, pure RAM dictionary lookup under lock)
+        async with self._lock:
+            if cache_key in self._mem_cache:
+                self._mem_cache.move_to_end(cache_key)
+                data = self._mem_cache[cache_key]
+                self._hits += 1
+
+                now = time.time()
+                if cache_key not in self._touch_throttle or (now - self._touch_throttle[cache_key] > 5.0):
+                    self._touch_throttle[cache_key] = now
+                    self._spawn_background(self._touch_db_async(cache_key))
+                return data, url_path, len(data)
+
+        # 2. Slow path: Disk & SQLite cache (miss in memory)
         file_path = self.cache_dir / f"{cache_key}.wav"
 
         # Verify disk file presence and non-zero size to detect manual unlinking or corruption
         if not file_path.exists():
-            self._mem_cache_discard(cache_key)
-            self._misses += 1
+            async with self._lock:
+                self._mem_cache_discard(cache_key)
+                self._misses += 1
             return None
 
         try:
             file_size = file_path.stat().st_size
         except OSError:
-            self._mem_cache_discard(cache_key)
-            self._misses += 1
+            async with self._lock:
+                self._mem_cache_discard(cache_key)
+                self._misses += 1
             return None
 
         if file_size == 0:
             # Corrupted 0-byte file on disk -> evict from memory cache and delete
-            self._mem_cache_discard(cache_key)
-            self._misses += 1
+            async with self._lock:
+                self._mem_cache_discard(cache_key)
+                self._misses += 1
             try:
                 file_path.unlink(missing_ok=True)
             except Exception:
                 pass
             return None
 
-        # 1. Fast path: In-Memory LRU Cache hit (<0.01ms, pure RAM dictionary lookup)
-        if cache_key in self._mem_cache:
-            audio_bytes = self._mem_cache[cache_key]
-            self._mem_cache.move_to_end(cache_key)
-            self._hits += 1
-
-            now = time.time()
-            if cache_key not in self._touch_throttle or (now - self._touch_throttle[cache_key] > 5.0):
-                self._touch_throttle[cache_key] = now
-                async def _touch_metadata_mem():
-                    try:
-                        loop = asyncio.get_running_loop()
-                        if not loop.is_running() or loop.is_closed():
-                            return
-                        async with get_db(self.db_path) as conn:
-                            await crud.touch_tts_cache_entry(conn, cache_key)
-                    except Exception:
-                        pass
-                self._spawn_background(_touch_metadata_mem())
-            return audio_bytes, url_path, len(audio_bytes)
-
-        # 2. Slow path: Disk & SQLite cache
         now = time.time()
         if cache_key not in self._touch_throttle or (now - self._touch_throttle[cache_key] > 5.0):
             self._touch_throttle[cache_key] = now
-            async def _touch_metadata():
-                try:
-                    loop = asyncio.get_running_loop()
-                    if not loop.is_running() or loop.is_closed():
-                        return
-                    async with get_db(self.db_path) as conn:
-                        entry = await crud.get_tts_cache_entry(conn, cache_key)
-                        if entry:
-                            await crud.touch_tts_cache_entry(conn, cache_key)
-                except Exception as exc:
-                    logger.debug("Non-critical: could not touch tts_cache_entry: %s", exc)
-
-            try:
-                self._spawn_background(_touch_metadata())
-            except RuntimeError:
-                pass
+            self._spawn_background(self._touch_db_async(cache_key))
 
         try:
             audio_bytes = await asyncio.to_thread(file_path.read_bytes)
-            self._hits += 1
-            # Populate In-Memory LRU Cache
-            self._mem_cache_store(cache_key, audio_bytes)
+            async with self._lock:
+                self._hits += 1
+                # Populate In-Memory LRU Cache
+                self._mem_cache_store(cache_key, audio_bytes)
             return audio_bytes, url_path, len(audio_bytes)
         except Exception as e:
             logger.warning("Failed to read cache file %s: %s", file_path, e)
-            self._misses += 1
+            async with self._lock:
+                self._misses += 1
             return None
 
     async def put(
@@ -283,34 +281,60 @@ class TtsCacheManager:
         file_path = self.cache_dir / f"{cache_key}.wav"
 
         # Update In-Memory LRU Cache
-        self._mem_cache_store(cache_key, audio_bytes)
+        async with self._lock:
+            self._mem_cache_store(cache_key, audio_bytes)
 
         # Atomic write to file via temp file to prevent 0-byte/corrupt files
         def _atomic_write():
-            tmp_path = file_path.with_suffix(f".tmp.{os.getpid()}_{int(time.time()*1000)}.wav")
-            tmp_path.write_bytes(audio_bytes)
-            tmp_path.replace(file_path)
+            tmp_path = file_path.with_suffix(f".tmp.{os.getpid()}_{time.time_ns()}_{uuid.uuid4().hex}.wav")
+            try:
+                tmp_path.write_bytes(audio_bytes)
+                for attempt in range(5):
+                    try:
+                        tmp_path.replace(file_path)
+                        return
+                    except (PermissionError, OSError) as err:
+                        try:
+                            if file_path.exists() and file_path.stat().st_size > 0:
+                                tmp_path.unlink(missing_ok=True)
+                                return
+                        except Exception:
+                            pass
+                        if attempt == 4:
+                            tmp_path.unlink(missing_ok=True)
+                            raise err
+                        time.sleep(0.005 * (attempt + 1))
+            except Exception:
+                tmp_path.unlink(missing_ok=True)
+                raise
 
         await asyncio.to_thread(_atomic_write)
         file_size = len(audio_bytes)
         url_path = f"/audio/cache/{cache_key}.wav"
 
         # Register in SQLite
-        try:
-            async with get_db(self.db_path) as conn:
-                await crud.upsert_tts_cache_entry(
-                    conn=conn,
-                    cache_key=cache_key,
-                    text=text,
-                    clean_text=clean_text,
-                    voice_profile_id=voice_profile_id or 1,
-                    params_hash=params_hash,
-                    file_path=str(file_path),
-                    file_size=file_size,
-                    duration_ms=duration_ms,
-                )
-        except Exception as exc:
-            logger.warning("Failed to insert tts_cache_entry in DB: %s", exc)
+        for db_attempt in range(5):
+            try:
+                async with get_db(self.db_path) as conn:
+                    await crud.upsert_tts_cache_entry(
+                        conn=conn,
+                        cache_key=cache_key,
+                        text=text,
+                        clean_text=clean_text,
+                        voice_profile_id=voice_profile_id or 1,
+                        params_hash=params_hash,
+                        file_path=str(file_path),
+                        file_size=file_size,
+                        duration_ms=duration_ms,
+                    )
+                break
+            except Exception as exc:
+                if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                    if db_attempt < 4:
+                        await asyncio.sleep(0.02 * (db_attempt + 1))
+                        continue
+                logger.warning("Failed to insert tts_cache_entry in DB: %s", exc)
+                break
 
         # Trigger background pruning if cache exceeds limits
         self._spawn_background(self._check_and_prune())

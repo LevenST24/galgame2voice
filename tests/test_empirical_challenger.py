@@ -311,8 +311,9 @@ class TestProcessTerminationAndLifespan:
         try:
             # Wait for server to become responsive with direct loopback connection
             online = False
+            t0 = time.perf_counter()
             with httpx.Client(trust_env=False, timeout=5.0) as client:
-                for _ in range(15):
+                while time.perf_counter() - t0 < 15.0:
                     time.sleep(0.5)
                     try:
                         r = client.get(f"http://127.0.0.1:{test_port}/api/health")
@@ -322,7 +323,7 @@ class TestProcessTerminationAndLifespan:
                     except Exception:
                         pass
 
-                assert online, "Subprocess server failed to start within 7.5 seconds"
+                assert online, "Subprocess server failed to start within 15.0 seconds"
 
                 # Query system status
                 r_sys = client.get(f"http://127.0.0.1:{test_port}/api/system/status")

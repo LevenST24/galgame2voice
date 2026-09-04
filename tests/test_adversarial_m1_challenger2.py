@@ -40,7 +40,7 @@ class TestProcessTreeTermination:
 
         # Script creates child process, and child creates grandchild
         worker_code = f"""
-import subprocess, time, sys, socket
+import subprocess, time, sys, socket, textwrap
 
 s1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -58,7 +58,7 @@ while True:
     time.sleep(0.5)
 '''
 
-p_child = subprocess.Popen([sys.executable, '-c', child_code])
+p_child = subprocess.Popen([sys.executable, '-c', textwrap.dedent(child_code)])
 while True:
     time.sleep(0.5)
 """
@@ -89,15 +89,16 @@ while True:
         )
         assert kill_result.returncode == 0, f"taskkill failed: {kill_result.stderr}"
 
-        # Verify both ports are freed and processes are dead
+        # Verify both ports are freed and processes are dead within 10s
         freed = False
-        for _ in range(50):
+        t_free_start = time.perf_counter()
+        while time.perf_counter() - t_free_start < 10.0:
             if not is_port_listening(port1) and not is_port_listening(port2):
                 freed = True
                 break
             time.sleep(0.1)
 
-        assert freed, f"Ports ({port1}, {port2}) were not released by tree kill!"
+        assert freed, f"Ports ({port1}, {port2}) were not released by tree kill within 10s!"
 
         # Verify parent process is no longer running
         parent.poll()

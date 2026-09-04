@@ -38,6 +38,7 @@ from galgame2voice.services.session_manager import SessionManager
 from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.services.affection_service import AffectionService
 from galgame2voice.services.metrics_collector import get_metrics_collector, MetricsCollector
+from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.text_splitter import split_japanese_sentences
 
 logger = logging.getLogger("galgame2voice.services.chat_service")
@@ -606,12 +607,13 @@ class ChatService:
                                     "Failed to synthesize audio chunk %d for sentence '%s': %s",
                                     chunk_index, sentence, tts_err,
                                 )
+                                safe_err = sanitize_error_detail(str(tts_err)[:200])
                                 await event_queue.put({
                                     "event": "audio_chunk_error",
                                     "data": {
                                         "index": chunk_index,
                                         "sentence": sentence,
-                                        "error": str(tts_err)[:200],
+                                        "error": safe_err,
                                     },
                                 })
                             chunk_index += 1
@@ -662,7 +664,8 @@ class ChatService:
                         await tts_queue.put(sentence)
                 except Exception as exc:
                     logger.error("LLM Producer error: %s", exc)
-                    await event_queue.put({"event": "error", "data": {"error": str(exc)}})
+                    safe_err = sanitize_error_detail(exc)
+                    await event_queue.put({"event": "error", "data": {"error": safe_err or "LLM generation failed"}})
                 finally:
                     await tts_queue.put(None)
                     await event_queue.put(_SENTINEL)
@@ -829,9 +832,10 @@ class ChatService:
 
         except Exception as exc:
             logger.error("Error in stream_chat pipeline: %s", exc, exc_info=True)
+            safe_err = sanitize_error_detail(exc)
             yield {
                 "event": "error",
-                "data": {"error": str(exc)}
+                "data": {"error": safe_err or "Chat service stream pipeline error"}
             }
         finally:
             # Reap producer/worker no matter how we exited (normal end, error,
