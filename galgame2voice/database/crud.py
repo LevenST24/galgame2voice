@@ -151,6 +151,7 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_voice_profiles_is_default ON voice_profiles(is_default);")
 
     # Schema migration checks for existing tables
     try:
@@ -184,6 +185,8 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     """)
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions(channel);")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_voice_profile ON sessions(voice_profile_id);")
 
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
@@ -199,6 +202,7 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     """)
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session_created ON messages(session_id, created_at);")
 
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS user_memories (

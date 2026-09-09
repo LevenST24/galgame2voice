@@ -19,9 +19,15 @@ from galgame2voice.services.voice_manager import (
     set_voice_manager,
 )
 
+from galgame2voice.services.emotion_classifier import (
+    EMOTION_KEYWORDS,
+    VALID_EMOTIONS,
+    EMOTION_NAME_MAP,
+    classify_emotion,
+)
+from galgame2voice.services.streaming_parser import StreamingBilingualParser
 from galgame2voice.services.chat_service import (
     ChatService,
-    StreamingBilingualParser,
     DYNAMIC_SPEED_MIN,
     DYNAMIC_SPEED_MAX,
     DYNAMIC_TEMP_MIN,
@@ -42,6 +48,10 @@ __all__ = [
     "TtsService",
     "ChatService",
     "StreamingBilingualParser",
+    "classify_emotion",
+    "EMOTION_KEYWORDS",
+    "VALID_EMOTIONS",
+    "EMOTION_NAME_MAP",
     "DYNAMIC_SPEED_MIN",
     "DYNAMIC_SPEED_MAX",
     "DYNAMIC_TEMP_MIN",

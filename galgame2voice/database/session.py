@@ -43,7 +43,14 @@ async def configure_connection(conn: aiosqlite.Connection, resolved_path: Option
             await conn.execute("PRAGMA journal_mode = WAL;")
         if key is not None:
             _wal_confirmed_paths.add(key)
-    await conn.executescript("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL;")
+    await conn.executescript(
+        "PRAGMA foreign_keys = ON; "
+        "PRAGMA busy_timeout = 5000; "
+        "PRAGMA synchronous = NORMAL; "
+        "PRAGMA cache_size = -64000; "
+        "PRAGMA temp_store = MEMORY; "
+        "PRAGMA mmap_size = 268435456;"
+    )
 
 
 

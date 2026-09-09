@@ -357,6 +357,7 @@ CREATE TABLE IF NOT EXISTS voice_profiles (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_voice_profiles_is_default ON voice_profiles(is_default);
 
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -370,6 +371,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions(channel);
 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_voice_profile ON sessions(voice_profile_id);
 
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -383,6 +386,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_session_created ON messages(session_id, created_at);
 
 CREATE TABLE IF NOT EXISTS session_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
