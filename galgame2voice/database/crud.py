@@ -23,7 +23,7 @@ from galgame2voice.database.models import (
     TtsCacheEntry, CacheStatsResponse, TokenUsageMetric, MetricsOverviewResponse,
     ProviderMetricItem, ProvidersMetricsResponse, LatencyTrendItem, LatencyTrendResponse
 )
-
+from galgame2voice.database.session import immediate_transaction
 
 logger = logging.getLogger("galgame2voice.database.crud")
 
@@ -293,14 +293,15 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
 【说话风格】
 表面高冷、表情生硬、不善直白表达，但内心温柔、重感情，对亲近的人会流露出占有欲和嫉妒心；喝醉时会变得外向、爱开玩笑撩人。语气礼貌得体，符合大学生口吻，可带语气词（如です、ます、ね、よ等）。
 
-重要：你必须严格输出如下 JSON 格式，不要输出任何多余文字、不要加代码块标记：
-{"chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}
+重要：你必须严格输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.70~1.35, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad），不要输出任何多余文字、不要加代码块标记：
+{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}
 
 要求：
-1. chinese 是给中文玩家看的内容；japanese 是同样含义的日文，口语自然、适合配音。
-2. japanese 必须符合四季夏目的角色口吻。
-3. 两个字段都不能为空。
-4. 始终以四季夏目的身份回复，不要解释设定、不要跳出角色。"""
+1. tts 包含 speed 语速、temp 生成温度、emotion 情绪，在开头根据每句话的情境动态微调。
+2. chinese 是给中文玩家看的内容；japanese 是同样含义的日文，口语自然、适合配音。
+3. japanese 必须符合四季夏目的角色口吻。
+4. 字段都不能为空。
+5. 始终以四季夏目的身份回复，不要解释设定、不要跳出角色。"""
         await conn.execute("""
             INSERT OR IGNORE INTO voice_profiles (
                 id, name, description, gpt_weights_path, sovits_weights_path,
@@ -319,6 +320,31 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
             natsume_prompt,
             1
         ))
+    else:
+        # Upgrade existing default profile if it still carries legacy prompt without dynamic tts instructions
+        try:
+            cur = await conn.execute("SELECT id, system_prompt FROM voice_profiles WHERE is_default = 1 OR id = 1;")
+            row = await cur.fetchone()
+            if row and row["system_prompt"] and '"tts":' not in row["system_prompt"] and '{"chinese":' in row["system_prompt"]:
+                new_prompt = row["system_prompt"].replace(
+                    '{"chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}',
+                    '{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}'
+                )
+                if "动态决定语音推理参数" not in new_prompt:
+                    new_prompt = new_prompt.replace(
+                        "你必须严格输出如下 JSON 格式",
+                        "你必须严格输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad）"
+                    )
+                await conn.execute("UPDATE voice_profiles SET system_prompt = ? WHERE id = ?;", (new_prompt, row["id"]))
+            # Also update if it has the old tts instruction but not the bold one
+            elif row and row["system_prompt"] and '请大胆调节！' not in row["system_prompt"] and '动态决定语音推理参数' in row["system_prompt"]:
+                new_prompt = row["system_prompt"].replace(
+                    "speed 语速: 0.70~1.35",
+                    "speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下"
+                )
+                await conn.execute("UPDATE voice_profiles SET system_prompt = ? WHERE id = ?;", (new_prompt, row["id"]))
+        except Exception as exc:
+            logger.debug("Could not auto-upgrade default voice profile system prompt: %s", exc)
 
     # 3. Seed Providers
     cursor = await conn.execute("SELECT COUNT(*) FROM providers;")
@@ -518,18 +544,17 @@ async def update_settings(conn: aiosqlite.Connection, updates: SettingsUpdate) -
             fields.append(f"{k} = ?")
             values.append(v)
 
-    if fields:
-        fields.append("updated_at = CURRENT_TIMESTAMP")
-        query = f"UPDATE settings SET {', '.join(fields)} WHERE id = 1;"
-        await conn.execute(query, tuple(values))
-
-    if "active_provider_id" in update_dict and update_dict["active_provider_id"]:
-        prov_id = str(update_dict["active_provider_id"]).strip()
-        await conn.execute("UPDATE providers SET is_active = 0;")
-        await conn.execute("UPDATE providers SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?;", (prov_id,))
-
     if fields or ("active_provider_id" in update_dict and update_dict["active_provider_id"]):
-        await conn.commit()
+        async with immediate_transaction(conn):
+            if fields:
+                fields.append("updated_at = CURRENT_TIMESTAMP")
+                query = f"UPDATE settings SET {', '.join(fields)} WHERE id = 1;"
+                await conn.execute(query, tuple(values))
+
+            if "active_provider_id" in update_dict and update_dict["active_provider_id"]:
+                prov_id = str(update_dict["active_provider_id"]).strip()
+                await conn.execute("UPDATE providers SET is_active = 0;")
+                await conn.execute("UPDATE providers SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?;", (prov_id,))
 
     return await get_settings(conn, mask=True)
 
@@ -627,18 +652,17 @@ async def get_active_provider(conn: aiosqlite.Connection, mask: bool = True) -> 
 
 async def create_provider(conn: aiosqlite.Connection, provider: ProviderCreate) -> ProviderResponse:
     headers_str = json.dumps(provider.custom_headers)
-    await conn.execute("""
-        INSERT INTO providers (id, name, api_base_url, api_key, chat_model, stt_model, is_active, custom_headers)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-    """, (
-        provider.id, provider.name, provider.api_base_url,
-        provider.api_key, provider.chat_model, provider.stt_model,
-        1 if provider.is_active else 0, headers_str
-    ))
-    if provider.is_active:
-        await set_active_provider(conn, provider.id)
-    else:
-        await conn.commit()
+    async with immediate_transaction(conn):
+        await conn.execute("""
+            INSERT INTO providers (id, name, api_base_url, api_key, chat_model, stt_model, is_active, custom_headers)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        """, (
+            provider.id, provider.name, provider.api_base_url,
+            provider.api_key, provider.chat_model, provider.stt_model,
+            1 if provider.is_active else 0, headers_str
+        ))
+        if provider.is_active:
+            await set_active_provider(conn, provider.id)
     return await get_provider(conn, provider.id, mask=True)
 
 
@@ -675,16 +699,15 @@ async def update_provider(conn: aiosqlite.Connection, provider_id: str, updates:
             fields.append(f"{k} = ?")
             values.append(v)
 
-    if fields:
-        fields.append("updated_at = CURRENT_TIMESTAMP")
-        values.append(provider_id)
-        query = f"UPDATE providers SET {', '.join(fields)} WHERE id = ?;"
-        await conn.execute(query, tuple(values))
+    async with immediate_transaction(conn):
+        if fields:
+            fields.append("updated_at = CURRENT_TIMESTAMP")
+            values.append(provider_id)
+            query = f"UPDATE providers SET {', '.join(fields)} WHERE id = ?;"
+            await conn.execute(query, tuple(values))
 
-    if updates.is_active:
-        await set_active_provider(conn, provider_id)
-    else:
-        await conn.commit()
+        if updates.is_active:
+            await set_active_provider(conn, provider_id)
 
     return await get_provider(conn, provider_id, mask=True)
 
@@ -693,18 +716,18 @@ async def set_active_provider(conn: aiosqlite.Connection, provider_id: str) -> b
     provider = await get_provider_raw(conn, provider_id)
     if not provider:
         return False
-    await conn.execute("UPDATE providers SET is_active = 0;")
-    await conn.execute("UPDATE providers SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?;", (provider_id,))
-    cur = await conn.execute("UPDATE settings SET active_provider_id = ?, updated_at = CURRENT_TIMESTAMP;", (provider_id,))
-    if cur.rowcount == 0:
-        await conn.execute("INSERT OR IGNORE INTO settings (id, active_provider_id) VALUES (1, ?);", (provider_id,))
-    await conn.commit()
+    async with immediate_transaction(conn):
+        await conn.execute("UPDATE providers SET is_active = 0;")
+        await conn.execute("UPDATE providers SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?;", (provider_id,))
+        cur = await conn.execute("UPDATE settings SET active_provider_id = ?, updated_at = CURRENT_TIMESTAMP;", (provider_id,))
+        if cur.rowcount == 0:
+            await conn.execute("INSERT OR IGNORE INTO settings (id, active_provider_id) VALUES (1, ?);", (provider_id,))
     return True
 
 
 async def delete_provider(conn: aiosqlite.Connection, provider_id: str) -> bool:
-    cursor = await conn.execute("DELETE FROM providers WHERE id = ?;", (provider_id,))
-    await conn.commit()
+    async with immediate_transaction(conn):
+        cursor = await conn.execute("DELETE FROM providers WHERE id = ?;", (provider_id,))
     return cursor.rowcount > 0
 
 
@@ -725,6 +748,17 @@ async def list_voice_profiles(conn: aiosqlite.Connection) -> List[VoiceProfileRe
 async def get_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> Optional[VoiceProfileResponse]:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM voice_profiles WHERE id = ?;", (profile_id,))
+    row = await cursor.fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["is_default"] = bool(d.get("is_default", 0))
+    return VoiceProfileResponse(**d)
+
+
+async def get_voice_profile_by_name(conn: aiosqlite.Connection, name: str) -> Optional[VoiceProfileResponse]:
+    conn.row_factory = aiosqlite.Row
+    cursor = await conn.execute("SELECT * FROM voice_profiles WHERE name = ? LIMIT 1;", (name,))
     row = await cursor.fetchone()
     if not row:
         return None
@@ -779,22 +813,22 @@ async def get_active_voice_profile(conn: aiosqlite.Connection) -> Optional[Voice
 
 async def create_voice_profile(conn: aiosqlite.Connection, profile: VoiceProfileCreate) -> VoiceProfileResponse:
     conn.row_factory = aiosqlite.Row
-    if profile.is_default:
-        await conn.execute("UPDATE voice_profiles SET is_default = 0;")
+    async with immediate_transaction(conn):
+        if profile.is_default:
+            await conn.execute("UPDATE voice_profiles SET is_default = 0;")
 
-    cursor = await conn.execute("""
-        INSERT INTO voice_profiles (
-            name, description, gpt_weights_path, sovits_weights_path,
-            ref_audio_path, prompt_text, prompt_lang, text_lang, system_prompt, is_default
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-    """, (
-        profile.name, profile.description, profile.gpt_weights_path,
-        profile.sovits_weights_path, profile.ref_audio_path,
-        profile.prompt_text, profile.prompt_lang, profile.text_lang,
-        profile.system_prompt, 1 if profile.is_default else 0
-    ))
-    new_id = cursor.lastrowid
-    await conn.commit()
+        cursor = await conn.execute("""
+            INSERT INTO voice_profiles (
+                name, description, gpt_weights_path, sovits_weights_path,
+                ref_audio_path, prompt_text, prompt_lang, text_lang, system_prompt, is_default
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """, (
+            profile.name, profile.description, profile.gpt_weights_path,
+            profile.sovits_weights_path, profile.ref_audio_path,
+            profile.prompt_text, profile.prompt_lang, profile.text_lang,
+            profile.system_prompt, 1 if profile.is_default else 0
+        ))
+        new_id = cursor.lastrowid
     return await get_voice_profile(conn, new_id)
 
 
@@ -819,29 +853,29 @@ async def update_voice_profile(conn: aiosqlite.Connection, profile_id: int, upda
         fields.append("updated_at = CURRENT_TIMESTAMP")
         values.append(profile_id)
         query = f"UPDATE voice_profiles SET {', '.join(fields)} WHERE id = ?;"
-        await conn.execute(query, tuple(values))
-        await conn.commit()
+        async with immediate_transaction(conn):
+            await conn.execute(query, tuple(values))
 
     return await get_voice_profile(conn, profile_id)
 
 
 async def set_active_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> bool:
     try:
-        await conn.execute("UPDATE settings SET active_voice_profile_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1;", (profile_id,))
-        await conn.commit()
+        async with immediate_transaction(conn):
+            await conn.execute("UPDATE settings SET active_voice_profile_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1;", (profile_id,))
         return True
     except Exception:
         try:
-            await conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('active_voice_profile_id', ?);", (str(profile_id),))
-            await conn.commit()
+            async with immediate_transaction(conn):
+                await conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('active_voice_profile_id', ?);", (str(profile_id),))
             return True
         except Exception:
             return False
 
 
 async def delete_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> bool:
-    cursor = await conn.execute("DELETE FROM voice_profiles WHERE id = ?;", (profile_id,))
-    await conn.commit()
+    async with immediate_transaction(conn):
+        cursor = await conn.execute("DELETE FROM voice_profiles WHERE id = ?;", (profile_id,))
     return cursor.rowcount > 0
 
 
@@ -857,10 +891,13 @@ async def get_or_create_session(
     try:
         cursor = await conn.execute("SELECT * FROM sessions WHERE id = ?;", (session_id,))
         row = await cursor.fetchone()
-    except (sqlite3.OperationalError, aiosqlite.OperationalError):
-        await init_schema_and_seeds(conn)
-        cursor = await conn.execute("SELECT * FROM sessions WHERE id = ?;", (session_id,))
-        row = await cursor.fetchone()
+    except (sqlite3.OperationalError, aiosqlite.OperationalError) as err:
+        if "no such table" in str(err).lower():
+            await init_schema_and_seeds(conn)
+            cursor = await conn.execute("SELECT * FROM sessions WHERE id = ?;", (session_id,))
+            row = await cursor.fetchone()
+        else:
+            raise
 
     if row:
         return SessionResponse(**dict(row))
@@ -871,21 +908,21 @@ async def get_or_create_session(
     profile_id = active_profile.id if active_profile else None
 
     try:
-        await conn.execute("""
-            INSERT INTO sessions (id, channel, user_id, voice_profile_id, token_budget)
-            VALUES (?, ?, ?, ?, 4096)
-            ON CONFLICT(id) DO NOTHING;
-        """, (session_id, channel, user_id, profile_id))
-        await conn.commit()
+        async with immediate_transaction(conn):
+            await conn.execute("""
+                INSERT INTO sessions (id, channel, user_id, voice_profile_id, token_budget)
+                VALUES (?, ?, ?, ?, 4096)
+                ON CONFLICT(id) DO NOTHING;
+            """, (session_id, channel, user_id, profile_id))
     except (sqlite3.IntegrityError, aiosqlite.IntegrityError):
         # Fallback if profile_id had a foreign key issue
         try:
-            await conn.execute("""
-                INSERT INTO sessions (id, channel, user_id, voice_profile_id, token_budget)
-                VALUES (?, ?, ?, NULL, 4096)
-                ON CONFLICT(id) DO NOTHING;
-            """, (session_id, channel, user_id))
-            await conn.commit()
+            async with immediate_transaction(conn):
+                await conn.execute("""
+                    INSERT INTO sessions (id, channel, user_id, voice_profile_id, token_budget)
+                    VALUES (?, ?, ?, NULL, 4096)
+                    ON CONFLICT(id) DO NOTHING;
+                """, (session_id, channel, user_id))
         except Exception:
             pass
 
@@ -920,46 +957,52 @@ async def list_sessions(conn: aiosqlite.Connection, limit: int = 50) -> List[Ses
 
 
 async def delete_session(conn: aiosqlite.Connection, session_id: str) -> bool:
-    cursor = await conn.execute("DELETE FROM sessions WHERE id = ?;", (session_id,))
-    await conn.commit()
+    async with immediate_transaction(conn):
+        cursor = await conn.execute("DELETE FROM sessions WHERE id = ?;", (session_id,))
     return cursor.rowcount > 0
 
 
 async def clear_session_messages(conn: aiosqlite.Connection, session_id: str) -> bool:
-    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
-    if await cur.fetchone():
-        cursor = await conn.execute("DELETE FROM session_messages WHERE session_id = ?;", (session_id,))
-        await conn.commit()
-        return cursor.rowcount > 0
-    else:
+    cleared = False
+    async with immediate_transaction(conn):
+        cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
+        if await cur.fetchone():
+            cursor = await conn.execute("DELETE FROM session_messages WHERE session_id = ?;", (session_id,))
+            if cursor.rowcount > 0:
+                cleared = True
+
         cur_msg = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages';")
-        if not await cur_msg.fetchone():
-            return False
-        cursor = await conn.execute("DELETE FROM messages WHERE session_id = ?;", (session_id,))
-        cur_sess = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions';")
-        if await cur_sess.fetchone():
-            await conn.execute("UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?;", (session_id,))
-        await conn.commit()
-        return cursor.rowcount > 0
+        if await cur_msg.fetchone():
+            cursor = await conn.execute("DELETE FROM messages WHERE session_id = ?;", (session_id,))
+            if cursor.rowcount > 0:
+                cleared = True
+            cur_sess = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions';")
+            if await cur_sess.fetchone():
+                await conn.execute("UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?;", (session_id,))
+
+    return cleared
 
 
 async def add_message(conn: aiosqlite.Connection, msg: MessageCreate) -> MessageResponse:
     conn.row_factory = aiosqlite.Row
     # Ensure session exists
     await get_or_create_session(conn, msg.session_id)
-    cursor = await conn.execute("""
-        INSERT INTO messages (session_id, role, content_chinese, content_japanese, audio_url, latency_ms)
-        VALUES (?, ?, ?, ?, ?, ?);
-    """, (
-        msg.session_id, msg.role, msg.content_chinese,
-        msg.content_japanese, msg.audio_url, msg.latency_ms
-    ))
-    new_id = cursor.lastrowid
-    await conn.execute("UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?;", (msg.session_id,))
-    await conn.commit()
-
-    cursor = await conn.execute("SELECT * FROM messages WHERE id = ?;", (new_id,))
-    row = await cursor.fetchone()
+    async with immediate_transaction(conn):
+        cursor = await conn.execute("""
+            INSERT INTO messages (session_id, role, content_chinese, content_japanese, audio_url, latency_ms)
+            VALUES (?, ?, ?, ?, ?, ?)
+            RETURNING *;
+        """, (
+            msg.session_id, msg.role, msg.content_chinese,
+            msg.content_japanese, msg.audio_url, msg.latency_ms
+        ))
+        row = await cursor.fetchone()
+        if not row and cursor.lastrowid:
+            cur2 = await conn.execute("SELECT * FROM messages WHERE id = ?;", (cursor.lastrowid,))
+            row = await cur2.fetchone()
+        await conn.execute("UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?;", (msg.session_id,))
+    if not row:
+        raise RuntimeError(f"Failed to persist or retrieve message for session '{msg.session_id}'")
     return MessageResponse(**dict(row))
 
 
@@ -988,18 +1031,24 @@ async def count_session_messages(conn: aiosqlite.Connection, session_id: str) ->
 
 async def create_memory(conn: aiosqlite.Connection, memory: UserMemoryCreate) -> UserMemoryResponse:
     conn.row_factory = aiosqlite.Row
-    cursor = await conn.execute("""
-        INSERT INTO user_memories (
-            user_id, character_id, category, fact_key, fact_value,
-            confidence, source_message_id, recall_count, last_recalled_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-    """, (
-        memory.user_id, memory.character_id, memory.category, memory.fact_key, memory.fact_value,
-        memory.confidence, memory.source_message_id, memory.recall_count, memory.last_recalled_at
-    ))
-    new_id = cursor.lastrowid
-    await conn.commit()
-    return await get_memory(conn, new_id)
+    async with immediate_transaction(conn):
+        cursor = await conn.execute("""
+            INSERT INTO user_memories (
+                user_id, character_id, category, fact_key, fact_value,
+                confidence, source_message_id, recall_count, last_recalled_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING *;
+        """, (
+            memory.user_id, memory.character_id, memory.category, memory.fact_key, memory.fact_value,
+            memory.confidence, memory.source_message_id, memory.recall_count, memory.last_recalled_at
+        ))
+        row = await cursor.fetchone()
+        if not row and cursor.lastrowid:
+            cur2 = await conn.execute("SELECT * FROM user_memories WHERE id = ?;", (cursor.lastrowid,))
+            row = await cur2.fetchone()
+    if not row:
+        raise RuntimeError("Failed to persist user memory")
+    return UserMemoryResponse(**dict(row))
 
 
 async def get_memory(conn: aiosqlite.Connection, memory_id: int) -> Optional[UserMemoryResponse]:
@@ -1061,15 +1110,15 @@ async def update_memory(
         fields.append("updated_at = CURRENT_TIMESTAMP")
         values.append(memory_id)
         query = f"UPDATE user_memories SET {', '.join(fields)} WHERE id = ?;"
-        await conn.execute(query, tuple(values))
-        await conn.commit()
+        async with immediate_transaction(conn):
+            await conn.execute(query, tuple(values))
 
     return await get_memory(conn, memory_id)
 
 
 async def delete_memory(conn: aiosqlite.Connection, memory_id: int) -> bool:
-    cursor = await conn.execute("DELETE FROM user_memories WHERE id = ?;", (memory_id,))
-    await conn.commit()
+    async with immediate_transaction(conn):
+        cursor = await conn.execute("DELETE FROM user_memories WHERE id = ?;", (memory_id,))
     return cursor.rowcount > 0
 
 
@@ -1085,46 +1134,48 @@ async def clear_memories(
         params.append(character_id)
 
     where_clause = " AND ".join(conditions)
-    cursor = await conn.execute(f"DELETE FROM user_memories WHERE {where_clause};", tuple(params))
-    await conn.commit()
+    async with immediate_transaction(conn):
+        cursor = await conn.execute(f"DELETE FROM user_memories WHERE {where_clause};", tuple(params))
     return cursor.rowcount
 
 
-async def upsert_memory(conn: aiosqlite.Connection, memory: UserMemoryCreate) -> UserMemoryResponse:
+async def upsert_memory(conn: aiosqlite.Connection, memory: UserMemoryCreate) -> Optional[UserMemoryResponse]:
     conn.row_factory = aiosqlite.Row
     character_id = memory.character_id if memory.character_id is not None else 1
-    await conn.execute("""
-        INSERT INTO user_memories (
-            user_id, character_id, category, fact_key, fact_value,
-            confidence, source_message_id, recall_count, last_recalled_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)
-        ON CONFLICT(user_id, character_id, fact_key) DO UPDATE SET
-            fact_value = excluded.fact_value,
-            category = excluded.category,
-            confidence = excluded.confidence,
-            source_message_id = COALESCE(excluded.source_message_id, source_message_id),
-            updated_at = CURRENT_TIMESTAMP;
-    """, (
-        memory.user_id, character_id, memory.category, memory.fact_key, memory.fact_value,
-        memory.confidence, memory.source_message_id,
-    ))
-    await conn.commit()
-
-    cursor = await conn.execute(
-        "SELECT id FROM user_memories WHERE user_id = ? AND character_id = ? AND fact_key = ?;",
-        (memory.user_id, character_id, memory.fact_key),
-    )
-    row = await cursor.fetchone()
-    return await get_memory(conn, row["id"]) if row else await get_memory(conn, 0)
+    async with immediate_transaction(conn):
+        cursor = await conn.execute("""
+            INSERT INTO user_memories (
+                user_id, character_id, category, fact_key, fact_value,
+                confidence, source_message_id, recall_count, last_recalled_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)
+            ON CONFLICT(user_id, character_id, fact_key) DO UPDATE SET
+                fact_value = excluded.fact_value,
+                category = excluded.category,
+                confidence = excluded.confidence,
+                source_message_id = COALESCE(excluded.source_message_id, source_message_id),
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING *;
+        """, (
+            memory.user_id, character_id, memory.category, memory.fact_key, memory.fact_value,
+            memory.confidence, memory.source_message_id,
+        ))
+        row = await cursor.fetchone()
+        if not row:
+            cur2 = await conn.execute(
+                "SELECT * FROM user_memories WHERE user_id = ? AND character_id = ? AND fact_key = ?;",
+                (memory.user_id, character_id, memory.fact_key),
+            )
+            row = await cur2.fetchone()
+    return UserMemoryResponse(**dict(row)) if row else None
 
 
 async def record_memory_recall(conn: aiosqlite.Connection, memory_id: int) -> None:
-    await conn.execute("""
-        UPDATE user_memories
-        SET recall_count = recall_count + 1, last_recalled_at = CURRENT_TIMESTAMP
-        WHERE id = ?;
-    """, (memory_id,))
-    await conn.commit()
+    async with immediate_transaction(conn):
+        await conn.execute("""
+            UPDATE user_memories
+            SET recall_count = recall_count + 1, last_recalled_at = CURRENT_TIMESTAMP
+            WHERE id = ?;
+        """, (memory_id,))
 
 
 async def record_memory_recall_batch(conn: aiosqlite.Connection, memory_ids: List[int]) -> None:
@@ -1132,12 +1183,12 @@ async def record_memory_recall_batch(conn: aiosqlite.Connection, memory_ids: Lis
     ids = list(dict.fromkeys(memory_ids))
     if not ids:
         return
-    await conn.executemany("""
-        UPDATE user_memories
-        SET recall_count = recall_count + 1, last_recalled_at = CURRENT_TIMESTAMP
-        WHERE id = ?;
-    """, [(mid,) for mid in ids])
-    await conn.commit()
+    async with immediate_transaction(conn):
+        await conn.executemany("""
+            UPDATE user_memories
+            SET recall_count = recall_count + 1, last_recalled_at = CURRENT_TIMESTAMP
+            WHERE id = ?;
+        """, [(mid,) for mid in ids])
 
 
 # ==================== Character Affection CRUD ====================
@@ -1188,14 +1239,14 @@ async def get_or_create_character_affection(
     if row:
         return _format_affection_response(dict(row))
 
-    await conn.execute("""
-        INSERT INTO character_affection (
-            user_id, character_id, affection_score, affection_level, current_emotion,
-            interaction_count, daily_points_earned, last_interaction_date, unlocked_dialogues, custom_nickname
-        ) VALUES (?, ?, 0, 1, 'normal', 0, 0, '', '[]', NULL)
-        ON CONFLICT(user_id, character_id) DO NOTHING;
-    """, (user_id, character_id))
-    await conn.commit()
+    async with immediate_transaction(conn):
+        await conn.execute("""
+            INSERT INTO character_affection (
+                user_id, character_id, affection_score, affection_level, current_emotion,
+                interaction_count, daily_points_earned, last_interaction_date, unlocked_dialogues, custom_nickname
+            ) VALUES (?, ?, 0, 1, 'normal', 0, 0, '', '[]', NULL)
+            ON CONFLICT(user_id, character_id) DO NOTHING;
+        """, (user_id, character_id))
 
     cursor = await conn.execute("""
         SELECT * FROM character_affection WHERE user_id = ? AND character_id = ?;
@@ -1273,8 +1324,8 @@ async def update_character_affection(
         fields.append("updated_at = CURRENT_TIMESTAMP")
         values.extend([user_id, character_id])
         query = f"UPDATE character_affection SET {', '.join(fields)} WHERE user_id = ? AND character_id = ?;"
-        await conn.execute(query, tuple(values))
-        await conn.commit()
+        async with immediate_transaction(conn):
+            await conn.execute(query, tuple(values))
 
     return await get_character_affection(conn, user_id, character_id)
 
@@ -1285,15 +1336,62 @@ async def reset_character_affection(
     character_id: int = 1
 ) -> CharacterAffectionResponse:
     await get_or_create_character_affection(conn, user_id, character_id)
-    await conn.execute("""
-        UPDATE character_affection
-        SET affection_score = 0, affection_level = 1, current_emotion = 'normal',
-            interaction_count = 0, daily_points_earned = 0, last_interaction_date = '',
-            unlocked_dialogues = '[]', custom_nickname = NULL, updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = ? AND character_id = ?;
-    """, (user_id, character_id))
-    await conn.commit()
+    async with immediate_transaction(conn):
+        await conn.execute("""
+            UPDATE character_affection
+            SET affection_score = 0, affection_level = 1, current_emotion = 'normal',
+                interaction_count = 0, daily_points_earned = 0, last_interaction_date = '',
+                unlocked_dialogues = '[]', custom_nickname = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND character_id = ?;
+        """, (user_id, character_id))
     return await get_or_create_character_affection(conn, user_id, character_id)
+
+
+async def unlock_character_dialogues(
+    conn: aiosqlite.Connection,
+    user_id: str,
+    character_id: int,
+    dialogue_ids_to_add: List[str],
+) -> List[str]:
+    """
+    Atomically appends new dialogue IDs to unlocked_dialogues under an immediate transaction.
+    Guarantees no lost updates or race conditions when concurrent requests unlock dialogues.
+    """
+    if not dialogue_ids_to_add:
+        aff = await get_character_affection(conn, user_id, character_id)
+        return aff.unlocked_dialogues if aff else []
+
+    await get_or_create_character_affection(conn, user_id, character_id)
+
+    async with immediate_transaction(conn):
+        cursor = await conn.execute(
+            "SELECT unlocked_dialogues FROM character_affection WHERE user_id = ? AND character_id = ?;",
+            (user_id, character_id),
+        )
+        row = await cursor.fetchone()
+        raw_json = row[0] if row else "[]"
+        try:
+            current_list = json.loads(raw_json) if raw_json else []
+            if not isinstance(current_list, list):
+                current_list = []
+        except Exception:
+            current_list = []
+
+        seen = set(current_list)
+        changed = False
+        for d_id in dialogue_ids_to_add:
+            if d_id and d_id not in seen:
+                current_list.append(d_id)
+                seen.add(d_id)
+                changed = True
+
+        if changed:
+            await conn.execute(
+                "UPDATE character_affection SET unlocked_dialogues = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE user_id = ? AND character_id = ?;",
+                (json.dumps(current_list, ensure_ascii=False), user_id, character_id),
+            )
+        return current_list
 
 
 async def increment_affection(
@@ -1306,65 +1404,44 @@ async def increment_affection(
     today_date_str: Optional[str] = None
 ) -> Tuple[CharacterAffectionResponse, int, bool]:
     """
-    Increments affection with daily cap checking.
+    Increments affection with daily cap checking atomically in a single transaction.
     Returns (updated_affection, actual_points_gained, did_level_up).
-
-    The counters are advanced with SQL expressions computed from the row at
-    write time, so concurrent increments can't silently overwrite each other.
     """
     from datetime import date
     today = today_date_str or date.today().isoformat()
     current = await get_or_create_character_affection(conn, user_id, character_id)
 
-    # Serialize read+write against other writers so both the counters and the
-    # reported gain are exact under concurrency.
-    await conn.execute("BEGIN IMMEDIATE")
-    try:
+    async with immediate_transaction(conn):
         cursor = await conn.execute(
             "SELECT affection_score, affection_level, daily_points_earned, last_interaction_date "
             "FROM character_affection WHERE user_id = ? AND character_id = ?;",
             (user_id, character_id),
         )
         row = await cursor.fetchone()
+        old_score = row[0] if row else current.affection_score
         old_level = row[1] if row else current.affection_level
         daily_before = (row[2] if row and row[3] == today else 0)
+
+        daily_remaining = max(0, daily_limit - daily_before)
+        pts_to_add = min(max(0, delta_points), daily_remaining)
+        new_score = min(100, max(0, old_score + pts_to_add))
+        new_daily = daily_before + pts_to_add
+        new_level, _ = calculate_affection_level(new_score)
 
         await conn.execute("""
             UPDATE character_affection
             SET interaction_count = interaction_count + 1,
                 last_interaction_date = ?,
-                daily_points_earned =
-                    (CASE WHEN last_interaction_date = ? THEN daily_points_earned ELSE 0 END)
-                    + MAX(0, MIN(?, ? - (CASE WHEN last_interaction_date = ? THEN daily_points_earned ELSE 0 END))),
-                affection_score = MIN(100,
-                    affection_score
-                    + MAX(0, MIN(?, ? - (CASE WHEN last_interaction_date = ? THEN daily_points_earned ELSE 0 END)))),
+                daily_points_earned = ?,
+                affection_score = ?,
+                affection_level = ?,
                 current_emotion = COALESCE(?, current_emotion),
                 updated_at = CURRENT_TIMESTAMP
             WHERE user_id = ? AND character_id = ?;
-        """, (today, today, max(0, delta_points), daily_limit, today,
-              max(0, delta_points), daily_limit, today, emotion, user_id, character_id))
-        await conn.commit()
-    except Exception:
-        await conn.execute("ROLLBACK")
-        raise
+        """, (today, new_daily, new_score, new_level, emotion, user_id, character_id))
 
     updated = await get_or_create_character_affection(conn, user_id, character_id)
-
-    new_level, _ = calculate_affection_level(updated.affection_score)
-    if new_level != updated.affection_level:
-        await conn.execute(
-            "UPDATE character_affection SET affection_level = ?, updated_at = CURRENT_TIMESTAMP "
-            "WHERE user_id = ? AND character_id = ?;",
-            (new_level, user_id, character_id),
-        )
-        await conn.commit()
-        updated = await get_or_create_character_affection(conn, user_id, character_id)
-
-    # "actual_gain" counts points charged against the daily budget (matching
-    # the historical contract), which may exceed the raw score delta when the
-    # score is clamped at 100.
-    actual_gain = max(0, updated.daily_points_earned - daily_before) if updated.last_interaction_date == today else 0
+    actual_gain = pts_to_add
     level_up = new_level > old_level
     return updated, actual_gain, level_up
 
@@ -1381,12 +1458,12 @@ async def get_tts_cache_entry(conn: aiosqlite.Connection, cache_key: str) -> Opt
 
 
 async def touch_tts_cache_entry(conn: aiosqlite.Connection, cache_key: str) -> None:
-    await conn.execute("""
-        UPDATE tts_cache_entries
-        SET hit_count = hit_count + 1, last_accessed_at = CURRENT_TIMESTAMP
-        WHERE cache_key = ?;
-    """, (cache_key,))
-    await conn.commit()
+    async with immediate_transaction(conn):
+        await conn.execute("""
+            UPDATE tts_cache_entries
+            SET hit_count = hit_count + 1, last_accessed_at = CURRENT_TIMESTAMP
+            WHERE cache_key = ?;
+        """, (cache_key,))
 
 
 async def upsert_tts_cache_entry(
@@ -1401,26 +1478,26 @@ async def upsert_tts_cache_entry(
     duration_ms: int = 0
 ) -> TtsCacheEntry:
     conn.row_factory = aiosqlite.Row
-    await conn.execute("""
-        INSERT INTO tts_cache_entries (
-            cache_key, text, clean_text, voice_profile_id, params_hash,
-            file_path, file_size, duration_ms, hit_count, created_at, last_accessed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        ON CONFLICT(cache_key) DO UPDATE SET
-            file_path = excluded.file_path,
-            file_size = excluded.file_size,
-            duration_ms = excluded.duration_ms,
-            last_accessed_at = CURRENT_TIMESTAMP;
-    """, (cache_key, text, clean_text, voice_profile_id or 1, params_hash, file_path, file_size, duration_ms))
-    await conn.commit()
-    cursor = await conn.execute("SELECT * FROM tts_cache_entries WHERE cache_key = ?;", (cache_key,))
-    row = await cursor.fetchone()
+    async with immediate_transaction(conn):
+        await conn.execute("""
+            INSERT INTO tts_cache_entries (
+                cache_key, text, clean_text, voice_profile_id, params_hash,
+                file_path, file_size, duration_ms, hit_count, created_at, last_accessed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                file_path = excluded.file_path,
+                file_size = excluded.file_size,
+                duration_ms = excluded.duration_ms,
+                last_accessed_at = CURRENT_TIMESTAMP;
+        """, (cache_key, text, clean_text, voice_profile_id or 1, params_hash, file_path, file_size, duration_ms))
+        cursor = await conn.execute("SELECT * FROM tts_cache_entries WHERE cache_key = ?;", (cache_key,))
+        row = await cursor.fetchone()
     return TtsCacheEntry(**dict(row))
 
 
 async def delete_tts_cache_entry(conn: aiosqlite.Connection, cache_key: str) -> bool:
-    cursor = await conn.execute("DELETE FROM tts_cache_entries WHERE cache_key = ?;", (cache_key,))
-    await conn.commit()
+    async with immediate_transaction(conn):
+        cursor = await conn.execute("DELETE FROM tts_cache_entries WHERE cache_key = ?;", (cache_key,))
     return cursor.rowcount > 0
 
 
@@ -1447,6 +1524,7 @@ async def get_tts_cache_stats(conn: aiosqlite.Connection) -> Dict[str, Any]:
     row = await cursor.fetchone()
     if not row:
         return {"total_files": 0, "total_size_bytes": 0, "total_size_mb": 0.0, "total_hits": 0}
+
     total_files = row["total_files"] or 0
     total_size_bytes = row["total_size_bytes"] or 0
     total_hits = row["total_hits"] or 0
@@ -1460,8 +1538,8 @@ async def get_tts_cache_stats(conn: aiosqlite.Connection) -> Dict[str, Any]:
 
 
 async def clear_all_tts_cache_entries(conn: aiosqlite.Connection) -> int:
-    cursor = await conn.execute("DELETE FROM tts_cache_entries;")
-    await conn.commit()
+    async with immediate_transaction(conn):
+        cursor = await conn.execute("DELETE FROM tts_cache_entries;")
     return cursor.rowcount
 
 
@@ -1483,20 +1561,21 @@ async def insert_token_metric(
     tts_generated_chunks: int = 0
 ) -> int:
     total_tokens = prompt_tokens + completion_tokens
-    cursor = await conn.execute("""
-        INSERT INTO token_usage_metrics (
+    async with immediate_transaction(conn):
+        cursor = await conn.execute("""
+            INSERT INTO token_usage_metrics (
+                session_id, channel, provider_id, model_name, prompt_tokens,
+                completion_tokens, total_tokens, estimated_cost, ttft_ms,
+                tts_first_chunk_ms, total_latency_ms, tts_cached_chunks, tts_generated_chunks,
+                timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP);
+        """, (
             session_id, channel, provider_id, model_name, prompt_tokens,
             completion_tokens, total_tokens, estimated_cost, ttft_ms,
-            tts_first_chunk_ms, total_latency_ms, tts_cached_chunks, tts_generated_chunks,
-            timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP);
-    """, (
-        session_id, channel, provider_id, model_name, prompt_tokens,
-        completion_tokens, total_tokens, estimated_cost, ttft_ms,
-        tts_first_chunk_ms, total_latency_ms, tts_cached_chunks, tts_generated_chunks
-    ))
-    await conn.commit()
-    return cursor.lastrowid
+            tts_first_chunk_ms, total_latency_ms, tts_cached_chunks, tts_generated_chunks
+        ))
+        new_id = cursor.lastrowid
+    return new_id
 
 
 async def get_metrics_overview(conn: aiosqlite.Connection) -> Dict[str, Any]:
@@ -1587,6 +1666,10 @@ async def get_provider_metrics_breakdown(conn: aiosqlite.Connection) -> List[Dic
 
 async def get_recent_latency_trends(conn: aiosqlite.Connection, limit: int = 30) -> List[Dict[str, Any]]:
     conn.row_factory = aiosqlite.Row
+    try:
+        safe_limit = max(1, min(int(limit), 200))
+    except (TypeError, ValueError):
+        safe_limit = 30
     cursor = await conn.execute("""
         SELECT * FROM (
             SELECT 
@@ -1600,7 +1683,7 @@ async def get_recent_latency_trends(conn: aiosqlite.Connection, limit: int = 30)
             ORDER BY id DESC
             LIMIT ?
         ) ORDER BY timestamp ASC;
-    """, (limit,))
+    """, (safe_limit,))
     rows = await cursor.fetchall()
     return [
         {

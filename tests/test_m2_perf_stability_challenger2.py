@@ -320,20 +320,29 @@ class TestProcessTerminationAndPortReleaseWindows:
         # Verify process is dead
         assert proc.poll() is not None, "Process failed to terminate"
 
-        # Verify port is immediately freed and can be bound by a new socket
-        test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            # Bind without SO_REUSEADDR to strictly verify kernel port reclamation
-            test_sock.bind(("127.0.0.1", test_port))
-            test_sock.listen(1)
-            port_freed = True
-        except OSError as e:
-            port_freed = False
-            pytest.fail(f"Port {test_port} was not cleanly released upon process exit: {e}")
-        finally:
-            test_sock.close()
+        # Verify the port is reclaimed by the kernel and re-bindable.
+        # On Windows, socket handle cleanup after TerminateProcess is asynchronous,
+        # so retry within a bounded window instead of demanding instantaneous rebind.
+        deadline = time.perf_counter() + 10.0
+        last_error: OSError | None = None
+        while time.perf_counter() < deadline:
+            test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                # Bind without SO_REUSEADDR to strictly verify kernel port reclamation
+                test_sock.bind(("127.0.0.1", test_port))
+                test_sock.listen(1)
+                last_error = None
+                break
+            except OSError as e:
+                last_error = e
+                time.sleep(0.25)
+            finally:
+                test_sock.close()
 
-        assert port_freed, f"Failed to rebind port {test_port}"
+        if last_error is not None:
+            pytest.fail(
+                f"Port {test_port} was not released within 10s of process exit: {last_error}"
+            )
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object test requires Windows OS")
     def test_windows_job_object_assignment_and_cleanup(self):

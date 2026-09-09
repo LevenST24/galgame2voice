@@ -15,9 +15,12 @@ Policy:
   explicitly runs a local Ollama/vLLM or a LAN relay).
 """
 
+import collections
 import ipaddress
 import socket
-from typing import Optional, Tuple
+import threading
+import time
+from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 # Hosts operated by the seeded official provider presets. These are forced
@@ -49,21 +52,63 @@ def _is_blocked_ip(addr: ipaddress._BaseAddress) -> bool:
     )
 
 
+_DNS_CACHE_LOCK = threading.Lock()
+_DNS_CACHE: Dict[Tuple[str, int], Tuple[float, bool, str]] = collections.OrderedDict()
+_DNS_CACHE_TTL_SECONDS = 60.0
+_DNS_CACHE_MAXSIZE = 256
+
+
+def clear_dns_cache() -> None:
+    """Flushes the internal DNS resolution cache (useful for testing and network reconfiguration)."""
+    with _DNS_CACHE_LOCK:
+        _DNS_CACHE.clear()
+
+
 def _resolve_host(host: str, port: int) -> Tuple[bool, str]:
+    norm_host = host.lower().strip()
+    key = (norm_host, port)
+    now = time.monotonic()
+
+    with _DNS_CACHE_LOCK:
+        cached = _DNS_CACHE.get(key)
+        if cached is not None:
+            expire_at, ok, reason = cached
+            if now < expire_at:
+                _DNS_CACHE.move_to_end(key)
+                return ok, reason
+            else:
+                _DNS_CACHE.pop(key, None)
+
     try:
-        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+        infos = socket.getaddrinfo(norm_host, port, proto=socket.IPPROTO_TCP)
     except (socket.gaierror, OSError):
         # A host that doesn't resolve cannot be connected to at all, so it
         # poses no SSRF risk; let normal connection-time error handling deal
         # with it instead of blocking configuration.
+        # Do not cache transient resolution failures.
         return True, ""
     if not infos:
         return True, ""
+
     for info in infos:
         addr = ipaddress.ip_address(info[4][0])
         if _is_blocked_ip(addr):
-            return False, _PRIVATE_REASONS
-    return True, ""
+            res = (False, _PRIVATE_REASONS)
+            with _DNS_CACHE_LOCK:
+                if len(_DNS_CACHE) >= _DNS_CACHE_MAXSIZE:
+                    _DNS_CACHE.popitem(last=False)
+                _DNS_CACHE[key] = (now + _DNS_CACHE_TTL_SECONDS, res[0], res[1])
+            return res
+
+    res = (True, "")
+    with _DNS_CACHE_LOCK:
+        if len(_DNS_CACHE) >= _DNS_CACHE_MAXSIZE:
+            _DNS_CACHE.popitem(last=False)
+        _DNS_CACHE[key] = (now + _DNS_CACHE_TTL_SECONDS, res[0], res[1])
+    return res
+
+
+_resolve_host.cache_clear = clear_dns_cache  # type: ignore[attr-defined]
 
 
 def validate_llm_base_url(url: Optional[str], allow_private: bool = False) -> Tuple[bool, str]:
@@ -102,4 +147,4 @@ def validate_llm_base_url(url: Optional[str], allow_private: bool = False) -> Tu
     return True, ""
 
 
-__all__ = ["validate_llm_base_url", "OFFICIAL_LLM_HOSTS"]
+__all__ = ["validate_llm_base_url", "OFFICIAL_LLM_HOSTS", "clear_dns_cache"]

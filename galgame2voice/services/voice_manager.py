@@ -55,10 +55,20 @@ class VoiceManager:
             # Shared application singleton: one lock to rule them all.
             self.client = get_gpt_sovits_client()
 
+        from galgame2voice.services.tts_service import TtsService
+        self.tts_service = TtsService(client=self.client, db_path=self.db_path)
+
+        self._switch_lock = asyncio.Lock()
+
     @property
     def lock(self) -> asyncio.Lock:
         """Shared inference and model switching mutex."""
         return self.client.lock
+
+    @property
+    def switch_lock(self) -> asyncio.Lock:
+        """Lock for serializing voice profile switch transactions and state persistence."""
+        return self._switch_lock
 
     @property
     def server(self) -> Optional[Any]:
@@ -91,13 +101,36 @@ class VoiceManager:
         self,
         target: Union[int, str, VoiceProfileResponse, VoiceProfileInDB, Dict[str, Any], Any],
         persist: bool = True,
+        _already_locked: bool = False,
+        force: bool = False,
     ) -> bool:
         """
         Atomically switches GPT-SoVITS weights to target voice profile.
         If target is an int ID or string ID/name, looks up profile from SQLite DB.
         On success, updates SQLite active profile if persist=True.
         On failure, automatically rolls back weights and preserves prior state.
+        Serialized with self._switch_lock.
         """
+        if _already_locked:
+            return await self._execute_switch(target, persist=persist, force=force)
+        async with self._switch_lock:
+            return await self._execute_switch(target, persist=persist, force=force)
+
+    async def switch_active_profile(
+        self,
+        target: Union[int, str, VoiceProfileResponse, VoiceProfileInDB, Dict[str, Any], Any],
+        persist: bool = True,
+        force: bool = False,
+    ) -> bool:
+        """Alias for switch_profile to preserve backwards compatibility."""
+        return await self.switch_profile(target, persist=persist, force=force)
+
+    async def _execute_switch(
+        self,
+        target: Union[int, str, VoiceProfileResponse, VoiceProfileInDB, Dict[str, Any], Any],
+        persist: bool = True,
+        force: bool = False,
+    ) -> bool:
         profile_obj = target
 
         # 1. Resolve Profile from DB if ID or Name provided
@@ -113,11 +146,9 @@ class VoiceManager:
         elif isinstance(target, str):
             # Target may be a character profile name
             async with get_db(self.db_path) as conn:
-                conn.row_factory = aiosqlite.Row
-                cursor = await conn.execute("SELECT * FROM voice_profiles WHERE name = ? LIMIT 1;", (target,))
-                row = await cursor.fetchone()
-                if row:
-                    profile_obj = VoiceProfileResponse(**dict(row))
+                db_profile = await crud.get_voice_profile_by_name(conn, target)
+                if db_profile:
+                    profile_obj = db_profile
                 else:
                     logger.warning("Voice profile name '%s' not found in database", target)
 
@@ -127,12 +158,12 @@ class VoiceManager:
             return False
 
         # 2. Execute 3-step atomic model switch with auto-rollback
-        success = await self.client.switch_voice_profile(profile_obj)
+        success = await self.client.switch_voice_profile(profile_obj, force=force)
         if not success:
             logger.error("Failed to switch GPT-SoVITS model weights for target: %s", target)
             return False
 
-        # 3. Update Persistence in SQLite
+        # 3. Update Persistence in SQLite (under switch lock)
         if persist:
             profile_id = None
             if hasattr(profile_obj, "id") and getattr(profile_obj, "id") is not None:
@@ -157,20 +188,36 @@ class VoiceManager:
     async def _resolve_active_options(self, options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         opts = dict(options or {})
         if not opts.get("ref_audio_path") and not opts.get("refer_audio_path") and not self.client.current_refer_audio:
-            try:
-                active = await self.get_active_profile()
-                if active:
-                    opts.setdefault("ref_audio_path", active.ref_audio_path)
-                    opts.setdefault("prompt_text", active.prompt_text)
-                    opts.setdefault("prompt_lang", active.prompt_lang)
-                    opts.setdefault("text_lang", active.text_lang)
-            except Exception as exc:
-                logger.debug("Could not auto-populate active profile options: %s", exc)
+            target_profile = None
+            profile_id = opts.get("voice_profile_id") or opts.get("profile_id")
+            if profile_id is not None:
+                try:
+                    target_profile = await self.get_profile(int(profile_id))
+                except Exception as exc:
+                    logger.debug("Could not resolve voice_profile_id %s: %s", profile_id, exc)
+            if not target_profile:
+                try:
+                    target_profile = await self.get_active_profile()
+                except Exception as exc:
+                    logger.debug("Could not auto-populate active profile options: %s", exc)
+            if target_profile:
+                opts.setdefault("voice_profile_id", target_profile.id)
+                opts.setdefault("ref_audio_path", target_profile.ref_audio_path)
+                opts.setdefault("prompt_text", target_profile.prompt_text)
+                opts.setdefault("prompt_lang", target_profile.prompt_lang)
+                opts.setdefault("text_lang", target_profile.text_lang)
         return opts
 
-    async def synthesize(self, text: str, options: Optional[Dict[str, Any]] = None) -> bytes:
-        """Synthesizes text into complete audio bytes using active weights and inference mutex."""
+    async def synthesize(
+        self,
+        text: str,
+        options: Optional[Dict[str, Any]] = None,
+        use_cache: bool = True,
+    ) -> bytes:
+        """Synthesizes text into complete audio bytes using active weights, persistent cache and inference mutex."""
         opts = await self._resolve_active_options(options)
+        if getattr(self, "tts_service", None) is not None:
+            return await self.tts_service.synthesize(text, options=opts, use_cache=use_cache)
         return await self.client.synthesize(text, options=opts)
 
     async def stream_tts(

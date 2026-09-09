@@ -1,211 +1,349 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Galgame2Voice — 二次元智能语音伴侣</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=21">
-    <script src="/static/js/auth.js?v=21"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Gal2Voice · AI 多会话对话</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
+  <script type="module" crossorigin src="/static/assets/index-C5oKplHJ.js"></script>
+  <link rel="stylesheet" crossorigin href="/static/assets/index-B-e8JhRP.css">
 </head>
-<body class="galgame-theme" id="galgame2voice-app">
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-nib" viewBox="0 0 24 24">
+      <path d="M12 3l5.6 7.6c.8 1.1.6 2.4-.3 3.3L12 21l-5.3-7.1c-.9-.9-1.1-2.2-.3-3.3L12 3z"/>
+      <path d="M12 8.5v5.5"/>
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5.5 11.5L12 5l6.5 6.5"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V5.2c0-.7.5-1.2 1.2-1.2h2.6c.7 0 1.2.5 1.2 1.2V7m2.8 0v11.9c0 1.1-.9 2.1-2.1 2.1H8.9c-1.2 0-2.2-1-2.2-2.1V7"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7.5" y="7.5" width="9" height="9" rx="1.5"/></symbol>
+    <symbol id="i-quill" viewBox="0 0 24 24"><path d="M4 20s2.5-1.2 4.5-3.2C11 14.3 14 8 20 4c0 0-.4 6.3-3.6 9.9C13.7 17 9.5 18 7 18L4 20z"/><path d="M8.5 15.5L4 20"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+    </symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24">
+      <path d="M4 8h7.2M17.8 8H20M4 16h3.2M13.8 16H20"/>
+      <circle cx="14.5" cy="8" r="2.4"/>
+      <circle cx="10.5" cy="16" r="2.4"/>
+    </symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24">
+      <rect x="7" y="5.5" width="3.5" height="13" rx="1.2" fill="currentColor"/>
+      <rect x="13.5" y="5.5" width="3.5" height="13" rx="1.2" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24">
+      <rect x="9" y="3" width="6" height="11" rx="3"/>
+      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3.5M9 21.5h6"/>
+    </symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24">
+      <path d="M4 9.5h3.5L12.5 5v14l-5-4.5H4z"/>
+      <path d="M15.5 9.5a4 4 0 0 1 0 5M17.8 7.2a7 7 0 0 1 0 9.6"/>
+    </symbol>
+    <symbol id="i-volume-off" viewBox="0 0 24 24">
+      <path d="M4 9.5h3.5L12.5 5v14l-5-4.5H4z"/>
+      <path d="M16 9.5l5 5M21 9.5l-5 5"/>
+    </symbol>
+    <symbol id="i-translate" viewBox="0 0 24 24">
+      <path d="M5 8h6M8 5v3M8 8c0 4.418-2.686 8-6 8M6.5 13c1.5 1.5 3 2.5 4.5 3"/>
+      <path d="M13 19l4.5-9 4.5 9M14.8 16h5.4"/>
+    </symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24">
+      <path d="M20 6L9 17l-5-5"/>
+    </symbol>
+  </svg>
 
-    <!-- ═══════════════ Ambient Background Layers ═══════════════ -->
-    <div class="ambient-bg">
-        <div class="ambient-orb orb-1"></div>
-        <div class="ambient-orb orb-2"></div>
-        <div class="ambient-orb orb-3"></div>
-        <div class="ambient-particles"></div>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <span class="brand-mark"><svg class="icon"><use href="#i-nib"></use></svg></span>
+        <span class="brand-text">
+          <strong>Gal2Voice</strong>
+          <em>Voice · AI Chat</em>
+        </span>
+        <button class="icon-btn sidebar-close" id="sidebarClose" aria-label="关闭侧边栏">
+          <svg class="icon"><use href="#i-x"></use></svg>
+        </button>
+      </div>
+
+      <button class="new-chat" id="newChatBtn">
+        <span class="nc-ico"><svg class="icon"><use href="#i-plus"></use></svg></span>
+        <span>新建聊天</span>
+      </button>
+
+      <div class="session-label">
+        <span>对话列表</span>
+        <span class="count-badge" id="sessionCount">0</span>
+      </div>
+      <nav class="session-list" id="sessionList" aria-label="会话列表"></nav>
+
+      <footer class="sidebar-foot">
+        <span class="foot-text"><span class="live-dot"></span>会话与设置仅存于本浏览器</span>
+        <button class="icon-btn foot-gear" id="globalSettingsBtn" title="全局设置" aria-label="全局设置">
+          <svg class="icon"><use href="#i-gear"></use></svg>
+        </button>
+      </footer>
+    </aside>
+
+    <div class="backdrop" id="backdrop"></div>
+
+    <main class="chat">
+      <header class="chat-head">
+        <button class="icon-btn menu-btn" id="menuBtn" aria-label="打开会话列表">
+          <svg class="icon"><use href="#i-menu"></use></svg>
+        </button>
+        <div class="chat-head-text">
+          <h1 id="chatTitle">新对话</h1>
+          <p id="chatMeta"></p>
+        </div>
+        <button class="icon-btn head-settings" id="sessionSettingsBtn" title="会话设置（人设 / 参数）" aria-label="会话设置">
+          <svg class="icon"><use href="#i-sliders"></use></svg>
+        </button>
+        <button class="icon-btn head-voice" id="voiceModeBtn" title="朗读回复" aria-label="朗读回复" aria-pressed="false">
+          <svg class="icon" id="voiceModeIcon"><use href="#i-volume-off"></use></svg>
+        </button>
+        <span class="model-badge" id="modelBadge"><span class="badge-dot" id="badgeDot"></span><span class="badge-label">本地引擎</span></span>
+      </header>
+
+      <div class="messages" id="messages"></div>
+
+      <div class="composer-wrap">
+        <form class="composer" id="composer">
+          <textarea id="input" rows="1" placeholder="说点什么，或点麦克风用语音输入…" aria-label="消息输入框"></textarea>
+          <div class="composer-actions">
+            <button type="button" class="mic-btn" id="micBtn" title="语音输入" aria-label="语音输入" aria-pressed="false">
+              <svg class="icon"><use href="#i-mic"></use></svg>
+            </button>
+            <button type="button" class="stop-btn hidden" id="stopBtn" aria-label="停止生成">
+              <svg class="icon"><use href="#i-stop"></use></svg>
+            </button>
+            <button type="submit" class="send-btn" id="sendBtn" aria-label="发送">
+              <svg class="icon"><use href="#i-send"></use></svg>
+            </button>
+          </div>
+        </form>
+        <p class="composer-hint">Enter 发送 · Shift + Enter 换行 · 麦克风语音输入 · 喇叭朗读回复</p>
+      </div>
+    </main>
+  </div>
+
+  <!-- 全局设置（引擎层：音色 / 对话模型 / 语音质量，跨会话生效） -->
+  <div class="overlay hidden" id="globalModal">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="全局设置">
+      <header class="modal-head">
+        <h2>全局设置</h2>
+        <button class="icon-btn" data-close aria-label="关闭"><svg class="icon"><use href="#i-x"></use></svg></button>
+      </header>
+      <div class="modal-body">
+        <div class="field">
+          <label>系统状态</label>
+          <div class="status-line" id="gStatus">加载中…</div>
+        </div>
+        <div class="field">
+          <label>对话模型（LLM）<b id="gProviderActive"></b></label>
+          <select id="gProvider"></select>
+        </div>
+        <div id="gCustomBox" class="custom-provider-box hidden">
+          <div class="field">
+            <label>名称</label>
+            <input id="gCustomName" placeholder="如 我的本地 Ollama" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>Base URL（OpenAI 兼容）</label>
+            <input id="gCustomBaseUrl" placeholder="https://api.openai.com/v1 或 http://127.0.0.1:11434/v1" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>API Key（本地服务可留空）</label>
+            <input id="gCustomApiKey" type="password" placeholder="sk-…（仅提交给本机后端）" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>模型名</label>
+            <input id="gCustomModel" placeholder="如 qwen3.6-plus / llama3" autocomplete="off" />
+          </div>
+        </div>
+        <div class="field">
+          <button type="button" class="btn primary" id="gProviderActivate">启用此模型</button>
+        </div>
+        <div class="field">
+          <label>TTS 语音质量预设（新消息生效）</label>
+          <select id="gPreset">
+            <option value="">跟随后端默认</option>
+            <option value="high_quality">高质量 · 合成较慢</option>
+            <option value="balanced">均衡</option>
+            <option value="low_latency">低延迟 · 最快出声</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>翻译</label>
+          <select id="gAutoTranslate">
+            <option value="manual">手动（点击“翻译”按钮）</option>
+            <option value="auto">自动（新消息自动展开）</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>音频缓存保留时长（分钟，过期自动清理）</label>
+          <input id="gAudioRetention" type="number" min="1" max="10080" step="1" />
+        </div>
+        <div class="field-group-title">Telegram 机器人</div>
+        <div class="field">
+          <label>Bot Token</label>
+          <input id="gTgToken" type="password" placeholder="" autocomplete="off" />
+        </div>
+        <div class="field-row-2">
+          <div class="field">
+            <label>代理地址</label>
+            <input id="gTgProxyHost" placeholder="127.0.0.1" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>代理端口</label>
+            <input id="gTgProxyPort" type="number" min="1" max="65535" placeholder="10809" />
+          </div>
+        </div>
+        <label class="check-line"><input type="checkbox" id="gTgProxyEnabled" /> 启用代理连接 Telegram</label>
+        <div class="field-row-2">
+          <div class="field">
+            <button type="button" class="btn ghost" id="gTgTest">测试连接</button>
+          </div>
+          <div class="field">
+            <button type="button" class="btn primary" id="gTgSave">保存全局配置</button>
+          </div>
+        </div>
+        <p class="modal-note">角色音色按会话绑定：在右上角「会话设置」里为每个会话选择音色，即可和不同角色聊天。保存 Telegram 配置后机器人立即热重载。</p>
+      </div>
+      <footer class="modal-foot">
+        <button class="btn ghost" data-close>关闭</button>
+      </footer>
     </div>
+  </div>
 
-    <div class="main-wrapper galgame2voice">
-        <!-- ═══════════════ Top Bar ═══════════════ -->
-        <header class="app-header glass-card">
-            <div class="brand-section">
-                <div class="brand-sakura">
-                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <path d="M12 2C12 2 14.5 5.5 14.5 8.5C14.5 10.5 13.5 12 12 12C10.5 12 9.5 10.5 9.5 8.5C9.5 5.5 12 2 12 2Z" fill="currentColor" opacity="0.6"/>
-                        <path d="M12 12C12 12 15.5 9.5 18 10.5C20 11.3 21 13 20 14.5C19 16 17 16 15 15C12.5 13.8 12 12 12 12Z" fill="currentColor" opacity="0.5"/>
-                        <path d="M12 12C12 12 15 15 14.5 17.5C14 20 12.5 21 11 20.5C9.5 20 9 18 10 16C11 14 12 12 12 12Z" fill="currentColor" opacity="0.4"/>
-                        <path d="M12 12C12 12 8.5 15 6 14.5C3.5 14 2.5 12 3.5 10.5C4.5 9 6.5 9 8.5 10C10.5 11 12 12 12 12Z" fill="currentColor" opacity="0.45"/>
-                        <path d="M12 12C12 12 9 9 9.5 6.5C10 4 11.5 3 13 3.5C14.5 4 15 6 14 8C13 10 12 12 12 12Z" fill="currentColor" opacity="0.55"/>
-                        <circle cx="12" cy="12" r="2" fill="currentColor" opacity="0.8"/>
-                    </svg>
-                </div>
-                <span class="brand-title">Galgame2Voice</span>
+  <!-- 会话设置 -->
+  <div class="overlay hidden" id="sessionModal">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="会话设置">
+      <header class="modal-head">
+        <h2>会话设置 <span class="modal-sub" id="smTitle"></span></h2>
+        <button class="icon-btn" data-close aria-label="关闭"><svg class="icon"><use href="#i-x"></use></svg></button>
+      </header>
+      <div class="modal-body">
+        <div class="field">
+          <label>System Prompt</label>
+          <textarea id="sSystem" rows="5" placeholder="定义这个会话专属的人设与指令，仅作用于当前对话…"></textarea>
+        </div>
+        <div class="field">
+          <label>角色音色（GPT / SoVITS 模型）<b id="sVoiceActive"></b></label>
+          <div class="voice-select-row">
+            <select id="sVoice"></select>
+            <button type="button" class="btn ghost danger" id="sVoiceDelete">删除</button>
+          </div>
+        </div>
+        <div id="sCustomVoiceBox" class="custom-provider-box hidden">
+          <div class="field">
+            <label>音色名称</label>
+            <input id="sCvName" placeholder="如 我的角色" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>GPT 模型 (.ckpt)</label>
+            <select id="sCvGpt"></select>
+          </div>
+          <div class="field">
+            <label>SoVITS 模型 (.pth)</label>
+            <select id="sCvSovits"></select>
+          </div>
+          <div class="field">
+            <label>参考音频（必选，角色声音样本）</label>
+            <select id="sCvRef"></select>
+          </div>
+          <div class="field">
+            <label>参考音频里说的话（必填，V3/V4 模型留空会导致合成失败）</label>
+            <input id="sCvPromptText" placeholder="逐字填写参考音频里说的内容，如：とりあえず、今日見たことは忘れて" autocomplete="off" />
+          </div>
+          <div class="field-row-2">
+            <div class="field">
+              <label>音频语言</label>
+              <select id="sCvLang">
+                <option value="ja">日语</option>
+                <option value="zh">中文</option>
+                <option value="en">英语</option>
+              </select>
             </div>
-
-            <div class="header-controls">
-                <!-- Voice Profile Selector -->
-                <div class="control-pill voice-select-pill">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
-                    <select id="quick-voice-select" class="voice-dropdown" aria-label="选择伴侣角色">
-                        <option value="">加载中...</option>
-                    </select>
-                </div>
-
-                <!-- Affection Badge -->
-                <div id="affection-badge" class="control-pill affection-pill" title="好感度">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-                    <span id="affection-label" class="affection-label">Lv.1 初识 (0/100)</span>
-                </div>
-
-                <!-- GPT-SoVITS Status -->
-                <div id="sovits-status-badge" class="badge badge-loading" title="GPT-SoVITS 状态">
-                    <span class="status-dot"></span>
-                    <span class="status-text">检测中...</span>
-                </div>
-
-                <!-- Volume -->
-                <div class="control-pill volume-pill">
-                    <button type="button" id="mute-toggle-btn" aria-label="静音开关" class="icon-btn mute-btn" title="静音开关">
-                        <svg class="vol-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-                    </button>
-                    <input type="range" id="volume-slider" min="0" max="100" value="100" class="volume-slider" title="音量">
-                    <span id="volume-label" class="volume-label">100</span>
-                </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <button type="button" class="btn primary" id="sCvCreate">创建并绑定</button>
             </div>
-
-            <div class="header-actions">
-                <div class="mode-toggle-group">
-                    <button type="button" id="btn-mode-vn" aria-label="视觉小说模式" class="btn-mode active" title="视觉小说模式">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                        <span>剧场</span>
-                    </button>
-                    <button type="button" id="btn-mode-chat" aria-label="对话流模式" class="btn-mode" title="对话流模式">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                        <span>对话</span>
-                    </button>
-                </div>
-                <a href="/settings.html" class="nav-console-btn" title="设置">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                </a>
-            </div>
-        </header>
-
-        <!-- ═══════════════ Stage Container ═══════════════ -->
-        <main class="stage-container">
-            <!-- ────── Mode 1: Visual Novel ────── -->
-            <section id="vn-view" class="vn-stage-view">
-                <!-- Character Portrait Area -->
-                <div class="character-backdrop">
-                    <div class="character-glow-circle"></div>
-                    <div class="character-avatar-wrapper">
-                        <div class="avatar-frame">
-                            <span class="avatar-emoji">🌸</span>
-                        </div>
-                        <div class="character-aura"></div>
-                    </div>
-                    <div class="character-name-float" id="vn-character-name">四季夏目</div>
-                </div>
-
-                <!-- Dialogue Box -->
-                <div class="vn-dialogue-box glass-card">
-                    <div class="vn-box-header">
-                        <div class="vn-name-tag">
-                            <span class="tag-diamond">◆</span>
-                            <span class="character-name-inline">四季夏目</span>
-                            <span id="vn-affection-badge" class="affection-badge-sm">Lv.1</span>
-                            <span id="vn-emotion-badge" class="emotion-badge" data-emotion="normal">平静</span>
-                        </div>
-                        <div id="vn-audio-equalizer" class="audio-equalizer-bars" title="声波">
-                            <span class="bar bar-1"></span>
-                            <span class="bar bar-2"></span>
-                            <span class="bar bar-3"></span>
-                            <span class="bar bar-4"></span>
-                            <span class="bar bar-5"></span>
-                        </div>
-                    </div>
-
-                    <div class="vn-dialogue-content">
-                        <div id="vn-text-ja" class="dialogue-line-ja">
-                            ねえ、今日はどんなことがあったの？
-                        </div>
-                        <div id="vn-text-zh" class="dialogue-line-zh">
-                            （呐，今天发生了什么有趣的事情吗？）
-                        </div>
-                    </div>
-
-                    <div class="vn-box-footer">
-                        <span id="vn-audio-status" class="status-indicator-text">音频就绪</span>
-                        <div class="vn-action-buttons">
-                            <button type="button" id="btn-vn-auto" aria-label="自动播放模式" class="vn-action-btn" title="自动播放模式">
-                                <span class="btn-text">AUTO</span>
-                            </button>
-                            <button type="button" id="btn-vn-skip" aria-label="跳过当前语音" class="vn-action-btn" title="跳过当前语音">
-                                <span class="btn-text">SKIP</span>
-                            </button>
-                            <button type="button" id="btn-vn-log" aria-label="历史对话" class="vn-action-btn" title="历史对话">
-                                <span class="btn-text">LOG</span>
-                            </button>
-                            <span class="vn-btn-divider"></span>
-                            <button type="button" id="btn-vn-replay" aria-label="重新播放当前台词" class="vn-action-btn" title="重新播放当前台词">
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
-                                <span>重新播放</span>
-                            </button>
-                            <button type="button" id="btn-vn-download" aria-label="下载合并母带音频 (WAV)" class="vn-action-btn" title="下载合并母带音频 (WAV)">
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                                <span>下载母带</span>
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- ────── Mode 2: Chat Flow ────── -->
-            <section id="chat-view" class="chat-stage-view" style="display:none;">
-                <div id="chat-log" class="chat-bubbles-container">
-                    <div class="message system-message glass-card">
-                        欢迎回来，双语流式对话与日配语音引擎已就绪。
-                    </div>
-                </div>
-            </section>
-        </main>
-
-        <!-- ═══════════════ Input Footer ═══════════════ -->
-        <footer class="app-footer">
-            <div class="quick-chips-bar">
-                <button type="button" class="quick-chip" data-prompt="夏目，今天咖啡店有什么特别推荐吗？">咖啡推荐</button>
-                <button type="button" class="quick-chip" data-prompt="早上好呀！今天心情怎么样？">晨间问候</button>
-                <button type="button" class="quick-chip" data-prompt="可以教我一句日常常用的日语吗？">日语教学</button>
-                <button type="button" class="quick-chip" data-prompt="能为我推荐一部好看的恋爱或治愈系动漫吗？">动漫推荐</button>
-            </div>
-            <form id="chat-form" class="input-glass-container">
-                <button type="button" id="reset-context-btn" aria-label="重置会话" class="btn-input-action" title="重置会话">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
-                </button>
-                <input
-                    type="text"
-                    id="prompt-input"
-                    class="prompt-input-field"
-                    placeholder="输入想对她说的话..."
-                    autocomplete="off"
-                    required
-                />
-                <button type="submit" id="send-btn" aria-label="发送消息" class="send-action-btn">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                </button>
-            </form>
-        </footer>
+          </div>
+        </div>
+        <p class="modal-note">绑定后，切换到该会话会自动加载对应模型权重——每个会话可以和不同的角色聊天。切换权重需要几秒且占用内存，频繁切换可能触发内存不足。</p>
+        <div class="field-group-title">采样参数</div>
+        <div class="field field-row">
+          <label>温度 Temperature <b id="sTempVal">0.7</b></label>
+          <input type="range" id="sTemp" min="0" max="2" step="0.05" value="0.7" />
+        </div>
+        <div class="field field-row">
+          <label>Top P 核采样 <b id="sTopPVal">1.0</b></label>
+          <input type="range" id="sTopP" min="0" max="1" step="0.05" value="1" />
+        </div>
+        <div class="field field-row">
+          <label>频率惩罚 Frequency Penalty <b id="sFreqVal">0</b></label>
+          <input type="range" id="sFreq" min="-2" max="2" step="0.1" value="0" />
+        </div>
+        <div class="field field-row">
+          <label>存在惩罚 Presence Penalty <b id="sPresVal">0</b></label>
+          <input type="range" id="sPres" min="-2" max="2" step="0.1" value="0" />
+        </div>
+        <div class="field-group-title">生成控制</div>
+        <div class="field-row-2">
+          <div class="field">
+            <label>最大生成长度 (tokens)</label>
+            <input id="sMaxTokens" type="number" min="16" max="32768" step="16" value="1024" />
+          </div>
+          <div class="field">
+            <label>携带上下文条数 <b id="sCtxVal">20</b></label>
+            <input type="range" id="sCtx" min="2" max="40" step="2" value="20" />
+          </div>
+        </div>
+        <div class="field-group-title">语音推理参数（覆盖全局质量预设，仅当前会话）</div>
+        <div class="field">
+          <label>语音参数调节模式</label>
+          <select id="sAiAdaptiveVoice">
+            <option value="true">AI 动态拟真 · 自动调节语速与语气</option>
+            <option value="false">固定参数模式</option>
+          </select>
+          <small class="hint" style="display:block;margin-top:4px;color:var(--text-muted,#888);font-size:12px;">开启动态拟真时，AI 将根据对话语境自适应调节每句话的语速（0.70~1.35）与温度（0.60~1.20）；固定参数模式下严格遵循下方滑块数值。</small>
+        </div>
+        <div class="field field-row">
+          <label>语速 Speed <b id="sTtsSpeedVal">1.0</b></label>
+          <input type="range" id="sTtsSpeed" min="0.5" max="2" step="0.05" value="1" />
+        </div>
+        <div class="field field-row">
+          <label>Top K <b id="sTtsTopKVal">15</b></label>
+          <input type="range" id="sTtsTopK" min="1" max="100" step="1" value="15" />
+        </div>
+        <div class="field field-row">
+          <label>TTS Top P <b id="sTtsTopPVal">1.0</b></label>
+          <input type="range" id="sTtsTopP" min="0" max="1" step="0.05" value="1" />
+        </div>
+        <div class="field field-row">
+          <label>TTS 温度 <b id="sTtsTempVal">1.0</b></label>
+          <input type="range" id="sTtsTemp" min="0" max="2" step="0.05" value="1" />
+        </div>
+        <p class="modal-note">以上配置只属于当前会话，随请求实时生效。音色与对话模型等引擎设置在侧边栏底部「全局设置」中调整。</p>
+      </div>
+      <footer class="modal-foot">
+        <button class="btn ghost" id="sReset">恢复默认</button>
+        <span class="foot-spacer"></span>
+        <button class="btn ghost" data-close>取消</button>
+        <button class="btn primary" id="sSave">保存</button>
+      </footer>
     </div>
+  </div>
 
-    <!-- ═══════════════ Log Drawer ═══════════════ -->
-    <div id="log-drawer-backdrop" class="drawer-backdrop" style="display:none;">
-        <aside id="vn-log-drawer" class="vn-log-drawer glass-card">
-            <div class="drawer-header">
-                <span class="drawer-title-text">历史对话</span>
-                <button type="button" id="btn-close-log-drawer" aria-label="关闭历史对话" class="drawer-close-btn">&times;</button>
-            </div>
-            <div id="log-drawer-body" class="drawer-body"></div>
-            <div class="drawer-footer">
-                <button type="button" id="btn-log-replay-all" class="btn-primary-sm" title="一键顺序回放所有历史语音">全量回放</button>
-                <button type="button" id="btn-clear-log-history" class="btn-danger-outline">清空记忆</button>
-                <button type="button" id="btn-close-log-drawer-2" class="btn-primary-sm">关闭</button>
-            </div>
-        </aside>
-    </div>
+  <div class="toast-root" id="toastRoot"></div>
 
-    <!-- Scripts -->
-    <script src="/static/js/audio_player.js?v=21"></script>
-    <script src="/static/js/chat_client.js?v=21"></script>
 </body>
 </html>

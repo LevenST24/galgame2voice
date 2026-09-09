@@ -1,4 +1,4 @@
-﻿"""
+"""
 Japanese dialogue sentence boundary splitter for galgame2voice.
 Splits Japanese text by punctuation markers (。, ！, ？, !, ?, \n).
 Preserves punctuation with the sentence and removes empty segments.

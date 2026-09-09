@@ -2,136 +2,169 @@
 
 > 中文显示 + 日文流式语音的 Galgame 女主聊天伴侣，基于 Python / FastAPI 构建，深度协同 **GPT-SoVITS**。
 
-`galgame2voice` 是一个轻量级、高性能的 Python/FastAPI 伴侣扩展服务，无缝集成主流大语言模型与 **GPT-SoVITS v2** 语音合成引擎，扮演《星光咖啡馆与死神之蝶》（喫茶ステラと死神の蝶）角色「四季夏目」等 Galgame 角色与玩家进行实时双语互动：
+`galgame2voice` 是一个轻量级、高性能、开箱即用的 Galgame 女主 AI 伴侣服务。它不仅无缝接入主流大语言模型与 **GPT-SoVITS** 语音合成引擎，扮演《星光咖啡馆与死神之蝶》（喫茶ステラと死神の蝶）角色「四季夏目」等角色进行实时双语互动，还具备零门槛的一键本地部署能力：
 
 - 🗣️ **双语流式输出**：大模型按流式 JSON 输出「中文台词 + 日文台词」
-- 🀄 **低延迟中文渲染**：流式输出中文内容并在网页界面实时逐字呈现
-- 🇯🇵 **分句并发语音合成**：日文台词按句自动切分，后台并发队列调用 GPT-SoVITS 合成高质量音频并流式播放
+- 🀄 **低延迟中文渲染**：流式输出中文内容并在现代化 Web 界面实时逐字打字机呈现
+- 🇯🇵 **分句并发语音合成**：日文台词按标点自动切分，后台并发队列调用 GPT-SoVITS 合成高质量音频并流式连续播放
+- 🌐 **一键日文原文/翻译展开**：消息下方提供简洁的「翻译」按钮；支持在全局设置中切换「手动点击」或「新消息自动展开」
+- 🎧 **完整音频播放控制**：支持点击播放、再次点击暂停、续播与进度条动态同步；内置客户端音频缓存，大幅节省重复合成算力
+- 🎭 **多会话与音色自由绑定**：支持多会话独立上下文与独立人设；支持为每个会话绑定不同的角色音色与模型权重
 - 💬 **双通道交互**：提供现代化 Web 聊天界面（`/`）与 Telegram 机器人双向语音/文本互动
-- 🎛️ **可视化管理控制台**：现代化 Web 配置后台（`/settings.html`），支持 10+ 家主流 LLM/STT 服务商管理、音色方案热切换、动态延迟测速与密钥脱敏保护
-- 🛡️ **安全加固**：控制台访问 Token 认证（Bearer + 常量时间比较）、LLM 接口 SSRF 防护（私网/环回/云元数据网段拦截）、输入长度与参数范围校验、请求限流、密钥脱敏返回，默认 `127.0.0.1` 本地绑定。详见 [SECURITY.md](SECURITY.md)
+- 🎛️ **可视化管理控制台**：现代化 Web 配置后台（`/settings.html`），支持 10+ 家主流 LLM 服务商管理与测速
+- 🛡️ **安全加固**：控制台访问 Token 认证、LLM 接口 SSRF 防护、输入校验与密钥脱敏保护，默认 `127.0.0.1` 安全绑定
 
 ---
 
-## 核心架构与处理链路
+## 🚀 3分钟极速部署指南
 
-```
-[用户提问]
-   │
-   ▼
-[FastAPI / LLM 流式引擎]
-   │
-   ├─► 增量中文流 (SSE: text) ─────────────────────► [前端 Web 界面即时显示]
-   │
-   └─► 日文分句检测 (StreamingBilingualParser)
-         │
-         ▼
-     [异步并发队列 asyncio.Queue]
-         │
-         ▼
-     [GPT-SoVITS 客户端 (Mutex 互斥合成)] ────────► [前端 Web Audio 队列连续播放]
-```
+无论是小白玩家还是开发者，都可以用最简单的命令在本地跑起来：
+
+### 方式 A：Windows 一键开箱（推荐，0命令）
+
+1. 下载或解压本项目压缩包。
+2. 确保电脑已安装 **Python 3.10 或更高版本**（[Python 官网下载](https://www.python.org/downloads/)，安装时务必勾选 `Add python.exe to PATH`）。
+3. 双击根目录下的 **`启动.bat`**：
+   - 脚本会自动检测运行环境；首次运行会自动创建 `.venv` 虚拟环境并安装所有依赖（`requirements.txt`）；
+   - 自动检测并拉起本地 GPT-SoVITS（若已存在）；
+   - 自动选择可用端口（默认 `8080`），启动服务并在浏览器中自动打开主界面；
+   - **退出时**：直接关闭黑色命令行窗口，Windows 内核级 Job Object 自动联动终止所有后台进程并释放全部显存。
 
 ---
 
-## 支持的模型服务商 (10+ 预置模板)
+### 方式 B：Linux / macOS 一键启动
 
-内置主流大语言模型与语音识别 (STT) 服务商配置模板：
-
-| 服务商 | 协议类型 | 默认对话模型 | 支持 STT 语音识别 |
-|--------|---------|-------------|------------------|
-| **DeepSeek** | OpenAI 兼容 | `deepseek-chat` / `deepseek-reasoner` | 搭配系统 STT |
-| **OpenAI** | 官方/兼容 | `gpt-4o` / `gpt-4o-mini` | `whisper-1` |
-| **Anthropic** | 官方 Messages 原生 | `claude-3-5-sonnet-latest` | 搭配系统 STT |
-| **通义千问 (Qwen)** | DashScope 兼容 | `qwen-plus` / `qwen-max` | `qwen-audio-asr` |
-| **智谱 GLM** | 官方 PAAS 兼容 | `glm-4-plus` / `glm-4-air` | 搭配系统 STT |
-| **月之暗面 (Moonshot)** | OpenAI 兼容 | `moonshot-v1-8k` | 搭配系统 STT |
-| **硅基流动 (SiliconFlow)** | OpenAI 兼容 | `deepseek-ai/DeepSeek-V3` | `FunAudioLLM/SenseVoiceSmall` |
-| **Groq** | OpenAI 兼容 | `llama-3.3-70b-versatile` | `whisper-large-v3` |
-| **xAI (Grok)** | OpenAI 兼容 | `grok-2` | 搭配系统 STT |
-| **Google Gemini** | OpenAI 兼容 | `gemini-2.0-flash` | 搭配系统 STT |
-| **字节豆包 (Doubao)** | 火山方舟兼容 | `doubao-1-5-pro-32k-250115` | 搭配系统 STT |
-| **自定义 / Ollama** | 本地/私有网关 | 自定义模型名 | 自定义 STT |
-
----
-
-## 环境要求
-
-- **Python 3.10** 或更高版本（支持 `uv`、`pip` 或 Conda 虚拟环境）
-- **GPT-SoVITS**（语音合成推理服务端，建议 v2 / v2ProPlus）
-- **FFmpeg**（可选，用于 Telegram 语音消息 OGG/Opus 与 16kHz WAV 双向转码）
-
----
-
-## 快速上手
-
-### 1. 启动 GPT-SoVITS 后端
-
-确保 GPT-SoVITS `api_v2.py` 已正常启动并监听在 `http://127.0.0.1:9880`：
+在终端中执行：
 
 ```bash
-# 进入 GPT-SoVITS 根目录
-python api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS/configs/tts_infer.yaml
+# 赋予执行权限
+chmod +x run.sh
+
+# 一键启动（首次运行会自动创建虚拟环境并安装依赖）
+./run.sh
 ```
 
-### 2. 启动 Galgame2Voice 伴侣服务
-
-在项目根目录下直接运行 Windows 批处理脚本（自动检测 Python 环境与依赖）：
-
-```bash
-# 一键双击启动（自动检测并拉起 GPT-SoVITS，等待模型就绪，启动服务并自动打开浏览器）
-# 退出时直接关闭控制台窗口或按 Ctrl+C，Windows 内核级 Job Object 自动联动终止后台进程并释放全部显存。
-.\启动.bat
-```
-
-启动器会自动完成：GPT-SoVITS 引擎检测与后台拉起（就绪等待 + 日志落盘）、端口冲突自动降级、健康轮询、浏览器自动打开，以及退出时的自动资源回收。
-
-或者使用 Python 原生命令行：
-
-```bash
-# 安装依赖（推荐 uv，或使用 pip install -e .）
-uv sync
-
-# 启动 FastAPI 服务
-uvicorn galgame2voice.main:app --host 127.0.0.1 --port 8080 --reload
-```
-
-启动后即可通过浏览器访问：
-- **聊天主界面**：[http://127.0.0.1:8080/](http://127.0.0.1:8080/)
-- **管理控制台**：[http://127.0.0.1:8080/settings.html](http://127.0.0.1:8080/settings.html)
-- **OpenAPI 接口文档**：默认关闭，需要时设置环境变量 `GALGAME2VOICE_ENABLE_DOCS=true` 开启
-
-> 🔑 首次启动会自动生成控制台访问 Token 并打印在启动日志中（也可通过
-> `GALGAME2VOICE_CONSOLE_TOKEN` 环境变量固定）。前端首次访问时输入一次即可。
+启动成功后，在浏览器访问 `http://127.0.0.1:8080/` 即可。
 
 ---
 
-## Telegram 机器人配置
+### 方式 C：Docker 容器化部署
+
+本项目提供标准 `Dockerfile` 与 `docker-compose.yml`，支持一键容器化运行：
+
+```bash
+# 启动容器
+docker compose up -d
+
+# 查看运行日志
+docker compose logs -f
+```
+
+启动后访问 `http://127.0.0.1:8080/`，数据持久化保存在本地 `./data`、`./audio` 与 `./logs` 目录中。
+
+---
+
+### 方式 D：开发者手动部署
+
+```bash
+# 1. 创建并激活虚拟环境
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+
+# 2. 安装依赖
+pip install -r requirements.txt
+
+# 或者使用 uv（极速推荐）
+# uv sync
+
+# 3. 启动服务
+python scripts/run_server.py
+```
+
+---
+
+## 🔑 配置对话大模型
+
+服务启动后，点击 Web 页面左下角齿轮 **「全局设置」**（或侧边栏底部）：
+
+1. **选择服务商**：内置 DeepSeek、OpenAI、通义千问、智谱 GLM、月之暗面、硅基流动、Groq、Gemini、字节豆包、Ollama 等 10+ 预置模板。
+2. **填写 API Key**：在对应输入框中填入您的 API Key（如 `sk-xxxx`），本地 Ollama 服务可直接免 Key 填写。
+3. **点击「启用此模型」** 即可实时生效！
+
+---
+
+## 🎙️ 语音合成 (GPT-SoVITS) 对接
+
+1. **自动侦测与拉起**：
+   - 如果您的电脑上已有 GPT-SoVITS 懒人包（默认查找 C/D/E/F 盘根目录或同级目录），启动器会自动识别并在后台拉起 `api_v2.py`。
+   - 也可通过环境变量指定路径：`set GPT_SOVITS_DIR=D:\GPT-SoVITS-v2`。
+2. **添加自定义音色**：
+   - 进入 Web 界面右上角 **「会话设置」** ➔ **「角色音色」**；
+   - 系统会自动扫描本地的 `.ckpt` 模型、`.pth` 模型与参考音频；
+   - 选择模型、参考音频并填写参考文本，点击 **「创建并绑定」**，即可在不同会话中与不同音色的角色对话。
+3. **纯文本模式（无显卡/无 GPT-SoVITS）**：
+   - 即使未运行 GPT-SoVITS，文字聊天与日文翻译功能仍 100% 正常工作。
+
+---
+
+## 📦 制作与发布标准 Release 压缩包
+
+如果您想将本项目打包分享给其他朋友或发布到 GitHub Releases，只需运行内置的发布打包工具：
+
+```bash
+python scripts/package_release.py
+```
+
+该工具会自动：
+- 严格过滤 `.git`、`.venv`、数据库、日志、音频缓存与临时开发文件；
+- 保留已预编译好的生产级前端 Web 资源（无需他人安装 Node.js）；
+- 在 `dist/` 目录下生成干净、标准的 `galgame2voice-v2.0.0.zip` 发布包，并附带 SHA-256 校验码。
+
+---
+
+## 🤖 Telegram 机器人配置
 
 1. 打开管理控制台 [http://127.0.0.1:8080/settings.html](http://127.0.0.1:8080/settings.html) ➔ **Telegram 设置**
 2. 填入从 `@BotFather` 获取的 `Bot Token`
-3. 配置 **管理员 ID 白名单**（`telegram_admin_ids` 或环境变量 `TELEGRAM_ADMIN_IDS`，逗号分隔）：未配置时任何人都可执行全局管理命令，强烈建议配置
+3. 配置 **管理员 ID 白名单**（`telegram_admin_ids` 或环境变量 `TELEGRAM_ADMIN_IDS`）
 4. 若在国内网络环境下，勾选 **启用 HTTP/SOCKS5 代理**（例如 `127.0.0.1:10809`）
-5. 保存配置后服务自动启动长轮询，支持以下指令：
-   - `/start` - 查看欢迎语并初始化角色
-   - `/reset` - 清空当前上下文历史
-   - `/voice` - 查看/切换音色配置
-   - `/model` - 查看当前 LLM / STT 模型
-   - `/console` - 在私聊中安全获取专属后台管理链接
-   - 🎙️ **直接发送语音**：机器人自动转码识别、调用大模型并回复女主语音
+5. 保存配置后机器人立即热重载，支持文字聊天与直接发送语音消息交互。
 
 ---
 
-## 运行自动化测试
+## 🧪 自动化测试
 
-项目内置完整的 Pytest 自动化测试套件（覆盖数据库持久化、模型适配器、分句算法、GPT-SoVITS 互斥客户端与 SSE 流式管道）：
+项目内置完整的 Pytest 自动化测试套件：
 
 ```bash
-python -m pytest -v
+# 安装开发测试依赖
+pip install -r requirements-dev.txt
+
+# 运行全量测试
+pytest
 ```
+
+---
+
+## ❓ 常见问题 (FAQ)
+
+<details>
+<summary><b>Q1: 启动时提示端口 8080 被占用？</b></summary>
+无需担心，智能启动器会自动检测端口冲突，并自动平滑切换至 8081、8082 或其他空闲端口，同时自动打开正确的浏览器地址。
+</details>
+
+<details>
+<summary><b>Q2: 重新打开网页后，之前的语音能播放吗？</b></summary>
+可以！系统内置了本地音频缓存机制，历史对话中只要该语音在有效期内，刷新或重开会话均可秒级重播，无需重复调用 GPU 合成。
+</details>
+
+<details>
+<summary><b>Q3: 我可以关掉自动展开翻译吗？</b></summary>
+可以。在左下角「全局设置」中找到「翻译」设置，切换为「手动（点击“翻译”按钮）」，回复将保持紧凑收起状态，只有在您想看时点击按钮才会展开。
+</details>
 
 ---
 
 ## 开源许可
 
-本项目遵循 MIT License 开源。
+本项目遵循 [MIT License](LICENSE) 开源。

@@ -126,13 +126,31 @@ class AnthropicAdapter(BaseLLMAdapter):
                     "content": content,
                 })
 
-        # Anthropic requires at least one user message
-        if not user_assistant_msgs:
-            user_assistant_msgs.append({"role": "user", "content": "Hello"})
+        # Anthropic requires:
+        # 1. Non-empty string for each message content (>= 1 char)
+        # 2. Alternating user/assistant roles (consecutive same roles must be merged)
+        # 3. First message must be 'user'
+        merged_msgs: List[Dict[str, str]] = []
+        for m in user_assistant_msgs:
+            role = m["role"]
+            raw_content = m.get("content") or ""
+            content = str(raw_content).strip()
+            if not content:
+                content = "..."
+
+            if merged_msgs and merged_msgs[-1]["role"] == role:
+                merged_msgs[-1]["content"] += "\n\n" + content
+            else:
+                merged_msgs.append({"role": role, "content": content})
+
+        if not merged_msgs:
+            merged_msgs.append({"role": "user", "content": "Hello"})
+        elif merged_msgs[0]["role"] != "user":
+            merged_msgs.insert(0, {"role": "user", "content": "Hello"})
 
         payload: Dict[str, Any] = {
             "model": model or self.default_model,
-            "messages": user_assistant_msgs,
+            "messages": merged_msgs,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": stream,
@@ -140,8 +158,10 @@ class AnthropicAdapter(BaseLLMAdapter):
         if system_content:
             payload["system"] = system_content
 
+        # Anthropic API 不支持这些 OpenAI 风格参数，透传会导致 400
+        _UNSUPPORTED = ("frequency_penalty", "presence_penalty", "top_k")
         for k, v in kwargs.items():
-            if k not in ("client_override", "custom_headers", "timeout_s", "max_retries", "base_delay"):
+            if k not in ("client_override", "custom_headers", "timeout_s", "max_retries", "base_delay") and k not in _UNSUPPORTED:
                 payload[k] = v
 
         return payload
@@ -285,7 +305,9 @@ class AnthropicAdapter(BaseLLMAdapter):
                                 text = chunk.get("delta", {}).get("text", "")
                                 if text:
                                     yield text
-                        except Exception:
+                            elif chunk.get("type") == "error":
+                                raise RuntimeError(f"Anthropic stream error: {chunk.get('error')}")
+                        except json.JSONDecodeError:
                             continue
                 return
 

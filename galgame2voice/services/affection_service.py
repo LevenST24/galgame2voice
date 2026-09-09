@@ -131,6 +131,10 @@ class AffectionService:
 
     def calculate_level(self, score: int) -> Tuple[int, str]:
         """Calculates intimacy level and tier name based on total affection score."""
+        try:
+            score = int(score)
+        except (TypeError, ValueError):
+            score = 0
         score = max(0, min(100, score))
         for level, tier in sorted(self.LEVEL_TIERS.items(), key=lambda x: x[0], reverse=True):
             if score >= tier["min_score"]:
@@ -139,10 +143,13 @@ class AffectionService:
 
     def calculate_turn_points(self, user_text: str, assistant_text: str = "") -> Tuple[int, List[str]]:
         """Calculates turn affection points and reason tags."""
+        if not user_text or not isinstance(user_text, str):
+            return 1, ["base_turn", "base_interaction (+1)"]
+
         points = 1
         reasons = ["base_turn", "base_interaction (+1)"]
 
-        combined = user_text.lower()
+        combined = user_text[:4000].lower()
 
         # Check compliments
         has_compliment = any(kw.lower() in combined for kw in self.COMPLIMENT_KEYWORDS)
@@ -176,7 +183,14 @@ class AffectionService:
         """
         Classifies emotion based on dialogue keywords and context.
         """
-        text = f"{assistant_text} {user_text}".lower()
+        a_str = (assistant_text or "")[:4000] if isinstance(assistant_text, str) else ""
+        u_str = (user_text or "")[:4000] if isinstance(user_text, str) else ""
+        text = f"{a_str} {u_str}".lower()
+
+        try:
+            aff_lvl = int(affection_level)
+        except (TypeError, ValueError):
+            aff_lvl = 1
 
         # Shy keywords
         if any(k in text for k in ["脸红", "害羞", "///", "唔……", "那个……", "别盯着我看", "秘密", "不好意思", "恥ずかしい", "照れ"]):
@@ -203,7 +217,7 @@ class AffectionService:
             return "cold"
 
         # Default by intimacy tier
-        if affection_level >= 4:
+        if aff_lvl >= 4:
             return "gentle"
         return current_emotion or "normal"
 
@@ -211,9 +225,16 @@ class AffectionService:
         """
         Checks if the user input triggers a specific Galgame easter egg dialogue.
         """
-        text_lower = user_text.lower()
+        if not user_text or not isinstance(user_text, str):
+            return None
+        try:
+            curr_lvl = int(current_level)
+        except (TypeError, ValueError):
+            curr_lvl = 1
+
+        text_lower = user_text[:4000].lower()
         for egg_id, egg in self.EASTER_EGGS.items():
-            if current_level >= egg.get("min_level", 1):
+            if curr_lvl >= egg.get("min_level", 1):
                 if any(trigger.lower() in text_lower for trigger in egg["triggers"]):
                     return egg
         return None
@@ -233,51 +254,63 @@ class AffectionService:
         3. Check easter eggs and unlock milestones
         4. Update SQLite state machine
         """
-        delta_points, reasons = self.calculate_interaction_points(user_text, assistant_text)
+        u_id = (user_id or "").strip() or "default_user"
+        try:
+            char_id = int(character_id) if character_id is not None and int(character_id) > 0 else 1
+        except (TypeError, ValueError):
+            char_id = 1
+        try:
+            d_limit = max(0, int(daily_limit))
+        except (TypeError, ValueError):
+            d_limit = 15
+
+        u_text = (user_text or "")[:4000] if isinstance(user_text, str) else ""
+        a_text = (assistant_text or "")[:4000] if isinstance(assistant_text, str) else ""
+
+        delta_points, reasons = self.calculate_interaction_points(u_text, a_text)
 
         async with get_db(self.db_path) as conn:
-            current = await crud.get_or_create_character_affection(conn, user_id, character_id)
+            current = await crud.get_or_create_character_affection(conn, u_id, char_id)
             emotion = self.classify_emotion(
-                assistant_text=assistant_text,
-                user_text=user_text,
+                assistant_text=a_text,
+                user_text=u_text,
                 current_emotion=current.current_emotion,
                 affection_level=current.affection_level,
             )
 
             # Check easter egg
-            triggered_egg = self.check_easter_eggs(user_text, current.affection_level)
+            triggered_egg = self.check_easter_eggs(u_text, current.affection_level)
             if triggered_egg:
                 emotion = triggered_egg["emotion"]
 
-            # Increment points
+            # Increment points atomically
             updated, actual_gain, level_up = await crud.increment_affection(
                 conn=conn,
-                user_id=user_id,
-                character_id=character_id,
+                user_id=u_id,
+                character_id=char_id,
                 delta_points=delta_points,
                 emotion=emotion,
-                daily_limit=daily_limit,
+                daily_limit=d_limit,
             )
 
-            # Update unlocked dialogues
-            unlocked_set = set(updated.unlocked_dialogues)
+            # Collect new dialogues to unlock (unlock all milestone lines up to current level)
+            new_dialogue_ids = []
+            for lvl in range(1, updated.affection_level + 1):
+                milestone_id = f"milestone_lv{lvl}"
+                if milestone_id in self.MILESTONES and milestone_id not in updated.unlocked_dialogues:
+                    new_dialogue_ids.append(milestone_id)
 
-            # Unlock milestone for current level
-            milestone_id = f"milestone_lv{updated.affection_level}"
-            if milestone_id in self.MILESTONES and milestone_id not in unlocked_set:
-                unlocked_set.add(milestone_id)
+            if triggered_egg and triggered_egg["id"] not in updated.unlocked_dialogues:
+                new_dialogue_ids.append(triggered_egg["id"])
 
-            if triggered_egg and triggered_egg["id"] not in unlocked_set:
-                unlocked_set.add(triggered_egg["id"])
-
-            if len(unlocked_set) != len(updated.unlocked_dialogues):
-                await crud.update_character_affection(
-                    conn,
-                    user_id=user_id,
-                    character_id=character_id,
-                    updates=CharacterAffectionUpdate(unlocked_dialogues=list(unlocked_set)),
+            if new_dialogue_ids:
+                await crud.unlock_character_dialogues(
+                    conn=conn,
+                    user_id=u_id,
+                    character_id=char_id,
+                    dialogue_ids_to_add=new_dialogue_ids,
                 )
-                updated = await crud.get_character_affection(conn, user_id, character_id) or updated
+                updated = await crud.get_character_affection(conn, u_id, char_id) or updated
 
         return {
             "score": updated.affection_score,
@@ -303,8 +336,14 @@ class AffectionService:
         """
         Returns full list of milestone and easter egg dialogues with unlock status.
         """
+        u_id = (user_id or "").strip() or "default_user"
+        try:
+            char_id = int(character_id) if character_id is not None and int(character_id) > 0 else 1
+        except (TypeError, ValueError):
+            char_id = 1
+
         async with get_db(self.db_path) as conn:
-            aff = await crud.get_or_create_character_affection(conn, user_id, character_id)
+            aff = await crud.get_or_create_character_affection(conn, u_id, char_id)
 
         unlocked_set = set(aff.unlocked_dialogues)
         gallery: List[Dict[str, Any]] = []

@@ -172,32 +172,25 @@ class TestFrontendAssetsAndDOMStructure:
         assert index_file.exists(), "index.html must exist"
         content = index_file.read_text(encoding="utf-8")
 
-        # Visual Novel Mode elements
-        assert 'id="vn-view"' in content
-        assert 'class="vn-dialogue-box' in content
-        assert 'id="vn-character-name"' in content
-        assert 'id="vn-text-ja"' in content
-        assert 'id="vn-text-zh"' in content
-        assert 'id="vn-audio-equalizer"' in content
-        assert 'id="vn-audio-status"' in content
-        assert 'id="btn-vn-replay"' in content
-        assert 'id="btn-vn-log"' in content
+        # Gal2Voice 新版 UI（多会话聊天 + 语音）必需元素
+        required_ids = [
+            'id="sidebar"', 'id="sessionList"', 'id="newChatBtn"',
+            'id="sessionCount"', 'id="messages"', 'id="composer"',
+            'id="input"', 'id="sendBtn"', 'id="stopBtn"', 'id="micBtn"',
+            'id="voiceModeBtn"', 'id="sessionSettingsBtn"', 'id="globalSettingsBtn"',
+            'id="modelBadge"', 'id="toastRoot"', 'id="sessionModal"', 'id="globalModal"',
+        ]
+        missing = [rid for rid in required_ids if rid not in content]
+        assert not missing, f"index.html missing required elements: {missing}"
+        # 语音条图标与 SVG sprite
+        assert 'id="i-play"' in content
+        assert 'id="i-pause"' in content
+        assert 'id="i-mic"' in content
+        assert 'id="i-gear"' in content
 
-        # Classic Chat Mode elements
-        assert 'id="chat-view"' in content
-        assert 'id="chat-log"' in content
-        assert 'id="chat-form"' in content
-        assert 'id="prompt-input"' in content
-        assert 'id="send-btn"' in content
-        assert 'id="reset-context-btn"' in content
-
-        # Header Capsule elements
-        assert 'id="quick-voice-select"' in content
-        assert 'id="sovits-status-badge"' in content
-        assert 'id="mute-toggle-btn"' in content
-        assert 'id="volume-slider"' in content
-        assert 'id="btn-mode-vn"' in content
-        assert 'id="btn-mode-chat"' in content
+        # 确保暂停图标有可见的实体图形（rect 或带闭合路径），而不是纯 1D stroke（否则 stroke:none 时 0 像素不可见）
+        pause_symbol = content[content.find('id="i-pause"'):content.find('</symbol>', content.find('id="i-pause"'))]
+        assert '<rect' in pause_symbol or 'fill="currentColor"' in pause_symbol, "Pause icon must have fillable geometry"
 
     def test_style_css_contains_glassmorphism_and_animations(self):
         style_file = Path("galgame2voice/static/css/style.css")
@@ -212,3 +205,15 @@ class TestFrontendAssetsAndDOMStructure:
         assert ".audio-equalizer-bars" in css or ".bar" in css
         # Standee aura / animations
         assert "keyframes" in css
+
+    def test_no_browser_speechsynthesis_fallback_and_has_persistent_cache(self):
+        assets_dir = Path("galgame2voice/static/assets")
+        assert assets_dir.exists(), "assets directory must exist"
+        js_files = list(assets_dir.glob("index-*.js"))
+        assert len(js_files) > 0, "Production bundle JS must exist"
+        content = js_files[0].read_text(encoding="utf-8")
+
+        # 验证包含 Cache Storage API 持久化缓存逻辑
+        assert "audio_cache" in content or "gal2voice-audio" in content, "Bundle must contain audio cache persistence"
+        # 验证不存在向操作系统机械音降级
+        assert "使用浏览器朗读" not in content, "Robotic browser TTS fallback must be eliminated"

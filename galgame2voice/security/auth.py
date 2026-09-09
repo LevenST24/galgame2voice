@@ -40,9 +40,10 @@ def get_env_console_token() -> Optional[str]:
 
 
 def is_auth_disabled() -> bool:
-    env_flag = os.getenv(AUTH_DISABLED_VAR, "").strip().lower() in ("1", "true", "yes")
-    if env_flag:
-        return True
+    """显式设置的环境变量优先（"0" 强制开启鉴权，"1" 强制关闭）；未设置时用配置默认（本地默认关闭）。"""
+    raw = os.getenv(AUTH_DISABLED_VAR)
+    if raw is not None and raw.strip():
+        return raw.strip().lower() in ("1", "true", "yes")
     try:
         from galgame2voice.config import get_settings
         return bool(get_settings().auth_disabled)

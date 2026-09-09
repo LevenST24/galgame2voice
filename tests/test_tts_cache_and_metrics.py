@@ -210,6 +210,9 @@ class TestTtsCacheLifecycleAndPerformance:
         for r in results:
             assert r == first
 
+        # Drain fire-and-forget DB-touch tasks before the loop closes.
+        await mgr.aclose()
+
 
 # ============================================================================
 # 3. LRU Pruning & Storage Isolation Tests

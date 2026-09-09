@@ -25,7 +25,7 @@ from galgame2voice.database.crud import (
     create_memory, get_memory, list_memories, update_memory, delete_memory, clear_memories,
     upsert_memory, record_memory_recall,
     calculate_affection_level, get_or_create_character_affection, get_character_affection,
-    update_character_affection, reset_character_affection, increment_affection
+    update_character_affection, reset_character_affection, increment_affection, unlock_character_dialogues
 )
 
 __all__ = [
@@ -49,6 +49,6 @@ __all__ = [
     "create_memory", "get_memory", "list_memories", "update_memory", "delete_memory", "clear_memories",
     "upsert_memory", "record_memory_recall",
     "calculate_affection_level", "get_or_create_character_affection", "get_character_affection",
-    "update_character_affection", "reset_character_affection", "increment_affection"
+    "update_character_affection", "reset_character_affection", "increment_affection", "unlock_character_dialogues"
 ]
 

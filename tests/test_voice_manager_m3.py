@@ -370,6 +370,14 @@ class TestVoiceRouterEndpointsM3:
             assert synth_resp.headers["content-type"] == "audio/wav"
             assert synth_resp.content.startswith(b"RIFF")
 
+            # 5b. Synthesize again to verify cache hit
+            synth_resp_2 = await client.post("/api/voice/synthesize", json={
+                "text": "（微笑みながら）先生、おはようございます！",
+                "preset": "high_quality"
+            })
+            assert synth_resp_2.status_code == 200
+            assert synth_resp_2.content == synth_resp.content
+
             # 6. Presets API
             preset_resp = await client.get("/api/voice/presets")
             assert preset_resp.status_code == 200

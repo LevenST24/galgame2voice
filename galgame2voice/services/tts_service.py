@@ -18,6 +18,12 @@ from galgame2voice.services.gpt_sovits_client import (
     resolve_tts_options,
     SLICING_METHODS,
     TTS_PRESETS,
+    DYNAMIC_SPEED_MIN,
+    DYNAMIC_SPEED_MAX,
+    DYNAMIC_TEMP_MIN,
+    DYNAMIC_TEMP_MAX,
+    clamp_dynamic_speed,
+    clamp_dynamic_temperature,
 )
 from galgame2voice.services.tts_cache_manager import get_tts_cache_manager, TtsCacheManager
 
@@ -41,6 +47,7 @@ class TtsService:
         client: Optional[GptSovitsClient] = None,
         audio_dir: Optional[Union[str, Path]] = None,
         cache_manager: Optional[TtsCacheManager] = None,
+        db_path: Optional[str] = None,
     ):
         settings = get_settings()
         self.client = client or get_gpt_sovits_client()
@@ -48,23 +55,51 @@ class TtsService:
         self.audio_dir.mkdir(parents=True, exist_ok=True)
         self.cache_manager = cache_manager or get_tts_cache_manager(
             cache_dir=self.audio_dir / "cache",
-            db_path=settings.db_path,
+            db_path=db_path or settings.db_path,
         )
 
     async def _populate_voice_profile_opts(self, opts: Dict[str, Any]) -> Dict[str, Any]:
-        """Auto-populates active voice profile parameters if missing."""
-        if not opts.get("ref_audio_path") and not opts.get("refer_audio_path") and not self.client.current_refer_audio:
-            try:
-                from galgame2voice.services.voice_manager import get_voice_manager
-                active = await get_voice_manager().get_active_profile()
-                if active:
-                    opts.setdefault("voice_profile_id", active.id)
-                    opts.setdefault("ref_audio_path", active.ref_audio_path)
-                    opts.setdefault("prompt_text", active.prompt_text)
-                    opts.setdefault("prompt_lang", active.prompt_lang)
-                    opts.setdefault("text_lang", active.text_lang)
-            except Exception as exc:
-                logger.debug("Could not auto-populate active profile options in TtsService: %s", exc)
+        """Auto-populates active voice profile parameters, applying dynamic emotion reference audios if available."""
+        try:
+            from galgame2voice.services.voice_manager import get_voice_manager
+            active = await get_voice_manager().get_active_profile()
+            if active:
+                opts.setdefault("voice_profile_id", active.id)
+                opts.setdefault("prompt_lang", active.prompt_lang)
+                opts.setdefault("text_lang", active.text_lang)
+
+                # Check for dynamic emotion reference audio override
+                ai_adaptive = opts.get("ai_adaptive_voice", opts.get("aiAdaptiveVoice", True))
+                emotion = opts.get("emotion")
+
+                resolved_emo = None
+                if ai_adaptive and emotion:
+                    from galgame2voice.services.emotion_references import resolve_emotion_reference
+                    char_name = getattr(active, "name", "") or "四季夏目"
+                    resolved_emo = resolve_emotion_reference(char_name, str(emotion))
+
+                if resolved_emo:
+                    opts["ref_audio_path"] = resolved_emo["ref_audio_path"]
+                    opts["prompt_text"] = resolved_emo["prompt_text"]
+                    opts["prompt_lang"] = resolved_emo["prompt_lang"]
+                else:
+                    if not opts.get("ref_audio_path") and not opts.get("refer_audio_path"):
+                        opts.setdefault("ref_audio_path", active.ref_audio_path)
+                        opts.setdefault("prompt_text", active.prompt_text)
+        except Exception as exc:
+            logger.debug("Could not auto-populate active profile options in TtsService: %s", exc)
+        return opts
+
+    def _sanitize_dynamic_voice_options(self, opts: Dict[str, Any]) -> Dict[str, Any]:
+        """Safely clamps speed to [0.70, 1.35] and temperature to [0.60, 1.20] if AI adaptive voice is enabled."""
+        if opts.get("ai_adaptive_voice", opts.get("aiAdaptiveVoice", False)):
+            if "speed" in opts or "speed_factor" in opts:
+                sp_val = opts.get("speed", opts.get("speed_factor"))
+                opts["speed"] = clamp_dynamic_speed(sp_val, fallback=1.0)
+                opts["speed_factor"] = opts["speed"]
+            if "temperature" in opts or "temp" in opts:
+                temp_val = opts.get("temperature", opts.get("temp"))
+                opts["temperature"] = clamp_dynamic_temperature(temp_val, fallback=1.0)
         return opts
 
     async def synthesize(
@@ -79,6 +114,7 @@ class TtsService:
         """
         opts = dict(options or {})
         opts = await self._populate_voice_profile_opts(opts)
+        opts = self._sanitize_dynamic_voice_options(opts)
 
         cache_key = ""
         clean_text = ""
@@ -122,6 +158,7 @@ class TtsService:
         """
         opts = dict(options or {})
         opts = await self._populate_voice_profile_opts(opts)
+        opts = self._sanitize_dynamic_voice_options(opts)
 
         if use_cache:
             cache_key, clean_text, params_hash = self.cache_manager.compute_cache_key(text, options=opts)
@@ -216,4 +253,10 @@ __all__ = [
     "resolve_tts_options",
     "SLICING_METHODS",
     "TTS_PRESETS",
+    "DYNAMIC_SPEED_MIN",
+    "DYNAMIC_SPEED_MAX",
+    "DYNAMIC_TEMP_MIN",
+    "DYNAMIC_TEMP_MAX",
+    "clamp_dynamic_speed",
+    "clamp_dynamic_temperature",
 ]

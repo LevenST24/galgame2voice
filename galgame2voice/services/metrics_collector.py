@@ -14,7 +14,7 @@ from pathlib import Path
 
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
-from galgame2voice.database.session import get_db
+from galgame2voice.database.session import get_db, get_database_path
 from galgame2voice.services.tts_cache_manager import get_tts_cache_manager
 
 logger = logging.getLogger("galgame2voice.services.metrics_collector")
@@ -84,8 +84,7 @@ class MetricsCollector:
     """
 
     def __init__(self, db_path: Optional[Union[str, Path]] = None, ring_buffer_size: int = 100):
-        settings = get_settings()
-        self.db_path = str(db_path or settings.db_path)
+        self.db_path = str(db_path) if db_path is not None else get_database_path()
         self.ring_buffer: deque = deque(maxlen=ring_buffer_size)
 
     def calculate_cost(
@@ -105,7 +104,16 @@ class MetricsCollector:
         provider_models = MODEL_PRICING_MAP.get(pid, {})
         input_rate, output_rate = provider_models.get(m_name, provider_models.get("default", DEFAULT_FALLBACK_PRICE))
 
-        cost_usd = ((prompt_tokens * input_rate) + (completion_tokens * output_rate)) / 1_000_000.0
+        try:
+            p_tok = max(0, int(prompt_tokens)) if prompt_tokens is not None else 0
+        except (TypeError, ValueError):
+            p_tok = 0
+        try:
+            c_tok = max(0, int(completion_tokens)) if completion_tokens is not None else 0
+        except (TypeError, ValueError):
+            c_tok = 0
+
+        cost_usd = ((p_tok * input_rate) + (c_tok * output_rate)) / 1_000_000.0
         cost_cny = cost_usd * USD_TO_CNY_RATE
 
         return round(cost_usd, 6), round(cost_cny, 4)
@@ -115,7 +123,7 @@ class MetricsCollector:
         """
         Estimates token count with high accuracy across mixed CJK and Latin scripts.
         """
-        if not text:
+        if not text or not isinstance(text, str):
             return 0
         
         cjk_count = 0
@@ -153,31 +161,53 @@ class MetricsCollector:
         Records telemetry for an end-to-end request.
         Updates in-memory ring buffer and persists asynchronously to SQLite.
         """
+        try:
+            safe_prompt_tok = max(0, int(prompt_tokens)) if prompt_tokens is not None else 0
+        except (TypeError, ValueError):
+            safe_prompt_tok = 0
+        try:
+            safe_comp_tok = max(0, int(completion_tokens)) if completion_tokens is not None else 0
+        except (TypeError, ValueError):
+            safe_comp_tok = 0
+
         cost_usd, cost_cny = self.calculate_cost(
             provider_id=provider_id,
             model_name=model_name,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
+            prompt_tokens=safe_prompt_tok,
+            completion_tokens=safe_comp_tok,
         )
-        total_tokens = prompt_tokens + completion_tokens
+        total_tokens = safe_prompt_tok + safe_comp_tok
         iso_timestamp = datetime.now(timezone.utc).isoformat()
+
+        try:
+            safe_ttft = max(0.0, float(ttft_ms))
+        except (TypeError, ValueError):
+            safe_ttft = 0.0
+        try:
+            safe_tts_first = max(0.0, float(tts_first_chunk_ms))
+        except (TypeError, ValueError):
+            safe_tts_first = 0.0
+        try:
+            safe_total_lat = max(0.0, float(total_latency_ms))
+        except (TypeError, ValueError):
+            safe_total_lat = 0.0
 
         metric_record = {
             "timestamp": iso_timestamp,
-            "session_id": session_id,
-            "channel": channel,
-            "provider_id": provider_id,
-            "model_name": model_name,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
+            "session_id": str(session_id or "default"),
+            "channel": str(channel or "web"),
+            "provider_id": str(provider_id or "deepseek"),
+            "model_name": str(model_name or "deepseek-chat"),
+            "prompt_tokens": safe_prompt_tok,
+            "completion_tokens": safe_comp_tok,
             "total_tokens": total_tokens,
             "estimated_cost_usd": cost_usd,
             "estimated_cost_cny": cost_cny,
-            "ttft_ms": round(float(ttft_ms), 1),
-            "tts_first_chunk_ms": round(float(tts_first_chunk_ms), 1),
-            "total_latency_ms": round(float(total_latency_ms), 1),
-            "tts_cached_chunks": tts_cached_chunks,
-            "tts_generated_chunks": tts_generated_chunks,
+            "ttft_ms": round(safe_ttft, 1),
+            "tts_first_chunk_ms": round(safe_tts_first, 1),
+            "total_latency_ms": round(safe_total_lat, 1),
+            "tts_cached_chunks": max(0, int(tts_cached_chunks or 0)),
+            "tts_generated_chunks": max(0, int(tts_generated_chunks or 0)),
         }
 
         # Add to in-memory ring buffer

@@ -30,6 +30,7 @@ from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate, SettingsUpdate, CharacterAffectionUpdate
 from galgame2voice.services.chat_service import ChatService, StreamingBilingualParser
+from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.adapters.registry import get_stt_adapter
 from galgame2voice.utils.audio_converter import convert_ogg_to_wav, convert_wav_to_ogg
@@ -88,7 +89,7 @@ class TelegramBotHandlers:
 
     def cancel_user_task(self, chat_id: int) -> None:
         """Cancels active background voice task for given chat_id if running."""
-        task = self.user_tasks.get(chat_id)
+        task = self.user_tasks.pop(chat_id, None)
         if task and not task.done():
             task.cancel()
             logger.info("Cancelled ongoing voice synthesis task for chat_id=%d", chat_id)
@@ -667,7 +668,12 @@ class TelegramBotHandlers:
                     await query.edit_message_text(text=text, reply_markup=markup)
 
             elif data.startswith("set_voice_"):
-                profile_id = int(data.split("_")[-1])
+                raw_id = data.replace("set_voice_", "").strip()
+                if not raw_id.isdigit() or int(raw_id) < 1:
+                    if hasattr(query, "answer"):
+                        await query.answer("⚠️ 无效的角色音色 ID", show_alert=True)
+                    return
+                profile_id = int(raw_id)
                 char_name = "目标角色"
                 try:
                     async with get_db(self.db_path) as conn:
@@ -699,7 +705,15 @@ class TelegramBotHandlers:
                     await query.edit_message_text(text=text, reply_markup=markup)
 
             elif data.startswith("set_speed_"):
-                new_speed = float(data.split("_")[-1])
+                raw_s = data.replace("set_speed_", "").strip()
+                try:
+                    new_speed = float(raw_s)
+                    if not (0.1 <= new_speed <= 3.0):
+                        raise ValueError()
+                except (ValueError, TypeError):
+                    if hasattr(query, "answer"):
+                        await query.answer("⚠️ 语速参数超出范围 (0.1~3.0)", show_alert=True)
+                    return
                 try:
                     async with get_db(self.db_path) as conn:
                         await crud.update_settings(conn, SettingsUpdate(speed_factor=new_speed))
@@ -719,7 +733,15 @@ class TelegramBotHandlers:
                     await query.edit_message_text(text=text, reply_markup=markup)
 
             elif data.startswith("set_temp_"):
-                new_temp = float(data.split("_")[-1])
+                raw_t = data.replace("set_temp_", "").strip()
+                try:
+                    new_temp = float(raw_t)
+                    if not (0.0 <= new_temp <= 2.0):
+                        raise ValueError()
+                except (ValueError, TypeError):
+                    if hasattr(query, "answer"):
+                        await query.answer("⚠️ 发音温度超出范围 (0.0~2.0)", show_alert=True)
+                    return
                 try:
                     async with get_db(self.db_path) as conn:
                         await crud.update_settings(conn, SettingsUpdate(temperature=new_temp))
@@ -759,7 +781,15 @@ class TelegramBotHandlers:
                     await query.edit_message_text(text=text, reply_markup=markup)
 
             elif data.startswith("set_topk_"):
-                new_topk = int(data.split("_")[-1])
+                raw_k = data.replace("set_topk_", "").strip()
+                try:
+                    new_topk = int(raw_k)
+                    if not (1 <= new_topk <= 100):
+                        raise ValueError()
+                except (ValueError, TypeError):
+                    if hasattr(query, "answer"):
+                        await query.answer("⚠️ Top-K 参数超出范围 (1~100)", show_alert=True)
+                    return
                 try:
                     async with get_db(self.db_path) as conn:
                         await crud.update_settings(conn, SettingsUpdate(top_k=new_topk))
@@ -772,7 +802,15 @@ class TelegramBotHandlers:
                     await query.edit_message_text(text=text, reply_markup=markup)
 
             elif data.startswith("set_topp_"):
-                new_topp = float(data.split("_")[-1])
+                raw_p = data.replace("set_topp_", "").strip()
+                try:
+                    new_topp = float(raw_p)
+                    if not (0.0 <= new_topp <= 1.0):
+                        raise ValueError()
+                except (ValueError, TypeError):
+                    if hasattr(query, "answer"):
+                        await query.answer("⚠️ Top-P 参数超出范围 (0.0~1.0)", show_alert=True)
+                    return
                 try:
                     async with get_db(self.db_path) as conn:
                         await crud.update_settings(conn, SettingsUpdate(top_p=new_topp))
@@ -792,7 +830,15 @@ class TelegramBotHandlers:
                     await query.edit_message_text(text=text, reply_markup=markup)
 
             elif data.startswith("set_batch_"):
-                new_batch = int(data.split("_")[-1])
+                raw_b = data.replace("set_batch_", "").strip()
+                try:
+                    new_batch = int(raw_b)
+                    if not (1 <= new_batch <= 16):
+                        raise ValueError()
+                except (ValueError, TypeError):
+                    if hasattr(query, "answer"):
+                        await query.answer("⚠️ 批量大小超出范围 (1~16)", show_alert=True)
+                    return
                 try:
                     async with get_db(self.db_path) as conn:
                         await crud.update_settings(conn, SettingsUpdate(batch_size=new_batch))
@@ -812,7 +858,15 @@ class TelegramBotHandlers:
                     await query.edit_message_text(text=text, reply_markup=markup)
 
             elif data.startswith("set_interval_"):
-                new_interval = float(data.split("_")[-1])
+                raw_i = data.replace("set_interval_", "").strip()
+                try:
+                    new_interval = float(raw_i)
+                    if not (0.0 <= new_interval <= 5.0):
+                        raise ValueError()
+                except (ValueError, TypeError):
+                    if hasattr(query, "answer"):
+                        await query.answer("⚠️ 分句间隔超出范围 (0.0~5.0s)", show_alert=True)
+                    return
                 try:
                     async with get_db(self.db_path) as conn:
                         await crud.update_settings(conn, SettingsUpdate(fragment_interval=new_interval))
@@ -832,7 +886,15 @@ class TelegramBotHandlers:
                     await query.edit_message_text(text=text, reply_markup=markup)
 
             elif data.startswith("set_history_"):
-                new_hist = int(data.split("_")[-1])
+                raw_h = data.replace("set_history_", "").strip()
+                try:
+                    new_hist = int(raw_h)
+                    if not (1 <= new_hist <= 100):
+                        raise ValueError()
+                except (ValueError, TypeError):
+                    if hasattr(query, "answer"):
+                        await query.answer("⚠️ 记忆轮数超出范围 (1~100)", show_alert=True)
+                    return
                 try:
                     async with get_db(self.db_path) as conn:
                         await crud.update_settings(conn, SettingsUpdate(max_history_messages=new_hist))
@@ -852,7 +914,12 @@ class TelegramBotHandlers:
                     await query.edit_message_text(text=text, reply_markup=markup)
 
             elif data.startswith("set_model_"):
-                provider_id = data.replace("set_model_", "")
+                provider_id = data.replace("set_model_", "").strip()
+                if not provider_id or len(provider_id) > 64:
+                    if hasattr(query, "answer"):
+                        await query.answer("⚠️ 无效的模型提供商标识", show_alert=True)
+                    return
+                prov_name = provider_id
                 prov_name = provider_id
                 err_msg = None
                 try:
@@ -947,6 +1014,28 @@ class TelegramBotHandlers:
                 except Exception:
                     pass
 
+    async def _safe_send_message(
+        self, update: Any, context: Optional[Any], text: str, reply_markup: Optional[Any] = None
+    ) -> bool:
+        """Safely sends Telegram message, absorbing network drops and client errors."""
+        try:
+            if hasattr(update, "message") and update.message:
+                if reply_markup is not None:
+                    await update.message.reply_text(text, reply_markup=reply_markup)
+                else:
+                    await update.message.reply_text(text)
+                return True
+            chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
+            if chat_id and context and hasattr(context, "bot"):
+                if reply_markup is not None:
+                    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+                else:
+                    await context.bot.send_message(chat_id=chat_id, text=text)
+                return True
+        except Exception as exc:
+            logger.warning("Failed sending Telegram message: %s", exc)
+        return False
+
     async def handle_start(self, update: Any, context: Optional[Any] = None) -> str:
         """Handler for /start command."""
         reply = (
@@ -960,10 +1049,7 @@ class TelegramBotHandlers:
             "• /reset - 清空当前对话历史\n"
             "• /help - 查看完整帮助信息"
         )
-        if hasattr(update, "message") and update.message:
-            await update.message.reply_text(reply)
-        elif hasattr(update, "effective_chat") and update.effective_chat and context and hasattr(context, "bot"):
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=reply)
+        await self._safe_send_message(update, context, reply)
         return reply
 
     async def handle_nickname(self, update: Any, context: Optional[Any] = None) -> str:
@@ -982,31 +1068,33 @@ class TelegramBotHandlers:
                 "设置后，二次元伴侣会在对话中用这个名字称呼你哦！"
             )
         else:
-            new_nick = parts[1].strip()[:20]
-            try:
-                async with get_db(self.db_path) as conn:
-                    profile = await crud.get_active_voice_profile(conn)
-                    profile_id = profile.id if profile else 1
-                    # Ensure affection row exists
-                    await crud.get_or_create_character_affection(
-                        conn, user_id=str(chat_id), character_id=profile_id
-                    )
-                    await crud.update_character_affection(
-                        conn,
-                        user_id=str(chat_id),
-                        character_id=profile_id,
-                        updates=CharacterAffectionUpdate(custom_nickname=new_nick),
-                    )
-                reply = f"🌸 称呼已成功更新为「{new_nick}」！\n夏目在接下来的对话中就会这样称呼你啦~"
-            except Exception as exc:
-                logger.error("Failed to update nickname: %s", exc)
-                safe_err = sanitize_error_detail(exc)
-                reply = f"❌ 更新称呼失败: {safe_err}" if safe_err else "❌ 更新称呼失败，请稍后重试！"
+            raw_nick = parts[1].strip()
+            # Defensively sanitize nickname to prevent prompt injection and control character leakage
+            new_nick = MemoryService.sanitize_fact_value(raw_nick, max_len=20)
+            if not new_nick:
+                reply = "⚠️ 称呼包含无效或特殊字符，请重新输入（支持中英文昵称，如「昂晴」「小夏目」）！"
+            else:
+                try:
+                    async with get_db(self.db_path) as conn:
+                        profile = await crud.get_active_voice_profile(conn)
+                        profile_id = profile.id if profile else 1
+                        # Ensure affection row exists
+                        await crud.get_or_create_character_affection(
+                            conn, user_id=str(chat_id), character_id=profile_id
+                        )
+                        await crud.update_character_affection(
+                            conn,
+                            user_id=str(chat_id),
+                            character_id=profile_id,
+                            updates=CharacterAffectionUpdate(custom_nickname=new_nick),
+                        )
+                    reply = f"🌸 称呼已成功更新为「{new_nick}」！\n夏目在接下来的对话中就会这样称呼你啦~"
+                except Exception as exc:
+                    logger.error("Failed to update nickname: %s", exc)
+                    safe_err = sanitize_error_detail(exc)
+                    reply = f"❌ 更新称呼失败: {safe_err}" if safe_err else "❌ 更新称呼失败，请稍后重试！"
 
-        if hasattr(update, "message") and update.message:
-            await update.message.reply_text(reply)
-        elif hasattr(update, "effective_chat") and update.effective_chat and context and hasattr(context, "bot"):
-            await context.bot.send_message(chat_id=chat_id, text=reply)
+        await self._safe_send_message(update, context, reply)
         return reply
 
     async def handle_reset(self, update: Any, context: Optional[Any] = None) -> str:
@@ -1023,10 +1111,7 @@ class TelegramBotHandlers:
             await self.chat_service.session_manager.clear_session(session_id)
 
         reply = "已清空当前对话上下文！"
-        if hasattr(update, "message") and update.message:
-            await update.message.reply_text(reply)
-        elif hasattr(update, "effective_chat") and update.effective_chat and context and hasattr(context, "bot"):
-            await context.bot.send_message(chat_id=chat_id, text=reply)
+        await self._safe_send_message(update, context, reply)
         return reply
 
     async def handle_voice(self, update: Any, context: Optional[Any] = None) -> str:
@@ -1055,10 +1140,7 @@ class TelegramBotHandlers:
             f"• 批量大小: {batch_s}\n\n"
             f"💡 发送 /console 可直接在手机端点击按钮切换音色与调节语速！"
         )
-        if hasattr(update, "message") and update.message:
-            await update.message.reply_text(reply)
-        elif hasattr(update, "effective_chat") and update.effective_chat and context and hasattr(context, "bot"):
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=reply)
+        await self._safe_send_message(update, context, reply)
         return reply
 
     async def handle_model(self, update: Any, context: Optional[Any] = None) -> str:
@@ -1083,30 +1165,14 @@ class TelegramBotHandlers:
         else:
             reply = "未找到已配置的活跃提供商。"
 
-        if hasattr(update, "message") and update.message:
-            await update.message.reply_text(reply)
-        elif hasattr(update, "effective_chat") and update.effective_chat and context and hasattr(context, "bot"):
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=reply)
+        await self._safe_send_message(update, context, reply)
         return reply
 
     async def handle_console(self, update: Any, context: Optional[Any] = None) -> str:
         """Handler for /console, /menu, /settings command rendering native Inline Keyboard Console."""
         chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
         text, markup = await self.build_main_console(chat_id, self._effective_user_id(update))
-
-        if hasattr(update, "message") and update.message:
-            if markup:
-                await update.message.reply_text(text, reply_markup=markup)
-            else:
-                await update.message.reply_text(text)
-        elif hasattr(update, "effective_chat") and update.effective_chat and context and hasattr(context, "bot"):
-            try:
-                if markup:
-                    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
-                else:
-                    await context.bot.send_message(chat_id=chat_id, text=text)
-            except TypeError:
-                await context.bot.send_message(chat_id=chat_id, text=text)
+        await self._safe_send_message(update, context, text, reply_markup=markup)
         return text
 
     async def handle_help(self, update: Any, context: Optional[Any] = None) -> str:
@@ -1120,19 +1186,13 @@ class TelegramBotHandlers:
             "• /reset - 清空当前对话上下文\n"
             "• /help - 查看此帮助信息"
         )
-        if hasattr(update, "message") and update.message:
-            await update.message.reply_text(reply)
-        elif hasattr(update, "effective_chat") and update.effective_chat and context and hasattr(context, "bot"):
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=reply)
+        await self._safe_send_message(update, context, reply)
         return reply
 
     async def handle_unknown(self, update: Any, context: Optional[Any] = None) -> str:
         """Handler for unknown commands."""
         reply = "未知指令，支持 /console, /voice, /model, /nickname, /reset, /help"
-        if hasattr(update, "message") and update.message:
-            await update.message.reply_text(reply)
-        elif hasattr(update, "effective_chat") and update.effective_chat and context and hasattr(context, "bot"):
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=reply)
+        await self._safe_send_message(update, context, reply)
         return reply
 
     async def process_text_chat(self, chat_id: int, text: str, bot: Any, user_id: int = 0) -> asyncio.Task:
@@ -1148,35 +1208,35 @@ class TelegramBotHandlers:
 
         session_id = self._session_key(chat_id, effective_user_id)
 
-        # 2. Query ChatService / LLM Adapter for bilingual response
-        async with get_db(self.db_path) as conn:
-            await crud.get_or_create_session(conn, session_id, channel="telegram", user_id=str(effective_user_id))
-            await crud.add_message(conn, MessageCreate(
-                session_id=session_id,
-                role="user",
-                content_chinese=text,
-                content_japanese="",
-                audio_url="",
-                latency_ms=0,
-            ))
-            # Extract and persist facts into long-term memory
-            profile = await crud.get_active_voice_profile(conn)
-            profile_id = profile.id if profile else 1
-            try:
-                if hasattr(self.chat_service, "memory_service"):
-                    await self.chat_service.memory_service.extract_and_save_facts(
-                        user_id=str(effective_user_id),
-                        text=text,
-                        character_id=profile_id,
-                        conn=conn,
-                    )
-            except Exception as mem_err:
-                logger.debug("Telegram non-critical memory extraction exception: %s", mem_err)
-
-            adapter, model_name, _provider_id = await self.chat_service.get_active_llm_adapter(conn=conn)
-            messages = await self.chat_service.prepare_messages(conn, session_id, text)
-
         try:
+            # 2. Query ChatService / LLM Adapter for bilingual response
+            async with get_db(self.db_path) as conn:
+                await crud.get_or_create_session(conn, session_id, channel="telegram", user_id=str(effective_user_id))
+                await crud.add_message(conn, MessageCreate(
+                    session_id=session_id,
+                    role="user",
+                    content_chinese=text,
+                    content_japanese="",
+                    audio_url="",
+                    latency_ms=0,
+                ))
+                # Extract and persist facts into long-term memory
+                profile = await crud.get_active_voice_profile(conn)
+                profile_id = profile.id if profile else 1
+                try:
+                    if hasattr(self.chat_service, "memory_service"):
+                        await self.chat_service.memory_service.process_user_message(
+                            user_id=str(effective_user_id),
+                            character_id=profile_id,
+                            message_text=text,
+                            conn=conn,
+                        )
+                except Exception as mem_err:
+                    logger.debug("Telegram non-critical memory extraction exception: %s", mem_err)
+
+                adapter, model_name, _provider_id = await self.chat_service.get_active_llm_adapter(conn=conn)
+                messages = await self.chat_service.prepare_messages(conn, session_id, text)
+
             llm_response = await adapter.chat(messages, model=model_name)
             raw_text = llm_response.content
 
@@ -1204,12 +1264,11 @@ class TelegramBotHandlers:
                 ))
                 try:
                     if hasattr(self.chat_service, "affection_service"):
-                        await self.chat_service.affection_service.process_turn(
+                        await self.chat_service.affection_service.handle_turn_affection(
                             user_id=str(effective_user_id),
                             character_id=profile_id,
                             user_text=text,
-                            bot_text=chinese,
-                            conn=conn,
+                            assistant_text=chinese,
                         )
                 except Exception as aff_err:
                     logger.debug("Telegram non-critical affection update exception: %s", aff_err)
@@ -1235,6 +1294,12 @@ class TelegramBotHandlers:
 
             task = asyncio.create_task(background_voice_worker())
             self.user_tasks[chat_id] = task
+
+            def _cleanup_task(t, cid=chat_id):
+                if self.user_tasks.get(cid) is t:
+                    self.user_tasks.pop(cid, None)
+
+            task.add_done_callback(_cleanup_task)
             return task
 
         except Exception as exc:

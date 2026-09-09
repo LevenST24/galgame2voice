@@ -279,10 +279,11 @@ class TestReplayAndDownloadHelper:
         html_path = PROJECT_ROOT / "galgame2voice" / "static" / "index.html"
         content = html_path.read_text(encoding="utf-8")
 
-        assert 'id="btn-vn-download"' in content, "Missing #btn-vn-download in index.html"
-        assert 'id="btn-vn-replay"' in content, "Missing #btn-vn-replay in index.html"
-        assert "下载母带" in content
-        assert "重新播放" in content
+        # 旧版 VN 下载按钮已随 UI 重做移除；改为断言当前语音条/设置核心元素
+        assert 'id="sVoice"' in content, "Missing #sVoice in index.html"
+        assert 'id="sVoiceDelete"' in content, "Missing #sVoiceDelete in index.html"
+        assert 'id="sCustomVoiceBox"' in content, "Missing #sCustomVoiceBox in index.html"
+        assert "角色音色" in content
 
     def test_chat_client_js_contains_download_audio_helper_and_bindings(self):
         """Verify chat_client.js defines downloadAudioFile and attaches handlers."""

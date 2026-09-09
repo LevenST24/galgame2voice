@@ -31,8 +31,8 @@ class SessionManager:
 
     DEFAULT_SYSTEM_TEMPLATE = (
         "你是一个Galgame二次元伴侣角色【{character_name}】。\n"
-        "请始终输出如下 JSON 格式，不要包含 Markdown 标记或多余文字：\n"
-        "{{\"chinese\": \"给玩家看的中文内容\", \"japanese\": \"对应的口语化日语音频台词\", \"emotion\": \"gentle|shy|happy|tsundere|cool|sad\"}}"
+        "请始终输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad），不要包含 Markdown 标记或多余文字：\n"
+        "{{\"tts\": {{\"speed\": 1.05, \"temp\": 0.95, \"emotion\": \"gentle\"}}, \"chinese\": \"给玩家看的中文内容\", \"japanese\": \"对应的口语化日语音频台词\", \"emotion\": \"gentle|shy|happy|tsundere|cool|sad\"}}"
     )
 
     def __init__(
@@ -42,6 +42,7 @@ class SessionManager:
     ):
         self.db_path = str(db_path) if db_path is not None else get_database_path()
         self.system_template = default_system_template or self.DEFAULT_SYSTEM_TEMPLATE
+        self._table_name: Optional[str] = None
 
     def estimate_tokens(self, text: str) -> int:
         """
@@ -104,37 +105,72 @@ class SessionManager:
         session_id: str,
         max_messages: int = 10,
         max_tokens: int = 8000,
+        conn: Optional[aiosqlite.Connection] = None,
     ) -> List[SessionTurn]:
         """
         Retrieves chronological history with two-stage sliding window:
         1. Max message count limit (most recent N turns).
         2. Token budget trimming (pops oldest turns until total tokens <= max_tokens).
         """
+        if conn is not None:
+            return await self._get_history_on_conn(conn, session_id, max_messages, max_tokens)
         async with get_db(self.db_path) as db:
-            cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
-            has_session_messages = await cur.fetchone()
+            return await self._get_history_on_conn(db, session_id, max_messages, max_tokens)
 
-            if has_session_messages:
-                query = """
-                    SELECT role, content_chinese, content_japanese, raw_content
-                    FROM session_messages
-                    WHERE session_id = ?
-                    ORDER BY id DESC
-                    LIMIT ?
-                """
+    @staticmethod
+    def _history_query_for_table(table: str) -> str:
+        if table == "session_messages":
+            return """
+                SELECT role, content_chinese, content_japanese, raw_content
+                FROM session_messages
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+            """
+        return """
+            SELECT role, content_chinese, content_japanese, '' as raw_content, audio_url, latency_ms
+            FROM messages
+            WHERE session_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+        """
+
+    async def _get_history_on_conn(
+        self,
+        db: aiosqlite.Connection,
+        session_id: str,
+        max_messages: int,
+        max_tokens: int,
+    ) -> List[SessionTurn]:
+        db.row_factory = aiosqlite.Row
+        if self._table_name is None:
+            cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
+            if await cur.fetchone():
+                self._table_name = "session_messages"
             else:
                 cur_msg = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages';")
                 if not await cur_msg.fetchone():
                     return []
-                query = """
-                    SELECT role, content_chinese, content_japanese, '' as raw_content, audio_url, latency_ms
-                    FROM messages
-                    WHERE session_id = ?
-                    ORDER BY id DESC
-                    LIMIT ?
-                """
+                self._table_name = "messages"
 
+        query = self._history_query_for_table(self._table_name)
+
+        try:
             async with db.execute(query, (session_id, max_messages)) as cursor:
+                rows = await cursor.fetchall()
+        except aiosqlite.OperationalError:
+            # If the database was dynamically re-initialized, invalidate cache and retry once
+            self._table_name = None
+            cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
+            if await cur.fetchone():
+                self._table_name = "session_messages"
+            else:
+                cur_msg = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages';")
+                if not await cur_msg.fetchone():
+                    return []
+                self._table_name = "messages"
+            q = self._history_query_for_table(self._table_name)
+            async with db.execute(q, (session_id, max_messages)) as cursor:
                 rows = await cursor.fetchall()
 
         # Restore chronological order
@@ -207,6 +243,11 @@ class SessionManager:
                 content = turn.content_chinese or turn.raw_content or ""
             else:
                 data_dict = {
+                    "tts": {
+                        "speed": 1.0,
+                        "temp": 1.0,
+                        "emotion": getattr(turn, "emotion", "gentle") or "gentle"
+                    },
                     "chinese": turn.content_chinese,
                     "japanese": turn.content_japanese,
                 }
@@ -232,9 +273,12 @@ class SessionManager:
         max_messages: int = 10,
         max_tokens: int = 8000,
         memory_prompt_block: Optional[str] = None,
+        conn: Optional[aiosqlite.Connection] = None,
     ) -> List[ChatMessage]:
         """High-level helper returning List[ChatMessage] for BaseLLMAdapter."""
-        history = await self.get_history(session_id, max_messages=max_messages, max_tokens=max_tokens)
+        history = await self.get_history(
+            session_id, max_messages=max_messages, max_tokens=max_tokens, conn=conn
+        )
         dict_msgs = self.format_llm_messages(
             character_name=character_name or "四季夏目",
             history=history,

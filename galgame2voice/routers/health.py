@@ -22,6 +22,7 @@ from galgame2voice.config import get_settings
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
 from galgame2voice.security.auth import require_auth
+from galgame2voice.utils.logger import sanitize_error_detail
 
 router = APIRouter(tags=["Health & Diagnostics"])
 
@@ -118,12 +119,20 @@ async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
     HTTP 200/400 counts as reachable; other codes / network errors do not.
     """
     t0 = time.perf_counter()
+    target = (base_url or "").strip().rstrip("/")
+    if not (target.startswith("http://") or target.startswith("https://")):
+        return GptSovitsTelemetry(
+            status="unreachable",
+            base_url=base_url or "",
+            latency_ms=0.0,
+            error="Invalid base_url: scheme must be http or https",
+        )
+
     try:
         from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client
         client = get_gpt_sovits_client()
 
-        target = base_url.rstrip("/")
-        if target and target != client.base_url:
+        if target and target != client.base_url.rstrip("/"):
             # One-shot probe against an explicitly different URL.
             # Connect budget 1s: healthy local engines connect in <50ms;
             # some VPN/TUN stacks delay loopback refusals to ~2s, so a tight
@@ -145,19 +154,22 @@ async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
         result = await client.check_health()
         latency = round((time.perf_counter() - t0) * 1000, 2)
         reachable = bool(result.get("connected"))
+        raw_err = result.get("error")
+        safe_err = sanitize_error_detail(raw_err) if raw_err else None
         return GptSovitsTelemetry(
             status="reachable" if reachable else "unreachable",
             base_url=client.base_url,
             latency_ms=latency,
-            error=result.get("error"),
+            error=safe_err,
         )
     except Exception as exc:
         latency = round((time.perf_counter() - t0) * 1000, 2)
+        safe_err = sanitize_error_detail(exc)
         return GptSovitsTelemetry(
             status="unreachable",
             base_url=base_url,
             latency_ms=latency,
-            error=f"{type(exc).__name__}: {exc}",
+            error=f"{type(exc).__name__}: {safe_err}",
         )
 
 

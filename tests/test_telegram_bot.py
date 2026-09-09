@@ -523,6 +523,11 @@ class TestTelegramBotRealModules:
         await handlers.handle_callback_query(cb_model_custom, DummyContext())
         assert "已激活大模型" in (cb_model_custom.callback_query.answer_text or "")
 
+        # Test Voice Profile switch
+        cb_voice = CallbackUpdate("set_voice_1")
+        await handlers.handle_callback_query(cb_voice, DummyContext())
+        assert "音色已切换为" in (cb_voice.callback_query.answer_text or "")
+
         cb_reset = CallbackUpdate("action_reset")
         await handlers.handle_callback_query(cb_reset, DummyContext())
         assert "清空" in (cb_reset.callback_query.answer_text or "")

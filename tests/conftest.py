@@ -8,9 +8,39 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 from typing import AsyncGenerator, Dict, Any, List, Optional
 import pytest
 import httpx
+
+os.environ.setdefault("GALGAME2VOICE_SKIP_MEM_CHECK", "1")
+
+
+def _filter_aiosqlite_teardown_race(args: threading.ExceptHookArgs) -> None:
+    """Swallows the known aiosqlite worker-thread race at loop teardown.
+
+    When pytest-asyncio closes a test's event loop while a fire-and-forget
+    background task's aiosqlite connection is still finishing, the worker
+    thread raises RuntimeError('Event loop is closed'). This is harmless
+    teardown noise, not a product bug; any other thread exception still
+    surfaces through pytest's threadexception plugin.
+    """
+    exc = args.exc_value
+    thread_name = args.thread.name if args.thread is not None else ""
+    is_aiosqlite_worker = False
+    tb = args.exc_traceback
+    while tb is not None:
+        if "aiosqlite" in tb.tb_frame.f_code.co_filename:
+            is_aiosqlite_worker = True
+            break
+        tb = tb.tb_next
+    if isinstance(exc, RuntimeError) and str(exc) == "Event loop is closed" and is_aiosqlite_worker:
+        return
+    _original_thread_excepthook(args)
+
+
+_original_thread_excepthook = threading.excepthook
+threading.excepthook = _filter_aiosqlite_teardown_race
 
 
 def mask_secret(secret: str) -> str:

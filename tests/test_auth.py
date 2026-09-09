@@ -21,8 +21,8 @@ TEST_TOKEN = "test_console_token"
 
 @pytest.fixture
 def auth_enabled(monkeypatch):
-    """Removes the global auth kill-switch for the duration of a test."""
-    monkeypatch.delenv("GALGAME2VOICE_AUTH_DISABLED", raising=False)
+    """Force-enables auth for the duration of a test (explicit env beats config default)."""
+    monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "0")
     yield
 
 

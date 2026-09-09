@@ -20,14 +20,60 @@ def is_ffmpeg_available(ffmpeg_path: Optional[str] = None) -> bool:
     return shutil.which(cmd) is not None
 
 
-async def run_ffmpeg_command(*args: str) -> None:
-    """Runs ffmpeg command asynchronously and raises RuntimeError on nonzero exit."""
+def _is_known_non_audio(data: bytes) -> bool:
+    """Checks if payload starts with distinct non-audio file magic headers."""
+    if not data:
+        return True
+    return (
+        data.startswith(b"\x89PNG")
+        or data.startswith(b"<!DOCTYPE")
+        or data.startswith(b"<html")
+        or data.startswith(b"{\n")
+        or data.startswith(b'{"')
+        or data.startswith(b"\x7fELF")
+        or data.startswith(b"PK\x03\x04")
+        or data.startswith(b"%PDF")
+    )
+
+
+async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
+    """
+    Runs ffmpeg command asynchronously with bounded timeout and process cleanup.
+    Raises RuntimeError on nonzero exit, or TimeoutError if execution exceeds timeout.
+    """
+    cmd_args = list(args)
+    if "-nostdin" not in cmd_args and len(cmd_args) > 1:
+        cmd_args.insert(1, "-nostdin")
+
     proc = await asyncio.create_subprocess_exec(
-        *args,
+        *cmd_args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.error("ffmpeg conversion timed out after %.1f seconds: %s", timeout, cmd_args[:4])
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=3.0)
+        except Exception:
+            pass
+        raise TimeoutError(f"ffmpeg conversion timed out after {timeout} seconds")
+    except asyncio.CancelledError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=3.0)
+        except Exception:
+            pass
+        raise
+
     if proc.returncode != 0:
         err_msg = stderr.decode("utf-8", errors="replace")
         logger.error("ffmpeg failed (code %d): %s", proc.returncode, err_msg)
@@ -39,6 +85,7 @@ async def convert_ogg_to_wav(
     sample_rate: int = 16000,
     channels: int = 1,
     ffmpeg_path: Optional[str] = None,
+    timeout: float = 30.0,
 ) -> bytes:
     """
     Converts OGG/Opus audio bytes from Telegram to 16kHz mono 16-bit PCM WAV bytes for STT.
@@ -46,6 +93,9 @@ async def convert_ogg_to_wav(
     """
     if not ogg_bytes or len(ogg_bytes) < 12:
         raise ValueError("Audio payload is empty or too short")
+
+    if _is_known_non_audio(ogg_bytes):
+        raise ValueError("Corrupted or unsupported audio format")
 
     if not (
         ogg_bytes.startswith(b"OggS") or ogg_bytes.startswith(b"RIFF") or len(ogg_bytes) > 44
@@ -79,12 +129,12 @@ async def convert_ogg_to_wav(
             "-f", "wav",
             str(out_path),
         ]
-        await run_ffmpeg_command(*cmd)
+        await run_ffmpeg_command(*cmd, timeout=timeout)
         wav_bytes = out_path.read_bytes()
-        if not wav_bytes.startswith(b"RIFF"):
+        if not wav_bytes or not wav_bytes.startswith(b"RIFF"):
             raise ValueError("ffmpeg output is not valid WAV audio")
         return wav_bytes
-    except Exception as exc:
+    except (RuntimeError, TimeoutError, ValueError) as exc:
         raise ValueError(f"Audio conversion failed: {exc}") from exc
     finally:
         for p in (in_path, out_path):
@@ -94,19 +144,33 @@ async def convert_ogg_to_wav(
                         p.unlink(missing_ok=True)
                     break
                 except OSError:
-                    await asyncio.sleep(0.05)
+                    try:
+                        await asyncio.sleep(0.05)
+                    except asyncio.CancelledError:
+                        pass
 
 
 async def convert_wav_to_ogg(
     wav_bytes: bytes,
     bitrate: str = "64k",
     ffmpeg_path: Optional[str] = None,
+    timeout: float = 30.0,
 ) -> bytes:
     """
     Converts WAV audio bytes to OGG/Opus bytes for Telegram SendVoice.
+    Raises ValueError if input bytes are invalid, corrupt, or empty.
     """
     if not wav_bytes:
         raise ValueError("WAV bytes cannot be empty")
+    if len(wav_bytes) < 12:
+        raise ValueError("Audio payload is empty or too short")
+
+    # Fast passthrough if already Ogg Opus
+    if wav_bytes.startswith(b"OggS"):
+        return wav_bytes
+
+    if _is_known_non_audio(wav_bytes):
+        raise ValueError("Corrupted or unsupported audio format")
 
     ffmpeg_bin = ffmpeg_path or "ffmpeg"
     if not is_ffmpeg_available(ffmpeg_bin):
@@ -130,8 +194,13 @@ async def convert_wav_to_ogg(
             "-f", "ogg",
             str(out_path),
         ]
-        await run_ffmpeg_command(*cmd)
-        return out_path.read_bytes()
+        await run_ffmpeg_command(*cmd, timeout=timeout)
+        ogg_bytes = out_path.read_bytes()
+        if not ogg_bytes or not ogg_bytes.startswith(b"OggS"):
+            raise ValueError("ffmpeg output is not valid OGG audio")
+        return ogg_bytes
+    except (RuntimeError, TimeoutError, ValueError) as exc:
+        raise ValueError(f"Audio conversion failed: {exc}") from exc
     finally:
         for p in (in_path, out_path):
             for _ in range(10):
@@ -140,7 +209,10 @@ async def convert_wav_to_ogg(
                         p.unlink(missing_ok=True)
                     break
                 except OSError:
-                    await asyncio.sleep(0.05)
+                    try:
+                        await asyncio.sleep(0.05)
+                    except asyncio.CancelledError:
+                        pass
 
 
 __all__ = [

@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
-from galgame2voice.database.session import get_db
+from galgame2voice.database.session import get_db, get_database_path
 from galgame2voice.services.gpt_sovits_client import clean_japanese_parentheses
 
 logger = logging.getLogger("galgame2voice.services.tts_cache_manager")
@@ -41,7 +41,7 @@ class TtsCacheManager:
         settings = get_settings()
         self.audio_root = Path(settings.audio_dir)
         self.cache_dir = Path(cache_dir or (self.audio_root / "cache"))
-        self.db_path = str(db_path or settings.db_path)
+        self.db_path = str(db_path) if db_path is not None else get_database_path()
         self.max_cache_mb = max_cache_mb
         self.max_entries = max_entries
         self.max_mem_entries = max_mem_entries
@@ -52,6 +52,8 @@ class TtsCacheManager:
         self._hits: int = 0
         self._misses: int = 0
         self._lock = asyncio.Lock()
+        self._prune_lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
         # High-speed In-Memory LRU Cache layer (<0.1ms access time)
         self._mem_cache: OrderedDict[str, bytes] = OrderedDict()
         self._mem_bytes_total: int = 0
@@ -88,9 +90,57 @@ class TtsCacheManager:
         try:
             task = asyncio.create_task(coro)
             self._bg_tasks.add(task)
-            task.add_done_callback(self._bg_tasks.discard)
+
+            def _on_done(t: asyncio.Task) -> None:
+                self._bg_tasks.discard(t)
+                if not t.cancelled():
+                    _ = t.exception()
+
+            task.add_done_callback(_on_done)
         except RuntimeError:
             pass
+
+    def _throttle_touch(self, cache_key: str) -> bool:
+        """Records a throttled DB touch; returns True when a touch should be scheduled.
+
+        The throttle map is bounded: entries older than 60s are dropped once the map
+        grows past 4x the in-memory entry cap, so long uptimes with many distinct
+        keys cannot grow it without limit. If still exceeding bounds under high key churn,
+        oldest entries are pruned to enforce a strict hard cap.
+        """
+        now = time.time()
+        throttle = self._touch_throttle
+        if cache_key in throttle and (now - throttle[cache_key] <= 5.0):
+            return False
+        max_bound = max(self.max_mem_entries * 4, 128)
+        if len(throttle) > max_bound:
+            cutoff = now - 60.0
+            for k in [k for k, ts in list(throttle.items()) if ts < cutoff]:
+                throttle.pop(k, None)
+            if len(throttle) > max_bound:
+                excess = len(throttle) - max_bound
+                sorted_keys = sorted(list(throttle.keys()), key=lambda k: throttle.get(k, 0.0))
+                for k in sorted_keys[:excess]:
+                    throttle.pop(k, None)
+        throttle[cache_key] = now
+        return True
+
+    async def aclose(self) -> None:
+        """Waits for pending background tasks (DB touches, pruning) to finish.
+
+        Call before the event loop shuts down so aiosqlite worker threads do not
+        race the closed loop. Tasks are given time to complete naturally (their
+        DB work is fast); only stragglers are cancelled.
+        """
+        pending = [t for t in self._bg_tasks if not t.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=5.0)
+        stragglers = [t for t in self._bg_tasks if not t.done()]
+        for t in stragglers:
+            t.cancel()
+        if stragglers:
+            await asyncio.gather(*stragglers, return_exceptions=True)
+        self._bg_tasks.clear()
 
     async def _touch_db_async(self, cache_key: str) -> None:
         """Asynchronously updates last_accessed_at in the database for the given cache key."""
@@ -207,9 +257,7 @@ class TtsCacheManager:
                 data = self._mem_cache[cache_key]
                 self._hits += 1
 
-                now = time.time()
-                if cache_key not in self._touch_throttle or (now - self._touch_throttle[cache_key] > 5.0):
-                    self._touch_throttle[cache_key] = now
+                if self._throttle_touch(cache_key):
                     self._spawn_background(self._touch_db_async(cache_key))
                 return data, url_path, len(data)
 
@@ -242,9 +290,9 @@ class TtsCacheManager:
                 pass
             return None
 
-        now = time.time()
-        if cache_key not in self._touch_throttle or (now - self._touch_throttle[cache_key] > 5.0):
-            self._touch_throttle[cache_key] = now
+        async with self._lock:
+            should_touch = self._throttle_touch(cache_key)
+        if should_touch:
             self._spawn_background(self._touch_db_async(cache_key))
 
         try:
@@ -280,61 +328,84 @@ class TtsCacheManager:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         file_path = self.cache_dir / f"{cache_key}.wav"
 
-        # Update In-Memory LRU Cache
-        async with self._lock:
-            self._mem_cache_store(cache_key, audio_bytes)
-
-        # Atomic write to file via temp file to prevent 0-byte/corrupt files
-        def _atomic_write():
-            tmp_path = file_path.with_suffix(f".tmp.{os.getpid()}_{time.time_ns()}_{uuid.uuid4().hex}.wav")
-            try:
-                tmp_path.write_bytes(audio_bytes)
-                for attempt in range(5):
-                    try:
-                        tmp_path.replace(file_path)
-                        return
-                    except (PermissionError, OSError) as err:
+        async with self._write_lock:
+            # Atomic write to file via temp file to prevent 0-byte/corrupt files
+            def _atomic_write():
+                tmp_path = file_path.with_suffix(f".tmp.{os.getpid()}_{time.time_ns()}_{uuid.uuid4().hex}.wav")
+                try:
+                    tmp_path.write_bytes(audio_bytes)
+                    for attempt in range(5):
                         try:
-                            if file_path.exists() and file_path.stat().st_size > 0:
+                            tmp_path.replace(file_path)
+                            return
+                        except (PermissionError, OSError) as err:
+                            try:
+                                if file_path.exists() and file_path.stat().st_size > 0:
+                                    tmp_path.unlink(missing_ok=True)
+                                    return
+                            except Exception:
+                                pass
+                            if attempt == 4:
                                 tmp_path.unlink(missing_ok=True)
-                                return
-                        except Exception:
-                            pass
-                        if attempt == 4:
-                            tmp_path.unlink(missing_ok=True)
-                            raise err
-                        time.sleep(0.005 * (attempt + 1))
-            except Exception:
-                tmp_path.unlink(missing_ok=True)
-                raise
+                                raise err
+                            time.sleep(0.005 * (attempt + 1))
+                except Exception:
+                    tmp_path.unlink(missing_ok=True)
+                    raise
 
-        await asyncio.to_thread(_atomic_write)
-        file_size = len(audio_bytes)
-        url_path = f"/audio/cache/{cache_key}.wav"
-
-        # Register in SQLite
-        for db_attempt in range(5):
             try:
-                async with get_db(self.db_path) as conn:
-                    await crud.upsert_tts_cache_entry(
-                        conn=conn,
-                        cache_key=cache_key,
-                        text=text,
-                        clean_text=clean_text,
-                        voice_profile_id=voice_profile_id or 1,
-                        params_hash=params_hash,
-                        file_path=str(file_path),
-                        file_size=file_size,
-                        duration_ms=duration_ms,
-                    )
-                break
-            except Exception as exc:
-                if "locked" in str(exc).lower() or "busy" in str(exc).lower():
-                    if db_attempt < 4:
-                        await asyncio.sleep(0.02 * (db_attempt + 1))
-                        continue
-                logger.warning("Failed to insert tts_cache_entry in DB: %s", exc)
-                break
+                await asyncio.to_thread(_atomic_write)
+                file_size = len(audio_bytes)
+                url_path = f"/audio/cache/{cache_key}.wav"
+
+                db_success = False
+                last_exc = None
+                for db_attempt in range(5):
+                    try:
+                        async with get_db(self.db_path) as conn:
+                            await crud.upsert_tts_cache_entry(
+                                conn=conn,
+                                cache_key=cache_key,
+                                text=text,
+                                clean_text=clean_text,
+                                voice_profile_id=voice_profile_id or 1,
+                                params_hash=params_hash,
+                                file_path=str(file_path),
+                                file_size=file_size,
+                                duration_ms=duration_ms,
+                            )
+                        db_success = True
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                            if db_attempt < 4:
+                                await asyncio.sleep(0.02 * (db_attempt + 1))
+                                continue
+                        if "no such table" in str(exc).lower():
+                            try:
+                                from galgame2voice.database.session import init_db
+                                await init_db(self.db_path)
+                                continue
+                            except Exception as init_err:
+                                logger.warning("Failed to auto-init DB in TtsCacheManager: %s", init_err)
+                        logger.warning("Failed to insert tts_cache_entry in DB: %s", exc)
+                        break
+
+                if not db_success:
+                    try:
+                        await asyncio.to_thread(file_path.unlink, missing_ok=True)
+                    except Exception:
+                        pass
+                    raise RuntimeError(f"Failed to persist cache entry metadata for key {cache_key}: {last_exc}") from last_exc
+
+                # Populate In-Memory LRU Cache only after successful persistence
+                async with self._lock:
+                    self._mem_cache_store(cache_key, audio_bytes)
+            except Exception:
+                async with self._lock:
+                    self._mem_cache_discard(cache_key)
+                raise
 
         # Trigger background pruning if cache exceeds limits
         self._spawn_background(self._check_and_prune())
@@ -342,15 +413,18 @@ class TtsCacheManager:
         return url_path, file_path, file_size
 
     async def _check_and_prune(self):
-        """Asynchronously checks if capacity thresholds are exceeded and prunes LRU entries."""
-        try:
-            async with self._lock:
+        """Asynchronously checks if capacity thresholds are exceeded and prunes LRU entries.
+        Guarded by _prune_lock to coalesce redundant triggers and prevent concurrent stampedes."""
+        if self._prune_lock.locked():
+            return
+        async with self._prune_lock:
+            try:
                 await self.prune(
                     max_mb=self.max_cache_mb,
                     max_entries=self.max_entries,
                 )
-        except Exception as exc:
-            logger.debug("Error during automatic cache pruning: %s", exc)
+            except Exception as exc:
+                logger.debug("Error during automatic cache pruning: %s", exc)
 
     async def prune(
         self,
@@ -359,86 +433,120 @@ class TtsCacheManager:
     ) -> int:
         """
         Performs LRU pruning of cache files when limits are exceeded.
+        Drains up to 10 batches of 200 entries to satisfy limits under burst writes.
+        Verifies disk removal prior to database deletion to prevent orphaned ghost files.
         Returns number of pruned entries.
         """
         limit_mb = max_mb or self.max_cache_mb
         limit_entries = max_entries or self.max_entries
         limit_bytes = limit_mb * 1024 * 1024
 
-        pruned_count = 0
+        async with self._write_lock:
+            pruned_count = 0
+            try:
+                async with get_db(self.db_path) as conn:
+                    stats = await crud.get_tts_cache_stats(conn)
+                    total_bytes = stats["total_size_bytes"]
+                    total_files = stats["total_files"]
 
-        async with get_db(self.db_path) as conn:
-            stats = await crud.get_tts_cache_stats(conn)
-            total_bytes = stats["total_size_bytes"]
-            total_files = stats["total_files"]
+                    if total_bytes <= limit_bytes and total_files <= limit_entries:
+                        return 0
 
-            if total_bytes <= limit_bytes and total_files <= limit_entries:
-                return 0
+                    target_bytes = int(limit_bytes * 0.8)
+                    target_files = int(limit_entries * 0.8)
 
-            # Target 80% of limit to avoid frequent thrashing
-            target_bytes = int(limit_bytes * 0.8)
-            target_files = int(limit_entries * 0.8)
+                    for _ in range(10):
+                        if total_bytes <= target_bytes and total_files <= target_files:
+                            break
+                        oldest_entries = await crud.get_oldest_tts_cache_entries(conn, limit=200)
+                        if not oldest_entries:
+                            break
+                        batch_pruned = 0
+                        for entry in oldest_entries:
+                            if total_bytes <= target_bytes and total_files <= target_files:
+                                break
 
-            oldest_entries = await crud.get_oldest_tts_cache_entries(conn, limit=200)
-            for entry in oldest_entries:
-                if total_bytes <= target_bytes and total_files <= target_files:
-                    break
+                            file_p = Path(entry.file_path)
+                            unlink_ok = True
+                            if file_p.exists():
+                                try:
+                                    await asyncio.to_thread(file_p.unlink, missing_ok=True)
+                                except Exception as unl_err:
+                                    unlink_ok = False
+                                    logger.debug("Skipping DB deletion for locked cache file %s: %s", file_p, unl_err)
 
-                file_p = Path(entry.file_path)
-                try:
-                    await asyncio.to_thread(lambda: file_p.unlink(missing_ok=True) if file_p.exists() else None)
-                except Exception:
-                    pass
+                            if unlink_ok:
+                                await crud.delete_tts_cache_entry(conn, entry.cache_key)
+                                async with self._lock:
+                                    self._mem_cache_discard(entry.cache_key)
+                                total_bytes -= entry.file_size
+                                total_files -= 1
+                                pruned_count += 1
+                                batch_pruned += 1
+                        if batch_pruned == 0:
+                            break
+            except Exception as e:
+                if "no such table" in str(e).lower():
+                    return 0
+                raise
 
-                await crud.delete_tts_cache_entry(conn, entry.cache_key)
-                self._mem_cache_discard(entry.cache_key)
-                total_bytes -= entry.file_size
-                total_files -= 1
-                pruned_count += 1
-
-        if pruned_count > 0:
-            logger.info("Pruned %d oldest TTS cache entries from disk.", pruned_count)
-        return pruned_count
+            if pruned_count > 0:
+                logger.info("Pruned %d oldest TTS cache entries from disk.", pruned_count)
+            return pruned_count
 
     async def clear(self) -> Tuple[int, float]:
         """
         Clears all cache files in audio/cache/ and purges SQLite metadata.
+        Guarded by _write_lock to serialize against concurrent put() and prune() operations.
         Returns (count_deleted, freed_mb).
         """
-        freed_bytes = 0
-        deleted_count = 0
+        async with self._write_lock:
+            freed_bytes = 0
+            deleted_count = 0
 
-        def _scan_and_delete() -> Tuple[int, int]:
-            freed = 0
-            count = 0
-            if self.cache_dir.exists():
-                for f in self.cache_dir.iterdir():
-                    if f.is_file():
-                        try:
-                            freed += f.stat().st_size
-                            f.unlink(missing_ok=True)
-                            count += 1
-                        except Exception as e:
-                            logger.warning("Failed to delete cache file %s: %s", f, e)
-            return freed, count
+            def _scan_and_delete() -> Tuple[int, int]:
+                freed = 0
+                count = 0
+                if self.cache_dir.exists():
+                    for f in list(self.cache_dir.iterdir()):
+                        if f.is_file():
+                            try:
+                                s = f.stat().st_size
+                                f.unlink(missing_ok=True)
+                                freed += s
+                                count += 1
+                            except FileNotFoundError:
+                                pass
+                            except Exception as e:
+                                logger.warning("Failed to delete cache file %s: %s", f, e)
+                return freed, count
 
-        freed_bytes, deleted_count = await asyncio.to_thread(_scan_and_delete)
+            freed_bytes, deleted_count = await asyncio.to_thread(_scan_and_delete)
 
-        async with get_db(self.db_path) as conn:
-            await crud.clear_all_tts_cache_entries(conn)
+            try:
+                async with get_db(self.db_path) as conn:
+                    await crud.clear_all_tts_cache_entries(conn)
+            except Exception:
+                pass
 
-        self._mem_cache.clear()
-        self._mem_bytes_total = 0
-        self._hits = 0
-        self._misses = 0
-        freed_mb = round(freed_bytes / (1024 * 1024), 2)
-        logger.info("Cleared TTS cache: deleted %d files, freed %.2f MB", deleted_count, freed_mb)
-        return deleted_count, freed_mb
+            async with self._lock:
+                self._mem_cache.clear()
+                self._mem_bytes_total = 0
+                self._touch_throttle.clear()
+                self._hits = 0
+                self._misses = 0
+
+            freed_mb = round(freed_bytes / (1024 * 1024), 2)
+            logger.info("Cleared TTS cache: deleted %d files, freed %.2f MB", deleted_count, freed_mb)
+            return deleted_count, freed_mb
 
     async def get_stats(self) -> Dict[str, Any]:
         """Returns comprehensive TTS cache statistics."""
-        async with get_db(self.db_path) as conn:
-            db_stats = await crud.get_tts_cache_stats(conn)
+        try:
+            async with get_db(self.db_path) as conn:
+                db_stats = await crud.get_tts_cache_stats(conn)
+        except Exception:
+            db_stats = {"total_files": 0, "total_size_bytes": 0, "total_size_mb": 0.0, "total_hits": 0}
 
         total_files = db_stats["total_files"]
         total_size_bytes = db_stats["total_size_bytes"]

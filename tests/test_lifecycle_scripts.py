@@ -54,6 +54,8 @@ class TestLifecycleScriptsTier1:
         for bat_file in list(SCRIPTS_DIR.glob("*.bat")) + list(PROJECT_ROOT.glob("*.bat")):
             content = bat_file.read_text(encoding="utf-8")
             assert len(content) > 0
+        start_bat = (PROJECT_ROOT / "启动.bat").read_text(encoding="utf-8")
+        assert "chcp 65001" in start_bat
 
     def test_start_script_invokes_intelligent_launcher(self):
         """Verifies 启动.bat delegates to scripts/run_server.py (single smart entrypoint)."""

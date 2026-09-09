@@ -87,7 +87,7 @@ class TelegramBotManager:
             return False
 
         if not validate_bot_token(token):
-            logger.warning("Invalid Telegram Bot Token configured: %s", token[:5] + "****" if len(token) >= 5 else "****")
+            logger.warning("Invalid Telegram Bot Token configured: ****%s", token[-4:] if len(token) >= 8 else "****")
             return False
 
         if not HAS_TELEGRAM:
@@ -138,6 +138,10 @@ class TelegramBotManager:
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handlers.handle_text_message))
         self.app.add_handler(MessageHandler(filters.COMMAND, self.handlers.handle_unknown))
 
+        # Register global error handler for Telegram network drops and exceptions
+        if hasattr(self.app, "add_error_handler"):
+            self.app.add_error_handler(self._on_telegram_error)
+
         # Initialize and start polling
         try:
             await self.app.initialize()
@@ -153,6 +157,17 @@ class TelegramBotManager:
             self.is_running = False
             return False
 
+    async def _on_telegram_error(self, update: object, context: Any) -> None:
+        """Centralized error boundary for python-telegram-bot exceptions and network drops."""
+        err = getattr(context, "error", None)
+        err_type = type(err).__name__ if err else "UnknownError"
+        safe_msg = sanitize_error_detail(err)
+        # Network dropped / polling timeout is normal in mobile or unstable proxies
+        if any(term in str(safe_msg).lower() for term in ("timed out", "network", "connect", "timeout", "connection reset")):
+            logger.info("Telegram network/timeout transient event [%s]: %s", err_type, safe_msg)
+        else:
+            logger.warning("Telegram Bot error event [%s]: %s", err_type, safe_msg)
+
     async def stop(self) -> None:
         """Gracefully stops Telegram Bot polling and application."""
         if not self.is_running:
@@ -160,9 +175,15 @@ class TelegramBotManager:
 
         logger.info("Stopping Telegram Bot service...")
         self.is_running = False
-        # Cancel all active voice tasks
+        # Cancel all active voice tasks and wait for clean exit
+        active_tasks = [t for t in self.handlers.user_tasks.values() if not t.done()]
         for chat_id in list(self.handlers.user_tasks.keys()):
             self.handlers.cancel_user_task(chat_id)
+        if active_tasks:
+            try:
+                await asyncio.gather(*active_tasks, return_exceptions=True)
+            except Exception:
+                pass
 
         try:
             if self.app:

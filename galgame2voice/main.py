@@ -5,13 +5,17 @@ Manages application lifespan, CORS, static routing, and router registration.
 
 import asyncio
 import logging
+import mimetypes
 import os
 import time
+
+# Windows 注册表常把 .js 映射为 text/plain，ES module 会被浏览器 Strict MIME 拒载
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/javascript", ".mjs")
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-import uvicorn
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -19,10 +23,15 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
 
+# Starlette 新旧版本状态码名称兼容：旧版只有 HTTP_422_UNPROCESSABLE_ENTITY，
+# 代码中多处使用新名 CONTENT；缺失时补齐为同一数值，否则校验路径会 500。
+if not hasattr(status, "HTTP_422_UNPROCESSABLE_CONTENT"):
+    status.HTTP_422_UNPROCESSABLE_CONTENT = 422
+
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
-from galgame2voice.routers import chat, config, health, voice, memory, affection, metrics
+from galgame2voice.routers import chat, config, health, voice, memory, affection, characters, metrics
 from galgame2voice.security.auth import require_auth
 from galgame2voice.security.rate_limit import RateLimitMiddleware
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
@@ -30,6 +39,28 @@ from galgame2voice.utils.logger import setup_logger
 
 
 logger = logging.getLogger("galgame2voice.main")
+
+
+# TTS 缓存保留天数：缓存用于复用省算力，但需设上限防止磁盘无限增长
+_CACHE_RETENTION_DAYS = 7
+
+
+def _cache_scan_and_clean(cache_dir: Path, cutoff: float) -> int:
+    """Removes cache audio files older than the retention cutoff (LRU by mtime)."""
+    cleaned = 0
+    if not cache_dir.is_dir():
+        return 0
+    for f in cache_dir.iterdir():
+        if not f.is_file():
+            continue
+        if f.suffix.lower() in (".wav", ".ogg", ".mp3", ".opus"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    cleaned += 1
+            except Exception as e:
+                logger.debug("Failed to remove cached audio %s: %s", f, e)
+    return cleaned
 
 
 async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int):
@@ -50,12 +81,13 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int):
                 retention_minutes = 30
             now = time.time()
             cutoff = now - (retention_minutes * 60)
+            cache_cutoff = now - (_CACHE_RETENTION_DAYS * 86400)
 
             def _scan_and_clean() -> int:
                 cleaned = 0
                 if audio_dir.exists():
                     for f in audio_dir.iterdir():
-                        # Strictly protect cache directory and non-file entries
+                        # Strictly protect non-file entries and the cache dir (handled below)
                         if f.is_dir() or f.name.lower() == "cache":
                             continue
                         if f.is_file() and f.suffix.lower() in (".wav", ".ogg", ".mp3", ".opus"):
@@ -65,6 +97,8 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int):
                                     cleaned += 1
                             except Exception as e:
                                 logger.debug("Failed to remove audio file %s: %s", f, e)
+                # TTS 分句缓存按天级保留期清理，防止磁盘无限增长
+                cleaned += _cache_scan_and_clean(audio_dir / "cache", cache_cutoff)
                 return cleaned
 
             cleaned_count = await asyncio.to_thread(_scan_and_clean)
@@ -124,6 +158,28 @@ async def lifespan(app: FastAPI):
         client = get_gpt_sovits_client()
         if sovits_url and sovits_url.rstrip("/") != client.base_url:
             await client.set_base_url(sovits_url)
+
+        # Pre-seed active voice profile from DB so frontend's initial switch is instantaneous
+        try:
+            from galgame2voice.services.voice_manager import get_voice_manager
+            vm = get_voice_manager()
+            async with get_db(settings.db_path) as conn:
+                default_profile = await crud.get_active_voice_profile(conn)
+                if default_profile:
+                    vm.active_profile = default_profile
+                    if not client.current_gpt_weights:
+                        client.current_gpt_weights = default_profile.gpt_weights_path
+                    if not client.current_sovits_weights:
+                        client.current_sovits_weights = default_profile.sovits_weights_path
+                    if not client.current_refer_audio:
+                        client.current_refer_audio = default_profile.ref_audio_path
+                    if not client.current_refer_text:
+                        client.current_refer_text = default_profile.prompt_text
+                    if not client.current_refer_language:
+                        client.current_refer_language = default_profile.prompt_lang
+        except Exception as exc:
+            logger.debug("Could not pre-seed active voice profile on startup: %s", exc)
+
         logger.info("GPT-SoVITS client initialized (endpoint: %s)", client.base_url)
     except Exception as exc:
         logger.error("Failed to initialize GPT-SoVITS client: %s", exc, exc_info=True)
@@ -136,13 +192,21 @@ async def lifespan(app: FastAPI):
         )
     )
 
-    # 6. Start Telegram Bot Background Polling (if configured)
+    # 6. Start Telegram Bot Background Polling (non-blocking background task)
+    tg_startup_task = None
     try:
         from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
         tg_manager = get_telegram_bot_manager(db_path=settings.db_path)
-        tg_started = await tg_manager.start()
-        if tg_started:
-            logger.info("Telegram Bot background polling started successfully.")
+
+        async def _start_telegram_bg():
+            try:
+                tg_started = await tg_manager.start()
+                if tg_started:
+                    logger.info("Telegram Bot background polling started successfully.")
+            except Exception as exc:
+                logger.warning("Telegram Bot auto-start on boot skipped or failed: %s", exc)
+
+        tg_startup_task = asyncio.create_task(_start_telegram_bg())
     except Exception as exc:
         logger.warning("Telegram Bot auto-start on boot skipped or failed: %s", exc)
 
@@ -162,6 +226,12 @@ async def lifespan(app: FastAPI):
         pass
 
     # Stop Telegram Bot
+    if tg_startup_task and not tg_startup_task.done():
+        tg_startup_task.cancel()
+        try:
+            await tg_startup_task
+        except asyncio.CancelledError:
+            pass
     try:
         from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
         await get_telegram_bot_manager().stop()
@@ -173,6 +243,27 @@ async def lifespan(app: FastAPI):
         await close_gpt_sovits_client()
     except Exception as exc:
         logger.debug("Error closing GPT-SoVITS client: %s", exc)
+
+    # Drain background tasks from ChatService and TTS cache before WAL checkpoint
+    try:
+        from galgame2voice.routers import chat as chat_router_mod
+        active_svcs = {
+            getattr(chat_router_mod, "_chat_service", None),
+            getattr(chat_router_mod, "_explicit_chat_service", None),
+        }
+        for chat_svc in active_svcs:
+            if chat_svc is not None:
+                if hasattr(chat_svc, "aclose"):
+                    await chat_svc.aclose()
+                if hasattr(chat_svc, "tts_service") and hasattr(chat_svc.tts_service, "cache_manager"):
+                    if hasattr(chat_svc.tts_service.cache_manager, "aclose"):
+                        await chat_svc.tts_service.cache_manager.aclose()
+        import galgame2voice.services.tts_cache_manager as tts_cache_mod
+        if getattr(tts_cache_mod, "_tts_cache_manager_instance", None) is not None:
+            if hasattr(tts_cache_mod._tts_cache_manager_instance, "aclose"):
+                await tts_cache_mod._tts_cache_manager_instance.aclose()
+    except Exception as exc:
+        logger.debug("Error draining background tasks on shutdown: %s", exc)
 
     # Safe SQLite WAL truncation checkpoint
     try:
@@ -222,7 +313,10 @@ def create_app() -> FastAPI:
 
         async def __call__(self, scope, receive, send):
             path = scope.get("path", "") if scope["type"] == "http" else ""
-            if path.startswith("/static/"):
+            if path == "/" or path == "/settings.html" or path == "/index.html":
+                # 入口页面必须每次回源校验，避免发版后浏览器用旧 index 加载旧 JS
+                cache_value = "no-cache"
+            elif path.startswith("/static/"):
                 cache_value = "public, max-age=3600"
             elif path.startswith("/audio/"):
                 cache_value = "private, max-age=0"
@@ -245,6 +339,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(config.router, dependencies=auth_deps)
     app.include_router(voice.router, dependencies=auth_deps)
+    app.include_router(characters.router, dependencies=auth_deps)
     app.include_router(chat.router, dependencies=auth_deps)
     app.include_router(memory.router, dependencies=auth_deps)
     app.include_router(affection.router, dependencies=auth_deps)
@@ -326,6 +421,8 @@ app = create_app()
 
 def run():
     """CLI execution entrypoint."""
+    import uvicorn
+
     settings = get_settings()
     uvicorn.run(
         "galgame2voice.main:app",

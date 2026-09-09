@@ -111,6 +111,9 @@ class TestTtsCacheAdversarialM2:
         assert avg_latency_ms < 0.05, f"Average multi-key latency {avg_latency_ms:.4f}ms exceeds 0.05ms"
         assert avg_latency_ms < 0.005, f"Average multi-key latency {avg_latency_ms:.4f}ms exceeds 0.005ms target"
 
+        # Drain the ~50 throttled DB-touch tasks before the loop closes.
+        await mgr.aclose()
+
     async def test_lru_entry_count_and_access_ordering(self, tmp_path):
         """
         Tests in-memory LRU entry limit eviction and access-order preservation.
@@ -164,6 +167,9 @@ class TestTtsCacheAdversarialM2:
         assert len(mgr._mem_cache) <= 3
         # Ensure internal byte counter exactly matches cache content lengths
         assert mgr._mem_bytes_total == sum(len(v) for v in mgr._mem_cache.values())
+
+        # Drain fire-and-forget prune/touch tasks before the loop closes.
+        await mgr.aclose()
 
     async def test_zero_byte_disk_cache_recovery(self, tmp_path):
         """

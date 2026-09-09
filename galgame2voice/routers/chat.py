@@ -55,46 +55,80 @@ def set_chat_service(service: Optional[ChatService]) -> None:
 class ChatRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=PROMPT_MAX_LENGTH, description="User prompt text")
     session_id: str = Field(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Conversation session identifier")
+    stream: Optional[bool] = Field(default=True, description="Whether client requested streaming")
     character_name: Optional[str] = Field(default=None, max_length=100, description="Character persona name override")
     provider_id: Optional[str] = Field(default=None, max_length=64, description="LLM provider ID override")
     tts_options: Optional[Dict[str, Any]] = Field(default=None, description="Inference parameters (speed, top_k, etc.)")
     preset: Optional[str] = Field(default=None, max_length=64, description="TTS Preset name (high_quality, balanced, low_latency)")
+    system_prompt: Optional[str] = Field(default=None, max_length=4000, description="Per-request system prompt override (frontend session persona)")
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0, description="Per-request LLM temperature override")
+    max_context: Optional[int] = Field(default=None, ge=2, le=100, description="Per-request max history messages override")
+    top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Per-request nucleus sampling override")
+    max_tokens: Optional[int] = Field(default=None, ge=16, le=32768, description="Per-request max generated tokens override")
+    frequency_penalty: Optional[float] = Field(default=None, ge=-2.0, le=2.0, description="Per-request frequency penalty override")
+    presence_penalty: Optional[float] = Field(default=None, ge=-2.0, le=2.0, description="Per-request presence penalty override")
+    ai_adaptive_voice: Optional[bool] = Field(default=True, description="Whether AI-driven dynamic voice inference is enabled")
 
 
 # ============================================================================
 # Streaming SSE Endpoint
 # ============================================================================
 
-async def sse_event_formatter(event_generator: AsyncGenerator[Dict[str, Any], None]) -> AsyncGenerator[str, None]:
+async def sse_event_formatter(
+    event_generator: AsyncGenerator[Dict[str, Any], None],
+    cancel_event: Optional[asyncio.Event] = None,
+    cleanup_task: Optional[asyncio.Task] = None,
+) -> AsyncGenerator[str, None]:
     """Formats event dictionaries into standard Server-Sent Events SSE text stream."""
     try:
         async for event in event_generator:
+            if cancel_event and cancel_event.is_set():
+                break
             event_name = event.get("event", "message")
             event_data = json.dumps(event.get("data", {}), ensure_ascii=False)
             yield f"event: {event_name}\ndata: {event_data}\n\n"
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, GeneratorExit):
+        if cancel_event:
+            cancel_event.set()
         logger.info("SSE client disconnected from stream.")
     except Exception as exc:
         logger.error("Error during SSE streaming: %s", exc, exc_info=True)
         safe_err = sanitize_error_detail(exc)
         err_data = json.dumps({"error": safe_err or "Streaming encountered an internal error"}, ensure_ascii=False)
         yield f"event: error\ndata: {err_data}\n\n"
+    finally:
+        if cancel_event:
+            cancel_event.set()
+        if cleanup_task and not cleanup_task.done():
+            cleanup_task.cancel()
 
 
 def _validate_chat_request(req: ChatRequest) -> None:
     if not req.prompt or not req.prompt.strip():
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Prompt cannot be empty",
         )
+    # Defensively normalize and validate session_id
+    req.session_id = (req.session_id or "").strip() or "default"
+    if len(req.session_id) > SESSION_ID_MAX_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Session ID exceeds maximum length of {SESSION_ID_MAX_LENGTH} characters",
+        )
+    if req.character_name is not None:
+        req.character_name = req.character_name.strip() or None
+    if req.provider_id is not None:
+        req.provider_id = req.provider_id.strip() or None
+
     try:
         validate_user_tts_options(req.tts_options)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
 
 
 @router.post("/api/chat/stream", summary="Real-time SSE bilingual streaming chat")
-async def chat_stream_endpoint(req: ChatRequest):
+async def chat_stream_endpoint(req: ChatRequest, request: Request):
     """
     Server-Sent Events endpoint streaming real-time Chinese delta text
     and synthesized Japanese audio chunks.
@@ -104,6 +138,27 @@ async def chat_stream_endpoint(req: ChatRequest):
     tts_opts = dict(req.tts_options or {})
     if req.preset:
         tts_opts["preset"] = req.preset
+    if req.ai_adaptive_voice is not None:
+        tts_opts["ai_adaptive_voice"] = req.ai_adaptive_voice
+
+    cancel_event = asyncio.Event()
+    disconnect_task: Optional[asyncio.Task] = None
+
+    if request is not None:
+        async def _client_disconnect_watcher():
+            try:
+                while not cancel_event.is_set():
+                    if await request.is_disconnected():
+                        logger.info("SSE client disconnected for session %s (detected via request.is_disconnected)", req.session_id)
+                        cancel_event.set()
+                        break
+                    await asyncio.sleep(0.5)
+            except asyncio.CancelledError:
+                pass
+            except Exception as ex:
+                logger.debug("Client disconnect watcher exception: %s", ex)
+
+        disconnect_task = asyncio.create_task(_client_disconnect_watcher())
 
     service = get_chat_service()
     event_gen = service.stream_chat(
@@ -112,10 +167,19 @@ async def chat_stream_endpoint(req: ChatRequest):
         character_name=req.character_name,
         provider_id=req.provider_id,
         tts_options=tts_opts,
+        cancel_event=cancel_event,
+        system_prompt=req.system_prompt,
+        temperature=req.temperature,
+        max_context=req.max_context,
+        top_p=req.top_p,
+        max_tokens=req.max_tokens,
+        frequency_penalty=req.frequency_penalty,
+        presence_penalty=req.presence_penalty,
+        ai_adaptive_voice=req.ai_adaptive_voice,
     )
 
     return StreamingResponse(
-        sse_event_formatter(event_gen),
+        sse_event_formatter(event_gen, cancel_event=cancel_event, cleanup_task=disconnect_task),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -139,16 +203,36 @@ async def chat_sync_endpoint(req: ChatRequest):
     tts_opts = dict(req.tts_options or {})
     if req.preset:
         tts_opts["preset"] = req.preset
+    if req.ai_adaptive_voice is not None:
+        tts_opts["ai_adaptive_voice"] = req.ai_adaptive_voice
 
     service = get_chat_service()
-    result = await service.chat_sync(
-        prompt=req.prompt.strip(),
-        session_id=req.session_id,
-        character_name=req.character_name,
-        provider_id=req.provider_id,
-        tts_options=tts_opts,
-    )
-    return result
+    try:
+        result = await service.chat_sync(
+            prompt=req.prompt.strip(),
+            session_id=req.session_id,
+            character_name=req.character_name,
+            provider_id=req.provider_id,
+            tts_options=tts_opts,
+            system_prompt=req.system_prompt,
+            temperature=req.temperature,
+            max_context=req.max_context,
+            top_p=req.top_p,
+            max_tokens=req.max_tokens,
+            frequency_penalty=req.frequency_penalty,
+            presence_penalty=req.presence_penalty,
+            ai_adaptive_voice=req.ai_adaptive_voice,
+        )
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error in synchronous chat completion: %s", exc, exc_info=True)
+        safe_err = sanitize_error_detail(exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=safe_err or "Chat completion encountered an internal error",
+        )
 
 
 @router.get("/ai/chat", summary="Legacy GET chat completion endpoint")
@@ -163,19 +247,31 @@ async def legacy_get_chat(
     """
     if not prompt or not prompt.strip():
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Prompt cannot be empty",
         )
 
+    clean_session_id = (session_id or "").strip() or "default"
+    clean_char_name = character_name.strip() if character_name else None
     service = get_chat_service()
     tts_opts = {"preset": preset} if preset else {}
-    result = await service.chat_sync(
-        prompt=prompt.strip(),
-        session_id=session_id,
-        character_name=character_name,
-        tts_options=tts_opts,
-    )
-    return result
+    try:
+        result = await service.chat_sync(
+            prompt=prompt.strip(),
+            session_id=clean_session_id,
+            character_name=clean_char_name,
+            tts_options=tts_opts,
+        )
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error in legacy GET chat completion: %s", exc, exc_info=True)
+        safe_err = sanitize_error_detail(exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=safe_err or "Chat completion encountered an internal error",
+        )
 
 
 @router.post("/ai/chat", summary="Legacy POST chat completion endpoint")
@@ -192,16 +288,17 @@ async def legacy_post_chat(req: ChatRequest):
 
 @router.get("/api/chat/history", summary="Get session message history")
 async def get_chat_history(
-    session_id: str = Query(default="default", description="Conversation session ID"),
+    session_id: str = Query(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Conversation session ID"),
     limit: int = Query(default=50, ge=1, le=200, description="Max message count to return"),
 ):
     """
     Returns chronological list of previous messages in the session for UI restoration.
     """
+    clean_session_id = (session_id or "").strip() or "default"
     async with get_db() as conn:
-        messages = await crud.get_recent_messages(conn, session_id=session_id, limit=limit)
+        messages = await crud.get_recent_messages(conn, session_id=clean_session_id, limit=limit)
         return {
-            "session_id": session_id,
+            "session_id": clean_session_id,
             "count": len(messages),
             "messages": [m.model_dump() for m in messages],
         }
@@ -209,16 +306,39 @@ async def get_chat_history(
 
 @router.delete("/api/chat/history", summary="Clear session message history")
 async def clear_chat_history(
-    session_id: str = Query(..., description="Conversation session ID to reset"),
+    session_id: str = Query(..., max_length=SESSION_ID_MAX_LENGTH, description="Conversation session ID to reset"),
 ):
     """
     Deletes all messages associated with the specified session ID.
     """
+    clean_session_id = (session_id or "").strip()
+    if not clean_session_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="session_id cannot be empty",
+        )
     async with get_db() as conn:
-        cleared = await crud.clear_session_messages(conn, session_id=session_id)
+        cleared = await crud.clear_session_messages(conn, session_id=clean_session_id)
         return {
             "status": "cleared",
-            "session_id": session_id,
+            "session_id": clean_session_id,
             "success": cleared,
         }
+
+
+class MessageJapaneseRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=PROMPT_MAX_LENGTH, description="Chinese text of the assistant message")
+    session_id: Optional[str] = Field(default=None, max_length=SESSION_ID_MAX_LENGTH, description="Session ID if known")
+
+
+@router.post("/api/chat/japanese", summary="Get or resolve backend synthesized Japanese text")
+async def get_message_japanese_endpoint(req: MessageJapaneseRequest):
+    """
+    Returns the Japanese original text used for TTS synthesis of this message.
+    Looks up database history first, falling back to LLM translation.
+    """
+    service = get_chat_service()
+    ja = await service.resolve_message_japanese(req.text, session_id=req.session_id)
+    return {"japanese": ja}
+
 

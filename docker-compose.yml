@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  galgame2voice:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: galgame2voice:latest
+    container_name: galgame2voice
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8080
+      - LOG_LEVEL=INFO
+      # If GPT-SoVITS is running on host machine:
+      # - GPT_SOVITS_BASE_URL=http://host.docker.internal:9880
+    volumes:
+      - ./data:/app/data
+      - ./audio:/app/audio
+      - ./logs:/app/logs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

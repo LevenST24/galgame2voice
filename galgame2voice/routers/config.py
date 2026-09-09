@@ -87,7 +87,7 @@ class TelegramTestRequest(BaseModel):
     bot_token: Optional[str] = None
     proxy_enabled: Optional[bool] = False
     proxy_host: Optional[str] = "127.0.0.1"
-    proxy_port: Optional[int] = 10809
+    proxy_port: Optional[int] = Field(default=10809, ge=1, le=65535)
 
 
 # ============================================================================
@@ -133,7 +133,14 @@ async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, 
         sanitized_updates = {k: v for k, v in update_data.items() if k in valid_fields}
 
         if sanitized_updates:
-            update_model = SettingsUpdate(**sanitized_updates)
+            try:
+                update_model = SettingsUpdate(**sanitized_updates)
+            except Exception as val_err:
+                safe_detail = sanitize_error_detail(val_err)
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Invalid configuration parameters: {safe_detail}",
+                )
             updated_settings = await crud.update_settings(conn, update_model)
         else:
             updated_settings = await crud.get_settings(conn, mask=True)
@@ -202,8 +209,11 @@ async def get_presets():
     description="Returns provider details by ID with masked API key.",
 )
 async def get_provider(provider_id: str):
+    clean_id = (provider_id or "").strip().lower()
+    if not clean_id or len(clean_id) > 64:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")
     async with get_db() as conn:
-        provider = await crud.get_provider(conn, provider_id, mask=True)
+        provider = await crud.get_provider(conn, clean_id, mask=True)
         if not provider:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")
         return {"provider": provider.model_dump()}
@@ -215,14 +225,19 @@ async def get_provider(provider_id: str):
     description="Upserts an LLM/STT provider profile, safely retaining existing secret keys if masked.",
 )
 async def create_or_update_provider(provider_data: Dict[str, Any]):
-    provider_id = provider_data.get("id") or provider_data.get("provider_type")
-    if not provider_id:
+    raw_id = provider_data.get("id") or provider_data.get("provider_type")
+    if not raw_id:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Missing required field 'id' or 'provider_type'",
         )
 
-    provider_id = str(provider_id).strip().lower()
+    provider_id = str(raw_id).strip().lower()
+    if not provider_id or len(provider_id) > 64:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Provider identifier must be between 1 and 64 characters",
+        )
 
     async with get_db() as conn:
         existing = await crud.get_provider_raw(conn, provider_id)
@@ -249,9 +264,16 @@ async def create_or_update_provider(provider_data: Dict[str, Any]):
             if "custom_headers" in provider_data and provider_data["custom_headers"] is not None:
                 update_kwargs["custom_headers"] = provider_data["custom_headers"]
 
-            updates = ProviderUpdate(**update_kwargs)
-            updated = await crud.update_provider(conn, provider_id, updates)
-            return {"status": "success", "provider": updated.model_dump() if updated else None}
+            try:
+                updates = ProviderUpdate(**update_kwargs)
+                updated = await crud.update_provider(conn, provider_id, updates)
+                return {"status": "success", "provider": updated.model_dump() if updated else None}
+            except Exception as exc:
+                safe_err = sanitize_error_detail(exc)
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Invalid provider parameters: {safe_err}",
+                )
         else:
             # Preset default values if not provided
             preset = get_provider_preset(provider_id)
@@ -276,18 +298,25 @@ async def create_or_update_provider(provider_data: Dict[str, Any]):
             api_key = provider_data.get("api_key", "")
             custom_headers = provider_data.get("custom_headers") or {}
 
-            new_provider = ProviderCreate(
-                id=provider_id,
-                name=name,
-                api_base_url=base_url,
-                api_key=api_key,
-                chat_model=chat_model,
-                stt_model=stt_model,
-                is_active=is_active,
-                custom_headers=custom_headers,
-            )
-            created = await crud.create_provider(conn, new_provider)
-            return {"status": "created", "provider": created.model_dump()}
+            try:
+                new_provider = ProviderCreate(
+                    id=provider_id,
+                    name=name,
+                    api_base_url=base_url,
+                    api_key=api_key,
+                    chat_model=chat_model,
+                    stt_model=stt_model,
+                    is_active=is_active,
+                    custom_headers=custom_headers,
+                )
+                created = await crud.create_provider(conn, new_provider)
+                return {"status": "created", "provider": created.model_dump()}
+            except Exception as exc:
+                safe_err = sanitize_error_detail(exc)
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Invalid provider creation parameters: {safe_err}",
+                )
 
 
 @router.delete(
@@ -296,11 +325,14 @@ async def create_or_update_provider(provider_data: Dict[str, Any]):
     description="Deletes a provider configuration by ID.",
 )
 async def delete_provider(provider_id: str):
+    clean_id = (provider_id or "").strip().lower()
+    if not clean_id or len(clean_id) > 64:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")
     async with get_db() as conn:
-        success = await crud.delete_provider(conn, provider_id)
+        success = await crud.delete_provider(conn, clean_id)
         if not success:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")
-        return {"status": "deleted", "provider_id": provider_id}
+        return {"status": "deleted", "provider_id": clean_id}
 
 
 # ============================================================================
@@ -349,13 +381,22 @@ async def test_provider(req: ProviderTestRequest):
         custom_headers=custom_headers,
     )
 
-    result = await adapter.test_connection(model=model)
-    return ProviderTestResponse(
-        success=result.success,
-        message=result.message,
-        latency_ms=result.latency_ms,
-        models=result.models,
-    )
+    try:
+        result = await adapter.test_connection(model=model)
+        return ProviderTestResponse(
+            success=result.success,
+            message=result.message,
+            latency_ms=result.latency_ms,
+            models=result.models,
+        )
+    except Exception as exc:
+        logger.error("Provider test failed for '%s': %s", provider_id, exc, exc_info=True)
+        return ProviderTestResponse(
+            success=False,
+            message=f"连接测试异常: {sanitize_error_detail(exc)}",
+            latency_ms=0.0,
+            models=[],
+        )
 
 
 @router.get(
@@ -364,16 +405,19 @@ async def test_provider(req: ProviderTestRequest):
     description="Fetches live available model list directly from the provider's /models API.",
 )
 async def get_provider_models(provider_id: str):
+    clean_id = (provider_id or "").strip().lower()
+    if not clean_id or len(clean_id) > 64:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")
     async with get_db() as conn:
-        stored = await crud.get_provider_raw(conn, provider_id)
+        stored = await crud.get_provider_raw(conn, clean_id)
         if not stored:
-            preset = get_provider_preset(provider_id)
+            preset = get_provider_preset(clean_id)
             if not preset:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Provider '{provider_id}' not found",
                 )
-            return {"provider_id": provider_id, "models": preset["preset_models"]}
+            return {"provider_id": clean_id, "models": preset["preset_models"]}
 
         adapter = get_llm_adapter(
             provider_id_or_config=stored,
@@ -384,12 +428,12 @@ async def get_provider_models(provider_id: str):
 
         try:
             models = await adapter.list_models()
-            return {"provider_id": provider_id, "models": models}
+            return {"provider_id": clean_id, "models": models}
         except Exception as exc:
-            logger.warning("Failed to list models for provider %s: %s", provider_id, exc)
-            preset = get_provider_preset(provider_id)
+            logger.warning("Failed to list models for provider %s: %s", clean_id, exc)
+            preset = get_provider_preset(clean_id)
             fallback = preset["preset_models"] if preset else [stored.chat_model]
-            return {"provider_id": provider_id, "models": fallback, "warning": sanitize_error_detail(exc)}
+            return {"provider_id": clean_id, "models": fallback, "warning": sanitize_error_detail(exc)}
 
 
 @router.post(
@@ -398,14 +442,16 @@ async def get_provider_models(provider_id: str):
     description="Sets specified provider as the active LLM provider.",
 )
 async def activate_provider(provider_id: str):
-    provider_id = provider_id.strip().lower()
+    clean_id = (provider_id or "").strip().lower()
+    if not clean_id or len(clean_id) > 64:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Provider ID must be between 1 and 64 characters")
     async with get_db() as conn:
-        existing = await crud.get_provider_raw(conn, provider_id)
+        existing = await crud.get_provider_raw(conn, clean_id)
         if not existing:
-            preset = get_provider_preset(provider_id)
+            preset = get_provider_preset(clean_id)
             if preset:
                 new_provider = ProviderCreate(
-                    id=provider_id,
+                    id=clean_id,
                     name=preset["name"],
                     api_base_url=preset["default_base_url"],
                     api_key="",
@@ -414,7 +460,7 @@ async def activate_provider(provider_id: str):
                     is_active=True,
                 )
                 await crud.create_provider(conn, new_provider)
-        success = await crud.set_active_provider(conn, provider_id)
+        success = await crud.set_active_provider(conn, clean_id)
         if not success:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")
         active = await crud.get_active_provider(conn, mask=True)

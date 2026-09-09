@@ -384,31 +384,27 @@ class TestFrontendDOMStructure:
         assert html_path.exists()
         content = html_path.read_text(encoding="utf-8")
 
-        # 1. Dual mode view containers
-        assert 'id="vn-view"' in content
-        assert 'id="chat-view"' in content
-        assert 'id="btn-mode-vn"' in content
-        assert 'id="btn-mode-chat"' in content
+        # 1. Gal2Voice 新版 UI 骨架
+        assert 'id="sidebar"' in content
+        assert 'id="sessionList"' in content
+        assert 'id="messages"' in content
+        assert 'id="composer"' in content
 
-        # 2. Visual Novel Stage elements
-        assert 'id="vn-character-name"' in content
-        assert 'id="vn-text-ja"' in content
-        assert 'id="vn-text-zh"' in content
-        assert 'id="vn-audio-equalizer"' in content
-        assert 'id="vn-audio-status"' in content
-        assert 'id="btn-vn-replay"' in content
-        assert 'id="btn-vn-log"' in content
+        # 2. 会话与全局设置入口
+        assert 'id="sessionSettingsBtn"' in content
+        assert 'id="globalSettingsBtn"' in content
+        assert 'id="sessionModal"' in content
+        assert 'id="globalModal"' in content
 
-        # 3. Top Capsule Bar controls
-        assert 'id="quick-voice-select"' in content
-        assert 'id="sovits-status-badge"' in content
-        assert 'id="volume-slider"' in content
-        assert 'id="mute-toggle-btn"' in content
-        assert 'id="reset-context-btn"' in content
+        # 3. 语音能力控件
+        assert 'id="micBtn"' in content
+        assert 'id="voiceModeBtn"' in content
+        assert 'id="sVoice"' in content
+        assert 'id="sVoiceDelete"' in content
 
-        # 4. History log drawer
-        assert 'id="log-drawer-backdrop"' in content
-        assert 'id="log-drawer-body"' in content
+        # 4. 状态与提示
+        assert 'id="modelBadge"' in content
+        assert 'id="toastRoot"' in content
 
     def test_css_contains_glassmorphism_aura_and_equalizer_animations(self):
         """Verify CSS contains backdrop filters, auraPulse keyframes, and equalizer bar styling."""

@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from fastapi import APIRouter, HTTPException, Query, status, Response
 from fastapi.responses import StreamingResponse
@@ -30,6 +31,7 @@ from galgame2voice.services.gpt_sovits_client import (
     SLICING_METHODS,
 )
 from galgame2voice.services.voice_manager import get_voice_manager
+from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.routers.voice")
 router = APIRouter(prefix="/api/voice", tags=["Voice Profiles & TTS"])
@@ -40,30 +42,32 @@ router = APIRouter(prefix="/api/voice", tags=["Voice Profiles & TTS"])
 # ============================================================================
 
 class VoiceProfileCreateRequest(BaseModel):
-    name: str = Field(..., min_length=1)
-    description: Optional[str] = ""
-    gpt_weights_path: str = Field(..., min_length=1)
-    sovits_weights_path: str = Field(..., min_length=1)
-    refer_audio_path: Optional[str] = None
-    ref_audio_path: Optional[str] = None
-    refer_text: Optional[str] = None
-    prompt_text: Optional[str] = None
-    refer_language: Optional[str] = "ja"
-    prompt_lang: Optional[str] = "ja"
-    text_lang: Optional[str] = "ja"
-    system_prompt: Optional[str] = ""
+    name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = Field(default="", max_length=1000)
+    gpt_weights_path: str = Field(..., min_length=1, max_length=1000)
+    sovits_weights_path: str = Field(..., min_length=1, max_length=1000)
+    refer_audio_path: Optional[str] = Field(default=None, max_length=1000)
+    ref_audio_path: Optional[str] = Field(default=None, max_length=1000)
+    refer_text: Optional[str] = Field(default=None, max_length=1000)
+    prompt_text: Optional[str] = Field(default=None, max_length=1000)
+    refer_language: Optional[str] = Field(default="ja", max_length=32)
+    prompt_lang: Optional[str] = Field(default="ja", max_length=32)
+    text_lang: Optional[str] = Field(default="ja", max_length=32)
+    system_prompt: Optional[str] = Field(default="", max_length=10000)
     is_default: bool = False
 
 
 class VoiceSwitchRequest(BaseModel):
-    profile_id: Optional[int] = None
-    profile_name: Optional[str] = None
-    id: Optional[int] = None
-    name: Optional[str] = None
+    profile_id: Optional[int] = Field(default=None, ge=1)
+    profile_name: Optional[str] = Field(default=None, max_length=100)
+    id: Optional[int] = Field(default=None, ge=1)
+    name: Optional[str] = Field(default=None, max_length=100)
+    force: bool = False
 
 
 class SynthesizeRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=2000)
+    voice_profile_id: Optional[int] = Field(default=None, ge=1)
     options: Optional[Dict[str, Any]] = None
     speed: Optional[float] = Field(default=None, ge=0.1, le=3.0)
     top_k: Optional[int] = Field(default=None, ge=1, le=100)
@@ -73,6 +77,7 @@ class SynthesizeRequest(BaseModel):
     cut_option: Optional[str] = Field(default=None, max_length=64)
     preset: Optional[str] = Field(default=None, max_length=64)
     stream: bool = False
+    ai_adaptive_voice: Optional[bool] = Field(default=None, description="Whether AI-driven dynamic voice inference is enabled")
 
 
 # ============================================================================
@@ -108,7 +113,7 @@ async def create_voice_profile(req: VoiceProfileCreateRequest):
 
     if not req.name.strip():
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Profile name cannot be empty",
         )
 
@@ -136,7 +141,7 @@ async def create_voice_profile(req: VoiceProfileCreateRequest):
             }
         except Exception as exc:
             logger.error("Failed to create voice profile '%s': %s", req.name, exc)
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=sanitize_error_detail(exc))
 
 
 @router.get(
@@ -145,6 +150,11 @@ async def create_voice_profile(req: VoiceProfileCreateRequest):
     description="Returns detailed parameters of a single voice profile.",
 )
 async def get_voice_profile(profile_id: int):
+    if profile_id < 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Profile ID must be a positive integer >= 1",
+        )
     async with get_db() as conn:
         profile = await crud.get_voice_profile(conn, profile_id)
         if not profile:
@@ -161,14 +171,27 @@ async def get_voice_profile(profile_id: int):
     description="Updates existing voice profile weights and prompt parameters.",
 )
 async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate):
+    if profile_id < 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Profile ID must be a positive integer >= 1",
+        )
     async with get_db() as conn:
-        updated = await crud.update_voice_profile(conn, profile_id, req)
-        if not updated:
+        try:
+            updated = await crud.update_voice_profile(conn, profile_id, req)
+            if not updated:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Voice profile ID {profile_id} not found",
+                )
+            return {"status": "updated", "profile": updated.model_dump()}
+        except HTTPException:
+            raise
+        except Exception as exc:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Voice profile ID {profile_id} not found",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=sanitize_error_detail(exc),
             )
-        return {"status": "updated", "profile": updated.model_dump()}
 
 
 @router.delete(
@@ -177,19 +200,196 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate):
     description="Deletes a voice profile by ID.",
 )
 async def delete_voice_profile(profile_id: int):
+    if profile_id < 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Profile ID must be a positive integer >= 1",
+        )
     async with get_db() as conn:
-        success = await crud.delete_voice_profile(conn, profile_id)
-        if not success:
+        try:
+            success = await crud.delete_voice_profile(conn, profile_id)
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Voice profile ID {profile_id} not found",
+                )
+            return {"status": "deleted", "profile_id": profile_id}
+        except HTTPException:
+            raise
+        except Exception as exc:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Voice profile ID {profile_id} not found",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=sanitize_error_detail(exc),
             )
-        return {"status": "deleted", "profile_id": profile_id}
 
 
 # ============================================================================
-# 2. Atomic Voice Model Switching
+# 2. Atomic Voice Model Switching & Memory Protection
 # ============================================================================
+
+def _resolve_cgroup_paths(root_path: Path) -> List[Path]:
+    """
+    Returns a list of candidate cgroup directory paths to inspect for the current process,
+    ordered from most specific (container subpath via /proc/self/cgroup) to root_path.
+    """
+    candidates: List[Path] = []
+    # 1. Inspect /proc/self/cgroup to detect specific container slices in K8s, Docker, systemd
+    proc_cgroup = Path("/proc/self/cgroup")
+    if proc_cgroup.is_file():
+        try:
+            for line in proc_cgroup.read_text(encoding="utf-8").splitlines():
+                parts = line.strip().split(":")
+                if len(parts) == 3:
+                    subpath = parts[2].lstrip("/")
+                    if subpath:
+                        # cgroups v2 entry: 0::<path>
+                        if parts[0] == "0" and parts[1] == "":
+                            cand = root_path / subpath
+                            if cand.is_dir() and cand not in candidates:
+                                candidates.append(cand)
+                        # cgroups v1 entry: <num>:memory:<path>
+                        elif "memory" in parts[1].split(","):
+                            # On cgroups v1, controllers are submounted under root_path/memory/
+                            cand_mem = root_path / "memory" / subpath
+                            if cand_mem.is_dir() and cand_mem not in candidates:
+                                candidates.append(cand_mem)
+                            cand_direct = root_path / subpath
+                            if cand_direct.is_dir() and cand_direct not in candidates:
+                                candidates.append(cand_direct)
+        except Exception:
+            pass
+
+    # 2. Add root_path as fallback (for container environments with private cgroup namespaces)
+    if root_path not in candidates:
+        candidates.append(root_path)
+
+    return candidates
+
+
+def _get_cgroup_memory_available_gb(cgroup_root: Optional[str] = None) -> Optional[float]:
+    """
+    Detects container memory quota limits via Linux cgroups (v2 and v1).
+    Inspects container-specific cgroup hierarchies (e.g. Kubernetes, Docker) via /proc/self/cgroup
+    as well as container root cgroup mounts.
+    Returns available memory in GB within the container limit, or None if no quota is configured.
+    """
+    try:
+        from pathlib import Path
+        root_path = Path(cgroup_root or os.getenv("GALGAME2VOICE_CGROUP_ROOT", "/sys/fs/cgroup"))
+        if not root_path.exists():
+            return None
+
+        candidate_dirs = _resolve_cgroup_paths(root_path)
+
+        # 1. Check cgroups v2 (memory.max & memory.current)
+        for cdir in candidate_dirs:
+            cg2_max = cdir / "memory.max"
+            cg2_curr = cdir / "memory.current"
+            if cg2_max.is_file() and cg2_curr.is_file():
+                max_val = cg2_max.read_text(encoding="utf-8").strip()
+                if max_val and max_val != "max":
+                    limit_bytes = int(max_val)
+                    curr_bytes = int(cg2_curr.read_text(encoding="utf-8").strip())
+                    return max(0.0, (limit_bytes - curr_bytes) / (1024 ** 3))
+
+        # 2. Check cgroups v1 (memory.limit_in_bytes & memory.usage_in_bytes)
+        for cdir in candidate_dirs:
+            cg1_candidates = [
+                (cdir / "memory.limit_in_bytes", cdir / "memory.usage_in_bytes"),
+                (cdir / "memory" / "memory.limit_in_bytes", cdir / "memory" / "memory.usage_in_bytes"),
+            ]
+            for lim_p, use_p in cg1_candidates:
+                if lim_p.is_file() and use_p.is_file():
+                    raw_lim = lim_p.read_text(encoding="utf-8").strip()
+                    if raw_lim:
+                        limit_bytes = int(raw_lim)
+                        # cgroups v1 unlimited sentinel is typically >= 1 << 60 (e.g. 0x7FFFFFFFFFFFF000)
+                        if limit_bytes < (1 << 60):
+                            usage_bytes = int(use_p.read_text(encoding="utf-8").strip())
+                            return max(0.0, (limit_bytes - usage_bytes) / (1024 ** 3))
+    except Exception as exc:
+        logger.debug("Failed to read cgroup memory limit: %s", exc)
+
+    return None
+
+
+def _free_memory_gb(cgroup_root: Optional[str] = None) -> Optional[float]:
+    """
+    Returns free physical memory in GB (cross-platform via psutil with OS-level fallbacks).
+    In containerized environments (Docker, Kubernetes, cgroups v1/v2), compares host memory
+    with container cgroup limits, returning min(host_available, cgroup_available).
+    """
+    host_avail = None
+    try:
+        import psutil
+        host_avail = psutil.virtual_memory().available / (1024 ** 3)
+    except Exception:
+        pass
+
+    # Windows fallback
+    if host_avail is None and sys.platform == "win32":
+        try:
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                host_avail = stat.ullAvailPhys / (1024 ** 3)
+        except Exception:
+            pass
+
+    # Linux fallback (/proc/meminfo)
+    if host_avail is None and sys.platform.startswith("linux"):
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        parts = line.split()
+                        host_avail = float(parts[1]) / (1024 * 1024)
+                        break
+        except Exception:
+            pass
+
+    # Container / cgroups quota detection (Docker, Kubernetes, cgroups v1 & v2)
+    # If cgroup limit is configured, takes min(host_available, cgroup_available)
+    if sys.platform.startswith("linux") or cgroup_root or os.getenv("GALGAME2VOICE_CGROUP_ROOT") or os.path.exists("/sys/fs/cgroup"):
+        cgroup_avail = _get_cgroup_memory_available_gb(cgroup_root=cgroup_root)
+        if cgroup_avail is not None:
+            if host_avail is not None:
+                return min(host_avail, cgroup_avail)
+            return cgroup_avail
+
+    return host_avail
+
+
+# 切换权重时新旧模型会短暂同时驻留内存；低于此阈值大概率触发引擎 OOM 崩溃
+_DEFAULT_SWITCH_MIN_FREE_MEMORY_GB = 1.5
+
+
+def _get_switch_min_free_memory_gb() -> float:
+    try:
+        val = os.getenv("GALGAME2VOICE_MIN_FREE_MEM_GB")
+        if val is not None:
+            return float(val)
+    except (ValueError, TypeError):
+        pass
+    return _DEFAULT_SWITCH_MIN_FREE_MEMORY_GB
+
+
+_SWITCH_MIN_FREE_MEMORY_GB = _DEFAULT_SWITCH_MIN_FREE_MEMORY_GB
+
 
 @router.post(
     "/switch",
@@ -198,7 +398,8 @@ async def delete_voice_profile(profile_id: int):
 )
 async def switch_voice(req: VoiceSwitchRequest):
     profile_id = req.profile_id if req.profile_id is not None else req.id
-    profile_name = req.profile_name or req.name
+    raw_name = req.profile_name or req.name
+    profile_name = raw_name.strip() if raw_name else None
 
     if profile_id is None and not profile_name:
         raise HTTPException(
@@ -206,16 +407,25 @@ async def switch_voice(req: VoiceSwitchRequest):
             detail="Missing profile_id or profile_name in switch request",
         )
 
+    if profile_id is not None and profile_id < 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="profile_id must be a positive integer >= 1",
+        )
+
+    # 1. 404 Precedence: Resolve voice profile entity first from database
     async with get_db() as conn:
         profile = None
         if profile_id is not None:
             profile = await crud.get_voice_profile(conn, profile_id)
         elif profile_name:
-            profiles = await crud.list_voice_profiles(conn)
-            for p in profiles:
-                if p.name == profile_name:
-                    profile = p
-                    break
+            profile = await crud.get_voice_profile_by_name(conn, profile_name)
+            if not profile:
+                profiles = await crud.list_voice_profiles(conn)
+                for p in profiles:
+                    if p.name == profile_name:
+                        profile = p
+                        break
 
         if not profile:
             identifier = profile_id if profile_id is not None else profile_name
@@ -225,18 +435,84 @@ async def switch_voice(req: VoiceSwitchRequest):
             )
 
     manager = get_voice_manager()
-    success = await manager.switch_profile(profile, persist=True)
-    if not success:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to load GPT/SoVITS model weights onto backend service",
-        )
 
-    return {
-        "status": "switched",
-        "profile": profile.name,
-        "profile_id": profile.id,
-    }
+    # 2. Concurrency & State Guard:
+    # Acquire manager.switch_lock to serialize memory checking, model loading, and persistence.
+    # This prevents concurrent requests from racing through memory checks or corrupting active profile states.
+    async with manager.switch_lock:
+        # Re-verify profile still exists in SQLite under the lock (TOCTOU guard against concurrent deletion)
+        async with get_db() as conn:
+            verified_profile = await crud.get_voice_profile(conn, profile.id)
+            if not verified_profile:
+                identifier = profile_id if profile_id is not None else profile_name
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Voice profile '{identifier}' not found",
+                )
+            profile = verified_profile
+
+        active_prof = manager.active_profile
+        if active_prof is None and not req.force:
+            try:
+                active_prof = await manager.get_active_profile()
+                if active_prof:
+                    manager.active_profile = active_prof
+            except Exception:
+                pass
+
+        is_already_active = False
+        if active_prof and not req.force:
+            active_id = getattr(active_prof, "id", None) or (active_prof.get("id") if isinstance(active_prof, dict) else None)
+            active_gpt = getattr(active_prof, "gpt_weights_path", None) or (active_prof.get("gpt_weights_path") if isinstance(active_prof, dict) else None)
+            active_sovits = getattr(active_prof, "sovits_weights_path", None) or (active_prof.get("sovits_weights_path") if isinstance(active_prof, dict) else None)
+            active_ref = getattr(active_prof, "ref_audio_path", None) or getattr(active_prof, "refer_audio_path", None) or (active_prof.get("ref_audio_path") if isinstance(active_prof, dict) else (active_prof.get("refer_audio_path") if isinstance(active_prof, dict) else None))
+            active_prompt = getattr(active_prof, "prompt_text", None) or getattr(active_prof, "refer_text", None) or (active_prof.get("prompt_text") if isinstance(active_prof, dict) else (active_prof.get("refer_text") if isinstance(active_prof, dict) else None))
+
+            prof_ref = getattr(profile, "ref_audio_path", None) or getattr(profile, "refer_audio_path", None)
+            prof_prompt = getattr(profile, "prompt_text", None) or getattr(profile, "refer_text", None)
+
+            if (
+                active_id == profile.id
+                and active_gpt == profile.gpt_weights_path
+                and active_sovits == profile.sovits_weights_path
+                and active_ref == prof_ref
+                and active_prompt == prof_prompt
+            ):
+                is_already_active = True
+
+        if is_already_active:
+            # Sync SQLite persistence under the lock to ensure DB reflects active profile
+            try:
+                async with get_db() as conn:
+                    await crud.set_active_voice_profile(conn, profile.id)
+            except Exception as exc:
+                logger.debug("Failed syncing active voice profile to settings: %s", exc)
+        else:
+            # 内存预检：实体存在且需切换时，若空闲内存不足则友好拒绝，避免 GPT-SoVITS 引擎加载权重时 OOM 崩溃
+            if not req.force and not os.getenv("GALGAME2VOICE_SKIP_MEM_CHECK"):
+                free_gb = _free_memory_gb()
+                min_free_gb = _get_switch_min_free_memory_gb()
+                if free_gb is not None and free_gb < min_free_gb:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=(
+                            f"系统空闲内存不足（{free_gb:.1f} GB < {min_free_gb:.1f} GB），"
+                            "加载新模型权重可能导致语音引擎崩溃。请关闭占内存的程序后重试。"
+                        ),
+                    )
+
+            success = await manager.switch_profile(profile, persist=True, _already_locked=True, force=req.force)
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Failed to load GPT/SoVITS model weights onto backend service",
+                )
+
+        return {
+            "status": "switched",
+            "profile": profile.name,
+            "profile_id": profile.id,
+        }
 
 
 # ============================================================================
@@ -252,12 +528,14 @@ async def synthesize_speech(req: SynthesizeRequest):
     cleaned_text = clean_japanese_parentheses(req.text)
     if not cleaned_text:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Text is empty after cleaning stage directions",
         )
 
     # Collect and normalize options
     options: Dict[str, Any] = dict(req.options or {})
+    if req.voice_profile_id is not None:
+        options["voice_profile_id"] = req.voice_profile_id
     if req.speed is not None:
         options["speed"] = req.speed
     if req.top_k is not None:
@@ -272,11 +550,13 @@ async def synthesize_speech(req: SynthesizeRequest):
         options["cut_option"] = req.cut_option
     if req.preset is not None:
         options["preset"] = req.preset
+    if req.ai_adaptive_voice is not None:
+        options["ai_adaptive_voice"] = req.ai_adaptive_voice
 
     try:
         validate_user_tts_options(options)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
 
     manager = get_voice_manager()
 
@@ -291,10 +571,10 @@ async def synthesize_speech(req: SynthesizeRequest):
             return Response(content=audio_bytes, media_type="audio/wav")
 
     except ValueError as val_err:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(val_err))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=sanitize_error_detail(val_err))
     except Exception as exc:
         logger.error("Synthesis error: %s", exc, exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error_detail(exc))
 
 
 class BrowseFileRequest(BaseModel):

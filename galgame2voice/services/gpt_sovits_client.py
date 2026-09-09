@@ -12,6 +12,7 @@ Single shared async client with:
 
 import asyncio
 import logging
+import math
 import os
 import re
 import tempfile
@@ -120,6 +121,37 @@ _TTS_STRING_MAXLEN = {
     "refer_text": 500,
 }
 
+# ============================================================================
+# Dynamic AI-Driven Voice Prosody & Emotion Constants
+# ============================================================================
+
+DYNAMIC_SPEED_MIN = 0.50
+DYNAMIC_SPEED_MAX = 1.50
+DYNAMIC_TEMP_MIN = 0.60
+DYNAMIC_TEMP_MAX = 1.20
+
+
+def clamp_dynamic_speed(val: Any, fallback: float = 1.0) -> float:
+    """Clamps dynamic voice inference speed into [0.70, 1.35]. Falls back if invalid."""
+    try:
+        num = float(val)
+        if math.isnan(num) or math.isinf(num):
+            return fallback
+        return max(DYNAMIC_SPEED_MIN, min(DYNAMIC_SPEED_MAX, round(num, 4)))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def clamp_dynamic_temperature(val: Any, fallback: float = 1.0) -> float:
+    """Clamps dynamic voice inference temperature into [0.60, 1.20]. Falls back if invalid."""
+    try:
+        num = float(val)
+        if math.isnan(num) or math.isinf(num):
+            return fallback
+        return max(DYNAMIC_TEMP_MIN, min(DYNAMIC_TEMP_MAX, round(num, 4)))
+    except (TypeError, ValueError):
+        return fallback
+
 
 def validate_user_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -172,16 +204,24 @@ def resolve_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, A
         options.get("speed_factor", options.get("speed", base_params.get("speed_factor", 1.0))),
         base_params.get("speed_factor", 1.0),
     )
+    is_adaptive = bool(options.get("ai_adaptive_voice", options.get("aiAdaptiveVoice", False)))
+    if is_adaptive:
+        speed_val = clamp_dynamic_speed(speed_val, fallback=1.0)
+
     text_lang_val = str(options.get("text_lang", options.get("text_language", "ja")))[:32]
     prompt_lang_val = str(options.get("prompt_lang", options.get("prompt_language", options.get("refer_language", "ja"))))[:32]
     split_val = str(options.get("text_split_method", options.get("how_to_cut", options.get("cut_option", base_params.get("text_split_method", "cut5")))))[:64]
+
+    temp_val = _clamped("temperature", options.get("temperature", options.get("temp", base_params.get("temperature", 1.0))), base_params.get("temperature", 1.0))
+    if is_adaptive:
+        temp_val = clamp_dynamic_temperature(temp_val, fallback=1.0)
 
     merged = {
         "speed_factor": speed_val,
         "speed": speed_val,  # alias kept for backwards compatibility
         "top_k": int(_clamped("top_k", options.get("top_k", base_params.get("top_k", 15)), base_params.get("top_k", 15))),
         "top_p": _clamped("top_p", options.get("top_p", base_params.get("top_p", 1.0)), base_params.get("top_p", 1.0)),
-        "temperature": _clamped("temperature", options.get("temperature", base_params.get("temperature", 1.0)), base_params.get("temperature", 1.0)),
+        "temperature": temp_val,
         "text_lang": text_lang_val,
         "text_language": text_lang_val,  # alias
         "prompt_lang": prompt_lang_val,
@@ -192,6 +232,7 @@ def resolve_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, A
         "fragment_interval": _clamped("fragment_interval", options.get("fragment_interval", 0.3), 0.3),
         "ref_audio_path": str(options.get("ref_audio_path", options.get("refer_audio_path", "")))[:512],
         "prompt_text": str(options.get("prompt_text", options.get("refer_text", "")))[:500],
+        "ai_adaptive_voice": is_adaptive,
     }
 
     # streaming_mode: accept bool or int (1/2/3 presets), normalized to bool later.
@@ -469,11 +510,11 @@ class GptSovitsClient:
     # 3-Step Atomic Model Switching with Auto-Rollback
     # ------------------------------------------------------------------
 
-    async def switch_voice_profile(self, target: Any) -> bool:
+    async def switch_voice_profile(self, target: Any, force: bool = False) -> bool:
         """
         Switches GPT-SoVITS voice profile in 3 transactional steps:
-          Step 1: GET /set_gpt_weights?weights_path=...
-          Step 2: GET /set_sovits_weights?weights_path=...
+          Step 1: GET /set_gpt_weights?weights_path=... (skipped if identical weights already loaded)
+          Step 2: GET /set_sovits_weights?weights_path=... (skipped if identical weights already loaded)
           Step 3: GET /set_refer_audio?refer_audio_path=...
 
         If any step fails, automatically rolls back previous steps to restore
@@ -489,34 +530,44 @@ class GptSovitsClient:
                         spec.name, spec.gpt_weights_path, spec.sovits_weights_path)
 
             try:
-                r1 = await self._request("GET", "/set_gpt_weights", params={"weights_path": spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
-                if r1.status_code != 200:
-                    logger.error("Switch failed at Step 1 (GPT weights): %s", r1.text)
-                    return False
-                self.current_gpt_weights = spec.gpt_weights_path
+                # Step 1: GPT weights (skip if identical weights already loaded and not force)
+                if force or not (self.current_gpt_weights and self.current_gpt_weights == spec.gpt_weights_path):
+                    r1 = await self._request("GET", "/set_gpt_weights", params={"weights_path": spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
+                    if r1.status_code != 200:
+                        logger.error("Switch failed at Step 1 (GPT weights): %s", r1.text)
+                        return False
+                    self.current_gpt_weights = spec.gpt_weights_path
+                else:
+                    logger.debug("Skipping /set_gpt_weights: '%s' already loaded", spec.gpt_weights_path)
 
-                r2 = await self._request("GET", "/set_sovits_weights", params={"weights_path": spec.sovits_weights_path}, timeout=SWITCH_TIMEOUT)
-                if r2.status_code != 200:
-                    logger.error("Switch failed at Step 2 (SoVITS weights): %s. Initiating rollback...", r2.text)
-                    if prev_spec and prev_spec.gpt_weights_path:
-                        await self._request("GET", "/set_gpt_weights", params={"weights_path": prev_spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
-                        self.current_gpt_weights = prev_spec.gpt_weights_path
-                    return False
-                self.current_sovits_weights = spec.sovits_weights_path
-
-                r3 = await self._request("GET", "/set_refer_audio", params={"refer_audio_path": spec.refer_audio_path})
-                if r3.status_code != 200:
-                    logger.error("Switch failed at Step 3 (Refer Audio): %s. Initiating rollback...", r3.text)
-                    if prev_spec:
-                        if prev_spec.sovits_weights_path:
-                            await self._request("GET", "/set_sovits_weights", params={"weights_path": prev_spec.sovits_weights_path}, timeout=SWITCH_TIMEOUT)
-                            self.current_sovits_weights = prev_spec.sovits_weights_path
-                        if prev_spec.gpt_weights_path:
+                # Step 2: SoVITS weights (skip if identical weights already loaded and not force)
+                if force or not (self.current_sovits_weights and self.current_sovits_weights == spec.sovits_weights_path):
+                    r2 = await self._request("GET", "/set_sovits_weights", params={"weights_path": spec.sovits_weights_path}, timeout=SWITCH_TIMEOUT)
+                    if r2.status_code != 200:
+                        logger.error("Switch failed at Step 2 (SoVITS weights): %s. Initiating rollback...", r2.text)
+                        if prev_spec and prev_spec.gpt_weights_path and prev_spec.gpt_weights_path != spec.gpt_weights_path:
                             await self._request("GET", "/set_gpt_weights", params={"weights_path": prev_spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
                             self.current_gpt_weights = prev_spec.gpt_weights_path
-                        if prev_spec.refer_audio_path:
-                            await self._request("GET", "/set_refer_audio", params={"refer_audio_path": prev_spec.refer_audio_path})
-                    return False
+                        return False
+                    self.current_sovits_weights = spec.sovits_weights_path
+                else:
+                    logger.debug("Skipping /set_sovits_weights: '%s' already loaded", spec.sovits_weights_path)
+
+                # Step 3: Reference Audio
+                if force or not (self.current_refer_audio and self.current_refer_audio == spec.refer_audio_path and self.current_refer_text == spec.refer_text and self.current_refer_language == spec.refer_language):
+                    r3 = await self._request("GET", "/set_refer_audio", params={"refer_audio_path": spec.refer_audio_path})
+                    if r3.status_code != 200:
+                        logger.error("Switch failed at Step 3 (Refer Audio): %s. Initiating rollback...", r3.text)
+                        if prev_spec:
+                            if prev_spec.sovits_weights_path and prev_spec.sovits_weights_path != spec.sovits_weights_path:
+                                await self._request("GET", "/set_sovits_weights", params={"weights_path": prev_spec.sovits_weights_path}, timeout=SWITCH_TIMEOUT)
+                                self.current_sovits_weights = prev_spec.sovits_weights_path
+                            if prev_spec.gpt_weights_path and prev_spec.gpt_weights_path != spec.gpt_weights_path:
+                                await self._request("GET", "/set_gpt_weights", params={"weights_path": prev_spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
+                                self.current_gpt_weights = prev_spec.gpt_weights_path
+                            if prev_spec.refer_audio_path:
+                                await self._request("GET", "/set_refer_audio", params={"refer_audio_path": prev_spec.refer_audio_path})
+                        return False
 
                 self.current_refer_audio = spec.refer_audio_path
                 self.current_refer_text = spec.refer_text
@@ -740,4 +791,10 @@ __all__ = [
     "resolve_tts_options",
     "SLICING_METHODS",
     "TTS_PRESETS",
+    "DYNAMIC_SPEED_MIN",
+    "DYNAMIC_SPEED_MAX",
+    "DYNAMIC_TEMP_MIN",
+    "DYNAMIC_TEMP_MAX",
+    "clamp_dynamic_speed",
+    "clamp_dynamic_temperature",
 ]

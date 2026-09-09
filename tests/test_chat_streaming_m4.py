@@ -1,4 +1,4 @@
-﻿"""
+"""
 Comprehensive tests for Milestone 4 (Streaming Pipeline & Web Audio Player).
 Covers:
  - galgame2voice.utils.text_splitter.split_japanese_sentences
@@ -341,7 +341,7 @@ class TestChatRouterEndpointsM4:
             # Root index.html
             r_root = await c.get("/")
             assert r_root.status_code == 200
-            assert "galgame2voice" in r_root.text
+            assert "Gal2Voice" in r_root.text
 
             # CSS
             r_css = await c.get("/static/css/style.css")

@@ -22,6 +22,12 @@ from galgame2voice.services.voice_manager import (
 from galgame2voice.services.chat_service import (
     ChatService,
     StreamingBilingualParser,
+    DYNAMIC_SPEED_MIN,
+    DYNAMIC_SPEED_MAX,
+    DYNAMIC_TEMP_MIN,
+    DYNAMIC_TEMP_MAX,
+    clamp_dynamic_speed,
+    clamp_dynamic_temperature,
 )
 
 from galgame2voice.services.affection_service import AffectionService
@@ -36,6 +42,12 @@ __all__ = [
     "TtsService",
     "ChatService",
     "StreamingBilingualParser",
+    "DYNAMIC_SPEED_MIN",
+    "DYNAMIC_SPEED_MAX",
+    "DYNAMIC_TEMP_MIN",
+    "DYNAMIC_TEMP_MAX",
+    "clamp_dynamic_speed",
+    "clamp_dynamic_temperature",
     "AffectionService",
     "MemoryService",
     "SessionManager",

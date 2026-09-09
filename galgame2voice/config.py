@@ -35,7 +35,7 @@ class Settings(BaseSettings):
         default=False, description="Expose /docs and /redoc (disable in production)"
     )
     auth_disabled: bool = Field(
-        default=False, description="Disable console token auth (tests/local dev only)"
+        default=True, description="Disable console token auth (default off for local use)"
     )
     rate_limit_disabled: bool = Field(
         default=False, description="Disable request rate limiting (tests only)"

@@ -35,6 +35,7 @@ class StreamingAudioPlayer {
         this._sessionAbort = new AbortController();
 
         this.equalizerElement = options.equalizerElement || null;
+        this._cachedBars = this.equalizerElement ? Array.from(this.equalizerElement.querySelectorAll('.bar')) : [];
         this.animFrameId = null;
 
         this.onStatusChange = options.onStatusChange || null;
