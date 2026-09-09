@@ -8,6 +8,7 @@ import json
 import logging
 import sqlite3
 import uuid
+from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 import aiosqlite
 
@@ -26,6 +27,14 @@ from galgame2voice.database.models import (
 from galgame2voice.database.session import immediate_transaction
 
 logger = logging.getLogger("galgame2voice.database.crud")
+
+# Default reference audio ships inside the repo so fresh deployments on any
+# machine get a valid path. Must be ABSOLUTE: the GPT-SoVITS engine process runs
+# with its own install dir as cwd, so relative DB paths break on the engine side.
+_DEFAULT_REF_AUDIO = str(
+    (Path(__file__).resolve().parents[2] / "audio" / "references" / "natsume" / "gentle.ogg").resolve()
+)
+_DEFAULT_REF_TEXT = "とりあえず、今日見たことは忘れて、わかった?"
 
 
 def mask_api_key(key: Optional[str]) -> str:
@@ -313,8 +322,8 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
             "《星光咖啡馆与死神之蝶》高冷毒舌但内心温柔的咖啡厅兼职店员",
             "GPT_weights_v2ProPlus/siki2-e50.ckpt",
             "SoVITS_weights_v2ProPlus/siki_e20_s10280.pth",
-            "E:/yuzusoft/cafeStella/sikivoice/nat002_032.ogg",
-            "とりあえず、今日見たことは忘れて、わかった?",
+            _DEFAULT_REF_AUDIO,
+            _DEFAULT_REF_TEXT,
             "ja",
             "ja",
             natsume_prompt,
@@ -345,6 +354,13 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
                 await conn.execute("UPDATE voice_profiles SET system_prompt = ? WHERE id = ?;", (new_prompt, row["id"]))
         except Exception as exc:
             logger.debug("Could not auto-upgrade default voice profile system prompt: %s", exc)
+
+        # Self-heal voice profiles whose reference audio points at paths
+        # that do not exist on this machine or point to legacy dev paths.
+        try:
+            await auto_heal_voice_profiles(conn)
+        except Exception as exc:
+            logger.debug("Could not self-heal voice profile reference audios: %s", exc)
 
     # 3. Seed Providers
     cursor = await conn.execute("SELECT COUNT(*) FROM providers;")
@@ -444,7 +460,71 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     except Exception:
         pass
 
+    # 7. Auto-heal missing or broken reference audio paths across existing voice profiles
+    try:
+        await auto_heal_voice_profiles(conn)
+    except Exception as exc:
+        logger.debug("Auto-heal voice profiles during schema init skipped: %s", exc)
+
     await conn.commit()
+
+
+async def auto_heal_voice_profiles(conn: aiosqlite.Connection) -> int:
+    """
+    Scans voice_profiles table and auto-heals any missing or invalid reference audio paths.
+    If ref_audio_path points to a non-existent file or a legacy dev-machine path (e.g. E:/yuzusoft/...),
+    it automatically updates the path to a verified existing bundled reference audio file.
+    Returns the number of healed profiles.
+    """
+    from pathlib import Path
+    from galgame2voice.config import get_settings
+    settings = get_settings()
+    project_root = settings.project_root
+
+    # Ensure bundled audio alias exists
+    bundled_gentle = project_root / "audio" / "references" / "natsume" / "gentle.ogg"
+    bundled_nat = project_root / "audio" / "nat002_032.ogg"
+    if bundled_gentle.is_file() and not bundled_nat.exists():
+        try:
+            import shutil
+            shutil.copy2(bundled_gentle, bundled_nat)
+        except Exception:
+            pass
+
+    default_ref_path = "audio/references/natsume/gentle.ogg"
+    if not (project_root / default_ref_path).is_file() and bundled_nat.is_file():
+        default_ref_path = "audio/nat002_032.ogg"
+
+    cursor = await conn.execute("SELECT id, name, ref_audio_path FROM voice_profiles;")
+    rows = await cursor.fetchall()
+    healed_count = 0
+
+    for row in rows:
+        p_id = row["id"]
+        ref_path = str(row["ref_audio_path"] or "").strip()
+        needs_healing = False
+
+        if not ref_path:
+            needs_healing = True
+        elif "yuzusoft" in ref_path.lower() or ref_path.startswith("E:") or ref_path.startswith("e:"):
+            needs_healing = True
+        else:
+            p = Path(ref_path)
+            if not p.is_file() and not (project_root / ref_path).is_file() and not (settings.audio_dir / ref_path).is_file():
+                needs_healing = True
+
+        if needs_healing:
+            logger.info(
+                "Auto-healing voice profile %d ('%s'): invalid ref_audio_path '%s' -> '%s'",
+                p_id, row["name"], ref_path, default_ref_path
+            )
+            await conn.execute(
+                "UPDATE voice_profiles SET ref_audio_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+                (default_ref_path, p_id)
+            )
+            healed_count += 1
+
+    return healed_count
 
 
 

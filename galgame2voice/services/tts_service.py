@@ -58,6 +58,59 @@ class TtsService:
             db_path=db_path or settings.db_path,
         )
 
+    @staticmethod
+    def get_audio_duration(path: Union[str, Path, None]) -> Optional[float]:
+        """
+        Safely inspects and measures reference audio duration in seconds.
+        Returns float duration, or None if file is missing, unreadable, or invalid.
+        """
+        if not path:
+            return None
+        try:
+            p = Path(path)
+            if not p.is_file():
+                # Check relative to project root or audio_dir
+                settings = get_settings()
+                cand1 = settings.project_root / path
+                cand2 = Path(settings.audio_dir) / path
+                if cand1.is_file():
+                    p = cand1
+                elif cand2.is_file():
+                    p = cand2
+                else:
+                    return None
+
+            # 1. Try soundfile (handles OGG, WAV, FLAC, etc.)
+            try:
+                import soundfile as sf
+                info = sf.info(str(p))
+                return float(info.duration)
+            except Exception:
+                pass
+
+            # 2. Try wave standard library for PCM WAV
+            try:
+                import wave
+                with wave.open(str(p), "rb") as wf:
+                    frames = wf.getnframes()
+                    rate = wf.getframerate()
+                    if rate > 0:
+                        return float(frames) / float(rate)
+            except Exception:
+                pass
+
+            # 3. Try mutagen
+            try:
+                import mutagen
+                m = mutagen.File(str(p))
+                if m and m.info and hasattr(m.info, "length"):
+                    return float(m.info.length)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return None
+
     async def _populate_voice_profile_opts(self, opts: Dict[str, Any]) -> Dict[str, Any]:
         """Auto-populates active voice profile parameters, applying dynamic emotion reference audios if available."""
         try:
@@ -67,6 +120,17 @@ class TtsService:
                 opts.setdefault("voice_profile_id", active.id)
                 opts.setdefault("prompt_lang", active.prompt_lang)
                 opts.setdefault("text_lang", active.text_lang)
+
+                fallback_ref_audio = active.ref_audio_path
+                fallback_prompt_text = active.prompt_text
+                fallback_prompt_lang = active.prompt_lang
+
+                # Ensure fallback_ref_audio exists; if not, point to bundled gentle.ogg
+                settings = get_settings()
+                if not (Path(fallback_ref_audio).is_file() or (settings.project_root / fallback_ref_audio).is_file()):
+                    bundled_default = settings.project_root / "audio" / "references" / "natsume" / "gentle.ogg"
+                    if bundled_default.is_file():
+                        fallback_ref_audio = str(bundled_default.resolve())
 
                 # Check for dynamic emotion reference audio override
                 ai_adaptive = opts.get("ai_adaptive_voice", opts.get("aiAdaptiveVoice", True))
@@ -79,13 +143,39 @@ class TtsService:
                     resolved_emo = resolve_emotion_reference(char_name, str(emotion))
 
                 if resolved_emo:
-                    opts["ref_audio_path"] = resolved_emo["ref_audio_path"]
-                    opts["prompt_text"] = resolved_emo["prompt_text"]
-                    opts["prompt_lang"] = resolved_emo["prompt_lang"]
+                    candidate_audio = resolved_emo["ref_audio_path"]
+                    # Validate candidate emotion reference audio duration: must be in [3.0, 10.0]s
+                    dur = self.get_audio_duration(candidate_audio)
+                    if dur is not None and 3.0 <= dur <= 10.0:
+                        opts["ref_audio_path"] = candidate_audio
+                        opts["prompt_text"] = resolved_emo["prompt_text"]
+                        opts["prompt_lang"] = resolved_emo["prompt_lang"]
+                    else:
+                        logger.warning(
+                            "Emotion reference audio '%s' is invalid (duration: %s, required: [3.0, 10.0]s) or missing. "
+                            "Falling back to active profile default reference audio: %s",
+                            candidate_audio, dur, fallback_ref_audio
+                        )
+                        opts["ref_audio_path"] = fallback_ref_audio
+                        opts["prompt_text"] = fallback_prompt_text
+                        opts["prompt_lang"] = fallback_prompt_lang
                 else:
-                    if not opts.get("ref_audio_path") and not opts.get("refer_audio_path"):
-                        opts.setdefault("ref_audio_path", active.ref_audio_path)
-                        opts.setdefault("prompt_text", active.prompt_text)
+                    # User-supplied or pre-existing ref_audio_path
+                    user_ref = opts.get("ref_audio_path") or opts.get("refer_audio_path")
+                    if user_ref:
+                        dur = self.get_audio_duration(user_ref)
+                        if dur is not None and (dur < 3.0 or dur > 10.0):
+                            logger.warning(
+                                "Reference audio '%s' duration %.2fs is out of [3.0, 10.0]s range. "
+                                "Falling back to default reference audio: %s",
+                                user_ref, dur, fallback_ref_audio
+                            )
+                            opts["ref_audio_path"] = fallback_ref_audio
+                            opts["prompt_text"] = fallback_prompt_text
+                            opts["prompt_lang"] = fallback_prompt_lang
+                    elif not getattr(self.client, "current_refer_audio", None):
+                        opts.setdefault("ref_audio_path", fallback_ref_audio)
+                        opts.setdefault("prompt_text", fallback_prompt_text)
         except Exception as exc:
             logger.debug("Could not auto-populate active profile options in TtsService: %s", exc)
         return opts

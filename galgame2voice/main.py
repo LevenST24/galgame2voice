@@ -137,11 +137,19 @@ async def lifespan(app: FastAPI):
     logger.info("Verified directories: data=%s, audio=%s, logs=%s",
                 settings.data_dir, settings.audio_dir, settings.logs_dir)
 
-    # 3. Initialize SQLite Database Schema (WAL Mode)
+    # 3. Initialize SQLite Database Schema (WAL Mode) & Self-Heal broken audio references
     # Fail-fast: a broken database must not silently degrade into a
     # half-functional service that reports healthy.
     await init_db(settings.db_path)
     logger.info("Database initialized successfully at %s", settings.db_path)
+
+    try:
+        async with get_db(settings.db_path) as conn:
+            healed = await crud.auto_heal_voice_profiles(conn)
+            if healed > 0:
+                logger.info("Auto-healed %d voice profile(s) with missing/invalid reference audio paths", healed)
+    except Exception as exc:
+        logger.debug("Startup auto-heal check skipped: %s", exc)
 
     # 4. Initialize shared GPT-SoVITS client (single inference mutex app-wide).
     #    The DB's gpt_sovits_url takes priority over the .env default so the
@@ -172,7 +180,10 @@ async def lifespan(app: FastAPI):
                     if not client.current_sovits_weights:
                         client.current_sovits_weights = default_profile.sovits_weights_path
                     if not client.current_refer_audio:
-                        client.current_refer_audio = default_profile.ref_audio_path
+                        ref_p = Path(default_profile.ref_audio_path)
+                        if not ref_p.is_file() and (settings.project_root / default_profile.ref_audio_path).is_file():
+                            ref_p = (settings.project_root / default_profile.ref_audio_path).resolve()
+                        client.current_refer_audio = str(ref_p)
                     if not client.current_refer_text:
                         client.current_refer_text = default_profile.prompt_text
                     if not client.current_refer_language:

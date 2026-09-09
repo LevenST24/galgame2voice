@@ -16,12 +16,26 @@ import math
 import os
 import re
 import tempfile
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 import httpx
 from pydantic import BaseModel
 
 logger = logging.getLogger("galgame2voice.services.gpt_sovits_client")
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# GPT-SoVITS hard-rejects reference audio outside 3~10 seconds with a raw 400
+# ("参考音频在3~10秒范围外"). Validate here so the user gets a fallback voice
+# instead of a silent synthesis failure (e.g. the 2.47s cool.ogg incident).
+REFERENCE_AUDIO_MIN_SECONDS = 3.0
+REFERENCE_AUDIO_MAX_SECONDS = 10.0
+
+_BUNDLED_REF_AUDIO = _PROJECT_ROOT / "audio" / "references" / "natsume" / "gentle.ogg"
+_BUNDLED_REF_TEXT = "とりあえず、今日見たことは忘れて、わかった?"
+_BUNDLED_REF_LANG = "ja"
 
 
 # ============================================================================
@@ -46,6 +60,91 @@ def clean_japanese_parentheses(text: str, max_passes: int = 5) -> str:
 
     cleaned = cleaned.replace('（', '').replace('）', '').replace('(', '').replace(')', '')
     return cleaned.strip()
+
+
+# ============================================================================
+# Reference Audio Validation (3~10s pre-flight guard)
+# ============================================================================
+
+@lru_cache(maxsize=256)
+def probe_audio_duration_seconds(path: str) -> Optional[float]:
+    """
+    Returns audio duration in seconds for WAV (stdlib wave) and OGG
+    (soundfile or Vorbis/Opus via last OggS page granule position) files, or None if
+    the duration cannot be determined.
+    """
+    try:
+        p = Path(path)
+        if not p.is_file() and (_PROJECT_ROOT / path).is_file():
+            p = _PROJECT_ROOT / path
+
+        # 1. Try soundfile first for exact header/granule parsing
+        try:
+            import soundfile as sf
+            info = sf.info(str(p))
+            return float(info.duration)
+        except Exception:
+            pass
+
+        suffix = p.suffix.lower()
+        if suffix == ".wav":
+            import wave
+            with wave.open(str(p), "rb") as w:
+                framerate = w.getframerate()
+                return (w.getnframes() / framerate) if framerate > 0 else None
+        if suffix in (".ogg", ".opus"):
+            data = p.read_bytes()
+            idx = data.rfind(b"OggS")
+            if idx < 0 or idx + 14 > len(data):
+                return None
+            granule = int.from_bytes(data[idx + 6:idx + 14], "little")
+            if granule <= 0:
+                return None
+            rate = 0
+            if suffix == ".opus" or b"OpusHead" in data[:64]:
+                rate = 48000  # Opus granule positions are always 48kHz-based
+            else:
+                h = data.find(b"\x01vorbis")
+                if h > 0:
+                    rate = int.from_bytes(data[h + 12:h + 16], "little")
+            if rate <= 0:
+                return None
+            return granule / rate
+    except Exception:
+        return None
+    return None
+
+
+def validate_reference_audio(ref_audio: str) -> Tuple[bool, str]:
+    """Checks a reference audio path against GPT-SoVITS's 3~10s hard constraint."""
+    if not ref_audio:
+        return False, "empty reference audio path"
+    p = Path(ref_audio)
+    if not p.is_file():
+        if (_PROJECT_ROOT / ref_audio).is_file():
+            p = (_PROJECT_ROOT / ref_audio).resolve()
+        else:
+            return False, f"reference audio file not found: {ref_audio}"
+    duration = probe_audio_duration_seconds(str(p))
+    if duration is None:
+        # Undeterminable (exotic container) — let the engine decide rather than block.
+        return True, ""
+    if not (REFERENCE_AUDIO_MIN_SECONDS <= duration <= REFERENCE_AUDIO_MAX_SECONDS):
+        return False, (
+            f"reference audio duration {duration:.2f}s is outside the "
+            f"{REFERENCE_AUDIO_MIN_SECONDS:.0f}~{REFERENCE_AUDIO_MAX_SECONDS:.0f}s range: {ref_audio}"
+        )
+    return True, ""
+
+
+def _fallback_reference() -> Optional[Tuple[str, str, str]]:
+    """Bundled baseline reference (5.03s gentle voice) usable on any machine."""
+    if _BUNDLED_REF_AUDIO.is_file():
+        return str(_BUNDLED_REF_AUDIO.resolve()), _BUNDLED_REF_TEXT, _BUNDLED_REF_LANG
+    alt_nat = _PROJECT_ROOT / "audio" / "nat002_032.ogg"
+    if alt_nat.is_file():
+        return str(alt_nat.resolve()), _BUNDLED_REF_TEXT, _BUNDLED_REF_LANG
+    return None
 
 
 # ============================================================================
@@ -497,6 +596,12 @@ class GptSovitsClient:
         refer_language: str = "ja",
     ) -> bool:
         """Sets reference audio."""
+        p = Path(refer_audio_path)
+        if not p.is_file() and (_PROJECT_ROOT / refer_audio_path).is_file():
+            refer_audio_path = str((_PROJECT_ROOT / refer_audio_path).resolve())
+        elif p.is_file():
+            refer_audio_path = str(p.resolve())
+
         resp = await self._request("GET", "/set_refer_audio", params={"refer_audio_path": refer_audio_path})
         if resp.status_code == 200:
             self.current_refer_audio = refer_audio_path
@@ -603,6 +708,23 @@ class GptSovitsClient:
         ref_audio = resolved.get("ref_audio_path") or self.current_refer_audio or ""
         ref_text = resolved.get("prompt_text") or self.current_refer_text or ""
         ref_lang = resolved.get("prompt_lang") or self.current_refer_language or "ja"
+
+        ok, reason = validate_reference_audio(ref_audio)
+        if not ok:
+            fallback = _fallback_reference()
+            if fallback:
+                logger.warning(
+                    "Reference audio rejected (%s) — falling back to bundled baseline reference", reason
+                )
+                ref_audio, ref_text, ref_lang = fallback
+            else:
+                logger.error("Reference audio rejected (%s) and no bundled fallback available", reason)
+        else:
+            p = Path(ref_audio)
+            if not p.is_file() and (_PROJECT_ROOT / ref_audio).is_file():
+                ref_audio = str((_PROJECT_ROOT / ref_audio).resolve())
+            elif p.is_file():
+                ref_audio = str(p.resolve())
 
         return {
             "text": text,

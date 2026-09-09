@@ -53,7 +53,8 @@ def test_resolve_emotion_reference_natsume():
 
     res_cool = resolve_emotion_reference("四季夏目", "cool")
     assert res_cool is not None
-    assert "cool.ogg" in res_cool["ref_audio_path"]
+    # cool is mapped to gentle.ogg (5.03s) to satisfy GPT-SoVITS 3~10s rule
+    assert "gentle.ogg" in res_cool["ref_audio_path"]
 
     # Other non-natsume character should not resolve natsume audios
     res_other = resolve_emotion_reference("Arona", "happy")

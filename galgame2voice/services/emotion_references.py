@@ -154,23 +154,25 @@ def resolve_emotion_reference(
             "emotion": canonical_emo,
         }
 
-    # Fallback to E: drive if original folder is still accessible
-    e_fallback = Path(r"E:\yuzusoft\cafeStella\sikivoice")
-    legacy_file_map = {
-        "gentle.ogg": "nat002_032.ogg",
-        "happy.ogg": "nat212_099.ogg",
-        "sad.ogg": "nat207_125.ogg",
-        "tsundere.ogg": "nat208_083.ogg",
-        "shy.ogg": "nat208_101.ogg",
-        "cool.ogg": "nat201_146.ogg",
-    }
-    legacy_file = e_fallback / legacy_file_map.get(ref_info["audio_name"], "")
-    if legacy_file.exists():
-        return {
-            "ref_audio_path": str(legacy_file.resolve()),
-            "prompt_text": ref_info["prompt_text"],
-            "prompt_lang": ref_info["prompt_lang"],
-            "emotion": canonical_emo,
-        }
+    # Fallback to alternate project locations if base_dir was custom or non-default
+    try:
+        from galgame2voice.config import get_settings
+        settings = get_settings()
+        alt_candidates = [
+            settings.project_root / "audio" / "references" / "natsume" / ref_info["audio_name"],
+            settings.project_root / "audio" / ref_info["audio_name"],
+            Path("audio/references/natsume") / ref_info["audio_name"],
+            Path("audio") / ref_info["audio_name"],
+        ]
+        for alt in alt_candidates:
+            if alt.is_file():
+                return {
+                    "ref_audio_path": str(alt.resolve()),
+                    "prompt_text": ref_info["prompt_text"],
+                    "prompt_lang": ref_info["prompt_lang"],
+                    "emotion": canonical_emo,
+                }
+    except Exception:
+        pass
 
     return None

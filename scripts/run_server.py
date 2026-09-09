@@ -287,6 +287,25 @@ def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
         return s.connect_ex((host, port)) == 0
 
 
+def _check_sovits_dir(p: Path) -> Path | None:
+    """Checks if p or an immediate nested directory inside p contains api_v2.py."""
+    if not p.exists() or not p.is_dir():
+        return None
+    if (p / "api_v2.py").exists():
+        return p
+    # Check nested directory with same name or any subfolder containing api_v2.py
+    nested_same = p / p.name
+    if (nested_same / "api_v2.py").exists():
+        return nested_same
+    try:
+        for sub in p.iterdir():
+            if sub.is_dir() and (sub / "api_v2.py").exists():
+                return sub
+    except (PermissionError, OSError):
+        pass
+    return None
+
+
 def find_gpt_sovits_directory() -> Path | None:
     """Probes candidate paths for local GPT-SoVITS installation (known path first)."""
     import glob
@@ -303,53 +322,166 @@ def find_gpt_sovits_directory() -> Path | None:
             candidates.append(Path(extra))
 
     # Fast cache lookup to avoid repeating disk searches on every run
+    # Strictly use utf-8-sig to strip any invisible Windows PowerShell UTF-8 BOM (\ufeff)
     cache_file = PROJECT_ROOT / "data" / "sovits_dir.txt"
     if cache_file.exists():
         try:
-            cached_path = Path(cache_file.read_text(encoding="utf-8").strip())
-            if (cached_path / "api_v2.py").exists():
-                return cached_path
+            cached_path_str = cache_file.read_text(encoding="utf-8-sig").strip()
+            if cached_path_str:
+                cached_path = Path(cached_path_str)
+                valid_cached = _check_sovits_dir(cached_path)
+                if valid_cached:
+                    return valid_cached
         except Exception:
             pass
 
     for p in candidates:
-        if (p / "api_v2.py").exists():
+        valid_dir = _check_sovits_dir(p)
+        if valid_dir:
             try:
-                cache_file.write_text(str(p), encoding="utf-8")
+                cache_file.write_text(str(valid_dir), encoding="utf-8")
             except Exception:
                 pass
-            return p
+            return valid_dir
 
-    # 2. Generic drive patterns for other versions / drives (probe existing drives only)
+    # 2. Sibling and local project folders
+    local_candidates = [
+        PROJECT_ROOT.parent / "GPT-SoVITS",
+        PROJECT_ROOT / "GPT-SoVITS",
+    ]
+    try:
+        for p in PROJECT_ROOT.parent.glob("GPT-SoVITS*"):
+            local_candidates.append(p)
+    except Exception:
+        pass
+
+    for p in local_candidates:
+        valid_dir = _check_sovits_dir(p)
+        if valid_dir:
+            try:
+                cache_file.write_text(str(valid_dir), encoding="utf-8")
+            except Exception:
+                pass
+            return valid_dir
+
+    # 3. Generic drive patterns for other versions / drives (probe existing drives only)
     for drive in ("D", "E", "C", "F"):
         if not os.path.exists(f"{drive}:\\"):
             continue
         for p_str in glob.glob(rf"{drive}:\GPT-SoVITS*\GPT-SoVITS*"):
             p = Path(p_str)
-            if (p / "api_v2.py").exists():
+            valid_dir = _check_sovits_dir(p)
+            if valid_dir:
                 try:
-                    cache_file.write_text(str(p), encoding="utf-8")
+                    cache_file.write_text(str(valid_dir), encoding="utf-8")
                 except Exception:
                     pass
-                return p
+                return valid_dir
         for p_str in glob.glob(rf"{drive}:\GPT-SoVITS*"):
             p = Path(p_str)
-            if (p / "api_v2.py").exists():
+            valid_dir = _check_sovits_dir(p)
+            if valid_dir:
                 try:
-                    cache_file.write_text(str(p), encoding="utf-8")
+                    cache_file.write_text(str(valid_dir), encoding="utf-8")
                 except Exception:
                     pass
-                return p
-
-    local_p = PROJECT_ROOT.parent / "GPT-SoVITS"
-    if (local_p / "api_v2.py").exists():
-        try:
-            cache_file.write_text(str(local_p), encoding="utf-8")
-        except Exception:
-            pass
-        return local_p
+                return valid_dir
 
     return None
+
+
+def is_turing_tu116_tu117_gpu() -> bool:
+    """
+    Detects if the system has an NVIDIA Turing TU116 or TU117 architecture GPU.
+    Affected models: GeForce MX450, MX550, GTX 1650, GTX 1660, GTX 1630, etc.
+    On these GPUs, FP16 half-precision inference causes PyTorch to produce NaN and zero-amplitude (silent) audio.
+    """
+    gpu_names = []
+
+    # 1. PyTorch CUDA inspection if torch is available
+    try:
+        import torch
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                gpu_names.append(torch.cuda.get_device_name(i).lower())
+    except Exception:
+        pass
+
+    # 2. nvidia-smi tool inspection
+    if not gpu_names:
+        try:
+            out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                text=True, stderr=subprocess.DEVNULL, timeout=2.0
+            )
+            gpu_names.extend([line.strip().lower() for line in out.splitlines() if line.strip()])
+        except Exception:
+            pass
+
+    # 3. Windows WMI / CIM query
+    if not gpu_names and sys.platform == "win32":
+        try:
+            out = subprocess.check_output(
+                ["wmic", "path", "win32_VideoController", "get", "name"],
+                text=True, stderr=subprocess.DEVNULL, timeout=2.0
+            )
+            gpu_names.extend([line.strip().lower() for line in out.splitlines() if line.strip() and line.strip().lower() != "name"])
+        except Exception:
+            pass
+
+        if not gpu_names:
+            try:
+                out = subprocess.check_output(
+                    ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
+                    text=True, stderr=subprocess.DEVNULL, timeout=3.0
+                )
+                gpu_names.extend([line.strip().lower() for line in out.splitlines() if line.strip()])
+            except Exception:
+                pass
+
+    all_names_str = " ".join(gpu_names).lower()
+    target_keywords = ["mx450", "mx550", "1650", "1660", "1630", "tu117", "tu116"]
+    return any(k in all_names_str for k in target_keywords)
+
+
+def patch_sovits_precision_config(sovits_dir: Path, force_fp32: bool = False) -> None:
+    """
+    Auto-patches GPT-SoVITS config.py, tts_infer.yaml, and tts_infer_v2.yaml
+    to disable FP16 half-precision on TU116/TU117 / MX / GTX 16-series GPUs.
+    Guarantees single precision (FP32) to prevent flatline silence.
+    Strictly uses utf-8-sig for reading configs.
+    """
+    if not force_fp32 and not is_turing_tu116_tu117_gpu():
+        return
+
+    print("      [优化] 检测到 NVIDIA MX / GTX 16 系列显卡 (Turing TU116/TU117)，自动配置单精度 (FP32) 推理以确保正常发声...")
+    import re
+
+    cfg_file = sovits_dir / "config.py"
+    if cfg_file.exists():
+        try:
+            c_txt = cfg_file.read_text(encoding="utf-8-sig", errors="ignore")
+            new_c = re.sub(r'\bis_half\s*=\s*True\b', 'is_half = False', c_txt)
+            if new_c != c_txt:
+                cfg_file.write_text(new_c, encoding="utf-8")
+        except Exception as e:
+            print(f"      [提示] 自动调整 config.py 精度配置跳过: {e}")
+
+    for y_rel in [
+        "GPT_SoVITS/configs/tts_infer.yaml",
+        "GPT_SoVITS/configs/tts_infer_v2.yaml",
+        "configs/tts_infer.yaml",
+        "configs/tts_infer_v2.yaml",
+    ]:
+        y_file = sovits_dir / y_rel
+        if y_file.exists():
+            try:
+                y_txt = y_file.read_text(encoding="utf-8-sig", errors="ignore")
+                new_y = re.sub(r'\bis_half\s*:\s*true\b', 'is_half: false', y_txt, flags=re.IGNORECASE)
+                if new_y != y_txt:
+                    y_file.write_text(new_y, encoding="utf-8")
+            except Exception as e:
+                print(f"      [提示] 自动调整 {y_rel} 精度配置跳过: {e}")
 
 
 def check_system_memory():
@@ -411,32 +543,7 @@ def ensure_gpt_sovits_running():
 
     # Auto-patch MX / GTX 16-series GPUs (Turing TU116/TU117) to disable FP16 (which produces silent NaN audio)
     try:
-        gpu_name = ""
-        try:
-            out = subprocess.check_output(
-                ["wmic", "path", "win32_VideoController", "get", "name"],
-                text=True, stderr=subprocess.DEVNULL, timeout=2.0
-            )
-            gpu_name = out.lower()
-        except Exception:
-            pass
-
-        if any(k in gpu_name for k in ["mx450", "mx550", "1650", "1660", "1630", "tu117", "tu116"]):
-            print("      [优化] 检测到 NVIDIA MX / 16 系列显卡，自动配置单精度 (FP32) 推理以确保正常发声...")
-            cfg_file = sovits_dir / "config.py"
-            if cfg_file.exists():
-                c_txt = cfg_file.read_text(encoding="utf-8", errors="ignore")
-                if "is_half = True" in c_txt or "is_half=True" in c_txt:
-                    cfg_file.write_text(
-                        c_txt.replace("is_half = True", "is_half = False").replace("is_half=True", "is_half=False"),
-                        encoding="utf-8"
-                    )
-            for y_rel in ["GPT_SoVITS/configs/tts_infer.yaml", "GPT_SoVITS/configs/tts_infer_v2.yaml"]:
-                y_file = sovits_dir / y_rel
-                if y_file.exists():
-                    y_txt = y_file.read_text(encoding="utf-8", errors="ignore")
-                    if "is_half: true" in y_txt:
-                        y_file.write_text(y_txt.replace("is_half: true", "is_half: false"), encoding="utf-8")
+        patch_sovits_precision_config(sovits_dir)
     except Exception:
         pass
 
