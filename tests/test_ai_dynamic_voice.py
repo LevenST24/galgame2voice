@@ -497,17 +497,22 @@ class TestChatRouterDynamicVoiceAPI:
         """Verifies /api/voice/synthesize accepts ai_adaptive_voice in request body."""
         from galgame2voice.services.voice_manager import get_voice_manager
         vm = get_voice_manager()
-        vm.client.server = mock_gpt_sovits
-        vm.tts_service.client.server = mock_gpt_sovits
+        try:
+            vm.client.server = mock_gpt_sovits
+            vm.tts_service.client.server = mock_gpt_sovits
 
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
-            resp = await c.post("/api/voice/synthesize", json={
-                "text": "こんにちは",
-                "speed": 1.2,
-                "ai_adaptive_voice": True,
-            })
-            assert resp.status_code == 200
-            assert resp.headers["content-type"] == "audio/wav"
+            app = create_app()
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as c:
+                resp = await c.post("/api/voice/synthesize", json={
+                    "text": "こんにちは",
+                    "speed": 1.2,
+                    "ai_adaptive_voice": True,
+                })
+                assert resp.status_code == 200
+                assert resp.headers["content-type"] == "audio/wav"
+        finally:
+            vm.client.server = None
+            vm.tts_service.client.server = None
+
 

@@ -470,7 +470,7 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
 async def auto_heal_voice_profiles(conn: aiosqlite.Connection) -> int:
     """
     Scans voice_profiles table and auto-heals any missing or invalid reference audio paths.
-    If ref_audio_path points to a non-existent file or a legacy dev-machine path (e.g. E:/yuzusoft/...),
+    If ref_audio_path points to a non-existent file or an unresolvable path,
     it automatically updates the path to a verified existing bundled reference audio file.
     Returns the number of healed profiles.
     """
@@ -479,15 +479,8 @@ async def auto_heal_voice_profiles(conn: aiosqlite.Connection) -> int:
     settings = get_settings()
     project_root = settings.project_root
 
-    # Ensure bundled audio alias exists
     bundled_gentle = project_root / "audio" / "references" / "natsume" / "gentle.ogg"
     bundled_nat = project_root / "audio" / "nat002_032.ogg"
-    if bundled_gentle.is_file() and not bundled_nat.exists():
-        try:
-            import shutil
-            shutil.copy2(bundled_gentle, bundled_nat)
-        except Exception:
-            pass
 
     default_ref_path = "audio/references/natsume/gentle.ogg"
     if not (project_root / default_ref_path).is_file() and bundled_nat.is_file():
@@ -505,25 +498,26 @@ async def auto_heal_voice_profiles(conn: aiosqlite.Connection) -> int:
         new_ref_path = default_ref_path
         if not ref_path:
             needs_healing = True
-        elif "yuzusoft" in ref_path.lower():
-            needs_healing = True
         else:
             p = Path(ref_path)
             file_exists = False
             try:
-                if p.is_file():
-                    file_exists = True
-                    try:
+                root_resolved = project_root.resolve()
+                audio_dir_resolved = settings.audio_dir.resolve()
+                if p.is_absolute():
+                    if p.is_file():
                         resolved = p.resolve()
-                        root_resolved = project_root.resolve()
                         if resolved.is_relative_to(root_resolved):
                             rel_posix = resolved.relative_to(root_resolved).as_posix()
                             if rel_posix != ref_path:
                                 new_ref_path = rel_posix
                                 needs_healing = True
-                    except Exception:
-                        pass
-                elif not p.is_absolute():
+                            file_exists = True
+                        elif resolved.is_relative_to(audio_dir_resolved):
+                            file_exists = True
+                    # Machine-specific absolute paths outside project root or audio_dir
+                    # do not resolve cleanly and are healed for cross-machine portability.
+                else:
                     if (project_root / ref_path).is_file() or (settings.audio_dir / ref_path).is_file():
                         file_exists = True
             except Exception:

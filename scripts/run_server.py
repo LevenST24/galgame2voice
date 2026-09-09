@@ -549,6 +549,40 @@ def check_python_environment() -> bool:
     return True
 
 
+if sys.platform == "win32":
+    import ctypes
+
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+
+def get_system_ram_gb() -> tuple[float, float]:
+    """Returns (total_ram_gb, avail_ram_gb) for the host system."""
+    try:
+        if sys.platform == "win32":
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                return stat.ullTotalPhys / (1024 ** 3), stat.ullAvailPhys / (1024 ** 3)
+        else:
+            import psutil
+            vm = psutil.virtual_memory()
+            return vm.total / (1024 ** 3), vm.available / (1024 ** 3)
+    except Exception:
+        pass
+    return 0.0, 0.0
+
+
 def run_hardware_diagnostics() -> dict[str, Any]:
     """
     Comprehensive pre-flight hardware and environment diagnostics.
@@ -565,33 +599,7 @@ def run_hardware_diagnostics() -> dict[str, Any]:
     }
 
     # 1. System Memory Check
-    try:
-        if sys.platform == "win32":
-            import ctypes
-            class MEMORYSTATUSEX(ctypes.Structure):
-                _fields_ = [
-                    ("dwLength", ctypes.c_ulong),
-                    ("dwMemoryLoad", ctypes.c_ulong),
-                    ("ullTotalPhys", ctypes.c_ulonglong),
-                    ("ullAvailPhys", ctypes.c_ulonglong),
-                    ("ullTotalPageFile", ctypes.c_ulonglong),
-                    ("ullAvailPageFile", ctypes.c_ulonglong),
-                    ("ullTotalVirtual", ctypes.c_ulonglong),
-                    ("ullAvailVirtual", ctypes.c_ulonglong),
-                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-                ]
-            stat = MEMORYSTATUSEX()
-            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-                diag["total_ram_gb"] = stat.ullTotalPhys / (1024 ** 3)
-                diag["avail_ram_gb"] = stat.ullAvailPhys / (1024 ** 3)
-        else:
-            import psutil
-            vm = psutil.virtual_memory()
-            diag["total_ram_gb"] = vm.total / (1024 ** 3)
-            diag["avail_ram_gb"] = vm.available / (1024 ** 3)
-    except Exception:
-        pass
+    diag["total_ram_gb"], diag["avail_ram_gb"] = get_system_ram_gb()
 
     # 2. GPU Detection
     gpu_names = []
@@ -663,28 +671,9 @@ def check_system_memory():
     """Checks free physical memory and prints advisory if system RAM is constrained."""
     if sys.platform != "win32":
         return
-    try:
-        import ctypes
-        class MEMORYSTATUSEX(ctypes.Structure):
-            _fields_ = [
-                ("dwLength", ctypes.c_ulong),
-                ("dwMemoryLoad", ctypes.c_ulong),
-                ("ullTotalPhys", ctypes.c_ulonglong),
-                ("ullAvailPhys", ctypes.c_ulonglong),
-                ("ullTotalPageFile", ctypes.c_ulonglong),
-                ("ullAvailPageFile", ctypes.c_ulonglong),
-                ("ullTotalVirtual", ctypes.c_ulonglong),
-                ("ullAvailVirtual", ctypes.c_ulonglong),
-                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-            ]
-        stat = MEMORYSTATUSEX()
-        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-            free_gb = stat.ullAvailPhys / (1024 ** 3)
-            if free_gb < 1.8:
-                print(f"      [内存提示] 当前系统空闲物理内存约 {free_gb:.1f} GB。建议关闭高内存占用的后台应用以确保语音合成流畅。")
-    except Exception:
-        pass
+    _, free_gb = get_system_ram_gb()
+    if 0 < free_gb < 1.8:
+        print(f"      [内存提示] 当前系统空闲物理内存约 {free_gb:.1f} GB。建议关闭高内存占用的后台应用以确保语音合成流畅。")
 
 
 def ensure_gpt_sovits_running():

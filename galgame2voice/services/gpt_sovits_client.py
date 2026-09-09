@@ -151,19 +151,6 @@ def resolve_reference_audio_path(path: str) -> str:
         return str(p.resolve())
     return path
 
-
-def is_turing_tu116_tu117_gpu(gpu_name_override: str | None = None) -> bool:
-    """
-    Detects if the system has an NVIDIA Turing TU116 or TU117 architecture GPU
-    (GeForce MX450, MX550, GTX 1650, GTX 1660, etc.) which produces silent NaN audio on FP16.
-    """
-    try:
-        from scripts.run_server import is_turing_tu116_tu117_gpu as _detect_turing
-        return _detect_turing(gpu_name_override=gpu_name_override)
-    except Exception:
-        return False
-
-
 def _fallback_reference() -> Optional[Tuple[str, str, str]]:
     """Bundled baseline reference (5.03s gentle voice) usable on any machine."""
     if _BUNDLED_REF_AUDIO.is_file():
@@ -318,33 +305,14 @@ _TTS_STRING_MAXLEN = {
 # ============================================================================
 # Dynamic AI-Driven Voice Prosody & Emotion Constants
 # ============================================================================
-
-DYNAMIC_SPEED_MIN = 0.50
-DYNAMIC_SPEED_MAX = 1.50
-DYNAMIC_TEMP_MIN = 0.60
-DYNAMIC_TEMP_MAX = 1.20
-
-
-def clamp_dynamic_speed(val: Any, fallback: float = 1.0) -> float:
-    """Clamps dynamic voice inference speed into [0.70, 1.35]. Falls back if invalid."""
-    try:
-        num = float(val)
-        if math.isnan(num) or math.isinf(num):
-            return fallback
-        return max(DYNAMIC_SPEED_MIN, min(DYNAMIC_SPEED_MAX, round(num, 4)))
-    except (TypeError, ValueError):
-        return fallback
-
-
-def clamp_dynamic_temperature(val: Any, fallback: float = 1.0) -> float:
-    """Clamps dynamic voice inference temperature into [0.60, 1.20]. Falls back if invalid."""
-    try:
-        num = float(val)
-        if math.isnan(num) or math.isinf(num):
-            return fallback
-        return max(DYNAMIC_TEMP_MIN, min(DYNAMIC_TEMP_MAX, round(num, 4)))
-    except (TypeError, ValueError):
-        return fallback
+from galgame2voice.utils.prosody import (
+    DYNAMIC_SPEED_MIN,
+    DYNAMIC_SPEED_MAX,
+    DYNAMIC_TEMP_MIN,
+    DYNAMIC_TEMP_MAX,
+    clamp_dynamic_speed,
+    clamp_dynamic_temperature,
+)
 
 
 def validate_user_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -525,11 +493,6 @@ class GptSovitsClient:
         self.current_refer_audio: Optional[str] = None
         self.current_refer_text: Optional[str] = None
         self.current_refer_language: Optional[str] = None
-
-        # GPU hardware capability inspection
-        self.is_turing_gpu = is_turing_tu116_tu117_gpu()
-        if self.is_turing_gpu:
-            logger.info("NVIDIA Turing TU116/TU117 GPU detected (MX450/GTX 1650/1660); client initialized for FP32 compatibility")
 
         # In-flight request tracking for hot URL swaps: the old connection
         # pool is closed once in-flight requests drain or the grace period
@@ -1025,5 +988,4 @@ __all__ = [
     "clamp_dynamic_speed",
     "clamp_dynamic_temperature",
     "resolve_reference_audio_path",
-    "is_turing_tu116_tu117_gpu",
 ]

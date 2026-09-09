@@ -87,10 +87,14 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int):
                 cleaned = 0
                 if audio_dir.exists():
                     for f in audio_dir.iterdir():
-                        # Strictly protect non-file entries and the cache dir (handled below)
-                        if f.is_dir() or f.name.lower() == "cache":
+                        # Strictly protect non-file entries and subdirectories (cache, references)
+                        if f.is_dir() or f.name.lower() in ("cache", "references"):
                             continue
-                        if f.is_file() and f.suffix.lower() in (".wav", ".ogg", ".mp3", ".opus"):
+                        # Strictly protect reference audio files (*.ogg) from background sweeps
+                        if f.suffix.lower() == ".ogg":
+                            continue
+                        # Target ephemeral synthesized audio files (e.g. chunk_*.wav, full_*.wav)
+                        if f.is_file() and f.suffix.lower() in (".wav", ".mp3", ".opus"):
                             try:
                                 if f.stat().st_mtime < cutoff:
                                     f.unlink()
