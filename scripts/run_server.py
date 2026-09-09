@@ -692,6 +692,8 @@ def ensure_gpt_sovits_running():
     print("[1/2] 正在检测 GPT-SoVITS 语音推理引擎 (端口 9880)...")
     if is_port_in_use(9880):
         print("      [OK] GPT-SoVITS 语音引擎已在运行")
+        print("      [注意] 引擎为外部启动，本启动器无法核实其精度 (FP16/FP32) 配置；")
+        print("             若语音全程无声，请关闭旧的 GPT-SoVITS 进程后重新运行本启动器。")
         return
 
     check_system_memory()

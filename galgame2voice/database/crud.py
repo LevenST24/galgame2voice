@@ -502,27 +502,44 @@ async def auto_heal_voice_profiles(conn: aiosqlite.Connection) -> int:
         ref_path = str(row["ref_audio_path"] or "").strip()
         needs_healing = False
 
+        new_ref_path = default_ref_path
         if not ref_path:
             needs_healing = True
-        elif (
-            "yuzusoft" in ref_path.lower()
-            or bool(re.match(r"^[a-zA-Z]:", ref_path))
-            or ref_path.startswith(("\\\\", "//"))
-        ):
+        elif "yuzusoft" in ref_path.lower():
             needs_healing = True
         else:
             p = Path(ref_path)
-            if not p.is_file() and not (project_root / ref_path).is_file() and not (settings.audio_dir / ref_path).is_file():
+            file_exists = False
+            try:
+                if p.is_file():
+                    file_exists = True
+                    try:
+                        resolved = p.resolve()
+                        root_resolved = project_root.resolve()
+                        if resolved.is_relative_to(root_resolved):
+                            rel_posix = resolved.relative_to(root_resolved).as_posix()
+                            if rel_posix != ref_path:
+                                new_ref_path = rel_posix
+                                needs_healing = True
+                    except Exception:
+                        pass
+                elif not p.is_absolute():
+                    if (project_root / ref_path).is_file() or (settings.audio_dir / ref_path).is_file():
+                        file_exists = True
+            except Exception:
+                file_exists = False
+
+            if not file_exists:
                 needs_healing = True
 
         if needs_healing:
             logger.info(
                 "Auto-healing voice profile %d ('%s'): invalid ref_audio_path '%s' -> '%s'",
-                p_id, row["name"], ref_path, default_ref_path
+                p_id, row["name"], ref_path, new_ref_path
             )
             await conn.execute(
                 "UPDATE voice_profiles SET ref_audio_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
-                (default_ref_path, p_id)
+                (new_ref_path, p_id)
             )
             healed_count += 1
 

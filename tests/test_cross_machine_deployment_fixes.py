@@ -109,19 +109,20 @@ def test_bundled_reference_audios_durations():
         assert 3.0 <= dur <= 10.0
         assert round(dur, 1) == 5.0
 
-    # cool.ogg is 2.47s (< 3.0s)
+    # cool.ogg is now verified >= 3.0s (3.23s)
     cool_path = natsume_dir / "cool.ogg"
     if cool_path.is_file():
         dur_cool = TtsService.get_audio_duration(cool_path)
         assert dur_cool is not None
-        assert dur_cool < 3.0
+        assert 3.0 <= dur_cool <= 10.0
 
 
 def test_cool_emotion_mapped_to_valid_duration_audio():
-    """Verifies cool emotion maps to gentle.ogg (5.03s) to prevent GPT-SoVITS 400."""
+    """Verifies cool emotion maps to authentic cool.ogg (>=3.0s) with valid Japanese prompt."""
     res = resolve_emotion_reference("四季夏目", "cool")
     assert res is not None
-    assert "gentle.ogg" in res["ref_audio_path"]
+    assert "cool.ogg" in res["ref_audio_path"]
+    assert "勝手に仲間" in res["prompt_text"]
     dur = TtsService.get_audio_duration(res["ref_audio_path"])
     assert dur is not None
     assert 3.0 <= dur <= 10.0
