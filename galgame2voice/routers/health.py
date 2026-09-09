@@ -23,6 +23,11 @@ from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
 from galgame2voice.security.auth import require_auth
 from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.hardware import (
+    detect_gpu_capability,
+    is_turing_tu116_tu117_gpu,
+    get_system_memory_status,
+)
 
 router = APIRouter(tags=["Health & Diagnostics"])
 
@@ -100,6 +105,15 @@ class TelegramTelemetry(BaseModel):
     status: str  # "disabled" | "running" | "error"
 
 
+class HardwareTelemetry(BaseModel):
+    """Host GPU and system memory diagnostic telemetry."""
+    gpu_available: bool
+    gpu_name: str
+    turing_fp32_active: bool
+    system_memory_gb: Optional[float] = None
+    system_memory_avail_gb: Optional[float] = None
+
+
 class SystemStatusResponse(BaseModel):
     """Full comprehensive system diagnostic status response."""
     status: str  # "healthy" | "degraded"
@@ -109,6 +123,7 @@ class SystemStatusResponse(BaseModel):
     gpt_sovits: GptSovitsTelemetry
     storage: StorageTelemetry
     telegram: TelegramTelemetry
+    hardware: HardwareTelemetry
 
 
 async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
@@ -255,6 +270,20 @@ async def legacy_status(request: Request):
     )
 
 
+def _collect_hardware_telemetry_sync() -> HardwareTelemetry:
+    """Collects GPU capability and host RAM telemetry synchronously."""
+    total_ram, avail_ram = get_system_memory_status()
+    gpu_avail, gpu_name, _ = detect_gpu_capability()
+    is_turing = is_turing_tu116_tu117_gpu()
+    return HardwareTelemetry(
+        gpu_available=gpu_avail,
+        gpu_name=gpu_name,
+        turing_fp32_active=is_turing,
+        system_memory_gb=total_ram,
+        system_memory_avail_gb=avail_ram,
+    )
+
+
 @router.get(
     "/api/system/status",
     response_model=SystemStatusResponse,
@@ -264,7 +293,7 @@ async def legacy_status(request: Request):
 async def system_status(request: Request):
     """
     Deep diagnostic telemetry endpoint for Web Management Console.
-    Inspects DB state, GPT-SoVITS latency, storage sizes, and memory usage.
+    Inspects DB state, GPT-SoVITS latency, storage sizes, memory usage, and hardware telemetry.
     """
     settings = get_settings()
     start_time = getattr(request.app.state, "start_time", time.time())
@@ -275,16 +304,18 @@ async def system_status(request: Request):
         datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat(),
     )
 
-    # 1-4 gathered in PARALLEL: the GPT-SoVITS probe (network-bound) overlaps
-    # with the storage scans (thread-bound) so total latency = max, not sum.
+    # 1-5 gathered in PARALLEL: the GPT-SoVITS probe (network-bound) overlaps
+    # with storage scans, memory retrieval, and hardware telemetry (thread-bound) so total latency = max, not sum.
     gpt_probe_task = asyncio.create_task(_probe_gpt_sovits(await get_effective_sovits_url()))
     audio_metrics_task = asyncio.create_task(_get_dir_metrics_cached(settings.audio_dir))
     data_metrics_task = asyncio.create_task(_get_dir_metrics_cached(settings.data_dir))
     memory_task = asyncio.create_task(asyncio.to_thread(_get_process_memory_mb))
+    hardware_task = asyncio.create_task(asyncio.to_thread(_collect_hardware_telemetry_sync))
 
     gpt_probe = await gpt_probe_task
     audio_count, audio_size_mb = await audio_metrics_task
     _, data_size_mb = await data_metrics_task
+    hardware_telemetry = await hardware_task
 
     # 2. Database Status Check (Normalized Relative Path)
     db_exists = settings.db_path.exists()
@@ -346,4 +377,5 @@ async def system_status(request: Request):
         gpt_sovits=gpt_probe,
         storage=storage_telemetry,
         telegram=tg_telemetry,
+        hardware=hardware_telemetry,
     )

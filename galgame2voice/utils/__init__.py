@@ -17,6 +17,11 @@ from galgame2voice.utils.prosody import (
     clamp_dynamic_speed,
     clamp_dynamic_temperature,
 )
+from galgame2voice.utils.hardware import (
+    detect_gpu_capability,
+    is_turing_tu116_tu117_gpu,
+    get_system_memory_status,
+)
 
 __all__ = [
     "MaskingFilter",
@@ -30,6 +35,9 @@ __all__ = [
     "DYNAMIC_TEMP_MAX",
     "clamp_dynamic_speed",
     "clamp_dynamic_temperature",
+    "detect_gpu_capability",
+    "is_turing_tu116_tu117_gpu",
+    "get_system_memory_status",
 ]
 
 

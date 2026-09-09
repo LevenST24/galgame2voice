@@ -12,6 +12,7 @@ import signal
 import threading
 import webbrowser
 import subprocess
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,12 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from galgame2voice.utils.hardware import (
+    detect_gpu_capability,
+    is_turing_tu116_tu117_gpu as _hw_is_turing_tu116_tu117_gpu,
+    get_system_memory_status,
+)
 
 # Ensure runtime directories
 for d in ["logs", "data", "audio"]:
@@ -404,59 +411,17 @@ def find_gpt_sovits_directory() -> Path | None:
 def is_turing_tu116_tu117_gpu(gpu_name_override: str | None = None) -> bool:
     """
     Detects if the system has an NVIDIA Turing TU116 or TU117 architecture GPU.
-    Affected models: GeForce MX450, MX550, GTX 1650, GTX 1660, GTX 1630, etc.
-    On these GPUs, FP16 half-precision inference causes PyTorch to produce NaN and zero-amplitude (silent) audio.
+    Re-exported from galgame2voice.utils.hardware for backward compatibility.
     """
-    target_keywords = ["mx450", "mx550", "1650", "1660", "1630", "tu117", "tu116"]
-    if gpu_name_override is not None:
-        return any(k in gpu_name_override.lower() for k in target_keywords)
-
-    gpu_names = []
-
-    # 1. PyTorch CUDA inspection if torch is available
-    try:
-        import torch
-        if torch.cuda.is_available():
-            for i in range(torch.cuda.device_count()):
-                gpu_names.append(torch.cuda.get_device_name(i).lower())
-    except Exception:
-        pass
-
-    # 2. nvidia-smi tool inspection
-    if not gpu_names:
+    import galgame2voice.utils.hardware as hw
+    if "subprocess" in globals() and globals()["subprocess"] is not hw.subprocess:
+        orig = hw.subprocess
         try:
-            out = subprocess.check_output(
-                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                text=True, stderr=subprocess.DEVNULL, timeout=2.0
-            )
-            gpu_names.extend([line.strip().lower() for line in out.splitlines() if line.strip()])
-        except Exception:
-            pass
-
-    # 3. Windows WMI / CIM query
-    if not gpu_names and sys.platform == "win32":
-        try:
-            out = subprocess.check_output(
-                ["wmic", "path", "win32_VideoController", "get", "name"],
-                text=True, stderr=subprocess.DEVNULL, timeout=2.0
-            )
-            gpu_names.extend([line.strip().lower() for line in out.splitlines() if line.strip() and line.strip().lower() != "name"])
-        except Exception:
-            pass
-
-        if not gpu_names:
-            try:
-                out = subprocess.check_output(
-                    ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
-                    text=True, stderr=subprocess.DEVNULL, timeout=3.0
-                )
-                gpu_names.extend([line.strip().lower() for line in out.splitlines() if line.strip()])
-            except Exception:
-                pass
-
-    all_names_str = " ".join(gpu_names).lower()
-    target_keywords = ["mx450", "mx550", "1650", "1660", "1630", "tu117", "tu116"]
-    return any(k in all_names_str for k in target_keywords)
+            hw.subprocess = globals()["subprocess"]
+            return hw.is_turing_tu116_tu117_gpu(gpu_name_override=gpu_name_override)
+        finally:
+            hw.subprocess = orig
+    return hw.is_turing_tu116_tu117_gpu(gpu_name_override=gpu_name_override)
 
 
 def patch_sovits_precision_config(sovits_dir: Path, force_fp32: bool = False) -> None:
@@ -549,38 +514,13 @@ def check_python_environment() -> bool:
     return True
 
 
-if sys.platform == "win32":
-    import ctypes
-
-    class MEMORYSTATUSEX(ctypes.Structure):
-        _fields_ = [
-            ("dwLength", ctypes.c_ulong),
-            ("dwMemoryLoad", ctypes.c_ulong),
-            ("ullTotalPhys", ctypes.c_ulonglong),
-            ("ullAvailPhys", ctypes.c_ulonglong),
-            ("ullTotalPageFile", ctypes.c_ulonglong),
-            ("ullAvailPageFile", ctypes.c_ulonglong),
-            ("ullTotalVirtual", ctypes.c_ulonglong),
-            ("ullAvailVirtual", ctypes.c_ulonglong),
-            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-        ]
-
-
 def get_system_ram_gb() -> tuple[float, float]:
-    """Returns (total_ram_gb, avail_ram_gb) for the host system."""
-    try:
-        if sys.platform == "win32":
-            stat = MEMORYSTATUSEX()
-            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-                return stat.ullTotalPhys / (1024 ** 3), stat.ullAvailPhys / (1024 ** 3)
-        else:
-            import psutil
-            vm = psutil.virtual_memory()
-            return vm.total / (1024 ** 3), vm.available / (1024 ** 3)
-    except Exception:
-        pass
-    return 0.0, 0.0
+    """
+    Returns (total_ram_gb, avail_ram_gb) for the host system.
+    Re-exported backward-compatibility shim using galgame2voice.utils.hardware.
+    """
+    total, avail = get_system_memory_status()
+    return total or 0.0, avail or 0.0
 
 
 def run_hardware_diagnostics() -> dict[str, Any]:
@@ -602,44 +542,13 @@ def run_hardware_diagnostics() -> dict[str, Any]:
     diag["total_ram_gb"], diag["avail_ram_gb"] = get_system_ram_gb()
 
     # 2. GPU Detection
-    gpu_names = []
-    cuda_available = False
-    try:
-        import torch
-        cuda_available = torch.cuda.is_available()
-        if cuda_available:
-            for i in range(torch.cuda.device_count()):
-                gpu_names.append(torch.cuda.get_device_name(i))
-    except Exception:
-        pass
-
-    if not gpu_names:
-        try:
-            out = subprocess.check_output(
-                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                text=True, stderr=subprocess.DEVNULL, timeout=2.0
-            )
-            gpu_names.extend([line.strip() for line in out.splitlines() if line.strip()])
-            if gpu_names:
-                cuda_available = True
-        except Exception:
-            pass
-
-    if not gpu_names and sys.platform == "win32":
-        try:
-            out = subprocess.check_output(
-                ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
-                text=True, stderr=subprocess.DEVNULL, timeout=3.0
-            )
-            gpu_names.extend([line.strip() for line in out.splitlines() if line.strip()])
-        except Exception:
-            pass
-
+    gpu_avail, gpu_name, count = detect_gpu_capability()
+    gpu_names = [gpu_name] if gpu_name and gpu_name != "N/A" else []
     diag["gpu_names"] = gpu_names
-    diag["cuda_available"] = cuda_available
+    diag["cuda_available"] = gpu_avail
 
     all_gpu_str = " ".join(gpu_names).lower()
-    diag["has_nvidia"] = any(k in all_gpu_str for k in ["nvidia", "geforce", "rtx", "gtx", "quadro", "tesla"])
+    diag["has_nvidia"] = gpu_avail or any(k in all_gpu_str for k in ["nvidia", "geforce", "rtx", "gtx", "quadro", "tesla"])
     diag["is_turing"] = is_turing_tu116_tu117_gpu()
 
     # 3. Print upfront commercial-grade notices
@@ -814,16 +723,63 @@ def auto_open_browser(port: int = 8080):
 
 
 
-def main():
-    if "--help" in sys.argv or "-h" in sys.argv:
-        print("Galgame2Voice Server Launcher")
-        print("Usage: python scripts/run_server.py [--port PORT]")
-        sys.exit(0)
+def parse_args(args: list[str] | None = None) -> argparse.Namespace:
+    """Parses CLI flags for the Galgame2Voice server launcher."""
+    parser = argparse.ArgumentParser(
+        description="Galgame2Voice Server Entry Point & Enterprise Auto-Launcher",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    env_port = 8080
+    if os.environ.get("GALGAME_PORT"):
+        try:
+            env_port = int(os.environ["GALGAME_PORT"])
+        except ValueError:
+            pass
+    env_host = os.environ.get("GALGAME_HOST", "127.0.0.1")
+
+    parser.add_argument(
+        "--host",
+        type=str,
+        default=env_host,
+        help="Host interface to bind the server on",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=env_port,
+        help="Port to listen on",
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Suppress automatic browser launch on server startup",
+    )
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Run pre-flight environment & hardware diagnostics, print report, and exit cleanly (exit code 0 if healthy, 1 if fatal)",
+    )
+    return parser.parse_args(args)
+
+
+def main(args: list[str] | None = None):
+    parsed = parse_args(args)
 
     # Step 0: Pre-Flight Environment & Hardware Diagnostics
     if not check_python_environment():
+        if parsed.check_only:
+            print("\n[巡检失败] Python 运行环境或核心运行库校验未通过。")
         sys.exit(1)
-    run_hardware_diagnostics()
+
+    try:
+        diag = run_hardware_diagnostics()
+    except Exception as e:
+        print(f"\n[错误] 硬件巡检诊断异常: {e}")
+        sys.exit(1)
+
+    if parsed.check_only:
+        print("[巡检通过] 所有前置依赖与硬件诊断均已就绪，系统运行状态正常。")
+        sys.exit(0)
 
     setup_windows_job_object()
     setup_signal_handlers()
@@ -834,22 +790,9 @@ def main():
         ensure_gpt_sovits_running()
 
         # Step 2: Determine & Probe Port
-        preferred_port = 8080
-        if os.environ.get("GALGAME_PORT"):
-            try:
-                preferred_port = int(os.environ["GALGAME_PORT"])
-            except ValueError:
-                pass
-
-        # Parse CLI --port if provided
-        for i, arg in enumerate(sys.argv):
-            if arg == "--port" and i + 1 < len(sys.argv):
-                try:
-                    preferred_port = int(sys.argv[i + 1])
-                except ValueError:
-                    pass
-
-        active_port = find_available_port(preferred_port)
+        preferred_port = parsed.port
+        bind_host = parsed.host
+        active_port = find_available_port(preferred_port, host=bind_host)
         if active_port != preferred_port:
             print(f"[提示] 默认端口 {preferred_port} 无法绑定 (可能被系统代理或其他程序占用)，已自动切换至可用端口: {active_port}")
 
@@ -861,13 +804,16 @@ def main():
             pass
 
         # Step 3: Auto Open Browser
-        print(f"[2/2] 正在启动 Galgame2Voice 伴侣服务 (端口 {active_port})...")
-        auto_open_browser(active_port)
-        print(f"      [OK] 正在打开浏览器: http://127.0.0.1:{active_port}/")
+        print(f"[2/2] 正在启动 Galgame2Voice 伴侣服务 ({bind_host}:{active_port})...")
+        if not parsed.no_browser:
+            auto_open_browser(active_port)
+            print(f"      [OK] 正在打开浏览器: http://{bind_host}:{active_port}/")
+        else:
+            print(f"      [提示] 已开启 --no-browser，跳过自动打开浏览器。访问地址: http://{bind_host}:{active_port}/")
         print("      关闭此窗口即可退出并释放显存。")
         try:
             import uvicorn
-            uvicorn.run("galgame2voice.main:app", host="127.0.0.1", port=active_port, log_level="info")
+            uvicorn.run("galgame2voice.main:app", host=bind_host, port=active_port, log_level="info")
         except (KeyboardInterrupt, SystemExit):
             print("\n[提示] 服务已正常停止，正在释放资源...")
         except Exception as e:

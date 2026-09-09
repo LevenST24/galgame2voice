@@ -357,6 +357,9 @@ def create_app() -> FastAPI:
             if path == "/" or path == "/settings.html" or path == "/index.html":
                 # 入口页面必须每次回源校验，避免发版后浏览器用旧 index 加载旧 JS
                 cache_value = "no-cache"
+            elif path.startswith("/static/assets/") or path == "/static/assets":
+                # 指纹化静态资源永久强缓存（1年），极大提升二次加载速度
+                cache_value = "public, max-age=31536000, immutable"
             elif path.startswith("/static/"):
                 cache_value = "public, max-age=3600"
             elif path.startswith("/audio/"):
@@ -367,7 +370,7 @@ def create_app() -> FastAPI:
             if cache_value:
                 async def send_with_cache(message):
                     if message["type"] == "http.response.start":
-                        MutableHeaders(scope=message).setdefault("Cache-Control", cache_value)
+                        MutableHeaders(scope=message)["Cache-Control"] = cache_value
                     await send(message)
                 await self.app(scope, receive, send_with_cache)
                 return
