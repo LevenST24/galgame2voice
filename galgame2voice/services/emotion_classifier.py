@@ -47,7 +47,7 @@ def classify_emotion(
         if clean in VALID_EMOTIONS:
             return clean
 
-    combined = f"{chinese} {japanese}".strip()
+    combined = f"{chinese or ''} {japanese or ''}".strip()
     if not combined:
         return "gentle"
 

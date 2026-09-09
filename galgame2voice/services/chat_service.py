@@ -151,7 +151,7 @@ class ChatService:
         self,
         res: Tuple[BaseLLMAdapter, str, Optional[str]],
         conn: aiosqlite.Connection,
-        provider_id: Optional[str],
+        provider_id: Optional[str] = None,
     ) -> Tuple[BaseLLMAdapter, str, str]:
         """Normalizes the adapter-factory result into (adapter, model, provider_id)."""
         if isinstance(res, (tuple, list)) and len(res) >= 3:
@@ -312,29 +312,62 @@ class ChatService:
         )
 
     def _concat_wav_files(self, chunk_paths: List[str], output_path: Path) -> bool:
-        """Synchronous WAV concatenation with in-memory buffering — ALWAYS run via asyncio.to_thread()."""
-        data = []
-        params = None
+        """Synchronous WAV concatenation with parameter validation and streaming frames — ALWAYS run via asyncio.to_thread()."""
+        if not chunk_paths:
+            return False
+
+        valid_files: List[Path] = []
+        base_params = None
+
         for local_p_str in chunk_paths:
             if not local_p_str:
                 continue
             p = Path(local_p_str)
-            if p.exists():
-                try:
-                    with wave.open(str(p), "rb") as w:
-                        if params is None:
-                            params = w.getparams()
-                        data.append(w.readframes(w.getnframes()))
-                except Exception as exc:
-                    logger.debug("Skipping unreadable WAV chunk %s: %s", p, exc)
-        if data and params:
+            if not p.is_file():
+                continue
+            try:
+                with wave.open(str(p), "rb") as w:
+                    cur_params = w.getparams()
+                    if base_params is None:
+                        base_params = cur_params
+                        valid_files.append(p)
+                    else:
+                        if (
+                            w.getnchannels() == base_params.nchannels
+                            and w.getsampwidth() == base_params.sampwidth
+                            and w.getframerate() == base_params.framerate
+                        ):
+                            valid_files.append(p)
+                        else:
+                            logger.warning(
+                                "Skipping WAV chunk %s: mismatched audio parameters (channels=%d, sampwidth=%d, framerate=%d vs base channels=%d, sampwidth=%d, framerate=%d)",
+                                p, w.getnchannels(), w.getsampwidth(), w.getframerate(),
+                                base_params.nchannels, base_params.sampwidth, base_params.framerate,
+                            )
+            except Exception as exc:
+                logger.debug("Skipping unreadable WAV chunk %s: %s", p, exc)
+
+        if not valid_files or base_params is None:
+            return False
+
+        try:
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            merged_payload = b"".join(data)
             with wave.open(str(output_path), "wb") as w_out:
-                w_out.setparams(params)
-                w_out.writeframes(merged_payload)
+                w_out.setparams(base_params)
+                for p in valid_files:
+                    try:
+                        with wave.open(str(p), "rb") as w_in:
+                            while True:
+                                frames = w_in.readframes(4096)
+                                if not frames:
+                                    break
+                                w_out.writeframes(frames)
+                    except Exception as err:
+                        logger.warning("Error reading frames from chunk %s: %s", p, err)
             return True
-        return False
+        except Exception as exc:
+            logger.error("Failed to write concatenated WAV to %s: %s", output_path, exc)
+            return False
 
     async def stream_chat(
         self,
@@ -608,7 +641,13 @@ class ChatService:
             while sentinels_received < 2:
                 if cancel_event and cancel_event.is_set():
                     break
-                event = await event_queue.get()
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    if cancel_event and cancel_event.is_set():
+                        break
+                    continue
+
                 if event is _CANCEL_SENTINEL or (cancel_event and cancel_event.is_set()):
                     break
 
@@ -1089,8 +1128,10 @@ class ChatService:
                     "注意：仅输出翻译后的纯日文句子，严禁包含任何中文、拼音、假名注音或解释说明。\n\n"
                     f"中文台词：{clean_text}"
                 )
-                resp = await adapter.chat([{"role": "user", "content": translation_prompt}], model=model_name, temperature=0.3)
-                ja = resp.strip().strip('"\'`')
+                chat_msg = ChatMessage(role="user", content=translation_prompt)
+                resp = await adapter.chat([chat_msg], model=model_name, temperature=0.3)
+                raw_ja = resp.content if hasattr(resp, "content") else str(resp)
+                ja = raw_ja.strip().strip('"\'`「」『』')
                 return ja
             except Exception as exc:
                 logger.warning("LLM translation fallback in resolve_message_japanese failed: %s", exc)

@@ -15,6 +15,7 @@ mimetypes.add_type("text/javascript", ".mjs")
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,11 +46,12 @@ logger = logging.getLogger("galgame2voice.main")
 _CACHE_RETENTION_DAYS = 7
 
 
-def _cache_scan_and_clean(cache_dir: Path, cutoff: float) -> int:
-    """Removes cache audio files older than the retention cutoff (LRU by mtime)."""
+def _cache_scan_and_clean(cache_dir: Path, cutoff: float) -> Tuple[int, List[str]]:
+    """Removes cache audio files older than the retention cutoff (LRU by mtime) and returns unlinked keys."""
     cleaned = 0
+    unlinked_keys: List[str] = []
     if not cache_dir.is_dir():
-        return 0
+        return 0, []
     for f in cache_dir.iterdir():
         if not f.is_file():
             continue
@@ -58,9 +60,10 @@ def _cache_scan_and_clean(cache_dir: Path, cutoff: float) -> int:
                 if f.stat().st_mtime < cutoff:
                     f.unlink()
                     cleaned += 1
+                    unlinked_keys.append(f.stem)
             except Exception as e:
                 logger.debug("Failed to remove cached audio %s: %s", f, e)
-    return cleaned
+    return cleaned, unlinked_keys
 
 
 async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int):
@@ -93,7 +96,7 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int):
             cutoff = now - (retention_minutes * 60)
             cache_cutoff = now - (_CACHE_RETENTION_DAYS * 86400)
 
-            def _scan_and_clean() -> int:
+            def _scan_and_clean() -> Tuple[int, List[str]]:
                 cleaned = 0
                 if audio_dir.exists():
                     for f in audio_dir.iterdir():
@@ -111,11 +114,24 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int):
                                     cleaned += 1
                             except Exception as e:
                                 logger.debug("Failed to remove audio file %s: %s", f, e)
-                # TTS 分句缓存按天级保留期清理，防止磁盘无限增长
-                cleaned += _cache_scan_and_clean(audio_dir / "cache", cache_cutoff)
-                return cleaned
+                # TTS 分句缓存按天级保留期清理，防止磁盘无限增长并同步清理数据库记录
+                cache_cleaned, unlinked_keys = _cache_scan_and_clean(audio_dir / "cache", cache_cutoff)
+                cleaned += cache_cleaned
+                return cleaned, unlinked_keys
 
-            cleaned_count = await asyncio.to_thread(_scan_and_clean)
+            cleaned_count, unlinked_keys = await asyncio.to_thread(_scan_and_clean)
+            if unlinked_keys:
+                try:
+                    async with get_db() as conn:
+                        for batch_idx in range(0, len(unlinked_keys), 100):
+                            batch = unlinked_keys[batch_idx:batch_idx + 100]
+                            placeholders = ",".join(["?"] * len(batch))
+                            await conn.execute(
+                                f"DELETE FROM tts_cache_entries WHERE cache_key IN ({placeholders});",
+                                batch,
+                            )
+                except Exception as db_clean_err:
+                    logger.debug("Failed to purge tts_cache_entries for unlinked keys: %s", db_clean_err)
             if cleaned_count > 0:
                 logger.info("Audio cleanup removed %d expired audio files.", cleaned_count)
         except asyncio.CancelledError:

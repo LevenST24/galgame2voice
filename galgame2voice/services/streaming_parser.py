@@ -54,10 +54,15 @@ class StreamingBilingualParser:
         return cleaned
 
     def _strip_incomplete_escape(self, s: str) -> str:
-        """Strips trailing incomplete unicode/backslash escape sequences."""
-        match = re.search(r'\\(?:u[0-9a-fA-F]{0,3}|[a-zA-Z\\]?)$', s)
-        if match:
-            return s[:match.start()]
+        """Strips trailing incomplete unicode or dangling backslash escape sequence."""
+        u_match = re.search(r'(?<!\\)(?:\\\\)*(\\u[0-9a-fA-F]{0,3})$', s)
+        if u_match:
+            return s[:-len(u_match.group(1))]
+
+        m = re.search(r'\\+$', s)
+        if m and len(m.group(0)) % 2 == 1:
+            return s[:-1]
+
         return s
 
     def _unescape_json_string(self, raw_str: str) -> str:
@@ -194,8 +199,12 @@ class StreamingBilingualParser:
             self.japanese_extracted = current_ja
 
             all_sentences = split_japanese_sentences(current_ja)
-            # If JSON object is not yet closed, the last sentence might still be growing
-            if not sanitized.rstrip().endswith(('"}', '"}`', '"} \n`', '"} \n', '"}')):
+            # If neither the japanese field nor the JSON object is closed, the last sentence might still be growing
+            is_ja_closed = bool(
+                re.search(r'"japanese"\s*:\s*"(?:[^"\\]|\\.)*"', sanitized)
+                or sanitized.rstrip().endswith(('"}', '"}`', '"} \n`', '"} \n', '"}'))
+            )
+            if not is_ja_closed:
                 if all_sentences and not re.search(r'[。！？!?\n]$', all_sentences[-1]):
                     all_sentences = all_sentences[:-1]
 
