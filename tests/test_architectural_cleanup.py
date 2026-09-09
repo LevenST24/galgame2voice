@@ -131,6 +131,39 @@ async def test_crud_auto_heal_objective_validation(tmp_path):
         assert rows[2]["ref_audio_path"] == "audio/references/natsume/gentle.ogg"
 
 
+@pytest.mark.asyncio
+async def test_crud_auto_heal_canonicalizes_absolute_project_paths(tmp_path):
+    """Verifies that auto_heal canonicalizes absolute project paths into portable relative paths."""
+    from galgame2voice.config import get_settings
+    settings = get_settings()
+    abs_gentle = (settings.project_root / "audio" / "references" / "natsume" / "gentle.ogg").resolve()
+
+    db_path = tmp_path / "test_heal_canonicalize.db"
+    async with aiosqlite.connect(str(db_path)) as conn:
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("""
+            CREATE TABLE voice_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                ref_audio_path TEXT NOT NULL,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        await conn.execute("""
+            INSERT INTO voice_profiles (id, name, ref_audio_path) VALUES
+            (1, 'Absolute In-Project Voice', ?);
+        """, (str(abs_gentle),))
+        await conn.commit()
+
+        healed = await crud.auto_heal_voice_profiles(conn)
+        assert healed == 1, "Absolute path in project root should be canonicalized to relative!"
+
+        cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE id = 1;")
+        row = await cur.fetchone()
+        assert row["ref_audio_path"] == "audio/references/natsume/gentle.ogg"
+
+
 # ============================================================================
 # 4. Safeguard Ephemeral Audio Cleanup Loop
 # ============================================================================
@@ -194,6 +227,62 @@ async def test_audio_cleanup_preserves_reference_audios(tmp_path, monkeypatch):
     # Reference audios must be protected and intact
     assert ref_root.exists(), "Root nat002_032.ogg must NEVER be unlinked by cleanup!"
     assert ref_nested.exists(), "Nested references/*.ogg must NEVER be unlinked by cleanup!"
+
+
+@pytest.mark.asyncio
+async def test_audio_cleanup_preserves_registered_wav_references(tmp_path, monkeypatch):
+    """Verifies that custom .wav reference files registered in voice_profiles are protected from cleanup."""
+    from galgame2voice.main import _audio_cleanup_loop
+
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Custom WAV reference registered in DB
+    custom_ref_wav = audio_dir / "custom_character_voice.wav"
+    custom_ref_wav.write_bytes(b"CUSTOM_REF_WAV_BYTES")
+
+    # 2. Ephemeral synthesized WAV file
+    ephemeral_wav = audio_dir / "chunk_123.wav"
+    ephemeral_wav.write_bytes(b"EPHEMERAL_CHUNK_WAV_BYTES")
+
+    # Backdate both files beyond retention
+    old_time = time.time() - 7200
+    os.utime(str(custom_ref_wav), (old_time, old_time))
+    os.utime(str(ephemeral_wav), (old_time, old_time))
+
+    # Mock DB connection that returns the custom ref in voice_profiles
+    class MockConn:
+        async def execute(self, query):
+            class MockCursor:
+                async def fetchall(self):
+                    return [("audio/custom_character_voice.wav",)]
+            return MockCursor()
+
+    class MockSettings:
+        audio_retention_minutes = 30
+
+    from contextlib import asynccontextmanager
+    @asynccontextmanager
+    async def mock_get_db():
+        yield MockConn()
+
+    monkeypatch.setattr("galgame2voice.main.get_db", mock_get_db)
+    async def mock_get_settings_raw(conn):
+        return MockSettings()
+    monkeypatch.setattr("galgame2voice.database.crud.get_settings_raw", mock_get_settings_raw)
+
+    task = asyncio.create_task(_audio_cleanup_loop(audio_dir, interval_seconds=0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    # Registered reference wav MUST be preserved
+    assert custom_ref_wav.exists(), "Registered custom_character_voice.wav must NOT be unlinked by cleanup!"
+    # Unregistered ephemeral wav MUST be unlinked
+    assert not ephemeral_wav.exists(), "Unregistered ephemeral chunk_123.wav must be cleaned up!"
 
 
 # ============================================================================

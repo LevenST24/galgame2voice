@@ -72,9 +72,19 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int):
     while True:
         try:
             await asyncio.sleep(interval_seconds)
+            protected_audio_names = set()
             try:
                 async with get_db() as conn:
                     db_settings = await crud.get_settings_raw(conn)
+                    if conn is not None:
+                        try:
+                            cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles;")
+                            rows = await cur.fetchall()
+                            for r in rows:
+                                if r and r[0]:
+                                    protected_audio_names.add(Path(r[0]).name.lower())
+                        except Exception:
+                            pass
                 retention_minutes = int(getattr(db_settings, "audio_retention_minutes", 30) or 30)
             except Exception as exc:
                 logger.debug("Falling back to default audio retention: %s", exc)
@@ -90,8 +100,8 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int):
                         # Strictly protect non-file entries and subdirectories (cache, references)
                         if f.is_dir() or f.name.lower() in ("cache", "references"):
                             continue
-                        # Strictly protect reference audio files (*.ogg) from background sweeps
-                        if f.suffix.lower() == ".ogg":
+                        # Strictly protect reference audio files (*.ogg) and registered voice profile references
+                        if f.suffix.lower() == ".ogg" or f.name.lower() in protected_audio_names:
                             continue
                         # Target ephemeral synthesized audio files (e.g. chunk_*.wav, full_*.wav)
                         if f.is_file() and f.suffix.lower() in (".wav", ".mp3", ".opus"):
