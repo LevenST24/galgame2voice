@@ -409,6 +409,37 @@ def ensure_gpt_sovits_running():
         "-c", "GPT_SoVITS/configs/tts_infer.yaml",
     ]
 
+    # Auto-patch MX / GTX 16-series GPUs (Turing TU116/TU117) to disable FP16 (which produces silent NaN audio)
+    try:
+        gpu_name = ""
+        try:
+            out = subprocess.check_output(
+                ["wmic", "path", "win32_VideoController", "get", "name"],
+                text=True, stderr=subprocess.DEVNULL, timeout=2.0
+            )
+            gpu_name = out.lower()
+        except Exception:
+            pass
+
+        if any(k in gpu_name for k in ["mx450", "mx550", "1650", "1660", "1630", "tu117", "tu116"]):
+            print("      [优化] 检测到 NVIDIA MX / 16 系列显卡，自动配置单精度 (FP32) 推理以确保正常发声...")
+            cfg_file = sovits_dir / "config.py"
+            if cfg_file.exists():
+                c_txt = cfg_file.read_text(encoding="utf-8", errors="ignore")
+                if "is_half = True" in c_txt or "is_half=True" in c_txt:
+                    cfg_file.write_text(
+                        c_txt.replace("is_half = True", "is_half = False").replace("is_half=True", "is_half=False"),
+                        encoding="utf-8"
+                    )
+            for y_rel in ["GPT_SoVITS/configs/tts_infer.yaml", "GPT_SoVITS/configs/tts_infer_v2.yaml"]:
+                y_file = sovits_dir / y_rel
+                if y_file.exists():
+                    y_txt = y_file.read_text(encoding="utf-8", errors="ignore")
+                    if "is_half: true" in y_txt:
+                        y_file.write_text(y_txt.replace("is_half: true", "is_half: false"), encoding="utf-8")
+    except Exception:
+        pass
+
     try:
         log_file = PROJECT_ROOT / "logs" / "gpt_sovits.log"
         # 简单轮转：超过 10MB 归档为 .old（引擎日志为 append 模式，无内置轮转）
@@ -423,6 +454,7 @@ def ensure_gpt_sovits_running():
         log_fp = open(log_file, "a", encoding="utf-8")
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         env = os.environ.copy()
+        env["is_half"] = "False"
         runtime_scripts = (sovits_dir / "runtime" / "Scripts") if sys.platform == "win32" else (sovits_dir / "runtime" / "bin")
         env["PATH"] = os.pathsep.join([str(sovits_dir / "runtime"), str(runtime_scripts), env.get("PATH", "")])
         env["PYTHONIOENCODING"] = "utf-8"
