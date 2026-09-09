@@ -270,11 +270,30 @@ async def legacy_status(request: Request):
     )
 
 
+_GPU_METRICS_TTL_SECONDS = 60.0
+_gpu_telemetry_cache: Optional[Tuple[float, Tuple[bool, str, bool]]] = None
+
+
+def _get_gpu_telemetry_cached() -> Tuple[bool, str, bool]:
+    """TTL-cached static GPU capability to prevent blocking subprocess spawning on frequent status polls."""
+    global _gpu_telemetry_cache
+    now = time.monotonic()
+    if _gpu_telemetry_cache is not None:
+        stamp, val = _gpu_telemetry_cache
+        if now - stamp < _GPU_METRICS_TTL_SECONDS:
+            return val
+    gpu_avail, gpu_name, _ = detect_gpu_capability()
+    name_str = gpu_name if gpu_name and gpu_name != "N/A" else ""
+    is_turing = is_turing_tu116_tu117_gpu(gpu_name_override=name_str if name_str else None)
+    val = (gpu_avail, gpu_name or "N/A", is_turing)
+    _gpu_telemetry_cache = (now, val)
+    return val
+
+
 def _collect_hardware_telemetry_sync() -> HardwareTelemetry:
     """Collects GPU capability and host RAM telemetry synchronously."""
     total_ram, avail_ram = get_system_memory_status()
-    gpu_avail, gpu_name, _ = detect_gpu_capability()
-    is_turing = is_turing_tu116_tu117_gpu()
+    gpu_avail, gpu_name, is_turing = _get_gpu_telemetry_cached()
     return HardwareTelemetry(
         gpu_available=gpu_avail,
         gpu_name=gpu_name,

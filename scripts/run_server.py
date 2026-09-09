@@ -22,9 +22,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from galgame2voice.utils.hardware import (
-    detect_gpu_capability,
+    detect_gpu_capability as _hw_detect_gpu_capability,
     is_turing_tu116_tu117_gpu as _hw_is_turing_tu116_tu117_gpu,
-    get_system_memory_status,
+    get_system_memory_status as _hw_get_system_memory_status,
 )
 
 # Ensure runtime directories
@@ -408,6 +408,22 @@ def find_gpt_sovits_directory() -> Path | None:
     return None
 
 
+def detect_gpu_capability() -> tuple[bool, str, int | None]:
+    """
+    Detects GPU compute availability and primary device metadata.
+    Re-exported from galgame2voice.utils.hardware for backward compatibility.
+    """
+    import galgame2voice.utils.hardware as hw
+    if "subprocess" in globals() and globals()["subprocess"] is not hw.subprocess:
+        orig = hw.subprocess
+        try:
+            hw.subprocess = globals()["subprocess"]
+            return hw.detect_gpu_capability()
+        finally:
+            hw.subprocess = orig
+    return hw.detect_gpu_capability()
+
+
 def is_turing_tu116_tu117_gpu(gpu_name_override: str | None = None) -> bool:
     """
     Detects if the system has an NVIDIA Turing TU116 or TU117 architecture GPU.
@@ -422,6 +438,15 @@ def is_turing_tu116_tu117_gpu(gpu_name_override: str | None = None) -> bool:
         finally:
             hw.subprocess = orig
     return hw.is_turing_tu116_tu117_gpu(gpu_name_override=gpu_name_override)
+
+
+def get_system_memory_status() -> tuple[float | None, float | None]:
+    """
+    Returns (total_ram_gb, available_ram_gb) for the host system.
+    Re-exported from galgame2voice.utils.hardware for backward compatibility.
+    """
+    import galgame2voice.utils.hardware as hw
+    return hw.get_system_memory_status()
 
 
 def patch_sovits_precision_config(sovits_dir: Path, force_fp32: bool = False) -> None:
@@ -697,17 +722,19 @@ def find_available_port(preferred_port: int = 8080, host: str = "127.0.0.1") -> 
         return s.getsockname()[1]
 
 
-def auto_open_browser(port: int = 8080):
+def auto_open_browser(port: int = 8080, host: str = "127.0.0.1"):
     """Background thread that waits for the HTTP service to answer, then launches the browser."""
     import http.client
 
     def _runner():
-        url = f"http://127.0.0.1:{port}/"
+        probe_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+        display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+        url = f"http://{display_host}:{port}/"
         # Fast local probe directly via raw loopback socket bypassing OS proxy delay
         for _ in range(30):
             time.sleep(0.3)
             try:
-                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=0.2)
+                conn = http.client.HTTPConnection(probe_host, port, timeout=0.2)
                 conn.request("GET", "/api/health")
                 resp = conn.getresponse()
                 if resp.status == 200:
@@ -736,6 +763,7 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         except ValueError:
             pass
     env_host = os.environ.get("GALGAME_HOST", "127.0.0.1")
+    env_no_browser = os.environ.get("GALGAME_NO_BROWSER", "").lower() in ("1", "true", "yes")
 
     parser.add_argument(
         "--host",
@@ -752,6 +780,7 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--no-browser",
         action="store_true",
+        default=env_no_browser,
         help="Suppress automatic browser launch on server startup",
     )
     parser.add_argument(
@@ -796,7 +825,11 @@ def main(args: list[str] | None = None):
         if active_port != preferred_port:
             print(f"[提示] 默认端口 {preferred_port} 无法绑定 (可能被系统代理或其他程序占用)，已自动切换至可用端口: {active_port}")
 
-        # Save active port & PID for clean shutdown
+        # Save active port & PID for clean shutdown and downstream configuration
+        os.environ["GALGAME_PORT"] = str(active_port)
+        os.environ["PORT"] = str(active_port)
+        os.environ["GALGAME_HOST"] = bind_host
+        os.environ["HOST"] = bind_host
         try:
             (PROJECT_ROOT / "data" / "active_port.txt").write_text(str(active_port), encoding="utf-8")
             (PROJECT_ROOT / "galgame2voice.pid").write_text(str(os.getpid()), encoding="utf-8")
@@ -804,12 +837,13 @@ def main(args: list[str] | None = None):
             pass
 
         # Step 3: Auto Open Browser
+        display_host = "127.0.0.1" if bind_host in ("0.0.0.0", "::") else bind_host
         print(f"[2/2] 正在启动 Galgame2Voice 伴侣服务 ({bind_host}:{active_port})...")
         if not parsed.no_browser:
-            auto_open_browser(active_port)
-            print(f"      [OK] 正在打开浏览器: http://{bind_host}:{active_port}/")
+            auto_open_browser(active_port, host=bind_host)
+            print(f"      [OK] 正在打开浏览器: http://{display_host}:{active_port}/")
         else:
-            print(f"      [提示] 已开启 --no-browser，跳过自动打开浏览器。访问地址: http://{bind_host}:{active_port}/")
+            print(f"      [提示] 已开启 --no-browser，跳过自动打开浏览器。访问地址: http://{display_host}:{active_port}/")
         print("      关闭此窗口即可退出并释放显存。")
         try:
             import uvicorn
@@ -826,3 +860,4 @@ def main(args: list[str] | None = None):
 
 if __name__ == "__main__":
     main()
+

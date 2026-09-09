@@ -367,10 +367,15 @@ def create_app() -> FastAPI:
             else:
                 cache_value = None
 
-            if cache_value:
+            if cache_value and scope.get("method") in ("GET", "HEAD"):
                 async def send_with_cache(message):
                     if message["type"] == "http.response.start":
-                        MutableHeaders(scope=message)["Cache-Control"] = cache_value
+                        status_code = message.get("status", 200)
+                        if status_code < 400:
+                            MutableHeaders(scope=message)["Cache-Control"] = cache_value
+                        else:
+                            # Never cache 4xx/5xx error responses immutably
+                            MutableHeaders(scope=message)["Cache-Control"] = "no-cache, no-store, must-revalidate"
                     await send(message)
                 await self.app(scope, receive, send_with_cache)
                 return
