@@ -21,6 +21,9 @@ from scripts.run_server import (
     _check_sovits_dir,
     is_turing_tu116_tu117_gpu,
     patch_sovits_precision_config,
+    build_gpt_sovits_env,
+    check_python_environment,
+    run_hardware_diagnostics,
 )
 
 
@@ -228,44 +231,61 @@ async def test_database_auto_healing_legacy_and_missing_paths(tmp_path):
 
 
 # ============================================================================
-# 4. Turing GPU Precision Patching
+# 4. Process-Isolated Precision & Pre-Flight Diagnostics
 # ============================================================================
 
-def test_patch_sovits_precision_config(tmp_path):
-    """Verifies that patch_sovits_precision_config correctly sets FP32 in config.py and tts_infer.yaml."""
+def test_gpt_sovits_process_isolation_env(tmp_path):
+    """Verifies that GPT-SoVITS runtime environment sets is_half via process isolation."""
     sovits_dir = tmp_path / "mock_sovits"
     sovits_dir.mkdir()
+
+    # Turing GPU must pass is_half="False" (FP32)
+    env_turing = build_gpt_sovits_env(sovits_dir, is_turing=True)
+    assert env_turing["is_half"] == "False"
+    assert "no_proxy" in env_turing
+
+    # Non-Turing GPU passes is_half="True" (FP16)
+    env_normal = build_gpt_sovits_env(sovits_dir, is_turing=False)
+    assert env_normal["is_half"] == "True"
+
+
+def test_no_disk_mutation_on_third_party_sovits_files(tmp_path):
+    """Verifies that external GPT-SoVITS files (config.py, tts_infer.yaml) are NEVER mutated on disk."""
+    sovits_dir = tmp_path / "mock_sovits_clean"
+    sovits_dir.mkdir()
     cfg_file = sovits_dir / "config.py"
-    cfg_file.write_text("is_half = True\nother_setting = 123", encoding="utf-8")
+    initial_cfg = 'is_half = True\nos.environ.get("is_half", "True")\n'
+    cfg_file.write_text(initial_cfg, encoding="utf-8")
 
     yaml_dir = sovits_dir / "GPT_SoVITS" / "configs"
     yaml_dir.mkdir(parents=True)
     yaml_file = yaml_dir / "tts_infer.yaml"
-    yaml_file.write_text("custom:\n  is_half: true\n  bert_path: ''", encoding="utf-8")
+    initial_yaml = "custom:\n  is_half: true\n"
+    yaml_file.write_text(initial_yaml, encoding="utf-8")
 
+    # Call patch_sovits_precision_config (must be safe no-op)
     patch_sovits_precision_config(sovits_dir, force_fp32=True)
 
-    # Check config.py
-    cfg_res = cfg_file.read_text(encoding="utf-8")
-    assert "is_half = False" in cfg_res
-    assert "is_half = True" not in cfg_res
-
-    # Check tts_infer.yaml
-    yaml_res = yaml_file.read_text(encoding="utf-8")
-    assert "is_half: false" in yaml_res
-    assert "is_half: true" not in yaml_res
+    # Content on disk MUST remain 100% untouched
+    assert cfg_file.read_text(encoding="utf-8") == initial_cfg
+    assert yaml_file.read_text(encoding="utf-8") == initial_yaml
 
 
-def test_patch_sovits_precision_config_env_fallback(tmp_path):
-    """Verifies that patch_sovits_precision_config patches os.environ.get fallback in config.py."""
-    sovits_dir = tmp_path / "mock_sovits_env"
-    sovits_dir.mkdir()
-    cfg_file = sovits_dir / "config.py"
-    cfg_file.write_text('is_half = eval(os.environ.get("is_half", "True"))\n', encoding="utf-8")
+def test_preflight_diagnostics_mx450_notice(capsys, monkeypatch):
+    """Verifies that pre-flight hardware diagnostics outputs exact reassuring notice for MX450/1650 GPUs."""
+    import scripts.run_server as rs
 
-    patch_sovits_precision_config(sovits_dir, force_fp32=True)
-    cfg_res = cfg_file.read_text(encoding="utf-8")
-    assert 'os.environ.get("is_half", "False")' in cfg_res
+    monkeypatch.setattr(rs, "is_turing_tu116_tu117_gpu", lambda override=None: True)
+    diag = rs.run_hardware_diagnostics()
+    captured = capsys.readouterr()
+    expected_notice = "[硬件优化] 检测到 NVIDIA MX / 16 系列显卡，已自动开启单精度 (FP32) 兼容模式，保证发声正常。"
+    assert expected_notice in captured.out
+    assert diag["is_turing"] is True
+
+
+def test_preflight_python_and_deps_check():
+    """Verifies that pre-flight Python version and dependency validation functions correctly."""
+    assert check_python_environment() is True
 
 
 @pytest.mark.asyncio
@@ -371,4 +391,25 @@ async def test_init_schema_and_seeds_seeds_portable_path(tmp_path):
         assert "yuzusoft" not in ref_path
         # Must be portable relative path
         assert ref_path == "audio/references/natsume/gentle.ogg"
+
+
+@pytest.mark.asyncio
+async def test_auto_heal_arbitrary_drive_letters(tmp_path):
+    """Verifies that auto_heal_voice_profiles cleanses arbitrary machine-specific drive letters."""
+    db_path = tmp_path / "drive_letters.db"
+    async with aiosqlite.connect(str(db_path)) as conn:
+        conn.row_factory = aiosqlite.Row
+        await crud.init_schema_and_seeds(conn)
+
+        # Inject machine-specific drive letters from foreign machines
+        await conn.execute("UPDATE voice_profiles SET ref_audio_path = 'D:\\other_user\\voice.wav' WHERE id = 1;")
+        await conn.commit()
+
+        healed = await crud.auto_heal_voice_profiles(conn)
+        assert healed >= 1
+
+        cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE id = 1;")
+        row = await cur.fetchone()
+        assert row["ref_audio_path"] == "audio/references/natsume/gentle.ogg"
+
 

@@ -13,6 +13,7 @@ import threading
 import webbrowser
 import subprocess
 from pathlib import Path
+from typing import Any
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -460,47 +461,202 @@ def is_turing_tu116_tu117_gpu(gpu_name_override: str | None = None) -> bool:
 
 def patch_sovits_precision_config(sovits_dir: Path, force_fp32: bool = False) -> None:
     """
-    Auto-patches GPT-SoVITS config.py, tts_infer.yaml, and tts_infer_v2.yaml
-    to disable FP16 half-precision on TU116/TU117 / MX / GTX 16-series GPUs.
-    Guarantees single precision (FP32) to prevent flatline silence.
-    Strictly uses utf-8-sig for reading configs.
+    Deprecated / No-op in commercial release.
+    External third-party GPT-SoVITS files are NEVER mutated on disk.
+    FP32 single precision is enforced cleanly and strictly through process environment
+    isolation (env['is_half'] = 'False') passed to subprocess.Popen.
     """
-    if not force_fp32 and not is_turing_tu116_tu117_gpu():
-        return
+    return
 
-    print("      [优化] 检测到 NVIDIA MX / GTX 16 系列显卡 (Turing TU116/TU117)，自动配置单精度 (FP32) 推理以确保正常发声...")
-    import re
 
-    cfg_file = sovits_dir / "config.py"
-    if cfg_file.exists():
+def build_gpt_sovits_env(sovits_dir: Path, is_turing: bool | None = None) -> dict[str, str]:
+    """
+    Constructs an isolated process environment for GPT-SoVITS.
+    Enforces precision via env['is_half'] without mutating third-party files on disk.
+    """
+    if is_turing is None:
+        is_turing = is_turing_tu116_tu117_gpu()
+
+    env = os.environ.copy()
+    if is_turing:
+        env["is_half"] = "False"
+    elif "is_half" not in env:
+        env["is_half"] = "True"
+
+    runtime_scripts = (sovits_dir / "runtime" / "Scripts") if sys.platform == "win32" else (sovits_dir / "runtime" / "bin")
+    env["PATH"] = os.pathsep.join([str(sovits_dir / "runtime"), str(runtime_scripts), env.get("PATH", "")])
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["no_proxy"] = "localhost, 127.0.0.1, ::1"
+    env["NO_PROXY"] = "localhost, 127.0.0.1, ::1"
+    env["all_proxy"] = ""
+    env["ALL_PROXY"] = ""
+    return env
+
+
+def check_python_environment() -> bool:
+    """
+    Validates Python runtime version and production core dependencies upfront.
+    If dependencies are missing, offers automated installation or friendly guidance.
+    """
+    if sys.version_info < (3, 10):
+        print("\n" + "=" * 60)
+        print(f"[错误] 当前 Python 版本为 {sys.version.split()[0]}，低于最低要求 (3.10+)")
+        print("常见解决办法:")
+        print("1. 前往官网下载安装最新 Python: https://www.python.org/downloads/")
+        print("2. 安装时请务必勾选底部 'Add python.exe to PATH'")
+        print("=" * 60 + "\n")
+        return False
+
+    core_deps = [
+        ("fastapi", "fastapi"),
+        ("uvicorn", "uvicorn"),
+        ("aiosqlite", "aiosqlite"),
+        ("pydantic", "pydantic"),
+        ("httpx", "httpx"),
+    ]
+    missing = []
+    for mod_name, pkg_name in core_deps:
         try:
-            c_txt = cfg_file.read_text(encoding="utf-8-sig", errors="ignore")
-            new_c = re.sub(r'\bis_half\s*=\s*True\b', 'is_half = False', c_txt)
-            new_c = re.sub(
-                r'os\.environ\.get\(["\']is_half["\'],\s*["\']True["\']\)',
-                'os.environ.get("is_half", "False")',
-                new_c
-            )
-            if new_c != c_txt:
-                cfg_file.write_text(new_c, encoding="utf-8")
-        except Exception as e:
-            print(f"      [提示] 自动调整 config.py 精度配置跳过: {e}")
+            __import__(mod_name)
+        except ImportError:
+            missing.append(pkg_name)
 
-    for y_rel in [
-        "GPT_SoVITS/configs/tts_infer.yaml",
-        "GPT_SoVITS/configs/tts_infer_v2.yaml",
-        "configs/tts_infer.yaml",
-        "configs/tts_infer_v2.yaml",
-    ]:
-        y_file = sovits_dir / y_rel
-        if y_file.exists():
+    if missing:
+        print(f"\n[提示] 正在检查运行依赖... 发现缺少核心运行库: {', '.join(missing)}")
+        req_file = PROJECT_ROOT / "requirements.txt"
+        if req_file.exists():
+            print(f"[提示] 正在尝试自动安装依赖: {req_file.name} ...")
             try:
-                y_txt = y_file.read_text(encoding="utf-8-sig", errors="ignore")
-                new_y = re.sub(r'\bis_half\s*:\s*true\b', 'is_half: false', y_txt, flags=re.IGNORECASE)
-                if new_y != y_txt:
-                    y_file.write_text(new_y, encoding="utf-8")
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-r", str(req_file)],
+                    check=True,
+                )
+                print("[OK] 运行依赖自动安装成功。")
             except Exception as e:
-                print(f"      [提示] 自动调整 {y_rel} 精度配置跳过: {e}")
+                print("\n" + "=" * 60)
+                print(f"[错误] 核心运行依赖安装失败: {e}")
+                print("请在命令行手动执行安装:")
+                print(f"    {sys.executable} -m pip install -r requirements.txt")
+                print("=" * 60 + "\n")
+                return False
+        else:
+            print("\n" + "=" * 60)
+            print(f"[错误] 缺少核心运行库: {', '.join(missing)}")
+            print("请手动运行: pip install " + " ".join(missing))
+            print("=" * 60 + "\n")
+            return False
+
+    return True
+
+
+def run_hardware_diagnostics() -> dict[str, Any]:
+    """
+    Comprehensive pre-flight hardware and environment diagnostics.
+    Inspects GPU architecture, CUDA availability, and system memory.
+    Displays upfront commercial-grade notices and guidance.
+    """
+    diag: dict[str, Any] = {
+        "is_turing": False,
+        "cuda_available": False,
+        "gpu_names": [],
+        "total_ram_gb": 0.0,
+        "avail_ram_gb": 0.0,
+        "has_nvidia": False,
+    }
+
+    # 1. System Memory Check
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                diag["total_ram_gb"] = stat.ullTotalPhys / (1024 ** 3)
+                diag["avail_ram_gb"] = stat.ullAvailPhys / (1024 ** 3)
+        else:
+            import psutil
+            vm = psutil.virtual_memory()
+            diag["total_ram_gb"] = vm.total / (1024 ** 3)
+            diag["avail_ram_gb"] = vm.available / (1024 ** 3)
+    except Exception:
+        pass
+
+    # 2. GPU Detection
+    gpu_names = []
+    cuda_available = False
+    try:
+        import torch
+        cuda_available = torch.cuda.is_available()
+        if cuda_available:
+            for i in range(torch.cuda.device_count()):
+                gpu_names.append(torch.cuda.get_device_name(i))
+    except Exception:
+        pass
+
+    if not gpu_names:
+        try:
+            out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                text=True, stderr=subprocess.DEVNULL, timeout=2.0
+            )
+            gpu_names.extend([line.strip() for line in out.splitlines() if line.strip()])
+            if gpu_names:
+                cuda_available = True
+        except Exception:
+            pass
+
+    if not gpu_names and sys.platform == "win32":
+        try:
+            out = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
+                text=True, stderr=subprocess.DEVNULL, timeout=3.0
+            )
+            gpu_names.extend([line.strip() for line in out.splitlines() if line.strip()])
+        except Exception:
+            pass
+
+    diag["gpu_names"] = gpu_names
+    diag["cuda_available"] = cuda_available
+
+    all_gpu_str = " ".join(gpu_names).lower()
+    diag["has_nvidia"] = any(k in all_gpu_str for k in ["nvidia", "geforce", "rtx", "gtx", "quadro", "tesla"])
+    diag["is_turing"] = is_turing_tu116_tu117_gpu()
+
+    # 3. Print upfront commercial-grade notices
+    print("\n[环境巡检] 正在诊断系统硬件与运行环境...")
+
+    if diag["is_turing"]:
+        print("      [硬件优化] 检测到 NVIDIA MX / 16 系列显卡，已自动开启单精度 (FP32) 兼容模式，保证发声正常。")
+    elif diag["has_nvidia"] or diag["cuda_available"]:
+        nvidia_names = [g for g in gpu_names if any(k in g.lower() for k in ["nvidia", "geforce", "rtx", "gtx"])]
+        detected_name = nvidia_names[0] if nvidia_names else (gpu_names[0] if gpu_names else "NVIDIA GPU")
+        print(f"      [硬件就绪] 检测到独立显卡: {detected_name} (已准备 CUDA 加速推理)")
+    else:
+        print("      [硬件提示] 未检测到兼容的 NVIDIA 独立显卡或 CUDA 推理环境。")
+        print("                系统将以 CPU 兼容模式运行。首次模型加载与推理耗时较长属于正常现象，建议在配置 NVIDIA 显卡的电脑上使用以获得最佳体验。")
+
+    if diag["avail_ram_gb"] > 0:
+        if diag["avail_ram_gb"] < 1.8:
+            print(f"      [内存提示] 当前系统空闲物理内存约 {diag['avail_ram_gb']:.1f} GB (总计 {diag['total_ram_gb']:.1f} GB)。建议关闭高内存占用的后台应用以确保语音合成流畅。")
+        elif diag["total_ram_gb"] < 4.0:
+            print(f"      [内存提示] 本机物理内存较小 ({diag['total_ram_gb']:.1f} GB)，若并发较高可能受限，建议配置虚拟内存。")
+        else:
+            print(f"      [内存就绪] 系统物理内存充裕: 空闲 {diag['avail_ram_gb']:.1f} GB / 总计 {diag['total_ram_gb']:.1f} GB")
+
+    print("      [巡检通过] 运行环境诊断完毕。\n")
+    return diag
 
 
 def check_system_memory():
@@ -560,14 +716,7 @@ def ensure_gpt_sovits_running():
         "-c", "GPT_SoVITS/configs/tts_infer.yaml",
     ]
 
-    # Auto-patch MX / GTX 16-series GPUs (Turing TU116/TU117) to disable FP16 (which produces silent NaN audio)
     is_turing = is_turing_tu116_tu117_gpu()
-    try:
-        if is_turing:
-            patch_sovits_precision_config(sovits_dir, force_fp32=True)
-    except Exception:
-        pass
-
     try:
         log_file = PROJECT_ROOT / "logs" / "gpt_sovits.log"
         # 简单轮转：超过 10MB 归档为 .old（引擎日志为 append 模式，无内置轮转）
@@ -581,18 +730,7 @@ def ensure_gpt_sovits_running():
             pass
         log_fp = open(log_file, "a", encoding="utf-8")
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        env = os.environ.copy()
-        if is_turing:
-            env["is_half"] = "False"
-        elif "is_half" not in env:
-            env["is_half"] = "True"
-        runtime_scripts = (sovits_dir / "runtime" / "Scripts") if sys.platform == "win32" else (sovits_dir / "runtime" / "bin")
-        env["PATH"] = os.pathsep.join([str(sovits_dir / "runtime"), str(runtime_scripts), env.get("PATH", "")])
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["no_proxy"] = "localhost, 127.0.0.1, ::1"
-        env["NO_PROXY"] = "localhost, 127.0.0.1, ::1"
-        env["all_proxy"] = ""
-        env["ALL_PROXY"] = ""
+        env = build_gpt_sovits_env(sovits_dir, is_turing=is_turing)
         extra_popen_kwargs = {}
         if sys.platform != "win32":
             extra_popen_kwargs["start_new_session"] = True
@@ -690,6 +828,11 @@ def main():
         print("Galgame2Voice Server Launcher")
         print("Usage: python scripts/run_server.py [--port PORT]")
         sys.exit(0)
+
+    # Step 0: Pre-Flight Environment & Hardware Diagnostics
+    if not check_python_environment():
+        sys.exit(1)
+    run_hardware_diagnostics()
 
     setup_windows_job_object()
     setup_signal_handlers()

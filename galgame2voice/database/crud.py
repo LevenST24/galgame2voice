@@ -3,6 +3,7 @@ Asynchronous CRUD operations for SQLite persistence in galgame2voice.
 Handles schema migrations, seed initializations, data queries, and key masking.
 """
 
+import re
 import hmac
 import json
 import logging
@@ -503,7 +504,11 @@ async def auto_heal_voice_profiles(conn: aiosqlite.Connection) -> int:
 
         if not ref_path:
             needs_healing = True
-        elif "yuzusoft" in ref_path.lower() or ref_path.startswith("E:") or ref_path.startswith("e:"):
+        elif (
+            "yuzusoft" in ref_path.lower()
+            or bool(re.match(r"^[a-zA-Z]:", ref_path))
+            or ref_path.startswith(("\\\\", "//"))
+        ):
             needs_healing = True
         else:
             p = Path(ref_path)

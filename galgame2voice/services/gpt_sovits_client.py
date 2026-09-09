@@ -11,10 +11,13 @@ Single shared async client with:
 """
 
 import asyncio
+import array
 import logging
 import math
 import os
 import re
+import struct
+import sys
 import tempfile
 from functools import lru_cache
 from pathlib import Path
@@ -169,6 +172,74 @@ def _fallback_reference() -> Optional[Tuple[str, str, str]]:
     if alt_nat.is_file():
         return str(alt_nat.resolve()), _BUNDLED_REF_TEXT, _BUNDLED_REF_LANG
     return None
+
+
+# ============================================================================
+# Silent Audio Invariant: an all-zero WAV is a FAILED synthesis, not a success
+# ============================================================================
+
+SILENT_AUDIO_ERROR = (
+    "TTS synthesis produced all-zero silent audio. This almost always means the GPU's "
+    "half-precision (FP16) inference is defective (e.g. NVIDIA MX450 / GTX 16-series / TU117): "
+    "the vocoder overflowed to NaN and was clamped to silence. "
+    "Fix: restart via 启动.bat, which automatically enables FP32 single-precision (is_half=False) "
+    "via clean process environment isolation. See logs/gpt_sovits.log."
+)
+
+
+def wav_peak_amplitude(audio: bytes) -> Optional[float]:
+    """
+    Returns the peak absolute sample value (normalized 0.0~1.0) of a RIFF/WAVE
+    payload (PCM16 or float32), or None if the container/samples cannot be parsed.
+    A zero-length data chunk counts as undeterminable (None), not silent.
+    """
+    try:
+        if len(audio) < 44 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+            return None
+        fmt: Optional[bytes] = None
+        data: Optional[bytes] = None
+        pos = 12
+        while pos + 8 <= len(audio):
+            chunk_id = audio[pos:pos + 4]
+            chunk_size = int.from_bytes(audio[pos + 4:pos + 8], "little")
+            if chunk_id == b"fmt ":
+                fmt = audio[pos + 8:pos + 8 + chunk_size]
+            elif chunk_id == b"data":
+                data = audio[pos + 8:pos + 8 + chunk_size]
+                break
+            pos += 8 + chunk_size + (chunk_size & 1)
+        if not fmt or len(fmt) < 16 or not data:
+            return None
+        audio_format, _channels, _rate, _byte_rate, _align, bits = struct.unpack_from("<HHIIHH", fmt, 0)
+        if audio_format == 0xFFFE and len(fmt) >= 26:  # WAVE_FORMAT_EXTENSIBLE
+            audio_format = struct.unpack_from("<H", fmt, 24)[0]
+        if audio_format == 1 and bits == 16:
+            count = len(data) // 2
+            if count == 0:
+                return None
+            samples = array.array("h")
+            samples.frombytes(data[:count * 2])
+            if sys.byteorder == "big":
+                samples.byteswap()
+            return max(abs(s) for s in samples) / 32768.0
+        if audio_format == 3 and bits == 32:
+            count = len(data) // 4
+            if count == 0:
+                return None
+            samples = array.array("f")
+            samples.frombytes(data[:count * 4])
+            if sys.byteorder == "big":
+                samples.byteswap()
+            return max(abs(s) for s in samples)
+        return None
+    except Exception:
+        return None
+
+
+def wav_is_silent(audio: bytes) -> bool:
+    """True only when the WAV parses and every sample is exactly zero."""
+    peak = wav_peak_amplitude(audio)
+    return peak is not None and peak == 0.0
 
 
 # ============================================================================
@@ -819,6 +890,8 @@ class GptSovitsClient:
                         raise RuntimeError(f"TTS synthesis failed with status {resp.status_code}: {resp.text[:300]}")
                     if not resp.content:
                         raise RuntimeError("TTS synthesis returned empty audio payload")
+                    if wav_is_silent(resp.content):
+                        raise RuntimeError(SILENT_AUDIO_ERROR)
                     return resp.content
                 except Exception as exc:
                     if attempt <= retries and self._is_transient(exc):
@@ -880,11 +953,11 @@ class GptSovitsClient:
                         self._inflight_requests -= 1
 
             buffer.seek(0)
-            while True:
-                chunk = buffer.read(chunk_size)
-                if not chunk:
-                    break
-                yield chunk
+            audio_bytes = buffer.read()
+            if wav_is_silent(audio_bytes):
+                raise RuntimeError(SILENT_AUDIO_ERROR)
+            for i in range(0, len(audio_bytes), chunk_size):
+                yield audio_bytes[i:i + chunk_size]
         finally:
             buffer.close()
 
