@@ -254,3 +254,121 @@ def test_patch_sovits_precision_config(tmp_path):
     yaml_res = yaml_file.read_text(encoding="utf-8")
     assert "is_half: false" in yaml_res
     assert "is_half: true" not in yaml_res
+
+
+def test_patch_sovits_precision_config_env_fallback(tmp_path):
+    """Verifies that patch_sovits_precision_config patches os.environ.get fallback in config.py."""
+    sovits_dir = tmp_path / "mock_sovits_env"
+    sovits_dir.mkdir()
+    cfg_file = sovits_dir / "config.py"
+    cfg_file.write_text('is_half = eval(os.environ.get("is_half", "True"))\n', encoding="utf-8")
+
+    patch_sovits_precision_config(sovits_dir, force_fp32=True)
+    cfg_res = cfg_file.read_text(encoding="utf-8")
+    assert 'os.environ.get("is_half", "False")' in cfg_res
+
+
+@pytest.mark.asyncio
+async def test_tts_service_duration_fallback_missing_file(tmp_path):
+    """Verifies that non-existent reference audio automatically falls back to default reference."""
+    missing_file = tmp_path / "absolutely_missing_reference.wav"
+    dur = TtsService.get_audio_duration(missing_file)
+    assert dur is None
+
+    tts = TtsService(audio_dir=tmp_path)
+    opts = {"ref_audio_path": str(missing_file), "ai_adaptive_voice": False}
+    populated = await tts._populate_voice_profile_opts(opts)
+
+    # Must fall back to default profile reference audio
+    assert populated["ref_audio_path"] != str(missing_file)
+    assert "gentle.ogg" in populated["ref_audio_path"] or "nat002_032.ogg" in populated["ref_audio_path"]
+
+
+@pytest.mark.asyncio
+async def test_switch_voice_profile_resolves_relative_reference_path(monkeypatch):
+    """Verifies switch_voice_profile passes resolved absolute path to GPT-SoVITS."""
+    from galgame2voice.services.gpt_sovits_client import GptSovitsClient, resolve_reference_audio_path
+
+    recorded_params = {}
+
+    class MockServer:
+        async def handle_request(self, method, path, json_data=None, params=None):
+            recorded_params[path] = params or {}
+            class MockResp:
+                status_code = 200
+                text = "ok"
+            return MockResp()
+
+    client = GptSovitsClient(server=MockServer())
+    profile = {
+        "name": "Natsume Test",
+        "gpt_weights_path": "GPT_weights/test.ckpt",
+        "sovits_weights_path": "SoVITS_weights/test.pth",
+        "refer_audio_path": "audio/references/natsume/gentle.ogg",
+        "refer_text": "test text",
+        "refer_language": "ja",
+    }
+
+    success = await client.switch_voice_profile(profile, force=True)
+    assert success is True
+    assert "/set_refer_audio" in recorded_params
+    sent_path = recorded_params["/set_refer_audio"]["refer_audio_path"]
+
+    # Must be absolute path
+    assert Path(sent_path).is_absolute()
+    assert sent_path.endswith("gentle.ogg")
+
+
+def test_is_turing_gpu_detection_keyword_logic(monkeypatch):
+    """Verifies TU116/TU117 Turing GPU detector recognizes MX450, GTX 1650/1660, and ignores RTX 3080."""
+    import scripts.run_server as rs
+    import sys
+
+    # Test via direct keyword override
+    assert rs.is_turing_tu116_tu117_gpu("NVIDIA GeForce MX450") is True
+    assert rs.is_turing_tu116_tu117_gpu("GeForce GTX 1650 Ti") is True
+    assert rs.is_turing_tu116_tu117_gpu("TU117 GPU") is True
+    assert rs.is_turing_tu116_tu117_gpu("NVIDIA GeForce RTX 3080") is False
+
+    # Test via torch detection mock
+    mock_torch = type("Torch", (), {
+        "cuda": type("Cuda", (), {
+            "is_available": lambda: True,
+            "device_count": lambda: 1,
+            "get_device_name": lambda idx: "NVIDIA GeForce MX450",
+        })
+    })
+    monkeypatch.setitem(sys.modules, "torch", mock_torch)
+    assert rs.is_turing_tu116_tu117_gpu() is True
+
+    # Test via subprocess nvidia-smi fallback when torch is unavailable
+    import subprocess as real_sub
+    mock_torch_no_cuda = type("Torch", (), {
+        "cuda": type("Cuda", (), {
+            "is_available": lambda: False,
+        })
+    })
+    monkeypatch.setitem(sys.modules, "torch", mock_torch_no_cuda)
+    monkeypatch.setattr(rs, "subprocess", type("M", (), {
+        "check_output": lambda *args, **kwargs: "GeForce GTX 1660 SUPER\n",
+        "DEVNULL": real_sub.DEVNULL,
+    }))
+    assert rs.is_turing_tu116_tu117_gpu() is True
+
+
+@pytest.mark.asyncio
+async def test_init_schema_and_seeds_seeds_portable_path(tmp_path):
+    """Verifies that init_schema_and_seeds inserts portable relative reference path."""
+    db_path = tmp_path / "fresh_seed.db"
+    async with aiosqlite.connect(str(db_path)) as conn:
+        conn.row_factory = aiosqlite.Row
+        await crud.init_schema_and_seeds(conn)
+
+        cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE id = 1;")
+        row = await cur.fetchone()
+        assert row is not None
+        ref_path = row["ref_audio_path"]
+        assert "yuzusoft" not in ref_path
+        # Must be portable relative path
+        assert ref_path == "audio/references/natsume/gentle.ogg"
+

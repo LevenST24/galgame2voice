@@ -28,12 +28,9 @@ from galgame2voice.database.session import immediate_transaction
 
 logger = logging.getLogger("galgame2voice.database.crud")
 
-# Default reference audio ships inside the repo so fresh deployments on any
-# machine get a valid path. Must be ABSOLUTE: the GPT-SoVITS engine process runs
-# with its own install dir as cwd, so relative DB paths break on the engine side.
-_DEFAULT_REF_AUDIO = str(
-    (Path(__file__).resolve().parents[2] / "audio" / "references" / "natsume" / "gentle.ogg").resolve()
-)
+# Default reference audio ships inside the repo using portable relative paths.
+# Converted to absolute at the client boundary when dispatching to GPT-SoVITS.
+_DEFAULT_REF_AUDIO = "audio/references/natsume/gentle.ogg"
 _DEFAULT_REF_TEXT = "とりあえず、今日見たことは忘れて、わかった?"
 
 

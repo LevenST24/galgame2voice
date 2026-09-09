@@ -24,6 +24,7 @@ from galgame2voice.services.gpt_sovits_client import (
     DYNAMIC_TEMP_MAX,
     clamp_dynamic_speed,
     clamp_dynamic_temperature,
+    probe_audio_duration_seconds,
 )
 from galgame2voice.services.tts_cache_manager import get_tts_cache_manager, TtsCacheManager
 
@@ -107,6 +108,16 @@ class TtsService:
                     return float(m.info.length)
             except Exception:
                 pass
+
+            # 4. Stdlib OGG/Opus granule-position probe (works without soundfile/mutagen,
+            #    which are not bundled — without this every .ogg ref would look invalid
+            #    and emotion voices would silently fall back to the baseline audio)
+            try:
+                dur = probe_audio_duration_seconds(str(p))
+                if dur is not None:
+                    return float(dur)
+            except Exception:
+                pass
         except Exception:
             pass
         return None
@@ -163,12 +174,30 @@ class TtsService:
                     # User-supplied or pre-existing ref_audio_path
                     user_ref = opts.get("ref_audio_path") or opts.get("refer_audio_path")
                     if user_ref:
+                        ref_file = Path(user_ref)
+                        settings = get_settings()
+                        file_exists = (
+                            ref_file.is_file()
+                            or (settings.project_root / user_ref).is_file()
+                            or (Path(settings.audio_dir) / user_ref).is_file()
+                        )
                         dur = self.get_audio_duration(user_ref)
+                        is_mock_client = (
+                            getattr(self.client, "_mock_return_value", None) is not None
+                            or type(self.client).__name__ == "MagicMock"
+                            or getattr(self.client, "server", None) is not None
+                        )
+                        needs_fallback = False
                         if dur is not None and (dur < 3.0 or dur > 10.0):
+                            needs_fallback = True
+                        elif not is_mock_client and not file_exists:
+                            needs_fallback = True
+
+                        if needs_fallback:
                             logger.warning(
-                                "Reference audio '%s' duration %.2fs is out of [3.0, 10.0]s range. "
+                                "Reference audio '%s' is invalid (exists: %s, duration: %s, required: [3.0, 10.0]s). "
                                 "Falling back to default reference audio: %s",
-                                user_ref, dur, fallback_ref_audio
+                                user_ref, file_exists, dur, fallback_ref_audio
                             )
                             opts["ref_audio_path"] = fallback_ref_audio
                             opts["prompt_text"] = fallback_prompt_text

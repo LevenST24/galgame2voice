@@ -137,6 +137,30 @@ def validate_reference_audio(ref_audio: str) -> Tuple[bool, str]:
     return True, ""
 
 
+def resolve_reference_audio_path(path: str) -> str:
+    """Converts a relative project reference audio path to an absolute path for GPT-SoVITS."""
+    if not path:
+        return ""
+    p = Path(path)
+    if not p.is_file() and (_PROJECT_ROOT / path).is_file():
+        return str((_PROJECT_ROOT / path).resolve())
+    elif p.is_file():
+        return str(p.resolve())
+    return path
+
+
+def is_turing_tu116_tu117_gpu(gpu_name_override: str | None = None) -> bool:
+    """
+    Detects if the system has an NVIDIA Turing TU116 or TU117 architecture GPU
+    (GeForce MX450, MX550, GTX 1650, GTX 1660, etc.) which produces silent NaN audio on FP16.
+    """
+    try:
+        from scripts.run_server import is_turing_tu116_tu117_gpu as _detect_turing
+        return _detect_turing(gpu_name_override=gpu_name_override)
+    except Exception:
+        return False
+
+
 def _fallback_reference() -> Optional[Tuple[str, str, str]]:
     """Bundled baseline reference (5.03s gentle voice) usable on any machine."""
     if _BUNDLED_REF_AUDIO.is_file():
@@ -431,6 +455,11 @@ class GptSovitsClient:
         self.current_refer_text: Optional[str] = None
         self.current_refer_language: Optional[str] = None
 
+        # GPU hardware capability inspection
+        self.is_turing_gpu = is_turing_tu116_tu117_gpu()
+        if self.is_turing_gpu:
+            logger.info("NVIDIA Turing TU116/TU117 GPU detected (MX450/GTX 1650/1660); client initialized for FP32 compatibility")
+
         # In-flight request tracking for hot URL swaps: the old connection
         # pool is closed once in-flight requests drain or the grace period
         # expires, whichever comes first (read timeout is up to 300s).
@@ -659,8 +688,9 @@ class GptSovitsClient:
                     logger.debug("Skipping /set_sovits_weights: '%s' already loaded", spec.sovits_weights_path)
 
                 # Step 3: Reference Audio
-                if force or not (self.current_refer_audio and self.current_refer_audio == spec.refer_audio_path and self.current_refer_text == spec.refer_text and self.current_refer_language == spec.refer_language):
-                    r3 = await self._request("GET", "/set_refer_audio", params={"refer_audio_path": spec.refer_audio_path})
+                resolved_ref_audio = resolve_reference_audio_path(spec.refer_audio_path)
+                if force or not (self.current_refer_audio and self.current_refer_audio == resolved_ref_audio and self.current_refer_text == spec.refer_text and self.current_refer_language == spec.refer_language):
+                    r3 = await self._request("GET", "/set_refer_audio", params={"refer_audio_path": resolved_ref_audio})
                     if r3.status_code != 200:
                         logger.error("Switch failed at Step 3 (Refer Audio): %s. Initiating rollback...", r3.text)
                         if prev_spec:
@@ -671,10 +701,11 @@ class GptSovitsClient:
                                 await self._request("GET", "/set_gpt_weights", params={"weights_path": prev_spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
                                 self.current_gpt_weights = prev_spec.gpt_weights_path
                             if prev_spec.refer_audio_path:
-                                await self._request("GET", "/set_refer_audio", params={"refer_audio_path": prev_spec.refer_audio_path})
+                                rollback_ref = resolve_reference_audio_path(prev_spec.refer_audio_path)
+                                await self._request("GET", "/set_refer_audio", params={"refer_audio_path": rollback_ref})
                         return False
 
-                self.current_refer_audio = spec.refer_audio_path
+                self.current_refer_audio = resolved_ref_audio
                 self.current_refer_text = spec.refer_text
                 self.current_refer_language = spec.refer_language
                 self.active_profile = target
@@ -690,7 +721,8 @@ class GptSovitsClient:
                         if prev_spec.gpt_weights_path:
                             await self._request("GET", "/set_gpt_weights", params={"weights_path": prev_spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
                         if prev_spec.refer_audio_path:
-                            await self._request("GET", "/set_refer_audio", params={"refer_audio_path": prev_spec.refer_audio_path})
+                            rollback_ref = resolve_reference_audio_path(prev_spec.refer_audio_path)
+                            await self._request("GET", "/set_refer_audio", params={"refer_audio_path": rollback_ref})
                     except Exception as rollback_exc:
                         # Rollback failure leaves server state diverged from local state — surface it loudly.
                         logger.error("ROLLBACK FAILED after switch error (server state may diverge): %s", rollback_exc)
@@ -919,4 +951,6 @@ __all__ = [
     "DYNAMIC_TEMP_MAX",
     "clamp_dynamic_speed",
     "clamp_dynamic_temperature",
+    "resolve_reference_audio_path",
+    "is_turing_tu116_tu117_gpu",
 ]

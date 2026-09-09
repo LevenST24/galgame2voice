@@ -288,19 +288,27 @@ def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
 
 
 def _check_sovits_dir(p: Path) -> Path | None:
-    """Checks if p or an immediate nested directory inside p contains api_v2.py."""
+    """Checks if p or a nested directory inside p contains api_v2.py."""
     if not p.exists() or not p.is_dir():
         return None
-    if (p / "api_v2.py").exists():
+    if (p / "api_v2.py").is_file():
         return p
     # Check nested directory with same name or any subfolder containing api_v2.py
     nested_same = p / p.name
-    if (nested_same / "api_v2.py").exists():
+    if (nested_same / "api_v2.py").is_file():
         return nested_same
     try:
         for sub in p.iterdir():
-            if sub.is_dir() and (sub / "api_v2.py").exists():
-                return sub
+            if sub.is_dir():
+                if (sub / "api_v2.py").is_file():
+                    return sub
+                # Check 2 levels deep (e.g. outer / nested / api_v2.py)
+                try:
+                    for sub2 in sub.iterdir():
+                        if sub2.is_dir() and (sub2 / "api_v2.py").is_file():
+                            return sub2
+                except (PermissionError, OSError):
+                    pass
     except (PermissionError, OSError):
         pass
     return None
@@ -326,9 +334,11 @@ def find_gpt_sovits_directory() -> Path | None:
     cache_file = PROJECT_ROOT / "data" / "sovits_dir.txt"
     if cache_file.exists():
         try:
-            cached_path_str = cache_file.read_text(encoding="utf-8-sig").strip()
+            cached_path_str = cache_file.read_text(encoding="utf-8-sig").strip().strip('"\'')
             if cached_path_str:
                 cached_path = Path(cached_path_str)
+                if not cached_path.is_absolute():
+                    cached_path = (PROJECT_ROOT / cached_path).resolve()
                 valid_cached = _check_sovits_dir(cached_path)
                 if valid_cached:
                     return valid_cached
@@ -390,12 +400,16 @@ def find_gpt_sovits_directory() -> Path | None:
     return None
 
 
-def is_turing_tu116_tu117_gpu() -> bool:
+def is_turing_tu116_tu117_gpu(gpu_name_override: str | None = None) -> bool:
     """
     Detects if the system has an NVIDIA Turing TU116 or TU117 architecture GPU.
     Affected models: GeForce MX450, MX550, GTX 1650, GTX 1660, GTX 1630, etc.
     On these GPUs, FP16 half-precision inference causes PyTorch to produce NaN and zero-amplitude (silent) audio.
     """
+    target_keywords = ["mx450", "mx550", "1650", "1660", "1630", "tu117", "tu116"]
+    if gpu_name_override is not None:
+        return any(k in gpu_name_override.lower() for k in target_keywords)
+
     gpu_names = []
 
     # 1. PyTorch CUDA inspection if torch is available
@@ -462,6 +476,11 @@ def patch_sovits_precision_config(sovits_dir: Path, force_fp32: bool = False) ->
         try:
             c_txt = cfg_file.read_text(encoding="utf-8-sig", errors="ignore")
             new_c = re.sub(r'\bis_half\s*=\s*True\b', 'is_half = False', c_txt)
+            new_c = re.sub(
+                r'os\.environ\.get\(["\']is_half["\'],\s*["\']True["\']\)',
+                'os.environ.get("is_half", "False")',
+                new_c
+            )
             if new_c != c_txt:
                 cfg_file.write_text(new_c, encoding="utf-8")
         except Exception as e:
@@ -542,8 +561,10 @@ def ensure_gpt_sovits_running():
     ]
 
     # Auto-patch MX / GTX 16-series GPUs (Turing TU116/TU117) to disable FP16 (which produces silent NaN audio)
+    is_turing = is_turing_tu116_tu117_gpu()
     try:
-        patch_sovits_precision_config(sovits_dir)
+        if is_turing:
+            patch_sovits_precision_config(sovits_dir, force_fp32=True)
     except Exception:
         pass
 
@@ -561,7 +582,10 @@ def ensure_gpt_sovits_running():
         log_fp = open(log_file, "a", encoding="utf-8")
         flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         env = os.environ.copy()
-        env["is_half"] = "False"
+        if is_turing:
+            env["is_half"] = "False"
+        elif "is_half" not in env:
+            env["is_half"] = "True"
         runtime_scripts = (sovits_dir / "runtime" / "Scripts") if sys.platform == "win32" else (sovits_dir / "runtime" / "bin")
         env["PATH"] = os.pathsep.join([str(sovits_dir / "runtime"), str(runtime_scripts), env.get("PATH", "")])
         env["PYTHONIOENCODING"] = "utf-8"
@@ -662,6 +686,11 @@ def auto_open_browser(port: int = 8080):
 
 
 def main():
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print("Galgame2Voice Server Launcher")
+        print("Usage: python scripts/run_server.py [--port PORT]")
+        sys.exit(0)
+
     setup_windows_job_object()
     setup_signal_handlers()
     atexit.register(cleanup_subprocesses)
