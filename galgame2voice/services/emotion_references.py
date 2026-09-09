@@ -44,8 +44,8 @@ NATSUME_EMOTION_REFERENCES: Dict[str, Dict[str, str]] = {
         "description": "羞涩颤音、慌乱难为情的语气",
     },
     "cool": {
-        "audio_name": "cool.ogg",
-        "prompt_text": "勝手に仲間にしないでください。",
+        "audio_name": "gentle.ogg",
+        "prompt_text": "とりあえず、今日見たことは忘れて、わかった?",
         "prompt_lang": "ja",
         "description": "平淡冷静、果断拉开距离的高冷语气",
     },
