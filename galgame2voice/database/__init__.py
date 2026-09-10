@@ -2,7 +2,17 @@
 Database module for galgame2voice.
 """
 
-from galgame2voice.database.session import get_db, init_db, configure_connection
+from galgame2voice.database.session import (
+    get_db,
+    init_db,
+    configure_connection,
+    get_schema_version,
+    set_schema_version,
+)
+from galgame2voice.database.crud import (
+    CURRENT_SCHEMA_VERSION,
+    run_schema_migrations,
+)
 from galgame2voice.database.models import (
     SettingsBase, SettingsInDB, SettingsResponse, SettingsUpdate,
     ProviderBase, ProviderInDB, ProviderResponse, ProviderCreate, ProviderUpdate,
@@ -30,6 +40,8 @@ from galgame2voice.database.crud import (
 
 __all__ = [
     "get_db", "init_db", "configure_connection",
+    "get_schema_version", "set_schema_version",
+    "CURRENT_SCHEMA_VERSION", "run_schema_migrations",
     "SettingsBase", "SettingsInDB", "SettingsResponse", "SettingsUpdate",
     "ProviderBase", "ProviderInDB", "ProviderResponse", "ProviderCreate", "ProviderUpdate",
     "VoiceProfileBase", "VoiceProfileInDB", "VoiceProfileResponse", "VoiceProfileCreate", "VoiceProfileUpdate",

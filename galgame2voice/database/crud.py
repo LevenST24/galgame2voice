@@ -64,13 +64,34 @@ def is_masked_key(key: Optional[str]) -> bool:
     return "****" in str(key)
 
 
-# ==================== Schema & Seed Initialization ====================
+# ==================== Schema Versioning & Migrations ====================
 
-async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
-    """Create tables, indexes, and seed initial records if empty."""
-    conn.row_factory = aiosqlite.Row
+CURRENT_SCHEMA_VERSION = 4
 
-    # 1. Create tables
+
+async def _get_table_columns(conn: aiosqlite.Connection, table_name: str) -> set[str]:
+    """Returns set of column names for an existing SQLite table."""
+    try:
+        cursor = await conn.execute(f"PRAGMA table_info({table_name});")
+        rows = await cursor.fetchall()
+        return {r["name"] for r in rows}
+    except Exception:
+        return set()
+
+
+async def _add_column_if_missing(
+    conn: aiosqlite.Connection, table_name: str, column_name: str, column_type: str
+) -> bool:
+    """Idempotently adds a column to a table if it does not already exist."""
+    existing = await _get_table_columns(conn, table_name)
+    if column_name not in existing:
+        await conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type};")
+        return True
+    return False
+
+
+async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
+    """Migration 1: Base table creation, primary indexes, and initial seeds."""
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -117,23 +138,6 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     """)
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_providers_is_active ON providers(is_active);")
 
-    # Schema migration checks for providers table
-    try:
-        cursor = await conn.execute("PRAGMA table_info(providers);")
-        existing_prov_cols = {r["name"] for r in await cursor.fetchall()}
-        for col, col_type in [
-            ("name", "TEXT NOT NULL DEFAULT ''"),
-            ("api_base_url", "TEXT NOT NULL DEFAULT ''"),
-            ("chat_model", "TEXT NOT NULL DEFAULT ''"),
-            ("stt_model", "TEXT NOT NULL DEFAULT ''"),
-            ("custom_headers", "TEXT NOT NULL DEFAULT '{}'"),
-        ]:
-            if col not in existing_prov_cols:
-                await conn.execute(f"ALTER TABLE providers ADD COLUMN {col} {col_type};")
-    except Exception:
-        pass
-
-
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS voice_profiles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,24 +156,6 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
         );
     """)
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_voice_profiles_is_default ON voice_profiles(is_default);")
-
-    # Schema migration checks for existing tables
-    try:
-        cursor = await conn.execute("PRAGMA table_info(voice_profiles);")
-        existing_cols = {r["name"] for r in await cursor.fetchall()}
-        for col, col_type in [
-            ("description", "TEXT NOT NULL DEFAULT ''"),
-            ("system_prompt", "TEXT NOT NULL DEFAULT ''"),
-            ("prompt_lang", "TEXT NOT NULL DEFAULT 'ja'"),
-            ("text_lang", "TEXT NOT NULL DEFAULT 'ja'"),
-            ("ref_audio_path", "TEXT NOT NULL DEFAULT ''"),
-            ("prompt_text", "TEXT NOT NULL DEFAULT ''"),
-        ]:
-            if col not in existing_cols:
-                await conn.execute(f"ALTER TABLE voice_profiles ADD COLUMN {col} {col_type};")
-    except Exception:
-        pass
-
 
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -284,7 +270,7 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_provider ON token_usage_metrics(provider_id);")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_session ON token_usage_metrics(session_id);")
 
-    # 2. Seed Voice Profiles
+    # Seed Voice Profile 1
     cursor = await conn.execute("SELECT COUNT(*) FROM voice_profiles;")
     count_row = await cursor.fetchone()
     count = count_row[0] if count_row else 0
@@ -304,7 +290,7 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
 【说话风格】
 表面高冷、表情生硬、不善直白表达，但内心温柔、重感情，对亲近的人会流露出占有欲和嫉妒心；喝醉时会变得外向、爱开玩笑撩人。语气礼貌得体，符合大学生口吻，可带语气词（如です、ます、ね、よ等）。
 
-重要：你必须严格输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.70~1.35, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad），不要输出任何多余文字、不要加代码块标记：
+重要：你必须严格输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad），不要输出任何多余文字、不要加代码块标记：
 {"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}
 
 要求：
@@ -331,40 +317,8 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
             natsume_prompt,
             1
         ))
-    else:
-        # Upgrade existing default profile if it still carries legacy prompt without dynamic tts instructions
-        try:
-            cur = await conn.execute("SELECT id, system_prompt FROM voice_profiles WHERE is_default = 1 OR id = 1;")
-            row = await cur.fetchone()
-            if row and row["system_prompt"] and '"tts":' not in row["system_prompt"] and '{"chinese":' in row["system_prompt"]:
-                new_prompt = row["system_prompt"].replace(
-                    '{"chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}',
-                    '{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}'
-                )
-                if "动态决定语音推理参数" not in new_prompt:
-                    new_prompt = new_prompt.replace(
-                        "你必须严格输出如下 JSON 格式",
-                        "你必须严格输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad）"
-                    )
-                await conn.execute("UPDATE voice_profiles SET system_prompt = ? WHERE id = ?;", (new_prompt, row["id"]))
-            # Also update if it has the old tts instruction but not the bold one
-            elif row and row["system_prompt"] and '请大胆调节！' not in row["system_prompt"] and '动态决定语音推理参数' in row["system_prompt"]:
-                new_prompt = row["system_prompt"].replace(
-                    "speed 语速: 0.70~1.35",
-                    "speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下"
-                )
-                await conn.execute("UPDATE voice_profiles SET system_prompt = ? WHERE id = ?;", (new_prompt, row["id"]))
-        except Exception as exc:
-            logger.debug("Could not auto-upgrade default voice profile system prompt: %s", exc)
 
-        # Self-heal voice profiles whose reference audio points at paths
-        # that do not exist on this machine or point to legacy dev paths.
-        try:
-            await auto_heal_voice_profiles(conn)
-        except Exception as exc:
-            logger.debug("Could not self-heal voice profile reference audios: %s", exc)
-
-    # 3. Seed Providers
+    # Seed Providers
     cursor = await conn.execute("SELECT COUNT(*) FROM providers;")
     count_row = await cursor.fetchone()
     count = count_row[0] if count_row else 0
@@ -385,49 +339,62 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
                 VALUES (?, ?, ?, '', ?, ?, ?, '{}');
             """, p)
 
-    # 4. Seed Settings
-    try:
-        cursor = await conn.execute("SELECT COUNT(*) FROM settings WHERE id = 1;")
-        count_row = await cursor.fetchone()
-        count = count_row[0] if count_row else 0
-        if count == 0:
-            token = uuid.uuid4().hex
-            await conn.execute("""
-                INSERT OR IGNORE INTO settings (
-                    id, active_provider_id, active_voice_profile_id, gpt_sovits_url,
-                    audio_output_dir, audio_retention_minutes, audio_cleanup_interval_sec,
-                    speed_factor, temperature, top_k, top_p, seed, batch_size,
-                    text_split_method, fragment_interval, telegram_bot_token,
-                    telegram_bot_username, telegram_proxy_host, telegram_proxy_port,
-                    telegram_proxy_enabled, console_token, console_url, max_history_messages
-                ) VALUES (
-                    1, 'deepseek', 1, 'http://127.0.0.1:9880',
-                    'audio', 30, 600,
-                    1.0, 1.0, 15, 1.0, -1, 1,
-                    'cut1', 0.3, '',
-                    'natsume_siki_bot', '127.0.0.1', 10809,
-                    0, ?, '', 10
-                );
-            """, (token,))
-    except Exception:
-        pass
+    # Seed Settings
+    cursor = await conn.execute("SELECT COUNT(*) FROM settings WHERE id = 1;")
+    count_row = await cursor.fetchone()
+    count = count_row[0] if count_row else 0
+    if count == 0:
+        token = uuid.uuid4().hex
+        await conn.execute("""
+            INSERT OR IGNORE INTO settings (
+                id, active_provider_id, active_voice_profile_id, gpt_sovits_url,
+                audio_output_dir, audio_retention_minutes, audio_cleanup_interval_sec,
+                speed_factor, temperature, top_k, top_p, seed, batch_size,
+                text_split_method, fragment_interval, telegram_bot_token,
+                telegram_bot_username, telegram_proxy_host, telegram_proxy_port,
+                telegram_proxy_enabled, console_token, console_url, max_history_messages
+            ) VALUES (
+                1, 'deepseek', 1, 'http://127.0.0.1:9880',
+                'audio', 30, 600,
+                1.0, 1.0, 15, 1.0, -1, 1,
+                'cut1', 0.3, '',
+                'natsume_siki_bot', '127.0.0.1', 10809,
+                0, ?, '', 10
+            );
+        """, (token,))
 
-    # 5. Schema migration for settings table (new security columns)
-    try:
-        cursor = await conn.execute("PRAGMA table_info(settings);")
-        existing_settings_cols = {r["name"] for r in await cursor.fetchall()}
-        for col, col_type in [
-            ("telegram_admin_ids", "TEXT NOT NULL DEFAULT ''"),
-            ("allow_private_llm_endpoints", "INTEGER NOT NULL DEFAULT 0"),
-        ]:
-            if col not in existing_settings_cols:
-                await conn.execute(f"ALTER TABLE settings ADD COLUMN {col} {col_type};")
-    except Exception:
-        pass
 
-    # 5b. user_memories uniqueness: normalize legacy NULL character ids and
-    # remove duplicate (user, character, fact_key) rows before adding a unique
-    # index, so concurrent upserts can rely on ON CONFLICT semantics.
+async def _migration_v2_columns(conn: aiosqlite.Connection) -> None:
+    """Migration 2: Ensure providers and voice_profiles tables have all required columns."""
+    for col, col_type in [
+        ("name", "TEXT NOT NULL DEFAULT ''"),
+        ("api_base_url", "TEXT NOT NULL DEFAULT ''"),
+        ("chat_model", "TEXT NOT NULL DEFAULT ''"),
+        ("stt_model", "TEXT NOT NULL DEFAULT ''"),
+        ("custom_headers", "TEXT NOT NULL DEFAULT '{}'"),
+    ]:
+        await _add_column_if_missing(conn, "providers", col, col_type)
+
+    for col, col_type in [
+        ("description", "TEXT NOT NULL DEFAULT ''"),
+        ("system_prompt", "TEXT NOT NULL DEFAULT ''"),
+        ("prompt_lang", "TEXT NOT NULL DEFAULT 'ja'"),
+        ("text_lang", "TEXT NOT NULL DEFAULT 'ja'"),
+        ("ref_audio_path", "TEXT NOT NULL DEFAULT ''"),
+        ("prompt_text", "TEXT NOT NULL DEFAULT ''"),
+    ]:
+        await _add_column_if_missing(conn, "voice_profiles", col, col_type)
+
+
+async def _migration_v3_security_and_indexes(conn: aiosqlite.Connection) -> None:
+    """Migration 3: Settings security columns, memory uniqueness, and composite query indexes."""
+    for col, col_type in [
+        ("telegram_admin_ids", "TEXT NOT NULL DEFAULT ''"),
+        ("allow_private_llm_endpoints", "INTEGER NOT NULL DEFAULT 0"),
+    ]:
+        await _add_column_if_missing(conn, "settings", col, col_type)
+
+    # user_memories uniqueness cleanup and index
     try:
         await conn.execute("UPDATE user_memories SET character_id = 1 WHERE character_id IS NULL;")
         await conn.execute("""
@@ -440,11 +407,89 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
         await conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_user_memories_key ON user_memories(user_id, character_id, fact_key);"
         )
+    except Exception as exc:
+        logger.debug("user_memories index migration skipped or already satisfied: %s", exc)
+
+    # Composite query indexes
+    try:
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session_created ON messages(session_id, created_at);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);")
+    except Exception as exc:
+        logger.debug("Composite index creation skipped: %s", exc)
+
+
+async def _migration_v4_prompts_and_self_healing(conn: aiosqlite.Connection) -> None:
+    """Migration 4: Upgrade legacy default voice profile prompt with dynamic TTS parameters and self-heal audios."""
+    try:
+        cur = await conn.execute("SELECT id, system_prompt FROM voice_profiles WHERE is_default = 1 OR id = 1;")
+        row = await cur.fetchone()
+        if row and row["system_prompt"] and '"tts":' not in row["system_prompt"] and '{"chinese":' in row["system_prompt"]:
+            new_prompt = row["system_prompt"].replace(
+                '{"chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}',
+                '{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}'
+            )
+            if "动态决定语音推理参数" not in new_prompt:
+                new_prompt = new_prompt.replace(
+                    "你必须严格输出如下 JSON 格式",
+                    "你必须严格输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad）"
+                )
+            await conn.execute("UPDATE voice_profiles SET system_prompt = ? WHERE id = ?;", (new_prompt, row["id"]))
+        elif row and row["system_prompt"] and '请大胆调节！' not in row["system_prompt"] and '动态决定语音推理参数' in row["system_prompt"]:
+            new_prompt = row["system_prompt"].replace(
+                "speed 语速: 0.70~1.35",
+                "speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下"
+            )
+            await conn.execute("UPDATE voice_profiles SET system_prompt = ? WHERE id = ?;", (new_prompt, row["id"]))
+    except Exception as exc:
+        logger.debug("Could not auto-upgrade default voice profile system prompt: %s", exc)
+
+    # Ensure cache indexes
+    try:
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_tts_cache_last_accessed ON tts_cache_entries(last_accessed_at);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_tts_cache_clean_text ON tts_cache_entries(clean_text);")
     except Exception:
         pass
 
-    # 6. Guarantee a console token exists so the API is never left unauthenticated.
-    #    The freshly generated token is logged once so the owner can retrieve it.
+
+async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
+    """
+    Executes SQLite schema migrations idempotently using PRAGMA user_version.
+    Guarantees that databases upgrade safely without losing any user data.
+    """
+    cursor = await conn.execute("PRAGMA user_version;")
+    row = await cursor.fetchone()
+    current_version = int(row[0]) if row and row[0] is not None else 0
+
+    if current_version < 1:
+        await _migration_v1_base_schema(conn)
+        current_version = 1
+        await conn.execute("PRAGMA user_version = 1;")
+
+    if current_version < 2:
+        await _migration_v2_columns(conn)
+        current_version = 2
+        await conn.execute("PRAGMA user_version = 2;")
+
+    if current_version < 3:
+        await _migration_v3_security_and_indexes(conn)
+        current_version = 3
+        await conn.execute("PRAGMA user_version = 3;")
+
+    if current_version < 4:
+        await _migration_v4_prompts_and_self_healing(conn)
+        current_version = 4
+        await conn.execute("PRAGMA user_version = 4;")
+
+    return current_version
+
+
+async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
+    """Create tables, indexes, apply schema version migrations, and guarantee credentials."""
+    conn.row_factory = aiosqlite.Row
+    await run_schema_migrations(conn)
+
+    # Guarantee a console token exists so the API is never left unauthenticated.
+    # The freshly generated token is logged once so the owner can retrieve it.
     try:
         cursor = await conn.execute("SELECT console_token FROM settings WHERE id = 1;")
         row = await cursor.fetchone()
@@ -462,7 +507,7 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     except Exception:
         pass
 
-    # 7. Auto-heal missing or broken reference audio paths across existing voice profiles
+    # Auto-heal missing or broken reference audio paths across existing voice profiles
     try:
         await auto_heal_voice_profiles(conn)
     except Exception as exc:

@@ -170,6 +170,18 @@ async def immediate_transaction(
         write_lock.release()
 
 
+async def get_schema_version(conn: aiosqlite.Connection) -> int:
+    """Returns the current database schema version via SQLite PRAGMA user_version."""
+    cursor = await conn.execute("PRAGMA user_version;")
+    row = await cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+async def set_schema_version(conn: aiosqlite.Connection, version: int) -> None:
+    """Sets the database schema version via SQLite PRAGMA user_version."""
+    await conn.execute(f"PRAGMA user_version = {int(version)};")
+
+
 async def init_db(db_path: Optional[Union[str, Path]] = None) -> None:
     """Initialize database schema, tables, indexes, and seed data with concurrency guards."""
     from galgame2voice.database.crud import init_schema_and_seeds

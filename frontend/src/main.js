@@ -420,6 +420,11 @@ async function playAiVoice(msg, ctl) {
       fetchAndCacheAudio(chunkTarget).catch(() => {});
     }
 
+    // 提前在后台预加载下一分句音频，实现跨分句无缝连贯播放
+    if (i + 1 < total && typeof urls[i + 1] === 'string' && urls[i + 1].startsWith('/audio/')) {
+      fetchAndCacheAudio(urls[i + 1]).catch(() => {});
+    }
+
     if (cancelled) return;
 
     const curAudio = new Audio(audioSrc);
@@ -444,15 +449,18 @@ async function playAiVoice(msg, ctl) {
 
     curAudio.onerror = () => {
       if (cancelled || audio !== curAudio) return;
-      console.warn('TTS 音频分块加载异常，自动调用模型重新合成:', chunkTarget);
+      console.warn('TTS 音频分块加载异常:', chunkTarget);
       if (activeObjectUrl) {
         URL.revokeObjectURL(activeObjectUrl);
         activeObjectUrl = null;
       }
       audio = null;
-      currentVoice = null;
-      // 彻底移除浏览器机械音，无缝重合成！
-      synthesizeAiVoice(msg, ctl);
+      if (i + 1 < total) {
+        playChunk(i + 1);
+      } else {
+        currentVoice = null;
+        synthesizeAiVoice(msg, ctl);
+      }
     };
 
     if (!paused && !cancelled) {
@@ -477,7 +485,6 @@ async function playAiVoice(msg, ctl) {
   };
 
   ctl.setProgress(0);
-  playChunk(0);
   currentVoice = {
     msgId: msg.id,
     get paused() { return paused; },
@@ -527,6 +534,7 @@ async function playAiVoice(msg, ctl) {
       }
     },
   };
+  playChunk(0);
 }
 
 async function playUserVoice(msg, ctl) {
@@ -1190,6 +1198,11 @@ function sendMessage(rawText, voiceMeta) {
     settings: session.settings,
     preset: state.global.ttsPreset || '',
     onChunk,
+    onAudio: (url) => {
+      if (url && typeof url === 'string' && url.startsWith('/audio/')) {
+        fetchAndCacheAudio(url).catch(() => {});
+      }
+    },
     onEnd,
   });
 }

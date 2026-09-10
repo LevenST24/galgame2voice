@@ -12,47 +12,24 @@ import time
 from typing import AsyncIterator, Dict, Any, List, Optional
 import httpx
 
-from galgame2voice.adapters.base import BaseLLMAdapter, ChatMessage, LLMResponse, TestResult
+from galgame2voice.adapters.base import (
+    BaseLLMAdapter,
+    ChatMessage,
+    LLMResponse,
+    TestResult,
+    TRANSIENT_STATUS_CODES,
+    TRANSIENT_NETWORK_EXCEPTIONS,
+    parse_retry_after,
+    calculate_backoff_delay,
+    parse_sse_lines,
+)
 from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.adapters.llm.openai")
 
-
-def _parse_retry_after(headers: Optional[Any]) -> Optional[float]:
-    """Extracts and parses Retry-After header (seconds or HTTP date)."""
-    if not headers:
-        return None
-    val = None
-    if hasattr(headers, "get"):
-        val = headers.get("retry-after") or headers.get("Retry-After")
-    elif isinstance(headers, dict):
-        val = headers.get("retry-after") or headers.get("Retry-After")
-    if not val:
-        return None
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        try:
-            import datetime
-            retry_date = email.utils.parsedate_to_datetime(str(val))
-            now = datetime.datetime.now(datetime.timezone.utc)
-            delta = (retry_date - now).total_seconds()
-            return max(0.0, delta)
-        except Exception:
-            return None
-
-
-def _calculate_backoff_delay(
-    attempt: int,
-    base_delay: float = 1.0,
-    retry_after: Optional[float] = None,
-) -> float:
-    """Calculates backoff delay with exponential scaling and random jitter."""
-    if retry_after is not None and retry_after > 0:
-        return min(60.0, retry_after + random.uniform(0.1, 0.4))
-    exp_backoff = min(10.0, base_delay * (2 ** attempt))
-    jitter = random.uniform(0.1, 0.4)
-    return exp_backoff + jitter
+# Backward compatibility aliases
+_parse_retry_after = parse_retry_after
+_calculate_backoff_delay = calculate_backoff_delay
 
 
 class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
@@ -116,10 +93,10 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 )
                 if resp.status_code in (401, 403):
                     raise ValueError(f"Authentication error: {resp.json() if hasattr(resp, 'json') else resp.text}")
-                if resp.status_code in (429, 502, 503, 504):
+                if resp.status_code in TRANSIENT_STATUS_CODES:
                     if attempt < max_retries:
-                        retry_after = _parse_retry_after(getattr(resp, "headers", None))
-                        delay = _calculate_backoff_delay(attempt, base_delay, retry_after)
+                        retry_after = parse_retry_after(getattr(resp, "headers", None))
+                        delay = calculate_backoff_delay(attempt, base_delay, retry_after)
                         logger.warning(
                             "Mock LLM chat received status %d. Retrying (%d/%d) in %.2fs...",
                             resp.status_code, attempt + 1, max_retries, delay
@@ -161,18 +138,9 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             for attempt in range(max_retries + 1):
                 try:
                     resp = await client.post(url, json=payload, headers=headers)
-                except (
-                    httpx.ConnectTimeout,
-                    httpx.ReadTimeout,
-                    httpx.WriteTimeout,
-                    httpx.PoolTimeout,
-                    httpx.ConnectError,
-                    httpx.RemoteProtocolError,
-                    httpx.NetworkError,
-                    httpx.RequestError,
-                ) as exc:
+                except TRANSIENT_NETWORK_EXCEPTIONS as exc:
                     if attempt < max_retries:
-                        delay = _calculate_backoff_delay(attempt, base_delay)
+                        delay = calculate_backoff_delay(attempt, base_delay)
                         logger.warning(
                             "Transient network error connecting to %s (%s: %s). Retrying (%d/%d) in %.2fs...",
                             url, type(exc).__name__, exc, attempt + 1, max_retries, delay
@@ -184,10 +152,10 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 if resp.status_code in (401, 403):
                     raise ValueError(f"Authentication error ({resp.status_code}): {resp.text}")
 
-                if resp.status_code in (429, 502, 503, 504):
+                if resp.status_code in TRANSIENT_STATUS_CODES:
                     if attempt < max_retries:
-                        retry_after = _parse_retry_after(resp.headers)
-                        delay = _calculate_backoff_delay(attempt, base_delay, retry_after)
+                        retry_after = parse_retry_after(resp.headers)
+                        delay = calculate_backoff_delay(attempt, base_delay, retry_after)
                         logger.warning(
                             "LLM endpoint %s returned HTTP %d. Retrying (%d/%d) in %.2fs...",
                             url, resp.status_code, attempt + 1, max_retries, delay
@@ -242,10 +210,10 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 )
                 if resp.status_code in (401, 403):
                     raise ValueError(f"Authentication error: {resp.text}")
-                if resp.status_code in (429, 502, 503, 504):
+                if resp.status_code in TRANSIENT_STATUS_CODES:
                     if attempt < max_retries:
-                        retry_after = _parse_retry_after(getattr(resp, "headers", None))
-                        delay = _calculate_backoff_delay(attempt, base_delay, retry_after)
+                        retry_after = parse_retry_after(getattr(resp, "headers", None))
+                        delay = calculate_backoff_delay(attempt, base_delay, retry_after)
                         await asyncio.sleep(delay)
                         continue
                     if resp.status_code == 429:
@@ -254,24 +222,12 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 if resp.status_code != 200:
                     raise RuntimeError(f"API returned status {resp.status_code}: {resp.text}")
 
-                lines = resp.text.split("\n")
-                for line in lines:
-                    line = line.strip()
-                    if not line or not line.startswith("data:"):
-                        continue
-                    data_str = line[5:].strip()
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                        choices = chunk.get("choices", [])
-                        if choices:
-                            delta = choices[0].get("delta", {})
-                            token = delta.get("content")
-                            if token:
-                                yield token
-                    except json.JSONDecodeError:
-                        continue
+                async def _mock_lines_iter():
+                    for line in resp.text.split("\n"):
+                        yield line
+
+                async for token in parse_sse_lines(_mock_lines_iter()):
+                    yield token
                 return
 
         url = f"{self.base_url}/chat/completions"
@@ -301,16 +257,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             try:
                 stream_ctx = client.stream("POST", url, json=payload, headers=headers)
                 response = await stream_ctx.__aenter__()
-            except (
-                httpx.ConnectTimeout,
-                httpx.ReadTimeout,
-                httpx.WriteTimeout,
-                httpx.PoolTimeout,
-                httpx.ConnectError,
-                httpx.RemoteProtocolError,
-                httpx.NetworkError,
-                httpx.RequestError,
-            ) as exc:
+            except TRANSIENT_NETWORK_EXCEPTIONS as exc:
                 if stream_ctx:
                     try:
                         await stream_ctx.__aexit__(None, None, None)
@@ -318,7 +265,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                         pass
                 await client.aclose()
                 if attempt < max_retries:
-                    delay = _calculate_backoff_delay(attempt, base_delay)
+                    delay = calculate_backoff_delay(attempt, base_delay)
                     logger.warning(
                         "Streaming connection error to %s (%s). Retrying (%d/%d) in %.2fs...",
                         url, exc, attempt + 1, max_retries, delay
@@ -333,13 +280,13 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 await client.aclose()
                 raise ValueError(f"Authentication error ({response.status_code}): {error_body.decode('utf-8', errors='ignore')}")
 
-            if response.status_code in (429, 502, 503, 504):
+            if response.status_code in TRANSIENT_STATUS_CODES:
                 error_body = await response.aread()
-                retry_after = _parse_retry_after(response.headers)
+                retry_after = parse_retry_after(response.headers)
                 await stream_ctx.__aexit__(None, None, None)
                 await client.aclose()
                 if attempt < max_retries:
-                    delay = _calculate_backoff_delay(attempt, base_delay, retry_after)
+                    delay = calculate_backoff_delay(attempt, base_delay, retry_after)
                     logger.warning(
                         "Streaming endpoint %s returned HTTP %d. Retrying (%d/%d) in %.2fs...",
                         url, response.status_code, attempt + 1, max_retries, delay
@@ -357,23 +304,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 raise RuntimeError(f"API returned status {response.status_code}: {error_body.decode('utf-8', errors='ignore')}")
 
             try:
-                async for line in response.aiter_lines():
-                    line = line.strip()
-                    if not line or not line.startswith("data:"):
-                        continue
-                    data_str = line[5:].strip()
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                        choices = chunk.get("choices", [])
-                        if choices:
-                            delta = choices[0].get("delta", {})
-                            token = delta.get("content")
-                            if token:
-                                yield token
-                    except json.JSONDecodeError:
-                        continue
+                async for token in parse_sse_lines(response.aiter_lines()):
+                    yield token
                 return
             except httpx.RequestError as exc:
                 raise RuntimeError(f"Streaming request failed to {url}: {exc}") from exc
