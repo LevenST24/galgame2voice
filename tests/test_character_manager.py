@@ -469,7 +469,10 @@ def test_character_manager_discovers_all_three_characters():
 def test_all_reference_audios_duration_boundary():
     """Verifies that all 21 reference audios across all 3 packages have duration in [3.0s, 10.0s]."""
     from galgame2voice.services.tts_service import TtsService
-    import soundfile as sf
+    try:
+        import soundfile as sf
+    except ImportError:
+        sf = None
 
     mgr = CharacterManager(get_settings().characters_dir)
     discovered = mgr.discover_characters()
@@ -482,16 +485,17 @@ def test_all_reference_audios_duration_boundary():
             assert audio_path is not None, f"Audio path could not be resolved for {pkg.name} - {emo_name}"
             assert audio_path.is_file(), f"Audio file {audio_path} does not exist"
 
-            # Check via soundfile
-            info = sf.info(str(audio_path))
-            assert 3.0 <= info.duration <= 10.0, (
-                f"Audio {audio_path} duration {info.duration:.2f}s is out of [3.0, 10.0] range"
-            )
+            # Check via soundfile if available
+            if sf is not None:
+                info = sf.info(str(audio_path))
+                assert 3.0 <= info.duration <= 10.0, (
+                    f"Audio {audio_path} duration {info.duration:.2f}s is out of [3.0, 10.0] range"
+                )
 
-            # Check via TtsService helper
+            # Check via TtsService helper (pure-Python / mutagen / wave fallback)
             tts_dur = TtsService.get_audio_duration(audio_path)
-            assert tts_dur is not None
-            assert 3.0 <= tts_dur <= 10.0
+            assert tts_dur is not None, f"TtsService could not determine duration for {audio_path}"
+            assert 3.0 <= tts_dur <= 10.0, f"TtsService duration {tts_dur:.2f}s is out of [3.0, 10.0] range for {audio_path}"
             audio_count += 1
 
     assert audio_count == 21, f"Expected 21 reference audios, tested {audio_count}"

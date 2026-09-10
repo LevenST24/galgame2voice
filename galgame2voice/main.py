@@ -6,7 +6,6 @@ Manages application lifespan, CORS, static routing, and router registration.
 import asyncio
 import logging
 import mimetypes
-import os
 import time
 
 # Windows 注册表常把 .js 映射为 text/plain，ES module 会被浏览器 Strict MIME 拒载
@@ -15,7 +14,7 @@ mimetypes.add_type("text/javascript", ".mjs")
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Tuple
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -253,7 +252,7 @@ async def lifespan(app: FastAPI):
         )
     )
 
-    # 6. Start Telegram Bot Background Polling (non-blocking background task)
+    # 6. Start Telegram Bot Background Polling (non-blocking background task, optional)
     tg_startup_task = None
     try:
         from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
@@ -261,6 +260,13 @@ async def lifespan(app: FastAPI):
 
         async def _start_telegram_bg():
             try:
+                # Telegram is optional: check if enabled in database
+                async with get_db(settings.db_path) as conn:
+                    db_settings = await crud.get_settings_raw(conn)
+                if not getattr(db_settings, "telegram_enabled", False):
+                    # Telegram is not enabled; do not start background polling and do not log to terminal
+                    return
+
                 tg_started = await tg_manager.start()
                 if tg_started:
                     logger.info("Telegram Bot background polling started successfully.")
@@ -268,8 +274,8 @@ async def lifespan(app: FastAPI):
                 logger.warning("Telegram Bot auto-start on boot skipped or failed: %s", exc)
 
         tg_startup_task = asyncio.create_task(_start_telegram_bg())
-    except Exception as exc:
-        logger.warning("Telegram Bot auto-start on boot skipped or failed: %s", exc)
+    except Exception:
+        pass
 
     logger.info(
         "Service startup complete. Listening on http://%s:%d",
@@ -377,7 +383,7 @@ def create_app() -> FastAPI:
 
         async def __call__(self, scope, receive, send):
             path = scope.get("path", "") if scope["type"] == "http" else ""
-            if path in ("/", "/index.html", "/settings.html"):
+            if path in ("/", "/index.html"):
                 # 入口页面必须每次回源校验，避免发版后浏览器用旧 index 加载旧 JS
                 cache_value = "no-cache"
             elif path.startswith("/static/assets/") or path == "/static/assets":
@@ -442,17 +448,11 @@ def create_app() -> FastAPI:
             return JSONResponse({"message": "galgame2voice backend active. UI index.html not found."})
 
         @app.get("/settings.html", include_in_schema=False)
-        async def serve_settings():
-            settings_path = settings.static_dir / "settings.html"
-            if settings_path.exists():
-                return FileResponse(str(settings_path))
-            return JSONResponse({"message": "Settings UI not found."})
-
         @app.get("/console", include_in_schema=False)
         @app.get("/settings", include_in_schema=False)
         async def console_redirect(request: Request):
             query = request.url.query
-            target_url = f"/settings.html?{query}" if query else "/settings.html"
+            target_url = f"/?settings=1&{query}" if query else "/?settings=1"
             return RedirectResponse(url=target_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
     else:
         @app.get("/", include_in_schema=False)
@@ -465,14 +465,11 @@ def create_app() -> FastAPI:
             })
 
         @app.get("/settings.html", include_in_schema=False)
-        async def settings_fallback():
-            return JSONResponse({"message": "Settings UI not found in static directory."})
-
         @app.get("/console", include_in_schema=False)
         @app.get("/settings", include_in_schema=False)
         async def console_fallback_redirect(request: Request):
             query = request.url.query
-            target_url = f"/settings.html?{query}" if query else "/settings.html"
+            target_url = f"/?settings=1&{query}" if query else "/?settings=1"
             return RedirectResponse(url=target_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
     # Global Exception Handler Sanitizing Internal Errors

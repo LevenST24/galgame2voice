@@ -81,9 +81,13 @@ class TelegramBotManager:
         async with get_db(self.db_path) as conn:
             settings = await crud.get_settings_raw(conn)
 
+        # Telegram is an optional feature. If not enabled in settings, do not start and do not output any messages.
+        if not getattr(settings, "telegram_enabled", False):
+            return False
+
         token = settings.telegram_bot_token.replace(" ", "").replace("\r", "").replace("\n", "").strip() if settings and settings.telegram_bot_token else ""
         if not token:
-            logger.info("Telegram Bot token is empty; skipping bot startup.")
+            logger.warning("Telegram Bot is enabled but token is empty; skipping bot startup.")
             return False
 
         if not validate_bot_token(token):
@@ -164,7 +168,7 @@ class TelegramBotManager:
         safe_msg = sanitize_error_detail(err)
         # Network dropped / polling timeout is normal in mobile or unstable proxies
         if any(term in str(safe_msg).lower() for term in ("timed out", "network", "connect", "timeout", "connection reset")):
-            logger.info("Telegram network/timeout transient event [%s]: %s", err_type, safe_msg)
+            logger.debug("Telegram network/timeout transient event [%s]: %s", err_type, safe_msg)
         else:
             logger.warning("Telegram Bot error event [%s]: %s", err_type, safe_msg)
 

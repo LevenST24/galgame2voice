@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import httpx
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from galgame2voice.config import get_settings
@@ -110,6 +110,8 @@ class HardwareTelemetry(BaseModel):
     gpu_available: bool
     gpu_name: str
     fp32_forced: bool
+    inference_precision: str = "FP32"
+    configured_precision: str = "auto"
     system_memory_gb: Optional[float] = None
     system_memory_avail_gb: Optional[float] = None
 
@@ -298,10 +300,29 @@ def _collect_hardware_telemetry_sync() -> HardwareTelemetry:
     """Collects GPU capability and host RAM telemetry synchronously."""
     total_ram, avail_ram = get_system_memory_status()
     gpu_avail, gpu_name = _get_gpu_telemetry_cached()
+    project_root = get_settings().project_root
+    cached = read_precision_cache(project_root)
+
+    env_prec = os.environ.get("GPT_SOVITS_PRECISION", "").strip().lower()
+    if env_prec in ("fp16", "half", "true", "1"):
+        active_prec = "FP16"
+        cfg_prec = "fp16"
+    elif env_prec in ("fp32", "float32", "false", "0"):
+        active_prec = "FP32"
+        cfg_prec = "fp32"
+    elif cached and "is_half" in cached:
+        active_prec = "FP16" if cached["is_half"] else "FP32"
+        cfg_prec = "fp16" if cached["is_half"] else "fp32"
+    else:
+        active_prec = "FP32" if _engine_fp32_forced() else "FP16"
+        cfg_prec = "auto"
+
     return HardwareTelemetry(
         gpu_available=gpu_avail,
         gpu_name=gpu_name,
         fp32_forced=_engine_fp32_forced(),
+        inference_precision=active_prec,
+        configured_precision=cfg_prec,
         system_memory_gb=total_ram,
         system_memory_avail_gb=avail_ram,
     )
@@ -384,10 +405,11 @@ async def system_status(request: Request):
     async with get_db(settings.db_path) as conn:
         db_s = await crud.get_settings_raw(conn)
         has_token = bool(db_s and db_s.telegram_bot_token and db_s.telegram_bot_token.strip())
+        is_enabled = bool(db_s and getattr(db_s, "telegram_enabled", False))
 
     tg_telemetry = TelegramTelemetry(
-        enabled=tg_running or has_token or settings.telegram_enabled,
-        status="running" if tg_running else ("disabled" if not has_token else "standby"),
+        enabled=is_enabled,
+        status="running" if tg_running else ("disabled" if not is_enabled else ("standby" if has_token else "unconfigured")),
     )
 
     overall_status = "healthy" if gpt_probe.status == "reachable" else "degraded"
@@ -402,3 +424,75 @@ async def system_status(request: Request):
         telegram=tg_telemetry,
         hardware=hardware_telemetry,
     )
+
+
+@router.post(
+    "/api/system/restart_sovits",
+    summary="Restart GPT-SoVITS Engine Subprocess",
+    dependencies=[Depends(require_auth)],
+)
+async def restart_sovits_endpoint():
+    """
+    Terminates the existing GPT-SoVITS process and restarts it with the
+    latest precision configuration (FP16 / FP32).
+    """
+    settings = get_settings()
+    sovits_dir_file = settings.project_root / "data" / "sovits_dir.txt"
+    if not sovits_dir_file.exists():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="GPT-SoVITS 目录路径未记录 (data/sovits_dir.txt 不存在)，无法自动重启",
+        )
+    sovits_dir = Path(sovits_dir_file.read_text(encoding="utf-8").strip())
+    if not sovits_dir.exists():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"GPT-SoVITS 目录不存在: {sovits_dir}",
+        )
+
+    from galgame2voice.utils.precision import resolve_initial_is_half
+    is_half, source = resolve_initial_is_half(settings.project_root, sovits_dir)
+
+    pid_file = settings.project_root / "gptsovits.pid"
+    old_pid = None
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except ValueError:
+            pass
+
+    # Terminate old process
+    if old_pid:
+        try:
+            import psutil
+            if psutil.pid_exists(old_pid):
+                p = psutil.Process(old_pid)
+                for child in p.children(recursive=True):
+                    try:
+                        child.kill()
+                    except Exception:
+                        pass
+                p.kill()
+                p.wait(timeout=3.0)
+        except Exception:
+            pass
+
+    await asyncio.sleep(1.0)
+
+    try:
+        from scripts.run_server import _spawn_sovits_process
+        proc = _spawn_sovits_process(sovits_dir, "127.0.0.1", 9880, is_half)
+        pid_file.write_text(str(proc.pid), encoding="utf-8")
+        prec_desc = "FP16 半精度" if is_half else "FP32 单精度"
+        return {
+            "status": "ok",
+            "message": f"GPT-SoVITS 语音引擎已按 {prec_desc} 成功重启 (PID: {proc.pid})",
+            "is_half": is_half,
+            "pid": proc.pid,
+            "source": source,
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"重启 GPT-SoVITS 失败: {exc}",
+        )

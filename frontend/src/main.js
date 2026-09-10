@@ -26,6 +26,7 @@ import {
   getCachedAudioBlob,
   putCachedAudioBlob,
   fetchAndCacheAudio,
+  clearMemAudioCache,
 } from './cache.js';
 import {
   renderSessionList,
@@ -105,15 +106,50 @@ const dom = {
   gCustomApiKey: $('gCustomApiKey'),
   gCustomModel: $('gCustomModel'),
   gPreset: $('gPreset'),
+  gPrecision: $('gPrecision'),
   gAutoTranslate: $('gAutoTranslate'),
   gStatus: $('gStatus'),
   gAudioRetention: $('gAudioRetention'),
+  gTgEnabled: $('gTgEnabled'),
+  gTgFieldsGroup: $('gTgFieldsGroup'),
   gTgToken: $('gTgToken'),
   gTgProxyHost: $('gTgProxyHost'),
   gTgProxyPort: $('gTgProxyPort'),
   gTgProxyEnabled: $('gTgProxyEnabled'),
   gTgTest: $('gTgTest'),
   gTgSave: $('gTgSave'),
+  gTabs: $('gTabs'),
+  gDashSovitsBadge: $('gDashSovitsBadge'),
+  gDashSovitsStatus: $('gDashSovitsStatus'),
+  gDashSovitsUrl: $('gDashSovitsUrl'),
+  gBtnRestartSovits: $('gBtnRestartSovits'),
+  gDashPrecisionBadge: $('gDashPrecisionBadge'),
+  gDashPrecisionVal: $('gDashPrecisionVal'),
+  gDashDeviceVal: $('gDashDeviceVal'),
+  gDashHardwareVal: $('gDashHardwareVal'),
+  gDashUptimeVal: $('gDashUptimeVal'),
+  gDashCacheVal: $('gDashCacheVal'),
+  gDashRetentionVal: $('gDashRetentionVal'),
+  gBtnClearCache: $('gBtnClearCache'),
+  gBtnRefreshStatus: $('gBtnRefreshStatus'),
+  gParamSovitsUrl: $('gParamSovitsUrl'),
+  gParamSliceMethod: $('gParamSliceMethod'),
+  gParamFragmentInterval: $('gParamFragmentInterval'),
+  gParamSpeed: $('gParamSpeed'),
+  gParamSpeedVal: $('gParamSpeedVal'),
+  gParamTopK: $('gParamTopK'),
+  gParamTopKVal: $('gParamTopKVal'),
+  gParamTopP: $('gParamTopP'),
+  gParamTopPVal: $('gParamTopPVal'),
+  gParamTemp: $('gParamTemp'),
+  gParamTempVal: $('gParamTempVal'),
+  gSttEngine: $('gSttEngine'),
+  gProviderTest: $('gProviderTest'),
+  gTgChatId: $('gTgChatId'),
+  gMemoryEnabled: $('gMemoryEnabled'),
+  gUserNickname: $('gUserNickname'),
+  gDefaultSystemPrompt: $('gDefaultSystemPrompt'),
+  gResetBtn: $('gResetBtn'),
 };
 
 let listInner = null;
@@ -152,10 +188,13 @@ function playSingleAudio(getAudio, msgId, ctl, { objectUrl = null } = {}) {
   let paused = false;
 
   const attach = () => {
-    audio.addEventListener('timeupdate', () => {
+    audio.ontimeupdate = () => {
       if (audio.duration) ctl.setProgress(audio.currentTime / audio.duration);
-    });
+    };
     audio.onended = () => {
+      audio.ontimeupdate = null;
+      audio.onended = null;
+      audio.onerror = null;
       if (!cancelled) {
         ctl.setProgress(1);
         ctl.setPlaying(false);
@@ -164,6 +203,9 @@ function playSingleAudio(getAudio, msgId, ctl, { objectUrl = null } = {}) {
       }
     };
     audio.onerror = () => {
+      audio.ontimeupdate = null;
+      audio.onended = null;
+      audio.onerror = null;
       if (cancelled) return;
       ctl.setPlaying(false);
       showToast('音频播放失败', 'error');
@@ -202,6 +244,9 @@ function playSingleAudio(getAudio, msgId, ctl, { objectUrl = null } = {}) {
       cancelled = true;
       paused = true;
       audio.pause();
+      audio.ontimeupdate = null;
+      audio.onended = null;
+      audio.onerror = null;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     },
   };
@@ -430,14 +475,17 @@ async function playAiVoice(msg, ctl) {
     const curAudio = new Audio(audioSrc);
     audio = curAudio;
 
-    curAudio.addEventListener('timeupdate', () => {
+    curAudio.ontimeupdate = () => {
       if (cancelled || audio !== curAudio) return;
       const dur = curAudio.duration;
       const frac = (dur && !isNaN(dur) && dur > 0) ? curAudio.currentTime / dur : 0;
       ctl.setProgress(Math.min(1, (i + frac) / total));
-    });
+    };
 
     curAudio.onended = () => {
+      curAudio.ontimeupdate = null;
+      curAudio.onended = null;
+      curAudio.onerror = null;
       if (cancelled || audio !== curAudio) return;
       if (paused) {
         currentIdx = i + 1;
@@ -448,6 +496,9 @@ async function playAiVoice(msg, ctl) {
     };
 
     curAudio.onerror = () => {
+      curAudio.ontimeupdate = null;
+      curAudio.onended = null;
+      curAudio.onerror = null;
       if (cancelled || audio !== curAudio) return;
       console.warn('TTS 音频分块加载异常:', chunkTarget);
       if (activeObjectUrl) {
@@ -1301,19 +1352,83 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-/* 全局设置（引擎层：状态 / 对话模型 / 语音质量 / Telegram / 音频管理） */
+/* 全局设置（引擎层：状态 / 语音推理 / 大模型 / Telegram / 记忆与人设） */
 function openGlobalSettings() {
   openModal(dom.globalModal);
   loadProviders();
   loadGlobalConfig();
-  dom.gPreset.value = state.global.ttsPreset || '';
+  fetchSystemTelemetry();
+  if (dom.gPreset) {
+    dom.gPreset.value = state.global.ttsPreset || '';
+  }
   if (dom.gAutoTranslate) {
     dom.gAutoTranslate.value = state.global.autoTranslate ? 'auto' : 'manual';
   }
 }
 
+async function fetchSystemTelemetry() {
+  try {
+    const [statusRes, cacheRes] = await Promise.all([
+      fetch('/api/system/status').catch(() => null),
+      fetch('/api/cache/stats').catch(() => null),
+    ]);
+    if (statusRes && statusRes.ok) {
+      const data = await statusRes.json();
+      // 1. GPT-SoVITS
+      if (data.gpt_sovits && dom.gDashSovitsStatus) {
+        const isOnline = data.gpt_sovits.status === 'reachable';
+        dom.gDashSovitsBadge.className = `badge-status-pill ${isOnline ? 'badge-pill-green' : 'badge-pill-red'}`;
+        dom.gDashSovitsBadge.textContent = isOnline ? '在线' : '离线';
+        dom.gDashSovitsStatus.textContent = isOnline ? `运行正常 (${data.gpt_sovits.latency_ms || 0}ms)` : '服务未响应';
+        dom.gDashSovitsUrl.textContent = data.gpt_sovits.base_url || 'http://127.0.0.1:9880';
+      }
+      // 2. Precision & GPU
+      if (data.hardware) {
+        const isFp16 = data.hardware.inference_precision === 'FP16';
+        if (dom.gDashPrecisionBadge) {
+          dom.gDashPrecisionBadge.className = `badge-status-pill ${isFp16 ? 'badge-pill-indigo' : 'badge-pill-green'}`;
+          dom.gDashPrecisionBadge.textContent = isFp16 ? 'FP16' : 'FP32';
+        }
+        if (dom.gDashPrecisionVal) {
+          dom.gDashPrecisionVal.textContent = isFp16 ? '⚡ FP16 半精度' : '🛡️ FP32 单精度';
+        }
+        if (dom.gDashDeviceVal) {
+          dom.gDashDeviceVal.textContent = data.hardware.gpu_name ? data.hardware.gpu_name : 'CPU 兼容模式';
+        }
+        if (dom.gDashHardwareVal) {
+          const procMem = (data.app && data.app.memory_usage_mb !== undefined && data.app.memory_usage_mb !== null)
+            ? `${Math.round(data.app.memory_usage_mb)} MB`
+            : '正常';
+          dom.gDashHardwareVal.textContent = `服务内存: ${procMem}`;
+        }
+        const hostRamEl = $('gDashHostRam');
+        if (hostRamEl) {
+          if (data.hardware.system_memory_gb && data.hardware.system_memory_avail_gb) {
+            hostRamEl.textContent = `系统可用: ${data.hardware.system_memory_avail_gb.toFixed(1)}G / ${data.hardware.system_memory_gb.toFixed(1)}G`;
+          } else {
+            hostRamEl.textContent = '系统内存: 良好';
+          }
+        }
+      }
+      // 3. Uptime & PID
+      if (data.app && dom.gDashUptimeVal) {
+        const sec = Math.round(data.app.uptime_seconds || 0);
+        const h = Math.floor(sec / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        const s = sec % 60;
+        dom.gDashUptimeVal.textContent = `PID: ${data.app.pid || '-'} · 运行: ${h}h ${m}m ${s}s`;
+      }
+    }
+    if (cacheRes && cacheRes.ok && dom.gDashCacheVal) {
+      const cData = await cacheRes.json();
+      dom.gDashCacheVal.textContent = `${cData.total_entries || 0} 个文件 · ${(cData.total_size_mb || 0).toFixed(1)} MB`;
+    }
+  } catch (e) {
+    console.warn('Failed to fetch telemetry:', e);
+  }
+}
+
 async function loadGlobalConfig() {
-  dom.gStatus.textContent = '加载中…';
   try {
     const [cfgRes, voiceErr] = await Promise.all([
       fetch('/api/config'),
@@ -1323,37 +1438,84 @@ async function loadGlobalConfig() {
     const s = cfg.settings || {};
     const provider = cfg.active_provider;
     const activeVoice = voiceProfiles.find((p) => p.id === activeProfileId);
-    const rows = [
-      { label: '后端', value: cfg.status === 'ok' ? '运行正常' : String(cfg.status), ok: cfg.status === 'ok' },
-      { label: '对话模型', value: provider ? `${provider.name} · ${provider.chat_model || '-'}` : '未配置' },
-      { label: '当前音色', value: activeVoice ? activeVoice.name : '未加载' },
-    ];
-    dom.gStatus.replaceChildren(
-      ...rows.map((r) => {
-        const row = document.createElement('div');
-        row.className = 'status-row';
-        const dot = document.createElement('span');
-        dot.className = r.ok ? 'st-dot ok' : 'st-dot';
-        const label = document.createElement('span');
-        label.className = 'st-label';
-        label.textContent = r.label;
-        const value = document.createElement('span');
-        value.className = 'st-value';
-        value.textContent = r.value;
-        row.append(dot, label, value);
-        return row;
-      })
-    );
-    dom.gAudioRetention.value = s.audio_retention_minutes || 30;
+
+    const isOk = cfg.status === 'ok';
+    const providerStr = provider ? `${provider.name} · ${provider.chat_model || '-'}` : '未配置';
+    const voiceStr = activeVoice ? activeVoice.name : '未加载';
+
+    const diagBackend = $('gDiagBackend');
+    const diagBackendDot = $('gDiagBackendDot');
+    const diagModel = $('gDiagModel');
+    const diagModelDot = $('gDiagModelDot');
+    const diagVoice = $('gDiagVoice');
+    const diagVoiceDot = $('gDiagVoiceDot');
+
+    if (diagBackend) diagBackend.textContent = isOk ? '运行正常' : String(cfg.status);
+    if (diagBackendDot) diagBackendDot.className = `diag-dot ${isOk ? 'ok' : ''}`;
+    if (diagModel) {
+      diagModel.textContent = providerStr;
+      diagModel.title = providerStr;
+    }
+    if (diagModelDot) diagModelDot.className = `diag-dot ${provider ? 'ok' : ''}`;
+    if (diagVoice) {
+      diagVoice.textContent = voiceStr;
+      diagVoice.title = voiceStr;
+    }
+    if (diagVoiceDot) diagVoiceDot.className = `diag-dot ${activeVoice ? 'ok' : ''}`;
+
+    // 语音与推理参数
+    if (dom.gParamSovitsUrl) dom.gParamSovitsUrl.value = s.gpt_sovits_url || 'http://127.0.0.1:9880';
+    if (dom.gPrecision) dom.gPrecision.value = s.inference_precision || 'auto';
+    if (dom.gParamSliceMethod) dom.gParamSliceMethod.value = s.text_split_method || 'cut5';
+    if (dom.gParamSpeed) {
+      dom.gParamSpeed.value = s.speed_factor !== undefined ? s.speed_factor : 1.0;
+      if (dom.gParamSpeedVal) dom.gParamSpeedVal.textContent = dom.gParamSpeed.value;
+    }
+    if (dom.gParamTopK) {
+      dom.gParamTopK.value = s.top_k || 15;
+      if (dom.gParamTopKVal) dom.gParamTopKVal.textContent = dom.gParamTopK.value;
+    }
+    if (dom.gParamTopP) {
+      dom.gParamTopP.value = s.top_p !== undefined ? s.top_p : 1.0;
+      if (dom.gParamTopPVal) dom.gParamTopPVal.textContent = dom.gParamTopP.value;
+    }
+    if (dom.gParamTemp) {
+      dom.gParamTemp.value = s.temperature !== undefined ? s.temperature : 1.0;
+      if (dom.gParamTempVal) dom.gParamTempVal.textContent = dom.gParamTemp.value;
+    }
+    if (dom.gParamFragmentInterval) dom.gParamFragmentInterval.value = s.fragment_interval !== undefined ? s.fragment_interval : 0.3;
+    if (dom.gAudioRetention) dom.gAudioRetention.value = s.audio_retention_minutes || 30;
+    if (dom.gDashRetentionVal) dom.gDashRetentionVal.textContent = `保留时长: ${s.audio_retention_minutes || 30} 分钟`;
+
+function updateTelegramFieldsVisibility() {
+  const enabled = dom.gTgEnabled ? dom.gTgEnabled.checked : false;
+  if (dom.gTgFieldsGroup) {
+    dom.gTgFieldsGroup.style.opacity = enabled ? '1' : '0.45';
+    dom.gTgFieldsGroup.style.pointerEvents = enabled ? 'auto' : 'none';
+  }
+}
+
+    // STT 与 Telegram
+    if (dom.gSttEngine) dom.gSttEngine.value = s.stt_engine || 'browser';
+    if (dom.gTgEnabled) {
+      dom.gTgEnabled.checked = Boolean(s.telegram_enabled);
+      updateTelegramFieldsVisibility();
+    }
     const token = s.telegram_bot_token || '';
     const masked = token.includes('****');
     dom.gTgToken.value = '';
     dom.gTgToken.placeholder = masked
       ? '已保存（输入新 Token 可覆盖）'
       : '未配置，如 123456:ABC-DEF…';
+    if (dom.gTgChatId) dom.gTgChatId.value = s.telegram_chat_id || '';
     dom.gTgProxyHost.value = s.telegram_proxy_host || '';
     dom.gTgProxyPort.value = s.telegram_proxy_port || '';
     dom.gTgProxyEnabled.checked = Boolean(s.telegram_proxy_enabled);
+
+    // 记忆与人设
+    if (dom.gMemoryEnabled) dom.gMemoryEnabled.checked = s.memory_enabled !== false;
+    if (dom.gUserNickname) dom.gUserNickname.value = s.user_nickname || '';
+    if (dom.gDefaultSystemPrompt) dom.gDefaultSystemPrompt.value = s.system_prompt || '';
   } catch (e) {
     dom.gStatus.textContent = '状态加载失败（后端未启动？）';
   }
@@ -1363,13 +1525,28 @@ async function saveGlobalConfig() {
   dom.gTgSave.disabled = true;
   try {
     const payload = {
+      gpt_sovits_url: dom.gParamSovitsUrl ? dom.gParamSovitsUrl.value.trim() || 'http://127.0.0.1:9880' : undefined,
+      inference_precision: dom.gPrecision ? dom.gPrecision.value : undefined,
+      text_split_method: dom.gParamSliceMethod ? dom.gParamSliceMethod.value : undefined,
+      speed_factor: dom.gParamSpeed ? Number(dom.gParamSpeed.value) : undefined,
+      top_k: dom.gParamTopK ? Number(dom.gParamTopK.value) : undefined,
+      top_p: dom.gParamTopP ? Number(dom.gParamTopP.value) : undefined,
+      temperature: dom.gParamTemp ? Number(dom.gParamTemp.value) : undefined,
+      fragment_interval: dom.gParamFragmentInterval ? Number(dom.gParamFragmentInterval.value) || 0.3 : undefined,
+      audio_retention_minutes: dom.gAudioRetention ? Math.max(1, Number(dom.gAudioRetention.value) || 30) : 30,
+      stt_engine: dom.gSttEngine ? dom.gSttEngine.value : undefined,
+      telegram_enabled: dom.gTgEnabled ? dom.gTgEnabled.checked : false,
+      telegram_chat_id: dom.gTgChatId ? dom.gTgChatId.value.trim() || undefined : undefined,
       telegram_proxy_enabled: dom.gTgProxyEnabled.checked,
       telegram_proxy_host: dom.gTgProxyHost.value.trim() || '127.0.0.1',
       telegram_proxy_port: Number(dom.gTgProxyPort.value) || 10809,
-      audio_retention_minutes: Math.max(1, Number(dom.gAudioRetention.value) || 30),
+      memory_enabled: dom.gMemoryEnabled ? dom.gMemoryEnabled.checked : true,
+      user_nickname: dom.gUserNickname ? dom.gUserNickname.value.trim() : undefined,
+      system_prompt: dom.gDefaultSystemPrompt ? dom.gDefaultSystemPrompt.value.trim() || undefined : undefined,
     };
     const token = dom.gTgToken.value.trim();
     if (token) payload.telegram_bot_token = token;
+
     const res = await fetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1377,8 +1554,17 @@ async function saveGlobalConfig() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-    showToast('全局配置已保存（Telegram 已热重载）', 'success');
+
+    if (dom.gPreset) {
+      saveGlobal({ ttsPreset: dom.gPreset.value });
+    }
+    if (dom.gAutoTranslate) {
+      saveGlobal({ autoTranslate: dom.gAutoTranslate.value === 'auto' });
+    }
+
+    showToast('全局配置已成功保存并实时生效', 'success');
     loadGlobalConfig();
+    fetchSystemTelemetry();
   } catch (e) {
     showToast(`保存失败: ${e.message || e}`, 'error');
   } finally {
@@ -1409,18 +1595,166 @@ async function testTelegram() {
     dom.gTgTest.disabled = false;
   }
 }
+
+// 选项卡切换
+if (dom.gTabs) {
+  dom.gTabs.querySelectorAll('.modal-tab-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      dom.gTabs.querySelectorAll('.modal-tab-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      const targetTab = btn.getAttribute('data-gtab');
+      dom.globalModal.querySelectorAll('.gtab-panel').forEach((p) => p.classList.add('hidden'));
+      const targetPanel = $(`gp-${targetTab}`);
+      if (targetPanel) targetPanel.classList.remove('hidden');
+      const modalBody = dom.globalModal ? dom.globalModal.querySelector('.modal-body') : null;
+      if (modalBody) modalBody.scrollTop = 0;
+    });
+  });
+}
+
+// 推理参数滑块数值联动
+if (dom.gParamSpeed) {
+  dom.gParamSpeed.addEventListener('input', (e) => { if (dom.gParamSpeedVal) dom.gParamSpeedVal.textContent = e.target.value; });
+}
+if (dom.gParamTopK) {
+  dom.gParamTopK.addEventListener('input', (e) => { if (dom.gParamTopKVal) dom.gParamTopKVal.textContent = e.target.value; });
+}
+if (dom.gParamTopP) {
+  dom.gParamTopP.addEventListener('input', (e) => { if (dom.gParamTopPVal) dom.gParamTopPVal.textContent = e.target.value; });
+}
+if (dom.gParamTemp) {
+  dom.gParamTemp.addEventListener('input', (e) => { if (dom.gParamTempVal) dom.gParamTempVal.textContent = e.target.value; });
+}
+
+// 刷新状态诊断
+if (dom.gBtnRefreshStatus) {
+  dom.gBtnRefreshStatus.addEventListener('click', () => {
+    fetchSystemTelemetry();
+    loadGlobalConfig();
+    showToast('诊断数据已刷新', 'info');
+  });
+}
+
+// 一键热重启 GPT-SoVITS 引擎
+if (dom.gBtnRestartSovits) {
+  dom.gBtnRestartSovits.addEventListener('click', async () => {
+    dom.gBtnRestartSovits.disabled = true;
+    dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>正在热重启...</span>';
+    try {
+      const res = await fetch('/api/system/restart_sovits', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      showToast(data.message || 'GPT-SoVITS 重启指令已发送', 'success');
+      setTimeout(() => {
+        fetchSystemTelemetry();
+        dom.gBtnRestartSovits.disabled = false;
+        dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>重启 SoVITS 引擎</span>';
+      }, 2500);
+    } catch (err) {
+      showToast(`重启失败: ${err.message}`, 'error');
+      dom.gBtnRestartSovits.disabled = false;
+      dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>重启 SoVITS 引擎</span>';
+    }
+  });
+}
+
+// 跳转至语音与推理设置
+const btnGoPrecision = $('gBtnGoPrecision');
+if (btnGoPrecision) {
+  btnGoPrecision.addEventListener('click', () => {
+    const tabBtn = dom.gTabs ? dom.gTabs.querySelector('[data-gtab="inference"]') : null;
+    if (tabBtn) tabBtn.click();
+  });
+}
+
+// 一键清空音频缓存
+if (dom.gBtnClearCache) {
+  dom.gBtnClearCache.addEventListener('click', async () => {
+    if (!confirm('确定要清空全部 TTS 离线音频缓存吗？清空后新请求将重新合成。')) return;
+    dom.gBtnClearCache.disabled = true;
+    try {
+      clearMemAudioCache();
+      if ('caches' in window) {
+        await caches.delete('gal2voice-audio-v1').catch(() => {});
+      }
+      const res = await fetch('/api/cache/clear', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      showToast(`缓存已清空：删除 ${data.deleted_files || 0} 个文件，释放 ${data.freed_mb || 0} MB`, 'success');
+      fetchSystemTelemetry();
+    } catch (err) {
+      showToast(`清空缓存失败: ${err.message}`, 'error');
+    } finally {
+      dom.gBtnClearCache.disabled = false;
+    }
+  });
+}
+
+// 测试模型连通性
+if (dom.gProviderTest) {
+  dom.gProviderTest.addEventListener('click', async () => {
+    dom.gProviderTest.disabled = true;
+    dom.gProviderTest.textContent = '测试中…';
+    try {
+      const isCustom = dom.gProvider.value === '__custom__';
+      const payload = {};
+      if (isCustom) {
+        payload.api_base_url = dom.gCustomBaseUrl.value.trim();
+        payload.api_key = dom.gCustomApiKey.value.trim();
+        payload.chat_model = dom.gCustomModel.value.trim();
+      } else {
+        payload.id = dom.gProvider.value;
+      }
+      const res = await fetch('/api/providers/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.success) {
+        showToast(`连接成功: 延迟 ${data.latency_ms || 0}ms`, 'success');
+      } else {
+        showToast(`连接测试失败: ${data.message || '未知错误'}`, 'error');
+      }
+    } catch (e) {
+      showToast(`测试请求异常: ${e.message}`, 'error');
+    } finally {
+      dom.gProviderTest.disabled = false;
+      dom.gProviderTest.textContent = '测试连通性';
+    }
+  });
+}
+
+// 恢复默认参数
+if (dom.gResetBtn) {
+  dom.gResetBtn.addEventListener('click', () => {
+    if (!confirm('确定要将全局参数恢复为推荐默认值吗？')) return;
+    if (dom.gParamSpeed) { dom.gParamSpeed.value = '1.0'; dom.gParamSpeedVal.textContent = '1.0'; }
+    if (dom.gParamTopK) { dom.gParamTopK.value = '15'; dom.gParamTopKVal.textContent = '15'; }
+    if (dom.gParamTopP) { dom.gParamTopP.value = '1.0'; dom.gParamTopPVal.textContent = '1.0'; }
+    if (dom.gParamTemp) { dom.gParamTemp.value = '1.0'; dom.gParamTempVal.textContent = '1.0'; }
+    if (dom.gParamSliceMethod) dom.gParamSliceMethod.value = 'cut5';
+    if (dom.gPrecision) dom.gPrecision.value = 'auto';
+    if (dom.gAudioRetention) dom.gAudioRetention.value = '30';
+    showToast('已恢复推荐数值，请点击【保存全局配置】生效', 'info');
+  });
+}
+
 dom.globalSettingsBtn.addEventListener('click', openGlobalSettings);
 dom.globalModal.querySelectorAll('[data-close]').forEach((btn) =>
   btn.addEventListener('click', () => closeModal(dom.globalModal))
 );
 dom.gProvider.addEventListener('change', syncCustomBox);
 dom.gProviderActivate.addEventListener('click', activateProvider);
+if (dom.gTgEnabled) dom.gTgEnabled.addEventListener('change', updateTelegramFieldsVisibility);
 dom.gTgTest.addEventListener('click', testTelegram);
 dom.gTgSave.addEventListener('click', saveGlobalConfig);
-dom.gPreset.addEventListener('change', () => {
-  saveGlobal({ ttsPreset: dom.gPreset.value });
-  showToast(dom.gPreset.value ? '语音质量预设已保存，对新消息生效' : '语音质量已恢复为后端默认', 'success');
-});
+if (dom.gPreset) {
+  dom.gPreset.addEventListener('change', () => {
+    saveGlobal({ ttsPreset: dom.gPreset.value });
+    showToast(dom.gPreset.value ? '语音质量预设已保存，对新消息生效' : '语音质量已恢复为后端默认', 'success');
+  });
+}
 if (dom.gAutoTranslate) {
   dom.gAutoTranslate.addEventListener('change', () => {
     const isAuto = dom.gAutoTranslate.value === 'auto';
@@ -1514,3 +1848,10 @@ updateVoiceModeUI();
 ensureSessionVoice(getActive());
 if (!voiceSupported() && !recorderSupported()) dom.micBtn.classList.add('hidden');
 if (window.innerWidth > 820) dom.input.focus();
+
+// 启动时检查 URL 是否携带设置参数（例如 /console 或 /settings 重定向过来的请求）
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('settings') === '1' || window.location.hash === '#settings') {
+  openGlobalSettings();
+}
+

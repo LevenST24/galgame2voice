@@ -5,9 +5,30 @@
  */
 
 const AUDIO_CACHE_NAME = 'gal2voice-audio-v1';
+const MAX_MEM_AUDIO_ENTRIES = 50;
 
-// L1 Memory cache for synchronous fast access within session
+// L1 Memory cache for synchronous fast access within session (bounded LRU)
 const memAudioMap = new Map();
+
+function storeInMemAudioMap(key, blob) {
+  if (memAudioMap.has(key)) {
+    memAudioMap.delete(key);
+  }
+  memAudioMap.set(key, blob);
+  if (memAudioMap.size > MAX_MEM_AUDIO_ENTRIES) {
+    const oldestKey = memAudioMap.keys().next().value;
+    if (oldestKey !== undefined) {
+      memAudioMap.delete(oldestKey);
+    }
+  }
+}
+
+/**
+ * Clears the in-memory audio blob cache.
+ */
+export function clearMemAudioCache() {
+  memAudioMap.clear();
+}
 
 function toCacheRequest(key) {
   const safeKey = String(key || '').replace(/^[/\\]+/, '');
@@ -22,7 +43,10 @@ function toCacheRequest(key) {
 export async function getCachedAudioBlob(key) {
   if (!key) return null;
   if (memAudioMap.has(key)) {
-    return memAudioMap.get(key);
+    const blob = memAudioMap.get(key);
+    memAudioMap.delete(key);
+    memAudioMap.set(key, blob);
+    return blob;
   }
   if (!('caches' in window)) return null;
 
@@ -32,7 +56,7 @@ export async function getCachedAudioBlob(key) {
     const res = await cache.match(req);
     if (res && res.ok) {
       const blob = await res.blob();
-      memAudioMap.set(key, blob);
+      storeInMemAudioMap(key, blob);
       return blob;
     }
   } catch (e) {
@@ -48,7 +72,7 @@ export async function getCachedAudioBlob(key) {
  */
 export async function putCachedAudioBlob(key, blob) {
   if (!key || !blob) return;
-  memAudioMap.set(key, blob);
+  storeInMemAudioMap(key, blob);
   if (!('caches' in window)) return;
 
   try {

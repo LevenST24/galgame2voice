@@ -5,6 +5,7 @@ and Tier 2 (Token Validation, Network Failures, Audio Conversion, Concurrent Use
 """
 
 import asyncio
+import logging
 from typing import Dict, Any, List, Optional
 import pytest
 from pydantic import BaseModel
@@ -531,5 +532,63 @@ class TestTelegramBotRealModules:
         cb_reset = CallbackUpdate("action_reset")
         await handlers.handle_callback_query(cb_reset, DummyContext())
         assert "清空" in (cb_reset.callback_query.answer_text or "")
+
+
+class TestTelegramOptionalFeature:
+    """Verifies that Telegram is strictly optional and produces zero terminal noise when disabled."""
+
+    @pytest.mark.asyncio
+    async def test_telegram_default_disabled(self, temp_db_path):
+        """Settings in SQLite must default telegram_enabled to False."""
+        from galgame2voice.database.session import get_db
+        from galgame2voice.database import crud
+        async with get_db(temp_db_path) as conn:
+            settings = await crud.get_settings_raw(conn)
+            assert settings.telegram_enabled is False
+
+    @pytest.mark.asyncio
+    async def test_manager_start_quiet_when_disabled(self, temp_db_path, caplog):
+        """When telegram_enabled=False, start() must return False quietly even if token is set."""
+        from galgame2voice.database.session import get_db
+        from galgame2voice.database import crud
+        from galgame2voice.database.models import SettingsUpdate
+
+        async with get_db(temp_db_path) as conn:
+            await crud.update_settings(
+                conn,
+                SettingsUpdate(
+                    telegram_enabled=False,
+                    telegram_bot_token="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz",
+                ),
+            )
+
+        manager = TelegramBotManager(db_path=temp_db_path)
+        with caplog.at_level(logging.INFO):
+            started = await manager.start()
+            assert started is False
+            assert manager.is_running is False
+            # Zero polling started, no warnings logged
+            assert not any("started successfully" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_config_api_toggles_telegram_enabled(self, temp_db_path):
+        """API allows enabling and disabling telegram seamlessly."""
+        from galgame2voice.database.session import get_db
+        from galgame2voice.database import crud
+        from galgame2voice.database.models import SettingsUpdate
+
+        async with get_db(temp_db_path) as conn:
+            # 1. Enable
+            res = await crud.update_settings(conn, SettingsUpdate(telegram_enabled=True))
+            assert res.telegram_enabled is True
+            raw = await crud.get_settings_raw(conn)
+            assert raw.telegram_enabled is True
+
+            # 2. Disable
+            res2 = await crud.update_settings(conn, SettingsUpdate(telegram_enabled=False))
+            assert res2.telegram_enabled is False
+            raw2 = await crud.get_settings_raw(conn)
+            assert raw2.telegram_enabled is False
+
 
 

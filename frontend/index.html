@@ -57,6 +57,13 @@
     <symbol id="i-check" viewBox="0 0 24 24">
       <path d="M20 6L9 17l-5-5"/>
     </symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24">
+      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+    </symbol>
+    <symbol id="i-sparkles" viewBox="0 0 24 24">
+      <path d="M12 3l1.9 4.8L18.7 9.7l-4.8 1.9L12 16.4l-1.9-4.8L5.3 9.7l4.8-1.9L12 3z"/>
+      <path d="M18.5 15.5l1 2.5 2.5 1-2.5 1-1 2.5-1-2.5-2.5-1 2.5-1 1-2.5z"/>
+    </symbol>
   </svg>
 
   <div class="app">
@@ -133,91 +140,277 @@
     </main>
   </div>
 
-  <!-- 全局设置（引擎层：音色 / 对话模型 / 语音质量，跨会话生效） -->
+  <!-- 全局控制与系统配置中心（系统诊断 / 语音推理 / 大模型与STT / Telegram / 记忆与人设） -->
   <div class="overlay hidden" id="globalModal">
-    <div class="modal" role="dialog" aria-modal="true" aria-label="全局设置">
+    <div class="modal modal-lg" role="dialog" aria-modal="true" aria-label="全局控制与系统配置">
       <header class="modal-head">
-        <h2>全局设置</h2>
+        <div>
+          <h2>全局控制与系统配置</h2>
+          <span class="modal-sub">实时诊断、推理精度、服务配置与跨会话引擎控制</span>
+        </div>
         <button class="icon-btn" data-close aria-label="关闭"><svg class="icon"><use href="#i-x"></use></svg></button>
       </header>
+      <div class="modal-tabs" id="gTabs">
+        <button type="button" class="modal-tab-btn active" data-gtab="dashboard">
+          <svg class="icon"><use href="#i-activity"></use></svg>
+          <span>状态诊断</span>
+        </button>
+        <button type="button" class="modal-tab-btn" data-gtab="inference">
+          <svg class="icon"><use href="#i-sliders"></use></svg>
+          <span>语音与推理</span>
+        </button>
+        <button type="button" class="modal-tab-btn" data-gtab="models">
+          <svg class="icon"><use href="#i-sparkles"></use></svg>
+          <span>模型与识别</span>
+        </button>
+        <button type="button" class="modal-tab-btn" data-gtab="telegram">
+          <svg class="icon"><use href="#i-send"></use></svg>
+          <span>Telegram</span>
+        </button>
+        <button type="button" class="modal-tab-btn" data-gtab="memory">
+          <svg class="icon"><use href="#i-quill"></use></svg>
+          <span>记忆与人设</span>
+        </button>
+      </div>
       <div class="modal-body">
-        <div class="field">
-          <label>系统状态</label>
-          <div class="status-line" id="gStatus">加载中…</div>
+        <!-- 选项卡 1: 系统状态看板 -->
+        <div class="gtab-panel" id="gp-dashboard">
+          <div class="status-cards-grid">
+            <div class="status-card-box">
+              <div class="status-card-head">
+                <span class="status-card-title">
+                  <span class="card-icon-dot">🎙️</span>
+                  <span>GPT-SoVITS 语音引擎</span>
+                </span>
+                <span id="gDashSovitsBadge" class="badge-status-pill badge-pill-yellow">检测中</span>
+              </div>
+              <div class="status-card-body">
+                <div class="status-card-main" id="gDashSovitsStatus">正在连接...</div>
+                <div class="status-card-sub" id="gDashSovitsUrl">http://127.0.0.1:9880</div>
+              </div>
+              <div class="status-card-act">
+                <button type="button" class="btn-card-action" id="gBtnRestartSovits">
+                  <svg class="icon"><use href="#i-play"></use></svg>
+                  <span>重启 SoVITS 引擎</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="status-card-box">
+              <div class="status-card-head">
+                <span class="status-card-title">
+                  <span class="card-icon-dot">⚡</span>
+                  <span>推理计算精度</span>
+                </span>
+                <span id="gDashPrecisionBadge" class="badge-status-pill badge-pill-indigo">FP16</span>
+              </div>
+              <div class="status-card-body">
+                <div class="status-card-main" id="gDashPrecisionVal">⚡ FP16 半精度</div>
+                <div class="status-card-sub" id="gDashDeviceVal">硬件加速中</div>
+              </div>
+              <div class="status-card-act">
+                <button type="button" class="btn-card-action" id="gBtnGoPrecision">
+                  <svg class="icon"><use href="#i-sliders"></use></svg>
+                  <span>调整精度与参数 →</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="status-card-box">
+              <div class="status-card-head">
+                <span class="status-card-title">
+                  <span class="card-icon-dot">💻</span>
+                  <span>服务与硬件资源</span>
+                </span>
+                <span class="badge-status-pill badge-pill-green">正常</span>
+              </div>
+              <div class="status-card-body">
+                <div class="status-card-main" id="gDashHardwareVal">服务内存: 统计中...</div>
+                <div class="status-card-sub" id="gDashUptimeVal">PID: - · 运行: -</div>
+              </div>
+              <div class="status-card-act">
+                <span class="status-card-meta-tag" id="gDashHostRam">系统可用: -</span>
+              </div>
+            </div>
+
+            <div class="status-card-box">
+              <div class="status-card-head">
+                <span class="status-card-title">
+                  <span class="card-icon-dot">📦</span>
+                  <span>TTS 离线音频缓存</span>
+                </span>
+                <span class="badge-status-pill badge-pill-gray">缓存</span>
+              </div>
+              <div class="status-card-body">
+                <div class="status-card-main" id="gDashCacheVal">0 文件 · 0.0 MB</div>
+                <div class="status-card-sub" id="gDashRetentionVal">保留时长: 30 分钟</div>
+              </div>
+              <div class="status-card-act">
+                <button type="button" class="btn-card-action btn-card-action-danger" id="gBtnClearCache">
+                  <svg class="icon"><use href="#i-trash"></use></svg>
+                  <span>立即清空缓存</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="diag-banner">
+            <div class="diag-banner-left" id="gStatus">
+              <div class="diag-chip">
+                <span class="diag-dot ok" id="gDiagBackendDot"></span>
+                <span class="diag-chip-label">网关:</span>
+                <span class="diag-chip-val" id="gDiagBackend">运行正常</span>
+              </div>
+              <div class="diag-chip">
+                <span class="diag-dot ok" id="gDiagModelDot"></span>
+                <span class="diag-chip-label">模型:</span>
+                <span class="diag-chip-val" id="gDiagModel">未配置</span>
+              </div>
+              <div class="diag-chip">
+                <span class="diag-dot" id="gDiagVoiceDot"></span>
+                <span class="diag-chip-label">音色:</span>
+                <span class="diag-chip-val" id="gDiagVoice">未加载</span>
+              </div>
+            </div>
+            <button type="button" class="btn-diag-refresh" id="gBtnRefreshStatus">
+              <svg class="icon"><use href="#i-activity"></use></svg>
+              <span>刷新遥测</span>
+            </button>
+          </div>
         </div>
-        <div class="field">
-          <label>对话模型（LLM）<b id="gProviderActive"></b></label>
-          <select id="gProvider"></select>
-        </div>
-        <div id="gCustomBox" class="custom-provider-box hidden">
+
+        <!-- 选项卡 2: 语音与推理参数 -->
+        <div class="gtab-panel hidden" id="gp-inference">
           <div class="field">
-            <label>名称</label>
-            <input id="gCustomName" placeholder="如 我的本地 Ollama" autocomplete="off" />
+            <label>GPT-SoVITS 服务地址 (base_url)</label>
+            <input id="gParamSovitsUrl" placeholder="http://127.0.0.1:9880" autocomplete="off" />
           </div>
           <div class="field">
-            <label>Base URL（OpenAI 兼容）</label>
-            <input id="gCustomBaseUrl" placeholder="https://api.openai.com/v1 或 http://127.0.0.1:11434/v1" autocomplete="off" />
+            <label>GPT-SoVITS 推理精度 (Inference Precision)</label>
+            <select id="gPrecision">
+              <option value="auto">自动判定 (Auto - 根据硬件与试声自动选择)</option>
+              <option value="fp16">FP16 半精度 (推荐，显存占用降低 50%，推理加速)</option>
+              <option value="fp32">FP32 单精度 (通用兼容，彻底防止特定显卡静音)</option>
+            </select>
+            <small style="color: var(--text-3); font-size: 11.5px;">修改后请保存并在「状态诊断」中点击【重启 SoVITS 引擎】生效。</small>
+          </div>
+          <div style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), rgba(168, 85, 247, 0.08)); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: 8px; padding: 14px 16px; margin: 14px 0;">
+            <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13.5px; color: var(--primary);">
+              <span>✨</span>
+              <span>AI 动态语速与情感韵律全自动生成</span>
+            </div>
+            <div style="font-size: 12px; color: var(--text-2); margin-top: 6px; line-height: 1.6;">
+              语速（Speed）、断句切分节奏、语气情感（喜怒哀乐/傲娇等）均已由大模型结合当前会话上下文、台词意图与角色设定全自动动态生成并注入语音引擎，无需在此处手动调整固定的语速与切分滑块。
+            </div>
+          </div>
+
+          <div class="field">
+            <label>音频缓存保留时长 (分钟，超时自动清空)</label>
+            <input id="gAudioRetention" type="number" min="1" max="10080" step="1" value="30" />
           </div>
           <div class="field">
-            <label>API Key（本地服务可留空）</label>
-            <input id="gCustomApiKey" type="password" placeholder="sk-…（仅提交给本机后端）" autocomplete="off" />
+            <label>日文双语翻译行为</label>
+            <select id="gAutoTranslate">
+              <option value="manual">手动（点击消息底部的“翻译”按钮）</option>
+              <option value="auto">自动（新消息生成后自动展开中文翻译）</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 选项卡 3: 模型与识别配置 -->
+        <div class="gtab-panel hidden" id="gp-models">
+          <div class="field">
+            <label>对话模型提供商（LLM）<b id="gProviderActive"></b></label>
+            <select id="gProvider"></select>
+          </div>
+          <div id="gCustomBox" class="custom-provider-box hidden">
+            <div class="field">
+              <label>提供商名称</label>
+              <input id="gCustomName" placeholder="如 我的本地 Ollama" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label>Base URL（OpenAI 兼容）</label>
+              <input id="gCustomBaseUrl" placeholder="https://api.openai.com/v1 或 http://127.0.0.1:11434/v1" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label>API Key（本地服务可留空）</label>
+              <input id="gCustomApiKey" type="password" placeholder="sk-…（仅提交给本机后端）" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label>模型名称</label>
+              <input id="gCustomModel" placeholder="如 qwen3.6-plus / llama3" autocomplete="off" />
+            </div>
+          </div>
+          <div class="field-row-2">
+            <div class="field">
+              <button type="button" class="btn ghost" id="gProviderTest">测试连通性</button>
+            </div>
+            <div class="field">
+              <button type="button" class="btn primary" id="gProviderActivate">启用此模型</button>
+            </div>
+          </div>
+          <div class="field-group-title">语音输入识别 (STT)</div>
+          <div class="field">
+            <label>STT 语音识别引擎</label>
+            <select id="gSttEngine">
+              <option value="browser">浏览器原生 Web Speech API (推荐，零GPU开销，即说即转)</option>
+              <option value="sensevoice">本地 SenseVoice-Small (极速精准，支持情感与多语言)</option>
+              <option value="whisper">OpenAI Whisper (多语言离线识别)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 选项卡 4: Telegram 机器人 -->
+        <div class="gtab-panel hidden" id="gp-telegram">
+          <label class="check-line" style="font-weight: 600; font-size: 13.5px; margin-bottom: 12px; padding: 6px 8px; background: var(--bg-hover); border-radius: 6px; cursor: pointer;">
+            <input type="checkbox" id="gTgEnabled" /> 启用 Telegram 机器人（未启用时完全不启动后台轮询与网络请求）
+          </label>
+          <div id="gTgFieldsGroup" style="opacity: 0.45; pointer-events: none; transition: opacity 0.2s ease;">
+            <div class="field">
+              <label>Bot Token</label>
+              <input id="gTgToken" type="password" placeholder="123456:ABC-DEF…" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label>允许访问的 Telegram Chat ID（可选，逗号分隔，留空不限制）</label>
+              <input id="gTgChatId" placeholder="例如 123456789" autocomplete="off" />
+            </div>
+            <div class="field-row-2">
+              <div class="field">
+                <label>代理地址</label>
+                <input id="gTgProxyHost" placeholder="127.0.0.1" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label>代理端口</label>
+                <input id="gTgProxyPort" type="number" min="1" max="65535" placeholder="10809" />
+              </div>
+            </div>
+            <label class="check-line"><input type="checkbox" id="gTgProxyEnabled" /> 启用代理连接 Telegram</label>
+            <div class="field" style="margin-top: 4px;">
+              <button type="button" class="btn ghost" id="gTgTest">测试 Telegram 连接</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 选项卡 5: 记忆与人设 -->
+        <div class="gtab-panel hidden" id="gp-memory">
+          <label class="check-line" style="font-weight: 600;">
+            <input type="checkbox" id="gMemoryEnabled" checked /> 启用长期记忆增强系统 (提取玩家关键信息并注入上下文)
+          </label>
+          <div class="field">
+            <label>用户在对话中的称呼 / 昵称 (User Nickname)</label>
+            <input id="gUserNickname" placeholder="例如：夏目 / 老师 / 指挥官 / 亲爱的" autocomplete="off" />
           </div>
           <div class="field">
-            <label>模型名</label>
-            <input id="gCustomModel" placeholder="如 qwen3.6-plus / llama3" autocomplete="off" />
+            <label>全局默认人设提示词 (System Prompt 模板)</label>
+            <textarea id="gDefaultSystemPrompt" rows="6" placeholder="创建新会话时的默认系统设定..."></textarea>
           </div>
         </div>
-        <div class="field">
-          <button type="button" class="btn primary" id="gProviderActivate">启用此模型</button>
-        </div>
-        <div class="field">
-          <label>TTS 语音质量预设（新消息生效）</label>
-          <select id="gPreset">
-            <option value="">跟随后端默认</option>
-            <option value="high_quality">高质量 · 合成较慢</option>
-            <option value="balanced">均衡</option>
-            <option value="low_latency">低延迟 · 最快出声</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>翻译</label>
-          <select id="gAutoTranslate">
-            <option value="manual">手动（点击“翻译”按钮）</option>
-            <option value="auto">自动（新消息自动展开）</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>音频缓存保留时长（分钟，过期自动清理）</label>
-          <input id="gAudioRetention" type="number" min="1" max="10080" step="1" />
-        </div>
-        <div class="field-group-title">Telegram 机器人</div>
-        <div class="field">
-          <label>Bot Token</label>
-          <input id="gTgToken" type="password" placeholder="" autocomplete="off" />
-        </div>
-        <div class="field-row-2">
-          <div class="field">
-            <label>代理地址</label>
-            <input id="gTgProxyHost" placeholder="127.0.0.1" autocomplete="off" />
-          </div>
-          <div class="field">
-            <label>代理端口</label>
-            <input id="gTgProxyPort" type="number" min="1" max="65535" placeholder="10809" />
-          </div>
-        </div>
-        <label class="check-line"><input type="checkbox" id="gTgProxyEnabled" /> 启用代理连接 Telegram</label>
-        <div class="field-row-2">
-          <div class="field">
-            <button type="button" class="btn ghost" id="gTgTest">测试连接</button>
-          </div>
-          <div class="field">
-            <button type="button" class="btn primary" id="gTgSave">保存全局配置</button>
-          </div>
-        </div>
-        <p class="modal-note">角色音色按会话绑定：在右上角「会话设置」里为每个会话选择音色，即可和不同角色聊天。保存 Telegram 配置后机器人立即热重载。</p>
       </div>
       <footer class="modal-foot">
-        <button class="btn ghost" data-close>关闭</button>
+        <button type="button" class="btn ghost danger" id="gResetBtn">恢复默认</button>
+        <span class="foot-spacer"></span>
+        <button type="button" class="btn ghost" data-close>关闭</button>
+        <button type="button" class="btn primary" id="gTgSave">保存全局配置</button>
       </footer>
     </div>
   </div>

@@ -36,32 +36,24 @@ class TestConsoleRoutesAndRedirects:
     """Verifies clean routing and redirection for /settings.html, /console, and /settings."""
 
     @pytest.mark.asyncio
-    async def test_serve_settings_html_200(self):
-        """Verifies GET /settings.html serves the Web Management Console with HTTP 200."""
+    async def test_serve_settings_html_redirects_to_spa(self):
+        """Verifies GET /settings.html redirects to the unified SPA /?settings=1 with HTTP 307."""
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
             resp = await client.get("/settings.html")
-            assert resp.status_code == 200
-            assert "text/html" in resp.headers.get("content-type", "")
-            content = resp.text
-            assert "galgame2voice - 控制台与系统配置" in content
-            assert "系统状态看板" in content
-            assert "LLM / STT 模型" in content
-            assert "角色音色管理" in content
-            assert "推理与切分参数" in content
-            assert "Telegram 机器人" in content
-            assert "安全与密钥控制" in content
+            assert resp.status_code == 307
+            assert resp.headers["location"] == "/?settings=1"
 
     @pytest.mark.asyncio
     async def test_console_redirect_to_settings_html(self):
-        """Verifies GET /console returns a 307 redirect to /settings.html."""
+        """Verifies GET /console returns a 307 redirect to /?settings=1."""
         app = create_app()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
             resp = await client.get("/console")
             assert resp.status_code == 307
-            assert resp.headers["location"] == "/settings.html"
+            assert resp.headers["location"] == "/?settings=1"
 
     @pytest.mark.asyncio
     async def test_console_redirect_preserves_query_parameters(self):
@@ -71,17 +63,17 @@ class TestConsoleRoutesAndRedirects:
         async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
             resp = await client.get("/console?token=sec123&lang=zh")
             assert resp.status_code == 307
-            assert resp.headers["location"] == "/settings.html?token=sec123&lang=zh"
+            assert resp.headers["location"] == "/?settings=1&token=sec123&lang=zh"
 
     @pytest.mark.asyncio
     async def test_settings_alias_redirect(self):
-        """Verifies GET /settings alias redirect to /settings.html."""
+        """Verifies GET /settings alias redirect to /?settings=1."""
         app = create_app()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
             resp = await client.get("/settings")
             assert resp.status_code == 307
-            assert resp.headers["location"] == "/settings.html"
+            assert resp.headers["location"] == "/?settings=1"
 
 
 # ============================================================================

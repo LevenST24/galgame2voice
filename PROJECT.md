@@ -32,9 +32,12 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 | 17 | Startup Performance Acceleration & Zero-Lag Launch | Eliminated cmd.exe UTF-8 seek drift in `启动.bat`, removed blocking Google Fonts links in `index.html` preventing 15-30s browser stalls, added `-I` isolated mode & loopback proxy bypass for GPT-SoVITS engine, replaced browser launcher with 50ms raw loopback HTTPConnection probe, pre-seeded active voice profile in `lifespan` and eliminated redundant GPU model reloads in `switch_voice_profile` | M3_FINAL_VERIFICATION | Startup optimization pass (DONE) |
 | 18 | Cross-Device Deployment Resilience & De-Bloat | Unified reference-audio path resolution (`resolve_existing_audio_path`/`to_project_relative_path` in `path_guard`, replacing 4 hand-rolled resolution sites; profiles now save project-relative paths for machine portability), single-source engine address parsed from `GPT_SOVITS_BASE_URL` replacing hardcoded 9880 in launcher, loopback-any-port CORS regex, memory guard sunk into `VoiceManager.switch_profile` with device-scaled threshold `max(1.0, total_gb*0.12)` (covers Telegram/auto-bind paths), cgroup detection consolidated into `utils/hardware.py` (-140 duplicated lines), platform-aware engine runtime interpreter candidates, dual-platform SILENT_AUDIO_ERROR guidance, legacy frontend routes kept by parallel session decision, safe-area composer padding | M3_FINAL_VERIFICATION | Cross-device optimization pass (DONE) |
 | 19 | Evidence-Based Precision Calibration (Probe replaces GPU whitelist) | Deleted the `is_turing_tu116_tu117_gpu` GPU-model-name whitelist entirely (hardware.py, run_server.py branches, health telemetry `turing_fp32_active`→`fp32_forced`). New `utils/precision.py` store (`data/precision.json`, keyed to engine dir, BOM-safe). Launcher now: reads `GPT_SOVITS_PRECISION` env override > verified cache > FP16 default; after engine readiness synthesizes a one-sentence probe via `/tts` and checks `wav_peak_amplitude` — FP16 silent → auto-restarts engine with FP32 → re-probes → caches verified result. Inconclusive probes never cache. Refactored spawn into `_spawn_sovits_process` (reused for FP32 restart). No user knowledge required; any future GPU auto-adapts | M3_FINAL_VERIFICATION | Precision calibration pass (DONE) |
-
-
-
+| 20 | Repository Quarantine & Asset Exclusion | Hardened `.gitignore` (all weight formats, temp audio, explicit characters recursion, data/audio_cache, temp_test/tmp_check, fix line 82 CRLF), update `scripts/package_release.py` | M4_HARDENING | Survey R1 (DONE) |
+| 21 | 16GB RAM Memory Lifecycle Reclamation | `release_system_memory()` with `gc.collect()` + PyTorch empty_cache in `hardware.py`; invoked before memory guard and on model switch in `voice_manager.py` | M4_HARDENING | Survey R2 (DONE) |
+| 22 | Frontend Memory & Listener De-allocation | Bounded LRU cache for audio blobs (50 entries) in `frontend/src/cache.js`, clean listener detachment via `curAudio.ontimeupdate` in `main.js`, rebuild assets | M4_HARDENING | Survey R2 (DONE) |
+| 23 | URL Authority Userinfo Credential Masking | Sanitize `user:password@host` in `MaskingFilter.PATTERNS` in `utils/logger.py` to prevent credential leaks in stdout/file logs on connection errors | M4_HARDENING | Survey R3 (DONE) |
+| 24 | Code Hygiene & v2.0 Documentation | Fix F821 undefined `updated` -> `updated_settings` in `routers/config.py:166`, remove dead imports, update `README.md` with AI Dynamic Voice, env vars, SPA settings | M4_HARDENING | Survey R4 (DONE) |
+| 25 | Full Test Suite Calibration & 100% Pass Verification | Fix `test_adversarial_m2_challenger2.py:412` (style.css path) and `test_character_manager.py:472` (soundfile dependency), verify 100% tests pass | M4_HARDENING | Survey R5 (DONE) |
 
 ---
 
@@ -45,6 +48,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 | 1 | M1_SECURITY | Security & Zero-Leakage Hardening: Logger traceback masking, token redaction in HTTP/SSE/Telegram errors, relative path telemetry, memory prompt injection defense | none | DONE |
 | 2 | M2_PERF_STABILITY | Performance & Stability Hardening: Microsecond TTS cache reordering, WAL shutdown checkpoint, test probe calibration for 100% test reliability | M1_SECURITY | DONE |
 | 3 | M3_FINAL_VERIFICATION | Final Milestone: 100% E2E test pass across all tiers, adversarial challenger hardening (Tier 5), and Forensic Auditor integrity verification | M0_E2E_TESTS, M2_PERF_STABILITY | DONE |
+| 4 | M4_HARDENING | Pre-Release Hardening & Repository Hygiene Finalization: R1-R5 implementations, zero model/database tracking, memory lifecycle reclamation, credential masking, code hygiene, README update, and 100% test pass rate | M3_FINAL_VERIFICATION | DONE |
 
 ---
 

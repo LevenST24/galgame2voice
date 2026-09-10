@@ -16,10 +16,7 @@ Pipeline hardening (v2.1):
 """
 
 import asyncio
-import json
 import logging
-import math
-import re
 import time
 import uuid
 import wave
@@ -28,7 +25,6 @@ from pathlib import Path
 
 import aiosqlite
 
-from galgame2voice.config import get_settings
 from galgame2voice.adapters.base import ChatMessage, BaseLLMAdapter
 from galgame2voice.adapters.registry import get_llm_adapter
 from galgame2voice.database import crud

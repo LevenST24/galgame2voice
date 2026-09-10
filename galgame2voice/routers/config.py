@@ -5,18 +5,15 @@ real-time connectivity testing, and model discovery.
 """
 
 import asyncio
-import json
 import logging
 import time
 from typing import Any, Dict, List, Optional, Union
 import httpx
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from galgame2voice.adapters.base import TestResult
 from galgame2voice.adapters.registry import (
     get_llm_adapter,
-    get_stt_adapter,
     list_provider_presets,
     get_provider_preset,
 )
@@ -24,11 +21,9 @@ from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
 from galgame2voice.database.models import (
     SettingsInDB,
-    SettingsResponse,
     SettingsUpdate,
     ProviderCreate,
     ProviderUpdate,
-    ProviderResponse,
 )
 from galgame2voice.security import url_guard
 from galgame2voice.telegram_bot.proxy import get_proxy_url
@@ -156,17 +151,42 @@ async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, 
         except Exception as exc:
             logger.error("Failed to hot-apply GPT-SoVITS URL '%s': %s", new_sovits_url, exc)
 
-    # Hot-reload Telegram Bot service when Telegram credentials/proxy change
-    tg_keys = {"telegram_bot_token", "telegram_bot_username", "telegram_proxy_enabled", "telegram_proxy_host", "telegram_proxy_port"}
+    # Hot-reload Telegram Bot service when Telegram credentials/proxy/enabled state change
+    tg_keys = {"telegram_enabled", "telegram_bot_token", "telegram_bot_username", "telegram_proxy_enabled", "telegram_proxy_host", "telegram_proxy_port"}
     if any(k in sanitized_updates for k in tg_keys):
         try:
             from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
             tg_manager = get_telegram_bot_manager()
             await tg_manager.stop()
-            await tg_manager.start()
-            logger.info("Telegram Bot service hot-reloaded with new configuration.")
+            if getattr(updated_settings, "telegram_enabled", False):
+                await tg_manager.start()
+                logger.info("Telegram Bot service hot-reloaded with new configuration.")
+            else:
+                logger.info("Telegram Bot service is disabled.")
         except Exception as exc:
             logger.warning("Failed to hot-reload Telegram Bot: %s", exc)
+
+    # Sync precision cache when inference_precision is updated
+    new_precision = sanitized_updates.get("inference_precision")
+    if new_precision:
+        try:
+            from galgame2voice.utils.precision import write_precision_cache
+            from galgame2voice.config import get_settings
+            app_settings = get_settings()
+            sovits_dir_file = app_settings.project_root / "data" / "sovits_dir.txt"
+            sovits_dir_str = sovits_dir_file.read_text(encoding="utf-8").strip() if sovits_dir_file.exists() else ""
+            prec_lower = str(new_precision).lower()
+            if prec_lower in ("fp16", "half"):
+                write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=True)
+            elif prec_lower in ("fp32", "float32"):
+                write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=False)
+            elif prec_lower == "auto":
+                cache_file = app_settings.project_root / "data" / "precision.json"
+                if cache_file.exists():
+                    cache_file.unlink(missing_ok=True)
+            logger.info("Inference precision configuration synced: %s", new_precision)
+        except Exception as exc:
+            logger.warning("Failed to sync precision cache on config update: %s", exc)
 
     return {
         "status": "success",

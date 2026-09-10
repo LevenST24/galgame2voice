@@ -495,11 +495,11 @@ class TestConsoleRoutingAndDefensiveBoundaries:
             query = "token=%27%20OR%201=1--&script=%3Cscript%3Ealert(1)%3C/script%3E&name=%E5%A5%88%E9%A1%BB%E3%81%8D%E3%81%AE%E3%81%93"
             resp = await client.get(f"/console?{query}")
             assert resp.status_code == 307
-            assert resp.headers["location"] == f"/settings.html?{query}"
+            assert resp.headers["location"] == f"/?settings=1&{query}"
 
             resp2 = await client.get(f"/settings?{query}")
             assert resp2.status_code == 307
-            assert resp2.headers["location"] == f"/settings.html?{query}"
+            assert resp2.headers["location"] == f"/?settings=1&{query}"
 
     @pytest.mark.asyncio
     async def test_config_update_with_unknown_and_invalid_fields(self):

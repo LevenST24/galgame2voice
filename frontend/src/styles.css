@@ -856,3 +856,273 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   .messages { scroll-behavior: auto; }
 }
+
+/* ============ 全局控制台增强弹窗 ============ */
+.modal-lg {
+  width: min(780px, 95vw);
+  height: min(650px, 88dvh);
+  display: flex;
+  flex-direction: column;
+}
+.modal-lg .modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.modal-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-soft);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.modal-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  border-radius: 9px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  background: transparent;
+  white-space: nowrap;
+  transition: all 0.18s var(--ease);
+}
+.modal-tab-btn .icon {
+  font-size: 14.5px;
+  color: var(--text-3);
+  transition: color 0.18s;
+}
+.modal-tab-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.65);
+}
+.modal-tab-btn:hover .icon {
+  color: var(--brand);
+}
+.modal-tab-btn.active {
+  color: var(--brand-ink);
+  font-weight: 600;
+  background: #ffffff;
+  border-color: var(--line);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+.modal-tab-btn.active .icon {
+  color: var(--brand);
+}
+.gtab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.gtab-panel.hidden {
+  display: none;
+}
+
+/* 状态诊断卡片 2x2 对称网格 */
+.status-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+@media (max-width: 580px) {
+  .status-cards-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.status-card-box {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 128px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+.status-card-box:hover {
+  border-color: var(--brand-line);
+  box-shadow: var(--shadow-1);
+}
+.status-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.status-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.card-icon-dot {
+  font-size: 13px;
+  line-height: 1;
+}
+.status-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+.status-card-main {
+  font-size: 15.5px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.status-card-sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-card-act {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.btn-card-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+.btn-card-action .icon {
+  font-size: 11.5px;
+}
+.btn-card-action:hover {
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+  border-color: var(--brand-line);
+}
+.btn-card-action-danger {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: rgba(217, 83, 79, 0.2);
+}
+.btn-card-action-danger:hover {
+  background: #fee2e2;
+  color: #b91c1c;
+  border-color: rgba(217, 83, 79, 0.35);
+}
+.status-card-meta-tag {
+  display: inline-block;
+  font-size: 11.5px;
+  color: var(--text-3);
+  background: var(--panel-soft);
+  padding: 3px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+
+.badge-status-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: center;
+  line-height: 1.4;
+}
+.badge-pill-green { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
+.badge-pill-red { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+.badge-pill-yellow { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
+.badge-pill-indigo { background: #eef2ff; color: #4f46e5; border: 1px solid #c7d2fe; }
+.badge-pill-gray { background: #f3f4f6; color: #4b5563; border: 1px solid #e5e7eb; }
+
+/* 底部全局遥测横条 */
+.diag-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin-top: 2px;
+}
+.diag-banner-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.diag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.diag-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #9ca3af;
+  flex-shrink: 0;
+}
+.diag-dot.ok {
+  background: #10b981;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+}
+.diag-chip-label {
+  font-weight: 500;
+  color: var(--text-3);
+}
+.diag-chip-val {
+  font-weight: 600;
+  color: var(--text);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.btn-diag-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--brand-ink);
+  background: #ffffff;
+  border: 1px solid var(--brand-line);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  flex-shrink: 0;
+}
+.btn-diag-refresh .icon {
+  font-size: 13px;
+  color: var(--brand);
+}
+.btn-diag-refresh:hover {
+  background: var(--brand-soft);
+  border-color: var(--brand);
+}
+

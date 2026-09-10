@@ -29,10 +29,12 @@ class SettingsBase(BaseModel):
     telegram_proxy_host: str = "127.0.0.1"
     telegram_proxy_port: int = Field(default=10809, ge=1, le=65535)
     telegram_proxy_enabled: bool = False
+    telegram_enabled: bool = False  # Explicit toggle: False by default to prevent polling/terminal spam
     telegram_admin_ids: str = ""  # Comma-separated Telegram user IDs allowed to run admin commands
     allow_private_llm_endpoints: bool = False  # Permit private/loopback LLM provider base URLs
     console_url: str = ""
     max_history_messages: int = Field(default=10, ge=1, le=100)
+    inference_precision: str = "auto"  # "auto" (probe), "fp16" (half), or "fp32" (single)
 
 
 class SettingsUpdate(BaseModel):
@@ -50,6 +52,7 @@ class SettingsUpdate(BaseModel):
     batch_size: Optional[int] = Field(default=None, ge=1, le=16)
     text_split_method: Optional[str] = None
     fragment_interval: Optional[float] = Field(default=None, ge=0.0, le=5.0)
+    telegram_enabled: Optional[bool] = None
     telegram_bot_token: Optional[str] = None
     telegram_bot_username: Optional[str] = None
     telegram_proxy_host: Optional[str] = None
@@ -59,6 +62,7 @@ class SettingsUpdate(BaseModel):
     allow_private_llm_endpoints: Optional[bool] = None
     console_url: Optional[str] = None
     max_history_messages: Optional[int] = Field(default=None, ge=1, le=100)
+    inference_precision: Optional[str] = None
 
 
 class SettingsInDB(SettingsBase):

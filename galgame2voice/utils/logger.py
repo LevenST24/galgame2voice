@@ -88,6 +88,11 @@ class MaskingFilter(logging.Filter):
             ),
             r"\1****",
         ),
+        # 13. URLs with embedded user credentials (http://user:password@host, socks5://user:pass@host)
+        (
+            re.compile(r"((?:[a-zA-Z0-9+.-]+)://[^:@/\s]+:)([^@/\s]+)(@)"),
+            r"\1****\3",
+        ),
     ]
 
     @classmethod
@@ -211,6 +216,10 @@ def setup_logger(
         for h in uv_logger.handlers:
             h.addFilter(masking_filter)
             h.setFormatter(formatter)
+
+    # Suppress chatty external loggers from flooding terminal output during polling
+    for noisy in ("httpx", "httpcore", "telegram", "telegram.ext"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     logger = logging.getLogger("galgame2voice")
     logger.info("Logging initialized at level %s with zero-leakage security filter and formatter", log_level.upper())

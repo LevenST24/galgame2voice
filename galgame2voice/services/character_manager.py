@@ -12,10 +12,10 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional
 
 import aiosqlite
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from galgame2voice.config import get_settings
 

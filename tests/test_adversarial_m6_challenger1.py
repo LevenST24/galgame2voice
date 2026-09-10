@@ -669,7 +669,7 @@ class TestTelegramBotAdversarial:
         from galgame2voice.database.models import SettingsUpdate
         from galgame2voice.database import crud
         async with aiosqlite.connect(m6_temp_db) as conn:
-            await crud.update_settings(conn, SettingsUpdate(telegram_bot_token="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"))
+            await crud.update_settings(conn, SettingsUpdate(telegram_enabled=True, telegram_bot_token="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"))
 
         with patch("galgame2voice.telegram_bot.bot.ApplicationBuilder", FakeBuilder):
             # Start and stop 5 times in rapid succession
@@ -733,7 +733,7 @@ class TestTelegramBotAdversarial:
         from galgame2voice.database.models import SettingsUpdate
         from galgame2voice.database import crud
         async with aiosqlite.connect(m6_temp_db) as conn:
-            await crud.update_settings(conn, SettingsUpdate(telegram_bot_token="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"))
+            await crud.update_settings(conn, SettingsUpdate(telegram_enabled=True, telegram_bot_token="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"))
 
         with patch("galgame2voice.telegram_bot.bot.ApplicationBuilder", ExplodingBuilder):
             started = await manager.start()

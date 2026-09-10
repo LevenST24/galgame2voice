@@ -22,6 +22,8 @@ from galgame2voice.utils.hardware import (
 )
 import scripts.run_server as rs
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 # ============================================================================
 # 1. Hardware Utility Tests
@@ -281,25 +283,28 @@ class TestStaticAssetCaching:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             # Request under /static/assets/ (real existing asset)
-            resp = await client.get("/static/assets/index-C5oKplHJ.js")
+            static_assets = list((PROJECT_ROOT / "galgame2voice" / "static" / "assets").glob("index-*.js"))
+            asset_name = static_assets[0].name if static_assets else "index-C1humFBM.js"
+            resp = await client.get(f"/static/assets/{asset_name}")
             assert resp.status_code == 200
             assert "cache-control" in resp.headers
             assert resp.headers["cache-control"] == "public, max-age=31536000, immutable"
 
             # Request under /static/ (non-assets)
-            resp_css = await client.get("/static/css/console.css")
-            assert resp_css.status_code == 200
-            assert "cache-control" in resp_css.headers
-            assert resp_css.headers["cache-control"] == "public, max-age=3600"
+            resp_js = await client.get("/static/js/audio_player.js")
+            assert resp_js.status_code == 200
+            assert "cache-control" in resp_js.headers
+            assert resp_js.headers["cache-control"] == "public, max-age=3600"
 
-            # Entry point index.html or settings.html
+            # Entry point index.html
             resp_index = await client.get("/")
             assert resp_index.status_code == 200
             assert resp_index.headers.get("cache-control") == "no-cache"
 
+            # Legacy /settings.html redirects to unified SPA
             resp_settings = await client.get("/settings.html")
-            assert resp_settings.status_code == 200
-            assert resp_settings.headers.get("cache-control") == "no-cache"
+            assert resp_settings.status_code == 307
+            assert resp_settings.headers["location"] == "/?settings=1"
 
     @pytest.mark.asyncio
     async def test_static_assets_error_status_not_cached_immutably(self):
@@ -316,6 +321,8 @@ class TestStaticAssetCaching:
         app = create_app()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/static/assets/index-C5oKplHJ.js")
+            static_assets = list((PROJECT_ROOT / "galgame2voice" / "static" / "assets").glob("index-*.js"))
+            asset_name = static_assets[0].name if static_assets else "index-C1humFBM.js"
+            resp = await client.post(f"/static/assets/{asset_name}")
             # POST should not receive immutable static cache header
             assert "immutable" not in resp.headers.get("cache-control", "")

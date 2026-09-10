@@ -7,10 +7,8 @@ rejecting path traversal attempts, symlink escapes, UNC paths, and Windows devic
 
 import os
 import re
-import sys
-import urllib.parse
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import List, Optional, Sequence, Union
 
 from galgame2voice.config import get_settings
 

@@ -55,7 +55,7 @@ class TestRedirectQueryPreservation:
         async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
             resp = await client.get(f"{route}?tab=providers&filter=openai")
             assert resp.status_code == 307
-            assert resp.headers["location"] == "/settings.html?tab=providers&filter=openai"
+            assert resp.headers["location"] == "/?settings=1&tab=providers&filter=openai"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -77,30 +77,30 @@ class TestRedirectQueryPreservation:
             for route in ["/console", "/settings"]:
                 resp = await client.get(f"{route}?{query_string}")
                 assert resp.status_code == 307
-                expected_target = f"/settings.html?{query_string}"
+                expected_target = f"/?settings=1&{query_string}"
                 assert resp.headers["location"] == expected_target
 
     @pytest.mark.asyncio
     async def test_redirect_no_query_has_no_trailing_question_mark(self):
-        """Verifies naked /console and /settings redirect to /settings.html without dangling '?'."""
+        """Verifies naked /console and /settings redirect to /?settings=1 without dangling '?'."""
         app = create_app()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
             for route in ["/console", "/settings"]:
                 resp = await client.get(route)
                 assert resp.status_code == 307
-                assert resp.headers["location"] == "/settings.html"
+                assert resp.headers["location"] == "/?settings=1"
 
     @pytest.mark.asyncio
     async def test_follow_redirect_delivers_200_html(self):
-        """Verifies following the 307 redirect lands successfully on /settings.html with HTTP 200."""
+        """Verifies following the 307 redirect lands successfully on / with HTTP 200."""
         app = create_app()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
             resp = await client.get("/console?tab=voice&profile=1")
             assert resp.status_code == 200
             assert "text/html" in resp.headers.get("content-type", "")
-            assert "galgame2voice" in resp.text
+            assert "Gal2Voice" in resp.text or "galgame2voice" in resp.text
 
 
 # ============================================================================

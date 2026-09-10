@@ -34,11 +34,10 @@ node_modules/
 frontend/node_modules/
 frontend/dist/
 
-# galgame2voice runtime data, audio cache & logs
+# galgame2voice runtime data, databases & logs
 data/
-audio/*
-!audio/references/
-!audio/references/**
+data/audio_cache/
+data/audio_cache/**
 logs/
 *.db
 *.db-journal
@@ -46,6 +45,18 @@ logs/
 *.db-shm
 *.pid
 *.log
+
+# Audio, recordings, scratch & caches
+audio/*
+temp_audio/
+temp_cache_mem/
+temp_test/
+tmp_check/
+*.wav
+*.mp3
+*.ogg
+!audio/references/
+!audio/references/**
 
 # Testing & Coverage
 .pytest_cache/
@@ -55,8 +66,7 @@ htmlcov/
 .tox/
 .nox/
 
-# Temporary runtime scratch dirs
-temp_cache_mem/
+# Temporary runtime scratch files
 temp.db
 
 # IDE & Editor files
@@ -74,9 +84,13 @@ desktop.ini
 # Temporary agent scratchpads
 .agents/
 
-# Character packages (user assets, distributed separately, drop into characters/ to use)
+# Character packages & model weights (user assets, distributed separately)
+characters/
 characters/*
+characters/**/*
 !characters/.gitkeep
-*.ckpt
 *.pth
-
+*.ckpt
+*.bin
+*.safetensors
+*.onnx

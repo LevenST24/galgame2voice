@@ -24,7 +24,11 @@ EXCLUDE_DIRS = {
     ".pytest_cache",
     ".ruff_cache",
     "node_modules",
+    "temp_audio",
     "temp_cache_mem",
+    "temp_test",
+    "tmp_check",
+    ".agents",
     "dist",
     "build",
     "galgame2voice.egg-info",
@@ -40,6 +44,9 @@ EXCLUDE_EXTENSIONS = {
     ".db-shm",
     ".log",
     ".pid",
+    ".bin",
+    ".safetensors",
+    ".onnx",
 }
 
 EXCLUDE_EXACT_FILES = {

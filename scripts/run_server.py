@@ -21,13 +21,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from galgame2voice.utils.hardware import (
-    detect_gpu_capability as _hw_detect_gpu_capability,
-    get_system_memory_status as _hw_get_system_memory_status,
-)
 from galgame2voice.utils.precision import (
     read_precision_cache,
-    resolve_initial_is_half,
     write_precision_cache,
 )
 
@@ -791,7 +786,7 @@ def _calibrate_precision_after_ready(sovits_dir: Path, host: str, port: int, is_
             print("      [精度校准] 此设备已记录为 FP32 模式 (FP16 半精度输出纯静音)。")
 
 
-def ensure_gpt_sovits_running(fp16: bool = False):
+def ensure_gpt_sovits_running(fp16: bool = False, fp32: bool = False, precision: Optional[str] = None):
     """Checks the configured engine address; if not running, discovers and launches GPT-SoVITS API daemon."""
     sovits_host, sovits_port = get_sovits_host_port()
     print(f"[1/2] 正在检测 GPT-SoVITS 语音推理引擎 ({sovits_host}:{sovits_port})...")
@@ -812,22 +807,41 @@ def ensure_gpt_sovits_running(fp16: bool = False):
     print(f"      [..] 定位到 GPT-SoVITS: {sovits_dir}")
     print("      [..] 正在后台拉起 GPT-SoVITS API 引擎...")
 
-    # Precision resolution: Enforce FP32 (is_half=False) by default on all machines.
-    # Optional --fp16 CLI flag allows advanced users to explicitly choose half-precision.
-    if fp16:
+    # Precision resolution order:
+    # 1. CLI explicit flags: --precision fp16/fp32 or --fp16/--fp32
+    # 2. Environment variable: GPT_SOVITS_PRECISION
+    # 3. Saved setting / cache: data/precision.json
+    # 4. Fallback: auto-detect (initial FP16, calibrate via probe)
+    prec_opt = (precision or "").lower()
+    if fp16 or prec_opt == "fp16":
         is_half = True
         precision_source = "cli"
         print("      [推理精度] 已指定 --fp16 半精度模式运行。")
+    elif fp32 or prec_opt == "fp32":
+        is_half = False
+        precision_source = "cli"
+        print("      [推理精度] 已指定 --fp32 单精度模式运行。")
     else:
         env_precision = os.environ.get("GPT_SOVITS_PRECISION", "").strip().lower()
         if env_precision in ("fp16", "half", "true", "1"):
             is_half = True
             precision_source = "env"
             print("      [推理精度] 已通过 GPT_SOVITS_PRECISION 手动指定 FP16 半精度。")
-        else:
+        elif env_precision in ("fp32", "float32", "false", "0"):
             is_half = False
-            precision_source = "default_fp32"
-            print("      [推理精度] 默认使用 FP32 单精度模式 (保证全设备发声正常，零静音故障)。")
+            precision_source = "env"
+            print("      [推理精度] 已通过 GPT_SOVITS_PRECISION 手动指定 FP32 单精度。")
+        else:
+            cached = read_precision_cache(PROJECT_ROOT)
+            if cached and "is_half" in cached:
+                is_half = bool(cached["is_half"])
+                precision_source = "cache"
+                prec_str = "FP16 半精度" if is_half else "FP32 单精度"
+                print(f"      [推理精度] 使用已保存的配置: {prec_str} (来源: data/precision.json)")
+            else:
+                is_half = True
+                precision_source = "default"
+                print("      [推理精度] 未指定固定精度，进入自动校准模式 (初始 FP16，就绪后验证发声)。")
     try:
         proc = _spawn_sovits_process(sovits_dir, sovits_host, sovits_port, is_half)
 
@@ -944,10 +958,22 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         help="Run pre-flight environment & hardware diagnostics, print report, and exit cleanly (exit code 0 if healthy, 1 if fatal)",
     )
     parser.add_argument(
+        "--precision",
+        choices=["fp16", "fp32", "auto"],
+        default=None,
+        help="Inference precision: fp16 (half-precision), fp32 (single-precision), or auto (probe-calibrated)",
+    )
+    parser.add_argument(
         "--fp16",
         action="store_true",
         default=False,
-        help="Enable half-precision (FP16) inference (default is FP32 for universal compatibility)",
+        help="Enable half-precision (FP16) inference (alias for --precision fp16)",
+    )
+    parser.add_argument(
+        "--fp32",
+        action="store_true",
+        default=False,
+        help="Force single-precision (FP32) inference (alias for --precision fp32)",
     )
     return parser.parse_args(args)
 
@@ -962,7 +988,7 @@ def main(args: list[str] | None = None):
         sys.exit(1)
 
     try:
-        diag = run_hardware_diagnostics()
+        run_hardware_diagnostics()
     except Exception as e:
         print(f"\n[错误] 硬件巡检诊断异常: {e}")
         sys.exit(1)
@@ -977,7 +1003,11 @@ def main(args: list[str] | None = None):
 
     try:
         # Step 1: GPT-SoVITS
-        ensure_gpt_sovits_running(fp16=getattr(parsed, "fp16", False))
+        ensure_gpt_sovits_running(
+            fp16=getattr(parsed, "fp16", False),
+            fp32=getattr(parsed, "fp32", False),
+            precision=getattr(parsed, "precision", None),
+        )
 
         # Step 2: Determine & Probe Port
         preferred_port = parsed.port

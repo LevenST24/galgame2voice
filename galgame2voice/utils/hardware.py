@@ -332,3 +332,23 @@ def detect_gpu_capability() -> Tuple[bool, str, Optional[int]]:
         return True, nvidia_names[0], len(nvidia_names)
 
     return False, gpu_names[0], len(gpu_names)
+
+
+def release_system_memory() -> None:
+    """
+    Explicitly invokes Python garbage collection and safely clears PyTorch
+    cached memory allocations (CUDA / MPS) if PyTorch is loaded.
+    Prevents resident memory accumulation during model swaps on constrained hosts (e.g. 16GB RAM).
+    """
+    import gc
+    gc.collect()
+    if "torch" in sys.modules:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+                torch.mps.empty_cache()
+        except Exception:
+            pass
+

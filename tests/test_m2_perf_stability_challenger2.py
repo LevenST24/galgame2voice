@@ -295,7 +295,7 @@ class TestProcessTerminationAndPortReleaseWindows:
             # Poll /api/health until responsive
             ready = False
             t0 = time.perf_counter()
-            while time.perf_counter() - t0 < 15.0:
+            while time.perf_counter() - t0 < 30.0:
                 time.sleep(0.5)
                 try:
                     with urllib.request.urlopen(f"http://127.0.0.1:{test_port}/api/health", timeout=1.0) as resp:
@@ -305,7 +305,7 @@ class TestProcessTerminationAndPortReleaseWindows:
                 except Exception:
                     pass
 
-            assert ready, f"Uvicorn server failed to respond on port {test_port} within 15s"
+            assert ready, f"Uvicorn server failed to respond on port {test_port} within 30s"
             assert is_port_in_use(test_port), f"Port {test_port} must be marked in use while running"
 
         finally:

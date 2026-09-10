@@ -24,7 +24,7 @@ from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
     get_gpt_sovits_client,
 )
-from galgame2voice.utils.hardware import get_system_memory_status
+from galgame2voice.utils.hardware import get_system_memory_status, release_system_memory
 
 logger = logging.getLogger("galgame2voice.services.voice_manager")
 
@@ -190,6 +190,7 @@ class VoiceManager:
         # with too little free memory OOM-crashes the engine. Sits here (not in the HTTP
         # layer) so every call path — REST, Telegram, auto-bind — gets the same guard.
         if not force and not os.getenv("GALGAME2VOICE_SKIP_MEM_CHECK"):
+            release_system_memory()
             _, free_gb = get_system_memory_status()
             min_free_gb = _get_switch_min_free_memory_gb()
             if free_gb is not None and free_gb < min_free_gb:
@@ -199,7 +200,9 @@ class VoiceManager:
                 )
 
         # 2. Execute 3-step atomic model switch with auto-rollback
+        release_system_memory()
         success = await self.client.switch_voice_profile(profile_obj, force=force)
+        release_system_memory()
         if not success:
             logger.error("Failed to switch GPT-SoVITS model weights for target: %s", target)
             return False

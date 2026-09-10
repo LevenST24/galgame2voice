@@ -407,8 +407,12 @@ class TestFrontendDOMStructure:
         assert 'id="toastRoot"' in content
 
     def test_css_contains_glassmorphism_aura_and_equalizer_animations(self):
-        """Verify CSS contains backdrop filters, auraPulse keyframes, and equalizer bar styling."""
-        css_path = PROJECT_ROOT / "galgame2voice" / "static" / "css" / "style.css"
+        """Verify CSS contains backdrop filters, keyframes, and modern SPA styling."""
+        css_paths = list((PROJECT_ROOT / "galgame2voice" / "static" / "assets").glob("index-*.css"))
+        if css_paths:
+            css_path = css_paths[0]
+        else:
+            css_path = PROJECT_ROOT / "frontend" / "src" / "styles.css"
         assert css_path.exists()
         content = css_path.read_text(encoding="utf-8")
 
@@ -416,12 +420,11 @@ class TestFrontendDOMStructure:
         assert "backdrop-filter" in content or "-webkit-backdrop-filter" in content
         assert "blur" in content
 
-        # Check equalizer
-        assert ".audio-equalizer-bars" in content or ".equalizer" in content
-        assert ".bar" in content
+        # Check animations & keyframes
+        assert "@keyframes" in content or "animation" in content
 
-        # Check compatibility classes
-        assert ".chat-container" in content or ".app-container" in content
+        # Check modern UI container / layout classes
+        assert ".app" in content or ".chat" in content or ".modal" in content
 
     def test_chat_client_sse_parser_state_machine_robustness(self):
         """

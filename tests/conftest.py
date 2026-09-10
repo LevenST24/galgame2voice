@@ -310,11 +310,13 @@ CREATE TABLE IF NOT EXISTS settings (
     telegram_proxy_host TEXT NOT NULL DEFAULT '127.0.0.1',
     telegram_proxy_port INTEGER NOT NULL DEFAULT 10809,
     telegram_proxy_enabled INTEGER NOT NULL DEFAULT 0,
+    telegram_enabled INTEGER NOT NULL DEFAULT 0,
     telegram_admin_ids TEXT NOT NULL DEFAULT '',
     allow_private_llm_endpoints INTEGER NOT NULL DEFAULT 0,
     console_token TEXT NOT NULL DEFAULT 'test_console_token',
     console_url TEXT NOT NULL DEFAULT '',
     max_history_messages INTEGER NOT NULL DEFAULT 10,
+    inference_precision TEXT NOT NULL DEFAULT 'auto',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

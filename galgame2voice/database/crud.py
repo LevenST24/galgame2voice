@@ -3,7 +3,6 @@ Asynchronous CRUD operations for SQLite persistence in galgame2voice.
 Handles schema migrations, seed initializations, data queries, and key masking.
 """
 
-import re
 import hmac
 import json
 import logging
@@ -16,14 +15,12 @@ import aiosqlite
 from galgame2voice.database.models import (
     SettingsInDB, SettingsResponse, SettingsUpdate,
     ProviderInDB, ProviderResponse, ProviderCreate, ProviderUpdate,
-    VoiceProfileInDB, VoiceProfileResponse, VoiceProfileCreate, VoiceProfileUpdate,
-    SessionInDB, SessionResponse, SessionCreate, SessionUpdate,
-    MessageInDB, MessageResponse, MessageCreate,
-    TtsOptions,
-    UserMemoryInDB, UserMemoryResponse, UserMemoryCreate, UserMemoryUpdate,
-    CharacterAffectionInDB, CharacterAffectionResponse, CharacterAffectionCreate, CharacterAffectionUpdate,
-    TtsCacheEntry, CacheStatsResponse, TokenUsageMetric, MetricsOverviewResponse,
-    ProviderMetricItem, ProvidersMetricsResponse, LatencyTrendItem, LatencyTrendResponse
+    VoiceProfileResponse, VoiceProfileCreate, VoiceProfileUpdate,
+    SessionResponse,
+    MessageResponse, MessageCreate,
+    UserMemoryResponse, UserMemoryCreate, UserMemoryUpdate,
+    CharacterAffectionResponse, CharacterAffectionUpdate,
+    TtsCacheEntry,
 )
 from galgame2voice.database.session import (
     immediate_transaction,
@@ -118,9 +115,11 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
             telegram_proxy_host TEXT NOT NULL DEFAULT '127.0.0.1',
             telegram_proxy_port INTEGER NOT NULL DEFAULT 10809,
             telegram_proxy_enabled INTEGER NOT NULL DEFAULT 0,
+            telegram_enabled INTEGER NOT NULL DEFAULT 0,
             console_token TEXT NOT NULL DEFAULT '',
             console_url TEXT NOT NULL DEFAULT '',
             max_history_messages INTEGER NOT NULL DEFAULT 10,
+            inference_precision TEXT NOT NULL DEFAULT 'auto',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -356,14 +355,14 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
                 speed_factor, temperature, top_k, top_p, seed, batch_size,
                 text_split_method, fragment_interval, telegram_bot_token,
                 telegram_bot_username, telegram_proxy_host, telegram_proxy_port,
-                telegram_proxy_enabled, console_token, console_url, max_history_messages
+                telegram_proxy_enabled, telegram_enabled, console_token, console_url, max_history_messages
             ) VALUES (
                 1, 'deepseek', 1, 'http://127.0.0.1:9880',
                 'audio', 30, 600,
                 1.0, 1.0, 15, 1.0, -1, 1,
                 'cut1', 0.3, '',
                 'natsume_siki_bot', '127.0.0.1', 10809,
-                0, ?, '', 10
+                0, 0, ?, '', 10
             );
         """, (token,))
 
@@ -395,6 +394,8 @@ async def _migration_v3_security_and_indexes(conn: aiosqlite.Connection) -> None
     for col, col_type in [
         ("telegram_admin_ids", "TEXT NOT NULL DEFAULT ''"),
         ("allow_private_llm_endpoints", "INTEGER NOT NULL DEFAULT 0"),
+        ("inference_precision", "TEXT NOT NULL DEFAULT 'auto'"),
+        ("telegram_enabled", "INTEGER NOT NULL DEFAULT 0"),
     ]:
         await _add_column_if_missing(conn, "settings", col, col_type)
 
@@ -529,13 +530,11 @@ async def auto_heal_voice_profiles(conn: aiosqlite.Connection) -> int:
     it automatically updates the path to a verified existing bundled reference audio file.
     Returns the number of healed profiles.
     """
-    from pathlib import Path
     from galgame2voice.config import get_settings
-    from galgame2voice.utils.path_guard import resolve_existing_audio_path, to_project_relative_path
+    from galgame2voice.utils.path_guard import resolve_existing_audio_path
     settings = get_settings()
     project_root = settings.project_root
 
-    bundled_gentle = project_root / "audio" / "references" / "natsume" / "gentle.ogg"
     char_gentle = project_root / "characters" / "四季夏目" / "refs" / "gentle.ogg"
     bundled_nat = project_root / "audio" / "nat002_032.ogg"
 
@@ -634,6 +633,7 @@ async def get_settings_raw(conn: aiosqlite.Connection) -> SettingsInDB:
         if row:
             data = dict(row)
             data["telegram_proxy_enabled"] = bool(data.get("telegram_proxy_enabled", 0))
+            data["telegram_enabled"] = bool(data.get("telegram_enabled", 0))
             data["allow_private_llm_endpoints"] = bool(data.get("allow_private_llm_endpoints", 0))
             return SettingsInDB(**data)
     except Exception:
@@ -649,6 +649,7 @@ async def get_settings_raw(conn: aiosqlite.Connection) -> SettingsInDB:
             active_provider_id=kv.get("active_provider_id", "deepseek"),
             active_voice_profile_id=int(kv.get("active_voice_profile_id", 1)) if kv.get("active_voice_profile_id") else 1,
             max_history_messages=int(kv.get("max_history_messages", 10)) if kv.get("max_history_messages") else 10,
+            telegram_enabled=bool(int(kv.get("telegram_enabled", 0))) if kv.get("telegram_enabled") else False,
         )
     except Exception:
         return SettingsInDB(id=1)
@@ -681,10 +682,7 @@ async def update_settings(conn: aiosqlite.Connection, updates: SettingsUpdate) -
             if v is not None and not is_masked_key(str(v)):
                 fields.append(f"{k} = ?")
                 values.append(str(v).strip())
-        elif k == "telegram_proxy_enabled":
-            fields.append(f"{k} = ?")
-            values.append(1 if v else 0)
-        elif k == "allow_private_llm_endpoints":
+        elif k in ("telegram_enabled", "telegram_proxy_enabled", "allow_private_llm_endpoints"):
             fields.append(f"{k} = ?")
             values.append(1 if v else 0)
         elif k == "telegram_admin_ids":
