@@ -85,9 +85,7 @@ desktop.ini
 .agents/
 
 # Character packages & model weights (user assets, distributed separately)
-characters/
 characters/*
-characters/**/*
 !characters/.gitkeep
 *.pth
 *.ckpt
