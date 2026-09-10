@@ -27,7 +27,13 @@ from galgame2voice.utils.hardware import (
     detect_gpu_capability,
     get_system_memory_status,
 )
-from galgame2voice.utils.precision import read_precision_cache
+from galgame2voice.utils.precision import (
+    read_precision_cache,
+    read_db_precision,
+    resolve_initial_is_half,
+    write_precision_cache,
+    write_sovits_yaml_is_half,
+)
 
 router = APIRouter(tags=["Health & Diagnostics"])
 
@@ -301,21 +307,18 @@ def _collect_hardware_telemetry_sync() -> HardwareTelemetry:
     total_ram, avail_ram = get_system_memory_status()
     gpu_avail, gpu_name = _get_gpu_telemetry_cached()
     project_root = get_settings().project_root
-    cached = read_precision_cache(project_root)
+    sovits_dir_file = project_root / "data" / "sovits_dir.txt"
+    sovits_dir = Path(sovits_dir_file.read_text(encoding="utf-8").strip()) if sovits_dir_file.exists() else project_root
 
+    is_half, _ = resolve_initial_is_half(project_root, sovits_dir)
+    active_prec = "FP16" if is_half else "FP32"
+
+    cfg_prec = read_db_precision(project_root) or "auto"
     env_prec = os.environ.get("GPT_SOVITS_PRECISION", "").strip().lower()
     if env_prec in ("fp16", "half", "true", "1"):
-        active_prec = "FP16"
         cfg_prec = "fp16"
     elif env_prec in ("fp32", "float32", "false", "0"):
-        active_prec = "FP32"
         cfg_prec = "fp32"
-    elif cached and "is_half" in cached:
-        active_prec = "FP16" if cached["is_half"] else "FP32"
-        cfg_prec = "fp16" if cached["is_half"] else "fp32"
-    else:
-        active_prec = "FP32" if _engine_fp32_forced() else "FP16"
-        cfg_prec = "auto"
 
     return HardwareTelemetry(
         gpu_available=gpu_avail,
@@ -426,12 +429,20 @@ async def system_status(request: Request):
     )
 
 
+class RestartSovitsPayload(BaseModel):
+    """Optional payload for restarting GPT-SoVITS subprocess with explicit precision."""
+    precision: Optional[str] = Field(
+        default=None,
+        description="Optional precision override: 'fp16', 'fp32', or 'auto'. If omitted, uses current setting.",
+    )
+
+
 @router.post(
     "/api/system/restart_sovits",
     summary="Restart GPT-SoVITS Engine Subprocess",
     dependencies=[Depends(require_auth)],
 )
-async def restart_sovits_endpoint():
+async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None):
     """
     Terminates the existing GPT-SoVITS process and restarts it with the
     latest precision configuration (FP16 / FP32).
@@ -450,8 +461,50 @@ async def restart_sovits_endpoint():
             detail=f"GPT-SoVITS 目录不存在: {sovits_dir}",
         )
 
-    from galgame2voice.utils.precision import resolve_initial_is_half
-    is_half, source = resolve_initial_is_half(settings.project_root, sovits_dir)
+    # Determine precision target
+    req_prec = str(payload.precision).strip().lower() if (payload and payload.precision) else None
+    if req_prec in ("fp32", "float32"):
+        is_half = False
+        source = "request"
+        write_precision_cache(settings.project_root, str(sovits_dir), is_half=False)
+        write_sovits_yaml_is_half(sovits_dir, is_half=False)
+        try:
+            from galgame2voice.database.session import get_db
+            from galgame2voice.database import crud
+            from galgame2voice.database.models import SettingsUpdate
+            async with get_db() as conn:
+                await crud.update_settings(conn, SettingsUpdate(inference_precision="fp32"))
+        except Exception:
+            pass
+    elif req_prec in ("fp16", "half"):
+        is_half = True
+        source = "request"
+        write_precision_cache(settings.project_root, str(sovits_dir), is_half=True)
+        write_sovits_yaml_is_half(sovits_dir, is_half=True)
+        try:
+            from galgame2voice.database.session import get_db
+            from galgame2voice.database import crud
+            from galgame2voice.database.models import SettingsUpdate
+            async with get_db() as conn:
+                await crud.update_settings(conn, SettingsUpdate(inference_precision="fp16"))
+        except Exception:
+            pass
+    elif req_prec == "auto":
+        cache_file = settings.project_root / "data" / "precision.json"
+        cache_file.unlink(missing_ok=True)
+        try:
+            from galgame2voice.database.session import get_db
+            from galgame2voice.database import crud
+            from galgame2voice.database.models import SettingsUpdate
+            async with get_db() as conn:
+                await crud.update_settings(conn, SettingsUpdate(inference_precision="auto"))
+        except Exception:
+            pass
+        is_half, source = resolve_initial_is_half(settings.project_root, sovits_dir)
+        write_sovits_yaml_is_half(sovits_dir, is_half)
+    else:
+        is_half, source = resolve_initial_is_half(settings.project_root, sovits_dir)
+        write_sovits_yaml_is_half(sovits_dir, is_half)
 
     pid_file = settings.project_root / "gptsovits.pid"
     old_pid = None
@@ -488,6 +541,7 @@ async def restart_sovits_endpoint():
             "status": "ok",
             "message": f"GPT-SoVITS 语音引擎已按 {prec_desc} 成功重启 (PID: {proc.pid})",
             "is_half": is_half,
+            "precision": "FP16" if is_half else "FP32",
             "pid": proc.pid,
             "source": source,
         }

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Gal2Voice · AI 多会话对话</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
-  <script type="module" crossorigin src="/static/assets/index-Dc5mL30U.js"></script>
+  <script type="module" crossorigin src="/static/assets/index-CN7KOI_s.js"></script>
   <link rel="stylesheet" crossorigin href="/static/assets/index-Cbnwx-vJ.css">
 </head>
 <body>
@@ -209,10 +209,14 @@
                 <div class="status-card-main" id="gDashPrecisionVal">⚡ FP16 半精度</div>
                 <div class="status-card-sub" id="gDashDeviceVal">硬件加速中</div>
               </div>
-              <div class="status-card-act">
-                <button type="button" class="btn-card-action" id="gBtnGoPrecision">
+              <div class="status-card-act" style="display: flex; gap: 6px;">
+                <button type="button" class="btn-card-action" id="gBtnTogglePrecision" title="一键切换 FP16/FP32 精度并重启">
+                  <svg class="icon"><use href="#i-refresh"></use></svg>
+                  <span id="gBtnTogglePrecisionText">切换为 FP32 重启</span>
+                </button>
+                <button type="button" class="btn-card-action" id="gBtnGoPrecision" title="调整详细参数">
                   <svg class="icon"><use href="#i-sliders"></use></svg>
-                  <span>调整精度与参数 →</span>
+                  <span>配置 →</span>
                 </button>
               </div>
             </div>

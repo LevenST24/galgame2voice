@@ -460,6 +460,17 @@ async def _migration_v4_prompts_and_self_healing(conn: aiosqlite.Connection) -> 
         pass
 
 
+async def _migration_v5_precision_and_column_integrity(conn: aiosqlite.Connection) -> None:
+    """Migration 5: Ensure settings table has inference_precision and all security/runtime columns."""
+    for col, col_type in [
+        ("inference_precision", "TEXT NOT NULL DEFAULT 'auto'"),
+        ("telegram_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("telegram_admin_ids", "TEXT NOT NULL DEFAULT ''"),
+        ("allow_private_llm_endpoints", "INTEGER NOT NULL DEFAULT 0"),
+    ]:
+        await _add_column_if_missing(conn, "settings", col, col_type)
+
+
 async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
     """
     Executes SQLite schema migrations idempotently using PRAGMA user_version.
@@ -487,6 +498,11 @@ async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
         current_version = 4
         await set_schema_version(conn, 4)
 
+    if current_version < 5:
+        await _migration_v5_precision_and_column_integrity(conn)
+        current_version = 5
+        await set_schema_version(conn, 5)
+
     return current_version
 
 
@@ -494,6 +510,15 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     """Create tables, indexes, apply schema version migrations, and guarantee credentials."""
     conn.row_factory = aiosqlite.Row
     await run_schema_migrations(conn)
+
+    # Always ensure settings columns exist even on existing databases with legacy schema history
+    for col, col_type in [
+        ("inference_precision", "TEXT NOT NULL DEFAULT 'auto'"),
+        ("telegram_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("telegram_admin_ids", "TEXT NOT NULL DEFAULT ''"),
+        ("allow_private_llm_endpoints", "INTEGER NOT NULL DEFAULT 0"),
+    ]:
+        await _add_column_if_missing(conn, "settings", col, col_type)
 
     # Guarantee a console token exists so the API is never left unauthenticated.
     # The freshly generated token is logged once so the owner can retrieve it.

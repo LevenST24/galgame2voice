@@ -123,6 +123,8 @@ const dom = {
   gDashSovitsStatus: $('gDashSovitsStatus'),
   gDashSovitsUrl: $('gDashSovitsUrl'),
   gBtnRestartSovits: $('gBtnRestartSovits'),
+  gBtnTogglePrecision: $('gBtnTogglePrecision'),
+  gBtnTogglePrecisionText: $('gBtnTogglePrecisionText'),
   gDashPrecisionBadge: $('gDashPrecisionBadge'),
   gDashPrecisionVal: $('gDashPrecisionVal'),
   gDashDeviceVal: $('gDashDeviceVal'),
@@ -1392,6 +1394,9 @@ async function fetchSystemTelemetry() {
         if (dom.gDashPrecisionVal) {
           dom.gDashPrecisionVal.textContent = isFp16 ? '⚡ FP16 半精度' : '🛡️ FP32 单精度';
         }
+        if (dom.gBtnTogglePrecisionText) {
+          dom.gBtnTogglePrecisionText.textContent = isFp16 ? '切换为 FP32 重启' : '切换为 FP16 重启';
+        }
         if (dom.gDashDeviceVal) {
           dom.gDashDeviceVal.textContent = data.hardware.gpu_name ? data.hardware.gpu_name : 'CPU 兼容模式';
         }
@@ -1641,7 +1646,15 @@ if (dom.gBtnRestartSovits) {
     dom.gBtnRestartSovits.disabled = true;
     dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>正在热重启...</span>';
     try {
-      const res = await fetch('/api/system/restart_sovits', { method: 'POST' });
+      const payload = {};
+      if (dom.gPrecision && dom.gPrecision.value) {
+        payload.precision = dom.gPrecision.value;
+      }
+      const res = await fetch('/api/system/restart_sovits', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
       showToast(data.message || 'GPT-SoVITS 重启指令已发送', 'success');
@@ -1654,6 +1667,57 @@ if (dom.gBtnRestartSovits) {
       showToast(`重启失败: ${err.message}`, 'error');
       dom.gBtnRestartSovits.disabled = false;
       dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>重启 SoVITS 引擎</span>';
+    }
+  });
+}
+
+// 一键切换精度并重启
+if (dom.gBtnTogglePrecision) {
+  dom.gBtnTogglePrecision.addEventListener('click', async () => {
+    const isCurrentlyFp16 = dom.gDashPrecisionBadge && dom.gDashPrecisionBadge.textContent.includes('FP16');
+    const targetPrec = isCurrentlyFp16 ? 'fp32' : 'fp16';
+    const targetLabel = isCurrentlyFp16 ? 'FP32 单精度' : 'FP16 半精度';
+    dom.gBtnTogglePrecision.disabled = true;
+    if (dom.gBtnRestartSovits) dom.gBtnRestartSovits.disabled = true;
+    if (dom.gBtnTogglePrecisionText) dom.gBtnTogglePrecisionText.textContent = `正在切换为 ${targetPrec.toUpperCase()}...`;
+    try {
+      if (dom.gPrecision) dom.gPrecision.value = targetPrec;
+      const res = await fetch('/api/system/restart_sovits', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ precision: targetPrec }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      showToast(data.message || `已按 ${targetLabel} 重启语音引擎`, 'success');
+      setTimeout(() => {
+        fetchSystemTelemetry();
+        dom.gBtnTogglePrecision.disabled = false;
+        if (dom.gBtnRestartSovits) dom.gBtnRestartSovits.disabled = false;
+      }, 2500);
+    } catch (err) {
+      showToast(`切换精度重启失败: ${err.message}`, 'error');
+      dom.gBtnTogglePrecision.disabled = false;
+      if (dom.gBtnRestartSovits) dom.gBtnRestartSovits.disabled = false;
+    }
+  });
+}
+
+// 精度下拉菜单自动保存
+if (dom.gPrecision) {
+  dom.gPrecision.addEventListener('change', async () => {
+    const val = dom.gPrecision.value;
+    try {
+      await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inference_precision: val }),
+      });
+      const labelMap = { auto: '自动判定 (Auto)', fp16: 'FP16 半精度', fp32: 'FP32 单精度' };
+      showToast(`已保存推理精度: ${labelMap[val] || val}。请点击【重启 SoVITS 引擎】应用。`, 'info');
+      fetchSystemTelemetry();
+    } catch (err) {
+      console.warn('Auto-save precision failed:', err);
     }
   });
 }

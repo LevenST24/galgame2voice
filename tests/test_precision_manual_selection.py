@@ -99,3 +99,42 @@ class TestPrecisionAPI:
             resp = await client.post("/api/system/restart_sovits")
             assert resp.status_code == 400
             assert "data/sovits_dir.txt" in resp.json()["detail"]
+
+    async def test_restart_sovits_endpoint_with_explicit_precision(self, tmp_path, monkeypatch):
+        settings = get_settings()
+        monkeypatch.setattr(settings, "project_root", tmp_path)
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        fake_engine = tmp_path / "dummy_sovits"
+        fake_engine.mkdir()
+        (tmp_path / "data" / "sovits_dir.txt").write_text(str(fake_engine), encoding="utf-8")
+
+        spawn_calls = []
+        class FakeProc:
+            pid = 9999
+
+        import scripts.run_server as rs
+        monkeypatch.setattr(rs, "_spawn_sovits_process", lambda s_dir, host, port, is_half: spawn_calls.append(is_half) or FakeProc())
+
+        app = create_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # 1. Restart with FP32
+            r1 = await client.post("/api/system/restart_sovits", json={"precision": "fp32"})
+            assert r1.status_code == 200
+            data1 = r1.json()
+            assert data1["is_half"] is False
+            assert data1["precision"] == "FP32"
+            assert "FP32" in data1["message"]
+            assert spawn_calls[-1] is False
+            cache1 = read_precision_cache(tmp_path)
+            assert cache1["is_half"] is False
+
+            # 2. Restart with FP16
+            r2 = await client.post("/api/system/restart_sovits", json={"precision": "fp16"})
+            assert r2.status_code == 200
+            data2 = r2.json()
+            assert data2["is_half"] is True
+            assert data2["precision"] == "FP16"
+            assert "FP16" in data2["message"]
+            assert spawn_calls[-1] is True
+            cache2 = read_precision_cache(tmp_path)
+            assert cache2["is_half"] is True

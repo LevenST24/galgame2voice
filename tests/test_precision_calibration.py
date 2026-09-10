@@ -199,3 +199,28 @@ class TestYamlPrecisionSync:
         is_half, source = resolve_initial_is_half(tmp_path, tmp_path)
         assert is_half is False
         assert source == "yaml"
+
+    def test_resolve_initial_is_half_picks_up_db_setting(self, tmp_path, monkeypatch):
+        import sqlite3
+        from galgame2voice.utils.precision import read_db_precision, resolve_initial_is_half
+        monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        db_file = data_dir / "galgame2voice.db"
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute("CREATE TABLE settings (id INTEGER PRIMARY KEY, inference_precision TEXT);")
+            conn.execute("INSERT INTO settings (id, inference_precision) VALUES (1, 'fp32');")
+
+        assert read_db_precision(tmp_path) == "fp32"
+        is_half, source = resolve_initial_is_half(tmp_path, tmp_path)
+        assert is_half is False
+        assert source == "db"
+
+        # Update DB to fp16
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute("UPDATE settings SET inference_precision = 'fp16' WHERE id = 1;")
+        assert read_db_precision(tmp_path) == "fp16"
+        is_half2, source2 = resolve_initial_is_half(tmp_path, tmp_path)
+        assert is_half2 is True
+        assert source2 == "db"

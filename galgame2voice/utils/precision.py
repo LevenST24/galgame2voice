@@ -110,11 +110,29 @@ def write_sovits_yaml_is_half(sovits_dir: Optional[Union[str, Path]], is_half: b
         return None
 
 
+def read_db_precision(project_root: Path) -> Optional[str]:
+    """Reads inference_precision ('auto' | 'fp16' | 'fp32') from SQLite settings table."""
+    db_path = project_root / "data" / "galgame2voice.db"
+    if not db_path.is_file():
+        return None
+    try:
+        import sqlite3
+        with sqlite3.connect(str(db_path), timeout=2.0) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT inference_precision FROM settings WHERE id = 1 LIMIT 1;")
+            row = cur.fetchone()
+            if row and row[0]:
+                return str(row[0]).strip().lower()
+    except Exception as exc:
+        logger.debug("Could not read inference_precision from DB: %s", exc)
+    return None
+
+
 def resolve_initial_is_half(project_root: Path, sovits_dir: Path, environ: Optional[Dict[str, str]] = None) -> tuple[bool, str]:
     """
     Decides the initial is_half setting for a fresh engine launch.
-    Priority: GPT_SOVITS_PRECISION env override > verified cache for this engine dir > existing YAML setting > FP16 default.
-    Returns (is_half, source) where source is "env" | "cache" | "yaml" | "default".
+    Priority: GPT_SOVITS_PRECISION env override > SQLite settings > verified cache > existing YAML setting > FP16 default.
+    Returns (is_half, source) where source is "env" | "db" | "cache" | "yaml" | "default".
     """
     env = environ if environ is not None else os.environ
     override = str(env.get(_PRECISION_ENV_VAR, "")).strip().lower()
@@ -122,6 +140,13 @@ def resolve_initial_is_half(project_root: Path, sovits_dir: Path, environ: Optio
         return True, "env"
     if override in ("fp32", "float32", "false", "0"):
         return False, "env"
+
+    # User configured setting in SQLite database
+    db_prec = read_db_precision(project_root)
+    if db_prec in ("fp32", "float32"):
+        return False, "db"
+    if db_prec in ("fp16", "half"):
+        return True, "db"
 
     cache = read_precision_cache(project_root)
     if cache is not None:

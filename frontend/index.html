@@ -208,10 +208,14 @@
                 <div class="status-card-main" id="gDashPrecisionVal">⚡ FP16 半精度</div>
                 <div class="status-card-sub" id="gDashDeviceVal">硬件加速中</div>
               </div>
-              <div class="status-card-act">
-                <button type="button" class="btn-card-action" id="gBtnGoPrecision">
+              <div class="status-card-act" style="display: flex; gap: 6px;">
+                <button type="button" class="btn-card-action" id="gBtnTogglePrecision" title="一键切换 FP16/FP32 精度并重启">
+                  <svg class="icon"><use href="#i-refresh"></use></svg>
+                  <span id="gBtnTogglePrecisionText">切换为 FP32 重启</span>
+                </button>
+                <button type="button" class="btn-card-action" id="gBtnGoPrecision" title="调整详细参数">
                   <svg class="icon"><use href="#i-sliders"></use></svg>
-                  <span>调整精度与参数 →</span>
+                  <span>配置 →</span>
                 </button>
               </div>
             </div>

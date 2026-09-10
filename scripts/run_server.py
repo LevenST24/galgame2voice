@@ -25,6 +25,8 @@ from galgame2voice.utils.precision import (
     read_precision_cache,
     write_precision_cache,
     write_sovits_yaml_is_half,
+    resolve_initial_is_half,
+    read_db_precision,
 )
 
 # Ensure runtime directories
@@ -831,26 +833,18 @@ def ensure_gpt_sovits_running(fp16: bool = False, fp32: bool = False, precision:
         precision_source = "cli"
         print("      [推理精度] 已指定 --fp32 单精度模式运行。")
     else:
-        env_precision = os.environ.get("GPT_SOVITS_PRECISION", "").strip().lower()
-        if env_precision in ("fp16", "half", "true", "1"):
-            is_half = True
-            precision_source = "env"
-            print("      [推理精度] 已通过 GPT_SOVITS_PRECISION 手动指定 FP16 半精度。")
-        elif env_precision in ("fp32", "float32", "false", "0"):
-            is_half = False
-            precision_source = "env"
-            print("      [推理精度] 已通过 GPT_SOVITS_PRECISION 手动指定 FP32 单精度。")
+        is_half, precision_source = resolve_initial_is_half(PROJECT_ROOT, sovits_dir)
+        prec_str = "FP16 半精度" if is_half else "FP32 单精度"
+        if precision_source == "env":
+            print(f"      [推理精度] 已通过环境变量手动指定 {prec_str}。")
+        elif precision_source == "db":
+            print(f"      [推理精度] 使用控制台保存的配置: {prec_str} (来源: SQLite数据库设置)")
+        elif precision_source == "cache":
+            print(f"      [推理精度] 使用已验证的校准结果: {prec_str} (来源: data/precision.json)")
+        elif precision_source == "yaml":
+            print(f"      [推理精度] 使用现有引擎配置文件: {prec_str} (来源: tts_infer.yaml)")
         else:
-            cached = read_precision_cache(PROJECT_ROOT)
-            if cached and "is_half" in cached:
-                is_half = bool(cached["is_half"])
-                precision_source = "cache"
-                prec_str = "FP16 半精度" if is_half else "FP32 单精度"
-                print(f"      [推理精度] 使用已保存的配置: {prec_str} (来源: data/precision.json)")
-            else:
-                is_half = True
-                precision_source = "default"
-                print("      [推理精度] 未指定固定精度，进入自动校准模式 (初始 FP16，就绪后验证发声)。")
+            print("      [推理精度] 未指定固定精度，进入自动校准模式 (初始 FP16，就绪后验证发声)。")
     try:
         proc = _spawn_sovits_process(sovits_dir, sovits_host, sovits_port, is_half)
 
