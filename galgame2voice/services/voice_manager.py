@@ -6,6 +6,7 @@ mutex locking, and atomic rollback on failure.
 
 import asyncio
 import logging
+import os
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
 import aiosqlite
@@ -23,8 +24,32 @@ from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
     get_gpt_sovits_client,
 )
+from galgame2voice.utils.hardware import get_system_memory_status
 
 logger = logging.getLogger("galgame2voice.services.voice_manager")
+
+
+class InsufficientMemoryError(RuntimeError):
+    """Raised when free memory is too low to safely load new model weights."""
+
+
+# 切换权重时新旧模型会短暂同时驻留内存；低于阈值大概率触发引擎 OOM 崩溃。
+# 阈值按设备总内存比例缩放（小内存机不会被绝对值锁死），env 可强制覆盖。
+_MIN_FREE_MEMORY_RATIO = 0.12
+_MIN_FREE_MEMORY_FLOOR_GB = 1.0
+
+
+def _get_switch_min_free_memory_gb() -> float:
+    try:
+        val = os.getenv("GALGAME2VOICE_MIN_FREE_MEM_GB")
+        if val is not None:
+            return float(val)
+    except (ValueError, TypeError):
+        pass
+    total_gb, _ = get_system_memory_status()
+    if total_gb:
+        return max(_MIN_FREE_MEMORY_FLOOR_GB, round(total_gb * _MIN_FREE_MEMORY_RATIO, 2))
+    return _MIN_FREE_MEMORY_FLOOR_GB
 
 
 class VoiceManager:
@@ -156,6 +181,18 @@ class VoiceManager:
         if isinstance(profile_obj, str):
             logger.error("Cannot switch voice profile: unresolved string target '%s'", profile_obj)
             return False
+
+        # Memory precheck: new and old weights briefly co-reside during a switch; loading
+        # with too little free memory OOM-crashes the engine. Sits here (not in the HTTP
+        # layer) so every call path — REST, Telegram, auto-bind — gets the same guard.
+        if not force and not os.getenv("GALGAME2VOICE_SKIP_MEM_CHECK"):
+            _, free_gb = get_system_memory_status()
+            min_free_gb = _get_switch_min_free_memory_gb()
+            if free_gb is not None and free_gb < min_free_gb:
+                raise InsufficientMemoryError(
+                    f"系统空闲内存不足（{free_gb:.1f} GB < {min_free_gb:.1f} GB），"
+                    "加载新模型权重可能导致语音引擎崩溃。请关闭占内存的程序后重试。"
+                )
 
         # 2. Execute 3-step atomic model switch with auto-rollback
         success = await self.client.switch_voice_profile(profile_obj, force=force)

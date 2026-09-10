@@ -37,6 +37,7 @@ from galgame2voice.security.auth import require_auth
 from galgame2voice.security.rate_limit import RateLimitMiddleware
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
 from galgame2voice.utils.logger import setup_logger
+from galgame2voice.utils.path_guard import resolve_existing_audio_path
 
 
 logger = logging.getLogger("galgame2voice.main")
@@ -210,10 +211,10 @@ async def lifespan(app: FastAPI):
                     if not client.current_sovits_weights:
                         client.current_sovits_weights = default_profile.sovits_weights_path
                     if not client.current_refer_audio:
-                        ref_p = Path(default_profile.ref_audio_path)
-                        if not ref_p.is_file() and (settings.project_root / default_profile.ref_audio_path).is_file():
-                            ref_p = (settings.project_root / default_profile.ref_audio_path).resolve()
-                        client.current_refer_audio = str(ref_p)
+                        client.current_refer_audio = str(
+                            resolve_existing_audio_path(default_profile.ref_audio_path)
+                            or default_profile.ref_audio_path
+                        )
                     if not client.current_refer_text:
                         client.current_refer_text = default_profile.prompt_text
                     if not client.current_refer_language:
@@ -223,7 +224,12 @@ async def lifespan(app: FastAPI):
 
         logger.info("GPT-SoVITS client initialized (endpoint: %s)", client.base_url)
     except Exception as exc:
-        logger.error("Failed to initialize GPT-SoVITS client: %s", exc, exc_info=True)
+        logger.error(
+            "Failed to initialize GPT-SoVITS client: %s (如引擎在别处运行，请配置 "
+            "GPT_SOVITS_BASE_URL 环境变量，例如 http://127.0.0.1:9880)",
+            exc,
+            exc_info=True,
+        )
 
     # 5. Start Background Audio Cleanup Loop
     cleanup_task = asyncio.create_task(
@@ -331,9 +337,12 @@ def create_app() -> FastAPI:
     )
 
     # 1. Configure CORS Middleware
+    # allow_origin_regex covers loopback on ANY port so the console keeps working
+    # when the launcher auto-switches away from a busy 8080.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
         allow_credentials=settings.cors_allow_credentials,
         allow_methods=settings.cors_allow_methods,
         allow_headers=settings.cors_allow_headers,
@@ -343,7 +352,7 @@ def create_app() -> FastAPI:
     # acceptable: the console is same-origin.
     app.add_middleware(RateLimitMiddleware)
 
-    # Compress large static/JS/CSS payloads (settings.html alone is ~170 KB).
+    # Compress large static/JS/CSS payloads.
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     # Cache headers: static assets are safe to cache for an hour (cache-busted
@@ -354,7 +363,7 @@ def create_app() -> FastAPI:
 
         async def __call__(self, scope, receive, send):
             path = scope.get("path", "") if scope["type"] == "http" else ""
-            if path == "/" or path == "/settings.html" or path == "/index.html":
+            if path in ("/", "/index.html", "/settings.html"):
                 # 入口页面必须每次回源校验，避免发版后浏览器用旧 index 加载旧 JS
                 cache_value = "no-cache"
             elif path.startswith("/static/assets/") or path == "/static/assets":

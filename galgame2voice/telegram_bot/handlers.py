@@ -1370,7 +1370,9 @@ class TelegramBotHandlers:
         except ValueError as val_err:
             logger.warning("Corrupted or unreadable voice file for chat_id=%d: %s", chat_id, val_err)
             if hasattr(update, "message") and update.message:
-                await update.message.reply_text("抱歉，语音解析失败，请重试！")
+                await update.message.reply_text(
+                    f"抱歉，语音解析失败，请重试！（原因：{sanitize_error_detail(val_err)}）"
+                )
             return None
         except Exception as exc:
             logger.error("Error processing voice message for chat_id=%d: %s", chat_id, exc, exc_info=True)

@@ -72,8 +72,14 @@ def should_include(rel_path: Path) -> bool:
             return False
 
     # Exclude dynamic runtime files inside logs/ and audio/
-    if len(parts) >= 2 and parts[0] in ("logs", "audio"):
-        return False
+    if len(parts) >= 2:
+        if parts[0] == "logs":
+            return False
+        if parts[0] == "audio":
+            # Exclude dynamic generated wav files and caches, but preserve bundled character reference audios
+            if "references" in parts or filename.endswith(".ogg") or filename.endswith(".keep"):
+                return True
+            return False
 
     return True
 

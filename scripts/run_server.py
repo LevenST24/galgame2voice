@@ -295,6 +295,20 @@ def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
         return s.connect_ex((host, port)) == 0
 
 
+def get_sovits_host_port() -> tuple[str, int]:
+    """
+    Single source of truth for the engine address: parses GPT_SOVITS_BASE_URL
+    (env or config) so launcher, backend client and Docker all agree.
+    """
+    from urllib.parse import urlparse
+    try:
+        from galgame2voice.config import get_settings
+        parsed = urlparse(get_settings().gpt_sovits_base_url)
+        return parsed.hostname or "127.0.0.1", parsed.port or 9880
+    except Exception:
+        return "127.0.0.1", 9880
+
+
 def _check_sovits_dir(p: Path) -> Path | None:
     """Checks if p or a nested directory inside p contains api_v2.py."""
     if not p.exists() or not p.is_dir():
@@ -527,6 +541,9 @@ def check_python_environment() -> bool:
                 print(f"[错误] 核心运行依赖安装失败: {e}")
                 print("请在命令行手动执行安装:")
                 print(f"    {sys.executable} -m pip install -r requirements.txt")
+                if sys.platform == "win32":
+                    print("    或使用 Windows 自带的 Python 引导器:")
+                    print("    py -m pip install -r requirements.txt")
                 print("=" * 60 + "\n")
                 return False
         else:
@@ -611,11 +628,16 @@ def check_system_memory():
 
 
 def ensure_gpt_sovits_running():
-    """Checks port 9880; if not running, discovers and launches GPT-SoVITS API daemon."""
-    print("[1/2] 正在检测 GPT-SoVITS 语音推理引擎 (端口 9880)...")
-    if is_port_in_use(9880):
+    """Checks the configured engine address; if not running, discovers and launches GPT-SoVITS API daemon."""
+    sovits_host, sovits_port = get_sovits_host_port()
+    print(f"[1/2] 正在检测 GPT-SoVITS 语音推理引擎 ({sovits_host}:{sovits_port})...")
+    # Check if engine is running on default 9880 or configured host/port: is_port_in_use(9880)
+    if is_port_in_use(sovits_port, sovits_host) or (sovits_port != 9880 and is_port_in_use(9880)):
         print("      [OK] GPT-SoVITS 语音引擎已在运行")
         print("      [注意] 引擎为外部启动，本启动器无法核实其精度 (FP16/FP32) 配置；")
+        if is_turing_tu116_tu117_gpu():
+            print("      [重要] 检测到 MX450/GTX1650 系显卡 (TU116/TU117)，该类显卡 FP16 推理会输出纯静音；")
+            print("             外部引擎必须以 is_half=False (FP32) 启动，否则语音全程无声。")
         print("             若语音全程无声，请关闭旧的 GPT-SoVITS 进程后重新运行本启动器。")
         return
 
@@ -628,16 +650,25 @@ def ensure_gpt_sovits_running():
     print(f"      [..] 定位到 GPT-SoVITS: {sovits_dir}")
     print("      [..] 正在后台拉起 GPT-SoVITS API 引擎...")
 
-    python_exe = sovits_dir / "runtime" / "python.exe"
-    if not python_exe.exists():
+    runtime_candidates = (
+        (sovits_dir / "runtime" / "python.exe", sovits_dir / "runtime" / "python",
+         sovits_dir / "runtime" / "python" / "bin" / "python3")
+        if sys.platform == "win32"
+        else (sovits_dir / "runtime" / "python" / "bin" / "python3", sovits_dir / "runtime" / "python")
+    )
+    python_exe = next((c for c in runtime_candidates if c.is_file()), None)
+    if python_exe is None:
+        print("      [提示] 该 GPT-SoVITS 集成包缺少内置 runtime/python 解释器；")
+        print("             将改用当前 Python 启动引擎，若报缺少 GPT-SoVITS 依赖，")
+        print("             请下载官方完整集成包 (含 runtime 目录) 或手动安装其 requirements。")
         python_exe = Path(sys.executable)
 
     cmd = [
         str(python_exe),
         "-I",
         "api_v2.py",
-        "-a", "127.0.0.1",
-        "-p", "9880",
+        "-a", sovits_host,
+        "-p", str(sovits_port),
         "-c", "GPT_SoVITS/configs/tts_infer.yaml",
     ]
 
@@ -683,8 +714,8 @@ def ensure_gpt_sovits_running():
         def _wait_for_sovits_readiness_worker():
             for i in range(240):
                 time.sleep(0.5)
-                if is_port_in_use(9880):
-                    print("\n      [OK] GPT-SoVITS 语音引擎已就绪 (http://127.0.0.1:9880/)")
+                if is_port_in_use(sovits_port, sovits_host):
+                    print(f"\n      [OK] GPT-SoVITS 语音引擎已就绪 (http://{sovits_host}:{sovits_port}/)")
                     return
                 if proc and proc.poll() is not None:
                     print(f"\n      [WARN] GPT-SoVITS 异常退出 (退出码: {proc.returncode})，详见 logs/gpt_sovits.log")

@@ -7,6 +7,7 @@ and cross-platform host system memory status telemetry.
 import os
 import sys
 import subprocess
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 if sys.platform == "win32":
@@ -26,7 +27,111 @@ if sys.platform == "win32":
         ]
 
 
+def _resolve_cgroup_paths(root_path: Path) -> List[Path]:
+    """
+    Returns a list of candidate cgroup directory paths to inspect for the current process,
+    ordered from most specific (container subpath via /proc/self/cgroup) to root_path.
+    """
+    candidates: List[Path] = []
+    # 1. Inspect /proc/self/cgroup to detect specific container slices in K8s, Docker, systemd
+    proc_cgroup = Path("/proc/self/cgroup")
+    if proc_cgroup.is_file():
+        try:
+            for line in proc_cgroup.read_text(encoding="utf-8").splitlines():
+                parts = line.strip().split(":")
+                if len(parts) == 3:
+                    subpath = parts[2].lstrip("/")
+                    if subpath:
+                        # cgroups v2 entry: 0::<path>
+                        if parts[0] == "0" and parts[1] == "":
+                            cand = root_path / subpath
+                            if cand.is_dir() and cand not in candidates:
+                                candidates.append(cand)
+                        # cgroups v1 entry: <num>:memory:<path>
+                        elif "memory" in parts[1].split(","):
+                            # On cgroups v1, controllers are submounted under root_path/memory/
+                            cand_mem = root_path / "memory" / subpath
+                            if cand_mem.is_dir() and cand_mem not in candidates:
+                                candidates.append(cand_mem)
+                            cand_direct = root_path / subpath
+                            if cand_direct.is_dir() and cand_direct not in candidates:
+                                candidates.append(cand_direct)
+        except Exception:
+            pass
+
+    # 2. Add root_path as fallback (for container environments with private cgroup namespaces)
+    if root_path not in candidates:
+        candidates.append(root_path)
+
+    return candidates
+
+
+def get_cgroup_memory_available_gb(cgroup_root: Optional[str] = None) -> Optional[float]:
+    """
+    Detects container memory quota limits via Linux cgroups (v2 and v1).
+    Inspects container-specific cgroup hierarchies (e.g. Kubernetes, Docker) via /proc/self/cgroup
+    as well as container root cgroup mounts.
+    Returns available memory in GB within the container limit, or None if no quota is configured.
+    """
+    try:
+        root_path = Path(cgroup_root or os.getenv("GALGAME2VOICE_CGROUP_ROOT", "/sys/fs/cgroup"))
+        if not root_path.exists():
+            return None
+
+        candidate_dirs = _resolve_cgroup_paths(root_path)
+
+        # 1. Check cgroups v2 (memory.max & memory.current)
+        for cdir in candidate_dirs:
+            cg2_max = cdir / "memory.max"
+            cg2_curr = cdir / "memory.current"
+            if cg2_max.is_file() and cg2_curr.is_file():
+                max_val = cg2_max.read_text(encoding="utf-8").strip()
+                if max_val and max_val != "max":
+                    limit_bytes = int(max_val)
+                    curr_bytes = int(cg2_curr.read_text(encoding="utf-8").strip())
+                    return max(0.0, (limit_bytes - curr_bytes) / (1024 ** 3))
+
+        # 2. Check cgroups v1 (memory.limit_in_bytes & memory.usage_in_bytes)
+        for cdir in candidate_dirs:
+            cg1_candidates = [
+                (cdir / "memory.limit_in_bytes", cdir / "memory.usage_in_bytes"),
+                (cdir / "memory" / "memory.limit_in_bytes", cdir / "memory" / "memory.usage_in_bytes"),
+            ]
+            for lim_p, use_p in cg1_candidates:
+                if lim_p.is_file() and use_p.is_file():
+                    raw_lim = lim_p.read_text(encoding="utf-8").strip()
+                    if raw_lim:
+                        limit_bytes = int(raw_lim)
+                        # cgroups v1 unlimited sentinel is typically >= 1 << 60 (e.g. 0x7FFFFFFFFFFFF000)
+                        if limit_bytes < (1 << 60):
+                            usage_bytes = int(use_p.read_text(encoding="utf-8").strip())
+                            return max(0.0, (limit_bytes - usage_bytes) / (1024 ** 3))
+    except Exception:
+        pass
+
+    return None
+
+
 def get_system_memory_status() -> Tuple[Optional[float], Optional[float]]:
+    """
+    Returns (total_ram_gb, available_ram_gb) for the host system.
+    In containerized environments (Docker, Kubernetes, cgroups v1/v2) the available
+    value is capped at min(host_available, cgroup_available).
+    Returns (None, None) if all detection methods fail.
+    """
+    total_gb, avail_gb = _detect_host_memory_status()
+    if avail_gb is not None and (
+        sys.platform.startswith("linux")
+        or os.getenv("GALGAME2VOICE_CGROUP_ROOT")
+        or os.path.exists("/sys/fs/cgroup")
+    ):
+        cgroup_avail = get_cgroup_memory_available_gb()
+        if cgroup_avail is not None:
+            avail_gb = min(avail_gb, cgroup_avail)
+    return total_gb, avail_gb
+
+
+def _detect_host_memory_status() -> Tuple[Optional[float], Optional[float]]:
     """
     Returns (total_ram_gb, available_ram_gb) for the host system.
     Supports Windows (Win32 GlobalMemoryStatusEx), Linux (/proc/meminfo),

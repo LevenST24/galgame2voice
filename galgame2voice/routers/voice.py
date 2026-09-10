@@ -30,13 +30,14 @@ from galgame2voice.services.gpt_sovits_client import (
     TTS_PRESETS,
     SLICING_METHODS,
 )
-from galgame2voice.services.voice_manager import get_voice_manager
+from galgame2voice.services.voice_manager import get_voice_manager, InsufficientMemoryError
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.path_guard import (
     PathTraversalError,
     contains_traversal_payload,
     is_windows_device_name,
     safe_resolve_audio_path,
+    to_project_relative_path,
     validate_voice_profile_paths,
 )
 
@@ -113,7 +114,7 @@ async def list_voice_profiles():
     description="Creates a new character voice profile with GPT/SoVITS weights and reference audio.",
 )
 async def create_voice_profile(req: VoiceProfileCreateRequest):
-    ref_audio = req.refer_audio_path or req.ref_audio_path or ""
+    ref_audio = to_project_relative_path(req.refer_audio_path or req.ref_audio_path or "")
     prompt_txt = req.refer_text or req.prompt_text or ""
     prompt_l = req.refer_language or req.prompt_lang or "ja"
     text_l = req.text_lang or "ja"
@@ -207,6 +208,8 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid file path: {pte}",
         )
+    if req.ref_audio_path:
+        req.ref_audio_path = to_project_relative_path(req.ref_audio_path)
 
     async with get_db() as conn:
         try:
@@ -258,169 +261,6 @@ async def delete_voice_profile(profile_id: int):
 # ============================================================================
 # 2. Atomic Voice Model Switching & Memory Protection
 # ============================================================================
-
-def _resolve_cgroup_paths(root_path: Path) -> List[Path]:
-    """
-    Returns a list of candidate cgroup directory paths to inspect for the current process,
-    ordered from most specific (container subpath via /proc/self/cgroup) to root_path.
-    """
-    candidates: List[Path] = []
-    # 1. Inspect /proc/self/cgroup to detect specific container slices in K8s, Docker, systemd
-    proc_cgroup = Path("/proc/self/cgroup")
-    if proc_cgroup.is_file():
-        try:
-            for line in proc_cgroup.read_text(encoding="utf-8").splitlines():
-                parts = line.strip().split(":")
-                if len(parts) == 3:
-                    subpath = parts[2].lstrip("/")
-                    if subpath:
-                        # cgroups v2 entry: 0::<path>
-                        if parts[0] == "0" and parts[1] == "":
-                            cand = root_path / subpath
-                            if cand.is_dir() and cand not in candidates:
-                                candidates.append(cand)
-                        # cgroups v1 entry: <num>:memory:<path>
-                        elif "memory" in parts[1].split(","):
-                            # On cgroups v1, controllers are submounted under root_path/memory/
-                            cand_mem = root_path / "memory" / subpath
-                            if cand_mem.is_dir() and cand_mem not in candidates:
-                                candidates.append(cand_mem)
-                            cand_direct = root_path / subpath
-                            if cand_direct.is_dir() and cand_direct not in candidates:
-                                candidates.append(cand_direct)
-        except Exception:
-            pass
-
-    # 2. Add root_path as fallback (for container environments with private cgroup namespaces)
-    if root_path not in candidates:
-        candidates.append(root_path)
-
-    return candidates
-
-
-def _get_cgroup_memory_available_gb(cgroup_root: Optional[str] = None) -> Optional[float]:
-    """
-    Detects container memory quota limits via Linux cgroups (v2 and v1).
-    Inspects container-specific cgroup hierarchies (e.g. Kubernetes, Docker) via /proc/self/cgroup
-    as well as container root cgroup mounts.
-    Returns available memory in GB within the container limit, or None if no quota is configured.
-    """
-    try:
-        from pathlib import Path
-        root_path = Path(cgroup_root or os.getenv("GALGAME2VOICE_CGROUP_ROOT", "/sys/fs/cgroup"))
-        if not root_path.exists():
-            return None
-
-        candidate_dirs = _resolve_cgroup_paths(root_path)
-
-        # 1. Check cgroups v2 (memory.max & memory.current)
-        for cdir in candidate_dirs:
-            cg2_max = cdir / "memory.max"
-            cg2_curr = cdir / "memory.current"
-            if cg2_max.is_file() and cg2_curr.is_file():
-                max_val = cg2_max.read_text(encoding="utf-8").strip()
-                if max_val and max_val != "max":
-                    limit_bytes = int(max_val)
-                    curr_bytes = int(cg2_curr.read_text(encoding="utf-8").strip())
-                    return max(0.0, (limit_bytes - curr_bytes) / (1024 ** 3))
-
-        # 2. Check cgroups v1 (memory.limit_in_bytes & memory.usage_in_bytes)
-        for cdir in candidate_dirs:
-            cg1_candidates = [
-                (cdir / "memory.limit_in_bytes", cdir / "memory.usage_in_bytes"),
-                (cdir / "memory" / "memory.limit_in_bytes", cdir / "memory" / "memory.usage_in_bytes"),
-            ]
-            for lim_p, use_p in cg1_candidates:
-                if lim_p.is_file() and use_p.is_file():
-                    raw_lim = lim_p.read_text(encoding="utf-8").strip()
-                    if raw_lim:
-                        limit_bytes = int(raw_lim)
-                        # cgroups v1 unlimited sentinel is typically >= 1 << 60 (e.g. 0x7FFFFFFFFFFFF000)
-                        if limit_bytes < (1 << 60):
-                            usage_bytes = int(use_p.read_text(encoding="utf-8").strip())
-                            return max(0.0, (limit_bytes - usage_bytes) / (1024 ** 3))
-    except Exception as exc:
-        logger.debug("Failed to read cgroup memory limit: %s", exc)
-
-    return None
-
-
-def _free_memory_gb(cgroup_root: Optional[str] = None) -> Optional[float]:
-    """
-    Returns free physical memory in GB (cross-platform via psutil with OS-level fallbacks).
-    In containerized environments (Docker, Kubernetes, cgroups v1/v2), compares host memory
-    with container cgroup limits, returning min(host_available, cgroup_available).
-    """
-    host_avail = None
-    try:
-        import psutil
-        host_avail = psutil.virtual_memory().available / (1024 ** 3)
-    except Exception:
-        pass
-
-    # Windows fallback
-    if host_avail is None and sys.platform == "win32":
-        try:
-            import ctypes
-
-            class MEMORYSTATUSEX(ctypes.Structure):
-                _fields_ = [
-                    ("dwLength", ctypes.c_ulong),
-                    ("dwMemoryLoad", ctypes.c_ulong),
-                    ("ullTotalPhys", ctypes.c_ulonglong),
-                    ("ullAvailPhys", ctypes.c_ulonglong),
-                    ("ullTotalPageFile", ctypes.c_ulonglong),
-                    ("ullAvailPageFile", ctypes.c_ulonglong),
-                    ("ullTotalVirtual", ctypes.c_ulonglong),
-                    ("ullAvailVirtual", ctypes.c_ulonglong),
-                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-                ]
-            stat = MEMORYSTATUSEX()
-            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-                host_avail = stat.ullAvailPhys / (1024 ** 3)
-        except Exception:
-            pass
-
-    # Linux fallback (/proc/meminfo)
-    if host_avail is None and sys.platform.startswith("linux"):
-        try:
-            with open("/proc/meminfo", "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.startswith("MemAvailable:"):
-                        parts = line.split()
-                        host_avail = float(parts[1]) / (1024 * 1024)
-                        break
-        except Exception:
-            pass
-
-    # Container / cgroups quota detection (Docker, Kubernetes, cgroups v1 & v2)
-    # If cgroup limit is configured, takes min(host_available, cgroup_available)
-    if sys.platform.startswith("linux") or cgroup_root or os.getenv("GALGAME2VOICE_CGROUP_ROOT") or os.path.exists("/sys/fs/cgroup"):
-        cgroup_avail = _get_cgroup_memory_available_gb(cgroup_root=cgroup_root)
-        if cgroup_avail is not None:
-            if host_avail is not None:
-                return min(host_avail, cgroup_avail)
-            return cgroup_avail
-
-    return host_avail
-
-
-# 切换权重时新旧模型会短暂同时驻留内存；低于此阈值大概率触发引擎 OOM 崩溃
-_DEFAULT_SWITCH_MIN_FREE_MEMORY_GB = 1.5
-
-
-def _get_switch_min_free_memory_gb() -> float:
-    try:
-        val = os.getenv("GALGAME2VOICE_MIN_FREE_MEM_GB")
-        if val is not None:
-            return float(val)
-    except (ValueError, TypeError):
-        pass
-    return _DEFAULT_SWITCH_MIN_FREE_MEMORY_GB
-
-
-_SWITCH_MIN_FREE_MEMORY_GB = _DEFAULT_SWITCH_MIN_FREE_MEMORY_GB
 
 
 @router.post(
@@ -520,20 +360,13 @@ async def switch_voice(req: VoiceSwitchRequest):
             except Exception as exc:
                 logger.debug("Failed syncing active voice profile to settings: %s", exc)
         else:
-            # 内存预检：实体存在且需切换时，若空闲内存不足则友好拒绝，避免 GPT-SoVITS 引擎加载权重时 OOM 崩溃
-            if not req.force and not os.getenv("GALGAME2VOICE_SKIP_MEM_CHECK"):
-                free_gb = _free_memory_gb()
-                min_free_gb = _get_switch_min_free_memory_gb()
-                if free_gb is not None and free_gb < min_free_gb:
-                    raise HTTPException(
-                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        detail=(
-                            f"系统空闲内存不足（{free_gb:.1f} GB < {min_free_gb:.1f} GB），"
-                            "加载新模型权重可能导致语音引擎崩溃。请关闭占内存的程序后重试。"
-                        ),
-                    )
-
-            success = await manager.switch_profile(profile, persist=True, _already_locked=True, force=req.force)
+            try:
+                success = await manager.switch_profile(profile, persist=True, _already_locked=True, force=req.force)
+            except InsufficientMemoryError as mem_err:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=str(mem_err),
+                )
             if not success:
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,

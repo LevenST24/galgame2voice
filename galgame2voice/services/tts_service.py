@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Optional, Tuple, Union
 
 from galgame2voice.config import get_settings
+from galgame2voice.utils.path_guard import resolve_existing_audio_path
 from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
     get_gpt_sovits_client,
@@ -68,18 +69,9 @@ class TtsService:
         if not path:
             return None
         try:
-            p = Path(path)
-            if not p.is_file():
-                # Check relative to project root or audio_dir
-                settings = get_settings()
-                cand1 = settings.project_root / path
-                cand2 = Path(settings.audio_dir) / path
-                if cand1.is_file():
-                    p = cand1
-                elif cand2.is_file():
-                    p = cand2
-                else:
-                    return None
+            p = resolve_existing_audio_path(path)
+            if p is None:
+                return None
 
             # 1. Try soundfile (handles OGG, WAV, FLAC, etc.)
             try:
@@ -138,7 +130,7 @@ class TtsService:
 
                 # Ensure fallback_ref_audio exists; if not, point to bundled gentle.ogg
                 settings = get_settings()
-                if not (Path(fallback_ref_audio).is_file() or (settings.project_root / fallback_ref_audio).is_file()):
+                if resolve_existing_audio_path(fallback_ref_audio) is None:
                     bundled_default = settings.project_root / "audio" / "references" / "natsume" / "gentle.ogg"
                     if bundled_default.is_file():
                         fallback_ref_audio = str(bundled_default.resolve())
@@ -174,13 +166,7 @@ class TtsService:
                     # User-supplied or pre-existing ref_audio_path
                     user_ref = opts.get("ref_audio_path") or opts.get("refer_audio_path")
                     if user_ref:
-                        ref_file = Path(user_ref)
-                        settings = get_settings()
-                        file_exists = (
-                            ref_file.is_file()
-                            or (settings.project_root / user_ref).is_file()
-                            or (Path(settings.audio_dir) / user_ref).is_file()
-                        )
+                        file_exists = resolve_existing_audio_path(user_ref) is not None
                         dur = self.get_audio_duration(user_ref)
                         is_mock_client = (
                             getattr(self.client, "_mock_return_value", None) is not None

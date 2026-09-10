@@ -119,25 +119,19 @@ def get_authorized_roots(
         sovits_txt = settings.data_dir / "sovits_dir.txt"
         if sovits_txt.is_file():
             try:
-                target_dir = sovits_txt.read_text(encoding="utf-8").strip()
+                target_dir = sovits_txt.read_text(encoding="utf-8-sig").strip()
                 if target_dir and Path(target_dir).is_dir():
                     roots.append(Path(target_dir).resolve())
             except Exception:
                 pass
 
-        # Discovered standard GPT-SoVITS install locations
-        for cand in (
-            r"E:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604",
-            r"D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604",
-            r"C:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604",
-        ):
+        # GPT-SoVITS installs discovered relative to the project (portable across machines)
+        for scan_root in (settings.project_root.parent, settings.project_root):
             try:
-                cp = Path(cand)
-                if cp.is_dir():
-                    res = cp.resolve()
-                    if res not in roots:
-                        roots.append(res)
-            except Exception:
+                for cand in scan_root.glob("GPT-SoVITS*/GPT-SoVITS*"):
+                    if cand.is_dir() and cand.resolve() not in roots:
+                        roots.append(cand.resolve())
+            except OSError:
                 pass
 
     if custom_roots:
@@ -261,6 +255,52 @@ def validate_voice_profile_paths(
         validate_path_containment(ref_audio_path, allowed_roots=roots)
 
 
+def resolve_existing_audio_path(path: Union[str, Path]) -> Optional[Path]:
+    """
+    Resolves a reference audio path across the three canonical bases in order:
+    absolute path, project_root-relative, audio_dir-relative.
+    Returns the first existing file, or None if it cannot be resolved.
+    Does not enforce containment: reference audio legitimately lives in
+    external directories (e.g. game voice packs on another drive).
+    """
+    raw = str(path or "").strip().strip("\"'")
+    if not raw:
+        return None
+    p = Path(raw)
+    try:
+        if p.is_absolute():
+            return p if p.is_file() else None
+        settings = get_settings()
+        for base in (settings.project_root, Path(settings.audio_dir)):
+            cand = base / p
+            if cand.is_file():
+                return cand
+    except OSError:
+        return None
+    return None
+
+
+def to_project_relative_path(path: Union[str, Path]) -> str:
+    """
+    Normalizes a path for storage so voice profiles stay portable across machines:
+    paths under project_root are stored project_root-relative (POSIX separators),
+    everything else is returned unchanged.
+    """
+    raw = str(path or "").strip().strip("\"'")
+    if not raw:
+        return raw
+    p = Path(raw)
+    try:
+        settings = get_settings()
+        root = settings.project_root.resolve()
+        resolved = p.resolve() if p.is_absolute() else (root / p).resolve()
+        if resolved == root or resolved.is_relative_to(root):
+            return resolved.relative_to(root).as_posix()
+    except (OSError, ValueError):
+        pass
+    return raw
+
+
 __all__ = [
     "PathTraversalError",
     "is_windows_device_name",
@@ -271,4 +311,6 @@ __all__ = [
     "is_path_safe",
     "safe_resolve_audio_path",
     "validate_voice_profile_paths",
+    "resolve_existing_audio_path",
+    "to_project_relative_path",
 ]

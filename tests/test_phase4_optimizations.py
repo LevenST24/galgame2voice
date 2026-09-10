@@ -338,3 +338,119 @@ class TestDatabaseSchemaMigrations:
             row = await cur.fetchone()
             assert row is not None
             assert row[0] == "你好夏目"
+
+    @pytest.mark.asyncio
+    async def test_auto_heal_preserves_bundled_paths_and_repairs_missing(self, temp_db_path):
+        from galgame2voice.database.crud import auto_heal_voice_profiles
+
+        # 1. Initialize schema
+        await init_db(temp_db_path)
+
+        async with get_db(temp_db_path) as conn:
+            await conn.execute(
+                "INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text) "
+                "VALUES ('Bundled Voice', 'gpt.ckpt', 'sovits.pth', 'audio/references/natsume/gentle.ogg', 'Hello');"
+            )
+            await conn.execute(
+                "INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text) "
+                "VALUES ('Broken Voice', 'gpt.ckpt', 'sovits.pth', 'audio/non_existent_file.ogg', 'Hello');"
+            )
+            await conn.commit()
+
+            # Run auto-healing
+            healed = await auto_heal_voice_profiles(conn)
+            assert healed >= 1
+
+            cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE name = 'Bundled Voice';")
+            row = await cur.fetchone()
+            assert row[0] == "audio/references/natsume/gentle.ogg"
+
+            cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE name = 'Broken Voice';")
+            row = await cur.fetchone()
+            assert "gentle.ogg" in row[0] or "nat002_032.ogg" in row[0]
+
+
+# ============================================================================
+# 4. Deep Edge Cases & Packaging Resilience Tests
+# ============================================================================
+
+class TestPhase4DeepEdgeCases:
+    """Additional edge case tests for null errors, streaming retry timeouts, and packaging."""
+
+    def test_extract_stream_token_null_or_false_error(self):
+        # Provider chunks containing "error": null or "error": false must not raise
+        chunk_null = {"error": None, "choices": [{"delta": {"content": "ValidContent"}}]}
+        assert extract_stream_token(chunk_null) == "ValidContent"
+
+        chunk_false = {"error": False, "choices": [{"delta": {"content": "StillValid"}}]}
+        assert extract_stream_token(chunk_false) == "StillValid"
+
+    @pytest.mark.asyncio
+    async def test_parse_sse_lines_multi_fragment_triplet(self):
+        # A single SSE token split across three consecutive data lines
+        lines = [
+            'data: {"choices": [',
+            'data: {"delta": ',
+            'data: {"content": "MultiFragmentTriplet"}}]}',
+            "",
+            'data: [DONE]',
+        ]
+
+        async def line_gen():
+            for line in lines:
+                yield line
+
+        tokens = [t async for t in parse_sse_lines(line_gen())]
+        assert "".join(tokens) == "MultiFragmentTriplet"
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_early_read_timeout_retries_successfully(self):
+        adapter = OpenAICompatibleLLMAdapter(api_key="sk-test", base_url="https://api.openai.com/v1")
+        attempt_count = 0
+
+        class MockStreamResponse:
+            status_code = 200
+            headers = {}
+
+            async def aiter_lines(self):
+                nonlocal attempt_count
+                attempt_count += 1
+                if attempt_count == 1:
+                    raise httpx.ReadTimeout("Server timed out before first byte")
+                yield 'data: {"choices": [{"delta": {"content": "RecoveredStream"}}]}'
+                yield 'data: [DONE]'
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+        with patch("httpx.AsyncClient.stream", return_value=MockStreamResponse()):
+            tokens = []
+            async for tok in adapter.stream_chat(
+                messages=[ChatMessage(role="user", content="hello")],
+                model="gpt-4o",
+                max_retries=2,
+                base_delay=0.01,
+            ):
+                tokens.append(tok)
+
+            assert "".join(tokens) == "RecoveredStream"
+            assert attempt_count == 2
+
+    def test_release_packaging_includes_bundled_reference_audios(self):
+        from pathlib import Path
+        from scripts.package_release import should_include
+
+        # Bundled character reference audios must be included
+        assert should_include(Path("audio/references/natsume/gentle.ogg")) is True
+        assert should_include(Path("audio/references/natsume/cool.ogg")) is True
+        assert should_include(Path("audio/nat002_032.ogg")) is True
+        assert should_include(Path("audio/.keep")) is True
+
+        # Transient generated wav chunks and cache files must be excluded
+        assert should_include(Path("audio/cache/some_cache.wav")) is False
+        assert should_include(Path("audio/chunk_0_1234.wav")) is False
+        assert should_include(Path("audio/full_5678.wav")) is False
+        assert should_include(Path("logs/app.log")) is False

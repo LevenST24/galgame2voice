@@ -547,7 +547,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .chip:hover { border-color: var(--brand-line); background: var(--brand-soft); color: var(--brand-ink); transform: translateY(-1px); }
 
 /* ---- 输入区 ---- */
-.composer-wrap { flex: none; padding: 12px 24px 12px; background: var(--bg); }
+.composer-wrap { flex: none; padding: 12px 24px calc(12px + env(safe-area-inset-bottom)); background: var(--bg); }
 .composer {
   max-width: 820px; margin: 0 auto;
   display: flex; align-items: flex-end; gap: 10px;
@@ -596,6 +596,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   position: fixed; inset: 0; z-index: 60;
   display: grid; place-items: center;
   background: rgba(29, 33, 41, 0.32);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   animation: fadeIn 0.2s var(--ease);
   padding: 20px;
 }

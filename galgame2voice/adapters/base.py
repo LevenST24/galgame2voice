@@ -4,6 +4,7 @@ Adheres to PROJECT.md §138-150 interface specifications.
 """
 
 from abc import ABC, abstractmethod
+import asyncio
 import datetime
 import email.utils
 import json
@@ -28,6 +29,9 @@ TRANSIENT_NETWORK_EXCEPTIONS = (
     httpx.RemoteProtocolError,
     httpx.NetworkError,
     httpx.RequestError,
+    asyncio.TimeoutError,
+    ConnectionResetError,
+    ConnectionError,
 )
 
 
@@ -88,7 +92,8 @@ def extract_stream_token(chunk: Dict[str, Any]) -> Optional[str]:
         err = chunk.get("error", {})
         raise RuntimeError(f"Anthropic stream error: {err}")
 
-    if "error" in chunk:
+    # Explicit provider error payload (must check truthiness: ignore {"error": null} or {"error": false})
+    if chunk.get("error"):
         err = chunk["error"]
         msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
         raise RuntimeError(f"Streaming error from provider: {msg}")
@@ -130,8 +135,10 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
     data_buffer: List[str] = []
 
     async for raw_line in lines_iter:
-        line = raw_line.strip()
-        if not line:
+        line = raw_line.rstrip("\r\n")
+        stripped = line.strip()
+
+        if not stripped:
             # Blank line: event boundary per SSE standard
             if data_buffer:
                 combined_data = "\n".join(data_buffer).strip()
@@ -147,35 +154,58 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
                     continue
             continue
 
-        if line.startswith(":"):
+        if stripped.startswith(":"):
             # Comment or keepalive
             continue
 
-        if line.startswith("data:"):
-            data_str = line[5:].strip()
-            if data_str == "[DONE]":
+        # Extract data content
+        data_str: Optional[str] = None
+        if line.startswith("data: "):
+            data_str = line[6:]
+        elif line.startswith("data:"):
+            data_str = line[5:].lstrip()
+        elif data_buffer and not any(line.startswith(prefix) for prefix in ("event:", "id:", "retry:")):
+            # Continuation line of a multi-line fragmented block
+            data_str = line
+
+        if data_str is not None:
+            if data_str.strip() == "[DONE]":
                 break
 
-            # 1. Try immediate eager parsing (for standard single-line SSE events)
-            try:
-                chunk = json.loads(data_str)
-                token = extract_stream_token(chunk)
-                if token:
-                    yield token
-                data_buffer.clear()
-                continue
-            except json.JSONDecodeError:
-                # 2. Incomplete or fragmented line: buffer and attempt joined parse
-                data_buffer.append(data_str)
-                joined = "\n".join(data_buffer)
+            if data_buffer:
+                # 1. Try joining with accumulated buffer
+                joined = "\n".join(data_buffer + [data_str])
                 try:
                     chunk = json.loads(joined)
                     token = extract_stream_token(chunk)
                     if token:
                         yield token
                     data_buffer.clear()
+                    continue
                 except json.JSONDecodeError:
                     pass
+
+                # 2. Joined parse failed: check if data_str alone is a valid standalone chunk.
+                # If so, the prior buffer was corrupted/unfinishable: discard it and process data_str.
+                try:
+                    chunk = json.loads(data_str)
+                    token = extract_stream_token(chunk)
+                    data_buffer.clear()
+                    if token:
+                        yield token
+                    continue
+                except json.JSONDecodeError:
+                    # Both joined and standalone failed: keep accumulating
+                    data_buffer.append(data_str)
+            else:
+                # Buffer is empty: try eager single-line parse (supports streams without blank delimiters)
+                try:
+                    chunk = json.loads(data_str)
+                    token = extract_stream_token(chunk)
+                    if token:
+                        yield token
+                except json.JSONDecodeError:
+                    data_buffer.append(data_str)
 
     # Flush any trailing buffer
     if data_buffer:

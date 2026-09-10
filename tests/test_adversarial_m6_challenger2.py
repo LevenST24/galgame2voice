@@ -406,7 +406,8 @@ class TestTelegramVoiceHandlerErrorRecovery:
 
         result = await handlers.handle_voice_message(MockUpdate(), MockContext())
         assert result is None
-        mock_reply.assert_called_once_with("抱歉，语音解析失败，请重试！")
+        mock_reply.assert_called_once()
+        assert "语音解析失败" in mock_reply.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_voice_handler_network_timeout_during_file_download(self, challenge_db):

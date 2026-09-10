@@ -25,7 +25,11 @@ from galgame2voice.database.models import (
     TtsCacheEntry, CacheStatsResponse, TokenUsageMetric, MetricsOverviewResponse,
     ProviderMetricItem, ProvidersMetricsResponse, LatencyTrendItem, LatencyTrendResponse
 )
-from galgame2voice.database.session import immediate_transaction
+from galgame2voice.database.session import (
+    immediate_transaction,
+    get_schema_version,
+    set_schema_version,
+)
 
 logger = logging.getLogger("galgame2voice.database.crud")
 
@@ -422,24 +426,28 @@ async def _migration_v4_prompts_and_self_healing(conn: aiosqlite.Connection) -> 
     """Migration 4: Upgrade legacy default voice profile prompt with dynamic TTS parameters and self-heal audios."""
     try:
         cur = await conn.execute("SELECT id, system_prompt FROM voice_profiles WHERE is_default = 1 OR id = 1;")
-        row = await cur.fetchone()
-        if row and row["system_prompt"] and '"tts":' not in row["system_prompt"] and '{"chinese":' in row["system_prompt"]:
-            new_prompt = row["system_prompt"].replace(
-                '{"chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}',
-                '{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}'
-            )
-            if "动态决定语音推理参数" not in new_prompt:
-                new_prompt = new_prompt.replace(
-                    "你必须严格输出如下 JSON 格式",
-                    "你必须严格输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad）"
+        rows = await cur.fetchall()
+        for row in rows:
+            if not row or not row["system_prompt"]:
+                continue
+            curr_prompt = row["system_prompt"]
+            if '"tts":' not in curr_prompt and '{"chinese":' in curr_prompt:
+                new_prompt = curr_prompt.replace(
+                    '{"chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}',
+                    '{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}'
                 )
-            await conn.execute("UPDATE voice_profiles SET system_prompt = ? WHERE id = ?;", (new_prompt, row["id"]))
-        elif row and row["system_prompt"] and '请大胆调节！' not in row["system_prompt"] and '动态决定语音推理参数' in row["system_prompt"]:
-            new_prompt = row["system_prompt"].replace(
-                "speed 语速: 0.70~1.35",
-                "speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下"
-            )
-            await conn.execute("UPDATE voice_profiles SET system_prompt = ? WHERE id = ?;", (new_prompt, row["id"]))
+                if "动态决定语音推理参数" not in new_prompt:
+                    new_prompt = new_prompt.replace(
+                        "你必须严格输出如下 JSON 格式",
+                        "你必须严格输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad）"
+                    )
+                await conn.execute("UPDATE voice_profiles SET system_prompt = ? WHERE id = ?;", (new_prompt, row["id"]))
+            elif '请大胆调节！' not in curr_prompt and '动态决定语音推理参数' in curr_prompt:
+                new_prompt = curr_prompt.replace(
+                    "speed 语速: 0.70~1.35",
+                    "speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下"
+                )
+                await conn.execute("UPDATE voice_profiles SET system_prompt = ? WHERE id = ?;", (new_prompt, row["id"]))
     except Exception as exc:
         logger.debug("Could not auto-upgrade default voice profile system prompt: %s", exc)
 
@@ -456,29 +464,27 @@ async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
     Executes SQLite schema migrations idempotently using PRAGMA user_version.
     Guarantees that databases upgrade safely without losing any user data.
     """
-    cursor = await conn.execute("PRAGMA user_version;")
-    row = await cursor.fetchone()
-    current_version = int(row[0]) if row and row[0] is not None else 0
+    current_version = await get_schema_version(conn)
 
     if current_version < 1:
         await _migration_v1_base_schema(conn)
         current_version = 1
-        await conn.execute("PRAGMA user_version = 1;")
+        await set_schema_version(conn, 1)
 
     if current_version < 2:
         await _migration_v2_columns(conn)
         current_version = 2
-        await conn.execute("PRAGMA user_version = 2;")
+        await set_schema_version(conn, 2)
 
     if current_version < 3:
         await _migration_v3_security_and_indexes(conn)
         current_version = 3
-        await conn.execute("PRAGMA user_version = 3;")
+        await set_schema_version(conn, 3)
 
     if current_version < 4:
         await _migration_v4_prompts_and_self_healing(conn)
         current_version = 4
-        await conn.execute("PRAGMA user_version = 4;")
+        await set_schema_version(conn, 4)
 
     return current_version
 
@@ -525,6 +531,7 @@ async def auto_heal_voice_profiles(conn: aiosqlite.Connection) -> int:
     """
     from pathlib import Path
     from galgame2voice.config import get_settings
+    from galgame2voice.utils.path_guard import resolve_existing_audio_path, to_project_relative_path
     settings = get_settings()
     project_root = settings.project_root
 
@@ -543,8 +550,8 @@ async def auto_heal_voice_profiles(conn: aiosqlite.Connection) -> int:
         p_id = row["id"]
         ref_path = str(row["ref_audio_path"] or "").strip()
         needs_healing = False
-
         new_ref_path = default_ref_path
+
         if not ref_path:
             needs_healing = True
         else:

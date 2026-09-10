@@ -11,8 +11,7 @@ from pydantic import BaseModel, Field
 
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db
-from galgame2voice.routers.voice import _free_memory_gb, _get_switch_min_free_memory_gb
-from galgame2voice.services.voice_manager import get_voice_manager
+from galgame2voice.services.voice_manager import get_voice_manager, InsufficientMemoryError
 from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.routers.characters")
@@ -223,19 +222,13 @@ async def switch_character(req: CharacterSwitchRequest):
             except Exception as exc:
                 logger.debug("Failed syncing active character to settings: %s", exc)
         else:
-            if not req.force and not os.getenv("GALGAME2VOICE_SKIP_MEM_CHECK"):
-                free_gb = _free_memory_gb()
-                min_free_gb = _get_switch_min_free_memory_gb()
-                if free_gb is not None and free_gb < min_free_gb:
-                    raise HTTPException(
-                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        detail=(
-                            f"系统空闲内存不足（{free_gb:.1f} GB < {min_free_gb:.1f} GB），"
-                            "加载新模型权重可能导致语音引擎崩溃。请关闭占内存的程序后重试。"
-                        ),
-                    )
-
-            success = await manager.switch_profile(profile, persist=True, _already_locked=True)
+            try:
+                success = await manager.switch_profile(profile, persist=True, _already_locked=True)
+            except InsufficientMemoryError as mem_err:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=str(mem_err),
+                )
             if not success:
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,

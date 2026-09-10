@@ -193,17 +193,13 @@ class TestFrontendAssetsAndDOMStructure:
         assert '<rect' in pause_symbol or 'fill="currentColor"' in pause_symbol, "Pause icon must have fillable geometry"
 
     def test_style_css_contains_glassmorphism_and_animations(self):
-        style_file = Path("galgame2voice/static/css/style.css")
-        assert style_file.exists(), "style.css must exist"
+        style_file = Path("frontend/src/styles.css")
+        assert style_file.exists(), "frontend/src/styles.css must exist"
         css = style_file.read_text(encoding="utf-8")
 
-        # Test asset compatibility classes
-        assert ".chat-container" in css or ".app-container" in css
         # Glassmorphism backdrop-filter
         assert "backdrop-filter" in css
-        # Equalizer bar styling
-        assert ".audio-equalizer-bars" in css or ".bar" in css
-        # Standee aura / animations
+        # Animations
         assert "keyframes" in css
 
     def test_no_browser_speechsynthesis_fallback_and_has_persistent_cache(self):

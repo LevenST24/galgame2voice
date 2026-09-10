@@ -343,17 +343,10 @@ class TestChatRouterEndpointsM4:
             assert r_root.status_code == 200
             assert "Gal2Voice" in r_root.text
 
-            # CSS
-            r_css = await c.get("/static/css/style.css")
-            assert r_css.status_code == 200
-            assert "chat-container" in r_css.text or "app-container" in r_css.text
-
-            # Audio Player JS
-            r_player = await c.get("/static/js/audio_player.js")
-            assert r_player.status_code == 200
-            assert "StreamingAudioPlayer" in r_player.text
-
-            # Chat Client JS
-            r_client = await c.get("/static/js/chat_client.js")
-            assert r_client.status_code == 200
-            assert "/api/chat/stream" in r_client.text
+            # Built assets exist and are fingerprint-hashed
+            import re as _re
+            asset_names = _re.findall(r'/static/assets/(index-[\w-]+\.(?:js|css))', r_root.text)
+            assert asset_names, "index.html must reference built /static/assets files"
+            for name in asset_names:
+                r_asset = await c.get(f"/static/assets/{name}")
+                assert r_asset.status_code == 200

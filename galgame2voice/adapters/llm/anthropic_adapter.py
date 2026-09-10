@@ -317,11 +317,21 @@ class AnthropicAdapter(BaseLLMAdapter):
                 await client.aclose()
                 raise RuntimeError(f"Anthropic API error ({response.status_code}): {err_body.decode('utf-8', errors='ignore')}")
 
+            yielded_any = False
             try:
                 async for token in parse_sse_lines(response.aiter_lines()):
+                    yielded_any = True
                     yield token
                 return
-            except httpx.RequestError as exc:
+            except TRANSIENT_NETWORK_EXCEPTIONS as exc:
+                if not yielded_any and attempt < max_retries:
+                    delay = calculate_backoff_delay(attempt, base_delay)
+                    logger.warning(
+                        "Anthropic streaming read error from %s (%s). Retrying (%d/%d) in %.2fs...",
+                        url, exc, attempt + 1, max_retries, delay
+                    )
+                    await asyncio.sleep(delay)
+                    continue
                 raise RuntimeError(f"Streaming request failed to {url}: {exc}") from exc
             finally:
                 await stream_ctx.__aexit__(None, None, None)

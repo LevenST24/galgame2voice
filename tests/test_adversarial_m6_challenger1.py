@@ -604,13 +604,15 @@ class TestTelegramBotAdversarial:
         update_corrupt = DummyVoiceMsgUpdate("corrupt_voice")
         task1 = await handlers.handle_voice_message(update_corrupt, DummyContext())
         assert task1 is None
-        update_corrupt.message.reply_text.assert_called_with("抱歉，语音解析失败，请重试！")
+        update_corrupt.message.reply_text.assert_called_once()
+        assert "语音解析失败" in update_corrupt.message.reply_text.call_args[0][0]
 
         # 2. Empty voice file
         update_empty = DummyVoiceMsgUpdate("empty_voice")
         task2 = await handlers.handle_voice_message(update_empty, DummyContext())
         assert task2 is None
-        update_empty.message.reply_text.assert_called_with("抱歉，语音解析失败，请重试！")
+        update_empty.message.reply_text.assert_called_once()
+        assert "语音解析失败" in update_empty.message.reply_text.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_telegram_bot_manager_rapid_lifecycle(self, m6_temp_db):

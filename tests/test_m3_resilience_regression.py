@@ -54,8 +54,8 @@ async def test_voice_switch_nonexistent_profile_404_precedence(temp_db_path, moc
     """
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.delenv("GALGAME2VOICE_SKIP_MEM_CHECK", raising=False)
-    # Simulate low memory (e.g. 0.8 GB < 1.5 GB threshold)
-    monkeypatch.setattr("galgame2voice.routers.voice._free_memory_gb", lambda: 0.8)
+    # Simulate low memory (e.g. 0.8 GB free < scaled threshold)
+    monkeypatch.setattr("galgame2voice.services.voice_manager.get_system_memory_status", lambda: (16.0, 0.8))
 
     manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
     set_voice_manager(manager)
@@ -79,8 +79,8 @@ async def test_voice_switch_existing_profile_low_memory_503_and_force_override(
     """
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.delenv("GALGAME2VOICE_SKIP_MEM_CHECK", raising=False)
-    # Simulate low memory (0.8 GB)
-    monkeypatch.setattr("galgame2voice.routers.voice._free_memory_gb", lambda: 0.8)
+    # Simulate low memory (0.8 GB free)
+    monkeypatch.setattr("galgame2voice.services.voice_manager.get_system_memory_status", lambda: (16.0, 0.8))
 
     manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
     set_voice_manager(manager)
@@ -149,36 +149,38 @@ def test_dns_rebind_ssrf_cache_vulnerability(monkeypatch):
 
 def test_cgroup_v2_memory_detection(tmp_path, monkeypatch):
     """Verifies cgroups v2 memory limit and usage detection."""
-    from galgame2voice.routers.voice import _get_cgroup_memory_available_gb, _free_memory_gb
+    from galgame2voice.utils.hardware import get_cgroup_memory_available_gb, get_system_memory_status
 
     # Mock host available = 16 GB
-    monkeypatch.setattr("psutil.virtual_memory", lambda: type("VM", (), {"available": 16.0 * (1024 ** 3)})())
+    monkeypatch.setattr("galgame2voice.utils.hardware._detect_host_memory_status", lambda: (16.0, 16.0))
+    monkeypatch.setenv("GALGAME2VOICE_CGROUP_ROOT", str(tmp_path))
 
     # 1. cgroup v2 with 2GB limit and 1.2GB usage -> 0.8GB available
     (tmp_path / "memory.max").write_text(str(int(2.0 * (1024 ** 3))), encoding="utf-8")
     (tmp_path / "memory.current").write_text(str(int(1.2 * (1024 ** 3))), encoding="utf-8")
 
-    cg_avail = _get_cgroup_memory_available_gb(cgroup_root=str(tmp_path))
+    cg_avail = get_cgroup_memory_available_gb(cgroup_root=str(tmp_path))
     assert cg_avail is not None
     assert abs(cg_avail - 0.8) < 0.01
 
-    free_gb = _free_memory_gb(cgroup_root=str(tmp_path))
+    free_gb = get_system_memory_status()[1]
     assert abs(free_gb - 0.8) < 0.01  # min(16.0, 0.8) = 0.8
 
     # 2. cgroup v2 with 'max' (unlimited) -> returns host available (16.0 GB)
     (tmp_path / "memory.max").write_text("max\n", encoding="utf-8")
-    cg_avail_unlimited = _get_cgroup_memory_available_gb(cgroup_root=str(tmp_path))
+    cg_avail_unlimited = get_cgroup_memory_available_gb(cgroup_root=str(tmp_path))
     assert cg_avail_unlimited is None
-    free_gb_unlimited = _free_memory_gb(cgroup_root=str(tmp_path))
+    free_gb_unlimited = get_system_memory_status()[1]
     assert abs(free_gb_unlimited - 16.0) < 0.01
 
 
 def test_cgroup_v1_memory_detection(tmp_path, monkeypatch):
     """Verifies cgroups v1 memory limit and usage detection."""
-    from galgame2voice.routers.voice import _get_cgroup_memory_available_gb, _free_memory_gb
+    from galgame2voice.utils.hardware import get_cgroup_memory_available_gb, get_system_memory_status
 
     # Mock host available = 32 GB
-    monkeypatch.setattr("psutil.virtual_memory", lambda: type("VM", (), {"available": 32.0 * (1024 ** 3)})())
+    monkeypatch.setattr("galgame2voice.utils.hardware._detect_host_memory_status", lambda: (32.0, 32.0))
+    monkeypatch.setenv("GALGAME2VOICE_CGROUP_ROOT", str(tmp_path))
 
     mem_dir = tmp_path / "memory"
     mem_dir.mkdir()
@@ -187,18 +189,18 @@ def test_cgroup_v1_memory_detection(tmp_path, monkeypatch):
     (mem_dir / "memory.limit_in_bytes").write_text(str(int(3.0 * (1024 ** 3))), encoding="utf-8")
     (mem_dir / "memory.usage_in_bytes").write_text(str(int(2.5 * (1024 ** 3))), encoding="utf-8")
 
-    cg_avail = _get_cgroup_memory_available_gb(cgroup_root=str(tmp_path))
+    cg_avail = get_cgroup_memory_available_gb(cgroup_root=str(tmp_path))
     assert cg_avail is not None
     assert abs(cg_avail - 0.5) < 0.01
 
-    free_gb = _free_memory_gb(cgroup_root=str(tmp_path))
+    free_gb = get_system_memory_status()[1]
     assert abs(free_gb - 0.5) < 0.01  # min(32.0, 0.5) = 0.5
 
     # 2. cgroup v1 with unlimited sentinel (>= 1 << 60) -> returns host available (32.0 GB)
     (mem_dir / "memory.limit_in_bytes").write_text("9223372036854771712\n", encoding="utf-8")
-    cg_avail_unlimited = _get_cgroup_memory_available_gb(cgroup_root=str(tmp_path))
+    cg_avail_unlimited = get_cgroup_memory_available_gb(cgroup_root=str(tmp_path))
     assert cg_avail_unlimited is None
-    free_gb_unlimited = _free_memory_gb(cgroup_root=str(tmp_path))
+    free_gb_unlimited = get_system_memory_status()[1]
     assert abs(free_gb_unlimited - 32.0) < 0.01
 
 
@@ -348,9 +350,9 @@ async def test_concurrent_voice_switch_serialization_and_toctou_prevention(temp_
     # Memory starts at 2.0GB, drops to 0.8GB after first check
     mem_readings = [2.0, 0.8, 0.8, 0.8]
     def mock_free_mem(*args, **kwargs):
-        return mem_readings.pop(0) if mem_readings else 0.8
+        return (16.0, mem_readings.pop(0) if mem_readings else 0.8)
 
-    monkeypatch.setattr("galgame2voice.routers.voice._free_memory_gb", mock_free_mem)
+    monkeypatch.setattr("galgame2voice.services.voice_manager.get_system_memory_status", mock_free_mem)
 
     manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
     set_voice_manager(manager)
@@ -429,7 +431,7 @@ def test_cgroup_proc_self_subpath_detection(tmp_path, monkeypatch):
     Verifies that in Kubernetes / Docker environments where /sys/fs/cgroup/memory.max is 'max',
     _get_cgroup_memory_available_gb inspects /proc/self/cgroup to discover the container slice.
     """
-    from galgame2voice.routers.voice import _get_cgroup_memory_available_gb
+    from galgame2voice.utils.hardware import get_cgroup_memory_available_gb
     from pathlib import Path
 
     # Root has 'max' (unlimited)
@@ -451,9 +453,9 @@ def test_cgroup_proc_self_subpath_detection(tmp_path, monkeypatch):
             return mock_proc
         return orig_path_cls(p, *args, **kwargs)
 
-    monkeypatch.setattr("galgame2voice.routers.voice.Path", patched_path)
+    monkeypatch.setattr("galgame2voice.utils.hardware.Path", patched_path)
 
-    avail = _get_cgroup_memory_available_gb(cgroup_root=str(tmp_path))
+    avail = get_cgroup_memory_available_gb(cgroup_root=str(tmp_path))
     assert avail is not None
     assert abs(avail - 0.5) < 0.01  # 2.0 - 1.5 = 0.5 GB
 
@@ -526,7 +528,7 @@ async def test_voice_switch_same_profile_with_different_refer_audio_triggers_swi
     monkeypatch.delenv("GALGAME2VOICE_SKIP_MEM_CHECK", raising=False)
     # Mock memory check to return safe value — this test validates refer audio
     # change detection, not memory gating.
-    monkeypatch.setattr("galgame2voice.routers.voice._free_memory_gb", lambda cgroup_root=None: 10.0)
+    monkeypatch.setattr("galgame2voice.services.voice_manager.get_system_memory_status", lambda: (16.0, 10.0))
 
     manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
     set_voice_manager(manager)
