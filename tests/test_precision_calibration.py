@@ -154,3 +154,48 @@ class TestResolveWeightFilePath:
         monkeypatch.setattr(pg, "get_authorized_roots", lambda include_sovits=True: [])
         assert pg.resolve_weight_file_path("GPT_weights_v2ProPlus/missing.ckpt") == "GPT_weights_v2ProPlus/missing.ckpt"
         assert pg.resolve_weight_file_path("") == ""
+
+
+class TestYamlPrecisionSync:
+    def test_yaml_read_write_roundtrip(self, tmp_path):
+        from galgame2voice.utils.precision import (
+            read_sovits_yaml_is_half,
+            write_sovits_yaml_is_half,
+            find_sovits_yaml_path,
+        )
+        configs_dir = tmp_path / "GPT_SoVITS" / "configs"
+        configs_dir.mkdir(parents=True)
+        yaml_file = configs_dir / "tts_infer.yaml"
+        yaml_file.write_text(
+            "custom:\n  device: cuda\n  is_half: true\n  version: v2\nv1:\n  is_half: false\n",
+            encoding="utf-8",
+        )
+
+        assert find_sovits_yaml_path(tmp_path) == yaml_file
+        assert read_sovits_yaml_is_half(tmp_path) is True
+
+        # Switch to FP32
+        out_path = write_sovits_yaml_is_half(tmp_path, False)
+        assert out_path == yaml_file
+        assert read_sovits_yaml_is_half(tmp_path) is False
+        content = yaml_file.read_text(encoding="utf-8")
+        assert "is_half: false" in content
+        assert "is_half: true" not in content.split("v1:")[0]
+
+        # Switch back to FP16
+        write_sovits_yaml_is_half(tmp_path, True)
+        assert read_sovits_yaml_is_half(tmp_path) is True
+
+    def test_resolve_initial_is_half_picks_up_yaml_fp32(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
+        configs_dir = tmp_path / "GPT_SoVITS" / "configs"
+        configs_dir.mkdir(parents=True)
+        yaml_file = configs_dir / "tts_infer.yaml"
+        yaml_file.write_text(
+            "custom:\n  device: cuda\n  is_half: false\n  version: v2\n",
+            encoding="utf-8",
+        )
+
+        is_half, source = resolve_initial_is_half(tmp_path, tmp_path)
+        assert is_half is False
+        assert source == "yaml"

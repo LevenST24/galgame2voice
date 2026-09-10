@@ -170,7 +170,7 @@ async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, 
     new_precision = sanitized_updates.get("inference_precision")
     if new_precision:
         try:
-            from galgame2voice.utils.precision import write_precision_cache
+            from galgame2voice.utils.precision import write_precision_cache, write_sovits_yaml_is_half
             from galgame2voice.config import get_settings
             app_settings = get_settings()
             sovits_dir_file = app_settings.project_root / "data" / "sovits_dir.txt"
@@ -178,8 +178,12 @@ async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, 
             prec_lower = str(new_precision).lower()
             if prec_lower in ("fp16", "half"):
                 write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=True)
+                if sovits_dir_str:
+                    write_sovits_yaml_is_half(sovits_dir_str, is_half=True)
             elif prec_lower in ("fp32", "float32"):
                 write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=False)
+                if sovits_dir_str:
+                    write_sovits_yaml_is_half(sovits_dir_str, is_half=False)
             elif prec_lower == "auto":
                 cache_file = app_settings.project_root / "data" / "precision.json"
                 if cache_file.exists():

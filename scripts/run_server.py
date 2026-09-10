@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from galgame2voice.utils.precision import (
     read_precision_cache,
     write_precision_cache,
+    write_sovits_yaml_is_half,
 )
 
 # Ensure runtime directories
@@ -612,13 +613,21 @@ def _spawn_sovits_process(sovits_dir: Path, host: str, port: int, is_half: bool)
         print("             请下载官方完整集成包 (含 runtime 目录) 或手动安装其 requirements。")
         python_exe = Path(sys.executable)
 
+    synced_yaml = write_sovits_yaml_is_half(sovits_dir, is_half)
+    config_arg = "GPT_SoVITS/configs/tts_infer.yaml"
+    if synced_yaml:
+        try:
+            config_arg = str(synced_yaml.relative_to(sovits_dir))
+        except ValueError:
+            config_arg = str(synced_yaml)
+
     cmd = [
         str(python_exe),
         "-I",
         "api_v2.py",
         "-a", host,
         "-p", str(port),
-        "-c", "GPT_SoVITS/configs/tts_infer.yaml",
+        "-c", config_arg,
     ]
 
     log_file = PROJECT_ROOT / "logs" / "gpt_sovits.log"

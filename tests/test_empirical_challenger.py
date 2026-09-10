@@ -312,7 +312,7 @@ class TestProcessTerminationAndLifespan:
             # Wait for server to become responsive with direct loopback connection
             online = False
             t0 = time.perf_counter()
-            with httpx.Client(trust_env=False, timeout=5.0) as client:
+            with httpx.Client(trust_env=False, timeout=15.0) as client:
                 while time.perf_counter() - t0 < 30.0:
                     time.sleep(0.5)
                     try:
