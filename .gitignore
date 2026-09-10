@@ -74,4 +74,8 @@ desktop.ini
 # Temporary agent scratchpads
 .agents/
 
-
+# Model weights (large binaries >100MB, distributed separately)
+*.ckpt
+*.pth
+characters/**/*.ckpt
+characters/**/*.pth

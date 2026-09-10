@@ -415,6 +415,7 @@ class ChatService:
         cancel_monitor: Optional[asyncio.Task] = None
         persisted_assistant: bool = False
         user_msg: Optional[Any] = None
+        final_result: Dict[str, Any] = {}
 
         if cancel_event and cancel_event.is_set():
             logger.info("Stream chat cancelled before starting for session %s", session_id)

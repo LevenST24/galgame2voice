@@ -6,6 +6,7 @@ Evidence-based precision calibration tests:
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -122,3 +123,34 @@ class TestCalibrateEnginePrecision:
         is_half, calibrated = calibrate(tmp_path / "engine", False, lambda: next(probes), lambda fh: restarts.append(fh))
         assert restarts == []  # already FP32 — restarting changes nothing
         assert is_half is False and calibrated is False
+
+
+class TestResolveWeightFilePath:
+    """Weights can live inside the character package (project-relative) or the
+    engine dir (engine-relative); the switch flow absolutizes either form."""
+
+    def test_package_relative_weight_absolutized(self, tmp_path, monkeypatch):
+        import galgame2voice.utils.path_guard as pg
+        pkg = tmp_path / "characters" / "kanna" / "gpt.ckpt"
+        pkg.parent.mkdir(parents=True)
+        pkg.write_bytes(b"w")
+        monkeypatch.setattr(pg, "get_settings", lambda: SimpleNamespace(project_root=tmp_path, audio_dir=tmp_path / "audio"))
+        monkeypatch.setattr(pg, "get_authorized_roots", lambda include_sovits=True: [])
+        assert pg.resolve_weight_file_path("characters/kanna/gpt.ckpt") == str(pkg)
+
+    def test_engine_relative_weight_absolutized(self, tmp_path, monkeypatch):
+        import galgame2voice.utils.path_guard as pg
+        engine = tmp_path / "engine"
+        w = engine / "GPT_weights_v2ProPlus" / "kanna-e50.ckpt"
+        w.parent.mkdir(parents=True)
+        w.write_bytes(b"w")
+        monkeypatch.setattr(pg, "get_settings", lambda: SimpleNamespace(project_root=tmp_path, audio_dir=tmp_path / "audio"))
+        monkeypatch.setattr(pg, "get_authorized_roots", lambda include_sovits=True: [engine])
+        assert pg.resolve_weight_file_path("GPT_weights_v2ProPlus/kanna-e50.ckpt") == str(w)
+
+    def test_absolute_untouched_and_missing_passthrough(self, tmp_path, monkeypatch):
+        import galgame2voice.utils.path_guard as pg
+        monkeypatch.setattr(pg, "get_settings", lambda: SimpleNamespace(project_root=tmp_path, audio_dir=tmp_path / "audio"))
+        monkeypatch.setattr(pg, "get_authorized_roots", lambda include_sovits=True: [])
+        assert pg.resolve_weight_file_path("GPT_weights_v2ProPlus/missing.ckpt") == "GPT_weights_v2ProPlus/missing.ckpt"
+        assert pg.resolve_weight_file_path("") == ""

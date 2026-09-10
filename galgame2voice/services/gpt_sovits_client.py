@@ -307,6 +307,7 @@ _TTS_STRING_MAXLEN = {
 # ============================================================================
 # Dynamic AI-Driven Voice Prosody & Emotion Constants
 # ============================================================================
+from galgame2voice.utils.path_guard import resolve_weight_file_path
 from galgame2voice.utils.prosody import (
     DYNAMIC_SPEED_MIN,
     DYNAMIC_SPEED_MAX,
@@ -423,12 +424,15 @@ class VoiceProfileWeightSpec(BaseModel):
 
 
 def _extract_weight_spec(target: Any) -> VoiceProfileWeightSpec:
-    """Extracts weight paths and refer audio fields from various object types."""
+    """Extracts weight paths and refer audio fields from various object types.
+    Weight paths are absolutized here (single choke point) so the engine receives
+    loadable absolute paths whether the profile stores project-relative package
+    paths or engine-relative paths."""
     if isinstance(target, dict):
         return VoiceProfileWeightSpec(
             name=target.get("name", "Unnamed"),
-            gpt_weights_path=target.get("gpt_weights_path", ""),
-            sovits_weights_path=target.get("sovits_weights_path", ""),
+            gpt_weights_path=resolve_weight_file_path(target.get("gpt_weights_path", "")),
+            sovits_weights_path=resolve_weight_file_path(target.get("sovits_weights_path", "")),
             refer_audio_path=target.get("refer_audio_path") or target.get("ref_audio_path") or "",
             refer_text=target.get("refer_text") or target.get("prompt_text") or "",
             refer_language=target.get("refer_language") or target.get("prompt_lang") or "ja",
@@ -438,8 +442,8 @@ def _extract_weight_spec(target: Any) -> VoiceProfileWeightSpec:
     elif hasattr(target, "gpt_weights_path"):
         return VoiceProfileWeightSpec(
             name=getattr(target, "name", "Unnamed"),
-            gpt_weights_path=getattr(target, "gpt_weights_path", ""),
-            sovits_weights_path=getattr(target, "sovits_weights_path", ""),
+            gpt_weights_path=resolve_weight_file_path(getattr(target, "gpt_weights_path", "")),
+            sovits_weights_path=resolve_weight_file_path(getattr(target, "sovits_weights_path", "")),
             refer_audio_path=getattr(target, "refer_audio_path", getattr(target, "ref_audio_path", "")),
             refer_text=getattr(target, "refer_text", getattr(target, "prompt_text", "")),
             refer_language=getattr(target, "refer_language", getattr(target, "prompt_lang", "ja")),

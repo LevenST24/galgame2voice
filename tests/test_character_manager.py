@@ -439,3 +439,209 @@ def test_build_gpt_sovits_env_default_argument(tmp_path):
     env = rs.build_gpt_sovits_env(tmp_path)
     assert env["is_half"] == "False"
 
+
+# ============================================================================
+# 8. Multi-Character Package Integration & Hardening Tests
+# ============================================================================
+
+def test_character_manager_discovers_all_three_characters():
+    """Verifies that CharacterManager auto-discovers all three packages: 四季夏目, 明月栞那, 西园寺风莉."""
+    mgr = CharacterManager(get_settings().characters_dir)
+    discovered = mgr.discover_characters()
+    assert len(discovered) == 3, f"Expected 3 packages, got {len(discovered)}"
+
+    expected_chars = {
+        "natsume": "四季夏目",
+        "kanna": "明月栞那",
+        "kazari": "西园寺风莉",
+    }
+    for char_id, expected_name in expected_chars.items():
+        pkg = mgr.get_character(char_id)
+        assert pkg is not None, f"Character package {char_id} not found"
+        assert pkg.is_valid is True, f"Character package {char_id} is invalid: {pkg.validation_errors}"
+        assert pkg.name == expected_name
+        assert pkg.id == char_id
+        # All 7 core emotions present
+        for emo in ["gentle", "happy", "angry", "sad", "shy", "tsundere", "cool"]:
+            assert emo in pkg.manifest.emotions, f"Emotion {emo} missing from {char_id}"
+
+
+def test_all_reference_audios_duration_boundary():
+    """Verifies that all 21 reference audios across all 3 packages have duration in [3.0s, 10.0s]."""
+    from galgame2voice.services.tts_service import TtsService
+    import soundfile as sf
+
+    mgr = CharacterManager(get_settings().characters_dir)
+    discovered = mgr.discover_characters()
+    assert len(discovered) == 3
+
+    audio_count = 0
+    for pkg in discovered:
+        for emo_name, emo_cfg in pkg.manifest.emotions.items():
+            audio_path = pkg.resolve_audio_path(emo_cfg.audio)
+            assert audio_path is not None, f"Audio path could not be resolved for {pkg.name} - {emo_name}"
+            assert audio_path.is_file(), f"Audio file {audio_path} does not exist"
+
+            # Check via soundfile
+            info = sf.info(str(audio_path))
+            assert 3.0 <= info.duration <= 10.0, (
+                f"Audio {audio_path} duration {info.duration:.2f}s is out of [3.0, 10.0] range"
+            )
+
+            # Check via TtsService helper
+            tts_dur = TtsService.get_audio_duration(audio_path)
+            assert tts_dur is not None
+            assert 3.0 <= tts_dur <= 10.0
+            audio_count += 1
+
+    assert audio_count == 21, f"Expected 21 reference audios, tested {audio_count}"
+
+
+def test_character_weights_are_real_binaries_gt_100mb():
+    """Verifies that all model weights across all 3 characters are valid binaries > 100MB (> 104,857,600 bytes)."""
+    mgr = CharacterManager(get_settings().characters_dir)
+    discovered = mgr.discover_characters()
+    assert len(discovered) == 3
+
+    for pkg in discovered:
+        for weight_type in ("gpt_weights", "sovits_weights"):
+            weight_path_str = pkg.resolve_weight_path(weight_type)
+            assert weight_path_str, f"{pkg.name} {weight_type} not resolved"
+            weight_path = Path(weight_path_str)
+            assert weight_path.is_file(), f"{pkg.name} {weight_type} file does not exist: {weight_path}"
+
+            file_size = weight_path.stat().st_size
+            assert file_size > 104857600, (
+                f"{pkg.name} {weight_type} size {file_size} is <= 100MB (not genuine binary)"
+            )
+
+            # Confirm binary non-pointer content
+            with open(weight_path, "rb") as f:
+                header = f.read(16)
+            assert not header.startswith(b"GPT_weights")
+            assert not header.startswith(b"SoVITS_weights")
+
+
+@pytest.mark.asyncio
+async def test_character_manager_sync_with_db_all_characters_and_default(tmp_path):
+    """Verifies that DB sync syncs all 3 characters, cleans ghosts, and sets Natsume as deterministic default."""
+    db_file = tmp_path / "multi_char_sync.db"
+    async with aiosqlite.connect(str(db_file)) as conn:
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("""
+            CREATE TABLE voice_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                gpt_weights_path TEXT NOT NULL DEFAULT '',
+                sovits_weights_path TEXT NOT NULL DEFAULT '',
+                ref_audio_path TEXT NOT NULL DEFAULT '',
+                prompt_text TEXT NOT NULL DEFAULT '',
+                prompt_lang TEXT NOT NULL DEFAULT 'ja',
+                text_lang TEXT NOT NULL DEFAULT 'ja',
+                system_prompt TEXT NOT NULL DEFAULT '',
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        # Insert a stale ghost profile that should be pruned
+        await conn.execute("""
+            INSERT INTO voice_profiles (name, gpt_weights_path, ref_audio_path)
+            VALUES ('kazari', 'characters/kazari/gpt.ckpt', 'audio/references/natsume/gentle.ogg');
+        """)
+        # Insert a stale Kanna profile with wrong audio and external E: weights
+        await conn.execute("""
+            INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text)
+            VALUES ('明月栞那', 'E:\\stale\\kanna.ckpt', 'E:\\stale\\kanna.pth', 'audio/references/natsume/gentle.ogg', '');
+        """)
+        await conn.commit()
+
+        mgr = CharacterManager(get_settings().characters_dir)
+        synced = await mgr.sync_with_db(conn)
+        assert synced >= 2
+
+        # 1. Ghost profile kazari must be pruned
+        cur = await conn.execute("SELECT * FROM voice_profiles WHERE name = 'kazari';")
+        assert (await cur.fetchone()) is None
+
+        # 2. All 3 characters must exist in DB
+        for name in ["四季夏目", "明月栞那", "西园寺风莉"]:
+            cur = await conn.execute("SELECT * FROM voice_profiles WHERE name = ?;", (name,))
+            row = await cur.fetchone()
+            assert row is not None, f"Profile {name} missing from DB"
+            assert not Path(row["ref_audio_path"]).is_absolute()
+            assert not Path(row["gpt_weights_path"]).is_absolute()
+            assert not Path(row["sovits_weights_path"]).is_absolute()
+            assert bool(row["prompt_text"].strip()), f"Empty prompt_text for {name}"
+
+        # 3. Kanna's stale row must be healed
+        cur = await conn.execute("SELECT * FROM voice_profiles WHERE name = '明月栞那';")
+        kanna_row = await cur.fetchone()
+        assert "natsume" not in kanna_row["ref_audio_path"]
+        assert "characters/明月栞那" in kanna_row["ref_audio_path"]
+        assert "characters/明月栞那" in kanna_row["gpt_weights_path"]
+        assert "characters/明月栞那" in kanna_row["sovits_weights_path"]
+
+        # 4. Natsume must be the default
+        cur = await conn.execute("SELECT * FROM voice_profiles WHERE is_default = 1;")
+        default_rows = await cur.fetchall()
+        assert len(default_rows) == 1
+        assert default_rows[0]["name"] == "四季夏目"
+
+
+def test_character_manager_whitespace_queries():
+    """Verifies that whitespace-only queries return None, and space-separated queries resolve properly."""
+    mgr = CharacterManager(get_settings().characters_dir)
+
+    # Whitespace-only queries must return None
+    assert mgr.get_character("") is None
+    assert mgr.get_character("   ") is None
+    assert mgr.get_character("\t\n") is None
+    assert mgr.get_character("   \t  ") is None
+
+    # Space-separated queries must resolve
+    assert mgr.get_character("明月 栞那") is not None
+    assert mgr.get_character("明月 栞那").id == "kanna"
+    assert mgr.get_character("西园寺 风莉") is not None
+    assert mgr.get_character("西园寺 风莉").id == "kazari"
+    assert mgr.get_character("四季 夏目") is not None
+    assert mgr.get_character("四季 夏目").id == "natsume"
+    assert mgr.get_character("  kanna  ") is not None
+    assert mgr.get_character("  kanna  ").id == "kanna"
+
+
+def test_character_switch_api_all_characters_and_aliases():
+    """Verifies that /api/characters/switch successfully switches to all characters by name, ID, and alias."""
+    from unittest.mock import patch, AsyncMock
+    from fastapi.testclient import TestClient
+    from galgame2voice.main import app
+
+    client = TestClient(app)
+
+    with patch("galgame2voice.services.voice_manager.VoiceManager.switch_profile", new_callable=AsyncMock) as mock_switch:
+        mock_switch.return_value = True
+
+        test_cases = [
+            ("四季夏目", 200),
+            ("natsume", 200),
+            ("明月栞那", 200),
+            ("kanna", 200),
+            ("西园寺风莉", 200),
+            ("kazari", 200),
+            ("nonexistent_heroine", 404),
+        ]
+
+        for char_query, expected_status in test_cases:
+            resp = client.post("/api/characters/switch", json={"character_name": char_query})
+            assert resp.status_code == expected_status, (
+                f"Expected status {expected_status} for '{char_query}', got {resp.status_code}: {resp.text}"
+            )
+            if expected_status == 200:
+                data = resp.json()
+                assert data["status"] == "switched"
+                assert "character" in data
+                assert "character_id" in data
+
+
+

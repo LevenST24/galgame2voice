@@ -309,6 +309,33 @@ def resolve_existing_audio_path(path: Union[str, Path]) -> Optional[Path]:
     return None
 
 
+def resolve_weight_file_path(path: str) -> str:
+    """
+    Absolutizes a model-weight path so the engine can load it regardless of its own
+    working directory. Tries, in order: absolute as-is, project_root-relative, any
+    authorized root (incl. the discovered GPT-SoVITS dir). Returns the original
+    string when nothing exists on disk (engine will attempt it relative to its cwd).
+    """
+    raw = str(path or "").strip().strip("\"'")
+    if not raw:
+        return raw
+    p = Path(raw)
+    if p.is_absolute():
+        return raw
+    try:
+        settings = get_settings()
+        cand = settings.project_root / p
+        if cand.is_file():
+            return str(cand)
+        for root in get_authorized_roots(include_sovits=True):
+            cand = root / p
+            if cand.is_file():
+                return str(cand)
+    except OSError:
+        pass
+    return raw
+
+
 def to_project_relative_path(path: Union[str, Path]) -> str:
     """
     Normalizes a path for storage so voice profiles stay portable across machines:
@@ -341,5 +368,6 @@ __all__ = [
     "safe_resolve_audio_path",
     "validate_voice_profile_paths",
     "resolve_existing_audio_path",
+    "resolve_weight_file_path",
     "to_project_relative_path",
 ]

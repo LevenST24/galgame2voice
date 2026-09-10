@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -333,20 +334,22 @@ class CharacterManager:
 
         # Specific alias indexing for known character strings
         for token in [pkg.name, pkg.id]:
-            cleaned = token.lower().replace(" ", "").replace("(", "").replace(")", "").replace("-", "")
+            cleaned = "".join(token.lower().replace("(", "").replace(")", "").replace("-", "").split())
             self._name_index[cleaned] = pid
 
         # Natsume specific aliases for full backward compatibility
         if "夏目" in pkg.name or "natsume" in pid.lower():
             for alias in ["四季夏目", "四季ナツメ", "natsume", "siki", "四季ナツメ (shiki natsume)", "default"]:
                 self._name_index[alias.lower()] = pid
+                self._name_index["".join(alias.lower().split())] = pid
 
     def get_character(self, id_or_name: str) -> Optional[CharacterPackage]:
         """Looks up a character package by ID or name/alias."""
-        if not id_or_name:
+        if not id_or_name or not id_or_name.strip():
             return None
         self._ensure_discovered()
         cleaned = id_or_name.strip().lower()
+        cleaned_spaceless = "".join(cleaned.split())
 
         # Direct ID match
         if id_or_name in self._packages:
@@ -357,9 +360,20 @@ class CharacterManager:
             pkg_id = self._name_index[cleaned]
             return self._packages.get(pkg_id)
 
+        if cleaned_spaceless in self._name_index:
+            pkg_id = self._name_index[cleaned_spaceless]
+            return self._packages.get(pkg_id)
+
         # Fuzzy substring match
         for pkg in self._packages.values():
-            if cleaned in pkg.id.lower() or cleaned in pkg.name.lower():
+            pkg_id_lower = pkg.id.lower()
+            pkg_name_lower = pkg.name.lower()
+            pkg_name_spaceless = "".join(pkg_name_lower.split())
+            if (
+                cleaned in pkg_id_lower
+                or cleaned in pkg_name_lower
+                or (cleaned_spaceless and (cleaned_spaceless in pkg_id_lower or cleaned_spaceless in pkg_name_spaceless))
+            ):
                 return pkg
 
         return None
@@ -486,12 +500,56 @@ class CharacterManager:
         if not valid_pkgs:
             return 0
 
+        # Deterministic default order: ensure natsume / 四季夏目 is sorted first
+        def _pkg_sort_key(p: CharacterPackage) -> int:
+            if "natsume" in p.id.lower() or "夏目" in p.name:
+                return 0
+            return 1
+
+        valid_pkgs = sorted(valid_pkgs, key=_pkg_sort_key)
+
         cur = await conn.execute("SELECT COUNT(*) FROM voice_profiles;")
         count_row = await cur.fetchone()
         existing_count = count_row[0] if count_row else 0
 
         synced_count = 0
         from galgame2voice.utils.path_guard import to_project_relative_path
+
+        # 1. Prune ghost profiles whose package directory under characters/ no longer exists
+        cur_all = await conn.execute("SELECT id, name, gpt_weights_path, ref_audio_path FROM voice_profiles;")
+        all_profiles = await cur_all.fetchall()
+        for prof in all_profiles:
+            p_id = prof["id"]
+            p_name = prof["name"]
+            p_gpt = prof["gpt_weights_path"] or ""
+            p_ref = prof["ref_audio_path"] or ""
+
+            is_ghost = False
+            for path_cand in (p_gpt, p_ref):
+                norm_cand = path_cand.replace("\\", "/")
+                if norm_cand.startswith("characters/"):
+                    parts = norm_cand.split("/")
+                    if len(parts) >= 2:
+                        sub_folder = parts[1]
+                        if not (self.characters_dir / sub_folder).exists():
+                            is_ghost = True
+                            break
+
+            if not is_ghost:
+                # Also check if profile name corresponds to an obsolete package ID whose folder doesn't exist
+                if p_name.lower() in ("kazari",) and not (self.characters_dir / p_name).exists():
+                    is_ghost = True
+
+            if is_ghost:
+                logger.info("Pruning ghost voice_profile record id=%s name='%s'", p_id, p_name)
+                await conn.execute("DELETE FROM voice_profiles WHERE id = ?;", (p_id,))
+                synced_count += 1
+                existing_count = max(0, existing_count - 1)
+
+        # Check if an active default already exists
+        cur_def = await conn.execute("SELECT COUNT(*) FROM voice_profiles WHERE is_default = 1;")
+        has_default_row = await cur_def.fetchone()
+        has_default = bool(has_default_row and has_default_row[0] > 0)
 
         for pkg in valid_pkgs:
             manifest = pkg.manifest
@@ -530,28 +588,62 @@ class CharacterManager:
             if existing_row:
                 # Existing profile: update paths idempotently without overriding user modifications
                 p_id = existing_row["id"]
-                current_ref = existing_row["ref_audio_path"]
-                # Only heal ref_audio_path if current points to a non-existent or empty path
-                ref_needs_update = not current_ref or not Path(current_ref).exists()
+                current_ref = existing_row["ref_audio_path"] or ""
+                current_gpt = existing_row["gpt_weights_path"] or ""
+                current_sovits = existing_row["sovits_weights_path"] or ""
+                current_prompt = existing_row["prompt_text"] or ""
+                current_sys = existing_row["system_prompt"] or ""
+
                 update_fields = []
                 params = []
+
+                # Determine if ref_audio_path needs healing:
+                # 1) current path is empty or does not exist on disk
+                # 2) non-Natsume character has ref pointing to natsume audio (cross-character bug)
+                is_natsume_pkg = "natsume" in pkg.id.lower() or "夏目" in pkg.name
+                ref_is_natsume = "natsume" in current_ref.lower() or "夏目" in current_ref
+                cross_character_audio = (not is_natsume_pkg) and ref_is_natsume
+
+                ref_needs_update = (
+                    not current_ref
+                    or not Path(current_ref).exists()
+                    or cross_character_audio
+                )
 
                 if ref_needs_update and ref_audio_str:
                     update_fields.append("ref_audio_path = ?")
                     params.append(ref_audio_str)
-                    if not existing_row["prompt_text"] and prompt_text:
-                        update_fields.append("prompt_text = ?")
-                        params.append(prompt_text)
 
-                if gpt_weights and not existing_row["gpt_weights_path"]:
+                # Prompt text should be updated if empty or if ref_audio was cross-character/healed
+                if (not current_prompt.strip() or ref_needs_update) and prompt_text:
+                    update_fields.append("prompt_text = ?")
+                    params.append(prompt_text)
+                    if prompt_lang:
+                        update_fields.append("prompt_lang = ?")
+                        params.append(prompt_lang)
+
+                # Model weights healing:
+                # If current weight is empty, does not exist on disk, or is machine-specific (e.g. E:\),
+                # heal it to the self-contained package weight
+                def _weight_needs_healing(w_path: str) -> bool:
+                    if not w_path:
+                        return True
+                    norm_w = w_path.replace("/", "\\")
+                    if norm_w.startswith("E:") or norm_w.startswith("E:\\") or (os.path.isabs(w_path) and not Path(w_path).exists()):
+                        return True
+                    if not Path(w_path).exists():
+                        return True
+                    return False
+
+                if gpt_weights and _weight_needs_healing(current_gpt):
                     update_fields.append("gpt_weights_path = ?")
                     params.append(gpt_weights)
 
-                if sovits_weights and not existing_row["sovits_weights_path"]:
+                if sovits_weights and _weight_needs_healing(current_sovits):
                     update_fields.append("sovits_weights_path = ?")
                     params.append(sovits_weights)
 
-                if system_prompt and not existing_row["system_prompt"]:
+                if system_prompt and not current_sys.strip():
                     update_fields.append("system_prompt = ?")
                     params.append(system_prompt)
 
@@ -563,7 +655,12 @@ class CharacterManager:
                     synced_count += 1
             else:
                 # Insert new voice profile
-                is_default_val = 1 if existing_count == 0 else 0
+                is_default_val = 0
+                if not has_default:
+                    if "natsume" in pkg.id.lower() or "夏目" in pkg.name or existing_count == 0:
+                        is_default_val = 1
+                        has_default = True
+
                 await conn.execute(
                     """
                     INSERT INTO voice_profiles (
