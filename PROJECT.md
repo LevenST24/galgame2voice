@@ -38,6 +38,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 | 23 | URL Authority Userinfo Credential Masking | Sanitize `user:password@host` in `MaskingFilter.PATTERNS` in `utils/logger.py` to prevent credential leaks in stdout/file logs on connection errors | M4_HARDENING | Survey R3 (DONE) |
 | 24 | Code Hygiene & v2.0 Documentation | Fix F821 undefined `updated` -> `updated_settings` in `routers/config.py:166`, remove dead imports, update `README.md` with AI Dynamic Voice, env vars, SPA settings | M4_HARDENING | Survey R4 (DONE) |
 | 25 | Full Test Suite Calibration & 100% Pass Verification | Fix `test_adversarial_m2_challenger2.py:412` (style.css path) and `test_character_manager.py:472` (soundfile dependency), verify 100% tests pass | M4_HARDENING | Survey R5 (DONE) |
+| 26 | CPU Inference Mode & Low-Memory GPU VRAM Inspection | `--cpu` CLI flag, `custom.device: cpu` YAML synchronization, `get_gpu_vram_status()` memory telemetry with <=4GB advisory, 3-state control panel toggle (FP16 ⇄ FP32 ⇄ CPU), and 100% test pass verification | M4_HARDENING | Performance & Stability (DONE) |
 
 ---
 
