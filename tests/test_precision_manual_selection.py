@@ -25,6 +25,11 @@ class TestPrecisionCLI:
         assert args.precision is None
         assert args.fp16 is False
         assert args.fp32 is False
+        assert args.cpu is False
+
+    def test_parse_args_cpu_flag(self):
+        args = rs.parse_args(["--cpu"])
+        assert args.cpu is True
 
     def test_parse_args_fp16_flag(self):
         args = rs.parse_args(["--fp16"])
@@ -40,6 +45,9 @@ class TestPrecisionCLI:
 
         args_fp32 = rs.parse_args(["--precision", "fp32"])
         assert args_fp32.precision == "fp32"
+
+        args_cpu = rs.parse_args(["--precision", "cpu"])
+        assert args_cpu.precision == "cpu"
 
         args_auto = rs.parse_args(["--precision", "auto"])
         assert args_auto.precision == "auto"
@@ -113,7 +121,11 @@ class TestPrecisionAPI:
             pid = 9999
 
         import scripts.run_server as rs
-        monkeypatch.setattr(rs, "_spawn_sovits_process", lambda s_dir, host, port, is_half: spawn_calls.append(is_half) or FakeProc())
+        monkeypatch.setattr(
+            rs,
+            "_spawn_sovits_process",
+            lambda s_dir, host, port, is_half, device="cuda": spawn_calls.append((is_half, device)) or FakeProc()
+        )
 
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -124,7 +136,7 @@ class TestPrecisionAPI:
             assert data1["is_half"] is False
             assert data1["precision"] == "FP32"
             assert "FP32" in data1["message"]
-            assert spawn_calls[-1] is False
+            assert spawn_calls[-1] == (False, "cuda")
             cache1 = read_precision_cache(tmp_path)
             assert cache1["is_half"] is False
 
@@ -135,6 +147,19 @@ class TestPrecisionAPI:
             assert data2["is_half"] is True
             assert data2["precision"] == "FP16"
             assert "FP16" in data2["message"]
-            assert spawn_calls[-1] is True
+            assert spawn_calls[-1] == (True, "cuda")
             cache2 = read_precision_cache(tmp_path)
             assert cache2["is_half"] is True
+
+            # 3. Restart with CPU
+            r3 = await client.post("/api/system/restart_sovits", json={"precision": "cpu"})
+            assert r3.status_code == 200
+            data3 = r3.json()
+            assert data3["is_half"] is False
+            assert data3["device"] == "cpu"
+            assert data3["precision"] == "CPU"
+            assert "CPU" in data3["message"]
+            assert spawn_calls[-1] == (False, "cpu")
+            cache3 = read_precision_cache(tmp_path)
+            assert cache3["device"] == "cpu"
+            assert cache3["is_half"] is False

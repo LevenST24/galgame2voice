@@ -170,20 +170,24 @@ async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, 
     new_precision = sanitized_updates.get("inference_precision")
     if new_precision:
         try:
-            from galgame2voice.utils.precision import write_precision_cache, write_sovits_yaml_is_half
+            from galgame2voice.utils.precision import write_precision_cache, write_sovits_yaml_config
             from galgame2voice.config import get_settings
             app_settings = get_settings()
             sovits_dir_file = app_settings.project_root / "data" / "sovits_dir.txt"
             sovits_dir_str = sovits_dir_file.read_text(encoding="utf-8").strip() if sovits_dir_file.exists() else ""
             prec_lower = str(new_precision).lower()
-            if prec_lower in ("fp16", "half"):
-                write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=True)
+            if prec_lower == "cpu":
+                write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=False, device="cpu")
                 if sovits_dir_str:
-                    write_sovits_yaml_is_half(sovits_dir_str, is_half=True)
+                    write_sovits_yaml_config(sovits_dir_str, is_half=False, device="cpu")
+            elif prec_lower in ("fp16", "half"):
+                write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=True, device="cuda")
+                if sovits_dir_str:
+                    write_sovits_yaml_config(sovits_dir_str, is_half=True, device="cuda")
             elif prec_lower in ("fp32", "float32"):
-                write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=False)
+                write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=False, device="cuda")
                 if sovits_dir_str:
-                    write_sovits_yaml_is_half(sovits_dir_str, is_half=False)
+                    write_sovits_yaml_config(sovits_dir_str, is_half=False, device="cuda")
             elif prec_lower == "auto":
                 cache_file = app_settings.project_root / "data" / "precision.json"
                 if cache_file.exists():

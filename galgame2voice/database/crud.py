@@ -67,7 +67,7 @@ def is_masked_key(key: Optional[str]) -> bool:
 
 # ==================== Schema Versioning & Migrations ====================
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 async def _get_table_columns(conn: aiosqlite.Connection, table_name: str) -> set[str]:

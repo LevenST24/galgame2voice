@@ -16,10 +16,11 @@
 - ⚡ **毫秒级双语流式推流与前瞻断句**：
   - 独创 `StreamingBilingualParser`，零阻塞并行提取大模型输出的中文心声与日文语音台词，前瞻式分句并管道化合成。
   - **双级 TTS 缓存**：L1 内存 LRU 缓存（`<0.005ms` 极速返回）+ L2 磁盘持久化 WAL 缓存，大幅降低重复对话时的 GPU 算力开销。
-- 🎛️ **推理精度自适应校准与手动选择**：
+- 🎛️ **推理精度自适应校准与硬件运行模式**：
   - **FP16 半精度**：显存占用直降 50%，推理速度提升 1.5x~2x，RTX 20/30/40 等主流显卡首选。
-  - **FP32 单精度**：高兼容性模式，彻底解决 GTX 16 系列（TU116/TU117）或 CPU 模式下的静音/哑音故障。
-  - **自适应试声探针 (Auto)**：服务启动后自动合成试声探测包并分析峰值振幅，静音时全自动平滑回退至 FP32，零学习成本。
+  - **FP32 单精度**：高兼容性模式，彻底解决 GTX 16 系列（TU116/TU117）或部分显卡驱动下的静音/哑音故障。
+  - **CPU 稳定模式 (免显存占用)**：专为入门/老旧显卡（如 MX450, GTX 1050/1650 显存 ≤ 4GB）设计。依托宿主机大内存（如 16GB）进行运算，彻底杜绝显存溢出 (CUDA OOM) 与显卡驱动崩溃。
+  - **自适应试声探针 (Auto)**：服务启动后自动合成试声探测包并分析峰值振幅，静音时全自动平滑回退至 FP32，零学习成本。可通过 Web 控制台仪表盘一键无缝热切换（FP16 ⇄ FP32 ⇄ CPU）。
 - 💻 **现代化单页控制台 (Unified SPA Web Console)**：
   - 基于极简高性能架构打造，首屏加载小于 50ms，彻底拔除历史多页面重定向与跳转延迟。
   - **双层设置架构**：
@@ -49,10 +50,11 @@
 ```cmd
 启动.bat
 ```
-如需显式指定推理精度启动：
+如需显式指定推理硬件或精度启动：
 ```cmd
 启动.bat --fp16          # 强制开启 FP16 半精度加速
 启动.bat --fp32          # 强制使用 FP32 单精度兼容模式
+启动.bat --cpu           # 强制使用纯 CPU 稳定模式 (免显存占用)
 ```
 
 #### 方式二：命令行启动
@@ -71,8 +73,9 @@ python scripts/run_server.py --help
   --port PORT             监听端口 (默认: 8080，被占用时自动递增)
   --fp16                  启用 FP16 半精度推理 (显存省半，推理快)
   --fp32                  强制 FP32 单精度 (杜绝哑音静音)
-  --precision {fp16,fp32,auto}
-                          显式指定推理精度
+  --cpu                   强制纯 CPU 稳定模式 (零显存占用，利用主机大内存)
+  --precision {fp16,fp32,cpu,auto}
+                          显式指定推理精度/运行模式
   --no-browser            启动后不自动唤起默认浏览器
   --check-only            仅执行环境依赖与硬件巡检，不启动常驻服务
 ```
@@ -89,7 +92,7 @@ python scripts/run_server.py --help
 | `PORT` | `8080` | int | 后端服务监听端口（若被占用自动探测可用端口） |
 | `LOG_LEVEL` | `INFO` | string | 日志记录级别 (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `GPT_SOVITS_BASE_URL` | `http://127.0.0.1:9880` | string | GPT-SoVITS 语音推理引擎的 HTTP API 地址 |
-| `GPT_SOVITS_PRECISION` | `auto` | string | 强制推理精度 (`fp16`, `fp32`, `auto`)，优先于探针缓存 |
+| `GPT_SOVITS_PRECISION` | `auto` | string | 强制推理精度与模式 (`fp16`, `fp32`, `cpu`, `auto`) |
 | `TELEGRAM_ENABLED` | `false` | bool | 是否在启动时自动拉起 Telegram 伴侣机器人 |
 | `TELEGRAM_TOKEN` | 空 | string | Telegram Bot API 访问凭据 Token |
 | `TELEGRAM_PROXY` | 空 | string | Telegram 代理服务器地址（支持 `http://` 或 `socks5://`） |

@@ -25,9 +25,12 @@ from galgame2voice.utils.precision import (
     read_precision_cache,
     write_precision_cache,
     write_sovits_yaml_is_half,
+    write_sovits_yaml_config,
     resolve_initial_is_half,
+    resolve_initial_device_and_half,
     read_db_precision,
 )
+from galgame2voice.utils.hardware import get_gpu_vram_status
 
 # Ensure runtime directories
 for d in ["logs", "data", "audio"]:
@@ -570,8 +573,21 @@ def run_hardware_diagnostics() -> dict[str, Any]:
         nvidia_names = [g for g in gpu_names if any(k in g.lower() for k in ["nvidia", "geforce", "rtx", "gtx"])]
         detected_name = nvidia_names[0] if nvidia_names else (gpu_names[0] if gpu_names else "NVIDIA GPU")
         print(f"      [硬件就绪] 检测到独立显卡: {detected_name} (已准备 CUDA 加速推理)")
+        vram_total, vram_free = get_gpu_vram_status()
+        if vram_total is not None:
+            diag["vram_total_gb"] = vram_total
+            diag["vram_free_gb"] = vram_free
+            if vram_total <= 4.1:
+                print(f"      [显存提示] 显卡物理显存为 {vram_total:.1f} GB (显存较紧凑)。")
+                print("                长时间连续多轮对话或高并发时可能存在显存溢出(OOM)风险。")
+                print("                若遇显存不足，可在控制面板或通过 `启动.bat --cpu` 启用「CPU 稳定模式」（依托大内存，彻底杜绝崩溃）。")
+            else:
+                print(f"      [显存就绪] 显存容量: {vram_total:.1f} GB (当前空闲约 {vram_free:.1f} GB)")
+
         cached = read_precision_cache(PROJECT_ROOT)
-        if cached and cached.get("is_half") is False:
+        if cached and cached.get("device") == "cpu":
+            print("      [推理模式] 已配置为 CPU 稳定模式推理 (免显存占用，利用大内存防爆显存)。")
+        elif cached and cached.get("is_half") is False:
             print("      [精度校准] 已缓存校准结果: 此设备使用 FP32 单精度推理 (保证发声正常)。")
         else:
             print("      [精度校准] 引擎就绪后将自动校准 FP16/FP32 精度，无需手动配置。")
@@ -600,8 +616,14 @@ def check_system_memory():
         print(f"      [内存提示] 当前系统空闲物理内存约 {free_gb:.1f} GB。建议关闭高内存占用的后台应用以确保语音合成流畅。")
 
 
-def _spawn_sovits_process(sovits_dir: Path, host: str, port: int, is_half: bool) -> subprocess.Popen:
-    """Launches the GPT-SoVITS API daemon with the given precision and binds it to the launcher lifecycle."""
+def _spawn_sovits_process(
+    sovits_dir: Path,
+    host: str,
+    port: int,
+    is_half: bool,
+    device: str = "cuda",
+) -> subprocess.Popen:
+    """Launches the GPT-SoVITS API daemon with the given precision and device, binding to launcher lifecycle."""
     runtime_candidates = (
         (sovits_dir / "runtime" / "python.exe", sovits_dir / "runtime" / "python",
          sovits_dir / "runtime" / "python" / "bin" / "python3")
@@ -615,7 +637,7 @@ def _spawn_sovits_process(sovits_dir: Path, host: str, port: int, is_half: bool)
         print("             请下载官方完整集成包 (含 runtime 目录) 或手动安装其 requirements。")
         python_exe = Path(sys.executable)
 
-    synced_yaml = write_sovits_yaml_is_half(sovits_dir, is_half)
+    synced_yaml = write_sovits_yaml_config(sovits_dir, is_half, device=device)
     config_arg = "GPT_SoVITS/configs/tts_infer.yaml"
     if synced_yaml:
         try:
@@ -761,10 +783,17 @@ def calibrate_engine_precision(
     return is_half, False
 
 
-def _calibrate_precision_after_ready(sovits_dir: Path, host: str, port: int, is_half: bool, precision_source: str) -> None:
+def _calibrate_precision_after_ready(
+    sovits_dir: Path,
+    host: str,
+    port: int,
+    is_half: bool,
+    precision_source: str,
+    device: str = "cuda",
+) -> None:
     """Runs the calibration probe in the readiness-monitor thread once the engine answers."""
-    if precision_source != "default":
-        return  # env override is authoritative; verified cache needs no re-probe
+    if precision_source != "default" or device == "cpu":
+        return  # env override or CPU mode needs no probe
 
     def probe() -> Optional[float]:
         return _probe_synth_peak(host, port)
@@ -797,19 +826,28 @@ def _calibrate_precision_after_ready(sovits_dir: Path, host: str, port: int, is_
             print("      [精度校准] 此设备已记录为 FP32 模式 (FP16 半精度输出纯静音)。")
 
 
-def ensure_gpt_sovits_running(fp16: bool = False, fp32: bool = False, precision: Optional[str] = None):
-    """Checks the configured engine address; if not running, discovers and launches GPT-SoVITS API daemon."""
+def ensure_gpt_sovits_running(
+    fp16: bool = False,
+    fp32: bool = False,
+    cpu: bool = False,
+    precision: str | None = None,
+):
+    """
+    Spawns the local GPT-SoVITS API daemon if it is not already running.
+    Runs non-blocking parallel readiness checking in the background.
+    """
     sovits_host, sovits_port = get_sovits_host_port()
     print(f"[1/2] 正在检测 GPT-SoVITS 语音推理引擎 ({sovits_host}:{sovits_port})...")
-    # Check if engine is running on default 9880 or configured host/port: is_port_in_use(9880)
     if is_port_in_use(sovits_port, sovits_host) or (sovits_port != 9880 and is_port_in_use(9880)):
         print("      [OK] GPT-SoVITS 语音引擎已在运行")
-        print("      [注意] 引擎为外部启动，本启动器无法自动校准其精度 (FP16/FP32)；")
-        print("             若语音全程无声，请以 is_half=False (FP32) 重启引擎，")
-        print("             或关闭旧引擎进程后由本启动器重新拉起 (将自动完成精度校准)。")
+        return
+    sovits_host = "127.0.0.1"
+    sovits_port = 9880
+
+    if is_port_in_use(sovits_port, sovits_host):
+        print(f"      [OK] GPT-SoVITS 服务已在运行中 (http://{sovits_host}:{sovits_port}/)")
         return
 
-    check_system_memory()
     sovits_dir = find_gpt_sovits_directory()
     if not sovits_dir:
         print("      [提示] 未自动定位到 GPT-SoVITS 目录，若已在其他终端运行请忽略。")
@@ -818,23 +856,35 @@ def ensure_gpt_sovits_running(fp16: bool = False, fp32: bool = False, precision:
     print(f"      [..] 定位到 GPT-SoVITS: {sovits_dir}")
     print("      [..] 正在后台拉起 GPT-SoVITS API 引擎...")
 
-    # Precision resolution order:
-    # 1. CLI explicit flags: --precision fp16/fp32 or --fp16/--fp32
-    # 2. Environment variable: GPT_SOVITS_PRECISION
-    # 3. Saved setting / cache: data/precision.json
-    # 4. Fallback: auto-detect (initial FP16, calibrate via probe)
+    # Precision and device resolution order:
+    # 1. CLI explicit flags: --cpu, --fp16, --fp32, or --precision
+    # 2. Environment variable: GPT_SOVITS_PRECISION / GPT_SOVITS_DEVICE
+    # 3. Saved setting in SQLite database (SettingsInDB)
+    # 4. Verified calibration cache: data/precision.json
+    # 5. Existing engine config: tts_infer.yaml
+    # 6. Default fallback: CUDA FP16 if GPU present, else CPU
     prec_opt = (precision or "").lower()
-    if fp16 or prec_opt == "fp16":
+    if cpu or prec_opt == "cpu":
+        device = "cpu"
+        is_half = False
+        precision_source = "cli"
+        print("      [推理模式] 已指定 --cpu 稳定模式运行 (免显存占用，利用大内存防爆显存)。")
+    elif fp16 or prec_opt == "fp16":
+        device = "cuda"
         is_half = True
         precision_source = "cli"
         print("      [推理精度] 已指定 --fp16 半精度模式运行。")
     elif fp32 or prec_opt == "fp32":
+        device = "cuda"
         is_half = False
         precision_source = "cli"
         print("      [推理精度] 已指定 --fp32 单精度模式运行。")
     else:
-        is_half, precision_source = resolve_initial_is_half(PROJECT_ROOT, sovits_dir)
-        prec_str = "FP16 半精度" if is_half else "FP32 单精度"
+        device, is_half, precision_source = resolve_initial_device_and_half(PROJECT_ROOT, sovits_dir)
+        if device == "cpu":
+            prec_str = "CPU 稳定模式"
+        else:
+            prec_str = "FP16 半精度" if is_half else "FP32 单精度"
         if precision_source == "env":
             print(f"      [推理精度] 已通过环境变量手动指定 {prec_str}。")
         elif precision_source == "db":
@@ -846,17 +896,17 @@ def ensure_gpt_sovits_running(fp16: bool = False, fp32: bool = False, precision:
         else:
             print("      [推理精度] 未指定固定精度，进入自动校准模式 (初始 FP16，就绪后验证发声)。")
     try:
-        proc = _spawn_sovits_process(sovits_dir, sovits_host, sovits_port, is_half)
+        proc = _spawn_sovits_process(sovits_dir, sovits_host, sovits_port, is_half, device=device)
 
         # Non-blocking parallel readiness monitor (bounded: 120s, engine logs written to gpt_sovits.log)
-        print("      [..] GPT-SoVITS 正在后台加载模型入显存 (最长 120 秒，伴侣服务先行启动)...")
+        print("      [..] GPT-SoVITS 正在后台加载模型 (最长 120 秒，伴侣服务先行启动)...")
 
         def _wait_for_sovits_readiness_worker():
             for i in range(240):
                 time.sleep(0.5)
                 if is_port_in_use(sovits_port, sovits_host):
                     print(f"\n      [OK] GPT-SoVITS 语音引擎已就绪 (http://{sovits_host}:{sovits_port}/)")
-                    _calibrate_precision_after_ready(sovits_dir, sovits_host, sovits_port, is_half, precision_source)
+                    _calibrate_precision_after_ready(sovits_dir, sovits_host, sovits_port, is_half, precision_source, device=device)
                     return
                 if proc and proc.poll() is not None:
                     print(f"\n      [WARN] GPT-SoVITS 异常退出 (退出码: {proc.returncode})，详见 logs/gpt_sovits.log")
@@ -962,9 +1012,9 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--precision",
-        choices=["fp16", "fp32", "auto"],
+        choices=["fp16", "fp32", "cpu", "auto"],
         default=None,
-        help="Inference precision: fp16 (half-precision), fp32 (single-precision), or auto (probe-calibrated)",
+        help="Inference precision/mode: fp16 (half-precision), fp32 (single-precision), cpu (safe host-RAM mode), or auto",
     )
     parser.add_argument(
         "--fp16",
@@ -977,6 +1027,12 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Force single-precision (FP32) inference (alias for --precision fp32)",
+    )
+    parser.add_argument(
+        "--cpu",
+        action="store_true",
+        default=False,
+        help="Force CPU inference mode (bypasses GPU/VRAM to eliminate OOM risk and driver crashes)",
     )
     return parser.parse_args(args)
 
@@ -1009,6 +1065,7 @@ def main(args: list[str] | None = None):
         ensure_gpt_sovits_running(
             fp16=getattr(parsed, "fp16", False),
             fp32=getattr(parsed, "fp32", False),
+            cpu=getattr(parsed, "cpu", False),
             precision=getattr(parsed, "precision", None),
         )
 

@@ -290,11 +290,12 @@
             <input id="gParamSovitsUrl" placeholder="http://127.0.0.1:9880" autocomplete="off" />
           </div>
           <div class="field">
-            <label>GPT-SoVITS 推理精度 (Inference Precision)</label>
+            <label>GPT-SoVITS 推理精度与计算设备</label>
             <select id="gPrecision">
               <option value="auto">自动判定 (Auto - 根据硬件与试声自动选择)</option>
               <option value="fp16">FP16 半精度 (推荐，显存占用降低 50%，推理加速)</option>
               <option value="fp32">FP32 单精度 (通用兼容，彻底防止特定显卡静音)</option>
+              <option value="cpu">CPU 稳定模式 (免显存占用，利用大内存彻底杜绝爆显存/驱动崩溃)</option>
             </select>
             <small style="color: var(--text-3); font-size: 11.5px;">修改后请保存并在「状态诊断」中点击【重启 SoVITS 引擎】生效。</small>
           </div>

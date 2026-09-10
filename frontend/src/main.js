@@ -1386,19 +1386,45 @@ async function fetchSystemTelemetry() {
       }
       // 2. Precision & GPU
       if (data.hardware) {
-        const isFp16 = data.hardware.inference_precision === 'FP16';
+        const prec = (data.hardware.inference_precision || '').toUpperCase();
+        const isCpu = prec === 'CPU';
+        const isFp16 = prec === 'FP16';
         if (dom.gDashPrecisionBadge) {
-          dom.gDashPrecisionBadge.className = `badge-status-pill ${isFp16 ? 'badge-pill-indigo' : 'badge-pill-green'}`;
-          dom.gDashPrecisionBadge.textContent = isFp16 ? 'FP16' : 'FP32';
+          if (isCpu) {
+            dom.gDashPrecisionBadge.className = 'badge-status-pill badge-pill-yellow';
+            dom.gDashPrecisionBadge.textContent = 'CPU';
+          } else if (isFp16) {
+            dom.gDashPrecisionBadge.className = 'badge-status-pill badge-pill-indigo';
+            dom.gDashPrecisionBadge.textContent = 'FP16';
+          } else {
+            dom.gDashPrecisionBadge.className = 'badge-status-pill badge-pill-green';
+            dom.gDashPrecisionBadge.textContent = 'FP32';
+          }
         }
         if (dom.gDashPrecisionVal) {
-          dom.gDashPrecisionVal.textContent = isFp16 ? '⚡ FP16 半精度' : '🛡️ FP32 单精度';
+          if (isCpu) {
+            dom.gDashPrecisionVal.textContent = '🛡️ CPU 稳定模式';
+          } else if (isFp16) {
+            dom.gDashPrecisionVal.textContent = '⚡ FP16 半精度';
+          } else {
+            dom.gDashPrecisionVal.textContent = '🛡️ FP32 单精度';
+          }
         }
         if (dom.gBtnTogglePrecisionText) {
-          dom.gBtnTogglePrecisionText.textContent = isFp16 ? '切换为 FP32 重启' : '切换为 FP16 重启';
+          if (isCpu) {
+            dom.gBtnTogglePrecisionText.textContent = '切为 GPU(FP16)';
+          } else if (isFp16) {
+            dom.gBtnTogglePrecisionText.textContent = '切为 FP32 重启';
+          } else {
+            dom.gBtnTogglePrecisionText.textContent = '切为 CPU 模式';
+          }
         }
         if (dom.gDashDeviceVal) {
-          dom.gDashDeviceVal.textContent = data.hardware.gpu_name ? data.hardware.gpu_name : 'CPU 兼容模式';
+          if (isCpu) {
+            dom.gDashDeviceVal.textContent = '免显存占用 · 依托物理大内存';
+          } else {
+            dom.gDashDeviceVal.textContent = data.hardware.gpu_name ? data.hardware.gpu_name : '硬件加速中';
+          }
         }
         if (dom.gDashHardwareVal) {
           const procMem = (data.app && data.app.memory_usage_mb !== undefined && data.app.memory_usage_mb !== null)
@@ -1671,12 +1697,23 @@ if (dom.gBtnRestartSovits) {
   });
 }
 
-// 一键切换精度并重启
+// 一键切换精度/设备并重启 (FP16 -> FP32 -> CPU 循环切换)
 if (dom.gBtnTogglePrecision) {
   dom.gBtnTogglePrecision.addEventListener('click', async () => {
-    const isCurrentlyFp16 = dom.gDashPrecisionBadge && dom.gDashPrecisionBadge.textContent.includes('FP16');
-    const targetPrec = isCurrentlyFp16 ? 'fp32' : 'fp16';
-    const targetLabel = isCurrentlyFp16 ? 'FP32 单精度' : 'FP16 半精度';
+    const badgeText = dom.gDashPrecisionBadge ? dom.gDashPrecisionBadge.textContent.trim().toUpperCase() : 'FP16';
+    let targetPrec = 'fp16';
+    let targetLabel = 'FP16 半精度';
+    if (badgeText === 'FP16') {
+      targetPrec = 'fp32';
+      targetLabel = 'FP32 单精度';
+    } else if (badgeText === 'FP32') {
+      targetPrec = 'cpu';
+      targetLabel = 'CPU 稳定模式 (免显存)';
+    } else {
+      targetPrec = 'fp16';
+      targetLabel = 'FP16 半精度';
+    }
+
     dom.gBtnTogglePrecision.disabled = true;
     if (dom.gBtnRestartSovits) dom.gBtnRestartSovits.disabled = true;
     if (dom.gBtnTogglePrecisionText) dom.gBtnTogglePrecisionText.textContent = `正在切换为 ${targetPrec.toUpperCase()}...`;
@@ -1713,8 +1750,13 @@ if (dom.gPrecision) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ inference_precision: val }),
       });
-      const labelMap = { auto: '自动判定 (Auto)', fp16: 'FP16 半精度', fp32: 'FP32 单精度' };
-      showToast(`已保存推理精度: ${labelMap[val] || val}。请点击【重启 SoVITS 引擎】应用。`, 'info');
+      const labelMap = {
+        auto: '自动判定 (Auto)',
+        fp16: 'FP16 半精度',
+        fp32: 'FP32 单精度',
+        cpu: 'CPU 稳定模式 (免显存)',
+      };
+      showToast(`已保存推理设置: ${labelMap[val] || val}。请点击【重启 SoVITS 引擎】应用。`, 'info');
       fetchSystemTelemetry();
     } catch (err) {
       console.warn('Auto-save precision failed:', err);

@@ -224,3 +224,60 @@ class TestYamlPrecisionSync:
         is_half2, source2 = resolve_initial_is_half(tmp_path, tmp_path)
         assert is_half2 is True
         assert source2 == "db"
+
+    def test_cpu_mode_yaml_and_resolution(self, tmp_path, monkeypatch):
+        import sqlite3
+        from galgame2voice.utils.precision import (
+            read_sovits_yaml_device,
+            write_sovits_yaml_config,
+            resolve_initial_device_and_half,
+            write_precision_cache,
+        )
+        monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
+        monkeypatch.delenv("GPT_SOVITS_DEVICE", raising=False)
+
+        configs_dir = tmp_path / "GPT_SoVITS" / "configs"
+        configs_dir.mkdir(parents=True)
+        yaml_file = configs_dir / "tts_infer.yaml"
+        yaml_file.write_text(
+            "custom:\n  device: cuda\n  is_half: true\n",
+            encoding="utf-8",
+        )
+
+        assert read_sovits_yaml_device(tmp_path) == "cuda"
+
+        # 1. Switch to CPU via write_sovits_yaml_config
+        write_sovits_yaml_config(tmp_path, is_half=False, device="cpu")
+        assert read_sovits_yaml_device(tmp_path) == "cpu"
+        content = yaml_file.read_text(encoding="utf-8")
+        assert "device: cpu" in content
+        assert "is_half: false" in content
+
+        # 2. YAML source detection
+        dev, half, src = resolve_initial_device_and_half(tmp_path, tmp_path)
+        assert dev == "cpu"
+        assert half is False
+        assert src == "yaml"
+
+        # 3. DB source detection for CPU
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        db_file = data_dir / "galgame2voice.db"
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute("CREATE TABLE settings (id INTEGER PRIMARY KEY, inference_precision TEXT);")
+            conn.execute("INSERT INTO settings (id, inference_precision) VALUES (1, 'cpu');")
+
+        dev2, half2, src2 = resolve_initial_device_and_half(tmp_path, tmp_path)
+        assert dev2 == "cpu"
+        assert half2 is False
+        assert src2 == "db"
+
+        # 4. Cache source detection for CPU
+        write_precision_cache(tmp_path, str(tmp_path), is_half=False, device="cpu")
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute("UPDATE settings SET inference_precision = 'auto' WHERE id = 1;")
+
+        dev3, half3, src3 = resolve_initial_device_and_half(tmp_path, tmp_path)
+        assert dev3 == "cpu"
+        assert half3 is False
+        assert src3 == "cache"

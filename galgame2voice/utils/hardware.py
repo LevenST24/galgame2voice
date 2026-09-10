@@ -352,3 +352,35 @@ def release_system_memory() -> None:
         except Exception:
             pass
 
+
+def get_gpu_vram_status() -> Tuple[Optional[float], Optional[float]]:
+    """
+    Returns (total_vram_gb, free_vram_gb) of primary NVIDIA GPU if available, else (None, None).
+    Inspects nvidia-smi first (fast, zero PyTorch CUDA context overhead), falling back to PyTorch.
+    """
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv,noheader,nounits"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2.0,
+        )
+        first_line = out.strip().splitlines()[0]
+        parts = [float(x.strip()) for x in first_line.split(",")]
+        if len(parts) >= 2:
+            return round(parts[0] / 1024, 2), round(parts[1] / 1024, 2)
+    except Exception:
+        pass
+
+    try:
+        import torch
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            total_gb = round(props.total_memory / (1024 ** 3), 2)
+            free_bytes, _ = torch.cuda.mem_get_info()
+            return total_gb, round(free_bytes / (1024 ** 3), 2)
+    except Exception:
+        pass
+
+    return None, None
+

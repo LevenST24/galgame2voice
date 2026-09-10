@@ -31,8 +31,10 @@ from galgame2voice.utils.precision import (
     read_precision_cache,
     read_db_precision,
     resolve_initial_is_half,
+    resolve_initial_device_and_half,
     write_precision_cache,
     write_sovits_yaml_is_half,
+    write_sovits_yaml_config,
 )
 
 router = APIRouter(tags=["Health & Diagnostics"])
@@ -310,8 +312,11 @@ def _collect_hardware_telemetry_sync() -> HardwareTelemetry:
     sovits_dir_file = project_root / "data" / "sovits_dir.txt"
     sovits_dir = Path(sovits_dir_file.read_text(encoding="utf-8").strip()) if sovits_dir_file.exists() else project_root
 
-    is_half, _ = resolve_initial_is_half(project_root, sovits_dir)
-    active_prec = "FP16" if is_half else "FP32"
+    device, is_half, _ = resolve_initial_device_and_half(project_root, sovits_dir)
+    if device == "cpu":
+        active_prec = "CPU"
+    else:
+        active_prec = "FP16" if is_half else "FP32"
 
     cfg_prec = read_db_precision(project_root) or "auto"
     env_prec = os.environ.get("GPT_SOVITS_PRECISION", "").strip().lower()
@@ -461,13 +466,28 @@ async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None
             detail=f"GPT-SoVITS 目录不存在: {sovits_dir}",
         )
 
-    # Determine precision target
+    # Determine precision and device target
     req_prec = str(payload.precision).strip().lower() if (payload and payload.precision) else None
-    if req_prec in ("fp32", "float32"):
+    if req_prec == "cpu":
+        device = "cpu"
         is_half = False
         source = "request"
-        write_precision_cache(settings.project_root, str(sovits_dir), is_half=False)
-        write_sovits_yaml_is_half(sovits_dir, is_half=False)
+        write_precision_cache(settings.project_root, str(sovits_dir), is_half=False, device="cpu")
+        write_sovits_yaml_config(sovits_dir, is_half=False, device="cpu")
+        try:
+            from galgame2voice.database.session import get_db
+            from galgame2voice.database import crud
+            from galgame2voice.database.models import SettingsUpdate
+            async with get_db() as conn:
+                await crud.update_settings(conn, SettingsUpdate(inference_precision="cpu"))
+        except Exception:
+            pass
+    elif req_prec in ("fp32", "float32"):
+        device = "cuda"
+        is_half = False
+        source = "request"
+        write_precision_cache(settings.project_root, str(sovits_dir), is_half=False, device="cuda")
+        write_sovits_yaml_config(sovits_dir, is_half=False, device="cuda")
         try:
             from galgame2voice.database.session import get_db
             from galgame2voice.database import crud
@@ -477,10 +497,11 @@ async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None
         except Exception:
             pass
     elif req_prec in ("fp16", "half"):
+        device = "cuda"
         is_half = True
         source = "request"
-        write_precision_cache(settings.project_root, str(sovits_dir), is_half=True)
-        write_sovits_yaml_is_half(sovits_dir, is_half=True)
+        write_precision_cache(settings.project_root, str(sovits_dir), is_half=True, device="cuda")
+        write_sovits_yaml_config(sovits_dir, is_half=True, device="cuda")
         try:
             from galgame2voice.database.session import get_db
             from galgame2voice.database import crud
@@ -500,11 +521,11 @@ async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None
                 await crud.update_settings(conn, SettingsUpdate(inference_precision="auto"))
         except Exception:
             pass
-        is_half, source = resolve_initial_is_half(settings.project_root, sovits_dir)
-        write_sovits_yaml_is_half(sovits_dir, is_half)
+        device, is_half, source = resolve_initial_device_and_half(settings.project_root, sovits_dir)
+        write_sovits_yaml_config(sovits_dir, is_half, device=device)
     else:
-        is_half, source = resolve_initial_is_half(settings.project_root, sovits_dir)
-        write_sovits_yaml_is_half(sovits_dir, is_half)
+        device, is_half, source = resolve_initial_device_and_half(settings.project_root, sovits_dir)
+        write_sovits_yaml_config(sovits_dir, is_half, device=device)
 
     pid_file = settings.project_root / "gptsovits.pid"
     old_pid = None
@@ -534,14 +555,20 @@ async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None
 
     try:
         from scripts.run_server import _spawn_sovits_process
-        proc = _spawn_sovits_process(sovits_dir, "127.0.0.1", 9880, is_half)
+        proc = _spawn_sovits_process(sovits_dir, "127.0.0.1", 9880, is_half, device=device)
         pid_file.write_text(str(proc.pid), encoding="utf-8")
-        prec_desc = "FP16 半精度" if is_half else "FP32 单精度"
+        if device == "cpu":
+            prec_desc = "CPU 稳定模式"
+            prec_val = "CPU"
+        else:
+            prec_desc = "FP16 半精度" if is_half else "FP32 单精度"
+            prec_val = "FP16" if is_half else "FP32"
         return {
             "status": "ok",
             "message": f"GPT-SoVITS 语音引擎已按 {prec_desc} 成功重启 (PID: {proc.pid})",
             "is_half": is_half,
-            "precision": "FP16" if is_half else "FP32",
+            "device": device,
+            "precision": prec_val,
             "pid": proc.pid,
             "source": source,
         }

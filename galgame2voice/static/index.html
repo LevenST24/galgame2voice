@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Gal2Voice · AI 多会话对话</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
-  <script type="module" crossorigin src="/static/assets/index-CN7KOI_s.js"></script>
+  <script type="module" crossorigin src="/static/assets/index-DIsNvaSF.js"></script>
   <link rel="stylesheet" crossorigin href="/static/assets/index-Cbnwx-vJ.css">
 </head>
 <body>
@@ -291,11 +291,12 @@
             <input id="gParamSovitsUrl" placeholder="http://127.0.0.1:9880" autocomplete="off" />
           </div>
           <div class="field">
-            <label>GPT-SoVITS 推理精度 (Inference Precision)</label>
+            <label>GPT-SoVITS 推理精度与计算设备</label>
             <select id="gPrecision">
               <option value="auto">自动判定 (Auto - 根据硬件与试声自动选择)</option>
               <option value="fp16">FP16 半精度 (推荐，显存占用降低 50%，推理加速)</option>
               <option value="fp32">FP32 单精度 (通用兼容，彻底防止特定显卡静音)</option>
+              <option value="cpu">CPU 稳定模式 (免显存占用，利用大内存彻底杜绝爆显存/驱动崩溃)</option>
             </select>
             <small style="color: var(--text-3); font-size: 11.5px;">修改后请保存并在「状态诊断」中点击【重启 SoVITS 引擎】生效。</small>
           </div>

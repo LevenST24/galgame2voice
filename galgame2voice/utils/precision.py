@@ -35,13 +35,23 @@ def read_precision_cache(project_root: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
-def write_precision_cache(project_root: Path, sovits_dir: str, is_half: bool) -> None:
-    """Persists a verified precision calibration bound to the engine directory."""
+def write_precision_cache(
+    project_root: Path,
+    sovits_dir: str,
+    is_half: bool,
+    device: str = "cuda",
+) -> None:
+    """Persists a verified precision calibration and device bound to the engine directory."""
     try:
         path = _cache_path(project_root)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps({"is_half": is_half, "sovits_dir": str(sovits_dir), "verified_at": int(time.time())}),
+            json.dumps({
+                "is_half": is_half,
+                "device": device.lower(),
+                "sovits_dir": str(sovits_dir),
+                "verified_at": int(time.time()),
+            }),
             encoding="utf-8",
         )
     except OSError as exc:
@@ -60,6 +70,25 @@ def find_sovits_yaml_path(sovits_dir: Optional[Union[str, Path]]) -> Optional[Pa
     for p in candidates:
         if p.is_file():
             return p
+    return None
+
+
+def read_sovits_yaml_device(sovits_dir: Optional[Union[str, Path]]) -> Optional[str]:
+    """Reads the custom.device setting ('cuda' | 'cpu') directly from tts_infer.yaml."""
+    yaml_path = find_sovits_yaml_path(sovits_dir)
+    if not yaml_path:
+        return None
+    try:
+        content = yaml_path.read_text(encoding="utf-8")
+        import re
+        m = re.search(r"custom:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+device:\s*([a-zA-Z0-9_]+)", content)
+        if m:
+            return m.group(1).lower().strip()
+        m2 = re.search(r"device:\s*([a-zA-Z0-9_]+)", content)
+        if m2:
+            return m2.group(1).lower().strip()
+    except Exception as e:
+        logger.debug("Could not read device from %s: %s", yaml_path, e)
     return None
 
 
@@ -82,10 +111,14 @@ def read_sovits_yaml_is_half(sovits_dir: Optional[Union[str, Path]]) -> Optional
     return None
 
 
-def write_sovits_yaml_is_half(sovits_dir: Optional[Union[str, Path]], is_half: bool) -> Optional[Path]:
+def write_sovits_yaml_config(
+    sovits_dir: Optional[Union[str, Path]],
+    is_half: bool,
+    device: Optional[str] = None,
+) -> Optional[Path]:
     """
-    Physically synchronizes custom.is_half in tts_infer.yaml on disk.
-    GPT-SoVITS api_v2.py ONLY determines precision from this YAML file;
+    Physically synchronizes custom.is_half and custom.device in tts_infer.yaml on disk.
+    GPT-SoVITS api_v2.py ONLY determines precision and compute device from this YAML file;
     setting OS environment variables alone has zero effect.
     """
     yaml_path = find_sovits_yaml_path(sovits_dir)
@@ -93,25 +126,44 @@ def write_sovits_yaml_is_half(sovits_dir: Optional[Union[str, Path]], is_half: b
         return None
     try:
         content = yaml_path.read_text(encoding="utf-8")
-        target_val = "true" if is_half else "false"
+        target_half = "true" if is_half else "false"
         import re
-        pattern = r"(custom:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+is_half:\s*)(?:true|false|True|False)"
-        new_content, count = re.subn(pattern, rf"\g<1>{target_val}", content, count=1)
-        if count == 0:
+
+        # 1. Synchronize is_half
+        pattern_half = r"(custom:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+is_half:\s*)(?:true|false|True|False)"
+        content, count_half = re.subn(pattern_half, rf"\g<1>{target_half}", content, count=1)
+        if count_half == 0:
             if "custom:" in content:
-                new_content = content.replace("custom:\n", f"custom:\n  is_half: {target_val}\n", 1)
+                content = content.replace("custom:\n", f"custom:\n  is_half: {target_half}\n", 1)
             else:
-                new_content = f"custom:\n  is_half: {target_val}\n" + content
-        yaml_path.write_text(new_content, encoding="utf-8")
-        logger.info("Synchronized %s with is_half=%s", yaml_path, is_half)
+                content = f"custom:\n  is_half: {target_half}\n" + content
+
+        # 2. Synchronize device if requested
+        if device:
+            dev_target = device.lower().strip()
+            pattern_dev = r"(custom:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+device:\s*)(?:cuda|cpu|mps|auto|[a-zA-Z0-9_]+)"
+            content, count_dev = re.subn(pattern_dev, rf"\g<1>{dev_target}", content, count=1)
+            if count_dev == 0:
+                if "custom:" in content:
+                    content = content.replace("custom:\n", f"custom:\n  device: {dev_target}\n", 1)
+                else:
+                    content = f"custom:\n  device: {dev_target}\n" + content
+
+        yaml_path.write_text(content, encoding="utf-8")
+        logger.info("Synchronized %s with is_half=%s, device=%s", yaml_path, is_half, device)
         return yaml_path
     except Exception as e:
-        logger.warning("Failed to write is_half=%s to %s: %s", is_half, yaml_path, e)
+        logger.warning("Failed to write config to %s: %s", yaml_path, e)
         return None
 
 
+def write_sovits_yaml_is_half(sovits_dir: Optional[Union[str, Path]], is_half: bool) -> Optional[Path]:
+    """Compatibility helper for synchronizing custom.is_half."""
+    return write_sovits_yaml_config(sovits_dir, is_half=is_half)
+
+
 def read_db_precision(project_root: Path) -> Optional[str]:
-    """Reads inference_precision ('auto' | 'fp16' | 'fp32') from SQLite settings table."""
+    """Reads inference_precision ('auto' | 'fp16' | 'fp32' | 'cpu') from SQLite settings table."""
     db_path = project_root / "data" / "galgame2voice.db"
     if not db_path.is_file():
         return None
@@ -128,38 +180,75 @@ def read_db_precision(project_root: Path) -> Optional[str]:
     return None
 
 
-def resolve_initial_is_half(project_root: Path, sovits_dir: Path, environ: Optional[Dict[str, str]] = None) -> tuple[bool, str]:
+def resolve_initial_device_and_half(
+    project_root: Path,
+    sovits_dir: Path,
+    environ: Optional[Dict[str, str]] = None,
+) -> tuple[str, bool, str]:
     """
-    Decides the initial is_half setting for a fresh engine launch.
-    Priority: GPT_SOVITS_PRECISION env override > SQLite settings > verified cache > existing YAML setting > FP16 default.
-    Returns (is_half, source) where source is "env" | "db" | "cache" | "yaml" | "default".
+    Decides the initial device ('cuda' | 'cpu') and is_half setting for engine launch.
+    Priority: CLI/ENV override > SQLite settings > verified cache > existing YAML setting > hardware default.
+    Returns (device, is_half, source) where source is "env" | "db" | "cache" | "yaml" | "default".
     """
     env = environ if environ is not None else os.environ
     override = str(env.get(_PRECISION_ENV_VAR, "")).strip().lower()
+    dev_override = str(env.get("GPT_SOVITS_DEVICE", "")).strip().lower()
+
+    if dev_override == "cpu" or override == "cpu":
+        return "cpu", False, "env"
     if override in ("fp16", "half", "true", "1"):
-        return True, "env"
+        return "cuda", True, "env"
     if override in ("fp32", "float32", "false", "0"):
-        return False, "env"
+        return "cuda", False, "env"
 
     # User configured setting in SQLite database
     db_prec = read_db_precision(project_root)
+    if db_prec == "cpu":
+        return "cpu", False, "db"
     if db_prec in ("fp32", "float32"):
-        return False, "db"
+        return "cuda", False, "db"
     if db_prec in ("fp16", "half"):
-        return True, "db"
+        return "cuda", True, "db"
 
+    # Calibration cache in precision.json
     cache = read_precision_cache(project_root)
     if cache is not None:
         cached_dir = str(cache.get("sovits_dir", "")).strip()
         try:
-            if not cached_dir or Path(cached_dir).resolve() == Path(sovits_dir).resolve():
-                return bool(cache["is_half"]), "cache"
+            matched = (not cached_dir or Path(cached_dir).resolve() == Path(sovits_dir).resolve())
         except Exception:
-            if cached_dir == str(sovits_dir):
-                return bool(cache["is_half"]), "cache"
+            matched = (cached_dir == str(sovits_dir))
+        if matched:
+            cached_dev = str(cache.get("device", "cuda")).lower()
+            if cached_dev == "cpu":
+                return "cpu", False, "cache"
+            return "cuda", bool(cache.get("is_half", True)), "cache"
 
+    # Existing YAML on disk
+    yaml_dev = read_sovits_yaml_device(sovits_dir)
+    if yaml_dev == "cpu":
+        return "cpu", False, "yaml"
     yaml_half = read_sovits_yaml_is_half(sovits_dir)
     if yaml_half is not None and yaml_half is False:
-        return False, "yaml"
+        return "cuda", False, "yaml"
 
-    return True, "default"
+    # Default fallback: check discrete GPU availability
+    try:
+        from galgame2voice.utils.hardware import detect_gpu_capability
+        has_gpu, _, _ = detect_gpu_capability()
+    except Exception:
+        has_gpu = True
+
+    if not has_gpu:
+        return "cpu", False, "default"
+    return "cuda", True, "default"
+
+
+def resolve_initial_is_half(
+    project_root: Path,
+    sovits_dir: Path,
+    environ: Optional[Dict[str, str]] = None,
+) -> tuple[bool, str]:
+    """Compatibility helper returning (is_half, source)."""
+    _, is_half, source = resolve_initial_device_and_half(project_root, sovits_dir, environ)
+    return is_half, source
