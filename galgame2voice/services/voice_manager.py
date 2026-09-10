@@ -33,10 +33,12 @@ class InsufficientMemoryError(RuntimeError):
     """Raised when free memory is too low to safely load new model weights."""
 
 
-# 切换权重时新旧模型会短暂同时驻留内存；低于阈值大概率触发引擎 OOM 崩溃。
-# 阈值按设备总内存比例缩放（小内存机不会被绝对值锁死），env 可强制覆盖。
-_MIN_FREE_MEMORY_RATIO = 0.12
-_MIN_FREE_MEMORY_FLOOR_GB = 1.0
+# 切换权重时新旧模型会短暂同时驻留内存（GPT约155MB + SoVITS约172MB = 约330MB，极端过渡期约660MB）；
+# 默认安全阈值：总内存的 6% 或最低 0.8GB，并设有 1.5GB 安全上限（大内存机器不会被百分比过度拦截）。
+# 16GB 设备所需空闲仅约 0.96GB，只要空闲内存大于 1GB 即可丝滑切换。
+_MIN_FREE_MEMORY_RATIO = 0.06
+_MIN_FREE_MEMORY_FLOOR_GB = 0.8
+_MIN_FREE_MEMORY_CEILING_GB = 1.5
 
 
 def _get_switch_min_free_memory_gb() -> float:
@@ -48,8 +50,10 @@ def _get_switch_min_free_memory_gb() -> float:
         pass
     total_gb, _ = get_system_memory_status()
     if total_gb:
-        return max(_MIN_FREE_MEMORY_FLOOR_GB, round(total_gb * _MIN_FREE_MEMORY_RATIO, 2))
+        scaled = round(total_gb * _MIN_FREE_MEMORY_RATIO, 2)
+        return min(_MIN_FREE_MEMORY_CEILING_GB, max(_MIN_FREE_MEMORY_FLOOR_GB, scaled))
     return _MIN_FREE_MEMORY_FLOOR_GB
+
 
 
 class VoiceManager:

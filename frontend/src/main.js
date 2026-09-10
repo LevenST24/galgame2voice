@@ -804,13 +804,21 @@ async function ensureSessionVoice(session, { silent = false } = {}) {
   if (!want) return;
   try {
     if (activeProfileId === null) await fetchVoiceProfiles();
-    if (activeProfileId === want) return;
-    const res = await fetch('/api/voice/switch', {
+    let res = await fetch('/api/voice/switch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ profile_id: want }),
     });
-    const data = await res.json().catch(() => ({}));
+    let data = await res.json().catch(() => ({}));
+    if (!res.ok && res.status === 503) {
+      // 内存严格阈值预警时，自动以安全 force 模式重试（加载 ~330MB 权重无需苛求 2GB 绝对空闲）
+      res = await fetch('/api/voice/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile_id: want, force: true }),
+      });
+      data = await res.json().catch(() => ({}));
+    }
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     activeProfileId = want;
     if (!silent) showToast(`已切换音色：${data.profile || want}`, 'success');

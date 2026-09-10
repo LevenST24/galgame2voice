@@ -127,14 +127,15 @@ class TestVoiceManagerMemoryGuard:
             "galgame2voice.services.voice_manager.get_system_memory_status",
             lambda: (4.0, 2.0),
         )
-        # 4GB machine: max(1.0, 4*0.12) = 1.0 — small-RAM machines are not locked out
-        assert _get_switch_min_free_memory_gb() == 1.0
+        # 4GB machine: max(0.8, 4*0.06) = 0.8 — small-RAM machines are not locked out
+        assert _get_switch_min_free_memory_gb() == 0.8
 
         monkeypatch.setattr(
             "galgame2voice.services.voice_manager.get_system_memory_status",
             lambda: (32.0, 2.0),
         )
-        assert _get_switch_min_free_memory_gb() == pytest.approx(3.84)
+        # 32GB machine: min(1.5, max(0.8, 32*0.06)) = 1.5 — large-RAM machines capped safely
+        assert _get_switch_min_free_memory_gb() == pytest.approx(1.5)
 
     def test_env_override_wins(self, monkeypatch):
         monkeypatch.setenv("GALGAME2VOICE_MIN_FREE_MEM_GB", "0.5")

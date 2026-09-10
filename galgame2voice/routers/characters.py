@@ -267,7 +267,7 @@ async def switch_character(req: CharacterSwitchRequest):
                 logger.debug("Failed syncing active character to settings: %s", exc)
         else:
             try:
-                success = await manager.switch_profile(profile, persist=True, _already_locked=True)
+                success = await manager.switch_profile(profile, persist=True, _already_locked=True, force=req.force)
             except InsufficientMemoryError as mem_err:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
