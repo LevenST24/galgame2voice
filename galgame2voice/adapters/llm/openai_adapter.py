@@ -31,6 +31,13 @@ logger = logging.getLogger("galgame2voice.adapters.llm.openai")
 _parse_retry_after = parse_retry_after
 _calculate_backoff_delay = calculate_backoff_delay
 
+# Parameters that are valid for OpenAI but rejected by Google Gemini's
+# OpenAI-compatible endpoint (generativelanguage.googleapis.com).
+_GEMINI_UNSUPPORTED_PARAMS = frozenset({
+    "frequency_penalty", "presence_penalty", "logit_bias",
+    "logprobs", "top_logprobs", "n", "seed", "user",
+})
+
 
 class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
     """
@@ -62,6 +69,17 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         """Validates presence and syntax of API key."""
         if not self.api_key:
             raise ValueError("Authentication error: Invalid API key")
+
+    @property
+    def _is_gemini(self) -> bool:
+        """Returns True if base_url points to Google Gemini's OpenAI-compat endpoint."""
+        return "googleapis.com" in (self.base_url or "")
+
+    def _filter_payload_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Filters out kwargs that are internal or unsupported by the current provider."""
+        _INTERNAL = {"client_override", "custom_headers", "timeout_s", "max_retries", "base_delay"}
+        skip = _INTERNAL | (_GEMINI_UNSUPPORTED_PARAMS if self._is_gemini else frozenset())
+        return {k: v for k, v in kwargs.items() if k not in skip}
 
     async def chat(
         self,
@@ -126,9 +144,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             ],
             "temperature": temperature,
         }
-        for k, v in kwargs.items():
-            if k not in ("client_override", "custom_headers", "timeout_s", "max_retries", "base_delay"):
-                payload[k] = v
+        for k, v in self._filter_payload_kwargs(kwargs).items():
+            payload[k] = v
 
         timeout_s = float(self.extra_config.get("timeout_s", kwargs.get("timeout_s", 60.0)))
         headers = self._get_headers()
@@ -243,9 +260,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             "temperature": temperature,
             "stream": True,
         }
-        for k, v in kwargs.items():
-            if k not in ("client_override", "custom_headers", "timeout_s", "max_retries", "base_delay"):
-                payload[k] = v
+        for k, v in self._filter_payload_kwargs(kwargs).items():
+            payload[k] = v
 
         timeout_s = float(self.extra_config.get("timeout_s", kwargs.get("timeout_s", 60.0)))
         headers = self._get_headers()
