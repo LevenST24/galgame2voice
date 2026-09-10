@@ -60,6 +60,10 @@ class TtsCacheManager:
         self._touch_throttle: Dict[str, float] = {}
         # Strong references for fire-and-forget background tasks (prevent GC mid-flight).
         self._bg_tasks: set = set()
+        # In-memory disk cache metadata tracking to avoid DB/disk scans on every synthesis
+        self._disk_bytes_total: Optional[int] = None
+        self._disk_files_total: Optional[int] = None
+        self._stats_initialized: bool = False
 
     def _mem_cache_discard(self, cache_key: str) -> None:
         evicted = self._mem_cache.pop(cache_key, None)
@@ -402,13 +406,28 @@ class TtsCacheManager:
                 # Populate In-Memory LRU Cache only after successful persistence
                 async with self._lock:
                     self._mem_cache_store(cache_key, audio_bytes)
+                    if self._disk_bytes_total is not None:
+                        self._disk_bytes_total += file_size
+                        self._disk_files_total = (self._disk_files_total or 0) + 1
             except Exception:
                 async with self._lock:
                     self._mem_cache_discard(cache_key)
                 raise
 
-        # Trigger background pruning if cache exceeds limits
-        self._spawn_background(self._check_and_prune())
+        # Check if cache capacity threshold could be exceeded before triggering pruning
+        limit_bytes = self.max_cache_mb * 1024 * 1024
+        limit_entries = self.max_entries
+
+        should_prune = (
+            not self._stats_initialized
+            or self._disk_bytes_total is None
+            or self._disk_bytes_total > limit_bytes
+            or (self._disk_files_total is not None and self._disk_files_total > limit_entries)
+        )
+
+        # Trigger background pruning only when capacity limit is approached or metadata is uninitialized
+        if should_prune:
+            self._spawn_background(self._check_and_prune())
 
         return url_path, file_path, file_size
 
@@ -449,6 +468,11 @@ class TtsCacheManager:
                     total_bytes = stats["total_size_bytes"]
                     total_files = stats["total_files"]
 
+                    async with self._lock:
+                        self._disk_bytes_total = total_bytes
+                        self._disk_files_total = total_files
+                        self._stats_initialized = True
+
                     if total_bytes <= limit_bytes and total_files <= limit_entries:
                         return 0
 
@@ -485,6 +509,10 @@ class TtsCacheManager:
                                 batch_pruned += 1
                         if batch_pruned == 0:
                             break
+
+                    async with self._lock:
+                        self._disk_bytes_total = max(total_bytes, 0)
+                        self._disk_files_total = max(total_files, 0)
             except Exception as e:
                 if "no such table" in str(e).lower():
                     return 0
@@ -533,6 +561,9 @@ class TtsCacheManager:
                 self._mem_cache.clear()
                 self._mem_bytes_total = 0
                 self._touch_throttle.clear()
+                self._disk_bytes_total = 0
+                self._disk_files_total = 0
+                self._stats_initialized = True
                 self._hits = 0
                 self._misses = 0
 
@@ -545,6 +576,10 @@ class TtsCacheManager:
         try:
             async with get_db(self.db_path) as conn:
                 db_stats = await crud.get_tts_cache_stats(conn)
+                async with self._lock:
+                    self._disk_bytes_total = db_stats["total_size_bytes"]
+                    self._disk_files_total = db_stats["total_files"]
+                    self._stats_initialized = True
         except Exception:
             db_stats = {"total_files": 0, "total_size_bytes": 0, "total_size_mb": 0.0, "total_hits": 0}
 

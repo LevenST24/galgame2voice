@@ -1,23 +1,104 @@
 """
 Audio conversion utilities wrapping ffmpeg asynchronously for galgame2voice.
 Converts OGG (Opus) to WAV (16kHz mono 16-bit PCM) for STT, and WAV to OGG for Telegram voice notes.
+Includes persistent executable discovery, caching, process cleanup, and format short-circuiting.
 """
 
 import asyncio
+import io
 import logging
 import os
 import shutil
+import sys
 import tempfile
+import wave
 from pathlib import Path
 from typing import Optional, Union
 
 logger = logging.getLogger("galgame2voice.utils.audio_converter")
 
+_cached_ffmpeg_bin: Optional[str] = None
+
+
+def reset_ffmpeg_cache() -> None:
+    """Clears the cached ffmpeg executable path (useful for testing)."""
+    global _cached_ffmpeg_bin
+    _cached_ffmpeg_bin = None
+
+
+def find_ffmpeg(custom_path: Optional[str] = None) -> Optional[str]:
+    """
+    Discovers and caches the ffmpeg executable location.
+    Checks:
+    1. custom_path (if provided and resolvable)
+    2. Environment variable FFMPEG_PATH or FFMPEG_BIN
+    3. Cached path from previous discovery
+    4. System PATH via shutil.which("ffmpeg")
+    5. Local virtualenv (sys.prefix/Scripts/ffmpeg.exe or bin/ffmpeg)
+    6. Bundled / project tools directories (tools/ffmpeg, runtime/ffmpeg, etc.)
+    """
+    if custom_path:
+        # If an explicit path was passed, check it directly without caching as global default
+        resolved = shutil.which(custom_path)
+        if resolved:
+            return resolved
+        p = Path(custom_path)
+        if p.is_file():
+            return str(p.resolve())
+        return None
+
+    global _cached_ffmpeg_bin
+    if _cached_ffmpeg_bin is not None:
+        return _cached_ffmpeg_bin
+
+    # 1. Environment variables
+    for env_var in ("FFMPEG_PATH", "FFMPEG_BIN"):
+        env_val = os.environ.get(env_var)
+        if env_val:
+            resolved = shutil.which(env_val) or (str(Path(env_val).resolve()) if Path(env_val).is_file() else None)
+            if resolved:
+                _cached_ffmpeg_bin = resolved
+                return _cached_ffmpeg_bin
+
+    # 2. System PATH
+    system_ffmpeg = shutil.which("ffmpeg") or (shutil.which("ffmpeg.exe") if sys.platform == "win32" else None)
+    if system_ffmpeg:
+        _cached_ffmpeg_bin = system_ffmpeg
+        return _cached_ffmpeg_bin
+
+    # 3. Virtualenv scripts
+    is_win = sys.platform == "win32"
+    exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
+    scripts_dir = "Scripts" if is_win else "bin"
+    venv_candidate = Path(sys.prefix) / scripts_dir / exe_name
+    if venv_candidate.is_file():
+        _cached_ffmpeg_bin = str(venv_candidate.resolve())
+        return _cached_ffmpeg_bin
+
+    base_candidate = Path(sys.base_prefix) / scripts_dir / exe_name
+    if base_candidate.is_file():
+        _cached_ffmpeg_bin = str(base_candidate.resolve())
+        return _cached_ffmpeg_bin
+
+    # 4. Project root & bundled tools
+    try:
+        from galgame2voice.config import get_settings
+        root = get_settings().project_root
+    except Exception:
+        root = Path(__file__).resolve().parent.parent.parent
+
+    for candidate_dir in ("tools", "runtime", "bin", "ffmpeg"):
+        bundled = root / candidate_dir / exe_name
+        if bundled.is_file():
+            _cached_ffmpeg_bin = str(bundled.resolve())
+            return _cached_ffmpeg_bin
+
+    return None
+
 
 def is_ffmpeg_available(ffmpeg_path: Optional[str] = None) -> bool:
     """Checks if ffmpeg executable is installed and available."""
-    cmd = ffmpeg_path or "ffmpeg"
-    return shutil.which(cmd) is not None
+    return find_ffmpeg(ffmpeg_path) is not None
 
 
 def _is_known_non_audio(data: bytes) -> bool:
@@ -36,12 +117,41 @@ def _is_known_non_audio(data: bytes) -> bool:
     )
 
 
+def is_target_wav_pcm(
+    data: bytes,
+    sample_rate: int = 16000,
+    channels: int = 1,
+    sample_width: int = 2,
+) -> bool:
+    """
+    Checks if audio bytes are already a valid uncompressed PCM WAV matching the target parameters.
+    Target format: 16-bit mono PCM WAV at target sample rate (default 16000 Hz, 1 channel, 16-bit).
+    """
+    if not data or len(data) < 44 or not data.startswith(b"RIFF"):
+        return False
+    try:
+        with wave.open(io.BytesIO(data), "rb") as wf:
+            return (
+                wf.getcomptype() == "NONE"
+                and wf.getnchannels() == channels
+                and wf.getframerate() == sample_rate
+                and wf.getsampwidth() == sample_width
+            )
+    except Exception:
+        return False
+
+
 async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
     """
     Runs ffmpeg command asynchronously with bounded timeout and process cleanup.
     Raises RuntimeError on nonzero exit, or TimeoutError if execution exceeds timeout.
     """
     cmd_args = list(args)
+    if cmd_args and cmd_args[0] == "ffmpeg":
+        discovered = find_ffmpeg()
+        if discovered:
+            cmd_args[0] = discovered
+
     if "-nostdin" not in cmd_args and len(cmd_args) > 1:
         cmd_args.insert(1, "-nostdin")
 
@@ -52,11 +162,11 @@ async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, TimeoutError):
         logger.error("ffmpeg conversion timed out after %.1f seconds: %s", timeout, cmd_args[:4])
         try:
             proc.kill()
-        except OSError:
+        except (ProcessLookupError, OSError):
             pass
         try:
             await asyncio.wait_for(proc.wait(), timeout=3.0)
@@ -66,7 +176,7 @@ async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
     except asyncio.CancelledError:
         try:
             proc.kill()
-        except OSError:
+        except (ProcessLookupError, OSError):
             pass
         try:
             await asyncio.wait_for(proc.wait(), timeout=3.0)
@@ -102,14 +212,14 @@ async def convert_ogg_to_wav(
     ):
         raise ValueError("Corrupted or unsupported audio format")
 
-    # If already WAV PCM, return as is
-    if ogg_bytes.startswith(b"RIFF"):
+    # Short-circuit transcoding when input is already in target format (16-bit mono PCM WAV at target sample rate)
+    if is_target_wav_pcm(ogg_bytes, sample_rate=sample_rate, channels=channels, sample_width=2):
         return ogg_bytes
 
-    ffmpeg_bin = ffmpeg_path or "ffmpeg"
-    if not is_ffmpeg_available(ffmpeg_bin):
+    ffmpeg_bin = find_ffmpeg(ffmpeg_path)
+    if not ffmpeg_bin:
         raise RuntimeError(
-            f"ffmpeg executable not found: '{ffmpeg_bin}'. "
+            f"ffmpeg executable not found: '{ffmpeg_path or 'ffmpeg'}'. "
             "Install ffmpeg and ensure it is on PATH, or provide ffmpeg_path."
         )
 
@@ -172,10 +282,10 @@ async def convert_wav_to_ogg(
     if _is_known_non_audio(wav_bytes):
         raise ValueError("Corrupted or unsupported audio format")
 
-    ffmpeg_bin = ffmpeg_path or "ffmpeg"
-    if not is_ffmpeg_available(ffmpeg_bin):
+    ffmpeg_bin = find_ffmpeg(ffmpeg_path)
+    if not ffmpeg_bin:
         raise RuntimeError(
-            f"ffmpeg executable not found: '{ffmpeg_bin}'. "
+            f"ffmpeg executable not found: '{ffmpeg_path or 'ffmpeg'}'. "
             "Install ffmpeg and ensure it is on PATH, or provide ffmpeg_path."
         )
 
@@ -216,7 +326,10 @@ async def convert_wav_to_ogg(
 
 
 __all__ = [
+    "find_ffmpeg",
+    "reset_ffmpeg_cache",
     "is_ffmpeg_available",
+    "is_target_wav_pcm",
     "run_ffmpeg_command",
     "convert_ogg_to_wav",
     "convert_wav_to_ogg",

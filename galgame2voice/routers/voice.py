@@ -32,6 +32,13 @@ from galgame2voice.services.gpt_sovits_client import (
 )
 from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.path_guard import (
+    PathTraversalError,
+    contains_traversal_payload,
+    is_windows_device_name,
+    safe_resolve_audio_path,
+    validate_voice_profile_paths,
+)
 
 logger = logging.getLogger("galgame2voice.routers.voice")
 router = APIRouter(prefix="/api/voice", tags=["Voice Profiles & TTS"])
@@ -117,6 +124,18 @@ async def create_voice_profile(req: VoiceProfileCreateRequest):
             detail="Profile name cannot be empty",
         )
 
+    try:
+        validate_voice_profile_paths(
+            gpt_weights_path=req.gpt_weights_path.strip(),
+            sovits_weights_path=req.sovits_weights_path.strip(),
+            ref_audio_path=ref_audio.strip() if ref_audio else None,
+        )
+    except PathTraversalError as pte:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file path: {pte}",
+        )
+
     profile_dto = VoiceProfileCreate(
         name=req.name.strip(),
         description=req.description or "",
@@ -176,6 +195,19 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate):
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Profile ID must be a positive integer >= 1",
         )
+
+    try:
+        validate_voice_profile_paths(
+            gpt_weights_path=req.gpt_weights_path.strip() if req.gpt_weights_path else None,
+            sovits_weights_path=req.sovits_weights_path.strip() if req.sovits_weights_path else None,
+            ref_audio_path=req.ref_audio_path.strip() if req.ref_audio_path else None,
+        )
+    except PathTraversalError as pte:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file path: {pte}",
+        )
+
     async with get_db() as conn:
         try:
             updated = await crud.update_voice_profile(conn, profile_id, req)
@@ -558,6 +590,16 @@ async def synthesize_speech(req: SynthesizeRequest):
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
 
+    ref_audio = options.get("ref_audio_path") or options.get("refer_audio_path")
+    if ref_audio:
+        try:
+            safe_resolve_audio_path(ref_audio)
+        except PathTraversalError as pte:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid reference audio path: {pte}",
+            )
+
     manager = get_voice_manager()
 
     try:
@@ -637,6 +679,18 @@ async def fs_browse(
 def _fs_browse_sync(path: Optional[str], file_type: Optional[str]) -> Dict[str, Any]:
     """Blocking directory listing (runs in a worker thread)."""
     import string
+
+    # Path traversal and device name safety check
+    if path:
+        if contains_traversal_payload(path) or is_windows_device_name(path):
+            return {
+                "current_path": path,
+                "parent_path": None,
+                "drives": [],
+                "directories": [],
+                "files": [],
+                "error": "Invalid or unsafe directory path",
+            }
 
     # 1. Available drives (Windows)
     drives = []
