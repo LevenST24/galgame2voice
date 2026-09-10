@@ -289,11 +289,9 @@ async def test_audio_cleanup_preserves_registered_wav_references(tmp_path, monke
 # 5. Clean Up Dead Stubs & Deduplicate MEMORYSTATUSEX in run_server.py
 # ============================================================================
 
-def test_patch_sovits_precision_config_is_backward_compat_shim(tmp_path):
-    """Verifies patch_sovits_precision_config exists as a safe no-op for backward compatibility."""
-    assert callable(rs.patch_sovits_precision_config)
-    res = rs.patch_sovits_precision_config(tmp_path, force_fp32=True)
-    assert res is None
+def test_patch_sovits_precision_config_removed(tmp_path):
+    """Verifies the no-op patch_sovits_precision_config shim was fully removed (precision is env/calibration-driven now)."""
+    assert not hasattr(rs, "patch_sovits_precision_config")
 
 
 def test_memorystatusex_deduplicated_in_run_server():

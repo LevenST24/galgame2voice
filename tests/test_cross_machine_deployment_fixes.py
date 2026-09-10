@@ -19,8 +19,6 @@ from galgame2voice.services.tts_service import TtsService
 from galgame2voice.services.emotion_references import resolve_emotion_reference, NATSUME_EMOTION_REFERENCES
 from scripts.run_server import (
     _check_sovits_dir,
-    is_turing_tu116_tu117_gpu,
-    patch_sovits_precision_config,
     build_gpt_sovits_env,
     check_python_environment,
     run_hardware_diagnostics,
@@ -236,52 +234,28 @@ async def test_database_auto_healing_legacy_and_missing_paths(tmp_path):
 # ============================================================================
 
 def test_gpt_sovits_process_isolation_env(tmp_path):
-    """Verifies that GPT-SoVITS runtime environment sets is_half via process isolation."""
+    """Verifies that GPT-SoVITS runtime environment sets is_half explicitly (no GPU-name matching)."""
     sovits_dir = tmp_path / "mock_sovits"
     sovits_dir.mkdir()
 
-    # Turing GPU must pass is_half="False" (FP32)
-    env_turing = build_gpt_sovits_env(sovits_dir, is_turing=True)
-    assert env_turing["is_half"] == "False"
-    assert "no_proxy" in env_turing
+    env_fp32 = build_gpt_sovits_env(sovits_dir, is_half=False)
+    assert env_fp32["is_half"] == "False"
+    assert "no_proxy" in env_fp32
 
-    # Non-Turing GPU passes is_half="True" (FP16)
-    env_normal = build_gpt_sovits_env(sovits_dir, is_turing=False)
-    assert env_normal["is_half"] == "True"
+    env_fp16 = build_gpt_sovits_env(sovits_dir, is_half=True)
+    assert env_fp16["is_half"] == "True"
 
 
-def test_no_disk_mutation_on_third_party_sovits_files(tmp_path):
-    """Verifies that external GPT-SoVITS files (config.py, tts_infer.yaml) are NEVER mutated on disk."""
-    sovits_dir = tmp_path / "mock_sovits_clean"
-    sovits_dir.mkdir()
-    cfg_file = sovits_dir / "config.py"
-    initial_cfg = 'is_half = True\nos.environ.get("is_half", "True")\n'
-    cfg_file.write_text(initial_cfg, encoding="utf-8")
-
-    yaml_dir = sovits_dir / "GPT_SoVITS" / "configs"
-    yaml_dir.mkdir(parents=True)
-    yaml_file = yaml_dir / "tts_infer.yaml"
-    initial_yaml = "custom:\n  is_half: true\n"
-    yaml_file.write_text(initial_yaml, encoding="utf-8")
-
-    # Call patch_sovits_precision_config (must be safe no-op)
-    patch_sovits_precision_config(sovits_dir, force_fp32=True)
-
-    # Content on disk MUST remain 100% untouched
-    assert cfg_file.read_text(encoding="utf-8") == initial_cfg
-    assert yaml_file.read_text(encoding="utf-8") == initial_yaml
-
-
-def test_preflight_diagnostics_mx450_notice(capsys, monkeypatch):
-    """Verifies that pre-flight hardware diagnostics outputs exact reassuring notice for MX450/1650 GPUs."""
+def test_preflight_diagnostics_calibration_notice(capsys, monkeypatch, tmp_path):
+    """Verifies that pre-flight diagnostics advertises automatic precision calibration."""
     import scripts.run_server as rs
 
-    monkeypatch.setattr(rs, "is_turing_tu116_tu117_gpu", lambda override=None: True)
+    monkeypatch.setattr(rs, "read_precision_cache", lambda root: None)
+    monkeypatch.setattr(rs, "detect_gpu_capability", lambda: (True, "NVIDIA GeForce RTX 3080", 1))
     diag = rs.run_hardware_diagnostics()
     captured = capsys.readouterr()
-    expected_notice = "[硬件优化] 检测到 NVIDIA MX / 16 系列显卡，已自动开启单精度 (FP32) 兼容模式，保证发声正常。"
-    assert expected_notice in captured.out
-    assert diag["is_turing"] is True
+    assert "[精度校准]" in captured.out
+    assert diag["has_nvidia"] is True
 
 
 def test_preflight_python_and_deps_check():
@@ -338,43 +312,6 @@ async def test_switch_voice_profile_resolves_relative_reference_path(monkeypatch
     # Must be absolute path
     assert Path(sent_path).is_absolute()
     assert sent_path.endswith("gentle.ogg")
-
-
-def test_is_turing_gpu_detection_keyword_logic(monkeypatch):
-    """Verifies TU116/TU117 Turing GPU detector recognizes MX450, GTX 1650/1660, and ignores RTX 3080."""
-    import scripts.run_server as rs
-    import sys
-
-    # Test via direct keyword override
-    assert rs.is_turing_tu116_tu117_gpu("NVIDIA GeForce MX450") is True
-    assert rs.is_turing_tu116_tu117_gpu("GeForce GTX 1650 Ti") is True
-    assert rs.is_turing_tu116_tu117_gpu("TU117 GPU") is True
-    assert rs.is_turing_tu116_tu117_gpu("NVIDIA GeForce RTX 3080") is False
-
-    # Test via torch detection mock
-    mock_torch = type("Torch", (), {
-        "cuda": type("Cuda", (), {
-            "is_available": lambda: True,
-            "device_count": lambda: 1,
-            "get_device_name": lambda idx: "NVIDIA GeForce MX450",
-        })
-    })
-    monkeypatch.setitem(sys.modules, "torch", mock_torch)
-    assert rs.is_turing_tu116_tu117_gpu() is True
-
-    # Test via subprocess nvidia-smi fallback when torch is unavailable
-    import subprocess as real_sub
-    mock_torch_no_cuda = type("Torch", (), {
-        "cuda": type("Cuda", (), {
-            "is_available": lambda: False,
-        })
-    })
-    monkeypatch.setitem(sys.modules, "torch", mock_torch_no_cuda)
-    monkeypatch.setattr(rs, "subprocess", type("M", (), {
-        "check_output": lambda *args, **kwargs: "GeForce GTX 1660 SUPER\n",
-        "DEVNULL": real_sub.DEVNULL,
-    }))
-    assert rs.is_turing_tu116_tu117_gpu() is True
 
 
 @pytest.mark.asyncio

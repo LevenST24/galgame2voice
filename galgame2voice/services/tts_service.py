@@ -128,11 +128,14 @@ class TtsService:
                 fallback_prompt_text = active.prompt_text
                 fallback_prompt_lang = active.prompt_lang
 
-                # Ensure fallback_ref_audio exists; if not, point to bundled gentle.ogg
+                # Ensure fallback_ref_audio exists; if not, point to character package or bundled gentle.ogg
                 settings = get_settings()
                 if resolve_existing_audio_path(fallback_ref_audio) is None:
+                    char_default = settings.characters_dir / "四季夏目" / "refs" / "gentle.ogg"
                     bundled_default = settings.project_root / "audio" / "references" / "natsume" / "gentle.ogg"
-                    if bundled_default.is_file():
+                    if char_default.is_file():
+                        fallback_ref_audio = str(char_default.resolve())
+                    elif bundled_default.is_file():
                         fallback_ref_audio = str(bundled_default.resolve())
 
                 # Check for dynamic emotion reference audio override

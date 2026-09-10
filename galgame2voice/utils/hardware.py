@@ -332,18 +332,3 @@ def detect_gpu_capability() -> Tuple[bool, str, Optional[int]]:
         return True, nvidia_names[0], len(nvidia_names)
 
     return False, gpu_names[0], len(gpu_names)
-
-
-def is_turing_tu116_tu117_gpu(gpu_name_override: Optional[str] = None) -> bool:
-    """
-    Detects if the system has an NVIDIA Turing TU116 or TU117 architecture GPU.
-    Affected models: GeForce MX450, MX550, GTX 1650, GTX 1660, GTX 1630, etc.
-    On these GPUs, FP16 half-precision inference causes PyTorch to produce NaN and zero-amplitude (silent) audio.
-    """
-    target_keywords = ["mx450", "mx550", "1650", "1660", "1630", "tu117", "tu116"]
-    if gpu_name_override is not None:
-        return any(k in gpu_name_override.lower() for k in target_keywords)
-
-    gpu_names = _get_all_detected_gpu_names()
-    all_names_str = " ".join(gpu_names).lower()
-    return any(k in all_names_str for k in target_keywords)

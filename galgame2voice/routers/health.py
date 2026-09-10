@@ -25,9 +25,9 @@ from galgame2voice.security.auth import require_auth
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.hardware import (
     detect_gpu_capability,
-    is_turing_tu116_tu117_gpu,
     get_system_memory_status,
 )
+from galgame2voice.utils.precision import read_precision_cache
 
 router = APIRouter(tags=["Health & Diagnostics"])
 
@@ -109,7 +109,7 @@ class HardwareTelemetry(BaseModel):
     """Host GPU and system memory diagnostic telemetry."""
     gpu_available: bool
     gpu_name: str
-    turing_fp32_active: bool
+    fp32_forced: bool
     system_memory_gb: Optional[float] = None
     system_memory_avail_gb: Optional[float] = None
 
@@ -283,21 +283,25 @@ def _get_gpu_telemetry_cached() -> Tuple[bool, str, bool]:
         if now - stamp < _GPU_METRICS_TTL_SECONDS:
             return val
     gpu_avail, gpu_name, _ = detect_gpu_capability()
-    name_str = gpu_name if gpu_name and gpu_name != "N/A" else ""
-    is_turing = is_turing_tu116_tu117_gpu(gpu_name_override=name_str if name_str else None)
-    val = (gpu_avail, gpu_name or "N/A", is_turing)
+    val = (gpu_avail, gpu_name or "N/A")
     _gpu_telemetry_cache = (now, val)
     return val
+
+
+def _engine_fp32_forced() -> bool:
+    """True when the calibration store has verified this device needs FP32."""
+    cached = read_precision_cache(get_settings().project_root)
+    return bool(cached and cached.get("is_half") is False)
 
 
 def _collect_hardware_telemetry_sync() -> HardwareTelemetry:
     """Collects GPU capability and host RAM telemetry synchronously."""
     total_ram, avail_ram = get_system_memory_status()
-    gpu_avail, gpu_name, is_turing = _get_gpu_telemetry_cached()
+    gpu_avail, gpu_name = _get_gpu_telemetry_cached()
     return HardwareTelemetry(
         gpu_available=gpu_avail,
         gpu_name=gpu_name,
-        turing_fp32_active=is_turing,
+        fp32_forced=_engine_fp32_forced(),
         system_memory_gb=total_ram,
         system_memory_avail_gb=avail_ram,
     )

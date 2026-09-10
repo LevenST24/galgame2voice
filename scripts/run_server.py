@@ -14,7 +14,7 @@ import webbrowser
 import subprocess
 import argparse
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -23,8 +23,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from galgame2voice.utils.hardware import (
     detect_gpu_capability as _hw_detect_gpu_capability,
-    is_turing_tu116_tu117_gpu as _hw_is_turing_tu116_tu117_gpu,
     get_system_memory_status as _hw_get_system_memory_status,
+)
+from galgame2voice.utils.precision import (
+    read_precision_cache,
+    resolve_initial_is_half,
+    write_precision_cache,
 )
 
 # Ensure runtime directories
@@ -438,22 +442,6 @@ def detect_gpu_capability() -> tuple[bool, str, int | None]:
     return hw.detect_gpu_capability()
 
 
-def is_turing_tu116_tu117_gpu(gpu_name_override: str | None = None) -> bool:
-    """
-    Detects if the system has an NVIDIA Turing TU116 or TU117 architecture GPU.
-    Re-exported from galgame2voice.utils.hardware for backward compatibility.
-    """
-    import galgame2voice.utils.hardware as hw
-    if "subprocess" in globals() and globals()["subprocess"] is not hw.subprocess:
-        orig = hw.subprocess
-        try:
-            hw.subprocess = globals()["subprocess"]
-            return hw.is_turing_tu116_tu117_gpu(gpu_name_override=gpu_name_override)
-        finally:
-            hw.subprocess = orig
-    return hw.is_turing_tu116_tu117_gpu(gpu_name_override=gpu_name_override)
-
-
 def get_system_memory_status() -> tuple[float | None, float | None]:
     """
     Returns (total_ram_gb, available_ram_gb) for the host system.
@@ -463,29 +451,15 @@ def get_system_memory_status() -> tuple[float | None, float | None]:
     return hw.get_system_memory_status()
 
 
-def patch_sovits_precision_config(sovits_dir: Path, force_fp32: bool = False) -> None:
-    """
-    Deprecated / No-op in commercial release.
-    External third-party GPT-SoVITS files are NEVER mutated on disk.
-    FP32 single precision is enforced cleanly and strictly through process environment
-    isolation (env['is_half'] = 'False') passed to subprocess.Popen.
-    """
-    return
-
-
-def build_gpt_sovits_env(sovits_dir: Path, is_turing: bool | None = None) -> dict[str, str]:
+def build_gpt_sovits_env(sovits_dir: Path, is_half: bool = False) -> dict[str, str]:
     """
     Constructs an isolated process environment for GPT-SoVITS.
-    Enforces precision via env['is_half'] without mutating third-party files on disk.
+    Precision comes exclusively from the calibration store / explicit argument —
+    no GPU model name matching. env['is_half'] is enforced without mutating
+    third-party files on disk. Defaults to False (FP32) for universal compatibility.
     """
-    if is_turing is None:
-        is_turing = is_turing_tu116_tu117_gpu()
-
     env = os.environ.copy()
-    if is_turing:
-        env["is_half"] = "False"
-    elif "is_half" not in env:
-        env["is_half"] = "True"
+    env["is_half"] = "True" if is_half else "False"
 
     runtime_scripts = (sovits_dir / "runtime" / "Scripts") if sys.platform == "win32" else (sovits_dir / "runtime" / "bin")
     env["PATH"] = os.pathsep.join([str(sovits_dir / "runtime"), str(runtime_scripts), env.get("PATH", "")])
@@ -572,7 +546,6 @@ def run_hardware_diagnostics() -> dict[str, Any]:
     Displays upfront commercial-grade notices and guidance.
     """
     diag: dict[str, Any] = {
-        "is_turing": False,
         "cuda_available": False,
         "gpu_names": [],
         "total_ram_gb": 0.0,
@@ -591,17 +564,19 @@ def run_hardware_diagnostics() -> dict[str, Any]:
 
     all_gpu_str = " ".join(gpu_names).lower()
     diag["has_nvidia"] = gpu_avail or any(k in all_gpu_str for k in ["nvidia", "geforce", "rtx", "gtx", "quadro", "tesla"])
-    diag["is_turing"] = is_turing_tu116_tu117_gpu()
 
     # 3. Print upfront commercial-grade notices
     print("\n[环境巡检] 正在诊断系统硬件与运行环境...")
 
-    if diag["is_turing"]:
-        print("      [硬件优化] 检测到 NVIDIA MX / 16 系列显卡，已自动开启单精度 (FP32) 兼容模式，保证发声正常。")
-    elif diag["has_nvidia"] or diag["cuda_available"]:
+    if diag["has_nvidia"] or diag["cuda_available"]:
         nvidia_names = [g for g in gpu_names if any(k in g.lower() for k in ["nvidia", "geforce", "rtx", "gtx"])]
         detected_name = nvidia_names[0] if nvidia_names else (gpu_names[0] if gpu_names else "NVIDIA GPU")
         print(f"      [硬件就绪] 检测到独立显卡: {detected_name} (已准备 CUDA 加速推理)")
+        cached = read_precision_cache(PROJECT_ROOT)
+        if cached and cached.get("is_half") is False:
+            print("      [精度校准] 已缓存校准结果: 此设备使用 FP32 单精度推理 (保证发声正常)。")
+        else:
+            print("      [精度校准] 引擎就绪后将自动校准 FP16/FP32 精度，无需手动配置。")
     else:
         print("      [硬件提示] 未检测到兼容的 NVIDIA 独立显卡或 CUDA 推理环境。")
         print("                系统将以 CPU 兼容模式运行。首次模型加载与推理耗时较长属于正常现象，建议在配置 NVIDIA 显卡的电脑上使用以获得最佳体验。")
@@ -627,29 +602,8 @@ def check_system_memory():
         print(f"      [内存提示] 当前系统空闲物理内存约 {free_gb:.1f} GB。建议关闭高内存占用的后台应用以确保语音合成流畅。")
 
 
-def ensure_gpt_sovits_running():
-    """Checks the configured engine address; if not running, discovers and launches GPT-SoVITS API daemon."""
-    sovits_host, sovits_port = get_sovits_host_port()
-    print(f"[1/2] 正在检测 GPT-SoVITS 语音推理引擎 ({sovits_host}:{sovits_port})...")
-    # Check if engine is running on default 9880 or configured host/port: is_port_in_use(9880)
-    if is_port_in_use(sovits_port, sovits_host) or (sovits_port != 9880 and is_port_in_use(9880)):
-        print("      [OK] GPT-SoVITS 语音引擎已在运行")
-        print("      [注意] 引擎为外部启动，本启动器无法核实其精度 (FP16/FP32) 配置；")
-        if is_turing_tu116_tu117_gpu():
-            print("      [重要] 检测到 MX450/GTX1650 系显卡 (TU116/TU117)，该类显卡 FP16 推理会输出纯静音；")
-            print("             外部引擎必须以 is_half=False (FP32) 启动，否则语音全程无声。")
-        print("             若语音全程无声，请关闭旧的 GPT-SoVITS 进程后重新运行本启动器。")
-        return
-
-    check_system_memory()
-    sovits_dir = find_gpt_sovits_directory()
-    if not sovits_dir:
-        print("      [提示] 未自动定位到 GPT-SoVITS 目录，若已在其他终端运行请忽略。")
-        return
-
-    print(f"      [..] 定位到 GPT-SoVITS: {sovits_dir}")
-    print("      [..] 正在后台拉起 GPT-SoVITS API 引擎...")
-
+def _spawn_sovits_process(sovits_dir: Path, host: str, port: int, is_half: bool) -> subprocess.Popen:
+    """Launches the GPT-SoVITS API daemon with the given precision and binds it to the launcher lifecycle."""
     runtime_candidates = (
         (sovits_dir / "runtime" / "python.exe", sovits_dir / "runtime" / "python",
          sovits_dir / "runtime" / "python" / "bin" / "python3")
@@ -667,46 +621,215 @@ def ensure_gpt_sovits_running():
         str(python_exe),
         "-I",
         "api_v2.py",
-        "-a", sovits_host,
-        "-p", str(sovits_port),
+        "-a", host,
+        "-p", str(port),
         "-c", "GPT_SoVITS/configs/tts_infer.yaml",
     ]
 
-    is_turing = is_turing_tu116_tu117_gpu()
+    log_file = PROJECT_ROOT / "logs" / "gpt_sovits.log"
+    # 简单轮转：超过 10MB 归档为 .old（引擎日志为 append 模式，无内置轮转）
     try:
-        log_file = PROJECT_ROOT / "logs" / "gpt_sovits.log"
-        # 简单轮转：超过 10MB 归档为 .old（引擎日志为 append 模式，无内置轮转）
+        if log_file.exists() and log_file.stat().st_size > 10 * 1024 * 1024:
+            old_file = log_file.with_suffix(".old.log")
+            if old_file.exists():
+                old_file.unlink()
+            log_file.rename(old_file)
+    except OSError:
+        pass
+    log_fp = open(log_file, "a", encoding="utf-8")
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    env = build_gpt_sovits_env(sovits_dir, is_half=is_half)
+    extra_popen_kwargs = {}
+    if sys.platform != "win32":
+        extra_popen_kwargs["start_new_session"] = True
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(sovits_dir),
+            env=env,
+            creationflags=flags,
+            stdout=log_fp,
+            stderr=log_fp,
+            stdin=subprocess.DEVNULL,
+            **extra_popen_kwargs,
+        )
+    finally:
+        log_fp.close()
+    global _SPAWNED_SOVITS_PROC
+    _SPAWNED_SOVITS_PROC = proc
+    assign_process_to_job(proc)
+    (PROJECT_ROOT / "gptsovits.pid").write_text(str(proc.pid), encoding="utf-8")
+    print(f"      [OK] 已在后台启动 GPT-SoVITS (PID: {proc.pid}, {'FP16' if is_half else 'FP32'})，进程与主窗口已安全绑定联动")
+    return proc
+
+
+def _probe_synth_peak(host: str, port: int, timeout: float = 90.0) -> Optional[float]:
+    """
+    Synthesizes one short test sentence via the engine's /tts endpoint and returns
+    the WAV peak amplitude (0.0~1.0). Returns None when the probe is INCONCLUSIVE
+    (timeout / connection / HTTP error) — None never means 'silent'.
+    """
+    import urllib.parse
+    import urllib.request
+
+    try:
+        from galgame2voice.services.gpt_sovits_client import (
+            _BUNDLED_REF_AUDIO,
+            _BUNDLED_REF_TEXT,
+            wav_peak_amplitude,
+        )
+    except Exception:
+        return None
+
+    ref_audio = _BUNDLED_REF_AUDIO if _BUNDLED_REF_AUDIO.is_file() else PROJECT_ROOT / "audio" / "nat002_032.ogg"
+    if not ref_audio.is_file():
+        return None
+
+    params = urllib.parse.urlencode({
+        "text": "テスト、聞こえていますか。",
+        "text_lang": "ja",
+        "ref_audio_path": str(ref_audio),
+        "prompt_text": _BUNDLED_REF_TEXT,
+        "prompt_lang": "ja",
+    })
+    url = f"http://{host}:{port}/tts?{params}"
+    # 直接连接，绕过系统代理（本机回环地址不应走代理）
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url, timeout=timeout) as resp:
+            if resp.status != 200:
+                return None
+            audio = resp.read()
+    except Exception:
+        return None
+    if not audio:
+        return None
+    return wav_peak_amplitude(audio)
+
+
+def calibrate_engine_precision(
+    sovits_dir: Path,
+    is_half: bool,
+    probe_fn,
+    restart_fn,
+) -> tuple[bool, bool]:
+    """
+    Evidence-based precision calibration: the engine proves which precision works
+    on THIS machine, no GPU model names involved.
+
+    Decision table (probe returns peak amplitude, or None = inconclusive):
+      peak > 0     -> current precision verified; cache it.
+      peak == 0    -> current precision produces silence:
+          FP16     -> restart with FP32 and re-probe: audible -> FP32 verified + cached;
+                      still silent/inconclusive -> keep FP32, no cache (deeper issue).
+          FP32     -> keep FP32, no cache (deeper issue than precision).
+      None         -> inconclusive; keep current setting, no cache.
+
+    Returns (final_is_half, calibrated) where calibrated means a verified value was cached.
+    """
+    peak = probe_fn()
+    if peak is None:
+        print("      [精度校准] 探针未完成 (超时/网络)，跳过本次校准，沿用当前精度。")
+        return is_half, False
+    if peak > 0:
+        write_precision_cache(PROJECT_ROOT, str(sovits_dir), is_half)
+        return is_half, True
+
+    # Silence on FP16: restart with FP32 and verify.
+    if is_half:
+        print("      [精度校准] FP16 探针结果为纯静音 —— 此设备半精度推理有缺陷，正在以 FP32 重启引擎...")
+        new_proc = restart_fn(False)
+        if new_proc is None:
+            print("      [WARN] FP32 引擎重启失败，请查看 logs/gpt_sovits.log。")
+            return False, False
+        peak_fp32 = probe_fn()
+        if peak_fp32 is not None and peak_fp32 > 0:
+            write_precision_cache(PROJECT_ROOT, str(sovits_dir), False)
+            print("      [OK] 精度校准完成: 此设备使用 FP32 单精度，语音输出正常。结果已缓存，下次启动直接生效。")
+            return False, True
+        print("      [WARN] FP32 探针仍为静音或未完成 —— 问题可能不在精度，请查看 logs/gpt_sovits.log。")
+        return False, False
+
+    # Silence on FP32: precision is not the culprit.
+    print("      [WARN] FP32 探针为纯静音 —— 问题可能不在精度，请查看 logs/gpt_sovits.log。")
+    return is_half, False
+
+
+def _calibrate_precision_after_ready(sovits_dir: Path, host: str, port: int, is_half: bool, precision_source: str) -> None:
+    """Runs the calibration probe in the readiness-monitor thread once the engine answers."""
+    if precision_source != "default":
+        return  # env override is authoritative; verified cache needs no re-probe
+
+    def probe() -> Optional[float]:
+        return _probe_synth_peak(host, port)
+
+    def restart(new_is_half: bool):
+        global _SPAWNED_SOVITS_PROC
+        old = _SPAWNED_SOVITS_PROC
+        if old is not None:
+            try:
+                terminate_process_tree(old.pid)
+            except Exception:
+                pass
+        # Wait for the old engine to release the port before relaunching.
+        for _ in range(20):
+            time.sleep(0.5)
+            if not is_port_in_use(port, host):
+                break
         try:
-            if log_file.exists() and log_file.stat().st_size > 10 * 1024 * 1024:
-                old_file = log_file.with_suffix(".old.log")
-                if old_file.exists():
-                    old_file.unlink()
-                log_file.rename(old_file)
-        except OSError:
-            pass
-        log_fp = open(log_file, "a", encoding="utf-8")
-        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        env = build_gpt_sovits_env(sovits_dir, is_turing=is_turing)
-        extra_popen_kwargs = {}
-        if sys.platform != "win32":
-            extra_popen_kwargs["start_new_session"] = True
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=str(sovits_dir),
-                env=env,
-                creationflags=flags,
-                stdout=log_fp,
-                stderr=log_fp,
-                stdin=subprocess.DEVNULL,
-                **extra_popen_kwargs,
-            )
-        finally:
-            log_fp.close()
-        _SPAWNED_SOVITS_PROC = proc
-        assign_process_to_job(proc)
-        (PROJECT_ROOT / "gptsovits.pid").write_text(str(proc.pid), encoding="utf-8")
-        print(f"      [OK] 已在后台启动 GPT-SoVITS (PID: {proc.pid})，进程与主窗口已安全绑定联动")
+            return _spawn_sovits_process(sovits_dir, host, port, new_is_half)
+        except Exception as exc:
+            print(f"      [WARN] 引擎重启失败: {exc}")
+            return None
+
+    # Give the model a moment to finish loading weights after port bind.
+    time.sleep(2.0)
+    _, calibrated = calibrate_engine_precision(sovits_dir, is_half, probe, restart)
+    if calibrated:
+        cached_half = read_precision_cache(PROJECT_ROOT)
+        if cached_half is not None and cached_half.get("is_half") is False:
+            print("      [精度校准] 此设备已记录为 FP32 模式 (FP16 半精度输出纯静音)。")
+
+
+def ensure_gpt_sovits_running(fp16: bool = False):
+    """Checks the configured engine address; if not running, discovers and launches GPT-SoVITS API daemon."""
+    sovits_host, sovits_port = get_sovits_host_port()
+    print(f"[1/2] 正在检测 GPT-SoVITS 语音推理引擎 ({sovits_host}:{sovits_port})...")
+    # Check if engine is running on default 9880 or configured host/port: is_port_in_use(9880)
+    if is_port_in_use(sovits_port, sovits_host) or (sovits_port != 9880 and is_port_in_use(9880)):
+        print("      [OK] GPT-SoVITS 语音引擎已在运行")
+        print("      [注意] 引擎为外部启动，本启动器无法自动校准其精度 (FP16/FP32)；")
+        print("             若语音全程无声，请以 is_half=False (FP32) 重启引擎，")
+        print("             或关闭旧引擎进程后由本启动器重新拉起 (将自动完成精度校准)。")
+        return
+
+    check_system_memory()
+    sovits_dir = find_gpt_sovits_directory()
+    if not sovits_dir:
+        print("      [提示] 未自动定位到 GPT-SoVITS 目录，若已在其他终端运行请忽略。")
+        return
+
+    print(f"      [..] 定位到 GPT-SoVITS: {sovits_dir}")
+    print("      [..] 正在后台拉起 GPT-SoVITS API 引擎...")
+
+    # Precision resolution: Enforce FP32 (is_half=False) by default on all machines.
+    # Optional --fp16 CLI flag allows advanced users to explicitly choose half-precision.
+    if fp16:
+        is_half = True
+        precision_source = "cli"
+        print("      [推理精度] 已指定 --fp16 半精度模式运行。")
+    else:
+        env_precision = os.environ.get("GPT_SOVITS_PRECISION", "").strip().lower()
+        if env_precision in ("fp16", "half", "true", "1"):
+            is_half = True
+            precision_source = "env"
+            print("      [推理精度] 已通过 GPT_SOVITS_PRECISION 手动指定 FP16 半精度。")
+        else:
+            is_half = False
+            precision_source = "default_fp32"
+            print("      [推理精度] 默认使用 FP32 单精度模式 (保证全设备发声正常，零静音故障)。")
+    try:
+        proc = _spawn_sovits_process(sovits_dir, sovits_host, sovits_port, is_half)
 
         # Non-blocking parallel readiness monitor (bounded: 120s, engine logs written to gpt_sovits.log)
         print("      [..] GPT-SoVITS 正在后台加载模型入显存 (最长 120 秒，伴侣服务先行启动)...")
@@ -716,6 +839,7 @@ def ensure_gpt_sovits_running():
                 time.sleep(0.5)
                 if is_port_in_use(sovits_port, sovits_host):
                     print(f"\n      [OK] GPT-SoVITS 语音引擎已就绪 (http://{sovits_host}:{sovits_port}/)")
+                    _calibrate_precision_after_ready(sovits_dir, sovits_host, sovits_port, is_half, precision_source)
                     return
                 if proc and proc.poll() is not None:
                     print(f"\n      [WARN] GPT-SoVITS 异常退出 (退出码: {proc.returncode})，详见 logs/gpt_sovits.log")
@@ -819,6 +943,12 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Run pre-flight environment & hardware diagnostics, print report, and exit cleanly (exit code 0 if healthy, 1 if fatal)",
     )
+    parser.add_argument(
+        "--fp16",
+        action="store_true",
+        default=False,
+        help="Enable half-precision (FP16) inference (default is FP32 for universal compatibility)",
+    )
     return parser.parse_args(args)
 
 
@@ -847,7 +977,7 @@ def main(args: list[str] | None = None):
 
     try:
         # Step 1: GPT-SoVITS
-        ensure_gpt_sovits_running()
+        ensure_gpt_sovits_running(fp16=getattr(parsed, "fp16", False))
 
         # Step 2: Determine & Probe Port
         preferred_port = parsed.port

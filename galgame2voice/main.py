@@ -165,8 +165,9 @@ async def lifespan(app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.audio_dir.mkdir(parents=True, exist_ok=True)
     settings.logs_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("Verified directories: data=%s, audio=%s, logs=%s",
-                settings.data_dir, settings.audio_dir, settings.logs_dir)
+    settings.characters_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Verified directories: data=%s, audio=%s, logs=%s, characters=%s",
+                settings.data_dir, settings.audio_dir, settings.logs_dir, settings.characters_dir)
 
     # 3. Initialize SQLite Database Schema (WAL Mode) & Self-Heal broken audio references
     # Fail-fast: a broken database must not silently degrade into a
@@ -181,6 +182,19 @@ async def lifespan(app: FastAPI):
                 logger.info("Auto-healed %d voice profile(s) with missing/invalid reference audio paths", healed)
     except Exception as exc:
         logger.debug("Startup auto-heal check skipped: %s", exc)
+
+    # 3b. Self-Contained Character Packages Auto-Discovery & DB Sync
+    try:
+        from galgame2voice.services.character_manager import get_character_manager
+        char_mgr = get_character_manager()
+        discovered = char_mgr.discover_characters()
+        logger.info("Discovered %d character package(s)", len(discovered))
+        async with get_db(settings.db_path) as conn:
+            synced = await char_mgr.sync_with_db(conn)
+            if synced > 0:
+                logger.info("Synced %d character package(s) with voice profiles", synced)
+    except Exception as exc:
+        logger.debug("Startup character packages sync skipped: %s", exc)
 
     # 4. Initialize shared GPT-SoVITS client (single inference mutex app-wide).
     #    The DB's gpt_sovits_url takes priority over the .env default so the

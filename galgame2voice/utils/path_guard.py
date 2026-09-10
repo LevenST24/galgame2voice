@@ -269,12 +269,41 @@ def resolve_existing_audio_path(path: Union[str, Path]) -> Optional[Path]:
     p = Path(raw)
     try:
         if p.is_absolute():
-            return p if p.is_file() else None
+            if p.is_file():
+                return p
         settings = get_settings()
-        for base in (settings.project_root, Path(settings.audio_dir)):
+        char_dir = getattr(settings, "characters_dir", None)
+        if char_dir is None and hasattr(settings, "project_root"):
+            char_dir = settings.project_root / "characters"
+
+        bases = [settings.project_root, Path(settings.audio_dir)]
+        if char_dir is not None:
+            bases.append(Path(char_dir))
+
+        for base in bases:
             cand = base / p
             if cand.is_file():
                 return cand
+
+        # Backwards-compatible resolution for legacy audio paths to self-contained character package
+        if char_dir is not None:
+            norm_str = raw.replace("\\", "/").lower()
+            if "audio/references/natsume/" in norm_str or "references/natsume/" in norm_str:
+                fname = Path(raw).name
+                cand = Path(char_dir) / "四季夏目" / "refs" / fname
+                if cand.is_file():
+                    return cand
+
+            if Path(raw).name.lower() == "nat002_032.ogg":
+                cand = Path(char_dir) / "四季夏目" / "refs" / "gentle.ogg"
+                if cand.is_file():
+                    return cand
+
+            if norm_str.startswith("refs/"):
+                fname = Path(raw).name
+                cand = Path(char_dir) / "四季夏目" / "refs" / fname
+                if cand.is_file():
+                    return cand
     except OSError:
         return None
     return None

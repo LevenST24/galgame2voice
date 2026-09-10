@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     data_dir_name: str = "data"
     audio_dir_name: str = "audio"
     logs_dir_name: str = "logs"
+    characters_dir_name: str = "characters"
     static_dir_name: str = "galgame2voice/static"
 
     # GPT-SoVITS Integration
@@ -122,6 +123,11 @@ class Settings(BaseSettings):
     def static_dir(self) -> Path:
         """Resolved absolute path to frontend static assets directory."""
         return self.project_root / self.static_dir_name
+
+    @property
+    def characters_dir(self) -> Path:
+        """Resolved absolute path to characters directory."""
+        return self.project_root / self.characters_dir_name
 
 
 @lru_cache()

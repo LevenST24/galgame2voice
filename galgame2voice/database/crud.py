@@ -536,11 +536,15 @@ async def auto_heal_voice_profiles(conn: aiosqlite.Connection) -> int:
     project_root = settings.project_root
 
     bundled_gentle = project_root / "audio" / "references" / "natsume" / "gentle.ogg"
+    char_gentle = project_root / "characters" / "四季夏目" / "refs" / "gentle.ogg"
     bundled_nat = project_root / "audio" / "nat002_032.ogg"
 
     default_ref_path = "audio/references/natsume/gentle.ogg"
-    if not (project_root / default_ref_path).is_file() and bundled_nat.is_file():
-        default_ref_path = "audio/nat002_032.ogg"
+    if not (project_root / default_ref_path).is_file():
+        if char_gentle.is_file():
+            default_ref_path = "characters/四季夏目/refs/gentle.ogg"
+        elif bundled_nat.is_file():
+            default_ref_path = "audio/nat002_032.ogg"
 
     cursor = await conn.execute("SELECT id, name, ref_audio_path FROM voice_profiles;")
     rows = await cursor.fetchall()
@@ -574,7 +578,8 @@ async def auto_heal_voice_profiles(conn: aiosqlite.Connection) -> int:
                     # Machine-specific absolute paths outside project root or audio_dir
                     # do not resolve cleanly and are healed for cross-machine portability.
                 else:
-                    if (project_root / ref_path).is_file() or (settings.audio_dir / ref_path).is_file():
+                    from galgame2voice.utils.path_guard import resolve_existing_audio_path
+                    if resolve_existing_audio_path(ref_path) is not None:
                         file_exists = True
             except Exception:
                 file_exists = False

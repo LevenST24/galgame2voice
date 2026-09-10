@@ -19,8 +19,12 @@ from galgame2voice.utils.prosody import (
 )
 from galgame2voice.utils.hardware import (
     detect_gpu_capability,
-    is_turing_tu116_tu117_gpu,
     get_system_memory_status,
+)
+from galgame2voice.utils.precision import (
+    read_precision_cache,
+    resolve_initial_is_half,
+    write_precision_cache,
 )
 from galgame2voice.utils.path_guard import (
     PathTraversalError,
@@ -56,8 +60,10 @@ __all__ = [
     "clamp_dynamic_speed",
     "clamp_dynamic_temperature",
     "detect_gpu_capability",
-    "is_turing_tu116_tu117_gpu",
     "get_system_memory_status",
+    "read_precision_cache",
+    "resolve_initial_is_half",
+    "write_precision_cache",
     "PathTraversalError",
     "is_windows_device_name",
     "contains_traversal_payload",

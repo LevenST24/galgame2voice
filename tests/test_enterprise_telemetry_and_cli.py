@@ -1,6 +1,6 @@
 """
 Unit tests for enterprise telemetry, hardware utilities, CLI flags, and static caching:
-1. galgame2voice.utils.hardware (detect_gpu_capability, is_turing_tu116_tu117_gpu, get_system_memory_status).
+1. galgame2voice.utils.hardware (detect_gpu_capability, get_system_memory_status).
 2. Backward-compatible re-exports in scripts/run_server.py.
 3. SystemStatusResponse hardware telemetry in /api/system/status.
 4. Server launcher CLI argument parsing and --check-only pre-flight execution.
@@ -18,7 +18,6 @@ from httpx import AsyncClient, ASGITransport
 from galgame2voice.main import create_app
 from galgame2voice.utils.hardware import (
     detect_gpu_capability,
-    is_turing_tu116_tu117_gpu,
     get_system_memory_status,
 )
 import scripts.run_server as rs
@@ -44,19 +43,11 @@ class TestHardwareUtilities:
         assert isinstance(gpu_name, str)
         assert count is None or isinstance(count, int)
 
-    def test_is_turing_gpu_detection_overrides(self):
-        # Explicit Turing models
-        assert is_turing_tu116_tu117_gpu("NVIDIA GeForce MX450") is True
-        assert is_turing_tu116_tu117_gpu("GeForce GTX 1650") is True
-        assert is_turing_tu116_tu117_gpu("GeForce GTX 1660 SUPER") is True
-        assert is_turing_tu116_tu117_gpu("NVIDIA TU117") is True
-        assert is_turing_tu116_tu117_gpu("GeForce MX550") is True
-
-        # Non-Turing models
-        assert is_turing_tu116_tu117_gpu("NVIDIA GeForce RTX 3080") is False
-        assert is_turing_tu116_tu117_gpu("NVIDIA GeForce RTX 4090") is False
-        assert is_turing_tu116_tu117_gpu("Intel Iris Xe Graphics") is False
-        assert is_turing_tu116_tu117_gpu("AMD Radeon RX 6800") is False
+    def test_is_turing_detection_removed(self):
+        # GPU-model-name whitelist was replaced by evidence-based precision calibration.
+        import scripts.run_server as rs
+        assert not hasattr(rs, "is_turing_tu116_tu117_gpu")
+        assert not hasattr(rs, "patch_sovits_precision_config")
 
     def test_detect_gpu_capability_with_mocked_torch(self, monkeypatch):
         mock_torch = type("Torch", (), {
@@ -159,7 +150,6 @@ class TestHardwareUtilities:
 class TestRunServerReExports:
     def test_run_server_reexports_hardware_functions(self):
         assert hasattr(rs, "detect_gpu_capability")
-        assert hasattr(rs, "is_turing_tu116_tu117_gpu")
         assert hasattr(rs, "get_system_memory_status")
         assert hasattr(rs, "get_system_ram_gb")
 
@@ -170,7 +160,6 @@ class TestRunServerReExports:
     def test_run_hardware_diagnostics_structure(self):
         diag = rs.run_hardware_diagnostics()
         assert isinstance(diag, dict)
-        assert "is_turing" in diag
         assert "cuda_available" in diag
         assert "gpu_names" in diag
         assert "total_ram_gb" in diag
@@ -212,7 +201,7 @@ class TestSystemStatusHardwareTelemetry:
             hw = data["hardware"]
             assert isinstance(hw["gpu_available"], bool)
             assert isinstance(hw["gpu_name"], str)
-            assert isinstance(hw["turing_fp32_active"], bool)
+            assert isinstance(hw["fp32_forced"], bool)
             assert hw["system_memory_gb"] is None or isinstance(hw["system_memory_gb"], (int, float))
             assert hw["system_memory_avail_gb"] is None or isinstance(hw["system_memory_avail_gb"], (int, float))
 
@@ -228,7 +217,7 @@ class TestSystemStatusHardwareTelemetry:
         monkeypatch.setattr(health_mod, "detect_gpu_capability", mock_detect)
 
         val1 = health_mod._get_gpu_telemetry_cached()
-        assert val1 == (True, "Mock RTX 5000", False)
+        assert val1 == (True, "Mock RTX 5000")
         assert call_count[0] == 1
 
         val2 = health_mod._get_gpu_telemetry_cached()
@@ -267,7 +256,7 @@ class TestServerLauncherCLI:
 
     def test_main_check_only_success(self, monkeypatch):
         monkeypatch.setattr(rs, "check_python_environment", lambda: True)
-        monkeypatch.setattr(rs, "run_hardware_diagnostics", lambda: {"is_turing": False})
+        monkeypatch.setattr(rs, "run_hardware_diagnostics", lambda: {"has_nvidia": False})
 
         with pytest.raises(SystemExit) as exc_info:
             rs.main(["--check-only"])

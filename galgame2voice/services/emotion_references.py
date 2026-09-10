@@ -1,7 +1,8 @@
 """
 Dynamic Emotional Reference Audio Mapper for Galgame2Voice.
-Maps AI-classified emotions (gentle, happy, sad, tsundere, shy, cool)
-to curated reference audio files and verified Japanese transcripts.
+
+Data-driven emotion resolution querying active/discovered Character Packages via CharacterManager.
+Provides seamless backward compatibility for legacy callers.
 """
 
 from pathlib import Path
@@ -10,48 +11,7 @@ import logging
 
 logger = logging.getLogger("galgame2voice.services.emotion_references")
 
-# Reference audio definitions for Shiki Natsume (四季夏目)
-# Listened, verified, and mapped from original game audio assets.
-NATSUME_EMOTION_REFERENCES: Dict[str, Dict[str, str]] = {
-    "gentle": {
-        "audio_name": "gentle.ogg",
-        "prompt_text": "とりあえず、今日見たことは忘れて、わかった?",
-        "prompt_lang": "ja",
-        "description": "平稳温和，微带疏离与关切（常规基准）",
-    },
-    "happy": {
-        "audio_name": "happy.ogg",
-        "prompt_text": "今日は来てくれてありがとう。楽しかった。",
-        "prompt_lang": "ja",
-        "description": "轻快甜美，带笑意的喜悦语气",
-    },
-    "sad": {
-        "audio_name": "sad.ogg",
-        "prompt_text": "その時少し、ほんの少し、寂しいって思った。",
-        "prompt_lang": "ja",
-        "description": "低沉放缓，微弱气声的委屈落寞语气",
-    },
-    "tsundere": {
-        "audio_name": "tsundere.ogg",
-        "prompt_text": "今さらそんな確認しないでよ、バカ",
-        "prompt_lang": "ja",
-        "description": "娇嗔急促、嘴硬气恼的傲娇语气",
-    },
-    "shy": {
-        "audio_name": "shy.ogg",
-        "prompt_text": "だから、無言で凝視されると恥ずかしいんだってば。",
-        "prompt_lang": "ja",
-        "description": "羞涩颤音、慌乱难为情的语气",
-    },
-    "cool": {
-        "audio_name": "cool.ogg",
-        "prompt_text": "勝手に仲間にしないでください。",
-        "prompt_lang": "ja",
-        "description": "平淡冷静、果断拉开距离的高冷语气",
-    },
-}
-
-# Emotion synonym normalizer
+# Emotion synonym normalizer (maps emotional keywords and Japanese/Chinese terms to canonical archetypes)
 EMOTION_SYNONYMS: Dict[str, str] = {
     "happy": "happy",
     "cheerful": "happy",
@@ -93,9 +53,84 @@ EMOTION_SYNONYMS: Dict[str, str] = {
     "平稳": "gentle",
 }
 
+# Dynamic data-driven emotion references proxy
+def _load_manifest_emotion_references(character_name: str = "四季夏目") -> Dict[str, Dict[str, str]]:
+    """Dynamically extracts emotion references dictionary from character package manifest."""
+    try:
+        from galgame2voice.services.character_manager import get_character_manager
+        mgr = get_character_manager()
+        pkg = mgr.get_character(character_name)
+        if pkg and pkg.manifest and pkg.manifest.emotions:
+            res: Dict[str, Dict[str, str]] = {}
+            for k, emo in pkg.manifest.emotions.items():
+                res[k] = {
+                    "audio_name": Path(emo.audio).name,
+                    "prompt_text": emo.text,
+                    "prompt_lang": emo.lang,
+                    "description": emo.description or f"Dynamic {k} emotion",
+                }
+            return res
+    except Exception:
+        pass
+    return {}
+
+
+class _DynamicEmotionReferences(dict):
+    """
+    Data-driven dictionary proxy that reflects the character package manifest dynamically
+    while maintaining 100% dictionary backward compatibility for legacy callers and tests.
+    """
+    def __init__(self):
+        super().__init__()
+        self._loaded = False
+
+    def _ensure_loaded(self):
+        if not self._loaded:
+            data = _load_manifest_emotion_references("四季夏目")
+            if data:
+                self.update(data)
+                self._loaded = True
+
+    def __getitem__(self, item):
+        self._ensure_loaded()
+        if item not in self:
+            return super().get("gentle", {})
+        return super().__getitem__(item)
+
+    def get(self, item, default=None):
+        self._ensure_loaded()
+        return super().get(item, default)
+
+    def __contains__(self, item):
+        self._ensure_loaded()
+        return super().__contains__(item)
+
+    def __iter__(self):
+        self._ensure_loaded()
+        return super().__iter__()
+
+    def __len__(self):
+        self._ensure_loaded()
+        return super().__len__()
+
+    def items(self):
+        self._ensure_loaded()
+        return super().items()
+
+    def keys(self):
+        self._ensure_loaded()
+        return super().keys()
+
+    def values(self):
+        self._ensure_loaded()
+        return super().values()
+
+
+NATSUME_EMOTION_REFERENCES: Dict[str, Dict[str, str]] = _DynamicEmotionReferences()
+
 
 def normalize_emotion(emotion: Optional[str]) -> str:
-    """Normalizes an emotion string to one of the 6 canonical archetypes."""
+    """Normalizes an emotion string to one of the canonical archetypes."""
     if not emotion:
         return "gentle"
     cleaned = str(emotion).strip().lower()
@@ -108,7 +143,10 @@ def resolve_emotion_reference(
     base_dir: Optional[Path] = None,
 ) -> Optional[Dict[str, str]]:
     """
-    Resolves emotion reference audio file path and prompt text.
+    Data-driven resolution of emotion reference audio file path, prompt text, and prompt lang.
+    Queries the CharacterManager for the active/named character package manifest.
+    Falls back gracefully if the emotion is missing or audio is invalid.
+
     Returns:
         {
             'ref_audio_path': str,
@@ -116,63 +154,27 @@ def resolve_emotion_reference(
             'prompt_lang': str,
             'emotion': str,
         }
-        or None if no matching reference audio is found.
+        or None if no matching character/reference audio is found.
     """
-    canonical_emo = normalize_emotion(emotion)
-
-    # Check if character is Shiki Natsume (or default fallback)
-    is_natsume = (
-        "夏目" in character_name
-        or "natsume" in character_name.lower()
-        or "siki" in character_name.lower()
-        or character_name == "default"
-    )
-
-    if not is_natsume:
-        return None
-
-    if canonical_emo not in NATSUME_EMOTION_REFERENCES:
-        return None
-
-    ref_info = NATSUME_EMOTION_REFERENCES[canonical_emo]
-
-    # Resolve local file path
-    if base_dir is None:
-        try:
-            from galgame2voice.config import get_settings
-            settings = get_settings()
-            base_dir = Path(settings.audio_dir) / "references" / "natsume"
-        except Exception:
-            base_dir = Path("audio/references/natsume")
-
-    candidate_file = Path(base_dir) / ref_info["audio_name"]
-    if candidate_file.exists():
-        return {
-            "ref_audio_path": str(candidate_file.resolve()),
-            "prompt_text": ref_info["prompt_text"],
-            "prompt_lang": ref_info["prompt_lang"],
-            "emotion": canonical_emo,
-        }
-
-    # Fallback to alternate project locations if base_dir was custom or non-default
     try:
-        from galgame2voice.config import get_settings
-        settings = get_settings()
-        alt_candidates = [
-            settings.project_root / "audio" / "references" / "natsume" / ref_info["audio_name"],
-            settings.project_root / "audio" / ref_info["audio_name"],
-            Path("audio/references/natsume") / ref_info["audio_name"],
-            Path("audio") / ref_info["audio_name"],
-        ]
-        for alt in alt_candidates:
-            if alt.is_file():
-                return {
-                    "ref_audio_path": str(alt.resolve()),
-                    "prompt_text": ref_info["prompt_text"],
-                    "prompt_lang": ref_info["prompt_lang"],
-                    "emotion": canonical_emo,
-                }
-    except Exception:
-        pass
+        from galgame2voice.services.character_manager import get_character_manager
+        mgr = get_character_manager()
+        result = mgr.resolve_emotion_audio_path(character_name, emotion, base_dir=base_dir)
+        if result is not None:
+            return result
 
-    return None
+        # Backward compatibility fallback: check if character is Shiki Natsume or default
+        is_natsume = (
+            not character_name
+            or "夏目" in character_name
+            or "natsume" in character_name.lower()
+            or "siki" in character_name.lower()
+            or character_name.strip().lower() == "default"
+        )
+        if not is_natsume:
+            return None
+
+        return mgr.resolve_emotion_audio_path("default", emotion, base_dir=base_dir)
+    except Exception as exc:
+        logger.debug("Data-driven emotion resolution encountered exception: %s", exc)
+        return None

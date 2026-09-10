@@ -81,6 +81,20 @@ def should_include(rel_path: Path) -> bool:
                 return True
             return False
 
+    # Ensure characters/ folder is bundled with manifests, prompts, and reference audios,
+    # while excluding large .ckpt / .pth binary model weights.
+    if len(parts) >= 2 and parts[0] == "characters":
+        if filename.endswith(".ckpt") or filename.endswith(".pth"):
+            abs_p = PROJECT_ROOT / rel_path
+            try:
+                if abs_p.is_file() and abs_p.stat().st_size > 1024 * 1024:
+                    return False
+                elif not abs_p.is_file():
+                    return False
+            except Exception:
+                return False
+        return True
+
     return True
 
 
@@ -114,7 +128,7 @@ def build_release_zip(version: str = "2.0.0") -> Path:
                     total_files += 1
 
         # Add empty placeholder runtime directories
-        for empty_dir in ["logs", "data", "audio"]:
+        for empty_dir in ["logs", "data", "audio", "characters"]:
             zf.writestr(f"galgame2voice-v{version}/{empty_dir}/.keep", "")
 
     file_size_mb = zip_filename.stat().st_size / (1024 * 1024)
