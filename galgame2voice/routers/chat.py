@@ -286,10 +286,99 @@ async def legacy_post_chat(req: ChatRequest):
 # Session & Message History Endpoints
 # ============================================================================
 
+class SessionUpsertRequest(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=SESSION_ID_MAX_LENGTH, description="Session ID (auto-generated if omitted)")
+    title: Optional[str] = Field(default=None, max_length=200, description="Session display title")
+    voice_profile_id: Optional[int] = Field(default=None, description="Bound voice profile ID")
+    custom_system_prompt: Optional[str] = Field(default=None, max_length=4000, description="Custom persona system prompt")
+    settings: Optional[Dict[str, Any]] = Field(default=None, description="Session-specific generation & voice parameters")
+
+
+@router.get("/api/chat/sessions", summary="List all chat sessions with metadata")
+async def list_chat_sessions(limit: int = Query(default=50, ge=1, le=200)):
+    """
+    Returns list of all conversation sessions from SQLite database in reverse-chronological order,
+    including inferred human-readable title, message count, and last message preview.
+    """
+    async with get_db() as conn:
+        sessions = await crud.list_sessions_overview(conn, limit=limit)
+        results = []
+        for s in sessions:
+            settings_dict = {}
+            if s.get("settings_json"):
+                try:
+                    settings_dict = json.loads(s["settings_json"])
+                except Exception:
+                    settings_dict = {}
+            results.append({
+                "id": s["id"],
+                "title": s.get("title") or "新对话",
+                "voice_profile_id": s.get("voice_profile_id"),
+                "custom_system_prompt": s.get("custom_system_prompt"),
+                "created_at": s.get("created_at"),
+                "updated_at": s.get("updated_at"),
+                "message_count": s.get("message_count", 0),
+                "last_message": s.get("last_message"),
+                "settings": settings_dict,
+            })
+        return {
+            "count": len(results),
+            "sessions": results,
+        }
+
+
+@router.post("/api/chat/sessions", summary="Create or update conversation session")
+async def upsert_chat_session(req: SessionUpsertRequest):
+    """
+    Creates or updates a conversation session in SQLite database,
+    persisting title and custom generation parameters.
+    """
+    import uuid
+    import time
+    sess_id = (req.id or "").strip()
+    if not sess_id:
+        sess_id = f"s_{int(time.time()):x}_{uuid.uuid4().hex[:6]}"
+
+    settings_str = json.dumps(req.settings, ensure_ascii=False) if req.settings else None
+    async with get_db() as conn:
+        session_obj = await crud.upsert_session(
+            conn=conn,
+            session_id=sess_id,
+            title=req.title,
+            voice_profile_id=req.voice_profile_id,
+            custom_system_prompt=req.custom_system_prompt,
+            settings_json=settings_str,
+        )
+        return {
+            "status": "ok",
+            "session": session_obj.model_dump(),
+        }
+
+
+@router.delete("/api/chat/sessions/{session_id}", summary="Delete conversation session")
+async def delete_chat_session_by_id(session_id: str):
+    """
+    Deletes a conversation session and all its cascading messages.
+    """
+    clean_id = (session_id or "").strip()
+    if not clean_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="session_id cannot be empty",
+        )
+    async with get_db() as conn:
+        success = await crud.delete_session(conn, clean_id)
+        return {
+            "status": "deleted" if success else "not_found",
+            "session_id": clean_id,
+            "success": success,
+        }
+
+
 @router.get("/api/chat/history", summary="Get session message history")
 async def get_chat_history(
     session_id: str = Query(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Conversation session ID"),
-    limit: int = Query(default=50, ge=1, le=200, description="Max message count to return"),
+    limit: int = Query(default=100, ge=1, le=500, description="Max message count to return"),
 ):
     """
     Returns chronological list of previous messages in the session for UI restoration.

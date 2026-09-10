@@ -55,16 +55,17 @@ function ensureSettings(session) {
   return session;
 }
 
-function makeStarterSession() {
+export function makeStarterSession() {
   const s = ensureSettings({
     id: uid('s'),
-    title: '开始 · Gal2Voice 使用指南',
+    title: '新对话',
     createdAt: now(),
     updatedAt: now(),
-    messages: [{ id: uid('m'), role: 'assistant', content: GREETING, noVoice: true, isGuide: true, ts: now() }],
+    messages: [{ id: uid('m'), role: 'assistant', content: GREETING, noVoice: true, ts: now() }],
   });
   state.sessions.unshift(s);
   state.activeId = s.id;
+  saveState();
   return s;
 }
 
@@ -87,10 +88,10 @@ export function loadState() {
   saveState();
 }
 
-export function createSession() {
+export function createSession(title = '新对话') {
   const s = ensureSettings({
     id: uid('s'),
-    title: '新对话',
+    title,
     createdAt: now(),
     updatedAt: now(),
     messages: [],
@@ -109,7 +110,13 @@ export function deleteSession(id) {
 }
 
 export function getActive() {
-  return state.sessions.find((s) => s.id === state.activeId) ?? null;
+  if (!state.sessions.length) makeStarterSession();
+  let s = state.sessions.find((sess) => sess.id === state.activeId);
+  if (!s) {
+    state.activeId = state.sessions[0]?.id ?? null;
+    s = state.sessions[0] ?? null;
+  }
+  return s;
 }
 
 export function getSession(id) {
@@ -121,12 +128,14 @@ export function saveGlobal(patch) {
   saveState();
 }
 
-function autoTitle(session) {
-  if (session.title !== '新对话') return;
+export function autoTitle(session) {
+  if (!session || (session.title && session.title !== '新对话' && session.title !== '开始 · Gal2Voice 使用指南')) return false;
   const firstUser = session.messages.find((m) => m.role === 'user');
-  if (!firstUser) return;
-  const t = firstUser.content.replace(/\s+/g, ' ').trim();
-  session.title = t.length > 18 ? `${t.slice(0, 18)}…` : t || '新对话';
+  if (!firstUser) return false;
+  const t = firstUser.content.replace(/[\r\n\t]+/g, ' ').trim();
+  if (!t) return false;
+  session.title = t.length > 20 ? `${t.slice(0, 20)}…` : t;
+  return true;
 }
 
 export function addMessage(role, content, sessionId = state.activeId) {

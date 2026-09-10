@@ -217,6 +217,8 @@ class SessionBase(BaseModel):
     user_id: str = ""
     voice_profile_id: Optional[int] = 1
     custom_system_prompt: Optional[str] = None
+    title: str = ""
+    settings_json: Optional[str] = None
     token_budget: int = 4096
 
 
@@ -227,6 +229,8 @@ class SessionCreate(SessionBase):
 class SessionUpdate(BaseModel):
     voice_profile_id: Optional[int] = None
     custom_system_prompt: Optional[str] = None
+    title: Optional[str] = None
+    settings_json: Optional[str] = None
     token_budget: Optional[int] = Field(default=None, ge=128, le=131072)
 
 

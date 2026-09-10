@@ -67,7 +67,7 @@ def is_masked_key(key: Optional[str]) -> bool:
 
 # ==================== Schema Versioning & Migrations ====================
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 
 async def _get_table_columns(conn: aiosqlite.Connection, table_name: str) -> set[str]:
@@ -167,6 +167,8 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
             user_id TEXT NOT NULL DEFAULT '',
             voice_profile_id INTEGER REFERENCES voice_profiles(id) ON DELETE SET NULL,
             custom_system_prompt TEXT DEFAULT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            settings_json TEXT DEFAULT NULL,
             token_budget INTEGER NOT NULL DEFAULT 4096,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -471,6 +473,12 @@ async def _migration_v5_precision_and_column_integrity(conn: aiosqlite.Connectio
         await _add_column_if_missing(conn, "settings", col, col_type)
 
 
+async def _migration_v6_session_titles_and_settings(conn: aiosqlite.Connection) -> None:
+    """Migration 6: Ensure sessions table has title and settings_json columns."""
+    await _add_column_if_missing(conn, "sessions", "title", "TEXT NOT NULL DEFAULT ''")
+    await _add_column_if_missing(conn, "sessions", "settings_json", "TEXT DEFAULT NULL")
+
+
 async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
     """
     Executes SQLite schema migrations idempotently using PRAGMA user_version.
@@ -503,6 +511,11 @@ async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
         current_version = 5
         await set_schema_version(conn, 5)
 
+    if current_version < 6:
+        await _migration_v6_session_titles_and_settings(conn)
+        current_version = 6
+        await set_schema_version(conn, 6)
+
     return current_version
 
 
@@ -519,6 +532,10 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
         ("allow_private_llm_endpoints", "INTEGER NOT NULL DEFAULT 0"),
     ]:
         await _add_column_if_missing(conn, "settings", col, col_type)
+
+    # Always ensure sessions columns exist even on legacy databases
+    await _add_column_if_missing(conn, "sessions", "title", "TEXT NOT NULL DEFAULT ''")
+    await _add_column_if_missing(conn, "sessions", "settings_json", "TEXT DEFAULT NULL")
 
     # Guarantee a console token exists so the API is never left unauthenticated.
     # The freshly generated token is logged once so the owner can retrieve it.
@@ -1126,6 +1143,59 @@ async def get_session(conn: aiosqlite.Connection, session_id: str) -> Optional[S
     return SessionResponse(**dict(row))
 
 
+async def upsert_session(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    title: Optional[str] = None,
+    channel: str = "web",
+    user_id: str = "",
+    voice_profile_id: Optional[int] = None,
+    custom_system_prompt: Optional[str] = None,
+    settings_json: Optional[str] = None,
+) -> SessionResponse:
+    conn.row_factory = aiosqlite.Row
+    clean_title = (title or "").strip()
+    cursor = await conn.execute("SELECT * FROM sessions WHERE id = ?;", (session_id,))
+    row = await cursor.fetchone()
+    if row:
+        updates = ["updated_at = CURRENT_TIMESTAMP"]
+        params = []
+        if title is not None:
+            updates.append("title = ?")
+            params.append(clean_title)
+        if voice_profile_id is not None:
+            updates.append("voice_profile_id = ?")
+            params.append(voice_profile_id)
+        if custom_system_prompt is not None:
+            updates.append("custom_system_prompt = ?")
+            params.append(custom_system_prompt)
+        if settings_json is not None:
+            updates.append("settings_json = ?")
+            params.append(settings_json)
+        params.append(session_id)
+        async with immediate_transaction(conn):
+            await conn.execute(f"UPDATE sessions SET {', '.join(updates)} WHERE id = ?;", params)
+    else:
+        if voice_profile_id is None:
+            active_p = await get_active_voice_profile(conn)
+            voice_profile_id = active_p.id if active_p else None
+        async with immediate_transaction(conn):
+            await conn.execute("""
+                INSERT INTO sessions (id, channel, user_id, voice_profile_id, custom_system_prompt, title, settings_json, token_budget)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 4096)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = COALESCE(excluded.title, sessions.title),
+                    voice_profile_id = COALESCE(excluded.voice_profile_id, sessions.voice_profile_id),
+                    custom_system_prompt = COALESCE(excluded.custom_system_prompt, sessions.custom_system_prompt),
+                    settings_json = COALESCE(excluded.settings_json, sessions.settings_json),
+                    updated_at = CURRENT_TIMESTAMP;
+            """, (session_id, channel, user_id, voice_profile_id, custom_system_prompt, clean_title, settings_json))
+
+    cursor = await conn.execute("SELECT * FROM sessions WHERE id = ?;", (session_id,))
+    new_row = await cursor.fetchone()
+    return SessionResponse(**dict(new_row))
+
+
 async def list_sessions(conn: aiosqlite.Connection, limit: int = 50) -> List[SessionResponse]:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?;", (limit,))
@@ -1133,8 +1203,49 @@ async def list_sessions(conn: aiosqlite.Connection, limit: int = 50) -> List[Ses
     return [SessionResponse(**dict(r)) for r in rows]
 
 
+async def list_sessions_overview(conn: aiosqlite.Connection, limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    Returns sessions ordered by updated_at DESC, augmented with message count,
+    last message preview, and dynamically inferred title if not explicitly set.
+    """
+    conn.row_factory = aiosqlite.Row
+    try:
+        cursor = await conn.execute("""
+            SELECT 
+                s.*,
+                (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count,
+                (SELECT content_chinese FROM messages WHERE session_id = s.id ORDER BY id DESC LIMIT 1) as last_message,
+                (SELECT content_chinese FROM messages WHERE session_id = s.id AND role = 'user' ORDER BY id ASC LIMIT 1) as first_user_message
+            FROM sessions s
+            ORDER BY s.updated_at DESC
+            LIMIT ?;
+        """, (limit,))
+        rows = await cursor.fetchall()
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        await init_schema_and_seeds(conn)
+        cursor = await conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?;", (limit,))
+        rows = await cursor.fetchall()
+
+    result = []
+    for r in rows:
+        d = dict(r)
+        explicit_title = str(d.get("title") or "").strip()
+        if not explicit_title:
+            first_user = str(d.get("first_user_message") or "").strip()
+            if first_user:
+                import re
+                clean_preview = re.sub(r"[\r\n\t]+", " ", first_user).strip()
+                explicit_title = clean_preview[:24]
+            else:
+                explicit_title = "新对话"
+        d["title"] = explicit_title
+        result.append(d)
+    return result
+
+
 async def delete_session(conn: aiosqlite.Connection, session_id: str) -> bool:
     async with immediate_transaction(conn):
+        await conn.execute("DELETE FROM messages WHERE session_id = ?;", (session_id,))
         cursor = await conn.execute("DELETE FROM sessions WHERE id = ?;", (session_id,))
     return cursor.rowcount > 0
 

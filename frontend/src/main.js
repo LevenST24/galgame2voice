@@ -8,6 +8,7 @@ import {
   getSession,
   getActive,
   addMessage,
+  autoTitle,
   uid,
   DEFAULT_SESSION_SETTINGS,
 } from './store.js';
@@ -1140,7 +1141,21 @@ function sendMessage(rawText, voiceMeta) {
   if (!session) return;
   const originId = session.id;
 
+  const prevTitle = session.title;
   const userMsg = addMessage('user', text);
+  if (session.title !== prevTitle) {
+    fetch('/api/chat/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: session.id,
+        title: session.title,
+        voice_profile_id: session.settings?.voiceProfileId,
+        custom_system_prompt: session.settings?.systemPrompt,
+        settings: session.settings,
+      }),
+    }).catch(() => {});
+  }
   if (voiceMeta && userMsg) {
     audioStore.set(userMsg.id, { url: voiceMeta.url, dur: voiceMeta.dur });
     userMsg.dur = voiceMeta.dur;
@@ -1269,11 +1284,38 @@ function sendMessage(rawText, voiceMeta) {
 }
 
 /* ---------- 会话操作 ---------- */
-function switchSession(id) {
+async function loadSessionHistory(session) {
+  if (!session || (session.messages && session.messages.length > 0)) return;
+  try {
+    const res = await fetch(`/api/chat/history?session_id=${encodeURIComponent(session.id)}&limit=100`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (Array.isArray(data.messages) && data.messages.length > 0) {
+      session.messages = data.messages.map((bm) => ({
+        id: `m_${bm.id}`,
+        role: bm.role,
+        content: bm.content_chinese,
+        japanese: bm.content_japanese || '',
+        audioUrls: bm.audio_url ? [bm.audio_url] : [],
+        ts: bm.created_at ? new Date(bm.created_at).getTime() : Date.now(),
+      }));
+      autoTitle(session);
+      saveState();
+    }
+  } catch (e) {
+    console.debug('Failed to load session history:', e);
+  }
+}
+
+async function switchSession(id) {
   closeDrawer();
   if (id === state.activeId) return;
   stopStream();
   state.activeId = id;
+  const s = getActive();
+  if (s && (!s.messages || s.messages.length === 0)) {
+    await loadSessionHistory(s);
+  }
   saveState();
   fullRender(true);
   ensureSessionVoice(getActive());
@@ -1294,18 +1336,32 @@ function handleDelete(id) {
     }
   }
   deleteSession(id);
-  // 同步清理后端该会话的持久化历史（失败不影响本地删除）
+  // 同步清理后端 SQLite 中该会话及其消息
+  fetch(`/api/chat/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
   fetch(`/api/chat/history?session_id=${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
   fullRender(true);
+  ensureSessionVoice(getActive());
   showToast('对话已删除');
 }
 
 function newChat() {
   stopStream();
   closeDrawer();
-  createSession();
+  const s = createSession();
   fullRender(true);
+  ensureSessionVoice(s);
   dom.input.focus();
+  fetch('/api/chat/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      id: s.id,
+      title: s.title,
+      voice_profile_id: s.settings?.voiceProfileId,
+      custom_system_prompt: s.settings?.systemPrompt,
+      settings: s.settings,
+    }),
+  }).catch(() => {});
 }
 
 /* ---------- 事件绑定 ---------- */
@@ -1924,6 +1980,17 @@ dom.sSave.addEventListener('click', () => {
   };
   s.updatedAt = Date.now();
   saveState();
+  fetch('/api/chat/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      id: s.id,
+      title: s.title,
+      voice_profile_id: s.settings?.voiceProfileId,
+      custom_system_prompt: s.settings?.systemPrompt,
+      settings: s.settings,
+    }),
+  }).catch(() => {});
   closeModal(dom.sessionModal);
   renderSidebar();
   renderHeader();
@@ -1954,6 +2021,80 @@ updateVoiceModeUI();
 ensureSessionVoice(getActive());
 if (!voiceSupported() && !recorderSupported()) dom.micBtn.classList.add('hidden');
 if (window.innerWidth > 820) dom.input.focus();
+
+// 同步后端 SQLite 会话列表及历史消息（跨端口、刷新或重启后无缝恢复）
+async function syncSessionsFromBackend() {
+  try {
+    const res = await fetch('/api/chat/sessions?limit=50');
+    if (!res.ok) return;
+    const data = await res.json();
+    const backendSessions = data.sessions || [];
+    if (backendSessions.length > 0) {
+      const existingMap = new Map(state.sessions.map((s) => [s.id, s]));
+      const merged = [];
+      for (const bs of backendSessions) {
+        let local = existingMap.get(bs.id);
+        if (local) {
+          if (bs.title && (local.title === '新对话' || !local.title)) local.title = bs.title;
+          local.updatedAt = bs.updated_at ? new Date(bs.updated_at).getTime() : local.updatedAt;
+          if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
+          if (bs.custom_system_prompt && !local.settings.systemPrompt) local.settings.systemPrompt = bs.custom_system_prompt;
+          if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = { ...local.settings, ...bs.settings };
+          merged.push(local);
+          existingMap.delete(bs.id);
+        } else {
+          merged.push({
+            id: bs.id,
+            title: bs.title || '新对话',
+            createdAt: bs.created_at ? new Date(bs.created_at).getTime() : Date.now(),
+            updatedAt: bs.updated_at ? new Date(bs.updated_at).getTime() : Date.now(),
+            messages: [],
+            settings: {
+              ...DEFAULT_SESSION_SETTINGS,
+              ...(bs.settings || {}),
+              voiceProfileId: bs.voice_profile_id || null,
+              systemPrompt: bs.custom_system_prompt || '',
+            },
+          });
+        }
+      }
+      // 保留本地有用户发言但后端尚未同步的会话
+      for (const [_, rem] of existingMap) {
+        if (rem.messages && rem.messages.some((m) => m.role === 'user')) {
+          merged.push(rem);
+        }
+      }
+      state.sessions = merged;
+      if (!state.activeId || !state.sessions.some((s) => s.id === state.activeId)) {
+        state.activeId = state.sessions[0]?.id || null;
+      }
+    } else if (state.sessions.length === 0) {
+      const s = createSession('新对话');
+      fetch('/api/chat/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: s.id,
+          title: s.title,
+          voice_profile_id: s.settings?.voiceProfileId,
+          custom_system_prompt: s.settings?.systemPrompt,
+          settings: s.settings,
+        }),
+      }).catch(() => {});
+    }
+    const curActive = getActive();
+    if (curActive && (!curActive.messages || curActive.messages.length === 0)) {
+      await loadSessionHistory(curActive);
+    }
+    saveState();
+    fullRender(false);
+    ensureSessionVoice(getActive(), { silent: true });
+    if (window.innerWidth > 820) dom.input.focus();
+  } catch (err) {
+    console.debug('Failed to sync sessions from backend:', err);
+  }
+}
+syncSessionsFromBackend().catch(() => {});
 
 // 启动时检查 URL 是否携带设置参数（例如 /console 或 /settings 重定向过来的请求）
 const urlParams = new URLSearchParams(window.location.search);
