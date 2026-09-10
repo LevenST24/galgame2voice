@@ -1428,6 +1428,14 @@ async function fetchSystemTelemetry() {
   }
 }
 
+function updateTelegramFieldsVisibility() {
+  const enabled = dom.gTgEnabled ? dom.gTgEnabled.checked : false;
+  if (dom.gTgFieldsGroup) {
+    dom.gTgFieldsGroup.style.opacity = enabled ? '1' : '0.45';
+    dom.gTgFieldsGroup.style.pointerEvents = enabled ? 'auto' : 'none';
+  }
+}
+
 async function loadGlobalConfig() {
   try {
     const [cfgRes, voiceErr] = await Promise.all([
@@ -1486,14 +1494,6 @@ async function loadGlobalConfig() {
     if (dom.gParamFragmentInterval) dom.gParamFragmentInterval.value = s.fragment_interval !== undefined ? s.fragment_interval : 0.3;
     if (dom.gAudioRetention) dom.gAudioRetention.value = s.audio_retention_minutes || 30;
     if (dom.gDashRetentionVal) dom.gDashRetentionVal.textContent = `保留时长: ${s.audio_retention_minutes || 30} 分钟`;
-
-function updateTelegramFieldsVisibility() {
-  const enabled = dom.gTgEnabled ? dom.gTgEnabled.checked : false;
-  if (dom.gTgFieldsGroup) {
-    dom.gTgFieldsGroup.style.opacity = enabled ? '1' : '0.45';
-    dom.gTgFieldsGroup.style.pointerEvents = enabled ? 'auto' : 'none';
-  }
-}
 
     // STT 与 Telegram
     if (dom.gSttEngine) dom.gSttEngine.value = s.stt_engine || 'browser';
