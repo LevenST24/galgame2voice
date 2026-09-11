@@ -445,10 +445,10 @@ def test_build_gpt_sovits_env_default_argument(tmp_path):
 # ============================================================================
 
 def test_character_manager_discovers_all_three_characters():
-    """Verifies that CharacterManager auto-discovers all three packages: 四季夏目, 明月栞那, 西园寺风莉."""
+    """Verifies that CharacterManager auto-discovers packages including original core characters and newly added characters."""
     mgr = CharacterManager(get_settings().characters_dir)
     discovered = mgr.discover_characters()
-    assert len(discovered) == 3, f"Expected 3 packages, got {len(discovered)}"
+    assert len(discovered) >= 3, f"Expected at least 3 packages, got {len(discovered)}"
 
     expected_chars = {
         "natsume": "四季夏目",
@@ -467,7 +467,7 @@ def test_character_manager_discovers_all_three_characters():
 
 
 def test_all_reference_audios_duration_boundary():
-    """Verifies that all 21 reference audios across all 3 packages have duration in [3.0s, 10.0s]."""
+    """Verifies that all reference audios across all packages have duration in [3.0s, 10.0s]."""
     from galgame2voice.services.tts_service import TtsService
     try:
         import soundfile as sf
@@ -476,7 +476,7 @@ def test_all_reference_audios_duration_boundary():
 
     mgr = CharacterManager(get_settings().characters_dir)
     discovered = mgr.discover_characters()
-    assert len(discovered) == 3
+    assert len(discovered) >= 3
 
     audio_count = 0
     for pkg in discovered:
@@ -498,14 +498,14 @@ def test_all_reference_audios_duration_boundary():
             assert 3.0 <= tts_dur <= 10.0, f"TtsService duration {tts_dur:.2f}s is out of [3.0, 10.0] range for {audio_path}"
             audio_count += 1
 
-    assert audio_count == 21, f"Expected 21 reference audios, tested {audio_count}"
+    assert audio_count >= 21, f"Expected at least 21 reference audios, tested {audio_count}"
 
 
 def test_character_weights_are_real_binaries_gt_100mb():
-    """Verifies that all model weights across all 3 characters are valid binaries > 100MB (> 104,857,600 bytes)."""
+    """Verifies that all model weights across all characters are valid binaries > 100MB (> 104,857,600 bytes)."""
     mgr = CharacterManager(get_settings().characters_dir)
     discovered = mgr.discover_characters()
-    assert len(discovered) == 3
+    assert len(discovered) >= 3
 
     for pkg in discovered:
         for weight_type in ("gpt_weights", "sovits_weights"):
