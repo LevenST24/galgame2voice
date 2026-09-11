@@ -52,6 +52,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 | 37 | Settings Audit: STT Engine & Telegram Chat ID Schema Fix | Add `stt_engine` to `SettingsBase`, `SettingsUpdate`, `SettingsResponse`, SQLite schema; map `telegram_chat_id` alias to `telegram_admin_ids` | M9_BACKEND_DIAGNOSTICS_SETTINGS | Survey R2 (IN_PROGRESS) |
 | 38 | Automated Provider Configuration & Key Protection Tests | Author `tests/test_provider_configuration_and_keys.py` covering all 8 providers, key masking, in-flight test mocks, real activation, xAI & Groq dedicated tests | M10_TEST_SUITE | Survey R4 (PLANNED) |
 | 39 | Full Test Suite 100% Pass & Multi-Agent Gate Verification | Full `pytest tests/ -q` regression, 2 Reviewers, 2 Challengers, 1 Forensic Auditor integrity verification | M11_GATE_VERIFICATION | Survey R4 (PLANNED) |
+| 40 | Emotion State Machine Hardening & 8-Character Audio Realignment | Eliminate emotion hijacking (tsundere ↔ angry), reject duplicate audio MD5s in package validation, realign all 8 characters with 7 native emotional audio tracks strictly in [3.0s, 9.0s] (56 distinct tracks), fix Japanese transcription typos/truncations, support Japanese and canonical emotion synonyms, and expand test suite to assert zero hijacking across all 8 characters | M12_EMOTION_REALIGNMENT | Survey R1 (DONE) |
 
 ---
 
@@ -70,6 +71,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 | 9 | M9_BACKEND_DIAGNOSTICS_SETTINGS | Backend xAI/Groq presets, `test_connection` gpt-4o-mini trap removal & HTTP 400 auth handling, structured Chinese error diagnostics, settings schema fix (stt_engine, telegram_chat_id) | none | IN_PROGRESS |
 | 10 | M10_TEST_SUITE | Automated Test Suite: `tests/test_provider_configuration_and_keys.py`, 100% pass across all tests (`pytest tests/ -q`) | M8_UNIVERSAL_PROVIDER_UI, M9_BACKEND_DIAGNOSTICS_SETTINGS | PLANNED |
 | 11 | M11_GATE_VERIFICATION | Gate Verification: 2 Reviewers, 2 Challengers, 1 Forensic Auditor, Sentinel victory report | M10_TEST_SUITE | PLANNED |
+| 12 | M12_EMOTION_REALIGNMENT | Emotion State Machine Hardening & 8-Character Audio Realignment: Eliminate cross-emotion hijacking, reject duplicate audio MD5s, realign all 8 characters with 56 native audio tracks in [3.0s, 9.0s], fix transcriptions, test 100% pass | none | DONE |
 
 
 ---
@@ -108,6 +110,14 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 ### Settings Schema Contract
 - `SettingsBase`, `SettingsUpdate`, `SettingsResponse`: Contain `stt_engine: Optional[str] = "browser"` and `telegram_chat_id: Optional[str] = None` (aliased to `telegram_admin_ids`).
 - SQLite table `settings`: Contains `stt_engine` column with default `'browser'`.
+
+### Emotion State Machine & Package Validation Contract
+- `EmotionClassifier.VALID_EMOTIONS`: Exactly 7 canonical emotions: `{"gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"}`.
+- `EmotionClassifier.classify(text)`: Strictly resolves angry keywords (`怒`, `生气`, `烦死了`, `讨厌`, `ムカつく`, `怒り`, `ふざけるな`, etc.) to `"angry"`. Does NOT hijack into `"tsundere"`.
+- `EmotionClassifier.resolve_emotion(text, fallback)`: Canonical emotion resolution mapping with explicit angry handling.
+- `EmotionReferenceService.resolve_emotion_reference()`: Direct lookup with support for Japanese synonyms (`ツンデレ`, `照れ`, `怒り`, `嬉しい`, `悲しい`, `優しい`, `クール`).
+- `CharacterManager._load_and_validate_package(package_dir)`: Rejects character packages if any two emotions share the same audio file path or duplicate audio MD5 hash.
+- 8-Character Package Asset Standard: All 8 discovered characters (`四季夏目`, `明月栞那`, `西园寺风莉`, `三司绫濑`, `二条院羽月`, `在原七海`, `常陆茉子`, `丛雨`) have `is_valid == True`, containing 7 distinct audio files (56 total) strictly in `[3.0s, 9.0s]` with accurate Japanese transcriptions.
 
 ---
 

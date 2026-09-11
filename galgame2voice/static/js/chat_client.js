@@ -130,6 +130,7 @@ class EmotionManager {
         tsundere: { name: '傲娇', emoji: '😤', tag: '傲娇' },
         cool:     { name: '高冷', emoji: '❄️', tag: '高冷' },
         sad:      { name: '难过', emoji: '🥺', tag: '难过' },
+        angry:    { name: '生气', emoji: '💢', tag: '生气' },
         normal:   { name: '平静', emoji: '🌸', tag: '平静' }
     };
 

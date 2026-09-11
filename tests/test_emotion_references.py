@@ -17,15 +17,28 @@ def test_normalize_emotion_synonyms():
     assert normalize_emotion("cheerful") == "happy"
     assert normalize_emotion("喜悦") == "happy"
     assert normalize_emotion("开心") == "happy"
+    assert normalize_emotion("嬉しい") == "happy"
+    assert normalize_emotion("楽しい") == "happy"
     assert normalize_emotion("sad") == "sad"
     assert normalize_emotion("难过") == "sad"
+    assert normalize_emotion("悲しい") == "sad"
+    assert normalize_emotion("寂しい") == "sad"
     assert normalize_emotion("tsundere") == "tsundere"
     assert normalize_emotion("傲娇") == "tsundere"
+    assert normalize_emotion("ツンデレ") == "tsundere"
+    assert normalize_emotion("angry") == "angry"
+    assert normalize_emotion("生气") == "angry"
+    assert normalize_emotion("愤怒") == "angry"
+    assert normalize_emotion("怒り") == "angry"
     assert normalize_emotion("shy") == "shy"
     assert normalize_emotion("害羞") == "shy"
+    assert normalize_emotion("照れ") == "shy"
+    assert normalize_emotion("恥ずかしい") == "shy"
     assert normalize_emotion("cool") == "cool"
     assert normalize_emotion("高冷") == "cool"
+    assert normalize_emotion("クール") == "cool"
     assert normalize_emotion("gentle") == "gentle"
+    assert normalize_emotion("優しい") == "gentle"
     assert normalize_emotion("unknown_xyz") == "gentle"
     assert normalize_emotion(None) == "gentle"
 
@@ -41,7 +54,13 @@ def test_resolve_emotion_reference_natsume():
     res_tsundere = resolve_emotion_reference("四季ナツメ (Shiki Natsume)", "傲娇")
     assert res_tsundere is not None
     assert "tsundere.ogg" in res_tsundere["ref_audio_path"]
+    assert "angry.ogg" not in res_tsundere["ref_audio_path"]
     assert "バカ" in res_tsundere["prompt_text"]
+
+    res_angry = resolve_emotion_reference("四季夏目", "angry")
+    assert res_angry is not None
+    assert "angry.ogg" in res_angry["ref_audio_path"]
+    assert "tsundere.ogg" not in res_angry["ref_audio_path"]
 
     res_sad = resolve_emotion_reference("四季夏目", "sad")
     assert res_sad is not None
@@ -59,6 +78,36 @@ def test_resolve_emotion_reference_natsume():
     # Other non-natsume character should not resolve natsume audios
     res_other = resolve_emotion_reference("Arona", "happy")
     assert res_other is None
+
+
+def test_resolve_emotion_reference_all_eight_characters_independent():
+    """
+    Verifies that for all 8 character packages, every one of the 7 standard emotions
+    resolves independently to its own distinct audio file without cross-hijacking.
+    """
+    characters = [
+        "四季夏目", "明月栞那", "西园寺风莉", "三司绫濑",
+        "二条院羽月", "在原七海", "常陆茉子", "丛雨"
+    ]
+    emotions = ["gentle", "happy", "sad", "tsundere", "angry", "shy", "cool"]
+
+    for char_name in characters:
+        resolved_files = set()
+        for emo in emotions:
+            res = resolve_emotion_reference(char_name, emo)
+            assert res is not None, f"Failed to resolve {emo} for {char_name}"
+            assert res["emotion"] == emo, f"Expected emotion {emo}, got {res['emotion']} for {char_name}"
+            audio_path = res["ref_audio_path"]
+            assert f"{emo}.ogg" in audio_path, f"Expected {emo}.ogg in {audio_path} for {char_name}"
+            assert audio_path not in resolved_files, f"Duplicate audio file resolved for {emo} in {char_name}"
+            resolved_files.add(audio_path)
+
+        # Explicit anti-hijacking check: tsundere != angry
+        res_tsun = resolve_emotion_reference(char_name, "tsundere")
+        res_angry = resolve_emotion_reference(char_name, "angry")
+        assert res_tsun["ref_audio_path"] != res_angry["ref_audio_path"], (
+            f"Tsundere and angry must not resolve to the same audio in {char_name}"
+        )
 
 
 @pytest.mark.asyncio

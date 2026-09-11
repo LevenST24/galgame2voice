@@ -236,8 +236,8 @@ class TestEmotionClassifierAdversarial:
     """Stress-tests emotion classification against edge cases, noise, and mixed dialects."""
 
     def test_all_six_archetypes_recognized(self):
-        assert len(VALID_EMOTIONS) == 6
-        for emo in ["gentle", "shy", "happy", "tsundere", "cool", "sad"]:
+        assert len(VALID_EMOTIONS) == 7
+        for emo in ["gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"]:
             assert emo in VALID_EMOTIONS
 
     def test_corrupted_and_adversarial_emotion_inputs(self):

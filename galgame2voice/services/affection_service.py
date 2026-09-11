@@ -212,7 +212,13 @@ class AffectionService:
         if any(k in text for k in ["微笑着", "没关系哦", "乖", "摸头", "辛苦了", "陪着你", "温柔", "大丈夫", "陪伴"]):
             return "gentle"
 
-        # Cold keywords
+        # Angry keywords
+        if any(k in text for k in ["生气", "愤怒", "气愤", "怒り", "怒る", "怒", "烦人", "讨厌死了", "吵死了", "うるさい", "ふざけるな", "怒りますよ", "怒ってる"]):
+            return "angry"
+
+        # Cold / Cool keywords
+        if any(k in text for k in ["高冷", "cool"]):
+            return "cool"
         if any(k in text for k in ["无聊", "……", "冷淡", "走开", "发卡", "別に"]):
             return "cold"
 

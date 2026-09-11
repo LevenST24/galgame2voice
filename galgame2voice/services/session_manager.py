@@ -17,7 +17,7 @@ class SessionTurn(BaseModel):
     role: str = Field(..., description="'user' or 'assistant'")
     content_chinese: str = Field(default="")
     content_japanese: str = Field(default="")
-    emotion: str = Field(default="gentle", description="Emotion archetype: gentle, shy, happy, tsundere, cool, sad")
+    emotion: str = Field(default="gentle", description="Emotion archetype: gentle, shy, happy, tsundere, cool, sad, angry")
     raw_content: Optional[str] = None
     audio_url: str = Field(default="")
     latency_ms: int = Field(default=0)
@@ -31,8 +31,8 @@ class SessionManager:
 
     DEFAULT_SYSTEM_TEMPLATE = (
         "你是一个Galgame二次元伴侣角色【{character_name}】。\n"
-        "请始终输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad），不要包含 Markdown 标记或多余文字：\n"
-        "{{\"tts\": {{\"speed\": 1.05, \"temp\": 0.95, \"emotion\": \"gentle\"}}, \"chinese\": \"给玩家看的中文内容\", \"japanese\": \"对应的口语化日语音频台词\", \"emotion\": \"gentle|shy|happy|tsundere|cool|sad\"}}"
+        "请始终输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad|angry），不要包含 Markdown 标记或多余文字：\n"
+        "{{\"tts\": {{\"speed\": 1.05, \"temp\": 0.95, \"emotion\": \"gentle\"}}, \"chinese\": \"给玩家看的中文内容\", \"japanese\": \"对应的口语化日语音频台词\", \"emotion\": \"gentle|shy|happy|tsundere|cool|sad|angry\"}}"
     )
 
     def __init__(

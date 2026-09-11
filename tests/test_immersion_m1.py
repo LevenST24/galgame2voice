@@ -40,7 +40,7 @@ class TestEmotionClassifier:
 
     def test_valid_emotions_set(self):
         """Ensure all 6 core emotion archetypes exist."""
-        expected = {"gentle", "shy", "happy", "tsundere", "cool", "sad"}
+        expected = {"gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"}
         assert VALID_EMOTIONS == expected
         assert set(EMOTION_KEYWORDS.keys()) == expected
 
@@ -52,6 +52,8 @@ class TestEmotionClassifier:
         ("tsundere", "tsundere"),
         ("COOL", "cool"),
         ("Sad", "sad"),
+        ("angry", "angry"),
+        ("ANGRY", "angry"),
         ("invalid_emotion", "gentle"),  # Fallback to gentle on unknown
         ("", "gentle"),
         (None, "gentle"),
@@ -171,7 +173,7 @@ class TestSessionManagerEmotion:
         assert turn.emotion == "tsundere"
 
         # Check default template contains emotion schema
-        assert '"emotion": "gentle|shy|happy|tsundere|cool|sad"' in sm.DEFAULT_SYSTEM_TEMPLATE
+        assert '"emotion": "gentle|shy|happy|tsundere|cool|sad|angry"' in sm.DEFAULT_SYSTEM_TEMPLATE
 
     def test_format_llm_messages_with_emotion(self, temp_db_path):
         sm = SessionManager(temp_db_path)

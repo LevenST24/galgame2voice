@@ -13,10 +13,11 @@ EMOTION_KEYWORDS: Dict[str, List[str]] = {
     "happy": ["开心", "高兴", "嬉し", "わーい", "やった", "笑", "喜ぶ", "大好き", "太好了", "ありがとう", "耶", "哈哈", "好棒"],
     "cool": ["冷淡", "高冷", "无聊", "くだらない", "別に", "静かに", "冷静", "ふん", "无所谓", "随你便"],
     "sad": ["难过", "伤心", "悲し", "泣く", "寂しい", "抱歉", "ごめん", "辛い", "对不起", "呜呜", "痛い"],
+    "angry": ["生气", "愤怒", "气愤", "怒り", "怒る", "怒", "恼怒", "烦人", "讨厌死了", "吵死了", "うるさい", "ふざけるな", "怒りますよ"],
     "gentle": ["温柔", "ふふ", "大丈夫", "よしよし", "微笑", "慢点", "摸摸头", "乖", "優しい", "好的", "没关系", "请放心"],
 }
 
-VALID_EMOTIONS = {"gentle", "shy", "happy", "tsundere", "cool", "sad"}
+VALID_EMOTIONS = {"gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"}
 
 EMOTION_NAME_MAP: Dict[str, str] = {
     "傲娇": "tsundere",
@@ -28,6 +29,10 @@ EMOTION_NAME_MAP: Dict[str, str] = {
     "难过": "sad",
     "伤心": "sad",
     "温柔": "gentle",
+    "生气": "angry",
+    "愤怒": "angry",
+    "气愤": "angry",
+    "怒": "angry",
 }
 
 

@@ -176,8 +176,15 @@ def test_resolve_emotion_reference_dynamic():
     # Synonym mapping
     res_tsun = resolve_emotion_reference("四季夏目", "傲娇")
     assert res_tsun is not None
-    assert "tsundere.ogg" in res_tsun["ref_audio_path"] or "angry.ogg" in res_tsun["ref_audio_path"]
+    assert "tsundere.ogg" in res_tsun["ref_audio_path"]
+    assert "angry.ogg" not in res_tsun["ref_audio_path"]
     assert "バカ" in res_tsun["prompt_text"]
+
+    # Angry mapping (independent, never tsundere)
+    res_angry = resolve_emotion_reference("四季夏目", "angry")
+    assert res_angry is not None
+    assert "angry.ogg" in res_angry["ref_audio_path"]
+    assert "tsundere.ogg" not in res_angry["ref_audio_path"]
 
     # English synonym
     res_cheerful = resolve_emotion_reference("natsume", "cheerful")
@@ -445,15 +452,34 @@ def test_build_gpt_sovits_env_default_argument(tmp_path):
 # ============================================================================
 
 def test_character_manager_discovers_all_three_characters():
-    """Verifies that CharacterManager auto-discovers packages including original core characters and newly added characters."""
+    """Alias for backward compatibility with existing test runners."""
+    test_character_manager_discovers_all_eight_characters()
+
+
+def test_character_manager_discovers_all_eight_characters():
+    """
+    Verifies that CharacterManager auto-discovers all 8 character packages:
+    四季夏目, 明月栞那, 西园寺风莉, 三司绫濑, 二条院羽月, 在原七海, 常陆茉子, 丛雨.
+    Asserts:
+    1. All 8 characters are discovered and is_valid is True.
+    2. Each character has all 7 standard emotions (gentle, happy, sad, tsundere, angry, shy, cool).
+    3. Inside each character package, all 7 emotion audio files have distinct MD5 hashes.
+    4. Anti-hijacking: resolving 'angry' does NOT return tsundere.ogg, and resolving 'tsundere' does NOT return angry.ogg.
+    """
+    import hashlib
     mgr = CharacterManager(get_settings().characters_dir)
     discovered = mgr.discover_characters()
-    assert len(discovered) >= 3, f"Expected at least 3 packages, got {len(discovered)}"
+    assert len(discovered) >= 8, f"Expected at least 8 packages, got {len(discovered)}"
 
     expected_chars = {
         "natsume": "四季夏目",
         "kanna": "明月栞那",
         "kazari": "西园寺风莉",
+        "ayase": "三司绫濑",
+        "hazuki": "二条院羽月",
+        "nanami": "在原七海",
+        "mako": "常陆茉子",
+        "murasame": "丛雨",
     }
     for char_id, expected_name in expected_chars.items():
         pkg = mgr.get_character(char_id)
@@ -461,13 +487,64 @@ def test_character_manager_discovers_all_three_characters():
         assert pkg.is_valid is True, f"Character package {char_id} is invalid: {pkg.validation_errors}"
         assert pkg.name == expected_name
         assert pkg.id == char_id
-        # All 7 core emotions present
+
+        # All 7 core emotions present and distinct MD5 hashes
+        seen_md5s = {}
         for emo in ["gentle", "happy", "angry", "sad", "shy", "tsundere", "cool"]:
             assert emo in pkg.manifest.emotions, f"Emotion {emo} missing from {char_id}"
+            audio_p = pkg.resolve_audio_path(pkg.manifest.emotions[emo].audio)
+            assert audio_p is not None and audio_p.is_file(), f"Audio for {char_id}/{emo} does not exist"
+            h = hashlib.md5(audio_p.read_bytes()).hexdigest()
+            assert h not in seen_md5s, (
+                f"Duplicate MD5 in character '{char_id}': emotion '{emo}' shares identical MD5 ({h[:8]}) with '{seen_md5s[h]}'"
+            )
+            seen_md5s[h] = emo
+
+        # Anti-hijacking verification: angry must never return tsundere, tsundere must never return angry
+        res_angry = mgr.resolve_emotion_audio_path(char_id, "angry")
+        assert res_angry is not None, f"Failed to resolve angry for {char_id}"
+        assert "angry.ogg" in res_angry["ref_audio_path"]
+        assert "tsundere.ogg" not in res_angry["ref_audio_path"]
+
+        res_tsun = mgr.resolve_emotion_audio_path(char_id, "tsundere")
+        assert res_tsun is not None, f"Failed to resolve tsundere for {char_id}"
+        assert "tsundere.ogg" in res_tsun["ref_audio_path"]
+        assert "angry.ogg" not in res_tsun["ref_audio_path"]
+
+
+def test_character_manager_rejects_duplicate_audio_md5(tmp_path):
+    """Verifies that CharacterManager marks package invalid if two emotions share identical MD5 or file."""
+    import shutil
+    char_dir = tmp_path / "dup_char"
+    char_dir.mkdir(parents=True)
+    refs_dir = char_dir / "refs"
+    refs_dir.mkdir(parents=True)
+
+    # Create synthetic WAV and duplicate it
+    _create_synthetic_wav(refs_dir / "audio1.wav", duration_sec=4.0)
+    shutil.copy2(refs_dir / "audio1.wav", refs_dir / "audio2.wav")
+
+    manifest_data = {
+        "id": "dup_char",
+        "name": "Duplicate Character",
+        "emotions": {
+            "gentle": {"audio": "refs/audio1.wav", "text": "Gentle Text"},
+            "shy": {"audio": "refs/audio2.wav", "text": "Shy Text with same audio"},
+        },
+    }
+    (char_dir / "manifest.json").write_text(json.dumps(manifest_data), encoding="utf-8")
+
+    mgr = CharacterManager(tmp_path)
+    discovered = mgr.discover_characters()
+    assert len(discovered) == 0, "Package with duplicate audio MD5 must not be considered valid"
+    pkg = mgr.get_character("dup_char")
+    assert pkg is not None
+    assert pkg.is_valid is False
+    assert any("duplicate" in err.lower() for err in pkg.validation_errors)
 
 
 def test_all_reference_audios_duration_boundary():
-    """Verifies that all reference audios across all packages have duration in [3.0s, 10.0s]."""
+    """Verifies that all reference audios across all 8 packages have duration in [3.0s, 10.0s]."""
     from galgame2voice.services.tts_service import TtsService
     try:
         import soundfile as sf
@@ -476,7 +553,7 @@ def test_all_reference_audios_duration_boundary():
 
     mgr = CharacterManager(get_settings().characters_dir)
     discovered = mgr.discover_characters()
-    assert len(discovered) >= 3
+    assert len(discovered) >= 8
 
     audio_count = 0
     for pkg in discovered:
@@ -498,14 +575,14 @@ def test_all_reference_audios_duration_boundary():
             assert 3.0 <= tts_dur <= 10.0, f"TtsService duration {tts_dur:.2f}s is out of [3.0, 10.0] range for {audio_path}"
             audio_count += 1
 
-    assert audio_count >= 21, f"Expected at least 21 reference audios, tested {audio_count}"
+    assert audio_count >= 56, f"Expected at least 56 reference audios (8 chars * 7 emotions), tested {audio_count}"
 
 
 def test_character_weights_are_real_binaries_gt_100mb():
     """Verifies that all model weights across all characters are valid binaries > 100MB (> 104,857,600 bytes)."""
     mgr = CharacterManager(get_settings().characters_dir)
     discovered = mgr.discover_characters()
-    assert len(discovered) >= 3
+    assert len(discovered) >= 8
 
     for pkg in discovered:
         for weight_type in ("gpt_weights", "sovits_weights"):
@@ -633,6 +710,16 @@ def test_character_switch_api_all_characters_and_aliases():
             ("kanna", 200),
             ("西园寺风莉", 200),
             ("kazari", 200),
+            ("三司绫濑", 200),
+            ("ayase", 200),
+            ("二条院羽月", 200),
+            ("hazuki", 200),
+            ("在原七海", 200),
+            ("nanami", 200),
+            ("常陆茉子", 200),
+            ("mako", 200),
+            ("丛雨", 200),
+            ("murasame", 200),
             ("nonexistent_heroine", 404),
         ]
 

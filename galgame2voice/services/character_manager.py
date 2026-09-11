@@ -8,6 +8,7 @@ and idempotent synchronization with SQLite voice_profiles persistence.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -292,6 +293,9 @@ class CharacterManager:
                 system_prompt=system_prompt,
             )
 
+            seen_audio_paths: Dict[Path, str] = {}
+            seen_audio_hashes: Dict[str, str] = {}
+
             for emo_name, emo_cfg in manifest.emotions.items():
                 audio_rel = emo_cfg.audio
                 if contains_traversal_payload(audio_rel):
@@ -302,6 +306,27 @@ class CharacterManager:
                 if not resolved_audio or not resolved_audio.is_file():
                     errors.append(f"Emotion '{emo_name}' audio file not found: '{audio_rel}'")
                     continue
+
+                # Check duplicate resolved physical path
+                canonical_path = resolved_audio.resolve()
+                if canonical_path in seen_audio_paths:
+                    errors.append(
+                        f"Duplicate audio path detected: emotion '{emo_name}' resolves to the same file as '{seen_audio_paths[canonical_path]}': '{audio_rel}'"
+                    )
+                else:
+                    seen_audio_paths[canonical_path] = emo_name
+
+                # Check duplicate MD5 hash across emotions in package
+                try:
+                    file_hash = hashlib.md5(resolved_audio.read_bytes()).hexdigest()
+                    if file_hash in seen_audio_hashes:
+                        errors.append(
+                            f"Duplicate audio MD5 detected: emotion '{emo_name}' audio '{audio_rel}' has identical MD5 hash ({file_hash[:8]}) to emotion '{seen_audio_hashes[file_hash]}'"
+                        )
+                    else:
+                        seen_audio_hashes[file_hash] = emo_name
+                except Exception as exc:
+                    errors.append(f"Failed to read audio file '{audio_rel}' for MD5 verification: {exc}")
 
                 # Validate duration: must be in [3.0s, 10.0s]
                 duration = TtsService.get_audio_duration(resolved_audio)
@@ -445,14 +470,6 @@ class CharacterManager:
             if target_cfg:
                 matched_emo = str(emotion).strip().lower()
 
-        # Handle tsundere/angry cross-matching if one exists
-        if target_cfg is None:
-            if canonical_emo == "tsundere" and "angry" in emotions:
-                target_cfg = emotions["angry"]
-                matched_emo = "angry"
-            elif canonical_emo == "angry" and "tsundere" in emotions:
-                target_cfg = emotions["tsundere"]
-                matched_emo = "tsundere"
 
         # 2. Fallback to gentle or first emotion in manifest
         if target_cfg is None:

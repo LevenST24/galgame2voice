@@ -55,9 +55,10 @@ class TestDecoupledEmotionClassifier:
     def test_direct_import_and_taxonomy_completeness(self):
         assert isinstance(EMOTION_KEYWORDS, dict)
         assert len(EMOTION_KEYWORDS) >= 6
-        assert VALID_EMOTIONS == {"gentle", "shy", "happy", "tsundere", "cool", "sad"}
+        assert VALID_EMOTIONS == {"gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"}
         assert EMOTION_NAME_MAP["傲娇"] == "tsundere"
         assert EMOTION_NAME_MAP["害羞"] == "shy"
+        assert EMOTION_NAME_MAP["生气"] == "angry"
 
     def test_explicit_emotion_precedence(self):
         # Explicit emotion overrides keywords

@@ -260,7 +260,7 @@ class ChatService:
             if "动态决定语音推理参数" not in system_prompt:
                 system_prompt = system_prompt.replace(
                     "你必须严格输出如下 JSON 格式",
-                    "你必须严格输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad）"
+                    "你必须严格输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad|angry）"
                 )
 
         char_name = character_name or (active_profile.name if active_profile else "四季夏目")
