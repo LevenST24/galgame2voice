@@ -244,6 +244,9 @@ class TestResult(BaseModel):
     message: str = Field(..., description="Informative status message or error details")
     latency_ms: Optional[float] = Field(default=None, description="Round-trip latency in milliseconds")
     models: Optional[List[str]] = Field(default=None, description="Discovered available models")
+    error: Optional[str] = Field(default=None, description="Error classification")
+    diagnostic: Optional[str] = Field(default=None, description="User-friendly Chinese troubleshooting guidance")
+    status_code: Optional[int] = Field(default=None, description="HTTP status code from probe")
 
 
 # Alias for backward compatibility with tests

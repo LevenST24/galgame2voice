@@ -43,8 +43,15 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 | 28 | GPT-SoVITS Prompt Audio Cache Warm-up & Audio Spec Cache | Asynchronous non-blocking warm-up during lifespan startup and profile switch to keep prompt_cache hot; cached audio sample specs | M5_BACKEND_PIPELINE | Survey R1 (PLANNED) |
 | 29 | Web Audio API Gapless Streaming & Immediate First Chunk Playback | Web Audio API `StreamAudioController` with sample-accurate `source.start(nextStartTime)`, 12ms micro-fade boundary transitions, and immediate first chunk playback upon arrival | M6_FRONTEND_ENGINE | Survey R2 (PLANNED) |
 | 30 | Smooth Fade-Out Interruption & Instant Queue Cancellation | 40ms smooth linear gain attenuation on user interrupt (stopBtn, switchSession, newChat, delete, sendMessage), instant queue purging and SSE abort | M6_FRONTEND_ENGINE | Survey R2 (PLANNED) |
-| 31 | VRAM Watermark Guard, SSE Keep-Alive & Bounded Blob LRU Cache | Discrete GPU VRAM floor (0.45GB) before model switch, periodic W3C SSE keep-alive comments (`: keep-alive\n\n`) every 5s, bounded LRU Blob URL cache (cap 30) with explicit `URL.revokeObjectURL()` | M5_BACKEND_PIPELINE, M6_FRONTEND_ENGINE | Survey R3 (PLANNED) |
-| 32 | Automated Quantitative Benchmark Suite & 100% Zero-Regression Verification | Dedicated quantitative benchmark module `test_benchmark_resilience_r4.py` measuring latency, 50-turn memory RSS drift (<35MB), mid-stream cancellation, and full 1079+ test regression | M7_GATE_VERIFICATION | Survey R4 (PLANNED) |
+| 31 | VRAM Watermark Guard, SSE Keep-Alive & Bounded Blob LRU Cache | Discrete GPU VRAM floor (0.45GB) before model switch, periodic W3C SSE keep-alive comments (`: keep-alive\n\n`) every 5s, bounded LRU Blob URL cache (cap 30) with explicit `URL.revokeObjectURL()` | M5_BACKEND_PIPELINE, M6_FRONTEND_ENGINE | Survey R3 (DONE) |
+| 32 | Automated Quantitative Benchmark Suite & 100% Zero-Regression Verification | Dedicated quantitative benchmark module `test_benchmark_resilience_r4.py` measuring latency, 50-turn memory RSS drift (<35MB), mid-stream cancellation, and full 1079+ test regression | M7_GATE_VERIFICATION | Survey R4 (DONE) |
+| 33 | Universal Provider UI & Dynamic Prefill | Redesign Model & Recognition panel: replace `#gCustomBox` with universal provider card across all 8 providers, API key masked/unmasked toggle with placeholder, Base URL custom input + one-click reset, preset dropdown + custom model input, dynamic prefill from backend | M8_UNIVERSAL_PROVIDER_UI | Survey R1 (IN_PROGRESS) |
+| 34 | In-Flight Connectivity Testing & One-Click Activation | In-flight testing against `/api/providers/test` using freshly typed form values before saving; one-click save and activate as global active provider; deploy frontend via `npm run deploy` | M8_UNIVERSAL_PROVIDER_UI | Survey R1 (IN_PROGRESS) |
+| 35 | Backend Provider Registry, xAI Grok & Groq Hardening | Remove `gpt-4o-mini` fallback trap, support HTTP 400 auth errors for xAI and Gemini in `test_connection()`, seed `groq` and `xai` in migrations and preset fallback | M9_BACKEND_DIAGNOSTICS_SETTINGS | Survey R1 (IN_PROGRESS) |
+| 36 | Structured Error Interception & Chinese Guidance | Intercept Gemini 403/400, OpenAI 429, xAI 400/401, Groq 401/429, timeout, model not found with actionable Chinese guidance in `galgame2voice/utils/error_diagnostics.py` | M9_BACKEND_DIAGNOSTICS_SETTINGS | Survey R3 (IN_PROGRESS) |
+| 37 | Settings Audit: STT Engine & Telegram Chat ID Schema Fix | Add `stt_engine` to `SettingsBase`, `SettingsUpdate`, `SettingsResponse`, SQLite schema; map `telegram_chat_id` alias to `telegram_admin_ids` | M9_BACKEND_DIAGNOSTICS_SETTINGS | Survey R2 (IN_PROGRESS) |
+| 38 | Automated Provider Configuration & Key Protection Tests | Author `tests/test_provider_configuration_and_keys.py` covering all 8 providers, key masking, in-flight test mocks, real activation, xAI & Groq dedicated tests | M10_TEST_SUITE | Survey R4 (PLANNED) |
+| 39 | Full Test Suite 100% Pass & Multi-Agent Gate Verification | Full `pytest tests/ -q` regression, 2 Reviewers, 2 Challengers, 1 Forensic Auditor integrity verification | M11_GATE_VERIFICATION | Survey R4 (PLANNED) |
 
 ---
 
@@ -56,9 +63,14 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 | 2 | M2_PERF_STABILITY | Performance & Stability Hardening: Microsecond TTS cache reordering, WAL shutdown checkpoint, test probe calibration for 100% test reliability | M1_SECURITY | DONE |
 | 3 | M3_FINAL_VERIFICATION | Final Milestone: 100% E2E test pass across all tiers, adversarial challenger hardening (Tier 5), and Forensic Auditor integrity verification | M0_E2E_TESTS, M2_PERF_STABILITY | DONE |
 | 4 | M4_HARDENING | Pre-Release Hardening & Repository Hygiene Finalization: R1-R5 implementations, zero model/database tracking, memory lifecycle reclamation, credential masking, code hygiene, README update, and 100% test pass rate | M3_FINAL_VERIFICATION | DONE |
-| 5 | M5_BACKEND_PIPELINE | Backend Latency, Warm-up, VRAM Watermark Guard & SSE Keep-Alive: Agile first sentence chunking, GPT-SoVITS warm-up, VRAM watermark guard, SSE keep-alive | M4_HARDENING | IN_PROGRESS |
-| 6 | M6_FRONTEND_ENGINE | Frontend Gapless Streaming, Immediate Playback, Interrupt Fade-out & Bounded Blob Cache: Web Audio API StreamAudioController, micro-fade, 40ms interrupt, bounded LRU blob cache, Vite build & deploy | M4_HARDENING | IN_PROGRESS |
-| 7 | M7_GATE_VERIFICATION | Multi-Agent Gate Verification & Integrity Audit: Benchmark test suite (`test_benchmark_resilience_r4.py`), full pytest suite 100% pass, 2 Reviewers, 2 Challengers, 1 Forensic Auditor | M5_BACKEND_PIPELINE, M6_FRONTEND_ENGINE | PLANNED |
+| 5 | M5_BACKEND_PIPELINE | Backend Latency, Warm-up, VRAM Watermark Guard & SSE Keep-Alive | M4_HARDENING | DONE |
+| 6 | M6_FRONTEND_ENGINE | Frontend Gapless Streaming, Immediate Playback, Interrupt Fade-out & Bounded Blob Cache | M4_HARDENING | DONE |
+| 7 | M7_GATE_VERIFICATION | Multi-Agent Gate Verification & Integrity Audit for R4 Engineering pass | M5_BACKEND_PIPELINE, M6_FRONTEND_ENGINE | DONE |
+| 8 | M8_UNIVERSAL_PROVIDER_UI | Frontend Universal Provider Form, API Key/Base URL/Model management, in-flight connectivity test, one-click activate, `npm run deploy` | none | IN_PROGRESS |
+| 9 | M9_BACKEND_DIAGNOSTICS_SETTINGS | Backend xAI/Groq presets, `test_connection` gpt-4o-mini trap removal & HTTP 400 auth handling, structured Chinese error diagnostics, settings schema fix (stt_engine, telegram_chat_id) | none | IN_PROGRESS |
+| 10 | M10_TEST_SUITE | Automated Test Suite: `tests/test_provider_configuration_and_keys.py`, 100% pass across all tests (`pytest tests/ -q`) | M8_UNIVERSAL_PROVIDER_UI, M9_BACKEND_DIAGNOSTICS_SETTINGS | PLANNED |
+| 11 | M11_GATE_VERIFICATION | Gate Verification: 2 Reviewers, 2 Challengers, 1 Forensic Auditor, Sentinel victory report | M10_TEST_SUITE | PLANNED |
+
 
 ---
 
@@ -83,6 +95,19 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 
 ### TTS Cache Latency Contract
 - `TtsCacheManager.get(cache_key)`: Checks `self._mem_cache` first. If hit, returns immediately without disk I/O. Latency must measure `< 0.05ms`.
+
+### Universal Provider API Contract
+- `GET /api/providers`: Returns `{"providers": [...], "presets": [...]}`. Each entry contains `id`, `name`, `description`, `api_base_url`, `default_base_url`, `api_key` (masked `****` if present), `chat_model`, `preset_models`, `is_active`. If a preset is not yet in the DB, it is synthesized from `adapters/registry.py` presets.
+- `POST /api/providers`: Upserts provider config. If `api_key` contains `****`, existing raw secret is preserved.
+- `POST /api/providers/test`: Accepts `{id, api_base_url, api_key, chat_model}`. Tests connection using in-flight credentials (falling back to DB secret if key is masked or omitted). Returns `{"success": true, "latency_ms": ...}` or `{"success": false, "error": "...", "diagnostic": "..."}` with Chinese guidance.
+- `POST /api/providers/{id}/activate`: Sets `is_active = 1` for provider and deactivates others.
+
+### Error Diagnostics Contract
+- `galgame2voice/utils/error_diagnostics.py`: `format_provider_error(provider_id: str, status_code: int, raw_error: str) -> dict`: Translates HTTP 400 (xAI invalid key, Gemini invalid key), 401 (unauthorized), 403 (region restriction / permission), 404 (model not found), 429 (rate/quota limit), timeouts, and connection errors into user-friendly Chinese recommendations. Eliminates raw tracebacks and secret leakage.
+
+### Settings Schema Contract
+- `SettingsBase`, `SettingsUpdate`, `SettingsResponse`: Contain `stt_engine: Optional[str] = "browser"` and `telegram_chat_id: Optional[str] = None` (aliased to `telegram_admin_ids`).
+- SQLite table `settings`: Contains `stt_engine` column with default `'browser'`.
 
 ---
 

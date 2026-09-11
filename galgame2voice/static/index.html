@@ -5,11 +5,164 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Gal2Voice · AI 多会话对话</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
-  <script type="module" crossorigin src="/static/assets/index-eJSfhuW-.js"></script>
+  <style>
+    /* ============ Universal Provider Card ============ */
+    .provider-config-card {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 16px;
+      background: var(--panel-soft);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      margin-top: 4px;
+    }
+    .provider-desc-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 14px;
+      background: var(--panel);
+      border: 1px solid var(--line-2);
+      border-radius: 10px;
+    }
+    .provider-desc-text {
+      font-size: 12.5px;
+      color: var(--text-2);
+      line-height: 1.4;
+      flex: 1;
+    }
+    .provider-status-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    .status-indicator-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+    }
+    .tag-configured {
+      background: #ecfdf5;
+      color: #059669;
+      border: 1px solid #a7f3d0;
+    }
+    .tag-configured .status-indicator-dot {
+      background: #10b981;
+    }
+    .tag-unconfigured {
+      background: #fef2f2;
+      color: #dc2626;
+      border: 1px solid #fecaca;
+    }
+    .tag-unconfigured .status-indicator-dot {
+      background: #ef4444;
+      box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+    }
+    .tag-optional {
+      background: #f3f4f6;
+      color: #4b5563;
+      border: 1px solid #e5e7eb;
+    }
+    .tag-optional .status-indicator-dot {
+      background: #9ca3af;
+    }
+    .input-action-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .btn-input-action {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 42px;
+      padding: 0 14px;
+      background: var(--panel);
+      border: 1px solid var(--line-2);
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-2);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.16s var(--ease);
+    }
+    .btn-input-action:hover {
+      border-color: var(--brand);
+      color: var(--brand-ink, var(--brand));
+      background: var(--brand-soft);
+    }
+    .btn-text-link {
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--brand);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      transition: color 0.15s;
+    }
+    .btn-text-link:hover {
+      text-decoration: underline;
+      color: var(--brand-deep);
+    }
+    .field-tip {
+      font-size: 11px;
+      color: var(--text-3);
+      margin-top: -2px;
+    }
+    .model-select-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .test-result-box {
+      padding: 12px 14px;
+      border-radius: 10px;
+      font-size: 12px;
+      line-height: 1.5;
+      transition: all 0.2s;
+    }
+    .test-result-success {
+      background: #ecfdf5;
+      border: 1px solid #a7f3d0;
+      color: #065f46;
+    }
+    .test-result-error {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: #991b1b;
+    }
+    .test-result-head {
+      display: flex;
+      justify-content: space-between;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .provider-act-row {
+      margin-top: 4px;
+    }
+  </style>
+  <script type="module" crossorigin src="/static/assets/index-C2mKvtQ0.js"></script>
   <link rel="stylesheet" crossorigin href="/static/assets/index-Cbnwx-vJ.css">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-eye" viewBox="0 0 24 24">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <line x1="1" y1="1" x2="23" y2="23" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
     <symbol id="i-nib" viewBox="0 0 24 24">
       <path d="M12 3l5.6 7.6c.8 1.1.6 2.4-.3 3.3L12 21l-5.3-7.1c-.9-.9-1.1-2.2-.3-3.3L12 3z"/>
       <path d="M12 8.5v5.5"/>
@@ -325,39 +478,109 @@
 
         <!-- 选项卡 3: 模型与识别配置 -->
         <div class="gtab-panel hidden" id="gp-models">
+          <!-- 1. 提供商选择与生效状态指示 -->
           <div class="field">
-            <label>对话模型提供商（LLM）<b id="gProviderActive"></b></label>
+            <label for="gProvider">
+              <span>对话模型提供商 (LLM Provider)<b id="gProviderActive" style="display:none;"></b></span>
+              <span id="gProviderActiveBadge" class="badge-status-pill badge-pill-gray">未激活</span>
+            </label>
             <select id="gProvider"></select>
           </div>
-          <div id="gCustomBox" class="custom-provider-box hidden">
-            <div class="field">
-              <label>提供商名称</label>
-              <input id="gCustomName" placeholder="如 我的本地 Ollama" autocomplete="off" />
+
+          <!-- 2. 通用配置卡片 (适用于所有提供商：Gemini / OpenAI / Claude / DeepSeek / xAI / Groq / SiliconFlow / 自定义) -->
+          <div id="gProviderCard" class="provider-config-card">
+            <!-- 提供商简介与密钥配置状态 -->
+            <div class="provider-desc-banner" id="gProviderDescBanner">
+              <div class="provider-desc-text" id="gProviderDesc">加载提供商简介中...</div>
+              <div class="provider-status-tag tag-unconfigured" id="gProviderKeyTag">
+                <span class="status-indicator-dot" id="gKeyStatusDot"></span>
+                <span id="gKeyStatusText">检测密钥状态中...</span>
+              </div>
             </div>
-            <div class="field">
-              <label>Base URL（OpenAI 兼容）</label>
-              <input id="gCustomBaseUrl" placeholder="https://api.openai.com/v1 或 http://127.0.0.1:11434/v1" autocomplete="off" />
+
+            <!-- 自定义提供商独有名称（仅在选择 custom / __custom__ 时显示） -->
+            <div class="field hidden" id="gCustomNameField">
+              <label for="gCustomName">自定义提供商名称</label>
+              <input id="gCustomName" placeholder="例如：我的本地 Ollama / vLLM 实例" autocomplete="off" />
             </div>
-            <div class="field">
-              <label>API Key（本地服务可留空）</label>
-              <input id="gCustomApiKey" type="password" placeholder="sk-…（仅提交给本机后端）" autocomplete="off" />
+
+            <!-- API Key 配置项（全提供商通用） -->
+            <div class="field" id="gApiKeyField">
+              <label for="gApiKey">
+                <span>API Key (接口凭证密钥)</span>
+                <span id="gApiKeyHint" class="field-hint"></span>
+              </label>
+              <div class="input-action-row">
+                <input id="gApiKey" type="password" placeholder="请输入 API Key..." autocomplete="off" spellcheck="false" />
+                <button type="button" class="btn-input-action" id="gBtnToggleKeyVisibility" title="显示 / 隐藏密钥">
+                  <svg class="icon" id="gIconKeyEye" style="width:14px;height:14px;"><use href="#i-eye"></use></svg>
+                  <span id="gBtnToggleKeyText">显示</span>
+                </button>
+              </div>
+              <small class="field-tip" id="gApiKeyTip">密钥经本机安全脱敏存储，仅提交给本地后端，绝不回显明文。</small>
             </div>
-            <div class="field">
-              <label>模型名称</label>
-              <input id="gCustomModel" placeholder="如 qwen3.6-plus / llama3" autocomplete="off" />
+
+            <!-- Base URL 配置项（全提供商通用，支持中转反代与一键恢复默认） -->
+            <div class="field" id="gBaseUrlField">
+              <label for="gBaseUrl">
+                <span>API Base URL (接口端点地址)</span>
+                <button type="button" class="btn-text-link" id="gBtnResetBaseUrl" title="恢复官方默认端点">
+                  恢复官方默认
+                </button>
+              </label>
+              <input id="gBaseUrl" placeholder="https://api.openai.com/v1" autocomplete="off" spellcheck="false" />
+              <small class="field-tip" id="gBaseUrlTip">支持本地反代、Cloudflare Workers 中转或私有网关。</small>
+            </div>
+
+            <!-- 对话模型选择项（预设下拉 + 自定义输入结合） -->
+            <div class="field" id="gChatModelField">
+              <label for="gChatModelSelect">对话模型名称 (Chat Model)</label>
+              <div class="model-select-group">
+                <select id="gChatModelSelect">
+                  <option value="">-- 选择预设推荐模型 --</option>
+                </select>
+                <input id="gChatModel" placeholder="或手动输入任意模型名称，如 grok-3 / deepseek-chat" autocomplete="off" />
+              </div>
+              <small class="field-tip">可直接在预设列表中点选，亦可自由键入最新的或微调版模型 ID。</small>
+            </div>
+
+            <!-- 连通性测试诊断输出条（测试结果与中文排错指引） -->
+            <div id="gProviderTestResult" class="test-result-box hidden">
+              <div class="test-result-head">
+                <span class="test-result-title" id="gTestResultTitle">连通性诊断</span>
+                <span class="test-result-latency" id="gTestResultLatency"></span>
+              </div>
+              <div class="test-result-body" id="gTestResultBody"></div>
+            </div>
+
+            <!-- 操作按钮栏 -->
+            <div class="field-row-2 provider-act-row">
+              <div class="field">
+                <button type="button" class="btn ghost" id="gProviderTest">
+                  <svg class="icon" style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-activity"></use></svg>
+                  <span>测试连通性</span>
+                </button>
+              </div>
+              <div class="field">
+                <button type="button" class="btn primary" id="gProviderActivate">
+                  <svg class="icon" style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-check"></use></svg>
+                  <span>保存并启用此模型</span>
+                </button>
+              </div>
             </div>
           </div>
-          <div class="field-row-2">
-            <div class="field">
-              <button type="button" class="btn ghost" id="gProviderTest">测试连通性</button>
-            </div>
-            <div class="field">
-              <button type="button" class="btn primary" id="gProviderActivate">启用此模型</button>
-            </div>
+
+          <!-- 隐藏兼容占位节点，防止旧代码引用报错 -->
+          <div id="gCustomBox" style="display:none;">
+            <input id="gCustomBaseUrl" style="display:none;" />
+            <input id="gCustomApiKey" style="display:none;" />
+            <input id="gCustomModel" style="display:none;" />
           </div>
-          <div class="field-group-title">语音输入识别 (STT)</div>
+
+          <!-- 语音输入识别 (STT) -->
+          <div class="field-group-title" style="margin-top: 20px;">语音输入识别 (STT)</div>
           <div class="field">
-            <label>STT 语音识别引擎</label>
+            <label for="gSttEngine">STT 语音识别引擎</label>
             <select id="gSttEngine">
               <option value="browser">浏览器原生 Web Speech API (推荐，零GPU开销，即说即转)</option>
               <option value="sensevoice">本地 SenseVoice-Small (极速精准，支持情感与多语言)</option>

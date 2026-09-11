@@ -38,6 +38,13 @@ import {
   formatContent,
   showToast,
 } from './ui.js';
+import {
+  fetchProviders,
+  saveProvider,
+  activateProvider as apiActivateProvider,
+  testProviderConnection,
+} from './api.js';
+import { formatProviderDiagnostic, BUILTIN_PRESETS } from './settings.js';
 
 const $ = (id) => document.getElementById(id);
 const dom = {
@@ -101,9 +108,31 @@ const dom = {
   smTitle: $('smTitle'),
   gProvider: $('gProvider'),
   gProviderActive: $('gProviderActive'),
+  gProviderActiveBadge: $('gProviderActiveBadge'),
+  gProviderCard: $('gProviderCard'),
+  gProviderDescBanner: $('gProviderDescBanner'),
+  gProviderDesc: $('gProviderDesc'),
+  gProviderKeyTag: $('gProviderKeyTag'),
+  gKeyStatusDot: $('gKeyStatusDot'),
+  gKeyStatusText: $('gKeyStatusText'),
+  gCustomNameField: $('gCustomNameField'),
+  gCustomName: $('gCustomName'),
+  gApiKey: $('gApiKey'),
+  gBtnToggleKeyVisibility: $('gBtnToggleKeyVisibility'),
+  gIconKeyEye: $('gIconKeyEye'),
+  gBtnToggleKeyText: $('gBtnToggleKeyText'),
+  gApiKeyTip: $('gApiKeyTip'),
+  gBaseUrl: $('gBaseUrl'),
+  gBtnResetBaseUrl: $('gBtnResetBaseUrl'),
+  gChatModelSelect: $('gChatModelSelect'),
+  gChatModel: $('gChatModel'),
+  gProviderTestResult: $('gProviderTestResult'),
+  gTestResultTitle: $('gTestResultTitle'),
+  gTestResultLatency: $('gTestResultLatency'),
+  gTestResultBody: $('gTestResultBody'),
+  gProviderTest: $('gProviderTest'),
   gProviderActivate: $('gProviderActivate'),
   gCustomBox: $('gCustomBox'),
-  gCustomName: $('gCustomName'),
   gCustomBaseUrl: $('gCustomBaseUrl'),
   gCustomApiKey: $('gCustomApiKey'),
   gCustomModel: $('gCustomModel'),
@@ -637,9 +666,22 @@ function renderHeader() {
   updateBadge();
 }
 
+let currentActiveProvider = null;
+
 function updateBadge() {
-  dom.badgeDot.className = 'badge-dot dot-meoo';
-  dom.badge.lastChild.textContent = '本地引擎 · GPT-SoVITS';
+  if (dom.badgeDot) dom.badgeDot.className = 'badge-dot dot-meoo';
+  if (dom.badge) {
+    const label = dom.badge.querySelector('.badge-label') || dom.badge.lastChild;
+    if (label) {
+      if (currentActiveProvider && (currentActiveProvider.name || currentActiveProvider.chat_model)) {
+        const pName = currentActiveProvider.name || '活跃模型';
+        const mName = currentActiveProvider.chat_model || '';
+        label.textContent = mName ? `${pName} · ${mName}` : pName;
+      } else {
+        label.textContent = '本地引擎 · GPT-SoVITS';
+      }
+    }
+  }
 }
 
 async function resolveJapanese(msg) {
@@ -929,85 +971,362 @@ async function deleteVoiceProfile() {
   }
 }
 
-/* ---------- 对话模型（LLM 提供商，后端全局生效） ---------- */
+/* ---------- 对话模型（LLM 提供商，通用配置卡片与全局生效） ---------- */
+let cachedProviders = [];
+let cachedPresets = [];
+
 async function loadProviders() {
-  dom.gProvider.innerHTML = '<option value="">加载中…</option>';
-  dom.gProviderActive.textContent = '';
+  if (dom.gProvider) dom.gProvider.innerHTML = '<option value="">加载模型列表…</option>';
   try {
-    const res = await fetch('/api/providers');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const list = data.providers || [];
-    const active = list.find((p) => p.is_active);
-    // 当前启用的排最前并默认选中
-    const sorted = active ? [active, ...list.filter((p) => p !== active)] : list;
-    dom.gProviderActive.textContent = active ? `当前：${active.name} · ${active.chat_model || ''}` : '';
-    if (!sorted.length) {
-      dom.gProvider.innerHTML = '<option value="__custom__">＋ 自定义模型 / 接口…</option>';
-    } else {
+    const data = await fetchProviders().catch(() => null);
+    cachedProviders = (data && data.providers) ? data.providers : [];
+    cachedPresets = (data && data.presets && data.presets.length) ? data.presets : BUILTIN_PRESETS;
+
+    // 确定当前激活的提供商
+    const active = cachedProviders.find((p) => p.is_active);
+    currentActiveProvider = active || null;
+    updateBadge();
+
+    // 构建提供商合并列表（以官方预设推荐顺序优先，随后追加用户自定义，最后提供自定义接口选项）
+    const presetOrder = ['gemini', 'openai', 'anthropic', 'deepseek', 'xai', 'groq', 'siliconflow', 'glm', 'qwen', 'custom'];
+    const providerMap = new Map();
+
+    // 1. 先载入预设顺序中存在的项目
+    presetOrder.forEach((pid) => {
+      const preset = cachedPresets.find((p) => p.id === pid);
+      const stored = cachedProviders.find((p) => p.id === pid);
+      if (preset || stored) {
+        providerMap.set(pid, {
+          id: pid,
+          name: stored?.name || preset?.name || pid,
+          chat_model: stored?.chat_model || preset?.default_chat_model || '',
+          is_active: Boolean(stored?.is_active),
+        });
+      }
+    });
+
+    // 2. 载入其它不在 presetOrder 中的预设 (如 moonshot 等)
+    cachedPresets.forEach((p) => {
+      if (!providerMap.has(p.id) && p.id !== 'custom') {
+        const stored = cachedProviders.find((sp) => sp.id === p.id);
+        providerMap.set(p.id, {
+          id: p.id,
+          name: stored?.name || p.name || p.id,
+          chat_model: stored?.chat_model || p.default_chat_model || '',
+          is_active: Boolean(stored?.is_active),
+        });
+      }
+    });
+
+    // 3. 载入用户在 DB 中创建的额外独立提供商
+    cachedProviders.forEach((p) => {
+      if (!providerMap.has(p.id)) {
+        providerMap.set(p.id, {
+          id: p.id,
+          name: p.name,
+          chat_model: p.chat_model || '',
+          is_active: Boolean(p.is_active),
+        });
+      }
+    });
+
+    const items = Array.from(providerMap.values());
+    // 当前启用的排在最前面并默认选中
+    const sorted = active
+      ? [items.find((i) => i.id === active.id) || active, ...items.filter((i) => i.id !== active.id)]
+      : items;
+
+    if (dom.gProvider) {
       dom.gProvider.innerHTML =
-        sorted.map((p) => `<option value="${p.id}">${p.name} · ${p.chat_model || '-'}${p.is_active ? '（当前）' : ''}</option>`).join('') +
+        sorted
+          .map(
+            (p) =>
+              `<option value="${p.id}" ${p.is_active ? 'selected' : ''}>${p.name} · ${p.chat_model || '未设定'}${p.is_active ? '（当前生效）' : ''}</option>`
+          )
+          .join('') +
+        `<option value="__custom__" ${!active && !sorted.length ? 'selected' : ''}>＋ 自定义模型 / 接口…</option>`;
+    }
+
+    onProviderChange();
+  } catch (e) {
+    console.error('Failed to load providers:', e);
+    if (dom.gProvider) {
+      dom.gProvider.innerHTML =
+        BUILTIN_PRESETS.map((p) => `<option value="${p.id}">${p.name} · ${p.default_chat_model}</option>`).join('') +
         '<option value="__custom__">＋ 自定义模型 / 接口…</option>';
     }
-    syncCustomBox();
-  } catch (e) {
-    dom.gProvider.innerHTML = '<option value="__custom__">＋ 自定义模型 / 接口…</option>';
-    showToast(`模型列表加载失败: ${e.message || e}`, 'error');
-    syncCustomBox();
+    showToast(`提供商列表加载异常: ${e.message || e}`, 'error');
+    onProviderChange();
   }
 }
 
-function syncCustomBox() {
-  dom.gCustomBox.classList.toggle('hidden', dom.gProvider.value !== '__custom__');
+function onProviderChange() {
+  if (!dom.gProvider) return;
+  const pid = dom.gProvider.value;
+  const isCustom = pid === 'custom' || pid === '__custom__';
+  const realId = isCustom ? 'custom' : pid;
+
+  const stored = cachedProviders.find((p) => p.id === realId);
+  const preset = cachedPresets.find((p) => p.id === realId) || BUILTIN_PRESETS.find((p) => p.id === realId);
+
+  // 1. 自定义提供商名称字段显隐
+  if (dom.gCustomNameField) {
+    dom.gCustomNameField.classList.toggle('hidden', !isCustom);
+    if (dom.gCustomName) {
+      dom.gCustomName.value = isCustom ? (stored?.name || '自定义模型') : '';
+    }
+  }
+
+  // 2. 当前生效状态徽标与描述文本
+  const isActive = Boolean(stored?.is_active);
+  if (dom.gProviderActiveBadge) {
+    dom.gProviderActiveBadge.className = `badge-status-pill ${isActive ? 'badge-pill-green' : 'badge-pill-gray'}`;
+    dom.gProviderActiveBadge.textContent = isActive ? '当前生效' : '未启用';
+  }
+  if (dom.gProviderActive) {
+    dom.gProviderActive.textContent = isActive ? `当前：${stored ? stored.name : realId} · ${stored?.chat_model || ''}` : '';
+  }
+  if (dom.gProviderDesc) {
+    dom.gProviderDesc.textContent =
+      preset?.description ||
+      stored?.description ||
+      (isCustom ? '本地或私有部署的 OpenAI 兼容推理服务 (Ollama / vLLM / LMStudio)' : '外部 AI 大模型服务提供商');
+  }
+
+  // 3. API Key 状态与脱敏占位符处理
+  if (dom.gApiKey) {
+    dom.gApiKey.value = '';
+    dom.gApiKey.type = 'password';
+  }
+  if (dom.gBtnToggleKeyText) {
+    dom.gBtnToggleKeyText.textContent = '显示';
+  }
+  if (dom.gIconKeyEye) {
+    const use = dom.gIconKeyEye.querySelector('use');
+    if (use) use.setAttribute('href', '#i-eye');
+  }
+
+  const maskedKey = (stored?.api_key || '').trim();
+  const hasKey = Boolean(maskedKey && maskedKey.length > 0);
+
+  if (hasKey) {
+    if (dom.gApiKey) dom.gApiKey.placeholder = `已配置：${maskedKey}（留空保持原密钥，输入新密钥可覆盖）`;
+    if (dom.gProviderKeyTag) dom.gProviderKeyTag.className = 'provider-status-tag tag-configured';
+    if (dom.gKeyStatusText) dom.gKeyStatusText.textContent = `已配置密钥 (${maskedKey})`;
+    if (dom.gApiKeyTip) dom.gApiKeyTip.textContent = '后端已持久化该提供商密钥。如需修改，请在此输入新密钥后保存生效。';
+  } else if (isCustom) {
+    if (dom.gApiKey) dom.gApiKey.placeholder = 'sk-…（本地 Ollama / vLLM 等无鉴权服务可留空）';
+    if (dom.gProviderKeyTag) dom.gProviderKeyTag.className = 'provider-status-tag tag-optional';
+    if (dom.gKeyStatusText) dom.gKeyStatusText.textContent = '可选 (本地服务可免密)';
+    if (dom.gApiKeyTip) dom.gApiKeyTip.textContent = '本地服务（如 Ollama）无需填写，公网中转或鉴权服务请输入对应凭据。';
+  } else {
+    if (dom.gApiKey) dom.gApiKey.placeholder = `请输入 ${preset?.name || pid} 的有效 API Key (必填)`;
+    if (dom.gProviderKeyTag) dom.gProviderKeyTag.className = 'provider-status-tag tag-unconfigured';
+    if (dom.gKeyStatusText) dom.gKeyStatusText.textContent = '未配置 API Key · 无法调用';
+    if (dom.gApiKeyTip) dom.gApiKeyTip.textContent = '该提供商尚未配置密钥。请前往官方控制台申领并在此填入。';
+  }
+
+  // 4. Base URL 填充与一键恢复默认
+  const defaultUrl = preset?.default_base_url || (isCustom ? 'http://127.0.0.1:11434/v1' : 'https://api.openai.com/v1');
+  const currentUrl = stored?.api_base_url || defaultUrl;
+  if (dom.gBaseUrl) {
+    dom.gBaseUrl.value = currentUrl;
+    dom.gBaseUrl.placeholder = defaultUrl;
+  }
+  if (dom.gBtnResetBaseUrl) {
+    dom.gBtnResetBaseUrl.textContent = '重置为默认';
+    dom.gBtnResetBaseUrl.title = `恢复官方默认端点: ${defaultUrl}`;
+    dom.gBtnResetBaseUrl.onclick = () => {
+      if (dom.gBaseUrl) dom.gBaseUrl.value = defaultUrl;
+      showToast(`已恢复官方默认 Base URL: ${defaultUrl}`, 'info');
+    };
+  }
+
+  // 5. 对话模型选择 (预设下拉 + 自由输入结合)
+  const presetModels = preset?.preset_models || (stored?.chat_model ? [stored.chat_model] : []);
+  if (dom.gChatModelSelect) {
+    dom.gChatModelSelect.innerHTML =
+      '<option value="">-- 选择预设推荐模型 --</option>' +
+      presetModels.map((m) => `<option value="${m}">${m}</option>`).join('') +
+      '<option value="__custom_model__">✏️ 手动输入任意模型 ID...</option>';
+  }
+
+  const currentModel = stored?.chat_model || preset?.default_chat_model || presetModels[0] || '';
+  if (dom.gChatModel) {
+    dom.gChatModel.value = currentModel;
+  }
+  if (dom.gChatModelSelect) {
+    if (presetModels.includes(currentModel)) {
+      dom.gChatModelSelect.value = currentModel;
+    } else if (currentModel) {
+      dom.gChatModelSelect.value = '__custom_model__';
+    } else {
+      dom.gChatModelSelect.value = '';
+    }
+  }
+
+  // 6. 诊断输出框重置
+  if (dom.gProviderTestResult) {
+    dom.gProviderTestResult.className = 'test-result-box hidden';
+    if (dom.gTestResultBody) dom.gTestResultBody.textContent = '';
+  }
 }
 
-async function activateProvider() {
-  const selected = dom.gProvider.value;
-  dom.gProviderActivate.disabled = true;
+function toggleKeyVisibility() {
+  if (!dom.gApiKey) return;
+  const isPass = dom.gApiKey.type === 'password';
+  dom.gApiKey.type = isPass ? 'text' : 'password';
+  if (dom.gBtnToggleKeyText) {
+    dom.gBtnToggleKeyText.textContent = isPass ? '隐藏' : '显示';
+  }
+  if (dom.gIconKeyEye) {
+    const use = dom.gIconKeyEye.querySelector('use');
+    if (use) use.setAttribute('href', isPass ? '#i-eye-off' : '#i-eye');
+  }
+}
+
+function onChatModelSelectChange() {
+  if (!dom.gChatModelSelect || !dom.gChatModel) return;
+  const val = dom.gChatModelSelect.value;
+  if (val && val !== '__custom_model__') {
+    dom.gChatModel.value = val;
+  } else if (val === '__custom_model__') {
+    dom.gChatModel.focus();
+    dom.gChatModel.select();
+  }
+}
+
+async function handleProviderTest() {
+  if (!dom.gProviderTest || !dom.gProvider) return;
+  dom.gProviderTest.disabled = true;
+  const origHtml = dom.gProviderTest.innerHTML;
+  dom.gProviderTest.innerHTML = '<svg class="icon" style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-activity"></use></svg><span>测试中…</span>';
+
   try {
-    if (selected === '__custom__') {
-      const baseUrl = dom.gCustomBaseUrl.value.trim();
-      const model = dom.gCustomModel.value.trim();
-      if (!baseUrl || !model) {
-        showToast('请填写 Base URL 和模型名', 'error');
-        return;
-      }
-      const payload = {
-        id: 'custom',
-        name: dom.gCustomName.value.trim() || '自定义模型',
-        api_base_url: baseUrl,
-        chat_model: model,
-        is_active: true,
-      };
-      const key = dom.gCustomApiKey.value.trim();
-      if (key) payload.api_key = key;
-      const res = await fetch('/api/providers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-      const act = await fetch('/api/providers/custom/activate', { method: 'POST' });
-      if (!act.ok) {
-        const ad = await act.json().catch(() => ({}));
-        throw new Error(ad.detail || `HTTP ${act.status}`);
-      }
-      showToast(`已启用自定义模型：${payload.name} · ${model}`, 'success');
-      dom.gProviderActive.textContent = `当前：${payload.name} · ${model}`;
-    } else {
-      const res = await fetch(`/api/providers/${encodeURIComponent(selected)}/activate`, { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-      const p = data.active_provider;
-      showToast(`已启用：${p ? p.name : selected}${p && p.chat_model ? ' · ' + p.chat_model : ''}`, 'success');
-      if (p) dom.gProviderActive.textContent = `当前：${p.name} · ${p.chat_model || ''}`;
+    const pid = dom.gProvider.value === '__custom__' ? 'custom' : dom.gProvider.value;
+    const baseUrl = dom.gBaseUrl ? dom.gBaseUrl.value.trim() : '';
+    const chatModel = dom.gChatModel ? dom.gChatModel.value.trim() : '';
+    const apiKey = dom.gApiKey ? dom.gApiKey.value.trim() : '';
+
+    const payload = {
+      id: pid,
+      api_base_url: baseUrl,
+      chat_model: chatModel,
+    };
+    // 只有当用户确实键入了新密钥（且非脱敏字符串）时才传递，否则让后端自动使用数据库中存储的明文密钥
+    if (apiKey && !apiKey.includes('****')) {
+      payload.api_key = apiKey;
     }
+
+    const data = await testProviderConnection(payload);
+
+    if (dom.gProviderTestResult) dom.gProviderTestResult.classList.remove('hidden');
+
+    if (data.success) {
+      const lat = Math.round(data.latency_ms || 0);
+      showToast(`连通性测试成功 (耗时 ${lat}ms)`, 'success');
+      if (dom.gProviderTestResult) {
+        dom.gProviderTestResult.className = 'test-result-box test-result-success';
+      }
+      if (dom.gTestResultTitle) dom.gTestResultTitle.textContent = '连通性测试通过';
+      if (dom.gTestResultLatency) dom.gTestResultLatency.textContent = `耗时 ${lat}ms`;
+      if (dom.gTestResultBody) {
+        const modelsCount = Array.isArray(data.models) ? data.models.length : 0;
+        dom.gTestResultBody.textContent =
+          `已成功连接至目标端点，模型 ${chatModel || '默认'} 就绪。` +
+          (modelsCount > 0 ? ` (发现 ${modelsCount} 个可用模型)` : '');
+      }
+    } else {
+      const rawErr = data.error || data.message || '连接失败';
+      const diag = formatProviderDiagnostic(pid, rawErr, data.diagnostic);
+      showToast(`连通性测试未通过: ${diag.title}`, 'error');
+      if (dom.gProviderTestResult) {
+        dom.gProviderTestResult.className = 'test-result-box test-result-error';
+      }
+      if (dom.gTestResultTitle) dom.gTestResultTitle.textContent = diag.title;
+      if (dom.gTestResultLatency) dom.gTestResultLatency.textContent = '失败';
+      if (dom.gTestResultBody) dom.gTestResultBody.textContent = diag.guidance;
+    }
+  } catch (e) {
+    showToast(`测试请求异常: ${e.message || e}`, 'error');
+    if (dom.gProviderTestResult) {
+      dom.gProviderTestResult.className = 'test-result-box test-result-error';
+      dom.gProviderTestResult.classList.remove('hidden');
+      if (dom.gTestResultTitle) dom.gTestResultTitle.textContent = '网络请求异常';
+      if (dom.gTestResultLatency) dom.gTestResultLatency.textContent = '异常';
+      if (dom.gTestResultBody) dom.gTestResultBody.textContent = `请求发送失败: ${e.message || e}`;
+    }
+  } finally {
+    dom.gProviderTest.disabled = false;
+    dom.gProviderTest.innerHTML = origHtml;
+  }
+}
+
+async function handleActivateProvider() {
+  if (!dom.gProviderActivate || !dom.gProvider) return;
+  dom.gProviderActivate.disabled = true;
+  const origHtml = dom.gProviderActivate.innerHTML;
+  dom.gProviderActivate.innerHTML = '<svg class="icon" style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-check"></use></svg><span>保存并启用中…</span>';
+
+  try {
+    const selected = dom.gProvider.value;
+    const isCustom = selected === '__custom__' || selected === 'custom';
+    const pid = isCustom ? 'custom' : selected;
+
+    const baseUrl = dom.gBaseUrl ? dom.gBaseUrl.value.trim() : '';
+    const chatModel = dom.gChatModel ? dom.gChatModel.value.trim() : '';
+    const apiKey = dom.gApiKey ? dom.gApiKey.value.trim() : '';
+    const customName = dom.gCustomName ? dom.gCustomName.value.trim() : '';
+
+    if (!baseUrl) {
+      showToast('请填写 API Base URL', 'error');
+      return;
+    }
+    if (!chatModel) {
+      showToast('请填写或选择模型名称', 'error');
+      return;
+    }
+
+    const stored = cachedProviders.find((p) => p.id === pid);
+    const preset = cachedPresets.find((p) => p.id === pid) || BUILTIN_PRESETS.find((p) => p.id === pid);
+
+    // 针对非本地/自定义的云端商业模型提供商，未保存过且未输入新 Key 时给予警告提醒
+    const hasExistingKey = Boolean(stored?.api_key && stored.api_key.length > 0);
+    if (!isCustom && !hasExistingKey && !apiKey) {
+      showToast(`请先输入 ${preset?.name || pid} 的 API Key 再启用`, 'error');
+      if (dom.gApiKey) dom.gApiKey.focus();
+      return;
+    }
+
+    // 1. 持久化保存提供商配置
+    const payload = {
+      id: pid,
+      name: isCustom ? (customName || '自定义模型') : (preset?.name || stored?.name || pid),
+      api_base_url: baseUrl,
+      chat_model: chatModel,
+      is_active: true,
+    };
+    if (apiKey && !apiKey.includes('****')) {
+      payload.api_key = apiKey;
+    }
+
+    await saveProvider(payload);
+
+    // 2. 激活为全局当前生效模型
+    const actResult = await apiActivateProvider(pid);
+    const active = actResult.active_provider;
+
+    currentActiveProvider = active || { name: payload.name, chat_model: chatModel };
+    updateBadge();
+
+    showToast(`已成功保存并启用：${payload.name} · ${chatModel}`, 'success');
     await loadProviders();
   } catch (e) {
+    console.error('Failed to activate provider:', e);
     showToast(`模型启用失败: ${e.message || e}`, 'error');
   } finally {
     dom.gProviderActivate.disabled = false;
+    dom.gProviderActivate.innerHTML = origHtml;
   }
 }
 
@@ -1642,7 +1961,7 @@ async function loadGlobalConfig() {
     dom.gTgToken.placeholder = masked
       ? '已保存（输入新 Token 可覆盖）'
       : '未配置，如 123456:ABC-DEF…';
-    if (dom.gTgChatId) dom.gTgChatId.value = s.telegram_chat_id || '';
+    if (dom.gTgChatId) dom.gTgChatId.value = s.telegram_chat_id || s.telegram_admin_ids || '';
     dom.gTgProxyHost.value = s.telegram_proxy_host || '';
     dom.gTgProxyPort.value = s.telegram_proxy_port || '';
     dom.gTgProxyEnabled.checked = Boolean(s.telegram_proxy_enabled);
@@ -1672,6 +1991,7 @@ async function saveGlobalConfig() {
       stt_engine: dom.gSttEngine ? dom.gSttEngine.value : undefined,
       telegram_enabled: dom.gTgEnabled ? dom.gTgEnabled.checked : false,
       telegram_chat_id: dom.gTgChatId ? dom.gTgChatId.value.trim() || undefined : undefined,
+      telegram_admin_ids: dom.gTgChatId ? dom.gTgChatId.value.trim() || undefined : undefined,
       telegram_proxy_enabled: dom.gTgProxyEnabled.checked,
       telegram_proxy_host: dom.gTgProxyHost.value.trim() || '127.0.0.1',
       telegram_proxy_port: Number(dom.gTgProxyPort.value) || 10809,
@@ -1900,40 +2220,12 @@ if (dom.gBtnClearCache) {
   });
 }
 
-// 测试模型连通性
-if (dom.gProviderTest) {
-  dom.gProviderTest.addEventListener('click', async () => {
-    dom.gProviderTest.disabled = true;
-    dom.gProviderTest.textContent = '测试中…';
-    try {
-      const isCustom = dom.gProvider.value === '__custom__';
-      const payload = {};
-      if (isCustom) {
-        payload.api_base_url = dom.gCustomBaseUrl.value.trim();
-        payload.api_key = dom.gCustomApiKey.value.trim();
-        payload.chat_model = dom.gCustomModel.value.trim();
-      } else {
-        payload.id = dom.gProvider.value;
-      }
-      const res = await fetch('/api/providers/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (data.success) {
-        showToast(`连接成功: 延迟 ${data.latency_ms || 0}ms`, 'success');
-      } else {
-        showToast(`连接测试失败: ${data.message || '未知错误'}`, 'error');
-      }
-    } catch (e) {
-      showToast(`测试请求异常: ${e.message}`, 'error');
-    } finally {
-      dom.gProviderTest.disabled = false;
-      dom.gProviderTest.textContent = '测试连通性';
-    }
-  });
-}
+// 模型配置与连通性测试事件绑定
+if (dom.gProvider) dom.gProvider.addEventListener('change', onProviderChange);
+if (dom.gBtnToggleKeyVisibility) dom.gBtnToggleKeyVisibility.addEventListener('click', toggleKeyVisibility);
+if (dom.gChatModelSelect) dom.gChatModelSelect.addEventListener('change', onChatModelSelectChange);
+if (dom.gProviderTest) dom.gProviderTest.addEventListener('click', handleProviderTest);
+if (dom.gProviderActivate) dom.gProviderActivate.addEventListener('click', handleActivateProvider);
 
 // 恢复默认参数
 if (dom.gResetBtn) {
@@ -1954,8 +2246,6 @@ dom.globalSettingsBtn.addEventListener('click', openGlobalSettings);
 dom.globalModal.querySelectorAll('[data-close]').forEach((btn) =>
   btn.addEventListener('click', () => closeModal(dom.globalModal))
 );
-dom.gProvider.addEventListener('change', syncCustomBox);
-dom.gProviderActivate.addEventListener('click', activateProvider);
 if (dom.gTgEnabled) dom.gTgEnabled.addEventListener('change', updateTelegramFieldsVisibility);
 dom.gTgTest.addEventListener('click', testTelegram);
 dom.gTgSave.addEventListener('click', saveGlobalConfig);
@@ -2130,6 +2420,7 @@ async function syncSessionsFromBackend() {
     fullRender(false);
     ensureSessionVoice(getActive(), { silent: true });
     if (window.innerWidth > 820) dom.input.focus();
+    loadProviders().catch(() => {});
   } catch (err) {
     console.debug('Failed to sync sessions from backend:', err);
   }

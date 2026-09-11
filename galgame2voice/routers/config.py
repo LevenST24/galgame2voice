@@ -6,6 +6,7 @@ real-time connectivity testing, and model discovery.
 
 import asyncio
 import logging
+import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Union
 import httpx
@@ -19,6 +20,7 @@ from galgame2voice.adapters.registry import (
 )
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
+from galgame2voice.database.crud import is_masked_key
 from galgame2voice.database.models import (
     SettingsInDB,
     SettingsUpdate,
@@ -74,6 +76,8 @@ class ProviderTestResponse(BaseModel):
     message: str
     latency_ms: Optional[float] = None
     models: Optional[List[str]] = None
+    error: Optional[str] = None
+    diagnostic: Optional[str] = None
 
 
 class TelegramTestRequest(BaseModel):
@@ -151,8 +155,17 @@ async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, 
         except Exception as exc:
             logger.error("Failed to hot-apply GPT-SoVITS URL '%s': %s", new_sovits_url, exc)
 
-    # Hot-reload Telegram Bot service when Telegram credentials/proxy/enabled state change
-    tg_keys = {"telegram_enabled", "telegram_bot_token", "telegram_bot_username", "telegram_proxy_enabled", "telegram_proxy_host", "telegram_proxy_port"}
+    # Hot-reload Telegram Bot service when Telegram credentials/proxy/enabled/admin state change
+    tg_keys = {
+        "telegram_enabled",
+        "telegram_bot_token",
+        "telegram_bot_username",
+        "telegram_proxy_enabled",
+        "telegram_proxy_host",
+        "telegram_proxy_port",
+        "telegram_admin_ids",
+        "telegram_chat_id",
+    }
     if any(k in sanitized_updates for k in tg_keys):
         try:
             from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
@@ -216,8 +229,22 @@ async def list_providers():
     async with get_db() as conn:
         providers = await crud.list_providers(conn, mask=True)
         presets = list_provider_presets()
+        existing_ids = {p.id for p in providers}
+        all_providers = [p.model_dump() for p in providers]
+        for pr in presets:
+            if pr["id"] not in existing_ids:
+                all_providers.append({
+                    "id": pr["id"],
+                    "name": pr.get("name", pr["id"]),
+                    "api_base_url": pr.get("default_base_url", ""),
+                    "chat_model": pr.get("default_chat_model", ""),
+                    "stt_model": pr.get("default_stt_model", ""),
+                    "api_key": "",
+                    "is_active": False,
+                    "custom_headers": {},
+                })
         return {
-            "providers": [p.model_dump() for p in providers],
+            "providers": all_providers,
             "presets": presets,
         }
 
@@ -243,6 +270,20 @@ async def get_provider(provider_id: str):
     async with get_db() as conn:
         provider = await crud.get_provider(conn, clean_id, mask=True)
         if not provider:
+            preset = get_provider_preset(clean_id)
+            if preset:
+                return {
+                    "provider": {
+                        "id": clean_id,
+                        "name": preset.get("name", clean_id),
+                        "api_base_url": preset.get("default_base_url", ""),
+                        "chat_model": preset.get("default_chat_model", ""),
+                        "stt_model": preset.get("default_stt_model", ""),
+                        "api_key": "",
+                        "is_active": False,
+                        "custom_headers": {},
+                    }
+                }
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")
         return {"provider": provider.model_dump()}
 
@@ -324,6 +365,8 @@ async def create_or_update_provider(provider_data: Dict[str, Any]):
             )
             is_active = bool(provider_data.get("is_active", False))
             api_key = provider_data.get("api_key", "")
+            if is_masked_key(api_key):
+                api_key = ""
             custom_headers = provider_data.get("custom_headers") or {}
 
             try:
@@ -394,8 +437,17 @@ async def test_provider(req: ProviderTestRequest):
                 api_key = stored.api_key
                 if not base_url:
                     base_url = stored.api_base_url
-                if not model:
-                    model = stored.chat_model
+    # If model is not specified, resolve from preset defaults
+    if not model:
+        preset = get_provider_preset(provider_id)
+        if preset:
+            model = preset.get("default_chat_model")
+
+    # If base_url is not specified, resolve from preset defaults
+    if not base_url:
+        preset = get_provider_preset(provider_id)
+        if preset:
+            base_url = preset.get("default_base_url")
 
     # SSRF guard: the effective base_url (explicit or stored) must pass the
     # private-network check before any credentials are attached to the request.
@@ -411,6 +463,21 @@ async def test_provider(req: ProviderTestRequest):
 
     try:
         result = await adapter.test_connection(model=model)
+        if not result.success:
+            from galgame2voice.utils.error_diagnostics import format_provider_error
+            diag_info = format_provider_error(
+                provider_id=provider_id,
+                status_code=getattr(result, "status_code", None),
+                raw_error=result.error or result.message,
+            )
+            return ProviderTestResponse(
+                success=False,
+                message=result.message,
+                latency_ms=result.latency_ms,
+                models=result.models,
+                error=result.error or diag_info.get("error") or result.message,
+                diagnostic=result.diagnostic or diag_info.get("diagnostic"),
+            )
         return ProviderTestResponse(
             success=result.success,
             message=result.message,
@@ -419,11 +486,20 @@ async def test_provider(req: ProviderTestRequest):
         )
     except Exception as exc:
         logger.error("Provider test failed for '%s': %s", provider_id, exc, exc_info=True)
+        safe_msg = sanitize_error_detail(exc)
+        from galgame2voice.utils.error_diagnostics import format_provider_error
+        diag_info = format_provider_error(
+            provider_id=provider_id,
+            status_code=504 if "timeout" in type(exc).__name__.lower() else 502,
+            raw_error=f"{type(exc).__name__}: {safe_msg}",
+        )
         return ProviderTestResponse(
             success=False,
-            message=f"连接测试异常: {sanitize_error_detail(exc)}",
+            message=f"连接测试异常: {safe_msg}",
             latency_ms=0.0,
             models=[],
+            error=diag_info.get("error") or safe_msg,
+            diagnostic=diag_info.get("diagnostic"),
         )
 
 
@@ -487,7 +563,11 @@ async def activate_provider(provider_id: str):
                     stt_model=preset["default_stt_model"],
                     is_active=True,
                 )
-                await crud.create_provider(conn, new_provider)
+                try:
+                    await crud.create_provider(conn, new_provider)
+                except (sqlite3.IntegrityError, Exception):
+                    # Concurrently created by parallel activation request (TOCTOU safe)
+                    pass
         success = await crud.set_active_provider(conn, clean_id)
         if not success:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")

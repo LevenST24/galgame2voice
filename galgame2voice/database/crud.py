@@ -120,6 +120,7 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
             console_url TEXT NOT NULL DEFAULT '',
             max_history_messages INTEGER NOT NULL DEFAULT 10,
             inference_precision TEXT NOT NULL DEFAULT 'auto',
+            stt_engine TEXT NOT NULL DEFAULT 'browser',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -333,10 +334,10 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
             ("openai", "OpenAI", "https://api.openai.com/v1", "gpt-5.6-sol", "whisper-1", 0),
             ("deepseek", "DeepSeek", "https://api.deepseek.com", "deepseek-v4-pro", "", 0),
             ("anthropic", "Anthropic Claude", "https://api.anthropic.com/v1", "claude-5-sonnet-latest", "", 0),
-            ("xai", "xAI (Grok)", "https://api.x.ai/v1", "grok-4.6", "", 0),
+            ("xai", "xAI (Grok)", "https://api.x.ai/v1", "grok-3", "", 0),
             ("glm", "智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-5.3", "", 0),
             ("qwen", "通义千问 (Qwen)", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.8-max", "qwen-audio-asr", 0),
-            ("custom", "自定义 / 本地模型 (Ollama / vLLM)", "http://127.0.0.1:11434/v1", "deepseek-v4:latest", "", 0)
+            ("custom", "自定义 / 本地模型 (Ollama / vLLM)", "http://127.0.0.1:11434/v1", "deepseek-v4:latest", "", 0),
         ]
         for p in presets:
             await conn.execute("""
@@ -398,6 +399,7 @@ async def _migration_v3_security_and_indexes(conn: aiosqlite.Connection) -> None
         ("allow_private_llm_endpoints", "INTEGER NOT NULL DEFAULT 0"),
         ("inference_precision", "TEXT NOT NULL DEFAULT 'auto'"),
         ("telegram_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("stt_engine", "TEXT NOT NULL DEFAULT 'browser'"),
     ]:
         await _add_column_if_missing(conn, "settings", col, col_type)
 
@@ -469,6 +471,7 @@ async def _migration_v5_precision_and_column_integrity(conn: aiosqlite.Connectio
         ("telegram_enabled", "INTEGER NOT NULL DEFAULT 0"),
         ("telegram_admin_ids", "TEXT NOT NULL DEFAULT ''"),
         ("allow_private_llm_endpoints", "INTEGER NOT NULL DEFAULT 0"),
+        ("stt_engine", "TEXT NOT NULL DEFAULT 'browser'"),
     ]:
         await _add_column_if_missing(conn, "settings", col, col_type)
 
@@ -530,6 +533,7 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
         ("telegram_enabled", "INTEGER NOT NULL DEFAULT 0"),
         ("telegram_admin_ids", "TEXT NOT NULL DEFAULT ''"),
         ("allow_private_llm_endpoints", "INTEGER NOT NULL DEFAULT 0"),
+        ("stt_engine", "TEXT NOT NULL DEFAULT 'browser'"),
     ]:
         await _add_column_if_missing(conn, "settings", col, col_type)
 
@@ -704,6 +708,8 @@ async def get_settings(conn: aiosqlite.Connection, mask: bool = True) -> Setting
     if mask:
         resp_data["telegram_bot_token"] = mask_api_key(raw.telegram_bot_token)
         resp_data["console_token"] = mask_api_key(raw.console_token)
+    if not resp_data.get("telegram_chat_id"):
+        resp_data["telegram_chat_id"] = resp_data.get("telegram_admin_ids", "")
     return SettingsResponse(**resp_data)
 
 
@@ -727,13 +733,17 @@ async def update_settings(conn: aiosqlite.Connection, updates: SettingsUpdate) -
         elif k in ("telegram_enabled", "telegram_proxy_enabled", "allow_private_llm_endpoints"):
             fields.append(f"{k} = ?")
             values.append(1 if v else 0)
-        elif k == "telegram_admin_ids":
+        elif k in ("telegram_admin_ids", "telegram_chat_id"):
             ids = ",".join(
                 part.strip() for part in str(v or "").replace("，", ",").split(",")
                 if part.strip().isdigit()
             )
-            fields.append(f"{k} = ?")
-            values.append(ids)
+            if not any(f.startswith("telegram_admin_ids") for f in fields):
+                fields.append("telegram_admin_ids = ?")
+                values.append(ids)
+        elif k == "stt_engine":
+            fields.append("stt_engine = ?")
+            values.append(str(v or "browser").strip())
         else:
             fields.append(f"{k} = ?")
             values.append(v)
@@ -848,7 +858,7 @@ async def create_provider(conn: aiosqlite.Connection, provider: ProviderCreate) 
     headers_str = json.dumps(provider.custom_headers)
     async with immediate_transaction(conn):
         await conn.execute("""
-            INSERT INTO providers (id, name, api_base_url, api_key, chat_model, stt_model, is_active, custom_headers)
+            INSERT OR IGNORE INTO providers (id, name, api_base_url, api_key, chat_model, stt_model, is_active, custom_headers)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         """, (
             provider.id, provider.name, provider.api_base_url,

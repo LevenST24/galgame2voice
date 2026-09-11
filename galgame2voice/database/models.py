@@ -35,6 +35,14 @@ class SettingsBase(BaseModel):
     console_url: str = ""
     max_history_messages: int = Field(default=10, ge=1, le=100)
     inference_precision: str = "auto"  # "auto" (probe), "fp16" (half), or "fp32" (single)
+    stt_engine: Optional[str] = "browser"
+    telegram_chat_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def sync_telegram_chat_id(self) -> "SettingsBase":
+        if self.telegram_chat_id is None:
+            self.telegram_chat_id = self.telegram_admin_ids
+        return self
 
 
 class SettingsUpdate(BaseModel):
@@ -59,10 +67,20 @@ class SettingsUpdate(BaseModel):
     telegram_proxy_port: Optional[int] = Field(default=None, ge=1, le=65535)
     telegram_proxy_enabled: Optional[bool] = None
     telegram_admin_ids: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
     allow_private_llm_endpoints: Optional[bool] = None
     console_url: Optional[str] = None
     max_history_messages: Optional[int] = Field(default=None, ge=1, le=100)
     inference_precision: Optional[str] = None
+    stt_engine: Optional[str] = None
+
+    @model_validator(mode="after")
+    def sync_telegram_ids(self) -> "SettingsUpdate":
+        if self.telegram_admin_ids is None and self.telegram_chat_id is not None:
+            self.telegram_admin_ids = self.telegram_chat_id
+        elif self.telegram_chat_id is None and self.telegram_admin_ids is not None:
+            self.telegram_chat_id = self.telegram_admin_ids
+        return self
 
 
 class SettingsInDB(SettingsBase):
@@ -77,6 +95,8 @@ class SettingsInDB(SettingsBase):
 class SettingsResponse(SettingsBase):
     telegram_bot_token: str = ""  # Masked
     console_token: str = ""
+    stt_engine: Optional[str] = "browser"
+    telegram_chat_id: Optional[str] = None
     updated_at: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 

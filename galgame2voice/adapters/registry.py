@@ -102,6 +102,7 @@ PROVIDER_PRESETS: Dict[str, Dict[str, Any]] = {
         "preset_models": [
             "grok-3",
             "grok-3-mini",
+            "grok-2",
             "grok-2-1212",
         ],
         "description": "xAI Grok 官方 API (Grok-3 系列)",
@@ -164,6 +165,7 @@ PROVIDER_PRESETS: Dict[str, Dict[str, Any]] = {
         "stt_adapter_class": OpenAICompatibleSTTAdapter,
         "preset_models": [
             "llama-3.3-70b-versatile",
+            "deepseek-r1-distill-llama-70b",
             "llama-3.1-8b-instant",
             "mixtral-8x7b-32768",
         ],
@@ -283,13 +285,17 @@ def get_llm_adapter(
     Factory function instantiating appropriate LLM adapter based on provider ID or config.
     """
     provider_id, key, url = _resolve_provider_request(provider_id_or_config, api_key, base_url, kwargs)
+    kwargs.setdefault("provider_id", provider_id)
+
+    preset = PROVIDER_PRESETS.get(provider_id)
+    if preset and "default_model" not in kwargs:
+        kwargs["default_model"] = preset.get("default_chat_model")
 
     if provider_id in ADAPTER_CLASS_MAP:
         adapter_cls, default_url = ADAPTER_CLASS_MAP[provider_id]
         target_url = url or default_url
         return adapter_cls(api_key=key, base_url=target_url, **kwargs)
 
-    preset = PROVIDER_PRESETS.get(provider_id)
     if preset:
         adapter_cls: Type[BaseLLMAdapter] = preset.get("adapter_class", OpenAICompatibleLLMAdapter)
         target_url = url or preset["default_base_url"]
