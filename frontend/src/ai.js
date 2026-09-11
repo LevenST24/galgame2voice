@@ -109,7 +109,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             }
             if (json.audio_url) {
               audioUrls.push(json.audio_url);
-              if (typeof onAudio === 'function') onAudio(json.audio_url, audioUrls.length - 1);
+              if (typeof onAudio === 'function') onAudio(json.audio_url, audioUrls.length - 1, json.sentence || '');
             }
           } else if (eventName === 'error') {
             finish(false, json.error || '服务流式处理出错');

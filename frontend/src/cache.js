@@ -114,3 +114,30 @@ export async function fetchAndCacheAudio(url) {
   }
   return null;
 }
+
+/**
+ * 剪裁持久化 Cache Storage，防止长期使用导致音频 Blobs 占满本地存储配额
+ * @param {number} maxEntries - 最大保留项数，默认 100 条
+ */
+export async function pruneAudioCacheStorage(maxEntries = 100) {
+  if (typeof window === 'undefined' || !('caches' in window)) return;
+  try {
+    const cache = await caches.open(AUDIO_CACHE_NAME);
+    const requests = await cache.keys();
+    if (requests && requests.length > maxEntries) {
+      const toDelete = requests.slice(0, requests.length - maxEntries);
+      await Promise.all(toDelete.map((req) => cache.delete(req)));
+    }
+  } catch (e) {
+    console.debug('Failed to prune audio cache storage:', e);
+  }
+}
+
+// 在应用空闲时自动维护 Cache Storage 配额
+if (typeof window !== 'undefined') {
+  if ('requestIdleCallback' in window) {
+    window.requestIdleCallback(() => pruneAudioCacheStorage().catch(() => {}));
+  } else {
+    setTimeout(() => pruneAudioCacheStorage().catch(() => {}), 5000);
+  }
+}

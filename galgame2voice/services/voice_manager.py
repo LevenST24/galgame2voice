@@ -24,7 +24,11 @@ from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
     get_gpt_sovits_client,
 )
-from galgame2voice.utils.hardware import get_system_memory_status, release_system_memory
+from galgame2voice.utils.hardware import (
+    get_system_memory_status,
+    get_gpu_vram_status,
+    release_system_memory,
+)
 
 logger = logging.getLogger("galgame2voice.services.voice_manager")
 
@@ -39,6 +43,7 @@ class InsufficientMemoryError(RuntimeError):
 _MIN_FREE_MEMORY_RATIO = 0.06
 _MIN_FREE_MEMORY_FLOOR_GB = 0.8
 _MIN_FREE_MEMORY_CEILING_GB = 1.5
+_MIN_FREE_VRAM_FLOOR_GB = 0.45
 
 
 def _get_switch_min_free_memory_gb() -> float:
@@ -53,6 +58,16 @@ def _get_switch_min_free_memory_gb() -> float:
         scaled = round(total_gb * _MIN_FREE_MEMORY_RATIO, 2)
         return min(_MIN_FREE_MEMORY_CEILING_GB, max(_MIN_FREE_MEMORY_FLOOR_GB, scaled))
     return _MIN_FREE_MEMORY_FLOOR_GB
+
+
+def _get_switch_min_free_vram_gb() -> float:
+    try:
+        val = os.getenv("GALGAME2VOICE_MIN_FREE_VRAM_GB")
+        if val is not None:
+            return float(val)
+    except (ValueError, TypeError):
+        pass
+    return _MIN_FREE_VRAM_FLOOR_GB
 
 
 
@@ -154,6 +169,82 @@ class VoiceManager:
         """Alias for switch_profile to preserve backwards compatibility."""
         return await self.switch_profile(target, persist=persist, force=force)
 
+    def _check_vram_guard(self, min_free_vram_gb: float = 0.45) -> None:
+        """
+        Verifies discrete GPU VRAM safety floor before switching models.
+        If discrete NVIDIA CUDA GPU is detected and free VRAM < floor,
+        attempts release_system_memory() and re-checks.
+        If still below floor, raises InsufficientMemoryError.
+        Skips cleanly if no CUDA GPU is detected (e.g. CPU or MPS mode).
+        """
+        total_vram, free_vram = get_gpu_vram_status()
+        if free_vram is None:
+            return
+
+        threshold = min_free_vram_gb if min_free_vram_gb is not None else _get_switch_min_free_vram_gb()
+        if free_vram < threshold:
+            release_system_memory()
+            _, free_vram = get_gpu_vram_status()
+            if free_vram is not None and free_vram < threshold:
+                raise InsufficientMemoryError(
+                    f"显卡可用显存不足（{free_vram:.2f} GB < {threshold:.2f} GB 安全阈值），"
+                    "加载新模型权重存在 CUDA OOM 崩溃风险。请关闭占用显存的应用或清理后重试。"
+                )
+
+    async def warmup_current_profile(self) -> bool:
+        """
+        Asynchronously warms up current voice profile model weights and GPT-SoVITS prompt cache.
+        Sends weights and a lightweight 1-word/short probe so the first turn is fully hot.
+        Non-blocking, resilient against network errors or engine offline states.
+        """
+        try:
+            profile = self.active_profile
+            if not profile:
+                profile = await self.get_active_profile()
+                if profile:
+                    self.active_profile = profile
+            if not profile:
+                logger.debug("Warm-up skipped: no active voice profile found.")
+                return False
+
+            # Check engine reachability before attempting switch to avoid connection error tracebacks
+            try:
+                health = await asyncio.wait_for(self.client.check_health(), timeout=2.0)
+                if not health.get("connected"):
+                    logger.debug("Warm-up skipped: GPT-SoVITS engine is offline.")
+                    return False
+            except Exception:
+                logger.debug("Warm-up skipped: GPT-SoVITS engine unreachable.")
+                return False
+
+            # Ensure weights and reference audio are set
+            ok = await self.client.switch_voice_profile(profile, force=False)
+            if not ok:
+                logger.debug("Warm-up skipped: weight switch to profile '%s' failed (engine offline).", getattr(profile, "name", "unknown"))
+                return False
+
+            # Probe synthesis to warm up HuBERT, STFT, and RoBERTa prompt_cache
+            opts = await self._resolve_active_options({
+                "voice_profile_id": getattr(profile, "id", None),
+                "ref_audio_path": getattr(profile, "ref_audio_path", ""),
+                "prompt_text": getattr(profile, "prompt_text", ""),
+                "prompt_lang": getattr(profile, "prompt_lang", "ja"),
+                "text_lang": getattr(profile, "text_lang", "ja"),
+            })
+            try:
+                await asyncio.wait_for(
+                    self.client.synthesize("。", options=opts),
+                    timeout=15.0,
+                )
+                logger.info("GPT-SoVITS prompt audio cache warm-up succeeded for profile '%s'.", getattr(profile, "name", "unknown"))
+                return True
+            except Exception as probe_err:
+                logger.warning("Lightweight probe during warm-up failed or timed out: %s", probe_err)
+                return False
+        except Exception as exc:
+            logger.warning("Voice profile warm-up encountered error: %s", exc)
+            return False
+
     async def _execute_switch(
         self,
         target: Union[int, str, VoiceProfileResponse, VoiceProfileInDB, Dict[str, Any], Any],
@@ -198,6 +289,7 @@ class VoiceManager:
                     f"系统空闲内存不足（{free_gb:.1f} GB < {min_free_gb:.1f} GB），"
                     "加载新模型权重可能导致语音引擎崩溃。请关闭占内存的程序后重试。"
                 )
+            self._check_vram_guard()
 
         # 2. Execute 3-step atomic model switch with auto-rollback
         release_system_memory()
@@ -222,6 +314,12 @@ class VoiceManager:
                         logger.info("Persisted active voice profile ID %d in settings", profile_id)
                 except Exception as exc:
                     logger.warning("Could not persist active voice profile ID to DB: %s", exc)
+
+        # Trigger non-blocking background warm-up of newly activated voice profile
+        try:
+            asyncio.create_task(self.warmup_current_profile())
+        except Exception as warmup_err:
+            logger.debug("Could not schedule warm-up task on profile switch: %s", warmup_err)
 
         return True
 

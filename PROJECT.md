@@ -39,6 +39,12 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 | 24 | Code Hygiene & v2.0 Documentation | Fix F821 undefined `updated` -> `updated_settings` in `routers/config.py:166`, remove dead imports, update `README.md` with AI Dynamic Voice, env vars, SPA settings | M4_HARDENING | Survey R4 (DONE) |
 | 25 | Full Test Suite Calibration & 100% Pass Verification | Fix `test_adversarial_m2_challenger2.py:412` (style.css path) and `test_character_manager.py:472` (soundfile dependency), verify 100% tests pass | M4_HARDENING | Survey R5 (DONE) |
 | 26 | CPU Inference Mode & Low-Memory GPU VRAM Inspection | `--cpu` CLI flag, `custom.device: cpu` YAML synchronization, `get_gpu_vram_status()` memory telemetry with <=4GB advisory, 3-state control panel toggle (FP16 ⇄ FP32 ⇄ CPU), and 100% test pass verification | M4_HARDENING | Performance & Stability (DONE) |
+| 27 | Agile First-Sentence Chunking & TTS Pipeline Acceleration | Agile comma/clause pause segmentation for the first sentence chunk (>=6 chars), accelerating TTFB and speech output by 600-1200ms | M5_BACKEND_PIPELINE | Survey R1 (PLANNED) |
+| 28 | GPT-SoVITS Prompt Audio Cache Warm-up & Audio Spec Cache | Asynchronous non-blocking warm-up during lifespan startup and profile switch to keep prompt_cache hot; cached audio sample specs | M5_BACKEND_PIPELINE | Survey R1 (PLANNED) |
+| 29 | Web Audio API Gapless Streaming & Immediate First Chunk Playback | Web Audio API `StreamAudioController` with sample-accurate `source.start(nextStartTime)`, 12ms micro-fade boundary transitions, and immediate first chunk playback upon arrival | M6_FRONTEND_ENGINE | Survey R2 (PLANNED) |
+| 30 | Smooth Fade-Out Interruption & Instant Queue Cancellation | 40ms smooth linear gain attenuation on user interrupt (stopBtn, switchSession, newChat, delete, sendMessage), instant queue purging and SSE abort | M6_FRONTEND_ENGINE | Survey R2 (PLANNED) |
+| 31 | VRAM Watermark Guard, SSE Keep-Alive & Bounded Blob LRU Cache | Discrete GPU VRAM floor (0.45GB) before model switch, periodic W3C SSE keep-alive comments (`: keep-alive\n\n`) every 5s, bounded LRU Blob URL cache (cap 30) with explicit `URL.revokeObjectURL()` | M5_BACKEND_PIPELINE, M6_FRONTEND_ENGINE | Survey R3 (PLANNED) |
+| 32 | Automated Quantitative Benchmark Suite & 100% Zero-Regression Verification | Dedicated quantitative benchmark module `test_benchmark_resilience_r4.py` measuring latency, 50-turn memory RSS drift (<35MB), mid-stream cancellation, and full 1079+ test regression | M7_GATE_VERIFICATION | Survey R4 (PLANNED) |
 
 ---
 
@@ -50,6 +56,9 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 | 2 | M2_PERF_STABILITY | Performance & Stability Hardening: Microsecond TTS cache reordering, WAL shutdown checkpoint, test probe calibration for 100% test reliability | M1_SECURITY | DONE |
 | 3 | M3_FINAL_VERIFICATION | Final Milestone: 100% E2E test pass across all tiers, adversarial challenger hardening (Tier 5), and Forensic Auditor integrity verification | M0_E2E_TESTS, M2_PERF_STABILITY | DONE |
 | 4 | M4_HARDENING | Pre-Release Hardening & Repository Hygiene Finalization: R1-R5 implementations, zero model/database tracking, memory lifecycle reclamation, credential masking, code hygiene, README update, and 100% test pass rate | M3_FINAL_VERIFICATION | DONE |
+| 5 | M5_BACKEND_PIPELINE | Backend Latency, Warm-up, VRAM Watermark Guard & SSE Keep-Alive: Agile first sentence chunking, GPT-SoVITS warm-up, VRAM watermark guard, SSE keep-alive | M4_HARDENING | IN_PROGRESS |
+| 6 | M6_FRONTEND_ENGINE | Frontend Gapless Streaming, Immediate Playback, Interrupt Fade-out & Bounded Blob Cache: Web Audio API StreamAudioController, micro-fade, 40ms interrupt, bounded LRU blob cache, Vite build & deploy | M4_HARDENING | IN_PROGRESS |
+| 7 | M7_GATE_VERIFICATION | Multi-Agent Gate Verification & Integrity Audit: Benchmark test suite (`test_benchmark_resilience_r4.py`), full pytest suite 100% pass, 2 Reviewers, 2 Challengers, 1 Forensic Auditor | M5_BACKEND_PIPELINE, M6_FRONTEND_ENGINE | PLANNED |
 
 ---
 

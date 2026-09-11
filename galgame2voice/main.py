@@ -235,6 +235,13 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.debug("Could not pre-seed active voice profile on startup: %s", exc)
 
+        # Trigger non-blocking background warm-up of default voice profile
+        try:
+            from galgame2voice.services.voice_manager import get_voice_manager
+            asyncio.create_task(get_voice_manager().warmup_current_profile())
+        except Exception as warmup_err:
+            logger.debug("Could not trigger startup voice profile warm-up: %s", warmup_err)
+
         logger.info("GPT-SoVITS client initialized (endpoint: %s)", client.base_url)
     except Exception as exc:
         logger.error(

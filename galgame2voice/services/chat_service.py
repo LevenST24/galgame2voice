@@ -16,6 +16,7 @@ Pipeline hardening (v2.1):
 """
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -43,6 +44,21 @@ logger = logging.getLogger("galgame2voice.services.chat_service")
 # Internal sentinel marking "this pipeline stage has finished producing events".
 _SENTINEL = object()
 _CANCEL_SENTINEL = object()
+
+
+class SseKeepAlive(dict):
+    """W3C Server-Sent Events keep-alive comment frame (: keep-alive\\n\\n)."""
+
+    def __init__(self):
+        super().__init__({"event": ":keep-alive", "data": {}, "comment": ": keep-alive\n\n"})
+
+    def __str__(self) -> str:
+        return ": keep-alive\n\n"
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, str) and other == ": keep-alive\n\n":
+            return True
+        return super().__eq__(other)
 
 
 # ============================================================================
@@ -623,7 +639,7 @@ class ChatService:
                 finally:
                     if stream_gen is not None and hasattr(stream_gen, "aclose"):
                         try:
-                            await asyncio.wait_for(stream_gen.aclose(), timeout=0.05)
+                            await asyncio.wait_for(stream_gen.aclose(), timeout=0.02)
                         except (asyncio.TimeoutError, Exception):
                             pass
                     await _put_with_cancel(tts_queue, None)
@@ -635,15 +651,40 @@ class ChatService:
             # Event pump: responsive wait on event queue and cancel event.
             sentinels_received = 0
             error_seen = False
+            last_event_time = time.monotonic()
+            keep_alive_interval = 5.0
             while sentinels_received < 2:
                 if cancel_event and cancel_event.is_set():
                     break
                 try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=0.5)
-                except asyncio.TimeoutError:
+                    event = event_queue.get_nowait()
+                    last_event_time = time.monotonic()
+                except asyncio.QueueEmpty:
+                    get_task = asyncio.create_task(event_queue.get())
+                    cancel_wait_task = asyncio.create_task(cancel_event.wait()) if cancel_event else None
+                    wait_set = {get_task}
+                    if cancel_wait_task:
+                        wait_set.add(cancel_wait_task)
+
+                    done, pending = await asyncio.wait(wait_set, timeout=0.5, return_when=asyncio.FIRST_COMPLETED)
+                    for t in pending:
+                        t.cancel()
+
                     if cancel_event and cancel_event.is_set():
                         break
-                    continue
+
+                    if get_task in done:
+                        try:
+                            event = get_task.result()
+                            last_event_time = time.monotonic()
+                        except asyncio.CancelledError:
+                            continue
+                    else:
+                        now = time.monotonic()
+                        if now - last_event_time >= keep_alive_interval:
+                            yield SseKeepAlive()
+                            last_event_time = now
+                        continue
 
                 if event is _CANCEL_SENTINEL or (cancel_event and cancel_event.is_set()):
                     break
@@ -665,13 +706,6 @@ class ChatService:
                 for task in (producer_task, worker_task):
                     if task is not None and not task.done():
                         task.cancel()
-                try:
-                    await asyncio.wait_for(
-                        asyncio.gather(producer_task, worker_task, return_exceptions=True),
-                        timeout=0.1,
-                    )
-                except asyncio.TimeoutError:
-                    pass
 
 
 
@@ -683,19 +717,21 @@ class ChatService:
                     (partial_ch and partial_ch.strip()) or (partial_ja and partial_ja.strip())
                 )
                 if has_meaningful_content:
-                    try:
-                        async with get_db(self.db_path) as conn:
-                            await crud.add_message(conn, MessageCreate(
-                                session_id=session_id,
-                                role="assistant",
-                                content_chinese=partial_ch,
-                                content_japanese=partial_ja,
-                                audio_url="",
-                                latency_ms=int((time.perf_counter() - t_start) * 1000),
-                            ))
-                            persisted_assistant = True
-                    except Exception as persist_err:
-                        logger.warning("Failed to persist partial assistant message: %s", persist_err)
+                    async def _persist_partial():
+                        try:
+                            async with get_db(self.db_path) as conn:
+                                await crud.add_message(conn, MessageCreate(
+                                    session_id=session_id,
+                                    role="assistant",
+                                    content_chinese=partial_ch,
+                                    content_japanese=partial_ja,
+                                    audio_url="",
+                                    latency_ms=int((time.perf_counter() - t_start) * 1000),
+                                ))
+                        except Exception as persist_err:
+                            logger.warning("Failed to persist partial assistant message: %s", persist_err)
+
+                    self._spawn_background(_persist_partial())
                 if cancel_event and cancel_event.is_set():
                     # Explicit truncated done so the client can distinguish
                     # "user stopped" from a broken connection.
@@ -887,6 +923,54 @@ class ChatService:
                                 await conn.execute("DELETE FROM messages WHERE id = ?;", (user_msg.id,))
                     except Exception as prune_err:
                         logger.warning("Failed to prune orphaned user message %s: %s", user_msg.id, prune_err)
+
+    async def stream_chat_events(
+        self,
+        prompt: str,
+        session_id: str = "default",
+        character_name: Optional[str] = None,
+        provider_id: Optional[str] = None,
+        tts_options: Optional[Dict[str, Any]] = None,
+        cancel_event: Optional[asyncio.Event] = None,
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_context: Optional[int] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        ai_adaptive_voice: Optional[bool] = None,
+    ) -> AsyncGenerator[Union[str, Dict[str, Any]], None]:
+        """
+        Asynchronously streams bilingual SSE formatted event strings.
+        Yields standard W3C SSE frames (event: <name>\ndata: <json>\n\n) and emits
+        W3C SSE comment frames ': keep-alive\n\n' every 5.0 seconds of queue silence.
+        """
+        async for event in self.stream_chat(
+            prompt=prompt,
+            session_id=session_id,
+            character_name=character_name,
+            provider_id=provider_id,
+            tts_options=tts_options,
+            cancel_event=cancel_event,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_context=max_context,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            ai_adaptive_voice=ai_adaptive_voice,
+        ):
+            if isinstance(event, str):
+                yield event
+            elif isinstance(event, dict):
+                if event.get("event") == ":keep-alive" or "comment" in event:
+                    yield event.get("comment", ": keep-alive\n\n")
+                else:
+                    event_name = event.get("event", "message")
+                    event_data = json.dumps(event.get("data", {}), ensure_ascii=False)
+                    yield f"event: {event_name}\ndata: {event_data}\n\n"
 
     async def chat_sync(
         self,
@@ -1138,6 +1222,7 @@ class ChatService:
 __all__ = [
     "StreamingBilingualParser",
     "ChatService",
+    "SseKeepAlive",
     "split_japanese_sentences",
     "classify_emotion",
     "EMOTION_KEYWORDS",

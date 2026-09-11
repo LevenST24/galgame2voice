@@ -41,6 +41,7 @@ class StreamingBilingualParser:
         self.emotion_extracted: str = ""
         self.emitted_chinese_len: int = 0
         self.emitted_japanese_len: int = 0
+        self.first_sentence_emitted: bool = False
         self.is_plain_text_fallback: bool = False
         self.tts_speed: Optional[float] = None
         self.tts_temperature: Optional[float] = None
@@ -198,34 +199,60 @@ class StreamingBilingualParser:
             current_ja = self._unescape_json_string(raw_ja)
             self.japanese_extracted = current_ja
 
-            all_sentences = split_japanese_sentences(current_ja)
+            is_first = not self.first_sentence_emitted
+            all_sentences = split_japanese_sentences(current_ja, is_first_chunk=is_first)
             # If neither the japanese field nor the JSON object is closed, the last sentence might still be growing
             is_ja_closed = bool(
                 re.search(r'"japanese"\s*:\s*"(?:[^"\\]|\\.)*"', sanitized)
                 or sanitized.rstrip().endswith(('"}', '"}`', '"} \n`', '"} \n', '"}'))
             )
             if not is_ja_closed:
-                if all_sentences and not re.search(r'[。！？!?\n]$', all_sentences[-1]):
-                    all_sentences = all_sentences[:-1]
+                if all_sentences:
+                    last_sent = all_sentences[-1]
+                    if is_first and len(all_sentences) == 1:
+                        valid_end = bool(
+                            re.search(r'[。！？!?\n]$', last_sent)
+                            or (re.search(r'[、，,]$', last_sent) and len(last_sent.strip()) >= 6)
+                        )
+                        if not valid_end:
+                            all_sentences = all_sentences[:-1]
+                    else:
+                        if not re.search(r'[。！？!?\n]$', last_sent):
+                            all_sentences = all_sentences[:-1]
 
             completed_text = "".join(all_sentences)
             if len(completed_text) > self.emitted_japanese_len:
                 remaining = completed_text[self.emitted_japanese_len:]
-                new_sentences = split_japanese_sentences(remaining)
+                new_sentences = split_japanese_sentences(remaining, is_first_chunk=not self.first_sentence_emitted)
                 self.emitted_japanese_len = len(completed_text)
+                if new_sentences:
+                    self.first_sentence_emitted = True
         elif self.is_plain_text_fallback:
             ja_fallback = re.search(r'(?:日文|Japanese)[:：]\s*(.*)$', sanitized, flags=re.DOTALL | re.IGNORECASE)
             if ja_fallback:
                 current_ja = ja_fallback.group(1).strip()
                 self.japanese_extracted = current_ja
-                all_sentences = split_japanese_sentences(current_ja)
-                if all_sentences and not re.search(r'[。！？!?\n]$', all_sentences[-1]):
-                    all_sentences = all_sentences[:-1]
+                is_first = not self.first_sentence_emitted
+                all_sentences = split_japanese_sentences(current_ja, is_first_chunk=is_first)
+                if all_sentences:
+                    last_sent = all_sentences[-1]
+                    if is_first and len(all_sentences) == 1:
+                        valid_end = bool(
+                            re.search(r'[。！？!?\n]$', last_sent)
+                            or (re.search(r'[、，,]$', last_sent) and len(last_sent.strip()) >= 6)
+                        )
+                        if not valid_end:
+                            all_sentences = all_sentences[:-1]
+                    else:
+                        if not re.search(r'[。！？!?\n]$', last_sent):
+                            all_sentences = all_sentences[:-1]
                 completed_text = "".join(all_sentences)
                 if len(completed_text) > self.emitted_japanese_len:
                     remaining = completed_text[self.emitted_japanese_len:]
-                    new_sentences = split_japanese_sentences(remaining)
+                    new_sentences = split_japanese_sentences(remaining, is_first_chunk=not self.first_sentence_emitted)
                     self.emitted_japanese_len = len(completed_text)
+                    if new_sentences:
+                        self.first_sentence_emitted = True
 
         return new_chinese_delta, new_sentences
 
@@ -342,12 +369,15 @@ class StreamingBilingualParser:
 
         remaining_sentences: List[str] = []
         if self.japanese_extracted:
-            all_sentences = split_japanese_sentences(self.japanese_extracted)
+            is_first = not self.first_sentence_emitted
+            all_sentences = split_japanese_sentences(self.japanese_extracted, is_first_chunk=is_first)
             emitted_so_far = self.emitted_japanese_len
             full_ja_text = "".join(all_sentences)
             if len(full_ja_text) > emitted_so_far:
                 rem_text = full_ja_text[emitted_so_far:]
                 if rem_text.strip():
-                    remaining_sentences = split_japanese_sentences(rem_text)
+                    remaining_sentences = split_japanese_sentences(rem_text, is_first_chunk=not self.first_sentence_emitted)
+                    if remaining_sentences:
+                        self.first_sentence_emitted = True
 
         return self.chinese_extracted, self.japanese_extracted, remaining_sentences

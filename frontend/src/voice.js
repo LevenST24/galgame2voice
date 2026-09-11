@@ -247,5 +247,70 @@ export function stopSpeaking() {
   currentUtter = null;
 }
 
-/** 语音消息的内存暂存（不进 localStorage，刷新后回退为纯文字） */
-export const audioStore = new Map();
+/** 最大内存音频条目数（严格限制，防止长时间多轮对话产生 Blob URL 内存泄漏） */
+export const MAX_AUDIO_STORE_ENTRIES = 30;
+
+function safeRevokeUrl(url) {
+  if (url && typeof url === 'string' && url.startsWith('blob:')) {
+    try {
+      URL.revokeObjectURL(url);
+    } catch (_) {}
+  }
+}
+
+/**
+ * BoundedAudioStore — 具备 30 条硬上限、LRU 淘汰机制与自动 URL.revokeObjectURL 的安全存储
+ */
+export class BoundedAudioStore extends Map {
+  set(key, value) {
+    if (this.has(key)) {
+      const old = this.get(key);
+      if (old && old.url && old.url !== value?.url) {
+        safeRevokeUrl(old.url);
+      }
+      super.delete(key);
+    }
+    super.set(key, value);
+    // LRU 淘汰：超出容量时驱逐最早访问的条目并释放 Blob URL
+    if (this.size > MAX_AUDIO_STORE_ENTRIES) {
+      const oldestKey = this.keys().next().value;
+      if (oldestKey !== undefined) {
+        const evicted = this.get(oldestKey);
+        if (evicted && evicted.url) {
+          safeRevokeUrl(evicted.url);
+        }
+        super.delete(oldestKey);
+      }
+    }
+    return this;
+  }
+
+  delete(key) {
+    if (this.has(key)) {
+      const item = this.get(key);
+      if (item && item.url) {
+        safeRevokeUrl(item.url);
+      }
+    }
+    return super.delete(key);
+  }
+
+  clear() {
+    for (const item of this.values()) {
+      if (item && item.url) {
+        safeRevokeUrl(item.url);
+      }
+    }
+    super.clear();
+  }
+}
+
+/** 语音消息的内存暂存（严格受控 LRU 30 项上限） */
+export const audioStore = new BoundedAudioStore();
+
+/**
+ * 辅助存储方法：设置录音并自动受控于 LRU 队列
+ */
+export function setAudioStore(msgId, rec) {
+  audioStore.set(msgId, rec);
+}
