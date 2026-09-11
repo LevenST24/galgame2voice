@@ -140,7 +140,7 @@ def diagnose_llm_error(
             return DiagnosticResult(
                 error_code="MODEL_NOT_FOUND",
                 message="指定的模型名称不存在 (404 Model Not Found)",
-                guidance="提供商无法识别填写的模型名称。请从官方推荐预设列表下拉选择（如 xAI 选 grok-3 / grok-3-mini，Groq 选 llama-3.3-70b-versatile），或核对自定义模型拼写无误。",
+                guidance="提供商无法识别填写的模型名称。请从官方推荐预设列表下拉选择（如 xAI 选 grok-3 / grok-3-mini，DeepSeek 选 deepseek-chat），或核对自定义模型拼写无误。",
                 status_code=status_code or 404,
                 raw_error=sanitized_raw,
             )
@@ -224,26 +224,7 @@ def diagnose_llm_error(
                 raw_error=sanitized_raw,
             )
 
-    # 5. Groq Specifics
-    if p_id == "groq" or "api.groq.com" in raw_lower:
-        if status_code == 401 or "invalid api key" in raw_lower or "unauthorized" in raw_lower or "api key" in raw_lower:
-            return DiagnosticResult(
-                error_code="GROQ_AUTH_FAILED",
-                message="Groq API Key 无效 (401 Unauthorized)",
-                guidance="Groq 身份验证失败。请登录 Groq Console (https://console.groq.com/keys) 复制以 gsk_ 开头的有效 Key。",
-                status_code=401,
-                raw_error=sanitized_raw,
-            )
-        if status_code == 429:
-            return DiagnosticResult(
-                error_code="GROQ_RATE_LIMIT",
-                message="Groq 速率超限 (429 Rate Limit)",
-                guidance="Groq 免费层具有每分钟请求限制 (RPM/TPM)。请稍等 10-30 秒后重试，或在 Groq 控制台绑定支付方式升级配额。",
-                status_code=429,
-                raw_error=sanitized_raw,
-            )
-
-    # 6. OpenAI Specifics
+    # 5. OpenAI Specifics
     if p_id == "openai" or "api.openai.com" in raw_lower:
         if (
             status_code == 401

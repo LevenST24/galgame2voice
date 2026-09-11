@@ -273,11 +273,6 @@ class TestAdaptersTier2:
         assert adapter.api_key == "sk-deepseek-key"
 
     @pytest.mark.asyncio
-    async def test_groq_adapter_configuration(self):
-        adapter = OpenAICompatibleLLMAdapter(api_key="gsk-groq-key", base_url="https://api.groq.com/openai/v1")
-        assert adapter.base_url == "https://api.groq.com/openai/v1"
-
-    @pytest.mark.asyncio
     async def test_qwen_adapter_configuration(self):
         adapter = OpenAICompatibleLLMAdapter(api_key="sk-dashscope-key", base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
         assert adapter.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -292,7 +287,7 @@ class TestAdaptersTier2:
         adapter = OpenAICompatibleSTTAdapter(api_key="sk-sensevoice", base_url="https://api.funaudiollm.com/v1")
         assert adapter.base_url == "https://api.funaudiollm.com/v1"
 
-    # All 10 Provider Configuration & Contract Verification Tests
+    # All Provider Configuration & Contract Verification Tests
     @pytest.mark.parametrize("provider_name,default_base_url,model_name", [
         ("openai", "https://api.openai.com/v1", "gpt-4o"),
         ("deepseek", "https://api.deepseek.com/v1", "deepseek-chat"),
@@ -300,7 +295,6 @@ class TestAdaptersTier2:
         ("glm", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash"),
         ("moonshot", "https://api.moonshot.cn/v1", "moonshot-v1-8k"),
         ("siliconflow", "https://api.siliconflow.cn/v1", "Qwen/Qwen2.5-7B-Instruct"),
-        ("groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
         ("xai", "https://api.x.ai/v1", "grok-2"),
         ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.0-flash"),
         ("custom", "http://127.0.0.1:11434/v1", "custom-model"),

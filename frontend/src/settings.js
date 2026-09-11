@@ -2,9 +2,9 @@
 
 /**
  * 针对各主流 LLM 提供商生成清晰明确的中文排错与解决指引
- * 重点覆盖：xAI (Grok)、Groq、Gemini、DeepSeek、OpenAI、Claude 等
+ * 重点覆盖：xAI (Grok)、Gemini、DeepSeek、OpenAI、Claude 等
  *
- * @param {string} providerId 提供商标识 (如 'xai', 'groq', 'gemini', 'openai')
+ * @param {string} providerId 提供商标识 (如 'xai', 'gemini', 'openai')
  * @param {string} rawMessage 后端返回的原始错误信息
  * @param {string} [backendDiagnostic] 后端结构化诊断字段
  * @returns {{ title: string, guidance: string }}
@@ -45,8 +45,6 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
     title = 'API Key 凭据无效或未授权 (HTTP 401)';
     if (pid === 'xai') {
       guidance = 'xAI (Grok) 密钥认证失败：请检查输入的 API Key 是否正确（通常以 xai- 开头），或前往 xAI 开发者控制台 (https://console.x.ai) 确认密钥启用状态与额度绑定。';
-    } else if (pid === 'groq') {
-      guidance = 'Groq 密钥认证失败：请检查输入的 API Key 是否正确（通常以 gsk_ 开头），或前往 Groq 控制台 (https://console.groq.com/keys) 重新生成密钥。';
     } else if (pid === 'gemini') {
       guidance = 'Google Gemini 认证失败：请检查 API Key 是否有效，或前往 Google AI Studio (https://aistudio.google.com) 重新申领新密钥。';
     } else if (pid === 'deepseek') {
@@ -75,8 +73,6 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
     title = '请求受限或账户额度耗尽 (HTTP 429)';
     if (pid === 'xai') {
       guidance = 'xAI (Grok) 速率超限或余额不足：请前往 xAI 控制台 (https://console.x.ai) 检查账单与充值状态。';
-    } else if (pid === 'groq') {
-      guidance = 'Groq 免费速率限制触发 (TPM/RPM 上限)：请稍候几秒再试，或在 Groq 控制台升级配额。';
     } else {
       guidance = 'HTTP 429 Too Many Requests：该提供商触发了并发频率上限或账户余额不足，请前往对应服务商控制台查看账户账单与配额。';
     }
@@ -149,18 +145,6 @@ export const BUILTIN_PRESETS = [
     default_chat_model: 'grok-3',
     preset_models: ['grok-3', 'grok-3-mini', 'grok-2-1212'],
     description: 'xAI Grok 官方 API (Grok-3 系列旗舰推理模型)',
-  },
-  {
-    id: 'groq',
-    name: 'Groq',
-    default_base_url: 'https://api.groq.com/openai/v1',
-    default_chat_model: 'llama-3.3-70b-versatile',
-    preset_models: [
-      'llama-3.3-70b-versatile',
-      'llama-3.1-8b-instant',
-      'mixtral-8x7b-32768',
-    ],
-    description: 'Groq 超低延迟 LPU 推理加速引擎 (Llama 3.3 / 3.1 系列)',
   },
   {
     id: 'siliconflow',

@@ -77,8 +77,6 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         burl = (self.base_url or "").lower()
         if "x.ai" in burl:
             return "grok-3"
-        if "groq.com" in burl:
-            return "llama-3.3-70b-versatile"
         if "googleapis.com" in burl:
             return "gemini-2.0-flash"
         if "deepseek.com" in burl:

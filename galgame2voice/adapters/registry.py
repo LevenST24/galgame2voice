@@ -13,7 +13,6 @@ from galgame2voice.adapters.llm import (
     GLMLLMAdapter,
     MoonshotLLMAdapter,
     SiliconFlowLLMAdapter,
-    GroqLLMAdapter,
     XAILLMAdapter,
     GeminiLLMAdapter,
     AnthropicAdapter,
@@ -154,22 +153,6 @@ PROVIDER_PRESETS: Dict[str, Dict[str, Any]] = {
             "gemma3:latest",
         ],
         "description": "本地或私有部署的 OpenAI 兼容推理服务 (Ollama, vLLM, LMStudio)",
-    },
-    "groq": {
-        "id": "groq",
-        "name": "Groq",
-        "default_base_url": "https://api.groq.com/openai/v1",
-        "default_chat_model": "llama-3.3-70b-versatile",
-        "default_stt_model": "whisper-large-v3",
-        "adapter_class": GroqLLMAdapter,
-        "stt_adapter_class": OpenAICompatibleSTTAdapter,
-        "preset_models": [
-            "llama-3.3-70b-versatile",
-            "deepseek-r1-distill-llama-70b",
-            "llama-3.1-8b-instant",
-            "mixtral-8x7b-32768",
-        ],
-        "description": "Groq 超低延迟推理 (Llama 3.3 / 3.1, Whisper large-v3)",
     },
     "siliconflow": {
         "id": "siliconflow",
@@ -323,9 +306,6 @@ def get_stt_adapter(
     elif provider_id == "qwen":
         target_url = url or "https://dashscope.aliyuncs.com/compatible-mode/v1"
         return QwenSTTAdapter(api_key=key, base_url=target_url, **kwargs)
-    elif provider_id == "groq":
-        target_url = url or "https://api.groq.com/openai/v1"
-        return OpenAICompatibleSTTAdapter(api_key=key, base_url=target_url, default_model="whisper-large-v3", **kwargs)
 
     target_url = url or "https://api.openai.com/v1"
     return OpenAICompatibleSTTAdapter(api_key=key, base_url=target_url, **kwargs)

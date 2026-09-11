@@ -1,6 +1,6 @@
 """
 OpenAI-compatible Speech-to-Text (STT/ASR) Adapter for galgame2voice.
-Supports OpenAI Whisper, Groq Whisper, and other OpenAI-compatible audio transcription endpoints.
+Supports OpenAI Whisper and other OpenAI-compatible audio transcription endpoints.
 """
 
 import time
@@ -26,7 +26,7 @@ def _get_mime_type(filename: str) -> str:
 
 class OpenAICompatibleSTTAdapter(BaseSTTAdapter):
     """
-    STT Adapter utilizing OpenAI Whisper / Groq Whisper / standard multipart /audio/transcriptions.
+    STT Adapter utilizing OpenAI Whisper / standard multipart /audio/transcriptions.
     """
 
     def __init__(

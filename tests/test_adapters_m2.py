@@ -30,7 +30,6 @@ from galgame2voice.adapters.llm import (
     GLMLLMAdapter,
     MoonshotLLMAdapter,
     SiliconFlowLLMAdapter,
-    GroqLLMAdapter,
     XAILLMAdapter,
     GeminiLLMAdapter,
     CustomLLMAdapter,
@@ -74,8 +73,8 @@ class TestAdapterRegistryAndFactory:
         qwen_adapter = get_llm_adapter("qwen", api_key="sk-qwen-key")
         assert isinstance(qwen_adapter, QwenLLMAdapter)
 
-        groq_adapter = get_llm_adapter("groq", api_key="gsk-groq-key")
-        assert isinstance(groq_adapter, GroqLLMAdapter)
+        xai_adapter = get_llm_adapter("xai", api_key="xai-test-key")
+        assert isinstance(xai_adapter, XAILLMAdapter)
 
         custom_adapter = get_llm_adapter("custom", base_url="http://localhost:8000/v1")
         assert isinstance(custom_adapter, CustomLLMAdapter)
@@ -109,10 +108,6 @@ class TestAdapterRegistryAndFactory:
 
         qwen = get_stt_adapter("qwen", api_key="sk-qw-key")
         assert isinstance(qwen, QwenSTTAdapter)
-
-        groq = get_stt_adapter("groq", api_key="gsk-groq")
-        assert isinstance(groq, OpenAICompatibleSTTAdapter)
-        assert groq.default_model == "whisper-large-v3"
 
         default_stt = get_stt_adapter("openai", api_key="sk-openai")
         assert isinstance(default_stt, OpenAICompatibleSTTAdapter)

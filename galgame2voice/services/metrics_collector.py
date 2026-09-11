@@ -62,9 +62,6 @@ MODEL_PRICING_MAP: Dict[str, Dict[str, Tuple[float, float]]] = {
     "siliconflow": {
         "default": (0.14, 0.28),
     },
-    "groq": {
-        "default": (0.59, 0.79),
-    },
     "moonshot": {
         "default": (0.20, 0.60),
     },

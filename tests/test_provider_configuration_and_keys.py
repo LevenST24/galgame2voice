@@ -1,11 +1,11 @@
 """
 Automated Provider Configuration & Key Protection Tests.
 Covers:
-1. Universal provider parameter submission across all 8 providers
-   (gemini, openai, anthropic, deepseek, xai, groq, siliconflow, custom and aliases).
+1. Universal provider parameter submission across all canonical providers
+   (gemini, openai, anthropic, deepseek, xai, siliconflow, custom and aliases).
 2. Strict API key masking and zero credential leakage in responses and logs.
 3. Non-destructive masked key retention on updates.
-4. Dedicated coverage for xAI (Grok) and Groq (presets, custom endpoints, models, synthesized fallback).
+4. Dedicated coverage for xAI (Grok) (presets, custom endpoints, models, synthesized fallback).
 5. In-flight connectivity testing with 100% mocked external HTTP calls.
 6. Error diagnostics verification with structured Chinese guidance.
 7. Provider activation flow and synchronization with GET /api/config.
@@ -184,14 +184,6 @@ class TestUniversalProviderParameterSubmission:
                 "api_key": "xai-test-secret-key-1234567890abcdef",
                 "chat_model": "grok-3",
                 "stt_model": "",
-            },
-            {
-                "id": "groq",
-                "name": "Groq Test",
-                "api_base_url": "https://api.groq.com/openai/v1",
-                "api_key": "gsk_test_secret_key_1234567890abcdef",
-                "chat_model": "llama-3.3-70b-versatile",
-                "stt_model": "whisper-large-v3",
             },
             {
                 "id": "siliconflow",
@@ -457,24 +449,24 @@ class TestMaskedKeyRetentionAndNonDestructiveRoundtrip:
     @pytest.mark.asyncio
     async def test_submitting_empty_or_whitespace_key_retains_stored_secret(self, app_client, isolate_test_database):
         """Submitting empty string or whitespace does not overwrite the stored secret."""
-        raw_secret = "gsk_original_groq_secret_key_12345"
+        raw_secret = "sk-original-moonshot-secret-key-12345"
         await app_client.post("/api/providers", json={
-            "id": "groq",
+            "id": "moonshot",
             "api_key": raw_secret,
         })
 
         # Submit empty key
         resp = await app_client.post("/api/providers", json={
-            "id": "groq",
+            "id": "moonshot",
             "api_key": "   ",
-            "chat_model": "deepseek-r1-distill-llama-70b",
+            "chat_model": "moonshot-v1-32k",
         })
         assert resp.status_code == 200
 
         async with get_db(isolate_test_database) as conn:
-            raw = await crud.get_provider_raw(conn, "groq")
+            raw = await crud.get_provider_raw(conn, "moonshot")
             assert raw.api_key == raw_secret
-            assert raw.chat_model == "deepseek-r1-distill-llama-70b"
+            assert raw.chat_model == "moonshot-v1-32k"
 
     @pytest.mark.asyncio
     async def test_submitting_new_raw_key_overwrites_secret(self, app_client, isolate_test_database):
@@ -631,125 +623,6 @@ class TestXaiGrokProviderCoverage:
             assert "积分" in data["diagnostic"] or "Credits" in data["diagnostic"] or "console.x.ai" in data["diagnostic"]
 
 
-# ============================================================================
-# 5. Dedicated Coverage for Groq
-# ============================================================================
-
-class TestGroqProviderCoverage:
-    """Dedicated tests for Groq provider presets, synthesized fallback, models and diagnostics."""
-
-    def test_groq_preset_configuration_defaults(self):
-        """Verifies Groq preset defaults in registry."""
-        preset = get_provider_preset("groq")
-        assert preset is not None
-        assert preset["name"] == "Groq"
-        assert preset["default_base_url"] == "https://api.groq.com/openai/v1"
-        assert preset["default_chat_model"] == "llama-3.3-70b-versatile"
-        assert preset["default_stt_model"] == "whisper-large-v3"
-        assert "deepseek-r1-distill-llama-70b" in preset["preset_models"]
-
-    @pytest.mark.asyncio
-    async def test_groq_synthesized_preset_on_fresh_db(self, app_client, isolate_test_database):
-        """
-        When 'groq' has not yet been saved to SQLite, GET /api/providers/groq must
-        dynamically synthesize and return the preset rather than throwing 404.
-        """
-        async with get_db(isolate_test_database) as conn:
-            await conn.execute("DELETE FROM providers WHERE id = 'groq';")
-            await conn.commit()
-
-        resp = await app_client.get("/api/providers/groq")
-        assert resp.status_code == 200
-        data = resp.json()
-        p = data["provider"]
-        assert p["id"] == "groq"
-        assert p["name"] == "Groq"
-        assert p["api_base_url"] == "https://api.groq.com/openai/v1"
-        assert p["chat_model"] == "llama-3.3-70b-versatile"
-        assert p["api_key"] == ""
-        assert p["is_active"] is False
-
-    @pytest.mark.asyncio
-    async def test_groq_configuration_submission_and_persistence(self, app_client, isolate_test_database):
-        """Tests submitting Groq configuration and verifying persistence."""
-        payload = {
-            "id": "groq",
-            "name": "Groq Ultra Fast",
-            "api_base_url": "https://api.groq.com/openai/v1",
-            "api_key": "gsk_live_test_groq_secret_key_12345",
-            "chat_model": "deepseek-r1-distill-llama-70b",
-        }
-        resp = await app_client.post("/api/providers", json=payload)
-        assert resp.status_code in (200, 201)
-
-        async with get_db(isolate_test_database) as conn:
-            raw = await crud.get_provider_raw(conn, "groq")
-            assert raw is not None
-            assert raw.api_key == "gsk_live_test_groq_secret_key_12345"
-            assert raw.chat_model == "deepseek-r1-distill-llama-70b"
-
-    @pytest.mark.asyncio
-    async def test_groq_connectivity_test_success_mock(self, app_client):
-        """Tests successful in-flight connectivity test for Groq with mocked HTTP response."""
-        mock_resp = httpx.Response(
-            200,
-            json={"data": [{"id": "llama-3.3-70b-versatile"}, {"id": "deepseek-r1-distill-llama-70b"}]},
-            request=httpx.Request("GET", "https://api.groq.com/openai/v1/models"),
-        )
-        p_get, p_post = mock_external_http_responses({"api.groq.com/openai/v1/models": mock_resp})
-
-        with p_get, p_post:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "groq",
-                "api_base_url": "https://api.groq.com/openai/v1",
-                "api_key": "gsk_valid_key_12345",
-                "chat_model": "llama-3.3-70b-versatile",
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is True
-            assert data["latency_ms"] is not None and data["latency_ms"] >= 0
-            assert "llama-3.3-70b-versatile" in data["models"]
-
-    @pytest.mark.asyncio
-    async def test_groq_401_auth_failure_error_diagnostics(self, app_client):
-        """Verifies Groq 401 auth error returns Chinese guidance pointing to console.groq.com."""
-        mock_401 = httpx.Response(
-            401,
-            text='{"error": {"message": "Invalid API Key provided", "type": "invalid_request_error"}}',
-            request=httpx.Request("GET", "https://api.groq.com/openai/v1/models"),
-        )
-        p_get, p_post = mock_external_http_responses({"api.groq.com": mock_401})
-
-        with p_get, p_post:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "groq",
-                "api_key": "gsk_bad_key",
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "console.groq.com/keys" in data["diagnostic"]
-
-    @pytest.mark.asyncio
-    async def test_groq_429_rate_limit_error_diagnostics(self, app_client):
-        """Verifies Groq 429 rate limit error returns Chinese guidance."""
-        mock_429 = httpx.Response(
-            429,
-            text='{"error": {"message": "Rate limit reached for requests per minute (RPM)", "type": "rate_limit_reached"}}',
-            request=httpx.Request("GET", "https://api.groq.com/openai/v1/models"),
-        )
-        p_get, p_post = mock_external_http_responses({"api.groq.com": mock_429})
-
-        with p_get, p_post:
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "groq",
-                "api_key": "gsk_rate_limited_key",
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "免费层" in data["diagnostic"] or "RPM/TPM" in data["diagnostic"] or "Groq" in data["diagnostic"]
 
 
 # ============================================================================
@@ -1010,21 +883,21 @@ class TestProviderActivationFlow:
 
     @pytest.mark.asyncio
     async def test_activate_synthesized_preset_creates_db_record(self, app_client, isolate_test_database):
-        """Activating a synthesized preset (e.g. groq before save) creates DB record and activates it."""
+        """Activating a synthesized preset (e.g. moonshot before save) creates DB record and activates it."""
         async with get_db(isolate_test_database) as conn:
-            await conn.execute("DELETE FROM providers WHERE id = 'groq';")
+            await conn.execute("DELETE FROM providers WHERE id = 'moonshot';")
             await conn.commit()
 
-        resp = await app_client.post("/api/providers/groq/activate")
+        resp = await app_client.post("/api/providers/moonshot/activate")
         assert resp.status_code == 200
 
         async with get_db(isolate_test_database) as conn:
-            raw = await crud.get_provider_raw(conn, "groq")
+            raw = await crud.get_provider_raw(conn, "moonshot")
             assert raw is not None
             assert raw.is_active is True
 
         cfg_resp = await app_client.get("/api/config")
-        assert cfg_resp.json()["active_provider"]["id"] == "groq"
+        assert cfg_resp.json()["active_provider"]["id"] == "moonshot"
 
     @pytest.mark.asyncio
     async def test_config_post_active_provider_id_syncs_providers_table(self, app_client, isolate_test_database):

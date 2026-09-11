@@ -183,30 +183,6 @@ class TestInFlightConnectivityTesting:
             assert "console.x.ai" in data["diagnostic"]
             assert elapsed < 3.0
 
-    @pytest.mark.asyncio
-    async def test_invalid_groq_key_http_401_diagnostics(self, app_client):
-        """Groq HTTP 401 unauthorized -> structured Chinese diagnostic pointing to console.groq.com."""
-        mock_401 = httpx.Response(
-            401,
-            text='{"error": {"message": "Invalid API Key provided", "type": "invalid_request_error"}}',
-            request=httpx.Request("GET", "https://api.groq.com/openai/v1/models"),
-        )
-        p_get, p_post = make_http_mocks({"api.groq.com": mock_401})
-
-        with p_get, p_post:
-            t0 = time.perf_counter()
-            resp = await app_client.post("/api/providers/test", json={
-                "id": "groq",
-                "api_key": "gsk_invalid_emp_key",
-            })
-            elapsed = time.perf_counter() - t0
-
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert data.get("diagnostic"), "diagnostic field must not be empty"
-            assert "console.groq.com" in data["diagnostic"]
-            assert elapsed < 3.0
 
     @pytest.mark.asyncio
     async def test_gemini_403_region_restriction_diagnostics(self, app_client):
@@ -495,7 +471,7 @@ class TestAdversarialStressAndConcurrency:
             t0 = time.perf_counter()
 
             async def probe(idx: int):
-                provider = "xai" if idx % 2 == 0 else "groq"
+                provider = "xai" if idx % 2 == 0 else "deepseek"
                 key = f"{provider}-concurrent-key-{idx}"
                 return await app_client.post("/api/providers/test", json={
                     "id": provider,

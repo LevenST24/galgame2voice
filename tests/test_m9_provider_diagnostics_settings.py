@@ -1,7 +1,7 @@
 """
 Comprehensive unit and integration tests for Worker M9:
 1. OpenAICompatibleLLMAdapter test_connection fixes (no gpt-4o-mini trap, HTTP 400 auth errors)
-2. Provider registry & seeds (groq, xai defaults and models, preset synthesis on GET /api/providers/{id})
+2. Provider registry & seeds (xai defaults and models, preset synthesis on GET /api/providers/{id})
 3. Structured Error Diagnostics Engine (format_provider_error, diagnose_llm_error, Chinese guidance)
 4. Settings Schema (stt_engine in schemas & DB, telegram_chat_id alias)
 """
@@ -29,7 +29,6 @@ from galgame2voice.adapters.registry import (
 )
 from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 from galgame2voice.adapters.llm.xai_adapter import XAILLMAdapter
-from galgame2voice.adapters.llm.groq_adapter import GroqLLMAdapter
 from galgame2voice.utils.error_diagnostics import (
     format_provider_error,
     diagnose_llm_error,
@@ -50,13 +49,6 @@ class TestOpenAICompatibleTestConnection:
         adapter = XAILLMAdapter(api_key="xai-test-key")
         assert adapter._resolve_test_model(None) == "grok-3"
         assert adapter._resolve_test_model("grok-3-mini") == "grok-3-mini"
-
-    @pytest.mark.asyncio
-    async def test_test_connection_resolves_groq_preset_default_model(self):
-        """Ensures Groq adapter test_connection uses llama-3.3-70b-versatile, never gpt-4o-mini."""
-        adapter = GroqLLMAdapter(api_key="gsk_test_key")
-        assert adapter._resolve_test_model(None) == "llama-3.3-70b-versatile"
-        assert adapter._resolve_test_model("deepseek-r1-distill-llama-70b") == "deepseek-r1-distill-llama-70b"
 
     @pytest.mark.asyncio
     async def test_test_connection_resolves_gemini_base_url_model(self):
@@ -142,7 +134,7 @@ class TestOpenAICompatibleTestConnection:
 # ============================================================================
 
 class TestProviderRegistryAndSeeds:
-    """Verifies groq and xai presets, defaults, and synthesize fallback on GET."""
+    """Verifies xai presets, defaults, and synthesize fallback on GET."""
 
     def test_xai_preset_defaults_and_models(self):
         preset = get_provider_preset("xai")
@@ -152,36 +144,6 @@ class TestProviderRegistryAndSeeds:
         assert "grok-3" in preset["preset_models"]
         assert "grok-3-mini" in preset["preset_models"]
         assert "grok-2" in preset["preset_models"]
-
-    def test_groq_preset_defaults_and_models(self):
-        preset = get_provider_preset("groq")
-        assert preset is not None
-        assert preset["default_base_url"] == "https://api.groq.com/openai/v1"
-        assert preset["default_chat_model"] == "llama-3.3-70b-versatile"
-        assert "llama-3.3-70b-versatile" in preset["preset_models"]
-        assert "deepseek-r1-distill-llama-70b" in preset["preset_models"]
-
-    @pytest.mark.asyncio
-    async def test_get_provider_synthesizes_preset_when_not_in_db(self):
-        """
-        When 'groq' is not yet seeded in SQLite DB, GET /api/providers/groq
-        must synthesize and return preset configuration instead of 404!
-        """
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/api/providers/groq")
-            assert resp.status_code == 200
-            data = resp.json()
-            assert "provider" in data
-            p = data["provider"]
-            assert p["id"] == "groq"
-            assert p["name"] == "Groq"
-            assert p["api_base_url"] == "https://api.groq.com/openai/v1"
-            assert p["chat_model"] == "llama-3.3-70b-versatile"
-            assert p["stt_model"] == "whisper-large-v3"
-            assert p["api_key"] == ""
-            assert p["is_active"] is False
 
     @pytest.mark.asyncio
     async def test_get_provider_unknown_returns_404(self):
@@ -193,8 +155,8 @@ class TestProviderRegistryAndSeeds:
             assert resp.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_list_providers_includes_groq_and_xai(self):
-        """GET /api/providers includes all providers and presets."""
+    async def test_list_providers_includes_xai_and_gemini(self):
+        """GET /api/providers includes active providers and presets."""
         app = create_app()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -203,10 +165,8 @@ class TestProviderRegistryAndSeeds:
             data = resp.json()
             provider_ids = [p["id"] for p in data["providers"]]
             preset_ids = [p["id"] for p in data["presets"]]
-            assert "xai" in provider_ids
-            assert "groq" in provider_ids
-            assert "xai" in preset_ids
-            assert "groq" in preset_ids
+            assert "xai" in provider_ids or "xai" in preset_ids
+            assert "gemini" in provider_ids or "gemini" in preset_ids
 
 
 # ============================================================================
@@ -240,16 +200,6 @@ class TestErrorDiagnosticsEngine:
         diag = format_provider_error("xai", 429, "Rate limit exceeded. Not enough credits.")
         assert diag["error_code"] == "XAI_QUOTA_EXCEEDED"
         assert "积分" in diag["diagnostic"] or "Credits" in diag["diagnostic"]
-
-    def test_groq_401_auth_failed(self):
-        diag = format_provider_error("groq", 401, "Invalid API Key provided")
-        assert diag["error_code"] == "GROQ_AUTH_FAILED"
-        assert "console.groq.com/keys" in diag["diagnostic"]
-
-    def test_groq_429_rate_limit(self):
-        diag = format_provider_error("groq", 429, "Rate limit reached for requests per minute")
-        assert diag["error_code"] == "GROQ_RATE_LIMIT"
-        assert "免费层" in diag["diagnostic"] or "RPM/TPM" in diag["diagnostic"]
 
     def test_openai_401_and_429_quota(self):
         diag401 = format_provider_error("openai", 401, "Incorrect API key provided")

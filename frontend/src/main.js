@@ -988,7 +988,7 @@ async function loadProviders() {
     updateBadge();
 
     // 构建提供商合并列表（以官方预设推荐顺序优先，随后追加用户自定义，最后提供自定义接口选项）
-    const presetOrder = ['gemini', 'openai', 'anthropic', 'deepseek', 'xai', 'groq', 'siliconflow', 'glm', 'qwen', 'custom'];
+    const presetOrder = ['gemini', 'openai', 'anthropic', 'deepseek', 'xai', 'siliconflow', 'glm', 'qwen', 'custom'];
     const providerMap = new Map();
 
     // 1. 先载入预设顺序中存在的项目

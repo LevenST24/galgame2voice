@@ -9,7 +9,6 @@ from galgame2voice.adapters.llm.qwen_adapter import QwenLLMAdapter
 from galgame2voice.adapters.llm.glm_adapter import GLMLLMAdapter
 from galgame2voice.adapters.llm.moonshot_adapter import MoonshotLLMAdapter
 from galgame2voice.adapters.llm.siliconflow_adapter import SiliconFlowLLMAdapter
-from galgame2voice.adapters.llm.groq_adapter import GroqLLMAdapter
 from galgame2voice.adapters.llm.xai_adapter import XAILLMAdapter
 from galgame2voice.adapters.llm.gemini_adapter import GeminiLLMAdapter
 from galgame2voice.adapters.llm.anthropic_adapter import AnthropicAdapter
@@ -22,7 +21,6 @@ __all__ = [
     "GLMLLMAdapter",
     "MoonshotLLMAdapter",
     "SiliconFlowLLMAdapter",
-    "GroqLLMAdapter",
     "XAILLMAdapter",
     "GeminiLLMAdapter",
     "AnthropicAdapter",

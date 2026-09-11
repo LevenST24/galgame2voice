@@ -45,7 +45,6 @@ CANONICAL_8_PROVIDERS = [
     "anthropic",
     "deepseek",
     "xai",
-    "groq",
     "siliconflow",
     "custom",
 ]
@@ -118,8 +117,6 @@ class TestProviderSwitchingAndPrefill:
                 assert "deepseek-chat" in preset["preset_models"]
             elif pid == "xai":
                 assert "grok-3" in preset["preset_models"]
-            elif pid == "groq":
-                assert any("llama" in m.lower() for m in preset["preset_models"])
             elif pid == "siliconflow":
                 assert any("deepseek" in m.lower() for m in preset["preset_models"])
             elif pid == "custom":
