@@ -8,7 +8,13 @@ from galgame2voice.utils.logger import (
     sanitize_error_detail,
     setup_logger,
 )
-from galgame2voice.utils.text_splitter import split_japanese_sentences
+from galgame2voice.utils.text_splitter import (
+    split_japanese_sentences,
+    normalize_dialogue_prosody,
+    MODAL_PARTICLES_PATTERN,
+    GREETING_PREFIX_PATTERN,
+    is_natural_clause_boundary,
+)
 from galgame2voice.utils.prosody import (
     DYNAMIC_SPEED_MIN,
     DYNAMIC_SPEED_MAX,
@@ -53,6 +59,10 @@ __all__ = [
     "sanitize_error_detail",
     "setup_logger",
     "split_japanese_sentences",
+    "normalize_dialogue_prosody",
+    "MODAL_PARTICLES_PATTERN",
+    "GREETING_PREFIX_PATTERN",
+    "is_natural_clause_boundary",
     "DYNAMIC_SPEED_MIN",
     "DYNAMIC_SPEED_MAX",
     "DYNAMIC_TEMP_MIN",

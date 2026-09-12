@@ -316,6 +316,7 @@ from galgame2voice.utils.prosody import (
     clamp_dynamic_speed,
     clamp_dynamic_temperature,
 )
+from galgame2voice.utils.text_splitter import normalize_dialogue_prosody
 
 
 def validate_user_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -798,8 +799,10 @@ class GptSovitsClient:
             elif p.is_file():
                 ref_audio = str(p.resolve())
 
+        norm_text = normalize_dialogue_prosody(text) or text
+
         return {
-            "text": text,
+            "text": norm_text,
             "text_lang": resolved["text_lang"],
             "ref_audio_path": ref_audio,
             "prompt_text": ref_text,
@@ -808,6 +811,7 @@ class GptSovitsClient:
             "top_p": resolved["top_p"],
             "temperature": resolved["temperature"],
             "text_split_method": resolved["text_split_method"],
+            "fragment_interval": resolved.get("fragment_interval", 0.3),
             "batch_size": resolved["batch_size"],
             "speed_factor": resolved["speed_factor"],
             "streaming_mode": resolved.get("streaming_mode", False),
@@ -984,6 +988,7 @@ __all__ = [
     "reload_gpt_sovits_client_base_url",
     "close_gpt_sovits_client",
     "clean_japanese_parentheses",
+    "normalize_dialogue_prosody",
     "resolve_tts_options",
     "SLICING_METHODS",
     "TTS_PRESETS",

@@ -236,12 +236,15 @@ class ChatService:
         character_name: Optional[str] = None,
         system_prompt_override: Optional[str] = None,
         max_history_override: Optional[int] = None,
+        active_profile: Optional[Any] = None,
+        session: Optional[Any] = None,
     ) -> List[ChatMessage]:
         """
         Constructs system prompt and conversation history messages for LLM using SessionManager.
         Injects dynamically recalled memories and character affection status into prompt context.
         """
-        active_profile = await crud.get_active_voice_profile(conn)
+        if active_profile is None:
+            active_profile = await crud.get_active_voice_profile(conn)
         if system_prompt_override and system_prompt_override.strip():
             system_prompt = system_prompt_override.strip()
         else:
@@ -268,7 +271,8 @@ class ChatService:
         settings_raw = await crud.get_settings_raw(conn)
         max_history = max_history_override or (settings_raw.max_history_messages if settings_raw else 10)
 
-        session = await crud.get_session(conn, session_id)
+        if session is None:
+            session = await crud.get_session(conn, session_id)
         user_id = session.user_id if session and session.user_id else "default_user"
         profile_id = active_profile.id if active_profile else 1
 
@@ -311,6 +315,8 @@ class ChatService:
         character_name: Optional[str] = None,
         system_prompt_override: Optional[str] = None,
         max_history_override: Optional[int] = None,
+        active_profile: Optional[Any] = None,
+        session: Optional[Any] = None,
     ) -> List[ChatMessage]:
         """Public interface for preparing chat messages.
 
@@ -321,9 +327,11 @@ class ChatService:
             conn, session_id, user_prompt, character_name,
             system_prompt_override=system_prompt_override,
             max_history_override=max_history_override,
+            active_profile=active_profile,
+            session=session,
         )
 
-    def _concat_wav_files(self, chunk_paths: List[str], output_path: Path) -> bool:
+    def _concat_wav_files(self, chunk_paths: List[str], output_path: Path, pause_duration: float = 0.0) -> bool:
         """Synchronous WAV concatenation with parameter validation and streaming frames — ALWAYS run via asyncio.to_thread()."""
         if not chunk_paths:
             return False
@@ -366,7 +374,13 @@ class ChatService:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             with wave.open(str(output_path), "wb") as w_out:
                 w_out.setparams(base_params)
-                for p in valid_files:
+                for idx, p in enumerate(valid_files):
+                    if pause_duration > 0 and idx > 0:
+                        silence_frames_count = int(base_params.framerate * pause_duration)
+                        if silence_frames_count > 0:
+                            sample_silence = b'\x80' if base_params.sampwidth == 1 else b'\x00'
+                            silence_bytes = (sample_silence * base_params.sampwidth * base_params.nchannels) * silence_frames_count
+                            w_out.writeframes(silence_bytes)
                     try:
                         with wave.open(str(p), "rb") as w_in:
                             while True:
@@ -463,6 +477,8 @@ class ChatService:
                     conn, session_id, prompt, character_name,
                     system_prompt_override=system_prompt,
                     max_history_override=max_context,
+                    active_profile=active_prof,
+                    session=sess_obj,
                 )
 
             # Bounded queues provide real backpressure: a slow SSE consumer
@@ -525,6 +541,9 @@ class ChatService:
                                     base_options=tts_options,
                                     adaptive_enabled=bool(ai_adaptive_voice),
                                 )
+                                user_split_method = (tts_options or {}).get("text_split_method") or (tts_options or {}).get("cut_option") or (tts_options or {}).get("how_to_cut")
+                                if not user_split_method:
+                                    chunk_opts["text_split_method"] = "cut0" if len(sentence.strip()) <= 80 else "cut2"
                                 audio_url, local_path, _ = await self.tts_service.synthesize_to_file(
                                     sentence,
                                     options=chunk_opts,
@@ -748,6 +767,39 @@ class ChatService:
             # Ensure both tasks are fully finished before touching shared state.
             await asyncio.gather(producer_task, worker_task, return_exceptions=True)
 
+            if cancel_event and cancel_event.is_set():
+                logger.info("Stream chat ended early (error=False, cancelled=True) for session %s", session_id)
+                partial_ch = final_result.get("chinese") or parser.chinese_extracted
+                partial_ja = final_result.get("japanese") or parser.japanese_extracted
+                has_meaningful_content = bool(
+                    (partial_ch and partial_ch.strip()) or (partial_ja and partial_ja.strip())
+                )
+                if has_meaningful_content:
+                    async def _persist_partial():
+                        try:
+                            async with get_db(self.db_path) as conn:
+                                await crud.add_message(conn, MessageCreate(
+                                    session_id=session_id,
+                                    role="assistant",
+                                    content_chinese=partial_ch,
+                                    content_japanese=partial_ja,
+                                    audio_url="",
+                                    latency_ms=int((time.perf_counter() - t_start) * 1000),
+                                ))
+                        except Exception as persist_err:
+                            logger.warning("Failed to persist partial assistant message: %s", persist_err)
+
+                    self._spawn_background(_persist_partial())
+                yield {
+                    "event": "done",
+                    "data": {
+                        "truncated": True,
+                        "chinese": partial_ch or "",
+                        "japanese": partial_ja or "",
+                    }
+                }
+                return
+
             full_chinese = final_result.get("chinese") or parser.chinese_extracted
             full_japanese = final_result.get("japanese") or parser.japanese_extracted
             final_emotion = classify_emotion(full_chinese, full_japanese, parser.emotion_extracted)
@@ -759,12 +811,28 @@ class ChatService:
                     total_audio_url = audio_chunks[0]["audio_url"]
                 else:
                     try:
+                        pause_candidate = None
+                        if tts_options:
+                            pause_candidate = tts_options.get("fragment_interval")
+                            if pause_candidate is None:
+                                pause_candidate = tts_options.get("pause_duration")
+                            if pause_candidate is None:
+                                pause_candidate = tts_options.get("sentence_pause")
+                        if pause_candidate is not None:
+                            try:
+                                pause_sec = float(pause_candidate)
+                            except (ValueError, TypeError):
+                                pause_sec = 0.3
+                        else:
+                            pause_sec = 0.3
+                        pause_sec = max(0.0, min(5.0, pause_sec))
                         full_filename = f"full_{uuid.uuid4().hex[:12]}.wav"
                         full_path = self.tts_service.audio_dir / full_filename
                         ok = await asyncio.to_thread(
                             self._concat_wav_files,
                             [c.get("local_path", "") for c in audio_chunks],
                             full_path,
+                            pause_sec,
                         )
                         total_audio_url = f"/audio/{full_filename}" if ok else audio_chunks[0]["audio_url"]
                     except Exception as cat_err:
@@ -851,7 +919,7 @@ class ChatService:
             yield {
                 "event": "done",
                 "data": {
-                    "truncated": not has_meaningful_content,
+                    "truncated": bool((cancel_event and cancel_event.is_set()) or not has_meaningful_content),
                     "chinese": full_chinese,
                     "japanese": full_japanese,
                     "emotion": final_emotion,
@@ -1027,6 +1095,8 @@ class ChatService:
                     conn, session_id, prompt, character_name,
                     system_prompt_override=system_prompt,
                     max_history_override=max_context,
+                    active_profile=active_prof,
+                    session=sess_obj,
                 )
 
             t_llm_start = time.perf_counter()
@@ -1082,6 +1152,9 @@ class ChatService:
                         base_options=tts_options,
                         adaptive_enabled=bool(ai_adaptive_voice),
                     )
+                    user_split_method = (tts_options or {}).get("text_split_method") or (tts_options or {}).get("cut_option") or (tts_options or {}).get("how_to_cut")
+                    if not user_split_method:
+                        sync_opts["text_split_method"] = "cut0" if len(japanese.strip()) <= 80 else "cut1"
                     audio_url, _, _ = await self.tts_service.synthesize_to_file(
                         japanese,
                         options=sync_opts,

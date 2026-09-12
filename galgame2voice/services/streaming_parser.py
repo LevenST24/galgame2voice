@@ -21,7 +21,11 @@ from galgame2voice.utils.prosody import (
     clamp_dynamic_speed,
     clamp_dynamic_temperature,
 )
-from galgame2voice.utils.text_splitter import split_japanese_sentences
+from galgame2voice.utils.text_splitter import (
+    split_japanese_sentences,
+    MODAL_PARTICLES_PATTERN,
+    is_natural_clause_boundary,
+)
 
 logger = logging.getLogger("galgame2voice.services.streaming_parser")
 
@@ -210,9 +214,14 @@ class StreamingBilingualParser:
                 if all_sentences:
                     last_sent = all_sentences[-1]
                     if is_first and len(all_sentences) == 1:
+                        clause = re.sub(r'[、，,\s…\.〜~ー\-]+$', '', last_sent)
                         valid_end = bool(
                             re.search(r'[。！？!?\n]$', last_sent)
-                            or (re.search(r'[、，,]$', last_sent) and len(last_sent.strip()) >= 6)
+                            or (
+                                re.search(r'[、，,]$', last_sent)
+                                and len(last_sent.strip()) >= 6
+                                and is_natural_clause_boundary(clause)
+                            )
                         )
                         if not valid_end:
                             all_sentences = all_sentences[:-1]
@@ -237,9 +246,14 @@ class StreamingBilingualParser:
                 if all_sentences:
                     last_sent = all_sentences[-1]
                     if is_first and len(all_sentences) == 1:
+                        clause = re.sub(r'[、，,\s…\.〜~ー\-]+$', '', last_sent)
                         valid_end = bool(
                             re.search(r'[。！？!?\n]$', last_sent)
-                            or (re.search(r'[、，,]$', last_sent) and len(last_sent.strip()) >= 6)
+                            or (
+                                re.search(r'[、，,]$', last_sent)
+                                and len(last_sent.strip()) >= 6
+                                and is_natural_clause_boundary(clause)
+                            )
                         )
                         if not valid_end:
                             all_sentences = all_sentences[:-1]

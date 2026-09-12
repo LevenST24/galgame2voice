@@ -223,6 +223,8 @@ class TtsService:
         opts = dict(options or {})
         opts = await self._populate_voice_profile_opts(opts)
         opts = self._sanitize_dynamic_voice_options(opts)
+        if "text_split_method" not in opts and "cut_option" not in opts and "how_to_cut" not in opts:
+            opts["text_split_method"] = "cut0" if len(text.strip()) <= 80 else "cut2"
 
         cache_key = ""
         clean_text = ""
@@ -267,6 +269,8 @@ class TtsService:
         opts = dict(options or {})
         opts = await self._populate_voice_profile_opts(opts)
         opts = self._sanitize_dynamic_voice_options(opts)
+        if "text_split_method" not in opts and "cut_option" not in opts and "how_to_cut" not in opts:
+            opts["text_split_method"] = "cut0" if len(text.strip()) <= 80 else "cut2"
 
         if use_cache:
             cache_key, clean_text, params_hash = self.cache_manager.compute_cache_key(text, options=opts)
@@ -314,6 +318,9 @@ class TtsService:
         """Streams audio chunks from cache or the shared GPT-SoVITS client."""
         opts = dict(options or {})
         opts = await self._populate_voice_profile_opts(opts)
+        opts = self._sanitize_dynamic_voice_options(opts)
+        if "text_split_method" not in opts and "cut_option" not in opts and "how_to_cut" not in opts:
+            opts["text_split_method"] = "cut0" if len(text.strip()) <= 80 else "cut2"
 
         cache_key = ""
         clean_text = ""
