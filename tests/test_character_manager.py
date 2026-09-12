@@ -469,7 +469,7 @@ def test_character_manager_discovers_all_eight_characters():
     import hashlib
     mgr = CharacterManager(get_settings().characters_dir)
     discovered = mgr.discover_characters()
-    assert len(discovered) >= 8, f"Expected at least 8 packages, got {len(discovered)}"
+    assert len(discovered) >= 13, f"Expected at least 13 packages, got {len(discovered)}"
 
     expected_chars = {
         "natsume": "四季夏目",
@@ -480,6 +480,11 @@ def test_character_manager_discovers_all_eight_characters():
         "nanami": "在原七海",
         "mako": "常陆茉子",
         "murasame": "丛雨",
+        "noa": "白雪乃爱",
+        "amane": "谷风天音",
+        "kurumi": "小云雀来海",
+        "kaguya": "星河辉耶",
+        "orie": "高楯欧丽叶",
     }
     for char_id, expected_name in expected_chars.items():
         pkg = mgr.get_character(char_id)
@@ -720,6 +725,16 @@ def test_character_switch_api_all_characters_and_aliases():
             ("mako", 200),
             ("丛雨", 200),
             ("murasame", 200),
+            ("白雪乃爱", 200),
+            ("noa", 200),
+            ("谷风天音", 200),
+            ("amane", 200),
+            ("小云雀来海", 200),
+            ("kurumi", 200),
+            ("星河辉耶", 200),
+            ("kaguya", 200),
+            ("高楯欧丽叶", 200),
+            ("orie", 200),
             ("nonexistent_heroine", 404),
         ]
 

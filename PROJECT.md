@@ -116,8 +116,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 - `EmotionClassifier.classify(text)`: Strictly resolves angry keywords (`怒`, `生气`, `烦死了`, `讨厌`, `ムカつく`, `怒り`, `ふざけるな`, etc.) to `"angry"`. Does NOT hijack into `"tsundere"`.
 - `EmotionClassifier.resolve_emotion(text, fallback)`: Canonical emotion resolution mapping with explicit angry handling.
 - `EmotionReferenceService.resolve_emotion_reference()`: Direct lookup with support for Japanese synonyms (`ツンデレ`, `照れ`, `怒り`, `嬉しい`, `悲しい`, `優しい`, `クール`).
-- `CharacterManager._load_and_validate_package(package_dir)`: Rejects character packages if any two emotions share the same audio file path or duplicate audio MD5 hash.
-- 8-Character Package Asset Standard: All 8 discovered characters (`四季夏目`, `明月栞那`, `西园寺风莉`, `三司绫濑`, `二条院羽月`, `在原七海`, `常陆茉子`, `丛雨`) have `is_valid == True`, containing 7 distinct audio files (56 total) strictly in `[3.0s, 9.0s]` with accurate Japanese transcriptions.
+- 13-Character Package Asset Standard: All 13 discovered characters (adding 《天使☆騒々 RE-BOOT!》 白雪乃爱, 谷风天音, 小云雀来海, 星河辉耶, 高楯欧丽叶) have `is_valid == True`, containing 7 distinct audio files each (91 total) strictly in `[3.0s, 9.0s]` with accurate Japanese transcriptions, genuine binary weights (>100MB), and progressive affection system prompts.
 
 ---
 
