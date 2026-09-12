@@ -380,12 +380,35 @@ class MemoryService:
             raw_nickname = affection_info.get("nickname")
             nickname = self.sanitize_fact_value(str(raw_nickname), max_len=20) if raw_nickname else None
 
+            # Progressive affection stage guidance (4-stage model: 0-20, 21-50, 51-80, 81-100)
+            score_val = affection_info.get("score")
+            if score_val is None:
+                try:
+                    lvl_int = int(lvl)
+                except (TypeError, ValueError):
+                    lvl_int = 1
+                score_val = (lvl_int - 1) * 20
+            try:
+                score_num = max(0, min(100, int(score_val)))
+            except (TypeError, ValueError):
+                score_num = 0
+
+            if score_num <= 20:
+                stage_guidance = "阶段一（0-20分【初识相识】）：保持适度礼貌与客套距离感，略带拘谨，展现初次相识的克制，不可过早过度亲昵或轻易表白"
+            elif score_num <= 50:
+                stage_guidance = "阶段二（21-50分【日常相伴】）：熟悉的朋友与同伴关系，日常轻松互动，可互相调侃与关照，保持好友边界"
+            elif score_num <= 80:
+                stage_guidance = "阶段三（51-80分【心动共鸣】）：深厚信赖与心动萌芽，偶现害羞脸红或傲娇依赖，展现明显羁绊，情感自然递进"
+            else:
+                stage_guidance = "阶段四（81-100分【恋慕誓约】）：专属誓约与深度依恋，由衷袒露爱意与心意相通，解锁最亲密的专属互动"
+
             aff_lines = ["【当前关系与好感度】"]
             aff_lines.append(f"- 亲密度等级：Lv.{lvl} ({lvl_name})")
+            aff_lines.append(f"- 阶段行为准则：{stage_guidance}")
             aff_lines.append(f"- 当前情绪状态：{emotion}")
             if nickname:
                 aff_lines.append(f"- 称呼玩家为：{nickname}")
-            aff_lines.append("（请依据好感度等级和当前情绪，自然呈现对应的语气与亲密程度。）")
+            aff_lines.append("（请依据好感度等级和当前情绪，自然呈现对应的语气与亲密程度。感情需在日常对话中循序渐进地培养，严禁脱离当前好感度阶段突兀表白。）")
             blocks.append("\n".join(aff_lines))
 
         return "\n\n".join(blocks)

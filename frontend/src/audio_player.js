@@ -124,13 +124,13 @@ export class StreamAudioController {
    * @param {Object} [ctl]
    */
   startSession(msgId, ctl = null) {
-    this.interrupt(40);
+    this.interrupt(0);
     this.ensureContext();
     const gainNode = this.masterGainNode || this.masterGain;
-    if (gainNode && gainNode.gain) {
+    if (gainNode && gainNode.gain && this.ctx) {
       try {
-        gainNode.gain.cancelScheduledValues(0);
-        gainNode.gain.setValueAtTime(1.0, 0);
+        gainNode.gain.cancelScheduledValues(this.ctx.currentTime);
+        gainNode.gain.setValueAtTime(1.0, this.ctx.currentTime);
       } catch (_) {}
     }
     this.currentMsgId = msgId;
@@ -255,6 +255,14 @@ export class StreamAudioController {
     }
 
     const now = this.ctx.currentTime;
+    if (this.masterGain && this.masterGain.gain) {
+      try {
+        if (this.masterGain.gain.value < 0.5) {
+          this.masterGain.gain.cancelScheduledValues(now);
+          this.masterGain.gain.setValueAtTime(1.0, now);
+        }
+      } catch (_) {}
+    }
     if (this.nextStartTime < now) {
       // 预留 20ms 给音频驱动混音缓冲
       this.nextStartTime = now + 0.02;
@@ -366,22 +374,17 @@ export class StreamAudioController {
     }
 
     if (this.ctx && this.masterGain && this.activeSources.length > 0) {
-      const now = this.ctx.currentTime;
-      const fadeSec = fadeMs / 1000;
-
-      // 40ms 线性平滑渐出至 0.0001
-      try {
-        this.masterGain.gain.setValueAtTime(this.masterGain.gain.value, now);
-        this.masterGain.gain.linearRampToValueAtTime(0.0001, now + fadeSec);
-      } catch (_) {}
-
-      const sourcesToStop = [...this.activeSources];
-      this.activeSources = [];
-      this.nextStartTime = 0;
-      this.isPlaying = false;
-      this.isPaused = false;
-
-      setTimeout(() => {
+      if (fadeMs <= 0) {
+        // 瞬间完全打断，立即停止所有源并重置音量
+        const sourcesToStop = [...this.activeSources];
+        this.activeSources = [];
+        this.nextStartTime = 0;
+        this.isPlaying = false;
+        this.isPaused = false;
+        try {
+          this.masterGain.gain.cancelScheduledValues(this.ctx.currentTime);
+          this.masterGain.gain.setValueAtTime(1.0, this.ctx.currentTime);
+        } catch (_) {}
         sourcesToStop.forEach(({ source, chunkGain }) => {
           try {
             source.stop();
@@ -389,18 +392,50 @@ export class StreamAudioController {
             chunkGain.disconnect();
           } catch (_) {}
         });
-        // 恢复 masterGain 为 1.0 备下次播放
-        if (this.masterGain && this.ctx) {
-          try {
-            this.masterGain.gain.setValueAtTime(1.0, this.ctx.currentTime);
-          } catch (_) {}
-        }
-      }, fadeMs + 10);
+      } else {
+        const now = this.ctx.currentTime;
+        const fadeSec = fadeMs / 1000;
+
+        try {
+          this.masterGain.gain.cancelScheduledValues(now);
+          this.masterGain.gain.setValueAtTime(this.masterGain.gain.value, now);
+          this.masterGain.gain.linearRampToValueAtTime(0.0001, now + fadeSec);
+        } catch (_) {}
+
+        const sourcesToStop = [...this.activeSources];
+        this.activeSources = [];
+        this.nextStartTime = 0;
+        this.isPlaying = false;
+        this.isPaused = false;
+
+        setTimeout(() => {
+          sourcesToStop.forEach(({ source, chunkGain }) => {
+            try {
+              source.stop();
+              source.disconnect();
+              chunkGain.disconnect();
+            } catch (_) {}
+          });
+          // 恢复 masterGain 为 1.0 备下次播放
+          if (this.masterGain && this.ctx) {
+            try {
+              this.masterGain.gain.cancelScheduledValues(this.ctx.currentTime);
+              this.masterGain.gain.setValueAtTime(1.0, this.ctx.currentTime);
+            } catch (_) {}
+          }
+        }, fadeMs + 10);
+      }
     } else {
       this.activeSources = [];
       this.nextStartTime = 0;
       this.isPlaying = false;
       this.isPaused = false;
+      if (this.masterGain && this.ctx) {
+        try {
+          this.masterGain.gain.cancelScheduledValues(this.ctx.currentTime);
+          this.masterGain.gain.setValueAtTime(1.0, this.ctx.currentTime);
+        } catch (_) {}
+      }
     }
 
     if (this._currentCtl && this._currentCtl.setPlaying) {

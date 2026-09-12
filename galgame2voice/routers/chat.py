@@ -57,6 +57,7 @@ class ChatRequest(BaseModel):
     session_id: str = Field(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Conversation session identifier")
     stream: Optional[bool] = Field(default=True, description="Whether client requested streaming")
     character_name: Optional[str] = Field(default=None, max_length=100, description="Character persona name override")
+    voice_profile_id: Optional[int] = Field(default=None, description="Active voice profile ID for character")
     provider_id: Optional[str] = Field(default=None, max_length=64, description="LLM provider ID override")
     tts_options: Optional[Dict[str, Any]] = Field(default=None, description="Inference parameters (speed, top_k, etc.)")
     preset: Optional[str] = Field(default=None, max_length=64, description="TTS Preset name (high_quality, balanced, low_latency)")
@@ -165,6 +166,7 @@ async def chat_stream_endpoint(req: ChatRequest, request: Request):
         prompt=req.prompt.strip(),
         session_id=req.session_id,
         character_name=req.character_name,
+        voice_profile_id=req.voice_profile_id,
         provider_id=req.provider_id,
         tts_options=tts_opts,
         cancel_event=cancel_event,
@@ -212,6 +214,7 @@ async def chat_sync_endpoint(req: ChatRequest):
             prompt=req.prompt.strip(),
             session_id=req.session_id,
             character_name=req.character_name,
+            voice_profile_id=req.voice_profile_id,
             provider_id=req.provider_id,
             tts_options=tts_opts,
             system_prompt=req.system_prompt,

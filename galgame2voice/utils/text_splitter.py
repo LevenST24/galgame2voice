@@ -15,12 +15,22 @@ MODAL_PARTICLES_PATTERN = re.compile(
     r'(?:'
     # Japanese sentence-ending and interjectional particles (終助詞・間投助詞)
     r'[ねよわなさぞぜのかや]|ねえ|ねぇ|よね|わよ|わね|なあ|なぁ|かしら|かな|もん|っけ|'
+    r'でしょ|でしょう|じゃん|ってば|てば|かい|だい|もんね|もんよ|んだ|んだから|んです|んだもん|'
+    # Galgame character-specific speech particles (Murasame: じゃ/のじゃ/じゃろ, Mako: っす, Kanna: のよ/んだよ)
+    r'じゃ|のじゃ|じゃな|じゃの|じゃよ|じゃろ|じゃろう|おる|おるぞ|おるの|'
+    r'っす|っすよ|っすね|っすから|っすけど|っすもん|'
+    r'のよ|のね|のさ|んだよ|んだね|んだよね|わけ|わけよ|わけね|わけだ|'
+    r'ぜよ|わい|わさ|やん|やろ|やんな|やんか|やんけ|やねん|やんね|'
     # Japanese soft clause connectors/hedges
     r'けど|けれど|けれども|から|ので|のに|ですが|ですから|ても|でも|たり|'
-    # Chinese modal particles (语气助词)
-    r'[呢吧啊呀啦哇嘛哦哈耶呐么吗]'
+    # Chinese modal particles & compound particles (语气助词与复合适词)
+    r'[呢吧啊呀啦哇嘛哦哈耶呐么吗呗嘞哒滴喵嗷咯]|'
+    r'呢吧|啊呀|啦呀|嘛呢|哦哈|哎呀|好嘛|对吧|行吧|对呀|行啦|好嘞|是嘛|好哒|好咯|对咯'
     r')$'
 )
+
+CLOSING_BRACKETS = set("」』\"'”’）)】]")
+
 
 # Formulaic opening greetings in Japanese dialogue.
 # When dialogue begins with a standard opening greeting (e.g., お久しぶりですね, こんにちは, 初めまして),
@@ -53,6 +63,7 @@ def is_natural_clause_boundary(clause: str) -> bool:
 def normalize_dialogue_prosody(text: str) -> str:
     """
     Normalizes punctuation and prosodic markers in spoken dialogue for natural TTS synthesis:
+    - Strips whitespace before punctuation marks
     - Collapses consecutive commas (、、 -> 、)
     - Normalizes awkward ellipsis + comma sequences (……、 -> ……)
     - Normalizes commas immediately preceding terminal punctuation (、。 -> 。)
@@ -62,6 +73,10 @@ def normalize_dialogue_prosody(text: str) -> str:
     if not text:
         return ""
     s = text.strip()
+    # Strip whitespace around fullwidth CJK punctuation
+    s = re.sub(r'\s*([、，。！？…])\s*', r'\1', s)
+    # Strip whitespace preceding halfwidth punctuation
+    s = re.sub(r'\s+([,.!?])', r'\1', s)
     # Collapse multiple commas
     s = re.sub(r'[、，,]{2,}', '、', s)
     # Collapse ellipsis followed by comma (……、 -> ……)
@@ -104,8 +119,8 @@ def split_japanese_sentences(
         return []
 
     if not is_first_chunk:
-        # Match contiguous segments of non-punctuation followed by punctuation markers
-        pattern = r'([^。！？!?\n]+[。！？!?\n]*)'
+        # Match contiguous segments of non-punctuation followed by punctuation markers and optional closing brackets/quotes
+        pattern = r'([^。！？!?\n]+(?:[。！？!?\n]+[」』"\'”’\)）\]】]*|\s*$))'
         matches = re.findall(pattern, text)
         sentences = [m.strip() for m in matches if m.strip()]
         if not sentences and text.strip():
@@ -126,7 +141,7 @@ def split_japanese_sentences(
         c = text[i]
         curr.append(c)
         if c in terminal_punct:
-            while i + 1 < n and text[i + 1] in terminal_punct:
+            while i + 1 < n and (text[i + 1] in terminal_punct or text[i + 1] in CLOSING_BRACKETS):
                 i += 1
                 curr.append(text[i])
             first_sent = "".join(curr).strip()
@@ -135,11 +150,11 @@ def split_japanese_sentences(
                 subsequent = split_japanese_sentences(rem_text, is_first_chunk=False) if rem_text.strip() else []
                 return [first_sent] + subsequent
         elif c in clause_punct:
-            while i + 1 < n and text[i + 1] in clause_punct:
+            while i + 1 < n and (text[i + 1] in clause_punct or text[i + 1] in CLOSING_BRACKETS):
                 i += 1
                 curr.append(text[i])
             cand = "".join(curr).strip()
-            clause = re.sub(r'[、，,\s…\.〜~ー\-]+$', '', cand)
+            clause = re.sub(r'[、，,\s…\.〜~ー\-」』"\'”’\)）\]】]+$', '', cand)
             if len(cand) >= min_chars and is_natural_clause_boundary(clause):
                 rem_text = text[i + 1:]
                 subsequent = split_japanese_sentences(rem_text, is_first_chunk=False) if rem_text.strip() else []

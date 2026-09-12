@@ -18,6 +18,7 @@ Pipeline hardening (v2.1):
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 import wave
@@ -31,6 +32,7 @@ from galgame2voice.adapters.registry import get_llm_adapter
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate
 from galgame2voice.database.session import get_db, immediate_transaction
+from galgame2voice.services.gpt_sovits_client import clean_japanese_parentheses
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.services.session_manager import SessionManager
 from galgame2voice.services.memory_service import MemoryService
@@ -243,10 +245,22 @@ class ChatService:
         Constructs system prompt and conversation history messages for LLM using SessionManager.
         Injects dynamically recalled memories and character affection status into prompt context.
         """
+        if session is None:
+            session = await crud.get_session(conn, session_id)
+
         if active_profile is None:
-            active_profile = await crud.get_active_voice_profile(conn)
+            target_profile_id = (session.voice_profile_id if session else None)
+            if target_profile_id is not None:
+                active_profile = await crud.get_voice_profile(conn, int(target_profile_id))
+            if active_profile is None and character_name:
+                active_profile = await crud.get_voice_profile_by_name(conn, character_name)
+            if active_profile is None:
+                active_profile = await crud.get_active_voice_profile(conn)
+
         if system_prompt_override and system_prompt_override.strip():
             system_prompt = system_prompt_override.strip()
+        elif session and session.custom_system_prompt and session.custom_system_prompt.strip():
+            system_prompt = session.custom_system_prompt.strip()
         else:
             system_prompt = (
                 active_profile.system_prompt
@@ -287,6 +301,7 @@ class ChatService:
             )
             affection = await crud.get_or_create_character_affection(conn, user_id=user_id, character_id=profile_id)
             aff_info = {
+                "score": affection.affection_score,
                 "level": affection.affection_level,
                 "level_name": affection.level_name,
                 "emotion": affection.current_emotion,
@@ -383,11 +398,30 @@ class ChatService:
                             w_out.writeframes(silence_bytes)
                     try:
                         with wave.open(str(p), "rb") as w_in:
-                            while True:
-                                frames = w_in.readframes(4096)
-                                if not frames:
-                                    break
-                                w_out.writeframes(frames)
+                            n_frames = w_in.getnframes()
+                            raw_frames = w_in.readframes(n_frames)
+                            if not raw_frames:
+                                continue
+
+                            # Micro-fade boundary smoothing on 16-bit PCM chunks to eliminate pop/click artifacts
+                            if base_params.sampwidth == 2 and len(raw_frames) % (2 * base_params.nchannels) == 0:
+                                import array
+                                total_frames = len(raw_frames) // (base_params.sampwidth * base_params.nchannels)
+                                fade_frames = min(int(base_params.framerate * 0.005), total_frames // 4)
+                                if fade_frames > 0:
+                                    samples = array.array('h')
+                                    samples.frombytes(raw_frames)
+                                    n_ch = base_params.nchannels
+                                    for i in range(fade_frames):
+                                        factor = i / fade_frames
+                                        for c in range(n_ch):
+                                            idx_start = i * n_ch + c
+                                            samples[idx_start] = int(samples[idx_start] * factor)
+                                            idx_end = (total_frames - 1 - i) * n_ch + c
+                                            samples[idx_end] = int(samples[idx_end] * factor)
+                                    raw_frames = samples.tobytes()
+
+                            w_out.writeframes(raw_frames)
                     except Exception as err:
                         logger.warning("Error reading frames from chunk %s: %s", p, err)
             return True
@@ -411,6 +445,7 @@ class ChatService:
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
         ai_adaptive_voice: Optional[bool] = None,
+        voice_profile_id: Optional[int] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Asynchronously streams bilingual SSE events:
@@ -449,20 +484,33 @@ class ChatService:
 
         try:
             async with get_db(self.db_path) as conn:
-                # Ensure session exists and record user message
-                sess_obj = await crud.get_or_create_session(conn, session_id)
-                user_msg = await crud.add_message(conn, MessageCreate(
-                    session_id=session_id,
-                    role="user",
-                    content_chinese=prompt,
-                    content_japanese="",
-                    audio_url="",
-                    latency_ms=0,
-                ))
+                async with immediate_transaction(conn):
+                    # Ensure session exists and record user message in a single atomic write transaction
+                    sess_obj = await crud.get_or_create_session(conn, session_id)
+                    user_msg = await crud.add_message(conn, MessageCreate(
+                        session_id=session_id,
+                        role="user",
+                        content_chinese=prompt,
+                        content_japanese="",
+                        audio_url="",
+                        latency_ms=0,
+                    ))
 
-                active_prof = await crud.get_active_voice_profile(conn)
-                user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
-                profile_id = active_prof.id if active_prof else None
+                    # Resolve active voice profile: explicit voice_profile_id -> tts_options -> session -> character_name -> global active
+                    target_profile_id = voice_profile_id or (tts_options or {}).get("voice_profile_id") or (sess_obj.voice_profile_id if sess_obj else None)
+                    active_prof = None
+                    if target_profile_id is not None:
+                        active_prof = await crud.get_voice_profile(conn, int(target_profile_id))
+                    if active_prof is None and character_name:
+                        active_prof = await crud.get_voice_profile_by_name(conn, character_name)
+                    if active_prof is None:
+                        active_prof = await crud.get_active_voice_profile(conn)
+
+                    user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
+                    profile_id = active_prof.id if active_prof else None
+                    await crud.get_or_create_character_affection(
+                        conn, user_id=user_id, character_id=profile_id or 1
+                    )
 
                 # Extract user memory facts in a TRUE background task (off TTFT path)
                 self._spawn_background(
@@ -490,6 +538,9 @@ class ChatService:
             if cancel_event:
                 async def _watch_cancel():
                     await cancel_event.wait()
+                    for t in (producer_task, worker_task):
+                        if t is not None and not t.done():
+                            t.cancel()
                     try:
                         tts_queue.put_nowait(None)
                     except Exception:
@@ -533,6 +584,9 @@ class ChatService:
                                 break
                             if not sentence.strip():
                                 continue
+                            if not clean_japanese_parentheses(sentence).strip() or not re.search(r'[\w\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]', sentence):
+                                logger.debug("Skipping non-vocal sentence chunk: '%s'", sentence)
+                                continue
                             if cancel_event and cancel_event.is_set():
                                 break
 
@@ -541,6 +595,9 @@ class ChatService:
                                     base_options=tts_options,
                                     adaptive_enabled=bool(ai_adaptive_voice),
                                 )
+                                if active_prof:
+                                    chunk_opts.setdefault("voice_profile_id", active_prof.id)
+                                    chunk_opts.setdefault("character_name", active_prof.name)
                                 user_split_method = (tts_options or {}).get("text_split_method") or (tts_options or {}).get("cut_option") or (tts_options or {}).get("how_to_cut")
                                 if not user_split_method:
                                     chunk_opts["text_split_method"] = "cut0" if len(sentence.strip()) <= 80 else "cut2"
@@ -653,12 +710,23 @@ class ChatService:
                         await _put_with_cancel(tts_queue, sentence)
                 except Exception as exc:
                     logger.error("LLM Producer error: %s", exc)
+                    try:
+                        p_ch, p_ja, _ = parser.finalize()
+                        if p_ch and not final_result.get("chinese"):
+                            final_result["chinese"] = p_ch
+                        if p_ja and not final_result.get("japanese"):
+                            final_result["japanese"] = p_ja
+                    except Exception:
+                        pass
                     safe_err = sanitize_error_detail(exc)
                     await _put_with_cancel(event_queue, {"event": "error", "data": {"error": safe_err or "LLM generation failed"}})
                 finally:
                     if stream_gen is not None and hasattr(stream_gen, "aclose"):
                         try:
-                            await asyncio.wait_for(stream_gen.aclose(), timeout=0.02)
+                            if cancel_event and cancel_event.is_set():
+                                asyncio.create_task(stream_gen.aclose())
+                            else:
+                                await asyncio.wait_for(stream_gen.aclose(), timeout=0.02)
                         except (asyncio.TimeoutError, Exception):
                             pass
                     await _put_with_cancel(tts_queue, None)
@@ -870,14 +938,15 @@ class ChatService:
             if has_meaningful_content:
                 # Persist assistant message in DB
                 async with get_db(self.db_path) as conn:
-                    await crud.add_message(conn, MessageCreate(
-                        session_id=session_id,
-                        role="assistant",
-                        content_chinese=full_chinese,
-                        content_japanese=full_japanese,
-                        audio_url=total_audio_url,
-                        latency_ms=total_latency,
-                    ))
+                    async with immediate_transaction(conn):
+                        await crud.add_message(conn, MessageCreate(
+                            session_id=session_id,
+                            role="assistant",
+                            content_chinese=full_chinese,
+                            content_japanese=full_japanese,
+                            audio_url=total_audio_url,
+                            latency_ms=total_latency,
+                        ))
                     persisted_assistant = True
             elif user_msg is not None and getattr(user_msg, "id", None):
                 # No meaningful assistant tokens were generated.
@@ -902,6 +971,7 @@ class ChatService:
                     character_id=profile_id,
                     user_text=prompt,
                     assistant_text=full_chinese,
+                    explicit_emotion=final_emotion,
                 )
                 final_emotion = affection_res.get("emotion", final_emotion)
             except Exception as aff_err:
@@ -954,7 +1024,13 @@ class ChatService:
                 if task is None:
                     continue
                 try:
-                    await task
+                    if cancel_event and cancel_event.is_set():
+                        if not task.done():
+                            task.cancel()
+                        else:
+                            await task
+                    else:
+                        await task
                 except asyncio.CancelledError:
                     pass
                 except Exception as task_exc:
@@ -971,14 +1047,15 @@ class ChatService:
                 if has_meaningful_content:
                     try:
                         async with get_db(self.db_path) as conn:
-                            await crud.add_message(conn, MessageCreate(
-                                session_id=session_id,
-                                role="assistant",
-                                content_chinese=partial_ch,
-                                content_japanese=partial_ja,
-                                audio_url="",
-                                latency_ms=int((time.perf_counter() - t_start) * 1000),
-                            ))
+                            async with immediate_transaction(conn):
+                                await crud.add_message(conn, MessageCreate(
+                                    session_id=session_id,
+                                    role="assistant",
+                                    content_chinese=partial_ch,
+                                    content_japanese=partial_ja,
+                                    audio_url="",
+                                    latency_ms=int((time.perf_counter() - t_start) * 1000),
+                                ))
                             persisted_assistant = True
                     except Exception as persist_err:
                         logger.warning("Failed to persist partial assistant message in finally: %s", persist_err)
@@ -1055,6 +1132,7 @@ class ChatService:
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
         ai_adaptive_voice: Optional[bool] = None,
+        voice_profile_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Synchronous non-streaming bilingual completion and TTS synthesis.
@@ -1068,19 +1146,32 @@ class ChatService:
         persisted_assistant = False
         try:
             async with get_db(self.db_path) as conn:
-                sess_obj = await crud.get_or_create_session(conn, session_id)
-                user_msg = await crud.add_message(conn, MessageCreate(
-                    session_id=session_id,
-                    role="user",
-                    content_chinese=prompt,
-                    content_japanese="",
-                    audio_url="",
-                    latency_ms=0,
-                ))
+                async with immediate_transaction(conn):
+                    sess_obj = await crud.get_or_create_session(conn, session_id)
+                    user_msg = await crud.add_message(conn, MessageCreate(
+                        session_id=session_id,
+                        role="user",
+                        content_chinese=prompt,
+                        content_japanese="",
+                        audio_url="",
+                        latency_ms=0,
+                    ))
 
-                active_prof = await crud.get_active_voice_profile(conn)
-                user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
-                profile_id = active_prof.id if active_prof else None
+                    # Resolve active voice profile: explicit voice_profile_id -> tts_options -> session -> character_name -> global active
+                    target_profile_id = voice_profile_id or (tts_options or {}).get("voice_profile_id") or (sess_obj.voice_profile_id if sess_obj else None)
+                    active_prof = None
+                    if target_profile_id is not None:
+                        active_prof = await crud.get_voice_profile(conn, int(target_profile_id))
+                    if active_prof is None and character_name:
+                        active_prof = await crud.get_voice_profile_by_name(conn, character_name)
+                    if active_prof is None:
+                        active_prof = await crud.get_active_voice_profile(conn)
+
+                    user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
+                    profile_id = active_prof.id if active_prof else None
+                    await crud.get_or_create_character_affection(
+                        conn, user_id=user_id, character_id=profile_id or 1
+                    )
 
                 # Extract user memory facts in background
                 self._spawn_background(
@@ -1134,6 +1225,7 @@ class ChatService:
                     character_id=profile_id,
                     user_text=prompt,
                     assistant_text=chinese,
+                    explicit_emotion=final_emotion,
                 )
                 final_emotion = affection_res.get("emotion", final_emotion)
             except Exception as aff_err:
@@ -1152,9 +1244,12 @@ class ChatService:
                         base_options=tts_options,
                         adaptive_enabled=bool(ai_adaptive_voice),
                     )
+                    if active_prof:
+                        sync_opts.setdefault("voice_profile_id", active_prof.id)
+                        sync_opts.setdefault("character_name", active_prof.name)
                     user_split_method = (tts_options or {}).get("text_split_method") or (tts_options or {}).get("cut_option") or (tts_options or {}).get("how_to_cut")
                     if not user_split_method:
-                        sync_opts["text_split_method"] = "cut0" if len(japanese.strip()) <= 80 else "cut1"
+                        sync_opts["text_split_method"] = "cut0" if len(japanese.strip()) <= 80 else "cut2"
                     audio_url, _, _ = await self.tts_service.synthesize_to_file(
                         japanese,
                         options=sync_opts,
@@ -1191,14 +1286,15 @@ class ChatService:
 
             # Save assistant message to DB
             async with get_db(self.db_path) as conn:
-                await crud.add_message(conn, MessageCreate(
-                    session_id=session_id,
-                    role="assistant",
-                    content_chinese=chinese,
-                    content_japanese=japanese,
-                    audio_url=audio_url,
-                    latency_ms=latency_ms,
-                ))
+                async with immediate_transaction(conn):
+                    await crud.add_message(conn, MessageCreate(
+                        session_id=session_id,
+                        role="assistant",
+                        content_chinese=chinese,
+                        content_japanese=japanese,
+                        audio_url=audio_url,
+                        latency_ms=latency_ms,
+                    ))
                 persisted_assistant = True
 
             final_tts_params = {

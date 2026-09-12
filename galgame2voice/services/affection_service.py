@@ -12,6 +12,8 @@ import aiosqlite
 from galgame2voice.database import crud
 from galgame2voice.database.models import CharacterAffectionResponse, CharacterAffectionUpdate
 from galgame2voice.database.session import get_database_path, get_db
+from galgame2voice.services.emotion_classifier import VALID_EMOTIONS, EMOTION_NAME_MAP
+from galgame2voice.services.emotion_references import EMOTION_SYNONYMS
 
 logger = logging.getLogger("galgame2voice.services.affection_service")
 
@@ -252,11 +254,12 @@ class AffectionService:
         user_text: str = "",
         assistant_text: str = "",
         daily_limit: int = 15,
+        explicit_emotion: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Processes a full turn of affection update:
         1. Calculate points
-        2. Detect emotion
+        2. Detect emotion (or adopt explicit classified emotion)
         3. Check easter eggs and unlock milestones
         4. Update SQLite state machine
         """
@@ -277,17 +280,32 @@ class AffectionService:
 
         async with get_db(self.db_path) as conn:
             current = await crud.get_or_create_character_affection(conn, u_id, char_id)
-            emotion = self.classify_emotion(
-                assistant_text=a_text,
-                user_text=u_text,
-                current_emotion=current.current_emotion,
-                affection_level=current.affection_level,
-            )
+            clean_exp = (explicit_emotion or "").strip().lower()
+            if clean_exp and clean_exp in EMOTION_SYNONYMS:
+                emotion = EMOTION_SYNONYMS[clean_exp]
+            elif clean_exp and clean_exp in VALID_EMOTIONS:
+                emotion = clean_exp
+            elif clean_exp and clean_exp in EMOTION_NAME_MAP:
+                emotion = EMOTION_NAME_MAP[clean_exp]
+            else:
+                raw_emo = self.classify_emotion(
+                    assistant_text=a_text,
+                    user_text=u_text,
+                    current_emotion=current.current_emotion,
+                    affection_level=current.affection_level,
+                )
+                raw_clean = (raw_emo or "").strip().lower()
+                emotion = EMOTION_SYNONYMS.get(raw_clean, EMOTION_NAME_MAP.get(raw_clean, raw_clean))
 
             # Check easter egg
             triggered_egg = self.check_easter_eggs(u_text, current.affection_level)
             if triggered_egg:
-                emotion = triggered_egg["emotion"]
+                egg_emo = (triggered_egg.get("emotion") or "").strip().lower()
+                if egg_emo:
+                    emotion = EMOTION_SYNONYMS.get(egg_emo, EMOTION_NAME_MAP.get(egg_emo, egg_emo))
+
+            if emotion not in VALID_EMOTIONS:
+                emotion = "gentle"
 
             # Increment points atomically
             updated, actual_gain, level_up = await crud.increment_affection(

@@ -88,8 +88,8 @@ async def get_db(db_path: Optional[Union[str, Path]] = None) -> AsyncGenerator[a
 @asynccontextmanager
 async def immediate_transaction(
     conn: aiosqlite.Connection,
-    max_retries: int = 5,
-    base_delay: float = 0.05,
+    max_retries: int = 10,
+    base_delay: float = 0.01,
 ) -> AsyncGenerator[aiosqlite.Connection, None]:
     """
     Begins an IMMEDIATE transaction with automatic exponential backoff retry on SQLite
@@ -111,7 +111,7 @@ async def immediate_transaction(
         try:
             yield conn
             await conn.execute(f"RELEASE SAVEPOINT {sp_id};")
-        except Exception:
+        except BaseException:
             try:
                 await conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};")
                 await conn.execute(f"RELEASE SAVEPOINT {sp_id};")
@@ -142,7 +142,7 @@ async def immediate_transaction(
                     except (sqlite3.OperationalError, aiosqlite.OperationalError) as err:
                         err_msg = str(err).lower()
                         if ("locked" in err_msg or "busy" in err_msg) and attempt < max_retries - 1:
-                            await asyncio.sleep(base_delay * (2 ** attempt) + random.uniform(0.01, 0.04))
+                            await asyncio.sleep(base_delay * (2 ** min(attempt, 5)) + random.uniform(0.005, 0.02))
                             continue
                         raise
 
@@ -151,7 +151,7 @@ async def immediate_transaction(
                 if sp_id:
                     await conn.execute(f"RELEASE SAVEPOINT {sp_id};")
                 await conn.commit()
-            except Exception:
+            except BaseException:
                 if sp_id:
                     try:
                         await conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};")

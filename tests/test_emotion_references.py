@@ -113,11 +113,20 @@ def test_resolve_emotion_reference_all_eight_characters_independent():
 @pytest.mark.asyncio
 async def test_tts_service_populates_emotion_reference():
     tts = TtsService()
+    from galgame2voice.services.voice_manager import get_voice_manager
+    vm = get_voice_manager()
+    active = await vm.get_active_profile()
+    char_name = (getattr(active, "name", "") or "四季夏目")
+    expected = resolve_emotion_reference(char_name, "tsundere")
+
     # When ai_adaptive_voice is True and emotion is 'tsundere'
     opts = {"emotion": "tsundere", "ai_adaptive_voice": True}
     res = await tts._populate_voice_profile_opts(opts)
     assert "tsundere.ogg" in res["ref_audio_path"]
-    assert "バカ" in res["prompt_text"]
+    if expected:
+        assert res["prompt_text"] == expected["prompt_text"]
+    else:
+        assert "バカ" in res["prompt_text"]
 
     # When ai_adaptive_voice is False, it should not override with emotion audio
     opts_disabled = {"emotion": "tsundere", "ai_adaptive_voice": False}

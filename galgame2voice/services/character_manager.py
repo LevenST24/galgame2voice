@@ -664,6 +664,12 @@ class CharacterManager:
                     update_fields.append("system_prompt = ?")
                     params.append(system_prompt)
 
+                char_desc = manifest.description or ""
+                current_desc = existing_row["description"] or ""
+                if char_desc and not current_desc.strip():
+                    update_fields.append("description = ?")
+                    params.append(char_desc)
+
                 if update_fields:
                     update_fields.append("updated_at = CURRENT_TIMESTAMP")
                     params.append(p_id)

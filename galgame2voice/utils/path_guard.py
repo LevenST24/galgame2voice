@@ -7,6 +7,7 @@ rejecting path traversal attempts, symlink escapes, UNC paths, and Windows devic
 
 import os
 import re
+import urllib.parse
 from pathlib import Path
 from typing import List, Optional, Sequence, Union
 

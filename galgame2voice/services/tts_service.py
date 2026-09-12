@@ -55,6 +55,7 @@ class TtsService:
         self.client = client or get_gpt_sovits_client()
         self.audio_dir = Path(audio_dir or settings.audio_dir)
         self.audio_dir.mkdir(parents=True, exist_ok=True)
+        self.db_path = db_path
         self.cache_manager = cache_manager or get_tts_cache_manager(
             cache_dir=self.audio_dir / "cache",
             db_path=db_path or settings.db_path,
@@ -117,21 +118,52 @@ class TtsService:
     async def _populate_voice_profile_opts(self, opts: Dict[str, Any]) -> Dict[str, Any]:
         """Auto-populates active voice profile parameters, applying dynamic emotion reference audios if available."""
         try:
-            from galgame2voice.services.voice_manager import get_voice_manager
-            active = await get_voice_manager().get_active_profile()
-            if active:
-                opts.setdefault("voice_profile_id", active.id)
-                opts.setdefault("prompt_lang", active.prompt_lang)
-                opts.setdefault("text_lang", active.text_lang)
+            from galgame2voice.database import crud
+            from galgame2voice.database.session import get_db
 
-                fallback_ref_audio = active.ref_audio_path
-                fallback_prompt_text = active.prompt_text
-                fallback_prompt_lang = active.prompt_lang
+            target_profile = None
+            has_explicit_voice = bool(opts.get("voice_profile_id") or opts.get("character_name"))
+            prof_id = opts.get("voice_profile_id")
+            if prof_id is not None:
+                try:
+                    async with get_db(self.db_path) as conn:
+                        target_profile = await crud.get_voice_profile(conn, int(prof_id))
+                except Exception as exc:
+                    logger.debug("Could not resolve voice_profile_id %s: %s", prof_id, exc)
+            if not target_profile and opts.get("character_name"):
+                try:
+                    async with get_db(self.db_path) as conn:
+                        target_profile = await crud.get_voice_profile_by_name(conn, str(opts["character_name"]))
+                except Exception as exc:
+                    logger.debug("Could not resolve character_name %s: %s", opts.get("character_name"), exc)
+            if not target_profile:
+                try:
+                    async with get_db(self.db_path) as conn:
+                        target_profile = await crud.get_active_voice_profile(conn)
+                except Exception as exc:
+                    logger.debug("Could not resolve active voice profile: %s", exc)
+
+            if not target_profile:
+                try:
+                    from galgame2voice.services.voice_manager import get_voice_manager
+                    vm = get_voice_manager()
+                    target_profile = vm.active_profile or await vm.get_active_profile()
+                except Exception as exc:
+                    logger.debug("Could not resolve voice manager active profile: %s", exc)
+            if target_profile:
+                opts.setdefault("voice_profile_id", target_profile.id)
+                opts.setdefault("prompt_lang", target_profile.prompt_lang)
+                opts.setdefault("text_lang", target_profile.text_lang)
+
+                fallback_ref_audio = target_profile.ref_audio_path
+                fallback_prompt_text = target_profile.prompt_text
+                fallback_prompt_lang = target_profile.prompt_lang
+                char_name = getattr(target_profile, "name", "") or "四季夏目"
 
                 # Ensure fallback_ref_audio exists; if not, point to character package or bundled gentle.ogg
                 settings = get_settings()
                 if resolve_existing_audio_path(fallback_ref_audio) is None:
-                    char_default = settings.characters_dir / "四季夏目" / "refs" / "gentle.ogg"
+                    char_default = settings.characters_dir / char_name / "refs" / "gentle.ogg"
                     bundled_default = settings.project_root / "audio" / "references" / "natsume" / "gentle.ogg"
                     if char_default.is_file():
                         fallback_ref_audio = str(char_default.resolve())
@@ -145,7 +177,6 @@ class TtsService:
                 resolved_emo = None
                 if ai_adaptive and emotion:
                     from galgame2voice.services.emotion_references import resolve_emotion_reference
-                    char_name = getattr(active, "name", "") or "四季夏目"
                     resolved_emo = resolve_emotion_reference(char_name, str(emotion))
 
                 if resolved_emo:
@@ -191,9 +222,11 @@ class TtsService:
                             opts["ref_audio_path"] = fallback_ref_audio
                             opts["prompt_text"] = fallback_prompt_text
                             opts["prompt_lang"] = fallback_prompt_lang
-                    elif not getattr(self.client, "current_refer_audio", None):
-                        opts.setdefault("ref_audio_path", fallback_ref_audio)
-                        opts.setdefault("prompt_text", fallback_prompt_text)
+                    else:
+                        if has_explicit_voice or not getattr(self.client, "current_refer_audio", None):
+                            opts.setdefault("ref_audio_path", fallback_ref_audio)
+                            opts.setdefault("prompt_text", fallback_prompt_text)
+                            opts.setdefault("prompt_lang", fallback_prompt_lang)
         except Exception as exc:
             logger.debug("Could not auto-populate active profile options in TtsService: %s", exc)
         return opts

@@ -16,6 +16,7 @@ from galgame2voice.services.emotion_classifier import (
     EMOTION_NAME_MAP,
     VALID_EMOTIONS,
     classify_emotion,
+    extract_bracketed_emotion,
 )
 from galgame2voice.utils.prosody import (
     clamp_dynamic_speed,
@@ -28,6 +29,10 @@ from galgame2voice.utils.text_splitter import (
 )
 
 logger = logging.getLogger("galgame2voice.services.streaming_parser")
+
+TERMINAL_PUNCT_WITH_CLOSING = re.compile(r'[。！？!?\n][」』"\'”’\)）\]】]*$')
+CLAUSE_PUNCT_WITH_CLOSING = re.compile(r'[、，,][」』"\'”’\)）\]】]*$')
+TRAILING_PUNCT_AND_CLOSING = re.compile(r'[、，,\s…\.〜~ー\-」』"\'”’\)）\]】]+$')
 
 
 class StreamingBilingualParser:
@@ -196,12 +201,32 @@ class StreamingBilingualParser:
                     self.chinese_extracted = current_ch
                     self.emitted_chinese_len = len(current_ch)
 
+        if not self.emotion_extracted:
+            lead_emo = None
+            if self.chinese_extracted:
+                lead_emo, _ = extract_bracketed_emotion(self.chinese_extracted)
+            if not lead_emo and self.japanese_extracted:
+                lead_emo, _ = extract_bracketed_emotion(self.japanese_extracted)
+            if lead_emo:
+                self.emotion_extracted = lead_emo
+                if self.tts_emotion is None:
+                    self.tts_emotion = lead_emo
+                    self.tts_params["emotion"] = lead_emo
+
         # 2. Incremental Japanese Sentence Slicing
         ja_match = re.search(r'"japanese"\s*:\s*"((?:[^"\\]|\\.)*)', sanitized)
         if ja_match:
             raw_ja = ja_match.group(1)
             current_ja = self._unescape_json_string(raw_ja)
             self.japanese_extracted = current_ja
+
+            if not self.emotion_extracted:
+                lead_emo_ja, _ = extract_bracketed_emotion(self.japanese_extracted)
+                if lead_emo_ja:
+                    self.emotion_extracted = lead_emo_ja
+                    if self.tts_emotion is None:
+                        self.tts_emotion = lead_emo_ja
+                        self.tts_params["emotion"] = lead_emo_ja
 
             is_first = not self.first_sentence_emitted
             all_sentences = split_japanese_sentences(current_ja, is_first_chunk=is_first)
@@ -214,11 +239,11 @@ class StreamingBilingualParser:
                 if all_sentences:
                     last_sent = all_sentences[-1]
                     if is_first and len(all_sentences) == 1:
-                        clause = re.sub(r'[、，,\s…\.〜~ー\-]+$', '', last_sent)
+                        clause = TRAILING_PUNCT_AND_CLOSING.sub('', last_sent)
                         valid_end = bool(
-                            re.search(r'[。！？!?\n]$', last_sent)
+                            TERMINAL_PUNCT_WITH_CLOSING.search(last_sent)
                             or (
-                                re.search(r'[、，,]$', last_sent)
+                                CLAUSE_PUNCT_WITH_CLOSING.search(last_sent)
                                 and len(last_sent.strip()) >= 6
                                 and is_natural_clause_boundary(clause)
                             )
@@ -226,7 +251,7 @@ class StreamingBilingualParser:
                         if not valid_end:
                             all_sentences = all_sentences[:-1]
                     else:
-                        if not re.search(r'[。！？!?\n]$', last_sent):
+                        if not TERMINAL_PUNCT_WITH_CLOSING.search(last_sent):
                             all_sentences = all_sentences[:-1]
 
             completed_text = "".join(all_sentences)
@@ -246,11 +271,11 @@ class StreamingBilingualParser:
                 if all_sentences:
                     last_sent = all_sentences[-1]
                     if is_first and len(all_sentences) == 1:
-                        clause = re.sub(r'[、，,\s…\.〜~ー\-]+$', '', last_sent)
+                        clause = TRAILING_PUNCT_AND_CLOSING.sub('', last_sent)
                         valid_end = bool(
-                            re.search(r'[。！？!?\n]$', last_sent)
+                            TERMINAL_PUNCT_WITH_CLOSING.search(last_sent)
                             or (
-                                re.search(r'[、，,]$', last_sent)
+                                CLAUSE_PUNCT_WITH_CLOSING.search(last_sent)
                                 and len(last_sent.strip()) >= 6
                                 and is_natural_clause_boundary(clause)
                             )
@@ -258,7 +283,7 @@ class StreamingBilingualParser:
                         if not valid_end:
                             all_sentences = all_sentences[:-1]
                     else:
-                        if not re.search(r'[。！？!?\n]$', last_sent):
+                        if not TERMINAL_PUNCT_WITH_CLOSING.search(last_sent):
                             all_sentences = all_sentences[:-1]
                 completed_text = "".join(all_sentences)
                 if len(completed_text) > self.emitted_japanese_len:
@@ -378,6 +403,18 @@ class StreamingBilingualParser:
                     self.chinese_extracted = sanitized
                 if not self.japanese_extracted:
                     self.japanese_extracted = self.chinese_extracted
+
+        if not self.emotion_extracted:
+            lead_emo = None
+            if self.chinese_extracted:
+                lead_emo, _ = extract_bracketed_emotion(self.chinese_extracted)
+            if not lead_emo and self.japanese_extracted:
+                lead_emo, _ = extract_bracketed_emotion(self.japanese_extracted)
+            if lead_emo:
+                self.emotion_extracted = lead_emo
+                if self.tts_emotion is None:
+                    self.tts_emotion = lead_emo
+                    self.tts_params["emotion"] = lead_emo
 
         self.emotion_extracted = classify_emotion(self.chinese_extracted, self.japanese_extracted, self.emotion_extracted)
 

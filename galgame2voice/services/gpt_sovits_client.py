@@ -45,24 +45,116 @@ _BUNDLED_REF_LANG = "ja"
 # Japanese Parentheses Cleaner (Stage Direction Stripper)
 # ============================================================================
 
+ENGLISH_STAGE_CUES = re.compile(
+    r'^(?:'
+    r'giggle|giggles|giggling|'
+    r'sigh|sighs|sighing|'
+    r'nod|nods|nodding|'
+    r'smile|smiles|smiling|'
+    r'whisper|whispers|whispering|'
+    r'laugh|laughs|laughing|laughter|'
+    r'blush|blushes|blushing|'
+    r'chuckle|chuckles|chuckling|'
+    r'pause|pauses|'
+    r'wave|waves|waving|'
+    r'wink|winks|winking|'
+    r'pout|pouts|pouting|'
+    r'shrug|shrugs|shrugging|'
+    r'cough|coughs|coughing|'
+    r'snicker|snickers|snickering|'
+    r'sob|sobs|sobbing|crying|tears|'
+    r'clears?\s+throat|'
+    r'leaves|enters|'
+    r'gasp|gasps|gasping|'
+    r'happy|sad|angry|surprised|confused|gentle|tsundere|cool|neutral|excited|shy'
+    r')(?::\s*.*)?$',
+    re.IGNORECASE
+)
+
+STAGE_CUE_ACTION_PATTERN = re.compile(
+    r'^(?:'
+    r'微笑|笑|ため息|深呼吸|手|目|顔|首|静寂|咳|怒|泣|照れ|赤面|慌て|あわて|囁き|ささやき|小声|大声|早口|'
+    r'ためいき|うなず|頷|振り|視線|息|声|口|表情|沈黙|足音|動作|仕草|仕組|ウインク|ウィンク|ジト目|'
+    r'元気|落ち着'
+    r')|'
+    r'(?:心の声|心の叫び|心のつぶやき|独り言|ナレーション|効果音|雷鳴)$',
+    re.IGNORECASE
+)
+
+STAGE_CUE_MODIFIERS_PATTERN = re.compile(r"(?:ながら|そうに|つつ|顔で|声で|気味に|風に|する|して|んで|った|よく|いて)$")
+STAGE_CUE_EXACT_SET = {
+    "汗", "苦笑", "照れ", "溜息", "ため息", "ためいき", "沈黙", "赤面", "困惑", "微笑", "笑顔", "爆笑", "失笑",
+    "驚き", "安堵", "息", "咳", "ウインク", "ウィンク", "ウインクする", "ウィンクする", "手を振る", "手を振って",
+    "首を横に振る", "首を振る", "首を傾げる", "首をかしげる", "うなずく", "頷く", "ジト目", "照れ笑い", "苦笑い",
+    "吹き出す", "俯く", "うつむく", "微笑む", "微笑んで", "微笑んだ",
+    "元気よく", "落ち着いて", "落ち着く", "深呼吸して", "深呼吸する"
+}
+
+
+def is_spoken_dialogue_inside_brackets(content: str) -> bool:
+    """
+    Determines if bracketed content is actually spoken dialogue or character thought (which should be voiced)
+    rather than a silent stage direction or action cue (which should be stripped).
+    """
+    c = re.sub(r"^[（(【\[〖〔]+|[)）】\]〗〕]+$", "", content.strip()).strip()
+    if not c:
+        return False
+    # Check English stage direction cues first (e.g. (giggles), (waves), (sigh), (whispers: 'hello'))
+    if ENGLISH_STAGE_CUES.match(c):
+        return False
+    # Strip exact action cue nouns/phrases
+    if c in STAGE_CUE_EXACT_SET:
+        return False
+    # If it matches common stage direction action keywords or prefixes
+    if STAGE_CUE_ACTION_PATTERN.search(c):
+        if len(c) < 20 and (STAGE_CUE_MODIFIERS_PATTERN.search(c) or "心の声" in c or len(c) <= 8):
+            return False
+    if len(c) <= 12 and STAGE_CUE_MODIFIERS_PATTERN.search(c):
+        return False
+    # If it contains dialogue punctuation marks, it is spoken text
+    if re.search(r'[。！？!?…]', c):
+        return True
+    # Default to True so dialogue/thoughts inside parentheses are preserved and voiced
+    return True
+
+
 def clean_japanese_parentheses(text: str, max_passes: int = 5) -> str:
     """
-    Strips stage cues and action directions enclosed in fullwidth （...） or ASCII (...) parentheses.
+    Strips stage cues and action directions enclosed in fullwidth （...）, ASCII (...),
+    lenticular 【...】, square [...], white lenticular 〖...〗, or tortoise shell 〔...〕 brackets.
+    Preserves actual spoken dialogue text that may be wrapped in parenthetical quotes.
     Applies multi-pass regex sanitization (up to max_passes) to handle nested brackets like （（ため息））.
     """
     if not text:
         return ""
 
     cleaned = text
+    bracket_pairs = [('（', '）'), ('(', ')'), ('【', '】'), ('[', ']'), ('〖', '〗'), ('〔', '〕')]
     for _ in range(max_passes):
         prev = cleaned
-        cleaned = re.sub(r'（[^（）]*）', '', cleaned)
-        cleaned = re.sub(r'\([^()]*\)', '', cleaned)
+        for o, cl in bracket_pairs:
+            pattern = re.escape(o) + r'([^' + re.escape(o) + re.escape(cl) + r']*)' + re.escape(cl)
+
+            def _replace_bracket(m):
+                inside = m.group(1)
+                if is_spoken_dialogue_inside_brackets(inside):
+                    return inside
+                return ""
+
+            cleaned = re.sub(pattern, _replace_bracket, cleaned)
         if cleaned == prev:
             break
 
-    cleaned = cleaned.replace('（', '').replace('）', '').replace('(', '').replace(')', '')
+    cleaned = (
+        cleaned.replace('（', '').replace('）', '')
+        .replace('(', '').replace(')', '')
+        .replace('【', '').replace('】', '')
+        .replace('[', '').replace(']', '')
+        .replace('〖', '').replace('〗', '')
+        .replace('〔', '').replace('〕', '')
+    )
     return cleaned.strip()
+
 
 
 # ============================================================================

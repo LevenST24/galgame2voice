@@ -223,13 +223,14 @@ async def convert_ogg_to_wav(
             "Install ffmpeg and ensure it is on PATH, or provide ffmpeg_path."
         )
 
-    # Execute ffmpeg with temporary files for cross-platform stability
-    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as in_file, \
-         tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as out_file:
-        in_path = Path(in_file.name)
-        out_path = Path(out_file.name)
-
+    in_path: Optional[Path] = None
+    out_path: Optional[Path] = None
     try:
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as in_file:
+            in_path = Path(in_file.name)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as out_file:
+            out_path = Path(out_file.name)
+
         in_path.write_bytes(ogg_bytes)
         cmd = [
             ffmpeg_bin, "-y",
@@ -248,16 +249,18 @@ async def convert_ogg_to_wav(
         raise ValueError(f"Audio conversion failed: {exc}") from exc
     finally:
         for p in (in_path, out_path):
-            for _ in range(10):
-                try:
-                    if p.exists():
-                        p.unlink(missing_ok=True)
-                    break
-                except OSError:
+            if p is not None:
+                for _ in range(10):
                     try:
-                        await asyncio.sleep(0.05)
-                    except asyncio.CancelledError:
-                        pass
+                        if p.exists():
+                            p.unlink(missing_ok=True)
+                        break
+                    except OSError:
+                        try:
+                            await asyncio.sleep(0.05)
+                        except asyncio.CancelledError:
+                            pass
+
 
 
 async def convert_wav_to_ogg(
@@ -289,12 +292,14 @@ async def convert_wav_to_ogg(
             "Install ffmpeg and ensure it is on PATH, or provide ffmpeg_path."
         )
 
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as in_file, \
-         tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as out_file:
-        in_path = Path(in_file.name)
-        out_path = Path(out_file.name)
-
+    in_path: Optional[Path] = None
+    out_path: Optional[Path] = None
     try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as in_file:
+            in_path = Path(in_file.name)
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as out_file:
+            out_path = Path(out_file.name)
+
         in_path.write_bytes(wav_bytes)
         cmd = [
             ffmpeg_bin, "-y",
@@ -313,16 +318,18 @@ async def convert_wav_to_ogg(
         raise ValueError(f"Audio conversion failed: {exc}") from exc
     finally:
         for p in (in_path, out_path):
-            for _ in range(10):
-                try:
-                    if p.exists():
-                        p.unlink(missing_ok=True)
-                    break
-                except OSError:
+            if p is not None:
+                for _ in range(10):
                     try:
-                        await asyncio.sleep(0.05)
-                    except asyncio.CancelledError:
-                        pass
+                        if p.exists():
+                            p.unlink(missing_ok=True)
+                        break
+                    except OSError:
+                        try:
+                            await asyncio.sleep(0.05)
+                        except asyncio.CancelledError:
+                            pass
+
 
 
 __all__ = [

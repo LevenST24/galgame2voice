@@ -195,6 +195,12 @@ let nearBottom = true;
  * 点其他消息 = 停止旧的、播放新的。
  */
 let currentVoice = null; // { msgId, paused, pause, resume, setPlaying, setProgress, stop }
+streamAudioController.onQueueEmpty = () => {
+  if (currentVoice) {
+    try { currentVoice.setPlaying(false); } catch (_) {}
+    currentVoice = null;
+  }
+};
 let micTimer = null;
 let micSecs = 0;
 let micBase = '';
@@ -235,10 +241,6 @@ function playSingleAudio(getAudio, msgId, ctl, { objectUrl = null } = {}) {
         ctl.setProgress(1);
         ctl.setPlaying(false);
         if (currentVoice && currentVoice.msgId === msgId) currentVoice = null;
-        if (objectUrl) {
-          try { URL.revokeObjectURL(objectUrl); } catch (_) {}
-          objectUrl = null;
-        }
       }
     };
     audio.onerror = () => {
@@ -441,11 +443,14 @@ async function synthesizeAiVoice(msg, ctl) {
 }
 
 async function playAiVoice(msg, ctl) {
-  // 同一条消息：切换暂停 / 继续
+  // 同一条消息：若正在播放中则切换暂停 / 继续；若已播完则重置以便重新从头播放
   if (currentVoice && currentVoice.msgId === msg.id) {
-    if (currentVoice.paused) currentVoice.resume();
-    else currentVoice.pause();
-    return;
+    if (streamAudioController.isPlaying) {
+      if (currentVoice.paused) currentVoice.resume();
+      else currentVoice.pause();
+      return;
+    }
+    currentVoice = null;
   }
   stopCurrentVoice();
 
@@ -1714,7 +1719,23 @@ function handleDelete(id) {
 function newChat() {
   interruptAll();
   closeDrawer();
+  const prevSession = getActive();
   const s = createSession();
+  if (prevSession && prevSession.settings && prevSession.settings.voiceProfileId) {
+    s.settings.voiceProfileId = prevSession.settings.voiceProfileId;
+    s.settings.systemPrompt = prevSession.settings.systemPrompt;
+    s.settings.ttsSpeed = prevSession.settings.ttsSpeed;
+  } else if (activeProfileId) {
+    const active = voiceProfiles.find((p) => p.id === activeProfileId);
+    if (active) {
+      s.settings.voiceProfileId = active.id;
+      if (active.system_prompt) s.settings.systemPrompt = active.system_prompt;
+      if (active.name === '高楯欧丽叶') s.settings.ttsSpeed = 0.88;
+      else if (active.name === '常陆茉子') s.settings.ttsSpeed = 0.90;
+      else if (active.name === '白雪乃爱') s.settings.ttsSpeed = 1.05;
+    }
+  }
+  saveState();
   fullRender(true);
   ensureSessionVoice(s);
   dom.input.focus();
@@ -2270,7 +2291,77 @@ dom.sessionModal.querySelectorAll('[data-close]').forEach((btn) =>
   btn.addEventListener('click', () => closeModal(dom.sessionModal))
 );
 dom.sTemp.addEventListener('input', syncRangeLabels);
-dom.sVoice.addEventListener('change', syncCustomVoiceBox);
+dom.sVoice.addEventListener('change', async () => {
+  syncCustomVoiceBox();
+  const val = dom.sVoice.value;
+  const s = getActive();
+  if (val === '__custom__') return;
+  if (!val) {
+    if (s) {
+      s.settings.voiceProfileId = null;
+      s.updatedAt = Date.now();
+      saveState();
+      fetch('/api/chat/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: s.id,
+          title: s.title,
+          voice_profile_id: null,
+          custom_system_prompt: s.settings?.systemPrompt,
+          settings: s.settings,
+        }),
+      }).catch(() => {});
+      renderSidebar();
+      renderHeader();
+    }
+    return;
+  }
+  const chosen = voiceProfiles.find((p) => String(p.id) === String(val));
+  if (chosen) {
+    if (chosen.system_prompt) {
+      dom.sSystem.value = chosen.system_prompt;
+    }
+    if (chosen.name === '高楯欧丽叶') {
+      dom.sTtsSpeed.value = 0.88;
+    } else if (chosen.name === '常陆茉子') {
+      dom.sTtsSpeed.value = 0.90;
+    } else if (chosen.name === '白雪乃爱') {
+      dom.sTtsSpeed.value = 1.05;
+    }
+    syncRangeLabels();
+
+    if (s) {
+      s.settings.voiceProfileId = chosen.id;
+      if (chosen.system_prompt) s.settings.systemPrompt = chosen.system_prompt;
+      if (chosen.name === '高楯欧丽叶') s.settings.ttsSpeed = 0.88;
+      else if (chosen.name === '常陆茉子') s.settings.ttsSpeed = 0.90;
+      else if (chosen.name === '白雪乃爱') s.settings.ttsSpeed = 1.05;
+      s.updatedAt = Date.now();
+      saveState();
+      renderSidebar();
+      renderHeader();
+
+      try {
+        await fetch('/api/chat/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: s.id,
+            title: s.title,
+            voice_profile_id: chosen.id,
+            custom_system_prompt: s.settings?.systemPrompt,
+            settings: s.settings,
+          }),
+        });
+      } catch (err) {
+        console.warn('Failed to persist session on voice switch:', err);
+      }
+      await ensureSessionVoice(s);
+      showToast(`已切换至角色：${chosen.name}`, 'success');
+    }
+  }
+});
 dom.sVoiceDelete.addEventListener('click', deleteVoiceProfile);
 dom.sCvCreate.addEventListener('click', createCustomVoice);
 dom.sTopP.addEventListener('input', syncRangeLabels);
@@ -2297,13 +2388,13 @@ dom.sReset.addEventListener('click', () => {
   dom.sTtsTemp.value = DEFAULT_SESSION_SETTINGS.ttsTemperature;
   syncRangeLabels();
 });
-dom.sSave.addEventListener('click', () => {
+dom.sSave.addEventListener('click', async () => {
   const s = getActive();
   if (!s) return;
   const maxTokens = Math.round(Number(dom.sMaxTokens.value)) || DEFAULT_SESSION_SETTINGS.maxTokens;
   s.settings = {
     systemPrompt: dom.sSystem.value,
-    voiceProfileId: dom.sVoice.value ? Number(dom.sVoice.value) : null,
+    voiceProfileId: dom.sVoice.value && dom.sVoice.value !== '__custom__' ? Number(dom.sVoice.value) : null,
     temperature: Number(dom.sTemp.value),
     topP: Number(dom.sTopP.value),
     maxTokens: Math.min(32768, Math.max(16, maxTokens)),
@@ -2318,21 +2409,28 @@ dom.sSave.addEventListener('click', () => {
   };
   s.updatedAt = Date.now();
   saveState();
-  fetch('/api/chat/sessions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      id: s.id,
-      title: s.title,
-      voice_profile_id: s.settings?.voiceProfileId,
-      custom_system_prompt: s.settings?.systemPrompt,
-      settings: s.settings,
-    }),
-  }).catch(() => {});
+  try {
+    const res = await fetch('/api/chat/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: s.id,
+        title: s.title,
+        voice_profile_id: s.settings?.voiceProfileId,
+        custom_system_prompt: s.settings?.systemPrompt,
+        settings: s.settings,
+      }),
+    });
+    if (!res.ok) {
+      console.warn('Failed to persist session to backend:', res.status);
+    }
+  } catch (err) {
+    console.warn('Network error persisting session to backend:', err);
+  }
   closeModal(dom.sessionModal);
   renderSidebar();
   renderHeader();
-  ensureSessionVoice(s);
+  await ensureSessionVoice(s);
   showToast('会话参数已保存', 'success');
 });
 

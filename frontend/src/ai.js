@@ -29,6 +29,9 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
 
   const body = { prompt, session_id: sessionId, stream: true };
   if (settings) {
+    if (settings.voiceProfileId) {
+      body.voice_profile_id = settings.voiceProfileId;
+    }
     if ((settings.systemPrompt || '').trim()) body.system_prompt = settings.systemPrompt.trim();
     if (typeof settings.temperature === 'number') body.temperature = settings.temperature;
     if (typeof settings.maxContext === 'number') body.max_context = Math.round(settings.maxContext);
@@ -37,6 +40,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
     if (typeof settings.freqPenalty === 'number') body.frequency_penalty = settings.freqPenalty;
     if (typeof settings.presPenalty === 'number') body.presence_penalty = settings.presPenalty;
     const ttsOpts = {};
+    if (settings.voiceProfileId) ttsOpts.voice_profile_id = settings.voiceProfileId;
     if (typeof settings.ttsSpeed === 'number') ttsOpts.speed = settings.ttsSpeed;
     if (typeof settings.ttsTopK === 'number') ttsOpts.top_k = Math.round(settings.ttsTopK);
     if (typeof settings.ttsTopP === 'number') ttsOpts.top_p = settings.ttsTopP;
@@ -111,6 +115,8 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
               audioUrls.push(json.audio_url);
               if (typeof onAudio === 'function') onAudio(json.audio_url, audioUrls.length - 1, json.sentence || '');
             }
+          } else if (eventName === 'audio_chunk_error') {
+            console.warn('[streamChat] audio chunk error:', json.error, json.sentence);
           } else if (eventName === 'error') {
             finish(false, json.error || '服务流式处理出错');
             return;
@@ -119,12 +125,14 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             if (json.japanese) {
               fullJapanese = json.japanese;
             }
-            if (audioUrls.length === 0) {
-              if (Array.isArray(json.chunks) && json.chunks.length > 0) {
-                for (const c of json.chunks) {
-                  if (c && c.audio_url) audioUrls.push(c.audio_url);
+            if (Array.isArray(json.chunks) && json.chunks.length > audioUrls.length) {
+              for (const c of json.chunks) {
+                if (c && c.audio_url && !audioUrls.includes(c.audio_url)) {
+                  audioUrls.push(c.audio_url);
                 }
-              } else if (json.audio_url || json.total_audio_url) {
+              }
+            } else if (audioUrls.length === 0) {
+              if (json.audio_url || json.total_audio_url) {
                 audioUrls.push(json.audio_url || json.total_audio_url);
               }
             }

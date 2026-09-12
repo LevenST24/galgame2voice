@@ -209,7 +209,15 @@ class TtsCacheManager:
         top_p_str = f"{top_p:.3f}"
         seed = int(opts.get("seed", -1))
         batch_size = int(opts.get("batch_size", 1))
-        text_split_method = str(opts.get("text_split_method", "cut1")).lower()
+        user_split = (
+            opts.get("text_split_method")
+            or opts.get("cut_option")
+            or opts.get("how_to_cut")
+        )
+        if user_split:
+            text_split_method = str(user_split).lower()
+        else:
+            text_split_method = "cut0" if len(clean_text.strip()) <= 80 else "cut2"
         fragment_interval = float(opts.get("fragment_interval", 0.3))
         frag_str = f"{fragment_interval:.3f}"
 
