@@ -31,7 +31,7 @@ if not hasattr(status, "HTTP_422_UNPROCESSABLE_CONTENT"):
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
-from galgame2voice.routers import chat, config, health, voice, memory, affection, characters, metrics
+from galgame2voice.routers import chat, config, health, voice, memory, affection, characters, metrics, system
 from galgame2voice.security.auth import require_auth
 from galgame2voice.security.rate_limit import RateLimitMiddleware
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
@@ -429,6 +429,7 @@ def create_app() -> FastAPI:
     app.include_router(memory.router, dependencies=auth_deps)
     app.include_router(affection.router, dependencies=auth_deps)
     app.include_router(metrics.router, dependencies=auth_deps)
+    app.include_router(system.router, dependencies=auth_deps)
 
 
     # 3. Mount Static Audio Storage Directory

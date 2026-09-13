@@ -183,3 +183,107 @@ export const BUILTIN_PRESETS = [
     description: '本地或私有部署的 OpenAI 兼容推理服务 (Ollama, vLLM, LMStudio)',
   },
 ];
+
+/**
+ * 格式化系统更新检查状态
+ * @param {Object} data 后端返回的 SystemVersionResponse 数据
+ * @returns {{
+ *   badgeClass: string,
+ *   badgeText: string,
+ *   title: string,
+ *   desc: string,
+ *   canUpdate: boolean,
+ *   hasUpdate: boolean
+ * }}
+ */
+export function formatUpdateStatus(data) {
+  if (!data) {
+    return {
+      badgeClass: 'badge-pill-gray',
+      badgeText: '状态未知',
+      title: '版本信息未获取',
+      desc: '请点击“检查更新”以获取最新状态。',
+      canUpdate: true,
+      hasUpdate: false,
+    };
+  }
+
+  if (data.error) {
+    return {
+      badgeClass: 'badge-pill-yellow',
+      badgeText: '检查受阻',
+      title: '无法获取远程更新',
+      desc: data.error,
+      canUpdate: true,
+      hasUpdate: false,
+    };
+  }
+
+  if (data.has_update && data.behind_count > 0) {
+    return {
+      badgeClass: 'badge-pill-indigo',
+      badgeText: `落后 ${data.behind_count} 个提交`,
+      title: `发现新版本可用 (落后 ${data.behind_count} 个提交)`,
+      desc: `远程最新版本为 ${data.latest_version}，本地当前版本为 ${data.current_version}。点击下方“一键拉取并更新”即可自动拉取最新代码并部署产物。`,
+      canUpdate: true,
+      hasUpdate: true,
+    };
+  }
+
+  return {
+    badgeClass: 'badge-pill-green',
+    badgeText: '已是最新',
+    title: '当前已是最新版本',
+    desc: `本地版本 (${data.current_version}) 与远程 origin/${data.current_branch || 'main'} 保持同步，可随时重新拉取或重新构建。`,
+    canUpdate: true,
+    hasUpdate: false,
+  };
+}
+
+/**
+ * 渲染更新提交日志列表
+ * @param {HTMLElement} listEl
+ * @param {Array<string>} commitsLog
+ */
+export function renderCommitsLog(listEl, commitsLog) {
+  if (!listEl) return;
+  listEl.innerHTML = '';
+  if (!Array.isArray(commitsLog) || commitsLog.length === 0) {
+    const li = document.createElement('li');
+    li.className = 'commits-log-empty';
+    li.textContent = '暂无新提交记录';
+    listEl.appendChild(li);
+    return;
+  }
+
+  commitsLog.forEach((entry) => {
+    const li = document.createElement('li');
+    li.className = 'commits-log-item';
+    
+    // 支持 "hash message (date)" 格式分割高亮
+    const match = typeof entry === 'string' ? entry.match(/^([a-f0-9]+)\s+(.+?)(?:\s+\((.*?)\))?$/) : null;
+    if (match) {
+      const hashSpan = document.createElement('span');
+      hashSpan.className = 'commit-hash';
+      hashSpan.textContent = match[1];
+
+      const msgSpan = document.createElement('span');
+      msgSpan.className = 'commit-msg';
+      msgSpan.textContent = match[2];
+
+      li.appendChild(hashSpan);
+      li.appendChild(msgSpan);
+
+      if (match[3]) {
+        const dateSpan = document.createElement('span');
+        dateSpan.className = 'commit-date';
+        dateSpan.textContent = match[3];
+        li.appendChild(dateSpan);
+      }
+    } else {
+      li.textContent = String(entry);
+    }
+    listEl.appendChild(li);
+  });
+}
+

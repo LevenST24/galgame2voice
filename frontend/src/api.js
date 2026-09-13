@@ -116,3 +116,48 @@ export async function saveConfig(payload) {
   }
   return data;
 }
+
+/**
+ * 获取系统当前版本与 Git 远程更新状态
+ * @param {boolean} checkRemote 是否检查远程仓库新提交
+ * @returns {Promise<Object>}
+ */
+export async function fetchSystemVersion(checkRemote = true) {
+  const res = await fetch(`/api/system/version?check_remote=${checkRemote ? 'true' : 'false'}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.detail || `HTTP ${res.status}`);
+  }
+  return data;
+}
+
+/**
+ * 检查 GitHub 远程是否有可用更新
+ * @returns {Promise<Object>}
+ */
+export async function checkSystemUpdate() {
+  const res = await fetch('/api/system/update/check');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.detail || `HTTP ${res.status}`);
+  }
+  return data;
+}
+
+/**
+ * 一键拉取并应用 GitHub 更新
+ * @param {Object} [payload]
+ * @returns {Promise<Object>}
+ */
+export async function applySystemUpdate(payload = {}) {
+  const res = await fetch('/api/system/update/apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.detail || data.output || `HTTP ${res.status}`);
+  }
+  return data;
+}

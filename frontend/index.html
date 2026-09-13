@@ -217,6 +217,19 @@
       <path d="M12 3l1.9 4.8L18.7 9.7l-4.8 1.9L12 16.4l-1.9-4.8L5.3 9.7l4.8-1.9L12 3z"/>
       <path d="M18.5 15.5l1 2.5 2.5 1-2.5 1-1 2.5-1-2.5-2.5-1 2.5-1 1-2.5z"/>
     </symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24">
+      <path d="M23 4v6h-6M1 20v-6h6"/>
+      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+    </symbol>
+    <symbol id="i-download" viewBox="0 0 24 24">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+    </symbol>
+    <symbol id="i-git-branch" viewBox="0 0 24 24">
+      <line x1="6" y1="3" x2="6" y2="15"/>
+      <circle cx="18" cy="6" r="3"/>
+      <circle cx="6" cy="18" r="3"/>
+      <path d="M18 9a9 9 0 0 1-9 9"/>
+    </symbol>
   </svg>
 
   <div class="app">
@@ -324,6 +337,10 @@
           <svg class="icon"><use href="#i-quill"></use></svg>
           <span>记忆与人设</span>
         </button>
+        <button type="button" class="modal-tab-btn" data-gtab="update">
+          <svg class="icon"><use href="#i-refresh"></use></svg>
+          <span>系统与更新</span>
+        </button>
       </div>
       <div class="modal-body">
         <!-- 选项卡 1: 系统状态看板 -->
@@ -406,6 +423,26 @@
                 <button type="button" class="btn-card-action btn-card-action-danger" id="gBtnClearCache">
                   <svg class="icon"><use href="#i-trash"></use></svg>
                   <span>立即清空缓存</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="status-card-box">
+              <div class="status-card-head">
+                <span class="status-card-title">
+                  <span class="card-icon-dot">🚀</span>
+                  <span>系统版本与更新</span>
+                </span>
+                <span id="gDashVersionBadge" class="badge-status-pill badge-pill-green">加载中</span>
+              </div>
+              <div class="status-card-body">
+                <div class="status-card-main font-mono" id="gDashVersionCommit">Commit: -</div>
+                <div class="status-card-sub" id="gDashVersionBranch">分支: main</div>
+              </div>
+              <div class="status-card-act">
+                <button type="button" class="btn-card-action" id="gBtnGoUpdateTab" title="查看更新详情与一键拉取">
+                  <svg class="icon"><use href="#i-refresh"></use></svg>
+                  <span>检查更新 →</span>
                 </button>
               </div>
             </div>
@@ -631,6 +668,89 @@
           <div class="field">
             <label>全局默认人设提示词 (System Prompt 模板)</label>
             <textarea id="gDefaultSystemPrompt" rows="6" placeholder="创建新会话时的默认系统设定..."></textarea>
+          </div>
+        </div>
+
+        <!-- 选项卡 6: 系统版本与更新 -->
+        <div class="gtab-panel hidden" id="gp-update">
+          <div class="update-panel-container">
+            <div class="update-header-card">
+              <div class="update-card-title-row">
+                <div class="update-title-group">
+                  <span class="update-icon-badge"><svg class="icon"><use href="#i-git-branch"></use></svg></span>
+                  <div>
+                    <h3 class="update-title-text">系统版本与 GitHub 更新</h3>
+                    <p class="update-subtitle-text">从 GitHub 官方仓库一键拉取最新代码并热重载前端静态产物</p>
+                  </div>
+                </div>
+                <span id="gRemoteStatusTag" class="badge-status-pill badge-pill-gray">待检查</span>
+              </div>
+
+              <div class="update-meta-grid">
+                <div class="update-meta-item">
+                  <span class="update-meta-label">当前版本 (Commit)</span>
+                  <span class="update-meta-val font-mono" id="gCurrentCommit">-</span>
+                </div>
+                <div class="update-meta-item">
+                  <span class="update-meta-label">当前分支 (Branch)</span>
+                  <span class="update-meta-val font-mono" id="gCurrentBranch">main</span>
+                </div>
+                <div class="update-meta-item">
+                  <span class="update-meta-label">最后提交时间</span>
+                  <span class="update-meta-val" id="gCurrentDate">-</span>
+                </div>
+                <div class="update-meta-item">
+                  <span class="update-meta-label">远程仓库 (Remote)</span>
+                  <span class="update-meta-val font-mono" id="gRemoteUrl" title="GitHub 仓库地址">-</span>
+                </div>
+              </div>
+
+              <div class="update-commit-msg-box" id="gCurrentCommitMsg">
+                <span class="commit-msg-label">提交说明:</span>
+                <span class="commit-msg-text" id="gCurrentMsgText">-</span>
+              </div>
+            </div>
+
+            <!-- 操作按钮行 -->
+            <div class="update-actions-bar">
+              <button type="button" class="btn secondary" id="gBtnCheckUpdate">
+                <svg class="icon" id="gIconCheckUpdate"><use href="#i-refresh"></use></svg>
+                <span id="gBtnCheckUpdateText">检查更新</span>
+              </button>
+              <button type="button" class="btn primary" id="gBtnApplyUpdate">
+                <svg class="icon" id="gIconApplyUpdate"><use href="#i-download"></use></svg>
+                <span id="gBtnApplyUpdateText">一键拉取并更新</span>
+              </button>
+            </div>
+
+            <!-- 更新状态 / 提交记录提示框 -->
+            <div id="gUpdateNoticeBox" class="update-notice-box hidden">
+              <div class="update-notice-header">
+                <span class="notice-icon" id="gUpdateNoticeIcon">ℹ️</span>
+                <div class="notice-main">
+                  <div class="notice-title" id="gUpdateNoticeTitle">检查结果</div>
+                  <div class="notice-desc" id="gUpdateNoticeDesc"></div>
+                </div>
+              </div>
+              <div class="commits-log-container hidden" id="gCommitsLogContainer">
+                <div class="commits-log-title">待更新提交记录 (Commits Log):</div>
+                <ul class="commits-log-list" id="gCommitsLogList"></ul>
+              </div>
+            </div>
+
+            <!-- 更新进度与控制台输出框 -->
+            <div id="gUpdateProgressBox" class="update-progress-box hidden">
+              <div class="update-progress-head">
+                <div class="update-progress-status">
+                  <span class="spinner-dot" id="gUpdateSpinner"></span>
+                  <span id="gUpdateProgressTitle">正在从 GitHub 拉取更新...</span>
+                </div>
+                <button type="button" class="btn-text-link hidden" id="gBtnReloadPage">
+                  刷新页面生效
+                </button>
+              </div>
+              <pre class="update-log-terminal" id="gUpdateLogOutput"></pre>
+            </div>
           </div>
         </div>
       </div>

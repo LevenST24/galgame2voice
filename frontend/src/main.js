@@ -43,8 +43,10 @@ import {
   saveProvider,
   activateProvider as apiActivateProvider,
   testProviderConnection,
+  fetchSystemVersion,
+  applySystemUpdate,
 } from './api.js';
-import { formatProviderDiagnostic, BUILTIN_PRESETS } from './settings.js';
+import { formatProviderDiagnostic, BUILTIN_PRESETS, formatUpdateStatus, renderCommitsLog } from './settings.js';
 
 const $ = (id) => document.getElementById(id);
 const dom = {
@@ -183,6 +185,35 @@ const dom = {
   gUserNickname: $('gUserNickname'),
   gDefaultSystemPrompt: $('gDefaultSystemPrompt'),
   gResetBtn: $('gResetBtn'),
+  // 系统版本与更新
+  gDashVersionBadge: $('gDashVersionBadge'),
+  gDashVersionCommit: $('gDashVersionCommit'),
+  gDashVersionBranch: $('gDashVersionBranch'),
+  gBtnGoUpdateTab: $('gBtnGoUpdateTab'),
+  gCurrentCommit: $('gCurrentCommit'),
+  gCurrentBranch: $('gCurrentBranch'),
+  gCurrentDate: $('gCurrentDate'),
+  gRemoteUrl: $('gRemoteUrl'),
+  gRemoteStatusTag: $('gRemoteStatusTag'),
+  gCurrentCommitMsg: $('gCurrentCommitMsg'),
+  gCurrentMsgText: $('gCurrentMsgText'),
+  gBtnCheckUpdate: $('gBtnCheckUpdate'),
+  gBtnCheckUpdateText: $('gBtnCheckUpdateText'),
+  gIconCheckUpdate: $('gIconCheckUpdate'),
+  gBtnApplyUpdate: $('gBtnApplyUpdate'),
+  gBtnApplyUpdateText: $('gBtnApplyUpdateText'),
+  gIconApplyUpdate: $('gIconApplyUpdate'),
+  gUpdateNoticeBox: $('gUpdateNoticeBox'),
+  gUpdateNoticeIcon: $('gUpdateNoticeIcon'),
+  gUpdateNoticeTitle: $('gUpdateNoticeTitle'),
+  gUpdateNoticeDesc: $('gUpdateNoticeDesc'),
+  gCommitsLogContainer: $('gCommitsLogContainer'),
+  gCommitsLogList: $('gCommitsLogList'),
+  gUpdateProgressBox: $('gUpdateProgressBox'),
+  gUpdateProgressTitle: $('gUpdateProgressTitle'),
+  gUpdateSpinner: $('gUpdateSpinner'),
+  gBtnReloadPage: $('gBtnReloadPage'),
+  gUpdateLogOutput: $('gUpdateLogOutput'),
 };
 
 let listInner = null;
@@ -1804,6 +1835,7 @@ function openGlobalSettings() {
   loadProviders();
   loadGlobalConfig();
   fetchSystemTelemetry();
+  loadSystemVersionInfo(false).catch(() => {});
   if (dom.gPreset) {
     dom.gPreset.value = state.global.ttsPreset || '';
   }
@@ -2260,6 +2292,215 @@ if (dom.gResetBtn) {
     if (dom.gPrecision) dom.gPrecision.value = 'auto';
     if (dom.gAudioRetention) dom.gAudioRetention.value = '30';
     showToast('已恢复推荐数值，请点击【保存全局配置】生效', 'info');
+  });
+}
+
+/* ============ 系统版本与 GitHub 一键更新 ============ */
+let currentVersionData = null;
+
+async function loadSystemVersionInfo(checkRemote = false) {
+  if (dom.gDashVersionCommit && !dom.gDashVersionCommit.textContent.startsWith('Commit: ')) {
+    dom.gDashVersionCommit.textContent = 'Commit: 读取中...';
+  }
+  if (dom.gCurrentCommit && dom.gCurrentCommit.textContent === '-') {
+    dom.gCurrentCommit.textContent = '读取中...';
+  }
+
+  try {
+    const data = await fetchSystemVersion(checkRemote);
+    currentVersionData = data;
+    renderSystemVersionUI(data);
+    return data;
+  } catch (err) {
+    console.warn('Failed to load system version:', err);
+    if (dom.gRemoteStatusTag) {
+      dom.gRemoteStatusTag.className = 'badge-status-pill badge-pill-yellow';
+      dom.gRemoteStatusTag.textContent = '读取受阻';
+    }
+    return null;
+  }
+}
+
+function renderSystemVersionUI(data) {
+  if (!data) return;
+
+  // 1. Dashboard 概览卡片更新
+  if (dom.gDashVersionCommit) {
+    dom.gDashVersionCommit.textContent = `Commit: ${data.current_version || '-'}`;
+  }
+  if (dom.gDashVersionBranch) {
+    dom.gDashVersionBranch.textContent = `分支: ${data.current_branch || 'main'}`;
+  }
+  if (dom.gDashVersionBadge) {
+    if (data.has_update) {
+      dom.gDashVersionBadge.className = 'badge-status-pill badge-pill-indigo';
+      dom.gDashVersionBadge.textContent = `有更新 (${data.behind_count})`;
+    } else {
+      dom.gDashVersionBadge.className = 'badge-status-pill badge-pill-green';
+      dom.gDashVersionBadge.textContent = '最新版';
+    }
+  }
+
+  // 2. 独立更新面板字段更新
+  if (dom.gCurrentCommit) dom.gCurrentCommit.textContent = data.current_version || '-';
+  if (dom.gCurrentBranch) dom.gCurrentBranch.textContent = data.current_branch || 'main';
+  if (dom.gCurrentDate) dom.gCurrentDate.textContent = data.commit_date || '-';
+  if (dom.gRemoteUrl) {
+    dom.gRemoteUrl.textContent = data.remote_url || '-';
+    dom.gRemoteUrl.title = data.remote_url || '';
+  }
+  if (dom.gCurrentMsgText) {
+    dom.gCurrentMsgText.textContent = data.commit_message || '无提交信息';
+  }
+
+  const statusInfo = formatUpdateStatus(data);
+  if (dom.gRemoteStatusTag) {
+    dom.gRemoteStatusTag.className = `badge-status-pill ${statusInfo.badgeClass}`;
+    dom.gRemoteStatusTag.textContent = statusInfo.badgeText;
+  }
+
+  // 更新提示框
+  if (dom.gUpdateNoticeBox) {
+    if (data.has_update || data.error || (data.commits_log && data.commits_log.length > 0)) {
+      dom.gUpdateNoticeBox.classList.remove('hidden');
+    }
+    if (dom.gUpdateNoticeTitle) dom.gUpdateNoticeTitle.textContent = statusInfo.title;
+    if (dom.gUpdateNoticeDesc) dom.gUpdateNoticeDesc.textContent = statusInfo.desc;
+    if (dom.gUpdateNoticeIcon) {
+      dom.gUpdateNoticeIcon.textContent = data.has_update ? '🚀' : (data.error ? '⚠️' : '✅');
+    }
+  }
+
+  // 提交日志列表
+  if (dom.gCommitsLogContainer && dom.gCommitsLogList) {
+    if (data.has_update && data.commits_log && data.commits_log.length > 0) {
+      dom.gCommitsLogContainer.classList.remove('hidden');
+      renderCommitsLog(dom.gCommitsLogList, data.commits_log);
+    } else {
+      dom.gCommitsLogContainer.classList.add('hidden');
+      dom.gCommitsLogList.innerHTML = '';
+    }
+  }
+
+  // 一键更新按钮显示逻辑
+  if (dom.gBtnApplyUpdate) {
+    dom.gBtnApplyUpdate.classList.remove('hidden');
+    if (statusInfo.hasUpdate) {
+      dom.gBtnApplyUpdate.className = 'btn primary';
+      if (dom.gBtnApplyUpdateText) {
+        dom.gBtnApplyUpdateText.textContent = `一键拉取并更新 (${data.behind_count} 个新提交)`;
+      }
+    } else {
+      dom.gBtnApplyUpdate.className = 'btn secondary';
+      if (dom.gBtnApplyUpdateText) {
+        dom.gBtnApplyUpdateText.textContent = '一键拉取并更新';
+      }
+    }
+  }
+}
+
+async function handleCheckUpdate() {
+  if (!dom.gBtnCheckUpdate) return;
+  dom.gBtnCheckUpdate.disabled = true;
+  const originalText = dom.gBtnCheckUpdateText ? dom.gBtnCheckUpdateText.textContent : '检查更新';
+  if (dom.gBtnCheckUpdateText) dom.gBtnCheckUpdateText.textContent = '正在检查远程...';
+  if (dom.gRemoteStatusTag) {
+    dom.gRemoteStatusTag.className = 'badge-status-pill badge-pill-yellow';
+    dom.gRemoteStatusTag.textContent = '检查中...';
+  }
+
+  try {
+    const data = await loadSystemVersionInfo(true);
+    if (data && data.has_update) {
+      showToast(`检测到新版本可用！落后 ${data.behind_count} 个提交`, 'info');
+    } else if (data && !data.error) {
+      showToast('当前已是最新版本', 'success');
+      if (dom.gUpdateNoticeBox) dom.gUpdateNoticeBox.classList.remove('hidden');
+    } else if (data && data.error) {
+      showToast(`检查更新失败: ${data.error}`, 'error');
+    }
+  } catch (err) {
+    showToast(`检查更新发生异常: ${err.message}`, 'error');
+  } finally {
+    dom.gBtnCheckUpdate.disabled = false;
+    if (dom.gBtnCheckUpdateText) dom.gBtnCheckUpdateText.textContent = originalText;
+  }
+}
+
+async function handleApplyUpdate() {
+  const isLatest = currentVersionData && !currentVersionData.has_update;
+  const promptText = isLatest
+    ? '当前本地版本已是最新。确定要从 GitHub 重新拉取并重构前端静态产物吗？'
+    : '确定要从 GitHub 拉取最新版本吗？\n拉取后系统将自动构建前端静态资源并同步角色包。';
+
+  if (!confirm(promptText)) {
+    return;
+  }
+
+  if (dom.gBtnApplyUpdate) dom.gBtnApplyUpdate.disabled = true;
+  if (dom.gBtnCheckUpdate) dom.gBtnCheckUpdate.disabled = true;
+  if (dom.gBtnApplyUpdateText) dom.gBtnApplyUpdateText.textContent = '正在拉取并更新...';
+
+  if (dom.gUpdateProgressBox) dom.gUpdateProgressBox.classList.remove('hidden');
+  if (dom.gUpdateSpinner) dom.gUpdateSpinner.classList.remove('hidden');
+  if (dom.gUpdateProgressTitle) dom.gUpdateProgressTitle.textContent = '正在执行 git pull 与资源构建，请稍候...';
+  if (dom.gBtnReloadPage) dom.gBtnReloadPage.classList.add('hidden');
+  if (dom.gUpdateLogOutput) dom.gUpdateLogOutput.textContent = '>>> 开始拉取 GitHub 最新版本...\n';
+
+  try {
+    const result = await applySystemUpdate();
+    if (dom.gUpdateLogOutput) {
+      dom.gUpdateLogOutput.textContent = result.output || (result.success ? '更新成功' : '更新未完成');
+    }
+
+    if (result.success) {
+      if (dom.gUpdateProgressTitle) {
+        dom.gUpdateProgressTitle.textContent = result.restart_required
+          ? '更新完成！检测到后端变动，建议重启后台服务并刷新页面。'
+          : '更新完成！静态产物已就绪，点击右侧刷新页面即可生效。';
+      }
+      if (dom.gUpdateSpinner) dom.gUpdateSpinner.classList.add('hidden');
+      if (dom.gBtnReloadPage) dom.gBtnReloadPage.classList.remove('hidden');
+      showToast('版本更新成功！请刷新页面体验最新功能', 'success');
+
+      await loadSystemVersionInfo(false);
+    } else {
+      if (dom.gUpdateProgressTitle) {
+        dom.gUpdateProgressTitle.textContent = '更新中断，请根据下方诊断信息处理:';
+      }
+      if (dom.gUpdateSpinner) dom.gUpdateSpinner.classList.add('hidden');
+      showToast(`更新失败: ${result.error || '详见下方输出'}`, 'error');
+    }
+  } catch (err) {
+    if (dom.gUpdateProgressTitle) {
+      dom.gUpdateProgressTitle.textContent = '更新请求失败:';
+    }
+    if (dom.gUpdateSpinner) dom.gUpdateSpinner.classList.add('hidden');
+    if (dom.gUpdateLogOutput) {
+      dom.gUpdateLogOutput.textContent += `\n[错误] ${err.message}`;
+    }
+    showToast(`更新请求异常: ${err.message}`, 'error');
+  } finally {
+    if (dom.gBtnApplyUpdate) dom.gBtnApplyUpdate.disabled = false;
+    if (dom.gBtnCheckUpdate) dom.gBtnCheckUpdate.disabled = false;
+    if (dom.gBtnApplyUpdateText) dom.gBtnApplyUpdateText.textContent = '一键拉取并更新';
+  }
+}
+
+if (dom.gBtnCheckUpdate) dom.gBtnCheckUpdate.addEventListener('click', handleCheckUpdate);
+if (dom.gBtnApplyUpdate) dom.gBtnApplyUpdate.addEventListener('click', handleApplyUpdate);
+if (dom.gBtnReloadPage) {
+  dom.gBtnReloadPage.addEventListener('click', () => {
+    window.location.reload();
+  });
+}
+if (dom.gBtnGoUpdateTab) {
+  dom.gBtnGoUpdateTab.addEventListener('click', () => {
+    const updateTabBtn = dom.gTabs ? dom.gTabs.querySelector('[data-gtab="update"]') : null;
+    if (updateTabBtn) {
+      updateTabBtn.click();
+      handleCheckUpdate();
+    }
   });
 }
 
