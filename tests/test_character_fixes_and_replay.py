@@ -111,19 +111,129 @@ def test_mako_persona_and_speed():
     assert "有地さん" in prompt
     assert "少女漫画" in prompt or "甘いもの" in prompt or "お恥ずかしい限りです" in prompt
     assert "严禁使用" in prompt or "绝非" in prompt or "不要使用" in prompt
+    # Protagonist correctness: strictly 有地将臣, ban 芳树/芳樹
+    assert "有地将臣" in prompt or "有地 将臣" in prompt
+    assert "芳树" not in prompt and "芳樹" not in prompt
+    assert "有地将臣" in manifest.get("description", "")
+    assert "芳树" not in manifest.get("description", "") and "芳樹" not in manifest.get("description", "")
 
 
 def test_murasame_persona_master():
     settings = get_settings()
     murasame_dir = settings.characters_dir / "丛雨"
+    manifest_p = murasame_dir / "manifest.json"
     prompt_p = murasame_dir / "system_prompt.txt"
 
+    with open(manifest_p, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
     with open(prompt_p, "r", encoding="utf-8") as f:
         prompt = f.read()
 
     assert "ご主人" in prompt
     assert "主（ぬし）" in prompt or "「主」" in prompt or "ぬし" in prompt
     assert "严禁" in prompt or "禁止" in prompt or "绝不" in prompt
+    # Protagonist correctness: strictly 有地将臣, ban 芳树/芳樹
+    assert "有地将臣" in prompt or "有地 将臣" in prompt
+    assert "芳树" not in prompt and "芳樹" not in prompt
+    assert "有地将臣" in manifest.get("description", "")
+    assert "芳树" not in manifest.get("description", "") and "芳樹" not in manifest.get("description", "")
+
+
+def test_riddle_joker_protagonist_and_address():
+    settings = get_settings()
+    rj_chars = ["三司绫濑", "在原七海", "二条院羽月"]
+    for name in rj_chars:
+        char_dir = settings.characters_dir / name
+        with open(char_dir / "manifest.json", "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        with open(char_dir / "system_prompt.txt", "r", encoding="utf-8") as f:
+            prompt = f.read()
+
+        # 男主角为「在原 晓」（在原 暁 / ありはら さとる）
+        assert ("在原晓" in prompt) or ("在原 暁" in prompt) or ("在原 晓" in prompt), f"Missing 在原晓 in {name}"
+        # 剔除“晓守”字眼
+        assert "晓守" not in prompt and "暁守" not in prompt, f"Found 晓守 in {name}"
+        assert "晓守" not in manifest.get("description", "") and "暁守" not in manifest.get("description", "")
+
+    # 七海在校「サトルくん」/在家「お兄ちゃん」
+    nanami_prompt = (settings.characters_dir / "在原七海" / "system_prompt.txt").read_text(encoding="utf-8")
+    assert "サトルくん" in nanami_prompt
+    assert "お兄ちゃん" in nanami_prompt
+
+    # 绫濑在校「在原君」/「バカ有原」/「暁君」
+    ayase_prompt = (settings.characters_dir / "三司绫濑" / "system_prompt.txt").read_text(encoding="utf-8")
+    assert "在原君" in ayase_prompt or "有原くん" in ayase_prompt
+    assert "バカ有原" in ayase_prompt
+
+    # 羽月「在原君」/「暁君」
+    hazuki_prompt = (settings.characters_dir / "二条院羽月" / "system_prompt.txt").read_text(encoding="utf-8")
+    assert "在原君" in hazuki_prompt
+    assert "暁君" in hazuki_prompt
+
+
+def test_all_13_characters_progressive_affection_and_manifest_sync():
+    settings = get_settings()
+    chars_dir = settings.characters_dir
+    character_folders = sorted([p for p in chars_dir.iterdir() if p.is_dir()])
+    assert len(character_folders) == 13, f"Expected 13 character folders, found {len(character_folders)}"
+
+    for c_dir in character_folders:
+        prompt_path = c_dir / "system_prompt.txt"
+        manifest_path = c_dir / "manifest.json"
+        assert prompt_path.is_file(), f"Missing system_prompt.txt in {c_dir.name}"
+        assert manifest_path.is_file(), f"Missing manifest.json in {c_dir.name}"
+
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        # 4-stage progressive affection
+        for stage in ["0~20", "21~50", "51~80", "81~100"]:
+            assert stage in prompt_text, f"Missing affection stage {stage} in {c_dir.name}"
+
+        # 100% strict manifest synchronization
+        assert manifest_data.get("system_prompt") == prompt_text, f"Manifest mismatch in {c_dir.name}"
+        assert len(manifest_data.get("description", "")) > 10, f"Empty description in {c_dir.name}"
+
+
+def test_database_persistence_and_protagonist_lore():
+    import sqlite3
+    settings = get_settings()
+    root_dir = settings.characters_dir.parent
+    db_paths = [
+        root_dir / "data" / "galgame2voice.db",
+        root_dir / "galgame2voice.db",
+    ]
+    for db_path in db_paths:
+        if not db_path.exists():
+            continue
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, description, system_prompt FROM voice_profiles")
+        rows = cur.fetchall()
+        assert len(rows) >= 13, f"Expected at least 13 profiles in {db_path}, found {len(rows)}"
+
+        for row in rows:
+            p_id, p_name, p_desc, p_sys = row
+            full_text = (p_desc or "") + " " + (p_sys or "")
+
+            # 严格禁止修改为芳树/芳樹
+            assert "芳树" not in full_text and "芳樹" not in full_text, f"Found 芳树 in {db_path} profile {p_name}"
+            # 剔除晓守/暁守
+            assert "晓守" not in full_text and "暁守" not in full_text, f"Found 晓守 in {db_path} profile {p_name}"
+
+            if p_name in ("常陆茉子", "丛雨"):
+                assert "有地将臣" in full_text or "有地 将臣" in full_text, f"Missing 有地将臣 in {db_path} profile {p_name}"
+
+            if p_name in ("三司绫濑", "在原七海", "二条院羽月"):
+                assert ("在原晓" in full_text) or ("在原 暁" in full_text) or ("在原 晓" in full_text), f"Missing 在原晓 in {db_path} profile {p_name}"
+
+            if p_name in ["四季夏目", "明月栞那", "三司绫濑", "在原七海", "二条院羽月", "西园寺风莉", "常陆茉子", "丛雨", "白雪乃爱", "星河辉耶", "小云雀来海", "高楯欧丽叶", "谷风天音"]:
+                for stage in ["0~20", "21~50", "51~80", "81~100"]:
+                    assert stage in p_sys, f"Missing stage {stage} in {db_path} profile {p_name}"
+
+        conn.close()
+
+
 
 
 def test_clean_japanese_parentheses_spoken_dialogue():
