@@ -45,19 +45,39 @@ GREETING_PREFIX_PATTERN = re.compile(
     r')$'
 )
 
+# Short conversational interjections and acknowledgments in Japanese dialogue.
+# Natural standalone pause units that can be dispatched immediately to TTS (TTFA < 1s).
+SHORT_INTERJECTIONS_PATTERN = re.compile(
+    r'^(?:'
+    r'はい|ええ|うん|あの|さあ|いや|まあ|えっと|ええと|ねえ|わあ|あら|ふむ|ほう|よし|'
+    r'大丈夫|分かった|了解|承知(?:しました)?|そうです(?:ね|か)?'
+    r')$'
+)
+
+
+def is_short_salutation(clause: str) -> bool:
+    """Returns True if the clause matches a formulaic greeting or short interjection."""
+    if not clause:
+        return False
+    cleaned = clause.strip().rstrip("、，,！？!?。")
+    return bool(GREETING_PREFIX_PATTERN.match(cleaned) or SHORT_INTERJECTIONS_PATTERN.match(cleaned))
+
 
 def is_natural_clause_boundary(clause: str) -> bool:
     """
     Determines if a clause ending with a comma is a natural pause point suitable for agile first-chunk TTS:
-    - Formulaic greetings (e.g. こんにちは, 初めまして, お久しぶりですね) are natural standalone salutations.
+    - Formulaic greetings (e.g. お久しぶりですね) are natural standalone salutations.
     - Modal particles and soft connectors (e.g. ね, よ, わ, な, けど, から, ので, etc.) indicate continuation
       of a thought and should NOT be split to avoid awkward disjoint pauses.
     """
     if not clause:
         return False
-    if GREETING_PREFIX_PATTERN.match(clause):
+    cleaned = clause.strip().rstrip("、，,！？!?。")
+    if GREETING_PREFIX_PATTERN.match(cleaned):
         return True
-    return not bool(MODAL_PARTICLES_PATTERN.search(clause))
+    if MODAL_PARTICLES_PATTERN.search(clause):
+        return False
+    return True
 
 
 def normalize_dialogue_prosody(text: str) -> str:
@@ -172,5 +192,7 @@ __all__ = [
     "normalize_dialogue_prosody",
     "MODAL_PARTICLES_PATTERN",
     "GREETING_PREFIX_PATTERN",
+    "SHORT_INTERJECTIONS_PATTERN",
+    "is_short_salutation",
     "is_natural_clause_boundary",
 ]

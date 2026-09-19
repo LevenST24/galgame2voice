@@ -78,7 +78,7 @@ def test_wav_unparseable_or_empty_not_flagged_silent():
 async def test_synthesize_raises_on_silent_audio():
     client = GptSovitsClient(base_url="http://mock", server=SilentTtsStubServer(build_wav(b"\x00\x00" * 1600)))
     with pytest.raises(RuntimeError, match="all-zero silent audio"):
-        await client.synthesize("テスト", options={"ref_audio_path": "", "prompt_text": ""})
+        await client.synthesize("テスト", options={"ref_audio_path": "mock.wav", "prompt_text": "mock"})
 
 
 @pytest.mark.asyncio
@@ -86,7 +86,7 @@ async def test_stream_tts_raises_before_yielding_on_silent_audio():
     client = GptSovitsClient(base_url="http://mock", server=SilentTtsStubServer(build_wav(b"\x00\x00" * 1600)))
     chunks = []
     with pytest.raises(RuntimeError, match="all-zero silent audio"):
-        async for chunk in client.stream_tts("テスト", options={"ref_audio_path": "", "prompt_text": ""}):
+        async for chunk in client.stream_tts("テスト", options={"ref_audio_path": "mock.wav", "prompt_text": "mock"}):
             chunks.append(chunk)
     assert chunks == []
 
@@ -95,5 +95,5 @@ async def test_stream_tts_raises_before_yielding_on_silent_audio():
 async def test_normal_audio_passes_through():
     payload = build_wav(struct.pack("<h", 8000) * 1600)
     client = GptSovitsClient(base_url="http://mock", server=SilentTtsStubServer(payload))
-    result = await client.synthesize("テスト", options={"ref_audio_path": "", "prompt_text": ""})
+    result = await client.synthesize("テスト", options={"ref_audio_path": "mock.wav", "prompt_text": "mock"})
     assert result == payload

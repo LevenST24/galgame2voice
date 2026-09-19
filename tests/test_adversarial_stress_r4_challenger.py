@@ -447,6 +447,7 @@ class TestConcurrentCancellationStorm:
         num_concurrent = 4
         cancel_events = [asyncio.Event() for _ in range(num_concurrent)]
         started_events = [asyncio.Event() for _ in range(num_concurrent)]
+        all_started = asyncio.Event()
 
         async def run_one(idx: int):
             gen = chat_service.stream_chat(
@@ -457,6 +458,8 @@ class TestConcurrentCancellationStorm:
             # Wait for first event
             first = await gen.__anext__()
             started_events[idx].set()
+            # Wait until all concurrent streams have started before draining further
+            await all_started.wait()
             # Wait for cancel
             events = [first]
             async for ev in gen:
@@ -470,6 +473,7 @@ class TestConcurrentCancellationStorm:
         t0 = time.perf_counter()
         for ce in cancel_events:
             ce.set()
+        all_started.set()
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
         t_done = time.perf_counter()

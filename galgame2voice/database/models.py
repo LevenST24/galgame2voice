@@ -3,7 +3,6 @@ Pydantic data models and schemas for SQLite entities in galgame2voice.
 Includes DB representations, Create/Update DTOs, and Safe Response models.
 """
 
-from datetime import datetime
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
@@ -12,7 +11,7 @@ from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 class SettingsBase(BaseModel):
     active_provider_id: str = "deepseek"
-    active_voice_profile_id: Optional[int] = 1
+    active_voice_profile_id: Optional[int] = None
     gpt_sovits_url: str = "http://127.0.0.1:9880"
     audio_output_dir: str = "audio"
     audio_retention_minutes: int = Field(default=30, ge=1)
@@ -25,7 +24,7 @@ class SettingsBase(BaseModel):
     batch_size: int = Field(default=1, ge=1, le=16)
     text_split_method: str = "cut1"
     fragment_interval: float = Field(default=0.3, ge=0.0, le=5.0)
-    telegram_bot_username: str = "natsume_siki_bot"
+    telegram_bot_username: str = "galgame2voice_bot"
     telegram_proxy_host: str = "127.0.0.1"
     telegram_proxy_port: int = Field(default=10809, ge=1, le=65535)
     telegram_proxy_enabled: bool = False
@@ -73,6 +72,7 @@ class SettingsUpdate(BaseModel):
     max_history_messages: Optional[int] = Field(default=None, ge=1, le=100)
     inference_precision: Optional[str] = None
     stt_engine: Optional[str] = None
+    console_token: Optional[str] = None
 
     @model_validator(mode="after")
     def sync_telegram_ids(self) -> "SettingsUpdate":
@@ -326,6 +326,9 @@ class CacheStatsResponse(BaseModel):
     total_hits: int = 0
     total_misses: int = 0
     hit_rate_percent: float = 0.0
+    memory_hits: int = 0
+    db_hits: int = 0
+    estimated_saved_seconds: float = 0.0
 
 
 class TokenUsageMetric(BaseModel):
@@ -358,6 +361,7 @@ class MetricsOverviewResponse(BaseModel):
     avg_tts_first_chunk_ms: float = 0.0
     avg_total_latency_ms: float = 0.0
     cache_stats: CacheStatsResponse = Field(default_factory=CacheStatsResponse)
+    tts_speed: Optional[Dict[str, Any]] = None
 
 
 class ProviderMetricItem(BaseModel):

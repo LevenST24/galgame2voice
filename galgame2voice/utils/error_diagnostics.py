@@ -124,20 +124,21 @@ def diagnose_llm_error(
         )
 
     # 2. Model Not Found (Universal check: 404 or specific error phrases in 400/404)
-    if status_code == 404 or any(
-        kw in raw_lower
-        for kw in (
-            "model not found",
-            "model_not_found",
-            "does not exist",
-            "the model",
-            "unknown model",
-            "no such model",
+    if "bot token" not in raw_lower and (
+        status_code == 404
+        or any(
+            kw in raw_lower
+            for kw in (
+                "model not found",
+                "model_not_found",
+                "does not exist",
+                "the model",
+                "unknown model",
+                "no such model",
+            )
         )
     ):
-        # Unless it's an explicit 404 from Telegram or auth endpoint
-        if "bot token" not in raw_lower:
-            return DiagnosticResult(
+        return DiagnosticResult(
                 error_code="MODEL_NOT_FOUND",
                 message="指定的模型名称不存在 (404 Model Not Found)",
                 guidance="提供商无法识别填写的模型名称。请从官方推荐预设列表下拉选择（如 xAI 选 grok-3 / grok-3-mini，DeepSeek 选 deepseek-chat），或核对自定义模型拼写无误。",

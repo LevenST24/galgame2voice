@@ -16,7 +16,7 @@ async def test_session_overview_and_history_sync(tmp_path, monkeypatch):
 
     # Pre-populate some sessions and messages directly
     async with get_db(test_db) as conn:
-        s1 = await crud.upsert_session(conn, session_id="s_test_1", title="夏目初次见面")
+        await crud.upsert_session(conn, session_id="s_test_1", title="夏目初次见面")
         await crud.add_message(conn, MessageCreate(
             session_id="s_test_1",
             role="user",
@@ -32,7 +32,7 @@ async def test_session_overview_and_history_sync(tmp_path, monkeypatch):
         ))
 
         # Second session with NO explicit title (should auto-infer from first user message)
-        s2 = await crud.get_or_create_session(conn, session_id="s_test_2")
+        await crud.get_or_create_session(conn, session_id="s_test_2")
         await crud.add_message(conn, MessageCreate(
             session_id="s_test_2",
             role="user",

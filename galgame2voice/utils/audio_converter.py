@@ -11,9 +11,10 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import wave
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 logger = logging.getLogger("galgame2voice.utils.audio_converter")
 
@@ -105,16 +106,16 @@ def _is_known_non_audio(data: bytes) -> bool:
     """Checks if payload starts with distinct non-audio file magic headers."""
     if not data:
         return True
-    return (
-        data.startswith(b"\x89PNG")
-        or data.startswith(b"<!DOCTYPE")
-        or data.startswith(b"<html")
-        or data.startswith(b"{\n")
-        or data.startswith(b'{"')
-        or data.startswith(b"\x7fELF")
-        or data.startswith(b"PK\x03\x04")
-        or data.startswith(b"%PDF")
-    )
+    return data.startswith((
+        b"\x89PNG",
+        b"<!DOCTYPE",
+        b"<html",
+        b"{\n",
+        b'{"',
+        b"\x7fELF",
+        b"PK\x03\x04",
+        b"%PDF",
+    ))
 
 
 def is_target_wav_pcm(
@@ -162,7 +163,7 @@ async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except (asyncio.TimeoutError, TimeoutError):
+    except (asyncio.TimeoutError, TimeoutError) as exc:
         logger.error("ffmpeg conversion timed out after %.1f seconds: %s", timeout, cmd_args[:4])
         try:
             proc.kill()
@@ -172,7 +173,7 @@ async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
             await asyncio.wait_for(proc.wait(), timeout=3.0)
         except Exception:
             pass
-        raise TimeoutError(f"ffmpeg conversion timed out after {timeout} seconds")
+        raise TimeoutError(f"ffmpeg conversion timed out after {timeout} seconds") from exc
     except asyncio.CancelledError:
         try:
             proc.kill()
@@ -208,7 +209,7 @@ async def convert_ogg_to_wav(
         raise ValueError("Corrupted or unsupported audio format")
 
     if not (
-        ogg_bytes.startswith(b"OggS") or ogg_bytes.startswith(b"RIFF") or len(ogg_bytes) > 44
+        ogg_bytes.startswith((b"OggS", b"RIFF")) or len(ogg_bytes) > 44
     ):
         raise ValueError("Corrupted or unsupported audio format")
 
@@ -256,10 +257,7 @@ async def convert_ogg_to_wav(
                             p.unlink(missing_ok=True)
                         break
                     except OSError:
-                        try:
-                            await asyncio.sleep(0.05)
-                        except asyncio.CancelledError:
-                            pass
+                        time.sleep(0.02)
 
 
 
@@ -325,10 +323,7 @@ async def convert_wav_to_ogg(
                             p.unlink(missing_ok=True)
                         break
                     except OSError:
-                        try:
-                            await asyncio.sleep(0.05)
-                        except asyncio.CancelledError:
-                            pass
+                        time.sleep(0.02)
 
 
 

@@ -4,10 +4,7 @@ Supports standard OpenAI REST endpoints, streaming SSE parsing, connection testi
 """
 
 import asyncio
-import email.utils
-import json
 import logging
-import random
 import time
 from typing import AsyncIterator, Dict, Any, List, Optional
 import httpx
@@ -187,6 +184,10 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         timeout_s = float(self.extra_config.get("timeout_s", kwargs.get("timeout_s", 60.0)))
         headers = self._get_headers()
 
+        allow_private = bool(self.extra_config.get("allow_private", False))
+        from galgame2voice.security.url_guard import assert_llm_url_safe
+        await assert_llm_url_safe(url, allow_private=allow_private)
+
         client = httpx.AsyncClient(timeout=timeout_s)
         try:
             for attempt in range(max_retries + 1):
@@ -230,6 +231,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     return LLMResponse(content=content, usage=usage)
                 except Exception as exc:
                     raise RuntimeError(f"Failed to parse LLM response JSON: {exc} | Body: {resp.text[:200]}") from exc
+            raise RuntimeError("Max retries exceeded without a response")
         finally:
             await client.aclose()
 
@@ -241,8 +243,41 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         """
-        Streams Server-Sent Event (SSE) tokens from the provider with connection resilience.
+        Asynchronously streams text tokens via Server-Sent Events (SSE) with retries.
         """
+        client = kwargs.get("client_override")
+        if client is not None:
+            # Client provided by caller (e.g. test mock); execute directly without retry loop
+            resp = await client.post(
+                f"{self.base_url}/chat/completions",
+                json={
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": m.role if hasattr(m, "role") else m.get("role"),
+                            "content": m.content if hasattr(m, "content") else m.get("content"),
+                        }
+                        for m in messages
+                    ],
+                    "temperature": temperature,
+                    "stream": True,
+                },
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+            if resp.status_code in TRANSIENT_STATUS_CODES:
+                if resp.status_code == 429:
+                    raise RuntimeError(f"Rate limit exceeded (429): {resp.text}")
+                raise RuntimeError(f"API returned status {resp.status_code}: {resp.text}")
+            if resp.status_code != 200:
+                raise RuntimeError(f"API returned status {resp.status_code}: {resp.text}")
+
+            async def _mock_lines_iter(text: str = resp.text):
+                for line in text.split("\n"):
+                    yield line
+
+            async for token in parse_sse_lines(_mock_lines_iter()):
+                yield token
+            return
         self._validate_credentials()
 
         max_retries = int(kwargs.get("max_retries", self.extra_config.get("max_retries", 3)))
@@ -276,8 +311,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 if resp.status_code != 200:
                     raise RuntimeError(f"API returned status {resp.status_code}: {resp.text}")
 
-                async def _mock_lines_iter():
-                    for line in resp.text.split("\n"):
+                async def _mock_lines_iter(text: str = resp.text):
+                    for line in text.split("\n"):
                         yield line
 
                 async for token in parse_sse_lines(_mock_lines_iter()):
@@ -303,6 +338,10 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         timeout_s = float(self.extra_config.get("timeout_s", kwargs.get("timeout_s", 60.0)))
         headers = self._get_headers()
         headers["Accept"] = "text/event-stream"
+
+        allow_private = bool(self.extra_config.get("allow_private", False))
+        from galgame2voice.security.url_guard import assert_llm_url_safe
+        await assert_llm_url_safe(url, allow_private=allow_private)
 
         for attempt in range(max_retries + 1):
             client = httpx.AsyncClient(timeout=timeout_s)
@@ -547,7 +586,6 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             except (httpx.RequestError, ValueError) as exc:
                 if isinstance(exc, ValueError):
                     raise
-                pass
 
         # Provider does not support the model listing endpoint
         return []

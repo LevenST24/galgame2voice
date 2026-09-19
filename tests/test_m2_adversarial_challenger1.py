@@ -95,7 +95,7 @@ class TestChatStreamingPipelineAdversarial:
 
     @pytest.mark.asyncio
     async def test_rapid_stream_cancellation(self, temp_db_path, mock_gpt_sovits, tmp_path):
-        app = create_app()
+        create_app()
         client = GptSovitsClient(server=mock_gpt_sovits)
         tts_service = TtsService(client=client, audio_dir=tmp_path)
         chat_service = ChatService(tts_service=tts_service, db_path=temp_db_path)

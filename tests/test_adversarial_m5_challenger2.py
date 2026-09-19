@@ -24,8 +24,7 @@ from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 from galgame2voice.adapters.registry import get_llm_adapter, list_provider_presets
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
-from galgame2voice.database.models import ProviderCreate, SettingsUpdate, VoiceProfileCreate
-from galgame2voice.database.session import get_db
+from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
@@ -393,6 +392,7 @@ class TestVoiceProfileExtremeParameters:
     @pytest.mark.asyncio
     async def test_synthesize_endpoint_with_extreme_parameters(self):
         """Verifies /api/voice/synthesize accepts and forwards extreme parameters correctly."""
+        await init_db()
         app = create_app()
         transport = ASGITransport(app=app)
 

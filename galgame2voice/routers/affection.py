@@ -4,7 +4,7 @@ Supports querying affection status, manual adjustments, resets, and dialogue unl
 """
 
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
@@ -91,7 +91,7 @@ async def update_character_affection_endpoint(req: AffectionUpdateRequest):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update character affection: {safe_err}",
-            )
+            ) from exc
 
 
 @router.post("/reset", response_model=CharacterAffectionResponse, summary="Reset character affection state")

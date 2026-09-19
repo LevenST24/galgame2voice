@@ -5,8 +5,8 @@ latency trends, and TTS persistent audio cache management.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Query, status
+from typing import Any, Dict
+from fastapi import APIRouter, Query
 
 from galgame2voice.database.models import (
     MetricsOverviewResponse,
@@ -70,6 +70,17 @@ async def get_cache_stats() -> CacheStatsResponse:
     cache_mgr = get_tts_cache_manager()
     stats = await cache_mgr.get_stats()
     return CacheStatsResponse(**stats)
+
+
+@router.get(
+    "/api/metrics/tts-speed",
+    summary="Get TTS Synthesis Speed & Throughput Telemetry",
+    description="Returns real-time synthesis metrics including RTF (Real-Time Factor), chars/sec, and dynamic batch size status.",
+)
+async def get_tts_speed_metrics() -> Dict[str, Any]:
+    from galgame2voice.services.dynamic_batcher import get_speed_tracker
+    tracker = get_speed_tracker()
+    return tracker.get_telemetry()
 
 
 @router.post(

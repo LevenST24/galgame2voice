@@ -117,7 +117,7 @@ class TestMemoryPersistenceAndRAGAdversarial:
     @pytest.mark.asyncio
     async def test_upsert_memory_deduplication(self, temp_db_path):
         """Updating existing fact_key overwrites value and updates timestamp in-place."""
-        svc = MemoryService(db_path=temp_db_path)
+        MemoryService(db_path=temp_db_path)
 
         async with get_db(temp_db_path) as conn:
             # 1. First declaration

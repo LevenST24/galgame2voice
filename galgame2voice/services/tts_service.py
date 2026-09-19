@@ -6,6 +6,7 @@ sentence streaming, and the persistent TTS cache.
 
 import asyncio
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Optional, Tuple, Union
@@ -17,19 +18,122 @@ from galgame2voice.services.gpt_sovits_client import (
     get_gpt_sovits_client,
     clean_japanese_parentheses,
     resolve_tts_options,
+    probe_audio_duration_seconds,
     SLICING_METHODS,
     TTS_PRESETS,
     DYNAMIC_SPEED_MIN,
     DYNAMIC_SPEED_MAX,
     DYNAMIC_TEMP_MIN,
     DYNAMIC_TEMP_MAX,
+)
+from galgame2voice.utils.prosody import (
     clamp_dynamic_speed,
     clamp_dynamic_temperature,
-    probe_audio_duration_seconds,
+    clamp_dynamic_top_k,
+    clamp_dynamic_top_p,
+    clamp_dynamic_fragment_interval,
+    clamp_dynamic_batch_size,
+    calculate_adaptive_prosody,
 )
 from galgame2voice.services.tts_cache_manager import get_tts_cache_manager, TtsCacheManager
 
 logger = logging.getLogger("galgame2voice.services.tts_service")
+
+
+_AUDIO_DURATION_CACHE: Dict[str, Optional[float]] = {}
+_AUDIO_STAT_DURATION_CACHE: Dict[Tuple[str, int, int], Optional[float]] = {}
+_VOICE_PROFILE_MEMO: Dict[Tuple[Optional[str], str], Tuple[float, Any]] = {}
+_MEMO_TTL_SECONDS = 60.0
+
+
+def clear_tts_profile_cache() -> None:
+    """Clears in-memory caches for voice profiles and reference audio durations."""
+    _AUDIO_DURATION_CACHE.clear()
+    _AUDIO_STAT_DURATION_CACHE.clear()
+    _VOICE_PROFILE_MEMO.clear()
+
+
+def _probe_audio_duration_sync(p: Path) -> Optional[float]:
+    """
+    Synchronously probes audio duration in seconds via soundfile, wave, mutagen,
+    or stdlib OGG/Opus granule position.
+    """
+    dur = None
+    # 1. Try soundfile (handles OGG, WAV, FLAC, etc.)
+    try:
+        import soundfile as sf
+        info = sf.info(str(p))
+        dur = float(info.duration)
+    except Exception:
+        pass
+
+    # 2. Try wave standard library for PCM WAV
+    if dur is None:
+        try:
+            import wave
+            with wave.open(str(p), "rb") as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate()
+                if rate > 0:
+                    dur = float(frames) / float(rate)
+        except Exception:
+            pass
+
+    # 3. Try mutagen
+    if dur is None:
+        try:
+            import mutagen
+            m = mutagen.File(str(p))
+            if m and m.info and hasattr(m.info, "length"):
+                dur = float(m.info.length)
+        except Exception:
+            pass
+
+    # 4. Stdlib OGG/Opus granule-position probe (works without soundfile/mutagen,
+    #    which are not bundled — without this every .ogg ref would look invalid
+    #    and emotion voices would silently fall back to the baseline audio)
+    if dur is None:
+        try:
+            probed = probe_audio_duration_seconds(str(p))
+            if probed is not None:
+                dur = float(probed)
+        except Exception:
+            pass
+
+    return dur
+
+
+async def async_get_audio_duration(path: Union[str, Path, None]) -> Optional[float]:
+    """
+    Safely inspects and measures reference audio duration asynchronously.
+    Returns float duration, or None if file is missing, unreadable, or invalid.
+    Uses stat-based caching (mtime_ns, size) to bypass disk inspection when audio
+    files have not changed, and delegates synchronous soundfile.info / wave.open
+    probes to asyncio.to_thread() so the main asyncio event loop is never blocked.
+    """
+    if not path:
+        return None
+    path_str = str(path)
+    try:
+        p = resolve_existing_audio_path(path)
+        if p is None or not p.is_file():
+            _AUDIO_DURATION_CACHE[path_str] = None
+            return None
+
+        st = p.stat()
+        stat_key = (str(p.resolve()), st.st_mtime_ns, st.st_size)
+        if stat_key in _AUDIO_STAT_DURATION_CACHE:
+            cached_dur = _AUDIO_STAT_DURATION_CACHE[stat_key]
+            _AUDIO_DURATION_CACHE[path_str] = cached_dur
+            return cached_dur
+
+        dur = await asyncio.to_thread(_probe_audio_duration_sync, p)
+        _AUDIO_STAT_DURATION_CACHE[stat_key] = dur
+        _AUDIO_DURATION_CACHE[path_str] = dur
+        return dur
+    except Exception:
+        _AUDIO_DURATION_CACHE[path_str] = None
+        return None
 
 
 class TtsService:
@@ -66,142 +170,95 @@ class TtsService:
         """
         Safely inspects and measures reference audio duration in seconds.
         Returns float duration, or None if file is missing, unreadable, or invalid.
+        Results are cached using stat-based keys (resolved_path, mtime_ns, size)
+        to bypass disk inspection when audio files haven't changed.
         """
         if not path:
             return None
+        path_str = str(path)
         try:
             p = resolve_existing_audio_path(path)
-            if p is None:
+            if p is None or not p.is_file():
+                _AUDIO_DURATION_CACHE[path_str] = None
                 return None
 
-            # 1. Try soundfile (handles OGG, WAV, FLAC, etc.)
-            try:
-                import soundfile as sf
-                info = sf.info(str(p))
-                return float(info.duration)
-            except Exception:
-                pass
+            st = p.stat()
+            stat_key = (str(p.resolve()), st.st_mtime_ns, st.st_size)
+            if stat_key in _AUDIO_STAT_DURATION_CACHE:
+                cached_dur = _AUDIO_STAT_DURATION_CACHE[stat_key]
+                _AUDIO_DURATION_CACHE[path_str] = cached_dur
+                return cached_dur
 
-            # 2. Try wave standard library for PCM WAV
-            try:
-                import wave
-                with wave.open(str(p), "rb") as wf:
-                    frames = wf.getnframes()
-                    rate = wf.getframerate()
-                    if rate > 0:
-                        return float(frames) / float(rate)
-            except Exception:
-                pass
-
-            # 3. Try mutagen
-            try:
-                import mutagen
-                m = mutagen.File(str(p))
-                if m and m.info and hasattr(m.info, "length"):
-                    return float(m.info.length)
-            except Exception:
-                pass
-
-            # 4. Stdlib OGG/Opus granule-position probe (works without soundfile/mutagen,
-            #    which are not bundled — without this every .ogg ref would look invalid
-            #    and emotion voices would silently fall back to the baseline audio)
-            try:
-                dur = probe_audio_duration_seconds(str(p))
-                if dur is not None:
-                    return float(dur)
-            except Exception:
-                pass
+            dur = _probe_audio_duration_sync(p)
+            _AUDIO_STAT_DURATION_CACHE[stat_key] = dur
+            _AUDIO_DURATION_CACHE[path_str] = dur
+            return dur
         except Exception:
-            pass
-        return None
+            _AUDIO_DURATION_CACHE[path_str] = None
+            return None
+
+    @staticmethod
+    async def async_get_audio_duration(path: Union[str, Path, None]) -> Optional[float]:
+        """
+        Asynchronously measures reference audio duration in seconds.
+        Delegates synchronous soundfile.info / wave.open to asyncio.to_thread()
+        and uses stat-based caching (mtime_ns, size) to keep the event loop unblocked.
+        """
+        return await async_get_audio_duration(path)
 
     async def _populate_voice_profile_opts(self, opts: Dict[str, Any]) -> Dict[str, Any]:
         """Auto-populates active voice profile parameters, applying dynamic emotion reference audios if available."""
+        if opts.get("_pre_resolved"):
+            return opts
+
+        # If user explicitly supplied all required reference audio options and no adaptive emotion override is needed,
+        # completely bypass SQLite to keep the TTS critical path in-memory (TTFA < 1s).
+        has_full_ref = bool(
+            opts.get("ref_audio_path")
+            and opts.get("prompt_text")
+            and opts.get("prompt_lang")
+        )
+        ai_adaptive = opts.get("ai_adaptive_voice", opts.get("aiAdaptiveVoice", True))
+        emotion = opts.get("emotion")
+        if has_full_ref and not (ai_adaptive and emotion):
+            return opts
+
         try:
-            from galgame2voice.database import crud
-            from galgame2voice.database.session import get_db
+            from galgame2voice.services.voice_resolver import get_voice_resolver
+            resolver = get_voice_resolver()
 
-            target_profile = None
-            has_explicit_voice = bool(opts.get("voice_profile_id") or opts.get("character_name"))
             prof_id = opts.get("voice_profile_id")
-            if prof_id is not None:
-                try:
-                    async with get_db(self.db_path) as conn:
-                        target_profile = await crud.get_voice_profile(conn, int(prof_id))
-                except Exception as exc:
-                    logger.debug("Could not resolve voice_profile_id %s: %s", prof_id, exc)
-            if not target_profile and opts.get("character_name"):
-                try:
-                    async with get_db(self.db_path) as conn:
-                        target_profile = await crud.get_voice_profile_by_name(conn, str(opts["character_name"]))
-                except Exception as exc:
-                    logger.debug("Could not resolve character_name %s: %s", opts.get("character_name"), exc)
-            if not target_profile:
-                try:
-                    async with get_db(self.db_path) as conn:
-                        target_profile = await crud.get_active_voice_profile(conn)
-                except Exception as exc:
-                    logger.debug("Could not resolve active voice profile: %s", exc)
+            char_name_opt = opts.get("character_name")
+            has_explicit_voice = bool(prof_id or char_name_opt)
 
-            if not target_profile:
-                try:
-                    from galgame2voice.services.voice_manager import get_voice_manager
-                    vm = get_voice_manager()
-                    target_profile = vm.active_profile or await vm.get_active_profile()
-                except Exception as exc:
-                    logger.debug("Could not resolve voice manager active profile: %s", exc)
-            if target_profile:
-                opts.setdefault("voice_profile_id", target_profile.id)
-                opts.setdefault("prompt_lang", target_profile.prompt_lang)
-                opts.setdefault("text_lang", target_profile.text_lang)
+            ctx = await resolver.resolve_context(
+                db_path=self.db_path,
+                profile_id=int(prof_id) if prof_id is not None else None,
+                character_name=str(char_name_opt) if char_name_opt else None,
+            )
 
-                fallback_ref_audio = target_profile.ref_audio_path
-                fallback_prompt_text = target_profile.prompt_text
-                fallback_prompt_lang = target_profile.prompt_lang
-                char_name = getattr(target_profile, "name", "") or "四季夏目"
+            if ctx:
+                opts.setdefault("voice_profile_id", ctx.profile_id or 1)
+                opts.setdefault("prompt_lang", ctx.prompt_lang)
+                opts.setdefault("text_lang", ctx.text_lang)
 
-                # Ensure fallback_ref_audio exists; if not, point to character package or bundled gentle.ogg
-                settings = get_settings()
-                if resolve_existing_audio_path(fallback_ref_audio) is None:
-                    char_default = settings.characters_dir / char_name / "refs" / "gentle.ogg"
-                    bundled_default = settings.project_root / "audio" / "references" / "natsume" / "gentle.ogg"
-                    if char_default.is_file():
-                        fallback_ref_audio = str(char_default.resolve())
-                    elif bundled_default.is_file():
-                        fallback_ref_audio = str(bundled_default.resolve())
+                fallback_ref_audio = str(ctx.ref_audio_path) if ctx.ref_audio_path is not None else None
+                fallback_prompt_text = ctx.prompt_text
+                fallback_prompt_lang = ctx.prompt_lang
 
-                # Check for dynamic emotion reference audio override
                 ai_adaptive = opts.get("ai_adaptive_voice", opts.get("aiAdaptiveVoice", True))
                 emotion = opts.get("emotion")
 
-                resolved_emo = None
-                if ai_adaptive and emotion:
-                    from galgame2voice.services.emotion_references import resolve_emotion_reference
-                    resolved_emo = resolve_emotion_reference(char_name, str(emotion))
-
+                resolved_emo = ctx.get_emotion_ref(str(emotion)) if (ai_adaptive and emotion) else None
                 if resolved_emo:
-                    candidate_audio = resolved_emo["ref_audio_path"]
-                    # Validate candidate emotion reference audio duration: must be in [3.0, 10.0]s
-                    dur = self.get_audio_duration(candidate_audio)
-                    if dur is not None and 3.0 <= dur <= 10.0:
-                        opts["ref_audio_path"] = candidate_audio
-                        opts["prompt_text"] = resolved_emo["prompt_text"]
-                        opts["prompt_lang"] = resolved_emo["prompt_lang"]
-                    else:
-                        logger.warning(
-                            "Emotion reference audio '%s' is invalid (duration: %s, required: [3.0, 10.0]s) or missing. "
-                            "Falling back to active profile default reference audio: %s",
-                            candidate_audio, dur, fallback_ref_audio
-                        )
-                        opts["ref_audio_path"] = fallback_ref_audio
-                        opts["prompt_text"] = fallback_prompt_text
-                        opts["prompt_lang"] = fallback_prompt_lang
+                    opts["ref_audio_path"] = str(resolved_emo["ref_audio_path"]) if resolved_emo.get("ref_audio_path") else ""
+                    opts["prompt_text"] = resolved_emo["prompt_text"]
+                    opts["prompt_lang"] = resolved_emo["prompt_lang"]
                 else:
-                    # User-supplied or pre-existing ref_audio_path
                     user_ref = opts.get("ref_audio_path") or opts.get("refer_audio_path")
                     if user_ref:
                         file_exists = resolve_existing_audio_path(user_ref) is not None
-                        dur = self.get_audio_duration(user_ref)
+                        dur = await self.async_get_audio_duration(user_ref)
                         is_mock_client = (
                             getattr(self.client, "_mock_return_value", None) is not None
                             or type(self.client).__name__ == "MagicMock"
@@ -219,21 +276,38 @@ class TtsService:
                                 "Falling back to default reference audio: %s",
                                 user_ref, file_exists, dur, fallback_ref_audio
                             )
-                            opts["ref_audio_path"] = fallback_ref_audio
+                            opts["ref_audio_path"] = str(fallback_ref_audio) if fallback_ref_audio else ""
                             opts["prompt_text"] = fallback_prompt_text
                             opts["prompt_lang"] = fallback_prompt_lang
                     else:
                         if has_explicit_voice or not getattr(self.client, "current_refer_audio", None):
-                            opts.setdefault("ref_audio_path", fallback_ref_audio)
+                            opts.setdefault("ref_audio_path", str(fallback_ref_audio) if fallback_ref_audio else "")
                             opts.setdefault("prompt_text", fallback_prompt_text)
                             opts.setdefault("prompt_lang", fallback_prompt_lang)
         except Exception as exc:
             logger.debug("Could not auto-populate active profile options in TtsService: %s", exc)
         return opts
 
-    def _sanitize_dynamic_voice_options(self, opts: Dict[str, Any]) -> Dict[str, Any]:
-        """Safely clamps speed to [0.70, 1.35] and temperature to [0.60, 1.20] if AI adaptive voice is enabled."""
+    def _sanitize_dynamic_voice_options(self, opts: Dict[str, Any], text: Optional[str] = None) -> Dict[str, Any]:
+        """Safely clamps and enriches speech prosody parameters (speed, temperature, top_k, top_p, fragment_interval, batch_size)."""
         if opts.get("ai_adaptive_voice", opts.get("aiAdaptiveVoice", False)):
+            emo = opts.get("emotion")
+            target_text = text or opts.get("prompt_text", "")
+            if emo or target_text:
+                calc = calculate_adaptive_prosody(text=target_text, emotion=emo, base_params=opts)
+                if "speed" not in opts and "speed_factor" not in opts:
+                    opts["speed"] = calc["speed"]
+                    opts["speed_factor"] = calc["speed"]
+                if "temperature" not in opts and "temp" not in opts:
+                    opts["temperature"] = calc["temperature"]
+                    opts["temp"] = calc["temperature"]
+                if "top_k" not in opts:
+                    opts["top_k"] = calc["top_k"]
+                if "top_p" not in opts:
+                    opts["top_p"] = calc["top_p"]
+                if "fragment_interval" not in opts:
+                    opts["fragment_interval"] = calc["fragment_interval"]
+
             if "speed" in opts or "speed_factor" in opts:
                 sp_val = opts.get("speed", opts.get("speed_factor"))
                 opts["speed"] = clamp_dynamic_speed(sp_val, fallback=1.0)
@@ -241,6 +315,15 @@ class TtsService:
             if "temperature" in opts or "temp" in opts:
                 temp_val = opts.get("temperature", opts.get("temp"))
                 opts["temperature"] = clamp_dynamic_temperature(temp_val, fallback=1.0)
+            if "top_k" in opts:
+                opts["top_k"] = clamp_dynamic_top_k(opts["top_k"], fallback=15)
+            if "top_p" in opts:
+                opts["top_p"] = clamp_dynamic_top_p(opts["top_p"], fallback=1.0)
+            if "fragment_interval" in opts:
+                opts["fragment_interval"] = clamp_dynamic_fragment_interval(opts["fragment_interval"], fallback=0.3)
+            if "batch_size" in opts and opts["batch_size"] is not None:
+                opts["batch_size"] = clamp_dynamic_batch_size(opts["batch_size"], fallback=1)
+
         return opts
 
     async def synthesize(
@@ -255,7 +338,7 @@ class TtsService:
         """
         opts = dict(options or {})
         opts = await self._populate_voice_profile_opts(opts)
-        opts = self._sanitize_dynamic_voice_options(opts)
+        opts = self._sanitize_dynamic_voice_options(opts, text=text)
         if "text_split_method" not in opts and "cut_option" not in opts and "how_to_cut" not in opts:
             opts["text_split_method"] = "cut0" if len(text.strip()) <= 80 else "cut2"
 
@@ -269,24 +352,46 @@ class TtsService:
                 logger.debug("TTS Cache HIT for key %s ('%s')", cache_key[:12], clean_text[:20])
                 return cached[0]
 
-        logger.debug("TTS Cache MISS for key %s ('%s'), invoking GPU synthesis", cache_key[:12] if cache_key else "none", text[:20])
-        audio_bytes = await self.client.synthesize(text, options=opts)
+        async def _do_gpu_synthesis() -> bytes:
+            logger.debug("TTS Cache MISS for key %s ('%s'), invoking GPU synthesis", cache_key[:12] if cache_key else "none", text[:20])
+            audio_bytes = await self.client.synthesize(text, options=opts)
+            if use_cache and audio_bytes and cache_key:
+                try:
+                    await self.cache_manager.put(
+                        cache_key=cache_key,
+                        text=text,
+                        clean_text=clean_text,
+                        voice_profile_id=opts.get("voice_profile_id", 1),
+                        params_hash=params_hash,
+                        audio_bytes=audio_bytes,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to store synthesized audio in cache: %s", exc)
+            return audio_bytes
 
-        if use_cache and audio_bytes and cache_key:
-            try:
-                await self.cache_manager.put(
-                    cache_key=cache_key,
-                    text=text,
-                    clean_text=clean_text,
-                    voice_profile_id=opts.get("voice_profile_id", 1),
-                    params_hash=params_hash,
-                    audio_bytes=audio_bytes,
-                )
-            except Exception as exc:
-                # Cache write failure must never fail an otherwise successful synthesis.
-                logger.warning("Failed to store synthesized audio in cache: %s", exc)
+        from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
+        scheduler = get_tts_scheduler()
+        raw_prio = opts.get("_priority", TtsPriority.NORMAL)
+        try:
+            priority = TtsPriority(int(raw_prio))
+        except (ValueError, TypeError):
+            priority = TtsPriority.NORMAL
+        gen_id = opts.get("_generation_id")
+        task_id = f"{gen_id}_{cache_key[:8]}_{uuid.uuid4().hex[:4]}" if gen_id and cache_key else None
 
-        return audio_bytes
+        if cache_key:
+            return await scheduler.schedule(
+                lambda: scheduler.single_flight.execute(cache_key, _do_gpu_synthesis),
+                priority=priority,
+                generation_id=gen_id,
+                task_id=task_id,
+            )
+        return await scheduler.schedule(
+            _do_gpu_synthesis,
+            priority=priority,
+            generation_id=gen_id,
+            task_id=task_id,
+        )
 
     async def synthesize_to_file(
         self,
@@ -301,9 +406,18 @@ class TtsService:
         """
         opts = dict(options or {})
         opts = await self._populate_voice_profile_opts(opts)
-        opts = self._sanitize_dynamic_voice_options(opts)
+        opts = self._sanitize_dynamic_voice_options(opts, text=text)
         if "text_split_method" not in opts and "cut_option" not in opts and "how_to_cut" not in opts:
             opts["text_split_method"] = "cut0" if len(text.strip()) <= 80 else "cut2"
+
+        from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
+        scheduler = get_tts_scheduler()
+        raw_prio = opts.get("_priority", TtsPriority.NORMAL)
+        try:
+            priority = TtsPriority(int(raw_prio))
+        except (ValueError, TypeError):
+            priority = TtsPriority.NORMAL
+        gen_id = opts.get("_generation_id")
 
         if use_cache:
             cache_key, clean_text, params_hash = self.cache_manager.compute_cache_key(text, options=opts)
@@ -314,32 +428,50 @@ class TtsService:
                 logger.debug("TTS Cache HIT (file) for key %s -> %s", cache_key[:12], url_path)
                 return url_path, file_path, file_size
 
-            # Synthesize exactly once on miss.
-            audio_bytes = await self.client.synthesize(text, options=opts)
-            if audio_bytes and cache_key:
-                try:
-                    url_path, file_path, file_size = await self.cache_manager.put(
-                        cache_key=cache_key,
-                        text=text,
-                        clean_text=clean_text,
-                        voice_profile_id=opts.get("voice_profile_id", 1),
-                        params_hash=params_hash,
-                        audio_bytes=audio_bytes,
-                    )
-                    return url_path, file_path, file_size
-                except Exception as exc:
-                    # Cache write failed — fall through to ephemeral file so the
-                    # caller still gets usable audio.
-                    logger.warning("TTS cache put failed, writing ephemeral file instead: %s", exc)
+            task_id = f"{gen_id}_{cache_key[:8]}_{uuid.uuid4().hex[:4]}" if gen_id else None
 
-        # Ephemeral non-cached file write (also reached when use_cache=False)
-        if not use_cache:
+            # Synthesize exactly once on miss, coordinated via scheduler + single-flight
+            async def _do_synth_file():
+                audio_b = await self.client.synthesize(text, options=opts)
+                if audio_b and cache_key:
+                    try:
+                        return await self.cache_manager.put(
+                            cache_key=cache_key,
+                            text=text,
+                            clean_text=clean_text,
+                            voice_profile_id=opts.get("voice_profile_id", 1),
+                            params_hash=params_hash,
+                            audio_bytes=audio_b,
+                        )
+                    except Exception as exc:
+                        logger.warning("TTS cache put failed, writing ephemeral file instead: %s", exc)
+                filename = f"{filename_prefix}_{uuid.uuid4().hex[:12]}.wav"
+                file_path = self.audio_dir / filename
+                await asyncio.to_thread(file_path.write_bytes, audio_b)
+                url_path = f"/audio/{filename}"
+                return url_path, file_path, len(audio_b)
+
+            return await scheduler.schedule(
+                lambda: scheduler.single_flight.execute(f"file_{cache_key}", _do_synth_file),
+                priority=priority,
+                generation_id=gen_id,
+                task_id=task_id,
+            )
+
+        # Ephemeral non-cached file write (when use_cache=False)
+        async def _do_ephemeral_file():
             audio_bytes = await self.client.synthesize(text, options=opts)
-        filename = f"{filename_prefix}_{uuid.uuid4().hex[:12]}.wav"
-        file_path = self.audio_dir / filename
-        await asyncio.to_thread(file_path.write_bytes, audio_bytes)
-        url_path = f"/audio/{filename}"
-        return url_path, file_path, len(audio_bytes)
+            filename = f"{filename_prefix}_{uuid.uuid4().hex[:12]}.wav"
+            file_path = self.audio_dir / filename
+            await asyncio.to_thread(file_path.write_bytes, audio_bytes)
+            url_path = f"/audio/{filename}"
+            return url_path, file_path, len(audio_bytes)
+
+        return await scheduler.schedule(
+            _do_ephemeral_file,
+            priority=priority,
+            generation_id=gen_id,
+        )
 
     async def stream_tts(
         self,
@@ -351,7 +483,7 @@ class TtsService:
         """Streams audio chunks from cache or the shared GPT-SoVITS client."""
         opts = dict(options or {})
         opts = await self._populate_voice_profile_opts(opts)
-        opts = self._sanitize_dynamic_voice_options(opts)
+        opts = self._sanitize_dynamic_voice_options(opts, text=text)
         if "text_split_method" not in opts and "cut_option" not in opts and "how_to_cut" not in opts:
             opts["text_split_method"] = "cut0" if len(text.strip()) <= 80 else "cut2"
 
@@ -362,41 +494,55 @@ class TtsService:
             cache_key, clean_text, params_hash = self.cache_manager.compute_cache_key(text, options=opts)
             cached = await self.cache_manager.get(cache_key)
             if cached is not None:
-                cached_bytes = cached[0]
-                for i in range(0, len(cached_bytes), chunk_size):
-                    yield cached_bytes[i:i + chunk_size]
+                async for chunk in self.cache_manager.stream_cached(cache_key, chunk_size=chunk_size):
+                    yield chunk
                 return
 
-        collected_chunks = []
-        stream = self.client.stream_tts(text, options=opts, chunk_size=chunk_size)
+        from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
+        scheduler = get_tts_scheduler()
+        raw_prio = opts.get("_priority", TtsPriority.NORMAL)
         try:
-            async for chunk in stream:
+            priority = TtsPriority(int(raw_prio))
+        except (ValueError, TypeError):
+            priority = TtsPriority.NORMAL
+
+        gen_id = opts.get("_generation_id")
+        task_id = opts.get("_task_id")
+
+        collected_chunks = []
+        completed_normally = False
+        try:
+            async for chunk in scheduler.schedule_stream(
+                lambda: self.client.stream_tts(text, options=opts, chunk_size=chunk_size),
+                priority=priority,
+                generation_id=gen_id,
+                task_id=task_id,
+            ):
                 collected_chunks.append(chunk)
                 yield chunk
+            completed_normally = True
         finally:
-            # Guarantee the underlying generator (and its inference lock) is
-            # released even if the consumer abandons us mid-stream.
-            await stream.aclose()
-
-        if use_cache and collected_chunks and cache_key:
-            full_bytes = b"".join(collected_chunks)
-            if full_bytes:
-                try:
-                    await self.cache_manager.put(
-                        cache_key=cache_key,
-                        text=text,
-                        clean_text=clean_text,
-                        voice_profile_id=opts.get("voice_profile_id", 1),
-                        params_hash=params_hash,
-                        audio_bytes=full_bytes,
-                    )
-                except Exception as exc:
-                    logger.debug("Failed to cache streamed TTS chunks: %s", exc)
+            if completed_normally and use_cache and collected_chunks and cache_key:
+                full_bytes = b"".join(collected_chunks)
+                if full_bytes:
+                    try:
+                        await self.cache_manager.put(
+                            cache_key=cache_key,
+                            text=text,
+                            clean_text=clean_text,
+                            voice_profile_id=opts.get("voice_profile_id", 1),
+                            params_hash=params_hash,
+                            audio_bytes=full_bytes,
+                        )
+                    except Exception as exc:
+                        logger.debug("Failed to cache streamed TTS chunks: %s", exc)
 
 
 __all__ = [
     "GptSovitsClient",
     "TtsService",
+    "async_get_audio_duration",
+    "clear_tts_profile_cache",
     "clean_japanese_parentheses",
     "resolve_tts_options",
     "SLICING_METHODS",
@@ -407,4 +553,9 @@ __all__ = [
     "DYNAMIC_TEMP_MAX",
     "clamp_dynamic_speed",
     "clamp_dynamic_temperature",
+    "clamp_dynamic_top_k",
+    "clamp_dynamic_top_p",
+    "clamp_dynamic_fragment_interval",
+    "clamp_dynamic_batch_size",
+    "calculate_adaptive_prosody",
 ]

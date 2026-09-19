@@ -75,12 +75,17 @@ EMOTION_SYNONYMS: Dict[str, str] = {
 }
 
 # Dynamic data-driven emotion references proxy
-def _load_manifest_emotion_references(character_name: str = "四季夏目") -> Dict[str, Dict[str, str]]:
-    """Dynamically extracts emotion references dictionary from character package manifest."""
+def _load_manifest_emotion_references(
+    character_name: Optional[str] = None,
+    char_mgr: Optional[Any] = None,
+) -> Dict[str, Dict[str, str]]:
+    """
+    Dynamically loads emotion references from the character package manifest.json.
+    """
     try:
         from galgame2voice.services.character_manager import get_character_manager
-        mgr = get_character_manager()
-        pkg = mgr.get_character(character_name)
+        mgr = char_mgr or get_character_manager()
+        pkg = mgr.get_character(character_name) if character_name else mgr.get_default_character()
         if pkg and pkg.manifest and pkg.manifest.emotions:
             res: Dict[str, Dict[str, str]] = {}
             for k, emo in pkg.manifest.emotions.items():
@@ -107,7 +112,7 @@ class _DynamicEmotionReferences(dict):
 
     def _ensure_loaded(self):
         if not self._loaded:
-            data = _load_manifest_emotion_references("四季夏目")
+            data = _load_manifest_emotion_references()
             if data:
                 self.update(data)
                 self._loaded = True
@@ -159,14 +164,14 @@ def normalize_emotion(emotion: Optional[str]) -> str:
 
 
 def resolve_emotion_reference(
-    character_name: str,
+    character_name: Optional[str],
     emotion: Optional[str],
     base_dir: Optional[Path] = None,
 ) -> Optional[Dict[str, str]]:
     """
     Data-driven resolution of emotion reference audio file path, prompt text, and prompt lang.
     Queries the CharacterManager for the active/named character package manifest.
-    Falls back gracefully if the emotion is missing or audio is invalid.
+    Falls back to default character package if specified character is not found.
 
     Returns:
         {
@@ -180,21 +185,10 @@ def resolve_emotion_reference(
     try:
         from galgame2voice.services.character_manager import get_character_manager
         mgr = get_character_manager()
-        result = mgr.resolve_emotion_audio_path(character_name, emotion, base_dir=base_dir)
-        if result is not None:
-            return result
+        if character_name:
+            return mgr.resolve_emotion_audio_path(character_name, emotion, base_dir=base_dir)
 
-        # Backward compatibility fallback: check if character is Shiki Natsume or default
-        is_natsume = (
-            not character_name
-            or "夏目" in character_name
-            or "natsume" in character_name.lower()
-            or "siki" in character_name.lower()
-            or character_name.strip().lower() == "default"
-        )
-        if not is_natsume:
-            return None
-
+        # Fallback to default character package only when no character_name was specified
         return mgr.resolve_emotion_audio_path("default", emotion, base_dir=base_dir)
     except Exception as exc:
         logger.debug("Data-driven emotion resolution encountered exception: %s", exc)

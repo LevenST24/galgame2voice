@@ -7,14 +7,14 @@ dynamic relevance scoring, anchor retrieval, and prompt injection.
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import List, Dict, Any, Optional, Union, Tuple
 from pathlib import Path
 import aiosqlite
 
 from galgame2voice.database import crud
 from galgame2voice.database.models import (
-    UserMemoryCreate, UserMemoryUpdate, UserMemoryResponse, CharacterAffectionUpdate
+    UserMemoryCreate, UserMemoryResponse, CharacterAffectionUpdate
 )
 from galgame2voice.database.session import get_database_path, get_db
 
@@ -312,7 +312,7 @@ class MemoryService:
                 if len(selected) >= safe_top_k:
                     break
 
-        for score, m in scored_candidates:
+        for _score, m in scored_candidates:
             if len(selected) >= safe_top_k:
                 break
             if m.fact_key not in seen_keys:

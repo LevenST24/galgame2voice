@@ -701,24 +701,30 @@ def _probe_synth_peak(host: str, port: int, timeout: float = 90.0) -> Optional[f
     import urllib.request
 
     try:
-        from galgame2voice.services.gpt_sovits_client import (
-            _BUNDLED_REF_AUDIO,
-            _BUNDLED_REF_TEXT,
-            wav_peak_amplitude,
-        )
+        from galgame2voice.services.gpt_sovits_client import wav_peak_amplitude
+        from galgame2voice.services.character_manager import get_character_manager
+        mgr = get_character_manager()
+        pkg = mgr.get_default_character()
+        if not pkg or not pkg.manifest or not pkg.manifest.emotions:
+            return None
+        emo = pkg.manifest.emotions.get("gentle") or next(iter(pkg.manifest.emotions.values()), None)
+        if not emo:
+            return None
+        resolved = pkg.resolve_audio_path(emo.audio)
+        if not resolved or not resolved.is_file():
+            return None
+        ref_audio = resolved
+        prompt_text = emo.text or "テスト、聞こえていますか。"
+        prompt_lang = emo.lang or "ja"
     except Exception:
-        return None
-
-    ref_audio = _BUNDLED_REF_AUDIO if _BUNDLED_REF_AUDIO.is_file() else PROJECT_ROOT / "audio" / "nat002_032.ogg"
-    if not ref_audio.is_file():
         return None
 
     params = urllib.parse.urlencode({
         "text": "テスト、聞こえていますか。",
         "text_lang": "ja",
         "ref_audio_path": str(ref_audio),
-        "prompt_text": _BUNDLED_REF_TEXT,
-        "prompt_lang": "ja",
+        "prompt_text": prompt_text,
+        "prompt_lang": prompt_lang,
     })
     url = f"http://{host}:{port}/tts?{params}"
     # 直接连接，绕过系统代理（本机回环地址不应走代理）
@@ -1034,11 +1040,21 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         default=False,
         help="Force CPU inference mode (bypasses GPU/VRAM to eliminate OOM risk and driver crashes)",
     )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        default=False,
+        help="Enable latency waterfall profiling mode (shows TTFT, First Sentence, TTS Dispatch, TTS Inference, TTFA)",
+    )
     return parser.parse_args(args)
 
 
 def main(args: list[str] | None = None):
     parsed = parse_args(args)
+
+    if getattr(parsed, "profile", False):
+        os.environ["GALGAME2VOICE_PROFILE"] = "1"
+        print("[性能追踪] 已启用 --profile 实时延迟瀑布图分析模式 (GALGAME2VOICE_PROFILE=1)")
 
     # Step 0: Pre-Flight Environment & Hardware Diagnostics
     if not check_python_environment():

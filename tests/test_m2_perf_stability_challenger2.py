@@ -144,7 +144,7 @@ class TestSqliteWalBurstConcurrency:
 
         await asyncio.gather(*reader_tasks, *writer_tasks)
         await checkpoint_task
-        elapsed = time.perf_counter() - t_start
+        time.perf_counter() - t_start
 
         # Filter locked/busy errors
         locked_errors = [e for e in errors if "locked" in e[3].lower() or "busy" in e[3].lower()]

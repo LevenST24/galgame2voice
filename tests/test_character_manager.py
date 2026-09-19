@@ -150,7 +150,7 @@ def test_character_manager_duration_validation(tmp_path):
     (char_dir / "manifest.json").write_text(json.dumps(manifest_data), encoding="utf-8")
 
     mgr = CharacterManager(tmp_path)
-    discovered = mgr.discover_characters()
+    mgr.discover_characters()
     pkg = mgr.get_character("test_duration")
 
     assert pkg is not None
@@ -377,7 +377,7 @@ def test_character_manager_path_traversal_rejection(tmp_path):
     (bad_dir / "manifest.json").write_text(json.dumps(manifest_data), encoding="utf-8")
 
     mgr = CharacterManager(tmp_path)
-    discovered = mgr.discover_characters()
+    mgr.discover_characters()
     pkg = mgr.get_character("bad_traversal")
     assert pkg is not None
     assert pkg.is_valid is False

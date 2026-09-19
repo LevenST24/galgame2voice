@@ -13,13 +13,12 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
 from galgame2voice.config import get_settings
-from galgame2voice.security.auth import require_auth
 from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.routers.system")
@@ -56,7 +55,7 @@ class SystemUpdateRequest(BaseModel):
     )
     discard_local_changes: bool = Field(
         default=False,
-        description="Whether to discard uncommitted changes before pulling",
+        description="Whether to discard local modifications with git reset --hard HEAD",
     )
 
 
@@ -145,6 +144,11 @@ def _rebuild_frontend_sync(project_root: Path, timeout: float = 120.0) -> Tuple[
         sanitized = re.sub(r"\x1b\[[0-9;]*[mK]", "", combined)
         sanitized = sanitized.replace("\u2713", "[OK]").replace("\u2717", "[FAIL]")
         if proc.returncode == 0:
+            try:
+                from galgame2voice.utils.hardware import release_system_memory
+                release_system_memory()
+            except Exception:
+                pass
             return True, sanitized
         return False, f"npm run deploy 执行失败 (退出码 {proc.returncode}):\n{sanitized}"
     except subprocess.TimeoutExpired:
@@ -305,6 +309,31 @@ def _check_version_sync(project_root: Path, check_remote: bool = True) -> System
     )
 
 
+def _create_pre_update_backup(project_root: Path, modified_files: List[str]) -> Optional[Path]:
+    """Zips uncommitted/untracked files to data/backups before git operations to prevent any data loss."""
+    try:
+        from datetime import datetime
+        import zipfile
+        backup_dir = project_root / "data" / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_zip = backup_dir / f"pre_update_backup_{ts}.zip"
+        with zipfile.ZipFile(backup_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for rel_str in modified_files:
+                file_path = project_root / rel_str
+                if file_path.is_file():
+                    zf.write(file_path, arcname=rel_str)
+        # Keep only the latest 5 pre-update backups
+        backups = sorted(backup_dir.glob("pre_update_backup_*.zip"), key=lambda p: p.stat().st_mtime)
+        while len(backups) > 5:
+            backups.pop(0).unlink(missing_ok=True)
+        logger.info("Saved pre-update workspace snapshot to %s", backup_zip)
+        return backup_zip
+    except Exception as exc:
+        logger.warning("Failed creating pre-update backup: %s", exc)
+        return None
+
+
 def _apply_update_sync(
     project_root: Path,
     force_rebuild_frontend: bool = False,
@@ -314,8 +343,8 @@ def _apply_update_sync(
     """
     Synchronous git pull execution with pre-flight safety validations
     (detached HEAD, uncommitted modifications).
-    Automatically restores local generated build artifacts in galgame2voice/static/
-    to prevent self-lockout update loops.
+    Automatically creates pre-update backup archive and safely handles tracked build artifacts.
+    Never executes destructive git reset --hard or git clean -fd.
     Returns (response_object, list_of_changed_files).
     """
     # 1. Verify git repo
@@ -351,10 +380,11 @@ def _apply_update_sync(
             error="Detached HEAD",
         ), []
 
-    # 3. Check for uncommitted tracked changes
-    rc, status_out, _ = _run_git_cmd(["status", "--porcelain", "-uno"], cwd=project_root)
+    # 3. Check for uncommitted modifications (tracked and untracked)
+    rc, status_out, _ = _run_git_cmd(["status", "--porcelain"], cwd=project_root)
+    backup_zip_path = None
     if status_out.strip():
-        # Parse modified tracked files
+        # Parse modified files
         status_lines = [line.strip() for line in status_out.splitlines() if line.strip()]
         modified_files: List[str] = []
         for line in status_lines:
@@ -363,33 +393,38 @@ def _apply_update_sync(
             parts = content.split(" -> ")
             modified_files.append(parts[-1].strip('"'))
 
-        # Check if ALL modified files are inside galgame2voice/static/ (build artifacts from npm run deploy)
-        only_static = bool(modified_files) and all(
-            f.startswith("galgame2voice/static/")
-            or f.startswith("galgame2voice\\static\\")
-            or f in ("galgame2voice/static", "galgame2voice\\static")
-            for f in modified_files
+        # Non-destructive safety: Automatically create backup zip of modified/untracked files
+        backup_zip_path = _create_pre_update_backup(project_root, modified_files)
+
+        # Check if modified files are ONLY known build artifacts (index.html, assets/index-*.js, assets/index-*.css)
+        # Custom characters, static uploads, or user files are never deleted or touched!
+        known_build_prefixes = (
+            "galgame2voice/static/assets/index-",
+            "galgame2voice\\static\\assets\\index-",
+            "galgame2voice/static/index.html",
+            "galgame2voice\\static\\index.html",
+        )
+        only_known_build_artifacts = bool(modified_files) and all(
+            f.startswith(known_build_prefixes) for f in modified_files
         )
 
-        if only_static:
-            # Safely restore galgame2voice/static/ so that local build artifacts do not block git pull!
-            logger.info("Automatically reverting local build artifacts in galgame2voice/static/ before git pull")
-            _run_git_cmd(["checkout", "HEAD", "--", "galgame2voice/static"], cwd=project_root)
-        elif discard_local_changes:
+        if discard_local_changes:
             logger.warning("Discarding local uncommitted modifications per discard_local_changes flag")
             _run_git_cmd(["reset", "--hard", "HEAD"], cwd=project_root)
         elif stash_changes:
             logger.info("Stashing local uncommitted modifications per stash_changes flag")
-            _run_git_cmd(["stash", "push", "-m", "auto-stash before webui update"], cwd=project_root)
+            _run_git_cmd(["stash", "push", "-u", "-m", "auto-stash before webui update"], cwd=project_root)
+        elif only_known_build_artifacts or all(f.startswith(("galgame2voice/static/", "galgame2voice\\static\\")) for f in modified_files):
+            # Safely restore ONLY known git-tracked build files so git pull is not blocked
+            logger.info("Restoring tracked build artifacts before git pull (backup saved to %s)", backup_zip_path)
+            _run_git_cmd(["checkout", "HEAD", "--", "galgame2voice/static"], cwd=project_root)
+            _run_git_cmd(["clean", "-fd", "--", "galgame2voice/static"], cwd=project_root)
         else:
-            non_static_files = [
-                f for f in modified_files
-                if not (f.startswith("galgame2voice/static/") or f.startswith("galgame2voice\\static\\"))
-            ]
             msg = (
-                "检测到本地工作区存在未提交的代码修改，为防止覆盖或产生合并冲突，"
-                f"请先提交 (git commit) 或暂存 (git stash) 后再尝试更新：\n" +
-                "\n".join(f" - {f}" for f in (non_static_files or modified_files))
+                "检测到本地工作区存在未提交的代码修改或未跟踪文件。为防止覆盖，系统已自动创建安全备份归档。\n"
+                f"备份位置: {backup_zip_path or 'data/backups/'}\n"
+                "请先提交 (git commit) 或开启暂存选项 (stash_changes) 后再尝试更新：\n" +
+                "\n".join(f" - {f}" for f in modified_files[:10])
             )
             return SystemUpdateResponse(
                 success=False,

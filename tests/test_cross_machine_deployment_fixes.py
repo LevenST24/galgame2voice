@@ -50,7 +50,7 @@ def create_synthetic_wav(path: Path, duration_sec: float, sample_rate: int = 160
 
 def test_bom_safe_sovits_cache_reading(tmp_path, monkeypatch):
     """Verifies that reading sovits_dir.txt with UTF-8 BOM (PowerShell export) is handled cleanly."""
-    settings = get_settings()
+    get_settings()
     data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     cache_file = data_dir / "sovits_dir.txt"
@@ -316,29 +316,28 @@ async def test_switch_voice_profile_resolves_relative_reference_path(monkeypatch
 
 @pytest.mark.asyncio
 async def test_init_schema_and_seeds_seeds_portable_path(tmp_path):
-    """Verifies that init_schema_and_seeds inserts portable relative reference path."""
+    """Verifies that init_db syncs portable relative reference path from character packages."""
+    from galgame2voice.database.session import init_db
     db_path = tmp_path / "fresh_seed.db"
+    await init_db(db_path)
     async with aiosqlite.connect(str(db_path)) as conn:
         conn.row_factory = aiosqlite.Row
-        await crud.init_schema_and_seeds(conn)
-
         cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE id = 1;")
         row = await cur.fetchone()
         assert row is not None
         ref_path = row["ref_audio_path"]
         assert "yuzusoft" not in ref_path
-        # Must be portable relative path
-        assert ref_path == "audio/references/natsume/gentle.ogg"
+        assert not Path(ref_path).is_absolute()
 
 
 @pytest.mark.asyncio
 async def test_auto_heal_arbitrary_drive_letters(tmp_path):
     """Verifies that auto_heal_voice_profiles cleanses arbitrary machine-specific drive letters."""
+    from galgame2voice.database.session import init_db
     db_path = tmp_path / "drive_letters.db"
+    await init_db(db_path)
     async with aiosqlite.connect(str(db_path)) as conn:
         conn.row_factory = aiosqlite.Row
-        await crud.init_schema_and_seeds(conn)
-
         # Inject machine-specific drive letters from foreign machines
         await conn.execute("UPDATE voice_profiles SET ref_audio_path = 'D:\\other_user\\voice.wav' WHERE id = 1;")
         await conn.commit()
@@ -348,6 +347,6 @@ async def test_auto_heal_arbitrary_drive_letters(tmp_path):
 
         cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE id = 1;")
         row = await cur.fetchone()
-        assert row["ref_audio_path"] == "audio/references/natsume/gentle.ogg"
+        assert not Path(row["ref_audio_path"]).is_absolute()
 
 

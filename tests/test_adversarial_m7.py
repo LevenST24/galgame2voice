@@ -205,7 +205,7 @@ class TestFullLifecycleCrossModuleE2E:
             await crud.set_active_provider(conn, "custom_cloud")
 
             # Step 3: Create and switch to Natsume voice profile
-            profile = await voice_manager.create_profile(VoiceProfileCreate(
+            await voice_manager.create_profile(VoiceProfileCreate(
                 name="Natsume",
                 gpt_weights_path="weights/natsume.ckpt",
                 sovits_weights_path="weights/natsume.pth",
@@ -856,7 +856,7 @@ class TestOriginalRequestAcceptanceCriteria:
         AC: All settings persist in SQLite. API keys returned to web frontend are masked (sk-****1234).
         No plaintext API keys in logs.
         """
-        async with aiosqlite.connect(m7_db_path) as conn:
+        async with aiosqlite.connect(m7_db_path):
             # Verify secret masking helper
             masked = mask_secret("sk-1234567890abcdef1234567890abcdef")
             assert masked.startswith("sk-****")
@@ -912,7 +912,7 @@ class TestOriginalRequestAcceptanceCriteria:
         """
         voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
 
-        profile = await voice_manager.create_profile(VoiceProfileCreate(
+        await voice_manager.create_profile(VoiceProfileCreate(
             name="RollbackTestProfile",
             gpt_weights_path="weights/rb.ckpt",
             sovits_weights_path="weights/rb.pth",

@@ -45,14 +45,18 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 | 30 | Smooth Fade-Out Interruption & Instant Queue Cancellation | 40ms smooth linear gain attenuation on user interrupt (stopBtn, switchSession, newChat, delete, sendMessage), instant queue purging and SSE abort | M6_FRONTEND_ENGINE | Survey R2 (PLANNED) |
 | 31 | VRAM Watermark Guard, SSE Keep-Alive & Bounded Blob LRU Cache | Discrete GPU VRAM floor (0.45GB) before model switch, periodic W3C SSE keep-alive comments (`: keep-alive\n\n`) every 5s, bounded LRU Blob URL cache (cap 30) with explicit `URL.revokeObjectURL()` | M5_BACKEND_PIPELINE, M6_FRONTEND_ENGINE | Survey R3 (DONE) |
 | 32 | Automated Quantitative Benchmark Suite & 100% Zero-Regression Verification | Dedicated quantitative benchmark module `test_benchmark_resilience_r4.py` measuring latency, 50-turn memory RSS drift (<35MB), mid-stream cancellation, and full 1079+ test regression | M7_GATE_VERIFICATION | Survey R4 (DONE) |
-| 33 | Universal Provider UI & Dynamic Prefill | Redesign Model & Recognition panel: replace `#gCustomBox` with universal provider card across all 8 providers, API key masked/unmasked toggle with placeholder, Base URL custom input + one-click reset, preset dropdown + custom model input, dynamic prefill from backend | M8_UNIVERSAL_PROVIDER_UI | Survey R1 (IN_PROGRESS) |
-| 34 | In-Flight Connectivity Testing & One-Click Activation | In-flight testing against `/api/providers/test` using freshly typed form values before saving; one-click save and activate as global active provider; deploy frontend via `npm run deploy` | M8_UNIVERSAL_PROVIDER_UI | Survey R1 (IN_PROGRESS) |
-| 35 | Backend Provider Registry, xAI Grok & Groq Hardening | Remove `gpt-4o-mini` fallback trap, support HTTP 400 auth errors for xAI and Gemini in `test_connection()`, seed `groq` and `xai` in migrations and preset fallback | M9_BACKEND_DIAGNOSTICS_SETTINGS | Survey R1 (IN_PROGRESS) |
-| 36 | Structured Error Interception & Chinese Guidance | Intercept Gemini 403/400, OpenAI 429, xAI 400/401, Groq 401/429, timeout, model not found with actionable Chinese guidance in `galgame2voice/utils/error_diagnostics.py` | M9_BACKEND_DIAGNOSTICS_SETTINGS | Survey R3 (IN_PROGRESS) |
-| 37 | Settings Audit: STT Engine & Telegram Chat ID Schema Fix | Add `stt_engine` to `SettingsBase`, `SettingsUpdate`, `SettingsResponse`, SQLite schema; map `telegram_chat_id` alias to `telegram_admin_ids` | M9_BACKEND_DIAGNOSTICS_SETTINGS | Survey R2 (IN_PROGRESS) |
-| 38 | Automated Provider Configuration & Key Protection Tests | Author `tests/test_provider_configuration_and_keys.py` covering all 8 providers, key masking, in-flight test mocks, real activation, xAI & Groq dedicated tests | M10_TEST_SUITE | Survey R4 (PLANNED) |
-| 39 | Full Test Suite 100% Pass & Multi-Agent Gate Verification | Full `pytest tests/ -q` regression, 2 Reviewers, 2 Challengers, 1 Forensic Auditor integrity verification | M11_GATE_VERIFICATION | Survey R4 (PLANNED) |
+| 33 | Universal Provider UI & Dynamic Prefill | Redesign Model & Recognition panel: replace `#gCustomBox` with universal provider card across all 8 providers, API key masked/unmasked toggle with placeholder, Base URL custom input + one-click reset, preset dropdown + custom model input, dynamic prefill from backend | M8_UNIVERSAL_PROVIDER_UI | Survey R1 (DONE) |
+| 34 | In-Flight Connectivity Testing & One-Click Activation | In-flight testing against `/api/providers/test` using freshly typed form values before saving; one-click save and activate as global active provider; deploy frontend via `npm run deploy` | M8_UNIVERSAL_PROVIDER_UI | Survey R1 (DONE) |
+| 35 | Backend Provider Registry, xAI Grok & Groq Hardening | Remove `gpt-4o-mini` fallback trap, support HTTP 400 auth errors for xAI and Gemini in `test_connection()`, seed `groq` and `xai` in migrations and preset fallback | M9_BACKEND_DIAGNOSTICS_SETTINGS | Survey R1 (DONE) |
+| 36 | Structured Error Interception & Chinese Guidance | Intercept Gemini 403/400, OpenAI 429, xAI 400/401, Groq 401/429, timeout, model not found with actionable Chinese guidance in `galgame2voice/utils/error_diagnostics.py` | M9_BACKEND_DIAGNOSTICS_SETTINGS | Survey R3 (DONE) |
+| 37 | Settings Audit: STT Engine & Telegram Chat ID Schema Fix | Add `stt_engine` to `SettingsBase`, `SettingsUpdate`, `SettingsResponse`, SQLite schema; map `telegram_chat_id` alias to `telegram_admin_ids` | M9_BACKEND_DIAGNOSTICS_SETTINGS | Survey R2 (DONE) |
+| 38 | Automated Provider Configuration & Key Protection Tests | Author `tests/test_provider_configuration_and_keys.py` covering all 8 providers, key masking, in-flight test mocks, real activation, xAI & Groq dedicated tests | M10_TEST_SUITE | Survey R4 (DONE) |
+| 39 | Full Test Suite 100% Pass & Multi-Agent Gate Verification | Full `pytest tests/ -q` regression, 2 Reviewers, 2 Challengers, 1 Forensic Auditor integrity verification | M11_GATE_VERIFICATION | Survey R4 (DONE) |
 | 40 | Emotion State Machine Hardening & 8-Character Audio Realignment | Eliminate emotion hijacking (tsundere ↔ angry), reject duplicate audio MD5s in package validation, realign all 8 characters with 7 native emotional audio tracks strictly in [3.0s, 9.0s] (56 distinct tracks), fix Japanese transcription typos/truncations, support Japanese and canonical emotion synonyms, and expand test suite to assert zero hijacking across all 8 characters | M12_EMOTION_REALIGNMENT | Survey R1 (DONE) |
+| 41 | Project-wide Comprehensive Optimization | Japanese phonetic lexicon expansion (Yuzusoft works, proper nouns, stage cue filtering), frontend shortcut keys (Esc voice interrupt, Ctrl+Enter send), dead UI cleanup, root SQLite purge & cache metrics | M13_COMPREHENSIVE_OPTIMIZATION | Optimization (DONE) |
+| 42 | Real-Time Audio Streaming & TTS Architecture Optimization | True upstream-to-downstream streaming pipeline, early lock release, priority TTS Scheduler with stale task cancellation, SingleFlightCoordinator coalescing, VoiceProfileResolver in-memory caching, hardened (mtime_ns:size) audio cache identity, and AudioSpecCache | M14_REAL_STREAMING_SCHEDULER | Core Review (DONE) |
+| 43 | Full-System Sub-Pipelines, T0-T7 Telemetry, Zero Cold-Start Warm-up & Underrun Detection | Modularized chat execution into `LlmStreamPipeline`, `TextSegmentationPipeline`, `TtsStreamPipeline`; expanded `ChatTurnProfiler` to full T0~T7 latency telemetry with ASCII waterfall and SSE payload delivery; background voice profile warm-up scheduled at LOW priority through `TtsScheduler`; and Web Audio frontend buffer underrun detection with `getStats()` metrics | M15_MODULAR_PIPELINES_AND_TELEMETRY | Architecture Refactoring (DONE) |
+| 44 | End-to-End Latency & Pipeline Optimizations | TtsScheduler & SingleFlightCoordinator event-loop rebinding, complete TtsService scheduling routing with priority and generation tracking, AudioStaticFiles HTTP immutable caching for content-addressed audio, adaptive Dynamic Jitter Buffer in Web Audio player (0.02s~0.12s lead-time adaptation), and zero-regression test suite | M16_END_TO_END_LATENCY_AND_PIPELINE | Performance & Latency (DONE) |
 
 ---
 
@@ -67,11 +71,16 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 | 5 | M5_BACKEND_PIPELINE | Backend Latency, Warm-up, VRAM Watermark Guard & SSE Keep-Alive | M4_HARDENING | DONE |
 | 6 | M6_FRONTEND_ENGINE | Frontend Gapless Streaming, Immediate Playback, Interrupt Fade-out & Bounded Blob Cache | M4_HARDENING | DONE |
 | 7 | M7_GATE_VERIFICATION | Multi-Agent Gate Verification & Integrity Audit for R4 Engineering pass | M5_BACKEND_PIPELINE, M6_FRONTEND_ENGINE | DONE |
-| 8 | M8_UNIVERSAL_PROVIDER_UI | Frontend Universal Provider Form, API Key/Base URL/Model management, in-flight connectivity test, one-click activate, `npm run deploy` | none | IN_PROGRESS |
-| 9 | M9_BACKEND_DIAGNOSTICS_SETTINGS | Backend xAI/Groq presets, `test_connection` gpt-4o-mini trap removal & HTTP 400 auth handling, structured Chinese error diagnostics, settings schema fix (stt_engine, telegram_chat_id) | none | IN_PROGRESS |
-| 10 | M10_TEST_SUITE | Automated Test Suite: `tests/test_provider_configuration_and_keys.py`, 100% pass across all tests (`pytest tests/ -q`) | M8_UNIVERSAL_PROVIDER_UI, M9_BACKEND_DIAGNOSTICS_SETTINGS | PLANNED |
-| 11 | M11_GATE_VERIFICATION | Gate Verification: 2 Reviewers, 2 Challengers, 1 Forensic Auditor, Sentinel victory report | M10_TEST_SUITE | PLANNED |
+| 8 | M8_UNIVERSAL_PROVIDER_UI | Frontend Universal Provider Form, API Key/Base URL/Model management, in-flight connectivity test, one-click activate, `npm run deploy` | none | DONE |
+| 9 | M9_BACKEND_DIAGNOSTICS_SETTINGS | Backend xAI/Groq presets, `test_connection` gpt-4o-mini trap removal & HTTP 400 auth handling, structured Chinese error diagnostics, settings schema fix (stt_engine, telegram_chat_id) | none | DONE |
+| 10 | M10_TEST_SUITE | Automated Test Suite: `tests/test_provider_configuration_and_keys.py`, 100% pass across all tests (`pytest tests/ -q`) | M8_UNIVERSAL_PROVIDER_UI, M9_BACKEND_DIAGNOSTICS_SETTINGS | DONE |
+| 11 | M11_GATE_VERIFICATION | Gate Verification: 2 Reviewers, 2 Challengers, 1 Forensic Auditor, Sentinel victory report | M10_TEST_SUITE | DONE |
 | 12 | M12_EMOTION_REALIGNMENT | Emotion State Machine Hardening & 8-Character Audio Realignment: Eliminate cross-emotion hijacking, reject duplicate audio MD5s, realign all 8 characters with 56 native audio tracks in [3.0s, 9.0s], fix transcriptions, test 100% pass | none | DONE |
+| 13 | M13_COMPREHENSIVE_OPTIMIZATION | System-level optimization: Yuzusoft Galgame phonetic normalization, stage cue filter, Esc speech interrupt & Ctrl+Enter composer, dead DOM removal, root DB cleanup & cache metrics | M12_EMOTION_REALIGNMENT | DONE |
+| 14 | M14_REAL_STREAMING_SCHEDULER | End-to-End Real-Time Audio Streaming & TTS Architecture Optimization: True upstream-downstream streaming decoupling, early lock release, priority TTS scheduler, stale task cancellation, voice resolver in-memory caching, hardened cache identity, single-flight coalescing | M13_COMPREHENSIVE_OPTIMIZATION | DONE |
+| 15 | M15_MODULAR_PIPELINES_AND_TELEMETRY | Architecture De-bloat, Sub-Pipeline Modularization, T0-T7 Latency Telemetry Waterfall, Zero Cold-Start Low-Priority Warm-up & Web Audio Underrun Metrics | M14_REAL_STREAMING_SCHEDULER | DONE |
+| 16 | M16_END_TO_END_LATENCY_AND_PIPELINE | End-to-End Latency & Pipeline Optimizations: TtsScheduler & SingleFlightCoordinator event-loop rebinding, complete TtsService scheduling routing, AudioStaticFiles HTTP immutable caching, adaptive Dynamic Jitter Buffer in Web Audio player | M15_MODULAR_PIPELINES_AND_TELEMETRY | DONE |
+| 17 | M17_PORTRAIT_STAGE_AND_REMEDIATION | Character Portrait Stage System, Windows DPAPI/AES Encryption, Subsystem Modularization & Universal Test Suite Zero-Regression Verification (1621/1621 tests passing, 100%) | M16_END_TO_END_LATENCY_AND_PIPELINE | DONE |
 
 
 ---
@@ -121,11 +130,12 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 ---
 
 ## Code Layout
-- `galgame2voice/utils/logger.py`: Logging formatters and masking filters.
-- `galgame2voice/routers/`: FastAPI routes (`chat.py`, `config.py`, `health.py`, `characters.py`, `audio.py`).
-- `galgame2voice/services/`: Core business logic (`chat_service.py`, `tts_cache_manager.py`, `memory_service.py`, `gpt_sovits_client.py`, `session_manager.py`).
-- `galgame2voice/database/`: SQLite engine, session, and CRUD operations (`session.py`, `crud.py`, `models.py`).
+- `galgame2voice/utils/`: Security masking, logging formatters, and hardware utilities (`logger.py`, `path_guard.py`, `error_diagnostics.py`, `hardware.py`).
+- `galgame2voice/routers/`: FastAPI endpoints (`chat.py`, `config.py`, `health.py`, `characters.py`, `audio.py`, `providers.py`, `affection.py`, `memories.py`).
+- `galgame2voice/services/`: Core business logic (`chat_service.py`, `character_manager.py`, `voice_manager.py`, `audio_cleaner.py`, `dynamic_batcher.py`, `tts_cache_manager.py`, `memory_service.py`, `gpt_sovits_client.py`, `session_manager.py`).
+- `galgame2voice/database/`: SQLite engine, schema version migrations, and CRUD operations (`session.py`, `migrations.py`, `crud.py`, `models.py`).
 - `galgame2voice/telegram_bot/`: Telegram bot client and command/chat handlers (`bot.py`, `handlers.py`).
-- `scripts/`: Launcher and maintenance scripts (`run_server.py`).
-- `tests/`: Automated test suite (40+ test files, 750+ tests).
+- `scripts/`: Launcher, packaging, and maintenance scripts (`run_server.py`, `package_release.py`, `apply_character_fixes.py`).
+- `scripts/tools/`: Diagnostic and verification utilities (`audit_character_emotions.py`).
+- `tests/`: Automated test suite (50+ test files, 1500+ tests).
 - `.agents/`: Agent coordination metadata (briefings, plans, progress, handoffs).

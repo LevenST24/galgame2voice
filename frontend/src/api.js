@@ -161,3 +161,5 @@ export async function applySystemUpdate(payload = {}) {
   }
   return data;
 }
+
+export { getConsoleToken, setConsoleToken, clearConsoleToken, promptConsoleToken } from './auth.js';

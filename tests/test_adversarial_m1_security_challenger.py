@@ -128,7 +128,7 @@ class TestMemoryPromptInjectionAdversarial:
 
         for payload in massive_payloads:
             t0 = time.perf_counter()
-            facts = mem_service.extract_facts_heuristic(payload)
+            mem_service.extract_facts_heuristic(payload)
             elapsed_ms = (time.perf_counter() - t0) * 1000
             assert elapsed_ms < 100.0, f"ReDoS vulnerability detected! Regex took {elapsed_ms:.2f}ms on payload of len {len(payload)}"
 

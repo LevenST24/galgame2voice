@@ -10,7 +10,7 @@ GALGAME2VOICE_RATE_LIMIT_DISABLED=1.
 import os
 import time
 from collections import deque
-from typing import Deque, Dict, Optional, Tuple
+from typing import Deque, Dict
 
 from galgame2voice.config import get_settings
 
@@ -56,7 +56,7 @@ class RateLimitMiddleware:
             return
 
         path = scope.get("path", "")
-        if path.startswith("/static/") or path.startswith("/audio/"):
+        if path.startswith(("/static/", "/audio/")):
             await self.app(scope, receive, send)
             return
 

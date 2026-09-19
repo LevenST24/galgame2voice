@@ -7,11 +7,13 @@ services:
     container_name: galgame2voice
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       - HOST=0.0.0.0
       - PORT=8080
       - LOG_LEVEL=INFO
+      - GALGAME2VOICE_AUTH_DISABLED=0
+      - GALGAME2VOICE_CONSOLE_TOKEN=${GALGAME2VOICE_CONSOLE_TOKEN:-}
       # If GPT-SoVITS is running on host machine:
       # - GPT_SOVITS_BASE_URL=http://host.docker.internal:9880
     volumes:

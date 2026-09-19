@@ -6,6 +6,8 @@ Exports GptSovitsClient, VoiceManager, TtsService, and TTS utilities.
 from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
     clean_japanese_parentheses,
+    extract_stage_directions_and_emotion,
+    normalize_japanese_for_tts,
     resolve_tts_options,
     SLICING_METHODS,
     TTS_PRESETS,
@@ -41,6 +43,20 @@ from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.services.session_manager import SessionManager, SessionTurn
 from galgame2voice.services.metrics_collector import MetricsCollector, get_metrics_collector
 from galgame2voice.services.tts_cache_manager import TtsCacheManager, get_tts_cache_manager
+from galgame2voice.services.dynamic_batcher import (
+    DynamicBatchScheduler,
+    SynthesisSpeedTracker,
+    get_speed_tracker,
+    reset_speed_tracker,
+    get_batch_scheduler,
+)
+from galgame2voice.services.character_manager import (
+    CharacterManager,
+    get_character_manager,
+)
+from galgame2voice.services.audio_cleaner import (
+    AudioCleanerService,
+)
 
 __all__ = [
     "GptSovitsClient",
@@ -67,10 +83,20 @@ __all__ = [
     "get_metrics_collector",
     "get_tts_cache_manager",
     "clean_japanese_parentheses",
+    "extract_stage_directions_and_emotion",
+    "normalize_japanese_for_tts",
     "resolve_tts_options",
     "SLICING_METHODS",
     "TTS_PRESETS",
     "get_voice_manager",
     "set_voice_manager",
+    "DynamicBatchScheduler",
+    "SynthesisSpeedTracker",
+    "get_speed_tracker",
+    "reset_speed_tracker",
+    "get_batch_scheduler",
+    "CharacterManager",
+    "get_character_manager",
+    "AudioCleanerService",
 ]
 

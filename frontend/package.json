@@ -7,7 +7,8 @@
     "dev": "vite --port 3015 --host 0.0.0.0 --strictPort",
     "build": "vite build",
     "deploy": "vite build && node deploy.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node ../tests/test_m1_m2_frontend_adversarial_challenger1.js && node ../tests/test_m2_frontend_empirical.js && node ../tests/test_m7_audio_lru_challenger2.js"
   },
   "devDependencies": {
     "vite": "^6.3.5"

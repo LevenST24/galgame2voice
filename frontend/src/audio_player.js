@@ -35,11 +35,31 @@ export class StreamAudioController {
     this._progressTimer = null;
     this._scheduleRetryTimer = null;
 
+    this.underrunCount = 0;
+    this.chunksPlayed = 0;
+    this.minBufferLeadSec = 0.02; // 20ms baseline ultra-low latency
+    this.maxBufferLeadSec = 0.12; // 120ms max jitter cushion
+    this.currentBufferLeadSec = 0.02;
+    this.consecutiveSmoothChunks = 0;
+
     this.onStatusChange = options.onStatusChange || null;
     this.onChunkStart = options.onChunkStart || null;
     this.onChunkEnd = options.onChunkEnd || null;
     this.onQueueEmpty = options.onQueueEmpty || null;
     this.onError = options.onError || null;
+
+    this._onVisibilityChange = () => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        if (this.ctx && this.ctx.state === 'running') {
+          if (this.nextStartTime < this.ctx.currentTime) {
+            this.nextStartTime = this.ctx.currentTime + this.currentBufferLeadSec;
+          }
+        }
+      }
+    };
+    if (typeof document !== 'undefined' && document.addEventListener) {
+      document.addEventListener('visibilitychange', this._onVisibilityChange);
+    }
   }
 
   /**
@@ -138,6 +158,10 @@ export class StreamAudioController {
     this.isPaused = false;
     this.isPlaying = true;
     this.nextStartTime = 0;
+    this.consecutiveSmoothChunks = 0;
+    if (this.underrunCount === 0) {
+      this.currentBufferLeadSec = this.minBufferLeadSec;
+    }
     if (ctl && ctl.setPlaying) ctl.setPlaying(true);
     if (ctl && ctl.setProgress) ctl.setProgress(0);
   }
@@ -264,8 +288,14 @@ export class StreamAudioController {
       } catch (_) {}
     }
     if (this.nextStartTime < now) {
-      // 预留 20ms 给音频驱动混音缓冲
-      this.nextStartTime = now + 0.02;
+      if (this.nextStartTime > 0 && this.isPlaying && this.activeSources.length === 0) {
+        this.underrunCount++;
+        // 欠载自适应：缓冲裕度递增 20ms（上限 120ms），消除后续切片抖动
+        this.currentBufferLeadSec = Math.min(this.maxBufferLeadSec, this.currentBufferLeadSec + 0.02);
+        this.consecutiveSmoothChunks = 0;
+      }
+      // 预留自适应 Jitter 缓冲给音频驱动混音
+      this.nextStartTime = now + this.currentBufferLeadSec;
     }
 
     while (this.queue.length > 0) {
@@ -297,6 +327,13 @@ export class StreamAudioController {
       chunkGain.connect(this.masterGain);
 
       source.start(startTime);
+      this.chunksPlayed++;
+      this.consecutiveSmoothChunks++;
+      // 连续 5 个切片平稳排期播放无欠载时，平滑递减 5ms 回退向 20ms 基线，恢复极低延迟
+      if (this.consecutiveSmoothChunks >= 5 && this.currentBufferLeadSec > this.minBufferLeadSec) {
+        this.currentBufferLeadSec = Math.max(this.minBufferLeadSec, this.currentBufferLeadSec - 0.005);
+        this.consecutiveSmoothChunks = 0;
+      }
       const entry = { source, chunkGain, item: nextItem, startTime, duration };
       this.activeSources.push(entry);
 
@@ -445,9 +482,30 @@ export class StreamAudioController {
   }
 
   /**
+   * 返回当前播放时延与缓冲健康度指标
+   */
+  getStats() {
+    return {
+      isPlaying: this.isPlaying,
+      isPaused: this.paused,
+      underrunCount: this.underrunCount,
+      chunksPlayed: this.chunksPlayed,
+      bufferLeadMs: Math.round(this.currentBufferLeadSec * 1000),
+      activeSources: this.activeSources.length,
+      queueLength: this.queue.length,
+      currentTime: this.ctx ? this.ctx.currentTime : 0,
+      nextStartTime: this.nextStartTime,
+    };
+  }
+
+  /**
    * 释放所有资源
    */
   async close() {
+    if (typeof document !== 'undefined' && document.removeEventListener && this._onVisibilityChange) {
+      document.removeEventListener('visibilitychange', this._onVisibilityChange);
+      this._onVisibilityChange = null;
+    }
     this.interrupt(10);
     if (this.ctx) {
       try {

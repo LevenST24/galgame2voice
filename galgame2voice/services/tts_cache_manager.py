@@ -13,14 +13,18 @@ import time
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, Dict, Optional, Tuple, Union
 
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path
-from galgame2voice.services.gpt_sovits_client import clean_japanese_parentheses
+from galgame2voice.services.gpt_sovits_client import (
+    normalize_japanese_for_tts,
+)
 
 logger = logging.getLogger("galgame2voice.services.tts_cache_manager")
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class TtsCacheManager:
@@ -58,12 +62,17 @@ class TtsCacheManager:
         self._mem_cache: OrderedDict[str, bytes] = OrderedDict()
         self._mem_bytes_total: int = 0
         self._touch_throttle: Dict[str, float] = {}
+        # Batch write cache access times: in-memory buffer protected by self._lock
+        self._dirty_touches: Dict[str, int] = {}
+        self._flush_interval: float = 15.0
+        self._flush_task: Optional[asyncio.Task] = None
         # Strong references for fire-and-forget background tasks (prevent GC mid-flight).
         self._bg_tasks: set = set()
         # In-memory disk cache metadata tracking to avoid DB/disk scans on every synthesis
         self._disk_bytes_total: Optional[int] = None
         self._disk_files_total: Optional[int] = None
         self._stats_initialized: bool = False
+        self._ensure_flusher_running()
 
     def _mem_cache_discard(self, cache_key: str) -> None:
         evicted = self._mem_cache.pop(cache_key, None)
@@ -119,23 +128,83 @@ class TtsCacheManager:
         max_bound = max(self.max_mem_entries * 4, 128)
         if len(throttle) > max_bound:
             cutoff = now - 60.0
-            for k in [k for k, ts in list(throttle.items()) if ts < cutoff]:
+            expired_keys = [k for k, ts in list(throttle.items()) if ts < cutoff]
+            for k in expired_keys:
                 throttle.pop(k, None)
             if len(throttle) > max_bound:
                 excess = len(throttle) - max_bound
-                sorted_keys = sorted(list(throttle.keys()), key=lambda k: throttle.get(k, 0.0))
+                sorted_keys = sorted(throttle.keys(), key=lambda k: throttle.get(k, 0.0))
                 for k in sorted_keys[:excess]:
                     throttle.pop(k, None)
         throttle[cache_key] = now
         return True
 
+    def _ensure_flusher_running(self) -> None:
+        """Ensures that the periodic background flusher task is running."""
+        if self._flush_task is None or self._flush_task.done():
+            try:
+                loop = asyncio.get_running_loop()
+                if loop.is_running():
+                    self._flush_task = loop.create_task(self._periodic_flush_loop())
+
+                    def _on_flusher_done(t: asyncio.Task) -> None:
+                        if not t.cancelled():
+                            _ = t.exception()
+
+                    self._flush_task.add_done_callback(_on_flusher_done)
+            except RuntimeError:
+                pass
+
+    async def _periodic_flush_loop(self) -> None:
+        """Periodically flushes accumulated dirty touches to the database."""
+        try:
+            while True:
+                await asyncio.sleep(self._flush_interval)
+                await self._flush_dirty_touches()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug("TTS cache periodic flusher encountered unexpected error: %s", exc)
+
+    async def _flush_dirty_touches(self) -> None:
+        """Flushes accumulated dirty touches to the database in a single batch transaction."""
+        async with self._lock:
+            if not self._dirty_touches:
+                return
+            touches = self._dirty_touches
+            self._dirty_touches = {}
+
+        try:
+            loop = asyncio.get_running_loop()
+            if not loop.is_running() or loop.is_closed():
+                return
+            async with get_db(self.db_path) as conn:
+                await crud.batch_touch_tts_cache_entries(conn, touches)
+        except Exception as exc:
+            logger.debug("Non-critical: could not batch touch tts_cache_entries: %s", exc)
+            async with self._lock:
+                for k, v in touches.items():
+                    self._dirty_touches[k] = self._dirty_touches.get(k, 0) + v
+
+    async def flush_dirty_touches(self) -> None:
+        """Public method to flush accumulated dirty touches immediately."""
+        await self._flush_dirty_touches()
+
     async def aclose(self) -> None:
         """Waits for pending background tasks (DB touches, pruning) to finish.
 
-        Call before the event loop shuts down so aiosqlite worker threads do not
-        race the closed loop. Tasks are given time to complete naturally (their
-        DB work is fast); only stragglers are cancelled.
+        Flushes buffered dirty touches to database in a single batch transaction.
         """
+        if self._flush_task is not None and not self._flush_task.done():
+            self._flush_task.cancel()
+            try:
+                await self._flush_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._flush_task = None
+
+        await self._flush_dirty_touches()
+
         pending = [t for t in self._bg_tasks if not t.done()]
         if pending:
             await asyncio.wait(pending, timeout=5.0)
@@ -168,7 +237,7 @@ class TtsCacheManager:
         Returns:
             (cache_key_sha256, clean_text, params_hash_sha256)
         """
-        clean_text = clean_japanese_parentheses(text).strip()
+        clean_text = normalize_japanese_for_tts(text).strip()
         opts = dict(options or {})
 
         # Extract voice profile info if provided
@@ -221,8 +290,20 @@ class TtsCacheManager:
         fragment_interval = float(opts.get("fragment_interval", 0.3))
         frag_str = f"{fragment_interval:.3f}"
 
-        # Ref audio normalization (keep filename if full path to ensure environment portability)
-        ref_audio_norm = Path(ref_audio).name if ref_audio else ""
+        # Ref audio normalization (include name:mtime_ns:size if file exists on disk, fallback to name)
+        ref_audio_norm = ""
+        if ref_audio:
+            p = Path(ref_audio)
+            if not p.is_file() and (_PROJECT_ROOT / ref_audio).is_file():
+                p = _PROJECT_ROOT / ref_audio
+            if p.is_file():
+                try:
+                    st = p.stat()
+                    ref_audio_norm = f"{p.name}:{st.st_mtime_ns}:{st.st_size}"
+                except OSError:
+                    ref_audio_norm = p.name
+            else:
+                ref_audio_norm = p.name
 
         params_dict = {
             "voice_profile_id": voice_profile_id,
@@ -260,6 +341,13 @@ class TtsCacheManager:
         Checks high-speed in-memory LRU cache first (<0.005ms), falling back to disk (<15ms).
         Returns (audio_bytes, url_path, file_size) if hit, None if miss.
         """
+        try:
+            from galgame2voice.config import get_settings
+            if get_settings().privacy_mode:
+                return None
+        except Exception:
+            pass
+
         url_path = f"/audio/cache/{cache_key}.wav"
 
         # 1. Fast path: In-Memory LRU Cache hit (<0.005ms, pure RAM dictionary lookup under lock)
@@ -268,9 +356,9 @@ class TtsCacheManager:
                 self._mem_cache.move_to_end(cache_key)
                 data = self._mem_cache[cache_key]
                 self._hits += 1
-
-                if self._throttle_touch(cache_key):
-                    self._spawn_background(self._touch_db_async(cache_key))
+                self._dirty_touches[cache_key] = self._dirty_touches.get(cache_key, 0) + 1
+                self._throttle_touch(cache_key)
+                self._ensure_flusher_running()
                 return data, url_path, len(data)
 
         # 2. Slow path: Disk & SQLite cache (miss in memory)
@@ -302,15 +390,13 @@ class TtsCacheManager:
                 pass
             return None
 
-        async with self._lock:
-            should_touch = self._throttle_touch(cache_key)
-        if should_touch:
-            self._spawn_background(self._touch_db_async(cache_key))
-
         try:
             audio_bytes = await asyncio.to_thread(file_path.read_bytes)
             async with self._lock:
                 self._hits += 1
+                self._dirty_touches[cache_key] = self._dirty_touches.get(cache_key, 0) + 1
+                self._throttle_touch(cache_key)
+                self._ensure_flusher_running()
                 # Populate In-Memory LRU Cache
                 self._mem_cache_store(cache_key, audio_bytes)
             return audio_bytes, url_path, len(audio_bytes)
@@ -319,6 +405,75 @@ class TtsCacheManager:
             async with self._lock:
                 self._misses += 1
             return None
+
+    async def stream_cached(
+        self,
+        cache_key: str,
+        chunk_size: int = 4096,
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Streams cached audio chunks directly from in-memory cache or disk cache.
+        Avoids loading multi-megabyte audio files entirely into temporary memory.
+        """
+        try:
+            from galgame2voice.config import get_settings
+            if get_settings().privacy_mode:
+                return
+        except Exception:
+            pass
+
+        mem_data = None
+        bounded_chunk_size = chunk_size if chunk_size > 0 else 4096
+
+        async with self._lock:
+            if cache_key in self._mem_cache:
+                self._mem_cache.move_to_end(cache_key)
+                mem_data = self._mem_cache[cache_key]
+                self._hits += 1
+                self._dirty_touches[cache_key] = self._dirty_touches.get(cache_key, 0) + 1
+                self._throttle_touch(cache_key)
+                self._ensure_flusher_running()
+
+        if mem_data is not None:
+            for i in range(0, len(mem_data), bounded_chunk_size):
+                yield mem_data[i:i + bounded_chunk_size]
+            return
+
+        file_path = self.cache_dir / f"{cache_key}.wav"
+        if not file_path.is_file():
+            return
+
+        try:
+            sz = file_path.stat().st_size
+            if sz == 0:
+                return
+        except OSError:
+            return
+
+        should_buffer = (sz <= self.max_mem_bytes)
+        collected = bytearray() if should_buffer else None
+
+        try:
+            with open(file_path, "rb") as f:
+                async with self._lock:
+                    self._hits += 1
+                    self._dirty_touches[cache_key] = self._dirty_touches.get(cache_key, 0) + 1
+                    self._throttle_touch(cache_key)
+                    self._ensure_flusher_running()
+
+                while True:
+                    chunk = await asyncio.to_thread(f.read, bounded_chunk_size)
+                    if not chunk:
+                        break
+                    if should_buffer and collected is not None:
+                        collected.extend(chunk)
+                    yield chunk
+
+            if should_buffer and collected is not None and len(collected) <= self.max_mem_bytes:
+                async with self._lock:
+                    self._mem_cache_store(cache_key, bytes(collected))
+        except Exception as exc:
+            logger.warning("stream_cached failed for %s: %s", file_path, exc)
 
     async def put(
         self,
@@ -336,6 +491,13 @@ class TtsCacheManager:
         """
         if not audio_bytes:
             raise ValueError("Cannot cache empty audio bytes")
+
+        try:
+            from galgame2voice.config import get_settings
+            if get_settings().privacy_mode:
+                return "", Path(""), len(audio_bytes)
+        except Exception:
+            pass
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         file_path = self.cache_dir / f"{cache_key}.wav"
@@ -390,10 +552,9 @@ class TtsCacheManager:
                         break
                     except Exception as exc:
                         last_exc = exc
-                        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
-                            if db_attempt < 4:
-                                await asyncio.sleep(0.02 * (db_attempt + 1))
-                                continue
+                        if ("locked" in str(exc).lower() or "busy" in str(exc).lower()) and db_attempt < 4:
+                            await asyncio.sleep(0.02 * (db_attempt + 1))
+                            continue
                         if "no such table" in str(exc).lower():
                             try:
                                 from galgame2voice.database.session import init_db
@@ -467,6 +628,11 @@ class TtsCacheManager:
         limit_mb = max_mb or self.max_cache_mb
         limit_entries = max_entries or self.max_entries
         limit_bytes = limit_mb * 1024 * 1024
+
+        try:
+            await self._flush_dirty_touches()
+        except Exception:
+            pass
 
         async with self._write_lock:
             pruned_count = 0
@@ -569,6 +735,7 @@ class TtsCacheManager:
                 self._mem_cache.clear()
                 self._mem_bytes_total = 0
                 self._touch_throttle.clear()
+                self._dirty_touches.clear()
                 self._disk_bytes_total = 0
                 self._disk_files_total = 0
                 self._stats_initialized = True
@@ -581,6 +748,11 @@ class TtsCacheManager:
 
     async def get_stats(self) -> Dict[str, Any]:
         """Returns comprehensive TTS cache statistics."""
+        try:
+            await self._flush_dirty_touches()
+        except Exception:
+            pass
+
         try:
             async with get_db(self.db_path) as conn:
                 db_stats = await crud.get_tts_cache_stats(conn)
@@ -598,6 +770,8 @@ class TtsCacheManager:
 
         # Report memory hits and db hits separately
         hit_rate = self._hits / (self._hits + self._misses) if (self._hits + self._misses) > 0 else 0.0
+        # Estimated computation saved: average 1.5s GPU inference time per cache hit
+        estimated_saved_seconds = round(self._hits * 1.5, 2)
 
         return {
             "total_files": total_files,
@@ -608,6 +782,7 @@ class TtsCacheManager:
             "hit_rate_percent": round(hit_rate * 100.0, 2),
             "memory_hits": self._hits,
             "db_hits": db_hits,
+            "estimated_saved_seconds": estimated_saved_seconds,
         }
 
 

@@ -4,14 +4,19 @@ Enforces WAL mode, foreign keys, and async connection management via aiosqlite.
 """
 
 import asyncio
+import logging
 import os
 import random
 import sqlite3
 import uuid
+import weakref
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator, Optional, Union
+
 import aiosqlite
+
+logger = logging.getLogger("galgame2voice.database.session")
 
 
 DEFAULT_DB_PATH = "data/galgame2voice.db"
@@ -51,11 +56,6 @@ async def configure_connection(conn: aiosqlite.Connection, resolved_path: Option
         "PRAGMA temp_store = MEMORY; "
         "PRAGMA mmap_size = 268435456;"
     )
-
-
-
-import weakref
-
 _loop_db_write_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]]" = weakref.WeakKeyDictionary()
 
 def _get_db_write_lock(db_path: str) -> asyncio.Lock:
@@ -80,7 +80,7 @@ async def get_db(db_path: Optional[Union[str, Path]] = None) -> AsyncGenerator[a
     if parent_dir:
         os.makedirs(parent_dir, exist_ok=True)
     async with aiosqlite.connect(resolved_path, timeout=30.0) as conn:
-        setattr(conn, "_db_path", os.path.normcase(os.path.abspath(resolved_path)))
+        conn._db_path = os.path.normcase(os.path.abspath(resolved_path))
         await configure_connection(conn, resolved_path)
         yield conn
 
@@ -105,7 +105,7 @@ async def immediate_transaction(
     if depth > 0:
         # Nested transaction: use savepoint so inner transactions roll back independently
         # without committing outer changes prematurely.
-        setattr(conn, "_imm_tx_depth", depth + 1)
+        conn._imm_tx_depth = depth + 1
         sp_id = f"sp_{uuid.uuid4().hex[:8]}"
         await conn.execute(f"SAVEPOINT {sp_id};")
         try:
@@ -119,7 +119,7 @@ async def immediate_transaction(
                 pass
             raise
         finally:
-            setattr(conn, "_imm_tx_depth", depth)
+            conn._imm_tx_depth = depth
         return
 
     # Outermost immediate_transaction (depth == 0)
@@ -127,9 +127,9 @@ async def immediate_transaction(
     write_lock = _get_db_write_lock(db_path)
     await write_lock.acquire()
     try:
-        setattr(conn, "_imm_tx_depth", 1)
+        conn._imm_tx_depth = 1
         try:
-            sp_id = None
+            sp_id: Optional[str] = None
             if is_in_tx:
                 # Connection was already in a transaction (e.g. uncommitted raw DML), use savepoint under outermost block
                 sp_id = f"sp_{uuid.uuid4().hex[:8]}"
@@ -165,7 +165,7 @@ async def immediate_transaction(
                         pass
                 raise
         finally:
-            setattr(conn, "_imm_tx_depth", 0)
+            conn._imm_tx_depth = 0
     finally:
         write_lock.release()
 
@@ -183,8 +183,28 @@ async def set_schema_version(conn: aiosqlite.Connection, version: int) -> None:
 
 
 async def init_db(db_path: Optional[Union[str, Path]] = None) -> None:
-    """Initialize database schema, tables, indexes, and seed data with concurrency guards."""
+    """Initialize database schema, tables, indexes, and seed data with concurrency guards and pre-migration backup."""
     from galgame2voice.database.crud import init_schema_and_seeds
+
+    resolved_path = Path(db_path or get_database_path())
+    # Automated pre-migration restorable backup
+    if resolved_path.exists() and resolved_path.is_file() and resolved_path.stat().st_size > 0:
+        try:
+            from datetime import datetime
+            import shutil
+            backup_dir = resolved_path.parent / "backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_file = backup_dir / f"{resolved_path.name}.bak_{ts}"
+            shutil.copy2(resolved_path, backup_file)
+            # Prune older database backups, retaining the 5 most recent
+            backups = sorted(backup_dir.glob(f"{resolved_path.name}.bak_*"), key=lambda p: p.stat().st_mtime)
+            while len(backups) > 5:
+                backups.pop(0).unlink(missing_ok=True)
+            logger.info("Created automated pre-migration database backup: %s", backup_file)
+        except Exception as exc:
+            logger.warning("Failed creating pre-migration database backup: %s", exc)
+
     async with _init_lock:
         max_retries = 5
         for attempt in range(max_retries):

@@ -13,7 +13,7 @@
 
 class StreamingAudioPlayer {
     constructor(options = {}) {
-        this.crossFadeDuration = options.crossFadeDuration || 0.025;
+        this.crossFadeDuration = options.crossFadeDuration || 0.025; // 0.012 - 0.025s cross-fade
         this.fetchTimeoutMs = options.fetchTimeoutMs || 15000;
         this.maxFetchRetries = 1; // 1 retry on transient network errors
 
@@ -369,9 +369,9 @@ class StreamingAudioPlayer {
             try {
                 if (s.chunkGain && this.audioCtx) {
                     s.chunkGain.gain.setValueAtTime(s.chunkGain.gain.value, this.audioCtx.currentTime);
-                    s.chunkGain.gain.linearRampToValueAtTime(0.0, this.audioCtx.currentTime + 0.015);
+                    s.chunkGain.gain.linearRampToValueAtTime(0.0, this.audioCtx.currentTime + 0.040);
                 }
-                s.source.stop(this.audioCtx ? this.audioCtx.currentTime + 0.015 : 0);
+                s.source.stop(this.audioCtx ? this.audioCtx.currentTime + 0.040 : 0);
                 s.source.disconnect();
                 s.chunkGain.disconnect();
             } catch (e) {

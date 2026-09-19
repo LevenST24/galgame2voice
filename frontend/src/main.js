@@ -1,4 +1,4 @@
-// 应用入口：事件绑定、渲染调度、设置面板、流式回复
+// 应用入口：事件绑定、渲染调度、设置协调、流式回复
 import {
   state,
   loadState,
@@ -13,40 +13,42 @@ import {
   DEFAULT_SESSION_SETTINGS,
 } from './store.js';
 import { streamChat } from './ai.js';
-import {
-  startListening,
-  stopListening,
-  isListening,
-  voiceSupported,
-  recorderSupported,
-  estimateDuration,
-  plainSpeechText,
-  audioStore,
-} from './voice.js';
-import {
-  getCachedAudioBlob,
-  putCachedAudioBlob,
-  fetchAndCacheAudio,
-  clearMemAudioCache,
-} from './cache.js';
+import { voiceSupported, recorderSupported, audioStore } from './voice.js';
+import { fetchAndCacheAudio, putCachedAudioBlob } from './cache.js';
 import { streamAudioController } from './audio_player.js';
+import { portraitStage } from './portrait.js';
+import { renderSessionList, renderMessages, createMessageEl, createTypingEl, showToast } from './ui.js';
+import { initAuthInterceptor } from './auth.js';
+
+// Initialize console token authentication interceptor
+initAuthInterceptor();
+
+// Modular controllers
+import { initUpdateManager, loadSystemVersionInfo } from './controllers/update_manager.js';
 import {
-  renderSessionList,
-  renderMessages,
-  createMessageEl,
-  createTypingEl,
-  formatContent,
-  showToast,
-} from './ui.js';
+  initVoiceSettings,
+  openSessionSettings,
+  fetchVoiceProfiles,
+  ensureSessionVoice,
+  getVoiceProfiles,
+  getActiveProfileId,
+} from './controllers/voice_settings.js';
 import {
-  fetchProviders,
-  saveProvider,
-  activateProvider as apiActivateProvider,
-  testProviderConnection,
-  fetchSystemVersion,
-  applySystemUpdate,
-} from './api.js';
-import { formatProviderDiagnostic, BUILTIN_PRESETS, formatUpdateStatus, renderCommitsLog } from './settings.js';
+  initGlobalSettings,
+  openGlobalSettings,
+  loadProviders,
+  getCurrentActiveProvider,
+} from './controllers/global_settings.js';
+import {
+  initAudioPlayerUi,
+  playVoice,
+  stopCurrentVoice,
+  revokeAllCachedAudioUrls,
+  updateVoiceModeUI,
+  getCurrentVoice,
+  setCurrentVoice,
+  clearMicTimers,
+} from './controllers/audio_player_ui.js';
 
 const $ = (id) => document.getElementById(id);
 const dom = {
@@ -58,7 +60,6 @@ const dom = {
   sessionList: $('sessionList'),
   sessionCount: $('sessionCount'),
   chatTitle: $('chatTitle'),
-  chatMeta: $('chatMeta'),
   messages: $('messages'),
   composer: $('composer'),
   input: $('input'),
@@ -179,7 +180,6 @@ const dom = {
   gParamTemp: $('gParamTemp'),
   gParamTempVal: $('gParamTempVal'),
   gSttEngine: $('gSttEngine'),
-  gProviderTest: $('gProviderTest'),
   gTgChatId: $('gTgChatId'),
   gMemoryEnabled: $('gMemoryEnabled'),
   gUserNickname: $('gUserNickname'),
@@ -221,503 +221,73 @@ let busy = false;
 let cancelStream = null;
 let nearBottom = true;
 
-/* ---------- 语音播放：播放/暂停/续播 ----------
- * currentVoice 记录当前播放会话；同一条消息再次点击 = 暂停/继续切换，
- * 点其他消息 = 停止旧的、播放新的。
- */
-let currentVoice = null; // { msgId, paused, pause, resume, setPlaying, setProgress, stop }
-streamAudioController.onQueueEmpty = () => {
-  if (currentVoice) {
-    try { currentVoice.setPlaying(false); } catch (_) {}
-    currentVoice = null;
-  }
-};
-let micTimer = null;
-let micSecs = 0;
-let micBase = '';
-let pendingVoice = { text: null, audio: null, dur: 0 };
-let micFinalizeTimers = [];
-function clearMicTimers() {
-  micFinalizeTimers.forEach((t) => clearTimeout(t));
-  micFinalizeTimers = [];
+/* ---------- 模态框通用操作 ---------- */
+function openModal(el) {
+  if (!el) return;
+  el.classList.remove('hidden');
+  const m = el.querySelector('.modal');
+  if (m) m.scrollTop = 0;
+  const b = el.querySelector('.modal-body');
+  if (b) b.scrollTop = 0;
 }
 
-function stopCurrentVoice() {
-  try {
-    streamAudioController.interrupt(40);
-  } catch (_) {}
-  if (currentVoice) {
-    const v = currentVoice;
-    currentVoice = null;
-    try { v.stop(); } catch (_) {}
-    try { v.setPlaying(false); } catch (_) {}
-  }
+function closeModal(el) {
+  if (el) el.classList.add('hidden');
 }
 
-// 从 URL 播放单个音频，支持暂停/续播与进度上报
-function playSingleAudio(getAudio, msgId, ctl, { objectUrl = null } = {}) {
-  let audio = getAudio();
-  let cancelled = false;
-  let paused = false;
-
-  const attach = () => {
-    audio.ontimeupdate = () => {
-      if (audio.duration) ctl.setProgress(audio.currentTime / audio.duration);
-    };
-    audio.onended = () => {
-      audio.ontimeupdate = null;
-      audio.onended = null;
-      audio.onerror = null;
-      if (!cancelled) {
-        ctl.setProgress(1);
-        ctl.setPlaying(false);
-        if (currentVoice && currentVoice.msgId === msgId) currentVoice = null;
-      }
-    };
-    audio.onerror = () => {
-      audio.ontimeupdate = null;
-      audio.onended = null;
-      audio.onerror = null;
-      if (cancelled) return;
-      ctl.setPlaying(false);
-      if (objectUrl) {
-        try { URL.revokeObjectURL(objectUrl); } catch (_) {}
-        objectUrl = null;
-      }
-      showToast('音频播放失败', 'error');
-    };
-  };
-  attach();
-
-  currentVoice = {
-    msgId,
-    get paused() { return paused; },
-    pause() {
-      paused = true;
-      audio.pause();
-      ctl.setPlaying(false);
-    },
-    resume() {
-      paused = false;
-      const p = audio.play();
-      if (p && typeof p.then === 'function') {
-        p.then(() => {
-          if (paused || cancelled) {
-            audio.pause();
-            ctl.setPlaying(false);
-          } else {
-            ctl.setPlaying(true);
-          }
-        }).catch((err) => {
-          if (err && err.name === 'AbortError') return;
-          ctl.setPlaying(false);
-        });
-      }
-    },
-    setPlaying: ctl.setPlaying,
-    setProgress: ctl.setProgress,
-    stop() {
-      cancelled = true;
-      paused = true;
-      audio.pause();
-      audio.ontimeupdate = null;
-      audio.onended = null;
-      audio.onerror = null;
-      if (objectUrl) {
-        try { URL.revokeObjectURL(objectUrl); } catch (_) {}
-        objectUrl = null;
-      }
-    },
-  };
-  const p = audio.play();
-  if (p && typeof p.then === 'function') {
-    p.then(() => {
-      if (paused || cancelled) {
-        audio.pause();
-        ctl.setPlaying(false);
-      } else {
-        ctl.setPlaying(true);
-      }
-    }).catch((err) => {
-      if (err && err.name === 'AbortError') return;
-      ctl.setPlaying(false);
-    });
-  }
+/* ---------- 抽屉操作 ---------- */
+function openDrawer() {
+  if (dom.sidebar) dom.sidebar.classList.add('open');
+  if (dom.backdrop) dom.backdrop.classList.add('show');
 }
 
-// 现场调用后端 GPT-SoVITS 合成角色原声音频（带本地持久缓存与参数继承，绝不调用浏览器机械音）
-async function synthesizeAiVoice(msg, ctl) {
-  stopCurrentVoice();
-  const abortCtrl = new AbortController();
-  let cancelled = false;
-  let paused = false;
-  let isTimeout = false;
-  const timeoutTimer = setTimeout(() => {
-    isTimeout = true;
-    abortCtrl.abort();
-  }, 16000);
-
-  currentVoice = {
-    msgId: msg.id,
-    get paused() { return paused; },
-    pause() {
-      paused = true;
-      clearTimeout(timeoutTimer);
-      ctl.setLoading(false);
-      ctl.setPlaying(false);
-      abortCtrl.abort();
-    },
-    resume() {
-      if (currentVoice && currentVoice.msgId === msg.id) {
-        currentVoice = null;
-        synthesizeAiVoice(msg, ctl);
-      }
-    },
-    setPlaying: ctl.setPlaying,
-    setProgress: ctl.setProgress,
-    stop() {
-      cancelled = true;
-      paused = true;
-      clearTimeout(timeoutTimer);
-      ctl.setLoading(false);
-      ctl.setPlaying(false);
-      abortCtrl.abort();
-    },
-  };
-  ctl.setLoading(true);
-  try {
-    const text = plainSpeechText(msg.content).slice(0, 2000);
-    if (!text) {
-      ctl.setLoading(false);
-      currentVoice = null;
-      showToast('该消息没有可朗读的文字内容', 'info');
-      return;
-    }
-
-    const session = getActive() || getSession(state.activeId) || {};
-    const settings = session.settings || DEFAULT_SESSION_SETTINGS;
-    const hasJa = /[\u3040-\u30ff\u31f0-\u31ff]/.test(text);
-    const textLang = hasJa ? 'ja' : 'zh';
-
-    const isAdaptive = settings.aiAdaptiveVoice !== false;
-    const dynSpeed = (isAdaptive && msg.ttsParams && typeof msg.ttsParams.speed === 'number')
-      ? msg.ttsParams.speed
-      : (settings.ttsSpeed || 1.0);
-    const dynTemp = (isAdaptive && msg.ttsParams && typeof msg.ttsParams.temperature === 'number')
-      ? msg.ttsParams.temperature
-      : (settings.ttsTemperature || 1.0);
-
-    const reqBody = {
-      text,
-      speed: dynSpeed,
-      top_k: settings.ttsTopK || 15,
-      top_p: settings.ttsTopP || 1.0,
-      temperature: dynTemp,
-      text_language: textLang,
-      voice_profile_id: settings.voiceProfileId || undefined,
-      ai_adaptive_voice: isAdaptive,
-      options: {
-        voice_profile_id: settings.voiceProfileId || undefined,
-        text_lang: textLang,
-        text_language: textLang,
-        speed: dynSpeed,
-        top_k: settings.ttsTopK || 15,
-        top_p: settings.ttsTopP || 1.0,
-        temperature: dynTemp,
-        ai_adaptive_voice: isAdaptive,
-      },
-    };
-
-    const res = await fetch('/api/voice/synthesize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(reqBody),
-      signal: abortCtrl.signal,
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      const detail = data.detail || `HTTP ${res.status}`;
-      throw new Error(detail);
-    }
-    const blob = await res.blob();
-    ctl.setLoading(false);
-    if (cancelled || paused || (currentVoice && currentVoice.msgId !== msg.id)) {
-      return;
-    }
-
-    // 写入浏览器持久化 Cache Storage，重启后依旧秒播
-    const cacheKey = `msg_${msg.id}`;
-    await putCachedAudioBlob(cacheKey, blob);
-    msg.audioUrls = [cacheKey];
-    saveState();
-
-    const url = URL.createObjectURL(blob);
-    playSingleAudio(() => new Audio(url), msg.id, ctl, { objectUrl: url });
-  } catch (e) {
-    ctl.setLoading(false);
-    ctl.setPlaying(false);
-    if (currentVoice && currentVoice.msgId === msg.id) {
-      currentVoice = null;
-    }
-    if (isTimeout) {
-      showToast('语音合成超时（16s），请检查 GPT-SoVITS 服务是否正常运行', 'error');
-    } else if (cancelled || (e && e.name === 'AbortError')) {
-      return;
-    } else {
-      const errStr = e.message || String(e);
-      showToast(`语音合成失败（${errStr}），请检查 GPT-SoVITS 服务是否就绪`, 'error');
-    }
-  } finally {
-    clearTimeout(timeoutTimer);
-    ctl.setLoading(false);
-  }
+function closeDrawer() {
+  if (dom.sidebar) dom.sidebar.classList.remove('open');
+  if (dom.backdrop) dom.backdrop.classList.remove('show');
 }
 
-async function playAiVoice(msg, ctl) {
-  // 同一条消息：若正在播放中则切换暂停 / 继续；若已播完则重置以便重新从头播放
-  if (currentVoice && currentVoice.msgId === msg.id) {
-    if (streamAudioController.isPlaying) {
-      if (currentVoice.paused) currentVoice.resume();
-      else currentVoice.pause();
-      return;
-    }
-    currentVoice = null;
-  }
-  stopCurrentVoice();
-
-  // 1. 优先从本地 Cache Storage 读取整句持久缓存（毫秒级秒开秒播，不惧后端清理/重启）
-  const fullCacheKey = `msg_${msg.id}`;
-  const localCachedBlob = await getCachedAudioBlob(fullCacheKey);
-  if (localCachedBlob && localCachedBlob.size > 0) {
-    ctl.setProgress(0);
-    ctl.setPlaying(true);
-    currentVoice = {
-      msgId: msg.id,
-      get paused() {
-        return streamAudioController.paused;
-      },
-      pause() {
-        streamAudioController.pause();
-        ctl.setPlaying(false);
-      },
-      resume() {
-        streamAudioController.resume();
-        ctl.setPlaying(true);
-      },
-      setPlaying: ctl.setPlaying,
-      setProgress: ctl.setProgress,
-      stop() {
-        streamAudioController.interrupt(40);
-      },
-    };
-    streamAudioController.startSession(msg.id, ctl);
-    streamAudioController.enqueueChunk({
-      url: fullCacheKey,
-      index: 0,
-      ctl,
-      blob: localCachedBlob,
-      totalExpected: 1,
-    });
-    return;
-  }
-
-  const urls = (msg.audioUrls || []).filter(Boolean);
-  if (!urls.length) {
-    // 缺失音频：自动调用模型现场重合成角色原声
-    synthesizeAiVoice(msg, ctl);
-    return;
-  }
-
-  // 2. 有分句音频链接：Web Audio API 无缝高保真排队播放 (Gapless + 12ms micro-fade)
-  ctl.setProgress(0);
-  ctl.setPlaying(true);
-
-  currentVoice = {
-    msgId: msg.id,
-    get paused() {
-      return streamAudioController.paused;
-    },
-    pause() {
-      streamAudioController.pause();
-      ctl.setPlaying(false);
-    },
-    resume() {
-      streamAudioController.resume();
-      ctl.setPlaying(true);
-    },
-    setPlaying: ctl.setPlaying,
-    setProgress: ctl.setProgress,
-    stop() {
-      streamAudioController.interrupt(40);
-    },
-  };
-
-  streamAudioController.playChunks(urls, ctl, msg.id).catch((err) => {
-    console.warn('[playAiVoice] 播放失败，回退重合成:', err);
-    currentVoice = null;
-    synthesizeAiVoice(msg, ctl);
-  });
-}
-
-async function playUserVoice(msg, ctl) {
-  let rec = audioStore.get(msg.id);
-  if (!rec && (msg.voiceKey || msg.audioUrl)) {
-    const key = msg.voiceKey || msg.audioUrl;
-    const blob = await getCachedAudioBlob(key);
-    if (blob) {
-      rec = { url: URL.createObjectURL(blob), dur: msg.dur || 3 };
-      audioStore.set(msg.id, rec);
-    }
-  }
-  if (!rec) {
-    showToast('该条录音缓存已清理，无法播放', 'info');
-    return;
-  }
-  // 同一条录音：切换暂停 / 继续
-  if (currentVoice && currentVoice.msgId === msg.id) {
-    if (currentVoice.paused) currentVoice.resume();
-    else currentVoice.pause();
-    return;
-  }
-  stopCurrentVoice();
-  playSingleAudio(() => new Audio(rec.url), msg.id, ctl);
-}
-
-function playVoice(msg, ctl) {
-  if (msg.role === 'user') playUserVoice(msg, ctl);
-  else playAiVoice(msg, ctl);
-}
-
-function updateVoiceModeUI() {
-  const on = state.global.voiceMode;
-  dom.voiceModeBtn.classList.toggle('active', on);
-  dom.voiceModeBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  dom.voiceModeBtn.title = on ? '关闭自动播放语音回复' : '自动播放语音回复';
-  dom.voiceModeIcon.querySelector('use').setAttribute('href', on ? '#i-volume' : '#i-volume-off');
-  if (!on) stopCurrentVoice();
-}
-
-function updateMicUI(listening) {
-  dom.micBtn.classList.toggle('listening', Boolean(listening));
-  dom.micBtn.setAttribute('aria-pressed', listening ? 'true' : 'false');
-}
-
-function finalizeVoice() {
-  clearMicTimers();
-  const { text, audio, dur, blob } = pendingVoice;
-  pendingVoice = { text: null, audio: null, dur: 0, blob: null };
-  if (!text && !audio) return;
-  if (text) {
-    sendMessage(text, audio ? { url: audio, dur, blob } : undefined);
-  } else {
-    showToast('没有识别到语音内容，请靠近麦克风再试', 'error');
-  }
-}
-
-function stopMic() {
-  clearInterval(micTimer);
-  micTimer = null;
-  clearMicTimers();
-  updateMicUI(false);
-  dom.input.placeholder = '说点什么，或点麦克风用语音输入…';
-  stopListening();
-  // 转写结束回调与录音停止回调都会更新 pendingVoice，这里给停止流程一个兜底窗口
-  micFinalizeTimers.push(
-    setTimeout(() => {
-      if (!isListening() && pendingVoice.text !== null) finalizeVoice();
-    }, 600)
-  );
-  micFinalizeTimers.push(
-    setTimeout(() => {
-      if (pendingVoice.text !== null || pendingVoice.audio) finalizeVoice();
-    }, 1400)
-  );
-}
-
-function toggleMic() {
-  clearMicTimers();
-  if (isListening()) {
-    stopMic();
-    return;
-  }
-  if (busy) return;
-  const handle = startListening({
-    onInterim: (t) => {
-      dom.input.value = `${micBase}${micBase ? ' ' : ''}${t}`;
-      autoGrow();
-    },
-    onText: (finalText) => {
-      pendingVoice.text = `${micBase ? micBase + ' ' : ''}${finalText}`.trim();
-      dom.input.value = pendingVoice.text;
-      autoGrow();
-    },
-    onRecorded: (blob, dur) => {
-      pendingVoice.audio = URL.createObjectURL(blob);
-      pendingVoice.dur = dur;
-      pendingVoice.blob = blob;
-    },
-    onError: (msg) => {
-      showToast(msg, 'error');
-    },
-  });
-  if (!handle.ok) {
-    showToast(handle.reason, 'error');
-    return;
-  }
-  micBase = dom.input.value;
-  pendingVoice = { text: null, audio: null, dur: 0, blob: null };
-  micSecs = 0;
-  updateMicUI(true);
-  micTimer = setInterval(() => {
-    micSecs += 1;
-    dom.input.placeholder = `正在聆听… ${micSecs}s（再次点击麦克风结束）`;
-  }, 1000);
-  dom.input.placeholder = '正在聆听…（再次点击麦克风结束）';
-  if (!recorderSupported() && !voiceSupported()) {
-    showToast('当前浏览器不支持语音输入，建议使用 Chrome / Edge', 'error');
-  }
-}
-
-/* ---------- 渲染 ---------- */
-function renderSidebar() {
-  renderSessionList(dom.sessionList, {
-    sessions: state.sessions,
-    activeId: state.activeId,
-    onSelect: switchSession,
-    onDelete: handleDelete,
-  });
-  dom.sessionCount.textContent = state.sessions.length;
-}
-
-function renderHeader() {
-  const s = getActive();
-  dom.chatTitle.textContent = s ? s.title : '新对话';
-  if (s) {
-    const st = s.settings;
-    dom.chatMeta.textContent = `${st.systemPrompt ? '已设人设' : '未设人设'} · 温度 ${st.temperature} · 上下文 ${st.maxContext} 条`;
-    dom.sessionSettingsBtn.classList.toggle('configured', Boolean(st.systemPrompt));
-  } else {
-    dom.chatMeta.textContent = '';
-  }
-  updateBadge();
-}
-
-let currentActiveProvider = null;
-
+/* ---------- 渲染与状态栏 ---------- */
 function updateBadge() {
   if (dom.badgeDot) dom.badgeDot.className = 'badge-dot dot-meoo';
   if (dom.badge) {
     const label = dom.badge.querySelector('.badge-label') || dom.badge.lastChild;
     if (label) {
-      if (currentActiveProvider && (currentActiveProvider.name || currentActiveProvider.chat_model)) {
-        const pName = currentActiveProvider.name || '活跃模型';
-        const mName = currentActiveProvider.chat_model || '';
+      const activeProvider = getCurrentActiveProvider();
+      if (activeProvider && (activeProvider.name || activeProvider.chat_model)) {
+        const pName = activeProvider.name || '活跃模型';
+        const mName = activeProvider.chat_model || '';
         label.textContent = mName ? `${pName} · ${mName}` : pName;
       } else {
         label.textContent = '本地引擎 · GPT-SoVITS';
       }
     }
   }
+}
+
+function renderSidebar() {
+  if (dom.sessionList) {
+    renderSessionList(dom.sessionList, {
+      sessions: state.sessions,
+      activeId: state.activeId,
+      onSelect: switchSession,
+      onDelete: handleDelete,
+    });
+  }
+  if (dom.sessionCount) {
+    dom.sessionCount.textContent = state.sessions.length;
+  }
+}
+
+function renderHeader() {
+  const s = getActive();
+  if (dom.chatTitle) {
+    dom.chatTitle.textContent = s ? s.title : '新对话';
+  }
+  if (s && dom.sessionSettingsBtn) {
+    const st = s.settings;
+    dom.sessionSettingsBtn.classList.toggle('configured', Boolean(st?.systemPrompt));
+  }
+  updateBadge();
 }
 
 async function resolveJapanese(msg) {
@@ -747,28 +317,36 @@ async function resolveJapanese(msg) {
 function fullRender(animate = false) {
   renderSidebar();
   renderHeader();
-  listInner = renderMessages(dom.messages, getActive(), {
-    animate,
-    onPick: sendMessage,
-    onPlayVoice: playVoice,
-    onResolveJapanese: resolveJapanese,
-    autoTranslate: Boolean(state.global.autoTranslate),
-  });
-  dom.messages.scrollTop = dom.messages.scrollHeight;
+  if (dom.messages) {
+    listInner = renderMessages(dom.messages, getActive(), {
+      animate,
+      onPick: sendMessage,
+      onPlayVoice: playVoice,
+      onResolveJapanese: resolveJapanese,
+      autoTranslate: Boolean(state.global.autoTranslate),
+    });
+    dom.messages.scrollTop = dom.messages.scrollHeight;
+  }
   nearBottom = true;
 }
 
 function updateComposer() {
-  dom.sendBtn.disabled = busy || !dom.input.value.trim();
-  dom.stopBtn.classList.toggle('hidden', !busy);
+  if (dom.sendBtn && dom.input) {
+    dom.sendBtn.disabled = busy || !dom.input.value.trim();
+  }
+  if (dom.stopBtn) {
+    dom.stopBtn.classList.toggle('hidden', !busy);
+  }
 }
 
 function autoGrow() {
+  if (!dom.input) return;
   dom.input.style.height = 'auto';
   dom.input.style.height = `${Math.min(dom.input.scrollHeight, 160)}px`;
 }
 
 function scrollBottom(smooth = false) {
+  if (!dom.messages) return;
   dom.messages.scrollTo({ top: dom.messages.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
   nearBottom = true;
 }
@@ -777,612 +355,7 @@ function maybeScroll() {
   if (nearBottom) scrollBottom(false);
 }
 
-/* ---------- 抽屉 ---------- */
-function openDrawer() {
-  dom.sidebar.classList.add('open');
-  dom.backdrop.classList.add('show');
-}
-function closeDrawer() {
-  dom.sidebar.classList.remove('open');
-  dom.backdrop.classList.remove('show');
-}
-
-/* ---------- 模态框 ---------- */
-function openModal(el) {
-  el.classList.remove('hidden');
-  const m = el.querySelector('.modal');
-  if (m) m.scrollTop = 0;
-  const b = el.querySelector('.modal-body');
-  if (b) b.scrollTop = 0;
-}
-function closeModal(el) {
-  el.classList.add('hidden');
-}
-
-function openSessionSettings() {
-  const s = getActive();
-  if (!s) return;
-  dom.smTitle.textContent = `· ${s.title}`;
-  dom.sSystem.value = s.settings.systemPrompt;
-  dom.sTemp.value = s.settings.temperature;
-  dom.sTopP.value = s.settings.topP;
-  dom.sFreq.value = s.settings.freqPenalty;
-  dom.sPres.value = s.settings.presPenalty;
-  dom.sMaxTokens.value = s.settings.maxTokens;
-  dom.sCtx.value = s.settings.maxContext;
-  dom.sAiAdaptiveVoice.value = String(s.settings.aiAdaptiveVoice !== false);
-  dom.sTtsSpeed.value = s.settings.ttsSpeed;
-  dom.sTtsTopK.value = s.settings.ttsTopK;
-  dom.sTtsTopP.value = s.settings.ttsTopP;
-  dom.sTtsTemp.value = s.settings.ttsTemperature;
-  syncRangeLabels();
-  loadSessionVoiceSelect(s);
-  openModal(dom.sessionModal);
-}
-
-/* ---------- 角色音色（按会话绑定：切换会话 = 换角色） ---------- */
-let voiceProfiles = [];
-let activeProfileId = null;
-
-async function fetchVoiceProfiles() {
-  const res = await fetch('/api/voice/profiles');
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
-  voiceProfiles = data.profiles || [];
-  activeProfileId = data.active_profile_id;
-  return data;
-}
-
-// 会话绑定了音色且与当前加载的不一致时，自动切换模型权重
-async function ensureSessionVoice(session, { silent = false } = {}) {
-  const want = session?.settings?.voiceProfileId;
-  if (!want) return;
-  try {
-    if (activeProfileId === null) await fetchVoiceProfiles();
-    let res = await fetch('/api/voice/switch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ profile_id: want }),
-    });
-    let data = await res.json().catch(() => ({}));
-    if (!res.ok && res.status === 503) {
-      // 内存严格阈值预警时，自动以安全 force 模式重试（加载 ~330MB 权重无需苛求 2GB 绝对空闲）
-      res = await fetch('/api/voice/switch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile_id: want, force: true }),
-      });
-      data = await res.json().catch(() => ({}));
-    }
-    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-    activeProfileId = want;
-    if (!silent) showToast(`已切换音色：${data.profile || want}`, 'success');
-  } catch (e) {
-    showToast(`音色切换失败: ${e.message || e}`, 'error');
-  }
-}
-
-async function loadSessionVoiceSelect(session) {
-  dom.sVoice.innerHTML = '<option value="">跟随后端当前音色</option>';
-  dom.sVoiceActive.textContent = '';
-  try {
-    await fetchVoiceProfiles();
-    const active = voiceProfiles.find((p) => p.id === activeProfileId);
-    dom.sVoiceActive.textContent = active ? `当前加载：${active.name}` : '';
-    // 当前加载的音色排最前
-    const sortedProfiles = active ? [active, ...voiceProfiles.filter((p) => p !== active)] : voiceProfiles;
-    for (const p of sortedProfiles) {
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = `${p.name}${p.id === activeProfileId ? '（当前加载）' : ''}`;
-      dom.sVoice.appendChild(opt);
-    }
-    const customOpt = document.createElement('option');
-    customOpt.value = '__custom__';
-    customOpt.textContent = '＋ 新建自定义音色（选择 ckpt / pth / 参考音频）…';
-    dom.sVoice.appendChild(customOpt);
-    if (session.settings.voiceProfileId) dom.sVoice.value = String(session.settings.voiceProfileId);
-  } catch (e) {
-    dom.sVoice.innerHTML = '<option value="">加载失败（后端未启动？）</option>';
-  }
-  syncCustomVoiceBox();
-}
-
-function syncCustomVoiceBox() {
-  const show = dom.sVoice.value === '__custom__';
-  dom.sCustomVoiceBox.classList.toggle('hidden', !show);
-  if (show) populateScanOptions();
-}
-
-let scannedModels = null;
-async function populateScanOptions() {
-  const fill = (sel, list, emptyHint) => {
-    sel.innerHTML = list.length
-      ? list.map((f) => `<option value="${f.path}">${f.name}</option>`).join('')
-      : `<option value="">${emptyHint}</option>`;
-  };
-  try {
-    if (!scannedModels) {
-      const res = await fetch('/api/voice/scan-models');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      scannedModels = await res.json();
-    }
-    fill(dom.sCvGpt, scannedModels.gpt_weights || [], '（未扫描到 .ckpt 文件）');
-    fill(dom.sCvSovits, scannedModels.sovits_weights || [], '（未扫描到 .pth 文件）');
-    fill(dom.sCvRef, scannedModels.audio_files || [], '（未扫描到音频文件，可留空音色但质量差）');
-  } catch (e) {
-    [dom.sCvGpt, dom.sCvSovits, dom.sCvRef].forEach((sel) => {
-      sel.innerHTML = `<option value="">扫描失败（${e.message || e}）</option>`;
-    });
-  }
-}
-
-async function createCustomVoice() {
-  const name = dom.sCvName.value.trim();
-  const gptPath = dom.sCvGpt.value;
-  const sovitsPath = dom.sCvSovits.value;
-  const refPath = dom.sCvRef.value;
-  const promptText = dom.sCvPromptText.value.trim();
-  if (!name || !gptPath || !sovitsPath) {
-    showToast('请填写音色名称并选择 GPT / SoVITS 模型文件', 'error');
-    return;
-  }
-  if (!refPath) {
-    showToast('必须选择参考音频：没有声音样本，合成音色会严重失真', 'error');
-    return;
-  }
-  if (!promptText) {
-    showToast('必须填写参考音频里说的话：SoVITS V3/V4 模型留空会直接导致合成失败（400）', 'error');
-    return;
-  }
-  dom.sCvCreate.disabled = true;
-  try {
-    const payload = {
-      name,
-      gpt_weights_path: gptPath,
-      sovits_weights_path: sovitsPath,
-      ref_audio_path: refPath,
-      prompt_text: promptText,
-      prompt_lang: dom.sCvLang.value,
-      text_lang: dom.sCvLang.value,
-    };
-    const res = await fetch('/api/voice/profiles', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-    const profileId = data.id;
-    const s = getActive();
-    if (s) {
-      s.settings.voiceProfileId = profileId;
-      saveState();
-    }
-    scannedModels = null; // 下次打开重新扫描，让新档案出现在列表
-    await loadSessionVoiceSelect(s);
-    dom.sVoice.value = String(profileId);
-    syncCustomVoiceBox();
-    showToast(`音色「${data.name}」已创建并绑定到当前会话`, 'success');
-    ensureSessionVoice(getActive());
-  } catch (e) {
-    showToast(`音色创建失败: ${e.message || e}`, 'error');
-  } finally {
-    dom.sCvCreate.disabled = false;
-  }
-}
-
-async function deleteVoiceProfile() {
-  const id = Number(dom.sVoice.value);
-  if (!id) {
-    showToast('请先在下拉框中选择要删除的音色', 'error');
-    return;
-  }
-  if (id === activeProfileId) {
-    showToast('该音色正在被引擎加载，请先把会话切换到其他音色再删除', 'error');
-    return;
-  }
-  const p = voiceProfiles.find((x) => x.id === id);
-  if (!window.confirm(`确定删除音色「${p ? p.name : id}」？此操作不可恢复。`)) return;
-  dom.sVoiceDelete.disabled = true;
-  try {
-    const res = await fetch(`/api/voice/profiles/${id}`, { method: 'DELETE' });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-    // 清除所有会话对该音色的绑定
-    let cleared = 0;
-    for (const sess of state.sessions) {
-      if (sess.settings?.voiceProfileId === id) {
-        sess.settings.voiceProfileId = null;
-        cleared += 1;
-      }
-    }
-    if (cleared) saveState();
-    await loadSessionVoiceSelect(getActive());
-    showToast(`音色「${p ? p.name : id}」已删除${cleared ? `，并解除了 ${cleared} 个会话的绑定` : ''}`, 'success');
-  } catch (e) {
-    showToast(`删除失败: ${e.message || e}`, 'error');
-  } finally {
-    dom.sVoiceDelete.disabled = false;
-  }
-}
-
-/* ---------- 对话模型（LLM 提供商，通用配置卡片与全局生效） ---------- */
-let cachedProviders = [];
-let cachedPresets = [];
-
-async function loadProviders() {
-  if (dom.gProvider) dom.gProvider.innerHTML = '<option value="">加载模型列表…</option>';
-  try {
-    const data = await fetchProviders().catch(() => null);
-    cachedProviders = (data && data.providers) ? data.providers : [];
-    cachedPresets = (data && data.presets && data.presets.length) ? data.presets : BUILTIN_PRESETS;
-
-    // 确定当前激活的提供商
-    const active = cachedProviders.find((p) => p.is_active);
-    currentActiveProvider = active || null;
-    updateBadge();
-
-    // 构建提供商合并列表（以官方预设推荐顺序优先，随后追加用户自定义，最后提供自定义接口选项）
-    const presetOrder = ['gemini', 'openai', 'anthropic', 'deepseek', 'xai', 'siliconflow', 'glm', 'qwen', 'custom'];
-    const providerMap = new Map();
-
-    // 1. 先载入预设顺序中存在的项目
-    presetOrder.forEach((pid) => {
-      const preset = cachedPresets.find((p) => p.id === pid);
-      const stored = cachedProviders.find((p) => p.id === pid);
-      if (preset || stored) {
-        providerMap.set(pid, {
-          id: pid,
-          name: stored?.name || preset?.name || pid,
-          chat_model: stored?.chat_model || preset?.default_chat_model || '',
-          is_active: Boolean(stored?.is_active),
-        });
-      }
-    });
-
-    // 2. 载入其它不在 presetOrder 中的预设 (如 moonshot 等)
-    cachedPresets.forEach((p) => {
-      if (!providerMap.has(p.id) && p.id !== 'custom') {
-        const stored = cachedProviders.find((sp) => sp.id === p.id);
-        providerMap.set(p.id, {
-          id: p.id,
-          name: stored?.name || p.name || p.id,
-          chat_model: stored?.chat_model || p.default_chat_model || '',
-          is_active: Boolean(stored?.is_active),
-        });
-      }
-    });
-
-    // 3. 载入用户在 DB 中创建的额外独立提供商
-    cachedProviders.forEach((p) => {
-      if (!providerMap.has(p.id)) {
-        providerMap.set(p.id, {
-          id: p.id,
-          name: p.name,
-          chat_model: p.chat_model || '',
-          is_active: Boolean(p.is_active),
-        });
-      }
-    });
-
-    const items = Array.from(providerMap.values());
-    // 当前启用的排在最前面并默认选中
-    const sorted = active
-      ? [items.find((i) => i.id === active.id) || active, ...items.filter((i) => i.id !== active.id)]
-      : items;
-
-    if (dom.gProvider) {
-      dom.gProvider.innerHTML =
-        sorted
-          .map(
-            (p) =>
-              `<option value="${p.id}" ${p.is_active ? 'selected' : ''}>${p.name} · ${p.chat_model || '未设定'}${p.is_active ? '（当前生效）' : ''}</option>`
-          )
-          .join('') +
-        `<option value="__custom__" ${!active && !sorted.length ? 'selected' : ''}>＋ 自定义模型 / 接口…</option>`;
-    }
-
-    onProviderChange();
-  } catch (e) {
-    console.error('Failed to load providers:', e);
-    if (dom.gProvider) {
-      dom.gProvider.innerHTML =
-        BUILTIN_PRESETS.map((p) => `<option value="${p.id}">${p.name} · ${p.default_chat_model}</option>`).join('') +
-        '<option value="__custom__">＋ 自定义模型 / 接口…</option>';
-    }
-    showToast(`提供商列表加载异常: ${e.message || e}`, 'error');
-    onProviderChange();
-  }
-}
-
-function onProviderChange() {
-  if (!dom.gProvider) return;
-  const pid = dom.gProvider.value;
-  const isCustom = pid === 'custom' || pid === '__custom__';
-  const realId = isCustom ? 'custom' : pid;
-
-  const stored = cachedProviders.find((p) => p.id === realId);
-  const preset = cachedPresets.find((p) => p.id === realId) || BUILTIN_PRESETS.find((p) => p.id === realId);
-
-  // 1. 自定义提供商名称字段显隐
-  if (dom.gCustomNameField) {
-    dom.gCustomNameField.classList.toggle('hidden', !isCustom);
-    if (dom.gCustomName) {
-      dom.gCustomName.value = isCustom ? (stored?.name || '自定义模型') : '';
-    }
-  }
-
-  // 2. 当前生效状态徽标与描述文本
-  const isActive = Boolean(stored?.is_active);
-  if (dom.gProviderActiveBadge) {
-    dom.gProviderActiveBadge.className = `badge-status-pill ${isActive ? 'badge-pill-green' : 'badge-pill-gray'}`;
-    dom.gProviderActiveBadge.textContent = isActive ? '当前生效' : '未启用';
-  }
-  if (dom.gProviderActive) {
-    dom.gProviderActive.textContent = isActive ? `当前：${stored ? stored.name : realId} · ${stored?.chat_model || ''}` : '';
-  }
-  if (dom.gProviderDesc) {
-    dom.gProviderDesc.textContent =
-      preset?.description ||
-      stored?.description ||
-      (isCustom ? '本地或私有部署的 OpenAI 兼容推理服务 (Ollama / vLLM / LMStudio)' : '外部 AI 大模型服务提供商');
-  }
-
-  // 3. API Key 状态与脱敏占位符处理
-  if (dom.gApiKey) {
-    dom.gApiKey.value = '';
-    dom.gApiKey.type = 'password';
-  }
-  if (dom.gBtnToggleKeyText) {
-    dom.gBtnToggleKeyText.textContent = '显示';
-  }
-  if (dom.gIconKeyEye) {
-    const use = dom.gIconKeyEye.querySelector('use');
-    if (use) use.setAttribute('href', '#i-eye');
-  }
-
-  const maskedKey = (stored?.api_key || '').trim();
-  const hasKey = Boolean(maskedKey && maskedKey.length > 0);
-
-  if (hasKey) {
-    if (dom.gApiKey) dom.gApiKey.placeholder = `已配置：${maskedKey}（留空保持原密钥，输入新密钥可覆盖）`;
-    if (dom.gProviderKeyTag) dom.gProviderKeyTag.className = 'provider-status-tag tag-configured';
-    if (dom.gKeyStatusText) dom.gKeyStatusText.textContent = `已配置密钥 (${maskedKey})`;
-    if (dom.gApiKeyTip) dom.gApiKeyTip.textContent = '后端已持久化该提供商密钥。如需修改，请在此输入新密钥后保存生效。';
-  } else if (isCustom) {
-    if (dom.gApiKey) dom.gApiKey.placeholder = 'sk-…（本地 Ollama / vLLM 等无鉴权服务可留空）';
-    if (dom.gProviderKeyTag) dom.gProviderKeyTag.className = 'provider-status-tag tag-optional';
-    if (dom.gKeyStatusText) dom.gKeyStatusText.textContent = '可选 (本地服务可免密)';
-    if (dom.gApiKeyTip) dom.gApiKeyTip.textContent = '本地服务（如 Ollama）无需填写，公网中转或鉴权服务请输入对应凭据。';
-  } else {
-    if (dom.gApiKey) dom.gApiKey.placeholder = `请输入 ${preset?.name || pid} 的有效 API Key (必填)`;
-    if (dom.gProviderKeyTag) dom.gProviderKeyTag.className = 'provider-status-tag tag-unconfigured';
-    if (dom.gKeyStatusText) dom.gKeyStatusText.textContent = '未配置 API Key · 无法调用';
-    if (dom.gApiKeyTip) dom.gApiKeyTip.textContent = '该提供商尚未配置密钥。请前往官方控制台申领并在此填入。';
-  }
-
-  // 4. Base URL 填充与一键恢复默认
-  const defaultUrl = preset?.default_base_url || (isCustom ? 'http://127.0.0.1:11434/v1' : 'https://api.openai.com/v1');
-  const currentUrl = stored?.api_base_url || defaultUrl;
-  if (dom.gBaseUrl) {
-    dom.gBaseUrl.value = currentUrl;
-    dom.gBaseUrl.placeholder = defaultUrl;
-  }
-  if (dom.gBtnResetBaseUrl) {
-    dom.gBtnResetBaseUrl.textContent = '重置为默认';
-    dom.gBtnResetBaseUrl.title = `恢复官方默认端点: ${defaultUrl}`;
-    dom.gBtnResetBaseUrl.onclick = () => {
-      if (dom.gBaseUrl) dom.gBaseUrl.value = defaultUrl;
-      showToast(`已恢复官方默认 Base URL: ${defaultUrl}`, 'info');
-    };
-  }
-
-  // 5. 对话模型选择 (预设下拉 + 自由输入结合)
-  const presetModels = preset?.preset_models || (stored?.chat_model ? [stored.chat_model] : []);
-  if (dom.gChatModelSelect) {
-    dom.gChatModelSelect.innerHTML =
-      '<option value="">-- 选择预设推荐模型 --</option>' +
-      presetModels.map((m) => `<option value="${m}">${m}</option>`).join('') +
-      '<option value="__custom_model__">✏️ 手动输入任意模型 ID...</option>';
-  }
-
-  const currentModel = stored?.chat_model || preset?.default_chat_model || presetModels[0] || '';
-  if (dom.gChatModel) {
-    dom.gChatModel.value = currentModel;
-  }
-  if (dom.gChatModelSelect) {
-    if (presetModels.includes(currentModel)) {
-      dom.gChatModelSelect.value = currentModel;
-    } else if (currentModel) {
-      dom.gChatModelSelect.value = '__custom_model__';
-    } else {
-      dom.gChatModelSelect.value = '';
-    }
-  }
-
-  // 6. 诊断输出框重置
-  if (dom.gProviderTestResult) {
-    dom.gProviderTestResult.className = 'test-result-box hidden';
-    if (dom.gTestResultBody) dom.gTestResultBody.textContent = '';
-  }
-}
-
-function toggleKeyVisibility() {
-  if (!dom.gApiKey) return;
-  const isPass = dom.gApiKey.type === 'password';
-  dom.gApiKey.type = isPass ? 'text' : 'password';
-  if (dom.gBtnToggleKeyText) {
-    dom.gBtnToggleKeyText.textContent = isPass ? '隐藏' : '显示';
-  }
-  if (dom.gIconKeyEye) {
-    const use = dom.gIconKeyEye.querySelector('use');
-    if (use) use.setAttribute('href', isPass ? '#i-eye-off' : '#i-eye');
-  }
-}
-
-function onChatModelSelectChange() {
-  if (!dom.gChatModelSelect || !dom.gChatModel) return;
-  const val = dom.gChatModelSelect.value;
-  if (val && val !== '__custom_model__') {
-    dom.gChatModel.value = val;
-  } else if (val === '__custom_model__') {
-    dom.gChatModel.focus();
-    dom.gChatModel.select();
-  }
-}
-
-async function handleProviderTest() {
-  if (!dom.gProviderTest || !dom.gProvider) return;
-  dom.gProviderTest.disabled = true;
-  const origHtml = dom.gProviderTest.innerHTML;
-  dom.gProviderTest.innerHTML = '<svg class="icon" style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-activity"></use></svg><span>测试中…</span>';
-
-  try {
-    const pid = dom.gProvider.value === '__custom__' ? 'custom' : dom.gProvider.value;
-    const baseUrl = dom.gBaseUrl ? dom.gBaseUrl.value.trim() : '';
-    const chatModel = dom.gChatModel ? dom.gChatModel.value.trim() : '';
-    const apiKey = dom.gApiKey ? dom.gApiKey.value.trim() : '';
-
-    const payload = {
-      id: pid,
-      api_base_url: baseUrl,
-      chat_model: chatModel,
-    };
-    // 只有当用户确实键入了新密钥（且非脱敏字符串）时才传递，否则让后端自动使用数据库中存储的明文密钥
-    if (apiKey && !apiKey.includes('****')) {
-      payload.api_key = apiKey;
-    }
-
-    const data = await testProviderConnection(payload);
-
-    if (dom.gProviderTestResult) dom.gProviderTestResult.classList.remove('hidden');
-
-    if (data.success) {
-      const lat = Math.round(data.latency_ms || 0);
-      showToast(`连通性测试成功 (耗时 ${lat}ms)`, 'success');
-      if (dom.gProviderTestResult) {
-        dom.gProviderTestResult.className = 'test-result-box test-result-success';
-      }
-      if (dom.gTestResultTitle) dom.gTestResultTitle.textContent = '连通性测试通过';
-      if (dom.gTestResultLatency) dom.gTestResultLatency.textContent = `耗时 ${lat}ms`;
-      if (dom.gTestResultBody) {
-        const modelsCount = Array.isArray(data.models) ? data.models.length : 0;
-        dom.gTestResultBody.textContent =
-          `已成功连接至目标端点，模型 ${chatModel || '默认'} 就绪。` +
-          (modelsCount > 0 ? ` (发现 ${modelsCount} 个可用模型)` : '');
-      }
-    } else {
-      const rawErr = data.error || data.message || '连接失败';
-      const diag = formatProviderDiagnostic(pid, rawErr, data.diagnostic);
-      showToast(`连通性测试未通过: ${diag.title}`, 'error');
-      if (dom.gProviderTestResult) {
-        dom.gProviderTestResult.className = 'test-result-box test-result-error';
-      }
-      if (dom.gTestResultTitle) dom.gTestResultTitle.textContent = diag.title;
-      if (dom.gTestResultLatency) dom.gTestResultLatency.textContent = '失败';
-      if (dom.gTestResultBody) dom.gTestResultBody.textContent = diag.guidance;
-    }
-  } catch (e) {
-    showToast(`测试请求异常: ${e.message || e}`, 'error');
-    if (dom.gProviderTestResult) {
-      dom.gProviderTestResult.className = 'test-result-box test-result-error';
-      dom.gProviderTestResult.classList.remove('hidden');
-      if (dom.gTestResultTitle) dom.gTestResultTitle.textContent = '网络请求异常';
-      if (dom.gTestResultLatency) dom.gTestResultLatency.textContent = '异常';
-      if (dom.gTestResultBody) dom.gTestResultBody.textContent = `请求发送失败: ${e.message || e}`;
-    }
-  } finally {
-    dom.gProviderTest.disabled = false;
-    dom.gProviderTest.innerHTML = origHtml;
-  }
-}
-
-async function handleActivateProvider() {
-  if (!dom.gProviderActivate || !dom.gProvider) return;
-  dom.gProviderActivate.disabled = true;
-  const origHtml = dom.gProviderActivate.innerHTML;
-  dom.gProviderActivate.innerHTML = '<svg class="icon" style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-check"></use></svg><span>保存并启用中…</span>';
-
-  try {
-    const selected = dom.gProvider.value;
-    const isCustom = selected === '__custom__' || selected === 'custom';
-    const pid = isCustom ? 'custom' : selected;
-
-    const baseUrl = dom.gBaseUrl ? dom.gBaseUrl.value.trim() : '';
-    const chatModel = dom.gChatModel ? dom.gChatModel.value.trim() : '';
-    const apiKey = dom.gApiKey ? dom.gApiKey.value.trim() : '';
-    const customName = dom.gCustomName ? dom.gCustomName.value.trim() : '';
-
-    if (!baseUrl) {
-      showToast('请填写 API Base URL', 'error');
-      return;
-    }
-    if (!chatModel) {
-      showToast('请填写或选择模型名称', 'error');
-      return;
-    }
-
-    const stored = cachedProviders.find((p) => p.id === pid);
-    const preset = cachedPresets.find((p) => p.id === pid) || BUILTIN_PRESETS.find((p) => p.id === pid);
-
-    // 针对非本地/自定义的云端商业模型提供商，未保存过且未输入新 Key 时给予警告提醒
-    const hasExistingKey = Boolean(stored?.api_key && stored.api_key.length > 0);
-    if (!isCustom && !hasExistingKey && !apiKey) {
-      showToast(`请先输入 ${preset?.name || pid} 的 API Key 再启用`, 'error');
-      if (dom.gApiKey) dom.gApiKey.focus();
-      return;
-    }
-
-    // 1. 持久化保存提供商配置
-    const payload = {
-      id: pid,
-      name: isCustom ? (customName || '自定义模型') : (preset?.name || stored?.name || pid),
-      api_base_url: baseUrl,
-      chat_model: chatModel,
-      is_active: true,
-    };
-    if (apiKey && !apiKey.includes('****')) {
-      payload.api_key = apiKey;
-    }
-
-    await saveProvider(payload);
-
-    // 2. 激活为全局当前生效模型
-    const actResult = await apiActivateProvider(pid);
-    const active = actResult.active_provider;
-
-    currentActiveProvider = active || { name: payload.name, chat_model: chatModel };
-    updateBadge();
-
-    showToast(`已成功保存并启用：${payload.name} · ${chatModel}`, 'success');
-    await loadProviders();
-  } catch (e) {
-    console.error('Failed to activate provider:', e);
-    showToast(`模型启用失败: ${e.message || e}`, 'error');
-  } finally {
-    dom.gProviderActivate.disabled = false;
-    dom.gProviderActivate.innerHTML = origHtml;
-  }
-}
-
-function syncRangeLabels() {
-  dom.sTempVal.textContent = Number(dom.sTemp.value).toFixed(2);
-  dom.sTopPVal.textContent = Number(dom.sTopP.value).toFixed(2);
-  dom.sFreqVal.textContent = Number(dom.sFreq.value).toFixed(1);
-  dom.sPresVal.textContent = Number(dom.sPres.value).toFixed(1);
-  dom.sCtxVal.textContent = dom.sCtx.value;
-  dom.sTtsSpeedVal.textContent = Number(dom.sTtsSpeed.value).toFixed(2);
-  dom.sTtsTopKVal.textContent = dom.sTtsTopK.value;
-  dom.sTtsTopPVal.textContent = Number(dom.sTtsTopP.value).toFixed(2);
-  dom.sTtsTempVal.textContent = Number(dom.sTtsTemp.value).toFixed(2);
-  for (const r of [dom.sTemp, dom.sTopP, dom.sFreq, dom.sPres, dom.sCtx, dom.sTtsSpeed, dom.sTtsTopK, dom.sTtsTopP, dom.sTtsTemp]) {
-    const pct = ((r.value - r.min) / (r.max - r.min)) * 100;
-    r.style.setProperty('--fill', `${pct}%`);
-  }
-}
-
-/* ---------- 流式回复 ---------- */
+/* ---------- 流式回复与打断 ---------- */
 function stopStream() {
   if (cancelStream) {
     const c = cancelStream;
@@ -1400,8 +373,8 @@ function sendMessage(rawText, voiceMeta) {
   clearMicTimers();
   const text = (typeof rawText === 'string' ? rawText : dom.input.value).trim();
   if (!text || busy) return;
-  // 发送新消息时，平滑打断旧声音 (40ms fade-out)，避免新老语音混杂
-  if (streamAudioController.isPlaying || currentVoice) {
+
+  if (streamAudioController.isPlaying || getCurrentVoice()) {
     stopCurrentVoice();
   }
   const session = getActive();
@@ -1526,103 +499,81 @@ function sendMessage(rawText, voiceMeta) {
           e.preventDefault();
           e.stopPropagation();
         }
-        if (streamAudioController.paused) {
-          streamAudioController.resume();
-          streamBarCtl.setPlaying(true);
-        } else {
-          streamAudioController.pause();
-          streamBarCtl.setPlaying(false);
+        if (streamAudioController.isPlaying) {
+          if (streamAudioController.paused) {
+            streamAudioController.resume();
+            streamBarCtl.setPlaying(true);
+          } else {
+            streamAudioController.pause();
+            streamBarCtl.setPlaying(false);
+          }
         }
       };
       bar.addEventListener('click', toggle);
       bar.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') toggle(e);
       });
-      paint();
     }
     return streamBarCtl;
   };
 
-  const onChunk = (full) => {
+  const onChunk = (chunk, full) => {
+    typing.remove();
     lastFull = full;
     if (!streamEl) {
-      typing.remove();
-      const built = createMessageEl(
-        { role: 'assistant', content: '', ts: Date.now() },
-        { streaming: true }
-      );
+      const pendingMsg = {
+        id: streamMsgId,
+        role: 'assistant',
+        content: full,
+        ts: Date.now(),
+      };
+      const built = createMessageEl(pendingMsg, { onPlayVoice: playVoice });
       streamEl = built.el;
       streamContentEl = built.contentEl;
+      streamEl.classList.add('animate-in', 'streaming');
       listInner.appendChild(streamEl);
+      if (state.global.voiceMode && originId === state.activeId) {
+        ensureStreamVoiceBar();
+      }
+    } else {
+      streamContentEl.textContent = full;
     }
-    streamContentEl.innerHTML = formatContent(full);
     maybeScroll();
   };
 
-  const onEnd = (full, cancelled, error, audioUrls, meta) => {
+  const onEnd = (finalText, meta, error, cancelled) => {
+    typing.remove();
     cancelStream = null;
-    if (typing.isConnected) typing.remove();
-    const finalText = full || lastFull;
-    let stored = finalText;
-    if (error) {
-      // 保留已生成的部分内容，错误信息附加在后面
-      const errNote = `（流式传输中断：${error}）`;
-      stored = finalText ? `${finalText}\n\n${errNote}` : `（请求失败）${error}\n— 请确认 Galgame2Voice 后端已启动，或查看后端日志排查。`;
-      showToast(error, 'error');
-    }
-    const cleanUrls = (audioUrls && audioUrls.length) ? [...audioUrls] : [];
-    for (const u of cleanUrls) {
-      if (typeof u === 'string' && u.startsWith('/audio/')) {
-        fetchAndCacheAudio(u).catch(() => {});
-      }
-    }
-    const finalMsgId = uid('m');
-    const msgPayload = {
-      id: finalMsgId,
-      role: 'assistant',
-      content: stored,
-      japanese: (meta && meta.japanese) || '',
-      ts: Date.now(),
-      audioUrls: cleanUrls,
-      ttsParams: (meta && meta.ttsParams) || null,
-      emotion: (meta && meta.emotion) || null,
-    };
-    if (streamEl) {
-      if (stored) {
-        const fresh = createMessageEl(
-          msgPayload,
-          {
-            onPlayVoice: playVoice,
-            onResolveJapanese: resolveJapanese,
-            autoTranslate: Boolean(state.global.autoTranslate),
-          }
-        );
-        streamEl.replaceWith(fresh.el);
-        streamEl = fresh.el;
-        streamContentEl = fresh.contentEl;
+    let stored = null;
+    const textToSave = (finalText || lastFull || '').trim();
 
-        // 若流式音频仍在播放中，将 currentVoice 的控制器顺滑接力至新生成的语音条
-        if (streamAudioController.isPlaying && currentVoice && currentVoice.msgId === streamMsgId) {
-          currentVoice.msgId = finalMsgId;
-          const freshBar = fresh.el.querySelector('.voice-bar');
-          if (freshBar) {
-            freshBar.classList.add('playing');
-            const freshWaves = freshBar.querySelector('.vb-waves');
-            const waveCount = freshWaves ? freshWaves.children.length : 20;
-            const updatedCtl = {
-              setPlaying: (p) => {
-                freshBar.classList.toggle('playing', Boolean(p));
-              },
-              setProgress: (pct) => {
-                if (freshWaves) {
-                  const lit = Math.round(pct * waveCount);
-                  [...freshWaves.children].forEach((el, i) => el.classList.toggle('on', i < lit));
-                }
-              },
-            };
-            streamAudioController.attachControl(updatedCtl, finalMsgId);
-            currentVoice.setPlaying = updatedCtl.setPlaying;
-            currentVoice.setProgress = updatedCtl.setProgress;
+    const msgPayload = {
+      id: uid('m'),
+      role: 'assistant',
+      content: textToSave,
+      japanese: meta?.japanese || '',
+      audioUrls: meta?.audio_urls || (meta?.audio_url ? [meta.audio_url] : []),
+      dur: meta?.audio_duration || 0,
+      ts: Date.now(),
+      ttsParams: meta?.tts_params || null,
+      ttsPlan: meta?.tts_plan || null,
+    };
+
+    if (streamEl) {
+      if (textToSave) {
+        streamEl.classList.remove('streaming');
+        stored = msgPayload;
+        const { el: finalEl } = createMessageEl(stored, {
+          onPlayVoice: playVoice,
+          onResolveJapanese: resolveJapanese,
+          autoTranslate: Boolean(state.global.autoTranslate),
+        });
+        streamEl.replaceWith(finalEl);
+        streamEl = finalEl;
+        if (hasStartedStreamAudio && streamBarCtl) {
+          const newBar = finalEl.querySelector('.voice-bar');
+          if (newBar) {
+            newBar.classList.add('playing');
           }
         }
       } else {
@@ -1640,7 +591,17 @@ function sendMessage(rawText, voiceMeta) {
     renderSidebar();
     renderHeader();
     if (!cancelled) maybeScroll();
-    // 全局朗读开启时：若尚未在流中播放（例如无分块音频或降级重试），才触发 bar.click()
+    if (stored && !error && !cancelled) {
+      if (meta && meta.emotion) {
+        try {
+          portraitStage.setEmotion(meta.emotion, stored);
+        } catch (_) {}
+      } else {
+        try {
+          portraitStage.handleMessageEmotion(stored);
+        } catch (_) {}
+      }
+    }
     if (stored && !error && !cancelled && state.global.voiceMode && originId === state.activeId) {
       if (!streamAudioController.isPlaying) {
         const bar = streamEl && (streamEl.querySelector('.voice-bar') || streamEl.querySelector('.vb-play'));
@@ -1659,21 +620,34 @@ function sendMessage(rawText, voiceMeta) {
       if (url && typeof url === 'string' && url.startsWith('/audio/')) {
         fetchAndCacheAudio(url).catch(() => {});
       }
-      // 全局朗读开启且仍处于当前会话：首句切片到达立即秒级开播，后续切片无缝微渐变追加排队
       if (state.global.voiceMode && originId === state.activeId && url) {
         if (idx === 0 || !hasStartedStreamAudio) {
           hasStartedStreamAudio = true;
           const ctl = ensureStreamVoiceBar();
           streamAudioController.startSession(streamMsgId, ctl);
-          currentVoice = {
+          setCurrentVoice({
             msgId: streamMsgId,
-            get paused() { return streamAudioController.paused; },
-            pause() { streamAudioController.pause(); if (ctl) ctl.setPlaying(false); },
-            resume() { streamAudioController.resume(); if (ctl) ctl.setPlaying(true); },
-            setPlaying: (p) => { if (ctl) ctl.setPlaying(p); },
-            setProgress: (pct) => { if (ctl) ctl.setProgress(pct); },
-            stop() { streamAudioController.interrupt(40); },
-          };
+            get paused() {
+              return streamAudioController.paused;
+            },
+            pause() {
+              streamAudioController.pause();
+              if (ctl) ctl.setPlaying(false);
+            },
+            resume() {
+              streamAudioController.resume();
+              if (ctl) ctl.setPlaying(true);
+            },
+            setPlaying: (p) => {
+              if (ctl) ctl.setPlaying(p);
+            },
+            setProgress: (pct) => {
+              if (ctl) ctl.setProgress(pct);
+            },
+            stop() {
+              streamAudioController.interrupt(40);
+            },
+          });
           streamAudioController.enqueueChunk({ url, index: idx, sentence, ctl });
         } else {
           streamAudioController.enqueueChunk({ url, index: idx, sentence, ctl: streamBarCtl });
@@ -1713,6 +687,7 @@ async function switchSession(id) {
   if (id === state.activeId) return;
   interruptAll();
   state.activeId = id;
+  revokeAllCachedAudioUrls();
   const s = getActive();
   if (s && (!s.messages || s.messages.length === 0)) {
     await loadSessionHistory(s);
@@ -1720,7 +695,7 @@ async function switchSession(id) {
   saveState();
   fullRender(true);
   ensureSessionVoice(getActive());
-  dom.input.focus();
+  if (dom.input) dom.input.focus();
 }
 
 function handleDelete(id) {
@@ -1729,7 +704,6 @@ function handleDelete(id) {
   } else {
     stopCurrentVoice();
   }
-  // 释放该会话用户录音的 blob URL，避免内存泄漏
   const sess = getSession(id);
   if (sess) {
     for (const m of sess.messages) {
@@ -1739,7 +713,6 @@ function handleDelete(id) {
     }
   }
   deleteSession(id);
-  // 同步清理后端 SQLite 中该会话及其消息
   fetch(`/api/chat/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
   fetch(`/api/chat/history?session_id=${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
   fullRender(true);
@@ -1750,8 +723,12 @@ function handleDelete(id) {
 function newChat() {
   interruptAll();
   closeDrawer();
+  revokeAllCachedAudioUrls();
   const prevSession = getActive();
   const s = createSession();
+  const activeProfileId = getActiveProfileId();
+  const voiceProfiles = getVoiceProfiles();
+
   if (prevSession && prevSession.settings && prevSession.settings.voiceProfileId) {
     s.settings.voiceProfileId = prevSession.settings.voiceProfileId;
     s.settings.systemPrompt = prevSession.settings.systemPrompt;
@@ -1769,7 +746,7 @@ function newChat() {
   saveState();
   fullRender(true);
   ensureSessionVoice(s);
-  dom.input.focus();
+  if (dom.input) dom.input.focus();
   fetch('/api/chat/sessions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1783,39 +760,42 @@ function newChat() {
   }).catch(() => {});
 }
 
-/* ---------- 事件绑定 ---------- */
-dom.newChatBtn.addEventListener('click', newChat);
-dom.menuBtn.addEventListener('click', openDrawer);
-dom.sidebarClose.addEventListener('click', closeDrawer);
-dom.backdrop.addEventListener('click', closeDrawer);
+/* ---------- 核心事件绑定 ---------- */
+if (dom.newChatBtn) dom.newChatBtn.addEventListener('click', newChat);
+if (dom.menuBtn) dom.menuBtn.addEventListener('click', openDrawer);
+if (dom.sidebarClose) dom.sidebarClose.addEventListener('click', closeDrawer);
+if (dom.backdrop) dom.backdrop.addEventListener('click', closeDrawer);
 
-dom.composer.addEventListener('submit', (e) => {
-  e.preventDefault();
-  sendMessage();
-});
-dom.input.addEventListener('input', () => {
-  autoGrow();
-  if (!busy) dom.sendBtn.disabled = !dom.input.value.trim();
-});
-dom.input.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+if (dom.composer) {
+  dom.composer.addEventListener('submit', (e) => {
     e.preventDefault();
     sendMessage();
-  }
-});
-dom.stopBtn.addEventListener('click', interruptAll);
-dom.micBtn.addEventListener('click', toggleMic);
-dom.voiceModeBtn.addEventListener('click', () => {
-  state.global.voiceMode = !state.global.voiceMode;
-  saveState();
-  updateVoiceModeUI();
-  showToast(state.global.voiceMode ? '已开启朗读回复：AI 回复将自动播放语音' : '已关闭朗读回复');
-});
+  });
+}
+if (dom.input) {
+  dom.input.addEventListener('input', () => {
+    autoGrow();
+    if (!busy && dom.sendBtn) dom.sendBtn.disabled = !dom.input.value.trim();
+  });
+  dom.input.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' && !e.shiftKey && !e.isComposing) || ((e.ctrlKey || e.metaKey) && e.key === 'Enter')) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+}
+if (dom.stopBtn) dom.stopBtn.addEventListener('click', interruptAll);
 
-dom.messages.addEventListener('scroll', () => {
-  const d = dom.messages;
-  nearBottom = d.scrollHeight - d.scrollTop - d.clientHeight < 160;
-});
+if (dom.messages) {
+  dom.messages.addEventListener(
+    'scroll',
+    () => {
+      const d = dom.messages;
+      nearBottom = d.scrollHeight - d.scrollTop - d.clientHeight < 160;
+    },
+    { passive: true }
+  );
+}
 
 document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
@@ -1823,875 +803,65 @@ document.addEventListener('keydown', (e) => {
     newChat();
   }
   if (e.key === 'Escape') {
+    const isModalOpen =
+      (dom.globalModal && dom.globalModal.classList.contains('active')) ||
+      (dom.sessionModal && dom.sessionModal.classList.contains('active'));
     closeModal(dom.globalModal);
     closeModal(dom.sessionModal);
     closeDrawer();
+    if (!isModalOpen) {
+      if (typeof streamAudioController !== 'undefined' && streamAudioController.isPlaying) {
+        streamAudioController.interrupt(40);
+      }
+      if (busy) {
+        interruptAll();
+      }
+    }
   }
 });
 
-/* 全局设置（引擎层：状态 / 语音推理 / 大模型 / Telegram / 记忆与人设） */
-function openGlobalSettings() {
-  openModal(dom.globalModal);
-  loadProviders();
-  loadGlobalConfig();
-  fetchSystemTelemetry();
-  loadSystemVersionInfo(false).catch(() => {});
-  if (dom.gPreset) {
-    dom.gPreset.value = state.global.ttsPreset || '';
-  }
-  if (dom.gAutoTranslate) {
-    dom.gAutoTranslate.value = state.global.autoTranslate ? 'auto' : 'manual';
-  }
-}
-
-async function fetchSystemTelemetry() {
-  try {
-    const [statusRes, cacheRes] = await Promise.all([
-      fetch('/api/system/status').catch(() => null),
-      fetch('/api/cache/stats').catch(() => null),
-    ]);
-    if (statusRes && statusRes.ok) {
-      const data = await statusRes.json();
-      // 1. GPT-SoVITS
-      if (data.gpt_sovits && dom.gDashSovitsStatus) {
-        const isOnline = data.gpt_sovits.status === 'reachable';
-        dom.gDashSovitsBadge.className = `badge-status-pill ${isOnline ? 'badge-pill-green' : 'badge-pill-red'}`;
-        dom.gDashSovitsBadge.textContent = isOnline ? '在线' : '离线';
-        dom.gDashSovitsStatus.textContent = isOnline ? `运行正常 (${data.gpt_sovits.latency_ms || 0}ms)` : '服务未响应';
-        dom.gDashSovitsUrl.textContent = data.gpt_sovits.base_url || 'http://127.0.0.1:9880';
-      }
-      // 2. Precision & GPU
-      if (data.hardware) {
-        const prec = (data.hardware.inference_precision || '').toUpperCase();
-        const isCpu = prec === 'CPU';
-        const isFp16 = prec === 'FP16';
-        if (dom.gDashPrecisionBadge) {
-          if (isCpu) {
-            dom.gDashPrecisionBadge.className = 'badge-status-pill badge-pill-yellow';
-            dom.gDashPrecisionBadge.textContent = 'CPU';
-          } else if (isFp16) {
-            dom.gDashPrecisionBadge.className = 'badge-status-pill badge-pill-indigo';
-            dom.gDashPrecisionBadge.textContent = 'FP16';
-          } else {
-            dom.gDashPrecisionBadge.className = 'badge-status-pill badge-pill-green';
-            dom.gDashPrecisionBadge.textContent = 'FP32';
-          }
-        }
-        if (dom.gDashPrecisionVal) {
-          if (isCpu) {
-            dom.gDashPrecisionVal.textContent = '🛡️ CPU 稳定模式';
-          } else if (isFp16) {
-            dom.gDashPrecisionVal.textContent = '⚡ FP16 半精度';
-          } else {
-            dom.gDashPrecisionVal.textContent = '🛡️ FP32 单精度';
-          }
-        }
-        if (dom.gBtnTogglePrecisionText) {
-          if (isCpu) {
-            dom.gBtnTogglePrecisionText.textContent = '切为 GPU(FP16)';
-          } else if (isFp16) {
-            dom.gBtnTogglePrecisionText.textContent = '切为 FP32 重启';
-          } else {
-            dom.gBtnTogglePrecisionText.textContent = '切为 CPU 模式';
-          }
-        }
-        if (dom.gDashDeviceVal) {
-          if (isCpu) {
-            dom.gDashDeviceVal.textContent = '免显存占用 · 依托物理大内存';
-          } else {
-            dom.gDashDeviceVal.textContent = data.hardware.gpu_name ? data.hardware.gpu_name : '硬件加速中';
-          }
-        }
-        if (dom.gDashHardwareVal) {
-          const procMem = (data.app && data.app.memory_usage_mb !== undefined && data.app.memory_usage_mb !== null)
-            ? `${Math.round(data.app.memory_usage_mb)} MB`
-            : '正常';
-          dom.gDashHardwareVal.textContent = `服务内存: ${procMem}`;
-        }
-        const hostRamEl = $('gDashHostRam');
-        if (hostRamEl) {
-          if (data.hardware.system_memory_gb && data.hardware.system_memory_avail_gb) {
-            hostRamEl.textContent = `系统可用: ${data.hardware.system_memory_avail_gb.toFixed(1)}G / ${data.hardware.system_memory_gb.toFixed(1)}G`;
-          } else {
-            hostRamEl.textContent = '系统内存: 良好';
-          }
-        }
-      }
-      // 3. Uptime & PID
-      if (data.app && dom.gDashUptimeVal) {
-        const sec = Math.round(data.app.uptime_seconds || 0);
-        const h = Math.floor(sec / 3600);
-        const m = Math.floor((sec % 3600) / 60);
-        const s = sec % 60;
-        dom.gDashUptimeVal.textContent = `PID: ${data.app.pid || '-'} · 运行: ${h}h ${m}m ${s}s`;
-      }
-    }
-    if (cacheRes && cacheRes.ok && dom.gDashCacheVal) {
-      const cData = await cacheRes.json();
-      dom.gDashCacheVal.textContent = `${cData.total_entries || 0} 个文件 · ${(cData.total_size_mb || 0).toFixed(1)} MB`;
-    }
-  } catch (e) {
-    console.warn('Failed to fetch telemetry:', e);
-  }
-}
-
-function updateTelegramFieldsVisibility() {
-  const enabled = dom.gTgEnabled ? dom.gTgEnabled.checked : false;
-  if (dom.gTgFieldsGroup) {
-    dom.gTgFieldsGroup.style.opacity = enabled ? '1' : '0.45';
-    dom.gTgFieldsGroup.style.pointerEvents = enabled ? 'auto' : 'none';
-  }
-}
-
-async function loadGlobalConfig() {
-  try {
-    const [cfgRes, voiceErr] = await Promise.all([
-      fetch('/api/config'),
-      fetchVoiceProfiles().catch(() => null),
-    ]);
-    const cfg = await cfgRes.json();
-    const s = cfg.settings || {};
-    const provider = cfg.active_provider;
-    const activeVoice = voiceProfiles.find((p) => p.id === activeProfileId);
-
-    const isOk = cfg.status === 'ok';
-    const providerStr = provider ? `${provider.name} · ${provider.chat_model || '-'}` : '未配置';
-    const voiceStr = activeVoice ? activeVoice.name : '未加载';
-
-    const diagBackend = $('gDiagBackend');
-    const diagBackendDot = $('gDiagBackendDot');
-    const diagModel = $('gDiagModel');
-    const diagModelDot = $('gDiagModelDot');
-    const diagVoice = $('gDiagVoice');
-    const diagVoiceDot = $('gDiagVoiceDot');
-
-    if (diagBackend) diagBackend.textContent = isOk ? '运行正常' : String(cfg.status);
-    if (diagBackendDot) diagBackendDot.className = `diag-dot ${isOk ? 'ok' : ''}`;
-    if (diagModel) {
-      diagModel.textContent = providerStr;
-      diagModel.title = providerStr;
-    }
-    if (diagModelDot) diagModelDot.className = `diag-dot ${provider ? 'ok' : ''}`;
-    if (diagVoice) {
-      diagVoice.textContent = voiceStr;
-      diagVoice.title = voiceStr;
-    }
-    if (diagVoiceDot) diagVoiceDot.className = `diag-dot ${activeVoice ? 'ok' : ''}`;
-
-    // 语音与推理参数
-    if (dom.gParamSovitsUrl) dom.gParamSovitsUrl.value = s.gpt_sovits_url || 'http://127.0.0.1:9880';
-    if (dom.gPrecision) dom.gPrecision.value = s.inference_precision || 'auto';
-    if (dom.gParamSliceMethod) dom.gParamSliceMethod.value = s.text_split_method || 'cut5';
-    if (dom.gParamSpeed) {
-      dom.gParamSpeed.value = s.speed_factor !== undefined ? s.speed_factor : 1.0;
-      if (dom.gParamSpeedVal) dom.gParamSpeedVal.textContent = dom.gParamSpeed.value;
-    }
-    if (dom.gParamTopK) {
-      dom.gParamTopK.value = s.top_k || 15;
-      if (dom.gParamTopKVal) dom.gParamTopKVal.textContent = dom.gParamTopK.value;
-    }
-    if (dom.gParamTopP) {
-      dom.gParamTopP.value = s.top_p !== undefined ? s.top_p : 1.0;
-      if (dom.gParamTopPVal) dom.gParamTopPVal.textContent = dom.gParamTopP.value;
-    }
-    if (dom.gParamTemp) {
-      dom.gParamTemp.value = s.temperature !== undefined ? s.temperature : 1.0;
-      if (dom.gParamTempVal) dom.gParamTempVal.textContent = dom.gParamTemp.value;
-    }
-    if (dom.gParamFragmentInterval) dom.gParamFragmentInterval.value = s.fragment_interval !== undefined ? s.fragment_interval : 0.3;
-    if (dom.gAudioRetention) dom.gAudioRetention.value = s.audio_retention_minutes || 30;
-    if (dom.gDashRetentionVal) dom.gDashRetentionVal.textContent = `保留时长: ${s.audio_retention_minutes || 30} 分钟`;
-
-    // STT 与 Telegram
-    if (dom.gSttEngine) dom.gSttEngine.value = s.stt_engine || 'browser';
-    if (dom.gTgEnabled) {
-      dom.gTgEnabled.checked = Boolean(s.telegram_enabled);
-      updateTelegramFieldsVisibility();
-    }
-    const token = s.telegram_bot_token || '';
-    const masked = token.includes('****');
-    dom.gTgToken.value = '';
-    dom.gTgToken.placeholder = masked
-      ? '已保存（输入新 Token 可覆盖）'
-      : '未配置，如 123456:ABC-DEF…';
-    if (dom.gTgChatId) dom.gTgChatId.value = s.telegram_chat_id || s.telegram_admin_ids || '';
-    dom.gTgProxyHost.value = s.telegram_proxy_host || '';
-    dom.gTgProxyPort.value = s.telegram_proxy_port || '';
-    dom.gTgProxyEnabled.checked = Boolean(s.telegram_proxy_enabled);
-
-    // 记忆与人设
-    if (dom.gMemoryEnabled) dom.gMemoryEnabled.checked = s.memory_enabled !== false;
-    if (dom.gUserNickname) dom.gUserNickname.value = s.user_nickname || '';
-    if (dom.gDefaultSystemPrompt) dom.gDefaultSystemPrompt.value = s.system_prompt || '';
-  } catch (e) {
-    dom.gStatus.textContent = '状态加载失败（后端未启动？）';
-  }
-}
-
-async function saveGlobalConfig() {
-  dom.gTgSave.disabled = true;
-  try {
-    const payload = {
-      gpt_sovits_url: dom.gParamSovitsUrl ? dom.gParamSovitsUrl.value.trim() || 'http://127.0.0.1:9880' : undefined,
-      inference_precision: dom.gPrecision ? dom.gPrecision.value : undefined,
-      text_split_method: dom.gParamSliceMethod ? dom.gParamSliceMethod.value : undefined,
-      speed_factor: dom.gParamSpeed ? Number(dom.gParamSpeed.value) : undefined,
-      top_k: dom.gParamTopK ? Number(dom.gParamTopK.value) : undefined,
-      top_p: dom.gParamTopP ? Number(dom.gParamTopP.value) : undefined,
-      temperature: dom.gParamTemp ? Number(dom.gParamTemp.value) : undefined,
-      fragment_interval: dom.gParamFragmentInterval ? Number(dom.gParamFragmentInterval.value) || 0.3 : undefined,
-      audio_retention_minutes: dom.gAudioRetention ? Math.max(1, Number(dom.gAudioRetention.value) || 30) : 30,
-      stt_engine: dom.gSttEngine ? dom.gSttEngine.value : undefined,
-      telegram_enabled: dom.gTgEnabled ? dom.gTgEnabled.checked : false,
-      telegram_chat_id: dom.gTgChatId ? dom.gTgChatId.value.trim() || undefined : undefined,
-      telegram_admin_ids: dom.gTgChatId ? dom.gTgChatId.value.trim() || undefined : undefined,
-      telegram_proxy_enabled: dom.gTgProxyEnabled.checked,
-      telegram_proxy_host: dom.gTgProxyHost.value.trim() || '127.0.0.1',
-      telegram_proxy_port: Number(dom.gTgProxyPort.value) || 10809,
-      memory_enabled: dom.gMemoryEnabled ? dom.gMemoryEnabled.checked : true,
-      user_nickname: dom.gUserNickname ? dom.gUserNickname.value.trim() : undefined,
-      system_prompt: dom.gDefaultSystemPrompt ? dom.gDefaultSystemPrompt.value.trim() || undefined : undefined,
-    };
-    const token = dom.gTgToken.value.trim();
-    if (token) payload.telegram_bot_token = token;
-
-    const res = await fetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-
-    if (dom.gPreset) {
-      saveGlobal({ ttsPreset: dom.gPreset.value });
-    }
-    if (dom.gAutoTranslate) {
-      saveGlobal({ autoTranslate: dom.gAutoTranslate.value === 'auto' });
-    }
-
-    showToast('全局配置已成功保存并实时生效', 'success');
-    loadGlobalConfig();
-    fetchSystemTelemetry();
-  } catch (e) {
-    showToast(`保存失败: ${e.message || e}`, 'error');
-  } finally {
-    dom.gTgSave.disabled = false;
-  }
-}
-
-async function testTelegram() {
-  dom.gTgTest.disabled = true;
-  try {
-    const payload = {
-      proxy_enabled: dom.gTgProxyEnabled.checked,
-      proxy_host: dom.gTgProxyHost.value.trim() || '127.0.0.1',
-      proxy_port: Number(dom.gTgProxyPort.value) || 10809,
-    };
-    const token = dom.gTgToken.value.trim();
-    if (token) payload.token = token;
-    const res = await fetch('/api/telegram/test', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json().catch(() => ({}));
-    showToast(data.message || (data.success ? '连接成功' : '连接失败'), data.success ? 'success' : 'error');
-  } catch (e) {
-    showToast(`测试失败: ${e.message || e}`, 'error');
-  } finally {
-    dom.gTgTest.disabled = false;
-  }
-}
-
-// 选项卡切换
-if (dom.gTabs) {
-  dom.gTabs.querySelectorAll('.modal-tab-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      dom.gTabs.querySelectorAll('.modal-tab-btn').forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
-      const targetTab = btn.getAttribute('data-gtab');
-      dom.globalModal.querySelectorAll('.gtab-panel').forEach((p) => p.classList.add('hidden'));
-      const targetPanel = $(`gp-${targetTab}`);
-      if (targetPanel) targetPanel.classList.remove('hidden');
-      const modalBody = dom.globalModal ? dom.globalModal.querySelector('.modal-body') : null;
-      if (modalBody) modalBody.scrollTop = 0;
-    });
-  });
-}
-
-// 推理参数滑块数值联动
-if (dom.gParamSpeed) {
-  dom.gParamSpeed.addEventListener('input', (e) => { if (dom.gParamSpeedVal) dom.gParamSpeedVal.textContent = e.target.value; });
-}
-if (dom.gParamTopK) {
-  dom.gParamTopK.addEventListener('input', (e) => { if (dom.gParamTopKVal) dom.gParamTopKVal.textContent = e.target.value; });
-}
-if (dom.gParamTopP) {
-  dom.gParamTopP.addEventListener('input', (e) => { if (dom.gParamTopPVal) dom.gParamTopPVal.textContent = e.target.value; });
-}
-if (dom.gParamTemp) {
-  dom.gParamTemp.addEventListener('input', (e) => { if (dom.gParamTempVal) dom.gParamTempVal.textContent = e.target.value; });
-}
-
-// 刷新状态诊断
-if (dom.gBtnRefreshStatus) {
-  dom.gBtnRefreshStatus.addEventListener('click', () => {
-    fetchSystemTelemetry();
-    loadGlobalConfig();
-    showToast('诊断数据已刷新', 'info');
-  });
-}
-
-// 一键热重启 GPT-SoVITS 引擎
-if (dom.gBtnRestartSovits) {
-  dom.gBtnRestartSovits.addEventListener('click', async () => {
-    dom.gBtnRestartSovits.disabled = true;
-    dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>正在热重启...</span>';
-    try {
-      const payload = {};
-      if (dom.gPrecision && dom.gPrecision.value) {
-        payload.precision = dom.gPrecision.value;
-      }
-      const res = await fetch('/api/system/restart_sovits', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-      showToast(data.message || 'GPT-SoVITS 重启指令已发送', 'success');
-      setTimeout(() => {
-        fetchSystemTelemetry();
-        dom.gBtnRestartSovits.disabled = false;
-        dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>重启 SoVITS 引擎</span>';
-      }, 2500);
-    } catch (err) {
-      showToast(`重启失败: ${err.message}`, 'error');
-      dom.gBtnRestartSovits.disabled = false;
-      dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>重启 SoVITS 引擎</span>';
-    }
-  });
-}
-
-// 一键切换精度/设备并重启 (FP16 -> FP32 -> CPU 循环切换)
-if (dom.gBtnTogglePrecision) {
-  dom.gBtnTogglePrecision.addEventListener('click', async () => {
-    const badgeText = dom.gDashPrecisionBadge ? dom.gDashPrecisionBadge.textContent.trim().toUpperCase() : 'FP16';
-    let targetPrec = 'fp16';
-    let targetLabel = 'FP16 半精度';
-    if (badgeText === 'FP16') {
-      targetPrec = 'fp32';
-      targetLabel = 'FP32 单精度';
-    } else if (badgeText === 'FP32') {
-      targetPrec = 'cpu';
-      targetLabel = 'CPU 稳定模式 (免显存)';
-    } else {
-      targetPrec = 'fp16';
-      targetLabel = 'FP16 半精度';
-    }
-
-    dom.gBtnTogglePrecision.disabled = true;
-    if (dom.gBtnRestartSovits) dom.gBtnRestartSovits.disabled = true;
-    if (dom.gBtnTogglePrecisionText) dom.gBtnTogglePrecisionText.textContent = `正在切换为 ${targetPrec.toUpperCase()}...`;
-    try {
-      if (dom.gPrecision) dom.gPrecision.value = targetPrec;
-      const res = await fetch('/api/system/restart_sovits', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ precision: targetPrec }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-      showToast(data.message || `已按 ${targetLabel} 重启语音引擎`, 'success');
-      setTimeout(() => {
-        fetchSystemTelemetry();
-        dom.gBtnTogglePrecision.disabled = false;
-        if (dom.gBtnRestartSovits) dom.gBtnRestartSovits.disabled = false;
-      }, 2500);
-    } catch (err) {
-      showToast(`切换精度重启失败: ${err.message}`, 'error');
-      dom.gBtnTogglePrecision.disabled = false;
-      if (dom.gBtnRestartSovits) dom.gBtnRestartSovits.disabled = false;
-    }
-  });
-}
-
-// 精度下拉菜单自动保存
-if (dom.gPrecision) {
-  dom.gPrecision.addEventListener('change', async () => {
-    const val = dom.gPrecision.value;
-    try {
-      await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inference_precision: val }),
-      });
-      const labelMap = {
-        auto: '自动判定 (Auto)',
-        fp16: 'FP16 半精度',
-        fp32: 'FP32 单精度',
-        cpu: 'CPU 稳定模式 (免显存)',
-      };
-      showToast(`已保存推理设置: ${labelMap[val] || val}。请点击【重启 SoVITS 引擎】应用。`, 'info');
-      fetchSystemTelemetry();
-    } catch (err) {
-      console.warn('Auto-save precision failed:', err);
-    }
-  });
-}
-
-// 跳转至语音与推理设置
-const btnGoPrecision = $('gBtnGoPrecision');
-if (btnGoPrecision) {
-  btnGoPrecision.addEventListener('click', () => {
-    const tabBtn = dom.gTabs ? dom.gTabs.querySelector('[data-gtab="inference"]') : null;
-    if (tabBtn) tabBtn.click();
-  });
-}
-
-// 一键清空音频缓存
-if (dom.gBtnClearCache) {
-  dom.gBtnClearCache.addEventListener('click', async () => {
-    if (!confirm('确定要清空全部 TTS 离线音频缓存吗？清空后新请求将重新合成。')) return;
-    dom.gBtnClearCache.disabled = true;
-    try {
-      clearMemAudioCache();
-      if ('caches' in window) {
-        await caches.delete('gal2voice-audio-v1').catch(() => {});
-      }
-      const res = await fetch('/api/cache/clear', { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-      showToast(`缓存已清空：删除 ${data.deleted_files || 0} 个文件，释放 ${data.freed_mb || 0} MB`, 'success');
-      fetchSystemTelemetry();
-    } catch (err) {
-      showToast(`清空缓存失败: ${err.message}`, 'error');
-    } finally {
-      dom.gBtnClearCache.disabled = false;
-    }
-  });
-}
-
-// 模型配置与连通性测试事件绑定
-if (dom.gProvider) dom.gProvider.addEventListener('change', onProviderChange);
-if (dom.gBtnToggleKeyVisibility) dom.gBtnToggleKeyVisibility.addEventListener('click', toggleKeyVisibility);
-if (dom.gChatModelSelect) dom.gChatModelSelect.addEventListener('change', onChatModelSelectChange);
-if (dom.gProviderTest) dom.gProviderTest.addEventListener('click', handleProviderTest);
-if (dom.gProviderActivate) dom.gProviderActivate.addEventListener('click', handleActivateProvider);
-
-// 恢复默认参数
-if (dom.gResetBtn) {
-  dom.gResetBtn.addEventListener('click', () => {
-    if (!confirm('确定要将全局参数恢复为推荐默认值吗？')) return;
-    if (dom.gParamSpeed) { dom.gParamSpeed.value = '1.0'; dom.gParamSpeedVal.textContent = '1.0'; }
-    if (dom.gParamTopK) { dom.gParamTopK.value = '15'; dom.gParamTopKVal.textContent = '15'; }
-    if (dom.gParamTopP) { dom.gParamTopP.value = '1.0'; dom.gParamTopPVal.textContent = '1.0'; }
-    if (dom.gParamTemp) { dom.gParamTemp.value = '1.0'; dom.gParamTempVal.textContent = '1.0'; }
-    if (dom.gParamSliceMethod) dom.gParamSliceMethod.value = 'cut5';
-    if (dom.gPrecision) dom.gPrecision.value = 'auto';
-    if (dom.gAudioRetention) dom.gAudioRetention.value = '30';
-    showToast('已恢复推荐数值，请点击【保存全局配置】生效', 'info');
-  });
-}
-
-/* ============ 系统版本与 GitHub 一键更新 ============ */
-let currentVersionData = null;
-
-async function loadSystemVersionInfo(checkRemote = false) {
-  if (dom.gDashVersionCommit && !dom.gDashVersionCommit.textContent.startsWith('Commit: ')) {
-    dom.gDashVersionCommit.textContent = 'Commit: 读取中...';
-  }
-  if (dom.gCurrentCommit && dom.gCurrentCommit.textContent === '-') {
-    dom.gCurrentCommit.textContent = '读取中...';
-  }
-
-  try {
-    const data = await fetchSystemVersion(checkRemote);
-    currentVersionData = data;
-    renderSystemVersionUI(data);
-    return data;
-  } catch (err) {
-    console.warn('Failed to load system version:', err);
-    if (dom.gRemoteStatusTag) {
-      dom.gRemoteStatusTag.className = 'badge-status-pill badge-pill-yellow';
-      dom.gRemoteStatusTag.textContent = '读取受阻';
-    }
-    return null;
-  }
-}
-
-function renderSystemVersionUI(data) {
-  if (!data) return;
-
-  // 1. Dashboard 概览卡片更新
-  if (dom.gDashVersionCommit) {
-    dom.gDashVersionCommit.textContent = `Commit: ${data.current_version || '-'}`;
-  }
-  if (dom.gDashVersionBranch) {
-    dom.gDashVersionBranch.textContent = `分支: ${data.current_branch || 'main'}`;
-  }
-  if (dom.gDashVersionBadge) {
-    if (data.has_update) {
-      dom.gDashVersionBadge.className = 'badge-status-pill badge-pill-indigo';
-      dom.gDashVersionBadge.textContent = `有更新 (${data.behind_count})`;
-    } else {
-      dom.gDashVersionBadge.className = 'badge-status-pill badge-pill-green';
-      dom.gDashVersionBadge.textContent = '最新版';
-    }
-  }
-
-  // 2. 独立更新面板字段更新
-  if (dom.gCurrentCommit) dom.gCurrentCommit.textContent = data.current_version || '-';
-  if (dom.gCurrentBranch) dom.gCurrentBranch.textContent = data.current_branch || 'main';
-  if (dom.gCurrentDate) dom.gCurrentDate.textContent = data.commit_date || '-';
-  if (dom.gRemoteUrl) {
-    dom.gRemoteUrl.textContent = data.remote_url || '-';
-    dom.gRemoteUrl.title = data.remote_url || '';
-  }
-  if (dom.gCurrentMsgText) {
-    dom.gCurrentMsgText.textContent = data.commit_message || '无提交信息';
-  }
-
-  const statusInfo = formatUpdateStatus(data);
-  if (dom.gRemoteStatusTag) {
-    dom.gRemoteStatusTag.className = `badge-status-pill ${statusInfo.badgeClass}`;
-    dom.gRemoteStatusTag.textContent = statusInfo.badgeText;
-  }
-
-  // 更新提示框
-  if (dom.gUpdateNoticeBox) {
-    if (data.has_update || data.error || (data.commits_log && data.commits_log.length > 0)) {
-      dom.gUpdateNoticeBox.classList.remove('hidden');
-    }
-    if (dom.gUpdateNoticeTitle) dom.gUpdateNoticeTitle.textContent = statusInfo.title;
-    if (dom.gUpdateNoticeDesc) dom.gUpdateNoticeDesc.textContent = statusInfo.desc;
-    if (dom.gUpdateNoticeIcon) {
-      dom.gUpdateNoticeIcon.textContent = data.has_update ? '🚀' : (data.error ? '⚠️' : '✅');
-    }
-  }
-
-  // 提交日志列表
-  if (dom.gCommitsLogContainer && dom.gCommitsLogList) {
-    if (data.has_update && data.commits_log && data.commits_log.length > 0) {
-      dom.gCommitsLogContainer.classList.remove('hidden');
-      renderCommitsLog(dom.gCommitsLogList, data.commits_log);
-    } else {
-      dom.gCommitsLogContainer.classList.add('hidden');
-      dom.gCommitsLogList.innerHTML = '';
-    }
-  }
-
-  // 一键更新按钮显示逻辑
-  if (dom.gBtnApplyUpdate) {
-    dom.gBtnApplyUpdate.classList.remove('hidden');
-    if (statusInfo.hasUpdate) {
-      dom.gBtnApplyUpdate.className = 'btn primary';
-      if (dom.gBtnApplyUpdateText) {
-        dom.gBtnApplyUpdateText.textContent = `一键拉取并更新 (${data.behind_count} 个新提交)`;
-      }
-    } else {
-      dom.gBtnApplyUpdate.className = 'btn secondary';
-      if (dom.gBtnApplyUpdateText) {
-        dom.gBtnApplyUpdateText.textContent = '一键拉取并更新';
-      }
-    }
-  }
-}
-
-async function handleCheckUpdate() {
-  if (!dom.gBtnCheckUpdate) return;
-  dom.gBtnCheckUpdate.disabled = true;
-  const originalText = dom.gBtnCheckUpdateText ? dom.gBtnCheckUpdateText.textContent : '检查更新';
-  if (dom.gBtnCheckUpdateText) dom.gBtnCheckUpdateText.textContent = '正在检查远程...';
-  if (dom.gRemoteStatusTag) {
-    dom.gRemoteStatusTag.className = 'badge-status-pill badge-pill-yellow';
-    dom.gRemoteStatusTag.textContent = '检查中...';
-  }
-
-  try {
-    const data = await loadSystemVersionInfo(true);
-    if (data && data.has_update) {
-      showToast(`检测到新版本可用！落后 ${data.behind_count} 个提交`, 'info');
-    } else if (data && !data.error) {
-      showToast('当前已是最新版本', 'success');
-      if (dom.gUpdateNoticeBox) dom.gUpdateNoticeBox.classList.remove('hidden');
-    } else if (data && data.error) {
-      showToast(`检查更新失败: ${data.error}`, 'error');
-    }
-  } catch (err) {
-    showToast(`检查更新发生异常: ${err.message}`, 'error');
-  } finally {
-    dom.gBtnCheckUpdate.disabled = false;
-    if (dom.gBtnCheckUpdateText) dom.gBtnCheckUpdateText.textContent = originalText;
-  }
-}
-
-async function handleApplyUpdate() {
-  const isLatest = currentVersionData && !currentVersionData.has_update;
-  const promptText = isLatest
-    ? '当前本地版本已是最新。确定要从 GitHub 重新拉取并重构前端静态产物吗？'
-    : '确定要从 GitHub 拉取最新版本吗？\n拉取后系统将自动构建前端静态资源并同步角色包。';
-
-  if (!confirm(promptText)) {
-    return;
-  }
-
-  if (dom.gBtnApplyUpdate) dom.gBtnApplyUpdate.disabled = true;
-  if (dom.gBtnCheckUpdate) dom.gBtnCheckUpdate.disabled = true;
-  if (dom.gBtnApplyUpdateText) dom.gBtnApplyUpdateText.textContent = '正在拉取并更新...';
-
-  if (dom.gUpdateProgressBox) dom.gUpdateProgressBox.classList.remove('hidden');
-  if (dom.gUpdateSpinner) dom.gUpdateSpinner.classList.remove('hidden');
-  if (dom.gUpdateProgressTitle) dom.gUpdateProgressTitle.textContent = '正在执行 git pull 与资源构建，请稍候...';
-  if (dom.gBtnReloadPage) dom.gBtnReloadPage.classList.add('hidden');
-  if (dom.gUpdateLogOutput) dom.gUpdateLogOutput.textContent = '>>> 开始拉取 GitHub 最新版本...\n';
-
-  try {
-    const result = await applySystemUpdate();
-    if (dom.gUpdateLogOutput) {
-      dom.gUpdateLogOutput.textContent = result.output || (result.success ? '更新成功' : '更新未完成');
-    }
-
-    if (result.success) {
-      if (dom.gUpdateProgressTitle) {
-        dom.gUpdateProgressTitle.textContent = result.restart_required
-          ? '更新完成！检测到后端变动，建议重启后台服务并刷新页面。'
-          : '更新完成！静态产物已就绪，点击右侧刷新页面即可生效。';
-      }
-      if (dom.gUpdateSpinner) dom.gUpdateSpinner.classList.add('hidden');
-      if (dom.gBtnReloadPage) dom.gBtnReloadPage.classList.remove('hidden');
-      showToast('版本更新成功！请刷新页面体验最新功能', 'success');
-
-      await loadSystemVersionInfo(false);
-    } else {
-      if (dom.gUpdateProgressTitle) {
-        dom.gUpdateProgressTitle.textContent = '更新中断，请根据下方诊断信息处理:';
-      }
-      if (dom.gUpdateSpinner) dom.gUpdateSpinner.classList.add('hidden');
-      showToast(`更新失败: ${result.error || '详见下方输出'}`, 'error');
-    }
-  } catch (err) {
-    if (dom.gUpdateProgressTitle) {
-      dom.gUpdateProgressTitle.textContent = '更新请求失败:';
-    }
-    if (dom.gUpdateSpinner) dom.gUpdateSpinner.classList.add('hidden');
-    if (dom.gUpdateLogOutput) {
-      dom.gUpdateLogOutput.textContent += `\n[错误] ${err.message}`;
-    }
-    showToast(`更新请求异常: ${err.message}`, 'error');
-  } finally {
-    if (dom.gBtnApplyUpdate) dom.gBtnApplyUpdate.disabled = false;
-    if (dom.gBtnCheckUpdate) dom.gBtnCheckUpdate.disabled = false;
-    if (dom.gBtnApplyUpdateText) dom.gBtnApplyUpdateText.textContent = '一键拉取并更新';
-  }
-}
-
-if (dom.gBtnCheckUpdate) dom.gBtnCheckUpdate.addEventListener('click', handleCheckUpdate);
-if (dom.gBtnApplyUpdate) dom.gBtnApplyUpdate.addEventListener('click', handleApplyUpdate);
-if (dom.gBtnReloadPage) {
-  dom.gBtnReloadPage.addEventListener('click', () => {
-    window.location.reload();
-  });
-}
-if (dom.gBtnGoUpdateTab) {
-  dom.gBtnGoUpdateTab.addEventListener('click', () => {
-    const updateTabBtn = dom.gTabs ? dom.gTabs.querySelector('[data-gtab="update"]') : null;
-    if (updateTabBtn) {
-      updateTabBtn.click();
-      handleCheckUpdate();
-    }
-  });
-}
-
-dom.globalSettingsBtn.addEventListener('click', openGlobalSettings);
-dom.globalModal.querySelectorAll('[data-close]').forEach((btn) =>
-  btn.addEventListener('click', () => closeModal(dom.globalModal))
-);
-if (dom.gTgEnabled) dom.gTgEnabled.addEventListener('change', updateTelegramFieldsVisibility);
-dom.gTgTest.addEventListener('click', testTelegram);
-dom.gTgSave.addEventListener('click', saveGlobalConfig);
-if (dom.gPreset) {
-  dom.gPreset.addEventListener('change', () => {
-    saveGlobal({ ttsPreset: dom.gPreset.value });
-    showToast(dom.gPreset.value ? '语音质量预设已保存，对新消息生效' : '语音质量已恢复为后端默认', 'success');
-  });
-}
-if (dom.gAutoTranslate) {
-  dom.gAutoTranslate.addEventListener('change', () => {
-    const isAuto = dom.gAutoTranslate.value === 'auto';
-    saveGlobal({ autoTranslate: isAuto });
-    fullRender(false);
-    showToast(isAuto ? '已开启翻译自动展开' : '已切换为手动点击翻译', 'success');
-  });
-}
-
-/* 会话设置 */
-dom.sessionSettingsBtn.addEventListener('click', openSessionSettings);
-dom.sessionModal.querySelectorAll('[data-close]').forEach((btn) =>
-  btn.addEventListener('click', () => closeModal(dom.sessionModal))
-);
-dom.sTemp.addEventListener('input', syncRangeLabels);
-dom.sVoice.addEventListener('change', async () => {
-  syncCustomVoiceBox();
-  const val = dom.sVoice.value;
-  const s = getActive();
-  if (val === '__custom__') return;
-  if (!val) {
-    if (s) {
-      s.settings.voiceProfileId = null;
-      s.updatedAt = Date.now();
-      saveState();
-      fetch('/api/chat/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: s.id,
-          title: s.title,
-          voice_profile_id: null,
-          custom_system_prompt: s.settings?.systemPrompt,
-          settings: s.settings,
-        }),
-      }).catch(() => {});
-      renderSidebar();
-      renderHeader();
-    }
-    return;
-  }
-  const chosen = voiceProfiles.find((p) => String(p.id) === String(val));
-  if (chosen) {
-    if (chosen.system_prompt) {
-      dom.sSystem.value = chosen.system_prompt;
-    }
-    if (chosen.name === '高楯欧丽叶') {
-      dom.sTtsSpeed.value = 0.88;
-    } else if (chosen.name === '常陆茉子') {
-      dom.sTtsSpeed.value = 0.90;
-    } else if (chosen.name === '白雪乃爱') {
-      dom.sTtsSpeed.value = 1.05;
-    }
-    syncRangeLabels();
-
-    if (s) {
-      s.settings.voiceProfileId = chosen.id;
-      if (chosen.system_prompt) s.settings.systemPrompt = chosen.system_prompt;
-      if (chosen.name === '高楯欧丽叶') s.settings.ttsSpeed = 0.88;
-      else if (chosen.name === '常陆茉子') s.settings.ttsSpeed = 0.90;
-      else if (chosen.name === '白雪乃爱') s.settings.ttsSpeed = 1.05;
-      s.updatedAt = Date.now();
-      saveState();
-      renderSidebar();
-      renderHeader();
-
-      try {
-        await fetch('/api/chat/sessions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: s.id,
-            title: s.title,
-            voice_profile_id: chosen.id,
-            custom_system_prompt: s.settings?.systemPrompt,
-            settings: s.settings,
-          }),
-        });
-      } catch (err) {
-        console.warn('Failed to persist session on voice switch:', err);
-      }
-      await ensureSessionVoice(s);
-      showToast(`已切换至角色：${chosen.name}`, 'success');
-    }
-  }
+/* ---------- 初始化控制器 ---------- */
+initUpdateManager(dom);
+initVoiceSettings(dom, {
+  openModal,
+  closeModal,
+  renderSidebar,
+  renderHeader,
 });
-dom.sVoiceDelete.addEventListener('click', deleteVoiceProfile);
-dom.sCvCreate.addEventListener('click', createCustomVoice);
-dom.sTopP.addEventListener('input', syncRangeLabels);
-dom.sFreq.addEventListener('input', syncRangeLabels);
-dom.sPres.addEventListener('input', syncRangeLabels);
-dom.sCtx.addEventListener('input', syncRangeLabels);
-dom.sTtsSpeed.addEventListener('input', syncRangeLabels);
-dom.sTtsTopK.addEventListener('input', syncRangeLabels);
-dom.sTtsTopP.addEventListener('input', syncRangeLabels);
-dom.sTtsTemp.addEventListener('input', syncRangeLabels);
-dom.sReset.addEventListener('click', () => {
-  dom.sSystem.value = DEFAULT_SESSION_SETTINGS.systemPrompt;
-  dom.sVoice.value = '';
-  dom.sTemp.value = DEFAULT_SESSION_SETTINGS.temperature;
-  dom.sTopP.value = DEFAULT_SESSION_SETTINGS.topP;
-  dom.sFreq.value = DEFAULT_SESSION_SETTINGS.freqPenalty;
-  dom.sPres.value = DEFAULT_SESSION_SETTINGS.presPenalty;
-  dom.sMaxTokens.value = DEFAULT_SESSION_SETTINGS.maxTokens;
-  dom.sCtx.value = DEFAULT_SESSION_SETTINGS.maxContext;
-  dom.sAiAdaptiveVoice.value = String(DEFAULT_SESSION_SETTINGS.aiAdaptiveVoice !== false);
-  dom.sTtsSpeed.value = DEFAULT_SESSION_SETTINGS.ttsSpeed;
-  dom.sTtsTopK.value = DEFAULT_SESSION_SETTINGS.ttsTopK;
-  dom.sTtsTopP.value = DEFAULT_SESSION_SETTINGS.ttsTopP;
-  dom.sTtsTemp.value = DEFAULT_SESSION_SETTINGS.ttsTemperature;
-  syncRangeLabels();
+initGlobalSettings(dom, {
+  openModal,
+  closeModal,
+  loadSystemVersionInfo,
+  fetchVoiceProfiles,
+  getVoiceProfiles,
+  getActiveProfileId,
+  updateBadge,
+  revokeAllCachedAudioUrls,
 });
-dom.sSave.addEventListener('click', async () => {
-  const s = getActive();
-  if (!s) return;
-  const maxTokens = Math.round(Number(dom.sMaxTokens.value)) || DEFAULT_SESSION_SETTINGS.maxTokens;
-  s.settings = {
-    systemPrompt: dom.sSystem.value,
-    voiceProfileId: dom.sVoice.value && dom.sVoice.value !== '__custom__' ? Number(dom.sVoice.value) : null,
-    temperature: Number(dom.sTemp.value),
-    topP: Number(dom.sTopP.value),
-    maxTokens: Math.min(32768, Math.max(16, maxTokens)),
-    freqPenalty: Number(dom.sFreq.value),
-    presPenalty: Number(dom.sPres.value),
-    maxContext: Number(dom.sCtx.value),
-    aiAdaptiveVoice: dom.sAiAdaptiveVoice.value === 'true',
-    ttsSpeed: Number(dom.sTtsSpeed.value),
-    ttsTopK: Math.round(Number(dom.sTtsTopK.value)),
-    ttsTopP: Number(dom.sTtsTopP.value),
-    ttsTemperature: Number(dom.sTtsTemp.value),
-  };
-  s.updatedAt = Date.now();
-  saveState();
-  try {
-    const res = await fetch('/api/chat/sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: s.id,
-        title: s.title,
-        voice_profile_id: s.settings?.voiceProfileId,
-        custom_system_prompt: s.settings?.systemPrompt,
-        settings: s.settings,
-      }),
-    });
-    if (!res.ok) {
-      console.warn('Failed to persist session to backend:', res.status);
-    }
-  } catch (err) {
-    console.warn('Network error persisting session to backend:', err);
-  }
-  closeModal(dom.sessionModal);
-  renderSidebar();
-  renderHeader();
-  await ensureSessionVoice(s);
-  showToast('会话参数已保存', 'success');
+initAudioPlayerUi(dom, {
+  sendMessage,
+  autoGrow,
+  isBusy: () => busy,
 });
 
-/* ---------- 启动 ---------- */
+if (dom.sessionSettingsBtn) {
+  dom.sessionSettingsBtn.addEventListener('click', openSessionSettings);
+}
+if (dom.globalSettingsBtn) {
+  dom.globalSettingsBtn.addEventListener('click', openGlobalSettings);
+}
+
+/* ---------- 启动同步与渲染 ---------- */
 loadState();
-async function restoreCachedAudios() {
-  // 惰性加载：启动时不为全量历史消息预建 Blob URL，避免浏览器内存暴涨与句柄泄露。
-  // 用户在会话中点击录音时，由 playUserVoice 按需从 CacheStorage 解析，并受控于 BoundedAudioStore (LRU 30 项上限)。
-}
-restoreCachedAudios().catch(() => {});
 fullRender(true);
 autoGrow();
 updateComposer();
 updateVoiceModeUI();
-// 启动时同步当前会话绑定的音色（引擎可能还加载着别的权重）
 ensureSessionVoice(getActive());
-if (!voiceSupported() && !recorderSupported()) dom.micBtn.classList.add('hidden');
-if (window.innerWidth > 820) dom.input.focus();
+if (!voiceSupported() && !recorderSupported() && dom.micBtn) dom.micBtn.classList.add('hidden');
+if (window.innerWidth > 820 && dom.input) dom.input.focus();
 
-// 同步后端 SQLite 会话列表及历史消息（跨端口、刷新或重启后无缝恢复）
+// 同步后端 SQLite 会话列表及历史消息
 async function syncSessionsFromBackend() {
   try {
     const res = await fetch('/api/chat/sessions?limit=50');
@@ -2727,7 +897,6 @@ async function syncSessionsFromBackend() {
           });
         }
       }
-      // 保留本地有用户发言但后端尚未同步的会话
       for (const [_, rem] of existingMap) {
         if (rem.messages && rem.messages.some((m) => m.role === 'user')) {
           merged.push(rem);
@@ -2758,17 +927,22 @@ async function syncSessionsFromBackend() {
     saveState();
     fullRender(false);
     ensureSessionVoice(getActive(), { silent: true });
-    if (window.innerWidth > 820) dom.input.focus();
+    if (window.innerWidth > 820 && dom.input) dom.input.focus();
     loadProviders().catch(() => {});
   } catch (err) {
     console.debug('Failed to sync sessions from backend:', err);
   }
 }
+
 syncSessionsFromBackend().catch(() => {});
 
-// 启动时检查 URL 是否携带设置参数（例如 /console 或 /settings 重定向过来的请求）
 const urlParams = new URLSearchParams(window.location.search);
 if (urlParams.get('settings') === '1' || window.location.hash === '#settings') {
   openGlobalSettings();
 }
 
+try {
+  portraitStage.init();
+} catch (e) {
+  console.warn('Failed to initialize portrait stage:', e);
+}

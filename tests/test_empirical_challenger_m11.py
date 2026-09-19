@@ -96,7 +96,7 @@ class TestProviderSwitchingAndPrefill:
         assert "providers" in data
         assert "presets" in data
 
-        providers_by_id = {p["id"]: p for p in data["providers"]}
+        {p["id"]: p for p in data["providers"]}
         presets_by_id = {p["id"]: p for p in data["presets"]}
 
         for pid in CANONICAL_8_PROVIDERS:

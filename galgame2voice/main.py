@@ -7,26 +7,16 @@ import asyncio
 import logging
 import mimetypes
 import time
-
-# Windows 注册表常把 .js 映射为 text/plain，ES module 会被浏览器 Strict MIME 拒载
-mimetypes.add_type("text/javascript", ".js")
-mimetypes.add_type("text/javascript", ".mjs")
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import List, Tuple
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
-
-# Starlette 新旧版本状态码名称兼容：旧版只有 HTTP_422_UNPROCESSABLE_ENTITY，
-# 代码中多处使用新名 CONTENT；缺失时补齐为同一数值，否则校验路径会 500。
-if not hasattr(status, "HTTP_422_UNPROCESSABLE_CONTENT"):
-    status.HTTP_422_UNPROCESSABLE_CONTENT = 422
+from starlette.types import Scope
 
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
@@ -35,109 +25,40 @@ from galgame2voice.routers import chat, config, health, voice, memory, affection
 from galgame2voice.security.auth import require_auth
 from galgame2voice.security.rate_limit import RateLimitMiddleware
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
+from galgame2voice.services.audio_cleaner import (
+    CACHE_RETENTION_DAYS as _CACHE_RETENTION_DAYS,
+    _cache_scan_and_clean,
+    _scan_and_clean,
+    _audio_cleanup_loop,
+    AudioCleanerService,
+)
 from galgame2voice.utils.logger import setup_logger
 from galgame2voice.utils.path_guard import resolve_existing_audio_path
 
+__all__ = [
+    "app",
+    "create_app",
+    "lifespan",
+    "run",
+    "AudioStaticFiles",
+    "AudioCleanerService",
+    "_audio_cleanup_loop",
+    "_scan_and_clean",
+    "_cache_scan_and_clean",
+    "_CACHE_RETENTION_DAYS",
+]
+
+# Windows 注册表常把 .js 映射为 text/plain，ES module 会被浏览器 Strict MIME 拒载
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/javascript", ".mjs")
+
+# Starlette 新旧版本状态码名称兼容：旧版只有 HTTP_422_UNPROCESSABLE_ENTITY，
+# 代码中多处使用新名 CONTENT；缺失时补齐为同一数值，否则校验路径会 500。
+if not hasattr(status, "HTTP_422_UNPROCESSABLE_CONTENT"):
+    status.HTTP_422_UNPROCESSABLE_CONTENT = 422
+
 
 logger = logging.getLogger("galgame2voice.main")
-
-
-# TTS 缓存保留天数：缓存用于复用省算力，但需设上限防止磁盘无限增长
-_CACHE_RETENTION_DAYS = 7
-
-
-def _cache_scan_and_clean(cache_dir: Path, cutoff: float) -> Tuple[int, List[str]]:
-    """Removes cache audio files older than the retention cutoff (LRU by mtime) and returns unlinked keys."""
-    cleaned = 0
-    unlinked_keys: List[str] = []
-    if not cache_dir.is_dir():
-        return 0, []
-    for f in cache_dir.iterdir():
-        if not f.is_file():
-            continue
-        if f.suffix.lower() in (".wav", ".ogg", ".mp3", ".opus"):
-            try:
-                if f.stat().st_mtime < cutoff:
-                    f.unlink()
-                    cleaned += 1
-                    unlinked_keys.append(f.stem)
-            except Exception as e:
-                logger.debug("Failed to remove cached audio %s: %s", f, e)
-    return cleaned, unlinked_keys
-
-
-async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int):
-    """Periodically removes ephemeral audio files exceeding retention duration while protecting persistent cache.
-
-    The retention duration is re-read from DB settings each cycle so console
-    edits to audio_retention_minutes take effect without a restart."""
-    logger.info("Started background audio cleanup worker (interval=%d sec)", interval_seconds)
-    while True:
-        try:
-            await asyncio.sleep(interval_seconds)
-            protected_audio_names = set()
-            try:
-                async with get_db() as conn:
-                    db_settings = await crud.get_settings_raw(conn)
-                    if conn is not None:
-                        try:
-                            cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles;")
-                            rows = await cur.fetchall()
-                            for r in rows:
-                                if r and r[0]:
-                                    protected_audio_names.add(Path(r[0]).name.lower())
-                        except Exception:
-                            pass
-                retention_minutes = int(getattr(db_settings, "audio_retention_minutes", 30) or 30)
-            except Exception as exc:
-                logger.debug("Falling back to default audio retention: %s", exc)
-                retention_minutes = 30
-            now = time.time()
-            cutoff = now - (retention_minutes * 60)
-            cache_cutoff = now - (_CACHE_RETENTION_DAYS * 86400)
-
-            def _scan_and_clean() -> Tuple[int, List[str]]:
-                cleaned = 0
-                if audio_dir.exists():
-                    for f in audio_dir.iterdir():
-                        # Strictly protect non-file entries and subdirectories (cache, references)
-                        if f.is_dir() or f.name.lower() in ("cache", "references"):
-                            continue
-                        # Strictly protect reference audio files (*.ogg) and registered voice profile references
-                        if f.suffix.lower() == ".ogg" or f.name.lower() in protected_audio_names:
-                            continue
-                        # Target ephemeral synthesized audio files (e.g. chunk_*.wav, full_*.wav)
-                        if f.is_file() and f.suffix.lower() in (".wav", ".mp3", ".opus"):
-                            try:
-                                if f.stat().st_mtime < cutoff:
-                                    f.unlink()
-                                    cleaned += 1
-                            except Exception as e:
-                                logger.debug("Failed to remove audio file %s: %s", f, e)
-                # TTS 分句缓存按天级保留期清理，防止磁盘无限增长并同步清理数据库记录
-                cache_cleaned, unlinked_keys = _cache_scan_and_clean(audio_dir / "cache", cache_cutoff)
-                cleaned += cache_cleaned
-                return cleaned, unlinked_keys
-
-            cleaned_count, unlinked_keys = await asyncio.to_thread(_scan_and_clean)
-            if unlinked_keys:
-                try:
-                    async with get_db() as conn:
-                        for batch_idx in range(0, len(unlinked_keys), 100):
-                            batch = unlinked_keys[batch_idx:batch_idx + 100]
-                            placeholders = ",".join(["?"] * len(batch))
-                            await conn.execute(
-                                f"DELETE FROM tts_cache_entries WHERE cache_key IN ({placeholders});",
-                                batch,
-                            )
-                except Exception as db_clean_err:
-                    logger.debug("Failed to purge tts_cache_entries for unlinked keys: %s", db_clean_err)
-            if cleaned_count > 0:
-                logger.info("Audio cleanup removed %d expired audio files.", cleaned_count)
-        except asyncio.CancelledError:
-            break
-        except Exception as exc:
-            logger.warning("Error in audio cleanup loop: %s", exc)
 
 
 @asynccontextmanager
@@ -159,6 +80,19 @@ async def lifespan(app: FastAPI):
         log_to_file=settings.log_to_file,
     )
     logger.info("Initializing %s v%s...", settings.app_name, settings.app_version)
+
+    # 1b. Fail-Fast Safety Check: Network Exposure requires Authentication
+    is_loopback = str(settings.host).strip().lower() in ("127.0.0.1", "localhost", "::1")
+    from galgame2voice.security.auth import is_auth_disabled
+
+    if not is_loopback and is_auth_disabled():
+        err_msg = (
+            f"FATAL: Application is configured to listen on '{settings.host}' with auth_disabled=True. "
+            "Network exposure strictly requires console token authentication enabled. "
+            "Set GALGAME2VOICE_AUTH_DISABLED=0 in your environment or docker-compose.yml to proceed."
+        )
+        logger.critical(err_msg)
+        raise RuntimeError(err_msg)
 
     # 2. Ensure Required Directories Exist
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -238,7 +172,8 @@ async def lifespan(app: FastAPI):
         # Trigger non-blocking background warm-up of default voice profile
         try:
             from galgame2voice.services.voice_manager import get_voice_manager
-            asyncio.create_task(get_voice_manager().warmup_current_profile())
+            vm = get_voice_manager()
+            vm._spawn_background(vm.warmup_current_profile())
         except Exception as warmup_err:
             logger.debug("Could not trigger startup voice profile warm-up: %s", warmup_err)
 
@@ -318,7 +253,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.debug("Error closing GPT-SoVITS client: %s", exc)
 
-    # Drain background tasks from ChatService and TTS cache before WAL checkpoint
+    # Drain background tasks from ChatService, SessionManager, and caches before WAL checkpoint
     try:
         from galgame2voice.routers import chat as chat_router_mod
         active_svcs = {
@@ -329,13 +264,34 @@ async def lifespan(app: FastAPI):
             if chat_svc is not None:
                 if hasattr(chat_svc, "aclose"):
                     await chat_svc.aclose()
-                if hasattr(chat_svc, "tts_service") and hasattr(chat_svc.tts_service, "cache_manager"):
-                    if hasattr(chat_svc.tts_service.cache_manager, "aclose"):
-                        await chat_svc.tts_service.cache_manager.aclose()
+                if (
+                    hasattr(chat_svc, "tts_service")
+                    and hasattr(chat_svc.tts_service, "cache_manager")
+                    and hasattr(chat_svc.tts_service.cache_manager, "aclose")
+                ):
+                    await chat_svc.tts_service.cache_manager.aclose()
+                if (
+                    hasattr(chat_svc, "session_manager")
+                    and hasattr(chat_svc.session_manager, "aclose")
+                ):
+                    await chat_svc.session_manager.aclose()
         import galgame2voice.services.tts_cache_manager as tts_cache_mod
-        if getattr(tts_cache_mod, "_tts_cache_manager_instance", None) is not None:
-            if hasattr(tts_cache_mod._tts_cache_manager_instance, "aclose"):
-                await tts_cache_mod._tts_cache_manager_instance.aclose()
+        cache_mgr = getattr(tts_cache_mod, "_tts_cache_manager_instance", None)
+        if cache_mgr is not None and hasattr(cache_mgr, "aclose"):
+            await cache_mgr.aclose()
+        import galgame2voice.services.voice_manager as vm_mod
+        vm_inst = getattr(vm_mod, "_global_voice_manager", None)
+        if vm_inst is not None and hasattr(vm_inst, "aclose"):
+            await vm_inst.aclose()
+
+        # Gracefully shut down default thread pool executor before WAL checkpoint
+        loop = asyncio.get_running_loop()
+        if hasattr(loop, "shutdown_default_executor"):
+            await loop.shutdown_default_executor()
+            if hasattr(loop, "_executor_shutdown_called"):
+                loop._executor_shutdown_called = False
+            if hasattr(loop, "_default_executor"):
+                loop._default_executor = None
     except Exception as exc:
         logger.debug("Error draining background tasks on shutdown: %s", exc)
 
@@ -348,6 +304,27 @@ async def lifespan(app: FastAPI):
 
     logger.info("Shutting down %s...", settings.app_name)
     logger.info("Graceful shutdown complete.")
+
+
+class AudioStaticFiles(StaticFiles):
+    """
+    Enhanced StaticFiles handler for audio files.
+    Applies aggressive Cache-Control headers to immutable content-addressed cache files
+    (e.g., /audio/cache/*.wav) and standard cache lifetimes to ephemeral chunks,
+    while ensuring Accept-Ranges: bytes support.
+    """
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        if response.status_code in (200, 206):
+            norm_path = path.replace("\\", "/").strip("/")
+            if norm_path.startswith("cache/") or "/cache/" in norm_path:
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            else:
+                response.headers["Cache-Control"] = "public, max-age=3600"
+            if "accept-ranges" not in response.headers:
+                response.headers["Accept-Ranges"] = "bytes"
+        return response
 
 
 def create_app() -> FastAPI:
@@ -436,7 +413,7 @@ def create_app() -> FastAPI:
     settings.audio_dir.mkdir(parents=True, exist_ok=True)
     app.mount(
         "/audio",
-        StaticFiles(directory=str(settings.audio_dir)),
+        AudioStaticFiles(directory=str(settings.audio_dir)),
         name="audio",
     )
 

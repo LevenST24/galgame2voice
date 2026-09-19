@@ -656,7 +656,7 @@ class TestTier2BoundaryAndCornerCases:
         svc = MemoryService()
         huge_text = "我喜欢" + ("很" * 5000) + "大" * 5000 + "蛋糕"
         t0 = time.perf_counter()
-        facts = svc.extract_facts_heuristic(huge_text)
+        svc.extract_facts_heuristic(huge_text)
         t1 = time.perf_counter()
         assert (t1 - t0) < 0.2
 

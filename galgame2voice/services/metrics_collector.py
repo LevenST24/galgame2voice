@@ -12,7 +12,6 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple, Union
 from pathlib import Path
 
-from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path
 from galgame2voice.services.tts_cache_manager import get_tts_cache_manager
@@ -122,7 +121,7 @@ class MetricsCollector:
         """
         if not text or not isinstance(text, str):
             return 0
-        
+
         cjk_count = 0
         non_cjk_chars = 0
         for ch in text:
@@ -254,6 +253,15 @@ class MetricsCollector:
 
         overview = dict(db_overview)
         overview["cache_stats"] = cache_stats
+
+        # Retrieve real-time TTS speed and dynamic batch scheduler telemetry
+        try:
+            from galgame2voice.services.dynamic_batcher import get_speed_tracker
+            overview["tts_speed"] = get_speed_tracker().get_telemetry()
+        except Exception as exc:
+            logger.debug("Could not read TTS speed telemetry: %s", exc)
+            overview["tts_speed"] = None
+
         return overview
 
     async def get_providers(self) -> List[Dict[str, Any]]:

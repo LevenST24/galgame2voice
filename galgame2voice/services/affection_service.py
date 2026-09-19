@@ -7,10 +7,8 @@ emotional state transitions, and interactive easter egg voicelines.
 import logging
 from typing import List, Dict, Any, Optional, Tuple, Union
 from pathlib import Path
-import aiosqlite
 
 from galgame2voice.database import crud
-from galgame2voice.database.models import CharacterAffectionResponse, CharacterAffectionUpdate
 from galgame2voice.database.session import get_database_path, get_db
 from galgame2voice.services.emotion_classifier import VALID_EMOTIONS, EMOTION_NAME_MAP
 from galgame2voice.services.emotion_references import EMOTION_SYNONYMS
@@ -241,10 +239,9 @@ class AffectionService:
             curr_lvl = 1
 
         text_lower = user_text[:4000].lower()
-        for egg_id, egg in self.EASTER_EGGS.items():
-            if curr_lvl >= egg.get("min_level", 1):
-                if any(trigger.lower() in text_lower for trigger in egg["triggers"]):
-                    return egg
+        for egg in self.EASTER_EGGS.values():
+            if curr_lvl >= egg.get("min_level", 1) and any(trigger.lower() in text_lower for trigger in egg["triggers"]):
+                return egg
         return None
 
     async def handle_turn_affection(

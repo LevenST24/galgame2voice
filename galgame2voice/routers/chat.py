@@ -7,14 +7,13 @@ backward-compatible synchronous chat endpoints (/api/chat, /ai/chat).
 import asyncio
 import json
 import logging
-from typing import Any, AsyncGenerator, Dict, Optional
+from typing import Any, AsyncGenerator, Dict, Optional, Union
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.gpt_sovits_client import validate_user_tts_options
-from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path
 from galgame2voice.utils.logger import sanitize_error_detail
@@ -76,7 +75,7 @@ class ChatRequest(BaseModel):
 # ============================================================================
 
 async def sse_event_formatter(
-    event_generator: AsyncGenerator[Dict[str, Any], None],
+    event_generator: AsyncGenerator[Union[Dict[str, Any], str], None],
     cancel_event: Optional[asyncio.Event] = None,
     cleanup_task: Optional[asyncio.Task] = None,
 ) -> AsyncGenerator[str, None]:
@@ -85,6 +84,12 @@ async def sse_event_formatter(
         async for event in event_generator:
             if cancel_event and cancel_event.is_set():
                 break
+            if isinstance(event, str):
+                yield event
+                continue
+            if isinstance(event, dict) and (event.get("event") == ":keep-alive" or "comment" in event):
+                yield str(event.get("comment", ": keep-alive\n\n"))
+                continue
             event_name = event.get("event", "message")
             event_data = json.dumps(event.get("data", {}), ensure_ascii=False)
             yield f"event: {event_name}\ndata: {event_data}\n\n"
@@ -102,6 +107,10 @@ async def sse_event_formatter(
             cancel_event.set()
         if cleanup_task and not cleanup_task.done():
             cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 def _validate_chat_request(req: ChatRequest) -> None:
@@ -125,7 +134,7 @@ def _validate_chat_request(req: ChatRequest) -> None:
     try:
         validate_user_tts_options(req.tts_options)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
 
 @router.post("/api/chat/stream", summary="Real-time SSE bilingual streaming chat")
@@ -235,7 +244,7 @@ async def chat_sync_endpoint(req: ChatRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=safe_err or "Chat completion encountered an internal error",
-        )
+        ) from exc
 
 
 @router.get("/ai/chat", summary="Legacy GET chat completion endpoint")
@@ -274,7 +283,7 @@ async def legacy_get_chat(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=safe_err or "Chat completion encountered an internal error",
-        )
+        ) from exc
 
 
 @router.post("/ai/chat", summary="Legacy POST chat completion endpoint")

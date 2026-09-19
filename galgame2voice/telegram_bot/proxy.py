@@ -20,14 +20,14 @@ def get_proxy_url(settings: Optional[SettingsInDB] = None, proxy_str: Optional[s
     if proxy_str:
         p = proxy_str.strip()
         if p:
-            if not (p.startswith("http://") or p.startswith("https://") or p.startswith("socks5://") or p.startswith("socks4://")):
+            if not p.startswith(("http://", "https://", "socks5://", "socks4://")):
                 p = f"http://{p}"
             return p
 
     if settings and getattr(settings, "telegram_proxy_enabled", 0):
         host = str(getattr(settings, "telegram_proxy_host", "127.0.0.1") or "127.0.0.1").strip()
         port = str(getattr(settings, "telegram_proxy_port", 10808) or 10808).strip()
-        if host.startswith("http://") or host.startswith("https://") or host.startswith("socks5://") or host.startswith("socks4://"):
+        if host.startswith(("http://", "https://", "socks5://", "socks4://")):
             return f"{host}:{port}" if ":" not in host.split("//")[-1] else host
         return f"http://{host}:{port}"
 

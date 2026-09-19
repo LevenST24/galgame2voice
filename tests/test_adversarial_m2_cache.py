@@ -48,7 +48,7 @@ class TestTtsCacheAdversarialM2:
         t_bench_start = time.perf_counter()
         for _ in range(10000):
             t0 = time.perf_counter()
-            hit = await mgr.get(key)
+            await mgr.get(key)
             latencies_ms.append((time.perf_counter() - t0) * 1000.0)
 
         total_elapsed_ms = (time.perf_counter() - t_bench_start) * 1000.0
@@ -98,7 +98,7 @@ class TestTtsCacheAdversarialM2:
         t_bench_start = time.perf_counter()
         for k in workload:
             t0 = time.perf_counter()
-            hit = await mgr.get(k)
+            await mgr.get(k)
             latencies_ms.append((time.perf_counter() - t0) * 1000.0)
 
         total_elapsed_ms = (time.perf_counter() - t_bench_start) * 1000.0

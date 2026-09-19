@@ -40,9 +40,7 @@ def validate_bot_token(token: Optional[str]) -> bool:
     if not token:
         return False
     t = str(token).replace(" ", "").strip()
-    if len(t) < 10 or "invalid" in t.lower() or ":" not in t:
-        return False
-    return True
+    return len(t) >= 10 and "invalid" not in t.lower() and ":" in t
 
 
 def parse_admin_ids(raw: Optional[str]) -> List[int]:
@@ -129,6 +127,7 @@ class TelegramBotManager:
         self.app.add_handler(CommandHandler("start", self.handlers.handle_start))
         self.app.add_handler(CommandHandler("reset", self.handlers.handle_reset))
         self.app.add_handler(CommandHandler("voice", self.handlers.handle_voice))
+        self.app.add_handler(CommandHandler(["character", "char", "switch"], self.handlers.handle_character))
         self.app.add_handler(CommandHandler("model", self.handlers.handle_model))
         self.app.add_handler(CommandHandler(["nickname", "name"], self.handlers.handle_nickname))
         self.app.add_handler(CommandHandler(["console", "menu", "settings"], self.handlers.handle_console))
@@ -159,6 +158,11 @@ class TelegramBotManager:
         except Exception as exc:
             logger.error("Telegram Bot initialization failed: %s", exc)
             self.is_running = False
+            try:
+                if self.app and hasattr(self.app, "shutdown"):
+                    await self.app.shutdown()
+            except Exception:
+                pass
             return False
 
     async def _on_telegram_error(self, update: object, context: Any) -> None:
@@ -166,8 +170,9 @@ class TelegramBotManager:
         err = getattr(context, "error", None)
         err_type = type(err).__name__ if err else "UnknownError"
         safe_msg = sanitize_error_detail(err)
-        # Network dropped / polling timeout is normal in mobile or unstable proxies
-        if any(term in str(safe_msg).lower() for term in ("timed out", "network", "connect", "timeout", "connection reset")):
+        if "conflict" in str(safe_msg).lower():
+            logger.error("Telegram token conflict: another bot instance is polling with this token! [%s]: %s", err_type, safe_msg)
+        elif any(term in str(safe_msg).lower() for term in ("timed out", "network", "connect", "timeout", "connection reset")):
             logger.debug("Telegram network/timeout transient event [%s]: %s", err_type, safe_msg)
         else:
             logger.warning("Telegram Bot error event [%s]: %s", err_type, safe_msg)

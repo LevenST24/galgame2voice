@@ -48,6 +48,7 @@ logs/
 
 # Audio, recordings, scratch & caches
 audio/*
+!audio/.gitkeep
 temp_audio/
 temp_cache_mem/
 temp_test/
@@ -55,8 +56,6 @@ tmp_check/
 *.wav
 *.mp3
 *.ogg
-!audio/references/
-!audio/references/**
 
 # Testing & Coverage
 .pytest_cache/
@@ -92,3 +91,6 @@ characters/*
 *.bin
 *.safetensors
 *.onnx
+*.tjs
+scripts/*.json
+scripts/*.txt

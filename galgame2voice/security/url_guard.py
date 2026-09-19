@@ -147,4 +147,16 @@ def validate_llm_base_url(url: Optional[str], allow_private: bool = False) -> Tu
     return True, ""
 
 
-__all__ = ["validate_llm_base_url", "OFFICIAL_LLM_HOSTS", "clear_dns_cache"]
+async def assert_llm_url_safe(url: str, allow_private: bool = False) -> None:
+    """
+    Validates the target URL before making outbound LLM or STT requests.
+    Defends against DNS Rebinding attacks where an approved domain subsequently resolves
+    to internal or loopback IP addresses.
+    """
+    import asyncio
+    ok, reason = await asyncio.to_thread(validate_llm_base_url, url, allow_private)
+    if not ok:
+        raise PermissionError(f"SSRF/DNS-Rebinding 阻止: {reason}")
+
+
+__all__ = ["validate_llm_base_url", "assert_llm_url_safe", "OFFICIAL_LLM_HOSTS", "clear_dns_cache"]

@@ -70,7 +70,6 @@ export function renderSessionList(container, { sessions, activeId, onSelect, onD
     const preview = last
       ? `${last.role === 'user' ? '你：' : ''}${last.content.replace(/[*`#\n]/g, ' ').slice(0, 26)}`
       : '暂无消息';
-    const persona = s.settings && s.settings.systemPrompt ? ' · 已设人设' : '';
 
     item.innerHTML = `
       <div class="si-main">
@@ -84,7 +83,7 @@ export function renderSessionList(container, { sessions, activeId, onSelect, onD
         <svg class="icon"><use href="#i-trash"></use></svg>
       </button>`;
     item.querySelector('.si-title').textContent = s.title;
-    item.querySelector('.si-preview').textContent = preview + persona;
+    item.querySelector('.si-preview').textContent = preview;
 
     item.addEventListener('click', () => onSelect(s.id));
     item.addEventListener('keydown', (e) => {
@@ -372,14 +371,16 @@ export function renderMessages(container, session, { animate = false, onPick, on
     inner.classList.add('is-empty');
     inner.appendChild(buildEmptyState(onPick));
   } else {
+    const frag = document.createDocumentFragment();
     session.messages.forEach((m, idx) => {
       const { el } = createMessageEl(m, { onPlayVoice, onResolveJapanese, autoTranslate });
       if (animate) {
         el.classList.add('animate-in');
         el.style.setProperty('--i', Math.min(idx, 10));
       }
-      inner.appendChild(el);
+      frag.appendChild(el);
     });
+    inner.appendChild(frag);
   }
   container.appendChild(inner);
   return inner;

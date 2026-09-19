@@ -5,10 +5,7 @@ system parameter separation, content_block_delta streaming, and exponential back
 """
 
 import asyncio
-import email.utils
-import json
 import logging
-import random
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -103,9 +100,9 @@ class AnthropicAdapter(BaseLLMAdapter):
         # 2. Alternating user/assistant roles (consecutive same roles must be merged)
         # 3. First message must be 'user'
         merged_msgs: List[Dict[str, str]] = []
-        for m in user_assistant_msgs:
-            role = m["role"]
-            raw_content = m.get("content") or ""
+        for msg_dict in user_assistant_msgs:
+            role = msg_dict["role"]
+            raw_content = msg_dict.get("content") or ""
             content = str(raw_content).strip()
             if not content:
                 content = "..."
@@ -180,6 +177,10 @@ class AnthropicAdapter(BaseLLMAdapter):
                         content += block.get("text", "")
                 return LLMResponse(content=content, usage=None)
 
+        allow_private = bool(self.extra_config.get("allow_private", False))
+        from galgame2voice.security.url_guard import assert_llm_url_safe
+        await assert_llm_url_safe(url, allow_private=allow_private)
+
         client = httpx.AsyncClient(timeout=timeout_s)
         try:
             for attempt in range(max_retries + 1):
@@ -220,6 +221,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                     if block.get("type") == "text":
                         content += block.get("text", "")
                 return LLMResponse(content=content, usage=None)
+            raise RuntimeError("Max retries exceeded without a response")
         finally:
             await client.aclose()
 
@@ -259,13 +261,17 @@ class AnthropicAdapter(BaseLLMAdapter):
                 if resp.status_code != 200:
                     raise RuntimeError(f"Anthropic API returned status {resp.status_code}: {resp.text}")
 
-                async def _mock_lines_iter():
-                    for line in resp.text.split("\n"):
+                async def _mock_lines_iter(text: str = resp.text):
+                    for line in text.split("\n"):
                         yield line
 
                 async for token in parse_sse_lines(_mock_lines_iter()):
                     yield token
                 return
+
+        allow_private = bool(self.extra_config.get("allow_private", False))
+        from galgame2voice.security.url_guard import assert_llm_url_safe
+        await assert_llm_url_safe(url, allow_private=allow_private)
 
         for attempt in range(max_retries + 1):
             client = httpx.AsyncClient(timeout=timeout_s)

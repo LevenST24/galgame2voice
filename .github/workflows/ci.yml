@@ -22,6 +22,15 @@ jobs:
       - name: Lint (ruff)
         run: uv run ruff check galgame2voice scripts
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
       - name: Run test suite
         run: uv run pytest -q
         env:

@@ -18,14 +18,19 @@ from galgame2voice.services.emotion_classifier import (
     classify_emotion,
     extract_bracketed_emotion,
 )
+from galgame2voice.utils.japanese_phonetics import extract_stage_directions_and_emotion
 from galgame2voice.utils.prosody import (
     clamp_dynamic_speed,
     clamp_dynamic_temperature,
+    clamp_dynamic_top_k,
+    clamp_dynamic_top_p,
+    clamp_dynamic_fragment_interval,
+    calculate_adaptive_prosody,
 )
 from galgame2voice.utils.text_splitter import (
     split_japanese_sentences,
-    MODAL_PARTICLES_PATTERN,
     is_natural_clause_boundary,
+    is_short_salutation,
 )
 
 logger = logging.getLogger("galgame2voice.services.streaming_parser")
@@ -54,6 +59,9 @@ class StreamingBilingualParser:
         self.is_plain_text_fallback: bool = False
         self.tts_speed: Optional[float] = None
         self.tts_temperature: Optional[float] = None
+        self.tts_top_k: Optional[int] = None
+        self.tts_top_p: Optional[float] = None
+        self.tts_fragment_interval: Optional[float] = None
         self.tts_emotion: Optional[str] = None
         self.tts_params: Dict[str, Any] = {}
 
@@ -97,10 +105,13 @@ class StreamingBilingualParser:
         self,
         base_options: Optional[Dict[str, Any]] = None,
         adaptive_enabled: bool = True,
+        sentence_text: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Merges base session TTS options with dynamic parameters if adaptive_enabled is True.
         When adaptive_enabled is False, returns base_options without dynamic overrides.
+        If explicit dynamic parameters are provided (e.g. from LLM JSON), uses them.
+        Otherwise, applies fine-grained emotion archetype baseline + sentence nuance prosody.
         """
         opts = dict(base_options or {})
         if "ai_adaptive_voice" in opts or not adaptive_enabled:
@@ -108,14 +119,60 @@ class StreamingBilingualParser:
         if not adaptive_enabled:
             return opts
 
+        has_dynamic_llm = any(
+            v is not None
+            for v in (self.tts_speed, self.tts_temperature, self.tts_top_k, self.tts_top_p, self.tts_fragment_interval, self.tts_emotion)
+        )
+        has_explicit_emotion = bool(self.tts_emotion or opts.get("emotion"))
+
+        # Backward compatibility for legacy tests checking get_dynamic_tts_options(base_opts) without sentence
+        if not has_dynamic_llm and not has_explicit_emotion and not sentence_text and not self.is_plain_text_fallback:
+            return opts
+
+        emo = self.tts_emotion or opts.get("emotion")
+        if not emo and sentence_text:
+            _, text_emo = extract_stage_directions_and_emotion(sentence_text)
+            if text_emo:
+                emo = text_emo
+        if not emo and self.buffer:
+            _, text_emo = extract_stage_directions_and_emotion(self.buffer)
+            if text_emo:
+                emo = text_emo
+        if not emo:
+            emo = self.get_emotion()
+
+        text_context = sentence_text or self.japanese_extracted or self.chinese_extracted or self.buffer
+        adaptive_calc = calculate_adaptive_prosody(text=text_context, emotion=emo, base_params=opts)
+
+        # Apply calculated baseline if not explicitly pinned in base_options
+        if "speed" not in opts and "speed_factor" not in opts:
+            opts["speed"] = adaptive_calc["speed"]
+            opts["speed_factor"] = adaptive_calc["speed"]
+        if "temperature" not in opts and "temp" not in opts:
+            opts["temperature"] = adaptive_calc["temperature"]
+            opts["temp"] = adaptive_calc["temperature"]
+        if "top_k" not in opts:
+            opts["top_k"] = adaptive_calc["top_k"]
+        if "top_p" not in opts:
+            opts["top_p"] = adaptive_calc["top_p"]
+        if "fragment_interval" not in opts:
+            opts["fragment_interval"] = adaptive_calc["fragment_interval"]
+
+        # Explicit LLM tts parameters override
         if self.tts_speed is not None:
             opts["speed"] = self.tts_speed
             opts["speed_factor"] = self.tts_speed
         if self.tts_temperature is not None:
             opts["temperature"] = self.tts_temperature
             opts["temp"] = self.tts_temperature
-        if self.tts_emotion:
-            opts["emotion"] = self.tts_emotion
+        if self.tts_top_k is not None:
+            opts["top_k"] = self.tts_top_k
+        if self.tts_top_p is not None:
+            opts["top_p"] = self.tts_top_p
+        if self.tts_fragment_interval is not None:
+            opts["fragment_interval"] = self.tts_fragment_interval
+        if emo:
+            opts["emotion"] = emo
 
         return opts
 
@@ -157,6 +214,33 @@ class StreamingBilingualParser:
                 except (ValueError, TypeError):
                     pass
 
+            top_k_match = re.search(r'["\']?top_?k["\']?\s*:\s*["\']?([0-9]+)["\']?', tts_block, re.IGNORECASE)
+            if top_k_match:
+                try:
+                    raw_k = int(top_k_match.group(1))
+                    self.tts_top_k = clamp_dynamic_top_k(raw_k)
+                    self.tts_params["top_k"] = self.tts_top_k
+                except (ValueError, TypeError):
+                    pass
+
+            top_p_match = re.search(r'["\']?top_?p["\']?\s*:\s*["\']?(-?[0-9]*\.?[0-9]+)["\']?', tts_block, re.IGNORECASE)
+            if top_p_match:
+                try:
+                    raw_p = float(top_p_match.group(1))
+                    self.tts_top_p = clamp_dynamic_top_p(raw_p)
+                    self.tts_params["top_p"] = self.tts_top_p
+                except (ValueError, TypeError):
+                    pass
+
+            frag_match = re.search(r'["\']?(?:fragment_interval|interval|pause)["\']?\s*:\s*["\']?(-?[0-9]*\.?[0-9]+)["\']?', tts_block, re.IGNORECASE)
+            if frag_match:
+                try:
+                    raw_frag = float(frag_match.group(1))
+                    self.tts_fragment_interval = clamp_dynamic_fragment_interval(raw_frag)
+                    self.tts_params["fragment_interval"] = self.tts_fragment_interval
+                except (ValueError, TypeError):
+                    pass
+
             emo_match_tts = re.search(r'["\']?emotion["\']?\s*:\s*["\']?([a-zA-Z\u4e00-\u9fa5]+)["\']?', tts_block)
             if emo_match_tts:
                 raw_emo = emo_match_tts.group(1).lower()
@@ -187,15 +271,21 @@ class StreamingBilingualParser:
                 self.chinese_extracted = current_ch
                 self.emitted_chinese_len = len(current_ch)
         else:
-            # Fallback check: If the stream does not look like JSON after some tokens
-            if not self.chinese_extracted and len(sanitized) > 15 and not sanitized.lstrip().startswith("{"):
+            # Fallback check: If the stream contains structured Chinese: / 中文:
+            ch_fallback = re.search(r'(?:中文|Chinese)[:：]\s*(.*?)(?:(?:日文|Japanese)[:：]|$)', sanitized, flags=re.DOTALL | re.IGNORECASE)
+            if ch_fallback:
                 self.is_plain_text_fallback = True
-                ch_fallback = re.search(r'(?:中文|Chinese)[:：]\s*(.*?)(?:(?:日文|Japanese)[:：]|$)', sanitized, flags=re.DOTALL | re.IGNORECASE)
-                if ch_fallback:
-                    current_ch = ch_fallback.group(1).strip()
-                else:
-                    current_ch = sanitized.strip()
-
+                current_ch = ch_fallback.group(1).strip()
+                if current_ch and current_ch != self.chinese_extracted:
+                    if len(current_ch) > self.emitted_chinese_len:
+                        new_chinese_delta = current_ch[self.emitted_chinese_len:]
+                        self.chinese_extracted = current_ch
+                        self.emitted_chinese_len = len(current_ch)
+                    else:
+                        self.chinese_extracted = current_ch
+            elif not self.chinese_extracted and len(sanitized) > 15 and not sanitized.lstrip().startswith(("{", "```")):
+                self.is_plain_text_fallback = True
+                current_ch = sanitized.strip()
                 if len(current_ch) > self.emitted_chinese_len:
                     new_chinese_delta = current_ch[self.emitted_chinese_len:]
                     self.chinese_extracted = current_ch
@@ -235,24 +325,23 @@ class StreamingBilingualParser:
                 re.search(r'"japanese"\s*:\s*"(?:[^"\\]|\\.)*"', sanitized)
                 or sanitized.rstrip().endswith(('"}', '"}`', '"} \n`', '"} \n', '"}'))
             )
-            if not is_ja_closed:
-                if all_sentences:
-                    last_sent = all_sentences[-1]
-                    if is_first and len(all_sentences) == 1:
-                        clause = TRAILING_PUNCT_AND_CLOSING.sub('', last_sent)
-                        valid_end = bool(
-                            TERMINAL_PUNCT_WITH_CLOSING.search(last_sent)
-                            or (
-                                CLAUSE_PUNCT_WITH_CLOSING.search(last_sent)
-                                and len(last_sent.strip()) >= 6
-                                and is_natural_clause_boundary(clause)
-                            )
+            if not is_ja_closed and all_sentences:
+                last_sent = all_sentences[-1]
+                if is_first and len(all_sentences) == 1:
+                    clause = TRAILING_PUNCT_AND_CLOSING.sub('', last_sent)
+                    valid_end = bool(
+                        TERMINAL_PUNCT_WITH_CLOSING.search(last_sent)
+                        or (
+                            CLAUSE_PUNCT_WITH_CLOSING.search(last_sent)
+                            and (len(last_sent.strip()) >= 6 or is_short_salutation(clause))
+                            and is_natural_clause_boundary(clause)
                         )
-                        if not valid_end:
-                            all_sentences = all_sentences[:-1]
-                    else:
-                        if not TERMINAL_PUNCT_WITH_CLOSING.search(last_sent):
-                            all_sentences = all_sentences[:-1]
+                    )
+                    if not valid_end:
+                        all_sentences = all_sentences[:-1]
+                else:
+                    if not TERMINAL_PUNCT_WITH_CLOSING.search(last_sent):
+                        all_sentences = all_sentences[:-1]
 
             completed_text = "".join(all_sentences)
             if len(completed_text) > self.emitted_japanese_len:
@@ -276,7 +365,7 @@ class StreamingBilingualParser:
                             TERMINAL_PUNCT_WITH_CLOSING.search(last_sent)
                             or (
                                 CLAUSE_PUNCT_WITH_CLOSING.search(last_sent)
-                                and len(last_sent.strip()) >= 6
+                                and (len(last_sent.strip()) >= 6 or is_short_salutation(clause))
                                 and is_natural_clause_boundary(clause)
                             )
                         )
@@ -392,24 +481,35 @@ class StreamingBilingualParser:
                         self.tts_params["emotion"] = raw_emo
 
             # Fallback for structured text without valid JSON
-            if not self.chinese_extracted and not self.japanese_extracted:
-                ch_fallback = re.search(r'(?:中文|Chinese)[:：]\s*(.*?)(?:(?:日文|Japanese)[:：]|$)', sanitized, flags=re.DOTALL | re.IGNORECASE)
-                ja_fallback = re.search(r'(?:日文|Japanese)[:：]\s*(.*)$', sanitized, flags=re.DOTALL | re.IGNORECASE)
-                if ch_fallback:
-                    self.chinese_extracted = ch_fallback.group(1).strip()
-                if ja_fallback:
-                    self.japanese_extracted = ja_fallback.group(1).strip()
-                if not self.chinese_extracted:
-                    self.chinese_extracted = sanitized
-                if not self.japanese_extracted:
-                    self.japanese_extracted = self.chinese_extracted
+            ch_fallback = re.search(r'(?:中文|Chinese)[:：]\s*(.*?)(?:(?:日文|Japanese)[:：]|$)', sanitized, flags=re.DOTALL | re.IGNORECASE)
+            ja_fallback = re.search(r'(?:日文|Japanese)[:：]\s*(.*)$', sanitized, flags=re.DOTALL | re.IGNORECASE)
+            if ch_fallback:
+                self.chinese_extracted = ch_fallback.group(1).strip()
+            if ja_fallback:
+                self.japanese_extracted = ja_fallback.group(1).strip()
+            if not self.chinese_extracted:
+                self.chinese_extracted = sanitized
+
+            if self.chinese_extracted and "【" in self.chinese_extracted and "】" in self.chinese_extracted:
+                ja_bracket = re.search(r'【([^】]+)】', self.chinese_extracted)
+                if ja_bracket:
+                    if not self.japanese_extracted or self.japanese_extracted == self.chinese_extracted:
+                        self.japanese_extracted = ja_bracket.group(1).strip()
+                    self.chinese_extracted = re.sub(r'【[^】]+】', '', self.chinese_extracted).strip()
+
+            if not self.japanese_extracted:
+                self.japanese_extracted = self.chinese_extracted
 
         if not self.emotion_extracted:
             lead_emo = None
             if self.chinese_extracted:
-                lead_emo, _ = extract_bracketed_emotion(self.chinese_extracted)
+                lead_emo, cl_ch = extract_bracketed_emotion(self.chinese_extracted)
+                if lead_emo and cl_ch:
+                    self.chinese_extracted = cl_ch
             if not lead_emo and self.japanese_extracted:
-                lead_emo, _ = extract_bracketed_emotion(self.japanese_extracted)
+                lead_emo, cl_ja = extract_bracketed_emotion(self.japanese_extracted)
+                if lead_emo and cl_ja:
+                    self.japanese_extracted = cl_ja
             if lead_emo:
                 self.emotion_extracted = lead_emo
                 if self.tts_emotion is None:

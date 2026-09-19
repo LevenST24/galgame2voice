@@ -26,7 +26,6 @@ def _filter_aiosqlite_teardown_race(args: threading.ExceptHookArgs) -> None:
     surfaces through pytest's threadexception plugin.
     """
     exc = args.exc_value
-    thread_name = args.thread.name if args.thread is not None else ""
     is_aiosqlite_worker = False
     tb = args.exc_traceback
     while tb is not None:
@@ -230,9 +229,8 @@ class MockLLMServer:
         model = json_data.get("model", "gpt-4o")
 
         # Check last message content
-        user_prompt = ""
         if messages:
-            user_prompt = messages[-1].get("content", "")
+            messages[-1].get("content", "")
 
         json_content = self.generate_bilingual_json()
 

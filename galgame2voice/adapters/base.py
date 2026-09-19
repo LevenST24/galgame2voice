@@ -281,10 +281,9 @@ class BaseLLMAdapter(ABC):
         """
         Executes non-streaming completion for given message history.
         """
-        pass
 
     @abstractmethod
-    async def stream_chat(
+    def stream_chat(
         self,
         messages: List[ChatMessage],
         model: str,
@@ -294,21 +293,18 @@ class BaseLLMAdapter(ABC):
         """
         Asynchronously streams incremental text delta tokens.
         """
-        pass
 
     @abstractmethod
     async def test_connection(self, model: Optional[str] = None) -> TestResult:
         """
         Verifies API credentials and measures endpoint latency.
         """
-        pass
 
     @abstractmethod
     async def list_models(self) -> List[str]:
         """
         Discovers supported or available model IDs from provider endpoint.
         """
-        pass
 
 
 class BaseSTTAdapter(ABC):
@@ -339,11 +335,9 @@ class BaseSTTAdapter(ABC):
         """
         Transcribes binary audio payload into plain text.
         """
-        pass
 
     @abstractmethod
     async def test_connection(self) -> TestResult:
         """
         Verifies STT credentials and measures endpoint latency.
         """
-        pass

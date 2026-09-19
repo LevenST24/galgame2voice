@@ -6,7 +6,6 @@ Supports listing, creating, updating, deleting, and clearing memories.
 import logging
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, Field
 
 from galgame2voice.database import crud
 from galgame2voice.database.models import (
@@ -52,7 +51,7 @@ async def list_user_memories(
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to list memories: {safe_err}",
-            )
+            ) from exc
 
 
 @router.post("", response_model=UserMemoryResponse, status_code=status.HTTP_201_CREATED, summary="Create or upsert memory")
@@ -103,7 +102,7 @@ async def create_user_memory(mem: UserMemoryCreate):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to create or upsert memory: {safe_err}",
-            )
+            ) from exc
 
 
 @router.put("/{memory_id}", response_model=UserMemoryResponse, summary="Update user memory")
@@ -159,7 +158,7 @@ async def update_user_memory(memory_id: int, updates: UserMemoryUpdate):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update memory: {safe_err}",
-            )
+            ) from exc
 
 
 @router.delete("/{memory_id}", summary="Delete specific user memory")
@@ -188,7 +187,7 @@ async def delete_user_memory(memory_id: int):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to delete memory: {safe_err}",
-            )
+            ) from exc
 
 
 @router.delete("", summary="Clear all user memories")
@@ -214,4 +213,4 @@ async def clear_user_memories(
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to clear memories: {safe_err}",
-            )
+            ) from exc

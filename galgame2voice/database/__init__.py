@@ -9,9 +9,11 @@ from galgame2voice.database.session import (
     get_schema_version,
     set_schema_version,
 )
-from galgame2voice.database.crud import (
+from galgame2voice.database.migrations import (
     CURRENT_SCHEMA_VERSION,
     run_schema_migrations,
+    init_schema_and_seeds,
+    auto_heal_voice_profiles,
 )
 from galgame2voice.database.models import (
     SettingsBase, SettingsInDB, SettingsResponse, SettingsUpdate,
@@ -41,7 +43,7 @@ from galgame2voice.database.crud import (
 __all__ = [
     "get_db", "init_db", "configure_connection",
     "get_schema_version", "set_schema_version",
-    "CURRENT_SCHEMA_VERSION", "run_schema_migrations",
+    "CURRENT_SCHEMA_VERSION", "run_schema_migrations", "init_schema_and_seeds", "auto_heal_voice_profiles",
     "SettingsBase", "SettingsInDB", "SettingsResponse", "SettingsUpdate",
     "ProviderBase", "ProviderInDB", "ProviderResponse", "ProviderCreate", "ProviderUpdate",
     "VoiceProfileBase", "VoiceProfileInDB", "VoiceProfileResponse", "VoiceProfileCreate", "VoiceProfileUpdate",

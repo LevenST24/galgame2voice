@@ -190,7 +190,7 @@ PROVIDER_PRESETS: Dict[str, Dict[str, Any]] = {
 def list_provider_presets() -> List[Dict[str, Any]]:
     """Returns a list of all built-in provider preset descriptions."""
     results = []
-    for pid, p in PROVIDER_PRESETS.items():
+    for p in PROVIDER_PRESETS.values():
         results.append({
             "id": p["id"],
             "name": p["name"],
@@ -280,9 +280,9 @@ def get_llm_adapter(
         return adapter_cls(api_key=key, base_url=target_url, **kwargs)
 
     if preset:
-        adapter_cls: Type[BaseLLMAdapter] = preset.get("adapter_class", OpenAICompatibleLLMAdapter)
+        preset_cls: Type[BaseLLMAdapter] = preset.get("adapter_class", OpenAICompatibleLLMAdapter)
         target_url = url or preset["default_base_url"]
-        return adapter_cls(api_key=key, base_url=target_url, **kwargs)
+        return preset_cls(api_key=key, base_url=target_url, **kwargs)
 
     # Fallback to general OpenAI-compatible adapter
     target_url = url or "https://api.openai.com/v1"

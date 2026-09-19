@@ -406,7 +406,7 @@ class TestDataIntegrityAndBoundaryDefense:
             assert active_before is not None
 
             # Attempt to set non-existent provider
-            res = await set_active_provider(conn, "non_existent_provider_id_999")
+            await set_active_provider(conn, "non_existent_provider_id_999")
             
             # Active provider should NOT be broken / None
             active_after = await get_active_provider(conn)

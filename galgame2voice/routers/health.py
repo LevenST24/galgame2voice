@@ -12,7 +12,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -30,10 +30,8 @@ from galgame2voice.utils.hardware import (
 from galgame2voice.utils.precision import (
     read_precision_cache,
     read_db_precision,
-    resolve_initial_is_half,
     resolve_initial_device_and_half,
     write_precision_cache,
-    write_sovits_yaml_is_half,
     write_sovits_yaml_config,
 )
 
@@ -145,7 +143,7 @@ async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
     """
     t0 = time.perf_counter()
     target = (base_url or "").strip().rstrip("/")
-    if not (target.startswith("http://") or target.startswith("https://")):
+    if not target.startswith(("http://", "https://")):
         return GptSovitsTelemetry(
             status="unreachable",
             base_url=base_url or "",
@@ -310,7 +308,7 @@ def _collect_hardware_telemetry_sync() -> HardwareTelemetry:
     gpu_avail, gpu_name = _get_gpu_telemetry_cached()
     project_root = get_settings().project_root
     sovits_dir_file = project_root / "data" / "sovits_dir.txt"
-    sovits_dir = Path(sovits_dir_file.read_text(encoding="utf-8").strip()) if sovits_dir_file.exists() else project_root
+    sovits_dir = Path(sovits_dir_file.read_text(encoding="utf-8-sig").strip()) if sovits_dir_file.exists() else project_root
 
     device, is_half, _ = resolve_initial_device_and_half(project_root, sovits_dir)
     if device == "cpu":
@@ -459,7 +457,7 @@ async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="GPT-SoVITS 目录路径未记录 (data/sovits_dir.txt 不存在)，无法自动重启",
         )
-    sovits_dir = Path(sovits_dir_file.read_text(encoding="utf-8").strip())
+    sovits_dir = Path(sovits_dir_file.read_text(encoding="utf-8-sig").strip())
     if not sovits_dir.exists():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -576,4 +574,4 @@ async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"重启 GPT-SoVITS 失败: {exc}",
-        )
+        ) from exc

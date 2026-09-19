@@ -46,7 +46,7 @@ class TestSseStreamingBackpressureAndDisconnect:
     @pytest.mark.asyncio
     async def test_put_with_cancel_aborts_promptly_when_cancelled(self):
         """Verify _put_with_cancel immediately returns False when queue is full and cancel_event is set."""
-        chat_service = ChatService()
+        ChatService()
         q = asyncio.Queue(maxsize=1)
         await q.put("initial_item")
 

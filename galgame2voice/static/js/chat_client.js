@@ -189,7 +189,7 @@ class LogDrawerController {
         this.onReplayAll = options.onReplayAll || null;
         this.onClearHistory = options.onClearHistory || null;
         this.getHistory = options.getHistory || (() => []);
-        this.characterName = options.characterName || '四季夏目';
+        this.characterName = options.characterName || 'AI 伴侣';
 
         this.init();
     }
@@ -274,7 +274,7 @@ class LogDrawerController {
             card.className = `log-item-card ${isUser ? 'log-user' : 'log-assistant'}`;
 
             const timeStr = item.timestamp || new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            const speakerName = isUser ? '你' : (this.characterName || '四季夏目');
+            const speakerName = isUser ? '你' : (this.characterName || 'AI 伴侣');
 
             let contentHtml = '';
             if (isUser) {
@@ -516,7 +516,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btnClear: btnClearLogHistory,
         btnReplayAll: btnLogReplayAll,
         getHistory: () => currentDialogueHistory,
-        characterName: (vnCharacterName && vnCharacterName.textContent) || '四季夏目',
+        characterName: (vnCharacterName && vnCharacterName.textContent) || 'AI 伴侣',
         onReplayAudio: (item) => {
             audioPlayer.interrupt();
             if (item.chunks && item.chunks.length > 0) {
@@ -1230,7 +1230,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function createAssistantMessageHolder() {
         const msgDiv = document.createElement('div');
         msgDiv.className = 'message assistant-message';
-        const characterName = (vnCharacterName && vnCharacterName.textContent) || '四季夏目';
+        const characterName = (vnCharacterName && vnCharacterName.textContent) || 'AI 伴侣';
         msgDiv.innerHTML = `
             <div class="msg-speaker">${escapeHtml(characterName)}</div>
             <div class="msg-ja" style="display: none;"></div>

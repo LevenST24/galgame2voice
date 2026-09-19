@@ -4,7 +4,6 @@ Provides unified character profile query, active character switching, and affect
 """
 
 import logging
-import os
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -14,9 +13,52 @@ from galgame2voice.database.session import get_db
 from galgame2voice.services.voice_manager import get_voice_manager, InsufficientMemoryError
 from galgame2voice.utils.logger import sanitize_error_detail
 
+import json
+from galgame2voice.config import get_settings
+
 logger = logging.getLogger("galgame2voice.routers.characters")
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
+
+
+def _resolve_character_portrait(char_name: str) -> Optional[Dict[str, Any]]:
+    if not char_name:
+        return None
+    settings = get_settings()
+    # Check character package manifest via character manager
+    try:
+        from galgame2voice.services.character_manager import get_character_manager
+        mgr = get_character_manager()
+        pkg = mgr.get_character(char_name)
+        if pkg and pkg.manifest and pkg.manifest.portrait:
+            portrait = pkg.manifest.portrait
+            data = dict(portrait if isinstance(portrait, dict) else portrait.model_dump())
+            data.setdefault("character_name", pkg.manifest.name)
+            data.setdefault("character_id", pkg.manifest.id)
+            return data
+    except Exception:
+        pass
+
+    # Check static characters directory
+    clean_slug = char_name.lower().split("(")[0].strip()
+    candidates = [clean_slug]
+    if "natsume" in char_name.lower() or "夏目" in char_name:
+        candidates.append("natsume")
+    if "(" in char_name:
+        inside = char_name.lower().split("(", 1)[1].rstrip(")").strip()
+        candidates.extend([inside, inside.replace(" ", "")])
+    for slug in candidates:
+        if not slug:
+            continue
+        p = settings.static_dir / "characters" / slug / "manifest.json"
+        if p.is_file():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                data.setdefault("enabled", True)
+                return data
+            except Exception:
+                pass
+    return None
 
 
 class CharacterSwitchRequest(BaseModel):
@@ -44,7 +86,7 @@ async def list_characters(
         try:
             profiles = await crud.list_voice_profiles(conn)
             active_profile = await crud.get_active_voice_profile(conn)
-            active_id = active_profile.id if active_profile else (profiles[0].id if profiles else 1)
+            active_id = active_profile.id if active_profile else (profiles[0].id if profiles else None)
 
             results = []
             for prof in profiles:
@@ -60,6 +102,7 @@ async def list_characters(
                     "prompt_lang": prof.prompt_lang,
                     "text_lang": prof.text_lang,
                     "affection": affection.model_dump() if affection else None,
+                    "portrait": _resolve_character_portrait(prof.name),
                 })
 
             return {
@@ -72,7 +115,7 @@ async def list_characters(
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to list characters: {safe_err}",
-            )
+            ) from exc
 
 
 @router.get(
@@ -126,6 +169,7 @@ async def get_character_detail(
                 "text_lang": prof.text_lang,
                 "system_prompt": prof.system_prompt,
                 "affection": affection.model_dump() if affection else None,
+                "portrait": _resolve_character_portrait(prof.name),
             }
         except HTTPException:
             raise
@@ -134,7 +178,26 @@ async def get_character_detail(
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to get character: {safe_err}",
+            ) from exc
+
+
+@router.get(
+    "/{character_id}/portrait",
+    summary="Get Character Standing CG Portrait Manifest",
+    description="Returns available standing CG sprites, outfits, emotions and coordinates.",
+)
+async def get_character_portrait(character_id: int):
+    async with get_db() as conn:
+        prof = await crud.get_voice_profile(conn, character_id)
+        if not prof:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Character with ID {character_id} not found",
             )
+        portrait = _resolve_character_portrait(prof.name)
+        if not portrait:
+            return {"enabled": False, "message": "No standing CG portrait available for this character"}
+        return {"enabled": True, **portrait}
 
 
 @router.post(
@@ -272,7 +335,7 @@ async def switch_character(req: CharacterSwitchRequest):
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=str(mem_err),
-                )
+                ) from mem_err
             if not success:
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,

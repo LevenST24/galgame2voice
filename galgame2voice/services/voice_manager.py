@@ -7,9 +7,9 @@ mutex locking, and atomic rollback on failure.
 import asyncio
 import logging
 import os
+import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
-import aiosqlite
 
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
@@ -103,6 +103,26 @@ class VoiceManager:
         self.tts_service = TtsService(client=self.client, db_path=self.db_path)
 
         self._switch_lock = asyncio.Lock()
+        self._bg_tasks: set[asyncio.Task] = set()
+
+    def _spawn_background(self, coro) -> asyncio.Task:
+        """Spawns and retains a strong reference to a background task, preventing GC mid-execution."""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
+
+    async def aclose(self) -> None:
+        """Gracefully drains and cancels pending background warmup tasks upon service shutdown."""
+        pending = [t for t in self._bg_tasks if not t.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=3.0)
+        stragglers = [t for t in self._bg_tasks if not t.done()]
+        for t in stragglers:
+            t.cancel()
+        if stragglers:
+            await asyncio.gather(*stragglers, return_exceptions=True)
+        self._bg_tasks.clear()
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -223,7 +243,7 @@ class VoiceManager:
                 logger.debug("Warm-up skipped: weight switch to profile '%s' failed (engine offline).", getattr(profile, "name", "unknown"))
                 return False
 
-            # Probe synthesis to warm up HuBERT, STFT, and RoBERTa prompt_cache
+            # Probe synthesis to warm up HuBERT, STFT, and RoBERTa prompt_cache via LOW priority scheduling
             opts = await self._resolve_active_options({
                 "voice_profile_id": getattr(profile, "id", None),
                 "ref_audio_path": getattr(profile, "ref_audio_path", ""),
@@ -232,8 +252,14 @@ class VoiceManager:
                 "text_lang": getattr(profile, "text_lang", "ja"),
             })
             try:
+                from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
+                scheduler = get_tts_scheduler()
                 await asyncio.wait_for(
-                    self.client.synthesize("。", options=opts),
+                    scheduler.schedule(
+                        lambda: self.client.synthesize("。", options=opts),
+                        priority=TtsPriority.LOW,
+                        task_id=f"warmup_{getattr(profile, 'id', 'default')}",
+                    ),
                     timeout=15.0,
                 )
                 logger.info("GPT-SoVITS prompt audio cache warm-up succeeded for profile '%s'.", getattr(profile, "name", "unknown"))
@@ -302,8 +328,8 @@ class VoiceManager:
         # 3. Update Persistence in SQLite (under switch lock)
         if persist:
             profile_id = None
-            if hasattr(profile_obj, "id") and getattr(profile_obj, "id") is not None:
-                profile_id = getattr(profile_obj, "id")
+            if hasattr(profile_obj, "id") and profile_obj.id is not None:
+                profile_id = profile_obj.id
             elif isinstance(profile_obj, dict) and "id" in profile_obj:
                 profile_id = profile_obj["id"]
 
@@ -315,9 +341,16 @@ class VoiceManager:
                 except Exception as exc:
                     logger.warning("Could not persist active voice profile ID to DB: %s", exc)
 
+        # Invalidate in-memory voice resolver cache
+        try:
+            from galgame2voice.services.voice_resolver import get_voice_resolver
+            get_voice_resolver().invalidate()
+        except Exception:
+            pass
+
         # Trigger non-blocking background warm-up of newly activated voice profile
         try:
-            asyncio.create_task(self.warmup_current_profile())
+            self._spawn_background(self.warmup_current_profile())
         except Exception as warmup_err:
             logger.debug("Could not schedule warm-up task on profile switch: %s", warmup_err)
 
@@ -367,11 +400,106 @@ class VoiceManager:
         text: str,
         options: Optional[Dict[str, Any]] = None,
         chunk_size: int = 4096,
+        use_cache: bool = True,
     ) -> AsyncGenerator[bytes, None]:
-        """Streams synthesized audio in binary chunks using inference mutex."""
+        """
+        Streams synthesized audio in binary chunks using priority scheduling and persistent cache.
+        1. First checks TTS cache (tts_cache_manager.stream_cached(cache_key)). If cached, yields from cache directly with zero GPU overhead.
+        2. If cache miss, routes through tts_scheduler.schedule_stream(...).
+        3. While streaming generated chunks, if caching is enabled, collects chunks and asynchronously puts into tts_cache_manager when complete.
+        """
         opts = await self._resolve_active_options(options)
-        async for chunk in self.client.stream_tts(text, options=opts, chunk_size=chunk_size):
-            yield chunk
+
+        effective_use_cache = bool(opts.get("use_cache", use_cache))
+
+        from galgame2voice.services.tts_cache_manager import get_tts_cache_manager
+        cache_mgr = (
+            getattr(getattr(self, "tts_service", None), "cache_manager", None)
+            or get_tts_cache_manager(db_path=self.db_path)
+        )
+
+        cache_key = ""
+        clean_text = ""
+        params_hash = ""
+        if effective_use_cache and cache_mgr is not None:
+            try:
+                cache_key, clean_text, params_hash = cache_mgr.compute_cache_key(text, options=opts)
+            except Exception as exc:
+                logger.debug("Failed to compute cache key in stream_tts: %s", exc)
+
+        # 1. First check TTS cache (tts_cache_manager.stream_cached(cache_key))
+        if effective_use_cache and cache_key and cache_mgr is not None:
+            is_cached = False
+            try:
+                async for chunk in cache_mgr.stream_cached(cache_key, chunk_size=chunk_size):
+                    is_cached = True
+                    yield chunk
+            except Exception as exc:
+                logger.warning("Error reading from TTS stream cache: %s", exc)
+
+            if is_cached:
+                logger.debug("TTS Cache HIT (stream) for key %s ('%s')", cache_key[:12], text[:20])
+                return
+
+        # 2. If cache miss, route through tts_scheduler.schedule_stream(...)
+        from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
+        scheduler = get_tts_scheduler()
+
+        raw_prio = opts.get("_priority", TtsPriority.NORMAL)
+        try:
+            priority = TtsPriority(int(raw_prio))
+        except (ValueError, TypeError):
+            priority = TtsPriority.NORMAL
+
+        gen_id = opts.get("_generation_id")
+        task_id = opts.get("_task_id") or (
+            f"{gen_id}_{cache_key[:8]}_{uuid.uuid4().hex[:4]}" if gen_id and cache_key else None
+        )
+
+        def _client_stream_fn() -> AsyncGenerator[bytes, None]:
+            return self.client.stream_tts(text, options=opts, chunk_size=chunk_size)
+
+        collected_chunks: List[bytes] = []
+        completed_normally = False
+        try:
+            async for chunk in scheduler.schedule_stream(
+                stream_fn=_client_stream_fn,
+                priority=priority,
+                generation_id=gen_id,
+                task_id=task_id,
+            ):
+                if effective_use_cache and cache_key:
+                    collected_chunks.append(chunk)
+                yield chunk
+            completed_normally = True
+        finally:
+            # 3. While streaming generated chunks, if caching is enabled, collect chunks
+            # and asynchronously put into tts_cache_manager when complete.
+            if completed_normally and effective_use_cache and cache_key and collected_chunks and cache_mgr is not None:
+                full_bytes = b"".join(collected_chunks)
+                if full_bytes:
+                    vpid = opts.get("voice_profile_id", 1)
+                    async def _async_cache_put(
+                        b_key=cache_key,
+                        b_text=text,
+                        b_clean=clean_text,
+                        b_vpid=vpid,
+                        b_hash=params_hash,
+                        b_audio=full_bytes,
+                    ):
+                        try:
+                            await cache_mgr.put(
+                                cache_key=b_key,
+                                text=b_text,
+                                clean_text=b_clean,
+                                voice_profile_id=b_vpid,
+                                params_hash=b_hash,
+                                audio_bytes=b_audio,
+                            )
+                        except Exception as put_exc:
+                            logger.debug("Failed to asynchronously cache streamed TTS: %s", put_exc)
+
+                    self._spawn_background(_async_cache_put())
 
     # ========================================================================
     # Voice Profile Database CRUD Operations
@@ -395,19 +523,37 @@ class VoiceManager:
     async def create_profile(self, profile: VoiceProfileCreate) -> VoiceProfileResponse:
         """Creates a new voice profile in database."""
         async with get_db(self.db_path) as conn:
-            return await crud.create_voice_profile(conn, profile)
+            res = await crud.create_voice_profile(conn, profile)
+        try:
+            from galgame2voice.services.voice_resolver import get_voice_resolver
+            get_voice_resolver().invalidate(res.id if res else None)
+        except Exception:
+            pass
+        return res
 
     async def update_profile(
         self, profile_id: int, updates: VoiceProfileUpdate
     ) -> Optional[VoiceProfileResponse]:
         """Updates an existing voice profile in database."""
         async with get_db(self.db_path) as conn:
-            return await crud.update_voice_profile(conn, profile_id, updates)
+            res = await crud.update_voice_profile(conn, profile_id, updates)
+        try:
+            from galgame2voice.services.voice_resolver import get_voice_resolver
+            get_voice_resolver().invalidate(profile_id)
+        except Exception:
+            pass
+        return res
 
     async def delete_profile(self, profile_id: int) -> bool:
         """Deletes a voice profile from database."""
         async with get_db(self.db_path) as conn:
-            return await crud.delete_voice_profile(conn, profile_id)
+            res = await crud.delete_voice_profile(conn, profile_id)
+        try:
+            from galgame2voice.services.voice_resolver import get_voice_resolver
+            get_voice_resolver().invalidate(profile_id)
+        except Exception:
+            pass
+        return res
 
 
 # ============================================================================

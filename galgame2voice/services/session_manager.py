@@ -2,7 +2,7 @@
 Multi-turn Conversational Memory, Sliding Window Truncation, and Prompt Templating Service.
 """
 
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Optional, Union
 from pathlib import Path
 import json
 import aiosqlite
@@ -280,7 +280,7 @@ class SessionManager:
             session_id, max_messages=max_messages, max_tokens=max_tokens, conn=conn
         )
         dict_msgs = self.format_llm_messages(
-            character_name=character_name or "四季夏目",
+            character_name=character_name or "Character",
             history=history,
             new_user_prompt=user_prompt,
             system_template=custom_system_prompt,
@@ -288,6 +288,9 @@ class SessionManager:
         )
         return [ChatMessage(role=m["role"], content=m["content"]) for m in dict_msgs]
 
+    async def aclose(self) -> None:
+        """Gracefully release any cached state or resources held by SessionManager."""
+        self._table_name = None
 
 
 __all__ = ["SessionTurn", "SessionManager"]

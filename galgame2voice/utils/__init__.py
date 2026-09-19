@@ -52,6 +52,26 @@ from galgame2voice.utils.audio_converter import (
     convert_ogg_to_wav,
     convert_wav_to_ogg,
 )
+from galgame2voice.utils.japanese_phonetics import (
+    normalize_japanese_furigana,
+    normalize_galgame_names_and_readings,
+    normalize_japanese_for_tts,
+    clean_japanese_parentheses,
+    extract_stage_directions_and_emotion,
+)
+from galgame2voice.utils.audio_spec import (
+    REFERENCE_AUDIO_MIN_SECONDS,
+    REFERENCE_AUDIO_MAX_SECONDS,
+    AudioSpec,
+    AudioSpecCache,
+    _AUDIO_SPEC_CACHE,
+    probe_audio_spec,
+    probe_audio_duration_seconds,
+    async_probe_audio_duration_seconds,
+    validate_reference_audio,
+    resolve_reference_audio_path,
+    extract_wav_duration,
+)
 
 __all__ = [
     "MaskingFilter",
@@ -90,4 +110,21 @@ __all__ = [
     "run_ffmpeg_command",
     "convert_ogg_to_wav",
     "convert_wav_to_ogg",
+    "normalize_japanese_furigana",
+    "normalize_galgame_names_and_readings",
+    "normalize_japanese_for_tts",
+    "clean_japanese_parentheses",
+    "extract_stage_directions_and_emotion",
+    "REFERENCE_AUDIO_MIN_SECONDS",
+    "REFERENCE_AUDIO_MAX_SECONDS",
+    "AudioSpec",
+    "AudioSpecCache",
+    "_AUDIO_SPEC_CACHE",
+    "probe_audio_spec",
+    "probe_audio_duration_seconds",
+    "async_probe_audio_duration_seconds",
+    "validate_reference_audio",
+    "resolve_reference_audio_path",
+    "extract_wav_duration",
 ]
+

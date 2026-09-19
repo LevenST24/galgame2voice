@@ -160,7 +160,7 @@ def test_character_manager_sync_method_existence():
     """
     mgr = get_character_manager()
     has_sync_with_db = hasattr(mgr, "sync_with_db")
-    has_sync_characters_to_db = hasattr(mgr, "sync_characters_to_db")
+    hasattr(mgr, "sync_characters_to_db")
 
     assert has_sync_with_db is True, "CharacterManager must implement sync_with_db(conn)"
     # Document finding: sync_characters_to_db is not the actual method name

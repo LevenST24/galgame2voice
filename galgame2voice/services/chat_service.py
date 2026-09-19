@@ -18,7 +18,6 @@ Pipeline hardening (v2.1):
 import asyncio
 import json
 import logging
-import re
 import time
 import uuid
 import wave
@@ -32,7 +31,6 @@ from galgame2voice.adapters.registry import get_llm_adapter
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate
 from galgame2voice.database.session import get_db, immediate_transaction
-from galgame2voice.services.gpt_sovits_client import clean_japanese_parentheses
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.services.session_manager import SessionManager
 from galgame2voice.services.memory_service import MemoryService
@@ -40,42 +38,14 @@ from galgame2voice.services.affection_service import AffectionService
 from galgame2voice.services.metrics_collector import get_metrics_collector, MetricsCollector
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.text_splitter import split_japanese_sentences
+from galgame2voice.utils.profiler import ChatTurnProfiler
 
-logger = logging.getLogger("galgame2voice.services.chat_service")
-
-# Internal sentinel marking "this pipeline stage has finished producing events".
-_SENTINEL = object()
-_CANCEL_SENTINEL = object()
-
-
-class SseKeepAlive(dict):
-    """W3C Server-Sent Events keep-alive comment frame (: keep-alive\\n\\n)."""
-
-    def __init__(self):
-        super().__init__({"event": ":keep-alive", "data": {}, "comment": ": keep-alive\n\n"})
-
-    def __str__(self) -> str:
-        return ": keep-alive\n\n"
-
-    def __eq__(self, other: Any) -> bool:
-        if isinstance(other, str) and other == ": keep-alive\n\n":
-            return True
-        return super().__eq__(other)
-
-
-# ============================================================================
-# Emotion Taxonomy & Classifier (Decoupled Module)
-# ============================================================================
 from galgame2voice.services.emotion_classifier import (
     EMOTION_KEYWORDS,
     VALID_EMOTIONS,
     EMOTION_NAME_MAP,
     classify_emotion,
 )
-
-# ============================================================================
-# Dynamic AI-Driven Voice Prosody & Emotion Constants
-# ============================================================================
 from galgame2voice.utils.prosody import (
     DYNAMIC_SPEED_MIN,
     DYNAMIC_SPEED_MAX,
@@ -84,12 +54,22 @@ from galgame2voice.utils.prosody import (
     clamp_dynamic_speed,
     clamp_dynamic_temperature,
 )
-
-
-# ============================================================================
-# Streaming Bilingual Parser (Decoupled Module)
-# ============================================================================
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
+from galgame2voice.services.chat_pipelines import (
+    LlmStreamPipeline,
+    StreamCoordinator,
+    TextSegmentationPipeline,
+    TtsStreamPipeline,
+    SseKeepAlive,
+)
+from galgame2voice.services.chat_pipelines.stream_coordinator import (
+    _CANCEL_SENTINEL,
+    _SENTINEL,
+)
+from galgame2voice.services.chat_pipelines.context_builder import build_chat_context
+from galgame2voice.utils.audio_concat import concat_wav_files
+
+logger = logging.getLogger("galgame2voice.services.chat_service")
 
 
 # ============================================================================
@@ -116,15 +96,15 @@ class ChatService:
         self.affection_service = AffectionService(db_path=self.db_path)
         self.metrics_collector = metrics_collector or get_metrics_collector(db_path=self.db_path)
         # Strong references for fire-and-forget background tasks (prevent GC mid-flight).
-        self._bg_tasks: set = set()
+        self._bg_tasks: set[asyncio.Task[Any]] = set()
 
-    def _spawn_background(self, coro) -> None:
+    def _spawn_background(self, coro: Any) -> None:
         """Runs a coroutine in the background with strong ref + error logging."""
         try:
             task = asyncio.create_task(coro)
             self._bg_tasks.add(task)
 
-            def _on_done(t: asyncio.Task) -> None:
+            def _on_done(t: asyncio.Task[Any]) -> None:
                 self._bg_tasks.discard(t)
                 if not t.cancelled():
                     exc = t.exception()
@@ -169,7 +149,7 @@ class ChatService:
     ) -> Tuple[BaseLLMAdapter, str, str]:
         """Normalizes the adapter-factory result into (adapter, model, provider_id)."""
         if isinstance(res, (tuple, list)) and len(res) >= 3:
-            return res[0], res[1], res[2]
+            return res[0], res[1], res[2] or "custom"
         adapter, model_name = res[0], res[1]
         active_p = await crud.get_active_provider_raw(conn)
         actual_provider_id = provider_id or getattr(adapter, "provider_type", None) or (active_p.id if active_p else "custom")
@@ -245,81 +225,17 @@ class ChatService:
         Constructs system prompt and conversation history messages for LLM using SessionManager.
         Injects dynamically recalled memories and character affection status into prompt context.
         """
-        if session is None:
-            session = await crud.get_session(conn, session_id)
-
-        if active_profile is None:
-            target_profile_id = (session.voice_profile_id if session else None)
-            if target_profile_id is not None:
-                active_profile = await crud.get_voice_profile(conn, int(target_profile_id))
-            if active_profile is None and character_name:
-                active_profile = await crud.get_voice_profile_by_name(conn, character_name)
-            if active_profile is None:
-                active_profile = await crud.get_active_voice_profile(conn)
-
-        if system_prompt_override and system_prompt_override.strip():
-            system_prompt = system_prompt_override.strip()
-        elif session and session.custom_system_prompt and session.custom_system_prompt.strip():
-            system_prompt = session.custom_system_prompt.strip()
-        else:
-            system_prompt = (
-                active_profile.system_prompt
-                if active_profile and active_profile.system_prompt
-                else self.session_manager.DEFAULT_SYSTEM_TEMPLATE
-            )
-
-        # Auto-upgrade legacy prompt formats that lack dynamic tts instructions
-        if system_prompt and '"tts":' not in system_prompt and '{"chinese":' in system_prompt:
-            system_prompt = system_prompt.replace(
-                '{"chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}',
-                '{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}'
-            )
-            if "动态决定语音推理参数" not in system_prompt:
-                system_prompt = system_prompt.replace(
-                    "你必须严格输出如下 JSON 格式",
-                    "你必须严格输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad|angry）"
-                )
-
-        char_name = character_name or (active_profile.name if active_profile else "四季夏目")
-
-        settings_raw = await crud.get_settings_raw(conn)
-        max_history = max_history_override or (settings_raw.max_history_messages if settings_raw else 10)
-
-        if session is None:
-            session = await crud.get_session(conn, session_id)
-        user_id = session.user_id if session and session.user_id else "default_user"
-        profile_id = active_profile.id if active_profile else 1
-
-        # RAG memory retrieval & affection context injection
-        try:
-            recalled_memories = await self.memory_service.retrieve_relevant_memories(
-                user_id=user_id,
-                character_id=profile_id,
-                prompt=user_prompt,
-                top_k=5,
-                conn=conn,
-            )
-            affection = await crud.get_or_create_character_affection(conn, user_id=user_id, character_id=profile_id)
-            aff_info = {
-                "score": affection.affection_score,
-                "level": affection.affection_level,
-                "level_name": affection.level_name,
-                "emotion": affection.current_emotion,
-                "nickname": affection.custom_nickname,
-            }
-            memory_block = self.memory_service.format_memory_prompt_block(recalled_memories, aff_info)
-        except Exception as e:
-            logger.warning("Failed to retrieve memories for prompt injection: %s", e)
-            memory_block = None
-
-        return await self.session_manager.build_chat_messages(
+        return await build_chat_context(
+            conn=conn,
             session_id=session_id,
             user_prompt=user_prompt,
-            character_name=char_name,
-            custom_system_prompt=system_prompt,
-            max_messages=max_history,
-            memory_prompt_block=memory_block,
-            conn=conn,
+            session_manager=self.session_manager,
+            memory_service=self.memory_service,
+            character_name=character_name,
+            system_prompt_override=system_prompt_override,
+            max_history_override=max_history_override,
+            active_profile=active_profile,
+            session=session,
         )
 
     async def prepare_messages(
@@ -346,88 +262,14 @@ class ChatService:
             session=session,
         )
 
-    def _concat_wav_files(self, chunk_paths: List[str], output_path: Path, pause_duration: float = 0.0) -> bool:
+    def _concat_wav_files(
+        self,
+        chunk_paths: List[Union[str, Path]],
+        output_path: Union[str, Path],
+        pause_duration: float = 0.0,
+    ) -> bool:
         """Synchronous WAV concatenation with parameter validation and streaming frames — ALWAYS run via asyncio.to_thread()."""
-        if not chunk_paths:
-            return False
-
-        valid_files: List[Path] = []
-        base_params = None
-
-        for local_p_str in chunk_paths:
-            if not local_p_str:
-                continue
-            p = Path(local_p_str)
-            if not p.is_file():
-                continue
-            try:
-                with wave.open(str(p), "rb") as w:
-                    cur_params = w.getparams()
-                    if base_params is None:
-                        base_params = cur_params
-                        valid_files.append(p)
-                    else:
-                        if (
-                            w.getnchannels() == base_params.nchannels
-                            and w.getsampwidth() == base_params.sampwidth
-                            and w.getframerate() == base_params.framerate
-                        ):
-                            valid_files.append(p)
-                        else:
-                            logger.warning(
-                                "Skipping WAV chunk %s: mismatched audio parameters (channels=%d, sampwidth=%d, framerate=%d vs base channels=%d, sampwidth=%d, framerate=%d)",
-                                p, w.getnchannels(), w.getsampwidth(), w.getframerate(),
-                                base_params.nchannels, base_params.sampwidth, base_params.framerate,
-                            )
-            except Exception as exc:
-                logger.debug("Skipping unreadable WAV chunk %s: %s", p, exc)
-
-        if not valid_files or base_params is None:
-            return False
-
-        try:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            with wave.open(str(output_path), "wb") as w_out:
-                w_out.setparams(base_params)
-                for idx, p in enumerate(valid_files):
-                    if pause_duration > 0 and idx > 0:
-                        silence_frames_count = int(base_params.framerate * pause_duration)
-                        if silence_frames_count > 0:
-                            sample_silence = b'\x80' if base_params.sampwidth == 1 else b'\x00'
-                            silence_bytes = (sample_silence * base_params.sampwidth * base_params.nchannels) * silence_frames_count
-                            w_out.writeframes(silence_bytes)
-                    try:
-                        with wave.open(str(p), "rb") as w_in:
-                            n_frames = w_in.getnframes()
-                            raw_frames = w_in.readframes(n_frames)
-                            if not raw_frames:
-                                continue
-
-                            # Micro-fade boundary smoothing on 16-bit PCM chunks to eliminate pop/click artifacts
-                            if base_params.sampwidth == 2 and len(raw_frames) % (2 * base_params.nchannels) == 0:
-                                import array
-                                total_frames = len(raw_frames) // (base_params.sampwidth * base_params.nchannels)
-                                fade_frames = min(int(base_params.framerate * 0.005), total_frames // 4)
-                                if fade_frames > 0:
-                                    samples = array.array('h')
-                                    samples.frombytes(raw_frames)
-                                    n_ch = base_params.nchannels
-                                    for i in range(fade_frames):
-                                        factor = i / fade_frames
-                                        for c in range(n_ch):
-                                            idx_start = i * n_ch + c
-                                            samples[idx_start] = int(samples[idx_start] * factor)
-                                            idx_end = (total_frames - 1 - i) * n_ch + c
-                                            samples[idx_end] = int(samples[idx_end] * factor)
-                                    raw_frames = samples.tobytes()
-
-                            w_out.writeframes(raw_frames)
-                    except Exception as err:
-                        logger.warning("Error reading frames from chunk %s: %s", p, err)
-            return True
-        except Exception as exc:
-            logger.error("Failed to write concatenated WAV to %s: %s", output_path, exc)
-            return False
+        return concat_wav_files(chunk_paths, output_path, pause_duration)
 
     async def stream_chat(
         self,
@@ -464,23 +306,13 @@ class ChatService:
             ai_adaptive_voice = opts_map.get("ai_adaptive_voice", opts_map.get("aiAdaptiveVoice", True))
 
         t_start = time.perf_counter()
-        ttft_ms = 0.0
-        tts_first_chunk_ms = 0.0
-        tts_cached_chunks = 0
-        tts_generated_chunks = 0
-
-        parser = StreamingBilingualParser()
-        audio_chunks: List[Dict[str, Any]] = []
-        producer_task: Optional[asyncio.Task] = None
-        worker_task: Optional[asyncio.Task] = None
-        cancel_monitor: Optional[asyncio.Task] = None
-        persisted_assistant: bool = False
-        user_msg: Optional[Any] = None
-        final_result: Dict[str, Any] = {}
 
         if cancel_event and cancel_event.is_set():
             logger.info("Stream chat cancelled before starting for session %s", session_id)
             return
+
+        coordinator: Optional[StreamCoordinator] = None
+        user_msg: Optional[Any] = None
 
         try:
             async with get_db(self.db_path) as conn:
@@ -508,14 +340,19 @@ class ChatService:
 
                     user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
                     profile_id = active_prof.id if active_prof else None
-                    await crud.get_or_create_character_affection(
-                        conn, user_id=user_id, character_id=profile_id or 1
-                    )
 
-                # Extract user memory facts in a TRUE background task (off TTFT path)
-                self._spawn_background(
-                    self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
-                )
+                # Extract user memory facts and init character affection in a TRUE background task (off TTFT path)
+                async def _bg_affection_and_memory():
+                    try:
+                        async with get_db(self.db_path) as conn_bg:
+                            await crud.get_or_create_character_affection(
+                                conn_bg, user_id=user_id, character_id=profile_id or 1
+                            )
+                    except Exception as exc:
+                        logger.debug("Failed background affection update: %s", exc)
+                    await self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
+
+                self._spawn_background(_bg_affection_and_memory())
 
                 res = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
                 adapter, model_name, actual_provider_id = await self._resolve_adapter_triple(
@@ -529,479 +366,40 @@ class ChatService:
                     session=sess_obj,
                 )
 
-            # Bounded queues provide real backpressure: a slow SSE consumer
-            # throttles the pipeline instead of growing memory without limit.
-            tts_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
-            event_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
-            final_result: Dict[str, Any] = {}
-
-            if cancel_event:
-                async def _watch_cancel():
-                    await cancel_event.wait()
-                    for t in (producer_task, worker_task):
-                        if t is not None and not t.done():
-                            t.cancel()
-                    try:
-                        tts_queue.put_nowait(None)
-                    except Exception:
-                        pass
-                    try:
-                        event_queue.put_nowait(_CANCEL_SENTINEL)
-                    except Exception:
-                        pass
-
-                cancel_monitor = asyncio.create_task(_watch_cancel())
-
-            async def _put_with_cancel(q: asyncio.Queue, item: Any) -> bool:
-                """Puts an item into a bounded queue with ultra-low latency while remaining responsive to cancel_event."""
-                if cancel_event and cancel_event.is_set():
-                    return False
-                try:
-                    q.put_nowait(item)
-                    return True
-                except asyncio.QueueFull:
-                    pass
-                while True:
-                    if cancel_event and cancel_event.is_set():
-                        return False
-                    try:
-                        await asyncio.wait_for(q.put(item), timeout=0.1)
-                        return True
-                    except asyncio.TimeoutError:
-                        continue
-
-            # Background TTS Consumer Worker
-            async def tts_worker():
-                nonlocal tts_first_chunk_ms, tts_cached_chunks, tts_generated_chunks
-                chunk_index = 0
-                try:
-                    while True:
-                        if cancel_event and cancel_event.is_set():
-                            break
-                        sentence = await tts_queue.get()
-                        try:
-                            if sentence is None:
-                                break
-                            if not sentence.strip():
-                                continue
-                            if not clean_japanese_parentheses(sentence).strip() or not re.search(r'[\w\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]', sentence):
-                                logger.debug("Skipping non-vocal sentence chunk: '%s'", sentence)
-                                continue
-                            if cancel_event and cancel_event.is_set():
-                                break
-
-                            try:
-                                chunk_opts = parser.get_dynamic_tts_options(
-                                    base_options=tts_options,
-                                    adaptive_enabled=bool(ai_adaptive_voice),
-                                )
-                                if active_prof:
-                                    chunk_opts.setdefault("voice_profile_id", active_prof.id)
-                                    chunk_opts.setdefault("character_name", active_prof.name)
-                                user_split_method = (tts_options or {}).get("text_split_method") or (tts_options or {}).get("cut_option") or (tts_options or {}).get("how_to_cut")
-                                if not user_split_method:
-                                    chunk_opts["text_split_method"] = "cut0" if len(sentence.strip()) <= 80 else "cut2"
-                                audio_url, local_path, _ = await self.tts_service.synthesize_to_file(
-                                    sentence,
-                                    options=chunk_opts,
-                                    filename_prefix=f"chunk_{chunk_index}",
-                                )
-                                if tts_first_chunk_ms == 0.0:
-                                    tts_first_chunk_ms = (time.perf_counter() - t_start) * 1000.0
-                                if "/audio/cache/" in str(audio_url):
-                                    tts_cached_chunks += 1
-                                else:
-                                    tts_generated_chunks += 1
-
-                                chunk_data = {
-                                    "index": chunk_index,
-                                    "audio_url": audio_url,
-                                    "sentence": sentence,
-                                    "local_path": str(local_path),
-                                }
-                                audio_chunks.append(chunk_data)
-                                await _put_with_cancel(event_queue, {
-                                    "event": "audio_chunk",
-                                    "data": {
-                                        "index": chunk_index,
-                                        "audio_url": audio_url,
-                                        "sentence": sentence,
-                                    },
-                                })
-                            except Exception as tts_err:
-                                # Surface the failure to the frontend instead of
-                                # silently dropping the sentence.
-                                logger.warning(
-                                    "Failed to synthesize audio chunk %d for sentence '%s': %s",
-                                    chunk_index, sentence, tts_err,
-                                )
-                                safe_err = sanitize_error_detail(str(tts_err)[:200])
-                                await _put_with_cancel(event_queue, {
-                                    "event": "audio_chunk_error",
-                                    "data": {
-                                        "index": chunk_index,
-                                        "sentence": sentence,
-                                        "error": safe_err,
-                                    },
-                                })
-                            chunk_index += 1
-                        finally:
-                            tts_queue.task_done()
-                finally:
-                    await _put_with_cancel(event_queue, _SENTINEL)
-
-            # LLM Stream Producer
-            async def llm_producer():
-                nonlocal ttft_ms
-                stream_gen = None
-                try:
-                    stream_kwargs: Dict[str, Any] = {"model": model_name}
-                    if temperature is not None:
-                        stream_kwargs["temperature"] = temperature
-                    if top_p is not None:
-                        stream_kwargs["top_p"] = top_p
-                    if max_tokens is not None:
-                        stream_kwargs["max_tokens"] = max_tokens
-                    if frequency_penalty is not None:
-                        stream_kwargs["frequency_penalty"] = frequency_penalty
-                    if presence_penalty is not None:
-                        stream_kwargs["presence_penalty"] = presence_penalty
-                    stream_gen = adapter.stream_chat(messages, **stream_kwargs)
-                    async for token in stream_gen:
-                        if cancel_event and cancel_event.is_set():
-                            break
-                        delta_ch, completed_sentences = parser.feed_chunk(token)
-                        if delta_ch:
-                            if ttft_ms == 0.0:
-                                ttft_ms = (time.perf_counter() - t_start) * 1000.0
-                            current_emo = parser.emotion_extracted or classify_emotion(parser.chinese_extracted, parser.japanese_extracted)
-                            ok = await _put_with_cancel(event_queue, {
-                                "event": "text",
-                                "data": {
-                                    "delta_chinese": delta_ch,
-                                    "emotion": current_emo,
-                                }
-                            })
-                            if not ok:
-                                break
-                        for sentence in completed_sentences:
-                            ok = await _put_with_cancel(tts_queue, sentence)
-                            if not ok:
-                                break
-
-                    full_ch, full_ja, rem_sentences = parser.finalize()
-                    final_result["chinese"] = full_ch
-                    final_result["japanese"] = full_ja
-                    if len(full_ch) > parser.emitted_chinese_len and not (cancel_event and cancel_event.is_set()):
-                        rem_ch = full_ch[parser.emitted_chinese_len:]
-                        if ttft_ms == 0.0:
-                            ttft_ms = (time.perf_counter() - t_start) * 1000.0
-                        current_emo = parser.emotion_extracted or classify_emotion(full_ch, full_ja)
-                        await _put_with_cancel(event_queue, {
-                            "event": "text",
-                            "data": {
-                                "delta_chinese": rem_ch,
-                                "emotion": current_emo,
-                            }
-                        })
-                    for sentence in rem_sentences:
-                        if cancel_event and cancel_event.is_set():
-                            break
-                        await _put_with_cancel(tts_queue, sentence)
-                except Exception as exc:
-                    logger.error("LLM Producer error: %s", exc)
-                    try:
-                        p_ch, p_ja, _ = parser.finalize()
-                        if p_ch and not final_result.get("chinese"):
-                            final_result["chinese"] = p_ch
-                        if p_ja and not final_result.get("japanese"):
-                            final_result["japanese"] = p_ja
-                    except Exception:
-                        pass
-                    safe_err = sanitize_error_detail(exc)
-                    await _put_with_cancel(event_queue, {"event": "error", "data": {"error": safe_err or "LLM generation failed"}})
-                finally:
-                    if stream_gen is not None and hasattr(stream_gen, "aclose"):
-                        try:
-                            if cancel_event and cancel_event.is_set():
-                                asyncio.create_task(stream_gen.aclose())
-                            else:
-                                await asyncio.wait_for(stream_gen.aclose(), timeout=0.02)
-                        except (asyncio.TimeoutError, Exception):
-                            pass
-                    await _put_with_cancel(tts_queue, None)
-                    await _put_with_cancel(event_queue, _SENTINEL)
-
-            producer_task = asyncio.create_task(llm_producer())
-            worker_task = asyncio.create_task(tts_worker())
-
-            # Event pump: responsive wait on event queue and cancel event.
-            sentinels_received = 0
-            error_seen = False
-            last_event_time = time.monotonic()
-            keep_alive_interval = 5.0
-            while sentinels_received < 2:
-                if cancel_event and cancel_event.is_set():
-                    break
-                try:
-                    event = event_queue.get_nowait()
-                    last_event_time = time.monotonic()
-                except asyncio.QueueEmpty:
-                    get_task = asyncio.create_task(event_queue.get())
-                    cancel_wait_task = asyncio.create_task(cancel_event.wait()) if cancel_event else None
-                    wait_set = {get_task}
-                    if cancel_wait_task:
-                        wait_set.add(cancel_wait_task)
-
-                    done, pending = await asyncio.wait(wait_set, timeout=0.5, return_when=asyncio.FIRST_COMPLETED)
-                    for t in pending:
-                        t.cancel()
-
-                    if cancel_event and cancel_event.is_set():
-                        break
-
-                    if get_task in done:
-                        try:
-                            event = get_task.result()
-                            last_event_time = time.monotonic()
-                        except asyncio.CancelledError:
-                            continue
-                    else:
-                        now = time.monotonic()
-                        if now - last_event_time >= keep_alive_interval:
-                            yield SseKeepAlive()
-                            last_event_time = now
-                        continue
-
-                if event is _CANCEL_SENTINEL or (cancel_event and cancel_event.is_set()):
-                    break
-
-                if event is _SENTINEL:
-                    sentinels_received += 1
-                    continue
-
-                yield event
-                if event.get("event") == "error":
-                    error_seen = True
-                    break
-
-            if error_seen or (cancel_event and cancel_event.is_set()):
-                logger.info("Stream chat ended early (error=%s, cancelled=%s) for session %s",
-                            error_seen, bool(cancel_event and cancel_event.is_set()), session_id)
-                # Reap producer/worker before persisting so TTS synthesis stops
-                # promptly and no task writes concurrently.
-                for task in (producer_task, worker_task):
-                    if task is not None and not task.done():
-                        task.cancel()
-
-
-
-                # Persist the partial reply the user already saw so the turn is
-                # not silently dropped from history (the user message was saved).
-                partial_ch = final_result.get("chinese") or parser.chinese_extracted
-                partial_ja = final_result.get("japanese") or parser.japanese_extracted
-                has_meaningful_content = bool(
-                    (partial_ch and partial_ch.strip()) or (partial_ja and partial_ja.strip())
-                )
-                if has_meaningful_content:
-                    async def _persist_partial():
-                        try:
-                            async with get_db(self.db_path) as conn:
-                                await crud.add_message(conn, MessageCreate(
-                                    session_id=session_id,
-                                    role="assistant",
-                                    content_chinese=partial_ch,
-                                    content_japanese=partial_ja,
-                                    audio_url="",
-                                    latency_ms=int((time.perf_counter() - t_start) * 1000),
-                                ))
-                        except Exception as persist_err:
-                            logger.warning("Failed to persist partial assistant message: %s", persist_err)
-
-                    self._spawn_background(_persist_partial())
-                if cancel_event and cancel_event.is_set():
-                    # Explicit truncated done so the client can distinguish
-                    # "user stopped" from a broken connection.
-                    yield {
-                        "event": "done",
-                        "data": {
-                            "truncated": True,
-                            "chinese": partial_ch or "",
-                            "japanese": partial_ja or "",
-                        }
-                    }
-                return
-
-            # Ensure both tasks are fully finished before touching shared state.
-            await asyncio.gather(producer_task, worker_task, return_exceptions=True)
-
-            if cancel_event and cancel_event.is_set():
-                logger.info("Stream chat ended early (error=False, cancelled=True) for session %s", session_id)
-                partial_ch = final_result.get("chinese") or parser.chinese_extracted
-                partial_ja = final_result.get("japanese") or parser.japanese_extracted
-                has_meaningful_content = bool(
-                    (partial_ch and partial_ch.strip()) or (partial_ja and partial_ja.strip())
-                )
-                if has_meaningful_content:
-                    async def _persist_partial():
-                        try:
-                            async with get_db(self.db_path) as conn:
-                                await crud.add_message(conn, MessageCreate(
-                                    session_id=session_id,
-                                    role="assistant",
-                                    content_chinese=partial_ch,
-                                    content_japanese=partial_ja,
-                                    audio_url="",
-                                    latency_ms=int((time.perf_counter() - t_start) * 1000),
-                                ))
-                        except Exception as persist_err:
-                            logger.warning("Failed to persist partial assistant message: %s", persist_err)
-
-                    self._spawn_background(_persist_partial())
-                yield {
-                    "event": "done",
-                    "data": {
-                        "truncated": True,
-                        "chinese": partial_ch or "",
-                        "japanese": partial_ja or "",
-                    }
-                }
-                return
-
-            full_chinese = final_result.get("chinese") or parser.chinese_extracted
-            full_japanese = final_result.get("japanese") or parser.japanese_extracted
-            final_emotion = classify_emotion(full_chinese, full_japanese, parser.emotion_extracted)
-
-            # Concatenate chunks into a master WAV in a worker thread.
-            total_audio_url = ""
-            if audio_chunks:
-                if len(audio_chunks) == 1:
-                    total_audio_url = audio_chunks[0]["audio_url"]
-                else:
-                    try:
-                        pause_candidate = None
-                        if tts_options:
-                            pause_candidate = tts_options.get("fragment_interval")
-                            if pause_candidate is None:
-                                pause_candidate = tts_options.get("pause_duration")
-                            if pause_candidate is None:
-                                pause_candidate = tts_options.get("sentence_pause")
-                        if pause_candidate is not None:
-                            try:
-                                pause_sec = float(pause_candidate)
-                            except (ValueError, TypeError):
-                                pause_sec = 0.3
-                        else:
-                            pause_sec = 0.3
-                        pause_sec = max(0.0, min(5.0, pause_sec))
-                        full_filename = f"full_{uuid.uuid4().hex[:12]}.wav"
-                        full_path = self.tts_service.audio_dir / full_filename
-                        ok = await asyncio.to_thread(
-                            self._concat_wav_files,
-                            [c.get("local_path", "") for c in audio_chunks],
-                            full_path,
-                            pause_sec,
-                        )
-                        total_audio_url = f"/audio/{full_filename}" if ok else audio_chunks[0]["audio_url"]
-                    except Exception as cat_err:
-                        logger.warning("Failed to concatenate audio chunks: %s", cat_err)
-                        total_audio_url = audio_chunks[0]["audio_url"]
-
-            total_latency = int((time.perf_counter() - t_start) * 1000)
-            if ttft_ms == 0.0:
-                ttft_ms = float(total_latency)
-            if tts_first_chunk_ms == 0.0:
-                tts_first_chunk_ms = float(total_latency)
-
-            # Calculate and record token and latency metrics
-            prompt_text = "".join([getattr(m, "content", "") for m in messages])
-            prompt_tokens = self.metrics_collector.estimate_tokens(prompt_text)
-            completion_tokens = self.metrics_collector.estimate_tokens(full_chinese + full_japanese)
-
-            metric_record = await self.metrics_collector.record_metric(
-                session_id=session_id,
-                channel="web",
-                provider_id=actual_provider_id,
+            coordinator = StreamCoordinator(
+                adapter=adapter,
+                messages=messages,
                 model_name=model_name,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                ttft_ms=ttft_ms,
-                tts_first_chunk_ms=tts_first_chunk_ms,
-                total_latency_ms=float(total_latency),
-                tts_cached_chunks=tts_cached_chunks,
-                tts_generated_chunks=tts_generated_chunks,
+                actual_provider_id=actual_provider_id,
+                session_id=session_id,
+                prompt=prompt,
+                user_msg=user_msg,
+                user_id=user_id,
+                profile_id=profile_id,
+                active_prof=active_prof,
+                tts_service=self.tts_service,
+                db_path=self.db_path,
+                metrics_collector=self.metrics_collector,
+                affection_service=self.affection_service,
+                spawn_background=self._spawn_background,
+                concat_wav_fn=self._concat_wav_files,
+                cancel_event=cancel_event,
+                tts_options=tts_options,
+                ai_adaptive_voice=bool(ai_adaptive_voice),
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
+                t_start=t_start,
             )
 
-            has_meaningful_content = bool(
-                (full_chinese and full_chinese.strip()) or (full_japanese and full_japanese.strip())
-            )
-            if has_meaningful_content:
-                # Persist assistant message in DB
-                async with get_db(self.db_path) as conn:
-                    async with immediate_transaction(conn):
-                        await crud.add_message(conn, MessageCreate(
-                            session_id=session_id,
-                            role="assistant",
-                            content_chinese=full_chinese,
-                            content_japanese=full_japanese,
-                            audio_url=total_audio_url,
-                            latency_ms=total_latency,
-                        ))
-                    persisted_assistant = True
-            elif user_msg is not None and getattr(user_msg, "id", None):
-                # No meaningful assistant tokens were generated.
-                # Prune the orphaned user message to prevent consecutive user turns in DB history.
-                try:
-                    async with get_db(self.db_path) as conn:
-                        async with immediate_transaction(conn):
-                            await conn.execute("DELETE FROM messages WHERE id = ?;", (user_msg.id,))
-                except Exception as prune_err:
-                    logger.warning("Failed to prune orphaned user message %s: %s", user_msg.id, prune_err)
-
-            # Clean local_path from audio_chunks before emitting to frontend
-            clean_chunks = [
-                {"index": c.get("index", i), "audio_url": c.get("audio_url", ""), "sentence": c.get("sentence", "")}
-                for i, c in enumerate(audio_chunks)
-            ]
-
-            # Affection State Machine update
+            stream_iter = coordinator.stream()
             try:
-                affection_res = await self.affection_service.handle_turn_affection(
-                    user_id=user_id,
-                    character_id=profile_id,
-                    user_text=prompt,
-                    assistant_text=full_chinese,
-                    explicit_emotion=final_emotion,
-                )
-                final_emotion = affection_res.get("emotion", final_emotion)
-            except Exception as aff_err:
-                logger.warning("Affection update in stream_chat failed: %s", aff_err)
-                affection_res = self._affection_fallback(final_emotion)
-
-            final_tts_params = {
-                "speed": parser.tts_speed,
-                "temperature": parser.tts_temperature,
-                "emotion": parser.tts_emotion,
-                "adaptive_enabled": bool(ai_adaptive_voice),
-            } if (parser.tts_speed is not None or parser.tts_temperature is not None or parser.tts_emotion is not None) else None
-
-            # Emit final done event
-            yield {
-                "event": "done",
-                "data": {
-                    "truncated": bool((cancel_event and cancel_event.is_set()) or not has_meaningful_content),
-                    "chinese": full_chinese,
-                    "japanese": full_japanese,
-                    "emotion": final_emotion,
-                    "affection": affection_res,
-                    "metrics": metric_record,
-                    "audio_url": total_audio_url,
-                    "total_audio_url": total_audio_url,
-                    "chunks": clean_chunks,
-                    "latency_ms": total_latency,
-                    "tts_params": final_tts_params,
-                }
-            }
+                async for event in stream_iter:
+                    yield event
+            finally:
+                await stream_iter.aclose()
 
         except Exception as exc:
             logger.error("Error in stream_chat pipeline: %s", exc, exc_info=True)
@@ -1011,63 +409,14 @@ class ChatService:
                 "data": {"error": safe_err or "Chat service stream pipeline error"}
             }
         finally:
-            if cancel_monitor and not cancel_monitor.done():
-                cancel_monitor.cancel()
-
-            # Reap producer/worker no matter how we exited (normal end, error,
-            # client disconnect, or cancellation). This prevents orphan tasks
-            # from holding the TTS inference lock forever.
-            for task in (producer_task, worker_task):
-                if task is not None and not task.done():
-                    task.cancel()
-            for task in (producer_task, worker_task):
-                if task is None:
-                    continue
+            if coordinator is None and user_msg is not None and getattr(user_msg, "id", None):
                 try:
-                    if cancel_event and cancel_event.is_set():
-                        if not task.done():
-                            task.cancel()
-                        else:
-                            await task
-                    else:
-                        await task
-                except asyncio.CancelledError:
-                    pass
-                except Exception as task_exc:
-                    logger.debug("Pipeline task ended with exception: %s", task_exc)
+                    async with get_db(self.db_path) as conn:
+                        async with immediate_transaction(conn):
+                            await conn.execute("DELETE FROM messages WHERE id = ?;", (user_msg.id,))
+                except Exception as prune_err:
+                    logger.warning("Failed to prune orphaned user message %s: %s", user_msg.id, prune_err)
 
-            # If the stream exited abruptly (e.g. client disconnect / GeneratorExit)
-            # without having persisted the assistant message:
-            if not persisted_assistant and user_msg is not None:
-                partial_ch = final_result.get("chinese") or parser.chinese_extracted
-                partial_ja = final_result.get("japanese") or parser.japanese_extracted
-                has_meaningful_content = bool(
-                    (partial_ch and partial_ch.strip()) or (partial_ja and partial_ja.strip())
-                )
-                if has_meaningful_content:
-                    try:
-                        async with get_db(self.db_path) as conn:
-                            async with immediate_transaction(conn):
-                                await crud.add_message(conn, MessageCreate(
-                                    session_id=session_id,
-                                    role="assistant",
-                                    content_chinese=partial_ch,
-                                    content_japanese=partial_ja,
-                                    audio_url="",
-                                    latency_ms=int((time.perf_counter() - t_start) * 1000),
-                                ))
-                            persisted_assistant = True
-                    except Exception as persist_err:
-                        logger.warning("Failed to persist partial assistant message in finally: %s", persist_err)
-                elif getattr(user_msg, "id", None):
-                    # No meaningful assistant tokens were generated before disconnect.
-                    # Prune the orphaned user message to prevent consecutive user turns in DB history.
-                    try:
-                        async with get_db(self.db_path) as conn:
-                            async with immediate_transaction(conn):
-                                await conn.execute("DELETE FROM messages WHERE id = ?;", (user_msg.id,))
-                    except Exception as prune_err:
-                        logger.warning("Failed to prune orphaned user message %s: %s", user_msg.id, prune_err)
 
     async def stream_chat_events(
         self,
@@ -1243,6 +592,7 @@ class ChatService:
                     sync_opts = parser.get_dynamic_tts_options(
                         base_options=tts_options,
                         adaptive_enabled=bool(ai_adaptive_voice),
+                        sentence_text=japanese,
                     )
                     if active_prof:
                         sync_opts.setdefault("voice_profile_id", active_prof.id)

@@ -299,7 +299,7 @@ def _get_all_detected_gpu_names() -> List[str]:
                 stderr=subprocess.DEVNULL,
                 timeout=2.0,
             )
-            vga_lines = [l.strip() for l in out.splitlines() if any(k in l.lower() for k in ["vga", "3d controller", "display"])]
+            vga_lines = [line.strip() for line in out.splitlines() if any(k in line.lower() for k in ["vga", "3d controller", "display"])]
             if vga_lines:
                 names = []
                 for line in vga_lines:

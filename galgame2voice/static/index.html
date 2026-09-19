@@ -5,153 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Gal2Voice · AI 多会话对话</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
-  <style>
-    /* ============ Universal Provider Card ============ */
-    .provider-config-card {
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-      padding: 16px;
-      background: var(--panel-soft);
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      margin-top: 4px;
-    }
-    .provider-desc-banner {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 10px 14px;
-      background: var(--panel);
-      border: 1px solid var(--line-2);
-      border-radius: 10px;
-    }
-    .provider-desc-text {
-      font-size: 12.5px;
-      color: var(--text-2);
-      line-height: 1.4;
-      flex: 1;
-    }
-    .provider-status-tag {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 11.5px;
-      font-weight: 600;
-      padding: 3px 10px;
-      border-radius: 999px;
-      white-space: nowrap;
-    }
-    .status-indicator-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-    }
-    .tag-configured {
-      background: #ecfdf5;
-      color: #059669;
-      border: 1px solid #a7f3d0;
-    }
-    .tag-configured .status-indicator-dot {
-      background: #10b981;
-    }
-    .tag-unconfigured {
-      background: #fef2f2;
-      color: #dc2626;
-      border: 1px solid #fecaca;
-    }
-    .tag-unconfigured .status-indicator-dot {
-      background: #ef4444;
-      box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
-    }
-    .tag-optional {
-      background: #f3f4f6;
-      color: #4b5563;
-      border: 1px solid #e5e7eb;
-    }
-    .tag-optional .status-indicator-dot {
-      background: #9ca3af;
-    }
-    .input-action-row {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }
-    .btn-input-action {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      height: 42px;
-      padding: 0 14px;
-      background: var(--panel);
-      border: 1px solid var(--line-2);
-      border-radius: 10px;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-2);
-      cursor: pointer;
-      white-space: nowrap;
-      transition: all 0.16s var(--ease);
-    }
-    .btn-input-action:hover {
-      border-color: var(--brand);
-      color: var(--brand-ink, var(--brand));
-      background: var(--brand-soft);
-    }
-    .btn-text-link {
-      font-size: 11.5px;
-      font-weight: 600;
-      color: var(--brand);
-      background: none;
-      border: none;
-      cursor: pointer;
-      padding: 0;
-      transition: color 0.15s;
-    }
-    .btn-text-link:hover {
-      text-decoration: underline;
-      color: var(--brand-deep);
-    }
-    .field-tip {
-      font-size: 11px;
-      color: var(--text-3);
-      margin-top: -2px;
-    }
-    .model-select-group {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .test-result-box {
-      padding: 12px 14px;
-      border-radius: 10px;
-      font-size: 12px;
-      line-height: 1.5;
-      transition: all 0.2s;
-    }
-    .test-result-success {
-      background: #ecfdf5;
-      border: 1px solid #a7f3d0;
-      color: #065f46;
-    }
-    .test-result-error {
-      background: #fef2f2;
-      border: 1px solid #fecaca;
-      color: #991b1b;
-    }
-    .test-result-head {
-      display: flex;
-      justify-content: space-between;
-      font-weight: 700;
-      margin-bottom: 4px;
-    }
-    .provider-act-row {
-      margin-top: 4px;
-    }
-  </style>
-  <script type="module" crossorigin src="/static/assets/index-DBHGWBtm.js"></script>
-  <link rel="stylesheet" crossorigin href="/static/assets/index-Bx76Osp2.css">
+
+  <script type="module" crossorigin src="/static/assets/index-C2tIUY2z.js"></script>
+  <link rel="stylesheet" crossorigin href="/static/assets/index-BaQ8B0pb.css">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -231,6 +87,13 @@
       <circle cx="6" cy="18" r="3"/>
       <path d="M18 9a9 9 0 0 1-9 9"/>
     </symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></symbol>
+    <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></symbol>
+    <symbol id="i-portrait" viewBox="0 0 24 24">
+      <circle cx="12" cy="7" r="4"/>
+      <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/>
+      <path d="M19 4l.8 1.8 1.8.8-1.8.8-.8 1.8-.8-1.8-1.8-.8 1.8-.8.8-1.8z"/>
+    </symbol>
   </svg>
 
   <div class="app">
@@ -274,13 +137,15 @@
         </button>
         <div class="chat-head-text">
           <h1 id="chatTitle">新对话</h1>
-          <p id="chatMeta"></p>
         </div>
         <button class="icon-btn head-settings" id="sessionSettingsBtn" title="会话设置（人设 / 参数）" aria-label="会话设置">
           <svg class="icon"><use href="#i-sliders"></use></svg>
         </button>
         <button class="icon-btn head-voice" id="voiceModeBtn" title="朗读回复" aria-label="朗读回复" aria-pressed="false">
           <svg class="icon" id="voiceModeIcon"><use href="#i-volume-off"></use></svg>
+        </button>
+        <button class="icon-btn head-portrait active" id="portraitToggleBtn" title="立绘演出舞台" aria-label="立绘演出舞台" aria-pressed="true">
+          <svg class="icon"><use href="#i-portrait"></use></svg>
         </button>
         <span class="model-badge" id="modelBadge"><span class="badge-dot" id="badgeDot"></span><span class="badge-label">本地引擎</span></span>
       </header>
@@ -305,6 +170,49 @@
         <p class="composer-hint">Enter 发送 · Shift + Enter 换行 · 麦克风语音输入 · 喇叭朗读回复</p>
       </div>
     </main>
+
+    <aside class="character-stage" id="characterStage" aria-label="角色立绘舞台">
+      <header class="stage-header">
+        <div class="stage-char-info">
+          <span class="stage-name" id="stageCharacterName">四季夏目</span>
+          <span class="stage-emotion-badge" id="stageEmotionLabel">平常</span>
+        </div>
+        <div class="stage-header-actions">
+          <button type="button" class="icon-btn stage-costume-btn" id="stageCostumeToggleBtn" title="切换服装">
+            <span id="stageCostumeIcon">☕</span>
+          </button>
+          <button type="button" class="icon-btn stage-collapse-btn" id="stageCollapseBtn" title="收起立绘" aria-label="收起立绘">
+            <svg class="icon"><use href="#i-x"></use></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="stage-costume-bar" id="stageCostumeBar">
+        <button type="button" class="costume-chip active" data-costume="cafe_uniform">
+          <span class="costume-chip-icon">☕</span>
+          <span>侍应制服</span>
+        </button>
+        <button type="button" class="costume-chip" data-costume="casual">
+          <span class="costume-chip-icon">👗</span>
+          <span>日常便服</span>
+        </button>
+        <button type="button" class="costume-chip" data-costume="cafe_pose_b">
+          <span class="costume-chip-icon">✨</span>
+          <span>制服侧姿</span>
+        </button>
+      </div>
+
+      <div class="stage-viewport" id="stageViewport">
+        <div class="stage-glow"></div>
+        <img id="portraitImgA" class="portrait-sprite is-visible" alt="立绘图层A" src="/static/characters/natsume/cafe_uniform/gentle.png" />
+        <img id="portraitImgB" class="portrait-sprite is-hidden" alt="立绘图层B" src="" />
+      </div>
+
+      <div class="stage-dialogue-card" id="stageDialogueCard">
+        <div class="stage-dialogue-name" id="stageDialogueName">四季夏目</div>
+        <div class="stage-dialogue-text" id="stageDialogueText">「とりあえず、今日見たことは忘れて、わかった？」</div>
+      </div>
+    </aside>
   </div>
 
   <!-- 全局控制与系统配置中心（系统诊断 / 语音推理 / 大模型与STT / Telegram / 记忆与人设） -->
@@ -880,6 +788,33 @@
         <span class="foot-spacer"></span>
         <button class="btn ghost" data-close>取消</button>
         <button class="btn primary" id="sSave">保存</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- 控制台访问令牌授权对话框 -->
+  <div class="modal-backdrop" id="tokenModal" hidden>
+    <div class="modal" role="dialog" aria-labelledby="tokenModalTitle" style="max-width: 440px;">
+      <header class="modal-head">
+        <h3 id="tokenModalTitle">控制台访问鉴权</h3>
+        <button class="icon-btn" data-close aria-label="关闭">✕</button>
+      </header>
+      <div class="modal-body">
+        <p style="margin-bottom: 12px; font-size: 14px; color: var(--text-muted, #888);">
+          当前服务已启用控制台安全鉴权。请输入控制台访问令牌 (Console Access Token)。
+        </p>
+        <div class="field">
+          <label for="consoleTokenInput">访问令牌 (Token)</label>
+          <input id="consoleTokenInput" type="password" placeholder="请输入控制台 Token..." autocomplete="off" />
+        </div>
+        <p class="modal-note" style="margin-top: 8px; font-size: 12px;">
+          令牌仅保存在当前浏览器的会话存储 (sessionStorage) 中，关闭页面后自动失效，绝不写入本地磁盘。
+        </p>
+      </div>
+      <footer class="modal-foot">
+        <span class="foot-spacer"></span>
+        <button class="btn ghost" data-close>取消</button>
+        <button class="btn primary" id="tokenModalSave">保存并继续</button>
       </footer>
     </div>
   </div>

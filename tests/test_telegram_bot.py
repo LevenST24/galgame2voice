@@ -43,6 +43,11 @@ class MockBotClient:
     def __init__(self):
         self.sent_messages: List[Dict[str, Any]] = []
         self.sent_voices: List[Dict[str, Any]] = []
+        self.sent_actions: List[Dict[str, Any]] = []
+
+    async def send_chat_action(self, chat_id: int, action: str, **kwargs: Any) -> bool:
+        self.sent_actions.append({"chat_id": chat_id, "action": action})
+        return True
 
     async def send_message(self, chat_id: int, text: str, reply_markup: Optional[Any] = None, **kwargs: Any) -> Dict[str, Any]:
         msg = {"chat_id": chat_id, "text": text, "reply_markup": reply_markup}
@@ -147,7 +152,7 @@ class MockTelegramBot:
     async def handle_voice_message(self, chat_id: int, file_id: str, llm_server: MockLLMServer, gpt_sovits: MockGptSovitsServer):
         voice_bytes = await self.download_file(file_id)
         try:
-            wav_bytes = await convert_ogg_to_wav(voice_bytes)
+            await convert_ogg_to_wav(voice_bytes)
         except ValueError:
             await self.send_message(chat_id, "抱歉，语音解析失败，请重试！")
             return None
@@ -529,9 +534,201 @@ class TestTelegramBotRealModules:
         await handlers.handle_callback_query(cb_voice, DummyContext())
         assert "音色已切换为" in (cb_voice.callback_query.answer_text or "")
 
+        # Test Character switch callback
+        cb_char = CallbackUpdate("set_char_1")
+        await handlers.handle_callback_query(cb_char, DummyContext())
+        assert "音色已切换为" in (cb_char.callback_query.answer_text or "")
+
         cb_reset = CallbackUpdate("action_reset")
         await handlers.handle_callback_query(cb_reset, DummyContext())
         assert "清空" in (cb_reset.callback_query.answer_text or "")
+
+    @pytest.mark.asyncio
+    async def test_telegram_bot_character_command_and_quick_switch(self, temp_db_path):
+        """Validates /character, /char, /switch command handling, direct switching, and 2-column menu layout."""
+        handlers = TelegramBotHandlers(db_path=temp_db_path)
+        client = MockBotClient()
+
+        class DummyUpdate:
+            def __init__(self, chat_id=1003):
+                self.effective_chat = type("Chat", (), {"id": chat_id})()
+                self.message = None
+
+        class DummyMessageUpdate:
+            def __init__(self, text, chat_id=1003):
+                self.effective_chat = type("Chat", (), {"id": chat_id})()
+                self.message = type("Message", (), {
+                    "text": text,
+                    "reply_text": self._reply_text
+                })()
+                self.replied = []
+
+            async def _reply_text(self, text, **kwargs):
+                self.replied.append(text)
+
+        class DummyContext:
+            def __init__(self):
+                self.bot = client
+
+        # 1. /character with no args renders voice & character selection menu
+        r_menu = await handlers.handle_character(DummyUpdate(), DummyContext())
+        assert "角色音色选择" in r_menu or "当前伴侣" in r_menu
+        assert len(client.sent_messages) >= 1
+        last_msg = client.sent_messages[-1]
+        assert last_msg["reply_markup"] is not None
+
+        # 2. /voice includes inline keyboard with quick switch button
+        r_voice = await handlers.handle_voice(DummyUpdate(), DummyContext())
+        assert "当前音色" in r_voice
+        voice_msg = client.sent_messages[-1]
+        assert voice_msg["reply_markup"] is not None
+
+        # 3. /character with invalid name returns helpful suggestion list
+        update_invalid = DummyMessageUpdate("/character non_existent_character_xyz")
+        r_invalid = await handlers.handle_character(update_invalid, DummyContext())
+        assert "未找到与" in r_invalid
+        assert "当前可用角色" in r_invalid
+
+        # 4. /character with valid name or ID switches profile
+        from galgame2voice.database.session import get_db
+        from galgame2voice.database import crud
+        async with get_db(temp_db_path) as conn:
+            profiles = await crud.list_voice_profiles(conn)
+            assert len(profiles) >= 1
+            target_profile = profiles[0]
+
+        update_valid = DummyMessageUpdate(f"/character {target_profile.name}")
+        r_valid = await handlers.handle_character(update_valid, DummyContext())
+        assert "角色切换成功" in r_valid
+        assert target_profile.name in r_valid
+        assert "当前角色" in r_valid
+
+    @pytest.mark.asyncio
+    async def test_telegram_bot_process_text_chat_dynamic_tts_and_chat_actions(self, temp_db_path):
+        """Validates that process_text_chat sends typing/recording actions and forwards dynamic TTS options."""
+        handlers = TelegramBotHandlers(db_path=temp_db_path)
+        client = MockBotClient()
+
+        # Mock LLM adapter returning emotion tags and psychological cues
+        class MockLLMAdapter:
+            async def chat(self, messages, model=None):
+                return type("LLMResponse", (), {
+                    "content": "[害羞] (声音轻轻颤抖) 那个...真的要这样决定吗？【あ、あの…本当にそう決めるの？】"
+                })()
+
+        # Mock ChatService
+        class MockChatService:
+            def __init__(self):
+                self.session_manager = type("SessionManager", (), {
+                    "clear_session": self._dummy_clear
+                })()
+
+            async def _dummy_clear(self, session_id):
+                pass
+
+            async def get_active_llm_adapter(self, conn=None):
+                return MockLLMAdapter(), "gpt-4o", "mock_prov"
+
+            async def prepare_messages(self, conn, session_id, text):
+                return [{"role": "user", "content": text}]
+
+        captured_tts_opts = {}
+
+        # Mock TTSService
+        class MockTTSService:
+            async def synthesize(self, text, options=None):
+                nonlocal captured_tts_opts
+                captured_tts_opts = options or {}
+                # Return dummy RIFF WAV
+                return b"RIFF\x24\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x08\x00\x00" + b"\x00" * 200
+
+        handlers.chat_service = MockChatService()
+        handlers.tts_service = MockTTSService()
+
+        # Run process_text_chat and await background task
+        task = await handlers.process_text_chat(chat_id=8888, text="你好呀！", bot=client, user_id=8888)
+        if task:
+            await task
+
+        # Assert immediate text reply was sent
+        assert len(client.sent_messages) >= 1
+        text_msg = client.sent_messages[-1]
+        assert "真的要这样决定吗" in text_msg["text"]
+        # Assert stage directions and Japanese brackets stripped from Chinese chat message
+        assert "【" not in text_msg["text"]
+
+        # Assert chat action indicators were sent
+        actions = [a["action"] for a in client.sent_actions]
+        assert "typing" in actions
+        assert "record_voice" in actions
+
+        # Assert dynamic TTS options were captured and passed to synthesize
+        assert isinstance(captured_tts_opts, dict)
+        assert captured_tts_opts.get("emotion") == "shy"
+        assert "speed" in captured_tts_opts
+
+        # Assert voice note was sent with Japanese caption
+        assert len(client.sent_voices) == 1
+        voice_msg = client.sent_voices[0]
+        assert voice_msg["caption"] == "あ、あの…本当にそう決めるの？"
+
+    @pytest.mark.asyncio
+    async def test_telegram_bot_dynamic_nickname_and_affection_menu(self, temp_db_path):
+        """Validates that nickname updates and affection menus use dynamic character names."""
+        handlers = TelegramBotHandlers(db_path=temp_db_path)
+        client = MockBotClient()
+
+        from galgame2voice.database.session import get_db
+        from galgame2voice.database import crud
+        from galgame2voice.database.models import VoiceProfileCreate
+
+        # Create a distinct custom character
+        async with get_db(temp_db_path) as conn:
+            custom_char = await crud.create_voice_profile(
+                conn,
+                VoiceProfileCreate(
+                    name="常陆茉子(Mako)",
+                    description="身手敏捷的忍者少女护卫",
+                    gpt_weights_path="mako.ckpt",
+                    sovits_weights_path="mako.pth",
+                    ref_audio_path="mako.wav",
+                    prompt_text="お館様",
+                    prompt_lang="ja",
+                    text_lang="ja",
+                ),
+            )
+            await crud.set_active_voice_profile(conn, custom_char.id)
+
+        class DummyMessageUpdate:
+            def __init__(self, text, chat_id=2001):
+                self.effective_chat = type("Chat", (), {"id": chat_id})()
+                self.message = type("Message", (), {
+                    "text": text,
+                    "reply_text": self._reply_text
+                })()
+                self.replied = []
+
+            async def _reply_text(self, text, **kwargs):
+                self.replied.append(text)
+
+        class DummyContext:
+            def __init__(self):
+                self.bot = client
+
+        # Set nickname
+        update_nick = DummyMessageUpdate("/nickname 主公大人")
+        r_nick = await handlers.handle_nickname(update_nick, DummyContext())
+        assert "主公大人" in r_nick
+        # Confirmation message should dynamically use the active character's name instead of hardcoded 夏目
+        assert "常陆茉子" in r_nick
+        assert "夏目" not in r_nick
+
+        # Affection menu should also reference 常陆茉子
+        text_aff, markup_aff = await handlers.build_affection_menu(chat_id=2001, user_id=2001)
+        assert "常陆茉子" in text_aff
+        # Check that quick character switch button exists in affection menu
+        callbacks = [btn.callback_data for row in markup_aff.inline_keyboard for btn in row]
+        assert "menu_voice" in callbacks
 
 
 class TestTelegramOptionalFeature:

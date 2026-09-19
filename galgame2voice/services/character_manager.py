@@ -13,173 +13,25 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiosqlite
-from pydantic import BaseModel, Field
-
 from galgame2voice.config import get_settings
+from galgame2voice.schemas.character_manifest import (
+    CharacterManifest,
+    EmotionConfig,
+    VoiceParamsConfig,
+)
+from galgame2voice.services.character_package import (
+    CharacterPackage,
+    _AUDIO_PROBE_CACHE,
+)
 
 logger = logging.getLogger("galgame2voice.services.character_manager")
 
 
 # ============================================================================
-# 1. Pydantic Manifest Schemas
-# ============================================================================
-
-class VoiceParamsConfig(BaseModel):
-    """Default voice generation parameters for a character."""
-    speed: float = Field(default=1.0, ge=0.1, le=3.0, description="Default speech speed factor")
-    temperature: float = Field(default=0.8, ge=0.0, le=2.0, description="Default sampling temperature")
-    top_k: Optional[int] = Field(default=15, ge=1, le=100, description="Top-k sampling parameter")
-    top_p: Optional[float] = Field(default=1.0, ge=0.0, le=1.0, description="Top-p sampling parameter")
-
-
-class EmotionConfig(BaseModel):
-    """Reference audio definition and metadata for a specific emotion."""
-    audio: str = Field(..., min_length=1, description="Relative path to reference audio, e.g., 'refs/gentle.ogg'")
-    text: str = Field(..., min_length=1, description="Transcript of the reference audio")
-    lang: str = Field(default="ja", description="Language code of reference audio (ja, zh, en)")
-    description: Optional[str] = Field(default=None, description="Human-readable description of this emotion")
-
-
-class CharacterManifest(BaseModel):
-    """Validated schema for character package manifest.json."""
-    id: str = Field(..., min_length=1, max_length=100, description="Unique machine-readable character identifier")
-    name: str = Field(..., min_length=1, max_length=100, description="Display name of the character")
-    version: str = Field(default="1.0.0", description="Character package semantic version")
-    description: str = Field(default="", description="Character background or lore description")
-    system_prompt: Optional[str] = Field(default="", description="Personality prompt template")
-    default_voice_params: VoiceParamsConfig = Field(default_factory=VoiceParamsConfig)
-    gpt_weights: Optional[str] = Field(default=None, description="Path or pointer to GPT model weights")
-    sovits_weights: Optional[str] = Field(default=None, description="Path or pointer to SoVITS model weights")
-    emotions: Dict[str, EmotionConfig] = Field(default_factory=dict, description="Emotion to reference audio mapping")
-
-
-# ============================================================================
-# 2. Character Package Container
-# ============================================================================
-
-class CharacterPackage:
-    """Represents a fully self-contained character package on disk."""
-
-    def __init__(
-        self,
-        folder_path: Path,
-        manifest: CharacterManifest,
-        system_prompt: str = "",
-        validation_errors: Optional[List[str]] = None,
-    ):
-        self.folder_path = folder_path.resolve()
-        self.manifest = manifest
-        self.system_prompt = system_prompt or manifest.system_prompt or ""
-        self.validation_errors: List[str] = validation_errors or []
-        self.is_valid: bool = len(self.validation_errors) == 0
-
-    @property
-    def id(self) -> str:
-        return self.manifest.id
-
-    @property
-    def name(self) -> str:
-        return self.manifest.name
-
-    def resolve_audio_path(self, relative_or_absolute: str) -> Optional[Path]:
-        """
-        Resolves an audio path relative to the character package directory.
-        Strictly guarded against directory traversal and out-of-boundary references.
-        """
-        if not relative_or_absolute:
-            return None
-        from galgame2voice.utils.path_guard import contains_traversal_payload, get_authorized_roots
-
-        clean_str = str(relative_or_absolute).strip().strip("\"'")
-        if contains_traversal_payload(clean_str):
-            logger.warning("Directory traversal rejected in resolve_audio_path: %s", clean_str)
-            return None
-
-        p = Path(clean_str)
-        settings = get_settings()
-        char_dir = getattr(settings, "characters_dir", settings.project_root / "characters")
-        authorized = [self.folder_path, Path(char_dir)] + get_authorized_roots()
-
-        if p.is_absolute():
-            if p.is_file():
-                res = p.resolve()
-                if any(res == root or res.is_relative_to(root) for root in authorized):
-                    return res
-            return None
-
-        # 1. Check relative to character package folder
-        norm_rel = clean_str.lstrip("/\\")
-        cand = (self.folder_path / norm_rel).resolve()
-        if cand.is_file() and (cand == self.folder_path or cand.is_relative_to(self.folder_path)):
-            return cand
-
-        # 2. Check relative to project root
-        root_cand = (settings.project_root / norm_rel).resolve()
-        if root_cand.is_file() and (root_cand == settings.project_root or root_cand.is_relative_to(settings.project_root)):
-            return root_cand
-
-        # 3. Check relative to audio_dir
-        audio_cand = (settings.audio_dir / norm_rel).resolve()
-        if audio_cand.is_file() and (audio_cand == settings.audio_dir or audio_cand.is_relative_to(settings.audio_dir)):
-            return audio_cand
-
-        return None
-
-    def resolve_weight_path(self, field_name: str) -> str:
-        """
-        Resolves gpt_weights or sovits_weights. Supports text pointer files.
-        If the file exists and is small (<4KB) and contains a path, returns that path.
-        Otherwise returns the resolved absolute or relative path string.
-        """
-        val = getattr(self.manifest, field_name, None)
-        if not val:
-            return ""
-        from galgame2voice.utils.path_guard import contains_traversal_payload
-        if contains_traversal_payload(str(val)):
-            logger.warning("Directory traversal rejected in resolve_weight_path: %s", val)
-            return ""
-
-        clean_str = str(val).strip().strip("\"'")
-        p = Path(clean_str)
-        target_file = (self.folder_path / clean_str.lstrip("/\\")) if not p.is_absolute() else p
-
-        if target_file.is_file():
-            # Check if it's a pointer file (e.g. text containing path to .ckpt or .pth)
-            try:
-                if target_file.stat().st_size < 4096:
-                    content = target_file.read_text(encoding="utf-8").strip()
-                    if content and (content.endswith(".ckpt") or content.endswith(".pth")):
-                        if contains_traversal_payload(content):
-                            return ""
-                        # Pointer points to target
-                        settings = get_settings()
-                        ptr_path = Path(content)
-                        if not ptr_path.is_absolute():
-                            ptr_target = settings.project_root / ptr_path
-                            if ptr_target.exists():
-                                from galgame2voice.utils.path_guard import to_project_relative_path
-                                return to_project_relative_path(ptr_target)
-                        return content
-            except Exception:
-                pass
-            from galgame2voice.utils.path_guard import to_project_relative_path
-            return to_project_relative_path(target_file)
-
-        # If file does not exist directly in package folder, check project root
-        settings = get_settings()
-        root_target = settings.project_root / clean_str.lstrip("/\\")
-        if root_target.exists():
-            from galgame2voice.utils.path_guard import to_project_relative_path
-            return to_project_relative_path(root_target)
-
-        return str(val)
-
-
-# ============================================================================
-# 3. Character Manager Service
+# Character Manager Service
 # ============================================================================
 
 class CharacterManager:
@@ -248,6 +100,15 @@ class CharacterManager:
                 )
 
         logger.info("Discovered %d valid character package(s) in %s", len(discovered), target_dir)
+        if discovered:
+            discovered_sorted = sorted(
+                discovered,
+                key=lambda p: (
+                    0 if getattr(p.manifest, "is_default", False) else 1,
+                    p.name
+                )
+            )
+            self._name_index["default"] = discovered_sorted[0].id
         return discovered
 
     def _load_and_validate_package(self, folder: Path, manifest_path: Path) -> CharacterPackage:
@@ -316,20 +177,34 @@ class CharacterManager:
                 else:
                     seen_audio_paths[canonical_path] = emo_name
 
-                # Check duplicate MD5 hash across emotions in package
+                # Check duplicate MD5 hash across emotions in package and validate duration
                 try:
-                    file_hash = hashlib.md5(resolved_audio.read_bytes()).hexdigest()
-                    if file_hash in seen_audio_hashes:
-                        errors.append(
-                            f"Duplicate audio MD5 detected: emotion '{emo_name}' audio '{audio_rel}' has identical MD5 hash ({file_hash[:8]}) to emotion '{seen_audio_hashes[file_hash]}'"
-                        )
-                    else:
-                        seen_audio_hashes[file_hash] = emo_name
-                except Exception as exc:
-                    errors.append(f"Failed to read audio file '{audio_rel}' for MD5 verification: {exc}")
+                    st = resolved_audio.stat()
+                    cache_key = (str(canonical_path), st.st_size, st.st_mtime)
+                except Exception:
+                    cache_key = None
+
+                cached_probe = _AUDIO_PROBE_CACHE.get(cache_key) if cache_key else None
+                if cached_probe is not None:
+                    file_hash, duration = cached_probe
+                else:
+                    try:
+                        file_hash = hashlib.md5(resolved_audio.read_bytes()).hexdigest()
+                    except Exception as exc:
+                        errors.append(f"Failed to read audio file '{audio_rel}' for MD5 verification: {exc}")
+                        continue
+                    duration = TtsService.get_audio_duration(resolved_audio)
+                    if cache_key:
+                        _AUDIO_PROBE_CACHE[cache_key] = (file_hash, duration)
+
+                if file_hash in seen_audio_hashes:
+                    errors.append(
+                        f"Duplicate audio MD5 detected: emotion '{emo_name}' audio '{audio_rel}' has identical MD5 hash ({file_hash[:8]}) to emotion '{seen_audio_hashes[file_hash]}'"
+                    )
+                else:
+                    seen_audio_hashes[file_hash] = emo_name
 
                 # Validate duration: must be in [3.0s, 10.0s]
-                duration = TtsService.get_audio_duration(resolved_audio)
                 if duration is None:
                     # Could not determine duration (unsupported or corrupted audio)
                     errors.append(f"Emotion '{emo_name}' audio '{audio_rel}' could not be decoded or probed for duration")
@@ -362,9 +237,10 @@ class CharacterManager:
             cleaned = "".join(token.lower().replace("(", "").replace(")", "").replace("-", "").split())
             self._name_index[cleaned] = pid
 
-        # Natsume specific aliases for full backward compatibility
-        if "夏目" in pkg.name or "natsume" in pid.lower():
-            for alias in ["四季夏目", "四季ナツメ", "natsume", "siki", "四季ナツメ (shiki natsume)", "default"]:
+        # Register manifest-defined aliases if present
+        manifest_aliases = getattr(pkg.manifest, "aliases", None) or []
+        for alias in manifest_aliases:
+            if alias:
                 self._name_index[alias.lower()] = pid
                 self._name_index["".join(alias.lower().split())] = pid
 
@@ -389,6 +265,15 @@ class CharacterManager:
             pkg_id = self._name_index[cleaned_spaceless]
             return self._packages.get(pkg_id)
 
+        # Check stripping parenthetical suffixes e.g. "四季夏目 (Shiki Natsume)" -> "四季夏目"
+        if "(" in cleaned:
+            base_cleaned = cleaned.split("(")[0].strip()
+            if base_cleaned in self._name_index:
+                return self._packages.get(self._name_index[base_cleaned])
+            inside_paren = cleaned.split("(", 1)[1].rstrip(")").strip()
+            if inside_paren in self._name_index:
+                return self._packages.get(self._name_index[inside_paren])
+
         # Fuzzy substring match
         for pkg in self._packages.values():
             pkg_id_lower = pkg.id.lower()
@@ -398,10 +283,15 @@ class CharacterManager:
                 cleaned in pkg_id_lower
                 or cleaned in pkg_name_lower
                 or (cleaned_spaceless and (cleaned_spaceless in pkg_id_lower or cleaned_spaceless in pkg_name_spaceless))
+                or (len(pkg_id_lower) >= 2 and pkg_id_lower in cleaned)
+                or (len(pkg_name_lower) >= 2 and pkg_name_lower in cleaned)
             ):
                 return pkg
-
         return None
+
+    def get_default_character(self) -> Optional[CharacterPackage]:
+        """Returns the default character package, or None if none installed."""
+        return self.get_character("default")
 
     def get_available_characters(self) -> List[CharacterPackage]:
         """Returns all valid, discovered character packages."""
@@ -422,8 +312,8 @@ class CharacterManager:
             if pkg and pkg.is_valid:
                 return pkg.manifest
 
-        # Fallback to default / natsume
-        pkg = self.get_character("default") or self.get_character("四季夏目") or self.get_character("natsume")
+        # Fallback to default
+        pkg = self.get_character("default")
         if pkg and pkg.is_valid:
             return pkg.manifest
 
@@ -446,10 +336,10 @@ class CharacterManager:
         Falls back to default reference if the specific emotion is missing or invalid.
         """
         self._ensure_discovered()
-        pkg = self.get_character(character_id_or_name)
+        pkg = self.get_character(character_id_or_name) if character_id_or_name else None
         if not pkg or not pkg.is_valid:
-            # Fall back to default character package if name was empty, 'default', or natsume
-            if not character_id_or_name or character_id_or_name.lower() in ("default", "四季夏目", "natsume", "siki"):
+            # Fall back to default character package if name was empty or 'default'
+            if not character_id_or_name or character_id_or_name.lower() == "default":
                 pkg = self.get_character("default")
             if not pkg or not pkg.is_valid:
                 return None
@@ -498,12 +388,15 @@ class CharacterManager:
             if custom_file.is_file():
                 resolved_path = custom_file.resolve()
 
-        return {
+        res: Dict[str, Any] = {
             "ref_audio_path": str(resolved_path),
             "prompt_text": target_cfg.text,
             "prompt_lang": target_cfg.lang,
             "emotion": matched_emo,
         }
+        if target_cfg.voice_params is not None:
+            res["voice_params"] = target_cfg.voice_params.model_dump()
+        return res
 
     async def sync_with_db(self, conn: aiosqlite.Connection) -> int:
         """
@@ -517,11 +410,10 @@ class CharacterManager:
         if not valid_pkgs:
             return 0
 
-        # Deterministic default order: ensure natsume / 四季夏目 is sorted first
-        def _pkg_sort_key(p: CharacterPackage) -> int:
-            if "natsume" in p.id.lower() or "夏目" in p.name:
-                return 0
-            return 1
+        # Deterministic default order: prioritize packages marked with is_default=True, then by name
+        def _pkg_sort_key(p: CharacterPackage):
+            is_def = getattr(p.manifest, "is_default", False)
+            return (0 if is_def else 1, p.name)
 
         valid_pkgs = sorted(valid_pkgs, key=_pkg_sort_key)
 
@@ -552,10 +444,8 @@ class CharacterManager:
                             is_ghost = True
                             break
 
-            if not is_ghost:
-                # Also check if profile name corresponds to an obsolete package ID whose folder doesn't exist
-                if p_name.lower() in ("kazari",) and not (self.characters_dir / p_name).exists():
-                    is_ghost = True
+            if not is_ghost and p_name.lower() in ("kazari",) and not (self.characters_dir / p_name).exists():
+                is_ghost = True
 
             if is_ghost:
                 logger.info("Pruning ghost voice_profile record id=%s name='%s'", p_id, p_name)
@@ -578,11 +468,17 @@ class CharacterManager:
                 (char_name, f"{char_name}%", f"%{char_name}%" if len(char_name) >= 3 else char_name)
             )
             existing_row = await cursor.fetchone()
-            if not existing_row and ("夏目" in char_name or "natsume" in pkg.id.lower()):
-                cursor = await conn.execute(
-                    "SELECT * FROM voice_profiles WHERE name LIKE '%夏目%' OR name LIKE '%ナツメ%' OR name LIKE '%natsume%' LIMIT 1;"
-                )
-                existing_row = await cursor.fetchone()
+            if not existing_row and getattr(manifest, "aliases", None):
+                for alias in manifest.aliases:
+                    if not alias:
+                        continue
+                    cur_alias = await conn.execute(
+                        "SELECT * FROM voice_profiles WHERE name = ? OR name LIKE ? LIMIT 1;",
+                        (alias, f"%{alias}%")
+                    )
+                    existing_row = await cur_alias.fetchone()
+                    if existing_row:
+                        break
 
             # Resolve default reference audio & text from package
             default_emo = manifest.emotions.get("gentle") or (
@@ -616,10 +512,17 @@ class CharacterManager:
 
                 # Determine if ref_audio_path needs healing:
                 # 1) current path is empty or does not exist on disk
-                # 2) non-Natsume character has ref pointing to natsume audio (cross-character bug)
-                is_natsume_pkg = "natsume" in pkg.id.lower() or "夏目" in pkg.name
-                ref_is_natsume = "natsume" in current_ref.lower() or "夏目" in current_ref
-                cross_character_audio = (not is_natsume_pkg) and ref_is_natsume
+                # 2) character has ref pointing to a different character's package directory
+                # 3) non-Natsume character has ref pointing to Natsume audio
+                cross_character_audio = False
+                norm_ref = current_ref.replace("\\", "/").lower()
+                is_natsume = (pkg.id.lower() in ("natsume", "shiki_natsume") or "夏目" in pkg.name)
+                if not is_natsume and "natsume" in norm_ref:
+                    cross_character_audio = True
+                elif current_ref and "characters/" in current_ref.replace("\\", "/"):
+                    ref_char_part = current_ref.replace("\\", "/").split("characters/")[1].split("/")[0]
+                    if ref_char_part and ref_char_part.lower() != pkg.id.lower() and ref_char_part != pkg.name:
+                        cross_character_audio = True
 
                 ref_needs_update = (
                     not current_ref
@@ -646,11 +549,9 @@ class CharacterManager:
                     if not w_path:
                         return True
                     norm_w = w_path.replace("/", "\\")
-                    if norm_w.startswith("E:") or norm_w.startswith("E:\\") or (os.path.isabs(w_path) and not Path(w_path).exists()):
+                    if norm_w.startswith(("E:", "E:\\")) or (os.path.isabs(w_path) and not Path(w_path).exists()):
                         return True
-                    if not Path(w_path).exists():
-                        return True
-                    return False
+                    return not Path(w_path).exists()
 
                 if gpt_weights and _weight_needs_healing(current_gpt):
                     update_fields.append("gpt_weights_path = ?")
@@ -679,10 +580,9 @@ class CharacterManager:
             else:
                 # Insert new voice profile
                 is_default_val = 0
-                if not has_default:
-                    if "natsume" in pkg.id.lower() or "夏目" in pkg.name or existing_count == 0:
-                        is_default_val = 1
-                        has_default = True
+                if not has_default and (getattr(manifest, "is_default", False) or existing_count == 0):
+                    is_default_val = 1
+                    has_default = True
 
                 await conn.execute(
                     """
@@ -715,3 +615,15 @@ class CharacterManager:
 def get_character_manager(characters_dir: Optional[Path] = None) -> CharacterManager:
     """Returns singleton instance of CharacterManager."""
     return CharacterManager.get_instance(characters_dir)
+
+
+__all__ = [
+    "CharacterManager",
+    "CharacterManifest",
+    "CharacterPackage",
+    "EmotionConfig",
+    "VoiceParamsConfig",
+    "_AUDIO_PROBE_CACHE",
+    "get_character_manager",
+]
+

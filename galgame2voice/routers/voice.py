@@ -9,8 +9,7 @@ import logging
 import os
 import sys
 import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, status, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -21,11 +20,9 @@ from galgame2voice.database.session import get_db
 from galgame2voice.database.models import (
     VoiceProfileCreate,
     VoiceProfileUpdate,
-    VoiceProfileResponse,
 )
 from galgame2voice.services.gpt_sovits_client import (
-    clean_japanese_parentheses,
-    resolve_tts_options,
+    normalize_japanese_for_tts,
     validate_user_tts_options,
     TTS_PRESETS,
     SLICING_METHODS,
@@ -84,6 +81,9 @@ class SynthesizeRequest(BaseModel):
     text_language: Optional[str] = Field(default=None, max_length=32)
     cut_option: Optional[str] = Field(default=None, max_length=64)
     preset: Optional[str] = Field(default=None, max_length=64)
+    fragment_interval: Optional[float] = Field(default=None, ge=0.0, le=5.0)
+    batch_size: Optional[int] = Field(default=None, ge=1, le=16)
+    emotion: Optional[str] = Field(default=None, max_length=64)
     stream: bool = False
     ai_adaptive_voice: Optional[bool] = Field(default=None, description="Whether AI-driven dynamic voice inference is enabled")
 
@@ -103,7 +103,7 @@ async def list_voice_profiles():
         active = await crud.get_active_voice_profile(conn)
         return {
             "profiles": [p.model_dump() for p in profiles],
-            "active_profile_id": active.id if active else 1,
+            "active_profile_id": active.id if active else (profiles[0].id if profiles else None),
         }
 
 
@@ -135,7 +135,7 @@ async def create_voice_profile(req: VoiceProfileCreateRequest):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid file path: {pte}",
-        )
+        ) from pte
 
     profile_dto = VoiceProfileCreate(
         name=req.name.strip(),
@@ -161,7 +161,7 @@ async def create_voice_profile(req: VoiceProfileCreateRequest):
             }
         except Exception as exc:
             logger.error("Failed to create voice profile '%s': %s", req.name, exc)
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=sanitize_error_detail(exc))
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=sanitize_error_detail(exc)) from exc
 
 
 @router.get(
@@ -207,7 +207,7 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid file path: {pte}",
-        )
+        ) from pte
     if req.ref_audio_path:
         req.ref_audio_path = to_project_relative_path(req.ref_audio_path)
 
@@ -226,7 +226,7 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=sanitize_error_detail(exc),
-            )
+            ) from exc
 
 
 @router.delete(
@@ -255,7 +255,7 @@ async def delete_voice_profile(profile_id: int):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=sanitize_error_detail(exc),
-            )
+            ) from exc
 
 
 # ============================================================================
@@ -366,7 +366,7 @@ async def switch_voice(req: VoiceSwitchRequest):
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=str(mem_err),
-                )
+                ) from mem_err
             if not success:
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
@@ -390,7 +390,7 @@ async def switch_voice(req: VoiceSwitchRequest):
     description="Synthesizes text into WAV audio using active voice profile and specified parameters.",
 )
 async def synthesize_speech(req: SynthesizeRequest):
-    cleaned_text = clean_japanese_parentheses(req.text)
+    cleaned_text = normalize_japanese_for_tts(req.text)
     if not cleaned_text:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -415,13 +415,19 @@ async def synthesize_speech(req: SynthesizeRequest):
         options["cut_option"] = req.cut_option
     if req.preset is not None:
         options["preset"] = req.preset
+    if req.fragment_interval is not None:
+        options["fragment_interval"] = req.fragment_interval
+    if req.batch_size is not None:
+        options["batch_size"] = req.batch_size
+    if req.emotion is not None:
+        options["emotion"] = req.emotion
     if req.ai_adaptive_voice is not None:
         options["ai_adaptive_voice"] = req.ai_adaptive_voice
 
     try:
         validate_user_tts_options(options)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
     ref_audio = options.get("ref_audio_path") or options.get("refer_audio_path")
     if ref_audio:
@@ -431,9 +437,20 @@ async def synthesize_speech(req: SynthesizeRequest):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid reference audio path: {pte}",
-            )
+            ) from pte
 
     manager = get_voice_manager()
+
+    # Reject synthesis if no character package or voice profile is available
+    if not options.get("ref_audio_path") and not options.get("refer_audio_path"):
+        async with get_db() as conn:
+            profiles = await crud.list_voice_profiles(conn)
+            has_server_audio = bool(getattr(manager.client, "server", None) and getattr(manager.client.server, "current_refer_audio", None))
+            if not profiles and not manager.client.current_refer_audio and not has_server_audio:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No character package or voice profile installed. Please install a character package to characters/ or configure a voice profile.",
+                )
 
     try:
         if req.stream:
@@ -446,10 +463,10 @@ async def synthesize_speech(req: SynthesizeRequest):
             return Response(content=audio_bytes, media_type="audio/wav")
 
     except ValueError as val_err:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=sanitize_error_detail(val_err))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=sanitize_error_detail(val_err)) from val_err
     except Exception as exc:
         logger.error("Synthesis error: %s", exc, exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error_detail(exc))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error_detail(exc)) from exc
 
 
 class BrowseFileRequest(BaseModel):
@@ -514,8 +531,7 @@ def _fs_browse_sync(path: Optional[str], file_type: Optional[str]) -> Dict[str, 
     import string
 
     # Path traversal and device name safety check
-    if path:
-        if contains_traversal_payload(path) or is_windows_device_name(path):
+    if path and (contains_traversal_payload(path) or is_windows_device_name(path)):
             return {
                 "current_path": path,
                 "parent_path": None,
