@@ -123,8 +123,15 @@ class TestProviderSwitchingAndPrefill:
                 assert preset["default_base_url"].startswith("http://")
 
     @pytest.mark.asyncio
-    async def test_rapid_succession_switching_and_mutual_exclusion(self, app_client):
-        """Tests rapid switching between all 8 providers in cyclic order, asserting mutual exclusivity."""
+    async def test_rapid_succession_switching_and_mutual_exclusion(self, app_client, monkeypatch):
+        """Tests rapid switching between all 8 providers in cyclic order, asserting mutual exclusivity.
+
+        The rate limiter is disabled on purpose: this test intentionally bursts
+        provider activations (3 x 8 in a row) to verify mutual exclusion, which is
+        a DB invariant rather than a throttling behaviour. The strict budget that
+        guards /api/providers mutations is covered in tests/test_rate_limit.py.
+        """
+        monkeypatch.setenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", "1")
         for cycle in range(3):
             for pid in CANONICAL_8_PROVIDERS:
                 # Activate provider

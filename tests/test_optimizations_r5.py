@@ -67,6 +67,10 @@ class TestSystemUpdateGitClean:
         executed_cmds = []
 
         def fake_run_git(args, cwd, timeout=30.0, env_overrides=None):
+            # Supply-chain guard: the update endpoint checks the origin remote
+            # against an allowlist before fetching/pulling.
+            if args[0] == "remote" and len(args) > 1 and args[1] == "get-url":
+                return 0, "https://github.com/LevenST24/galgame2voice.git", ""
             executed_cmds.append(list(args))
             if args == ["rev-parse", "--is-inside-work-tree"]:
                 return 0, "true", ""

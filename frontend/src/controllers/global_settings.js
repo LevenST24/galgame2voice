@@ -248,23 +248,36 @@ export async function loadProviders() {
       : items;
 
     if (_dom.gProvider) {
-      _dom.gProvider.innerHTML =
-        sorted
-          .map(
-            (p) =>
-              `<option value="${p.id}" ${p.is_active ? 'selected' : ''}>${p.name} · ${p.chat_model || '未设定'}${p.is_active ? '（当前生效）' : ''}</option>`
-          )
-          .join('') +
-        `<option value="__custom__" ${!active && !sorted.length ? 'selected' : ''}>＋ 自定义模型 / 接口…</option>`;
+      _dom.gProvider.innerHTML = '';
+      sorted.forEach((p) => {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = `${p.name} · ${p.chat_model || '未设定'}${p.is_active ? '（当前生效）' : ''}`;
+        if (p.is_active) opt.selected = true;
+        _dom.gProvider.appendChild(opt);
+      });
+      const customOpt = document.createElement('option');
+      customOpt.value = '__custom__';
+      customOpt.textContent = '＋ 自定义模型 / 接口…';
+      if (!active && !sorted.length) customOpt.selected = true;
+      _dom.gProvider.appendChild(customOpt);
     }
 
     onProviderChange();
   } catch (e) {
     console.error('Failed to load providers:', e);
     if (_dom.gProvider) {
-      _dom.gProvider.innerHTML =
-        BUILTIN_PRESETS.map((p) => `<option value="${p.id}">${p.name} · ${p.default_chat_model}</option>`).join('') +
-        '<option value="__custom__">＋ 自定义模型 / 接口…</option>';
+      _dom.gProvider.innerHTML = '';
+      BUILTIN_PRESETS.forEach((p) => {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = `${p.name} · ${p.default_chat_model}`;
+        _dom.gProvider.appendChild(opt);
+      });
+      const customOpt = document.createElement('option');
+      customOpt.value = '__custom__';
+      customOpt.textContent = '＋ 自定义模型 / 接口…';
+      _dom.gProvider.appendChild(customOpt);
     }
     showToast(`提供商列表加载异常: ${e.message || e}`, 'error');
     onProviderChange();
@@ -356,10 +369,21 @@ export function onProviderChange() {
   // 5. 对话模型选择
   const presetModels = preset?.preset_models || (stored?.chat_model ? [stored.chat_model] : []);
   if (_dom.gChatModelSelect) {
-    _dom.gChatModelSelect.innerHTML =
-      '<option value="">-- 选择预设推荐模型 --</option>' +
-      presetModels.map((m) => `<option value="${m}">${m}</option>`).join('') +
-      '<option value="__custom_model__">✏️ 手动输入任意模型 ID...</option>';
+    _dom.gChatModelSelect.innerHTML = '';
+    const placeholderOpt = document.createElement('option');
+    placeholderOpt.value = '';
+    placeholderOpt.textContent = '-- 选择预设推荐模型 --';
+    _dom.gChatModelSelect.appendChild(placeholderOpt);
+    presetModels.forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m;
+      _dom.gChatModelSelect.appendChild(opt);
+    });
+    const customModelOpt = document.createElement('option');
+    customModelOpt.value = '__custom_model__';
+    customModelOpt.textContent = '✏️ 手动输入任意模型 ID...';
+    _dom.gChatModelSelect.appendChild(customModelOpt);
   }
 
   const currentModel = stored?.chat_model || preset?.default_chat_model || presetModels[0] || '';

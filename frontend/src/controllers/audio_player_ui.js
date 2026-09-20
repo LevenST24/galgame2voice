@@ -498,6 +498,12 @@ export function finalizeVoice() {
   const { text, audio, dur, blob } = pendingVoice;
   pendingVoice = { text: null, audio: null, dur: 0, blob: null };
   if (!text && !audio) return;
+  if (!text && audio) {
+    // 有录音但未识别出文字 → 不会发送，释放 Blob URL 避免泄漏
+    try {
+      URL.revokeObjectURL(audio);
+    } catch (_) {}
+  }
   if (text) {
     if (_callbacks.sendMessage) {
       _callbacks.sendMessage(text, audio ? { url: audio, dur, blob } : undefined);
@@ -548,6 +554,11 @@ export function toggleMic() {
       if (_callbacks.autoGrow) _callbacks.autoGrow();
     },
     onRecorded: (blob, dur) => {
+      if (pendingVoice.audio) {
+        try {
+          URL.revokeObjectURL(pendingVoice.audio);
+        } catch (_) {}
+      }
       pendingVoice.audio = URL.createObjectURL(blob);
       pendingVoice.dur = dur;
       pendingVoice.blob = blob;

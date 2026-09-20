@@ -228,11 +228,16 @@ class TestConcurrencyAndRaceConditions:
     """Stress tests concurrent operations on settings, providers, and masked updates."""
 
     @pytest.mark.asyncio
-    async def test_concurrent_settings_updates(self):
+    async def test_concurrent_settings_updates(self, monkeypatch):
         """
         50 concurrent workers updating different settings parameters simultaneously.
         Verify no SQLite database locked errors and all updates commit successfully.
+
+        The request-rate limiter is disabled here on purpose: this test stresses
+        database concurrency, and the strict budget guarding admin mutations
+        (/api/config) is verified separately in tests/test_rate_limit.py.
         """
+        monkeypatch.setenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", "1")
         app = create_app()
         transport = ASGITransport(app=app)
 
@@ -264,11 +269,16 @@ class TestConcurrencyAndRaceConditions:
             assert final_settings.top_k >= 10
 
     @pytest.mark.asyncio
-    async def test_concurrent_provider_activation_race(self):
+    async def test_concurrent_provider_activation_race(self, monkeypatch):
         """
         Multiple providers created; 30 workers concurrently activate different providers.
         Verify invariant: exactly ONE provider is active in DB and settings.active_provider_id matches.
+
+        Rate limiting is disabled on purpose: this test stresses DB concurrency,
+        not request throttling (see tests/test_rate_limit.py).
         """
+        monkeypatch.setenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", "1")
+        monkeypatch.setattr("galgame2voice.security.url_guard._resolve_host", lambda host, port: (True, ""))
         app = create_app()
         transport = ASGITransport(app=app)
 
@@ -311,11 +321,15 @@ class TestConcurrencyAndRaceConditions:
                 await client.delete(f"/api/providers/{pid}")
 
     @pytest.mark.asyncio
-    async def test_concurrent_masked_form_submissions_under_load(self):
+    async def test_concurrent_masked_form_submissions_under_load(self, monkeypatch):
         """
         Stress test 40 concurrent workers submitting masked keys and configuration updates
         to ensure zero race conditions cause raw secret erasure in SQLite.
+
+        Rate limiting is disabled on purpose: this test stresses DB concurrency,
+        not request throttling (see tests/test_rate_limit.py).
         """
+        monkeypatch.setenv("GALGAME2VOICE_RATE_LIMIT_DISABLED", "1")
         app = create_app()
         transport = ASGITransport(app=app)
         test_provider_id = "concurrent_mask_target"

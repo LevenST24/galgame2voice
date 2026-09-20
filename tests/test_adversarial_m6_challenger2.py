@@ -41,6 +41,7 @@ from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from galgame2voice.telegram_bot.bot import validate_bot_token, TelegramBotManager
+from telegram_test_support import TELEGRAM_TEST_ADMINS
 from galgame2voice.utils.audio_converter import (
     is_ffmpeg_available,
     convert_ogg_to_wav,
@@ -103,7 +104,7 @@ class TestMultiUserConcurrencyAndIsolation:
         4. DB persistence maintains strict user session isolation.
         """
         bot_client = MockTelegramBotClient()
-        handlers = TelegramBotHandlers(db_path=challenge_db)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=challenge_db)
         num_users = 15
 
         # Configure mock LLM adapter to return custom bilingual payload per user
@@ -176,7 +177,7 @@ class TestMultiUserConcurrencyAndIsolation:
         - All other 9 users' voice tasks complete successfully without being affected.
         """
         bot_client = MockTelegramBotClient()
-        handlers = TelegramBotHandlers(db_path=challenge_db)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=challenge_db)
 
         # Make TTS slow to allow race window
         async def slow_synthesize(text, *args, **kwargs):
@@ -229,7 +230,7 @@ class TestMultiUserConcurrencyAndIsolation:
         Verifies no unhandled exceptions, deadlocks, or DB corruption.
         """
         bot_client = MockTelegramBotClient()
-        handlers = TelegramBotHandlers(db_path=challenge_db)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=challenge_db)
         chat_id = 88888
 
         class DummyUpdate:
@@ -382,7 +383,7 @@ class TestTelegramVoiceHandlerErrorRecovery:
         Simulate downloading corrupted voice bytes from Telegram.
         Verifies user receives error reply and bot does not crash.
         """
-        handlers = TelegramBotHandlers(db_path=challenge_db)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=challenge_db)
         mock_reply = AsyncMock()
 
         class MockVoice:
@@ -415,7 +416,7 @@ class TestTelegramVoiceHandlerErrorRecovery:
         Simulate network timeout / connection error during Telegram get_file.
         Verifies bot handles exception gracefully and informs user.
         """
-        handlers = TelegramBotHandlers(db_path=challenge_db)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=challenge_db)
         mock_reply = AsyncMock()
 
         class MockVoice:
@@ -444,7 +445,7 @@ class TestTelegramVoiceHandlerErrorRecovery:
         Simulate STT adapter raising an unhandled exception (e.g. API quota exceeded, 500 server error).
         Verifies bot catches exception, replies to user, and does not crash.
         """
-        handlers = TelegramBotHandlers(db_path=challenge_db)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=challenge_db)
         mock_reply = AsyncMock()
 
         class MockVoice:
@@ -485,7 +486,7 @@ class TestTelegramVoiceHandlerErrorRecovery:
         2. Background task logs error and terminates cleanly without uncaught exception crash.
         """
         bot_client = MockTelegramBotClient()
-        handlers = TelegramBotHandlers(db_path=challenge_db)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=challenge_db)
         chat_id = 30001
 
         # LLM returns valid bilingual reply
@@ -513,7 +514,7 @@ class TestTelegramVoiceHandlerErrorRecovery:
         Pass updates with missing fields (message=None, voice=None, text=None) to handlers.
         Verifies graceful None return without AttributeError or crash.
         """
-        handlers = TelegramBotHandlers(db_path=challenge_db)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=challenge_db)
         mock_context = AsyncMock()
 
         # Update without message
@@ -547,7 +548,7 @@ class TestEndToEndConcurrentVoicePipelineStress:
         - Background voice synthesis dispatched to matching chat_id
         """
         bot_client = MockTelegramBotClient()
-        handlers = TelegramBotHandlers(db_path=challenge_db)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=challenge_db)
         num_users = 10
 
         # Mock STT adapter to return distinct transcription per user
@@ -630,7 +631,7 @@ class TestEndToEndConcurrentVoicePipelineStress:
         message sequencing in SQLite, and clean reset.
         """
         bot_client = MockTelegramBotClient()
-        handlers = TelegramBotHandlers(db_path=challenge_db)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=challenge_db)
         chat_id = 70001
 
         turn_count = 6

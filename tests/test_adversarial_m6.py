@@ -45,6 +45,7 @@ from galgame2voice.database.session import init_db
 from galgame2voice.adapters.base import BaseLLMAdapter, LLMResponse, ChatMessage
 from galgame2voice.database.models import SettingsInDB, ProviderCreate, VoiceProfileCreate
 from tests.conftest import MockLLMServer, MockGptSovitsServer
+from telegram_test_support import TELEGRAM_TEST_ADMINS
 
 
 @pytest.fixture
@@ -217,7 +218,7 @@ class TestTelegramBotAdversarial:
 
     @pytest.mark.asyncio
     async def test_telegram_rapid_interruption_stress(self, m6_test_db):
-        handlers = TelegramBotHandlers(db_path=m6_test_db)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=m6_test_db)
         chat_id = 99999
 
         class MockBot:
@@ -257,7 +258,7 @@ class TestTelegramBotAdversarial:
 
     @pytest.mark.asyncio
     async def test_telegram_voice_stt_transcription_empty_graceful(self, m6_test_db):
-        handlers = TelegramBotHandlers(db_path=m6_test_db)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=m6_test_db)
         
         class MockVoiceMessage:
             file_id = "test_empty_voice"

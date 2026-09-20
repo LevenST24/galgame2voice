@@ -26,6 +26,7 @@ from galgame2voice.utils.audio_converter import (
     convert_wav_to_ogg,
 )
 from galgame2voice.database.models import SettingsInDB
+from telegram_test_support import TELEGRAM_TEST_ADMINS
 
 
 # ============================================================================
@@ -360,7 +361,7 @@ class TestTelegramBotRealModules:
 
     @pytest.mark.asyncio
     async def test_telegram_bot_handlers_commands(self, temp_db_path):
-        handlers = TelegramBotHandlers(db_path=temp_db_path)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=temp_db_path)
         client = MockBotClient()
 
         class DummyUpdate:
@@ -430,7 +431,7 @@ class TestTelegramBotRealModules:
     @pytest.mark.asyncio
     async def test_telegram_bot_inline_keyboard_console_and_callbacks(self, temp_db_path):
         """Validates that the native inline keyboard console and all callback sub-menus work seamlessly."""
-        handlers = TelegramBotHandlers(db_path=temp_db_path)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=temp_db_path)
         client = MockBotClient()
 
         class DummyUpdate:
@@ -546,7 +547,7 @@ class TestTelegramBotRealModules:
     @pytest.mark.asyncio
     async def test_telegram_bot_character_command_and_quick_switch(self, temp_db_path):
         """Validates /character, /char, /switch command handling, direct switching, and 2-column menu layout."""
-        handlers = TelegramBotHandlers(db_path=temp_db_path)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=temp_db_path)
         client = MockBotClient()
 
         class DummyUpdate:
@@ -606,7 +607,7 @@ class TestTelegramBotRealModules:
     @pytest.mark.asyncio
     async def test_telegram_bot_process_text_chat_dynamic_tts_and_chat_actions(self, temp_db_path):
         """Validates that process_text_chat sends typing/recording actions and forwards dynamic TTS options."""
-        handlers = TelegramBotHandlers(db_path=temp_db_path)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=temp_db_path)
         client = MockBotClient()
 
         # Mock LLM adapter returning emotion tags and psychological cues
@@ -675,7 +676,7 @@ class TestTelegramBotRealModules:
     @pytest.mark.asyncio
     async def test_telegram_bot_dynamic_nickname_and_affection_menu(self, temp_db_path):
         """Validates that nickname updates and affection menus use dynamic character names."""
-        handlers = TelegramBotHandlers(db_path=temp_db_path)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=temp_db_path)
         client = MockBotClient()
 
         from galgame2voice.database.session import get_db

@@ -34,6 +34,7 @@ from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.tts_cache_manager import TtsCacheManager
 from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from tests.test_chat_streaming_m4 import MockStreamingLLMAdapter
+from telegram_test_support import TELEGRAM_TEST_ADMINS
 
 
 # ============================================================================
@@ -273,7 +274,7 @@ class TestMemoryLeakPrevention:
     @pytest.mark.asyncio
     async def test_telegram_handlers_cleans_up_finished_task(self):
         """Verify TelegramBotHandlers automatically pops completed tasks from user_tasks."""
-        handlers = TelegramBotHandlers()
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, )
 
         async def quick_worker():
             await asyncio.sleep(0.01)
@@ -299,7 +300,7 @@ class TestMemoryLeakPrevention:
     @pytest.mark.asyncio
     async def test_telegram_handlers_cancel_user_task_pops_immediately(self):
         """Verify cancel_user_task immediately removes the entry from user_tasks."""
-        handlers = TelegramBotHandlers()
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, )
 
         async def slow_worker():
             await asyncio.sleep(10.0)

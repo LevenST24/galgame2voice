@@ -24,6 +24,50 @@ from galgame2voice.utils.logger import sanitize_error_detail
 logger = logging.getLogger("galgame2voice.routers.system")
 router = APIRouter(prefix="/api/system", tags=["System & Update"])
 
+# Supply-chain hardening: one-click update executes code freshly pulled from
+# `origin` (npm build etc.), so the remote URL must be pinned to the upstream
+# repository. Operators can override/extend via a comma-separated list in the
+# GALGAME2VOICE_UPDATE_ALLOWED_REMOTES environment variable.
+_DEFAULT_ALLOWED_REMOTES = (
+    "https://github.com/LevenST24/galgame2voice",
+    "https://github.com/LevenST24/galgame2voice.git",
+    "git@github.com:LevenST24/galgame2voice",
+    "git@github.com:LevenST24/galgame2voice.git",
+    "ssh://git@github.com/LevenST24/galgame2voice",
+    "ssh://git@github.com/LevenST24/galgame2voice.git",
+)
+
+
+def _get_allowed_remotes() -> List[str]:
+    raw = os.getenv("GALGAME2VOICE_UPDATE_ALLOWED_REMOTES", "").strip()
+    if raw:
+        return [entry.strip() for entry in raw.split(",") if entry.strip()]
+    return list(_DEFAULT_ALLOWED_REMOTES)
+
+
+def _is_allowed_remote(url: str) -> bool:
+    normalized = (url or "").strip().rstrip("/")
+    return any(normalized == allowed.rstrip("/") for allowed in _get_allowed_remotes())
+
+
+def _verify_remote_url_allowed(project_root: Path) -> Optional[str]:
+    """Returns an error message if `origin` is not an allowed update source, else None."""
+    rc, remote_url, err = _run_git_cmd(["remote", "get-url", "origin"], cwd=project_root)
+    if rc != 0 or not remote_url:
+        return f"无法读取 git remote origin 地址: {err or 'remote 不存在'}"
+    if not _is_allowed_remote(remote_url):
+        logger.warning("Blocked one-click update from untrusted remote: %s", remote_url)
+        return (
+            f"安全拦截: 当前 git remote origin 不在允许的更新源白名单内 ({remote_url})。"
+            "如需更换更新源, 请设置 GALGAME2VOICE_UPDATE_ALLOWED_REMOTES 环境变量。"
+        )
+    return None
+
+
+# Serializes all git fetch/pull/update operations to prevent concurrent
+# repository lock contention.
+_GIT_OP_LOCK = asyncio.Lock()
+
 
 # ============================================================================
 # Pydantic Schemas
@@ -130,7 +174,9 @@ def _rebuild_frontend_sync(project_root: Path, timeout: float = 120.0) -> Tuple[
 
     try:
         proc = subprocess.run(
-            [npm_bin, "run", "deploy"],
+            # --ignore-scripts blocks malicious lifecycle hooks (pre/postinstall
+            # style) from freshly pulled code during the build.
+            [npm_bin, "--ignore-scripts", "run", "deploy"],
             cwd=str(frontend_dir),
             capture_output=True,
             text=True,
@@ -218,7 +264,7 @@ def _check_version_sync(project_root: Path, check_remote: bool = True) -> System
             remote_url = ""
 
     # If remote check is disabled, return local snapshot immediately
-    if not check_remote:
+    if not check_remote:  # note: caller decides; remote URL whitelist enforced before fetch below
         return SystemVersionResponse(
             current_version=cur_short,
             latest_version=cur_short,
@@ -233,6 +279,22 @@ def _check_version_sync(project_root: Path, check_remote: bool = True) -> System
 
     # 3. Check remote origin status
     remote_name, remote_branch = _get_remote_and_branch(project_root)
+
+    # Supply-chain guard: never fetch from an untrusted remote
+    if remote_name == "origin" and not _is_allowed_remote(remote_url):
+        logger.warning("Blocked remote update check from untrusted remote: %s", remote_url)
+        return SystemVersionResponse(
+            current_version=cur_short,
+            latest_version=cur_short,
+            has_update=False,
+            behind_count=0,
+            remote_url=remote_url,
+            commits_log=[],
+            current_branch=branch,
+            commit_date=commit_date,
+            commit_message=commit_msg,
+            error="安全拦截: git remote origin 不在允许的更新源白名单内，已跳过远端检查。",
+        )
 
     # Fetch origin using refspec to update both FETCH_HEAD and remote-tracking branch
     refspec = f"+refs/heads/{remote_branch}:refs/remotes/{remote_name}/{remote_branch}"
@@ -359,6 +421,19 @@ def _apply_update_sync(
             current_version="unknown",
             previous_version="unknown",
             error=msg,
+        ), []
+
+    # 1b. Supply-chain guard: only fetch/reset from the pinned upstream remote
+    remote_err = _verify_remote_url_allowed(project_root)
+    if remote_err:
+        return SystemUpdateResponse(
+            success=False,
+            rebuilt_frontend=False,
+            restart_required=False,
+            output=remote_err,
+            current_version="unknown",
+            previous_version="unknown",
+            error=remote_err,
         ), []
 
     # Record current short commit before checks
@@ -527,13 +602,14 @@ def _apply_update_sync(
 )
 async def get_system_version(
     check_remote: bool = Query(
-        default=True,
+        default=False,
         description="Whether to fetch remote origin to check for pending updates",
     )
 ):
     """Returns local git commit metadata and pending updates comparison."""
     settings = get_settings()
-    return await asyncio.to_thread(_check_version_sync, settings.project_root, check_remote)
+    async with _GIT_OP_LOCK:
+        return await asyncio.to_thread(_check_version_sync, settings.project_root, check_remote)
 
 
 @router.get(
@@ -545,7 +621,8 @@ async def get_system_version(
 async def check_system_update():
     """Convenient alias explicitly checking for remote updates."""
     settings = get_settings()
-    return await asyncio.to_thread(_check_version_sync, settings.project_root, True)
+    async with _GIT_OP_LOCK:
+        return await asyncio.to_thread(_check_version_sync, settings.project_root, True)
 
 
 @router.post(
@@ -561,14 +638,16 @@ async def apply_system_update(payload: Optional[SystemUpdateRequest] = None):
     stash_changes = payload.stash_changes if payload else False
     discard_local_changes = payload.discard_local_changes if payload else False
 
-    # Execute git pull and frontend rebuild in worker thread
-    res, changed_files = await asyncio.to_thread(
-        _apply_update_sync,
-        settings.project_root,
-        force_rebuild,
-        stash_changes,
-        discard_local_changes,
-    )
+    # Execute git pull and frontend rebuild in worker thread (serialized to
+    # avoid concurrent git operations racing on the repository lock)
+    async with _GIT_OP_LOCK:
+        res, changed_files = await asyncio.to_thread(
+            _apply_update_sync,
+            settings.project_root,
+            force_rebuild,
+            stash_changes,
+            discard_local_changes,
+        )
 
     # If update succeeded, automatically synchronize character packages with DB
     if res.success:

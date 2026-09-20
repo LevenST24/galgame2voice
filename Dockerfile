@@ -12,9 +12,9 @@ FROM node:20-alpine AS frontend-builder
 
 WORKDIR /frontend
 
-# Install dependencies (reproducible from lockfile)
+# Install dependencies (reproducible from lockfile; no fallback to unpinned install)
 COPY frontend/package*.json ./
-RUN npm ci || npm install
+RUN npm ci --ignore-scripts
 
 # Build production assets
 COPY frontend/ ./
@@ -31,8 +31,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy uv binary from official Astral image for locked, reproducible dependency installation
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Copy uv binary from official Astral image for locked, reproducible dependency installation.
+# Pinned tag for reproducible builds (no floating :latest); bump deliberately and re-test when upgrading.
+COPY --from=ghcr.io/astral-sh/uv:0.9.0 /uv /uvx /bin/
 
 WORKDIR /app
 
@@ -62,6 +63,18 @@ COPY --from=frontend-builder /frontend/dist/ /app/galgame2voice/static/
 
 # Create runtime directories
 RUN mkdir -p /app/data /app/audio /app/logs
+
+# Run as a dedicated non-root user. /app itself stays root-owned (read-only for the
+# app); only the writable data directories (bind-mounted at runtime) are chowned.
+# APP_UID/APP_GID default to 1000 -- the usual first Linux user -- so the
+# docker-compose bind mounts (./data, ./audio, ./logs) remain writable. If your
+# host user has a different id, rebuild with:
+#   docker compose build --build-arg APP_UID=$(id -u) --build-arg APP_GID=$(id -g)
+ARG APP_UID=1000
+ARG APP_GID=1000
+RUN groupadd -g ${APP_GID} app && useradd -u ${APP_UID} -g app -d /app -M app \
+    && chown -R app:app /app/data /app/audio /app/logs
+USER app
 
 EXPOSE 8080
 

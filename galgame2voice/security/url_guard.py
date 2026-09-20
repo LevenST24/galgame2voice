@@ -147,6 +147,17 @@ def validate_llm_base_url(url: Optional[str], allow_private: bool = False) -> Tu
     return True, ""
 
 
+def validate_local_service_url(url: Optional[str]) -> Tuple[bool, str]:
+    """Validates a local/LAN service URL (e.g. the GPT-SoVITS inference server).
+
+    Allows private/loopback hosts (the service legitimately lives on the LAN),
+    but rejects non-http(s) schemes (file://, gopher://, ...), embedded
+    credentials, and URLs without a hostname. No DNS resolution is performed.
+    Returns (ok, reason).
+    """
+    return validate_llm_base_url(url, allow_private=True)
+
+
 async def assert_llm_url_safe(url: str, allow_private: bool = False) -> None:
     """
     Validates the target URL before making outbound LLM or STT requests.
@@ -159,4 +170,10 @@ async def assert_llm_url_safe(url: str, allow_private: bool = False) -> None:
         raise PermissionError(f"SSRF/DNS-Rebinding 阻止: {reason}")
 
 
-__all__ = ["validate_llm_base_url", "assert_llm_url_safe", "OFFICIAL_LLM_HOSTS", "clear_dns_cache"]
+__all__ = [
+    "validate_llm_base_url",
+    "validate_local_service_url",
+    "assert_llm_url_safe",
+    "OFFICIAL_LLM_HOSTS",
+    "clear_dns_cache",
+]

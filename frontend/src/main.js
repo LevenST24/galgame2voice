@@ -861,12 +861,16 @@ ensureSessionVoice(getActive());
 if (!voiceSupported() && !recorderSupported() && dom.micBtn) dom.micBtn.classList.add('hidden');
 if (window.innerWidth > 820 && dom.input) dom.input.focus();
 
-// 同步后端 SQLite 会话列表及历史消息
+// 同步后端 SQLite 会话列表及历史消息（generation counter 防止过期结果覆盖用户新建会话）
+let _syncSessionsGen = 0;
 async function syncSessionsFromBackend() {
+  const gen = ++_syncSessionsGen;
+  const isStale = () => gen !== _syncSessionsGen;
   try {
     const res = await fetch('/api/chat/sessions?limit=50');
     if (!res.ok) return;
     const data = await res.json();
+    if (isStale()) return;
     const backendSessions = data.sessions || [];
     if (backendSessions.length > 0) {
       const existingMap = new Map(state.sessions.map((s) => [s.id, s]));
@@ -924,6 +928,7 @@ async function syncSessionsFromBackend() {
     if (curActive && (!curActive.messages || curActive.messages.length === 0)) {
       await loadSessionHistory(curActive);
     }
+    if (isStale()) return;
     saveState();
     fullRender(false);
     ensureSessionVoice(getActive(), { silent: true });

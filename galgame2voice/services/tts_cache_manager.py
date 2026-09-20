@@ -26,6 +26,10 @@ logger = logging.getLogger("galgame2voice.services.tts_cache_manager")
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+# Sentinel for "the previous cache row could not be read", which is distinct from
+# None ("no previous row exists" = this write is an INSERT).
+_STATS_UNKNOWN = object()
+
 
 class TtsCacheManager:
     """
@@ -502,6 +506,24 @@ class TtsCacheManager:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         file_path = self.cache_dir / f"{cache_key}.wav"
 
+        # upsert_tts_cache_entry is an UPSERT: on a repeated key the row is
+        # replaced, not added. Read the previous file_size up front so the
+        # in-memory disk stats are adjusted by the delta instead of being
+        # double-counted on every re-synthesis of the same key.
+        # _STATS_UNKNOWN distinguishes "query failed, INSERT/UPDATE unknown"
+        # from prev_file_size=None which unambiguously means "no previous row"
+        # (i.e. this write inserts a new cache entry).
+        prev_file_size: Optional[int] = _STATS_UNKNOWN
+        try:
+            async with get_db(self.db_path) as _conn:
+                _prev = await crud.get_tts_cache_entry(_conn, cache_key)
+                # The query succeeded, so its result is authoritative:
+                # None means "no previous row exists" => this write is an INSERT.
+                prev_file_size = _prev.file_size if _prev is not None else None
+        except Exception as exc:
+            logger.debug("Could not read previous cache entry for %s: %r", cache_key, exc)
+            prev_file_size = _STATS_UNKNOWN  # stats fallback handled below
+
         async with self._write_lock:
             # Atomic write to file via temp file to prevent 0-byte/corrupt files
             def _atomic_write():
@@ -515,6 +537,14 @@ class TtsCacheManager:
                         except (PermissionError, OSError) as err:
                             try:
                                 if file_path.exists() and file_path.stat().st_size > 0:
+                                    # Windows AV/indexer may transiently lock the target;
+                                    # the existing file is a valid cache entry for this key,
+                                    # so keep it rather than failing the whole put.
+                                    logger.warning(
+                                        "Cache file %s locked (%s); keeping existing file, "
+                                        "fresh bytes discarded for this write.",
+                                        file_path, err,
+                                    )
                                     tmp_path.unlink(missing_ok=True)
                                     return
                             except Exception:
@@ -575,9 +605,21 @@ class TtsCacheManager:
                 # Populate In-Memory LRU Cache only after successful persistence
                 async with self._lock:
                     self._mem_cache_store(cache_key, audio_bytes)
-                    if self._disk_bytes_total is not None:
-                        self._disk_bytes_total += file_size
-                        self._disk_files_total = (self._disk_files_total or 0) + 1
+                    if prev_file_size is _STATS_UNKNOWN:
+                        # The previous row could not be read, so this write may
+                        # be an INSERT or an UPSERT overwrite: invalidate the
+                        # stats and let the next prune/get_stats rebuild them
+                        # from the DB truth instead of double-counting.
+                        self._disk_bytes_total = None
+                        self._disk_files_total = None
+                        self._stats_initialized = False
+                    elif self._disk_bytes_total is not None:
+                        # Delta-based update: an UPSERT replaces the old row, so
+                        # only the size difference counts; a fresh key adds a file.
+                        delta = file_size - (prev_file_size or 0)
+                        self._disk_bytes_total += delta
+                        if prev_file_size is None:
+                            self._disk_files_total = (self._disk_files_total or 0) + 1
             except Exception:
                 async with self._lock:
                     self._mem_cache_discard(cache_key)

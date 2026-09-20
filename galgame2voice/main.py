@@ -61,6 +61,63 @@ if not hasattr(status, "HTTP_422_UNPROCESSABLE_CONTENT"):
 logger = logging.getLogger("galgame2voice.main")
 
 
+class HostValidationMiddleware:
+    """
+    Rejects /api/ requests whose Host header is not a loopback host.
+
+    A malicious web page can DNS-rebind its own domain to 127.0.0.1 and call this
+    API with the victim's browser; the browser still sends the attacker's domain
+    as the Host header, so an exact allowlist breaks the attack. Only enabled for
+    the local zero-config mode (see create_app) because TLS-terminating reverse
+    proxies rewrite or forward their own Host value.
+    """
+
+    ALLOWED_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+    def __init__(self, app):
+        self.app = app
+
+    @staticmethod
+    def extract_hostname(raw_host: str) -> str:
+        """Strips the optional port from a Host header value, keeping IPv6 brackets semantics."""
+        host = (raw_host or "").strip()
+        if not host:
+            return ""
+        if host.startswith("["):
+            # IPv6 literal, e.g. "[::1]:8080" -> "::1"
+            return host[1:].split("]", 1)[0].lower()
+        if host.count(":") == 1:
+            # "host:port" -> "host"; a bare IPv6 without brackets has 2+ colons
+            # and is deliberately NOT accepted (it cannot be parsed unambiguously).
+            return host.split(":", 1)[0].lower()
+        return host.lower()
+
+    def _allowed_hostnames(self) -> set:
+        allowed = set(self.ALLOWED_LOOPBACK_HOSTS)
+        configured = str(get_settings().host).strip().lower()
+        if configured:
+            allowed.add(configured)
+        return allowed
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and str(scope.get("path", "")).startswith("/api/"):
+            headers = {k.lower(): v for k, v in scope.get("headers") or []}
+            raw_host = headers.get(b"host", b"").decode("latin-1")
+            if self.extract_hostname(raw_host) not in self._allowed_hostnames():
+                logger.warning("Rejected /api request with unexpected Host header: %r", raw_host)
+                await send({
+                    "type": "http.response.start",
+                    "status": 403,
+                    "headers": [(b"content-type", b"application/json")],
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": b'{"detail": "Forbidden: unexpected Host header"}',
+                })
+                return
+        await self.app(scope, receive, send)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -355,6 +412,29 @@ def create_app() -> FastAPI:
     # Request rate limiting (outermost middleware). 429s bypassing CORS is
     # acceptable: the console is same-origin.
     app.add_middleware(RateLimitMiddleware)
+
+    # DNS Rebinding mitigation (audit finding: Host header validation).
+    # A malicious web page can rebind its domain to 127.0.0.1 and call this
+    # API with the victim's browser; enforcing an exact Host allowlist breaks
+    # that attack because the browser sends the attacker's domain as Host.
+    # IMPORTANT: this check is ONLY enabled for the local zero-config mode
+    # (auth disabled AND listening on a loopback address). Reverse-proxied /
+    # LAN deployments terminate TLS or rewrite Host at the proxy, and the
+    # loopback fail-fast check in lifespan() already requires auth there, so
+    # enabling this unconditionally would break legitimate deployments.
+    # Test suites drive the ASGI app directly (Host: "test") and therefore opt
+    # out via GALGAME2VOICE_HOST_HEADER_VALIDATION_DISABLED=1, mirroring the
+    # existing GALGAME2VOICE_RATE_LIMIT_DISABLED convention.
+    from galgame2voice.security.auth import is_auth_disabled
+
+    _is_loopback_host = str(settings.host).strip().lower() in ("127.0.0.1", "localhost", "::1")
+    if (
+        settings.auth_disabled
+        and _is_loopback_host
+        and is_auth_disabled()
+        and not settings.host_header_validation_disabled
+    ):
+        app.add_middleware(HostValidationMiddleware)
 
     # Compress large static/JS/CSS payloads.
     app.add_middleware(GZipMiddleware, minimum_size=1024)

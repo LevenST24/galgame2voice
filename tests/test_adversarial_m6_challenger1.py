@@ -54,6 +54,7 @@ from galgame2voice.utils.audio_converter import (
 from galgame2voice.adapters.base import BaseLLMAdapter, LLMResponse, ChatMessage
 from galgame2voice.services.tts_service import TtsService
 from tests.conftest import MockGptSovitsServer, MockLLMServer, DATABASE_SCHEMA_SQL
+from telegram_test_support import TELEGRAM_TEST_ADMINS
 
 
 # ============================================================================
@@ -488,7 +489,7 @@ class TestTelegramBotAdversarial:
         bot_client = MockStressBotClient()
         slow_tts = SlowMockTTS(delay_s=0.03)
 
-        handlers = TelegramBotHandlers(db_path=m6_temp_db, tts_service=slow_tts)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=m6_temp_db, tts_service=slow_tts)
 
         # Mock LLM response in ChatService
         mock_adapter = AsyncMock(spec=BaseLLMAdapter)
@@ -531,7 +532,7 @@ class TestTelegramBotAdversarial:
         """
         bot_client = MockStressBotClient()
         slow_tts = SlowMockTTS(delay_s=0.02)
-        handlers = TelegramBotHandlers(db_path=m6_temp_db, tts_service=slow_tts)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=m6_temp_db, tts_service=slow_tts)
 
         mock_adapter = AsyncMock(spec=BaseLLMAdapter)
         mock_adapter.chat.side_effect = lambda msgs, **kw: LLMResponse(
@@ -565,7 +566,7 @@ class TestTelegramBotAdversarial:
         """Verify that when background TTS fails (500/timeout), text reply was still sent and no crash occurs."""
         bot_client = MockStressBotClient()
         failing_tts = SlowMockTTS(delay_s=0.01, should_fail=True)
-        handlers = TelegramBotHandlers(db_path=m6_temp_db, tts_service=failing_tts)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=m6_temp_db, tts_service=failing_tts)
 
         mock_adapter = AsyncMock(spec=BaseLLMAdapter)
         mock_adapter.chat.return_value = LLMResponse(
@@ -586,7 +587,7 @@ class TestTelegramBotAdversarial:
     async def test_corrupt_audio_conversion_failure_resilience(self, m6_temp_db):
         """Test voice message handler against corrupted, empty, and non-audio bytes."""
         bot_client = MockStressBotClient()
-        handlers = TelegramBotHandlers(db_path=m6_temp_db)
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=m6_temp_db)
 
         class DummyVoiceMsgUpdate:
             def __init__(self, file_id: str):

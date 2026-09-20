@@ -178,16 +178,33 @@ class GptSovitsClient:
         old_client = self._client
         self._client = None
         if old_client is not None and not old_client.is_closed:
-            grace = float(os.getenv("GALGAME2VOICE_CLIENT_CLOSE_GRACE_SECONDS", "30") or 30)
+            # The grace period must be no shorter than the TTS read timeout:
+            # a legitimate slow synthesis can hold a streaming response open
+            # for up to TTS_TIMEOUT.read seconds; force-closing earlier would
+            # cut off in-flight streams mid-read (RemoteProtocolError).
+            min_grace = float(TTS_TIMEOUT.read) + 30.0
+            grace = max(
+                float(os.getenv("GALGAME2VOICE_CLIENT_CLOSE_GRACE_SECONDS", "30") or 30),
+                min_grace,
+            )
 
             async def _close_when_drained():
+                force_closed = False
                 try:
                     loop = asyncio.get_running_loop()
                     deadline = loop.time() + grace
                     while self._inflight_requests > 0 and loop.time() < deadline:
                         await asyncio.sleep(0.25)
+                    force_closed = self._inflight_requests > 0
                 except Exception:
                     pass
+                if force_closed:
+                    logger.warning(
+                        "Force-closing stale GPT-SoVITS connection pool after %.0fs grace: "
+                        "%d request(s) still in flight; their streams may be interrupted.",
+                        grace,
+                        self._inflight_requests,
+                    )
                 try:
                     await old_client.aclose()
                 except Exception:

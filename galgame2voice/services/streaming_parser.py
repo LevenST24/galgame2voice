@@ -54,6 +54,15 @@ class StreamingBilingualParser:
         self.japanese_extracted: str = ""
         self.emotion_extracted: str = ""
         self.emitted_chinese_len: int = 0
+        # Monotone CHARACTER cursor over the normalized confirmed Japanese text
+        # (the concatenation of the confirmed completed sentences) that has
+        # already been dispatched to TTS. feed_chunk/finalize re-split the full
+        # accumulated Japanese text every round and compare the confirmed prefix
+        # against this offset, guaranteeing each sentence is emitted exactly once.
+        # A character offset (not a sentence index) is required because the
+        # splitter runs with is_first_chunk=True until the first emission and
+        # False afterwards, and the two modes yield DIFFERENT boundaries for the
+        # same text (see _drain_new_ja_sentences).
         self.emitted_japanese_len: int = 0
         self.first_sentence_emitted: bool = False
         self.is_plain_text_fallback: bool = False
@@ -343,13 +352,7 @@ class StreamingBilingualParser:
                     if not TERMINAL_PUNCT_WITH_CLOSING.search(last_sent):
                         all_sentences = all_sentences[:-1]
 
-            completed_text = "".join(all_sentences)
-            if len(completed_text) > self.emitted_japanese_len:
-                remaining = completed_text[self.emitted_japanese_len:]
-                new_sentences = split_japanese_sentences(remaining, is_first_chunk=not self.first_sentence_emitted)
-                self.emitted_japanese_len = len(completed_text)
-                if new_sentences:
-                    self.first_sentence_emitted = True
+            new_sentences = self._drain_new_ja_sentences(all_sentences)
         elif self.is_plain_text_fallback:
             ja_fallback = re.search(r'(?:日文|Japanese)[:：]\s*(.*)$', sanitized, flags=re.DOTALL | re.IGNORECASE)
             if ja_fallback:
@@ -374,15 +377,39 @@ class StreamingBilingualParser:
                     else:
                         if not TERMINAL_PUNCT_WITH_CLOSING.search(last_sent):
                             all_sentences = all_sentences[:-1]
-                completed_text = "".join(all_sentences)
-                if len(completed_text) > self.emitted_japanese_len:
-                    remaining = completed_text[self.emitted_japanese_len:]
-                    new_sentences = split_japanese_sentences(remaining, is_first_chunk=not self.first_sentence_emitted)
-                    self.emitted_japanese_len = len(completed_text)
-                    if new_sentences:
-                        self.first_sentence_emitted = True
+                new_sentences = self._drain_new_ja_sentences(all_sentences)
 
         return new_chinese_delta, new_sentences
+
+    def _drain_new_ja_sentences(self, confirmed_sentences: List[str]) -> List[str]:
+        """
+        Advances the monotone character cursor over the confirmed-completed
+        Japanese prefix and returns only the newly confirmed sentences.
+
+        Why a character cursor instead of a sentence-index cursor: the splitter
+        is invoked with ``is_first_chunk=True`` until the first sentence has been
+        emitted and with ``is_first_chunk=False`` afterwards, and those two modes
+        produce DIFFERENT boundaries for the very same text -- agile mode may cut
+        on a clause comma (``["こんにちは、", "先生、今日は…ですね。"]``) while the
+        strict mode merges them back into a single sentence
+        (``["こんにちは、先生、今日は…ですね。"]``). Comparing sentence *counts*
+        would then report "nothing new" and silently drop the remainder of the
+        already-started sentence, so the cursor is tracked as a character offset
+        over the concatenated confirmed text, which is guaranteed to be a
+        monotonically growing prefix of the accumulated Japanese text.
+        """
+        confirmed_text = "".join(confirmed_sentences)
+        if len(confirmed_text) <= self.emitted_japanese_len:
+            return []
+
+        remainder = confirmed_text[self.emitted_japanese_len:]
+        new_sentences = split_japanese_sentences(remainder, is_first_chunk=not self.first_sentence_emitted)
+        # The splitter only ever discards pure whitespace, so advancing the cursor
+        # past `confirmed_text` is lossless even when nothing is emitted here.
+        self.emitted_japanese_len = len(confirmed_text)
+        if new_sentences:
+            self.first_sentence_emitted = True
+        return new_sentences
 
     def finalize(self) -> Tuple[str, str, List[str]]:
         """
@@ -520,15 +547,12 @@ class StreamingBilingualParser:
 
         remaining_sentences: List[str] = []
         if self.japanese_extracted:
+            # Re-split the full accumulated Japanese text with the same
+            # is_first_chunk parameter as feed_chunk, then drain everything
+            # beyond the monotone emitted-sentence cursor so feed_chunk and
+            # finalize stay aligned (no duplicated or skipped sentences).
             is_first = not self.first_sentence_emitted
             all_sentences = split_japanese_sentences(self.japanese_extracted, is_first_chunk=is_first)
-            emitted_so_far = self.emitted_japanese_len
-            full_ja_text = "".join(all_sentences)
-            if len(full_ja_text) > emitted_so_far:
-                rem_text = full_ja_text[emitted_so_far:]
-                if rem_text.strip():
-                    remaining_sentences = split_japanese_sentences(rem_text, is_first_chunk=not self.first_sentence_emitted)
-                    if remaining_sentences:
-                        self.first_sentence_emitted = True
+            remaining_sentences = self._drain_new_ja_sentences(all_sentences)
 
         return self.chinese_extracted, self.japanese_extracted, remaining_sentences

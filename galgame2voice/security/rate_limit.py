@@ -19,9 +19,35 @@ from galgame2voice.config import get_settings
 _DEFAULT_GLOBAL_LIMIT = 240      # requests per window, all clients combined
 _DEFAULT_IP_LIMIT = 120          # requests per window, per client IP
 _WINDOW_SECONDS = 60.0
-_PROTECTED_PREFIXES = ("/api/chat", "/api/voice/synthesize", "/api/memory", "/api/affection")
-_PROTECTED_LIMIT = 30            # stricter budget for LLM/TTS-spending routes
+_PROTECTED_PREFIXES = (
+    "/api/chat",
+    "/api/voice/synthesize",
+    "/api/memory",
+    "/api/affection",
+)
+# High-risk admin/config routes. Their expensive/dangerous operations are the
+# MUTATING ones (settings writes, provider activation, network tests, git
+# updates), so only those take the strict budget; plain GETs of /api/config and
+# /api/providers stay on the normal per-IP budget so the console cannot throttle
+# itself while polling.
+_ADMIN_STRICT_PREFIXES = ("/api/system/update", "/api/config", "/api/providers")
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_PROTECTED_LIMIT = 30            # stricter budget for LLM/TTS-spending and high-risk admin routes
 _MAX_TRACKED_IPS = 10000
+
+
+def _evict_oldest(counters: Dict[str, "SlidingWindowCounter"]) -> None:
+    """Evicts the stalest per-IP counter instead of clearing the whole table.
+
+    Clearing everything lets an attacker with spoofed source IPs periodically
+    reset EVERY client's rate-limit budget; evicting only the entry whose
+    newest event is oldest keeps honest clients' limits intact.
+    """
+    oldest_key = min(
+        counters,
+        key=lambda k: counters[k].events[-1] if counters[k].events else 0.0,
+    )
+    counters.pop(oldest_key, None)
 
 
 class SlidingWindowCounter:
@@ -67,18 +93,21 @@ class RateLimitMiddleware:
             await self._reject(send)
             return
 
-        is_protected = path.startswith(_PROTECTED_PREFIXES)
+        is_protected = path.startswith(_PROTECTED_PREFIXES) or (
+            path.startswith(_ADMIN_STRICT_PREFIXES)
+            and str(scope.get("method", "GET")).upper() in _MUTATING_METHODS
+        )
         if is_protected:
             counter = self.protected_counters.get(ip)
             if counter is None:
                 if len(self.protected_counters) >= _MAX_TRACKED_IPS:
-                    self.protected_counters.clear()
+                    _evict_oldest(self.protected_counters)
                 counter = self.protected_counters[ip] = SlidingWindowCounter(_PROTECTED_LIMIT)
         else:
             counter = self.ip_counters.get(ip)
             if counter is None:
                 if len(self.ip_counters) >= _MAX_TRACKED_IPS:
-                    self.ip_counters.clear()
+                    _evict_oldest(self.ip_counters)
                 counter = self.ip_counters[ip] = SlidingWindowCounter(_DEFAULT_IP_LIMIT)
 
         if not counter.allow(now):

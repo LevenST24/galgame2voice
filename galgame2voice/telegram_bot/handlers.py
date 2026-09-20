@@ -76,7 +76,7 @@ class TelegramBotHandlers:
         self.tts_service = tts_service or TtsService()
         # User voice synthesis background tasks mapped by chat_id
         self.user_tasks: Dict[int, asyncio.Task] = {}
-        # Telegram user IDs allowed to run admin commands; empty set = unrestricted
+        # Telegram user IDs allowed to use the bot; empty set = fail-closed (nobody authorized)
         self.admin_ids: set = set(admin_ids or [])
 
     def _effective_user_id(self, update: Any) -> int:
@@ -86,8 +86,9 @@ class TelegramBotHandlers:
         return int(uid) if uid else 0
 
     def _is_admin(self, update: Any) -> bool:
+        # Fail-closed: an empty whitelist must NOT mean "everyone is admin".
         if not self.admin_ids:
-            return True
+            return False
         return self._effective_user_id(update) in self.admin_ids
 
     def _session_key(self, chat_id: int, user_id: int) -> str:
@@ -645,6 +646,11 @@ class TelegramBotHandlers:
         """Handler for normal text messages."""
         if not hasattr(update, "message") or not update.message or not getattr(update.message, "text", None):
             return None
+        if not self._is_admin(update):
+            uid = self._effective_user_id(update)
+            logger.warning("Rejected text message from unauthorized Telegram user_id=%d", uid)
+            await self._safe_send_message(update, context, "抱歉，你没有使用本机器人的权限。")
+            return None
         chat_id = update.effective_chat.id
         text = update.message.text.strip()
         if text.startswith("/"):
@@ -657,6 +663,11 @@ class TelegramBotHandlers:
         Downloads OGG, converts to 16kHz mono WAV, transcribes via STT, and triggers text chat.
         """
         if not hasattr(update, "message") or not update.message or not getattr(update.message, "voice", None):
+            return None
+        if not self._is_admin(update):
+            uid = self._effective_user_id(update)
+            logger.warning("Rejected voice message from unauthorized Telegram user_id=%d", uid)
+            await self._safe_send_message(update, context, "抱歉，你没有使用本机器人的权限。")
             return None
         chat_id = update.effective_chat.id
         voice = update.message.voice

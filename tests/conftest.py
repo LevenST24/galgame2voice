@@ -14,6 +14,10 @@ import pytest
 import httpx
 
 os.environ.setdefault("GALGAME2VOICE_SKIP_MEM_CHECK", "1")
+# The suite drives the ASGI app in-process (Host: "test"), which the DNS-rebinding
+# Host allowlist would reject; the middleware has its own dedicated test that opts
+# back in explicitly.
+os.environ.setdefault("GALGAME2VOICE_HOST_HEADER_VALIDATION_DISABLED", "1")
 
 
 def _filter_aiosqlite_teardown_race(args: threading.ExceptHookArgs) -> None:

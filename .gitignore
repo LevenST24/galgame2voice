@@ -22,17 +22,29 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Virtual Environments
+# Virtual Environments & Secrets
 .venv/
 venv/
 ENV/
 env/
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
 
 # Frontend & Node
 node_modules/
 frontend/node_modules/
 frontend/dist/
+
+# Frontend bundle deployed into the backend static dir. It is intentionally
+# TRACKED so a fresh clone runs without a Node toolchain; regenerate it with
+# `cd frontend && npm run deploy` after changing frontend/src (the Docker build
+# always rebuilds it from source). galgame2voice/static/characters/ and static/js/
+# are hand-maintained assets.
 
 # galgame2voice runtime data, databases & logs
 data/
@@ -43,6 +55,10 @@ logs/
 *.db-journal
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite3
+backups/
+*.bak
 *.pid
 *.log
 
@@ -57,16 +73,27 @@ tmp_check/
 *.mp3
 *.ogg
 
-# Testing & Coverage
+# Testing, Coverage & Build/Test Outputs
 .pytest_cache/
 .ruff_cache/
 .coverage
+*.coverage.*
+coverage.xml
+coverage.json
 htmlcov/
 .tox/
 .nox/
+pytest*.txt
+pytest*.log
+deploy_*.txt
+_probe_*.py
+temp_*.py
+debug_*.py
+scratch_*.py
 
 # Temporary runtime scratch files
 temp.db
+*.tmp
 
 # IDE & Editor files
 .idea/
@@ -87,10 +114,13 @@ desktop.ini
 characters/*
 !characters/.gitkeep
 *.pth
+*.pt
 *.ckpt
 *.bin
 *.safetensors
 *.onnx
+*.gguf
 *.tjs
 scripts/*.json
 scripts/*.txt
+

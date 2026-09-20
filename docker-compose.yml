@@ -9,10 +9,12 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-      - HOST=0.0.0.0
-      - PORT=8080
-      - LOG_LEVEL=INFO
+      - GALGAME2VOICE_HOST=0.0.0.0
+      - GALGAME2VOICE_PORT=8080
+      - GALGAME2VOICE_LOG_LEVEL=INFO
       - GALGAME2VOICE_AUTH_DISABLED=0
+      # 若留空，后端首次启动会自动生成随机 token 并打印到日志（见 security/auth.py）；
+      # 生产部署建议通过 .env 显式设置 GALGAME2VOICE_CONSOLE_TOKEN。
       - GALGAME2VOICE_CONSOLE_TOKEN=${GALGAME2VOICE_CONSOLE_TOKEN:-}
       # If GPT-SoVITS is running on host machine:
       # - GPT_SOVITS_BASE_URL=http://host.docker.internal:9880

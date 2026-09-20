@@ -42,15 +42,26 @@ logger = logging.getLogger("galgame2voice.services.tts_service")
 
 _AUDIO_DURATION_CACHE: Dict[str, Optional[float]] = {}
 _AUDIO_STAT_DURATION_CACHE: Dict[Tuple[str, int, int], Optional[float]] = {}
-_VOICE_PROFILE_MEMO: Dict[Tuple[Optional[str], str], Tuple[float, Any]] = {}
-_MEMO_TTL_SECONDS = 60.0
+# Hard upper bound for the module-level duration caches. The stat-keyed cache is
+# invalidated by (mtime_ns, size), so every revision of a reference clip inserts a
+# NEW entry and the previous one is never reclaimed; without a cap, a long-running
+# process that sees many distinct reference clips would grow without bound.
+_CACHE_MAX_ENTRIES = 512
+
+
+def _cache_store(cache: Dict[Any, Any], key: Any, value: Any) -> None:
+    """Stores a value in a module-level cache, evicting the stalest half when full."""
+    if key not in cache and len(cache) >= _CACHE_MAX_ENTRIES:
+        # dict preserves insertion order, so the leading keys are the oldest.
+        for stale_key in list(cache.keys())[: _CACHE_MAX_ENTRIES // 2]:
+            cache.pop(stale_key, None)
+    cache[key] = value
 
 
 def clear_tts_profile_cache() -> None:
-    """Clears in-memory caches for voice profiles and reference audio durations."""
+    """Clears in-memory caches for reference audio durations."""
     _AUDIO_DURATION_CACHE.clear()
     _AUDIO_STAT_DURATION_CACHE.clear()
-    _VOICE_PROFILE_MEMO.clear()
 
 
 def _probe_audio_duration_sync(p: Path) -> Optional[float]:
@@ -117,22 +128,22 @@ async def async_get_audio_duration(path: Union[str, Path, None]) -> Optional[flo
     try:
         p = resolve_existing_audio_path(path)
         if p is None or not p.is_file():
-            _AUDIO_DURATION_CACHE[path_str] = None
+            _cache_store(_AUDIO_DURATION_CACHE, path_str, None)
             return None
 
         st = p.stat()
         stat_key = (str(p.resolve()), st.st_mtime_ns, st.st_size)
         if stat_key in _AUDIO_STAT_DURATION_CACHE:
             cached_dur = _AUDIO_STAT_DURATION_CACHE[stat_key]
-            _AUDIO_DURATION_CACHE[path_str] = cached_dur
+            _cache_store(_AUDIO_DURATION_CACHE, path_str, cached_dur)
             return cached_dur
 
         dur = await asyncio.to_thread(_probe_audio_duration_sync, p)
-        _AUDIO_STAT_DURATION_CACHE[stat_key] = dur
-        _AUDIO_DURATION_CACHE[path_str] = dur
+        _cache_store(_AUDIO_STAT_DURATION_CACHE, stat_key, dur)
+        _cache_store(_AUDIO_DURATION_CACHE, path_str, dur)
         return dur
     except Exception:
-        _AUDIO_DURATION_CACHE[path_str] = None
+        _cache_store(_AUDIO_DURATION_CACHE, path_str, None)
         return None
 
 
@@ -179,22 +190,22 @@ class TtsService:
         try:
             p = resolve_existing_audio_path(path)
             if p is None or not p.is_file():
-                _AUDIO_DURATION_CACHE[path_str] = None
+                _cache_store(_AUDIO_DURATION_CACHE, path_str, None)
                 return None
 
             st = p.stat()
             stat_key = (str(p.resolve()), st.st_mtime_ns, st.st_size)
             if stat_key in _AUDIO_STAT_DURATION_CACHE:
                 cached_dur = _AUDIO_STAT_DURATION_CACHE[stat_key]
-                _AUDIO_DURATION_CACHE[path_str] = cached_dur
+                _cache_store(_AUDIO_DURATION_CACHE, path_str, cached_dur)
                 return cached_dur
 
             dur = _probe_audio_duration_sync(p)
-            _AUDIO_STAT_DURATION_CACHE[stat_key] = dur
-            _AUDIO_DURATION_CACHE[path_str] = dur
+            _cache_store(_AUDIO_STAT_DURATION_CACHE, stat_key, dur)
+            _cache_store(_AUDIO_DURATION_CACHE, path_str, dur)
             return dur
         except Exception:
-            _AUDIO_DURATION_CACHE[path_str] = None
+            _cache_store(_AUDIO_DURATION_CACHE, path_str, None)
             return None
 
     @staticmethod

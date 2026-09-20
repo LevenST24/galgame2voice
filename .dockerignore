@@ -1,7 +1,12 @@
 .git/
 .github/
+.agents/
 .venv/
 venv/
+.env
+.env.*
+!.env.example
+tests/
 __pycache__/
 *.pyc
 *.pyo
@@ -12,8 +17,8 @@ frontend/node_modules/
 frontend/dist/
 data/*.db
 data/*.txt
-logs/*.log
-audio/*
+logs/
+audio/
 *.pid
 *.db
 temp_cache_mem/

@@ -35,6 +35,7 @@ from galgame2voice.services.tts_cache_manager import TtsCacheManager
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from galgame2voice.utils.logger import MaskingFilter, setup_logger
+from telegram_test_support import TELEGRAM_TEST_ADMINS
 
 
 # ============================================================================
@@ -380,7 +381,7 @@ class TestTelegramBotParameterAndSecurityGating:
             await conn.execute("UPDATE providers SET api_key = 'sk-valid-key-9999', is_active = 1 WHERE id = 'deepseek';")
             await crud.set_active_provider(conn, "deepseek")
 
-        handlers = TelegramBotHandlers(db_path=str(db_file))
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=str(db_file))
 
         # Mock CallbackQuery for switching to unconfigured provider
         mock_query = AsyncMock()
@@ -416,7 +417,7 @@ class TestTelegramBotParameterAndSecurityGating:
         async with get_db(str(db_file)) as conn:
             await conn.execute("UPDATE providers SET api_key = '', is_active = 0 WHERE id = 'custom';")
 
-        handlers = TelegramBotHandlers(db_path=str(db_file))
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=str(db_file))
         mock_query = AsyncMock()
         mock_query.data = "set_model_custom"
         mock_query.answer = AsyncMock()
@@ -441,7 +442,7 @@ class TestTelegramBotParameterAndSecurityGating:
             await crud.get_active_voice_profile(conn)
 
         chat_service = ChatService(db_path=str(db_file))
-        handlers = TelegramBotHandlers(chat_service=chat_service, db_path=str(db_file))
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, chat_service=chat_service, db_path=str(db_file))
 
         test_chat_id = 88776655
         custom_name = "昂晴君"
@@ -484,7 +485,7 @@ class TestTelegramBotParameterAndSecurityGating:
         """Verifies that calling /nickname without args outputs usage instructions."""
         db_file = tmp_path / "test_tg_nick_empty.db"
         await init_db(str(db_file))
-        handlers = TelegramBotHandlers(db_path=str(db_file))
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=str(db_file))
 
         mock_message = AsyncMock()
         mock_message.text = "/nickname   "

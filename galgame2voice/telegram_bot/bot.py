@@ -104,8 +104,9 @@ class TelegramBotManager:
             logger.info("Telegram admin whitelist active with %d user(s).", len(admin_ids))
         else:
             logger.warning(
-                "No telegram_admin_ids configured: management commands are open to EVERYONE. "
-                "Set them in the console or the TELEGRAM_ADMIN_IDS env var."
+                "SECURITY: Telegram Bot is enabled but telegram_admin_ids is EMPTY. "
+                "Fail-closed policy active: ALL users (including you) will be rejected until at least one "
+                "admin user ID is configured in the console or the TELEGRAM_ADMIN_IDS env var."
             )
 
         proxy_url = get_proxy_url(settings)

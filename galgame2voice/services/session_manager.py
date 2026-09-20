@@ -44,6 +44,13 @@ class SessionManager:
         self.system_template = default_system_template or self.DEFAULT_SYSTEM_TEMPLATE
         self._table_name: Optional[str] = None
 
+    async def _resolve_table_name(self, db: aiosqlite.Connection) -> str:
+        """Detects and caches the messages table name (session_messages vs messages)."""
+        if self._table_name is None:
+            cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
+            self._table_name = "session_messages" if await cur.fetchone() else "messages"
+        return self._table_name
+
     def estimate_tokens(self, text: str) -> int:
         """
         Estimates token count for mixed CJK / English text.

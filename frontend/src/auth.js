@@ -125,7 +125,16 @@ export function initAuthInterceptor() {
 
   window.fetch = async function (input, init = {}) {
     const url = typeof input === 'string' ? input : input?.url || '';
-    const isApiRequest = url.startsWith('/api/') || url.includes('/api/');
+    let parsedUrl = null;
+    try {
+      parsedUrl = new URL(url, location.origin);
+    } catch (_) {
+      parsedUrl = null;
+    }
+    const isApiRequest =
+      parsedUrl !== null &&
+      parsedUrl.origin === location.origin &&
+      parsedUrl.pathname.startsWith('/api/');
 
     if (!isApiRequest) {
       return nativeFetch(input, init);

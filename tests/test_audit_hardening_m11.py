@@ -18,6 +18,7 @@ from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 from galgame2voice.services.memory_service import MemoryService
+from telegram_test_support import TELEGRAM_TEST_ADMINS
 
 
 @pytest.fixture
@@ -250,7 +251,7 @@ class TestHealthRouterHardening:
 class TestTelegramBotHardening:
     async def test_safe_send_message_absorbs_drop(self):
         from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
-        handlers = TelegramBotHandlers()
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, )
         mock_update = MagicMock()
         mock_update.message.reply_text = AsyncMock(side_effect=Exception("Network connection lost"))
         # Should not raise exception
@@ -261,7 +262,7 @@ class TestTelegramBotHardening:
         from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
         from telegram import Update, CallbackQuery, User
 
-        handlers = TelegramBotHandlers()
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, )
         mock_update = MagicMock(spec=Update)
         mock_query = MagicMock(spec=CallbackQuery)
         mock_update.callback_query = mock_query

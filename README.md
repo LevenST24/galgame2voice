@@ -72,6 +72,8 @@ pip install -r requirements.txt
 python scripts/run_server.py
 ```
 
+> **前端构建产物说明**：`galgame2voice/static/index.html` 与 `static/assets/` 为前端构建产物，仓库中保留了可直接运行的版本（克隆后无需 Node 环境即可启动控制台）；修改 `frontend/src` 后请执行 `cd frontend && npm ci && npm run deploy` 重新生成，否则界面与源码会不一致（Docker 镜像构建时会自动重新构建，无需手动操作）。
+
 常用命令行参数：
 ```bash
 python scripts/run_server.py --help

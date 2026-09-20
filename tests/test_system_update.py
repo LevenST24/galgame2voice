@@ -60,7 +60,9 @@ class TestSystemVersionCheck:
             assert data["behind_count"] == 0
             assert "remote_url" in data
             assert isinstance(data["commits_log"], list)
-            assert data["current_branch"] in ("main", "master", "HEAD")
+            # Branch name depends on the checkout (feature branches, detached HEAD
+            # reported as HEAD, ...), so only require a sane non-empty value.
+            assert isinstance(data["current_branch"], str) and data["current_branch"]
             assert data["error"] is None
 
     @pytest.mark.asyncio
@@ -133,6 +135,10 @@ class TestSystemVersionCheck:
     def test_check_version_sync_remote_fetch_failure(self, tmp_path):
         """Verifies _check_version_sync handles remote fetch network failures gracefully without crashing."""
         def fake_git(args, cwd, timeout=30.0, env_overrides=None):
+            # Supply-chain guard: the update endpoint checks the origin remote
+            # against an allowlist before fetching/pulling.
+            if args[0] == "remote" and len(args) > 1 and args[1] == "get-url":
+                return 0, "https://github.com/LevenST24/galgame2voice.git", ""
             if args[0] == "rev-parse" and args[1] == "--is-inside-work-tree":
                 return 0, "true", ""
             if args[0] == "rev-parse" and args[1] == "--short" and args[2] == "HEAD":
@@ -168,6 +174,10 @@ class TestSystemUpdateApply:
         transport = ASGITransport(app=test_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             def fake_git(args, cwd, timeout=30.0, env_overrides=None):
+                # Supply-chain guard: the update endpoint checks the origin remote
+                # against an allowlist before fetching/pulling.
+                if args[0] == "remote" and len(args) > 1 and args[1] == "get-url":
+                    return 0, "https://github.com/LevenST24/galgame2voice.git", ""
                 if args[0] == "rev-parse" and args[1] == "--is-inside-work-tree":
                     return 0, "true", ""
                 if args[0] == "rev-parse" and args[1] == "--short":
@@ -190,6 +200,10 @@ class TestSystemUpdateApply:
         transport = ASGITransport(app=test_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             def fake_git(args, cwd, timeout=30.0, env_overrides=None):
+                # Supply-chain guard: the update endpoint checks the origin remote
+                # against an allowlist before fetching/pulling.
+                if args[0] == "remote" and len(args) > 1 and args[1] == "get-url":
+                    return 0, "https://github.com/LevenST24/galgame2voice.git", ""
                 if args[0] == "rev-parse" and args[1] == "--is-inside-work-tree":
                     return 0, "true", ""
                 if args[0] == "rev-parse" and args[1] == "--short":
@@ -215,6 +229,10 @@ class TestSystemUpdateApply:
         transport = ASGITransport(app=test_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             def fake_git(args, cwd, timeout=30.0, env_overrides=None):
+                # Supply-chain guard: the update endpoint checks the origin remote
+                # against an allowlist before fetching/pulling.
+                if args[0] == "remote" and len(args) > 1 and args[1] == "get-url":
+                    return 0, "https://github.com/LevenST24/galgame2voice.git", ""
                 if args[0] == "rev-parse" and args[1] == "--is-inside-work-tree":
                     return 0, "true", ""
                 if args[0] == "rev-parse" and args[1] == "--short":
@@ -245,6 +263,10 @@ class TestSystemUpdateApply:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             commit_hash = "eb94d8522043c72c1ed5c3111b138ef8eee6dcc6"
             def fake_git(args, cwd, timeout=30.0, env_overrides=None):
+                # Supply-chain guard: the update endpoint checks the origin remote
+                # against an allowlist before fetching/pulling.
+                if args[0] == "remote" and len(args) > 1 and args[1] == "get-url":
+                    return 0, "https://github.com/LevenST24/galgame2voice.git", ""
                 if args[0] == "rev-parse" and args[1] == "--is-inside-work-tree":
                     return 0, "true", ""
                 if args[0] == "rev-parse" and args[1] == "--short":
@@ -280,6 +302,10 @@ class TestSystemUpdateApply:
             calls = []
 
             def fake_git(args, cwd, timeout=30.0, env_overrides=None):
+                # Supply-chain guard: the update endpoint checks the origin remote
+                # against an allowlist before fetching/pulling.
+                if args[0] == "remote" and len(args) > 1 and args[1] == "get-url":
+                    return 0, "https://github.com/LevenST24/galgame2voice.git", ""
                 calls.append(args[0])
                 if args[0] == "rev-parse" and args[1] == "--is-inside-work-tree":
                     return 0, "true", ""
@@ -326,6 +352,10 @@ class TestSystemUpdateApply:
             calls = []
 
             def fake_git(args, cwd, timeout=30.0, env_overrides=None):
+                # Supply-chain guard: the update endpoint checks the origin remote
+                # against an allowlist before fetching/pulling.
+                if args[0] == "remote" and len(args) > 1 and args[1] == "get-url":
+                    return 0, "https://github.com/LevenST24/galgame2voice.git", ""
                 calls.append(args[0])
                 if args[0] == "rev-parse" and args[1] == "--is-inside-work-tree":
                     return 0, "true", ""
@@ -363,6 +393,10 @@ class TestSystemUpdateApply:
             checkout_calls = []
 
             def fake_git(args, cwd, timeout=30.0, env_overrides=None):
+                # Supply-chain guard: the update endpoint checks the origin remote
+                # against an allowlist before fetching/pulling.
+                if args[0] == "remote" and len(args) > 1 and args[1] == "get-url":
+                    return 0, "https://github.com/LevenST24/galgame2voice.git", ""
                 if args[0] == "rev-parse" and args[1] == "--is-inside-work-tree":
                     return 0, "true", ""
                 if args[0] == "rev-parse" and args[1] == "--short":
@@ -400,6 +434,10 @@ class TestSystemUpdateApply:
             stash_called = False
 
             def fake_git(args, cwd, timeout=30.0, env_overrides=None):
+                # Supply-chain guard: the update endpoint checks the origin remote
+                # against an allowlist before fetching/pulling.
+                if args[0] == "remote" and len(args) > 1 and args[1] == "get-url":
+                    return 0, "https://github.com/LevenST24/galgame2voice.git", ""
                 nonlocal stash_called
                 if args[0] == "rev-parse" and args[1] == "--is-inside-work-tree":
                     return 0, "true", ""
@@ -433,6 +471,10 @@ class TestSystemUpdateApply:
             reset_called = False
 
             def fake_git(args, cwd, timeout=30.0, env_overrides=None):
+                # Supply-chain guard: the update endpoint checks the origin remote
+                # against an allowlist before fetching/pulling.
+                if args[0] == "remote" and len(args) > 1 and args[1] == "get-url":
+                    return 0, "https://github.com/LevenST24/galgame2voice.git", ""
                 nonlocal reset_called
                 if args[0] == "rev-parse" and args[1] == "--is-inside-work-tree":
                     return 0, "true", ""

@@ -211,9 +211,20 @@ export function syncCustomVoiceBox() {
 export async function populateScanOptions() {
   const fill = (sel, list, emptyHint) => {
     if (!sel) return;
-    sel.innerHTML = list.length
-      ? list.map((f) => `<option value="${f.path}">${f.name}</option>`).join('')
-      : `<option value="">${emptyHint}</option>`;
+    sel.innerHTML = '';
+    if (list.length) {
+      list.forEach((f) => {
+        const opt = document.createElement('option');
+        opt.value = f.path;
+        opt.textContent = f.name;
+        sel.appendChild(opt);
+      });
+    } else {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = emptyHint;
+      sel.appendChild(opt);
+    }
   };
   try {
     if (!scannedModels) {
@@ -226,7 +237,13 @@ export async function populateScanOptions() {
     fill(_dom.sCvRef, scannedModels.audio_files || [], '（未扫描到音频文件，可留空音色但质量差）');
   } catch (e) {
     [_dom.sCvGpt, _dom.sCvSovits, _dom.sCvRef].forEach((sel) => {
-      if (sel) sel.innerHTML = `<option value="">扫描失败（${e.message || e}）</option>`;
+      if (sel) {
+        sel.innerHTML = '';
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = `扫描失败（${e.message || e}）`;
+        sel.appendChild(opt);
+      }
     });
   }
 }

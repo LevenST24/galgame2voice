@@ -144,6 +144,7 @@ export class StreamAudioController {
    * @param {Object} [ctl]
    */
   startSession(msgId, ctl = null) {
+    this.currentSessionId += 1; // 使旧 interrupt 的延迟回调失效，避免打断新会话开头
     this.interrupt(0);
     this.ensureContext();
     const gainNode = this.masterGainNode || this.masterGain;
@@ -445,6 +446,7 @@ export class StreamAudioController {
         this.isPlaying = false;
         this.isPaused = false;
 
+        const sessionAtInterrupt = this.currentSessionId;
         setTimeout(() => {
           sourcesToStop.forEach(({ source, chunkGain }) => {
             try {
@@ -453,8 +455,10 @@ export class StreamAudioController {
               chunkGain.disconnect();
             } catch (_) {}
           });
-          // 恢复 masterGain 为 1.0 备下次播放
-          if (this.masterGain && this.ctx) {
+          // 恢复 masterGain 为 1.0 备下次播放；
+          // 仅当期间没有新会话开始（startSession 会递增 currentSessionId）时才恢复，
+          // 否则新会话的增益已由 startSession 自行重置，此处再动会产生爆音
+          if (this.currentSessionId === sessionAtInterrupt && this.masterGain && this.ctx) {
             try {
               this.masterGain.gain.cancelScheduledValues(this.ctx.currentTime);
               this.masterGain.gain.setValueAtTime(1.0, this.ctx.currentTime);
@@ -519,3 +523,10 @@ export class StreamAudioController {
 
 export const streamAudioController = new StreamAudioController();
 export default streamAudioController;
+
+// Vite HMR：模块热更新/失效时释放单例，移除 visibilitychange 监听避免重复注册与泄漏
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    streamAudioController.close().catch(() => {});
+  });
+}

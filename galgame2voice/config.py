@@ -79,6 +79,17 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GALGAME2VOICE_RATE_LIMIT_DISABLED", "RATE_LIMIT_DISABLED"),
         description="Disable request rate limiting (tests only)",
     )
+    host_header_validation_disabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "GALGAME2VOICE_HOST_HEADER_VALIDATION_DISABLED",
+            "HOST_HEADER_VALIDATION_DISABLED",
+        ),
+        description=(
+            "Disable the /api Host-header allowlist that blocks DNS-rebinding attacks "
+            "in local zero-config mode (tests only; never enable in a browser-facing deployment)"
+        ),
+    )
 
     # Privacy Mode (Directive 10)
     privacy_mode: bool = Field(

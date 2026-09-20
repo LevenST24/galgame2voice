@@ -42,6 +42,7 @@ from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.services.tts_cache_manager import TtsCacheManager
 from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from galgame2voice.utils.logger import MaskingFilter
+from telegram_test_support import TELEGRAM_TEST_ADMINS
 
 
 # ============================================================================
@@ -536,14 +537,14 @@ class TestTier1FeatureCoverage:
     # --- F9: Telegram Bot Handlers ---
     def test_f9_01_telegram_session_keys_isolated(self):
         """Verifies private vs group chat session keys are properly isolated."""
-        handlers = TelegramBotHandlers()
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, )
         assert handlers._session_key(chat_id=12345, user_id=12345) == "tg_12345"
         assert handlers._session_key(chat_id=-100123456, user_id=98765) == "tg_-100123456_98765"
 
     @pytest.mark.asyncio
     async def test_f9_02_telegram_task_cancellation(self):
         """Verifies background task cancellation properly cancels pending async task."""
-        handlers = TelegramBotHandlers()
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, )
 
         async def dummy_coro():
             await asyncio.sleep(10)

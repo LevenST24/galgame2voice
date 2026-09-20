@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from galgame2voice.database import crud
 from galgame2voice.database.models import SettingsUpdate
 from galgame2voice.database.session import get_db
+from galgame2voice.security.url_guard import validate_local_service_url
 from galgame2voice.routers.providers import (
     ProviderTestRequest,
     ProviderTestResponse,
@@ -108,6 +109,17 @@ async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, 
         # Filter valid settings fields for update
         valid_fields = SettingsUpdate.model_fields.keys()
         sanitized_updates = {k: v for k, v in update_data.items() if k in valid_fields}
+
+        # SSRF guard: the GPT-SoVITS endpoint is a legitimate LAN/local service,
+        # but it must still be a plain http(s) URL (no file://, gopher://,
+        # embedded credentials, ...).
+        if "gpt_sovits_url" in sanitized_updates and sanitized_updates["gpt_sovits_url"]:
+            ok, reason = validate_local_service_url(str(sanitized_updates["gpt_sovits_url"]))
+            if not ok:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid gpt_sovits_url: {reason}",
+                )
 
         if sanitized_updates:
             try:

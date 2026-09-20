@@ -30,6 +30,7 @@ from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.audio_converter import convert_ogg_to_wav, convert_wav_to_ogg
 from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from galgame2voice.telegram_bot.bot import TelegramBotManager
+from telegram_test_support import TELEGRAM_TEST_ADMINS
 
 
 # ============================================================================
@@ -205,7 +206,7 @@ async def test_utf8_bom_safe_reading_across_config_and_health(tmp_path):
 @pytest.mark.asyncio
 async def test_telegram_voice_size_guard():
     """Verifies that voice notes larger than 15MB are rejected before download."""
-    handlers = TelegramBotHandlers(db_path=":memory:")
+    handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=":memory:")
 
     update = MagicMock()
     update.effective_chat.id = 12345
