@@ -6,6 +6,9 @@ import { showToast } from '../ui.js';
 let _dom = {};
 let _callbacks = {};
 let voiceProfiles = [];
+// 面板里人设框的初始值与对应角色，用于换角色时判断"有未保存的编辑"
+let _promptBaseline = '';
+let _promptOwnerId = null;
 let activeProfileId = null;
 let scannedModels = null;
 
@@ -15,6 +18,7 @@ export function initVoiceSettings(dom, callbacks = {}) {
 
   if (_dom.sVoice) {
     _dom.sVoice.addEventListener('change', syncCustomVoiceBox);
+    _dom.sVoice.addEventListener('change', syncSystemPromptToSelectedVoice);
   }
   if (_dom.sVoiceDelete) {
     _dom.sVoiceDelete.addEventListener('click', deleteVoiceProfile);
@@ -41,7 +45,7 @@ export function initVoiceSettings(dom, callbacks = {}) {
 
   if (_dom.sReset) {
     _dom.sReset.addEventListener('click', () => {
-      _dom.sSystem.value = DEFAULT_SESSION_SETTINGS.systemPrompt;
+      // 人设提示词属于角色包、不属于会话参数，重置只恢复推理参数，不抹人设
       _dom.sVoice.value = '';
       _dom.sTemp.value = DEFAULT_SESSION_SETTINGS.temperature;
       _dom.sTopP.value = DEFAULT_SESSION_SETTINGS.topP;
@@ -79,11 +83,18 @@ export function getVoiceProfiles() {
   return voiceProfiles;
 }
 
-export function openSessionSettings() {
+export async function openSessionSettings() {
   const s = getActive();
   if (!s) return;
   if (_dom.smTitle) _dom.smTitle.textContent = `· ${s.title}`;
-  if (_dom.sSystem) _dom.sSystem.value = s.settings.systemPrompt;
+  if (_dom.sSystem) {
+    // 人设提示词是角色级数据，权威源在角色包；这里只展示当前绑定角色的那一份
+    if (!voiceProfiles.length) {
+      try { await fetchVoiceProfiles(); } catch (_) { /* 下面按空值处理 */ }
+    }
+    const prof = voiceProfiles.find((p) => p.id === s.settings?.voiceProfileId);
+    applyProfilePromptToField(prof ? prof.id : null);
+  }
   if (_dom.sTemp) _dom.sTemp.value = s.settings.temperature;
   if (_dom.sTopP) _dom.sTopP.value = s.settings.topP;
   if (_dom.sFreq) _dom.sFreq.value = s.settings.freqPenalty;
@@ -160,6 +171,13 @@ export async function ensureSessionVoice(session, { silent = false } = {}) {
     }
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     activeProfileId = want;
+    // 换人后若面板正开着且人设框没有未保存编辑，就跟着换成新角色的那一份
+    const modalOpen = _dom.sessionModal && !_dom.sessionModal.classList.contains('hidden');
+    if (modalOpen && _dom.sSystem) {
+      const clean = !(_dom.sSystem.value || '').trim()
+        || (_dom.sSystem.value || '').trim() === _promptBaseline.trim();
+      if (clean) applyProfilePromptToField(want);
+    }
     if (data && data.profile) {
       try {
         portraitStage.setCharacter(data.profile, want);
@@ -199,6 +217,39 @@ export async function loadSessionVoiceSelect(session) {
     _dom.sVoice.innerHTML = '<option value="">加载失败（后端未启动？）</option>';
   }
   syncCustomVoiceBox();
+}
+
+/**
+ * 面板里换角色时，人设框立刻换成新角色的那一份。
+ * 框里若有未保存的编辑先确认并允许回退选择 —— 否则保存时会把上一个角色的
+ * 文字写进新角色的包里，那是静默的数据损坏。
+ */
+function syncSystemPromptToSelectedVoice() {
+  if (!_dom.sSystem || !_dom.sVoice) return;
+  const raw = _dom.sVoice.value;
+  const id = raw && raw !== '__custom__' ? Number(raw) : null;
+  if (id === _promptOwnerId) return;
+  const current = (_dom.sSystem.value || '').trim();
+  if (current && current !== _promptBaseline.trim()
+      && !window.confirm('人设提示词有未保存的修改，切换角色会覆盖它。仍要切换吗？')) {
+    _dom.sVoice.value = _promptOwnerId === null ? '' : String(_promptOwnerId);
+    return;
+  }
+  applyProfilePromptToField(id);
+}
+
+/** 把指定角色的人设提示词填进人设框，并记录基线（不改动角色数据本身）。 */
+function applyProfilePromptToField(profileId) {
+  const prof = voiceProfiles.find((p) => p.id === profileId);
+  const text = (prof && prof.system_prompt) || '';
+  _promptBaseline = text;
+  _promptOwnerId = profileId ?? null;
+  if (_dom.sSystem) {
+    _dom.sSystem.value = text;
+    _dom.sSystem.placeholder = prof
+      ? `编辑「${prof.name}」的人设提示词，保存后写回角色包并对该角色的所有会话生效…`
+      : '当前会话未绑定角色，绑定后即可编辑该角色的人设提示词…';
+  }
 }
 
 export function syncCustomVoiceBox() {
@@ -341,9 +392,11 @@ async function handleSaveSessionSettings() {
   const s = getActive();
   if (!s) return;
   const maxTokens = Math.round(Number(_dom.sMaxTokens.value)) || DEFAULT_SESSION_SETTINGS.maxTokens;
+  const profileId = _dom.sVoice.value && _dom.sVoice.value !== '__custom__'
+    ? Number(_dom.sVoice.value)
+    : null;
   s.settings = {
-    systemPrompt: _dom.sSystem.value,
-    voiceProfileId: _dom.sVoice.value && _dom.sVoice.value !== '__custom__' ? Number(_dom.sVoice.value) : null,
+    voiceProfileId: profileId,
     temperature: Number(_dom.sTemp.value),
     topP: Number(_dom.sTopP.value),
     maxTokens: Math.min(32768, Math.max(16, maxTokens)),
@@ -359,6 +412,9 @@ async function handleSaveSessionSettings() {
   s.updatedAt = Date.now();
   saveState();
 
+  // 人设提示词属于角色、不属于会话：写回角色包 manifest.json，DB 镜像由后端刷新
+  const promptNote = await saveCharacterPrompt(profileId);
+
   try {
     const res = await fetch('/api/chat/sessions', {
       method: 'POST',
@@ -367,7 +423,6 @@ async function handleSaveSessionSettings() {
         id: s.id,
         title: s.title,
         voice_profile_id: s.settings?.voiceProfileId,
-        custom_system_prompt: s.settings?.systemPrompt,
         settings: s.settings,
       }),
     });
@@ -382,5 +437,34 @@ async function handleSaveSessionSettings() {
   if (_callbacks.renderSidebar) _callbacks.renderSidebar();
   if (_callbacks.renderHeader) _callbacks.renderHeader();
   await ensureSessionVoice(s);
-  showToast('会话参数已保存', 'success');
+  showToast(`会话参数已保存${promptNote}`, promptNote.startsWith('；') ? 'info' : 'success');
+}
+
+/** 把人设框的内容写回角色包；返回追加到提示语后的说明。 */
+async function saveCharacterPrompt(profileId) {
+  if (!_dom.sSystem) return '';
+  if (!profileId) {
+    return (_dom.sSystem.value || '').trim() ? '；当前会话未绑定角色，人设改动未保存' : '';
+  }
+  const prof = voiceProfiles.find((p) => p.id === profileId);
+  const text = (_dom.sSystem.value || '').trim();
+  if (!prof) return '；找不到对应角色包，人设改动未保存';
+  if (!text) return '；人设提示词不能为空，未改动角色包';
+  if (text === (prof.system_prompt || '').trim()) return '';
+  try {
+    const res = await fetch(`/api/characters/${profileId}/system-prompt`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ system_prompt: text }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    prof.system_prompt = text;
+    // 写回成功后基线跟着更新，否则下次换角色会被误判为"有未保存的编辑"
+    _promptBaseline = text;
+    _promptOwnerId = profileId;
+    return `；已写回角色包「${prof.name}」`;
+  } catch (e) {
+    return `；人设写入角色包失败：${e.message || e}`;
+  }
 }

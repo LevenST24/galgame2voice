@@ -561,7 +561,10 @@ class CharacterManager:
                     update_fields.append("sovits_weights_path = ?")
                     params.append(sovits_weights)
 
-                if system_prompt and not current_sys.strip():
+                # 角色包是人设提示词的唯一权威源，DB 只是运行时读的镜像：
+                # 不一致就覆盖，否则包里的更新永远进不了聊天链路。
+                # 包内为空时保留 DB 值，避免同步把设定抹掉。
+                if system_prompt and system_prompt != current_sys:
                     update_fields.append("system_prompt = ?")
                     params.append(system_prompt)
 

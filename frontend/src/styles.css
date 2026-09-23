@@ -1730,16 +1730,22 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  gap: 8px;
+  height: 52px;
+  padding: 0 16px;
   border-bottom: 1px solid var(--line-2);
   background: var(--panel-soft);
+  /* 高度必须锁死：徽章文字一长就换行会撑高这一行，而下面的 .stage-viewport 是
+     flex:1，被压矮后立绘（height:100%）会跟着缩水下沉 */
   flex-shrink: 0;
+  overflow: hidden;
 }
 
 .stage-char-info {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0; /* 允许子元素在 flex 容器里被截断 */
 }
 
 .stage-name {
@@ -1748,18 +1754,28 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   font-size: 15px;
   color: var(--text);
   letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .stage-emotion-badge {
-  display: inline-flex;
-  align-items: center;
+  /* 用 block 而非 inline-flex：text-overflow 对 flex 容器的匿名文本项不可靠 */
+  display: block;
+  max-width: 190px;
   padding: 2px 8px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--brand-ink);
   background: var(--brand-soft);
   border: 1px solid var(--brand-line);
+  flex-shrink: 0;
 }
 
 .stage-header-actions {
@@ -1871,20 +1887,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   opacity: 0;
 }
 
-/* 角色发声联动微动效 */
+/* 角色发声指示：只做静态光晕，不做缩放/位移。
+   之前的 portraitBreathe 会 scale(1→1.012)+translateY，看起来像"轻微放大再缩小"，
+   立绘的动感全部交给表情差分切换本身。 */
 .stage-viewport.is-speaking .portrait-sprite.is-visible {
-  animation: portraitBreathe 2.2s ease-in-out infinite alternate;
-}
-
-@keyframes portraitBreathe {
-  0% {
-    transform: scale(1) translateY(0);
-    filter: drop-shadow(0 4px 12px rgba(108, 124, 224, 0.15));
-  }
-  100% {
-    transform: scale(1.012) translateY(-4px);
-    filter: drop-shadow(0 8px 24px rgba(108, 124, 224, 0.28));
-  }
+  filter: drop-shadow(0 6px 20px rgba(108, 124, 224, 0.26));
 }
 
 .stage-dialogue-card {

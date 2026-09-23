@@ -177,7 +177,7 @@ export class StreamAudioController {
    * @param {Blob} [options.blob] - 本地预加载的 Blob（若有）
    * @param {number} [options.totalExpected] - 预期总切片数（用于计算进度）
    */
-  async enqueueChunk({ url, index, sentence = '', ctl = null, blob = null, totalExpected = 0 }) {
+  async enqueueChunk({ url, index, sentence = '', emotion = '', ctl = null, blob = null, totalExpected = 0 }) {
     this.ensureContext();
     if (ctl) this._currentCtl = ctl;
 
@@ -188,6 +188,7 @@ export class StreamAudioController {
       index,
       url,
       sentence,
+      emotion,
       audioBuffer: null,
       status: 'fetching',
       totalExpected: totalExpected || (index + 1),
@@ -242,20 +243,25 @@ export class StreamAudioController {
 
   /**
    * 批量播放已有完整消息的分句切片列表
-   * @param {string[]} urls - 切片 URL 数组
+   * @param {Array<string|{url:string,sentence?:string,emotion?:string}>} chunks
+   *   纯 URL 数组，或带句子/情绪元数据的对象数组（后者可让立绘逐句切换）
    * @param {Object} [ctl] - UI 控制器
    * @param {string} [msgId]
    */
-  async playChunks(urls, ctl = null, msgId = null) {
-    if (!urls || urls.length === 0) return;
+  async playChunks(chunks, ctl = null, msgId = null) {
+    if (!chunks || chunks.length === 0) return;
     this.startSession(msgId, ctl);
     const sessionId = this.currentSessionId;
-    const total = urls.length;
-    for (let i = 0; i < urls.length; i++) {
+    const total = chunks.length;
+    for (let i = 0; i < chunks.length; i++) {
       if (sessionId !== this.currentSessionId) break;
+      const c = chunks[i];
+      const meta = typeof c === 'string' ? { url: c } : (c || {});
       this.enqueueChunk({
-        url: urls[i],
+        url: meta.url,
         index: i,
+        sentence: meta.sentence || '',
+        emotion: meta.emotion || '',
         ctl,
         totalExpected: total,
       });

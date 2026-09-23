@@ -56,7 +56,12 @@ export function initAudioPlayerUi(dom, callbacks = {}) {
     if (chunk && chunk.sentence) {
       try {
         portraitStage.updateDialogue(chunk.sentence);
-        portraitStage.handleMessageEmotion(chunk.sentence);
+        // 后端随音频切片下发逐句情绪，立绘据此在同情绪内做细微漂移
+        if (chunk.emotion) {
+          portraitStage.setEmotion(chunk.emotion, chunk.sentence);
+        } else {
+          portraitStage.handleMessageEmotion(chunk.sentence);
+        }
       } catch (_) {}
     }
   };
@@ -268,11 +273,19 @@ export async function synthesizeAiVoice(msg, ctl) {
 
   if (ctl) ctl.setLoading(true);
   try {
-    const text = plainSpeechText(msg.content).slice(0, 2000);
+    // 配音只能用日文台词：中文气泡文本喂给日文音色模型会"音色对、说的却是中文"，
+    // 所以缺日文时先补取，补不到就明确报错，绝不退回中文。
+    let text = plainSpeechText(msg.japanese || '').slice(0, 2000);
+    if (!text && _callbacks.resolveJapanese) {
+      text = plainSpeechText(await _callbacks.resolveJapanese(msg) || '').slice(0, 2000);
+    }
     if (!text) {
-      if (ctl) ctl.setLoading(false);
+      if (ctl) {
+        ctl.setLoading(false);
+        ctl.setPlaying(false);
+      }
       currentVoice = null;
-      showToast('该消息没有可朗读的文字内容', 'info');
+      showToast('该消息缺少日文配音原文，点消息下的「翻译」取到日文后再播', 'info');
       return;
     }
 
@@ -358,6 +371,21 @@ export async function synthesizeAiVoice(msg, ctl) {
   }
 }
 
+/**
+ * 切片是否还取得到：先看 Cache Storage，再探一次 HTTP。
+ * 只探最早那条即可 —— audio_cleaner 按时间过期，最旧的还在就说明后面的都在。
+ */
+async function firstChunkStillExists(url) {
+  try {
+    const cached = await getCachedAudioBlob(url);
+    if (cached && cached.size > 0) return true;
+    const res = await fetch(url, { cache: 'no-store' });
+    return res.ok;
+  } catch (_) {
+    return false;
+  }
+}
+
 export async function playAiVoice(msg, ctl) {
   if (currentVoice && currentVoice.msgId === msg.id) {
     if (streamAudioController.isPlaying) {
@@ -370,7 +398,9 @@ export async function playAiVoice(msg, ctl) {
   stopCurrentVoice();
 
   const fullCacheKey = `msg_${msg.id}`;
-  const localCachedBlob = await getCachedAudioBlob(fullCacheKey);
+  // 有分句元数据时优先走分句播放：整块 blob 路径不带句子和情绪，立绘就不会逐句切换
+  const chunked = (msg.audioChunks || []).filter((c) => c && c.url);
+  const localCachedBlob = chunked.length ? null : await getCachedAudioBlob(fullCacheKey);
   if (localCachedBlob && localCachedBlob.size > 0) {
     if (ctl) {
       ctl.setProgress(0);
@@ -406,7 +436,17 @@ export async function playAiVoice(msg, ctl) {
     return;
   }
 
-  const urls = (msg.audioUrls || []).filter(Boolean);
+  const urls = chunked.length ? chunked.map((c) => c.url) : (msg.audioUrls || []).filter(Boolean);
+  if (urls.length && !(await firstChunkStillExists(urls[0]))) {
+    // 切片 wav 已被 audio_cleaner 按保留期删掉（默认 30 分钟）。enqueueChunk 会
+    // 静默吞掉 404 继续排期，结果是"点了没声音、进度条却满格"，所以这里主动
+    // 放弃这些 URL，改走按需合成。
+    msg.audioUrls = [];
+    msg.audioChunks = [];
+    saveState();
+    synthesizeAiVoice(msg, ctl);
+    return;
+  }
   if (!urls.length) {
     synthesizeAiVoice(msg, ctl);
     return;
@@ -437,7 +477,8 @@ export async function playAiVoice(msg, ctl) {
     },
   };
 
-  streamAudioController.playChunks(urls, ctl, msg.id).catch((err) => {
+  // 传带元数据的分句对象，重播时立绘才会跟着语境逐句切换
+  streamAudioController.playChunks(chunked.length ? chunked : urls, ctl, msg.id).catch((err) => {
     console.warn('[playAiVoice] 播放失败，回退重合成:', err);
     currentVoice = null;
     synthesizeAiVoice(msg, ctl);

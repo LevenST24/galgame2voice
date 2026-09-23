@@ -9,6 +9,8 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
   const controller = new AbortController();
   let acc = '';
   const audioUrls = [];
+  // 与 audioUrls 一一对应的分句元数据，重播时靠它驱动立绘逐句切换
+  const audioChunks = [];
   const jaSentences = [];
   let fullJapanese = '';
   let doneMeta = null;
@@ -17,14 +19,19 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
   const finish = (cancelled, error) => {
     if (settled) return;
     settled = true;
-    const ja = fullJapanese || jaSentences.join('');
-    const meta = {
-      japanese: ja,
-      ttsParams: (doneMeta && doneMeta.tts_params) || null,
+    // 统一用一个对象回传。之前是位置参数 onEnd(acc, cancelled, error, urls, meta)，
+    // 而调用方按 (finalText, meta, error, cancelled) 接，meta 实际收到布尔值，
+    // 日文原文/情绪/音频列表整批静默丢失，cancelled 恒为真导致收尾逻辑不执行。
+    onEnd(acc, {
+      cancelled: Boolean(cancelled),
+      error: error || null,
+      japanese: fullJapanese || jaSentences.join(''),
+      audioUrls: [...audioUrls],
+      chunks: audioChunks.map((c) => ({ ...c })),
       emotion: (doneMeta && doneMeta.emotion) || null,
       affection: (doneMeta && doneMeta.affection) || null,
-    };
-    onEnd(acc, cancelled, error || null, [...audioUrls], meta);
+      ttsParams: (doneMeta && doneMeta.tts_params) || null,
+    });
   };
 
   const body = { prompt, session_id: sessionId, stream: true };
@@ -32,7 +39,8 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
     if (settings.voiceProfileId) {
       body.voice_profile_id = settings.voiceProfileId;
     }
-    if ((settings.systemPrompt || '').trim()) body.system_prompt = settings.systemPrompt.trim();
+    // 人设提示词由后端按当前角色解析（权威源是角色包），前端不再随请求带上
+    // 一份会话私有副本 —— 那份副本会压过角色值，造成同一角色设定不一致。
     if (typeof settings.temperature === 'number') body.temperature = settings.temperature;
     if (typeof settings.maxContext === 'number') body.max_context = Math.round(settings.maxContext);
     if (typeof settings.topP === 'number') body.top_p = settings.topP;
@@ -40,7 +48,8 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
     if (typeof settings.freqPenalty === 'number') body.frequency_penalty = settings.freqPenalty;
     if (typeof settings.presPenalty === 'number') body.presence_penalty = settings.presPenalty;
     const ttsOpts = {};
-    if (settings.voiceProfileId) ttsOpts.voice_profile_id = settings.voiceProfileId;
+    // voice_profile_id 走 ChatRequest 顶层字段；塞进 tts_options 会被后端
+    // ChatTtsOptions(extra="forbid") 的白名单判为非法参数并返回 422。
     if (typeof settings.ttsSpeed === 'number') ttsOpts.speed = settings.ttsSpeed;
     if (typeof settings.ttsTopK === 'number') ttsOpts.top_k = Math.round(settings.ttsTopK);
     if (typeof settings.ttsTopP === 'number') ttsOpts.top_p = settings.ttsTopP;
@@ -113,7 +122,14 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             }
             if (json.audio_url) {
               audioUrls.push(json.audio_url);
-              if (typeof onAudio === 'function') onAudio(json.audio_url, audioUrls.length - 1, json.sentence || '');
+              audioChunks.push({
+                url: json.audio_url,
+                sentence: json.sentence || '',
+                emotion: json.emotion || '',
+              });
+              if (typeof onAudio === 'function') {
+                onAudio(json.audio_url, audioUrls.length - 1, json.sentence || '', { emotion: json.emotion || '' });
+              }
             }
           } else if (eventName === 'audio_chunk_error') {
             console.warn('[streamChat] audio chunk error:', json.error, json.sentence);
@@ -129,6 +145,11 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
               for (const c of json.chunks) {
                 if (c && c.audio_url && !audioUrls.includes(c.audio_url)) {
                   audioUrls.push(c.audio_url);
+                  audioChunks.push({
+                    url: c.audio_url,
+                    sentence: c.sentence || '',
+                    emotion: c.emotion || '',
+                  });
                 }
               }
             } else if (audioUrls.length === 0) {

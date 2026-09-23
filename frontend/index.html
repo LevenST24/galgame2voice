@@ -174,12 +174,12 @@
     <aside class="character-stage" id="characterStage" aria-label="角色立绘舞台">
       <header class="stage-header">
         <div class="stage-char-info">
-          <span class="stage-name" id="stageCharacterName">四季夏目</span>
-          <span class="stage-emotion-badge" id="stageEmotionLabel">平常</span>
+          <span class="stage-name" id="stageCharacterName"></span>
+          <span class="stage-emotion-badge" id="stageEmotionLabel"></span>
         </div>
         <div class="stage-header-actions">
           <button type="button" class="icon-btn stage-costume-btn" id="stageCostumeToggleBtn" title="切换服装">
-            <span id="stageCostumeIcon">☕</span>
+            <span id="stageCostumeIcon">👗</span>
           </button>
           <button type="button" class="icon-btn stage-collapse-btn" id="stageCollapseBtn" title="收起立绘" aria-label="收起立绘">
             <svg class="icon"><use href="#i-x"></use></svg>
@@ -187,24 +187,11 @@
         </div>
       </header>
 
-      <div class="stage-costume-bar" id="stageCostumeBar">
-        <button type="button" class="costume-chip active" data-costume="cafe_uniform">
-          <span class="costume-chip-icon">☕</span>
-          <span>侍应制服</span>
-        </button>
-        <button type="button" class="costume-chip" data-costume="casual">
-          <span class="costume-chip-icon">👗</span>
-          <span>日常便服</span>
-        </button>
-        <button type="button" class="costume-chip" data-costume="cafe_pose_b">
-          <span class="costume-chip-icon">✨</span>
-          <span>制服侧姿</span>
-        </button>
-      </div>
+      <div class="stage-costume-bar" id="stageCostumeBar"></div>
 
       <div class="stage-viewport" id="stageViewport">
         <div class="stage-glow"></div>
-        <img id="portraitImgA" class="portrait-sprite is-visible" alt="立绘图层A" src="/static/characters/natsume/cafe_uniform/gentle.png" />
+        <img id="portraitImgA" class="portrait-sprite is-visible" alt="立绘图层A" src="" />
         <img id="portraitImgB" class="portrait-sprite is-hidden" alt="立绘图层B" src="" />
       </div>
 
@@ -681,8 +668,8 @@
       </header>
       <div class="modal-body">
         <div class="field">
-          <label>System Prompt</label>
-          <textarea id="sSystem" rows="5" placeholder="定义这个会话专属的人设与指令，仅作用于当前对话…"></textarea>
+          <label>角色人设提示词 <b class="muted">（属于当前角色，保存写回角色包）</b></label>
+          <textarea id="sSystem" rows="5" placeholder="编辑当前角色的人设与指令，保存后写回角色包并对该角色所有会话生效…"></textarea>
         </div>
         <div class="field">
           <label>角色音色（GPT / SoVITS 模型）<b id="sVoiceActive"></b></label>
