@@ -1,31 +1,26 @@
 /**
  * 角色立绘舞台演出控制器 (Galgame Character Portrait Stage System)
- * 实现立绘平滑交叉淡入淡出（Cross-fading）、情绪感知联动、服装差分切换与发声呼吸动画
+ * 立绘完全由角色包内的表情编号差分体系（portrait/expressions.json）驱动：
+ * 交叉淡入淡出、逐句同情绪微漂移、好感度解锁红脸差分、服装差分切换、发声呼吸动画。
  */
 
-export const EMOTIONS = {
-  gentle: { label: '温柔', quote: '「とりあえず、今日見たことは忘れて、わかった？」' },
-  normal: { label: '平常', quote: '「……何か用でしょうか、高嶺君。」' },
-  happy: { label: '开心', quote: '「今日は来てくれてありがとう。楽しかった。」' },
-  smile: { label: '微笑', quote: '「ふふっ……別に笑ってないですよ。」' },
-  shy: { label: '害羞', quote: '「だから、無言で凝視されると恥ずかしいんだってば……」' },
-  blush: { label: '面红', quote: '「み、見ないでください……！顔が熱いだけです……」' },
-  tsundere: { label: '傲娇', quote: '「今さらそんな確認しないでよ、バカ……」' },
-  pout: { label: '撅嘴', quote: '「むぅ……別に拗ねてなんかいません。」' },
-  angry: { label: '嫌弃', quote: '「だから気持ち悪い！なんでそんなことばっかり思いつくわけ？」' },
-  cool: { label: '冷淡', quote: '「勝手に仲間にしないでください。」' },
-  thinking: { label: '沉思', quote: '「……なるほど。そういうことでしたか。」' },
-  surprised: { label: '惊讶', quote: '「えっ……？そ、それ本当なんですか……？」' },
-  sad: { label: '感伤', quote: '「その時少し、ほんの少し、寂しいって思った……」' },
-  sleepy: { label: '困倦', quote: '「ふわぁ……少し、眠くなってきてしまいました……」' },
-  wink: { label: '眨眼', quote: '「……これくらい、サービスですからね。」' },
+// 对话管线会请求的情绪 → 中文标签
+export const EMOTION_LABELS = {
+  gentle: '温柔', happy: '开心', shy: '害羞', tsundere: '傲娇',
+  cool: '冷静', sad: '感伤', angry: '生气', surprised: '惊讶', thinking: '沉思',
 };
 
-export const COSTUMES = {
-  cafe_uniform: { name: '星光咖啡馆侍应制服', icon: '☕', short: '侍应制服' },
-  casual: { name: '日常便服', icon: '👗', short: '日常便服' },
-  cafe_pose_b: { name: '咖啡馆制服 (倾身姿态)', icon: '✨', short: '制服侧姿' },
-};
+export const KNOWN_EMOTION_KEYS = new Set(Object.keys(EMOTION_LABELS));
+
+// 无情绪标签时的兜底推断（如后端未开启自适应音色则情绪为空）
+const KEYWORD_EMOTIONS = [
+  ['shy', /害羞|脸红|别看我|恥ずかしい|バカ/i],
+  ['angry', /生气|火大|信じられない|何様/i],
+  ['tsundere', /哼|才没有|真是的|別に|今さら/i],
+  ['happy', /高兴|开心|太好了|谢谢|ふふ|ありがとう|嬉しい/i],
+  ['sad', /寂寞|难过|孤独|寂しい/i],
+  ['cool', /无聊|随便|敷衍|勝手に/i],
+];
 
 export class PortraitStageController {
   constructor() {
@@ -46,13 +41,24 @@ export class PortraitStageController {
     this.dialogueNameEl = null;
 
     this.activeSlot = 'A';
-    this.currentCostume = 'cafe_uniform';
-    this.currentEmotion = 'gentle';
     this.isVisible = true;
     this.isSpeaking = false;
-    this.currentCharacter = '四季夏目';
-    this.currentCharacterId = 'natsume';
     this.preloaded = new Set();
+
+    // 角色包立绘数据
+    this.enabled = false;
+    this.costumes = [];          // [{id,name,icon}]
+    this.currentCostume = null;
+    this.sprites = {};           // costumeId -> faceId -> {file,width,height}
+    this.faces = {};             // faceId -> {label,primary,parts,blush,...}
+    this.expressionSets = {};    // emotion -> [{id,strength}]
+    this.currentEmotion = 'gentle';
+    this.activeFace = null;
+    this.recentFaces = [];
+    this.affectionLevel = 1;
+    this.currentCharacter = '';
+    this.profileId = null;
+    this.lastPaint = null;
   }
 
   init() {
@@ -74,7 +80,6 @@ export class PortraitStageController {
 
     if (!this.stageEl || !this.appEl) return;
 
-    // 默认读取持久化展示状态
     const savedVisible = localStorage.getItem('g2v_portrait_visible');
     if (savedVisible !== null) {
       this.isVisible = savedVisible === 'true';
@@ -83,86 +88,144 @@ export class PortraitStageController {
     }
     this.applyVisibility();
 
-    // 绑定事件监听
     this.bindEvents();
+    this.initDefaultCharacter();
+  }
 
-    // 预加载常用立绘切片
-    this.preloadKeySprites();
+  async initDefaultCharacter() {
+    try {
+      const res = await fetch('/api/characters');
+      if (!res.ok) return;
+      const data = await res.json();
+      const chars = data.characters || [];
+      const active = chars.find((c) => c.is_active) || chars.find((c) => c.is_default) || chars[0];
+      if (active && active.name) {
+        await this.setCharacter(active.name, active.id);
+      }
+    } catch (_) { /* 忽略，等用户切换角色时再加载 */ }
   }
 
   bindEvents() {
-    // 绑定顶部展开/收起按钮
     if (this.toggleBtn) {
-      this.toggleBtn.addEventListener('click', () => {
-        this.toggleVisibility();
-      });
+      this.toggleBtn.addEventListener('click', () => this.toggleVisibility());
     }
-
-    // 绑定舞台内收起按钮
     if (this.collapseBtn) {
-      this.collapseBtn.addEventListener('click', () => {
-        this.setVisibility(false);
-      });
+      this.collapseBtn.addEventListener('click', () => this.setVisibility(false));
     }
-
-    // 绑定服装选择按钮
-    if (this.costumeBarEl) {
-      const chips = this.costumeBarEl.querySelectorAll('.costume-chip');
-      chips.forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const costumeId = btn.dataset.costume;
-          if (costumeId && COSTUMES[costumeId]) {
-            this.setCostume(costumeId);
-          }
-        });
-      });
-    }
-
-    // 快捷服装轮转
     if (this.costumeToggleBtn) {
       this.costumeToggleBtn.addEventListener('click', () => {
-        const keys = Object.keys(COSTUMES);
-        const nextIdx = (keys.indexOf(this.currentCostume) + 1) % keys.length;
-        this.setCostume(keys[nextIdx]);
+        if (this.costumes.length < 2) return;
+        const ids = this.costumes.map((c) => c.id);
+        const next = ids[(ids.indexOf(this.currentCostume) + 1) % ids.length];
+        this.setCostume(next);
       });
     }
   }
 
-  setCharacter(charName, charId = null) {
+  async loadPortrait(profileId) {
+    if (!profileId) return null;
+    try {
+      const res = await fetch(`/api/characters/${encodeURIComponent(profileId)}/portrait`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data && data.enabled ? data : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  applyPayload(data) {
+    this.enabled = Boolean(data);
+    if (!data) {
+      this.costumes = [];
+      this.sprites = {};
+      this.renderCostumeBar();
+      // 该角色包没有立绘差分：收掉两张图，舞台只留名字与台词卡
+      for (const img of [this.imgA, this.imgB]) {
+        if (img) {
+          img.classList.remove('is-visible');
+          img.classList.add('is-hidden');
+        }
+      }
+      return;
+    }
+    this.costumes = (data.costumes || []).filter((c) => c && c.id);
+    this.sprites = data.sprites || {};
+    this.faces = data.faces || {};
+    this.expressionSets = data.expression_sets || {};
+    this.currentCostume = this.costumes.some((c) => c.id === data.default_costume)
+      ? data.default_costume
+      : (this.costumes[0] || {}).id || null;
+    this.activeFace = null;
+    this.recentFaces = [];
+    this.currentEmotion = 'gentle';
+    this.renderCostumeBar();
+  }
+
+  renderCostumeBar() {
+    if (!this.costumeBarEl) return;
+    this.costumeBarEl.innerHTML = '';
+    for (const c of this.costumes) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'costume-chip' + (c.id === this.currentCostume ? ' active' : '');
+      btn.dataset.costume = c.id;
+      const icon = document.createElement('span');
+      icon.className = 'costume-chip-icon';
+      icon.textContent = c.icon || '👗';
+      const label = document.createElement('span');
+      label.textContent = c.name || c.id;
+      btn.appendChild(icon);
+      btn.appendChild(label);
+      btn.addEventListener('click', () => this.setCostume(c.id));
+      this.costumeBarEl.appendChild(btn);
+    }
+    if (this.costumeIconEl) {
+      const active = this.costumes.find((c) => c.id === this.currentCostume);
+      this.costumeIconEl.textContent = (active && active.icon) || '👗';
+    }
+    if (this.costumeToggleBtn) {
+      this.costumeToggleBtn.hidden = this.costumes.length < 2;
+    }
+  }
+
+  async setCharacter(charName, profileId = null) {
     if (!charName) return;
     this.currentCharacter = charName;
-    if (charId) {
-      this.currentCharacterId = charId;
-    } else if (charName.includes('夏目') || charName.toLowerCase().includes('natsume')) {
-      this.currentCharacterId = 'natsume';
-    } else {
-      this.currentCharacterId = charName.toLowerCase();
-    }
-    if (this.charNameEl) {
-      this.charNameEl.textContent = charName;
-    }
-    if (this.dialogueNameEl) {
-      this.dialogueNameEl.textContent = charName;
-    }
+    if (profileId) this.profileId = profileId;
+    this.applyPayload(await this.loadPortrait(this.profileId));
+    if (this.charNameEl) this.charNameEl.textContent = charName;
+    if (this.dialogueNameEl) this.dialogueNameEl.textContent = charName;
+    await this.refreshAffection();
     this.preloadKeySprites();
     this.setEmotion(this.currentEmotion);
   }
 
-  preloadKeySprites() {
-    if (!this.currentCharacter && !this.currentCharacterId) return;
-    const slug = (this.currentCharacterId || this.currentCharacter || '').toLowerCase();
-    if (!slug) return;
-    const costumes = ['cafe_uniform', 'casual', 'cafe_pose_b'];
-    const keyEmotions = ['gentle', 'happy', 'shy', 'tsundere', 'angry', 'cool'];
-    for (const c of costumes) {
-      for (const em of keyEmotions) {
-        const url = `/static/characters/${slug}/${c}/${em}.png`;
-        if (!this.preloaded.has(url)) {
-          const img = new Image();
-          img.src = url;
-          this.preloaded.add(url);
-        }
+  /** 好感度阶段决定红脸差分是否可用，切换角色与每轮回复结束时刷新。 */
+  async refreshAffection() {
+    if (!this.profileId) return;
+    try {
+      const res = await fetch(`/api/affection?character_id=${encodeURIComponent(this.profileId)}`);
+      if (res.ok) {
+        const data = await res.json();
+        this.affectionLevel = Number(data.affection_level) || 1;
       }
+    } catch (_) { /* 保持上一次的好感度阶段 */ }
+  }
+
+  preloadKeySprites() {
+    if (!this.enabled) return;
+    const urls = [];
+    for (const entries of Object.values(this.expressionSets)) {
+      for (const entry of (entries || []).slice(0, 4)) {
+        urls.push(this.faceUrl(entry.id));
+      }
+    }
+    for (const url of urls) {
+      if (!url || this.preloaded.has(url)) continue;
+      const img = new Image();
+      img.src = url;
+      this.preloaded.add(url);
     }
   }
 
@@ -196,65 +259,109 @@ export class PortraitStageController {
   }
 
   setCostume(costumeId) {
-    if (!COSTUMES[costumeId]) return;
+    if (!this.costumes.some((c) => c.id === costumeId)) return;
     this.currentCostume = costumeId;
+    this.renderCostumeBar();
+    // 换服装后当前表情编号仍然有效，直接按同一张脸重绘
+    this.paint(this.faceUrl(this.activeFace) || this.firstFaceFor(this.currentEmotion));
+  }
 
-    // 更新服装图标与高亮
-    if (this.costumeIconEl) {
-      this.costumeIconEl.textContent = COSTUMES[costumeId].icon;
+  faceUrl(faceId) {
+    if (!faceId) return '';
+    const costume = this.sprites[this.currentCostume];
+    const sprite = costume && costume[faceId];
+    if (sprite) return sprite.file;
+    for (const faces of Object.values(this.sprites)) {
+      if (faces && faces[faceId]) return faces[faceId].file;
     }
-    if (this.costumeToggleBtn) {
-      this.costumeToggleBtn.title = `切换服装 (当前: ${COSTUMES[costumeId].name})`;
-    }
-    if (this.costumeBarEl) {
-      this.costumeBarEl.querySelectorAll('.costume-chip').forEach((btn) => {
-        btn.classList.toggle('active', btn.dataset.costume === costumeId);
-      });
-    }
+    return '';
+  }
 
-    // 刷新当前立绘表情
-    this.setEmotion(this.currentEmotion);
+  firstFaceFor(emotion) {
+    const pool = this.expressionSets[emotion] || this.expressionSets.gentle || [];
+    return pool.length ? pool[0].id : null;
   }
 
   /**
-   * 设置立绘表情与台词
-   * @param {string} rawEmotion 情绪代码（如 gentle, happy, shy, tsundere 等）
-   * @param {string} [quoteText] 选填台词文案（若为空则使用该表情的经典台词）
+   * 在同一情绪的候选里挑一张脸：情绪不变时优先选与当前脸共享眉/眼/嘴部件最多的
+   * 那张，所以连续说话只有细微变化，而不是整张脸跳来跳去。
+   */
+  pickFace(emotion) {
+    const pool = this.expressionSets[emotion] || this.expressionSets.gentle || [];
+    if (!pool.length) return null;
+    const current = this.faces[this.activeFace];
+    if (!current || !pool.some((e) => e.id === this.activeFace)) {
+      return pool[0].id;
+    }
+    const recent = new Set(this.recentFaces);
+    const ranked = (skipRecent) => {
+      let pick = null;
+      let score = -Infinity;
+      for (const entry of pool) {
+        const cand = this.faces[entry.id];
+        if (!cand || entry.id === this.activeFace) continue;
+        if (skipRecent && recent.has(entry.id)) continue;
+        // 共享部件越多，两张脸的差别越小
+        const shared = cand.parts.filter((p) => current.parts.some((q) => q.romaji === p.romaji)).length;
+        const s = shared * 10 + entry.strength;
+        if (s > score) {
+          score = s;
+          pick = entry.id;
+        }
+      }
+      return pick;
+    };
+    // 最近上屏过的脸先排除，否则会在两张最相似的脸之间来回抖动
+    return ranked(true) || ranked(false) || pool[0].id;
+  }
+
+  /** 红脸差分按好感度阶段解锁，害羞系情绪更早脸红。 */
+  blushTier(faceId) {
+    const face = this.faces[faceId];
+    if (!face || !face.blush) return faceId;
+    const shyish = ['shy', 'tsundere', 'angry'].includes(this.currentEmotion);
+    return this.affectionLevel >= (shyish ? 2 : 3) ? face.blush : faceId;
+  }
+
+  /**
+   * 设置立绘情绪并驱动差分选脸
+   * @param {string} rawEmotion 情绪代码（gentle/happy/shy/tsundere/cool/sad/angry）
+   * @param {string} [quoteText] 该句台词，用于底部台词卡
    */
   setEmotion(rawEmotion, quoteText = '') {
-    const emKey = (rawEmotion || 'gentle').toLowerCase().trim();
-    const meta = EMOTIONS[emKey] || EMOTIONS['gentle'] || { label: '表情', quote: '' };
-    this.currentEmotion = emKey;
+    const emKey = (rawEmotion || this.currentEmotion || 'gentle').toLowerCase().trim();
+    this.currentEmotion = KNOWN_EMOTION_KEYS.has(emKey) ? emKey : 'gentle';
+    if (!this.enabled) return;
 
+    const faceId = this.pickFace(this.currentEmotion);
+    if (!faceId) return;
+    this.recentFaces = [...this.recentFaces, this.activeFace].filter(Boolean).slice(-3);
+    this.activeFace = faceId;
+
+    const face = this.faces[faceId] || {};
     if (this.emotionLabelEl) {
-      this.emotionLabelEl.textContent = meta.label;
+      const emotionLabel = EMOTION_LABELS[this.currentEmotion] || this.currentEmotion;
+      const badge = face.label ? `${emotionLabel} · ${face.label}` : emotionLabel;
+      this.emotionLabelEl.textContent = badge;
+      // 徽章定宽会截断，完整部件描述放 title 里悬停可看
+      this.emotionLabelEl.title = face.jp ? `${badge}\n${face.jp}` : badge;
+    }
+    if (this.dialogueTextEl && quoteText && quoteText.trim()) {
+      this.dialogueTextEl.textContent = `「${quoteText.trim().replace(/^[「『"“\s]+|[」』"”\s]+$/g, '')}」`;
     }
 
-    if (this.dialogueTextEl) {
-      if (quoteText && quoteText.trim()) {
-        const clean = quoteText.trim().replace(/^[「『"“\s]+|[」』"”\s]+$/g, '');
-        this.dialogueTextEl.textContent = `「${clean}」`;
-      } else if (meta.quote) {
-        this.dialogueTextEl.textContent = meta.quote;
-      }
-    }
+    this.paint(this.faceUrl(this.blushTier(faceId)));
+  }
 
-    // 计算资源路径
-    const charSlug = (this.currentCharacterId || (this.currentCharacter ? this.currentCharacter.toLowerCase() : '')).toLowerCase();
-    if (!charSlug) return;
-    let targetSrc = `/static/characters/${charSlug}/${this.currentCostume}/${emKey}.png`;
-    // 若 pose_b 没有该细分表情，则自动平滑回退到制服
-    if (this.currentCostume === 'cafe_pose_b' && !['gentle', 'happy', 'shy', 'tsundere', 'angry', 'cool'].includes(emKey)) {
-      targetSrc = `/static/characters/${charSlug}/cafe_uniform/${emKey}.png`;
-    }
+  /** 交叉淡入淡出切换立绘（Slot A / Slot B 双层） */
+  paint(targetSrc) {
+    if (!targetSrc || !this.imgA || !this.imgB) return;
+    this.lastPaint = { emotion: this.currentEmotion, face: this.activeFace, url: targetSrc };
 
-    // 交叉淡入淡出（Slot A / Slot B）
     const frontImg = this.activeSlot === 'A' ? this.imgA : this.imgB;
     const backImg = this.activeSlot === 'A' ? this.imgB : this.imgA;
 
-    if (!frontImg || !backImg) return;
-
-    // 若当前前台立绘已处于该目标立绘并且可见，无需重复触发动画
+    // 前台已是该立绘则无需重播动画
     if (frontImg.src && frontImg.src.endsWith(targetSrc) && frontImg.classList.contains('is-visible')) {
       return;
     }
@@ -265,27 +372,18 @@ export class PortraitStageController {
       swapped = true;
       backImg.classList.remove('is-hidden');
       backImg.classList.add('is-visible');
-
       frontImg.classList.remove('is-visible');
       frontImg.classList.add('is-hidden');
-
       this.activeSlot = this.activeSlot === 'A' ? 'B' : 'A';
     };
 
-    // 预载并平滑交叉淡入淡出切换
-    backImg.onload = () => {
-      triggerSwap();
-    };
+    backImg.onload = triggerSwap;
     backImg.onerror = () => {
-      // 容错回退到 gentle
-      if (!targetSrc.endsWith('gentle.png')) {
-        backImg.src = `/static/characters/${charSlug}/${this.currentCostume}/gentle.png`;
-      }
+      const fallback = this.faceUrl(this.activeFace);
+      if (fallback && fallback !== targetSrc) backImg.src = fallback;
     };
     backImg.src = targetSrc;
-    if (backImg.complete && backImg.naturalWidth > 0) {
-      triggerSwap();
-    }
+    if (backImg.complete && backImg.naturalWidth > 0) triggerSwap();
   }
 
   /**
@@ -299,10 +397,7 @@ export class PortraitStageController {
     }
   }
 
-  /**
-   * 角色发声说话状态联动（触发微动效与柔和呼吸光晕）
-   * @param {boolean} isSpeaking 
-   */
+  /** 角色发声说话状态联动（触发微动效与柔和呼吸光晕） */
   setSpeaking(isSpeaking) {
     this.isSpeaking = Boolean(isSpeaking);
     if (this.viewportEl) {
@@ -311,39 +406,24 @@ export class PortraitStageController {
   }
 
   /**
-   * 从消息文本或元数据中提取表情标签并驱动立绘
-   * 支持 [emotion] 标签（如 [happy], [gentle], [shy], [tsundere], [cool], [sad], [angry]）
+   * 从消息文本或元数据推断情绪并驱动立绘（后端已给情绪时优先用它）
    */
   handleMessageEmotion(text, metaEmotion = null) {
-    if (metaEmotion && EMOTIONS[metaEmotion.toLowerCase()]) {
+    if (metaEmotion && KNOWN_EMOTION_KEYS.has(String(metaEmotion).toLowerCase())) {
       this.setEmotion(metaEmotion);
       return;
     }
     if (!text) return;
-
-    // 匹配 [happy], [tsundere] 等前导标签
-    const tagMatch = text.match(/\[([a-zA-Z_\-]+)\]/);
-    if (tagMatch && tagMatch[1]) {
-      const tag = tagMatch[1].toLowerCase();
-      if (EMOTIONS[tag]) {
-        this.setEmotion(tag);
+    const tag = String(text).match(/\[([a-zA-Z_\-]+)\]/);
+    if (tag && KNOWN_EMOTION_KEYS.has(tag[1].toLowerCase())) {
+      this.setEmotion(tag[1]);
+      return;
+    }
+    for (const [emotion, pattern] of KEYWORD_EMOTIONS) {
+      if (pattern.test(text)) {
+        this.setEmotion(emotion);
         return;
       }
-    }
-
-    // 关键词语义快速推断（若无显式标签）
-    if (/害羞|脸红|别看我|恥ずかしい|バカ/i.test(text)) {
-      this.setEmotion('shy');
-    } else if (/笨蛋|恶心|变态|気持ち悪い|変態|信じられない/i.test(text)) {
-      this.setEmotion('angry');
-    } else if (/哼|才没有|傲娇|別に|今さら/i.test(text)) {
-      this.setEmotion('tsundere');
-    } else if (/高兴|开心|太好了|ふふ|ありがとう|嬉しい/i.test(text)) {
-      this.setEmotion('happy');
-    } else if (/寂寞|难过|车祸|孤独|寂しい/i.test(text)) {
-      this.setEmotion('sad');
-    } else if (/冷淡|同类|无聊|勝手に/i.test(text)) {
-      this.setEmotion('cool');
     }
   }
 }

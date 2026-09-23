@@ -4,8 +4,10 @@ Provides unified character profile query, active character switching, and affect
 """
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from galgame2voice.database import crud
@@ -21,44 +23,60 @@ logger = logging.getLogger("galgame2voice.routers.characters")
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 
 
-def _resolve_character_portrait(char_name: str) -> Optional[Dict[str, Any]]:
+def _rewrite_sprite_urls(data: Dict[str, Any], character_id: int) -> None:
+    """把立绘清单里 sprites 的 file 路径改写为后端文件接口 URL（自包含读取）。"""
+    sprites = data.get("sprites") or {}
+    if not isinstance(sprites, dict):
+        return
+    for costume_id, faces in sprites.items():
+        if not isinstance(faces, dict):
+            continue
+        for _face_key, sprite in faces.items():
+            if isinstance(sprite, dict) and "file" in sprite:
+                file_name = str(sprite["file"]).rsplit("/", 1)[-1]
+                sprite["file"] = f"/api/characters/{character_id}/portrait/file/{costume_id}/{file_name}"
+
+
+def _resolve_character_portrait(char_name: str, character_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """立绘完全由角色包内的 portrait/expressions.json 驱动（表情编号差分体系）。"""
     if not char_name:
         return None
-    settings = get_settings()
-    # Check character package manifest via character manager
-    try:
-        from galgame2voice.services.character_manager import get_character_manager
-        mgr = get_character_manager()
-        pkg = mgr.get_character(char_name)
-        if pkg and pkg.manifest and pkg.manifest.portrait:
-            portrait = pkg.manifest.portrait
-            data = dict(portrait if isinstance(portrait, dict) else portrait.model_dump())
-            data.setdefault("character_name", pkg.manifest.name)
-            data.setdefault("character_id", pkg.manifest.id)
-            return data
-    except Exception:
-        pass
+    from galgame2voice.services.character_manager import get_character_manager
+    mgr = get_character_manager()
+    pkg = mgr.get_character(char_name)
+    if pkg is None:
+        return None
 
-    # Check static characters directory
-    clean_slug = char_name.lower().split("(")[0].strip()
-    candidates = [clean_slug]
-    if "natsume" in char_name.lower() or "夏目" in char_name:
-        candidates.append("natsume")
-    if "(" in char_name:
-        inside = char_name.lower().split("(", 1)[1].rstrip(")").strip()
-        candidates.extend([inside, inside.replace(" ", "")])
-    for slug in candidates:
-        if not slug:
-            continue
-        p = settings.static_dir / "characters" / slug / "manifest.json"
-        if p.is_file():
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                data.setdefault("enabled", True)
-                return data
-            except Exception:
-                pass
-    return None
+    path = pkg.folder / "portrait" / "expressions.json"
+    if not path.is_file():
+        return None
+    try:
+        expr = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("Malformed portrait index: %s", path)
+        return None
+
+    costumes = expr.get("costumes") or {}
+    if not costumes:
+        return None
+
+    data: Dict[str, Any] = {
+        "enabled": True,
+        "character_id": pkg.manifest.id,
+        "character_name": pkg.manifest.name,
+        "pose": expr.get("pose", ""),
+        "default_costume": expr.get("default_costume") or next(iter(costumes)),
+        "costumes": [
+            {"id": cid, "name": c.get("name", cid), "icon": c.get("icon", "🎎")}
+            for cid, c in costumes.items()
+        ],
+        "faces": expr.get("faces") or {},
+        "expression_sets": expr.get("expression_sets") or {},
+        "sprites": {cid: (c.get("sprites") or {}) for cid, c in costumes.items()},
+    }
+    if character_id is not None:
+        _rewrite_sprite_urls(data, character_id)
+    return data
 
 
 class CharacterSwitchRequest(BaseModel):
@@ -102,7 +120,7 @@ async def list_characters(
                     "prompt_lang": prof.prompt_lang,
                     "text_lang": prof.text_lang,
                     "affection": affection.model_dump() if affection else None,
-                    "portrait": _resolve_character_portrait(prof.name),
+                    "portrait": _resolve_character_portrait(prof.name, prof.id),
                 })
 
             return {
@@ -169,7 +187,7 @@ async def get_character_detail(
                 "text_lang": prof.text_lang,
                 "system_prompt": prof.system_prompt,
                 "affection": affection.model_dump() if affection else None,
-                "portrait": _resolve_character_portrait(prof.name),
+                "portrait": _resolve_character_portrait(prof.name, prof.id),
             }
         except HTTPException:
             raise
@@ -194,10 +212,132 @@ async def get_character_portrait(character_id: int):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Character with ID {character_id} not found",
             )
-        portrait = _resolve_character_portrait(prof.name)
+        portrait = _resolve_character_portrait(prof.name, character_id)
         if not portrait:
             return {"enabled": False, "message": "No standing CG portrait available for this character"}
         return {"enabled": True, **portrait}
+
+
+@router.get(
+    "/{character_id}/portrait/file/{costume}/{file_name}",
+    summary="Get Character Portrait Sprite Image",
+    description="Serves a standing CG portrait sprite image from the character's self-contained package.",
+)
+async def get_character_portrait_file(character_id: int, costume: str, file_name: str):
+    # 安全：拒绝路径遍历
+    if ".." in costume or ".." in file_name or "/" in file_name or "\\" in file_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid sprite path")
+
+    async with get_db() as conn:
+        prof = await crud.get_voice_profile(conn, character_id)
+        if not prof:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Character with ID {character_id} not found",
+            )
+
+    from galgame2voice.services.character_manager import get_character_manager
+    mgr = get_character_manager()
+    pkg = mgr.get_character(prof.name)
+    if pkg is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Character package not found")
+
+    portraits_root = (pkg.folder / "portrait").resolve()
+    file_path = (portraits_root / costume / file_name).resolve()
+    if not file_path.is_relative_to(portraits_root) or not file_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sprite image not found")
+
+    return FileResponse(str(file_path))
+
+
+class SystemPromptUpdate(BaseModel):
+    system_prompt: str = Field(
+        ..., min_length=1, max_length=20000,
+        description="角色人设提示词（写回角色包，全局生效）",
+    )
+
+
+@router.put(
+    "/{character_id}/system-prompt",
+    summary="Update Character System Prompt",
+    description="Writes the persona prompt back into the character package manifest.json "
+                "(the single source of truth) and refreshes the database mirror.",
+)
+async def update_character_system_prompt(character_id: int, req: SystemPromptUpdate):
+    text = req.system_prompt.strip()
+    if not text:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="人设提示词不能为空",
+        )
+
+    async with get_db() as conn:
+        prof = await crud.get_voice_profile(conn, character_id)
+        if not prof:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Character with ID {character_id} not found",
+            )
+
+    from galgame2voice.services.character_manager import get_character_manager
+    mgr = get_character_manager()
+    pkg = mgr.get_character(prof.name)
+    if pkg is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="角色包目录不存在，无法写回人设提示词；请先确认 characters/ 下的角色包完整",
+        )
+
+    manifest_path = pkg.folder / "manifest.json"
+    if not manifest_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"角色包缺少 manifest.json: {manifest_path}",
+        )
+
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        safe_err = sanitize_error_detail(exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"无法解析角色 manifest.json: {safe_err}",
+        ) from exc
+
+    data["system_prompt"] = text
+    tmp_path = manifest_path.with_name("manifest.json.tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        os.replace(tmp_path, manifest_path)
+    except OSError as exc:
+        tmp_path.unlink(missing_ok=True)
+        safe_err = sanitize_error_detail(exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"写入角色 manifest.json 失败: {safe_err}",
+        ) from exc
+
+    # 内存里的角色包缓存也要刷新，否则本进程后续仍读到旧人设
+    mgr.discover_characters()
+
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE voice_profiles SET system_prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+            (text, character_id),
+        )
+        # get_db() 不自动提交，漏掉 commit 会让这次 UPDATE 随连接关闭被回滚
+        await conn.commit()
+
+    logger.info("System prompt updated for character %s (%d chars)", prof.name, len(text))
+    return {
+        "character_id": character_id,
+        "name": prof.name,
+        "system_prompt": text,
+        "length": len(text),
+        "manifest_path": str(manifest_path),
+    }
 
 
 @router.post(

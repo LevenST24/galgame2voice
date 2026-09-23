@@ -285,7 +285,8 @@ function renderHeader() {
   }
   if (s && dom.sessionSettingsBtn) {
     const st = s.settings;
-    dom.sessionSettingsBtn.classList.toggle('configured', Boolean(st?.systemPrompt));
+    // 会话是否"已配置"看有没有绑定角色：人设提示词属于角色包，不再是会话属性
+    dom.sessionSettingsBtn.classList.toggle('configured', Boolean(st?.voiceProfileId));
   }
   updateBadge();
 }
@@ -391,7 +392,6 @@ function sendMessage(rawText, voiceMeta) {
         id: session.id,
         title: session.title,
         voice_profile_id: session.settings?.voiceProfileId,
-        custom_system_prompt: session.settings?.systemPrompt,
         settings: session.settings,
       }),
     }).catch(() => {});
@@ -541,7 +541,8 @@ function sendMessage(rawText, voiceMeta) {
     maybeScroll();
   };
 
-  const onEnd = (finalText, meta, error, cancelled) => {
+  const onEnd = (finalText, meta = {}) => {
+    const { cancelled = false, error = null, audioUrls = [] } = meta;
     typing.remove();
     cancelStream = null;
     let stored = null;
@@ -551,12 +552,12 @@ function sendMessage(rawText, voiceMeta) {
       id: uid('m'),
       role: 'assistant',
       content: textToSave,
-      japanese: meta?.japanese || '',
-      audioUrls: meta?.audio_urls || (meta?.audio_url ? [meta.audio_url] : []),
-      dur: meta?.audio_duration || 0,
+      japanese: meta.japanese || '',
+      audioUrls,
+      // 分句元数据（url + 句子 + 情绪）：重播时用它逐句切换立绘
+      audioChunks: meta.chunks || [],
       ts: Date.now(),
-      ttsParams: meta?.tts_params || null,
-      ttsPlan: meta?.tts_plan || null,
+      ttsParams: meta.ttsParams || null,
     };
 
     if (streamEl) {
@@ -592,7 +593,7 @@ function sendMessage(rawText, voiceMeta) {
     renderHeader();
     if (!cancelled) maybeScroll();
     if (stored && !error && !cancelled) {
-      if (meta && meta.emotion) {
+      if (meta.emotion) {
         try {
           portraitStage.setEmotion(meta.emotion, stored);
         } catch (_) {}
@@ -601,6 +602,8 @@ function sendMessage(rawText, voiceMeta) {
           portraitStage.handleMessageEmotion(stored);
         } catch (_) {}
       }
+      // 本轮好感度可能已变化，红脸差分的解锁门槛跟着更新
+      portraitStage.refreshAffection();
     }
     if (stored && !error && !cancelled && state.global.voiceMode && originId === state.activeId) {
       if (!streamAudioController.isPlaying) {
@@ -616,7 +619,7 @@ function sendMessage(rawText, voiceMeta) {
     settings: session.settings,
     preset: state.global.ttsPreset || '',
     onChunk,
-    onAudio: (url, idx, sentence) => {
+    onAudio: (url, idx, sentence, meta = {}) => {
       if (url && typeof url === 'string' && url.startsWith('/audio/')) {
         fetchAndCacheAudio(url).catch(() => {});
       }
@@ -648,9 +651,9 @@ function sendMessage(rawText, voiceMeta) {
               streamAudioController.interrupt(40);
             },
           });
-          streamAudioController.enqueueChunk({ url, index: idx, sentence, ctl });
+          streamAudioController.enqueueChunk({ url, index: idx, sentence, ctl, emotion: meta.emotion || '' });
         } else {
-          streamAudioController.enqueueChunk({ url, index: idx, sentence, ctl: streamBarCtl });
+          streamAudioController.enqueueChunk({ url, index: idx, sentence, ctl: streamBarCtl, emotion: meta.emotion || '' });
         }
       }
     },
@@ -730,14 +733,14 @@ function newChat() {
   const voiceProfiles = getVoiceProfiles();
 
   if (prevSession && prevSession.settings && prevSession.settings.voiceProfileId) {
+    // 只继承角色绑定与语速；人设提示词属于角色包，由后端按绑定角色解析，
+    // 不再复制会话副本（复制正是同一角色在不同会话设定不一致的来源）
     s.settings.voiceProfileId = prevSession.settings.voiceProfileId;
-    s.settings.systemPrompt = prevSession.settings.systemPrompt;
     s.settings.ttsSpeed = prevSession.settings.ttsSpeed;
   } else if (activeProfileId) {
     const active = voiceProfiles.find((p) => p.id === activeProfileId);
     if (active) {
       s.settings.voiceProfileId = active.id;
-      if (active.system_prompt) s.settings.systemPrompt = active.system_prompt;
       if (active.name === '高楯欧丽叶') s.settings.ttsSpeed = 0.88;
       else if (active.name === '常陆茉子') s.settings.ttsSpeed = 0.90;
       else if (active.name === '白雪乃爱') s.settings.ttsSpeed = 1.05;
@@ -754,7 +757,6 @@ function newChat() {
       id: s.id,
       title: s.title,
       voice_profile_id: s?.settings?.voiceProfileId,
-      custom_system_prompt: s.settings?.systemPrompt,
       settings: s.settings,
     }),
   }).catch(() => {});
@@ -842,6 +844,7 @@ initAudioPlayerUi(dom, {
   sendMessage,
   autoGrow,
   isBusy: () => busy,
+  resolveJapanese,
 });
 
 if (dom.sessionSettingsBtn) {
@@ -881,8 +884,10 @@ async function syncSessionsFromBackend() {
           if (bs.title && (local.title === '新对话' || !local.title)) local.title = bs.title;
           local.updatedAt = bs.updated_at ? new Date(bs.updated_at).getTime() : local.updatedAt;
           if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
-          if (bs.custom_system_prompt && !local.settings.systemPrompt) local.settings.systemPrompt = bs.custom_system_prompt;
           if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = { ...local.settings, ...bs.settings };
+          // 人设提示词是角色级数据，会话里残留的旧副本一律丢弃
+          delete local.settings.systemPrompt;
+          delete local.settings.promptProfileId;
           merged.push(local);
           existingMap.delete(bs.id);
         } else {
@@ -896,7 +901,7 @@ async function syncSessionsFromBackend() {
               ...DEFAULT_SESSION_SETTINGS,
               ...(bs.settings || {}),
               voiceProfileId: bs.voice_profile_id || null,
-              systemPrompt: bs.custom_system_prompt || '',
+              systemPrompt: '',
             },
           });
         }
@@ -919,7 +924,6 @@ async function syncSessionsFromBackend() {
           id: s.id,
           title: s.title,
           voice_profile_id: s.settings?.voiceProfileId,
-          custom_system_prompt: s.settings?.systemPrompt,
           settings: s.settings,
         }),
       }).catch(() => {});

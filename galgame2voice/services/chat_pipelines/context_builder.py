@@ -68,10 +68,11 @@ async def build_chat_context(
         if active_profile is None:
             active_profile = await crud.get_active_voice_profile(conn)
 
+    # 人设提示词只有一个权威源：角色包 manifest.json（DB voice_profiles 是它的镜像）。
+    # 会话级 custom_system_prompt 已废弃：它让同一角色在不同会话里说不同人设，
+    # 而且设置面板不再展示它，留着只会造成看不见的设定分叉。
     if system_prompt_override and system_prompt_override.strip():
         system_prompt = system_prompt_override.strip()
-    elif session and session.custom_system_prompt and session.custom_system_prompt.strip():
-        system_prompt = session.custom_system_prompt.strip()
     else:
         system_prompt = (
             active_profile.system_prompt

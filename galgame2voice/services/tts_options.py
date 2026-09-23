@@ -102,8 +102,14 @@ _TTS_STRING_MAXLEN = {
 }
 
 _ALLOWED_TTS_KEYS = set(_TTS_NUMERIC_RANGES.keys()) | set(_TTS_STRING_MAXLEN.keys()) | {
-    "preset", "temp", "ai_adaptive_voice", "aiAdaptiveVoice"
+    "preset", "temp", "ai_adaptive_voice", "aiAdaptiveVoice",
+    # 内部音色路由键：routers/voice.py 与 tts_service.py 都会把它写进 options，
+    # 不入白名单会被自己的边界校验判为非法参数。
+    "voice_profile_id",
 }
+
+# voice_profile_id 是角色音色 ID，非 GPT-SoVITS 推理参数，仅需整数边界。
+_INTERNAL_INT_KEYS = {"voice_profile_id": (1, 100000)}
 
 
 class ChatTtsOptions(BaseModel):
@@ -134,6 +140,7 @@ class ChatTtsOptions(BaseModel):
     preset: Optional[str] = Field(default=None, max_length=64)
     ai_adaptive_voice: Optional[bool] = None
     aiAdaptiveVoice: Optional[bool] = None
+    voice_profile_id: Optional[int] = Field(default=None, ge=1, le=100000)
 
 
 def validate_user_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -159,6 +166,14 @@ def validate_user_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[
                 num = caster(value)
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"TTS 参数 {key} 必须是数字") from exc
+            if not (low <= num <= high):
+                raise ValueError(f"TTS 参数 {key} 超出允许范围 [{low}, {high}]")
+        elif key in _INTERNAL_INT_KEYS:
+            low, high = _INTERNAL_INT_KEYS[key]
+            try:
+                num = int(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"TTS 参数 {key} 必须是整数") from exc
             if not (low <= num <= high):
                 raise ValueError(f"TTS 参数 {key} 超出允许范围 [{low}, {high}]")
         elif key in _TTS_STRING_MAXLEN:

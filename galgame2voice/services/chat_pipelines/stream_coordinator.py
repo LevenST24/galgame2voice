@@ -293,6 +293,11 @@ class StreamCoordinator:
                                     "index": chunk_index,
                                     "audio_url": chunk_data["audio_url"],
                                     "sentence": sentence,
+                                    # 立绘按这句话的语境切换。TTS 韵律仍用整条消息的
+                                    # 统一情绪（见 chunk_opts），逐句分类只影响画面，
+                                    # 不动声音 —— 音频在此之前已经合成完毕。
+                                    "emotion": classify_emotion(sentence, "", None)
+                                        or chunk_opts.get("emotion"),
                                 },
                             })
                         chunk_index += 1
