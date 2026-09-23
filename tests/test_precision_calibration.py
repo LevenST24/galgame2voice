@@ -1,0 +1,283 @@
+"""
+Evidence-based precision calibration tests:
+1. precision store read/write and resolve_initial_is_half priority (env > cache > default).
+2. calibrate_engine_precision decision table (audible / silent / inconclusive), with a
+   fake probe + fake restart — no real engine or GPU needed.
+"""
+
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from galgame2voice.utils.precision import (
+    read_precision_cache,
+    resolve_initial_is_half,
+    write_precision_cache,
+)
+
+
+class TestPrecisionStore:
+    def test_write_and_read_roundtrip(self, tmp_path):
+        write_precision_cache(tmp_path, str(tmp_path / "engine"), False)
+        data = read_precision_cache(tmp_path)
+        assert data is not None
+        assert data["is_half"] is False
+        assert data["sovits_dir"] == str(tmp_path / "engine")
+
+    def test_missing_cache_returns_none(self, tmp_path):
+        assert read_precision_cache(tmp_path) is None
+
+    def test_corrupt_cache_returns_none(self, tmp_path):
+        (tmp_path / "data").mkdir()
+        (tmp_path / "data" / "precision.json").write_text("{not json", encoding="utf-8")
+        assert read_precision_cache(tmp_path) is None
+
+    def test_utf8_bom_tolerated(self, tmp_path):
+        (tmp_path / "data").mkdir()
+        payload = json.dumps({"is_half": True, "sovits_dir": "x", "verified_at": 0})
+        (tmp_path / "data" / "precision.json").write_bytes(b"\xef\xbb\xbf" + payload.encode("utf-8"))
+        assert read_precision_cache(tmp_path)["is_half"] is True
+
+
+class TestResolveInitialIsHalf:
+    def test_env_override_fp32_wins(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GPT_SOVITS_PRECISION", "fp32")
+        is_half, source = resolve_initial_is_half(tmp_path, tmp_path / "engine")
+        assert is_half is False and source == "env"
+
+    def test_env_override_fp16_wins(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GPT_SOVITS_PRECISION", "FP16")
+        is_half, source = resolve_initial_is_half(tmp_path, tmp_path / "engine")
+        assert is_half is True and source == "env"
+
+    def test_cache_used_when_engine_dir_matches(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
+        engine = tmp_path / "engine"
+        write_precision_cache(tmp_path, str(engine), False)
+        is_half, source = resolve_initial_is_half(tmp_path, engine)
+        assert is_half is False and source == "cache"
+
+    def test_cache_ignored_when_engine_dir_changed(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
+        write_precision_cache(tmp_path, str(tmp_path / "old_engine"), False)
+        is_half, source = resolve_initial_is_half(tmp_path, tmp_path / "new_engine")
+        assert is_half is True and source == "default"
+
+    def test_default_is_fp16(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
+        is_half, source = resolve_initial_is_half(tmp_path, tmp_path / "engine")
+        assert is_half is True and source == "default"
+
+
+class TestCalibrateEnginePrecision:
+    """Exercises scripts.run_server.calibrate_engine_precision with fake probe/restart."""
+
+    @pytest.fixture
+    def calibrate(self):
+        import scripts.run_server as rs
+        return rs.calibrate_engine_precision
+
+    def test_fp16_audible_caches_fp16(self, calibrate, tmp_path, monkeypatch):
+        monkeypatch.setattr("scripts.run_server.PROJECT_ROOT", tmp_path)
+        probes = iter([0.5])
+        is_half, calibrated = calibrate(
+            tmp_path / "engine", True, lambda: next(probes), lambda fh: (_ for _ in ()).throw(AssertionError("no restart expected")),
+        )
+        assert is_half is True and calibrated is True
+        assert read_precision_cache(tmp_path)["is_half"] is True
+
+    def test_fp16_silent_restarts_fp32_and_caches(self, calibrate, tmp_path, monkeypatch):
+        monkeypatch.setattr("scripts.run_server.PROJECT_ROOT", tmp_path)
+        # First probe (FP16): silent. Second probe (after FP32 restart): audible.
+        probes = iter([0.0, 0.42])
+        restarts = []
+
+        def fake_restart(is_half):
+            restarts.append(is_half)
+            return object()
+
+        is_half, calibrated = calibrate(tmp_path / "engine", True, lambda: next(probes), fake_restart)
+        assert restarts == [False]
+        assert is_half is False and calibrated is True
+        assert read_precision_cache(tmp_path)["is_half"] is False
+
+    def test_fp32_still_silent_no_cache(self, calibrate, tmp_path, monkeypatch):
+        monkeypatch.setattr("scripts.run_server.PROJECT_ROOT", tmp_path)
+        probes = iter([0.0, 0.0])
+        is_half, calibrated = calibrate(tmp_path / "engine", True, lambda: next(probes), lambda fh: object())
+        assert is_half is False and calibrated is False
+        assert read_precision_cache(tmp_path) is None
+
+    def test_inconclusive_probe_no_cache(self, calibrate, tmp_path, monkeypatch):
+        monkeypatch.setattr("scripts.run_server.PROJECT_ROOT", tmp_path)
+        is_half, calibrated = calibrate(tmp_path / "engine", True, lambda: None, lambda fh: object())
+        assert is_half is True and calibrated is False
+        assert read_precision_cache(tmp_path) is None
+
+    def test_fp32_silent_from_start_no_restart(self, calibrate, tmp_path, monkeypatch):
+        monkeypatch.setattr("scripts.run_server.PROJECT_ROOT", tmp_path)
+        probes = iter([0.0])
+        restarts = []
+
+        is_half, calibrated = calibrate(tmp_path / "engine", False, lambda: next(probes), lambda fh: restarts.append(fh))
+        assert restarts == []  # already FP32 — restarting changes nothing
+        assert is_half is False and calibrated is False
+
+
+class TestResolveWeightFilePath:
+    """Weights can live inside the character package (project-relative) or the
+    engine dir (engine-relative); the switch flow absolutizes either form."""
+
+    def test_package_relative_weight_absolutized(self, tmp_path, monkeypatch):
+        import galgame2voice.utils.path_guard as pg
+        pkg = tmp_path / "characters" / "kanna" / "gpt.ckpt"
+        pkg.parent.mkdir(parents=True)
+        pkg.write_bytes(b"w")
+        monkeypatch.setattr(pg, "get_settings", lambda: SimpleNamespace(project_root=tmp_path, audio_dir=tmp_path / "audio"))
+        monkeypatch.setattr(pg, "get_authorized_roots", lambda include_sovits=True: [])
+        assert pg.resolve_weight_file_path("characters/kanna/gpt.ckpt") == str(pkg)
+
+    def test_engine_relative_weight_absolutized(self, tmp_path, monkeypatch):
+        import galgame2voice.utils.path_guard as pg
+        engine = tmp_path / "engine"
+        w = engine / "GPT_weights_v2ProPlus" / "kanna-e50.ckpt"
+        w.parent.mkdir(parents=True)
+        w.write_bytes(b"w")
+        monkeypatch.setattr(pg, "get_settings", lambda: SimpleNamespace(project_root=tmp_path, audio_dir=tmp_path / "audio"))
+        monkeypatch.setattr(pg, "get_authorized_roots", lambda include_sovits=True: [engine])
+        assert pg.resolve_weight_file_path("GPT_weights_v2ProPlus/kanna-e50.ckpt") == str(w)
+
+    def test_absolute_untouched_and_missing_passthrough(self, tmp_path, monkeypatch):
+        import galgame2voice.utils.path_guard as pg
+        monkeypatch.setattr(pg, "get_settings", lambda: SimpleNamespace(project_root=tmp_path, audio_dir=tmp_path / "audio"))
+        monkeypatch.setattr(pg, "get_authorized_roots", lambda include_sovits=True: [])
+        assert pg.resolve_weight_file_path("GPT_weights_v2ProPlus/missing.ckpt") == "GPT_weights_v2ProPlus/missing.ckpt"
+        assert pg.resolve_weight_file_path("") == ""
+
+
+class TestYamlPrecisionSync:
+    def test_yaml_read_write_roundtrip(self, tmp_path):
+        from galgame2voice.utils.precision import (
+            read_sovits_yaml_is_half,
+            write_sovits_yaml_is_half,
+            find_sovits_yaml_path,
+        )
+        configs_dir = tmp_path / "GPT_SoVITS" / "configs"
+        configs_dir.mkdir(parents=True)
+        yaml_file = configs_dir / "tts_infer.yaml"
+        yaml_file.write_text(
+            "custom:\n  device: cuda\n  is_half: true\n  version: v2\nv1:\n  is_half: false\n",
+            encoding="utf-8",
+        )
+
+        assert find_sovits_yaml_path(tmp_path) == yaml_file
+        assert read_sovits_yaml_is_half(tmp_path) is True
+
+        # Switch to FP32
+        out_path = write_sovits_yaml_is_half(tmp_path, False)
+        assert out_path == yaml_file
+        assert read_sovits_yaml_is_half(tmp_path) is False
+        content = yaml_file.read_text(encoding="utf-8")
+        assert "is_half: false" in content
+        assert "is_half: true" not in content.split("v1:")[0]
+
+        # Switch back to FP16
+        write_sovits_yaml_is_half(tmp_path, True)
+        assert read_sovits_yaml_is_half(tmp_path) is True
+
+    def test_resolve_initial_is_half_picks_up_yaml_fp32(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
+        configs_dir = tmp_path / "GPT_SoVITS" / "configs"
+        configs_dir.mkdir(parents=True)
+        yaml_file = configs_dir / "tts_infer.yaml"
+        yaml_file.write_text(
+            "custom:\n  device: cuda\n  is_half: false\n  version: v2\n",
+            encoding="utf-8",
+        )
+
+        is_half, source = resolve_initial_is_half(tmp_path, tmp_path)
+        assert is_half is False
+        assert source == "yaml"
+
+    def test_resolve_initial_is_half_picks_up_db_setting(self, tmp_path, monkeypatch):
+        import sqlite3
+        from galgame2voice.utils.precision import read_db_precision, resolve_initial_is_half
+        monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        db_file = data_dir / "galgame2voice.db"
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute("CREATE TABLE settings (id INTEGER PRIMARY KEY, inference_precision TEXT);")
+            conn.execute("INSERT INTO settings (id, inference_precision) VALUES (1, 'fp32');")
+
+        assert read_db_precision(tmp_path) == "fp32"
+        is_half, source = resolve_initial_is_half(tmp_path, tmp_path)
+        assert is_half is False
+        assert source == "db"
+
+        # Update DB to fp16
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute("UPDATE settings SET inference_precision = 'fp16' WHERE id = 1;")
+        assert read_db_precision(tmp_path) == "fp16"
+        is_half2, source2 = resolve_initial_is_half(tmp_path, tmp_path)
+        assert is_half2 is True
+        assert source2 == "db"
+
+    def test_cpu_mode_yaml_and_resolution(self, tmp_path, monkeypatch):
+        import sqlite3
+        from galgame2voice.utils.precision import (
+            read_sovits_yaml_device,
+            write_sovits_yaml_config,
+            resolve_initial_device_and_half,
+            write_precision_cache,
+        )
+        monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
+        monkeypatch.delenv("GPT_SOVITS_DEVICE", raising=False)
+
+        configs_dir = tmp_path / "GPT_SoVITS" / "configs"
+        configs_dir.mkdir(parents=True)
+        yaml_file = configs_dir / "tts_infer.yaml"
+        yaml_file.write_text(
+            "custom:\n  device: cuda\n  is_half: true\n",
+            encoding="utf-8",
+        )
+
+        assert read_sovits_yaml_device(tmp_path) == "cuda"
+
+        # 1. Switch to CPU via write_sovits_yaml_config
+        write_sovits_yaml_config(tmp_path, is_half=False, device="cpu")
+        assert read_sovits_yaml_device(tmp_path) == "cpu"
+        content = yaml_file.read_text(encoding="utf-8")
+        assert "device: cpu" in content
+        assert "is_half: false" in content
+
+        # 2. YAML source detection
+        dev, half, src = resolve_initial_device_and_half(tmp_path, tmp_path)
+        assert dev == "cpu"
+        assert half is False
+        assert src == "yaml"
+
+        # 3. DB source detection for CPU
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        db_file = data_dir / "galgame2voice.db"
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute("CREATE TABLE settings (id INTEGER PRIMARY KEY, inference_precision TEXT);")
+            conn.execute("INSERT INTO settings (id, inference_precision) VALUES (1, 'cpu');")
+
+        dev2, half2, src2 = resolve_initial_device_and_half(tmp_path, tmp_path)
+        assert dev2 == "cpu"
+        assert half2 is False
+        assert src2 == "db"
+
+        # 4. Cache source detection for CPU
+        write_precision_cache(tmp_path, str(tmp_path), is_half=False, device="cpu")
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute("UPDATE settings SET inference_precision = 'auto' WHERE id = 1;")
+
+        dev3, half3, src3 = resolve_initial_device_and_half(tmp_path, tmp_path)
+        assert dev3 == "cpu"
+        assert half3 is False
+        assert src3 == "cache"

@@ -1,0 +1,756 @@
+"""
+Chat Service and Streaming Bilingual Pipeline for galgame2voice.
+Coordinates LLM streaming, incremental JSON bilingual parsing,
+sentence boundary splitting, and low-latency TTS audio generation.
+
+Pipeline hardening (v2.1):
+  - Producer/worker tasks are ALWAYS reaped in a finally block (no orphan tasks
+    leaking the inference lock after an SSE client disconnects).
+  - TTS sentence failures emit an `audio_chunk_error` SSE event instead of
+    being silently swallowed, so the frontend can skip that sentence and keep
+    playing the rest.
+  - The event pump blocks on the queue (1s heartbeat only for cancel
+    responsiveness) instead of busy-polling every 50ms.
+  - WAV concatenation runs in a worker thread so the event loop never freezes.
+  - Memory fact extraction runs in a true background task, off the TTFT path.
+"""
+
+import asyncio
+import json
+import logging
+import time
+import uuid
+import wave
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from pathlib import Path
+
+import aiosqlite
+
+from galgame2voice.adapters.base import ChatMessage, BaseLLMAdapter
+from galgame2voice.adapters.registry import get_llm_adapter
+from galgame2voice.database import crud
+from galgame2voice.database.models import MessageCreate
+from galgame2voice.database.session import get_db, immediate_transaction
+from galgame2voice.services.tts_service import TtsService
+from galgame2voice.services.session_manager import SessionManager
+from galgame2voice.services.memory_service import MemoryService
+from galgame2voice.services.affection_service import AffectionService
+from galgame2voice.services.metrics_collector import get_metrics_collector, MetricsCollector
+from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.text_splitter import split_japanese_sentences
+from galgame2voice.utils.profiler import ChatTurnProfiler
+
+from galgame2voice.services.emotion_classifier import (
+    EMOTION_KEYWORDS,
+    VALID_EMOTIONS,
+    EMOTION_NAME_MAP,
+    classify_emotion,
+)
+from galgame2voice.utils.prosody import (
+    DYNAMIC_SPEED_MIN,
+    DYNAMIC_SPEED_MAX,
+    DYNAMIC_TEMP_MIN,
+    DYNAMIC_TEMP_MAX,
+    clamp_dynamic_speed,
+    clamp_dynamic_temperature,
+)
+from galgame2voice.services.streaming_parser import StreamingBilingualParser
+from galgame2voice.services.chat_pipelines import (
+    LlmStreamPipeline,
+    StreamCoordinator,
+    TextSegmentationPipeline,
+    TtsStreamPipeline,
+    SseKeepAlive,
+)
+from galgame2voice.services.chat_pipelines.stream_coordinator import (
+    _CANCEL_SENTINEL,
+    _SENTINEL,
+)
+from galgame2voice.services.chat_pipelines.context_builder import build_chat_context
+from galgame2voice.utils.audio_concat import concat_wav_files
+
+logger = logging.getLogger("galgame2voice.services.chat_service")
+
+
+# ============================================================================
+# Chat Service (End-to-End Coordination)
+# ============================================================================
+
+class ChatService:
+    """
+    Coordinates multi-turn dialogue, LLM adapter streaming, incremental bilingual
+    parsing, and low-latency sentence-by-sentence TTS audio generation.
+    """
+
+    def __init__(
+        self,
+        tts_service: Optional[TtsService] = None,
+        db_path: Optional[Union[str, Path]] = None,
+        metrics_collector: Optional[MetricsCollector] = None,
+    ):
+        from galgame2voice.database.session import get_database_path
+        self.tts_service = tts_service or TtsService()
+        self.db_path = str(db_path or get_database_path())
+        self.session_manager = SessionManager(db_path=self.db_path)
+        self.memory_service = MemoryService(db_path=self.db_path)
+        self.affection_service = AffectionService(db_path=self.db_path)
+        self.metrics_collector = metrics_collector or get_metrics_collector(db_path=self.db_path)
+        # Strong references for fire-and-forget background tasks (prevent GC mid-flight).
+        self._bg_tasks: set[asyncio.Task[Any]] = set()
+
+    def _spawn_background(self, coro: Any) -> None:
+        """Runs a coroutine in the background with strong ref + error logging."""
+        try:
+            task = asyncio.create_task(coro)
+            self._bg_tasks.add(task)
+
+            def _on_done(t: asyncio.Task[Any]) -> None:
+                self._bg_tasks.discard(t)
+                if not t.cancelled():
+                    exc = t.exception()
+                    if exc:
+                        logger.warning("Background task raised unhandled exception: %s", exc)
+
+            task.add_done_callback(_on_done)
+        except RuntimeError:
+            pass
+
+    async def aclose(self) -> None:
+        """Waits for pending background tasks (memory extraction, etc.) to finish."""
+        pending = [t for t in self._bg_tasks if not t.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=3.0)
+        stragglers = [t for t in self._bg_tasks if not t.done()]
+        for t in stragglers:
+            t.cancel()
+        if stragglers:
+            await asyncio.gather(*stragglers, return_exceptions=True)
+        self._bg_tasks.clear()
+
+    async def _extract_memory_safe(
+        self, user_id: str, profile_id: Optional[int], message_text: str, message_id: int
+    ) -> None:
+        """Background memory fact extraction that never raises."""
+        try:
+            await self.memory_service.process_user_message(
+                user_id=user_id,
+                character_id=profile_id,
+                message_text=message_text,
+                source_message_id=message_id,
+            )
+        except Exception as mem_err:
+            logger.warning("Memory fact extraction failed: %s", mem_err)
+
+    async def _resolve_adapter_triple(
+        self,
+        res: Tuple[BaseLLMAdapter, str, Optional[str]],
+        conn: aiosqlite.Connection,
+        provider_id: Optional[str] = None,
+    ) -> Tuple[BaseLLMAdapter, str, str]:
+        """Normalizes the adapter-factory result into (adapter, model, provider_id)."""
+        if isinstance(res, (tuple, list)) and len(res) >= 3:
+            return res[0], res[1], res[2] or "custom"
+        adapter, model_name = res[0], res[1]
+        active_p = await crud.get_active_provider_raw(conn)
+        actual_provider_id = provider_id or getattr(adapter, "provider_type", None) or (active_p.id if active_p else "custom")
+        return adapter, model_name, actual_provider_id
+
+    @staticmethod
+    def _affection_fallback(emotion: str) -> Dict[str, Any]:
+        """Neutral affection payload used when the affection update fails."""
+        return {
+            "score": 0,
+            "level": 1,
+            "level_name": "初识/生疏",
+            "emotion": emotion,
+            "points_earned": 0,
+        }
+
+    async def _get_active_llm_adapter(self, conn: Optional[aiosqlite.Connection] = None, provider_id: Optional[str] = None) -> Tuple[BaseLLMAdapter, str, str]:
+        """
+        Loads the configured or requested LLM adapter, target chat model, and resolved provider ID from DB.
+        """
+        if conn is not None:
+            if provider_id:
+                provider = await crud.get_provider_raw(conn, provider_id)
+            else:
+                provider = await crud.get_active_provider_raw(conn)
+
+            if provider:
+                adapter = get_llm_adapter(provider)
+                chat_model = provider.chat_model or "gpt-4o-mini"
+                return adapter, chat_model, provider.id
+
+            adapter = get_llm_adapter("openai")
+            return adapter, "gpt-4o-mini", "openai"
+
+        async with get_db(self.db_path) as local_conn:
+            if provider_id:
+                provider = await crud.get_provider_raw(local_conn, provider_id)
+            else:
+                provider = await crud.get_active_provider_raw(local_conn)
+
+            if provider:
+                adapter = get_llm_adapter(provider)
+                chat_model = provider.chat_model or "gpt-4o-mini"
+                return adapter, chat_model, provider.id
+
+            adapter = get_llm_adapter("openai")
+            return adapter, "gpt-4o-mini", "openai"
+
+    async def get_active_llm_adapter(
+        self,
+        conn: Optional[aiosqlite.Connection] = None,
+        provider_id: Optional[str] = None,
+    ) -> Tuple[BaseLLMAdapter, str, str]:
+        """Public interface for getting the active LLM adapter.
+
+        Returns (adapter, chat_model, provider_id). External callers (e.g. the
+        Telegram bot) should use this instead of the private _get_active_llm_adapter.
+        """
+        return await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
+
+    async def _prepare_messages(
+        self,
+        conn: aiosqlite.Connection,
+        session_id: str,
+        user_prompt: str,
+        character_name: Optional[str] = None,
+        system_prompt_override: Optional[str] = None,
+        max_history_override: Optional[int] = None,
+        active_profile: Optional[Any] = None,
+        session: Optional[Any] = None,
+    ) -> List[ChatMessage]:
+        """
+        Constructs system prompt and conversation history messages for LLM using SessionManager.
+        Injects dynamically recalled memories and character affection status into prompt context.
+        """
+        return await build_chat_context(
+            conn=conn,
+            session_id=session_id,
+            user_prompt=user_prompt,
+            session_manager=self.session_manager,
+            memory_service=self.memory_service,
+            character_name=character_name,
+            system_prompt_override=system_prompt_override,
+            max_history_override=max_history_override,
+            active_profile=active_profile,
+            session=session,
+        )
+
+    async def prepare_messages(
+        self,
+        conn: aiosqlite.Connection,
+        session_id: str,
+        user_prompt: str,
+        character_name: Optional[str] = None,
+        system_prompt_override: Optional[str] = None,
+        max_history_override: Optional[int] = None,
+        active_profile: Optional[Any] = None,
+        session: Optional[Any] = None,
+    ) -> List[ChatMessage]:
+        """Public interface for preparing chat messages.
+
+        External callers (e.g. the Telegram bot) should use this instead of the
+        private _prepare_messages.
+        """
+        return await self._prepare_messages(
+            conn, session_id, user_prompt, character_name,
+            system_prompt_override=system_prompt_override,
+            max_history_override=max_history_override,
+            active_profile=active_profile,
+            session=session,
+        )
+
+    def _concat_wav_files(
+        self,
+        chunk_paths: List[Union[str, Path]],
+        output_path: Union[str, Path],
+        pause_duration: float = 0.0,
+    ) -> bool:
+        """Synchronous WAV concatenation with parameter validation and streaming frames — ALWAYS run via asyncio.to_thread()."""
+        return concat_wav_files(chunk_paths, output_path, pause_duration)
+
+    async def stream_chat(
+        self,
+        prompt: str,
+        session_id: str = "default",
+        character_name: Optional[str] = None,
+        provider_id: Optional[str] = None,
+        tts_options: Optional[Dict[str, Any]] = None,
+        cancel_event: Optional[asyncio.Event] = None,
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_context: Optional[int] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        ai_adaptive_voice: Optional[bool] = None,
+        voice_profile_id: Optional[int] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Asynchronously streams bilingual SSE events:
+          - text: incremental Chinese delta tokens
+          - audio_chunk: synthesized sentence audio URL and index
+          - audio_chunk_error: a sentence failed to synthesize (frontend skips it)
+          - done: final complete Chinese/Japanese text and full audio URL
+          - error: error detail if an exception occurs
+
+        All background tasks are guaranteed to be reaped in the finally block,
+        even when the SSE consumer disconnects mid-stream.
+        """
+        # Resolve AI adaptive voice mode (session setting or parameter)
+        if ai_adaptive_voice is None:
+            opts_map = tts_options or {}
+            ai_adaptive_voice = opts_map.get("ai_adaptive_voice", opts_map.get("aiAdaptiveVoice", True))
+
+        t_start = time.perf_counter()
+
+        if cancel_event and cancel_event.is_set():
+            logger.info("Stream chat cancelled before starting for session %s", session_id)
+            return
+
+        coordinator: Optional[StreamCoordinator] = None
+        user_msg: Optional[Any] = None
+
+        try:
+            async with get_db(self.db_path) as conn:
+                async with immediate_transaction(conn):
+                    # Ensure session exists and record user message in a single atomic write transaction
+                    sess_obj = await crud.get_or_create_session(conn, session_id)
+                    user_msg = await crud.add_message(conn, MessageCreate(
+                        session_id=session_id,
+                        role="user",
+                        content_chinese=prompt,
+                        content_japanese="",
+                        audio_url="",
+                        latency_ms=0,
+                    ))
+
+                    # Resolve active voice profile: explicit voice_profile_id -> tts_options -> session -> character_name -> global active
+                    target_profile_id = voice_profile_id or (tts_options or {}).get("voice_profile_id") or (sess_obj.voice_profile_id if sess_obj else None)
+                    active_prof = None
+                    if target_profile_id is not None:
+                        active_prof = await crud.get_voice_profile(conn, int(target_profile_id))
+                    if active_prof is None and character_name:
+                        active_prof = await crud.get_voice_profile_by_name(conn, character_name)
+                    if active_prof is None:
+                        active_prof = await crud.get_active_voice_profile(conn)
+
+                    user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
+                    profile_id = active_prof.id if active_prof else None
+
+                # Extract user memory facts and init character affection in a TRUE background task (off TTFT path)
+                async def _bg_affection_and_memory():
+                    try:
+                        async with get_db(self.db_path) as conn_bg:
+                            await crud.get_or_create_character_affection(
+                                conn_bg, user_id=user_id, character_id=profile_id or 1
+                            )
+                    except Exception as exc:
+                        logger.debug("Failed background affection update: %s", exc)
+                    await self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
+
+                self._spawn_background(_bg_affection_and_memory())
+
+                res = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
+                adapter, model_name, actual_provider_id = await self._resolve_adapter_triple(
+                    res, conn, provider_id
+                )
+                messages = await self._prepare_messages(
+                    conn, session_id, prompt, character_name,
+                    system_prompt_override=system_prompt,
+                    max_history_override=max_context,
+                    active_profile=active_prof,
+                    session=sess_obj,
+                )
+
+            coordinator = StreamCoordinator(
+                adapter=adapter,
+                messages=messages,
+                model_name=model_name,
+                actual_provider_id=actual_provider_id,
+                session_id=session_id,
+                prompt=prompt,
+                user_msg=user_msg,
+                user_id=user_id,
+                profile_id=profile_id,
+                active_prof=active_prof,
+                tts_service=self.tts_service,
+                db_path=self.db_path,
+                metrics_collector=self.metrics_collector,
+                affection_service=self.affection_service,
+                spawn_background=self._spawn_background,
+                concat_wav_fn=self._concat_wav_files,
+                cancel_event=cancel_event,
+                tts_options=tts_options,
+                ai_adaptive_voice=bool(ai_adaptive_voice),
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
+                t_start=t_start,
+            )
+
+            stream_iter = coordinator.stream()
+            try:
+                async for event in stream_iter:
+                    yield event
+            finally:
+                await stream_iter.aclose()
+
+        except Exception as exc:
+            logger.error("Error in stream_chat pipeline: %s", exc, exc_info=True)
+            safe_err = sanitize_error_detail(exc)
+            yield {
+                "event": "error",
+                "data": {"error": safe_err or "Chat service stream pipeline error"}
+            }
+        finally:
+            if coordinator is None and user_msg is not None and getattr(user_msg, "id", None):
+                try:
+                    async with get_db(self.db_path) as conn:
+                        async with immediate_transaction(conn):
+                            await conn.execute("DELETE FROM messages WHERE id = ?;", (user_msg.id,))
+                except Exception as prune_err:
+                    logger.warning("Failed to prune orphaned user message %s: %s", user_msg.id, prune_err)
+
+
+    async def stream_chat_events(
+        self,
+        prompt: str,
+        session_id: str = "default",
+        character_name: Optional[str] = None,
+        provider_id: Optional[str] = None,
+        tts_options: Optional[Dict[str, Any]] = None,
+        cancel_event: Optional[asyncio.Event] = None,
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_context: Optional[int] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        ai_adaptive_voice: Optional[bool] = None,
+    ) -> AsyncGenerator[Union[str, Dict[str, Any]], None]:
+        """
+        Asynchronously streams bilingual SSE formatted event strings.
+        Yields standard W3C SSE frames (event: <name>\ndata: <json>\n\n) and emits
+        W3C SSE comment frames ': keep-alive\n\n' every 5.0 seconds of queue silence.
+        """
+        async for event in self.stream_chat(
+            prompt=prompt,
+            session_id=session_id,
+            character_name=character_name,
+            provider_id=provider_id,
+            tts_options=tts_options,
+            cancel_event=cancel_event,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_context=max_context,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            ai_adaptive_voice=ai_adaptive_voice,
+        ):
+            if isinstance(event, str):
+                yield event
+            elif isinstance(event, dict):
+                if event.get("event") == ":keep-alive" or "comment" in event:
+                    yield event.get("comment", ": keep-alive\n\n")
+                else:
+                    event_name = event.get("event", "message")
+                    event_data = json.dumps(event.get("data", {}), ensure_ascii=False)
+                    yield f"event: {event_name}\ndata: {event_data}\n\n"
+
+    async def chat_sync(
+        self,
+        prompt: str,
+        session_id: str = "default",
+        character_name: Optional[str] = None,
+        provider_id: Optional[str] = None,
+        tts_options: Optional[Dict[str, Any]] = None,
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_context: Optional[int] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        ai_adaptive_voice: Optional[bool] = None,
+        voice_profile_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Synchronous non-streaming bilingual completion and TTS synthesis.
+        """
+        if ai_adaptive_voice is None:
+            opts_map = tts_options or {}
+            ai_adaptive_voice = opts_map.get("ai_adaptive_voice", opts_map.get("aiAdaptiveVoice", True))
+
+        t_start = time.perf_counter()
+        user_msg = None
+        persisted_assistant = False
+        try:
+            async with get_db(self.db_path) as conn:
+                async with immediate_transaction(conn):
+                    sess_obj = await crud.get_or_create_session(conn, session_id)
+                    user_msg = await crud.add_message(conn, MessageCreate(
+                        session_id=session_id,
+                        role="user",
+                        content_chinese=prompt,
+                        content_japanese="",
+                        audio_url="",
+                        latency_ms=0,
+                    ))
+
+                    # Resolve active voice profile: explicit voice_profile_id -> tts_options -> session -> character_name -> global active
+                    target_profile_id = voice_profile_id or (tts_options or {}).get("voice_profile_id") or (sess_obj.voice_profile_id if sess_obj else None)
+                    active_prof = None
+                    if target_profile_id is not None:
+                        active_prof = await crud.get_voice_profile(conn, int(target_profile_id))
+                    if active_prof is None and character_name:
+                        active_prof = await crud.get_voice_profile_by_name(conn, character_name)
+                    if active_prof is None:
+                        active_prof = await crud.get_active_voice_profile(conn)
+
+                    user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
+                    profile_id = active_prof.id if active_prof else None
+                    await crud.get_or_create_character_affection(
+                        conn, user_id=user_id, character_id=profile_id or 1
+                    )
+
+                # Extract user memory facts in background
+                self._spawn_background(
+                    self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
+                )
+
+                res = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
+                adapter, model_name, actual_provider_id = await self._resolve_adapter_triple(
+                    res, conn, provider_id
+                )
+                messages = await self._prepare_messages(
+                    conn, session_id, prompt, character_name,
+                    system_prompt_override=system_prompt,
+                    max_history_override=max_context,
+                    active_profile=active_prof,
+                    session=sess_obj,
+                )
+
+            t_llm_start = time.perf_counter()
+            chat_kwargs: Dict[str, Any] = {"model": model_name}
+            if temperature is not None:
+                chat_kwargs["temperature"] = temperature
+            if top_p is not None:
+                chat_kwargs["top_p"] = top_p
+            if max_tokens is not None:
+                chat_kwargs["max_tokens"] = max_tokens
+            if frequency_penalty is not None:
+                chat_kwargs["frequency_penalty"] = frequency_penalty
+            if presence_penalty is not None:
+                chat_kwargs["presence_penalty"] = presence_penalty
+            llm_response = await adapter.chat(messages, **chat_kwargs)
+            ttft_ms = (time.perf_counter() - t_llm_start) * 1000.0
+            raw_text = llm_response.content
+
+            # Parse bilingual response
+            parser = StreamingBilingualParser()
+            parser.feed_chunk(raw_text)
+            chinese, japanese, _ = parser.finalize()
+
+            if not chinese:
+                chinese = raw_text
+            if not japanese:
+                japanese = chinese
+
+            final_emotion = classify_emotion(chinese, japanese, parser.emotion_extracted)
+
+            # Affection update
+            try:
+                affection_res = await self.affection_service.handle_turn_affection(
+                    user_id=user_id,
+                    character_id=profile_id,
+                    user_text=prompt,
+                    assistant_text=chinese,
+                    explicit_emotion=final_emotion,
+                )
+                final_emotion = affection_res.get("emotion", final_emotion)
+            except Exception as aff_err:
+                logger.warning("Affection update in chat_sync failed: %s", aff_err)
+                affection_res = self._affection_fallback(final_emotion)
+
+            # Synthesize full audio
+            audio_url = ""
+            tts_first_chunk_ms = 0.0
+            tts_cached_chunks = 0
+            tts_generated_chunks = 0
+            if japanese.strip():
+                try:
+                    t_tts_start = time.perf_counter()
+                    sync_opts = parser.get_dynamic_tts_options(
+                        base_options=tts_options,
+                        adaptive_enabled=bool(ai_adaptive_voice),
+                        sentence_text=japanese,
+                    )
+                    if active_prof:
+                        sync_opts.setdefault("voice_profile_id", active_prof.id)
+                        sync_opts.setdefault("character_name", active_prof.name)
+                    user_split_method = (tts_options or {}).get("text_split_method") or (tts_options or {}).get("cut_option") or (tts_options or {}).get("how_to_cut")
+                    if not user_split_method:
+                        sync_opts["text_split_method"] = "cut0" if len(japanese.strip()) <= 80 else "cut2"
+                    audio_url, _, _ = await self.tts_service.synthesize_to_file(
+                        japanese,
+                        options=sync_opts,
+                        filename_prefix="voice",
+                    )
+                    tts_first_chunk_ms = (time.perf_counter() - t_tts_start) * 1000.0
+                    if "/audio/cache/" in str(audio_url):
+                        tts_cached_chunks = 1
+                    else:
+                        tts_generated_chunks = 1
+                except Exception as e:
+                    logger.warning("TTS synthesis in chat_sync failed: %s", e)
+
+            latency_ms = int((time.perf_counter() - t_start) * 1000)
+
+            # Token and Latency Telemetry
+            prompt_text = "".join([getattr(m, "content", "") for m in messages])
+            prompt_tokens = self.metrics_collector.estimate_tokens(prompt_text)
+            completion_tokens = self.metrics_collector.estimate_tokens(chinese + japanese)
+
+            metric_record = await self.metrics_collector.record_metric(
+                session_id=session_id,
+                channel="web",
+                provider_id=actual_provider_id,
+                model_name=model_name,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                ttft_ms=ttft_ms,
+                tts_first_chunk_ms=tts_first_chunk_ms,
+                total_latency_ms=float(latency_ms),
+                tts_cached_chunks=tts_cached_chunks,
+                tts_generated_chunks=tts_generated_chunks,
+            )
+
+            # Save assistant message to DB
+            async with get_db(self.db_path) as conn:
+                async with immediate_transaction(conn):
+                    await crud.add_message(conn, MessageCreate(
+                        session_id=session_id,
+                        role="assistant",
+                        content_chinese=chinese,
+                        content_japanese=japanese,
+                        audio_url=audio_url,
+                        latency_ms=latency_ms,
+                    ))
+                persisted_assistant = True
+
+            final_tts_params = {
+                "speed": parser.tts_speed,
+                "temperature": parser.tts_temperature,
+                "emotion": parser.tts_emotion,
+                "adaptive_enabled": bool(ai_adaptive_voice),
+            } if (parser.tts_speed is not None or parser.tts_temperature is not None or parser.tts_emotion is not None) else None
+
+            return {
+                "session_id": session_id,
+                "chinese": chinese,
+                "japanese": japanese,
+                "emotion": final_emotion,
+                "affection": affection_res,
+                "metrics": metric_record,
+                "audio_url": audio_url,
+                "audioUrl": audio_url,
+                "latency_ms": latency_ms,
+                "tts_params": final_tts_params,
+            }
+        finally:
+            if not persisted_assistant and user_msg is not None and getattr(user_msg, "id", None):
+                try:
+                    async with get_db(self.db_path) as conn:
+                        async with immediate_transaction(conn):
+                            await conn.execute("DELETE FROM messages WHERE id = ?;", (user_msg.id,))
+                except Exception as prune_err:
+                    logger.warning("Failed to prune orphaned user message %s in chat_sync: %s", user_msg.id, prune_err)
+
+    async def resolve_message_japanese(
+        self,
+        text: str,
+        session_id: Optional[str] = None,
+    ) -> str:
+        """
+        Resolves the Japanese original text used during backend synthesis for a given Chinese message.
+        1. Checks database records for an exact or approximate match in messages table.
+        2. If not found in database, invokes active LLM adapter to translate to spoken Japanese suitable for Galgame.
+        """
+        clean_text = (text or "").strip()
+        if not clean_text:
+            return ""
+
+        async with get_db(self.db_path) as conn:
+            # First attempt: match by session_id and exact/substring content_chinese
+            if session_id:
+                cursor = await conn.execute(
+                    """
+                    SELECT content_japanese FROM messages
+                    WHERE session_id = ? AND role = 'assistant' AND content_japanese != ''
+                      AND (content_chinese = ? OR ? LIKE '%' || content_chinese || '%' OR content_chinese LIKE '%' || ? || '%')
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (session_id, clean_text, clean_text, clean_text),
+                )
+                row = await cursor.fetchone()
+                if row and row[0] and str(row[0]).strip():
+                    return str(row[0]).strip()
+
+            # Second attempt: search across all assistant messages in DB
+            cursor = await conn.execute(
+                """
+                SELECT content_japanese FROM messages
+                WHERE role = 'assistant' AND content_japanese != ''
+                  AND (content_chinese = ? OR ? LIKE '%' || content_chinese || '%' OR content_chinese LIKE '%' || ? || '%')
+                ORDER BY id DESC LIMIT 1
+                """,
+                (clean_text, clean_text, clean_text),
+            )
+            row = await cursor.fetchone()
+            if row and row[0] and str(row[0]).strip():
+                return str(row[0]).strip()
+
+            # Third attempt: fallback to active LLM translation
+            try:
+                res = await self._get_active_llm_adapter(conn=conn)
+                adapter, model_name, _ = await self._resolve_adapter_triple(res, conn)
+                translation_prompt = (
+                    "你是一个Galgame本地化配音翻译专家。请将以下中文台词直接翻译为适合配音朗读的口语化自然日文。"
+                    "注意：仅输出翻译后的纯日文句子，严禁包含任何中文、拼音、假名注音或解释说明。\n\n"
+                    f"中文台词：{clean_text}"
+                )
+                chat_msg = ChatMessage(role="user", content=translation_prompt)
+                resp = await adapter.chat([chat_msg], model=model_name, temperature=0.3)
+                raw_ja = resp.content if hasattr(resp, "content") else str(resp)
+                ja = raw_ja.strip().strip('"\'`「」『』')
+                return ja
+            except Exception as exc:
+                logger.warning("LLM translation fallback in resolve_message_japanese failed: %s", exc)
+                return ""
+
+
+__all__ = [
+    "StreamingBilingualParser",
+    "ChatService",
+    "SseKeepAlive",
+    "split_japanese_sentences",
+    "classify_emotion",
+    "EMOTION_KEYWORDS",
+    "VALID_EMOTIONS",
+    "EMOTION_NAME_MAP",
+    "DYNAMIC_SPEED_MIN",
+    "DYNAMIC_SPEED_MAX",
+    "DYNAMIC_TEMP_MIN",
+    "DYNAMIC_TEMP_MAX",
+    "clamp_dynamic_speed",
+    "clamp_dynamic_temperature",
+]

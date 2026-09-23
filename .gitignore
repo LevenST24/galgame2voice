@@ -1,0 +1,126 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments & Secrets
+.venv/
+venv/
+ENV/
+env/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+
+# Frontend & Node
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Frontend bundle deployed into the backend static dir. It is intentionally
+# TRACKED so a fresh clone runs without a Node toolchain; regenerate it with
+# `cd frontend && npm run deploy` after changing frontend/src (the Docker build
+# always rebuilds it from source). galgame2voice/static/characters/ and static/js/
+# are hand-maintained assets.
+
+# galgame2voice runtime data, databases & logs
+data/
+data/audio_cache/
+data/audio_cache/**
+logs/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+backups/
+*.bak
+*.pid
+*.log
+
+# Audio, recordings, scratch & caches
+audio/*
+!audio/.gitkeep
+temp_audio/
+temp_cache_mem/
+temp_test/
+tmp_check/
+*.wav
+*.mp3
+*.ogg
+
+# Testing, Coverage & Build/Test Outputs
+.pytest_cache/
+.ruff_cache/
+.coverage
+*.coverage.*
+coverage.xml
+coverage.json
+htmlcov/
+.tox/
+.nox/
+pytest*.txt
+pytest*.log
+deploy_*.txt
+_probe_*.py
+temp_*.py
+debug_*.py
+scratch_*.py
+
+# Temporary runtime scratch files
+temp.db
+*.tmp
+
+# IDE & Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Operating System
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary agent scratchpads
+.agents/
+
+# Character packages & model weights (user assets, distributed separately)
+characters/*
+!characters/.gitkeep
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+*.onnx
+*.gguf
+*.tjs
+scripts/*.json
+scripts/*.txt
+

@@ -1,0 +1,9 @@
+# Galgame2Voice Development and Testing Dependencies
+-r requirements.txt
+
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
+pytest-mock>=3.14.0
+pytest-cov>=5.0.0
+ruff>=0.6.0
+mypy>=1.11.0
