@@ -39,6 +39,7 @@ STANDARD_EMOTIONS = {"gentle", "shy", "happy", "tsundere", "cool", "sad", "angry
 # Task 1: Validate Prompt JSON Output Schema & Streaming Parser / Prosody
 # ============================================================================
 
+@pytest.mark.requires_character_assets
 @pytest.mark.parametrize("char_name", TENSHI_5)
 def test_prompt_json_example_extraction_and_schema(char_name):
     """
@@ -80,6 +81,7 @@ def test_prompt_json_example_extraction_and_schema(char_name):
     assert emotion in STANDARD_EMOTIONS, f"{char_name} JSON example emotion {emotion} not in {STANDARD_EMOTIONS}"
 
 
+@pytest.mark.requires_character_assets
 @pytest.mark.parametrize("char_name", TENSHI_5)
 def test_streaming_parser_with_prompt_json_complete_and_chunked(char_name):
     """
@@ -167,6 +169,7 @@ def test_character_manager_sync_method_existence():
     assert callable(getattr(mgr, "sync_with_db"))
 
 
+@pytest.mark.requires_character_assets
 @pytest.mark.asyncio
 async def test_character_manager_sync_roundtrip_and_idempotence(tmp_path):
     """
@@ -234,6 +237,7 @@ async def test_character_manager_sync_roundtrip_and_idempotence(tmp_path):
 # Task 3: Verify All 13 Characters Discovered Have is_valid == True
 # ============================================================================
 
+@pytest.mark.requires_character_assets
 def test_all_13_characters_discovered_is_valid():
     """
     Verifies that CharacterManager discovers exactly 13 character packages
@@ -251,6 +255,7 @@ def test_all_13_characters_discovered_is_valid():
         assert len(pkg.manifest.emotions) == 7, f"Package {pkg.name} has {len(pkg.manifest.emotions)} emotions != 7"
 
 
+@pytest.mark.requires_character_assets
 def test_manifest_and_system_prompt_txt_synchronized_tenshi_5():
     """
     Verifies that manifest.json['system_prompt'] strictly matches system_prompt.txt

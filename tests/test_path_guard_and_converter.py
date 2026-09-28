@@ -26,6 +26,7 @@ from galgame2voice.utils.path_guard import (
 )
 from galgame2voice.utils.audio_converter import (
     convert_ogg_to_wav,
+    convert_wav_to_ogg,
     find_ffmpeg,
     is_ffmpeg_available,
     is_target_wav_pcm,
@@ -141,6 +142,58 @@ async def test_convert_ogg_to_wav_short_circuit():
     # Even if an invalid ffmpeg_path is provided, short-circuiting must return wav_16k without error
     result = await convert_ogg_to_wav(wav_16k, sample_rate=16000, channels=1, ffmpeg_path="non_existent_ffmpeg_bin")
     assert result == wav_16k
+
+
+@pytest.mark.asyncio
+async def test_convert_ogg_to_wav_with_mocked_ffmpeg(monkeypatch):
+    """Verifies convert_ogg_to_wav executes conversion pipeline and cleans up temp files."""
+    monkeypatch.setattr("galgame2voice.utils.audio_converter.find_ffmpeg", lambda path=None: "/mock/ffmpeg")
+
+    mock_wav = _create_wav(sample_rate=16000, channels=1, sampwidth=2)
+    captured_paths = []
+
+    async def fake_run_ffmpeg(*cmd_args, **kwargs):
+        out_path = Path(cmd_args[-1])
+        in_path = Path(cmd_args[cmd_args.index("-i") + 1])
+        assert in_path.exists()
+        out_path.write_bytes(mock_wav)
+        captured_paths.extend([in_path, out_path])
+
+    monkeypatch.setattr("galgame2voice.utils.audio_converter.run_ffmpeg_command", fake_run_ffmpeg)
+
+    dummy_ogg = b"OggS" + b"\x00" * 32
+    result = await convert_ogg_to_wav(dummy_ogg)
+
+    assert result == mock_wav
+    assert len(captured_paths) == 2
+    for p in captured_paths:
+        assert not p.exists()
+
+
+@pytest.mark.asyncio
+async def test_convert_wav_to_ogg_with_mocked_ffmpeg(monkeypatch):
+    """Verifies convert_wav_to_ogg executes conversion pipeline and cleans up temp files."""
+    monkeypatch.setattr("galgame2voice.utils.audio_converter.find_ffmpeg", lambda path=None: "/mock/ffmpeg")
+
+    mock_ogg = b"OggS" + b"\x00" * 32
+    captured_paths = []
+
+    async def fake_run_ffmpeg(*cmd_args, **kwargs):
+        out_path = Path(cmd_args[-1])
+        in_path = Path(cmd_args[cmd_args.index("-i") + 1])
+        assert in_path.exists()
+        out_path.write_bytes(mock_ogg)
+        captured_paths.extend([in_path, out_path])
+
+    monkeypatch.setattr("galgame2voice.utils.audio_converter.run_ffmpeg_command", fake_run_ffmpeg)
+
+    wav_input = _create_wav(sample_rate=16000, channels=1, sampwidth=2)
+    result = await convert_wav_to_ogg(wav_input)
+
+    assert result == mock_ogg
+    assert len(captured_paths) == 2
+    for p in captured_paths:
+        assert not p.exists()
 
 
 # ============================================================================

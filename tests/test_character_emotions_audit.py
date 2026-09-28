@@ -60,6 +60,7 @@ def _md5(path: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+@pytest.mark.requires_character_assets
 def test_all_13_characters_exist():
     settings = get_settings()
     chars_dir = settings.characters_dir
