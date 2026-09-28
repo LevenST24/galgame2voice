@@ -209,6 +209,7 @@ async def test_cgroup_quota_triggers_503_on_voice_switch(tmp_path, temp_db_path,
     """In containerized environment, cgroup quota exhaustion blocks voice switch with 503 unless forced."""
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.delenv("GALGAME2VOICE_SKIP_MEM_CHECK", raising=False)
+    monkeypatch.setenv("GALGAME2VOICE_MIN_FREE_MEM_GB", "1.5")
 
     # cgroup limit: 2GB max, 1.2GB used -> 0.8GB free (< 1.5GB threshold)
     (tmp_path / "memory.max").write_text(str(int(2.0 * (1024 ** 3))), encoding="utf-8")

@@ -11,7 +11,6 @@ import os
 import shutil
 import sys
 import tempfile
-import time
 import wave
 from pathlib import Path
 from typing import Optional
@@ -257,7 +256,7 @@ async def convert_ogg_to_wav(
                             p.unlink(missing_ok=True)
                         break
                     except OSError:
-                        time.sleep(0.02)
+                        await asyncio.sleep(0.02)
 
 
 
@@ -323,7 +322,7 @@ async def convert_wav_to_ogg(
                             p.unlink(missing_ok=True)
                         break
                     except OSError:
-                        time.sleep(0.02)
+                        await asyncio.sleep(0.02)
 
 
 

@@ -380,10 +380,14 @@ class TestDatabaseTelemetryPathNormalization:
                 "data/temp.db",
             ),
             # UNC network share (outside project root) -> fallback
-            (
+            pytest.param(
                 Path("C:/galgame2voice"),
                 Path(r"\\remote-server\share\data.db"),
                 "data/data.db",
+                marks=pytest.mark.skipif(
+                    sys.platform != "win32",
+                    reason="UNC path parsing is Windows-specific; POSIX treats backslashes as literal characters",
+                ),
             ),
         ],
     )
