@@ -161,6 +161,39 @@ class VoiceManager:
     # Voice Profile Switching (Atomic 3-Step + Persistence)
     # ========================================================================
 
+    def is_active_profile(self, profile: Any, force: bool = False) -> bool:
+        """
+        Check if the given profile matches the currently active voice profile.
+        Uses canonical fallback-chain semantics: attribute access, then
+        refer_audio_path/refer_text legacy aliases, then dict-key fallback.
+        """
+        if force:
+            return False
+
+        active_prof = self.active_profile
+        if not active_prof or not profile:
+            return False
+
+        active_id = getattr(active_prof, "id", None) or (active_prof.get("id") if isinstance(active_prof, dict) else None)
+        active_gpt = getattr(active_prof, "gpt_weights_path", None) or (active_prof.get("gpt_weights_path") if isinstance(active_prof, dict) else None)
+        active_sovits = getattr(active_prof, "sovits_weights_path", None) or (active_prof.get("sovits_weights_path") if isinstance(active_prof, dict) else None)
+        active_ref = getattr(active_prof, "ref_audio_path", None) or getattr(active_prof, "refer_audio_path", None) or (active_prof.get("ref_audio_path") if isinstance(active_prof, dict) else (active_prof.get("refer_audio_path") if isinstance(active_prof, dict) else None))
+        active_prompt = getattr(active_prof, "prompt_text", None) or getattr(active_prof, "refer_text", None) or (active_prof.get("prompt_text") if isinstance(active_prof, dict) else (active_prof.get("refer_text") if isinstance(active_prof, dict) else None))
+
+        prof_id = getattr(profile, "id", None) or (profile.get("id") if isinstance(profile, dict) else None)
+        prof_gpt = getattr(profile, "gpt_weights_path", None) or (profile.get("gpt_weights_path") if isinstance(profile, dict) else None)
+        prof_sovits = getattr(profile, "sovits_weights_path", None) or (profile.get("sovits_weights_path") if isinstance(profile, dict) else None)
+        prof_ref = getattr(profile, "ref_audio_path", None) or getattr(profile, "refer_audio_path", None) or (profile.get("ref_audio_path") if isinstance(profile, dict) else (profile.get("refer_audio_path") if isinstance(profile, dict) else None))
+        prof_prompt = getattr(profile, "prompt_text", None) or getattr(profile, "refer_text", None) or (profile.get("prompt_text") if isinstance(profile, dict) else (profile.get("refer_text") if isinstance(profile, dict) else None))
+
+        return bool(
+            active_id == prof_id
+            and active_gpt == prof_gpt
+            and active_sovits == prof_sovits
+            and active_ref == prof_ref
+            and active_prompt == prof_prompt
+        )
+
     async def switch_profile(
         self,
         target: Union[int, str, VoiceProfileResponse, VoiceProfileInDB, Dict[str, Any], Any],

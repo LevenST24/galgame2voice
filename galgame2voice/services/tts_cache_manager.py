@@ -84,11 +84,6 @@ class TtsCacheManager:
             self._mem_bytes_total -= len(evicted)
         self._touch_throttle.pop(cache_key, None)
 
-    def _mem_cache_clear(self) -> None:
-        self._mem_cache.clear()
-        self._mem_bytes_total = 0
-        self._touch_throttle.clear()
-
     def _mem_cache_store(self, cache_key: str, audio_bytes: bytes) -> None:
         self._mem_cache_discard(cache_key)
         self._mem_cache[cache_key] = audio_bytes
@@ -218,17 +213,6 @@ class TtsCacheManager:
         if stragglers:
             await asyncio.gather(*stragglers, return_exceptions=True)
         self._bg_tasks.clear()
-
-    async def _touch_db_async(self, cache_key: str) -> None:
-        """Asynchronously updates last_accessed_at in the database for the given cache key."""
-        try:
-            loop = asyncio.get_running_loop()
-            if not loop.is_running() or loop.is_closed():
-                return
-            async with get_db(self.db_path) as conn:
-                await crud.touch_tts_cache_entry(conn, cache_key)
-        except Exception as exc:
-            logger.debug("Non-critical: could not touch tts_cache_entry: %s", exc)
 
     def compute_cache_key(
         self,

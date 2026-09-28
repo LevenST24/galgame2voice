@@ -441,26 +441,7 @@ async def switch_character(req: CharacterSwitchRequest):
                 )
             profile = verified_profile
 
-        active_prof = manager.active_profile
-        is_already_active = False
-        if active_prof and not req.force:
-            active_id = getattr(active_prof, "id", None) or (active_prof.get("id") if isinstance(active_prof, dict) else None)
-            active_gpt = getattr(active_prof, "gpt_weights_path", None) or (active_prof.get("gpt_weights_path") if isinstance(active_prof, dict) else None)
-            active_sovits = getattr(active_prof, "sovits_weights_path", None) or (active_prof.get("sovits_weights_path") if isinstance(active_prof, dict) else None)
-            active_ref = getattr(active_prof, "ref_audio_path", None) or getattr(active_prof, "refer_audio_path", None) or (active_prof.get("ref_audio_path") if isinstance(active_prof, dict) else None)
-            active_prompt = getattr(active_prof, "prompt_text", None) or getattr(active_prof, "refer_text", None) or (active_prof.get("prompt_text") if isinstance(active_prof, dict) else None)
-
-            prof_ref = getattr(profile, "ref_audio_path", None) or getattr(profile, "refer_audio_path", None)
-            prof_prompt = getattr(profile, "prompt_text", None) or getattr(profile, "refer_text", None)
-
-            if (
-                active_id == profile.id
-                and active_gpt == profile.gpt_weights_path
-                and active_sovits == profile.sovits_weights_path
-                and active_ref == prof_ref
-                and active_prompt == prof_prompt
-            ):
-                is_already_active = True
+        is_already_active = manager.is_active_profile(profile, force=req.force)
 
         if is_already_active:
             try:
