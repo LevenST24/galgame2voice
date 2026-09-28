@@ -217,10 +217,8 @@ class AffectionService:
             return "angry"
 
         # Cold / Cool keywords
-        if any(k in text for k in ["高冷", "cool"]):
+        if any(k in text for k in ["高冷", "cool", "无聊", "……", "冷淡", "走开", "发卡", "別に"]):
             return "cool"
-        if any(k in text for k in ["无聊", "……", "冷淡", "走开", "发卡", "別に"]):
-            return "cold"
 
         # Default by intimacy tier
         if aff_lvl >= 4:
@@ -409,7 +407,7 @@ EMOTION_KEYWORDS = {
     "happy": ["太好了", "好高兴", "开心", "嘻嘻", "真棒", "笑", "うれしい", "よかった", "很高兴"],
     "sad": ["对不起", "难过", "伤心", "抱歉", "呜", "悲しい", "ごめん", "失落"],
     "gentle": ["微笑着", "没关系哦", "乖", "摸头", "辛苦了", "陪着你", "温柔", "大丈夫", "陪伴"],
-    "cold": ["无聊", "……", "冷淡", "走开", "发卡", "別に"],
+    "cool": ["无聊", "……", "冷淡", "走开", "发卡", "別に"],
 }
 
 __all__ = [
