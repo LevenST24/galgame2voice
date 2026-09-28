@@ -136,8 +136,9 @@ class TestHardwareUtilities:
     def test_macos_sysctl_memory_parsing(self, monkeypatch):
         import galgame2voice.utils.hardware as hw
         monkeypatch.setattr(hw.sys, "platform", "darwin")
-        if hasattr(hw.os, "sysconf"):
-            monkeypatch.setattr(hw.os, "sysconf", lambda name: 0)
+        orig_exists = hw.os.path.exists
+        monkeypatch.setattr(hw.os.path, "exists", lambda p: False if str(p) == "/proc/meminfo" else orig_exists(p))
+        monkeypatch.delattr(hw.os, "sysconf", raising=False)
         monkeypatch.setattr(hw.subprocess, "check_output", lambda *args, **kwargs: "17179869184\n")
 
         total, avail = hw.get_system_memory_status()

@@ -106,6 +106,7 @@ def test_manifest_schema_missing_required():
 # 2. Character Discovery & Audio Duration Validation
 # ============================================================================
 
+@pytest.mark.requires_character_assets
 def test_character_manager_discovers_natsume(tmp_path):
     mgr = CharacterManager(get_settings().characters_dir)
     discovered = mgr.discover_characters()
@@ -164,6 +165,7 @@ def test_character_manager_duration_validation(tmp_path):
 # 3. Dynamic Emotion Resolution Tests
 # ============================================================================
 
+@pytest.mark.requires_character_assets
 def test_resolve_emotion_reference_dynamic():
     # Canonical emotion
     res = resolve_emotion_reference("四季夏目", "happy")
@@ -236,6 +238,7 @@ def test_character_manager_resolve_fallback(tmp_path):
 # 4. Database Synchronization & Idempotence Tests
 # ============================================================================
 
+@pytest.mark.requires_character_assets
 @pytest.mark.asyncio
 async def test_character_manager_sync_with_db_idempotent(tmp_path):
     db_file = tmp_path / "test_char_sync.db"
@@ -338,6 +341,7 @@ def test_package_release_includes_character_assets(tmp_path):
 # 7. Robustness, Lazy Discovery & Security Tests
 # ============================================================================
 
+@pytest.mark.requires_character_assets
 def test_character_manager_lazy_discovery():
     """Verifies that CharacterManager getters automatically discover characters if not yet discovered."""
     mgr = CharacterManager()
@@ -384,6 +388,7 @@ def test_character_manager_path_traversal_rejection(tmp_path):
     assert any("traversal" in err.lower() for err in pkg.validation_errors)
 
 
+@pytest.mark.requires_character_assets
 @pytest.mark.asyncio
 async def test_character_manager_sync_stores_portable_paths(tmp_path):
     """Verifies that character manager DB sync writes portable project-relative paths, not machine absolute."""
@@ -421,6 +426,7 @@ async def test_character_manager_sync_stores_portable_paths(tmp_path):
         assert not Path(ref_path).is_absolute()
 
 
+@pytest.mark.requires_character_assets
 def test_legacy_path_resolution_backward_compatibility():
     """Verifies that resolve_existing_audio_path backwards-compatibly resolves legacy audio references."""
     from galgame2voice.utils.path_guard import resolve_existing_audio_path
@@ -451,11 +457,13 @@ def test_build_gpt_sovits_env_default_argument(tmp_path):
 # 8. Multi-Character Package Integration & Hardening Tests
 # ============================================================================
 
+@pytest.mark.requires_character_assets
 def test_character_manager_discovers_all_three_characters():
     """Alias for backward compatibility with existing test runners."""
     test_character_manager_discovers_all_eight_characters()
 
 
+@pytest.mark.requires_character_assets
 def test_character_manager_discovers_all_eight_characters():
     """
     Verifies that CharacterManager auto-discovers all 8 character packages:
@@ -548,6 +556,7 @@ def test_character_manager_rejects_duplicate_audio_md5(tmp_path):
     assert any("duplicate" in err.lower() for err in pkg.validation_errors)
 
 
+@pytest.mark.requires_character_assets
 def test_all_reference_audios_duration_boundary():
     """Verifies that all reference audios across all 8 packages have duration in [3.0s, 10.0s]."""
     from galgame2voice.services.tts_service import TtsService
@@ -583,6 +592,7 @@ def test_all_reference_audios_duration_boundary():
     assert audio_count >= 56, f"Expected at least 56 reference audios (8 chars * 7 emotions), tested {audio_count}"
 
 
+@pytest.mark.requires_character_assets
 def test_character_weights_are_real_binaries_gt_100mb():
     """Verifies that all model weights across all characters are valid binaries > 100MB (> 104,857,600 bytes)."""
     mgr = CharacterManager(get_settings().characters_dir)
@@ -608,6 +618,7 @@ def test_character_weights_are_real_binaries_gt_100mb():
             assert not header.startswith(b"SoVITS_weights")
 
 
+@pytest.mark.requires_character_assets
 @pytest.mark.asyncio
 async def test_character_manager_sync_with_db_all_characters_and_default(tmp_path):
     """Verifies that DB sync syncs all 3 characters, cleans ghosts, and sets Natsume as deterministic default."""
@@ -676,6 +687,7 @@ async def test_character_manager_sync_with_db_all_characters_and_default(tmp_pat
         assert default_rows[0]["name"] == "四季夏目"
 
 
+@pytest.mark.requires_character_assets
 def test_character_manager_whitespace_queries():
     """Verifies that whitespace-only queries return None, and space-separated queries resolve properly."""
     mgr = CharacterManager(get_settings().characters_dir)
@@ -697,6 +709,7 @@ def test_character_manager_whitespace_queries():
     assert mgr.get_character("  kanna  ").id == "kanna"
 
 
+@pytest.mark.requires_character_assets
 def test_character_switch_api_all_characters_and_aliases():
     """Verifies that /api/characters/switch successfully switches to all characters by name, ID, and alias."""
     from unittest.mock import patch, AsyncMock

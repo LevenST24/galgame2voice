@@ -39,6 +39,7 @@ STANDARD_EMOTIONS = ["gentle", "shy", "happy", "tsundere", "cool", "sad", "angry
 AFFECTION_STAGES = ["0~20", "21~50", "51~80", "81~100"]
 
 
+@pytest.mark.requires_character_assets
 def test_discovery_and_pydantic_validation_all_13_packages():
     """Validates that all 13 packages are discovered and satisfy CharacterManifest schema."""
     settings = get_settings()
@@ -72,6 +73,7 @@ def test_discovery_and_pydantic_validation_all_13_packages():
             assert w_path.stat().st_size > 100 * 1024 * 1024, f"Weight {w_path} size <= 100MB for {pkg.name}"
 
 
+@pytest.mark.requires_character_assets
 def test_strict_string_equality_manifest_and_system_prompt_five_characters():
     """Asserts strict string equality between manifest.json['system_prompt'] and system_prompt.txt for all 5 new characters."""
     settings = get_settings()
@@ -97,6 +99,7 @@ def test_strict_string_equality_manifest_and_system_prompt_five_characters():
         )
 
 
+@pytest.mark.requires_character_assets
 def test_affection_stages_and_emotions_in_prompts_five_characters():
     """Asserts that each prompt contains all 4 affection stages and 7 standard emotions."""
     settings = get_settings()
@@ -122,6 +125,7 @@ def test_affection_stages_and_emotions_in_prompts_five_characters():
         assert '"japanese"' in prompt, f'JSON TTS contract missing "japanese" in prompt for {char_name}'
 
 
+@pytest.mark.requires_character_assets
 def test_audio_references_unique_md5_and_duration_bounds():
     """Asserts that each of the 13 characters has 7 audio references in refs/ with unique MD5s and durations in [3.0s, 10.0s]."""
     settings = get_settings()
@@ -164,6 +168,7 @@ def test_audio_references_unique_md5_and_duration_bounds():
             )
 
 
+@pytest.mark.requires_character_assets
 def test_dynamic_emotion_resolution_all_thirteen_characters():
     """Verifies that all 13 characters resolve all 7 standard emotions without cross-hijacking."""
     for char_name in ALL_THIRTEEN_CHARACTERS:
@@ -191,6 +196,7 @@ def test_dynamic_emotion_resolution_all_thirteen_characters():
         )
 
 
+@pytest.mark.requires_character_assets
 def test_tanikaze_amane_non_blood_sister_canon_correction():
     """Verifies that Tanikaze Amane's persona explicitly identifies as step-sister (义妹/义理之妹) and not biological sister."""
     settings = get_settings()
@@ -211,6 +217,7 @@ def test_tanikaze_amane_non_blood_sister_canon_correction():
     )
 
 
+@pytest.mark.requires_character_assets
 def test_global_audio_uniqueness_across_all_91_tracks():
     """Stress-test verifying that all 91 reference audio tracks across all 13 characters are globally unique."""
     settings = get_settings()
@@ -238,6 +245,7 @@ def test_global_audio_uniqueness_across_all_91_tracks():
     assert len(global_hashes) == 91, f"Expected 91 unique MD5 hashes, got {len(global_hashes)}"
 
 
+@pytest.mark.requires_character_assets
 @pytest.mark.asyncio
 async def test_character_manager_sync_with_db_all_thirteen_characters(tmp_path):
     """Verifies that DB synchronization works flawlessly for all 13 characters."""

@@ -43,6 +43,7 @@ def test_normalize_emotion_synonyms():
     assert normalize_emotion(None) == "gentle"
 
 
+@pytest.mark.requires_character_assets
 def test_resolve_emotion_reference_natsume():
     # Verify resolving for Shiki Natsume
     res_happy = resolve_emotion_reference("四季夏目", "happy")
@@ -80,6 +81,7 @@ def test_resolve_emotion_reference_natsume():
     assert res_other is None
 
 
+@pytest.mark.requires_character_assets
 def test_resolve_emotion_reference_all_eight_characters_independent():
     """
     Verifies that for all 8 character packages, every one of the 7 standard emotions
@@ -110,6 +112,7 @@ def test_resolve_emotion_reference_all_eight_characters_independent():
         )
 
 
+@pytest.mark.requires_character_assets
 @pytest.mark.asyncio
 async def test_tts_service_populates_emotion_reference():
     tts = TtsService()

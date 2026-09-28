@@ -60,12 +60,20 @@ class TestResolveInitialIsHalf:
 
     def test_cache_ignored_when_engine_dir_changed(self, tmp_path, monkeypatch):
         monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
+        monkeypatch.setattr(
+            "galgame2voice.utils.hardware.detect_gpu_capability",
+            lambda: (True, "Mock GPU", 0),
+        )
         write_precision_cache(tmp_path, str(tmp_path / "old_engine"), False)
         is_half, source = resolve_initial_is_half(tmp_path, tmp_path / "new_engine")
         assert is_half is True and source == "default"
 
     def test_default_is_fp16(self, tmp_path, monkeypatch):
         monkeypatch.delenv("GPT_SOVITS_PRECISION", raising=False)
+        monkeypatch.setattr(
+            "galgame2voice.utils.hardware.detect_gpu_capability",
+            lambda: (True, "Mock GPU", 0),
+        )
         is_half, source = resolve_initial_is_half(tmp_path, tmp_path / "engine")
         assert is_half is True and source == "default"
 
