@@ -204,6 +204,9 @@ export async function loadSessionVoiceSelect(session) {
       const opt = document.createElement('option');
       opt.value = p.id;
       opt.textContent = `${p.name}${p.id === activeProfileId ? '（当前加载）' : ''}`;
+      if (p.id === activeProfileId) {
+        opt.disabled = true;
+      }
       _dom.sVoice.appendChild(opt);
     }
     const customOpt = document.createElement('option');
