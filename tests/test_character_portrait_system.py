@@ -38,6 +38,7 @@ async def _natsume_id(client) -> int:
     return entry["id"]
 
 
+@pytest.mark.requires_character_assets
 @pytest.mark.asyncio
 async def test_character_list_includes_portrait_metadata():
     async with await _client() as client:
@@ -56,6 +57,7 @@ async def test_character_list_includes_portrait_metadata():
         assert len(portrait["costumes"]) >= 1
 
 
+@pytest.mark.requires_character_assets
 @pytest.mark.asyncio
 async def test_portrait_payload_is_numbered_face_differentials():
     async with await _client() as client:
@@ -97,6 +99,7 @@ async def test_portrait_payload_is_numbered_face_differentials():
                 )
 
 
+@pytest.mark.requires_character_assets
 @pytest.mark.asyncio
 async def test_face_and_blush_sprites_are_served():
     async with await _client() as client:

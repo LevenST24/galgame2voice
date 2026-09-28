@@ -115,6 +115,7 @@ def test_bundled_reference_audios_durations():
         assert 3.0 <= dur_cool <= 10.0
 
 
+@pytest.mark.requires_character_assets
 def test_cool_emotion_mapped_to_valid_duration_audio():
     """Verifies cool emotion maps to authentic cool.ogg (>=3.0s) with valid Japanese prompt."""
     res = resolve_emotion_reference("四季夏目", "cool")

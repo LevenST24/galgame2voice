@@ -6,6 +6,8 @@ Includes Mock GPT-SoVITS Server, Mock LLM/STT Providers, In-Memory SQLite DB, an
 import asyncio
 import json
 import os
+from pathlib import Path
+import re
 import sqlite3
 import tempfile
 import threading
@@ -13,11 +15,31 @@ from typing import AsyncGenerator, Dict, Any, List, Optional
 import pytest
 import httpx
 
+from galgame2voice.security import url_guard
+from galgame2voice.security.url_guard import OFFICIAL_LLM_HOSTS
+
+# 净化沙箱环境中 no_proxy/NO_PROXY 环境变量里的带方括号 IPv6 地址（如 [::1]、[fd8b:4f84:7d32:99::1]）。
+# 沙箱环境注入的代理忽略列表中常包含带括号的 IPv6 地址，但 httpx 创建 Client 时通过 urlparse 解析代理规则，
+# 会将形如 [::1] 误判为 host 为 "["、port 为 ":1]"，进而抛出 httpx.InvalidURL: Invalid port: ':1]'。
+# 将其净化为无括号形式（::1）后，httpx 能正常解析，且不破坏原有的代理绕过名单。
+for _proxy_var in ("no_proxy", "NO_PROXY"):
+    _val = os.environ.get(_proxy_var)
+    if _val:
+        os.environ[_proxy_var] = re.sub(r"\[([0-9a-fA-F:]+)\]", r"\1", _val)
+
 os.environ.setdefault("GALGAME2VOICE_SKIP_MEM_CHECK", "1")
 # The suite drives the ASGI app in-process (Host: "test"), which the DNS-rebinding
 # Host allowlist would reject; the middleware has its own dedicated test that opts
 # back in explicitly.
 os.environ.setdefault("GALGAME2VOICE_HOST_HEADER_VALIDATION_DISABLED", "1")
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "requires_character_assets: mark test as requiring installed character assets in characters/",
+    )
+
 
 
 def _filter_aiosqlite_teardown_race(args: threading.ExceptHookArgs) -> None:
@@ -477,6 +499,74 @@ def isolate_test_database(monkeypatch):
             os.remove(path)
         except OSError:
             pass
+
+
+@pytest.fixture(autouse=True)
+def hermetic_dns_for_official_hosts(monkeypatch):
+    """实现测试环境的 DNS hermetic 化，避免沙箱环境不可信 DNS 影响测试。
+
+    说明与理由：
+    1. 这些测试（如各类 adapter 和 provider 测试）mock 了 HTTP transport，本意只测重试与诊断逻辑；
+    2. 官方 host 本就是 allowlist 设计（url_guard.py 第 134 行对官方 host 强制 https 即体现了这一点）；
+    3. 沙箱 DNS 不可信（官方域名常被解析到私网 IP 导致 _resolve_host 做真实 DNS 检查时抛 PermissionError 或返回拒绝误杀测试）。
+
+    对 host.lower() 在 OFFICIAL_LLM_HOSTS 中的官方 host 直接返回 (True, "")，不做真实 DNS 解析；
+    否则调用原始 _resolve_host(host, port)。
+    """
+    orig_resolve_host = url_guard._resolve_host
+
+    def wrapper(host: str, port: int):
+        hl = host.lower()
+        if hl in OFFICIAL_LLM_HOSTS:
+            return True, ""
+        # RFC 保留域名与单测占位域名直通：
+        # 理由：
+        # 1. RFC 2606 / RFC 6761 保留的文档/测试专用域名（example.com, example.org, example.net 及 .test, .invalid, .example 后缀）；
+        # 2. 测试套件内实际使用的占位域名（api.test.com、api.special.org，见 test_adversarial_m5.py、test_settings_console.py）。
+        # 永远不可能是真实 SSRF 目标；单测使用它们做占位 URL 只关心 CRUD、表单回显与重试/错误诊断逻辑。
+        # 沙箱环境不可信 DNS 会将任意域名解析到私网 IP 导致误杀，故在此直通避免沙箱污染。
+        if (
+            hl in ("example.com", "example.org", "example.net")
+            or hl.endswith(
+                (
+                    ".test",
+                    ".invalid",
+                    ".example",
+                    ".example.com",
+                    ".example.org",
+                    ".example.net",
+                )
+            )
+            or hl in ("api.test.com", "api.special.org")
+        ):
+            return True, ""
+        return orig_resolve_host(host, port)
+
+    # 保留被替换函数的 cache_clear 属性（url_guard.py 第 111 行给 _resolve_host 挂了 cache_clear = clear_dns_cache），
+    # wrapper 上也要能调到，否则引用它的测试会坏。
+    wrapper.cache_clear = getattr(orig_resolve_host, "cache_clear", url_guard.clear_dns_cache)
+
+    monkeypatch.setattr("galgame2voice.security.url_guard._resolve_host", wrapper)
+
+
+@pytest.fixture(autouse=True)
+def require_character_assets_guard(request):
+    """当测试带有 requires_character_assets marker 且 characters/ 下没有任何有效角色包时自动 skip。"""
+    marker = request.node.get_closest_marker("requires_character_assets")
+    if marker is not None:
+        characters_dir = Path(__file__).resolve().parent.parent / "characters"
+        has_valid_package = (
+            characters_dir.is_dir()
+            and any(
+                (subdir / "manifest.json").is_file()
+                for subdir in characters_dir.iterdir()
+                if subdir.is_dir()
+            )
+        )
+        if not has_valid_package:
+            pytest.skip(
+                "character asset packages not installed (characters/ is empty; git-ignored user assets)"
+            )
 
 
 @pytest.fixture

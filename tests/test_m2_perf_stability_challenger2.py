@@ -267,6 +267,10 @@ class TestServerLifespanCyclesAndCheckpointing:
 class TestProcessTerminationAndPortReleaseWindows:
     """Verifies clean Windows process reclamation and socket re-binding."""
 
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="Windows Job Object process reclamation and WSAEADDRINUSE-free port rebinding are Windows-specific",
+    )
     def test_subprocess_server_spawn_terminate_and_port_rebind(self):
         """
         Spawn uvicorn in a subprocess on an ephemeral port, verify health response,
