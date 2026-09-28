@@ -87,7 +87,11 @@ class TestPrecisionAPI:
             cache3 = read_precision_cache(tmp_path)
             assert cache3 is None
 
-    async def test_system_status_telemetry_includes_precision(self):
+    async def test_system_status_telemetry_includes_precision(self, monkeypatch):
+        monkeypatch.setattr(
+            "galgame2voice.utils.hardware.detect_gpu_capability",
+            lambda: (True, "Mock GPU", 0),
+        )
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/system/status")

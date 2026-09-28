@@ -832,10 +832,12 @@ class TestTier3CrossFeatureCombinations:
         app = create_app()
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            # .invalid 是 RFC 6761 为"无效域名"保留的顶级域，语义与原测试意图（不可达域名触发错误诊断路径）一致；
+            # 沙箱 DNS 会污染任意域名，.invalid 已被任务 1 的 fixture 直通。
             resp = await client.post("/api/providers/test", json={
                 "provider_type": "openai",
                 "api_key": "sk-leaktestsecret1234567890abcdef",
-                "base_url": "https://invalid.openai.domain.internal"
+                "base_url": "https://invalid.invalid"
             })
             assert resp.status_code == 200
             resp_text = resp.text

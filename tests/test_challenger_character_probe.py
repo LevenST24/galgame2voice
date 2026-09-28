@@ -236,6 +236,7 @@ def test_streaming_parser_out_of_bounds_clamped_in_stream():
 # 2. Database Synchronization & Character Switching Probes
 # ============================================================================
 
+@pytest.mark.requires_character_assets
 @pytest.mark.asyncio
 async def test_character_manager_sync_to_db_all_13_packages(tmp_path):
     """
@@ -301,6 +302,7 @@ async def test_character_manager_sync_to_db_all_13_packages(tmp_path):
         assert synced_second == 0, f"Expected 0 updates on second sync, got {synced_second}"
 
 
+@pytest.mark.requires_character_assets
 @pytest.mark.asyncio
 async def test_character_manager_sync_preserves_user_edits(tmp_path):
     """Test that sync_with_db preserves user modifications to prompt_text, default flag, and system_prompt."""
@@ -348,6 +350,7 @@ async def test_character_manager_sync_preserves_user_edits(tmp_path):
         assert row["system_prompt"] == "Custom Kaguya Lore"
 
 
+@pytest.mark.requires_character_assets
 @pytest.mark.asyncio
 async def test_character_switching_and_emotion_resolution_all_13(tmp_path):
     """
@@ -425,6 +428,7 @@ async def test_character_switching_and_emotion_resolution_all_13(tmp_path):
 # 3. Assert All 13 Packages are Valid & Compliant
 # ============================================================================
 
+@pytest.mark.requires_character_assets
 def test_all_13_packages_discovered_and_valid():
     """Assert that exactly 13 character packages exist and all have is_valid == True."""
     mgr = CharacterManager(get_settings().characters_dir)
@@ -505,6 +509,7 @@ def test_all_13_packages_audio_duration_and_md5_uniqueness():
             hashes[digest] = emo_name
 
 
+@pytest.mark.requires_character_assets
 def test_tenshi_souzou_5_heroines_lore_and_contract():
     """
     Forensic audit of the 5 Tenshi Souzou heroines prompts:
