@@ -11,6 +11,7 @@ Provides rich inline keyboard menus and callback processing for:
 - Performance & Latency Metrics Dashboard and Audio Cache Cleanup
 """
 
+from dataclasses import dataclass
 import logging
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -684,6 +685,477 @@ async def build_affection_menu(
     return text, reply_markup
 
 
+@dataclass
+class _CallbackContext:
+    data: str
+    query: Any
+    chat_id: int
+    user_id: int
+    db_path: Optional[str]
+    session_key_fn: Callable[[int, int], str]
+    cancel_task: Callable[[int], None]
+
+
+async def _handle_main_menu(ctx: _CallbackContext) -> None:
+    text, markup = await build_main_console(
+        chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
+    )
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer("已刷新控制台" if ctx.data == "menu_refresh" else None)
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_voice_menu(ctx: _CallbackContext) -> None:
+    text, markup = await build_voice_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer()
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_set_voice(ctx: _CallbackContext) -> None:
+    raw_id = ctx.data.replace("set_voice_", "").replace("set_char_", "").strip()
+    if not raw_id.isdigit() or int(raw_id) < 1:
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer("⚠️ 无效的角色音色 ID", show_alert=True)
+        return
+    profile_id = int(raw_id)
+    # Already-active guard: same source of truth as build_voice_menu's
+    # "(当前)" marker. Fail-open: on any DB error, fall through to switch.
+    _active_id = None
+    try:
+        async with get_db(ctx.db_path) as conn:
+            _db_active = await crud.get_active_voice_profile(conn)
+            if _db_active is not None:
+                _active_id = getattr(_db_active, "id", None)
+    except Exception:
+        pass
+    if _active_id is not None and profile_id == _active_id:
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer("已经是当前音色，无需切换")
+        return
+    char_name = "目标角色"
+    err_msg = None
+    warning_note = ""
+    try:
+        from galgame2voice.services.voice_manager import get_voice_manager, InsufficientMemoryError
+        vm = get_voice_manager()
+        try:
+            switched = await vm.switch_active_profile(profile_id)
+            if not switched:
+                warning_note = "（语音引擎离线）"
+        except InsufficientMemoryError:
+            raise
+        except Exception as sw_err:
+            logger.debug("VoiceManager weight switch skipped: %s", sw_err)
+            warning_note = "（语音引擎离线）"
+
+        async with get_db(ctx.db_path) as conn:
+            await crud.set_active_voice_profile(conn, profile_id)
+            profile = await crud.get_voice_profile(conn, profile_id)
+            if profile:
+                char_name = profile.name
+    except InsufficientMemoryError as mem_err:
+        err_msg = f"系统内存不足，无法加载该模型: {mem_err}"
+        logger.warning("Insufficient memory switching to profile %d: %s", profile_id, mem_err)
+    except Exception as exc:
+        err_msg = f"切换异常: {sanitize_error_detail(exc)}"
+        logger.warning("Voice switch exception: %s", exc)
+
+    if err_msg:
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer(f"⚠️ {err_msg}", show_alert=True)
+        text, markup = await build_voice_menu(db_path=ctx.db_path)
+        if hasattr(ctx.query, "edit_message_text"):
+            await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    else:
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer(f"🌸 音色已切换为: {char_name}{warning_note}", show_alert=True)
+        text, markup = await build_main_console(
+            chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
+        )
+        if hasattr(ctx.query, "edit_message_text"):
+            await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_tts_menu(ctx: _CallbackContext) -> None:
+    text, markup = await build_tts_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer()
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_speed_menu(ctx: _CallbackContext) -> None:
+    text, markup = await build_speed_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer()
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_set_speed(ctx: _CallbackContext) -> None:
+    raw_s = ctx.data.replace("set_speed_", "").strip()
+    try:
+        new_speed = float(raw_s)
+        if not (0.1 <= new_speed <= 3.0):
+            raise ValueError()
+    except (ValueError, TypeError):
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer("⚠️ 语速参数超出范围 (0.1~3.0)", show_alert=True)
+        return
+    try:
+        async with get_db(ctx.db_path) as conn:
+            await crud.update_settings(conn, SettingsUpdate(speed_factor=new_speed))
+    except Exception as exc:
+        logger.warning("Speed update exception: %s", exc)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer(f"⚡ 语速已调整为: {new_speed}x", show_alert=True)
+    text, markup = await build_tts_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_temp_menu(ctx: _CallbackContext) -> None:
+    text, markup = await build_temp_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer()
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_set_temp(ctx: _CallbackContext) -> None:
+    raw_t = ctx.data.replace("set_temp_", "").strip()
+    try:
+        new_temp = float(raw_t)
+        if not (0.0 <= new_temp <= 2.0):
+            raise ValueError()
+    except (ValueError, TypeError):
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer("⚠️ 发音温度超出范围 (0.0~2.0)", show_alert=True)
+        return
+    try:
+        async with get_db(ctx.db_path) as conn:
+            await crud.update_settings(conn, SettingsUpdate(temperature=new_temp))
+    except Exception as exc:
+        logger.warning("Temperature update exception: %s", exc)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer(f"🌡️ 发音温度已设置为: {new_temp}", show_alert=True)
+    text, markup = await build_tts_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_split_menu(ctx: _CallbackContext) -> None:
+    text, markup = await build_split_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer()
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_set_split(ctx: _CallbackContext) -> None:
+    new_split = ctx.data.replace("set_split_", "")
+    try:
+        async with get_db(ctx.db_path) as conn:
+            await crud.update_settings(conn, SettingsUpdate(text_split_method=new_split))
+    except Exception as exc:
+        logger.warning("Split method update exception: %s", exc)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer(f"✂️ 切分方式已设置为: {new_split}", show_alert=True)
+    text, markup = await build_tts_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_sampling_menu(ctx: _CallbackContext) -> None:
+    text, markup = await build_sampling_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer()
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_set_topk(ctx: _CallbackContext) -> None:
+    raw_k = ctx.data.replace("set_topk_", "").strip()
+    try:
+        new_topk = int(raw_k)
+        if not (1 <= new_topk <= 100):
+            raise ValueError()
+    except (ValueError, TypeError):
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer("⚠️ Top-K 参数超出范围 (1~100)", show_alert=True)
+        return
+    try:
+        async with get_db(ctx.db_path) as conn:
+            await crud.update_settings(conn, SettingsUpdate(top_k=new_topk))
+    except Exception as exc:
+        logger.warning("Top-K update exception: %s", exc)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer(f"🎯 Top-K 已设置为: {new_topk}", show_alert=True)
+    text, markup = await build_sampling_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_set_topp(ctx: _CallbackContext) -> None:
+    raw_p = ctx.data.replace("set_topp_", "").strip()
+    try:
+        new_topp = float(raw_p)
+        if not (0.0 <= new_topp <= 1.0):
+            raise ValueError()
+    except (ValueError, TypeError):
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer("⚠️ Top-P 参数超出范围 (0.0~1.0)", show_alert=True)
+        return
+    try:
+        async with get_db(ctx.db_path) as conn:
+            await crud.update_settings(conn, SettingsUpdate(top_p=new_topp))
+    except Exception as exc:
+        logger.warning("Top-P update exception: %s", exc)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer(f"🎯 Top-P 已设置为: {new_topp}", show_alert=True)
+    text, markup = await build_sampling_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_batch_menu(ctx: _CallbackContext) -> None:
+    text, markup = await build_batch_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer()
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_set_batch(ctx: _CallbackContext) -> None:
+    raw_b = ctx.data.replace("set_batch_", "").strip()
+    try:
+        new_batch = int(raw_b)
+        if not (1 <= new_batch <= 16):
+            raise ValueError()
+    except (ValueError, TypeError):
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer("⚠️ 批量大小超出范围 (1~16)", show_alert=True)
+        return
+    try:
+        async with get_db(ctx.db_path) as conn:
+            await crud.update_settings(conn, SettingsUpdate(batch_size=new_batch))
+    except Exception as exc:
+        logger.warning("Batch update exception: %s", exc)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer(f"📦 批量大小已设置为: {new_batch}", show_alert=True)
+    text, markup = await build_tts_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_interval_menu(ctx: _CallbackContext) -> None:
+    text, markup = await build_interval_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer()
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_set_interval(ctx: _CallbackContext) -> None:
+    raw_i = ctx.data.replace("set_interval_", "").strip()
+    try:
+        new_interval = float(raw_i)
+        if not (0.0 <= new_interval <= 5.0):
+            raise ValueError()
+    except (ValueError, TypeError):
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer("⚠️ 分句间隔超出范围 (0.0~5.0s)", show_alert=True)
+        return
+    try:
+        async with get_db(ctx.db_path) as conn:
+            await crud.update_settings(conn, SettingsUpdate(fragment_interval=new_interval))
+    except Exception as exc:
+        logger.warning("Interval update exception: %s", exc)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer(f"⏱️ 分句连播间隔已设置为: {new_interval}s", show_alert=True)
+    text, markup = await build_tts_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_history_menu(ctx: _CallbackContext) -> None:
+    text, markup = await build_history_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer()
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_set_history(ctx: _CallbackContext) -> None:
+    raw_h = ctx.data.replace("set_history_", "").strip()
+    try:
+        new_hist = int(raw_h)
+        if not (1 <= new_hist <= 100):
+            raise ValueError()
+    except (ValueError, TypeError):
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer("⚠️ 记忆轮数超出范围 (1~100)", show_alert=True)
+        return
+    try:
+        async with get_db(ctx.db_path) as conn:
+            await crud.update_settings(conn, SettingsUpdate(max_history_messages=new_hist))
+    except Exception as exc:
+        logger.warning("History update exception: %s", exc)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer(f"🧠 记忆轮数已调整为: {new_hist} 轮", show_alert=True)
+    text, markup = await build_main_console(
+        chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
+    )
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_model_menu(ctx: _CallbackContext) -> None:
+    text, markup = await build_model_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer()
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_set_model(ctx: _CallbackContext) -> None:
+    provider_id = ctx.data.replace("set_model_", "").strip()
+    if not provider_id or len(provider_id) > 64:
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer("⚠️ 无效的模型提供商标识", show_alert=True)
+        return
+    prov_name = provider_id
+    err_msg = None
+    try:
+        async with get_db(ctx.db_path) as conn:
+            prov = await crud.get_provider_raw(conn, provider_id)
+            if not prov:
+                err_msg = "❌ 该模型提供商不存在！"
+            else:
+                prov_name = prov.name
+                has_key = bool(prov.api_key and prov.api_key.strip())
+                if provider_id != "custom" and not has_key:
+                    err_msg = (
+                        f"⚠️ 无法激活 {prov_name}：未配置 API Key！\n\n"
+                        f"请先在管理网页端为 {prov_name} 填入有效 Key，或切换至已配置 Key 的模型。"
+                    )
+                else:
+                    await crud.set_active_provider(conn, provider_id)
+    except Exception as exc:
+        logger.warning("Model switch exception: %s", exc)
+        err_msg = f"切换模型异常: {exc}"
+
+    if err_msg:
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer(err_msg, show_alert=True)
+        text, markup = await build_model_menu(db_path=ctx.db_path)
+        if hasattr(ctx.query, "edit_message_text"):
+            await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    else:
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer(f"🤖 已激活大模型: {prov_name}", show_alert=True)
+        text, markup = await build_main_console(
+            chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
+        )
+        if hasattr(ctx.query, "edit_message_text"):
+            await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_metrics_menu(ctx: _CallbackContext) -> None:
+    text, markup = await build_metrics_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer("已刷新性能与缓存监控" if ctx.data == "menu_metrics" else None)
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_clear_cache(ctx: _CallbackContext) -> None:
+    cleared_count = 0
+    try:
+        async with get_db(ctx.db_path) as conn:
+            cleared_count = await crud.clear_all_tts_cache_entries(conn)
+    except Exception as exc:
+        logger.warning("Clear cache exception: %s", exc)
+    # Also evict cached audio files from disk, not just DB metadata.
+    disk_cleared = 0
+    try:
+        from galgame2voice.services.tts_cache_manager import get_tts_cache_manager
+        disk_cleared, _ = await get_tts_cache_manager().clear()
+    except Exception as exc:
+        logger.warning("Disk cache clear exception: %s", exc)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer(
+            f"🧹 本地语音缓存已清空 (清理了 {cleared_count} 条记录, {disk_cleared} 个磁盘文件)！",
+            show_alert=True,
+        )
+    text, markup = await build_metrics_menu(db_path=ctx.db_path)
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_affection_menu(ctx: _CallbackContext) -> None:
+    text, markup = await build_affection_menu(
+        chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
+    )
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer()
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_reset_session(ctx: _CallbackContext) -> None:
+    session_id = ctx.session_key_fn(ctx.chat_id, ctx.user_id)
+    ctx.cancel_task(ctx.chat_id)
+    try:
+        async with get_db(ctx.db_path) as conn:
+            await crud.clear_session_messages(conn, session_id)
+    except Exception as exc:
+        logger.warning("Could not clear session: %s", exc)
+    if hasattr(ctx.query, "answer"):
+        await ctx.query.answer("🗑️ 当前会话记忆已清空！", show_alert=True)
+    text, markup = await build_main_console(
+        chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
+    )
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+_EXACT_CALLBACK_HANDLERS: Dict[str, Callable] = {
+    "menu_main": _handle_main_menu,
+    "menu_refresh": _handle_main_menu,
+    "menu_voice": _handle_voice_menu,
+    "menu_tts": _handle_tts_menu,
+    "menu_speed": _handle_speed_menu,
+    "menu_temp": _handle_temp_menu,
+    "menu_split": _handle_split_menu,
+    "menu_sampling": _handle_sampling_menu,
+    "menu_batch": _handle_batch_menu,
+    "menu_interval": _handle_interval_menu,
+    "menu_history": _handle_history_menu,
+    "menu_model": _handle_model_menu,
+    "menu_metrics": _handle_metrics_menu,
+    "action_clear_cache": _handle_clear_cache,
+    "menu_affection": _handle_affection_menu,
+    "action_reset": _handle_reset_session,
+}
+
+_PREFIX_CALLBACK_HANDLERS: Tuple[Tuple[Tuple[str, ...], Callable], ...] = (
+    (("set_voice_", "set_char_"), _handle_set_voice),
+    (("set_speed_",), _handle_set_speed),
+    (("set_temp_",), _handle_set_temp),
+    (("set_split_",), _handle_set_split),
+    (("set_topk_",), _handle_set_topk),
+    (("set_topp_",), _handle_set_topp),
+    (("set_batch_",), _handle_set_batch),
+    (("set_interval_",), _handle_set_interval),
+    (("set_history_",), _handle_set_history),
+    (("set_model_",), _handle_set_model),
+)
+
+
 async def route_callback_query(
     handlers_or_update: Any,
     update_or_context: Optional[Any] = None,
@@ -755,408 +1227,17 @@ async def route_callback_query(
         return resolve_session_key(cid, uid)
 
     try:
-        if data in ("menu_main", "menu_refresh"):
-            text, markup = await build_main_console(
-                chat_id=chat_id, user_id=user_id, db_path=actual_db_path, session_key_fn=session_key_fn
-            )
-            if hasattr(query, "answer"):
-                await query.answer("已刷新控制台" if data == "menu_refresh" else None)
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data == "menu_voice":
-            text, markup = await build_voice_menu(db_path=actual_db_path)
-            if hasattr(query, "answer"):
-                await query.answer()
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data.startswith(("set_voice_", "set_char_")):
-            raw_id = data.replace("set_voice_", "").replace("set_char_", "").strip()
-            if not raw_id.isdigit() or int(raw_id) < 1:
-                if hasattr(query, "answer"):
-                    await query.answer("⚠️ 无效的角色音色 ID", show_alert=True)
-                return
-            profile_id = int(raw_id)
-            # Already-active guard: same source of truth as build_voice_menu's
-            # "(当前)" marker. Fail-open: on any DB error, fall through to switch.
-            _active_id = None
-            try:
-                async with get_db(actual_db_path) as conn:
-                    _db_active = await crud.get_active_voice_profile(conn)
-                    if _db_active is not None:
-                        _active_id = getattr(_db_active, "id", None)
-            except Exception:
-                pass
-            if _active_id is not None and profile_id == _active_id:
-                if hasattr(query, "answer"):
-                    await query.answer("已经是当前音色，无需切换")
-                return
-            char_name = "目标角色"
-            err_msg = None
-            warning_note = ""
-            try:
-                from galgame2voice.services.voice_manager import get_voice_manager, InsufficientMemoryError
-                vm = get_voice_manager()
-                try:
-                    switched = await vm.switch_active_profile(profile_id)
-                    if not switched:
-                        warning_note = "（语音引擎离线）"
-                except InsufficientMemoryError:
-                    raise
-                except Exception as sw_err:
-                    logger.debug("VoiceManager weight switch skipped: %s", sw_err)
-                    warning_note = "（语音引擎离线）"
-
-                async with get_db(actual_db_path) as conn:
-                    await crud.set_active_voice_profile(conn, profile_id)
-                    profile = await crud.get_voice_profile(conn, profile_id)
-                    if profile:
-                        char_name = profile.name
-            except InsufficientMemoryError as mem_err:
-                err_msg = f"系统内存不足，无法加载该模型: {mem_err}"
-                logger.warning("Insufficient memory switching to profile %d: %s", profile_id, mem_err)
-            except Exception as exc:
-                err_msg = f"切换异常: {sanitize_error_detail(exc)}"
-                logger.warning("Voice switch exception: %s", exc)
-
-            if err_msg:
-                if hasattr(query, "answer"):
-                    await query.answer(f"⚠️ {err_msg}", show_alert=True)
-                text, markup = await build_voice_menu(db_path=actual_db_path)
-                if hasattr(query, "edit_message_text"):
-                    await query.edit_message_text(text=text, reply_markup=markup)
-            else:
-                if hasattr(query, "answer"):
-                    await query.answer(f"🌸 音色已切换为: {char_name}{warning_note}", show_alert=True)
-                text, markup = await build_main_console(
-                    chat_id=chat_id, user_id=user_id, db_path=actual_db_path, session_key_fn=session_key_fn
-                )
-                if hasattr(query, "edit_message_text"):
-                    await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data == "menu_tts":
-            text, markup = await build_tts_menu(db_path=actual_db_path)
-            if hasattr(query, "answer"):
-                await query.answer()
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data == "menu_speed":
-            text, markup = await build_speed_menu(db_path=actual_db_path)
-            if hasattr(query, "answer"):
-                await query.answer()
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data.startswith("set_speed_"):
-            raw_s = data.replace("set_speed_", "").strip()
-            try:
-                new_speed = float(raw_s)
-                if not (0.1 <= new_speed <= 3.0):
-                    raise ValueError()
-            except (ValueError, TypeError):
-                if hasattr(query, "answer"):
-                    await query.answer("⚠️ 语速参数超出范围 (0.1~3.0)", show_alert=True)
-                return
-            try:
-                async with get_db(actual_db_path) as conn:
-                    await crud.update_settings(conn, SettingsUpdate(speed_factor=new_speed))
-            except Exception as exc:
-                logger.warning("Speed update exception: %s", exc)
-            if hasattr(query, "answer"):
-                await query.answer(f"⚡ 语速已调整为: {new_speed}x", show_alert=True)
-            text, markup = await build_tts_menu(db_path=actual_db_path)
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data == "menu_temp":
-            text, markup = await build_temp_menu(db_path=actual_db_path)
-            if hasattr(query, "answer"):
-                await query.answer()
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data.startswith("set_temp_"):
-            raw_t = data.replace("set_temp_", "").strip()
-            try:
-                new_temp = float(raw_t)
-                if not (0.0 <= new_temp <= 2.0):
-                    raise ValueError()
-            except (ValueError, TypeError):
-                if hasattr(query, "answer"):
-                    await query.answer("⚠️ 发音温度超出范围 (0.0~2.0)", show_alert=True)
-                return
-            try:
-                async with get_db(actual_db_path) as conn:
-                    await crud.update_settings(conn, SettingsUpdate(temperature=new_temp))
-            except Exception as exc:
-                logger.warning("Temperature update exception: %s", exc)
-            if hasattr(query, "answer"):
-                await query.answer(f"🌡️ 发音温度已设置为: {new_temp}", show_alert=True)
-            text, markup = await build_tts_menu(db_path=actual_db_path)
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data == "menu_split":
-            text, markup = await build_split_menu(db_path=actual_db_path)
-            if hasattr(query, "answer"):
-                await query.answer()
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data.startswith("set_split_"):
-            new_split = data.replace("set_split_", "")
-            try:
-                async with get_db(actual_db_path) as conn:
-                    await crud.update_settings(conn, SettingsUpdate(text_split_method=new_split))
-            except Exception as exc:
-                logger.warning("Split method update exception: %s", exc)
-            if hasattr(query, "answer"):
-                await query.answer(f"✂️ 切分方式已设置为: {new_split}", show_alert=True)
-            text, markup = await build_tts_menu(db_path=actual_db_path)
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data == "menu_sampling":
-            text, markup = await build_sampling_menu(db_path=actual_db_path)
-            if hasattr(query, "answer"):
-                await query.answer()
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data.startswith("set_topk_"):
-            raw_k = data.replace("set_topk_", "").strip()
-            try:
-                new_topk = int(raw_k)
-                if not (1 <= new_topk <= 100):
-                    raise ValueError()
-            except (ValueError, TypeError):
-                if hasattr(query, "answer"):
-                    await query.answer("⚠️ Top-K 参数超出范围 (1~100)", show_alert=True)
-                return
-            try:
-                async with get_db(actual_db_path) as conn:
-                    await crud.update_settings(conn, SettingsUpdate(top_k=new_topk))
-            except Exception as exc:
-                logger.warning("Top-K update exception: %s", exc)
-            if hasattr(query, "answer"):
-                await query.answer(f"🎯 Top-K 已设置为: {new_topk}", show_alert=True)
-            text, markup = await build_sampling_menu(db_path=actual_db_path)
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data.startswith("set_topp_"):
-            raw_p = data.replace("set_topp_", "").strip()
-            try:
-                new_topp = float(raw_p)
-                if not (0.0 <= new_topp <= 1.0):
-                    raise ValueError()
-            except (ValueError, TypeError):
-                if hasattr(query, "answer"):
-                    await query.answer("⚠️ Top-P 参数超出范围 (0.0~1.0)", show_alert=True)
-                return
-            try:
-                async with get_db(actual_db_path) as conn:
-                    await crud.update_settings(conn, SettingsUpdate(top_p=new_topp))
-            except Exception as exc:
-                logger.warning("Top-P update exception: %s", exc)
-            if hasattr(query, "answer"):
-                await query.answer(f"🎯 Top-P 已设置为: {new_topp}", show_alert=True)
-            text, markup = await build_sampling_menu(db_path=actual_db_path)
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data == "menu_batch":
-            text, markup = await build_batch_menu(db_path=actual_db_path)
-            if hasattr(query, "answer"):
-                await query.answer()
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data.startswith("set_batch_"):
-            raw_b = data.replace("set_batch_", "").strip()
-            try:
-                new_batch = int(raw_b)
-                if not (1 <= new_batch <= 16):
-                    raise ValueError()
-            except (ValueError, TypeError):
-                if hasattr(query, "answer"):
-                    await query.answer("⚠️ 批量大小超出范围 (1~16)", show_alert=True)
-                return
-            try:
-                async with get_db(actual_db_path) as conn:
-                    await crud.update_settings(conn, SettingsUpdate(batch_size=new_batch))
-            except Exception as exc:
-                logger.warning("Batch update exception: %s", exc)
-            if hasattr(query, "answer"):
-                await query.answer(f"📦 批量大小已设置为: {new_batch}", show_alert=True)
-            text, markup = await build_tts_menu(db_path=actual_db_path)
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data == "menu_interval":
-            text, markup = await build_interval_menu(db_path=actual_db_path)
-            if hasattr(query, "answer"):
-                await query.answer()
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data.startswith("set_interval_"):
-            raw_i = data.replace("set_interval_", "").strip()
-            try:
-                new_interval = float(raw_i)
-                if not (0.0 <= new_interval <= 5.0):
-                    raise ValueError()
-            except (ValueError, TypeError):
-                if hasattr(query, "answer"):
-                    await query.answer("⚠️ 分句间隔超出范围 (0.0~5.0s)", show_alert=True)
-                return
-            try:
-                async with get_db(actual_db_path) as conn:
-                    await crud.update_settings(conn, SettingsUpdate(fragment_interval=new_interval))
-            except Exception as exc:
-                logger.warning("Interval update exception: %s", exc)
-            if hasattr(query, "answer"):
-                await query.answer(f"⏱️ 分句连播间隔已设置为: {new_interval}s", show_alert=True)
-            text, markup = await build_tts_menu(db_path=actual_db_path)
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data == "menu_history":
-            text, markup = await build_history_menu(db_path=actual_db_path)
-            if hasattr(query, "answer"):
-                await query.answer()
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data.startswith("set_history_"):
-            raw_h = data.replace("set_history_", "").strip()
-            try:
-                new_hist = int(raw_h)
-                if not (1 <= new_hist <= 100):
-                    raise ValueError()
-            except (ValueError, TypeError):
-                if hasattr(query, "answer"):
-                    await query.answer("⚠️ 记忆轮数超出范围 (1~100)", show_alert=True)
-                return
-            try:
-                async with get_db(actual_db_path) as conn:
-                    await crud.update_settings(conn, SettingsUpdate(max_history_messages=new_hist))
-            except Exception as exc:
-                logger.warning("History update exception: %s", exc)
-            if hasattr(query, "answer"):
-                await query.answer(f"🧠 记忆轮数已调整为: {new_hist} 轮", show_alert=True)
-            text, markup = await build_main_console(
-                chat_id=chat_id, user_id=user_id, db_path=actual_db_path, session_key_fn=session_key_fn
-            )
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data == "menu_model":
-            text, markup = await build_model_menu(db_path=actual_db_path)
-            if hasattr(query, "answer"):
-                await query.answer()
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data.startswith("set_model_"):
-            provider_id = data.replace("set_model_", "").strip()
-            if not provider_id or len(provider_id) > 64:
-                if hasattr(query, "answer"):
-                    await query.answer("⚠️ 无效的模型提供商标识", show_alert=True)
-                return
-            prov_name = provider_id
-            err_msg = None
-            try:
-                async with get_db(actual_db_path) as conn:
-                    prov = await crud.get_provider_raw(conn, provider_id)
-                    if not prov:
-                        err_msg = "❌ 该模型提供商不存在！"
-                    else:
-                        prov_name = prov.name
-                        has_key = bool(prov.api_key and prov.api_key.strip())
-                        if provider_id != "custom" and not has_key:
-                            err_msg = (
-                                f"⚠️ 无法激活 {prov_name}：未配置 API Key！\n\n"
-                                f"请先在管理网页端为 {prov_name} 填入有效 Key，或切换至已配置 Key 的模型。"
-                            )
-                        else:
-                            await crud.set_active_provider(conn, provider_id)
-            except Exception as exc:
-                logger.warning("Model switch exception: %s", exc)
-                err_msg = f"切换模型异常: {exc}"
-
-            if err_msg:
-                if hasattr(query, "answer"):
-                    await query.answer(err_msg, show_alert=True)
-                text, markup = await build_model_menu(db_path=actual_db_path)
-                if hasattr(query, "edit_message_text"):
-                    await query.edit_message_text(text=text, reply_markup=markup)
-            else:
-                if hasattr(query, "answer"):
-                    await query.answer(f"🤖 已激活大模型: {prov_name}", show_alert=True)
-                text, markup = await build_main_console(
-                    chat_id=chat_id, user_id=user_id, db_path=actual_db_path, session_key_fn=session_key_fn
-                )
-                if hasattr(query, "edit_message_text"):
-                    await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data == "menu_metrics":
-            text, markup = await build_metrics_menu(db_path=actual_db_path)
-            if hasattr(query, "answer"):
-                await query.answer("已刷新性能与缓存监控" if data == "menu_metrics" else None)
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data == "action_clear_cache":
-            cleared_count = 0
-            try:
-                async with get_db(actual_db_path) as conn:
-                    cleared_count = await crud.clear_all_tts_cache_entries(conn)
-            except Exception as exc:
-                logger.warning("Clear cache exception: %s", exc)
-            # Also evict cached audio files from disk, not just DB metadata.
-            disk_cleared = 0
-            try:
-                from galgame2voice.services.tts_cache_manager import get_tts_cache_manager
-                disk_cleared, _ = await get_tts_cache_manager().clear()
-            except Exception as exc:
-                logger.warning("Disk cache clear exception: %s", exc)
-            if hasattr(query, "answer"):
-                await query.answer(
-                    f"🧹 本地语音缓存已清空 (清理了 {cleared_count} 条记录, {disk_cleared} 个磁盘文件)！",
-                    show_alert=True,
-                )
-            text, markup = await build_metrics_menu(db_path=actual_db_path)
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data == "menu_affection":
-            text, markup = await build_affection_menu(
-                chat_id=chat_id, user_id=user_id, db_path=actual_db_path, session_key_fn=session_key_fn
-            )
-            if hasattr(query, "answer"):
-                await query.answer()
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
-        elif data == "action_reset":
-            session_id = session_key_fn(chat_id, user_id)
-            cancel_task(chat_id)
-            try:
-                async with get_db(actual_db_path) as conn:
-                    await crud.clear_session_messages(conn, session_id)
-            except Exception as exc:
-                logger.warning("Could not clear session: %s", exc)
-            if hasattr(query, "answer"):
-                await query.answer("🗑️ 当前会话记忆已清空！", show_alert=True)
-            text, markup = await build_main_console(
-                chat_id=chat_id, user_id=user_id, db_path=actual_db_path, session_key_fn=session_key_fn
-            )
-            if hasattr(query, "edit_message_text"):
-                await query.edit_message_text(text=text, reply_markup=markup)
-
+        ctx = _CallbackContext(data=data, query=query, chat_id=chat_id, user_id=user_id,
+                               db_path=actual_db_path, session_key_fn=session_key_fn, cancel_task=cancel_task)
+        handler = _EXACT_CALLBACK_HANDLERS.get(data)
+        if handler is None:
+            for prefixes, prefix_handler in _PREFIX_CALLBACK_HANDLERS:
+                if data.startswith(prefixes):
+                    handler = prefix_handler
+                    break
+        if handler is not None:
+            await handler(ctx)
+        # unknown callback_data: fall through silently (original code had no else branch)
     except Exception as exc:
         logger.error("Error processing callback query '%s': %s", data, exc, exc_info=True)
         if hasattr(query, "answer"):

@@ -13,12 +13,16 @@ from typing import Any, AsyncGenerator, Dict, Optional, Tuple, Union
 
 from galgame2voice.config import get_settings
 from galgame2voice.utils.path_guard import resolve_existing_audio_path
+from galgame2voice.utils.audio_spec import (
+    AudioSpecCache,
+    _AUDIO_SPEC_CACHE,
+    async_probe_audio_duration_seconds,
+)
 from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
     get_gpt_sovits_client,
     clean_japanese_parentheses,
     resolve_tts_options,
-    probe_audio_duration_seconds,
     SLICING_METHODS,
     TTS_PRESETS,
     DYNAMIC_SPEED_MIN,
@@ -40,110 +44,32 @@ from galgame2voice.services.tts_cache_manager import get_tts_cache_manager, TtsC
 logger = logging.getLogger("galgame2voice.services.tts_service")
 
 
-_AUDIO_DURATION_CACHE: Dict[str, Optional[float]] = {}
-_AUDIO_STAT_DURATION_CACHE: Dict[Tuple[str, int, int], Optional[float]] = {}
-# Hard upper bound for the module-level duration caches. The stat-keyed cache is
-# invalidated by (mtime_ns, size), so every revision of a reference clip inserts a
-# NEW entry and the previous one is never reclaimed; without a cap, a long-running
-# process that sees many distinct reference clips would grow without bound.
-_CACHE_MAX_ENTRIES = 512
-
-
-def _cache_store(cache: Dict[Any, Any], key: Any, value: Any) -> None:
-    """Stores a value in a module-level cache, evicting the stalest half when full."""
-    if key not in cache and len(cache) >= _CACHE_MAX_ENTRIES:
-        # dict preserves insertion order, so the leading keys are the oldest.
-        for stale_key in list(cache.keys())[: _CACHE_MAX_ENTRIES // 2]:
-            cache.pop(stale_key, None)
-    cache[key] = value
+# Backward compatibility aliases pointing to the thread-safe AudioSpecCache singleton.
+_AUDIO_STAT_DURATION_CACHE = _AUDIO_SPEC_CACHE._cache
+_AUDIO_DURATION_CACHE = _AUDIO_STAT_DURATION_CACHE
 
 
 def clear_tts_profile_cache() -> None:
     """Clears in-memory caches for reference audio durations."""
-    _AUDIO_DURATION_CACHE.clear()
-    _AUDIO_STAT_DURATION_CACHE.clear()
-
-
-def _probe_audio_duration_sync(p: Path) -> Optional[float]:
-    """
-    Synchronously probes audio duration in seconds via soundfile, wave, mutagen,
-    or stdlib OGG/Opus granule position.
-    """
-    dur = None
-    # 1. Try soundfile (handles OGG, WAV, FLAC, etc.)
-    try:
-        import soundfile as sf
-        info = sf.info(str(p))
-        dur = float(info.duration)
-    except Exception:
-        pass
-
-    # 2. Try wave standard library for PCM WAV
-    if dur is None:
-        try:
-            import wave
-            with wave.open(str(p), "rb") as wf:
-                frames = wf.getnframes()
-                rate = wf.getframerate()
-                if rate > 0:
-                    dur = float(frames) / float(rate)
-        except Exception:
-            pass
-
-    # 3. Try mutagen
-    if dur is None:
-        try:
-            import mutagen
-            m = mutagen.File(str(p))
-            if m and m.info and hasattr(m.info, "length"):
-                dur = float(m.info.length)
-        except Exception:
-            pass
-
-    # 4. Stdlib OGG/Opus granule-position probe (works without soundfile/mutagen,
-    #    which are not bundled — without this every .ogg ref would look invalid
-    #    and emotion voices would silently fall back to the baseline audio)
-    if dur is None:
-        try:
-            probed = probe_audio_duration_seconds(str(p))
-            if probed is not None:
-                dur = float(probed)
-        except Exception:
-            pass
-
-    return dur
+    _AUDIO_SPEC_CACHE.clear()
 
 
 async def async_get_audio_duration(path: Union[str, Path, None]) -> Optional[float]:
     """
     Safely inspects and measures reference audio duration asynchronously.
     Returns float duration, or None if file is missing, unreadable, or invalid.
-    Uses stat-based caching (mtime_ns, size) to bypass disk inspection when audio
-    files have not changed, and delegates synchronous soundfile.info / wave.open
-    probes to asyncio.to_thread() so the main asyncio event loop is never blocked.
+    Uses AudioSpecCache to bypass disk inspection when audio files have not changed,
+    and delegates file inspection to asyncio.to_thread() so the main asyncio event
+    loop is never blocked.
     """
     if not path:
         return None
-    path_str = str(path)
     try:
         p = resolve_existing_audio_path(path)
         if p is None or not p.is_file():
-            _cache_store(_AUDIO_DURATION_CACHE, path_str, None)
             return None
-
-        st = p.stat()
-        stat_key = (str(p.resolve()), st.st_mtime_ns, st.st_size)
-        if stat_key in _AUDIO_STAT_DURATION_CACHE:
-            cached_dur = _AUDIO_STAT_DURATION_CACHE[stat_key]
-            _cache_store(_AUDIO_DURATION_CACHE, path_str, cached_dur)
-            return cached_dur
-
-        dur = await asyncio.to_thread(_probe_audio_duration_sync, p)
-        _cache_store(_AUDIO_STAT_DURATION_CACHE, stat_key, dur)
-        _cache_store(_AUDIO_DURATION_CACHE, path_str, dur)
-        return dur
+        return await async_probe_audio_duration_seconds(p)
     except Exception:
-        _cache_store(_AUDIO_DURATION_CACHE, path_str, None)
         return None
 
 
@@ -182,38 +108,23 @@ class TtsService:
         Safely inspects and measures reference audio duration in seconds.
         Returns float duration, or None if file is missing, unreadable, or invalid.
         Results are cached using stat-based keys (resolved_path, mtime_ns, size)
-        to bypass disk inspection when audio files haven't changed.
+        in AudioSpecCache to bypass disk inspection when audio files haven't changed.
         """
         if not path:
             return None
-        path_str = str(path)
         try:
             p = resolve_existing_audio_path(path)
             if p is None or not p.is_file():
-                _cache_store(_AUDIO_DURATION_CACHE, path_str, None)
                 return None
-
-            st = p.stat()
-            stat_key = (str(p.resolve()), st.st_mtime_ns, st.st_size)
-            if stat_key in _AUDIO_STAT_DURATION_CACHE:
-                cached_dur = _AUDIO_STAT_DURATION_CACHE[stat_key]
-                _cache_store(_AUDIO_DURATION_CACHE, path_str, cached_dur)
-                return cached_dur
-
-            dur = _probe_audio_duration_sync(p)
-            _cache_store(_AUDIO_STAT_DURATION_CACHE, stat_key, dur)
-            _cache_store(_AUDIO_DURATION_CACHE, path_str, dur)
-            return dur
+            return _AUDIO_SPEC_CACHE.get_duration(p)
         except Exception:
-            _cache_store(_AUDIO_DURATION_CACHE, path_str, None)
             return None
 
     @staticmethod
     async def async_get_audio_duration(path: Union[str, Path, None]) -> Optional[float]:
         """
         Asynchronously measures reference audio duration in seconds.
-        Delegates synchronous soundfile.info / wave.open to asyncio.to_thread()
-        and uses stat-based caching (mtime_ns, size) to keep the event loop unblocked.
+        Delegates to AudioSpecCache to keep the main asyncio event loop unblocked.
         """
         return await async_get_audio_duration(path)
 

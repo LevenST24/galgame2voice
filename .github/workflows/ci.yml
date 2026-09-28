@@ -48,6 +48,24 @@ jobs:
         env:
           GALGAME2VOICE_RATE_LIMIT_DISABLED: "1"
 
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Run test suite
+        run: uv run pytest -q
+        env:
+          GALGAME2VOICE_RATE_LIMIT_DISABLED: '1'
+
   frontend-build:
     runs-on: windows-latest
     steps:
