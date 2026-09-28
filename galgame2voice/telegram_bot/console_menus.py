@@ -778,6 +778,20 @@ async def route_callback_query(
                     await query.answer("⚠️ 无效的角色音色 ID", show_alert=True)
                 return
             profile_id = int(raw_id)
+            # Already-active guard: same source of truth as build_voice_menu's
+            # "(当前)" marker. Fail-open: on any DB error, fall through to switch.
+            _active_id = None
+            try:
+                async with get_db(actual_db_path) as conn:
+                    _db_active = await crud.get_active_voice_profile(conn)
+                    if _db_active is not None:
+                        _active_id = getattr(_db_active, "id", None)
+            except Exception:
+                pass
+            if _active_id is not None and profile_id == _active_id:
+                if hasattr(query, "answer"):
+                    await query.answer("已经是当前音色，无需切换")
+                return
             char_name = "目标角色"
             err_msg = None
             warning_note = ""
