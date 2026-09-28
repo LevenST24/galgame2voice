@@ -17,11 +17,6 @@ class DiagnosticResult:
     status_code: Optional[int] = None
     raw_error: Optional[str] = None
 
-    def format_user_message(self) -> str:
-        if self.guidance:
-            return f"{self.message}：{self.guidance}"
-        return self.message
-
     def to_dict(self) -> Dict[str, Any]:
         return {
             "error": self.message,

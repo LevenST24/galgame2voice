@@ -44,13 +44,6 @@ class SessionManager:
         self.system_template = default_system_template or self.DEFAULT_SYSTEM_TEMPLATE
         self._table_name: Optional[str] = None
 
-    async def _resolve_table_name(self, db: aiosqlite.Connection) -> str:
-        """Detects and caches the messages table name (session_messages vs messages)."""
-        if self._table_name is None:
-            cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
-            self._table_name = "session_messages" if await cur.fetchone() else "messages"
-        return self._table_name
-
     def estimate_tokens(self, text: str) -> int:
         """
         Estimates token count for mixed CJK / English text.
@@ -142,6 +135,19 @@ class SessionManager:
             LIMIT ?
         """
 
+    async def _detect_table_name(self, db: aiosqlite.Connection) -> Optional[str]:
+        """Detects and caches the messages table name (session_messages vs messages)."""
+        if self._table_name is None:
+            cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
+            if await cur.fetchone():
+                self._table_name = "session_messages"
+            else:
+                cur_msg = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages';")
+                if not await cur_msg.fetchone():
+                    return None
+                self._table_name = "messages"
+        return self._table_name
+
     async def _get_history_on_conn(
         self,
         db: aiosqlite.Connection,
@@ -150,15 +156,8 @@ class SessionManager:
         max_tokens: int,
     ) -> List[SessionTurn]:
         db.row_factory = aiosqlite.Row
-        if self._table_name is None:
-            cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
-            if await cur.fetchone():
-                self._table_name = "session_messages"
-            else:
-                cur_msg = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages';")
-                if not await cur_msg.fetchone():
-                    return []
-                self._table_name = "messages"
+        if not await self._detect_table_name(db):
+            return []
 
         query = self._history_query_for_table(self._table_name)
 
@@ -168,14 +167,8 @@ class SessionManager:
         except aiosqlite.OperationalError:
             # If the database was dynamically re-initialized, invalidate cache and retry once
             self._table_name = None
-            cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
-            if await cur.fetchone():
-                self._table_name = "session_messages"
-            else:
-                cur_msg = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages';")
-                if not await cur_msg.fetchone():
-                    return []
-                self._table_name = "messages"
+            if not await self._detect_table_name(db):
+                return []
             q = self._history_query_for_table(self._table_name)
             async with db.execute(q, (session_id, max_messages)) as cursor:
                 rows = await cursor.fetchall()

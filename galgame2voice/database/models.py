@@ -331,25 +331,6 @@ class CacheStatsResponse(BaseModel):
     estimated_saved_seconds: float = 0.0
 
 
-class TokenUsageMetric(BaseModel):
-    id: Optional[int] = None
-    timestamp: Optional[str] = None
-    session_id: str = "default"
-    channel: str = "web"
-    provider_id: str = "deepseek"
-    model_name: str = "deepseek-chat"
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    estimated_cost: float = 0.0
-    ttft_ms: float = 0.0
-    tts_first_chunk_ms: float = 0.0
-    total_latency_ms: float = 0.0
-    tts_cached_chunks: int = 0
-    tts_generated_chunks: int = 0
-    model_config = ConfigDict(from_attributes=True)
-
-
 class MetricsOverviewResponse(BaseModel):
     total_requests: int = 0
     total_prompt_tokens: int = 0
