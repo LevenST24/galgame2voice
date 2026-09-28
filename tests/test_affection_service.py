@@ -68,7 +68,7 @@ class TestEmotionClassification:
         assert affection_service.classify_emotion("安心吧，我会一直陪在你身边的，请放松一些。", "大丈夫ですよ") == "gentle"
         assert affection_service.classify_emotion("太好啦！今天真是超级开心的一天呢！", "やったー！嬉しい！") == "happy"
         assert affection_service.classify_emotion("好难过，为什么会变成这样……对不起……", "悲しい…ごめんなさい") == "sad"
-        assert affection_service.classify_emotion("……无聊。请不要浪费彼此的时间。", "くだらない…") == "cold"
+        assert affection_service.classify_emotion("……无聊。请不要浪费彼此的时间。", "くだらない…") == "cool"
         assert affection_service.classify_emotion("今天的天气预报说是晴天。", "今日は晴れです。") == "normal"
 
 

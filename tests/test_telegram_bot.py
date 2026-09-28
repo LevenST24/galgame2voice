@@ -530,19 +530,87 @@ class TestTelegramBotRealModules:
         await handlers.handle_callback_query(cb_model_custom, DummyContext())
         assert "已激活大模型" in (cb_model_custom.callback_query.answer_text or "")
 
-        # Test Voice Profile switch
+        # Test Voice Profile switch (profile 1 is the seeded default active
+        # profile -> already-active guard answers without switching)
         cb_voice = CallbackUpdate("set_voice_1")
         await handlers.handle_callback_query(cb_voice, DummyContext())
-        assert "音色已切换为" in (cb_voice.callback_query.answer_text or "")
+        assert "已经是当前音色" in (cb_voice.callback_query.answer_text or "")
 
-        # Test Character switch callback
+        # Test Character switch callback (profile 1 is already active from the
+        # voice switch above -> already-active guard answers without switching)
         cb_char = CallbackUpdate("set_char_1")
         await handlers.handle_callback_query(cb_char, DummyContext())
-        assert "音色已切换为" in (cb_char.callback_query.answer_text or "")
+        assert "已经是当前音色" in (cb_char.callback_query.answer_text or "")
 
         cb_reset = CallbackUpdate("action_reset")
         await handlers.handle_callback_query(cb_reset, DummyContext())
         assert "清空" in (cb_reset.callback_query.answer_text or "")
+
+    @pytest.mark.asyncio
+    async def test_telegram_bot_set_voice_already_active_guard(self, temp_db_path):
+        """Tapping the already-active voice profile is a no-op toast; other profiles still switch."""
+        from galgame2voice.database.session import get_db
+        from galgame2voice.database import crud
+        from galgame2voice.database.models import VoiceProfileCreate
+
+        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=temp_db_path)
+
+        async with get_db(temp_db_path) as conn:
+            active_p = await crud.create_voice_profile(
+                conn,
+                VoiceProfileCreate(
+                    name="守卫测试A",
+                    gpt_weights_path="a.ckpt",
+                    sovits_weights_path="a.pth",
+                    ref_audio_path="a.wav",
+                    prompt_text="テスト",
+                    prompt_lang="ja",
+                    text_lang="ja",
+                ),
+            )
+            other_p = await crud.create_voice_profile(
+                conn,
+                VoiceProfileCreate(
+                    name="守卫测试B",
+                    gpt_weights_path="b.ckpt",
+                    sovits_weights_path="b.pth",
+                    ref_audio_path="b.wav",
+                    prompt_text="テスト",
+                    prompt_lang="ja",
+                    text_lang="ja",
+                ),
+            )
+            await crud.set_active_voice_profile(conn, active_p.id)
+
+        class MockQuery:
+            def __init__(self, data):
+                self.data = data
+                self.answer_text = None
+
+            async def answer(self, text=None, show_alert=False):
+                self.answer_text = text
+
+            async def edit_message_text(self, text, reply_markup=None):
+                pass
+
+        class CallbackUpdate:
+            def __init__(self, data, chat_id=1002):
+                self.callback_query = MockQuery(data)
+                self.effective_chat = type("Chat", (), {"id": chat_id})()
+
+        class DummyContext:
+            def __init__(self):
+                self.bot = MockBotClient()
+
+        # Tapping the already-active profile -> no-op toast, no switch
+        cb_same = CallbackUpdate(f"set_voice_{active_p.id}")
+        await handlers.handle_callback_query(cb_same, DummyContext())
+        assert "已经是当前音色" in (cb_same.callback_query.answer_text or "")
+
+        # Tapping a different profile -> normal switch flow still works
+        cb_other = CallbackUpdate(f"set_voice_{other_p.id}")
+        await handlers.handle_callback_query(cb_other, DummyContext())
+        assert "音色已切换为" in (cb_other.callback_query.answer_text or "")
 
     @pytest.mark.asyncio
     async def test_telegram_bot_character_command_and_quick_switch(self, temp_db_path):
