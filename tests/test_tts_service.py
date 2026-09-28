@@ -24,6 +24,7 @@ from galgame2voice.services.tts_service import (
     async_get_audio_duration,
     clear_tts_profile_cache,
 )
+from galgame2voice.utils.audio_spec import AudioSpecCache, _AUDIO_SPEC_CACHE
 
 
 def _make_test_wav(file_path: Path, duration_sec: float = 4.0, sample_rate: int = 16000) -> Path:
@@ -59,10 +60,11 @@ def test_get_audio_duration_stat_cache(tmp_path):
     # Stat cache should have recorded the entry
     st = wav_path.stat()
     stat_key = (str(wav_path.resolve()), st.st_mtime_ns, st.st_size)
+    assert stat_key in _AUDIO_SPEC_CACHE._cache
     assert stat_key in _AUDIO_STAT_DURATION_CACHE
 
-    # Second probe: should hit stat cache directly without calling _probe_audio_duration_sync
-    with patch("galgame2voice.services.tts_service._probe_audio_duration_sync") as mock_probe:
+    # Second probe: should hit stat cache directly without calling AudioSpecCache._probe
+    with patch.object(AudioSpecCache, "_probe") as mock_probe:
         dur2 = TtsService.get_audio_duration(wav_path)
         assert dur2 == dur1
         mock_probe.assert_not_called()
@@ -112,11 +114,13 @@ def test_clear_tts_profile_cache(tmp_path):
     wav_path = _make_test_wav(tmp_path / "cache_clear.wav", duration_sec=3.5)
     TtsService.get_audio_duration(wav_path)
 
+    assert len(_AUDIO_SPEC_CACHE._cache) > 0
     assert len(_AUDIO_DURATION_CACHE) > 0
     assert len(_AUDIO_STAT_DURATION_CACHE) > 0
 
     clear_tts_profile_cache()
 
+    assert len(_AUDIO_SPEC_CACHE._cache) == 0
     assert len(_AUDIO_DURATION_CACHE) == 0
     assert len(_AUDIO_STAT_DURATION_CACHE) == 0
 
