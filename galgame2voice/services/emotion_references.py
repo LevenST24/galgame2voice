@@ -185,11 +185,8 @@ def resolve_emotion_reference(
     try:
         from galgame2voice.services.character_manager import get_character_manager
         mgr = get_character_manager()
-        if character_name:
-            return mgr.resolve_emotion_audio_path(character_name, emotion, base_dir=base_dir)
-
-        # Fallback to default character package only when no character_name was specified
-        return mgr.resolve_emotion_audio_path("default", emotion, base_dir=base_dir)
+        target = character_name if character_name else "default"
+        return mgr.resolve_emotion_audio_path(target, emotion, base_dir=base_dir)
     except Exception as exc:
         logger.debug("Data-driven emotion resolution encountered exception: %s", exc)
         return None
