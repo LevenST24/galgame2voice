@@ -337,6 +337,17 @@ def _collect_hardware_telemetry_sync() -> HardwareTelemetry:
     )
 
 
+def _resolve_telegram_status(is_running: bool, is_enabled: bool, has_token: bool) -> str:
+    """Computes categorical telegram telemetry status string without nested conditionals."""
+    if is_running:
+        return "running"
+    if not is_enabled:
+        return "disabled"
+    if has_token:
+        return "standby"
+    return "unconfigured"
+
+
 @router.get(
     "/api/system/status",
     response_model=SystemStatusResponse,
@@ -418,7 +429,7 @@ async def system_status(request: Request) -> SystemStatusResponse:
 
     tg_telemetry = TelegramTelemetry(
         enabled=is_enabled,
-        status="running" if tg_running else ("disabled" if not is_enabled else ("standby" if has_token else "unconfigured")),
+        status=_resolve_telegram_status(tg_running, is_enabled, has_token),
     )
 
     overall_status = "healthy" if gpt_probe.status == "reachable" else "degraded"

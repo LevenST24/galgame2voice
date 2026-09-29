@@ -21,6 +21,7 @@ from galgame2voice.database.session import get_db, get_database_path
 from galgame2voice.services.gpt_sovits_client import (
     normalize_japanese_for_tts,
 )
+from galgame2voice.utils.async_tasks import drain_background_tasks
 
 logger = logging.getLogger("galgame2voice.services.tts_cache_manager")
 
@@ -231,15 +232,7 @@ class TtsCacheManager:
 
         await self._flush_dirty_touches()
 
-        pending = [t for t in self._bg_tasks if not t.done()]
-        if pending:
-            await asyncio.wait(pending, timeout=5.0)
-        stragglers = [t for t in self._bg_tasks if not t.done()]
-        for t in stragglers:
-            t.cancel()
-        if stragglers:
-            await asyncio.gather(*stragglers, return_exceptions=True)
-        self._bg_tasks.clear()
+        await drain_background_tasks(self._bg_tasks, timeout=5.0)
 
     def compute_cache_key(
         self,

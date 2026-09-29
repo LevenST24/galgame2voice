@@ -533,3 +533,18 @@ class StreamingBilingualParser:
             remaining_sentences = self._drain_new_ja_sentences(all_sentences)
 
         return self.chinese_extracted, self.japanese_extracted, remaining_sentences
+
+    @classmethod
+    def parse_full_text(cls, raw_text: str) -> Tuple[str, str, "StreamingBilingualParser"]:
+        """
+        Parses non-streaming bilingual completion text into (chinese, japanese, parser).
+        Guarantees fallback to raw_text if extracted fields are empty.
+        """
+        parser = cls()
+        parser.feed_chunk(raw_text)
+        chinese, japanese, _ = parser.finalize()
+        if not chinese:
+            chinese = raw_text
+        if not japanese:
+            japanese = chinese
+        return chinese, japanese, parser

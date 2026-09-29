@@ -24,6 +24,7 @@ from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
     get_gpt_sovits_client,
 )
+from galgame2voice.utils.async_tasks import drain_background_tasks
 from galgame2voice.utils.hardware import (
     get_system_memory_status,
     get_gpu_vram_status,
@@ -122,15 +123,7 @@ class VoiceManager:
 
     async def aclose(self) -> None:
         """Gracefully drains and cancels pending background warmup tasks upon service shutdown."""
-        pending = [t for t in self._bg_tasks if not t.done()]
-        if pending:
-            await asyncio.wait(pending, timeout=3.0)
-        stragglers = [t for t in self._bg_tasks if not t.done()]
-        for t in stragglers:
-            t.cancel()
-        if stragglers:
-            await asyncio.gather(*stragglers, return_exceptions=True)
-        self._bg_tasks.clear()
+        await drain_background_tasks(self._bg_tasks, timeout=3.0)
 
     @property
     def lock(self) -> asyncio.Lock:
