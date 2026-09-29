@@ -16,7 +16,6 @@ from galgame2voice.services.voice_manager import get_voice_manager, Insufficient
 from galgame2voice.utils.logger import sanitize_error_detail
 
 import json
-from galgame2voice.config import get_settings
 
 logger = logging.getLogger("galgame2voice.routers.characters")
 

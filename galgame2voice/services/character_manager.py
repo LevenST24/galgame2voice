@@ -22,6 +22,7 @@ from galgame2voice.schemas.character_manifest import (
     EmotionConfig,
     VoiceParamsConfig,
 )
+from galgame2voice.utils.path_guard import to_project_relative_path
 from galgame2voice.services.character_package import (
     CharacterPackage,
     _AUDIO_PROBE_CACHE,
@@ -398,33 +399,19 @@ class CharacterManager:
             res["voice_params"] = target_cfg.voice_params.model_dump()
         return res
 
-    async def sync_with_db(self, conn: aiosqlite.Connection) -> int:
-        """
-        Idempotently syncs/upserts discovered character packages into SQLite voice_profiles
-        table without mutating or corrupting existing user configurations or settings.
-        Returns the count of synced/updated profiles.
-        """
-        self._ensure_discovered()
+    @staticmethod
+    def _weight_needs_healing(w_path: str) -> bool:
+        """Determines if a model weight path is empty, machine-specific, or non-existent."""
+        if not w_path:
+            return True
+        norm_w = w_path.replace("/", "\\")
+        if norm_w.startswith(("E:", "E:\\")) or (os.path.isabs(w_path) and not Path(w_path).exists()):
+            return True
+        return not Path(w_path).exists()
 
-        valid_pkgs = self.get_available_characters()
-        if not valid_pkgs:
-            return 0
-
-        # Deterministic default order: prioritize packages marked with is_default=True, then by name
-        def _pkg_sort_key(p: CharacterPackage):
-            is_def = getattr(p.manifest, "is_default", False)
-            return (0 if is_def else 1, p.name)
-
-        valid_pkgs = sorted(valid_pkgs, key=_pkg_sort_key)
-
-        cur = await conn.execute("SELECT COUNT(*) FROM voice_profiles;")
-        count_row = await cur.fetchone()
-        existing_count = count_row[0] if count_row else 0
-
-        synced_count = 0
-        from galgame2voice.utils.path_guard import to_project_relative_path
-
-        # 1. Prune ghost profiles whose package directory under characters/ no longer exists
+    async def _prune_ghost_profiles(self, conn: aiosqlite.Connection) -> int:
+        """Prunes ghost voice_profile records whose package directory under characters/ no longer exists."""
+        pruned_count = 0
         cur_all = await conn.execute("SELECT id, name, gpt_weights_path, ref_audio_path FROM voice_profiles;")
         all_profiles = await cur_all.fetchall()
         for prof in all_profiles:
@@ -450,8 +437,210 @@ class CharacterManager:
             if is_ghost:
                 logger.info("Pruning ghost voice_profile record id=%s name='%s'", p_id, p_name)
                 await conn.execute("DELETE FROM voice_profiles WHERE id = ?;", (p_id,))
-                synced_count += 1
-                existing_count = max(0, existing_count - 1)
+                pruned_count += 1
+        return pruned_count
+
+    @staticmethod
+    async def _find_existing_profile_row(
+        conn: aiosqlite.Connection,
+        char_name: str,
+        aliases: Optional[List[str]],
+    ) -> Optional[Any]:
+        """Queries an existing voice_profile row by character name or configured aliases."""
+        cursor = await conn.execute(
+            "SELECT * FROM voice_profiles WHERE name = ? OR name LIKE ? OR name LIKE ? LIMIT 1;",
+            (char_name, f"{char_name}%", f"%{char_name}%" if len(char_name) >= 3 else char_name),
+        )
+        existing_row = await cursor.fetchone()
+        if not existing_row and aliases:
+            for alias in aliases:
+                if not alias:
+                    continue
+                cur_alias = await conn.execute(
+                    "SELECT * FROM voice_profiles WHERE name = ? OR name LIKE ? LIMIT 1;",
+                    (alias, f"%{alias}%"),
+                )
+                existing_row = await cur_alias.fetchone()
+                if existing_row:
+                    break
+        return existing_row
+
+    @staticmethod
+    def _resolve_package_profile_defaults(pkg: CharacterPackage) -> Dict[str, Any]:
+        """Resolves default reference audio, weights, and prompt settings for a package."""
+        manifest = pkg.manifest
+        default_emo = manifest.emotions.get("gentle") or (
+            next(iter(manifest.emotions.values())) if manifest.emotions else None
+        )
+        if default_emo:
+            resolved_audio = pkg.resolve_audio_path(default_emo.audio)
+            ref_audio_str = to_project_relative_path(resolved_audio) if resolved_audio else default_emo.audio
+            prompt_text = default_emo.text
+            prompt_lang = default_emo.lang
+        else:
+            ref_audio_str = ""
+            prompt_text = ""
+            prompt_lang = "ja"
+
+        gpt_weights = to_project_relative_path(pkg.resolve_weight_path("gpt_weights"))
+        sovits_weights = to_project_relative_path(pkg.resolve_weight_path("sovits_weights"))
+        system_prompt = pkg.system_prompt or manifest.system_prompt or ""
+
+        return {
+            "ref_audio_str": ref_audio_str,
+            "prompt_text": prompt_text,
+            "prompt_lang": prompt_lang,
+            "gpt_weights": gpt_weights,
+            "sovits_weights": sovits_weights,
+            "system_prompt": system_prompt,
+        }
+
+    @classmethod
+    async def _update_existing_profile(
+        cls,
+        conn: aiosqlite.Connection,
+        existing_row: Any,
+        pkg: CharacterPackage,
+        defaults: Dict[str, Any],
+    ) -> bool:
+        """Idempotently updates existing voice_profile row with healed paths and prompt updates."""
+        manifest = pkg.manifest
+        ref_audio_str = defaults["ref_audio_str"]
+        prompt_text = defaults["prompt_text"]
+        prompt_lang = defaults["prompt_lang"]
+        gpt_weights = defaults["gpt_weights"]
+        sovits_weights = defaults["sovits_weights"]
+        system_prompt = defaults["system_prompt"]
+
+        p_id = existing_row["id"]
+        current_ref = existing_row["ref_audio_path"] or ""
+        current_gpt = existing_row["gpt_weights_path"] or ""
+        current_sovits = existing_row["sovits_weights_path"] or ""
+        current_prompt = existing_row["prompt_text"] or ""
+        current_sys = existing_row["system_prompt"] or ""
+
+        update_fields = []
+        params = []
+
+        # Determine if ref_audio_path needs healing:
+        # 1) current path is empty or does not exist on disk
+        # 2) character has ref pointing to a different character's package directory
+        # 3) non-Natsume character has ref pointing to Natsume audio
+        cross_character_audio = False
+        norm_ref = current_ref.replace("\\", "/").lower()
+        is_natsume = (pkg.id.lower() in ("natsume", "shiki_natsume") or "夏目" in pkg.name)
+        if not is_natsume and "natsume" in norm_ref:
+            cross_character_audio = True
+        elif current_ref and "characters/" in current_ref.replace("\\", "/"):
+            ref_char_part = current_ref.replace("\\", "/").split("characters/")[1].split("/")[0]
+            if ref_char_part and ref_char_part.lower() != pkg.id.lower() and ref_char_part != pkg.name:
+                cross_character_audio = True
+
+        ref_needs_update = (
+            not current_ref
+            or not Path(current_ref).exists()
+            or cross_character_audio
+        )
+
+        if ref_needs_update and ref_audio_str:
+            update_fields.append("ref_audio_path = ?")
+            params.append(ref_audio_str)
+
+        # Prompt text should be updated if empty or if ref_audio was cross-character/healed
+        if (not current_prompt.strip() or ref_needs_update) and prompt_text:
+            update_fields.append("prompt_text = ?")
+            params.append(prompt_text)
+            if prompt_lang:
+                update_fields.append("prompt_lang = ?")
+                params.append(prompt_lang)
+
+        if gpt_weights and cls._weight_needs_healing(current_gpt):
+            update_fields.append("gpt_weights_path = ?")
+            params.append(gpt_weights)
+
+        if sovits_weights and cls._weight_needs_healing(current_sovits):
+            update_fields.append("sovits_weights_path = ?")
+            params.append(sovits_weights)
+
+        # 角色包是人设提示词的唯一权威源，DB 只是运行时读的镜像：
+        # 不一致就覆盖，否则包里的更新永远进不了聊天链路。
+        # 包内为空时保留 DB 值，避免同步把设定抹掉。
+        if system_prompt and system_prompt != current_sys:
+            update_fields.append("system_prompt = ?")
+            params.append(system_prompt)
+
+        char_desc = manifest.description or ""
+        current_desc = existing_row["description"] or ""
+        if char_desc and not current_desc.strip():
+            update_fields.append("description = ?")
+            params.append(char_desc)
+
+        if update_fields:
+            update_fields.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(p_id)
+            query = f"UPDATE voice_profiles SET {', '.join(update_fields)} WHERE id = ?;"
+            await conn.execute(query, tuple(params))
+            return True
+        return False
+
+    @staticmethod
+    async def _insert_new_profile(
+        conn: aiosqlite.Connection,
+        char_name: str,
+        manifest: Any,
+        defaults: Dict[str, Any],
+        is_default_val: int,
+    ) -> None:
+        """Inserts a new voice_profile record from character package manifest and defaults."""
+        await conn.execute(
+            """
+            INSERT INTO voice_profiles (
+                name, description, gpt_weights_path, sovits_weights_path,
+                ref_audio_path, prompt_text, prompt_lang, text_lang,
+                system_prompt, is_default
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                char_name,
+                manifest.description,
+                defaults["gpt_weights"],
+                defaults["sovits_weights"],
+                defaults["ref_audio_str"],
+                defaults["prompt_text"],
+                defaults["prompt_lang"],
+                defaults["prompt_lang"],
+                defaults["system_prompt"],
+                is_default_val,
+            ),
+        )
+
+    async def sync_with_db(self, conn: aiosqlite.Connection) -> int:
+        """
+        Idempotently syncs/upserts discovered character packages into SQLite voice_profiles
+        table without mutating or corrupting existing user configurations or settings.
+        Returns the count of synced/updated profiles.
+        """
+        self._ensure_discovered()
+
+        valid_pkgs = self.get_available_characters()
+        if not valid_pkgs:
+            return 0
+
+        # Deterministic default order: prioritize packages marked with is_default=True, then by name
+        def _pkg_sort_key(p: CharacterPackage):
+            is_def = getattr(p.manifest, "is_default", False)
+            return (0 if is_def else 1, p.name)
+
+        valid_pkgs = sorted(valid_pkgs, key=_pkg_sort_key)
+
+        cur = await conn.execute("SELECT COUNT(*) FROM voice_profiles;")
+        count_row = await cur.fetchone()
+        existing_count = count_row[0] if count_row else 0
+
+        # 1. Prune ghost profiles whose package directory under characters/ no longer exists
+        pruned_count = await self._prune_ghost_profiles(conn)
+        synced_count = pruned_count
+        existing_count = max(0, existing_count - pruned_count)
 
         # Check if an active default already exists
         cur_def = await conn.execute("SELECT COUNT(*) FROM voice_profiles WHERE is_default = 1;")
@@ -461,153 +650,19 @@ class CharacterManager:
         for pkg in valid_pkgs:
             manifest = pkg.manifest
             char_name = manifest.name
-
-            # Query existing row by name or close match/alias
-            cursor = await conn.execute(
-                "SELECT * FROM voice_profiles WHERE name = ? OR name LIKE ? OR name LIKE ? LIMIT 1;",
-                (char_name, f"{char_name}%", f"%{char_name}%" if len(char_name) >= 3 else char_name)
-            )
-            existing_row = await cursor.fetchone()
-            if not existing_row and getattr(manifest, "aliases", None):
-                for alias in manifest.aliases:
-                    if not alias:
-                        continue
-                    cur_alias = await conn.execute(
-                        "SELECT * FROM voice_profiles WHERE name = ? OR name LIKE ? LIMIT 1;",
-                        (alias, f"%{alias}%")
-                    )
-                    existing_row = await cur_alias.fetchone()
-                    if existing_row:
-                        break
-
-            # Resolve default reference audio & text from package
-            default_emo = manifest.emotions.get("gentle") or (
-                next(iter(manifest.emotions.values())) if manifest.emotions else None
-            )
-            if default_emo:
-                resolved_audio = pkg.resolve_audio_path(default_emo.audio)
-                ref_audio_str = to_project_relative_path(resolved_audio) if resolved_audio else default_emo.audio
-                prompt_text = default_emo.text
-                prompt_lang = default_emo.lang
-            else:
-                ref_audio_str = ""
-                prompt_text = ""
-                prompt_lang = "ja"
-
-            gpt_weights = to_project_relative_path(pkg.resolve_weight_path("gpt_weights"))
-            sovits_weights = to_project_relative_path(pkg.resolve_weight_path("sovits_weights"))
-            system_prompt = pkg.system_prompt or manifest.system_prompt or ""
+            existing_row = await self._find_existing_profile_row(conn, char_name, getattr(manifest, "aliases", None))
+            defaults = self._resolve_package_profile_defaults(pkg)
 
             if existing_row:
-                # Existing profile: update paths idempotently without overriding user modifications
-                p_id = existing_row["id"]
-                current_ref = existing_row["ref_audio_path"] or ""
-                current_gpt = existing_row["gpt_weights_path"] or ""
-                current_sovits = existing_row["sovits_weights_path"] or ""
-                current_prompt = existing_row["prompt_text"] or ""
-                current_sys = existing_row["system_prompt"] or ""
-
-                update_fields = []
-                params = []
-
-                # Determine if ref_audio_path needs healing:
-                # 1) current path is empty or does not exist on disk
-                # 2) character has ref pointing to a different character's package directory
-                # 3) non-Natsume character has ref pointing to Natsume audio
-                cross_character_audio = False
-                norm_ref = current_ref.replace("\\", "/").lower()
-                is_natsume = (pkg.id.lower() in ("natsume", "shiki_natsume") or "夏目" in pkg.name)
-                if not is_natsume and "natsume" in norm_ref:
-                    cross_character_audio = True
-                elif current_ref and "characters/" in current_ref.replace("\\", "/"):
-                    ref_char_part = current_ref.replace("\\", "/").split("characters/")[1].split("/")[0]
-                    if ref_char_part and ref_char_part.lower() != pkg.id.lower() and ref_char_part != pkg.name:
-                        cross_character_audio = True
-
-                ref_needs_update = (
-                    not current_ref
-                    or not Path(current_ref).exists()
-                    or cross_character_audio
-                )
-
-                if ref_needs_update and ref_audio_str:
-                    update_fields.append("ref_audio_path = ?")
-                    params.append(ref_audio_str)
-
-                # Prompt text should be updated if empty or if ref_audio was cross-character/healed
-                if (not current_prompt.strip() or ref_needs_update) and prompt_text:
-                    update_fields.append("prompt_text = ?")
-                    params.append(prompt_text)
-                    if prompt_lang:
-                        update_fields.append("prompt_lang = ?")
-                        params.append(prompt_lang)
-
-                # Model weights healing:
-                # If current weight is empty, does not exist on disk, or is machine-specific (e.g. E:\),
-                # heal it to the self-contained package weight
-                def _weight_needs_healing(w_path: str) -> bool:
-                    if not w_path:
-                        return True
-                    norm_w = w_path.replace("/", "\\")
-                    if norm_w.startswith(("E:", "E:\\")) or (os.path.isabs(w_path) and not Path(w_path).exists()):
-                        return True
-                    return not Path(w_path).exists()
-
-                if gpt_weights and _weight_needs_healing(current_gpt):
-                    update_fields.append("gpt_weights_path = ?")
-                    params.append(gpt_weights)
-
-                if sovits_weights and _weight_needs_healing(current_sovits):
-                    update_fields.append("sovits_weights_path = ?")
-                    params.append(sovits_weights)
-
-                # 角色包是人设提示词的唯一权威源，DB 只是运行时读的镜像：
-                # 不一致就覆盖，否则包里的更新永远进不了聊天链路。
-                # 包内为空时保留 DB 值，避免同步把设定抹掉。
-                if system_prompt and system_prompt != current_sys:
-                    update_fields.append("system_prompt = ?")
-                    params.append(system_prompt)
-
-                char_desc = manifest.description or ""
-                current_desc = existing_row["description"] or ""
-                if char_desc and not current_desc.strip():
-                    update_fields.append("description = ?")
-                    params.append(char_desc)
-
-                if update_fields:
-                    update_fields.append("updated_at = CURRENT_TIMESTAMP")
-                    params.append(p_id)
-                    query = f"UPDATE voice_profiles SET {', '.join(update_fields)} WHERE id = ?;"
-                    await conn.execute(query, tuple(params))
+                if await self._update_existing_profile(conn, existing_row, pkg, defaults):
                     synced_count += 1
             else:
-                # Insert new voice profile
                 is_default_val = 0
                 if not has_default and (getattr(manifest, "is_default", False) or existing_count == 0):
                     is_default_val = 1
                     has_default = True
 
-                await conn.execute(
-                    """
-                    INSERT INTO voice_profiles (
-                        name, description, gpt_weights_path, sovits_weights_path,
-                        ref_audio_path, prompt_text, prompt_lang, text_lang,
-                        system_prompt, is_default
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                    """,
-                    (
-                        char_name,
-                        manifest.description,
-                        gpt_weights,
-                        sovits_weights,
-                        ref_audio_str,
-                        prompt_text,
-                        prompt_lang,
-                        prompt_lang,
-                        system_prompt,
-                        is_default_val,
-                    )
-                )
+                await self._insert_new_profile(conn, char_name, manifest, defaults, is_default_val)
                 existing_count += 1
                 synced_count += 1
 

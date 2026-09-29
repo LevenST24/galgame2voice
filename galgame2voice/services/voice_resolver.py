@@ -14,10 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
 from galgame2voice.utils.path_guard import resolve_weight_file_path, resolve_existing_audio_path
-from galgame2voice.services.gpt_sovits_client import (
-    probe_audio_duration_seconds,
-    async_probe_audio_duration_seconds,
-)
+from galgame2voice.services.gpt_sovits_client import probe_audio_duration_seconds
 from galgame2voice.services.emotion_references import resolve_emotion_reference
 
 logger = logging.getLogger("galgame2voice.services.voice_resolver")

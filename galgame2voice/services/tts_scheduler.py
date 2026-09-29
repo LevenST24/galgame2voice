@@ -78,6 +78,25 @@ class TtsPriority(IntEnum):
     NORMAL = 1    # Next sentence prefetch
     LOW = 2       # Background character/emotion preheat
 
+    @classmethod
+    def from_options(
+        cls,
+        options: Optional[Dict[str, Any]] = None,
+        default: Optional["TtsPriority"] = None,
+    ) -> "TtsPriority":
+        """
+        Parses TTS scheduling priority from options dict (under '_priority' key).
+        Safely falls back to default (NORMAL) on missing, invalid, or malformed values.
+        """
+        fallback = default if default is not None else cls.NORMAL
+        if not options:
+            return fallback
+        raw_prio = options.get("_priority", fallback)
+        try:
+            return cls(int(raw_prio))
+        except (ValueError, TypeError):
+            return fallback
+
 
 class SingleFlightCoordinator:
     """

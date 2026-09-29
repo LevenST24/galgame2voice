@@ -477,12 +477,7 @@ class VoiceManager:
         # 2. If cache miss, route through tts_scheduler.schedule_stream(...)
         from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
         scheduler = get_tts_scheduler()
-
-        raw_prio = opts.get("_priority", TtsPriority.NORMAL)
-        try:
-            priority = TtsPriority(int(raw_prio))
-        except (ValueError, TypeError):
-            priority = TtsPriority.NORMAL
+        priority = TtsPriority.from_options(opts)
 
         gen_id = opts.get("_generation_id")
         task_id = opts.get("_task_id") or (
