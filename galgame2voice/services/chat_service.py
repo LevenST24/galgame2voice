@@ -713,17 +713,14 @@ class ChatService:
             latency_ms = int((time.perf_counter() - t_start) * 1000)
 
             # Token and Latency Telemetry
-            prompt_text = "".join([getattr(m, "content", "") for m in messages])
-            prompt_tokens = self.metrics_collector.estimate_tokens(prompt_text)
-            completion_tokens = self.metrics_collector.estimate_tokens(chinese + japanese)
-
-            metric_record = await self.metrics_collector.record_metric(
+            metric_record = await self.metrics_collector.record_chat_turn(
                 session_id=session_id,
                 channel="web",
                 provider_id=actual_provider_id,
                 model_name=model_name,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
+                messages=messages,
+                chinese=chinese,
+                japanese=japanese,
                 ttft_ms=ttft_ms,
                 tts_first_chunk_ms=tts_first_chunk_ms,
                 total_latency_ms=float(latency_ms),

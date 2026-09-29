@@ -28,7 +28,7 @@ from galgame2voice.database import crud
 from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from galgame2voice.telegram_bot.proxy import get_proxy_url, get_telegram_request_kwargs
 from galgame2voice.utils.logger import sanitize_error_detail
-from galgame2voice.utils.text_sanitize import sanitize_bot_token
+from galgame2voice.utils.text_sanitize import parse_admin_ids, sanitize_bot_token
 
 logger = logging.getLogger("galgame2voice.telegram_bot.bot")
 
@@ -42,18 +42,6 @@ def validate_bot_token(token: Optional[str]) -> bool:
         return False
     t = str(token).replace(" ", "").strip()
     return len(t) >= 10 and "invalid" not in t.lower() and ":" in t
-
-
-def parse_admin_ids(raw: Optional[str]) -> List[int]:
-    """Parses a comma-separated list of Telegram user IDs."""
-    if not raw:
-        return []
-    ids = []
-    for part in str(raw).replace("，", ",").split(","):
-        part = part.strip()
-        if part.isdigit():
-            ids.append(int(part))
-    return ids
 
 
 def _register_handlers(app: Any, handlers: Any, error_handler: Optional[Any] = None) -> None:
@@ -249,6 +237,7 @@ def get_telegram_bot_manager(db_path: Optional[str] = None) -> TelegramBotManage
 
 __all__ = [
     "validate_bot_token",
+    "parse_admin_ids",
     "TelegramBotManager",
     "get_telegram_bot_manager",
     "HAS_TELEGRAM",

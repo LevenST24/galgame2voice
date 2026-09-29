@@ -603,18 +603,14 @@ class StreamCoordinator:
         if tts_first_chunk_ms == 0.0:
             tts_first_chunk_ms = float(total_latency)
 
-        # Calculate and record token and latency metrics
-        prompt_text = "".join([getattr(m, "content", "") for m in self.messages])
-        prompt_tokens = self.metrics_collector.estimate_tokens(prompt_text)
-        completion_tokens = self.metrics_collector.estimate_tokens(full_chinese + full_japanese)
-
-        metric_record = await self.metrics_collector.record_metric(
+        metric_record = await self.metrics_collector.record_chat_turn(
             session_id=self.session_id,
             channel="web",
             provider_id=self.actual_provider_id,
             model_name=self.model_name,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
+            messages=self.messages,
+            chinese=full_chinese,
+            japanese=full_japanese,
             ttft_ms=ttft_ms,
             tts_first_chunk_ms=tts_first_chunk_ms,
             total_latency_ms=float(total_latency),

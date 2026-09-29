@@ -232,6 +232,42 @@ class MetricsCollector:
 
         return metric_record
 
+    async def record_chat_turn(
+        self,
+        session_id: str,
+        provider_id: str,
+        model_name: str,
+        messages: List[Any],
+        chinese: str,
+        japanese: str,
+        ttft_ms: float,
+        tts_first_chunk_ms: float,
+        total_latency_ms: float,
+        tts_cached_chunks: int = 0,
+        tts_generated_chunks: int = 0,
+        channel: str = "web",
+    ) -> Dict[str, Any]:
+        """
+        Calculates prompt and completion tokens from conversation messages and bilingual response,
+        then records telemetry record.
+        """
+        prompt_text = "".join([getattr(m, "content", "") for m in messages])
+        prompt_tokens = self.estimate_tokens(prompt_text)
+        completion_tokens = self.estimate_tokens(chinese + japanese)
+        return await self.record_metric(
+            session_id=session_id,
+            channel=channel,
+            provider_id=provider_id,
+            model_name=model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            ttft_ms=ttft_ms,
+            tts_first_chunk_ms=tts_first_chunk_ms,
+            total_latency_ms=total_latency_ms,
+            tts_cached_chunks=tts_cached_chunks,
+            tts_generated_chunks=tts_generated_chunks,
+        )
+
     async def get_overview(self) -> Dict[str, Any]:
         """
         Retrieves global token telemetry aggregated overview combined with TTS cache stats.

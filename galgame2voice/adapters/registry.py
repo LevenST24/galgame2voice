@@ -273,11 +273,6 @@ def get_llm_adapter(
         target_url = url or default_url
         return adapter_cls(api_key=key, base_url=target_url, **kwargs)
 
-    if preset:
-        preset_cls: Type[BaseLLMAdapter] = preset.get("adapter_class", OpenAICompatibleLLMAdapter)
-        target_url = url or preset["default_base_url"]
-        return preset_cls(api_key=key, base_url=target_url, **kwargs)
-
     # Fallback to general OpenAI-compatible adapter
     target_url = url or "https://api.openai.com/v1"
     return OpenAICompatibleLLMAdapter(api_key=key, base_url=target_url, **kwargs)

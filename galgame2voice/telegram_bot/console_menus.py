@@ -13,7 +13,7 @@ Provides rich inline keyboard menus and callback processing for:
 
 from dataclasses import dataclass
 import logging
-from typing import Any, Callable, Dict, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 try:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -120,6 +120,29 @@ def _tts_nav_row() -> list:
         InlineKeyboardButton("🔙 返回语音调参", callback_data="menu_tts"),
         InlineKeyboardButton("🏠 返回主控制台", callback_data="menu_main"),
     ]
+
+
+def _build_single_col_options_markup(
+    options: List[Tuple[Any, str]],
+    current_val: Any,
+    callback_prefix: str,
+    nav_row: Optional[list] = None,
+    is_float: bool = False,
+) -> Any:
+    """Builds a single-column inline keyboard for selectable scalar options."""
+    if not (HAS_TELEGRAM and InlineKeyboardButton and InlineKeyboardMarkup):
+        return None
+    keyboard = []
+    for val, label in options:
+        if is_float and isinstance(current_val, (int, float)) and isinstance(val, (int, float)):
+            is_active = abs(current_val - val) < 0.01
+        else:
+            is_active = (current_val == val)
+        mark = "✓ " if is_active else ""
+        keyboard.append([InlineKeyboardButton(f"{mark}{label}", callback_data=f"{callback_prefix}{val}")])
+    if nav_row:
+        keyboard.append(nav_row)
+    return InlineKeyboardMarkup(keyboard)
 
 
 async def build_main_console(
@@ -365,16 +388,15 @@ async def build_speed_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
 
     text = f"⚡ 【调节语音语速】\n当前语速: {current_speed}x\n请选择你期望的发音语速："
     speeds = [0.8, 0.9, 1.0, 1.05, 1.1, 1.2, 1.3, 1.5]
-    row1 = []
-    row2 = []
-    for s in speeds[:4]:
+    def _speed_btn(s: float) -> Any:
         mark = "✓ " if abs(current_speed - s) < 0.01 else ""
-        row1.append(InlineKeyboardButton(f"{mark}{s}x", callback_data=f"set_speed_{s}"))
-    for s in speeds[4:]:
-        mark = "✓ " if abs(current_speed - s) < 0.01 else ""
-        row2.append(InlineKeyboardButton(f"{mark}{s}x", callback_data=f"set_speed_{s}"))
+        return InlineKeyboardButton(f"{mark}{s}x", callback_data=f"set_speed_{s}")
 
-    keyboard = [row1, row2, _tts_nav_row()]
+    keyboard = [
+        [_speed_btn(s) for s in speeds[:4]],
+        [_speed_btn(s) for s in speeds[4:]],
+        _tts_nav_row(),
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
     return text, reply_markup
 
@@ -395,13 +417,9 @@ async def build_temp_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
         (1.0, "1.0 (生动活泼)"),
         (1.2, "1.2 (高昂起伏)"),
     ]
-    keyboard = []
-    for t_val, t_label in temps:
-        mark = "✓ " if abs(current_temp - t_val) < 0.01 else ""
-        keyboard.append([InlineKeyboardButton(f"{mark}{t_label}", callback_data=f"set_temp_{t_val}")])
-
-    keyboard.append(_tts_nav_row())
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _build_single_col_options_markup(
+        temps, current_temp, "set_temp_", nav_row=_tts_nav_row(), is_float=True
+    )
     return text, reply_markup
 
 
@@ -422,13 +440,9 @@ async def build_split_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
         ("cut4", "↵ cut4 按换行切分"),
         ("cut0", "🚫 cut0 不切分 (整段合成)"),
     ]
-    keyboard = []
-    for s_key, s_label in splits:
-        mark = "✓ " if current_split == s_key else ""
-        keyboard.append([InlineKeyboardButton(f"{mark}{s_label}", callback_data=f"set_split_{s_key}")])
-
-    keyboard.append(_tts_nav_row())
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _build_single_col_options_markup(
+        splits, current_split, "set_split_", nav_row=_tts_nav_row(), is_float=False
+    )
     return text, reply_markup
 
 
@@ -486,13 +500,9 @@ async def build_batch_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
         (2, "📦 2 (双句并行 / 均衡推荐)"),
         (4, "📦 4 (四句并发 / 极速模式)"),
     ]
-    keyboard = []
-    for b_val, b_label in batches:
-        mark = "✓ " if current_batch == b_val else ""
-        keyboard.append([InlineKeyboardButton(f"{mark}{b_label}", callback_data=f"set_batch_{b_val}")])
-
-    keyboard.append(_tts_nav_row())
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _build_single_col_options_markup(
+        batches, current_batch, "set_batch_", nav_row=_tts_nav_row(), is_float=False
+    )
     return text, reply_markup
 
 
@@ -511,13 +521,9 @@ async def build_interval_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
         (0.3, "0.3s (标准推荐)"),
         (0.5, "0.5s (舒缓沉浸)"),
     ]
-    keyboard = []
-    for i_val, i_label in intervals:
-        mark = "✓ " if abs(current_interval - i_val) < 0.01 else ""
-        keyboard.append([InlineKeyboardButton(f"{mark}{i_label}", callback_data=f"set_interval_{i_val}")])
-
-    keyboard.append(_tts_nav_row())
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _build_single_col_options_markup(
+        intervals, current_interval, "set_interval_", nav_row=_tts_nav_row(), is_float=True
+    )
     return text, reply_markup
 
 
@@ -536,13 +542,10 @@ async def build_history_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
         (20, "20 轮 (深度长程连贯)"),
         (30, "30 轮 (超长对话沉浸)"),
     ]
-    keyboard = []
-    for h_val, h_label in histories:
-        mark = "✓ " if current_hist == h_val else ""
-        keyboard.append([InlineKeyboardButton(f"{mark}{h_label}", callback_data=f"set_history_{h_val}")])
-
-    keyboard.append([InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main")])
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    nav_row = [InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main")]
+    reply_markup = _build_single_col_options_markup(
+        histories, current_hist, "set_history_", nav_row=nav_row, is_float=False
+    )
     return text, reply_markup
 
 
