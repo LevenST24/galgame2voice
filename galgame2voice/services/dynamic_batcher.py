@@ -16,6 +16,9 @@ from galgame2voice.utils.prosody import clamp_dynamic_batch_size
 
 logger = logging.getLogger("galgame2voice.services.dynamic_batcher")
 
+_RE_SPLIT_PUNCT_COMMA = re.compile(r'[。！？\.\!\?，,、\n]+')
+_RE_SPLIT_PUNCT_PERIOD = re.compile(r'[。！？\.\!\?\n]+')
+
 
 class SynthesisSpeedRecord:
     """Historical snapshot of a single speech synthesis operation."""
@@ -156,9 +159,9 @@ class DynamicBatchScheduler:
         # cut4: 凑50字切
         # cut5: 按标点切
         if method in ("cut2", "cut5"):
-            parts = [p for p in re.split(r'[。！？\.\!\?，,、\n]+', cleaned) if p.strip()]
+            parts = [p for p in _RE_SPLIT_PUNCT_COMMA.split(cleaned) if p.strip()]
         elif method in ("cut1", "cut3"):
-            parts = [p for p in re.split(r'[。！？\.\!\?\n]+', cleaned) if p.strip()]
+            parts = [p for p in _RE_SPLIT_PUNCT_PERIOD.split(cleaned) if p.strip()]
         else:
             # Approx 25-30 chars per fragment
             parts = [cleaned[i:i + 30] for i in range(0, len(cleaned), 30)]
@@ -209,16 +212,16 @@ class DynamicBatchScheduler:
         # High throughput GPU environment (RTF < 0.5, chars/s >= 20):
         if metrics["is_high_throughput"]:
             if slice_count >= 8:
-                return min(8, slice_count)
+                return 8
             if slice_count >= 4:
-                return min(4, slice_count)
+                return 4
             return min(2, slice_count)
 
         # Moderate throughput:
         if slice_count >= 6:
-            return min(4, slice_count)
+            return 4
         if slice_count >= 3:
-            return min(3, slice_count)
+            return 3
         return min(2, slice_count)
 
 

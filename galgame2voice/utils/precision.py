@@ -8,6 +8,7 @@ keyed to the engine directory so swapping engine packages recalibrates.
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
@@ -15,6 +16,13 @@ from typing import Any, Dict, Optional, Union
 logger = logging.getLogger("galgame2voice.utils.precision")
 
 _PRECISION_ENV_VAR = "GPT_SOVITS_PRECISION"
+
+_RE_YAML_CUSTOM_DEVICE = re.compile(r"custom:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+device:\s*([a-zA-Z0-9_]+)")
+_RE_YAML_DEVICE = re.compile(r"device:\s*([a-zA-Z0-9_]+)")
+_RE_YAML_CUSTOM_IS_HALF = re.compile(r"custom:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+is_half:\s*(true|false|True|False)")
+_RE_YAML_IS_HALF = re.compile(r"is_half:\s*(true|false|True|False)")
+_RE_YAML_SUB_HALF = re.compile(r"(custom:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+is_half:\s*)(?:true|false|True|False)")
+_RE_YAML_SUB_DEVICE = re.compile(r"(custom:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+device:\s*)(?:cuda|cpu|mps|auto|[a-zA-Z0-9_]+)")
 
 
 def _cache_path(project_root: Path) -> Path:
@@ -80,11 +88,10 @@ def read_sovits_yaml_device(sovits_dir: Optional[Union[str, Path]]) -> Optional[
         return None
     try:
         content = yaml_path.read_text(encoding="utf-8")
-        import re
-        m = re.search(r"custom:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+device:\s*([a-zA-Z0-9_]+)", content)
+        m = _RE_YAML_CUSTOM_DEVICE.search(content)
         if m:
             return m.group(1).lower().strip()
-        m2 = re.search(r"device:\s*([a-zA-Z0-9_]+)", content)
+        m2 = _RE_YAML_DEVICE.search(content)
         if m2:
             return m2.group(1).lower().strip()
     except Exception as e:
@@ -99,11 +106,10 @@ def read_sovits_yaml_is_half(sovits_dir: Optional[Union[str, Path]]) -> Optional
         return None
     try:
         content = yaml_path.read_text(encoding="utf-8")
-        import re
-        m = re.search(r"custom:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+is_half:\s*(true|false|True|False)", content)
+        m = _RE_YAML_CUSTOM_IS_HALF.search(content)
         if m:
             return m.group(1).lower() == "true"
-        m2 = re.search(r"is_half:\s*(true|false|True|False)", content)
+        m2 = _RE_YAML_IS_HALF.search(content)
         if m2:
             return m2.group(1).lower() == "true"
     except Exception as e:
@@ -127,11 +133,9 @@ def write_sovits_yaml_config(
     try:
         content = yaml_path.read_text(encoding="utf-8")
         target_half = "true" if is_half else "false"
-        import re
 
         # 1. Synchronize is_half
-        pattern_half = r"(custom:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+is_half:\s*)(?:true|false|True|False)"
-        content, count_half = re.subn(pattern_half, rf"\g<1>{target_half}", content, count=1)
+        content, count_half = _RE_YAML_SUB_HALF.subn(rf"\g<1>{target_half}", content, count=1)
         if count_half == 0:
             if "custom:" in content:
                 content = content.replace("custom:\n", f"custom:\n  is_half: {target_half}\n", 1)
@@ -141,8 +145,7 @@ def write_sovits_yaml_config(
         # 2. Synchronize device if requested
         if device:
             dev_target = device.lower().strip()
-            pattern_dev = r"(custom:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+device:\s*)(?:cuda|cpu|mps|auto|[a-zA-Z0-9_]+)"
-            content, count_dev = re.subn(pattern_dev, rf"\g<1>{dev_target}", content, count=1)
+            content, count_dev = _RE_YAML_SUB_DEVICE.subn(rf"\g<1>{dev_target}", content, count=1)
             if count_dev == 0:
                 if "custom:" in content:
                     content = content.replace("custom:\n", f"custom:\n  device: {dev_target}\n", 1)
@@ -229,7 +232,7 @@ def resolve_initial_device_and_half(
     if yaml_dev == "cpu":
         return "cpu", False, "yaml"
     yaml_half = read_sovits_yaml_is_half(sovits_dir)
-    if yaml_half is not None and yaml_half is False:
+    if yaml_half is False:
         return "cuda", False, "yaml"
 
     # Default fallback: check discrete GPU availability
