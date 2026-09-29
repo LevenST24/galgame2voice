@@ -334,6 +334,29 @@ class GptSovitsClient:
     # 3-Step Atomic Model Switching with Auto-Rollback
     # ------------------------------------------------------------------
 
+    async def _rollback_weights(
+        self,
+        prev_spec: Optional[VoiceProfileWeightSpec],
+        current_spec: Optional[VoiceProfileWeightSpec] = None,
+        rollback_sovits: bool = False,
+        rollback_gpt: bool = False,
+        rollback_refer: bool = False,
+    ) -> None:
+        """Rolls back GPT-SoVITS server weights and reference audio to previous spec."""
+        if not prev_spec:
+            return
+        if rollback_sovits and prev_spec.sovits_weights_path:
+            if not current_spec or prev_spec.sovits_weights_path != current_spec.sovits_weights_path:
+                await self._request("GET", "/set_sovits_weights", params={"weights_path": prev_spec.sovits_weights_path}, timeout=SWITCH_TIMEOUT)
+                self.current_sovits_weights = prev_spec.sovits_weights_path
+        if rollback_gpt and prev_spec.gpt_weights_path:
+            if not current_spec or prev_spec.gpt_weights_path != current_spec.gpt_weights_path:
+                await self._request("GET", "/set_gpt_weights", params={"weights_path": prev_spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
+                self.current_gpt_weights = prev_spec.gpt_weights_path
+        if rollback_refer and prev_spec.refer_audio_path:
+            rollback_ref = resolve_reference_audio_path(prev_spec.refer_audio_path)
+            await self._request("GET", "/set_refer_audio", params={"refer_audio_path": rollback_ref})
+
     async def switch_voice_profile(self, target: Any, force: bool = False) -> bool:
         """
         Switches GPT-SoVITS voice profile in 3 transactional steps:
@@ -371,9 +394,7 @@ class GptSovitsClient:
                     r2 = await self._request("GET", "/set_sovits_weights", params={"weights_path": spec.sovits_weights_path}, timeout=SWITCH_TIMEOUT)
                     if r2.status_code != 200:
                         logger.error("Switch failed at Step 2 (SoVITS weights): %s. Initiating rollback...", r2.text)
-                        if prev_spec and prev_spec.gpt_weights_path and prev_spec.gpt_weights_path != spec.gpt_weights_path:
-                            await self._request("GET", "/set_gpt_weights", params={"weights_path": prev_spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
-                            self.current_gpt_weights = prev_spec.gpt_weights_path
+                        await self._rollback_weights(prev_spec, spec, rollback_gpt=True)
                         return False
                     self.current_sovits_weights = spec.sovits_weights_path
                 else:
@@ -391,16 +412,7 @@ class GptSovitsClient:
                     r3 = await self._request("GET", "/set_refer_audio", params={"refer_audio_path": resolved_ref_audio})
                     if r3.status_code != 200:
                         logger.error("Switch failed at Step 3 (Refer Audio): %s. Initiating rollback...", r3.text)
-                        if prev_spec:
-                            if prev_spec.sovits_weights_path and prev_spec.sovits_weights_path != spec.sovits_weights_path:
-                                await self._request("GET", "/set_sovits_weights", params={"weights_path": prev_spec.sovits_weights_path}, timeout=SWITCH_TIMEOUT)
-                                self.current_sovits_weights = prev_spec.sovits_weights_path
-                            if prev_spec.gpt_weights_path and prev_spec.gpt_weights_path != spec.gpt_weights_path:
-                                await self._request("GET", "/set_gpt_weights", params={"weights_path": prev_spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
-                                self.current_gpt_weights = prev_spec.gpt_weights_path
-                            if prev_spec.refer_audio_path:
-                                rollback_ref = resolve_reference_audio_path(prev_spec.refer_audio_path)
-                                await self._request("GET", "/set_refer_audio", params={"refer_audio_path": rollback_ref})
+                        await self._rollback_weights(prev_spec, spec, rollback_sovits=True, rollback_gpt=True, rollback_refer=True)
                         return False
 
                 self.current_refer_audio = resolved_ref_audio
@@ -414,13 +426,7 @@ class GptSovitsClient:
                 logger.error("Exception during voice profile switch: %s. Rolling back...", exc, exc_info=True)
                 if prev_spec:
                     try:
-                        if prev_spec.sovits_weights_path:
-                            await self._request("GET", "/set_sovits_weights", params={"weights_path": prev_spec.sovits_weights_path}, timeout=SWITCH_TIMEOUT)
-                        if prev_spec.gpt_weights_path:
-                            await self._request("GET", "/set_gpt_weights", params={"weights_path": prev_spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
-                        if prev_spec.refer_audio_path:
-                            rollback_ref = resolve_reference_audio_path(prev_spec.refer_audio_path)
-                            await self._request("GET", "/set_refer_audio", params={"refer_audio_path": rollback_ref})
+                        await self._rollback_weights(prev_spec, rollback_sovits=True, rollback_gpt=True, rollback_refer=True)
                     except Exception as rollback_exc:
                         # Rollback failure leaves server state diverged from local state — surface it loudly.
                         logger.error("ROLLBACK FAILED after switch error (server state may diverge): %s", rollback_exc)

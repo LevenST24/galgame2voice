@@ -234,6 +234,18 @@ class TtsCacheManager:
 
         await drain_background_tasks(self._bg_tasks, timeout=5.0)
 
+    def _record_hit_locked(self, cache_key: str) -> None:
+        """Records a cache hit, queues throttled DB touch, and triggers flusher. Must be called under self._lock."""
+        self._hits += 1
+        self._dirty_touches[cache_key] = self._dirty_touches.get(cache_key, 0) + 1
+        self._throttle_touch(cache_key)
+        self._ensure_flusher_running()
+
+    def _record_miss_discard_locked(self, cache_key: str) -> None:
+        """Evicts cache key from in-memory cache and records a cache miss. Must be called under self._lock."""
+        self._mem_cache_discard(cache_key)
+        self._misses += 1
+
     def compute_cache_key(
         self,
         text: str,
@@ -359,10 +371,7 @@ class TtsCacheManager:
             if cache_key in self._mem_cache:
                 self._mem_cache.move_to_end(cache_key)
                 data = self._mem_cache[cache_key]
-                self._hits += 1
-                self._dirty_touches[cache_key] = self._dirty_touches.get(cache_key, 0) + 1
-                self._throttle_touch(cache_key)
-                self._ensure_flusher_running()
+                self._record_hit_locked(cache_key)
                 return data, url_path, len(data)
 
         # 2. Slow path: Disk & SQLite cache (miss in memory)
@@ -371,23 +380,20 @@ class TtsCacheManager:
         # Verify disk file presence and non-zero size to detect manual unlinking or corruption
         if not file_path.exists():
             async with self._lock:
-                self._mem_cache_discard(cache_key)
-                self._misses += 1
+                self._record_miss_discard_locked(cache_key)
             return None
 
         try:
             file_size = file_path.stat().st_size
         except OSError:
             async with self._lock:
-                self._mem_cache_discard(cache_key)
-                self._misses += 1
+                self._record_miss_discard_locked(cache_key)
             return None
 
         if file_size == 0:
             # Corrupted 0-byte file on disk -> evict from memory cache and delete
             async with self._lock:
-                self._mem_cache_discard(cache_key)
-                self._misses += 1
+                self._record_miss_discard_locked(cache_key)
             try:
                 file_path.unlink(missing_ok=True)
             except OSError:
@@ -397,10 +403,7 @@ class TtsCacheManager:
         try:
             audio_bytes = await asyncio.to_thread(file_path.read_bytes)
             async with self._lock:
-                self._hits += 1
-                self._dirty_touches[cache_key] = self._dirty_touches.get(cache_key, 0) + 1
-                self._throttle_touch(cache_key)
-                self._ensure_flusher_running()
+                self._record_hit_locked(cache_key)
                 # Populate In-Memory LRU Cache
                 self._mem_cache_store(cache_key, audio_bytes)
             return audio_bytes, url_path, len(audio_bytes)
@@ -433,10 +436,7 @@ class TtsCacheManager:
             if cache_key in self._mem_cache:
                 self._mem_cache.move_to_end(cache_key)
                 mem_data = self._mem_cache[cache_key]
-                self._hits += 1
-                self._dirty_touches[cache_key] = self._dirty_touches.get(cache_key, 0) + 1
-                self._throttle_touch(cache_key)
-                self._ensure_flusher_running()
+                self._record_hit_locked(cache_key)
 
         if mem_data is not None:
             for i in range(0, len(mem_data), bounded_chunk_size):
@@ -460,10 +460,7 @@ class TtsCacheManager:
         try:
             with open(file_path, "rb") as f:
                 async with self._lock:
-                    self._hits += 1
-                    self._dirty_touches[cache_key] = self._dirty_touches.get(cache_key, 0) + 1
-                    self._throttle_touch(cache_key)
-                    self._ensure_flusher_running()
+                    self._record_hit_locked(cache_key)
 
                 while True:
                     chunk = await asyncio.to_thread(f.read, bounded_chunk_size)

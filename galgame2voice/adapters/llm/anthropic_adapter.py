@@ -21,6 +21,7 @@ from galgame2voice.adapters.base import (
     parse_retry_after,
     calculate_backoff_delay,
     parse_sse_lines,
+    aclose_stream_context,
 )
 from galgame2voice.utils.logger import sanitize_error_detail
 
@@ -280,12 +281,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                 stream_ctx = client.stream("POST", url, json=payload, headers=headers)
                 response = await stream_ctx.__aenter__()
             except TRANSIENT_NETWORK_EXCEPTIONS as exc:
-                if stream_ctx:
-                    try:
-                        await stream_ctx.__aexit__(None, None, None)
-                    except Exception as exit_err:
-                        logger.debug("Failed closing stream context after network error: %s", exit_err)
-                await client.aclose()
+                await aclose_stream_context(stream_ctx, client)
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay)
                     logger.warning(
@@ -298,15 +294,13 @@ class AnthropicAdapter(BaseLLMAdapter):
 
             if response.status_code in (401, 403):
                 err_body = await response.aread()
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
+                await aclose_stream_context(stream_ctx, client)
                 raise ValueError(f"Anthropic auth failed ({response.status_code}): {err_body.decode('utf-8', errors='ignore')}")
 
             if response.status_code in TRANSIENT_STATUS_CODES:
                 err_body = await response.aread()
                 retry_after = parse_retry_after(response.headers)
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
+                await aclose_stream_context(stream_ctx, client)
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay, retry_after)
                     logger.warning(
@@ -319,8 +313,7 @@ class AnthropicAdapter(BaseLLMAdapter):
 
             if response.status_code != 200:
                 err_body = await response.aread()
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
+                await aclose_stream_context(stream_ctx, client)
                 raise RuntimeError(f"Anthropic API error ({response.status_code}): {err_body.decode('utf-8', errors='ignore')}")
 
             yielded_any = False
@@ -340,8 +333,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                     continue
                 raise RuntimeError(f"Streaming request failed to {url}: {exc}") from exc
             finally:
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
+                await aclose_stream_context(stream_ctx, client)
 
     async def list_models(self) -> List[str]:
         """Returns known Anthropic Claude models."""

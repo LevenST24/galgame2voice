@@ -19,6 +19,7 @@ from galgame2voice.adapters.base import (
     parse_retry_after,
     calculate_backoff_delay,
     parse_sse_lines,
+    aclose_stream_context,
 )
 from galgame2voice.utils.logger import sanitize_error_detail
 
@@ -350,12 +351,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 stream_ctx = client.stream("POST", url, json=payload, headers=headers)
                 response = await stream_ctx.__aenter__()
             except TRANSIENT_NETWORK_EXCEPTIONS as exc:
-                if stream_ctx:
-                    try:
-                        await stream_ctx.__aexit__(None, None, None)
-                    except Exception as exit_err:
-                        logger.debug("Failed closing stream context after network error: %s", exit_err)
-                await client.aclose()
+                await aclose_stream_context(stream_ctx, client)
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay)
                     logger.warning(
@@ -368,15 +364,13 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
             if response.status_code in (401, 403):
                 error_body = await response.aread()
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
+                await aclose_stream_context(stream_ctx, client)
                 raise ValueError(f"Authentication error ({response.status_code}): {error_body.decode('utf-8', errors='ignore')}")
 
             if response.status_code in TRANSIENT_STATUS_CODES:
                 error_body = await response.aread()
                 retry_after = parse_retry_after(response.headers)
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
+                await aclose_stream_context(stream_ctx, client)
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay, retry_after)
                     logger.warning(
@@ -391,8 +385,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
             if response.status_code != 200:
                 error_body = await response.aread()
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
+                await aclose_stream_context(stream_ctx, client)
                 raise RuntimeError(f"API returned status {response.status_code}: {error_body.decode('utf-8', errors='ignore')}")
 
             yielded_any = False
@@ -412,8 +405,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     continue
                 raise RuntimeError(f"Streaming request failed to {url}: {exc}") from exc
             finally:
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
+                await aclose_stream_context(stream_ctx, client)
 
     @staticmethod
     def _diagnose_failure(

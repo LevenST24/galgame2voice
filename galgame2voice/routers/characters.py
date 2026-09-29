@@ -13,8 +13,8 @@ from pydantic import BaseModel, Field
 
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db
-from galgame2voice.routers.common import validate_user_id
-from galgame2voice.services.voice_manager import get_voice_manager, InsufficientMemoryError
+from galgame2voice.routers.common import switch_voice_profile_or_raise, validate_user_id
+from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.routers.characters")
@@ -441,18 +441,7 @@ async def switch_character(req: CharacterSwitchRequest):
             except Exception as exc:
                 logger.debug("Failed syncing active character to settings: %s", exc)
         else:
-            try:
-                success = await manager.switch_profile(profile, persist=True, _already_locked=True, force=req.force)
-            except InsufficientMemoryError as mem_err:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=str(mem_err),
-                ) from mem_err
-            if not success:
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="Failed to load GPT/SoVITS model weights onto backend service",
-                )
+            await switch_voice_profile_or_raise(manager, profile, force=req.force)
 
         return {
             "status": "switched",

@@ -62,6 +62,22 @@ _RE_PARAM_FRAG = re.compile(r'["\']?(?:fragment_interval|interval|pause)["\']?\s
 _RE_PARAM_EMOTION = re.compile(r'["\']?emotion["\']?\s*:\s*["\']?([a-zA-Z\u4e00-\u9fa5]+)["\']?')
 
 
+def _extract_numeric_param(
+    text: str,
+    pattern: re.Pattern,
+    converter: type,
+    clamp_fn: Any,
+) -> Optional[Any]:
+    """Searches pattern in text, parses numerical value, and applies safety clamping."""
+    match = pattern.search(text)
+    if match:
+        try:
+            return clamp_fn(converter(match.group(1)))
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
 def _trim_unclosed_sentence(sentences: List[str], is_first: bool) -> List[str]:
     """Trims incomplete trailing sentence chunk if sentence ending punctuation is missing."""
     if not sentences:
@@ -260,51 +276,32 @@ class StreamingBilingualParser:
         tts_match = _RE_TTS_BLOCK.search(sanitized)
         if tts_match:
             tts_block = tts_match.group(1)
-            sp_match = _RE_PARAM_SPEED.search(tts_block)
-            if sp_match:
-                try:
-                    raw_sp = float(sp_match.group(1))
-                    self.tts_speed = clamp_dynamic_speed(raw_sp)
-                    self.tts_params["speed"] = self.tts_speed
-                except (ValueError, TypeError):
-                    pass
 
-            temp_match = _RE_PARAM_TEMP.search(tts_block)
-            if temp_match:
-                try:
-                    raw_temp = float(temp_match.group(1))
-                    self.tts_temperature = clamp_dynamic_temperature(raw_temp)
-                    self.tts_params["temperature"] = self.tts_temperature
-                    self.tts_params["temp"] = self.tts_temperature
-                except (ValueError, TypeError):
-                    pass
+            val_speed = _extract_numeric_param(tts_block, _RE_PARAM_SPEED, float, clamp_dynamic_speed)
+            if val_speed is not None:
+                self.tts_speed = val_speed
+                self.tts_params["speed"] = val_speed
 
-            top_k_match = _RE_PARAM_TOP_K.search(tts_block)
-            if top_k_match:
-                try:
-                    raw_k = int(top_k_match.group(1))
-                    self.tts_top_k = clamp_dynamic_top_k(raw_k)
-                    self.tts_params["top_k"] = self.tts_top_k
-                except (ValueError, TypeError):
-                    pass
+            val_temp = _extract_numeric_param(tts_block, _RE_PARAM_TEMP, float, clamp_dynamic_temperature)
+            if val_temp is not None:
+                self.tts_temperature = val_temp
+                self.tts_params["temperature"] = val_temp
+                self.tts_params["temp"] = val_temp
 
-            top_p_match = _RE_PARAM_TOP_P.search(tts_block)
-            if top_p_match:
-                try:
-                    raw_p = float(top_p_match.group(1))
-                    self.tts_top_p = clamp_dynamic_top_p(raw_p)
-                    self.tts_params["top_p"] = self.tts_top_p
-                except (ValueError, TypeError):
-                    pass
+            val_top_k = _extract_numeric_param(tts_block, _RE_PARAM_TOP_K, int, clamp_dynamic_top_k)
+            if val_top_k is not None:
+                self.tts_top_k = val_top_k
+                self.tts_params["top_k"] = val_top_k
 
-            frag_match = _RE_PARAM_FRAG.search(tts_block)
-            if frag_match:
-                try:
-                    raw_frag = float(frag_match.group(1))
-                    self.tts_fragment_interval = clamp_dynamic_fragment_interval(raw_frag)
-                    self.tts_params["fragment_interval"] = self.tts_fragment_interval
-                except (ValueError, TypeError):
-                    pass
+            val_top_p = _extract_numeric_param(tts_block, _RE_PARAM_TOP_P, float, clamp_dynamic_top_p)
+            if val_top_p is not None:
+                self.tts_top_p = val_top_p
+                self.tts_params["top_p"] = val_top_p
+
+            val_frag = _extract_numeric_param(tts_block, _RE_PARAM_FRAG, float, clamp_dynamic_fragment_interval)
+            if val_frag is not None:
+                self.tts_fragment_interval = val_frag
+                self.tts_params["fragment_interval"] = val_frag
 
             emo_match_tts = _RE_PARAM_EMOTION.search(tts_block)
             if emo_match_tts:
