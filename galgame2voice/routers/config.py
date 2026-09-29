@@ -91,6 +91,79 @@ async def get_config():
         }
 
 
+TELEGRAM_CONFIG_KEYS = frozenset({
+    "telegram_enabled",
+    "telegram_bot_token",
+    "telegram_bot_username",
+    "telegram_proxy_enabled",
+    "telegram_proxy_host",
+    "telegram_proxy_port",
+    "telegram_admin_ids",
+    "telegram_chat_id",
+})
+
+
+async def _apply_sovits_url_update(new_sovits_url: Optional[str]) -> None:
+    """Hot-applies GPT-SoVITS endpoint change to the shared client so it takes effect immediately."""
+    if not new_sovits_url:
+        return
+    try:
+        from galgame2voice.services.gpt_sovits_client import reload_gpt_sovits_client_base_url
+        await reload_gpt_sovits_client_base_url(str(new_sovits_url))
+        logger.info("GPT-SoVITS endpoint hot-applied: %s", new_sovits_url)
+    except Exception as exc:
+        logger.error("Failed to hot-apply GPT-SoVITS URL '%s': %s", new_sovits_url, exc)
+
+
+async def _reload_telegram_if_needed(sanitized_updates: Dict[str, Any], updated_settings: Any) -> None:
+    """Hot-reloads Telegram Bot service when Telegram credentials/proxy/enabled/admin state changes."""
+    if not any(k in sanitized_updates for k in TELEGRAM_CONFIG_KEYS):
+        return
+    try:
+        from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
+        tg_manager = get_telegram_bot_manager()
+        await tg_manager.stop()
+        if getattr(updated_settings, "telegram_enabled", False):
+            await tg_manager.start()
+            logger.info("Telegram Bot service hot-reloaded with new configuration.")
+        else:
+            logger.info("Telegram Bot service is disabled.")
+    except Exception as exc:
+        logger.warning("Failed to hot-reload Telegram Bot: %s", exc)
+
+
+def _sync_precision_cache(new_precision: Optional[str]) -> None:
+    """Syncs precision cache files on disk when inference_precision is updated."""
+    if not new_precision:
+        return
+    try:
+        from galgame2voice.utils.precision import write_precision_cache, write_sovits_yaml_config
+        from galgame2voice.config import get_settings
+        app_settings = get_settings()
+        sovits_dir_file = app_settings.project_root / "data" / "sovits_dir.txt"
+        sovits_dir_str = sovits_dir_file.read_text(encoding="utf-8-sig").strip() if sovits_dir_file.exists() else ""
+        prec_lower = str(new_precision).lower()
+        if prec_lower == "cpu":
+            write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=False, device="cpu")
+            if sovits_dir_str:
+                write_sovits_yaml_config(sovits_dir_str, is_half=False, device="cpu")
+        elif prec_lower in ("fp16", "half"):
+            write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=True, device="cuda")
+            if sovits_dir_str:
+                write_sovits_yaml_config(sovits_dir_str, is_half=True, device="cuda")
+        elif prec_lower in ("fp32", "float32"):
+            write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=False, device="cuda")
+            if sovits_dir_str:
+                write_sovits_yaml_config(sovits_dir_str, is_half=False, device="cuda")
+        elif prec_lower == "auto":
+            cache_file = app_settings.project_root / "data" / "precision.json"
+            if cache_file.exists():
+                cache_file.unlink(missing_ok=True)
+        logger.info("Inference precision configuration synced: %s", new_precision)
+    except Exception as exc:
+        logger.warning("Failed to sync precision cache on config update: %s", exc)
+
+
 @router.post(
     "/config",
     summary="Update Global Configuration",
@@ -134,70 +207,9 @@ async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, 
         else:
             updated_settings = await crud.get_settings(conn, mask=True)
 
-    # Hot-apply GPT-SoVITS endpoint change to the shared client so the new URL
-    # takes effect immediately (previously this setting was saved but never used).
-    new_sovits_url = sanitized_updates.get("gpt_sovits_url")
-    if new_sovits_url:
-        try:
-            from galgame2voice.services.gpt_sovits_client import reload_gpt_sovits_client_base_url
-            await reload_gpt_sovits_client_base_url(str(new_sovits_url))
-            logger.info("GPT-SoVITS endpoint hot-applied: %s", new_sovits_url)
-        except Exception as exc:
-            logger.error("Failed to hot-apply GPT-SoVITS URL '%s': %s", new_sovits_url, exc)
-
-    # Hot-reload Telegram Bot service when Telegram credentials/proxy/enabled/admin state change
-    tg_keys = {
-        "telegram_enabled",
-        "telegram_bot_token",
-        "telegram_bot_username",
-        "telegram_proxy_enabled",
-        "telegram_proxy_host",
-        "telegram_proxy_port",
-        "telegram_admin_ids",
-        "telegram_chat_id",
-    }
-    if any(k in sanitized_updates for k in tg_keys):
-        try:
-            from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
-            tg_manager = get_telegram_bot_manager()
-            await tg_manager.stop()
-            if getattr(updated_settings, "telegram_enabled", False):
-                await tg_manager.start()
-                logger.info("Telegram Bot service hot-reloaded with new configuration.")
-            else:
-                logger.info("Telegram Bot service is disabled.")
-        except Exception as exc:
-            logger.warning("Failed to hot-reload Telegram Bot: %s", exc)
-
-    # Sync precision cache when inference_precision is updated
-    new_precision = sanitized_updates.get("inference_precision")
-    if new_precision:
-        try:
-            from galgame2voice.utils.precision import write_precision_cache, write_sovits_yaml_config
-            from galgame2voice.config import get_settings
-            app_settings = get_settings()
-            sovits_dir_file = app_settings.project_root / "data" / "sovits_dir.txt"
-            sovits_dir_str = sovits_dir_file.read_text(encoding="utf-8-sig").strip() if sovits_dir_file.exists() else ""
-            prec_lower = str(new_precision).lower()
-            if prec_lower == "cpu":
-                write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=False, device="cpu")
-                if sovits_dir_str:
-                    write_sovits_yaml_config(sovits_dir_str, is_half=False, device="cpu")
-            elif prec_lower in ("fp16", "half"):
-                write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=True, device="cuda")
-                if sovits_dir_str:
-                    write_sovits_yaml_config(sovits_dir_str, is_half=True, device="cuda")
-            elif prec_lower in ("fp32", "float32"):
-                write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=False, device="cuda")
-                if sovits_dir_str:
-                    write_sovits_yaml_config(sovits_dir_str, is_half=False, device="cuda")
-            elif prec_lower == "auto":
-                cache_file = app_settings.project_root / "data" / "precision.json"
-                if cache_file.exists():
-                    cache_file.unlink(missing_ok=True)
-            logger.info("Inference precision configuration synced: %s", new_precision)
-        except Exception as exc:
-            logger.warning("Failed to sync precision cache on config update: %s", exc)
+    await _apply_sovits_url_update(sanitized_updates.get("gpt_sovits_url"))
+    await _reload_telegram_if_needed(sanitized_updates, updated_settings)
+    _sync_precision_cache(sanitized_updates.get("inference_precision"))
 
     return {
         "status": "success",

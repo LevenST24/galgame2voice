@@ -9,6 +9,7 @@ import mimetypes
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -118,19 +119,8 @@ class HostValidationMiddleware:
         await self.app(scope, receive, send)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """
-    Application lifespan context manager.
-    Handles startup directory creation, DB initialization, and graceful shutdown.
-    """
-    settings = get_settings()
-
-    # --- STARTUP PHASE ---
-    app.state.start_time = time.time()
-    app.state.start_time_iso = datetime.now(timezone.utc).isoformat()
-
-    # 1. Initialize Logger with Secret Masking
+def _init_logging_and_safety(settings) -> None:
+    """Initializes logging with secret masking and runs fail-fast network exposure checks."""
     setup_logger(
         log_level=settings.log_level,
         logs_dir=settings.logs_dir if settings.log_to_file else None,
@@ -138,7 +128,6 @@ async def lifespan(app: FastAPI):
     )
     logger.info("Initializing %s v%s...", settings.app_name, settings.app_version)
 
-    # 1b. Fail-Fast Safety Check: Network Exposure requires Authentication
     is_loopback = str(settings.host).strip().lower() in ("127.0.0.1", "localhost", "::1")
     from galgame2voice.security.auth import is_auth_disabled
 
@@ -151,17 +140,24 @@ async def lifespan(app: FastAPI):
         logger.critical(err_msg)
         raise RuntimeError(err_msg)
 
-    # 2. Ensure Required Directories Exist
+
+def _init_directories(settings) -> None:
+    """Ensures required application runtime directories exist."""
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.audio_dir.mkdir(parents=True, exist_ok=True)
     settings.logs_dir.mkdir(parents=True, exist_ok=True)
     settings.characters_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("Verified directories: data=%s, audio=%s, logs=%s, characters=%s",
-                settings.data_dir, settings.audio_dir, settings.logs_dir, settings.characters_dir)
+    logger.info(
+        "Verified directories: data=%s, audio=%s, logs=%s, characters=%s",
+        settings.data_dir,
+        settings.audio_dir,
+        settings.logs_dir,
+        settings.characters_dir,
+    )
 
-    # 3. Initialize SQLite Database Schema (WAL Mode) & Self-Heal broken audio references
-    # Fail-fast: a broken database must not silently degrade into a
-    # half-functional service that reports healthy.
+
+async def _init_database_and_characters(settings) -> None:
+    """Initializes SQLite schema, auto-heals voice profiles, and syncs character packages."""
     await init_db(settings.db_path)
     logger.info("Database initialized successfully at %s", settings.db_path)
 
@@ -173,7 +169,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.debug("Startup auto-heal check skipped: %s", exc)
 
-    # 3b. Self-Contained Character Packages Auto-Discovery & DB Sync
     try:
         from galgame2voice.services.character_manager import get_character_manager
         char_mgr = get_character_manager()
@@ -186,9 +181,9 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.debug("Startup character packages sync skipped: %s", exc)
 
-    # 4. Initialize shared GPT-SoVITS client (single inference mutex app-wide).
-    #    The DB's gpt_sovits_url takes priority over the .env default so the
-    #    settings console is the source of truth.
+
+async def _init_gpt_sovits_client(settings) -> None:
+    """Initializes shared GPT-SoVITS client, pre-seeds active profile, and triggers background warm-up."""
     try:
         sovits_url = None
         try:
@@ -198,6 +193,7 @@ async def lifespan(app: FastAPI):
                     sovits_url = db_settings.gpt_sovits_url
         except Exception as exc:
             logger.warning("Could not read gpt_sovits_url from DB: %s", exc)
+
         client = get_gpt_sovits_client()
         if sovits_url and sovits_url.rstrip("/") != client.base_url:
             await client.set_base_url(sovits_url)
@@ -243,48 +239,32 @@ async def lifespan(app: FastAPI):
             exc_info=True,
         )
 
-    # 5. Start Background Audio Cleanup Loop
-    cleanup_task = asyncio.create_task(
-        _audio_cleanup_loop(
-            audio_dir=settings.audio_dir,
-            interval_seconds=settings.audio_cleanup_interval_seconds,
-        )
-    )
 
-    # 6. Start Telegram Bot Background Polling (non-blocking background task, optional)
-    tg_startup_task = None
+def _start_telegram_bg(settings) -> Optional[asyncio.Task]:
+    """Starts Telegram Bot polling in a background task if enabled in DB."""
     try:
         from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
         tg_manager = get_telegram_bot_manager(db_path=settings.db_path)
 
-        async def _start_telegram_bg():
+        async def _run():
             try:
-                # Telegram is optional: check if enabled in database
                 async with get_db(settings.db_path) as conn:
                     db_settings = await crud.get_settings_raw(conn)
                 if not getattr(db_settings, "telegram_enabled", False):
-                    # Telegram is not enabled; do not start background polling and do not log to terminal
                     return
-
                 tg_started = await tg_manager.start()
                 if tg_started:
                     logger.info("Telegram Bot background polling started successfully.")
             except Exception as exc:
                 logger.warning("Telegram Bot auto-start on boot skipped or failed: %s", exc)
 
-        tg_startup_task = asyncio.create_task(_start_telegram_bg())
+        return asyncio.create_task(_run())
     except Exception:
-        pass
+        return None
 
-    logger.info(
-        "Service startup complete. Listening on http://%s:%d",
-        settings.host,
-        settings.port,
-    )
 
-    yield  # Application serving requests
-
-    # --- SHUTDOWN PHASE ---
+async def _shutdown_services(settings, cleanup_task: asyncio.Task, tg_startup_task: Optional[asyncio.Task]) -> None:
+    """Gracefully drains background tasks, closes connections, and checkpoints SQLite WAL."""
     cleanup_task.cancel()
     try:
         await cleanup_task
@@ -363,6 +343,43 @@ async def lifespan(app: FastAPI):
     logger.info("Graceful shutdown complete.")
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Application lifespan context manager.
+    Handles startup directory creation, DB initialization, and graceful shutdown.
+    """
+    settings = get_settings()
+
+    # --- STARTUP PHASE ---
+    app.state.start_time = time.time()
+    app.state.start_time_iso = datetime.now(timezone.utc).isoformat()
+
+    _init_logging_and_safety(settings)
+    _init_directories(settings)
+    await _init_database_and_characters(settings)
+    await _init_gpt_sovits_client(settings)
+
+    cleanup_task = asyncio.create_task(
+        _audio_cleanup_loop(
+            audio_dir=settings.audio_dir,
+            interval_seconds=settings.audio_cleanup_interval_seconds,
+        )
+    )
+    tg_startup_task = _start_telegram_bg(settings)
+
+    logger.info(
+        "Service startup complete. Listening on http://%s:%d",
+        settings.host,
+        settings.port,
+    )
+
+    yield  # Application serving requests
+
+    # --- SHUTDOWN PHASE ---
+    await _shutdown_services(settings, cleanup_task, tg_startup_task)
+
+
 class AudioStaticFiles(StaticFiles):
     """
     Enhanced StaticFiles handler for audio files.
@@ -382,6 +399,48 @@ class AudioStaticFiles(StaticFiles):
             if "accept-ranges" not in response.headers:
                 response.headers["Accept-Ranges"] = "bytes"
         return response
+
+
+class StaticCacheControlMiddleware:
+    """
+    Cache headers middleware: static assets are safe to cache (immutable fingerprinted
+    assets cached for 1 year, other static for 1 hour), while user-generated audio is private.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path", "") if scope["type"] == "http" else ""
+        if path in ("/", "/index.html"):
+            # 入口页面必须每次回源校验，避免发版后浏览器用旧 index 加载旧 JS
+            cache_value = "no-cache"
+        elif path.startswith("/static/assets/") or path == "/static/assets":
+            # 指纹化静态资源永久强缓存（1年），极大提升二次加载速度
+            cache_value = "public, max-age=31536000, immutable"
+        elif path.startswith("/static/"):
+            cache_value = "public, max-age=3600"
+        elif path.startswith("/audio/"):
+            cache_value = "private, max-age=0"
+        else:
+            cache_value = None
+
+        if cache_value and scope.get("method") in ("GET", "HEAD"):
+            async def send_with_cache(message):
+                if message["type"] == "http.response.start":
+                    status_code = message.get("status", 200)
+                    if status_code < 400:
+                        MutableHeaders(scope=message)["Cache-Control"] = cache_value
+                    else:
+                        # Never cache 4xx/5xx error responses immutably
+                        MutableHeaders(scope=message)["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                await send(message)
+            await self.app(scope, receive, send_with_cache)
+            return
+        await self.app(scope, receive, send)
+
+
+_StaticCacheControlMiddleware = StaticCacheControlMiddleware
 
 
 def create_app() -> FastAPI:
@@ -414,17 +473,6 @@ def create_app() -> FastAPI:
     app.add_middleware(RateLimitMiddleware)
 
     # DNS Rebinding mitigation (audit finding: Host header validation).
-    # A malicious web page can rebind its domain to 127.0.0.1 and call this
-    # API with the victim's browser; enforcing an exact Host allowlist breaks
-    # that attack because the browser sends the attacker's domain as Host.
-    # IMPORTANT: this check is ONLY enabled for the local zero-config mode
-    # (auth disabled AND listening on a loopback address). Reverse-proxied /
-    # LAN deployments terminate TLS or rewrite Host at the proxy, and the
-    # loopback fail-fast check in lifespan() already requires auth there, so
-    # enabling this unconditionally would break legitimate deployments.
-    # Test suites drive the ASGI app directly (Host: "test") and therefore opt
-    # out via GALGAME2VOICE_HOST_HEADER_VALIDATION_DISABLED=1, mirroring the
-    # existing GALGAME2VOICE_RATE_LIMIT_DISABLED convention.
     from galgame2voice.security.auth import is_auth_disabled
 
     _is_loopback_host = str(settings.host).strip().lower() in ("127.0.0.1", "localhost", "::1")
@@ -439,42 +487,8 @@ def create_app() -> FastAPI:
     # Compress large static/JS/CSS payloads.
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
-    # Cache headers: static assets are safe to cache for an hour (cache-busted
-    # with ?v= query params), but user-generated audio is private.
-    class _StaticCacheControlMiddleware:
-        def __init__(self, app):
-            self.app = app
-
-        async def __call__(self, scope, receive, send):
-            path = scope.get("path", "") if scope["type"] == "http" else ""
-            if path in ("/", "/index.html"):
-                # 入口页面必须每次回源校验，避免发版后浏览器用旧 index 加载旧 JS
-                cache_value = "no-cache"
-            elif path.startswith("/static/assets/") or path == "/static/assets":
-                # 指纹化静态资源永久强缓存（1年），极大提升二次加载速度
-                cache_value = "public, max-age=31536000, immutable"
-            elif path.startswith("/static/"):
-                cache_value = "public, max-age=3600"
-            elif path.startswith("/audio/"):
-                cache_value = "private, max-age=0"
-            else:
-                cache_value = None
-
-            if cache_value and scope.get("method") in ("GET", "HEAD"):
-                async def send_with_cache(message):
-                    if message["type"] == "http.response.start":
-                        status_code = message.get("status", 200)
-                        if status_code < 400:
-                            MutableHeaders(scope=message)["Cache-Control"] = cache_value
-                        else:
-                            # Never cache 4xx/5xx error responses immutably
-                            MutableHeaders(scope=message)["Cache-Control"] = "no-cache, no-store, must-revalidate"
-                    await send(message)
-                await self.app(scope, receive, send_with_cache)
-                return
-            await self.app(scope, receive, send)
-
-    app.add_middleware(_StaticCacheControlMiddleware)
+    # Cache headers: static assets vs user-generated audio
+    app.add_middleware(StaticCacheControlMiddleware)
 
     # 2. Register API Routers (all management/data routes require console token auth)
     auth_deps = [Depends(require_auth)]
@@ -511,14 +525,6 @@ def create_app() -> FastAPI:
             if index_path.exists():
                 return FileResponse(str(index_path))
             return JSONResponse({"message": "galgame2voice backend active. UI index.html not found."})
-
-        @app.get("/settings.html", include_in_schema=False)
-        @app.get("/console", include_in_schema=False)
-        @app.get("/settings", include_in_schema=False)
-        async def console_redirect(request: Request):
-            query = request.url.query
-            target_url = f"/?settings=1&{query}" if query else "/?settings=1"
-            return RedirectResponse(url=target_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
     else:
         @app.get("/", include_in_schema=False)
         async def root_fallback():
@@ -529,13 +535,13 @@ def create_app() -> FastAPI:
                 "status": "/api/health",
             })
 
-        @app.get("/settings.html", include_in_schema=False)
-        @app.get("/console", include_in_schema=False)
-        @app.get("/settings", include_in_schema=False)
-        async def console_fallback_redirect(request: Request):
-            query = request.url.query
-            target_url = f"/?settings=1&{query}" if query else "/?settings=1"
-            return RedirectResponse(url=target_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    @app.get("/settings.html", include_in_schema=False)
+    @app.get("/console", include_in_schema=False)
+    @app.get("/settings", include_in_schema=False)
+    async def console_redirect(request: Request):
+        query = request.url.query
+        target_url = f"/?settings=1&{query}" if query else "/?settings=1"
+        return RedirectResponse(url=target_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
     # Global Exception Handler Sanitizing Internal Errors
     @app.exception_handler(Exception)

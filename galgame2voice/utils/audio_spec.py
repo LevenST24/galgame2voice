@@ -115,6 +115,20 @@ def _probe_ogg_granule(data: bytes, suffix: str = ".ogg") -> Optional[AudioSpec]
     return None
 
 
+def _spec_from_wave(w: Any) -> Optional[AudioSpec]:
+    """Constructs AudioSpec from an opened stdlib wave reader."""
+    framerate = w.getframerate()
+    channels = w.getnchannels()
+    nframes = w.getnframes()
+    if framerate > 0:
+        return AudioSpec(
+            duration_s=nframes / framerate,
+            sample_rate=framerate,
+            channels=channels,
+        )
+    return None
+
+
 def _probe_from_bytes(data: bytes) -> Optional[AudioSpec]:
     """Probes AudioSpec from in-memory byte buffer using soundfile, wave, and fallback parsers."""
     if not data or len(data) < 12:
@@ -138,15 +152,9 @@ def _probe_from_bytes(data: bytes) -> Optional[AudioSpec]:
         import wave
 
         with wave.open(io.BytesIO(data), "rb") as w:
-            framerate = w.getframerate()
-            channels = w.getnchannels()
-            nframes = w.getnframes()
-            if framerate > 0:
-                return AudioSpec(
-                    duration_s=nframes / framerate,
-                    sample_rate=framerate,
-                    channels=channels,
-                )
+            spec = _spec_from_wave(w)
+            if spec is not None:
+                return spec
     except Exception:
         pass
 
@@ -230,15 +238,9 @@ class AudioSpecCache:
                 import wave
 
                 with wave.open(str(p), "rb") as w:
-                    framerate = w.getframerate()
-                    channels = w.getnchannels()
-                    nframes = w.getnframes()
-                    if framerate > 0:
-                        return AudioSpec(
-                            duration_s=nframes / framerate,
-                            sample_rate=framerate,
-                            channels=channels,
-                        )
+                    spec = _spec_from_wave(w)
+                    if spec is not None:
+                        return spec
             except Exception:
                 pass
 

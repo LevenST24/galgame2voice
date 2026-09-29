@@ -190,6 +190,30 @@ async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
         raise RuntimeError(f"ffmpeg conversion failed (code {proc.returncode}): {err_msg[:200]}")
 
 
+def _require_ffmpeg_bin(ffmpeg_path: Optional[str] = None) -> str:
+    """Discovers ffmpeg binary or raises RuntimeError with an informative message."""
+    ffmpeg_bin = find_ffmpeg(ffmpeg_path)
+    if not ffmpeg_bin:
+        raise RuntimeError(
+            f"ffmpeg executable not found: '{ffmpeg_path or 'ffmpeg'}'. "
+            "Install ffmpeg and ensure it is on PATH, or provide ffmpeg_path."
+        )
+    return ffmpeg_bin
+
+
+async def _cleanup_temp_paths(*paths: Optional[Path]) -> None:
+    """Unlinks temporary paths with retry logic to handle file locking on Windows/Linux."""
+    for p in paths:
+        if p is not None:
+            for _ in range(10):
+                try:
+                    if p.exists():
+                        p.unlink(missing_ok=True)
+                    break
+                except OSError:
+                    await asyncio.sleep(0.02)
+
+
 async def convert_ogg_to_wav(
     ogg_bytes: bytes,
     sample_rate: int = 16000,
@@ -216,12 +240,7 @@ async def convert_ogg_to_wav(
     if is_target_wav_pcm(ogg_bytes, sample_rate=sample_rate, channels=channels, sample_width=2):
         return ogg_bytes
 
-    ffmpeg_bin = find_ffmpeg(ffmpeg_path)
-    if not ffmpeg_bin:
-        raise RuntimeError(
-            f"ffmpeg executable not found: '{ffmpeg_path or 'ffmpeg'}'. "
-            "Install ffmpeg and ensure it is on PATH, or provide ffmpeg_path."
-        )
+    ffmpeg_bin = _require_ffmpeg_bin(ffmpeg_path)
 
     in_path: Optional[Path] = None
     out_path: Optional[Path] = None
@@ -248,15 +267,7 @@ async def convert_ogg_to_wav(
     except (RuntimeError, TimeoutError, ValueError) as exc:
         raise ValueError(f"Audio conversion failed: {exc}") from exc
     finally:
-        for p in (in_path, out_path):
-            if p is not None:
-                for _ in range(10):
-                    try:
-                        if p.exists():
-                            p.unlink(missing_ok=True)
-                        break
-                    except OSError:
-                        await asyncio.sleep(0.02)
+        await _cleanup_temp_paths(in_path, out_path)
 
 
 
@@ -282,12 +293,7 @@ async def convert_wav_to_ogg(
     if _is_known_non_audio(wav_bytes):
         raise ValueError("Corrupted or unsupported audio format")
 
-    ffmpeg_bin = find_ffmpeg(ffmpeg_path)
-    if not ffmpeg_bin:
-        raise RuntimeError(
-            f"ffmpeg executable not found: '{ffmpeg_path or 'ffmpeg'}'. "
-            "Install ffmpeg and ensure it is on PATH, or provide ffmpeg_path."
-        )
+    ffmpeg_bin = _require_ffmpeg_bin(ffmpeg_path)
 
     in_path: Optional[Path] = None
     out_path: Optional[Path] = None
@@ -314,15 +320,7 @@ async def convert_wav_to_ogg(
     except (RuntimeError, TimeoutError, ValueError) as exc:
         raise ValueError(f"Audio conversion failed: {exc}") from exc
     finally:
-        for p in (in_path, out_path):
-            if p is not None:
-                for _ in range(10):
-                    try:
-                        if p.exists():
-                            p.unlink(missing_ok=True)
-                        break
-                    except OSError:
-                        await asyncio.sleep(0.02)
+        await _cleanup_temp_paths(in_path, out_path)
 
 
 

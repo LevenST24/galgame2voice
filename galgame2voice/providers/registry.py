@@ -3,7 +3,7 @@ Provider Registry and Factory for galgame2voice.
 Decoupled provider resolution layer mapping provider IDs to LLMProvider implementations.
 """
 
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Dict, List, Optional, Type
 
 from galgame2voice.providers.base import LLMProvider, BaseLLMProvider
 from galgame2voice.providers.openai import OpenAIProvider
