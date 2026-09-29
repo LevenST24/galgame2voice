@@ -20,6 +20,11 @@ from galgame2voice.database.session import get_database_path, get_db
 
 logger = logging.getLogger("galgame2voice.services.memory_service")
 
+_RE_CONTROL_AND_BIDI = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069]")
+_RE_DELIMITERS_TAGS = re.compile(r"[\r\n\t\[\]【】`'\"<>{}]")
+_RE_WHITESPACE_COLLAPSE = re.compile(r"\s+")
+_RE_KEY_SUFFIX_CHARS = re.compile(r"[^\w\u4e00-\u9fff]")
+
 
 class MemoryService:
     """
@@ -77,13 +82,13 @@ class MemoryService:
             return None
 
         # 1. Strip control characters and bidirectional overrides (Trojan Source protection)
-        cleaned = re.sub(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069]", "", val)
+        cleaned = _RE_CONTROL_AND_BIDI.sub("", val)
 
         # 2. Strip structural prompt delimiters, tags, braces, and quotes
-        cleaned = re.sub(r"[\r\n\t\[\]【】`'\"<>{}]", " ", cleaned)
+        cleaned = _RE_DELIMITERS_TAGS.sub(" ", cleaned)
 
         # 3. Collapse multiple whitespace characters into single space
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = _RE_WHITESPACE_COLLAPSE.sub(" ", cleaned).strip()
 
         if not cleaned:
             return None
@@ -126,7 +131,7 @@ class MemoryService:
                     key = pat["key"]
                 else:
                     # Sanitize key name: alphanumeric and CJK only, <= 10 chars
-                    sanitized_key_suffix = re.sub(r"[^\w\u4e00-\u9fff]", "", sanitized_val)[:10]
+                    sanitized_key_suffix = _RE_KEY_SUFFIX_CHARS.sub("", sanitized_val)[:10]
                     if not sanitized_key_suffix:
                         sanitized_key_suffix = "item"
                     key = f"{pat.get('key_prefix', 'fact_')}{sanitized_key_suffix}"
@@ -348,8 +353,8 @@ class MemoryService:
             for m in memories:
                 raw_val = str(getattr(m, "fact_value", "") or "")
                 val = self.sanitize_fact_value(raw_val, max_len=50) or raw_val[:50]
-                val = re.sub(r"[\r\n\t\[\]【】`'\"<>{}]", " ", val).strip()
-                cat = re.sub(r"[\r\n\t\[\]【】`'\"<>{}]", "", str(getattr(m, "category", "memory"))).strip()
+                val = _RE_DELIMITERS_TAGS.sub(" ", val).strip()
+                cat = _RE_DELIMITERS_TAGS.sub("", str(getattr(m, "category", "memory"))).strip()
 
                 if not val:
                     continue

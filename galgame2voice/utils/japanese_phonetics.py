@@ -134,13 +134,26 @@ STAGE_CUE_EMOTION_MAP: Dict[str, str] = {
 }
 
 
+_RE_BRACKET_STRIP_EDGES = re.compile(r"^[（(【\[〖〔*]+|[)）】\]〖〔*]+$")
+_RE_PUNCT_ELLIPSIS_STRIP = re.compile(r'[。！？!?….~〜 　\-\*]+')
+_RE_EMOTION_CANDIDATE_PREFIX = re.compile(r'^(?:情绪|心情|状态|emotion|emo)[:：\s]*', flags=re.IGNORECASE)
+_RE_TERMINAL_PUNCT_CHECK = re.compile(r'[。！？!?…]')
+_RE_ACTION_ASTERISK = re.compile(r'(?<!\*)\*([^*]{1,35})\*(?!\*)')
+_RE_BRACKET_CUES = re.compile(r'[（\(\[【〖〔\*]([^）\)\]】〗〕\*]{1,30})[）\)\]】〗〕\*]')
+
+BRACKET_REGEX_PAIRS = [
+    re.compile(re.escape(o) + r'([^' + re.escape(o) + re.escape(cl) + r']*)' + re.escape(cl))
+    for o, cl in [('（', '）'), ('(', ')'), ('【', '】'), ('[', ']'), ('〖', '〗'), ('〔', '〕')]
+]
+
+
 def is_spoken_dialogue_inside_brackets(content: str) -> bool:
     """
     Determines if bracketed content is actually spoken dialogue or character thought (which should be voiced)
     rather than a silent stage direction or action cue (which should be stripped).
     Supports English, Japanese, and Chinese stage cues, action verbs, and emotion tags.
     """
-    c = re.sub(r"^[（(【\[〖〔*]+|[)）】\]〖〔*]+$", "", content.strip()).strip()
+    c = _RE_BRACKET_STRIP_EDGES.sub("", content.strip()).strip()
     if not c:
         return False
 
@@ -149,7 +162,7 @@ def is_spoken_dialogue_inside_brackets(content: str) -> bool:
         return False
 
     # Bare string without surrounding punctuation / ellipses / whitespace
-    c_bare = re.sub(r'[。！？!?….~〜 　\-\*]+', '', c).strip()
+    c_bare = _RE_PUNCT_ELLIPSIS_STRIP.sub('', c).strip()
 
     # Strip exact action cue nouns/phrases across Japanese and Chinese
     if c in STAGE_CUE_EXACT_SET or c_bare in STAGE_CUE_EXACT_SET:
@@ -158,7 +171,7 @@ def is_spoken_dialogue_inside_brackets(content: str) -> bool:
         return False
 
     # Check bracketed emotion tags: e.g. 【傲娇】, (tsundere), 【害羞】, (shy)
-    cand_emo = re.sub(r'^(?:情绪|心情|状态|emotion|emo)[:：\s]*', '', c_bare, flags=re.IGNORECASE).strip().lower()
+    cand_emo = _RE_EMOTION_CANDIDATE_PREFIX.sub('', c_bare).strip().lower()
     if cand_emo in STAGE_CUE_EMOTION_MAP or cand_emo in ("gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"):
         return False
 
@@ -178,7 +191,7 @@ def is_spoken_dialogue_inside_brackets(content: str) -> bool:
         return False
 
     # If it contains dialogue terminal punctuation marks and is not an action cue, it is spoken text
-    if re.search(r'[。！？!?…]', c):
+    if _RE_TERMINAL_PUNCT_CHECK.search(c):
         return True
 
     # Default to True so pure spoken dialogue/thoughts inside parentheses are preserved and voiced
@@ -205,22 +218,19 @@ def clean_japanese_parentheses(text: str, max_passes: int = 5) -> str:
             return m.group(0)
         return ""
 
-    cleaned = re.sub(r'(?<!\*)\*([^*]{1,35})\*(?!\*)', _replace_asterisk, cleaned)
+    cleaned = _RE_ACTION_ASTERISK.sub(_replace_asterisk, cleaned)
 
     # 2. Clean parenthetical brackets
-    bracket_pairs = [('（', '）'), ('(', ')'), ('【', '】'), ('[', ']'), ('〖', '〗'), ('〔', '〕')]
     for _ in range(max_passes):
         prev = cleaned
-        for o, cl in bracket_pairs:
-            pattern = re.escape(o) + r'([^' + re.escape(o) + re.escape(cl) + r']*)' + re.escape(cl)
-
+        for pat in BRACKET_REGEX_PAIRS:
             def _replace_bracket(m: re.Match) -> str:
                 inside = m.group(1)
                 if is_spoken_dialogue_inside_brackets(inside):
                     return inside
                 return ""
 
-            cleaned = re.sub(pattern, _replace_bracket, cleaned)
+            cleaned = pat.sub(_replace_bracket, cleaned)
         if cleaned == prev:
             break
 
@@ -245,10 +255,10 @@ def extract_stage_directions_and_emotion(text: str) -> Tuple[str, Optional[str]]
     inferred_emotion: Optional[str] = None
 
     # Scan bracketed contents and asterisks to infer emotion
-    bracket_cues = re.findall(r'[（\(\[【〖〔\*]([^）\)\]】〗〕\*]{1,30})[）\)\]】〗〕\*]', text)
+    bracket_cues = _RE_BRACKET_CUES.findall(text)
     for raw_cue in bracket_cues:
-        cue = re.sub(r'^[（(【\[〖〔*]+|[)）】\]〖〔*]+$', '', raw_cue.strip()).strip()
-        cue_bare = re.sub(r'[。！？!?….~〜 　\-\*]+', '', cue).strip()
+        cue = _RE_BRACKET_STRIP_EDGES.sub('', raw_cue.strip()).strip()
+        cue_bare = _RE_PUNCT_ELLIPSIS_STRIP.sub('', cue).strip()
         # Direct match in map
         if cue_bare in STAGE_CUE_EMOTION_MAP:
             inferred_emotion = STAGE_CUE_EMOTION_MAP[cue_bare]

@@ -80,6 +80,18 @@ def is_natural_clause_boundary(clause: str) -> bool:
     return True
 
 
+_RE_CJK_PUNCT_WHITESPACE = re.compile(r'\s*([、，。！？…])\s*')
+_RE_HALFWIDTH_PUNCT_WHITESPACE = re.compile(r'\s+([,.!?])')
+_RE_MULTIPLE_COMMAS = re.compile(r'[、，,]{2,}')
+_RE_ELLIPSIS_COMMA = re.compile(r'(…+|\.{3,})[、，,]+')
+_RE_COMMA_BEFORE_TERMINAL = re.compile(r'[、，,]+([。！？!?])')
+_RE_LEADING_COMMAS = re.compile(r'^[、，,]+')
+_RE_TRAILING_COMMAS = re.compile(r'[、，,]+$')
+
+_RE_NON_FIRST_SENTENCES = re.compile(r'([^。！？!?\n]+(?:[。！？!?\n]+[」』"\'”’\)）\]】]*|\s*$))')
+_RE_CLAUSE_TRAILING_PUNCT = re.compile(r'[、，,\s…\.〜~ー\-」』"\'”’\)）\]】]+$')
+
+
 def normalize_dialogue_prosody(text: str) -> str:
     """
     Normalizes punctuation and prosodic markers in spoken dialogue for natural TTS synthesis:
@@ -93,20 +105,13 @@ def normalize_dialogue_prosody(text: str) -> str:
     if not text:
         return ""
     s = text.strip()
-    # Strip whitespace around fullwidth CJK punctuation
-    s = re.sub(r'\s*([、，。！？…])\s*', r'\1', s)
-    # Strip whitespace preceding halfwidth punctuation
-    s = re.sub(r'\s+([,.!?])', r'\1', s)
-    # Collapse multiple commas
-    s = re.sub(r'[、，,]{2,}', '、', s)
-    # Collapse ellipsis followed by comma (……、 -> ……)
-    s = re.sub(r'(…+|\.{3,})[、，,]+', r'\1', s)
-    # Collapse comma before terminal punctuation
-    s = re.sub(r'[、，,]+([。！？!?])', r'\1', s)
-    # Remove leading comma
-    s = re.sub(r'^[、，,]+', '', s)
-    # Normalize trailing comma at end of utterance to period so TTS intonation finishes naturally
-    s = re.sub(r'[、，,]+$', '。', s)
+    s = _RE_CJK_PUNCT_WHITESPACE.sub(r'\1', s)
+    s = _RE_HALFWIDTH_PUNCT_WHITESPACE.sub(r'\1', s)
+    s = _RE_MULTIPLE_COMMAS.sub('、', s)
+    s = _RE_ELLIPSIS_COMMA.sub(r'\1', s)
+    s = _RE_COMMA_BEFORE_TERMINAL.sub(r'\1', s)
+    s = _RE_LEADING_COMMAS.sub('', s)
+    s = _RE_TRAILING_COMMAS.sub('。', s)
     return s.strip()
 
 
@@ -140,8 +145,7 @@ def split_japanese_sentences(
 
     if not is_first_chunk:
         # Match contiguous segments of non-punctuation followed by punctuation markers and optional closing brackets/quotes
-        pattern = r'([^。！？!?\n]+(?:[。！？!?\n]+[」』"\'”’\)）\]】]*|\s*$))'
-        matches = re.findall(pattern, text)
+        matches = _RE_NON_FIRST_SENTENCES.findall(text)
         sentences = [m.strip() for m in matches if m.strip()]
         if not sentences and text.strip():
             return [text.strip()]
@@ -174,7 +178,7 @@ def split_japanese_sentences(
                 i += 1
                 curr.append(text[i])
             cand = "".join(curr).strip()
-            clause = re.sub(r'[、，,\s…\.〜~ー\-」』"\'”’\)）\]】]+$', '', cand)
+            clause = _RE_CLAUSE_TRAILING_PUNCT.sub('', cand)
             if len(cand) >= min_chars and is_natural_clause_boundary(clause):
                 rem_text = text[i + 1:]
                 subsequent = split_japanese_sentences(rem_text, is_first_chunk=False) if rem_text.strip() else []

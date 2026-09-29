@@ -7,7 +7,9 @@ backward-compatible synchronous chat endpoints (/api/chat, /ai/chat).
 import asyncio
 import json
 import logging
+import time
 from typing import Any, AsyncGenerator, Dict, Optional, Union
+import uuid
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -317,7 +319,7 @@ async def list_chat_sessions(limit: int = Query(default=50, ge=1, le=200)):
             if s.get("settings_json"):
                 try:
                     settings_dict = json.loads(s["settings_json"])
-                except Exception:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     settings_dict = {}
             results.append({
                 "id": s["id"],
@@ -336,14 +338,22 @@ async def list_chat_sessions(limit: int = Query(default=50, ge=1, le=200)):
         }
 
 
+def _validate_non_empty_session_id(session_id: str) -> str:
+    clean_id = (session_id or "").strip()
+    if not clean_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="session_id cannot be empty",
+        )
+    return clean_id
+
+
 @router.post("/api/chat/sessions", summary="Create or update conversation session")
 async def upsert_chat_session(req: SessionUpsertRequest):
     """
     Creates or updates a conversation session in SQLite database,
     persisting title and custom generation parameters.
     """
-    import uuid
-    import time
     sess_id = (req.id or "").strip()
     if not sess_id:
         sess_id = f"s_{int(time.time()):x}_{uuid.uuid4().hex[:6]}"
@@ -369,12 +379,7 @@ async def delete_chat_session_by_id(session_id: str):
     """
     Deletes a conversation session and all its cascading messages.
     """
-    clean_id = (session_id or "").strip()
-    if not clean_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="session_id cannot be empty",
-        )
+    clean_id = _validate_non_empty_session_id(session_id)
     async with get_db() as conn:
         success = await crud.delete_session(conn, clean_id)
         return {
@@ -409,12 +414,7 @@ async def clear_chat_history(
     """
     Deletes all messages associated with the specified session ID.
     """
-    clean_session_id = (session_id or "").strip()
-    if not clean_session_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="session_id cannot be empty",
-        )
+    clean_session_id = _validate_non_empty_session_id(session_id)
     async with get_db() as conn:
         cleared = await crud.clear_session_messages(conn, session_id=clean_session_id)
         return {
