@@ -12,6 +12,7 @@ from galgame2voice.database.models import (
     UserMemoryCreate, UserMemoryUpdate, UserMemoryResponse
 )
 from galgame2voice.database.session import get_db
+from galgame2voice.routers.common import validate_user_id
 from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.utils.logger import sanitize_error_detail
 
@@ -30,12 +31,7 @@ async def list_user_memories(
     """
     Returns list of stored user long-term facts and memories.
     """
-    clean_user = user_id.strip()
-    if not clean_user:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="user_id cannot be empty",
-        )
+    clean_user = validate_user_id(user_id)
     async with get_db() as conn:
         try:
             memories = await crud.list_memories(
@@ -198,12 +194,7 @@ async def clear_user_memories(
     """
     Clears all memories for the specified user and optional character.
     """
-    clean_user = user_id.strip()
-    if not clean_user:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="user_id cannot be empty",
-        )
+    clean_user = validate_user_id(user_id)
     async with get_db() as conn:
         try:
             count = await crud.clear_memories(conn, user_id=clean_user, character_id=character_id)

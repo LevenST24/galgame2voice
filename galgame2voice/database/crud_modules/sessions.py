@@ -31,6 +31,7 @@ __all__ = [
     "delete_session",
     "clear_session_messages",
     "add_message",
+    "delete_message",
     "get_recent_messages",
     "count_session_messages",
 ]
@@ -336,3 +337,8 @@ async def count_session_messages(conn: aiosqlite.Connection, session_id: str) ->
     cursor = await conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?;", (session_id,))
     row = await cursor.fetchone()
     return row[0] if row else 0
+
+
+async def delete_message(conn: aiosqlite.Connection, message_id: int) -> None:
+    """Deletes a message by its ID."""
+    await conn.execute("DELETE FROM messages WHERE id = ?;", (message_id,))

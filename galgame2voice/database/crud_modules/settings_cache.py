@@ -19,6 +19,7 @@ from galgame2voice.database.models import (
 )
 from galgame2voice.database.session import immediate_transaction
 from galgame2voice.security.crypto import decrypt_secret, encrypt_secret
+from galgame2voice.utils.text_sanitize import sanitize_bot_token
 
 logger = logging.getLogger("galgame2voice.database.crud_modules.settings_cache")
 
@@ -110,7 +111,7 @@ async def update_settings(conn: aiosqlite.Connection, updates: SettingsUpdate) -
     for k, v in update_dict.items():
         if k == "telegram_bot_token":
             if v is not None and not is_masked_key(str(v)):
-                cleaned = str(v).replace(" ", "").replace("\r", "").replace("\n", "").strip()
+                cleaned = sanitize_bot_token(v)
                 fields.append(f"{k} = ?")
                 values.append(encrypt_secret(cleaned) if cleaned else "")
         elif k == "console_token":

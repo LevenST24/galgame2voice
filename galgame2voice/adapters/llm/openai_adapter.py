@@ -46,6 +46,18 @@ _URL_DEFAULT_MODELS: Tuple[Tuple[str, str], ...] = (
     ("anthropic.com", "claude-3-5-sonnet-20241022"),
 )
 
+_AUTH_ERROR_KEYWORDS: Tuple[str, ...] = (
+    "api key",
+    "apikey",
+    "unauthorized",
+    "invalid key",
+    "incorrect api key",
+    "valid api key",
+    "invalid-argument",
+    "invalid_argument",
+    "authentication",
+)
+
 
 async def _mock_lines_iter(text: str) -> AsyncIterator[str]:
     for line in text.split("\n"):
@@ -463,20 +475,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 # and Gemini returns 400 with "API key not valid" or "Please pass a valid API key".
                 is_auth_error = resp.status_code in (401, 403) or (
                     resp.status_code == 400
-                    and any(
-                        kw in resp_lower
-                        for kw in (
-                            "api key",
-                            "apikey",
-                            "unauthorized",
-                            "invalid key",
-                            "incorrect api key",
-                            "valid api key",
-                            "invalid-argument",
-                            "invalid_argument",
-                            "authentication",
-                        )
-                    )
+                    and any(kw in resp_lower for kw in _AUTH_ERROR_KEYWORDS)
                 )
 
                 if resp.status_code == 200:

@@ -34,6 +34,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 REFERENCE_AUDIO_MIN_SECONDS: float = 3.0
 REFERENCE_AUDIO_MAX_SECONDS: float = 10.0
+WAV_HEADER_BYTES: int = 44
+PCM_32KHZ_16BIT_MONO_BYTE_RATE: float = 64000.0
 
 
 def _safe_resolve_path(path_val: Union[str, Path]) -> Path:
@@ -78,13 +80,13 @@ def _probe_wav_riff_header(data: bytes) -> Optional[AudioSpec]:
             channels = struct.unpack_from("<H", fmt, 2)[0]
             sample_rate = struct.unpack_from("<I", fmt, 4)[0]
             byte_rate = struct.unpack_from("<I", fmt, 8)[0]
-            effective_data_len = data_len if data_len is not None else max(0, len(data) - 44)
+            effective_data_len = data_len if data_len is not None else max(0, len(data) - WAV_HEADER_BYTES)
             if byte_rate > 0:
                 duration_s = max(0.05, effective_data_len / float(byte_rate))
             elif sample_rate > 0 and channels > 0:
                 duration_s = max(0.05, effective_data_len / float(sample_rate * channels * 2))
             else:
-                duration_s = max(0.05, (len(data) - 44) / 64000.0)
+                duration_s = max(0.05, (len(data) - WAV_HEADER_BYTES) / PCM_32KHZ_16BIT_MONO_BYTE_RATE)
             return AudioSpec(
                 duration_s=duration_s,
                 sample_rate=sample_rate if sample_rate > 0 else 32000,
@@ -410,12 +412,12 @@ def extract_wav_duration(audio: bytes) -> Optional[float]:
             if fmt and len(fmt) >= 16:
                 _byte_rate = struct.unpack_from("<I", fmt, 8)[0]
                 if _byte_rate > 0:
-                    effective_data_len = data_len if data_len is not None else max(0, len(audio) - 44)
+                    effective_data_len = data_len if data_len is not None else max(0, len(audio) - WAV_HEADER_BYTES)
                     return max(0.05, effective_data_len / float(_byte_rate))
     except (struct.error, IndexError, TypeError, ZeroDivisionError):
         pass
     # Fallback: assume 32000Hz 16-bit mono PCM (64000 bytes/sec)
-    return max(0.05, (len(audio) - 44) / 64000.0)
+    return max(0.05, (len(audio) - WAV_HEADER_BYTES) / PCM_32KHZ_16BIT_MONO_BYTE_RATE)
 
 
 # ============================================================================

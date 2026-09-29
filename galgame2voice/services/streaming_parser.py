@@ -39,6 +39,15 @@ TERMINAL_PUNCT_WITH_CLOSING = re.compile(r'[。！？!?\n][」』"\'”’\)）\
 CLAUSE_PUNCT_WITH_CLOSING = re.compile(r'[、，,][」』"\'”’\)）\]】]*$')
 TRAILING_PUNCT_AND_CLOSING = re.compile(r'[、，,\s…\.〜~ー\-」』"\'”’\)）\]】]+$')
 
+_RE_CHINESE_FIELD = re.compile(r'"chinese"\s*:\s*"((?:[^"\\]|\\.)*)')
+_RE_CHINESE_FALLBACK = re.compile(r'(?:中文|Chinese)[:：]\s*(.*?)(?:(?:日文|Japanese)[:：]|$)', flags=re.DOTALL | re.IGNORECASE)
+_RE_JAPANESE_FIELD = re.compile(r'"japanese"\s*:\s*"((?:[^"\\]|\\.)*)')
+_RE_JAPANESE_CLOSED = re.compile(r'"japanese"\s*:\s*"(?:[^"\\]|\\.)*"')
+_RE_JAPANESE_FALLBACK = re.compile(r'(?:日文|Japanese)[:：]\s*(.*)$', flags=re.DOTALL | re.IGNORECASE)
+_RE_JSON_BLOCK = re.compile(r'\{.*\}', flags=re.DOTALL)
+_RE_BRACKETED_JAPANESE = re.compile(r'【([^】]+)】')
+_RE_BRACKETED_JAPANESE_STRIP = re.compile(r'【[^】]+】')
+
 
 def _trim_unclosed_sentence(sentences: List[str], is_first: bool) -> List[str]:
     """Trims incomplete trailing sentence chunk if sentence ending punctuation is missing."""
@@ -318,14 +327,14 @@ class StreamingBilingualParser:
         self._parse_dynamic_tts_block(sanitized)
 
         # 1. Incremental Chinese Extraction
-        ch_match = re.search(r'"chinese"\s*:\s*"((?:[^"\\]|\\.)*)', sanitized)
+        ch_match = _RE_CHINESE_FIELD.search(sanitized)
         if ch_match:
             raw_ch = ch_match.group(1)
             current_ch = self._unescape_json_string(raw_ch)
             new_chinese_delta = self._advance_chinese(current_ch)
         else:
             # Fallback check: If the stream contains structured Chinese: / 中文:
-            ch_fallback = re.search(r'(?:中文|Chinese)[:：]\s*(.*?)(?:(?:日文|Japanese)[:：]|$)', sanitized, flags=re.DOTALL | re.IGNORECASE)
+            ch_fallback = _RE_CHINESE_FALLBACK.search(sanitized)
             if ch_fallback:
                 self.is_plain_text_fallback = True
                 current_ch = ch_fallback.group(1).strip()
@@ -346,7 +355,7 @@ class StreamingBilingualParser:
                 self._set_lead_emotion(lead_emo)
 
         # 2. Incremental Japanese Sentence Slicing
-        ja_match = re.search(r'"japanese"\s*:\s*"((?:[^"\\]|\\.)*)', sanitized)
+        ja_match = _RE_JAPANESE_FIELD.search(sanitized)
         if ja_match:
             raw_ja = ja_match.group(1)
             current_ja = self._unescape_json_string(raw_ja)
@@ -361,7 +370,7 @@ class StreamingBilingualParser:
             all_sentences = split_japanese_sentences(current_ja, is_first_chunk=is_first)
             # If neither the japanese field nor the JSON object is closed, the last sentence might still be growing
             is_ja_closed = bool(
-                re.search(r'"japanese"\s*:\s*"(?:[^"\\]|\\.)*"', sanitized)
+                _RE_JAPANESE_CLOSED.search(sanitized)
                 or sanitized.rstrip().endswith(('"}', '"}`', '"} \n`', '"} \n', '"}'))
             )
             if not is_ja_closed:
@@ -369,7 +378,7 @@ class StreamingBilingualParser:
 
             new_sentences = self._drain_new_ja_sentences(all_sentences)
         elif self.is_plain_text_fallback:
-            ja_fallback = re.search(r'(?:日文|Japanese)[:：]\s*(.*)$', sanitized, flags=re.DOTALL | re.IGNORECASE)
+            ja_fallback = _RE_JAPANESE_FALLBACK.search(sanitized)
             if ja_fallback:
                 current_ja = ja_fallback.group(1).strip()
                 self.japanese_extracted = current_ja
@@ -423,7 +432,7 @@ class StreamingBilingualParser:
         try:
             parsed = json.loads(sanitized)
         except json.JSONDecodeError:
-            json_match = re.search(r'\{.*\}', sanitized, flags=re.DOTALL)
+            json_match = _RE_JSON_BLOCK.search(sanitized)
             if json_match:
                 try:
                     parsed = json.loads(json_match.group(0))
@@ -457,17 +466,17 @@ class StreamingBilingualParser:
                         self.tts_params["emotion"] = norm_te
         else:
             # Try regex extraction for unclosed JSON
-            ch_match = re.search(r'"chinese"\s*:\s*"((?:[^"\\]|\\.)*)', sanitized)
+            ch_match = _RE_CHINESE_FIELD.search(sanitized)
             if ch_match:
                 self.chinese_extracted = self._unescape_json_string(ch_match.group(1))
-            ja_match = re.search(r'"japanese"\s*:\s*"((?:[^"\\]|\\.)*)', sanitized)
+            ja_match = _RE_JAPANESE_FIELD.search(sanitized)
             if ja_match:
                 self.japanese_extracted = self._unescape_json_string(ja_match.group(1))
             self._parse_dynamic_tts_block(sanitized)
 
             # Fallback for structured text without valid JSON
-            ch_fallback = re.search(r'(?:中文|Chinese)[:：]\s*(.*?)(?:(?:日文|Japanese)[:：]|$)', sanitized, flags=re.DOTALL | re.IGNORECASE)
-            ja_fallback = re.search(r'(?:日文|Japanese)[:：]\s*(.*)$', sanitized, flags=re.DOTALL | re.IGNORECASE)
+            ch_fallback = _RE_CHINESE_FALLBACK.search(sanitized)
+            ja_fallback = _RE_JAPANESE_FALLBACK.search(sanitized)
             if ch_fallback:
                 self.chinese_extracted = ch_fallback.group(1).strip()
             if ja_fallback:
@@ -476,11 +485,11 @@ class StreamingBilingualParser:
                 self.chinese_extracted = sanitized
 
             if self.chinese_extracted and "【" in self.chinese_extracted and "】" in self.chinese_extracted:
-                ja_bracket = re.search(r'【([^】]+)】', self.chinese_extracted)
+                ja_bracket = _RE_BRACKETED_JAPANESE.search(self.chinese_extracted)
                 if ja_bracket:
                     if not self.japanese_extracted or self.japanese_extracted == self.chinese_extracted:
                         self.japanese_extracted = ja_bracket.group(1).strip()
-                    self.chinese_extracted = re.sub(r'【[^】]+】', '', self.chinese_extracted).strip()
+                    self.chinese_extracted = _RE_BRACKETED_JAPANESE_STRIP.sub('', self.chinese_extracted).strip()
 
             if not self.japanese_extracted:
                 self.japanese_extracted = self.chinese_extracted

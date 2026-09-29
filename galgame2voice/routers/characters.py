@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db
+from galgame2voice.routers.common import validate_user_id
 from galgame2voice.services.voice_manager import get_voice_manager, InsufficientMemoryError
 from galgame2voice.utils.logger import sanitize_error_detail
 
@@ -92,12 +93,7 @@ class CharacterSwitchRequest(BaseModel):
 async def list_characters(
     user_id: str = Query(default="default_user", min_length=1, max_length=128, description="User ID"),
 ):
-    clean_user = user_id.strip()
-    if not clean_user:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="user_id cannot be empty",
-        )
+    clean_user = validate_user_id(user_id)
 
     async with get_db() as conn:
         try:
@@ -105,11 +101,14 @@ async def list_characters(
             active_profile = await crud.get_active_voice_profile(conn)
             active_id = active_profile.id if active_profile else (profiles[0].id if profiles else None)
 
+            profile_ids = [prof.id for prof in profiles]
+            affections_by_id = await crud.get_user_affections_for_profiles(
+                conn, user_id=clean_user, profile_ids=profile_ids
+            )
+
             results = []
             for prof in profiles:
-                affection = await crud.get_or_create_character_affection(
-                    conn, user_id=clean_user, character_id=prof.id
-                )
+                affection = affections_by_id.get(prof.id)
                 results.append({
                     "id": prof.id,
                     "name": prof.name,
@@ -150,12 +149,7 @@ async def get_character_detail(
             detail="character_id must be a positive integer >= 1",
         )
 
-    clean_user = user_id.strip()
-    if not clean_user:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="user_id cannot be empty",
-        )
+    clean_user = validate_user_id(user_id)
 
     async with get_db() as conn:
         try:

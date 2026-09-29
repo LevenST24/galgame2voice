@@ -33,6 +33,7 @@ __all__ = [
     "calculate_affection_level",
     "_format_affection_response",
     "get_or_create_character_affection",
+    "get_user_affections_for_profiles",
     "get_character_affection",
     "update_character_affection",
     "reset_character_affection",
@@ -279,6 +280,69 @@ async def get_or_create_character_affection(
         unlocked_dialogues=[],
         custom_nickname=None,
     )
+
+
+async def get_user_affections_for_profiles(
+    conn: aiosqlite.Connection,
+    user_id: str = "default_user",
+    profile_ids: Optional[List[int]] = None,
+) -> Dict[int, CharacterAffectionResponse]:
+    """
+    Fetches character affections for multiple profiles in a single batched query,
+    preserving get-or-create semantics per profile.
+    """
+    if not profile_ids:
+        return {}
+
+    conn.row_factory = aiosqlite.Row
+    placeholders = ",".join("?" for _ in profile_ids)
+    cursor = await conn.execute(f"""
+        SELECT * FROM character_affection WHERE user_id = ? AND character_id IN ({placeholders});
+    """, [user_id, *profile_ids])
+    rows = await cursor.fetchall()
+    result_map: Dict[int, CharacterAffectionResponse] = {
+        row["character_id"]: _format_affection_response(dict(row))
+        for row in rows
+    }
+
+    missing_ids = [pid for pid in profile_ids if pid not in result_map]
+    if missing_ids:
+        async with immediate_transaction(conn):
+            insert_params = [(user_id, pid) for pid in missing_ids]
+            await conn.executemany("""
+                INSERT INTO character_affection (
+                    user_id, character_id, affection_score, affection_level, current_emotion,
+                    interaction_count, daily_points_earned, last_interaction_date, unlocked_dialogues, custom_nickname
+                ) VALUES (?, ?, 0, 1, 'normal', 0, 0, '', '[]', NULL)
+                ON CONFLICT(user_id, character_id) DO NOTHING;
+            """, insert_params)
+
+        missing_placeholders = ",".join("?" for _ in missing_ids)
+        cursor = await conn.execute(f"""
+            SELECT * FROM character_affection WHERE user_id = ? AND character_id IN ({missing_placeholders});
+        """, [user_id, *missing_ids])
+        new_rows = await cursor.fetchall()
+        for row in new_rows:
+            result_map[row["character_id"]] = _format_affection_response(dict(row))
+
+        for pid in missing_ids:
+            if pid not in result_map:
+                result_map[pid] = CharacterAffectionResponse(
+                    id=0,
+                    user_id=user_id,
+                    character_id=pid,
+                    affection_score=0,
+                    affection_level=1,
+                    level_name="初识/生疏",
+                    current_emotion="normal",
+                    interaction_count=0,
+                    daily_points_earned=0,
+                    last_interaction_date="",
+                    unlocked_dialogues=[],
+                    custom_nickname=None,
+                )
+
+    return result_map
 
 
 async def get_character_affection(

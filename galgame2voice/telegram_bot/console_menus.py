@@ -13,7 +13,7 @@ Provides rich inline keyboard menus and callback processing for:
 
 from dataclasses import dataclass
 import logging
-from typing import Any, Callable, Dict, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Optional, Set, Tuple, Union
 
 try:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -799,26 +799,52 @@ async def _handle_speed_menu(ctx: _CallbackContext) -> None:
         await ctx.query.edit_message_text(text=text, reply_markup=markup)
 
 
-async def _handle_set_speed(ctx: _CallbackContext) -> None:
-    raw_s = ctx.data.replace("set_speed_", "").strip()
+async def _handle_scalar_setting(
+    ctx: _CallbackContext,
+    prefix: str,
+    parser: Callable[[str], Any],
+    val_min: Union[int, float],
+    val_max: Union[int, float],
+    range_msg: str,
+    setting_key: str,
+    log_name: str,
+    success_tmpl: str,
+    menu_builder: Callable[[], Any],
+) -> None:
+    raw = ctx.data.replace(prefix, "").strip()
     try:
-        new_speed = float(raw_s)
-        if not (0.1 <= new_speed <= 3.0):
+        new_val = parser(raw)
+        if not (val_min <= new_val <= val_max):
             raise ValueError()
     except (ValueError, TypeError):
         if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("⚠️ 语速参数超出范围 (0.1~3.0)", show_alert=True)
+            await ctx.query.answer(range_msg, show_alert=True)
         return
     try:
         async with get_db(ctx.db_path) as conn:
-            await crud.update_settings(conn, SettingsUpdate(speed_factor=new_speed))
+            await crud.update_settings(conn, SettingsUpdate(**{setting_key: new_val}))
     except Exception as exc:
-        logger.warning("Speed update exception: %s", exc)
+        logger.warning("%s update exception: %s", log_name, exc)
     if hasattr(ctx.query, "answer"):
-        await ctx.query.answer(f"⚡ 语速已调整为: {new_speed}x", show_alert=True)
-    text, markup = await build_tts_menu(db_path=ctx.db_path)
+        await ctx.query.answer(success_tmpl.format(val=new_val), show_alert=True)
+    text, markup = await menu_builder()
     if hasattr(ctx.query, "edit_message_text"):
         await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _handle_set_speed(ctx: _CallbackContext) -> None:
+    await _handle_scalar_setting(
+        ctx,
+        prefix="set_speed_",
+        parser=float,
+        val_min=0.1,
+        val_max=3.0,
+        range_msg="⚠️ 语速参数超出范围 (0.1~3.0)",
+        setting_key="speed_factor",
+        log_name="Speed",
+        success_tmpl="⚡ 语速已调整为: {val}x",
+        menu_builder=lambda: build_tts_menu(db_path=ctx.db_path),
+    )
 
 
 async def _handle_temp_menu(ctx: _CallbackContext) -> None:
@@ -830,25 +856,18 @@ async def _handle_temp_menu(ctx: _CallbackContext) -> None:
 
 
 async def _handle_set_temp(ctx: _CallbackContext) -> None:
-    raw_t = ctx.data.replace("set_temp_", "").strip()
-    try:
-        new_temp = float(raw_t)
-        if not (0.0 <= new_temp <= 2.0):
-            raise ValueError()
-    except (ValueError, TypeError):
-        if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("⚠️ 发音温度超出范围 (0.0~2.0)", show_alert=True)
-        return
-    try:
-        async with get_db(ctx.db_path) as conn:
-            await crud.update_settings(conn, SettingsUpdate(temperature=new_temp))
-    except Exception as exc:
-        logger.warning("Temperature update exception: %s", exc)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer(f"🌡️ 发音温度已设置为: {new_temp}", show_alert=True)
-    text, markup = await build_tts_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _handle_scalar_setting(
+        ctx,
+        prefix="set_temp_",
+        parser=float,
+        val_min=0.0,
+        val_max=2.0,
+        range_msg="⚠️ 发音温度超出范围 (0.0~2.0)",
+        setting_key="temperature",
+        log_name="Temperature",
+        success_tmpl="🌡️ 发音温度已设置为: {val}",
+        menu_builder=lambda: build_tts_menu(db_path=ctx.db_path),
+    )
 
 
 async def _handle_split_menu(ctx: _CallbackContext) -> None:
@@ -882,47 +901,33 @@ async def _handle_sampling_menu(ctx: _CallbackContext) -> None:
 
 
 async def _handle_set_topk(ctx: _CallbackContext) -> None:
-    raw_k = ctx.data.replace("set_topk_", "").strip()
-    try:
-        new_topk = int(raw_k)
-        if not (1 <= new_topk <= 100):
-            raise ValueError()
-    except (ValueError, TypeError):
-        if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("⚠️ Top-K 参数超出范围 (1~100)", show_alert=True)
-        return
-    try:
-        async with get_db(ctx.db_path) as conn:
-            await crud.update_settings(conn, SettingsUpdate(top_k=new_topk))
-    except Exception as exc:
-        logger.warning("Top-K update exception: %s", exc)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer(f"🎯 Top-K 已设置为: {new_topk}", show_alert=True)
-    text, markup = await build_sampling_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _handle_scalar_setting(
+        ctx,
+        prefix="set_topk_",
+        parser=int,
+        val_min=1,
+        val_max=100,
+        range_msg="⚠️ Top-K 参数超出范围 (1~100)",
+        setting_key="top_k",
+        log_name="Top-K",
+        success_tmpl="🎯 Top-K 已设置为: {val}",
+        menu_builder=lambda: build_sampling_menu(db_path=ctx.db_path),
+    )
 
 
 async def _handle_set_topp(ctx: _CallbackContext) -> None:
-    raw_p = ctx.data.replace("set_topp_", "").strip()
-    try:
-        new_topp = float(raw_p)
-        if not (0.0 <= new_topp <= 1.0):
-            raise ValueError()
-    except (ValueError, TypeError):
-        if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("⚠️ Top-P 参数超出范围 (0.0~1.0)", show_alert=True)
-        return
-    try:
-        async with get_db(ctx.db_path) as conn:
-            await crud.update_settings(conn, SettingsUpdate(top_p=new_topp))
-    except Exception as exc:
-        logger.warning("Top-P update exception: %s", exc)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer(f"🎯 Top-P 已设置为: {new_topp}", show_alert=True)
-    text, markup = await build_sampling_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _handle_scalar_setting(
+        ctx,
+        prefix="set_topp_",
+        parser=float,
+        val_min=0.0,
+        val_max=1.0,
+        range_msg="⚠️ Top-P 参数超出范围 (0.0~1.0)",
+        setting_key="top_p",
+        log_name="Top-P",
+        success_tmpl="🎯 Top-P 已设置为: {val}",
+        menu_builder=lambda: build_sampling_menu(db_path=ctx.db_path),
+    )
 
 
 async def _handle_batch_menu(ctx: _CallbackContext) -> None:
@@ -934,25 +939,18 @@ async def _handle_batch_menu(ctx: _CallbackContext) -> None:
 
 
 async def _handle_set_batch(ctx: _CallbackContext) -> None:
-    raw_b = ctx.data.replace("set_batch_", "").strip()
-    try:
-        new_batch = int(raw_b)
-        if not (1 <= new_batch <= 16):
-            raise ValueError()
-    except (ValueError, TypeError):
-        if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("⚠️ 批量大小超出范围 (1~16)", show_alert=True)
-        return
-    try:
-        async with get_db(ctx.db_path) as conn:
-            await crud.update_settings(conn, SettingsUpdate(batch_size=new_batch))
-    except Exception as exc:
-        logger.warning("Batch update exception: %s", exc)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer(f"📦 批量大小已设置为: {new_batch}", show_alert=True)
-    text, markup = await build_tts_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _handle_scalar_setting(
+        ctx,
+        prefix="set_batch_",
+        parser=int,
+        val_min=1,
+        val_max=16,
+        range_msg="⚠️ 批量大小超出范围 (1~16)",
+        setting_key="batch_size",
+        log_name="Batch",
+        success_tmpl="📦 批量大小已设置为: {val}",
+        menu_builder=lambda: build_tts_menu(db_path=ctx.db_path),
+    )
 
 
 async def _handle_interval_menu(ctx: _CallbackContext) -> None:
@@ -964,25 +962,18 @@ async def _handle_interval_menu(ctx: _CallbackContext) -> None:
 
 
 async def _handle_set_interval(ctx: _CallbackContext) -> None:
-    raw_i = ctx.data.replace("set_interval_", "").strip()
-    try:
-        new_interval = float(raw_i)
-        if not (0.0 <= new_interval <= 5.0):
-            raise ValueError()
-    except (ValueError, TypeError):
-        if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("⚠️ 分句间隔超出范围 (0.0~5.0s)", show_alert=True)
-        return
-    try:
-        async with get_db(ctx.db_path) as conn:
-            await crud.update_settings(conn, SettingsUpdate(fragment_interval=new_interval))
-    except Exception as exc:
-        logger.warning("Interval update exception: %s", exc)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer(f"⏱️ 分句连播间隔已设置为: {new_interval}s", show_alert=True)
-    text, markup = await build_tts_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _handle_scalar_setting(
+        ctx,
+        prefix="set_interval_",
+        parser=float,
+        val_min=0.0,
+        val_max=5.0,
+        range_msg="⚠️ 分句间隔超出范围 (0.0~5.0s)",
+        setting_key="fragment_interval",
+        log_name="Interval",
+        success_tmpl="⏱️ 分句连播间隔已设置为: {val}s",
+        menu_builder=lambda: build_tts_menu(db_path=ctx.db_path),
+    )
 
 
 async def _handle_history_menu(ctx: _CallbackContext) -> None:
@@ -994,27 +985,20 @@ async def _handle_history_menu(ctx: _CallbackContext) -> None:
 
 
 async def _handle_set_history(ctx: _CallbackContext) -> None:
-    raw_h = ctx.data.replace("set_history_", "").strip()
-    try:
-        new_hist = int(raw_h)
-        if not (1 <= new_hist <= 100):
-            raise ValueError()
-    except (ValueError, TypeError):
-        if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("⚠️ 记忆轮数超出范围 (1~100)", show_alert=True)
-        return
-    try:
-        async with get_db(ctx.db_path) as conn:
-            await crud.update_settings(conn, SettingsUpdate(max_history_messages=new_hist))
-    except Exception as exc:
-        logger.warning("History update exception: %s", exc)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer(f"🧠 记忆轮数已调整为: {new_hist} 轮", show_alert=True)
-    text, markup = await build_main_console(
-        chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
+    await _handle_scalar_setting(
+        ctx,
+        prefix="set_history_",
+        parser=int,
+        val_min=1,
+        val_max=100,
+        range_msg="⚠️ 记忆轮数超出范围 (1~100)",
+        setting_key="max_history_messages",
+        log_name="History",
+        success_tmpl="🧠 记忆轮数已调整为: {val} 轮",
+        menu_builder=lambda: build_main_console(
+            chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
+        ),
     )
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
 
 
 async def _handle_model_menu(ctx: _CallbackContext) -> None:

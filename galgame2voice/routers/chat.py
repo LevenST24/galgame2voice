@@ -17,6 +17,7 @@ from galgame2voice.services.gpt_sovits_client import validate_user_tts_options
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path
 from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.sse import format_sse_frame
 
 logger = logging.getLogger("galgame2voice.routers.chat")
 
@@ -86,15 +87,7 @@ async def sse_event_formatter(
         async for event in event_generator:
             if cancel_event and cancel_event.is_set():
                 break
-            if isinstance(event, str):
-                yield event
-                continue
-            if isinstance(event, dict) and (event.get("event") == ":keep-alive" or "comment" in event):
-                yield str(event.get("comment", ": keep-alive\n\n"))
-                continue
-            event_name = event.get("event", "message")
-            event_data = json.dumps(event.get("data", {}), ensure_ascii=False)
-            yield f"event: {event_name}\ndata: {event_data}\n\n"
+            yield format_sse_frame(event)
     except (asyncio.CancelledError, GeneratorExit):
         if cancel_event:
             cancel_event.set()
