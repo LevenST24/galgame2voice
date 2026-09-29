@@ -32,35 +32,50 @@ if sys.platform == "win32":
         ]
 
 
+def _exec_command_output(cmd: List[str], timeout: float = DEFAULT_SUBPROCESS_TIMEOUT) -> Optional[str]:
+    """Safely executes a system command, suppressing stderr and subprocess exceptions."""
+    try:
+        return subprocess.check_output(
+            cmd,
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+        )
+    except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
+        return None
+
+
 def _resolve_cgroup_paths(root_path: Path) -> List[Path]:
     """
     Returns a list of candidate cgroup directory paths to inspect for the current process,
     ordered from most specific (container subpath via /proc/self/cgroup) to root_path.
     """
     candidates: List[Path] = []
+
+    def _add_if_dir(cand: Path) -> None:
+        if cand.is_dir() and cand not in candidates:
+            candidates.append(cand)
+
     # 1. Inspect /proc/self/cgroup to detect specific container slices in K8s, Docker, systemd
     proc_cgroup = Path("/proc/self/cgroup")
     if proc_cgroup.is_file():
         try:
             for line in proc_cgroup.read_text(encoding="utf-8").splitlines():
                 parts = line.strip().split(":")
-                if len(parts) == 3:
-                    subpath = parts[2].lstrip("/")
-                    if subpath:
-                        # cgroups v2 entry: 0::<path>
-                        if parts[0] == "0" and parts[1] == "":
-                            cand = root_path / subpath
-                            if cand.is_dir() and cand not in candidates:
-                                candidates.append(cand)
-                        # cgroups v1 entry: <num>:memory:<path>
-                        elif "memory" in parts[1].split(","):
-                            # On cgroups v1, controllers are submounted under root_path/memory/
-                            cand_mem = root_path / "memory" / subpath
-                            if cand_mem.is_dir() and cand_mem not in candidates:
-                                candidates.append(cand_mem)
-                            cand_direct = root_path / subpath
-                            if cand_direct.is_dir() and cand_direct not in candidates:
-                                candidates.append(cand_direct)
+                if len(parts) != 3:
+                    continue
+                subpath = parts[2].lstrip("/")
+                if not subpath:
+                    continue
+
+                # cgroups v2 entry: 0::<path>
+                if parts[0] == "0" and parts[1] == "":
+                    _add_if_dir(root_path / subpath)
+                # cgroups v1 entry: <num>:memory:<path>
+                elif "memory" in parts[1].split(","):
+                    # On cgroups v1, controllers are submounted under root_path/memory/
+                    _add_if_dir(root_path / "memory" / subpath)
+                    _add_if_dir(root_path / subpath)
         except (OSError, UnicodeDecodeError):
             pass
 
@@ -155,41 +170,35 @@ def _detect_linux_proc_meminfo() -> Tuple[Optional[float], Optional[float]]:
     if not (sys.platform.startswith("linux") or os.path.exists("/proc/meminfo")):
         return None, None
     try:
-        mem_total_kb = None
-        mem_avail_kb = None
-        mem_free_kb = None
-        buffers_kb = None
-        cached_kb = None
+        mem_info: Dict[str, float] = {}
         with open("/proc/meminfo", "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
                 parts = line.split()
                 if len(parts) >= 2:
-                    key = parts[0].rstrip(":")
                     try:
-                        val = float(parts[1])
+                        mem_info[parts[0].rstrip(":")] = float(parts[1])
                     except ValueError:
                         continue
-                    if key == "MemTotal":
-                        mem_total_kb = val
-                    elif key == "MemAvailable":
-                        mem_avail_kb = val
-                    elif key == "MemFree":
-                        mem_free_kb = val
-                    elif key == "Buffers":
-                        buffers_kb = val
-                    elif key == "Cached":
-                        cached_kb = val
-        if mem_total_kb is not None:
-            total_gb = round(mem_total_kb / BYTES_PER_MB, 2)
-            if mem_avail_kb is not None:
-                avail_gb = round(mem_avail_kb / BYTES_PER_MB, 2)
-            elif mem_free_kb is not None and buffers_kb is not None and cached_kb is not None:
-                avail_gb = round((mem_free_kb + buffers_kb + cached_kb) / BYTES_PER_MB, 2)
-            elif mem_free_kb is not None:
-                avail_gb = round(mem_free_kb / BYTES_PER_MB, 2)
-            else:
-                avail_gb = None
-            return total_gb, avail_gb
+
+        mem_total_kb = mem_info.get("MemTotal")
+        if mem_total_kb is None:
+            return None, None
+
+        total_gb = round(mem_total_kb / BYTES_PER_MB, 2)
+        mem_avail_kb = mem_info.get("MemAvailable")
+        mem_free_kb = mem_info.get("MemFree")
+        buffers_kb = mem_info.get("Buffers")
+        cached_kb = mem_info.get("Cached")
+
+        if mem_avail_kb is not None:
+            avail_gb = round(mem_avail_kb / BYTES_PER_MB, 2)
+        elif mem_free_kb is not None and buffers_kb is not None and cached_kb is not None:
+            avail_gb = round((mem_free_kb + buffers_kb + cached_kb) / BYTES_PER_MB, 2)
+        elif mem_free_kb is not None:
+            avail_gb = round(mem_free_kb / BYTES_PER_MB, 2)
+        else:
+            avail_gb = None
+        return total_gb, avail_gb
     except (OSError, UnicodeDecodeError):
         pass
     return None, None
@@ -204,17 +213,14 @@ def _detect_darwin_memory() -> Tuple[Optional[float], Optional[float]]:
         if hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names and "SC_PHYS_PAGES" in os.sysconf_names:
             total_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
         if total_bytes is None:
-            out = subprocess.check_output(
-                ["sysctl", "-n", "hw.memsize"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-                timeout=DEFAULT_SUBPROCESS_TIMEOUT,
-            )
-            total_bytes = int(out.strip())
-        total_gb = round(total_bytes / BYTES_PER_GB, 2)
-        # macOS does not expose a single trivial available sysctl; return total
-        return total_gb, None
-    except (subprocess.SubprocessError, OSError, ValueError):
+            out = _exec_command_output(["sysctl", "-n", "hw.memsize"])
+            if out:
+                total_bytes = int(out.strip())
+        if total_bytes is not None:
+            total_gb = round(total_bytes / BYTES_PER_GB, 2)
+            # macOS does not expose a single trivial available sysctl; return total
+            return total_gb, None
+    except (OSError, ValueError):
         pass
     return None, None
 
@@ -281,60 +287,37 @@ def _get_all_detected_gpu_names() -> List[str]:
         pass
 
     # 2. nvidia-smi tool inspection
-    try:
-        out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-            timeout=DEFAULT_SUBPROCESS_TIMEOUT,
-        )
+    out = _exec_command_output(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
+    if out:
         names = [line.strip() for line in out.splitlines() if line.strip()]
         if names:
             gpu_names.extend(names)
             return gpu_names
-    except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
-        pass
 
     # 3. Windows WMI / CIM query
     if sys.platform == "win32":
-        try:
-            out = subprocess.check_output(
-                ["wmic", "path", "win32_VideoController", "get", "name"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-                timeout=DEFAULT_SUBPROCESS_TIMEOUT,
-            )
+        out = _exec_command_output(["wmic", "path", "win32_VideoController", "get", "name"])
+        if out:
             names = [
                 line.strip() for line in out.splitlines()
                 if line.strip() and line.strip().lower() != "name"
             ]
             if names:
                 return names
-        except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
-            pass
 
-        try:
-            out = subprocess.check_output(
-                ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-                timeout=3.0,
-            )
+        out = _exec_command_output(
+            ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
+            timeout=3.0,
+        )
+        if out:
             names = [line.strip() for line in out.splitlines() if line.strip()]
             if names:
                 return names
-        except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
-            pass
 
     # 4. Linux lspci query
     if sys.platform.startswith("linux"):
-        try:
-            out = subprocess.check_output(
-                ["lspci"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-                timeout=DEFAULT_SUBPROCESS_TIMEOUT,
-            )
+        out = _exec_command_output(["lspci"])
+        if out:
             vga_lines = [line.strip() for line in out.splitlines() if any(k in line.lower() for k in ["vga", "3d controller", "display"])]
             if vga_lines:
                 names = []
@@ -342,8 +325,6 @@ def _get_all_detected_gpu_names() -> List[str]:
                     parts = line.split(":")
                     names.append(parts[-1].strip() if len(parts) >= 3 else line)
                 return names
-        except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
-            pass
 
     return gpu_names
 

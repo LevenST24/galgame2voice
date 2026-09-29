@@ -606,14 +606,7 @@ class TelegramBotHandlers:
             llm_response = await adapter.chat(messages, model=model_name)
             raw_text = llm_response.content
 
-            parser = StreamingBilingualParser()
-            parser.feed_chunk(raw_text)
-            chinese, japanese, _ = parser.finalize()
-
-            if not chinese:
-                chinese = raw_text
-            if not japanese:
-                japanese = chinese
+            chinese, japanese, parser = StreamingBilingualParser.parse_full_text(raw_text)
 
             display_chinese = strip_stage_directions(chinese).strip() or chinese
             dynamic_tts = parser.get_dynamic_tts_options(sentence_text=japanese)

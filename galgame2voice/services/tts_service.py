@@ -15,6 +15,8 @@ from galgame2voice.utils.path_guard import resolve_existing_audio_path
 from galgame2voice.utils.audio_spec import (
     _AUDIO_SPEC_CACHE,
     async_probe_audio_duration_seconds,
+    REFERENCE_AUDIO_MIN_SECONDS,
+    REFERENCE_AUDIO_MAX_SECONDS,
 )
 from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
@@ -185,7 +187,7 @@ class TtsService:
                             or getattr(self.client, "server", None) is not None
                         )
                         needs_fallback = False
-                        if dur is not None and (dur < 3.0 or dur > 10.0):
+                        if dur is not None and not (REFERENCE_AUDIO_MIN_SECONDS <= dur <= REFERENCE_AUDIO_MAX_SECONDS):
                             needs_fallback = True
                         elif not is_mock_client and not file_exists:
                             needs_fallback = True

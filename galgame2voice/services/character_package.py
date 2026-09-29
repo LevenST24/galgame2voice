@@ -25,6 +25,27 @@ logger = logging.getLogger("galgame2voice.services.character_package")
 _AUDIO_PROBE_CACHE: Dict[Tuple[str, int, float], Tuple[str, Optional[float]]] = {}
 
 
+def _resolve_pointer_file_target(target_file: Path) -> Optional[str]:
+    """Inspects if target_file is a lightweight pointer file (<4KB) referencing model weights."""
+    try:
+        if target_file.stat().st_size >= 4096:
+            return None
+        content = target_file.read_text(encoding="utf-8").strip()
+        if not content or not content.endswith((".ckpt", ".pth")):
+            return None
+        if contains_traversal_payload(content):
+            return ""
+        settings = get_settings()
+        ptr_path = Path(content)
+        if not ptr_path.is_absolute():
+            ptr_target = settings.project_root / ptr_path
+            if ptr_target.exists():
+                return to_project_relative_path(ptr_target)
+        return content
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 class CharacterPackage:
     """Represents a fully self-contained character package on disk."""
 
@@ -106,23 +127,9 @@ class CharacterPackage:
         target_file = (self.folder_path / clean_str.lstrip("/\\")) if not p.is_absolute() else p
 
         if target_file.is_file():
-            # Check if it's a pointer file (e.g. text containing path to .ckpt or .pth)
-            try:
-                if target_file.stat().st_size < 4096:
-                    content = target_file.read_text(encoding="utf-8").strip()
-                    if content and content.endswith((".ckpt", ".pth")):
-                        if contains_traversal_payload(content):
-                            return ""
-                        # Pointer points to target
-                        settings = get_settings()
-                        ptr_path = Path(content)
-                        if not ptr_path.is_absolute():
-                            ptr_target = settings.project_root / ptr_path
-                            if ptr_target.exists():
-                                return to_project_relative_path(ptr_target)
-                        return content
-            except (OSError, UnicodeDecodeError):
-                pass
+            ptr_target = _resolve_pointer_file_target(target_file)
+            if ptr_target is not None:
+                return ptr_target
             return to_project_relative_path(target_file)
 
         # If file does not exist directly in package folder, check project root

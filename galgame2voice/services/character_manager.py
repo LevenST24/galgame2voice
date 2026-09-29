@@ -22,6 +22,10 @@ from galgame2voice.schemas.character_manifest import (
     EmotionConfig,
     VoiceParamsConfig,
 )
+from galgame2voice.utils.audio_spec import (
+    REFERENCE_AUDIO_MIN_SECONDS,
+    REFERENCE_AUDIO_MAX_SECONDS,
+)
 from galgame2voice.utils.path_guard import to_project_relative_path
 from galgame2voice.services.character_package import (
     CharacterPackage,
@@ -228,7 +232,7 @@ class CharacterManager:
             if duration is None:
                 # Could not determine duration (unsupported or corrupted audio)
                 errors.append(f"Emotion '{emo_name}' audio '{audio_rel}' could not be decoded or probed for duration")
-            elif duration < 3.0 or duration > 10.0:
+            elif not (REFERENCE_AUDIO_MIN_SECONDS <= duration <= REFERENCE_AUDIO_MAX_SECONDS):
                 errors.append(
                     f"Emotion '{emo_name}' audio '{audio_rel}' duration {duration:.2f}s "
                     f"is out of required [3.0s, 10.0s] range"

@@ -34,6 +34,7 @@ from galgame2voice.services.session_manager import SessionManager
 from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.services.affection_service import AffectionService
 from galgame2voice.services.metrics_collector import get_metrics_collector, MetricsCollector
+from galgame2voice.utils.async_tasks import drain_background_tasks
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.sse import format_sse_frame
 from galgame2voice.utils.text_splitter import split_japanese_sentences
@@ -108,15 +109,7 @@ class ChatService:
 
     async def aclose(self) -> None:
         """Waits for pending background tasks (memory extraction, etc.) to finish."""
-        pending = [t for t in self._bg_tasks if not t.done()]
-        if pending:
-            await asyncio.wait(pending, timeout=3.0)
-        stragglers = [t for t in self._bg_tasks if not t.done()]
-        for t in stragglers:
-            t.cancel()
-        if stragglers:
-            await asyncio.gather(*stragglers, return_exceptions=True)
-        self._bg_tasks.clear()
+        await drain_background_tasks(self._bg_tasks, timeout=3.0)
 
     async def _extract_memory_safe(
         self, user_id: str, profile_id: Optional[int], message_text: str, message_id: int
@@ -212,13 +205,7 @@ class ChatService:
     @staticmethod
     def _affection_fallback(emotion: str) -> Dict[str, Any]:
         """Neutral affection payload used when the affection update fails."""
-        return {
-            "score": 0,
-            "level": 1,
-            "level_name": "初识/生疏",
-            "emotion": emotion,
-            "points_earned": 0,
-        }
+        return AffectionService.get_fallback_payload(emotion)
 
     async def _get_active_llm_adapter(self, conn: Optional[aiosqlite.Connection] = None, provider_id: Optional[str] = None) -> Tuple[BaseLLMAdapter, str, str]:
         """
@@ -696,14 +683,7 @@ class ChatService:
             )
 
             # Parse bilingual response
-            parser = StreamingBilingualParser()
-            parser.feed_chunk(raw_text)
-            chinese, japanese, _ = parser.finalize()
-
-            if not chinese:
-                chinese = raw_text
-            if not japanese:
-                japanese = chinese
+            chinese, japanese, parser = StreamingBilingualParser.parse_full_text(raw_text)
 
             final_emotion = classify_emotion(chinese, japanese, parser.emotion_extracted)
 

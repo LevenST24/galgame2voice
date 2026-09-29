@@ -2,6 +2,7 @@
 Utilities module for galgame2voice.
 """
 
+from galgame2voice.utils.async_tasks import drain_background_tasks
 from galgame2voice.utils.logger import (
     MaskingFilter,
     MaskingFormatter,
@@ -126,5 +127,6 @@ __all__ = [
     "validate_reference_audio",
     "resolve_reference_audio_path",
     "extract_wav_duration",
+    "drain_background_tasks",
 ]
 

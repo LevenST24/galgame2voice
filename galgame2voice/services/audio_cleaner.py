@@ -22,6 +22,7 @@ logger = logging.getLogger("galgame2voice.services.audio_cleaner")
 # TTS cache retention in days: balances compute savings against disk storage
 CACHE_RETENTION_DAYS = 7
 PURGE_BATCH_SIZE: int = 100
+_CACHE_AUDIO_EXTENSIONS = frozenset({".wav", ".ogg", ".mp3", ".opus"})
 
 
 def _resolve_get_db() -> Any:
@@ -54,27 +55,20 @@ def _cache_scan_and_clean(
     orphan_threshold = time.time() - 3600  # 1 hour safe buffer
 
     for f in cache_dir.iterdir():
-        if not f.is_file():
+        if not f.is_file() or f.suffix.lower() not in _CACHE_AUDIO_EXTENSIONS:
             continue
-        if f.suffix.lower() in (".wav", ".ogg", ".mp3", ".opus"):
-            try:
-                should_unlink = False
-                if active_cache_keys is not None:
-                    # Database is single source of truth:
-                    # Only unlink if NOT in active_cache_keys (orphan) and modified before orphan threshold
-                    if f.stem not in active_cache_keys and f.stat().st_mtime < orphan_threshold:
-                        should_unlink = True
-                else:
-                    # Legacy fallback
-                    if f.stat().st_mtime < cutoff:
-                        should_unlink = True
+        try:
+            if active_cache_keys is not None:
+                should_unlink = f.stem not in active_cache_keys and f.stat().st_mtime < orphan_threshold
+            else:
+                should_unlink = f.stat().st_mtime < cutoff
 
-                if should_unlink:
-                    f.unlink(missing_ok=True)
-                    cleaned += 1
-                    unlinked_keys.append(f.stem)
-            except Exception as e:
-                logger.debug("Failed to remove cached audio %s: %s", f, e)
+            if should_unlink:
+                f.unlink(missing_ok=True)
+                cleaned += 1
+                unlinked_keys.append(f.stem)
+        except Exception as e:
+            logger.debug("Failed to remove cached audio %s: %s", f, e)
     return cleaned, unlinked_keys
 
 

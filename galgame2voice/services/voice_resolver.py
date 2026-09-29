@@ -58,6 +58,15 @@ class ResolvedVoiceContext:
         return self.emotions.get(str(emotion).strip().lower())
 
 
+def _extract_field(raw: Any, key: str, default: Any = "") -> Any:
+    """Safely extracts a field from a model, dataclass, object or dict."""
+    if hasattr(raw, key):
+        return getattr(raw, key)
+    if isinstance(raw, dict):
+        return raw.get(key, default)
+    return default
+
+
 class VoiceProfileResolver:
     """
     Maintains in-memory memoization of resolved voice profiles.
@@ -168,16 +177,16 @@ class VoiceProfileResolver:
 
     def _build_context(self, raw: Any) -> ResolvedVoiceContext:
         """Constructs a validated ResolvedVoiceContext from a raw DB model or dict."""
-        pid = getattr(raw, "id", None) if hasattr(raw, "id") else raw.get("id") if isinstance(raw, dict) else None
-        name = getattr(raw, "name", "") if hasattr(raw, "name") else raw.get("name", "") if isinstance(raw, dict) else "Default"
+        pid = _extract_field(raw, "id", None)
+        name = _extract_field(raw, "name", "Default") or "Default"
         clean_name = name.split("(")[0].strip()
 
-        gpt_path = getattr(raw, "gpt_weights_path", "") if hasattr(raw, "gpt_weights_path") else raw.get("gpt_weights_path", "") if isinstance(raw, dict) else ""
-        sovits_path = getattr(raw, "sovits_weights_path", "") if hasattr(raw, "sovits_weights_path") else raw.get("sovits_weights_path", "") if isinstance(raw, dict) else ""
-        ref_audio = getattr(raw, "ref_audio_path", "") if hasattr(raw, "ref_audio_path") else raw.get("ref_audio_path", "") if isinstance(raw, dict) else ""
-        prompt_text = getattr(raw, "prompt_text", "") if hasattr(raw, "prompt_text") else raw.get("prompt_text", "") if isinstance(raw, dict) else ""
-        prompt_lang = getattr(raw, "prompt_lang", "ja") if hasattr(raw, "prompt_lang") else raw.get("prompt_lang", "ja") if isinstance(raw, dict) else "ja"
-        text_lang = getattr(raw, "text_lang", "ja") if hasattr(raw, "text_lang") else raw.get("text_lang", "ja") if isinstance(raw, dict) else "ja"
+        gpt_path = _extract_field(raw, "gpt_weights_path", "") or ""
+        sovits_path = _extract_field(raw, "sovits_weights_path", "") or ""
+        ref_audio = _extract_field(raw, "ref_audio_path", "") or ""
+        prompt_text = _extract_field(raw, "prompt_text", "") or ""
+        prompt_lang = _extract_field(raw, "prompt_lang", "ja") or "ja"
+        text_lang = _extract_field(raw, "text_lang", "ja") or "ja"
 
         # Absolutize weight paths
         abs_gpt = resolve_weight_file_path(gpt_path)

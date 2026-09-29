@@ -185,13 +185,7 @@ class StreamCoordinator:
     @staticmethod
     def _affection_fallback(emotion: str) -> Dict[str, Any]:
         """Neutral affection payload used when the affection update fails."""
-        return {
-            "score": 0,
-            "level": 1,
-            "level_name": "初识/生疏",
-            "emotion": emotion,
-            "points_earned": 0,
-        }
+        return AffectionService.get_fallback_payload(emotion)
 
     def __aiter__(self) -> AsyncGenerator[Dict[str, Any], None]:
         return self.stream()

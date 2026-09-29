@@ -31,6 +31,17 @@ class AffectionService:
         5: {"min_score": 80, "max_score": 100, "name": "恋慕/誓约", "desc": "专属心意与誓约羁绊，解锁全部隐藏告白台词"},
     }
 
+    @staticmethod
+    def get_fallback_payload(emotion: str) -> Dict[str, Any]:
+        """Returns standard neutral affection payload used when an affection update fails."""
+        return {
+            "score": 0,
+            "level": 1,
+            "level_name": "初识/生疏",
+            "emotion": emotion,
+            "points_earned": 0,
+        }
+
     # Keyword scoring rules
     COMPLIMENT_KEYWORDS = [
         "可爱", "辛苦了", "喜欢你", "谢谢你", "真棒", "夸你", "好看", "漂亮", "温柔", "爱你", "想你", "开心",

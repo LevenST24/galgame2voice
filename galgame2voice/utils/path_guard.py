@@ -251,6 +251,47 @@ def validate_voice_profile_paths(
         validate_path_containment(ref_audio_path, allowed_roots=roots)
 
 
+def _search_character_packages_for_audio(raw: str, filename: str) -> Optional[Path]:
+    """Inspects installed character packages for matching reference audio file."""
+    try:
+        from galgame2voice.services.character_manager import get_character_manager
+        mgr = get_character_manager()
+        # Normalize to lowercase path segments; character attribution must
+        # match a complete path segment exactly (substring matching would
+        # let a crafted path like "foo/<char_id>evil/x.ogg" impersonate a
+        # character package).
+        segments = [seg for seg in raw.lower().replace("\\", "/").split("/") if seg]
+        seg_set = set(segments)
+        for pkg in mgr.get_available_characters():
+            # If path references this character by ID, name, or alias as an
+            # exact path segment, or starts with refs/
+            is_match = (
+                pkg.id.lower() in seg_set
+                or pkg.name.lower() in seg_set
+                or any(a.lower() in seg_set for a in (getattr(pkg.manifest, "aliases", None) or []))
+                or (segments and segments[0] == "refs")
+                or segments == ["audio", "nat002_032.ogg"]
+            )
+            if not is_match:
+                continue
+
+            ref_cand = pkg.folder / "refs" / filename
+            if ref_cand.is_file():
+                return ref_cand
+            for emo in (getattr(pkg.manifest, "emotions", None) or {}).values():
+                if Path(emo.audio).name == filename:
+                    resolved = pkg.resolve_audio_path(emo.audio)
+                    if resolved and resolved.is_file():
+                        return resolved
+            if filename == "nat002_032.ogg" and ("natsume" in pkg.id.lower() or "夏目" in pkg.name):
+                ref_cand = pkg.folder / "refs" / "gentle.ogg"
+                if ref_cand.is_file():
+                    return ref_cand
+    except (AttributeError, KeyError, OSError):
+        pass
+    return None
+
+
 def resolve_existing_audio_path(path: Union[str, Path]) -> Optional[Path]:
     """
     Resolves a reference audio path across the three canonical bases in order:
@@ -281,44 +322,9 @@ def resolve_existing_audio_path(path: Union[str, Path]) -> Optional[Path]:
                 return cand
 
         # Check if an installed character package contains this reference file
-        try:
-            from galgame2voice.services.character_manager import get_character_manager
-            mgr = get_character_manager()
-            filename = p.name
-            # Normalize to lowercase path segments; character attribution must
-            # match a complete path segment exactly (substring matching would
-            # let a crafted path like "foo/<char_id>evil/x.ogg" impersonate a
-            # character package).
-            segments = [seg for seg in raw.lower().replace("\\", "/").split("/") if seg]
-            seg_set = set(segments)
-            for pkg in mgr.get_available_characters():
-                # If path references this character by ID, name, or alias as an
-                # exact path segment, or starts with refs/
-                is_match = (
-                    pkg.id.lower() in seg_set
-                    or pkg.name.lower() in seg_set
-                    or any(a.lower() in seg_set for a in (getattr(pkg.manifest, "aliases", None) or []))
-                    or (segments and segments[0] == "refs")
-                    or segments == ["audio", "nat002_032.ogg"]
-                )
-                if is_match:
-                    ref_cand = pkg.folder / "refs" / filename
-                    if ref_cand.is_file():
-                        return ref_cand
-                    for emo in (getattr(pkg.manifest, "emotions", None) or {}).values():
-                        if Path(emo.audio).name == filename:
-                            resolved = pkg.resolve_audio_path(emo.audio)
-                            if resolved and resolved.is_file():
-                                return resolved
-                    if filename == "nat002_032.ogg" and ("natsume" in pkg.id.lower() or "夏目" in pkg.name):
-                        ref_cand = pkg.folder / "refs" / "gentle.ogg"
-                        if ref_cand.is_file():
-                            return ref_cand
-        except (AttributeError, KeyError, OSError):
-            pass
+        return _search_character_packages_for_audio(raw, p.name)
     except OSError:
         return None
-    return None
 
 
 def resolve_weight_file_path(path: str) -> str:

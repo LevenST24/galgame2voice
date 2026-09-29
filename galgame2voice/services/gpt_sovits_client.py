@@ -355,7 +355,8 @@ class GptSovitsClient:
 
             try:
                 # Step 1: GPT weights (skip if identical weights already loaded and not force)
-                if force or not (self.current_gpt_weights and self.current_gpt_weights == spec.gpt_weights_path):
+                needs_gpt_update = force or not self.current_gpt_weights or self.current_gpt_weights != spec.gpt_weights_path
+                if needs_gpt_update:
                     r1 = await self._request("GET", "/set_gpt_weights", params={"weights_path": spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
                     if r1.status_code != 200:
                         logger.error("Switch failed at Step 1 (GPT weights): %s", r1.text)
@@ -365,7 +366,8 @@ class GptSovitsClient:
                     logger.debug("Skipping /set_gpt_weights: '%s' already loaded", spec.gpt_weights_path)
 
                 # Step 2: SoVITS weights (skip if identical weights already loaded and not force)
-                if force or not (self.current_sovits_weights and self.current_sovits_weights == spec.sovits_weights_path):
+                needs_sovits_update = force or not self.current_sovits_weights or self.current_sovits_weights != spec.sovits_weights_path
+                if needs_sovits_update:
                     r2 = await self._request("GET", "/set_sovits_weights", params={"weights_path": spec.sovits_weights_path}, timeout=SWITCH_TIMEOUT)
                     if r2.status_code != 200:
                         logger.error("Switch failed at Step 2 (SoVITS weights): %s. Initiating rollback...", r2.text)
@@ -379,7 +381,13 @@ class GptSovitsClient:
 
                 # Step 3: Reference Audio
                 resolved_ref_audio = resolve_reference_audio_path(spec.refer_audio_path)
-                if force or not (self.current_refer_audio and self.current_refer_audio == resolved_ref_audio and self.current_refer_text == spec.refer_text and self.current_refer_language == spec.refer_language):
+                is_same_refer = bool(
+                    self.current_refer_audio
+                    and self.current_refer_audio == resolved_ref_audio
+                    and self.current_refer_text == spec.refer_text
+                    and self.current_refer_language == spec.refer_language
+                )
+                if force or not is_same_refer:
                     r3 = await self._request("GET", "/set_refer_audio", params={"refer_audio_path": resolved_ref_audio})
                     if r3.status_code != 200:
                         logger.error("Switch failed at Step 3 (Refer Audio): %s. Initiating rollback...", r3.text)
