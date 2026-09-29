@@ -376,28 +376,28 @@ class StreamingBilingualParser:
                 if lead_emo_ja:
                     self._set_lead_emotion(lead_emo_ja)
 
-            is_first = not self.first_sentence_emitted
-            all_sentences = split_japanese_sentences(current_ja, is_first_chunk=is_first)
-            # If neither the japanese field nor the JSON object is closed, the last sentence might still be growing
             is_ja_closed = bool(
                 _RE_JAPANESE_CLOSED.search(sanitized)
                 or sanitized.rstrip().endswith(('"}', '"}`', '"} \n`', '"} \n', '"}'))
             )
-            if not is_ja_closed:
-                all_sentences = _trim_unclosed_sentence(all_sentences, is_first)
-
-            new_sentences = self._drain_new_ja_sentences(all_sentences)
+            new_sentences = self._extract_new_ja_sentences(current_ja, is_closed=is_ja_closed)
         elif self.is_plain_text_fallback:
             ja_fallback = _RE_JAPANESE_FALLBACK.search(sanitized)
             if ja_fallback:
                 current_ja = ja_fallback.group(1).strip()
                 self.japanese_extracted = current_ja
-                is_first = not self.first_sentence_emitted
-                all_sentences = split_japanese_sentences(current_ja, is_first_chunk=is_first)
-                all_sentences = _trim_unclosed_sentence(all_sentences, is_first)
-                new_sentences = self._drain_new_ja_sentences(all_sentences)
+                new_sentences = self._extract_new_ja_sentences(current_ja, is_closed=False)
 
         return new_chinese_delta, new_sentences
+
+    def _extract_new_ja_sentences(self, current_ja: str, is_closed: bool) -> List[str]:
+        """Splits accumulated Japanese text into sentences and drains newly confirmed ones."""
+        is_first = not self.first_sentence_emitted
+        all_sentences = split_japanese_sentences(current_ja, is_first_chunk=is_first)
+        # If the sentence source is not yet closed, the trailing sentence might still be growing
+        if not is_closed:
+            all_sentences = _trim_unclosed_sentence(all_sentences, is_first)
+        return self._drain_new_ja_sentences(all_sentences)
 
     def _drain_new_ja_sentences(self, confirmed_sentences: List[str]) -> List[str]:
         """
@@ -525,9 +525,7 @@ class StreamingBilingualParser:
             # is_first_chunk parameter as feed_chunk, then drain everything
             # beyond the monotone emitted-sentence cursor so feed_chunk and
             # finalize stay aligned (no duplicated or skipped sentences).
-            is_first = not self.first_sentence_emitted
-            all_sentences = split_japanese_sentences(self.japanese_extracted, is_first_chunk=is_first)
-            remaining_sentences = self._drain_new_ja_sentences(all_sentences)
+            remaining_sentences = self._extract_new_ja_sentences(self.japanese_extracted, is_closed=True)
 
         return self.chinese_extracted, self.japanese_extracted, remaining_sentences
 

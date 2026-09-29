@@ -6,6 +6,7 @@ and character package synchronization.
 """
 
 import asyncio
+from datetime import datetime
 import logging
 import os
 import re
@@ -14,11 +15,13 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+import zipfile
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
 from galgame2voice.config import get_settings
+from galgame2voice.utils.hardware import release_system_memory
 from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.routers.system")
@@ -191,7 +194,6 @@ def _rebuild_frontend_sync(project_root: Path, timeout: float = 120.0) -> Tuple[
         sanitized = sanitized.replace("\u2713", "[OK]").replace("\u2717", "[FAIL]")
         if proc.returncode == 0:
             try:
-                from galgame2voice.utils.hardware import release_system_memory
                 release_system_memory()
             except Exception as mem_err:
                 logger.debug("Failed releasing system memory after npm deploy: %s", mem_err)
@@ -361,8 +363,6 @@ def _check_version_sync(project_root: Path, check_remote: bool = True) -> System
 def _create_pre_update_backup(project_root: Path, modified_files: List[str]) -> Optional[Path]:
     """Zips uncommitted/untracked files to data/backups before git operations to prevent any data loss."""
     try:
-        from datetime import datetime
-        import zipfile
         backup_dir = project_root / "data" / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")

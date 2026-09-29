@@ -8,7 +8,7 @@ import os
 import sys
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 BYTES_PER_KB: int = 1024
 BYTES_PER_MB: int = 1024 * 1024

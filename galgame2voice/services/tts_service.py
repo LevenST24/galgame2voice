@@ -40,6 +40,7 @@ from galgame2voice.utils.prosody import (
     calculate_adaptive_prosody,
 )
 from galgame2voice.services.tts_cache_manager import get_tts_cache_manager, TtsCacheManager
+from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
 
 logger = logging.getLogger("galgame2voice.services.tts_service")
 
@@ -243,6 +244,9 @@ class TtsService:
             if "batch_size" in opts and opts["batch_size"] is not None:
                 opts["batch_size"] = clamp_dynamic_batch_size(opts["batch_size"], fallback=1)
 
+        if text is not None and "text_split_method" not in opts and "cut_option" not in opts and "how_to_cut" not in opts:
+            opts["text_split_method"] = "cut0" if len(text.strip()) <= 80 else "cut2"
+
         return opts
 
     async def synthesize(
@@ -258,8 +262,6 @@ class TtsService:
         opts = dict(options or {})
         opts = await self._populate_voice_profile_opts(opts)
         opts = self._sanitize_dynamic_voice_options(opts, text=text)
-        if "text_split_method" not in opts and "cut_option" not in opts and "how_to_cut" not in opts:
-            opts["text_split_method"] = "cut0" if len(text.strip()) <= 80 else "cut2"
 
         cache_key = ""
         clean_text = ""
@@ -288,7 +290,6 @@ class TtsService:
                     logger.warning("Failed to store synthesized audio in cache: %s", exc)
             return audio_bytes
 
-        from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
         scheduler = get_tts_scheduler()
         priority = TtsPriority.from_options(opts)
         gen_id = opts.get("_generation_id")
@@ -322,10 +323,7 @@ class TtsService:
         opts = dict(options or {})
         opts = await self._populate_voice_profile_opts(opts)
         opts = self._sanitize_dynamic_voice_options(opts, text=text)
-        if "text_split_method" not in opts and "cut_option" not in opts and "how_to_cut" not in opts:
-            opts["text_split_method"] = "cut0" if len(text.strip()) <= 80 else "cut2"
 
-        from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
         scheduler = get_tts_scheduler()
         priority = TtsPriority.from_options(opts)
         gen_id = opts.get("_generation_id")
@@ -395,8 +393,6 @@ class TtsService:
         opts = dict(options or {})
         opts = await self._populate_voice_profile_opts(opts)
         opts = self._sanitize_dynamic_voice_options(opts, text=text)
-        if "text_split_method" not in opts and "cut_option" not in opts and "how_to_cut" not in opts:
-            opts["text_split_method"] = "cut0" if len(text.strip()) <= 80 else "cut2"
 
         cache_key = ""
         clean_text = ""
@@ -409,7 +405,6 @@ class TtsService:
                     yield chunk
                 return
 
-        from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
         scheduler = get_tts_scheduler()
         priority = TtsPriority.from_options(opts)
 

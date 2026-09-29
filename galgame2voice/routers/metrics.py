@@ -14,6 +14,7 @@ from galgame2voice.database.models import (
     LatencyTrendResponse,
     CacheStatsResponse,
 )
+from galgame2voice.services.dynamic_batcher import get_speed_tracker
 from galgame2voice.services.metrics_collector import get_metrics_collector
 from galgame2voice.services.tts_cache_manager import get_tts_cache_manager
 
@@ -78,7 +79,6 @@ async def get_cache_stats() -> CacheStatsResponse:
     description="Returns real-time synthesis metrics including RTF (Real-Time Factor), chars/sec, and dynamic batch size status.",
 )
 async def get_tts_speed_metrics() -> Dict[str, Any]:
-    from galgame2voice.services.dynamic_batcher import get_speed_tracker
     tracker = get_speed_tracker()
     return tracker.get_telemetry()
 
