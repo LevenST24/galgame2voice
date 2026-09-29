@@ -28,38 +28,34 @@ __all__ = [
 ]
 
 
+def _row_to_voice_profile(row: Optional[aiosqlite.Row]) -> Optional[VoiceProfileResponse]:
+    """Helper to convert a SQLite Row to VoiceProfileResponse with normalized boolean is_default."""
+    if not row:
+        return None
+    d = dict(row)
+    d["is_default"] = bool(d.get("is_default", 0))
+    return VoiceProfileResponse(**d)
+
+
 async def list_voice_profiles(conn: aiosqlite.Connection) -> List[VoiceProfileResponse]:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM voice_profiles ORDER BY id ASC;")
     rows = await cursor.fetchall()
-    result = []
-    for r in rows:
-        d = dict(r)
-        d["is_default"] = bool(d.get("is_default", 0))
-        result.append(VoiceProfileResponse(**d))
-    return result
+    return [p for r in rows if (p := _row_to_voice_profile(r)) is not None]
 
 
 async def get_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> Optional[VoiceProfileResponse]:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM voice_profiles WHERE id = ?;", (profile_id,))
     row = await cursor.fetchone()
-    if not row:
-        return None
-    d = dict(row)
-    d["is_default"] = bool(d.get("is_default", 0))
-    return VoiceProfileResponse(**d)
+    return _row_to_voice_profile(row)
 
 
 async def get_voice_profile_by_name(conn: aiosqlite.Connection, name: str) -> Optional[VoiceProfileResponse]:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM voice_profiles WHERE name = ? LIMIT 1;", (name,))
     row = await cursor.fetchone()
-    if not row:
-        return None
-    d = dict(row)
-    d["is_default"] = bool(d.get("is_default", 0))
-    return VoiceProfileResponse(**d)
+    return _row_to_voice_profile(row)
 
 
 async def get_active_voice_profile(conn: aiosqlite.Connection) -> Optional[VoiceProfileResponse]:
@@ -82,28 +78,16 @@ async def get_active_voice_profile(conn: aiosqlite.Connection) -> Optional[Voice
         except Exception:
             pass
 
-    # First check settings table for active_voice_profile_id
-    settings_cursor = await conn.execute("SELECT active_voice_profile_id FROM settings WHERE id = 1;")
-    settings_row = await settings_cursor.fetchone()
-    if settings_row and settings_row["active_voice_profile_id"]:
-        cursor = await conn.execute("SELECT * FROM voice_profiles WHERE id = ?;", (settings_row["active_voice_profile_id"],))
-        row = await cursor.fetchone()
-        if row:
-            return VoiceProfileResponse(**dict(row))
-
     # Fallback to is_default = 1
     cursor = await conn.execute("SELECT * FROM voice_profiles WHERE is_default = 1 LIMIT 1;")
     row = await cursor.fetchone()
     if row:
-        return VoiceProfileResponse(**dict(row))
+        return _row_to_voice_profile(row)
 
     # Fallback to first available profile
     cursor = await conn.execute("SELECT * FROM voice_profiles ORDER BY id ASC LIMIT 1;")
     row = await cursor.fetchone()
-    if row:
-        return VoiceProfileResponse(**dict(row))
-
-    return None
+    return _row_to_voice_profile(row)
 
 
 async def create_voice_profile(conn: aiosqlite.Connection, profile: VoiceProfileCreate) -> VoiceProfileResponse:

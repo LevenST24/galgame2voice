@@ -29,7 +29,7 @@ class LlmStreamPipeline:
         max_tokens: Optional[int] = None,
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
-    ):
+    ) -> None:
         self.adapter = adapter
         self.messages = messages
         self.model_name = model_name

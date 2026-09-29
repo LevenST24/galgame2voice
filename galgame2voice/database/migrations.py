@@ -5,6 +5,7 @@ from runtime CRUD operations.
 """
 
 import logging
+import os
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -57,7 +58,6 @@ def _save_console_token_file(token: str) -> None:
         token_file.parent.mkdir(parents=True, exist_ok=True)
         token_file.write_text(token.strip(), encoding="utf-8")
         try:
-            import os
             os.chmod(token_file, 0o600)
         except Exception:
             pass

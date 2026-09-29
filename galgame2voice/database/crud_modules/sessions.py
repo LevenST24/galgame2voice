@@ -3,6 +3,7 @@ Session and message CRUD operations for SQLite persistence in galgame2voice.
 """
 
 import logging
+from pathlib import Path
 import re
 import sqlite3
 from typing import Any, Dict, List, Optional
@@ -201,7 +202,6 @@ async def list_sessions_overview(conn: aiosqlite.Connection, limit: int = 50) ->
 
 
 def _cascade_delete_message_audios(audio_urls: List[str]) -> None:
-    from pathlib import Path
     try:
         from galgame2voice.config import get_settings
         audio_dir = get_settings().audio_dir
@@ -228,8 +228,8 @@ def _cascade_delete_message_audios(audio_urls: List[str]) -> None:
             logger.debug("Failed cascading audio deletion for %s: %s", raw_url, e)
 
 
-async def delete_session(conn: aiosqlite.Connection, session_id: str) -> bool:
-    # Query audio_urls for cascade deletion
+async def _cleanup_session_audios(conn: aiosqlite.Connection, session_id: str, context: str) -> None:
+    """Helper to query and cascade-delete ephemeral audios belonging to a session."""
     try:
         cur_urls = await conn.execute(
             "SELECT audio_url FROM messages WHERE session_id = ? AND audio_url IS NOT NULL AND audio_url != '';",
@@ -238,7 +238,11 @@ async def delete_session(conn: aiosqlite.Connection, session_id: str) -> bool:
         audio_urls = [r[0] for r in await cur_urls.fetchall() if r and r[0]]
         _cascade_delete_message_audios(audio_urls)
     except Exception as exc:
-        logger.debug("Cascade audio cleanup on delete_session skipped: %s", exc)
+        logger.debug("Cascade audio cleanup on %s skipped: %s", context, exc)
+
+
+async def delete_session(conn: aiosqlite.Connection, session_id: str) -> bool:
+    await _cleanup_session_audios(conn, session_id, "delete_session")
 
     async with immediate_transaction(conn):
         await conn.execute("DELETE FROM messages WHERE session_id = ?;", (session_id,))
@@ -247,16 +251,7 @@ async def delete_session(conn: aiosqlite.Connection, session_id: str) -> bool:
 
 
 async def clear_session_messages(conn: aiosqlite.Connection, session_id: str) -> bool:
-    # Query audio_urls for cascade deletion
-    try:
-        cur_urls = await conn.execute(
-            "SELECT audio_url FROM messages WHERE session_id = ? AND audio_url IS NOT NULL AND audio_url != '';",
-            (session_id,),
-        )
-        audio_urls = [r[0] for r in await cur_urls.fetchall() if r and r[0]]
-        _cascade_delete_message_audios(audio_urls)
-    except Exception as exc:
-        logger.debug("Cascade audio cleanup on clear_session_messages skipped: %s", exc)
+    await _cleanup_session_audios(conn, session_id, "clear_session_messages")
 
     cleared = False
     async with immediate_transaction(conn):

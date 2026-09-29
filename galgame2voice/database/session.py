@@ -4,9 +4,11 @@ Enforces WAL mode, foreign keys, and async connection management via aiosqlite.
 """
 
 import asyncio
+from datetime import datetime
 import logging
 import os
 import random
+import shutil
 import sqlite3
 import uuid
 import weakref
@@ -263,8 +265,6 @@ async def init_db(db_path: Optional[Union[str, Path]] = None) -> None:
     # Automated pre-migration restorable backup
     if resolved_path.exists() and resolved_path.is_file() and resolved_path.stat().st_size > 0:
         try:
-            from datetime import datetime
-            import shutil
             backup_dir = resolved_path.parent / "backups"
             backup_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")

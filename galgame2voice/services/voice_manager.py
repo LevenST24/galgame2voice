@@ -105,7 +105,7 @@ class VoiceManager:
         self._switch_lock = asyncio.Lock()
         self._bg_tasks: set[asyncio.Task] = set()
 
-    def _spawn_background(self, coro) -> asyncio.Task:
+    def _spawn_background(self, coro: Any) -> asyncio.Task:
         """Spawns and retains a strong reference to a background task, preventing GC mid-execution."""
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
@@ -140,7 +140,7 @@ class VoiceManager:
         return self.client.server
 
     @server.setter
-    def server(self, val: Any):
+    def server(self, val: Any) -> None:
         self.client.server = val
 
     @property
@@ -149,7 +149,7 @@ class VoiceManager:
         return self.client.active_profile
 
     @active_profile.setter
-    def active_profile(self, val: Any):
+    def active_profile(self, val: Any) -> None:
         self.client.active_profile = val
 
     @property
@@ -508,13 +508,13 @@ class VoiceManager:
                 if full_bytes:
                     vpid = opts.get("voice_profile_id", 1)
                     async def _async_cache_put(
-                        b_key=cache_key,
-                        b_text=text,
-                        b_clean=clean_text,
-                        b_vpid=vpid,
-                        b_hash=params_hash,
-                        b_audio=full_bytes,
-                    ):
+                        b_key: str = cache_key,
+                        b_text: str = text,
+                        b_clean: str = clean_text,
+                        b_vpid: Any = vpid,
+                        b_hash: str = params_hash,
+                        b_audio: bytes = full_bytes,
+                    ) -> None:
                         try:
                             await cache_mgr.put(
                                 cache_key=b_key,

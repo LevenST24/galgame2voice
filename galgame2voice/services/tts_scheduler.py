@@ -104,7 +104,7 @@ class SingleFlightCoordinator:
     Subsequent callers await the single leader's result instead of duplicating GPU inference.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._flights: Dict[str, asyncio.Future] = {}
         self._lock: Optional[asyncio.Lock] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -179,7 +179,7 @@ class TtsScheduler:
     and enabling proactive elimination of stale tasks on dialogue interruptions.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._queue: Optional[asyncio.PriorityQueue[ScheduledTtsTask]] = None
         self._seq: int = 0

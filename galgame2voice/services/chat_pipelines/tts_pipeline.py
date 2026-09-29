@@ -26,7 +26,7 @@ class TtsStreamPipeline:
     Manages audio synthesis for sentence chunks produced by the chat parser.
     """
 
-    def __init__(self, tts_service: TtsService, generation_id: str):
+    def __init__(self, tts_service: TtsService, generation_id: str) -> None:
         self.tts_service = tts_service
         self.generation_id = generation_id
 

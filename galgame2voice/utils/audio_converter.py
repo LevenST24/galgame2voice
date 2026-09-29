@@ -141,6 +141,18 @@ def is_target_wav_pcm(
         return False
 
 
+async def _terminate_subprocess(proc: asyncio.subprocess.Process, timeout: float = 3.0) -> None:
+    """Defensively terminates a subprocess and waits for exit."""
+    try:
+        proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=timeout)
+    except Exception:
+        pass
+
+
 async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
     """
     Runs ffmpeg command asynchronously with bounded timeout and process cleanup.
@@ -164,24 +176,10 @@ async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except (asyncio.TimeoutError, TimeoutError) as exc:
         logger.error("ffmpeg conversion timed out after %.1f seconds: %s", timeout, cmd_args[:4])
-        try:
-            proc.kill()
-        except (ProcessLookupError, OSError):
-            pass
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=3.0)
-        except Exception:
-            pass
+        await _terminate_subprocess(proc)
         raise TimeoutError(f"ffmpeg conversion timed out after {timeout} seconds") from exc
     except asyncio.CancelledError:
-        try:
-            proc.kill()
-        except (ProcessLookupError, OSError):
-            pass
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=3.0)
-        except Exception:
-            pass
+        await _terminate_subprocess(proc)
         raise
 
     if proc.returncode != 0:

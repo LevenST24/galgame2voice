@@ -23,7 +23,7 @@ class TextSegmentationPipeline:
     3. Emotion metadata
     """
 
-    def __init__(self, parser: Optional[StreamingBilingualParser] = None):
+    def __init__(self, parser: Optional[StreamingBilingualParser] = None) -> None:
         self.parser = parser or StreamingBilingualParser()
 
     def feed_token(self, token: str) -> Tuple[str, List[str], Optional[str]]:

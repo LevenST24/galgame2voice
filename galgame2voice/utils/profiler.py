@@ -38,7 +38,7 @@ class ChatTurnProfiler:
     T7: Audio playback started
     """
 
-    def __init__(self, turn_id: Optional[str] = None, enabled: Optional[bool] = None):
+    def __init__(self, turn_id: Optional[str] = None, enabled: Optional[bool] = None) -> None:
         self.turn_id = turn_id or str(int(time.time() * 1000) % 10000)
         self.enabled = is_profiling_enabled() if enabled is None else enabled
         self.t_start = time.perf_counter()

@@ -126,7 +126,7 @@ class AffectionService:
         },
     }
 
-    def __init__(self, db_path: Optional[Union[str, Path]] = None):
+    def __init__(self, db_path: Optional[Union[str, Path]] = None) -> None:
         self.db_path = str(db_path) if db_path is not None else get_database_path()
 
     def calculate_level(self, score: int) -> Tuple[int, str]:
