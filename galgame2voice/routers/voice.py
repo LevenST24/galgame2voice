@@ -384,30 +384,14 @@ async def synthesize_speech(req: SynthesizeRequest):
 
     # Collect and normalize options
     options: Dict[str, Any] = dict(req.options or {})
-    if req.voice_profile_id is not None:
-        options["voice_profile_id"] = req.voice_profile_id
-    if req.speed is not None:
-        options["speed"] = req.speed
-    if req.top_k is not None:
-        options["top_k"] = req.top_k
-    if req.temperature is not None:
-        options["temperature"] = req.temperature
-    if req.top_p is not None:
-        options["top_p"] = req.top_p
-    if req.text_language is not None:
-        options["text_language"] = req.text_language
-    if req.cut_option is not None:
-        options["cut_option"] = req.cut_option
-    if req.preset is not None:
-        options["preset"] = req.preset
-    if req.fragment_interval is not None:
-        options["fragment_interval"] = req.fragment_interval
-    if req.batch_size is not None:
-        options["batch_size"] = req.batch_size
-    if req.emotion is not None:
-        options["emotion"] = req.emotion
-    if req.ai_adaptive_voice is not None:
-        options["ai_adaptive_voice"] = req.ai_adaptive_voice
+    for field in (
+        "voice_profile_id", "speed", "top_k", "temperature", "top_p",
+        "text_language", "cut_option", "preset", "fragment_interval",
+        "batch_size", "emotion", "ai_adaptive_voice",
+    ):
+        val = getattr(req, field, None)
+        if val is not None:
+            options[field] = val
 
     try:
         validate_user_tts_options(options)

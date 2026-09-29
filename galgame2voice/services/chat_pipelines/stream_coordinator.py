@@ -51,6 +51,11 @@ class SseKeepAlive(dict):
         return super().__eq__(other)
 
 
+def _has_meaningful_text(chinese: Optional[str], japanese: Optional[str]) -> bool:
+    """Returns True if either Chinese or Japanese string contains non-whitespace text."""
+    return bool((chinese and chinese.strip()) or (japanese and japanese.strip()))
+
+
 class _StreamRun:
     """Holds per-stream runtime state, pipelines, task handles, and telemetry."""
 
@@ -494,6 +499,16 @@ class StreamCoordinator:
         except Exception as persist_err:
             logger.warning("Failed to persist partial assistant message: %s", persist_err)
 
+    async def _prune_orphaned_user_message(self) -> None:
+        """Prunes orphaned user message when no meaningful assistant response was generated."""
+        if self.user_msg is not None and getattr(self.user_msg, "id", None):
+            try:
+                async with get_db(self.db_path) as conn:
+                    async with immediate_transaction(conn):
+                        await conn.execute("DELETE FROM messages WHERE id = ?;", (self.user_msg.id,))
+            except Exception as prune_err:
+                logger.warning("Failed to prune orphaned user message %s: %s", self.user_msg.id, prune_err)
+
     async def _finalize_early_exit(
         self,
         run: _StreamRun,
@@ -518,10 +533,7 @@ class StreamCoordinator:
         # not silently dropped from history (the user message was saved).
         partial_ch = run.final_result.get("chinese") or run.parser.chinese_extracted
         partial_ja = run.final_result.get("japanese") or run.parser.japanese_extracted
-        has_meaningful_content = bool(
-            (partial_ch and partial_ch.strip()) or (partial_ja and partial_ja.strip())
-        )
-        if has_meaningful_content:
+        if _has_meaningful_text(partial_ch, partial_ja):
             self._spawn_bg(self._persist_partial_message(partial_ch, partial_ja, run.t_start))
 
         if is_cancelled:
@@ -616,9 +628,7 @@ class StreamCoordinator:
             tts_generated_chunks=run.tts_generated_chunks,
         )
 
-        has_meaningful_content = bool(
-            (full_chinese and full_chinese.strip()) or (full_japanese and full_japanese.strip())
-        )
+        has_meaningful_content = _has_meaningful_text(full_chinese, full_japanese)
         if has_meaningful_content:
             # Persist assistant message in DB
             async with get_db(self.db_path) as conn:
@@ -632,15 +642,8 @@ class StreamCoordinator:
                         latency_ms=total_latency,
                     ))
                 self.persisted_assistant = True
-        elif self.user_msg is not None and getattr(self.user_msg, "id", None):
-            # No meaningful assistant tokens were generated.
-            # Prune the orphaned user message to prevent consecutive user turns in DB history.
-            try:
-                async with get_db(self.db_path) as conn:
-                    async with immediate_transaction(conn):
-                        await conn.execute("DELETE FROM messages WHERE id = ?;", (self.user_msg.id,))
-            except Exception as prune_err:
-                logger.warning("Failed to prune orphaned user message %s: %s", self.user_msg.id, prune_err)
+        else:
+            await self._prune_orphaned_user_message()
 
         # Clean local_path from audio_chunks before emitting to frontend
         clean_chunks = [
@@ -729,10 +732,7 @@ class StreamCoordinator:
         if not self.persisted_assistant and self.user_msg is not None:
             partial_ch = run.final_result.get("chinese") or run.parser.chinese_extracted
             partial_ja = run.final_result.get("japanese") or run.parser.japanese_extracted
-            has_meaningful_content = bool(
-                (partial_ch and partial_ch.strip()) or (partial_ja and partial_ja.strip())
-            )
-            if has_meaningful_content:
+            if _has_meaningful_text(partial_ch, partial_ja):
                 try:
                     async with get_db(self.db_path) as conn:
                         async with immediate_transaction(conn):
@@ -747,15 +747,8 @@ class StreamCoordinator:
                         self.persisted_assistant = True
                 except Exception as persist_err:
                     logger.warning("Failed to persist partial assistant message in finally: %s", persist_err)
-            elif getattr(self.user_msg, "id", None):
-                # No meaningful assistant tokens were generated before disconnect.
-                # Prune the orphaned user message to prevent consecutive user turns in DB history.
-                try:
-                    async with get_db(self.db_path) as conn:
-                        async with immediate_transaction(conn):
-                            await conn.execute("DELETE FROM messages WHERE id = ?;", (self.user_msg.id,))
-                except Exception as prune_err:
-                    logger.warning("Failed to prune orphaned user message %s: %s", self.user_msg.id, prune_err)
+            else:
+                await self._prune_orphaned_user_message()
 
         run.profiler.print_waterfall()
 
