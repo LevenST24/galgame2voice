@@ -295,23 +295,33 @@ class TtsScheduler:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
 
+        task = ScheduledTtsTask(
+            priority=int(priority),
+            seq=0,
+            task_id=tid,
+            generation_id=generation_id,
+            coro_fn=coro_fn,
+            future=fut,
+        )
+        await self._enqueue_task(task)
+        return await fut
+
+    def _mark_stream_cancelled(self, task: ScheduledTtsTask) -> None:
+        """Atomically marks a streaming task cancelled and increments telemetry."""
+        if not task.stream_cancelled_counted:
+            task.stream_cancelled_counted = True
+            self._cancelled_streams += 1
+
+    async def _enqueue_task(self, task: ScheduledTtsTask) -> None:
+        """Assigns sequence number and adds task to priority queue under scheduler lock."""
         assert self._lock is not None and self._queue is not None
         async with self._lock:
             self._seq += 1
-            task = ScheduledTtsTask(
-                priority=int(priority),
-                seq=self._seq,
-                task_id=tid,
-                generation_id=generation_id,
-                coro_fn=coro_fn,
-                future=fut,
-            )
-            self._tasks_by_id[tid] = task
-            if generation_id:
-                self._tasks_by_gen.setdefault(generation_id, set()).add(tid)
+            task.seq = self._seq
+            self._tasks_by_id[task.task_id] = task
+            if task.generation_id:
+                self._tasks_by_gen.setdefault(task.generation_id, set()).add(task.task_id)
             await self._queue.put(task)
-
-        return await fut
 
     async def schedule_stream(
         self,
@@ -346,9 +356,7 @@ class TtsScheduler:
 
         async def _run_stream() -> None:
             if task.cancelled or task.future.cancelled() or stop_event.is_set():
-                if not task.stream_cancelled_counted:
-                    task.stream_cancelled_counted = True
-                    self._cancelled_streams += 1
+                self._mark_stream_cancelled(task)
                 return
 
             self._active_streams += 1
@@ -362,21 +370,15 @@ class TtsScheduler:
 
                 async for chunk in stream_gen:
                     if task.cancelled or task.future.cancelled() or stop_event.is_set():
-                        if not task.stream_cancelled_counted:
-                            task.stream_cancelled_counted = True
-                            self._cancelled_streams += 1
+                        self._mark_stream_cancelled(task)
                         break
                     put_ok = await _safe_put_chunk(buffer_queue, chunk, stop_event)
                     if not put_ok:
-                        if not task.stream_cancelled_counted:
-                            task.stream_cancelled_counted = True
-                            self._cancelled_streams += 1
+                        self._mark_stream_cancelled(task)
                         break
             except BaseException as exc:
                 if isinstance(exc, (asyncio.CancelledError, GeneratorExit)):
-                    if not task.stream_cancelled_counted:
-                        task.stream_cancelled_counted = True
-                        self._cancelled_streams += 1
+                    self._mark_stream_cancelled(task)
                 else:
                     await _safe_put_chunk(buffer_queue, _StreamError(exc), stop_event)
                 raise
@@ -390,15 +392,7 @@ class TtsScheduler:
                 await _safe_put_chunk(buffer_queue, _STREAM_EOF, stop_event)
 
         task.coro_fn = _run_stream
-
-        assert self._lock is not None and self._queue is not None
-        async with self._lock:
-            self._seq += 1
-            task.seq = self._seq
-            self._tasks_by_id[tid] = task
-            if generation_id:
-                self._tasks_by_gen.setdefault(generation_id, set()).add(tid)
-            await self._queue.put(task)
+        await self._enqueue_task(task)
 
         is_normal_eof = False
         try:
@@ -420,9 +414,7 @@ class TtsScheduler:
             stop_event.set()
             if not is_normal_eof:
                 task.cancelled = True
-                if not task.stream_cancelled_counted:
-                    task.stream_cancelled_counted = True
-                    self._cancelled_streams += 1
+                self._mark_stream_cancelled(task)
                 if not fut.done():
                     fut.cancel()
 

@@ -78,21 +78,12 @@ class CharacterPackage:
                     return res
             return None
 
-        # 1. Check relative to character package folder
+        # Check relative to package folder, project root, and audio_dir
         norm_rel = clean_str.lstrip("/\\")
-        cand = (self.folder_path / norm_rel).resolve()
-        if cand.is_file() and (cand == self.folder_path or cand.is_relative_to(self.folder_path)):
-            return cand
-
-        # 2. Check relative to project root
-        root_cand = (settings.project_root / norm_rel).resolve()
-        if root_cand.is_file() and (root_cand == settings.project_root or root_cand.is_relative_to(settings.project_root)):
-            return root_cand
-
-        # 3. Check relative to audio_dir
-        audio_cand = (settings.audio_dir / norm_rel).resolve()
-        if audio_cand.is_file() and (audio_cand == settings.audio_dir or audio_cand.is_relative_to(settings.audio_dir)):
-            return audio_cand
+        for base in (self.folder_path, settings.project_root, settings.audio_dir):
+            cand = (base / norm_rel).resolve()
+            if cand.is_file() and (cand == base or cand.is_relative_to(base)):
+                return cand
 
         return None
 

@@ -97,6 +97,23 @@ for _cue_k, _cue_v in STAGE_CUE_EMOTION_MAP.items():
         EMOTION_NAME_MAP[_cue_k] = _cue_v
 
 
+def _match_emotion_candidate(raw_candidate: str) -> Optional[str]:
+    """Matches candidate emotion text against aliases, exact keywords, or substrings."""
+    candidate = raw_candidate.strip().lower()
+    candidate_bare = re.sub(r'[。！？!?….~〜 　\-\*]+', '', candidate).strip()
+
+    if candidate in EMOTION_NAME_MAP:
+        return EMOTION_NAME_MAP[candidate]
+    if candidate_bare in EMOTION_NAME_MAP:
+        return EMOTION_NAME_MAP[candidate_bare]
+    if candidate in VALID_EMOTIONS:
+        return candidate
+    for k, v in EMOTION_NAME_MAP.items():
+        if k in candidate or k in candidate_bare:
+            return v
+    return None
+
+
 def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
     """
     Extracts emotion archetype from bracketed stage cues such as:
@@ -120,20 +137,8 @@ def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
     if m_lead:
         quote_prefix = m_lead.group(1).strip()
         inner_content = m_lead.group(3).strip()
-        candidate = re.sub(r'^(?:情绪|心情|状态|emotion|emo)[:：\s]*', '', inner_content, flags=re.IGNORECASE).strip().lower()
-        candidate_bare = re.sub(r'[。！？!?….~〜 　\-\*]+', '', candidate).strip()
-        detected = None
-        if candidate in EMOTION_NAME_MAP:
-            detected = EMOTION_NAME_MAP[candidate]
-        elif candidate_bare in EMOTION_NAME_MAP:
-            detected = EMOTION_NAME_MAP[candidate_bare]
-        elif candidate in VALID_EMOTIONS:
-            detected = candidate
-        else:
-            for k, v in EMOTION_NAME_MAP.items():
-                if k in candidate or k in candidate_bare:
-                    detected = v
-                    break
+        candidate = re.sub(r'^(?:情绪|心情|状态|emotion|emo)[:：\s]*', '', inner_content, flags=re.IGNORECASE)
+        detected = _match_emotion_candidate(candidate)
 
         if detected in VALID_EMOTIONS:
             cleaned = text[m_lead.end():].strip()
@@ -144,18 +149,8 @@ def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
     # 2. Markdown asterisk action cue at start or embedded: *blushes*, *sighs*, *叹气*
     m_ast = re.search(r'(?<!\*)\*([^*]{1,30})\*(?!\*)', text)
     if m_ast:
-        inner_content = m_ast.group(1).strip().lower()
-        inner_bare = re.sub(r'[。！？!?….~〜 　\-\*]+', '', inner_content).strip()
-        detected = None
-        if inner_content in EMOTION_NAME_MAP:
-            detected = EMOTION_NAME_MAP[inner_content]
-        elif inner_bare in EMOTION_NAME_MAP:
-            detected = EMOTION_NAME_MAP[inner_bare]
-        else:
-            for k, v in EMOTION_NAME_MAP.items():
-                if k in inner_content or k in inner_bare:
-                    detected = v
-                    break
+        inner_content = m_ast.group(1).strip()
+        detected = _match_emotion_candidate(inner_content)
         if detected in VALID_EMOTIONS:
             cleaned = f"{text[:m_ast.start()]}{text[m_ast.end():]}".strip()
             cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
@@ -165,20 +160,8 @@ def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
     any_pattern = r'([（\(\[【〖〔])([^）\)\]】〗〕]+)([）\)\]】〗〕])'
     for m in re.finditer(any_pattern, text):
         inner_content = m.group(2).strip()
-        candidate = re.sub(r'^(?:情绪|心情|状态|emotion|emo)[:：\s]*', '', inner_content, flags=re.IGNORECASE).strip().lower()
-        candidate_bare = re.sub(r'[。！？!?….~〜 　\-\*]+', '', candidate).strip()
-        detected = None
-        if candidate in EMOTION_NAME_MAP:
-            detected = EMOTION_NAME_MAP[candidate]
-        elif candidate_bare in EMOTION_NAME_MAP:
-            detected = EMOTION_NAME_MAP[candidate_bare]
-        elif candidate in VALID_EMOTIONS:
-            detected = candidate
-        else:
-            for k, v in EMOTION_NAME_MAP.items():
-                if k in candidate or k in candidate_bare:
-                    detected = v
-                    break
+        candidate = re.sub(r'^(?:情绪|心情|状态|emotion|emo)[:：\s]*', '', inner_content, flags=re.IGNORECASE)
+        detected = _match_emotion_candidate(candidate)
 
         if detected in VALID_EMOTIONS:
             cleaned = f"{text[:m.start()]}{text[m.end():]}".strip()

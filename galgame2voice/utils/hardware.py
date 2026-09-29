@@ -136,6 +136,100 @@ def get_system_memory_status() -> Tuple[Optional[float], Optional[float]]:
     return total_gb, avail_gb
 
 
+def _detect_windows_memory() -> Tuple[Optional[float], Optional[float]]:
+    """Native Windows GlobalMemoryStatusEx memory inspection."""
+    if sys.platform != "win32":
+        return None, None
+    try:
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return round(stat.ullTotalPhys / BYTES_PER_GB, 2), round(stat.ullAvailPhys / BYTES_PER_GB, 2)
+    except (OSError, AttributeError):
+        pass
+    return None, None
+
+
+def _detect_linux_proc_meminfo() -> Tuple[Optional[float], Optional[float]]:
+    """Zero-dependency Linux /proc/meminfo inspection."""
+    if not (sys.platform.startswith("linux") or os.path.exists("/proc/meminfo")):
+        return None, None
+    try:
+        mem_total_kb = None
+        mem_avail_kb = None
+        mem_free_kb = None
+        buffers_kb = None
+        cached_kb = None
+        with open("/proc/meminfo", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    key = parts[0].rstrip(":")
+                    try:
+                        val = float(parts[1])
+                    except ValueError:
+                        continue
+                    if key == "MemTotal":
+                        mem_total_kb = val
+                    elif key == "MemAvailable":
+                        mem_avail_kb = val
+                    elif key == "MemFree":
+                        mem_free_kb = val
+                    elif key == "Buffers":
+                        buffers_kb = val
+                    elif key == "Cached":
+                        cached_kb = val
+        if mem_total_kb is not None:
+            total_gb = round(mem_total_kb / BYTES_PER_MB, 2)
+            if mem_avail_kb is not None:
+                avail_gb = round(mem_avail_kb / BYTES_PER_MB, 2)
+            elif mem_free_kb is not None and buffers_kb is not None and cached_kb is not None:
+                avail_gb = round((mem_free_kb + buffers_kb + cached_kb) / BYTES_PER_MB, 2)
+            elif mem_free_kb is not None:
+                avail_gb = round(mem_free_kb / BYTES_PER_MB, 2)
+            else:
+                avail_gb = None
+            return total_gb, avail_gb
+    except (OSError, UnicodeDecodeError):
+        pass
+    return None, None
+
+
+def _detect_darwin_memory() -> Tuple[Optional[float], Optional[float]]:
+    """macOS sysctl / os.sysconf inspection."""
+    if sys.platform != "darwin":
+        return None, None
+    try:
+        total_bytes = None
+        if hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names and "SC_PHYS_PAGES" in os.sysconf_names:
+            total_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        if total_bytes is None:
+            out = subprocess.check_output(
+                ["sysctl", "-n", "hw.memsize"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=DEFAULT_SUBPROCESS_TIMEOUT,
+            )
+            total_bytes = int(out.strip())
+        total_gb = round(total_bytes / BYTES_PER_GB, 2)
+        # macOS does not expose a single trivial available sysctl; return total
+        return total_gb, None
+    except (subprocess.SubprocessError, OSError, ValueError):
+        pass
+    return None, None
+
+
+def _detect_psutil_memory() -> Tuple[Optional[float], Optional[float]]:
+    """Cross-platform psutil fallback inspection."""
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        return round(vm.total / BYTES_PER_GB, 2), round(vm.available / BYTES_PER_GB, 2)
+    except (ImportError, Exception):
+        pass
+    return None, None
+
+
 def _detect_host_memory_status() -> Tuple[Optional[float], Optional[float]]:
     """
     Returns (total_ram_gb, available_ram_gb) for the host system.
@@ -144,85 +238,22 @@ def _detect_host_memory_status() -> Tuple[Optional[float], Optional[float]]:
     Returns (None, None) if all detection methods fail.
     """
     # 1. Windows Win32 API
-    if sys.platform == "win32":
-        try:
-            stat = MEMORYSTATUSEX()
-            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-                return round(stat.ullTotalPhys / BYTES_PER_GB, 2), round(stat.ullAvailPhys / BYTES_PER_GB, 2)
-        except (OSError, AttributeError):
-            pass
+    total, avail = _detect_windows_memory()
+    if total is not None:
+        return total, avail
 
-    # 2. Linux /proc/meminfo (zero-dependency native inspection)
-    if sys.platform.startswith("linux") or os.path.exists("/proc/meminfo"):
-        try:
-            mem_total_kb = None
-            mem_avail_kb = None
-            mem_free_kb = None
-            buffers_kb = None
-            cached_kb = None
-            with open("/proc/meminfo", "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        key = parts[0].rstrip(":")
-                        try:
-                            val = float(parts[1])
-                        except ValueError:
-                            continue
-                        if key == "MemTotal":
-                            mem_total_kb = val
-                        elif key == "MemAvailable":
-                            mem_avail_kb = val
-                        elif key == "MemFree":
-                            mem_free_kb = val
-                        elif key == "Buffers":
-                            buffers_kb = val
-                        elif key == "Cached":
-                            cached_kb = val
-            if mem_total_kb is not None:
-                total_gb = round(mem_total_kb / BYTES_PER_MB, 2)
-                if mem_avail_kb is not None:
-                    avail_gb = round(mem_avail_kb / BYTES_PER_MB, 2)
-                elif mem_free_kb is not None and buffers_kb is not None and cached_kb is not None:
-                    avail_gb = round((mem_free_kb + buffers_kb + cached_kb) / BYTES_PER_MB, 2)
-                elif mem_free_kb is not None:
-                    avail_gb = round(mem_free_kb / BYTES_PER_MB, 2)
-                else:
-                    avail_gb = None
-                return total_gb, avail_gb
-        except (OSError, UnicodeDecodeError):
-            pass
+    # 2. Linux /proc/meminfo
+    total, avail = _detect_linux_proc_meminfo()
+    if total is not None:
+        return total, avail
 
-    # 3. macOS sysctl / os.sysconf inspection
-    if sys.platform == "darwin":
-        try:
-            total_bytes = None
-            if hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names and "SC_PHYS_PAGES" in os.sysconf_names:
-                total_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-            if total_bytes is None:
-                out = subprocess.check_output(
-                    ["sysctl", "-n", "hw.memsize"],
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                    timeout=DEFAULT_SUBPROCESS_TIMEOUT,
-                )
-                total_bytes = int(out.strip())
-            total_gb = round(total_bytes / BYTES_PER_GB, 2)
-            # macOS does not expose a single trivial available sysctl; return total
-            return total_gb, None
-        except (subprocess.SubprocessError, OSError, ValueError):
-            pass
+    # 3. macOS sysctl / os.sysconf
+    total, avail = _detect_darwin_memory()
+    if total is not None:
+        return total, avail
 
     # 4. Cross-platform psutil fallback
-    try:
-        import psutil
-        vm = psutil.virtual_memory()
-        return round(vm.total / BYTES_PER_GB, 2), round(vm.available / BYTES_PER_GB, 2)
-    except (ImportError, Exception):
-        pass
-
-    return None, None
+    return _detect_psutil_memory()
 
 
 def _get_all_detected_gpu_names() -> List[str]:
