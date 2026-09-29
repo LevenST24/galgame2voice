@@ -13,7 +13,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import aiosqlite
 from galgame2voice.config import get_settings

@@ -14,7 +14,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, AsyncGenerator, Callable, Coroutine, Dict, List, Optional, Set, TypeVar
+from typing import Any, AsyncGenerator, Callable, Coroutine, Dict, Optional, Set, TypeVar
 
 logger = logging.getLogger("galgame2voice.services.tts_scheduler")
 

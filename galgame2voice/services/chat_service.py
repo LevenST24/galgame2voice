@@ -145,6 +145,69 @@ class ChatService:
         actual_provider_id = provider_id or getattr(adapter, "provider_type", None) or (active_p.id if active_p else "custom")
         return adapter, model_name, actual_provider_id
 
+    async def _resolve_adapter_and_messages(
+        self,
+        conn: aiosqlite.Connection,
+        session_id: str,
+        prompt: str,
+        character_name: Optional[str] = None,
+        provider_id: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        max_context: Optional[int] = None,
+        active_prof: Optional[Any] = None,
+        session: Optional[Any] = None,
+    ) -> Tuple[BaseLLMAdapter, str, str, List[ChatMessage]]:
+        """Resolves active LLM adapter, model name, provider ID, and prepared chat messages."""
+        res = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
+        adapter, model_name, actual_provider_id = await self._resolve_adapter_triple(
+            res, conn, provider_id
+        )
+        messages = await self._prepare_messages(
+            conn,
+            session_id,
+            prompt,
+            character_name,
+            system_prompt_override=system_prompt,
+            max_history_override=max_context,
+            active_profile=active_prof,
+            session=session,
+        )
+        return adapter, model_name, actual_provider_id, messages
+
+    @staticmethod
+    def _format_sync_response(
+        session_id: str,
+        chinese: str,
+        japanese: str,
+        emotion: str,
+        affection_res: Dict[str, Any],
+        metric_record: Any,
+        audio_url: str,
+        latency_ms: int,
+        parser: Any,
+        adaptive_enabled: bool,
+    ) -> Dict[str, Any]:
+        """Formats standard response dictionary for chat_sync."""
+        final_tts_params = {
+            "speed": parser.tts_speed,
+            "temperature": parser.tts_temperature,
+            "emotion": parser.tts_emotion,
+            "adaptive_enabled": bool(adaptive_enabled),
+        } if (parser.tts_speed is not None or parser.tts_temperature is not None or parser.tts_emotion is not None) else None
+
+        return {
+            "session_id": session_id,
+            "chinese": chinese,
+            "japanese": japanese,
+            "emotion": emotion,
+            "affection": affection_res,
+            "metrics": metric_record,
+            "audio_url": audio_url,
+            "audioUrl": audio_url,
+            "latency_ms": latency_ms,
+            "tts_params": final_tts_params,
+        }
+
     @staticmethod
     def _affection_fallback(emotion: str) -> Dict[str, Any]:
         """Neutral affection payload used when the affection update fails."""
@@ -454,15 +517,20 @@ class ChatService:
 
                 self._spawn_background(_bg_affection_and_memory())
 
-                res = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
-                adapter, model_name, actual_provider_id = await self._resolve_adapter_triple(
-                    res, conn, provider_id
-                )
-                messages = await self._prepare_messages(
-                    conn, session_id, prompt, character_name,
-                    system_prompt_override=system_prompt,
-                    max_history_override=max_context,
-                    active_profile=active_prof,
+                (
+                    adapter,
+                    model_name,
+                    actual_provider_id,
+                    messages,
+                ) = await self._resolve_adapter_and_messages(
+                    conn=conn,
+                    session_id=session_id,
+                    prompt=prompt,
+                    character_name=character_name,
+                    provider_id=provider_id,
+                    system_prompt=system_prompt,
+                    max_context=max_context,
+                    active_prof=active_prof,
                     session=sess_obj,
                 )
 
@@ -614,15 +682,20 @@ class ChatService:
                     self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
                 )
 
-                res = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
-                adapter, model_name, actual_provider_id = await self._resolve_adapter_triple(
-                    res, conn, provider_id
-                )
-                messages = await self._prepare_messages(
-                    conn, session_id, prompt, character_name,
-                    system_prompt_override=system_prompt,
-                    max_history_override=max_context,
-                    active_profile=active_prof,
+                (
+                    adapter,
+                    model_name,
+                    actual_provider_id,
+                    messages,
+                ) = await self._resolve_adapter_and_messages(
+                    conn=conn,
+                    session_id=session_id,
+                    prompt=prompt,
+                    character_name=character_name,
+                    provider_id=provider_id,
+                    system_prompt=system_prompt,
+                    max_context=max_context,
+                    active_prof=active_prof,
                     session=sess_obj,
                 )
 
@@ -706,25 +779,18 @@ class ChatService:
                     ))
                 persisted_assistant = True
 
-            final_tts_params = {
-                "speed": parser.tts_speed,
-                "temperature": parser.tts_temperature,
-                "emotion": parser.tts_emotion,
-                "adaptive_enabled": bool(adaptive_enabled),
-            } if (parser.tts_speed is not None or parser.tts_temperature is not None or parser.tts_emotion is not None) else None
-
-            return {
-                "session_id": session_id,
-                "chinese": chinese,
-                "japanese": japanese,
-                "emotion": final_emotion,
-                "affection": affection_res,
-                "metrics": metric_record,
-                "audio_url": audio_url,
-                "audioUrl": audio_url,
-                "latency_ms": latency_ms,
-                "tts_params": final_tts_params,
-            }
+            return self._format_sync_response(
+                session_id=session_id,
+                chinese=chinese,
+                japanese=japanese,
+                emotion=final_emotion,
+                affection_res=affection_res,
+                metric_record=metric_record,
+                audio_url=audio_url,
+                latency_ms=latency_ms,
+                parser=parser,
+                adaptive_enabled=adaptive_enabled,
+            )
         finally:
             if not persisted_assistant and user_msg is not None:
                 await self._prune_orphaned_user_message(getattr(user_msg, "id", None), context_label="chat_sync")

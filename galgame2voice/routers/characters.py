@@ -339,6 +339,55 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
     }
 
 
+async def _resolve_profile_by_name(conn, char_name: str) -> Optional[Any]:
+    """Resolves a voice profile by character name using exact, flexible, or package-synced match."""
+    from galgame2voice.services.character_manager import get_character_manager
+    cm = get_character_manager()
+    pkg = cm.get_character(char_name)
+
+    candidate_names: List[str] = []
+    if pkg:
+        candidate_names.extend([pkg.name, pkg.id])
+    candidate_names.append(char_name)
+
+    # 1. Exact name match in DB
+    for c_name in candidate_names:
+        profile = await crud.get_voice_profile_by_name(conn, c_name)
+        if profile:
+            return profile
+
+    # 2. Flexible matching against existing DB voice profiles
+    profiles = await crud.list_voice_profiles(conn)
+    for p in profiles:
+        for c_name in candidate_names:
+            if p.name.lower() == c_name.lower():
+                return p
+
+    if pkg:
+        for p in profiles:
+            if p.name.startswith(pkg.name) or pkg.name.startswith(p.name):
+                return p
+            if pkg.id.lower() in p.name.lower() or pkg.name in p.name:
+                return p
+
+    for p in profiles:
+        if p.name.startswith(char_name) or char_name in p.name:
+            return p
+
+    # 3. If still not found but package exists on disk, sync with DB and retry
+    if pkg:
+        await cm.sync_with_db(conn)
+        profile = await crud.get_voice_profile_by_name(conn, pkg.name)
+        if profile:
+            return profile
+        profiles = await crud.list_voice_profiles(conn)
+        for p in profiles:
+            if p.name.startswith(pkg.name) or pkg.name in p.name:
+                return p
+
+    return None
+
+
 @router.post(
     "/switch",
     summary="Switch Active Character",
@@ -367,57 +416,7 @@ async def switch_character(req: CharacterSwitchRequest):
         if char_id is not None:
             profile = await crud.get_voice_profile(conn, char_id)
         elif char_name:
-            from galgame2voice.services.character_manager import get_character_manager
-            cm = get_character_manager()
-            pkg = cm.get_character(char_name)
-
-            candidate_names: List[str] = []
-            if pkg:
-                candidate_names.extend([pkg.name, pkg.id])
-            candidate_names.append(char_name)
-
-            # 1. Exact name match in DB
-            for c_name in candidate_names:
-                profile = await crud.get_voice_profile_by_name(conn, c_name)
-                if profile:
-                    break
-
-            # 2. Flexible matching against existing DB voice profiles
-            if not profile:
-                profiles = await crud.list_voice_profiles(conn)
-                for p in profiles:
-                    for c_name in candidate_names:
-                        if p.name.lower() == c_name.lower():
-                            profile = p
-                            break
-                    if profile:
-                        break
-
-                if not profile and pkg:
-                    for p in profiles:
-                        if p.name.startswith(pkg.name) or pkg.name.startswith(p.name):
-                            profile = p
-                            break
-                        if pkg.id.lower() in p.name.lower() or pkg.name in p.name:
-                            profile = p
-                            break
-
-                if not profile:
-                    for p in profiles:
-                        if p.name.startswith(char_name) or char_name in p.name:
-                            profile = p
-                            break
-
-            # 3. If still not found but package exists on disk, sync with DB and retry
-            if not profile and pkg:
-                await cm.sync_with_db(conn)
-                profile = await crud.get_voice_profile_by_name(conn, pkg.name)
-                if not profile:
-                    profiles = await crud.list_voice_profiles(conn)
-                    for p in profiles:
-                        if p.name.startswith(pkg.name) or pkg.name in p.name:
-                            profile = p
-                            break
+            profile = await _resolve_profile_by_name(conn, char_name)
 
         if not profile:
             ident = char_id if char_id is not None else char_name

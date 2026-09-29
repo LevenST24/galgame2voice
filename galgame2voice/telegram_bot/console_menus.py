@@ -13,7 +13,7 @@ Provides rich inline keyboard menus and callback processing for:
 
 from dataclasses import dataclass
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 try:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -66,13 +66,13 @@ def resolve_session_key(chat_id: int, user_id: int = 0) -> str:
     return f"tg_{chat_id}_{user_id}"
 
 
-async def build_main_console(
+def _resolve_menu_context(
     chat_id: Any = 0,
     user_id: int = 0,
     db_path: Optional[str] = None,
     session_key_fn: Optional[Callable[[int, int], str]] = None,
-) -> Tuple[str, Any]:
-    """Constructs the rich text and inline keyboard for the Telegram Interactive Console."""
+) -> Tuple[Optional[str], int, int, str]:
+    """Resolves (actual_db_path, actual_chat_id, actual_user_id, session_key) for interactive menus."""
     if isinstance(chat_id, str) and not chat_id.isdigit():
         actual_db_path = chat_id
         actual_chat_id = user_id
@@ -84,6 +84,30 @@ async def build_main_console(
 
     key_fn = session_key_fn or resolve_session_key
     session_key = key_fn(actual_chat_id, actual_user_id)
+    return actual_db_path, actual_chat_id, actual_user_id, session_key
+
+
+async def _get_affection_safe(conn, user_id_key: str, profile: Any) -> Optional[Any]:
+    """Safely retrieves or initializes character affection without throwing on errors."""
+    profile_id = profile.id if profile else 1
+    try:
+        return await crud.get_or_create_character_affection(
+            conn, user_id=user_id_key, character_id=profile_id
+        )
+    except Exception:
+        return None
+
+
+async def build_main_console(
+    chat_id: Any = 0,
+    user_id: int = 0,
+    db_path: Optional[str] = None,
+    session_key_fn: Optional[Callable[[int, int], str]] = None,
+) -> Tuple[str, Any]:
+    """Constructs the rich text and inline keyboard for the Telegram Interactive Console."""
+    actual_db_path, actual_chat_id, actual_user_id, session_key = _resolve_menu_context(
+        chat_id, user_id, db_path, session_key_fn
+    )
 
     profile = None
     settings = None
@@ -97,13 +121,7 @@ async def build_main_console(
             profile = await crud.get_active_voice_profile(conn)
             settings = await crud.get_settings_raw(conn)
             provider = await crud.get_active_provider(conn, mask=True)
-            profile_id = profile.id if profile else 1
-            try:
-                affection = await crud.get_or_create_character_affection(
-                    conn, user_id=str(actual_user_id or actual_chat_id), character_id=profile_id
-                )
-            except Exception:
-                affection = None
+            affection = await _get_affection_safe(conn, str(actual_user_id or actual_chat_id), profile)
             try:
                 msg_count = await crud.count_session_messages(conn, session_key)
             except Exception:
@@ -623,17 +641,9 @@ async def build_affection_menu(
     session_key_fn: Optional[Callable[[int, int], str]] = None,
 ) -> Tuple[str, Any]:
     """Constructs sub-menu for displaying affection details and emotion."""
-    if isinstance(chat_id, str) and not chat_id.isdigit():
-        actual_db_path = chat_id
-        actual_chat_id = user_id
-        actual_user_id = 0
-    else:
-        actual_db_path = db_path
-        actual_chat_id = int(chat_id or 0)
-        actual_user_id = int(user_id or 0)
-
-    key_fn = session_key_fn or resolve_session_key
-    session_key = key_fn(actual_chat_id, actual_user_id)
+    actual_db_path, actual_chat_id, actual_user_id, session_key = _resolve_menu_context(
+        chat_id, user_id, db_path, session_key_fn
+    )
 
     profile = None
     affection = None
@@ -641,13 +651,7 @@ async def build_affection_menu(
     try:
         async with get_db(actual_db_path) as conn:
             profile = await crud.get_active_voice_profile(conn)
-            profile_id = profile.id if profile else 1
-            try:
-                affection = await crud.get_or_create_character_affection(
-                    conn, user_id=str(actual_user_id or actual_chat_id), character_id=profile_id
-                )
-            except Exception:
-                affection = None
+            affection = await _get_affection_safe(conn, str(actual_user_id or actual_chat_id), profile)
             try:
                 msg_count = await crud.count_session_messages(conn, session_key)
             except Exception:
