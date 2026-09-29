@@ -518,14 +518,14 @@ def _fs_browse_sync(path: Optional[str], file_type: Optional[str]) -> Dict[str, 
 
     # Path traversal and device name safety check
     if path and (contains_traversal_payload(path) or is_windows_device_name(path)):
-            return {
-                "current_path": path,
-                "parent_path": None,
-                "drives": [],
-                "directories": [],
-                "files": [],
-                "error": "Invalid or unsafe directory path",
-            }
+        return {
+            "current_path": path,
+            "parent_path": None,
+            "drives": [],
+            "directories": [],
+            "files": [],
+            "error": "Invalid or unsafe directory path",
+        }
 
     # 1. Available drives (Windows)
     drives = []

@@ -144,14 +144,88 @@ async def _clean_lru_cache_from_db(
 
     if unlinked_keys:
         async with immediate_transaction(conn):
-            for i in range(0, len(unlinked_keys), 100):
-                batch = unlinked_keys[i:i + 100]
+            for i in range(0, len(unlinked_keys), PURGE_BATCH_SIZE):
+                batch = unlinked_keys[i:i + PURGE_BATCH_SIZE]
                 placeholders = ",".join(["?"] * len(batch))
                 await conn.execute(
                     f"DELETE FROM tts_cache_entries WHERE cache_key IN ({placeholders});",
                     batch,
                 )
     return len(unlinked_keys), unlinked_keys
+
+
+async def _run_audio_cleanup_cycle(audio_dir: Path) -> None:
+    """Executes a single cycle of audio retention and LRU cache eviction."""
+    db_getter = _resolve_get_db()
+    protected_audio_names: Set[str] = set()
+    active_cache_keys: Optional[Set[str]] = None
+    db_evicted_count = 0
+
+    try:
+        async with db_getter() as conn:
+            db_settings = await crud.get_settings_raw(conn)
+            if conn is not None:
+                try:
+                    cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles;")
+                    rows = await cur.fetchall()
+                    for r in rows:
+                        if r and r[0]:
+                            protected_audio_names.add(Path(r[0]).name.lower())
+                except Exception as prof_err:
+                    logger.debug("Failed querying protected voice profile audio names: %s", prof_err)
+
+            # LRU Eviction: SQLite last_accessed_at is the sole authority for 7-day retention
+            now = time.time()
+            cache_cutoff = now - (CACHE_RETENTION_DAYS * 86400)
+            try:
+                db_evicted_count, _ = await _clean_lru_cache_from_db(
+                    conn, audio_dir / "cache", cache_cutoff
+                )
+                # Fetch active keys to protect valid cache files from orphan cleanup
+                cur = await conn.execute("SELECT cache_key FROM tts_cache_entries;")
+                rows = await cur.fetchall()
+                active_cache_keys = {r[0] for r in rows if r and r[0]}
+            except Exception as lru_err:
+                logger.debug("Database LRU cache eviction failed/skipped: %s", lru_err)
+
+        retention_minutes = int(getattr(db_settings, "audio_retention_minutes", 30) or 30)
+    except Exception as exc:
+        logger.debug("Falling back to default audio retention: %s", exc)
+        retention_minutes = 30
+
+    now = time.time()
+    cutoff = now - (retention_minutes * 60)
+    cache_cutoff = now - (CACHE_RETENTION_DAYS * 86400)
+
+    cleaned_count, unlinked_keys = await asyncio.to_thread(
+        _scan_and_clean, audio_dir, protected_audio_names, cutoff, cache_cutoff, active_cache_keys
+    )
+    total_cleaned = cleaned_count + db_evicted_count
+
+    if unlinked_keys:
+        try:
+            async with db_getter() as conn:
+                async with immediate_transaction(conn):
+                    for batch_idx in range(0, len(unlinked_keys), PURGE_BATCH_SIZE):
+                        batch = unlinked_keys[batch_idx:batch_idx + PURGE_BATCH_SIZE]
+                        filenames = [f"{k}.wav" for k in batch]
+                        all_params = batch + filenames + batch
+                        p_batch = ",".join(["?"] * len(batch))
+                        p_files = ",".join(["?"] * len(filenames))
+                        await conn.execute(
+                            f"DELETE FROM tts_cache_entries WHERE cache_key IN ({p_batch}) OR audio_filename IN ({p_files}) OR audio_filename IN ({p_batch});",
+                            all_params,
+                        )
+        except Exception as db_clean_err:
+            logger.debug("Failed to purge tts_cache_entries for unlinked keys: %s", db_clean_err)
+
+    if total_cleaned > 0 or unlinked_keys:
+        logger.info("Audio cleanup removed %d expired/orphan audio files.", total_cleaned)
+        try:
+            from galgame2voice.utils.hardware import release_system_memory
+            release_system_memory()
+        except Exception as mem_err:
+            logger.debug("Failed releasing system memory during audio cleanup: %s", mem_err)
 
 
 async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int) -> None:
@@ -163,76 +237,7 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int) -> None:
     while True:
         try:
             await asyncio.sleep(interval_seconds)
-            db_getter = _resolve_get_db()
-            protected_audio_names: Set[str] = set()
-            active_cache_keys: Optional[Set[str]] = None
-            db_evicted_count = 0
-
-            try:
-                async with db_getter() as conn:
-                    db_settings = await crud.get_settings_raw(conn)
-                    if conn is not None:
-                        try:
-                            cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles;")
-                            rows = await cur.fetchall()
-                            for r in rows:
-                                if r and r[0]:
-                                    protected_audio_names.add(Path(r[0]).name.lower())
-                        except Exception as prof_err:
-                            logger.debug("Failed querying protected voice profile audio names: %s", prof_err)
-
-                    # LRU Eviction: SQLite last_accessed_at is the sole authority for 7-day retention
-                    now = time.time()
-                    cache_cutoff = now - (CACHE_RETENTION_DAYS * 86400)
-                    try:
-                        db_evicted_count, _ = await _clean_lru_cache_from_db(
-                            conn, audio_dir / "cache", cache_cutoff
-                        )
-                        # Fetch active keys to protect valid cache files from orphan cleanup
-                        cur = await conn.execute("SELECT cache_key FROM tts_cache_entries;")
-                        rows = await cur.fetchall()
-                        active_cache_keys = {r[0] for r in rows if r and r[0]}
-                    except Exception as lru_err:
-                        logger.debug("Database LRU cache eviction failed/skipped: %s", lru_err)
-
-                retention_minutes = int(getattr(db_settings, "audio_retention_minutes", 30) or 30)
-            except Exception as exc:
-                logger.debug("Falling back to default audio retention: %s", exc)
-                retention_minutes = 30
-
-            now = time.time()
-            cutoff = now - (retention_minutes * 60)
-            cache_cutoff = now - (CACHE_RETENTION_DAYS * 86400)
-
-            cleaned_count, unlinked_keys = await asyncio.to_thread(
-                _scan_and_clean, audio_dir, protected_audio_names, cutoff, cache_cutoff, active_cache_keys
-            )
-            total_cleaned = cleaned_count + db_evicted_count
-
-            if unlinked_keys:
-                try:
-                    async with db_getter() as conn:
-                        async with immediate_transaction(conn):
-                            for batch_idx in range(0, len(unlinked_keys), PURGE_BATCH_SIZE):
-                                batch = unlinked_keys[batch_idx:batch_idx + PURGE_BATCH_SIZE]
-                                filenames = [f"{k}.wav" for k in batch]
-                                all_params = batch + filenames + batch
-                                p_batch = ",".join(["?"] * len(batch))
-                                p_files = ",".join(["?"] * len(filenames))
-                                await conn.execute(
-                                    f"DELETE FROM tts_cache_entries WHERE cache_key IN ({p_batch}) OR audio_filename IN ({p_files}) OR audio_filename IN ({p_batch});",
-                                    all_params,
-                                )
-                except Exception as db_clean_err:
-                    logger.debug("Failed to purge tts_cache_entries for unlinked keys: %s", db_clean_err)
-
-            if total_cleaned > 0 or unlinked_keys:
-                logger.info("Audio cleanup removed %d expired/orphan audio files.", total_cleaned)
-                try:
-                    from galgame2voice.utils.hardware import release_system_memory
-                    release_system_memory()
-                except Exception as mem_err:
-                    logger.debug("Failed releasing system memory during audio cleanup: %s", mem_err)
+            await _run_audio_cleanup_cycle(audio_dir)
         except asyncio.CancelledError:
             break
         except Exception as exc:
