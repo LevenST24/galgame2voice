@@ -306,6 +306,67 @@ class TelegramBotHandlers:
         await self._safe_send_message(update, context, reply, reply_markup=reply_markup)
         return reply
 
+    async def _lookup_character_profile_by_query(
+        self,
+        conn: Any,
+        query_str: str,
+        profiles: List[Any],
+    ) -> Optional[Any]:
+        """Matches character profile by numeric ID, exact name, or CharacterManager flexible aliases."""
+        if query_str.isdigit():
+            matched = await crud.get_voice_profile(conn, int(query_str))
+            if matched:
+                return matched
+
+        matched = await crud.get_voice_profile_by_name(conn, query_str)
+        if matched:
+            return matched
+
+        try:
+            from galgame2voice.services.character_manager import get_character_manager
+            cm = get_character_manager()
+            pkg = cm.get_character(query_str)
+            candidate_names = []
+            if pkg:
+                candidate_names.extend([pkg.name, pkg.id])
+            candidate_names.append(query_str)
+
+            for p in profiles:
+                p_low = p.name.lower()
+                for c_name in candidate_names:
+                    c_low = c_name.lower()
+                    if c_low in p_low or p_low in c_low:
+                        return p
+        except Exception as cm_err:
+            logger.debug("CharacterManager flexible lookup failed: %s", cm_err)
+
+        return None
+
+    async def _switch_character_weights(self, profile_id: int) -> Tuple[Optional[str], str]:
+        """Switches model weights in VoiceManager and updates active profile in SQLite.
+        Returns (error_message, warning_note)."""
+        warning_note = ""
+        try:
+            from galgame2voice.services.voice_manager import get_voice_manager, InsufficientMemoryError
+            vm = get_voice_manager()
+            try:
+                switched = await vm.switch_active_profile(profile_id)
+                if not switched:
+                    warning_note = "\n⚠️ 提示：GPT-SoVITS 语音引擎当前处于离线状态，已为您激活对话人设与好感档案。"
+            except InsufficientMemoryError:
+                raise
+            except Exception as sw_err:
+                logger.debug("VoiceManager weight switch skipped: %s", sw_err)
+                warning_note = "\n⚠️ 提示：GPT-SoVITS 语音引擎当前处于离线状态，已为您激活对话人设与好感档案。"
+
+            async with get_db(self.db_path) as conn:
+                await crud.set_active_voice_profile(conn, profile_id)
+            return None, warning_note
+        except InsufficientMemoryError as mem_err:
+            return f"系统内存不足，无法加载该角色模型: {mem_err}", ""
+        except Exception as exc:
+            return f"切换异常: {sanitize_error_detail(exc)}", ""
+
     async def handle_character(self, update: Any, context: Optional[Any] = None) -> str:
         """
         Handler for /character, /char, /switch command.
@@ -333,37 +394,7 @@ class TelegramBotHandlers:
         try:
             async with get_db(self.db_path) as conn:
                 profiles = await crud.list_voice_profiles(conn)
-                # 1. Try numeric ID
-                if query_str.isdigit():
-                    pid = int(query_str)
-                    matched_profile = await crud.get_voice_profile(conn, pid)
-
-                # 2. Try exact name match
-                if not matched_profile:
-                    matched_profile = await crud.get_voice_profile_by_name(conn, query_str)
-
-                # 3. Try flexible match via CharacterManager
-                if not matched_profile:
-                    try:
-                        from galgame2voice.services.character_manager import get_character_manager
-                        cm = get_character_manager()
-                        pkg = cm.get_character(query_str)
-                        candidate_names = []
-                        if pkg:
-                            candidate_names.extend([pkg.name, pkg.id])
-                        candidate_names.append(query_str)
-
-                        for p in profiles:
-                            p_low = p.name.lower()
-                            for c_name in candidate_names:
-                                c_low = c_name.lower()
-                                if c_low in p_low or p_low in c_low:
-                                    matched_profile = p
-                                    break
-                            if matched_profile:
-                                break
-                    except Exception as cm_err:
-                        logger.debug("CharacterManager flexible lookup failed: %s", cm_err)
+                matched_profile = await self._lookup_character_profile_by_query(conn, query_str, profiles)
         except Exception as exc:
             logger.warning("Database read exception in handle_character: %s", exc)
 
@@ -382,27 +413,7 @@ class TelegramBotHandlers:
 
         # Perform atomic switch
         char_name = matched_profile.name
-        err_msg = None
-        warning_note = ""
-        try:
-            from galgame2voice.services.voice_manager import get_voice_manager, InsufficientMemoryError
-            vm = get_voice_manager()
-            try:
-                switched = await vm.switch_active_profile(matched_profile.id)
-                if not switched:
-                    warning_note = "\n⚠️ 提示：GPT-SoVITS 语音引擎当前处于离线状态，已为您激活对话人设与好感档案。"
-            except InsufficientMemoryError:
-                raise
-            except Exception as sw_err:
-                logger.debug("VoiceManager weight switch skipped: %s", sw_err)
-                warning_note = "\n⚠️ 提示：GPT-SoVITS 语音引擎当前处于离线状态，已为您激活对话人设与好感档案。"
-
-            async with get_db(self.db_path) as conn:
-                await crud.set_active_voice_profile(conn, matched_profile.id)
-        except InsufficientMemoryError as mem_err:
-            err_msg = f"系统内存不足，无法加载该角色模型: {mem_err}"
-        except Exception as exc:
-            err_msg = f"切换异常: {sanitize_error_detail(exc)}"
+        err_msg, warning_note = await self._switch_character_weights(matched_profile.id)
 
         if err_msg:
             reply = f"⚠️ 切换至角色【{char_name}】失败: {err_msg}"
@@ -499,6 +510,48 @@ class TelegramBotHandlers:
         await self._safe_send_message(update, context, reply)
         return reply
 
+    def _spawn_background_voice_task(
+        self,
+        chat_id: int,
+        bot: Any,
+        japanese: str,
+        dynamic_tts: Optional[Dict[str, Any]],
+    ) -> asyncio.Task:
+        """Schedules background voice synthesis and tracks task in user_tasks with auto-cleanup."""
+        async def background_voice_worker():
+            try:
+                if bot and hasattr(bot, "send_chat_action"):
+                    try:
+                        await bot.send_chat_action(chat_id=chat_id, action="record_voice")
+                    except Exception:
+                        pass
+
+                clean_japanese = strip_stage_directions(japanese).strip() or japanese
+                tts_opts = dict(dynamic_tts or {})
+                wav_bytes = await self.tts_service.synthesize(clean_japanese, options=tts_opts)
+                if not wav_bytes:
+                    logger.warning("TTS synthesis returned empty bytes for chat_id=%d", chat_id)
+                    return
+
+                ogg_bytes = await convert_wav_to_ogg(wav_bytes)
+                caption = clean_japanese[:1020] if len(clean_japanese) > 1020 else clean_japanese
+                await bot.send_voice(chat_id=chat_id, voice=ogg_bytes, caption=caption)
+            except asyncio.CancelledError:
+                logger.info("Voice synthesis cancelled for chat_id=%d", chat_id)
+                return
+            except Exception as exc:
+                logger.error("Voice synthesis failed for chat_id=%d: %s", chat_id, exc)
+
+        task = asyncio.create_task(background_voice_worker())
+        self.user_tasks[chat_id] = task
+
+        def _cleanup_task(t, cid=chat_id):
+            if self.user_tasks.get(cid) is t:
+                self.user_tasks.pop(cid, None)
+
+        task.add_done_callback(_cleanup_task)
+        return task
+
     async def process_text_chat(self, chat_id: int, text: str, bot: Any, user_id: int = 0) -> asyncio.Task:
         """
         Executes immediate text reply, immediately persists assistant turn to DB,
@@ -588,43 +641,7 @@ class TelegramBotHandlers:
                     logger.debug("Telegram non-critical affection update exception: %s", aff_err)
 
             # 5. Schedule background voice synthesis task
-            async def background_voice_worker():
-                try:
-                    if bot and hasattr(bot, "send_chat_action"):
-                        try:
-                            await bot.send_chat_action(chat_id=chat_id, action="record_voice")
-                        except Exception:
-                            pass
-
-                    # Synthesize Japanese text to WAV bytes with dynamic TTS options & emotion
-                    clean_japanese = strip_stage_directions(japanese).strip() or japanese
-                    tts_opts = dict(dynamic_tts or {})
-                    wav_bytes = await self.tts_service.synthesize(clean_japanese, options=tts_opts)
-                    if not wav_bytes:
-                        logger.warning("TTS synthesis returned empty bytes for chat_id=%d", chat_id)
-                        return
-
-                    # Convert WAV to OGG/Opus for Telegram voice note
-                    ogg_bytes = await convert_wav_to_ogg(wav_bytes)
-                    # Safe caption truncate (Telegram voice caption limit is 1024 chars)
-                    caption = clean_japanese[:1020] if len(clean_japanese) > 1020 else clean_japanese
-                    await bot.send_voice(chat_id=chat_id, voice=ogg_bytes, caption=caption)
-
-                except asyncio.CancelledError:
-                    logger.info("Voice synthesis cancelled for chat_id=%d", chat_id)
-                    return
-                except Exception as exc:
-                    logger.error("Voice synthesis failed for chat_id=%d: %s", chat_id, exc)
-
-            task = asyncio.create_task(background_voice_worker())
-            self.user_tasks[chat_id] = task
-
-            def _cleanup_task(t, cid=chat_id):
-                if self.user_tasks.get(cid) is t:
-                    self.user_tasks.pop(cid, None)
-
-            task.add_done_callback(_cleanup_task)
-            return task
+            return self._spawn_background_voice_task(chat_id, bot, japanese, dynamic_tts)
 
         except Exception as exc:
             logger.error("Error generating LLM reply for chat_id=%d: %s", chat_id, exc, exc_info=True)

@@ -36,6 +36,11 @@ _GEMINI_UNSUPPORTED_PARAMS = frozenset({
 })
 
 
+async def _mock_lines_iter(text: str) -> AsyncIterator[str]:
+    for line in text.split("\n"):
+        yield line
+
+
 class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
     """
     Adapter for OpenAI and OpenAI-compatible API providers (DeepSeek, Groq, Qwen, GLM, etc.).
@@ -115,6 +120,33 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         skip = _INTERNAL | (_GEMINI_UNSUPPORTED_PARAMS if self._is_gemini else frozenset())
         return {k: v for k, v in kwargs.items() if k not in skip}
 
+    def _build_payload(
+        self,
+        messages: List[ChatMessage],
+        model: str,
+        temperature: float = 1.0,
+        stream: bool = False,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Formats chat messages and parameters into standard OpenAI completion payload."""
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {
+                    "role": m.role if hasattr(m, "role") else m.get("role"),
+                    "content": m.content if hasattr(m, "content") else m.get("content"),
+                }
+                for m in messages
+            ],
+            "temperature": temperature,
+        }
+        if stream:
+            payload["stream"] = True
+        if extra:
+            for k, v in self._filter_payload_kwargs(extra).items():
+                payload[k] = v
+        return payload
+
     async def chat(
         self,
         messages: List[ChatMessage],
@@ -167,19 +199,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 )
 
         url = f"{self.base_url}/chat/completions"
-        payload: Dict[str, Any] = {
-            "model": model,
-            "messages": [
-                {
-                    "role": m.role if hasattr(m, "role") else m.get("role"),
-                    "content": m.content if hasattr(m, "content") else m.get("content"),
-                }
-                for m in messages
-            ],
-            "temperature": temperature,
-        }
-        for k, v in self._filter_payload_kwargs(kwargs).items():
-            payload[k] = v
+        payload = self._build_payload(messages, model, temperature=temperature, stream=False, extra=kwargs)
 
         timeout_s = float(self.extra_config.get("timeout_s", kwargs.get("timeout_s", 60.0)))
         headers = self._get_headers()
@@ -250,18 +270,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             # Client provided by caller (e.g. test mock); execute directly without retry loop
             resp = await client.post(
                 f"{self.base_url}/chat/completions",
-                json={
-                    "model": model,
-                    "messages": [
-                        {
-                            "role": m.role if hasattr(m, "role") else m.get("role"),
-                            "content": m.content if hasattr(m, "content") else m.get("content"),
-                        }
-                        for m in messages
-                    ],
-                    "temperature": temperature,
-                    "stream": True,
-                },
+                json=self._build_payload(messages, model, temperature=temperature, stream=True),
                 headers={"Authorization": f"Bearer {self.api_key}"},
             )
             if resp.status_code in TRANSIENT_STATUS_CODES:
@@ -271,11 +280,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             if resp.status_code != 200:
                 raise RuntimeError(f"API returned status {resp.status_code}: {resp.text}")
 
-            async def _mock_lines_iter(text: str = resp.text):
-                for line in text.split("\n"):
-                    yield line
-
-            async for token in parse_sse_lines(_mock_lines_iter()):
+            async for token in parse_sse_lines(_mock_lines_iter(resp.text)):
                 yield token
             return
         self._validate_credentials()
@@ -311,29 +316,12 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 if resp.status_code != 200:
                     raise RuntimeError(f"API returned status {resp.status_code}: {resp.text}")
 
-                async def _mock_lines_iter(text: str = resp.text):
-                    for line in text.split("\n"):
-                        yield line
-
-                async for token in parse_sse_lines(_mock_lines_iter()):
+                async for token in parse_sse_lines(_mock_lines_iter(resp.text)):
                     yield token
                 return
 
         url = f"{self.base_url}/chat/completions"
-        payload: Dict[str, Any] = {
-            "model": model,
-            "messages": [
-                {
-                    "role": m.role if hasattr(m, "role") else m.get("role"),
-                    "content": m.content if hasattr(m, "content") else m.get("content"),
-                }
-                for m in messages
-            ],
-            "temperature": temperature,
-            "stream": True,
-        }
-        for k, v in self._filter_payload_kwargs(kwargs).items():
-            payload[k] = v
+        payload = self._build_payload(messages, model, temperature=temperature, stream=True, extra=kwargs)
 
         timeout_s = float(self.extra_config.get("timeout_s", kwargs.get("timeout_s", 60.0)))
         headers = self._get_headers()

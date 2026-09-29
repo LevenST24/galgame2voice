@@ -440,6 +440,64 @@ class RestartSovitsPayload(BaseModel):
     )
 
 
+async def _update_inference_precision_setting(precision_val: str) -> None:
+    try:
+        from galgame2voice.database.session import get_db
+        from galgame2voice.database import crud
+        from galgame2voice.database.models import SettingsUpdate
+        async with get_db() as conn:
+            await crud.update_settings(conn, SettingsUpdate(inference_precision=precision_val))
+    except Exception:
+        pass
+
+
+async def _apply_sovits_precision_config(
+    project_root: Path,
+    sovits_dir: Path,
+    req_prec: Optional[str],
+) -> Tuple[str, bool, str]:
+    """Applies target precision configuration to cache, YAML, and database settings.
+    Returns (device, is_half, source)."""
+    if req_prec == "cpu":
+        device, is_half, source = "cpu", False, "request"
+        write_precision_cache(project_root, str(sovits_dir), is_half=is_half, device=device)
+        await _update_inference_precision_setting("cpu")
+    elif req_prec in ("fp32", "float32"):
+        device, is_half, source = "cuda", False, "request"
+        write_precision_cache(project_root, str(sovits_dir), is_half=is_half, device=device)
+        await _update_inference_precision_setting("fp32")
+    elif req_prec in ("fp16", "half"):
+        device, is_half, source = "cuda", True, "request"
+        write_precision_cache(project_root, str(sovits_dir), is_half=is_half, device=device)
+        await _update_inference_precision_setting("fp16")
+    elif req_prec == "auto":
+        cache_file = project_root / "data" / "precision.json"
+        cache_file.unlink(missing_ok=True)
+        await _update_inference_precision_setting("auto")
+        device, is_half, source = resolve_initial_device_and_half(project_root, sovits_dir)
+    else:
+        device, is_half, source = resolve_initial_device_and_half(project_root, sovits_dir)
+
+    write_sovits_yaml_config(sovits_dir, is_half=is_half, device=device)
+    return device, is_half, source
+
+
+def _terminate_process_by_pid(pid: int, timeout: float = 3.0) -> None:
+    try:
+        import psutil
+        if psutil.pid_exists(pid):
+            p = psutil.Process(pid)
+            for child in p.children(recursive=True):
+                try:
+                    child.kill()
+                except Exception:
+                    pass
+            p.kill()
+            p.wait(timeout=timeout)
+    except Exception:
+        pass
+
+
 @router.post(
     "/api/system/restart_sovits",
     summary="Restart GPT-SoVITS Engine Subprocess",
@@ -466,64 +524,7 @@ async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None
 
     # Determine precision and device target
     req_prec = str(payload.precision).strip().lower() if (payload and payload.precision) else None
-    if req_prec == "cpu":
-        device = "cpu"
-        is_half = False
-        source = "request"
-        write_precision_cache(settings.project_root, str(sovits_dir), is_half=False, device="cpu")
-        write_sovits_yaml_config(sovits_dir, is_half=False, device="cpu")
-        try:
-            from galgame2voice.database.session import get_db
-            from galgame2voice.database import crud
-            from galgame2voice.database.models import SettingsUpdate
-            async with get_db() as conn:
-                await crud.update_settings(conn, SettingsUpdate(inference_precision="cpu"))
-        except Exception:
-            pass
-    elif req_prec in ("fp32", "float32"):
-        device = "cuda"
-        is_half = False
-        source = "request"
-        write_precision_cache(settings.project_root, str(sovits_dir), is_half=False, device="cuda")
-        write_sovits_yaml_config(sovits_dir, is_half=False, device="cuda")
-        try:
-            from galgame2voice.database.session import get_db
-            from galgame2voice.database import crud
-            from galgame2voice.database.models import SettingsUpdate
-            async with get_db() as conn:
-                await crud.update_settings(conn, SettingsUpdate(inference_precision="fp32"))
-        except Exception:
-            pass
-    elif req_prec in ("fp16", "half"):
-        device = "cuda"
-        is_half = True
-        source = "request"
-        write_precision_cache(settings.project_root, str(sovits_dir), is_half=True, device="cuda")
-        write_sovits_yaml_config(sovits_dir, is_half=True, device="cuda")
-        try:
-            from galgame2voice.database.session import get_db
-            from galgame2voice.database import crud
-            from galgame2voice.database.models import SettingsUpdate
-            async with get_db() as conn:
-                await crud.update_settings(conn, SettingsUpdate(inference_precision="fp16"))
-        except Exception:
-            pass
-    elif req_prec == "auto":
-        cache_file = settings.project_root / "data" / "precision.json"
-        cache_file.unlink(missing_ok=True)
-        try:
-            from galgame2voice.database.session import get_db
-            from galgame2voice.database import crud
-            from galgame2voice.database.models import SettingsUpdate
-            async with get_db() as conn:
-                await crud.update_settings(conn, SettingsUpdate(inference_precision="auto"))
-        except Exception:
-            pass
-        device, is_half, source = resolve_initial_device_and_half(settings.project_root, sovits_dir)
-        write_sovits_yaml_config(sovits_dir, is_half, device=device)
-    else:
-        device, is_half, source = resolve_initial_device_and_half(settings.project_root, sovits_dir)
-        write_sovits_yaml_config(sovits_dir, is_half, device=device)
+    device, is_half, source = await _apply_sovits_precision_config(settings.project_root, sovits_dir, req_prec)
 
     pid_file = settings.project_root / "gptsovits.pid"
     old_pid = None
@@ -535,19 +536,7 @@ async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None
 
     # Terminate old process
     if old_pid:
-        try:
-            import psutil
-            if psutil.pid_exists(old_pid):
-                p = psutil.Process(old_pid)
-                for child in p.children(recursive=True):
-                    try:
-                        child.kill()
-                    except Exception:
-                        pass
-                p.kill()
-                p.wait(timeout=3.0)
-        except Exception:
-            pass
+        _terminate_process_by_pid(old_pid)
 
     await asyncio.sleep(1.0)
 

@@ -40,6 +40,29 @@ CLAUSE_PUNCT_WITH_CLOSING = re.compile(r'[、，,][」』"\'”’\)）\]】]*$'
 TRAILING_PUNCT_AND_CLOSING = re.compile(r'[、，,\s…\.〜~ー\-」』"\'”’\)）\]】]+$')
 
 
+def _trim_unclosed_sentence(sentences: List[str], is_first: bool) -> List[str]:
+    """Trims incomplete trailing sentence chunk if sentence ending punctuation is missing."""
+    if not sentences:
+        return sentences
+    last_sent = sentences[-1]
+    if is_first and len(sentences) == 1:
+        clause = TRAILING_PUNCT_AND_CLOSING.sub('', last_sent)
+        valid_end = bool(
+            TERMINAL_PUNCT_WITH_CLOSING.search(last_sent)
+            or (
+                CLAUSE_PUNCT_WITH_CLOSING.search(last_sent)
+                and (len(last_sent.strip()) >= 6 or is_short_salutation(clause))
+                and is_natural_clause_boundary(clause)
+            )
+        )
+        if not valid_end:
+            return sentences[:-1]
+    else:
+        if not TERMINAL_PUNCT_WITH_CLOSING.search(last_sent):
+            return sentences[:-1]
+    return sentences
+
+
 class StreamingBilingualParser:
     """
     Incremental state machine for parsing streaming LLM output tokens into
@@ -185,22 +208,8 @@ class StreamingBilingualParser:
 
         return opts
 
-    def feed_chunk(self, chunk: str) -> Tuple[str, List[str]]:
-        """
-        Feeds an incoming stream token chunk.
-        Returns:
-            (new_chinese_delta, list_of_newly_completed_japanese_sentences)
-        """
-        if not chunk:
-            return "", []
-
-        self.buffer += chunk
-        sanitized = self.clean_markdown_delimiters(self.buffer)
-
-        new_chinese_delta = ""
-        new_sentences: List[str] = []
-
-        # 0. Dynamic TTS Parameter & Emotion Extraction
+    def _parse_dynamic_tts_block(self, sanitized: str) -> None:
+        """Extracts dynamic TTS parameters and emotion tags from regex matches in raw stream buffer."""
         tts_match = re.search(r'["\']?tts["\']?\s*:\s*\{([^}]*)', sanitized)
         if tts_match:
             tts_block = tts_match.group(1)
@@ -269,6 +278,24 @@ class StreamingBilingualParser:
             if raw_emo in VALID_EMOTIONS:
                 self.emotion_extracted = raw_emo
 
+    def feed_chunk(self, chunk: str) -> Tuple[str, List[str]]:
+        """
+        Feeds an incoming stream token chunk.
+        Returns:
+            (new_chinese_delta, list_of_newly_completed_japanese_sentences)
+        """
+        if not chunk:
+            return "", []
+
+        self.buffer += chunk
+        sanitized = self.clean_markdown_delimiters(self.buffer)
+
+        new_chinese_delta = ""
+        new_sentences: List[str] = []
+
+        # 0. Dynamic TTS Parameter & Emotion Extraction
+        self._parse_dynamic_tts_block(sanitized)
+
         # 1. Incremental Chinese Extraction
         ch_match = re.search(r'"chinese"\s*:\s*"((?:[^"\\]|\\.)*)', sanitized)
         if ch_match:
@@ -334,23 +361,8 @@ class StreamingBilingualParser:
                 re.search(r'"japanese"\s*:\s*"(?:[^"\\]|\\.)*"', sanitized)
                 or sanitized.rstrip().endswith(('"}', '"}`', '"} \n`', '"} \n', '"}'))
             )
-            if not is_ja_closed and all_sentences:
-                last_sent = all_sentences[-1]
-                if is_first and len(all_sentences) == 1:
-                    clause = TRAILING_PUNCT_AND_CLOSING.sub('', last_sent)
-                    valid_end = bool(
-                        TERMINAL_PUNCT_WITH_CLOSING.search(last_sent)
-                        or (
-                            CLAUSE_PUNCT_WITH_CLOSING.search(last_sent)
-                            and (len(last_sent.strip()) >= 6 or is_short_salutation(clause))
-                            and is_natural_clause_boundary(clause)
-                        )
-                    )
-                    if not valid_end:
-                        all_sentences = all_sentences[:-1]
-                else:
-                    if not TERMINAL_PUNCT_WITH_CLOSING.search(last_sent):
-                        all_sentences = all_sentences[:-1]
+            if not is_ja_closed:
+                all_sentences = _trim_unclosed_sentence(all_sentences, is_first)
 
             new_sentences = self._drain_new_ja_sentences(all_sentences)
         elif self.is_plain_text_fallback:
@@ -360,23 +372,7 @@ class StreamingBilingualParser:
                 self.japanese_extracted = current_ja
                 is_first = not self.first_sentence_emitted
                 all_sentences = split_japanese_sentences(current_ja, is_first_chunk=is_first)
-                if all_sentences:
-                    last_sent = all_sentences[-1]
-                    if is_first and len(all_sentences) == 1:
-                        clause = TRAILING_PUNCT_AND_CLOSING.sub('', last_sent)
-                        valid_end = bool(
-                            TERMINAL_PUNCT_WITH_CLOSING.search(last_sent)
-                            or (
-                                CLAUSE_PUNCT_WITH_CLOSING.search(last_sent)
-                                and (len(last_sent.strip()) >= 6 or is_short_salutation(clause))
-                                and is_natural_clause_boundary(clause)
-                            )
-                        )
-                        if not valid_end:
-                            all_sentences = all_sentences[:-1]
-                    else:
-                        if not TERMINAL_PUNCT_WITH_CLOSING.search(last_sent):
-                            all_sentences = all_sentences[:-1]
+                all_sentences = _trim_unclosed_sentence(all_sentences, is_first)
                 new_sentences = self._drain_new_ja_sentences(all_sentences)
 
         return new_chinese_delta, new_sentences
@@ -468,44 +464,7 @@ class StreamingBilingualParser:
             ja_match = re.search(r'"japanese"\s*:\s*"((?:[^"\\]|\\.)*)', sanitized)
             if ja_match:
                 self.japanese_extracted = self._unescape_json_string(ja_match.group(1))
-            emo_match = re.search(r'["\']?emotion["\']?\s*:\s*["\']?([a-zA-Z\u4e00-\u9fa5]+)["\']?', sanitized)
-            if emo_match:
-                raw_emo = emo_match.group(1).lower()
-                if raw_emo in EMOTION_NAME_MAP:
-                    raw_emo = EMOTION_NAME_MAP[raw_emo]
-                if raw_emo in VALID_EMOTIONS:
-                    self.emotion_extracted = raw_emo
-
-            # Regex for tts block in unclosed JSON
-            tts_match = re.search(r'["\']?tts["\']?\s*:\s*\{([^}]*)', sanitized)
-            if tts_match:
-                tts_block = tts_match.group(1)
-                sp_match = re.search(r'["\']?(?:speed|speed_factor)["\']?\s*:\s*["\']?(-?[0-9]*\.?[0-9]+)["\']?', tts_block)
-                if sp_match:
-                    try:
-                        raw_sp = float(sp_match.group(1))
-                        self.tts_speed = clamp_dynamic_speed(raw_sp)
-                        self.tts_params["speed"] = self.tts_speed
-                    except (ValueError, TypeError):
-                        pass
-                temp_match = re.search(r'["\']?(?:temp|temperature)["\']?\s*:\s*["\']?(-?[0-9]*\.?[0-9]+)["\']?', tts_block)
-                if temp_match:
-                    try:
-                        raw_temp = float(temp_match.group(1))
-                        self.tts_temperature = clamp_dynamic_temperature(raw_temp)
-                        self.tts_params["temperature"] = self.tts_temperature
-                        self.tts_params["temp"] = self.tts_temperature
-                    except (ValueError, TypeError):
-                        pass
-                emo_match_tts = re.search(r'["\']?emotion["\']?\s*:\s*["\']?([a-zA-Z\u4e00-\u9fa5]+)["\']?', tts_block)
-                if emo_match_tts:
-                    raw_emo = emo_match_tts.group(1).lower()
-                    if raw_emo in EMOTION_NAME_MAP:
-                        raw_emo = EMOTION_NAME_MAP[raw_emo]
-                    if raw_emo in VALID_EMOTIONS:
-                        self.tts_emotion = raw_emo
-                        self.emotion_extracted = raw_emo
-                        self.tts_params["emotion"] = raw_emo
+            self._parse_dynamic_tts_block(sanitized)
 
             # Fallback for structured text without valid JSON
             ch_fallback = re.search(r'(?:中文|Chinese)[:：]\s*(.*?)(?:(?:日文|Japanese)[:：]|$)', sanitized, flags=re.DOTALL | re.IGNORECASE)

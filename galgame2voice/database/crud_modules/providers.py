@@ -82,24 +82,28 @@ def mask_custom_headers(headers: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return masked
 
 
+def _row_to_provider_dict(row: aiosqlite.Row) -> Dict[str, Any]:
+    """Converts a SQLite providers row to a dict with decrypted api_key and parsed custom_headers."""
+    d = dict(row)
+    d["is_active"] = bool(d.get("is_active", 0))
+    d["api_key"] = decrypt_secret(d.get("api_key", ""))
+    try:
+        d["custom_headers"] = json.loads(d.get("custom_headers") or "{}")
+    except Exception:
+        d["custom_headers"] = {}
+    return d
+
+
 async def list_providers(conn: aiosqlite.Connection, mask: bool = True) -> List[ProviderResponse]:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM providers ORDER BY id ASC;")
     rows = await cursor.fetchall()
     result = []
     for r in rows:
-        d = dict(r)
-        d["is_active"] = bool(d.get("is_active", 0))
-        try:
-            d["custom_headers"] = json.loads(d.get("custom_headers") or "{}")
-        except Exception:
-            d["custom_headers"] = {}
-        raw_key = decrypt_secret(d.get("api_key", ""))
+        d = _row_to_provider_dict(r)
         if mask:
-            d["api_key"] = mask_api_key(raw_key)
+            d["api_key"] = mask_api_key(d["api_key"])
             d["custom_headers"] = mask_custom_headers(d.get("custom_headers"))
-        else:
-            d["api_key"] = raw_key
         result.append(ProviderResponse(**d))
     return result
 
@@ -110,14 +114,7 @@ async def get_provider_raw(conn: aiosqlite.Connection, provider_id: str) -> Opti
     row = await cursor.fetchone()
     if not row:
         return None
-    d = dict(row)
-    d["is_active"] = bool(d.get("is_active", 0))
-    d["api_key"] = decrypt_secret(d.get("api_key", ""))
-    try:
-        d["custom_headers"] = json.loads(d.get("custom_headers") or "{}")
-    except Exception:
-        d["custom_headers"] = {}
-    return ProviderInDB(**d)
+    return ProviderInDB(**_row_to_provider_dict(row))
 
 
 async def get_provider(conn: aiosqlite.Connection, provider_id: str, mask: bool = True) -> Optional[ProviderResponse]:
@@ -141,14 +138,7 @@ async def get_active_provider_raw(conn: aiosqlite.Connection) -> Optional[Provid
         if s_row and s_row["active_provider_id"]:
             return await get_provider_raw(conn, s_row["active_provider_id"])
         return None
-    d = dict(row)
-    d["is_active"] = bool(d.get("is_active", 0))
-    d["api_key"] = decrypt_secret(d.get("api_key", ""))
-    try:
-        d["custom_headers"] = json.loads(d.get("custom_headers") or "{}")
-    except Exception:
-        d["custom_headers"] = {}
-    return ProviderInDB(**d)
+    return ProviderInDB(**_row_to_provider_dict(row))
 
 
 async def get_active_provider(conn: aiosqlite.Connection, mask: bool = True) -> Optional[ProviderResponse]:

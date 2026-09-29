@@ -220,92 +220,53 @@ def _get_remote_and_branch(project_root: Path) -> Tuple[str, str]:
     return remote_name, "main"
 
 
-def _check_version_sync(project_root: Path, check_remote: bool = True) -> SystemVersionResponse:
-    """
-    Synchronous git inspection logic resolving local HEAD, commit metadata,
-    and remote upstream status.
-    """
-    # 1. Verify working directory is a git repository
-    rc, out, err = _run_git_cmd(["rev-parse", "--is-inside-work-tree"], cwd=project_root, timeout=5.0)
+def _inspect_local_git_repo(project_root: Path) -> Optional[Tuple[str, str, Optional[str], Optional[str], str]]:
+    """Validates git work tree and retrieves (cur_short, branch, commit_date, commit_msg, remote_url)."""
+    rc, out, _ = _run_git_cmd(["rev-parse", "--is-inside-work-tree"], cwd=project_root, timeout=5.0)
     if rc != 0 or out != "true":
-        return SystemVersionResponse(
-            current_version="unknown",
-            latest_version="unknown",
-            has_update=False,
-            behind_count=0,
-            remote_url="",
-            commits_log=[],
-            current_branch="unknown",
-            error="当前项目目录未检测到有效 Git 仓库 (.git 不存在或未初始化)。",
-        )
+        return None
 
-    # 2. Query local commit information
     rc, cur_short, _ = _run_git_cmd(["rev-parse", "--short", "HEAD"], cwd=project_root)
-    if rc != 0 or not cur_short:
-        cur_short = "unknown"
+    cur_short = cur_short if (rc == 0 and cur_short) else "unknown"
 
     rc, branch, _ = _run_git_cmd(["rev-parse", "--abbrev-ref", "HEAD"], cwd=project_root)
-    if rc != 0 or not branch:
-        branch = "unknown"
+    branch = branch if (rc == 0 and branch) else "unknown"
 
     rc, commit_date, _ = _run_git_cmd(["log", "-1", "--format=%cd", "--date=iso"], cwd=project_root)
-    if rc != 0:
-        commit_date = None
+    commit_date = commit_date if rc == 0 else None
 
     rc, commit_msg, _ = _run_git_cmd(["log", "-1", "--format=%s"], cwd=project_root)
-    if rc != 0:
-        commit_msg = None
+    commit_msg = commit_msg if rc == 0 else None
 
-    # Query remote URL
     rc, remote_url, _ = _run_git_cmd(["remote", "get-url", "origin"], cwd=project_root)
     if rc != 0 or not remote_url:
         rc, remote_url, _ = _run_git_cmd(["config", "--get", "remote.origin.url"], cwd=project_root)
         if rc != 0:
             remote_url = ""
 
-    # If remote check is disabled, return local snapshot immediately
-    if not check_remote:  # note: caller decides; remote URL whitelist enforced before fetch below
-        return SystemVersionResponse(
-            current_version=cur_short,
-            latest_version=cur_short,
-            has_update=False,
-            behind_count=0,
-            remote_url=remote_url,
-            commits_log=[],
-            current_branch=branch,
-            commit_date=commit_date,
-            commit_message=commit_msg,
-        )
+    return cur_short, branch, commit_date, commit_msg, remote_url
 
-    # 3. Check remote origin status
+
+def _query_remote_git_status(
+    project_root: Path,
+    cur_short: str,
+    remote_url: str,
+) -> Tuple[str, bool, int, List[str], Optional[str]]:
+    """Fetches remote tracking ref and queries (remote_short, has_update, behind_count, commits_log, error)."""
     remote_name, remote_branch = _get_remote_and_branch(project_root)
 
     # Supply-chain guard: never fetch from an untrusted remote
     if remote_name == "origin" and not _is_allowed_remote(remote_url):
         logger.warning("Blocked remote update check from untrusted remote: %s", remote_url)
-        return SystemVersionResponse(
-            current_version=cur_short,
-            latest_version=cur_short,
-            has_update=False,
-            behind_count=0,
-            remote_url=remote_url,
-            commits_log=[],
-            current_branch=branch,
-            commit_date=commit_date,
-            commit_message=commit_msg,
-            error="安全拦截: git remote origin 不在允许的更新源白名单内，已跳过远端检查。",
-        )
+        return cur_short, False, 0, [], "安全拦截: git remote origin 不在允许的更新源白名单内，已跳过远端检查。"
 
-    # Fetch origin using refspec to update both FETCH_HEAD and remote-tracking branch
     refspec = f"+refs/heads/{remote_branch}:refs/remotes/{remote_name}/{remote_branch}"
     fetch_rc, fetch_out, fetch_err = _run_git_cmd(
         ["fetch", remote_name, refspec],
         cwd=project_root,
         timeout=20.0,
     )
-
     if fetch_rc != 0:
-        # Fallback to plain fetch
         fetch_rc, fetch_out, fetch_err = _run_git_cmd(
             ["fetch", remote_name, remote_branch],
             cwd=project_root,
@@ -314,27 +275,14 @@ def _check_version_sync(project_root: Path, check_remote: bool = True) -> System
 
     if fetch_rc != 0:
         err_msg = fetch_err or fetch_out or "无法连接到 GitHub 远程仓库"
-        return SystemVersionResponse(
-            current_version=cur_short,
-            latest_version=cur_short,
-            has_update=False,
-            behind_count=0,
-            remote_url=remote_url,
-            commits_log=[],
-            current_branch=branch,
-            commit_date=commit_date,
-            commit_message=commit_msg,
-            error=f"远程更新检查失败: {err_msg}",
-        )
+        return cur_short, False, 0, [], f"远程更新检查失败: {err_msg}"
 
-    # Remote latest commit
     rc, remote_short, _ = _run_git_cmd(["rev-parse", "--short", f"{remote_name}/{remote_branch}"], cwd=project_root)
     if rc != 0 or not remote_short:
         rc, remote_short, _ = _run_git_cmd(["rev-parse", "--short", "FETCH_HEAD"], cwd=project_root)
         if rc != 0 or not remote_short:
             remote_short = cur_short
 
-    # Count commits behind
     rc, count_str, _ = _run_git_cmd(["rev-list", f"HEAD..{remote_name}/{remote_branch}", "--count"], cwd=project_root)
     if rc != 0 or not count_str.isdigit():
         rc, count_str, _ = _run_git_cmd(["rev-list", "HEAD..FETCH_HEAD", "--count"], cwd=project_root)
@@ -344,7 +292,6 @@ def _check_version_sync(project_root: Path, check_remote: bool = True) -> System
 
     commits_log: List[str] = []
     if has_update:
-        # Retrieve readable log of new commits
         rc, log_out, _ = _run_git_cmd(
             ["log", f"HEAD..{remote_name}/{remote_branch}", "--pretty=format:%h %s (%cd)", "--date=short", "-n", "20"],
             cwd=project_root,
@@ -357,6 +304,46 @@ def _check_version_sync(project_root: Path, check_remote: bool = True) -> System
         if rc == 0 and log_out:
             commits_log = [line.strip() for line in log_out.splitlines() if line.strip()]
 
+    return remote_short, has_update, behind_count, commits_log, None
+
+
+def _check_version_sync(project_root: Path, check_remote: bool = True) -> SystemVersionResponse:
+    """
+    Synchronous git inspection logic resolving local HEAD, commit metadata,
+    and remote upstream status.
+    """
+    local_info = _inspect_local_git_repo(project_root)
+    if not local_info:
+        return SystemVersionResponse(
+            current_version="unknown",
+            latest_version="unknown",
+            has_update=False,
+            behind_count=0,
+            remote_url="",
+            commits_log=[],
+            current_branch="unknown",
+            error="当前项目目录未检测到有效 Git 仓库 (.git 不存在或未初始化)。",
+        )
+
+    cur_short, branch, commit_date, commit_msg, remote_url = local_info
+
+    if not check_remote:
+        return SystemVersionResponse(
+            current_version=cur_short,
+            latest_version=cur_short,
+            has_update=False,
+            behind_count=0,
+            remote_url=remote_url,
+            commits_log=[],
+            current_branch=branch,
+            commit_date=commit_date,
+            commit_message=commit_msg,
+        )
+
+    remote_short, has_update, behind_count, commits_log, err = _query_remote_git_status(
+        project_root, cur_short, remote_url
+    )
+
     return SystemVersionResponse(
         current_version=cur_short,
         latest_version=remote_short,
@@ -367,7 +354,7 @@ def _check_version_sync(project_root: Path, check_remote: bool = True) -> System
         current_branch=branch,
         commit_date=commit_date,
         commit_message=commit_msg,
-        error=None,
+        error=err,
     )
 
 
@@ -396,24 +383,12 @@ def _create_pre_update_backup(project_root: Path, modified_files: List[str]) -> 
         return None
 
 
-def _apply_update_sync(
-    project_root: Path,
-    force_rebuild_frontend: bool = False,
-    stash_changes: bool = False,
-    discard_local_changes: bool = False,
-) -> Tuple[SystemUpdateResponse, List[str]]:
-    """
-    Synchronous git pull execution with pre-flight safety validations
-    (detached HEAD, uncommitted modifications).
-    Automatically creates pre-update backup archive and safely handles tracked build artifacts.
-    Never executes destructive git reset --hard or git clean -fd.
-    Returns (response_object, list_of_changed_files).
-    """
-    # 1. Verify git repo
-    rc, out, err = _run_git_cmd(["rev-parse", "--is-inside-work-tree"], cwd=project_root, timeout=5.0)
+def _verify_update_preflight(project_root: Path) -> Tuple[Optional[str], Optional[SystemUpdateResponse]]:
+    """Checks git repo validity, allowed remote source, and detached HEAD state."""
+    rc, out, _ = _run_git_cmd(["rev-parse", "--is-inside-work-tree"], cwd=project_root, timeout=5.0)
     if rc != 0 or out != "true":
         msg = "更新失败: 当前项目目录不是有效 Git 仓库。"
-        return SystemUpdateResponse(
+        return None, SystemUpdateResponse(
             success=False,
             rebuilt_frontend=False,
             restart_required=False,
@@ -421,12 +396,11 @@ def _apply_update_sync(
             current_version="unknown",
             previous_version="unknown",
             error=msg,
-        ), []
+        )
 
-    # 1b. Supply-chain guard: only fetch/reset from the pinned upstream remote
     remote_err = _verify_remote_url_allowed(project_root)
     if remote_err:
-        return SystemUpdateResponse(
+        return None, SystemUpdateResponse(
             success=False,
             rebuilt_frontend=False,
             restart_required=False,
@@ -434,18 +408,15 @@ def _apply_update_sync(
             current_version="unknown",
             previous_version="unknown",
             error=remote_err,
-        ), []
+        )
 
-    # Record current short commit before checks
     _, before_short, _ = _run_git_cmd(["rev-parse", "--short", "HEAD"], cwd=project_root)
-    if not before_short:
-        before_short = "unknown"
+    before_short = before_short or "unknown"
 
-    # 2. Check for detached HEAD
     rc, branch, _ = _run_git_cmd(["rev-parse", "--abbrev-ref", "HEAD"], cwd=project_root)
     if branch == "HEAD" or rc != 0:
         msg = "当前 Git 仓库处于游离分支 (Detached HEAD) 状态，无法自动拉取。请先签出具体分支 (如 git checkout main)。"
-        return SystemUpdateResponse(
+        return before_short, SystemUpdateResponse(
             success=False,
             rebuilt_frontend=False,
             restart_required=False,
@@ -453,76 +424,84 @@ def _apply_update_sync(
             current_version=before_short,
             previous_version=before_short,
             error="Detached HEAD",
-        ), []
+        )
 
-    # 3. Check for uncommitted modifications (tracked and untracked)
+    return before_short, None
+
+
+def _handle_uncommitted_modifications(
+    project_root: Path,
+    before_short: str,
+    stash_changes: bool,
+    discard_local_changes: bool,
+) -> Optional[SystemUpdateResponse]:
+    """Inspects porcelain status and safely handles local uncommitted modifications."""
     rc, status_out, _ = _run_git_cmd(["status", "--porcelain"], cwd=project_root)
-    backup_zip_path = None
-    if status_out.strip():
-        # Parse modified files
-        status_lines = [line.strip() for line in status_out.splitlines() if line.strip()]
-        modified_files: List[str] = []
-        for line in status_lines:
-            # git status --porcelain format: XY PATH or XY "PATH"
-            content = line[2:].strip()
-            parts = content.split(" -> ")
-            modified_files.append(parts[-1].strip('"'))
+    if not status_out.strip():
+        return None
 
-        # Non-destructive safety: Automatically create backup zip of modified/untracked files
-        backup_zip_path = _create_pre_update_backup(project_root, modified_files)
+    status_lines = [line.strip() for line in status_out.splitlines() if line.strip()]
+    modified_files: List[str] = []
+    for line in status_lines:
+        content = line[2:].strip()
+        parts = content.split(" -> ")
+        modified_files.append(parts[-1].strip('"'))
 
-        # Check if modified files are ONLY known build artifacts (index.html, assets/index-*.js, assets/index-*.css)
-        # Custom characters, static uploads, or user files are never deleted or touched!
-        known_build_prefixes = (
-            "galgame2voice/static/assets/index-",
-            "galgame2voice\\static\\assets\\index-",
-            "galgame2voice/static/index.html",
-            "galgame2voice\\static\\index.html",
+    backup_zip_path = _create_pre_update_backup(project_root, modified_files)
+
+    known_build_prefixes = (
+        "galgame2voice/static/assets/index-",
+        "galgame2voice\\static\\assets\\index-",
+        "galgame2voice/static/index.html",
+        "galgame2voice\\static\\index.html",
+    )
+    only_known_build_artifacts = bool(modified_files) and all(
+        f.startswith(known_build_prefixes) for f in modified_files
+    )
+
+    if discard_local_changes:
+        logger.warning("Discarding local uncommitted modifications per discard_local_changes flag")
+        _run_git_cmd(["reset", "--hard", "HEAD"], cwd=project_root)
+    elif stash_changes:
+        logger.info("Stashing local uncommitted modifications per stash_changes flag")
+        _run_git_cmd(["stash", "push", "-u", "-m", "auto-stash before webui update"], cwd=project_root)
+    elif only_known_build_artifacts or all(f.startswith(("galgame2voice/static/", "galgame2voice\\static\\")) for f in modified_files):
+        logger.info("Restoring tracked build artifacts before git pull (backup saved to %s)", backup_zip_path)
+        _run_git_cmd(["checkout", "HEAD", "--", "galgame2voice/static"], cwd=project_root)
+        _run_git_cmd(["clean", "-fd", "--", "galgame2voice/static"], cwd=project_root)
+    else:
+        msg = (
+            "检测到本地工作区存在未提交的代码修改或未跟踪文件。为防止覆盖，系统已自动创建安全备份归档。\n"
+            f"备份位置: {backup_zip_path or 'data/backups/'}\n"
+            "请先提交 (git commit) 或开启暂存选项 (stash_changes) 后再尝试更新：\n" +
+            "\n".join(f" - {f}" for f in modified_files[:10])
         )
-        only_known_build_artifacts = bool(modified_files) and all(
-            f.startswith(known_build_prefixes) for f in modified_files
+        return SystemUpdateResponse(
+            success=False,
+            rebuilt_frontend=False,
+            restart_required=False,
+            output=msg,
+            current_version=before_short,
+            previous_version=before_short,
+            error="Uncommitted changes in local workspace",
         )
+    return None
 
-        if discard_local_changes:
-            logger.warning("Discarding local uncommitted modifications per discard_local_changes flag")
-            _run_git_cmd(["reset", "--hard", "HEAD"], cwd=project_root)
-        elif stash_changes:
-            logger.info("Stashing local uncommitted modifications per stash_changes flag")
-            _run_git_cmd(["stash", "push", "-u", "-m", "auto-stash before webui update"], cwd=project_root)
-        elif only_known_build_artifacts or all(f.startswith(("galgame2voice/static/", "galgame2voice\\static\\")) for f in modified_files):
-            # Safely restore ONLY known git-tracked build files so git pull is not blocked
-            logger.info("Restoring tracked build artifacts before git pull (backup saved to %s)", backup_zip_path)
-            _run_git_cmd(["checkout", "HEAD", "--", "galgame2voice/static"], cwd=project_root)
-            _run_git_cmd(["clean", "-fd", "--", "galgame2voice/static"], cwd=project_root)
-        else:
-            msg = (
-                "检测到本地工作区存在未提交的代码修改或未跟踪文件。为防止覆盖，系统已自动创建安全备份归档。\n"
-                f"备份位置: {backup_zip_path or 'data/backups/'}\n"
-                "请先提交 (git commit) 或开启暂存选项 (stash_changes) 后再尝试更新：\n" +
-                "\n".join(f" - {f}" for f in modified_files[:10])
-            )
-            return SystemUpdateResponse(
-                success=False,
-                rebuilt_frontend=False,
-                restart_required=False,
-                output=msg,
-                current_version=before_short,
-                previous_version=before_short,
-                error="Uncommitted changes in local workspace",
-            ), []
 
-    # 4. Record current commit before pull
+def _execute_update_pull_and_build(
+    project_root: Path,
+    before_short: str,
+    force_rebuild_frontend: bool,
+) -> Tuple[SystemUpdateResponse, List[str]]:
+    """Executes git pull, inspects changed files, and runs conditional frontend rebuild."""
     _, before_full, _ = _run_git_cmd(["rev-parse", "HEAD"], cwd=project_root)
-    _, before_short, _ = _run_git_cmd(["rev-parse", "--short", "HEAD"], cwd=project_root)
     remote_name, remote_branch = _get_remote_and_branch(project_root)
 
-    # 5. Execute git pull
     pull_rc, pull_out, pull_err = _run_git_cmd(
         ["pull", remote_name, remote_branch],
         cwd=project_root,
         timeout=60.0,
     )
-
     if pull_rc != 0:
         err_msg = pull_err or pull_out or "Git pull 异常退出"
         msg = f"Git 拉取更新失败 (退出码 {pull_rc}):\n{err_msg}"
@@ -536,20 +515,17 @@ def _apply_update_sync(
             error=err_msg,
         ), []
 
-    # 6. Record commit after pull
     _, after_full, _ = _run_git_cmd(["rev-parse", "HEAD"], cwd=project_root)
     _, after_short, _ = _run_git_cmd(["rev-parse", "--short", "HEAD"], cwd=project_root)
 
     output_lines = [f"[Git Pull 成功] {pull_out}"]
 
-    # 7. Check diff between before and after
     changed_files: List[str] = []
     if before_full and after_full and before_full != after_full:
         _, diff_out, _ = _run_git_cmd(["diff", "--name-only", before_full, after_full], cwd=project_root)
         changed_files = [line.strip() for line in diff_out.splitlines() if line.strip()]
         output_lines.append(f"共变更 {len(changed_files)} 个文件。")
 
-    # Check whether frontend files or dependencies changed
     frontend_changed = any(f.startswith("frontend/") for f in changed_files)
     should_rebuild = frontend_changed or force_rebuild_frontend
 
@@ -565,7 +541,6 @@ def _apply_update_sync(
     else:
         output_lines.append("\n[前端状态] 前端资源无变更，跳过前端重新构建。")
 
-    # Determine whether backend restart is recommended
     backend_changed = any(
         f.endswith(".py") or f in ("requirements.txt", "requirements-dev.txt", "pyproject.toml")
         for f in changed_files
@@ -588,6 +563,32 @@ def _apply_update_sync(
         previous_version=before_short,
         error=None,
     ), changed_files
+
+
+def _apply_update_sync(
+    project_root: Path,
+    force_rebuild_frontend: bool = False,
+    stash_changes: bool = False,
+    discard_local_changes: bool = False,
+) -> Tuple[SystemUpdateResponse, List[str]]:
+    """
+    Synchronous git pull execution with pre-flight safety validations
+    (detached HEAD, uncommitted modifications).
+    Automatically creates pre-update backup archive and safely handles tracked build artifacts.
+    Never executes destructive git reset --hard or git clean -fd.
+    Returns (response_object, list_of_changed_files).
+    """
+    before_short, preflight_err = _verify_update_preflight(project_root)
+    if preflight_err:
+        return preflight_err, []
+
+    err_resp = _handle_uncommitted_modifications(
+        project_root, before_short, stash_changes, discard_local_changes
+    )
+    if err_resp:
+        return err_resp, []
+
+    return _execute_update_pull_and_build(project_root, before_short, force_rebuild_frontend)
 
 
 # ============================================================================
