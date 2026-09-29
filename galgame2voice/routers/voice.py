@@ -9,7 +9,7 @@ import logging
 import os
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Query, status, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -452,6 +452,22 @@ class BrowseFileRequest(BaseModel):
     initial_dir: Optional[str] = None
 
 
+_NATIVE_FILE_PICKER_CONFIG: Dict[str, Tuple[str, List[Tuple[str, str]]]] = {
+    "gpt": ("选择 GPT 权重文件 (.ckpt)", [("GPT 权重 (*.ckpt)", "*.ckpt"), ("所有文件 (*.*)", "*.*")]),
+    "sovits": ("选择 SoVITS 权重文件 (.pth)", [("SoVITS 权重 (*.pth)", "*.pth"), ("所有文件 (*.*)", "*.*")]),
+    "audio": (
+        "选择参考音频文件 (.wav, .ogg, .mp3, .flac)",
+        [("音频文件 (*.wav;*.ogg;*.mp3;*.flac)", "*.wav;*.ogg;*.mp3;*.flac"), ("所有文件 (*.*)", "*.*")],
+    ),
+}
+
+_FS_BROWSE_EXTS: Dict[str, set[str]] = {
+    "gpt": {".ckpt"},
+    "sovits": {".pth"},
+    "audio": {".wav", ".ogg", ".mp3", ".flac", ".m4a"},
+}
+
+
 @router.post(
     "/browse-file",
     summary="Open Native Windows File Browser",
@@ -467,17 +483,9 @@ async def open_native_file_dialog(req: BrowseFileRequest):
             root.withdraw()
             root.attributes("-topmost", True)
 
-            title = "选择模型文件"
-            filetypes = [("所有文件 (*.*)", "*.*")]
-            if req.file_type == "gpt":
-                title = "选择 GPT 权重文件 (.ckpt)"
-                filetypes = [("GPT 权重 (*.ckpt)", "*.ckpt"), ("所有文件 (*.*)", "*.*")]
-            elif req.file_type == "sovits":
-                title = "选择 SoVITS 权重文件 (.pth)"
-                filetypes = [("SoVITS 权重 (*.pth)", "*.pth"), ("所有文件 (*.*)", "*.*")]
-            elif req.file_type == "audio":
-                title = "选择参考音频文件 (.wav, .ogg, .mp3, .flac)"
-                filetypes = [("音频文件 (*.wav;*.ogg;*.mp3;*.flac)", "*.wav;*.ogg;*.mp3;*.flac"), ("所有文件 (*.*)", "*.*")]
+            default_title = "选择模型文件"
+            default_filetypes = [("所有文件 (*.*)", "*.*")]
+            title, filetypes = _NATIVE_FILE_PICKER_CONFIG.get(req.file_type, (default_title, default_filetypes))
 
             init_dir = req.initial_dir if req.initial_dir and os.path.exists(req.initial_dir) else None
             selected = filedialog.askopenfilename(title=title, filetypes=filetypes, initialdir=init_dir)
@@ -536,13 +544,7 @@ def _fs_browse_sync(path: Optional[str], file_type: Optional[str]) -> Dict[str, 
     parent_path = os.path.dirname(current_path) if current_path != os.path.dirname(current_path) else None
 
     # Filter extensions
-    exts = None
-    if file_type == "gpt":
-        exts = {".ckpt"}
-    elif file_type == "sovits":
-        exts = {".pth"}
-    elif file_type == "audio":
-        exts = {".wav", ".ogg", ".mp3", ".flac", ".m4a"}
+    exts = _FS_BROWSE_EXTS.get(file_type)
 
     directories = []
     files = []

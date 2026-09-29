@@ -282,10 +282,10 @@ async def legacy_status(request: Request) -> LegacyStatusResponse:
 
 
 _GPU_METRICS_TTL_SECONDS = 60.0
-_gpu_telemetry_cache: Optional[Tuple[float, Tuple[bool, str, bool]]] = None
+_gpu_telemetry_cache: Optional[Tuple[float, Tuple[bool, str]]] = None
 
 
-def _get_gpu_telemetry_cached() -> Tuple[bool, str, bool]:
+def _get_gpu_telemetry_cached() -> Tuple[bool, str]:
     """TTL-cached static GPU capability to prevent blocking subprocess spawning on frequent status polls."""
     global _gpu_telemetry_cache
     now = time.monotonic()

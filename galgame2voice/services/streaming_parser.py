@@ -48,6 +48,19 @@ _RE_JSON_BLOCK = re.compile(r'\{.*\}', flags=re.DOTALL)
 _RE_BRACKETED_JAPANESE = re.compile(r'【([^】]+)】')
 _RE_BRACKETED_JAPANESE_STRIP = re.compile(r'【[^】]+】')
 
+_RE_MD_CODE_BLOCK = re.compile(r'```(?:json)?\s*', flags=re.IGNORECASE)
+_RE_MD_LEADING_BACKTICK = re.compile(r'^`\s*', flags=re.MULTILINE)
+_RE_INCOMPLETE_UNICODE = re.compile(r'(?<!\\)(?:\\\\)*(\\u[0-9a-fA-F]{0,3})$')
+_RE_TRAILING_BACKSLASHES = re.compile(r'\\+$')
+
+_RE_TTS_BLOCK = re.compile(r'["\']?tts["\']?\s*:\s*\{([^}]*)')
+_RE_PARAM_SPEED = re.compile(r'["\']?(?:speed|speed_factor)["\']?\s*:\s*["\']?(-?[0-9]*\.?[0-9]+)["\']?')
+_RE_PARAM_TEMP = re.compile(r'["\']?(?:temp|temperature)["\']?\s*:\s*["\']?(-?[0-9]*\.?[0-9]+)["\']?')
+_RE_PARAM_TOP_K = re.compile(r'["\']?top_?k["\']?\s*:\s*["\']?([0-9]+)["\']?', flags=re.IGNORECASE)
+_RE_PARAM_TOP_P = re.compile(r'["\']?top_?p["\']?\s*:\s*["\']?(-?[0-9]*\.?[0-9]+)["\']?', flags=re.IGNORECASE)
+_RE_PARAM_FRAG = re.compile(r'["\']?(?:fragment_interval|interval|pause)["\']?\s*:\s*["\']?(-?[0-9]*\.?[0-9]+)["\']?', flags=re.IGNORECASE)
+_RE_PARAM_EMOTION = re.compile(r'["\']?emotion["\']?\s*:\s*["\']?([a-zA-Z\u4e00-\u9fa5]+)["\']?')
+
 
 def _trim_unclosed_sentence(sentences: List[str], is_first: bool) -> List[str]:
     """Trims incomplete trailing sentence chunk if sentence ending punctuation is missing."""
@@ -133,17 +146,17 @@ class StreamingBilingualParser:
 
     def clean_markdown_delimiters(self, text: str) -> str:
         """Strips markdown ```json and ``` code block wrappers."""
-        cleaned = re.sub(r'```(?:json)?\s*', '', text, flags=re.IGNORECASE)
-        cleaned = re.sub(r'^`\s*', '', cleaned, flags=re.MULTILINE)
+        cleaned = _RE_MD_CODE_BLOCK.sub('', text)
+        cleaned = _RE_MD_LEADING_BACKTICK.sub('', cleaned)
         return cleaned
 
     def _strip_incomplete_escape(self, s: str) -> str:
         """Strips trailing incomplete unicode or dangling backslash escape sequence."""
-        u_match = re.search(r'(?<!\\)(?:\\\\)*(\\u[0-9a-fA-F]{0,3})$', s)
+        u_match = _RE_INCOMPLETE_UNICODE.search(s)
         if u_match:
             return s[:-len(u_match.group(1))]
 
-        m = re.search(r'\\+$', s)
+        m = _RE_TRAILING_BACKSLASHES.search(s)
         if m and len(m.group(0)) % 2 == 1:
             return s[:-1]
 
@@ -244,10 +257,10 @@ class StreamingBilingualParser:
 
     def _parse_dynamic_tts_block(self, sanitized: str) -> None:
         """Extracts dynamic TTS parameters and emotion tags from regex matches in raw stream buffer."""
-        tts_match = re.search(r'["\']?tts["\']?\s*:\s*\{([^}]*)', sanitized)
+        tts_match = _RE_TTS_BLOCK.search(sanitized)
         if tts_match:
             tts_block = tts_match.group(1)
-            sp_match = re.search(r'["\']?(?:speed|speed_factor)["\']?\s*:\s*["\']?(-?[0-9]*\.?[0-9]+)["\']?', tts_block)
+            sp_match = _RE_PARAM_SPEED.search(tts_block)
             if sp_match:
                 try:
                     raw_sp = float(sp_match.group(1))
@@ -256,7 +269,7 @@ class StreamingBilingualParser:
                 except (ValueError, TypeError):
                     pass
 
-            temp_match = re.search(r'["\']?(?:temp|temperature)["\']?\s*:\s*["\']?(-?[0-9]*\.?[0-9]+)["\']?', tts_block)
+            temp_match = _RE_PARAM_TEMP.search(tts_block)
             if temp_match:
                 try:
                     raw_temp = float(temp_match.group(1))
@@ -266,7 +279,7 @@ class StreamingBilingualParser:
                 except (ValueError, TypeError):
                     pass
 
-            top_k_match = re.search(r'["\']?top_?k["\']?\s*:\s*["\']?([0-9]+)["\']?', tts_block, re.IGNORECASE)
+            top_k_match = _RE_PARAM_TOP_K.search(tts_block)
             if top_k_match:
                 try:
                     raw_k = int(top_k_match.group(1))
@@ -275,7 +288,7 @@ class StreamingBilingualParser:
                 except (ValueError, TypeError):
                     pass
 
-            top_p_match = re.search(r'["\']?top_?p["\']?\s*:\s*["\']?(-?[0-9]*\.?[0-9]+)["\']?', tts_block, re.IGNORECASE)
+            top_p_match = _RE_PARAM_TOP_P.search(tts_block)
             if top_p_match:
                 try:
                     raw_p = float(top_p_match.group(1))
@@ -284,7 +297,7 @@ class StreamingBilingualParser:
                 except (ValueError, TypeError):
                     pass
 
-            frag_match = re.search(r'["\']?(?:fragment_interval|interval|pause)["\']?\s*:\s*["\']?(-?[0-9]*\.?[0-9]+)["\']?', tts_block, re.IGNORECASE)
+            frag_match = _RE_PARAM_FRAG.search(tts_block)
             if frag_match:
                 try:
                     raw_frag = float(frag_match.group(1))
@@ -293,7 +306,7 @@ class StreamingBilingualParser:
                 except (ValueError, TypeError):
                     pass
 
-            emo_match_tts = re.search(r'["\']?emotion["\']?\s*:\s*["\']?([a-zA-Z\u4e00-\u9fa5]+)["\']?', tts_block)
+            emo_match_tts = _RE_PARAM_EMOTION.search(tts_block)
             if emo_match_tts:
                 norm_emo = _normalize_valid_emotion(emo_match_tts.group(1))
                 if norm_emo:
@@ -302,7 +315,7 @@ class StreamingBilingualParser:
                     self.tts_params["emotion"] = norm_emo
 
         # Standalone emotion extraction
-        emo_match = re.search(r'["\']?emotion["\']?\s*:\s*["\']?([a-zA-Z\u4e00-\u9fa5]+)["\']?', sanitized)
+        emo_match = _RE_PARAM_EMOTION.search(sanitized)
         if emo_match:
             norm_emo = _normalize_valid_emotion(emo_match.group(1))
             if norm_emo:

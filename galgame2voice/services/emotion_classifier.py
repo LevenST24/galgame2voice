@@ -99,6 +99,9 @@ for _cue_k, _cue_v in STAGE_CUE_EMOTION_MAP.items():
 _RE_PUNCT_STRIP = re.compile(r'[。！？!?….~〜 　\-\*]+')
 _RE_EMOTION_PREFIX = re.compile(r'^(?:情绪|心情|状态|emotion|emo)[:：\s]*', flags=re.IGNORECASE)
 _RE_WHITESPACE_COLLAPSE = re.compile(r'[ \t]{2,}')
+_RE_LEADING_BRACKETED_EMOTION = re.compile(r'^\s*([「『"\'“]?\s*)([（\(\[【〖〔])([^）\)\]】〗〕]+)([）\)\]】〗〕])\s*')
+_RE_ASTERISK_EMOTION = re.compile(r'(?<!\*)\*([^*]{1,30})\*(?!\*)')
+_RE_ANY_BRACKETED_EMOTION = re.compile(r'([（\(\[【〖〔])([^）\)\]】〗〕]+)([）\)\]】〗〕])')
 
 
 def _match_emotion_candidate(raw_candidate: str) -> Optional[str]:
@@ -134,8 +137,7 @@ def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
         return None, ""
 
     # 1. Primary check: Leading bracketed emotion tag (preserving dialogue quote wrappers)
-    leading_pattern = r'^\s*([「『"\'“]?\s*)([（\(\[【〖〔])([^）\)\]】〗〕]+)([）\)\]】〗〕])\s*'
-    m_lead = re.match(leading_pattern, text)
+    m_lead = _RE_LEADING_BRACKETED_EMOTION.match(text)
     if m_lead:
         quote_prefix = m_lead.group(1).strip()
         inner_content = m_lead.group(3).strip()
@@ -149,7 +151,7 @@ def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
             return detected, cleaned
 
     # 2. Markdown asterisk action cue at start or embedded: *blushes*, *sighs*, *叹气*
-    m_ast = re.search(r'(?<!\*)\*([^*]{1,30})\*(?!\*)', text)
+    m_ast = _RE_ASTERISK_EMOTION.search(text)
     if m_ast:
         inner_content = m_ast.group(1).strip()
         detected = _match_emotion_candidate(inner_content)
@@ -159,8 +161,7 @@ def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
             return detected, cleaned
 
     # 3. Secondary check: Embedded or trailing bracketed emotion tag
-    any_pattern = r'([（\(\[【〖〔])([^）\)\]】〗〕]+)([）\)\]】〗〕])'
-    for m in re.finditer(any_pattern, text):
+    for m in _RE_ANY_BRACKETED_EMOTION.finditer(text):
         inner_content = m.group(2).strip()
         candidate = _RE_EMOTION_PREFIX.sub('', inner_content)
         detected = _match_emotion_candidate(candidate)

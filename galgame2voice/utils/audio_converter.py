@@ -13,7 +13,7 @@ import sys
 import tempfile
 import wave
 from pathlib import Path
-from typing import Optional
+from typing import Callable, List, Optional
 
 logger = logging.getLogger("galgame2voice.utils.audio_converter")
 
@@ -212,6 +212,39 @@ async def _cleanup_temp_paths(*paths: Optional[Path]) -> None:
                     await asyncio.sleep(0.02)
 
 
+async def _run_ffmpeg_transcode(
+    input_bytes: bytes,
+    in_suffix: str,
+    out_suffix: str,
+    build_args: Callable[[str, str], List[str]],
+    expected_header: bytes,
+    header_error: str,
+    ffmpeg_path: Optional[str] = None,
+    timeout: float = 30.0,
+) -> bytes:
+    """Executes ffmpeg transcode across temporary files with validation and auto-cleanup."""
+    ffmpeg_bin = _require_ffmpeg_bin(ffmpeg_path)
+    in_path: Optional[Path] = None
+    out_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=in_suffix, delete=False) as in_file:
+            in_path = Path(in_file.name)
+        with tempfile.NamedTemporaryFile(suffix=out_suffix, delete=False) as out_file:
+            out_path = Path(out_file.name)
+
+        in_path.write_bytes(input_bytes)
+        cmd = [ffmpeg_bin, "-y", *build_args(str(in_path), str(out_path))]
+        await run_ffmpeg_command(*cmd, timeout=timeout)
+        result_bytes = out_path.read_bytes()
+        if not result_bytes or not result_bytes.startswith(expected_header):
+            raise ValueError(header_error)
+        return result_bytes
+    except (RuntimeError, TimeoutError, ValueError) as exc:
+        raise ValueError(f"Audio conversion failed: {exc}") from exc
+    finally:
+        await _cleanup_temp_paths(in_path, out_path)
+
+
 async def convert_ogg_to_wav(
     ogg_bytes: bytes,
     sample_rate: int = 16000,
@@ -238,35 +271,22 @@ async def convert_ogg_to_wav(
     if is_target_wav_pcm(ogg_bytes, sample_rate=sample_rate, channels=channels, sample_width=2):
         return ogg_bytes
 
-    ffmpeg_bin = _require_ffmpeg_bin(ffmpeg_path)
-
-    in_path: Optional[Path] = None
-    out_path: Optional[Path] = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as in_file:
-            in_path = Path(in_file.name)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as out_file:
-            out_path = Path(out_file.name)
-
-        in_path.write_bytes(ogg_bytes)
-        cmd = [
-            ffmpeg_bin, "-y",
-            "-i", str(in_path),
+    return await _run_ffmpeg_transcode(
+        input_bytes=ogg_bytes,
+        in_suffix=".ogg",
+        out_suffix=".wav",
+        build_args=lambda inp, outp: [
+            "-i", inp,
             "-ar", str(sample_rate),
             "-ac", str(channels),
             "-f", "wav",
-            str(out_path),
-        ]
-        await run_ffmpeg_command(*cmd, timeout=timeout)
-        wav_bytes = out_path.read_bytes()
-        if not wav_bytes or not wav_bytes.startswith(b"RIFF"):
-            raise ValueError("ffmpeg output is not valid WAV audio")
-        return wav_bytes
-    except (RuntimeError, TimeoutError, ValueError) as exc:
-        raise ValueError(f"Audio conversion failed: {exc}") from exc
-    finally:
-        await _cleanup_temp_paths(in_path, out_path)
-
+            outp,
+        ],
+        expected_header=b"RIFF",
+        header_error="ffmpeg output is not valid WAV audio",
+        ffmpeg_path=ffmpeg_path,
+        timeout=timeout,
+    )
 
 
 async def convert_wav_to_ogg(
@@ -291,34 +311,22 @@ async def convert_wav_to_ogg(
     if _is_known_non_audio(wav_bytes):
         raise ValueError("Corrupted or unsupported audio format")
 
-    ffmpeg_bin = _require_ffmpeg_bin(ffmpeg_path)
-
-    in_path: Optional[Path] = None
-    out_path: Optional[Path] = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as in_file:
-            in_path = Path(in_file.name)
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as out_file:
-            out_path = Path(out_file.name)
-
-        in_path.write_bytes(wav_bytes)
-        cmd = [
-            ffmpeg_bin, "-y",
-            "-i", str(in_path),
+    return await _run_ffmpeg_transcode(
+        input_bytes=wav_bytes,
+        in_suffix=".wav",
+        out_suffix=".ogg",
+        build_args=lambda inp, outp: [
+            "-i", inp,
             "-c:a", "libopus",
             "-b:a", str(bitrate),
             "-f", "ogg",
-            str(out_path),
-        ]
-        await run_ffmpeg_command(*cmd, timeout=timeout)
-        ogg_bytes = out_path.read_bytes()
-        if not ogg_bytes or not ogg_bytes.startswith(b"OggS"):
-            raise ValueError("ffmpeg output is not valid OGG audio")
-        return ogg_bytes
-    except (RuntimeError, TimeoutError, ValueError) as exc:
-        raise ValueError(f"Audio conversion failed: {exc}") from exc
-    finally:
-        await _cleanup_temp_paths(in_path, out_path)
+            outp,
+        ],
+        expected_header=b"OggS",
+        header_error="ffmpeg output is not valid OGG audio",
+        ffmpeg_path=ffmpeg_path,
+        timeout=timeout,
+    )
 
 
 

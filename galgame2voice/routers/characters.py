@@ -3,6 +3,7 @@ Character Management REST API Router for galgame2voice (/api/characters).
 Provides unified character profile query, active character switching, and affection integration.
 """
 
+import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -15,8 +16,6 @@ from galgame2voice.database.session import get_db
 from galgame2voice.routers.common import validate_user_id
 from galgame2voice.services.voice_manager import get_voice_manager, InsufficientMemoryError
 from galgame2voice.utils.logger import sanitize_error_detail
-
-import json
 
 logger = logging.getLogger("galgame2voice.routers.characters")
 

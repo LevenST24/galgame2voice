@@ -9,6 +9,7 @@ Implements:
 """
 
 import asyncio
+from io import BytesIO
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -86,6 +87,15 @@ class TelegramBotHandlers:
         if not self.admin_ids:
             return False
         return resolve_effective_user_id(update) in self.admin_ids
+
+    async def _check_admin_authorized(self, update: Any, context: Any, message_type: str = "message") -> bool:
+        """Verifies if user is authorized. If not, logs warning, notifies user, and returns False."""
+        if not self._is_admin(update):
+            uid = resolve_effective_user_id(update)
+            logger.warning("Rejected %s from unauthorized Telegram user_id=%d", message_type, uid)
+            await self._safe_send_message(update, context, "抱歉，你没有使用本机器人的权限。")
+            return False
+        return True
 
     # Backward compatibility aliases for external callers / tests
     _effective_user_id = staticmethod(resolve_effective_user_id)
@@ -655,10 +665,7 @@ class TelegramBotHandlers:
         """Handler for normal text messages."""
         if not hasattr(update, "message") or not update.message or not getattr(update.message, "text", None):
             return None
-        if not self._is_admin(update):
-            uid = resolve_effective_user_id(update)
-            logger.warning("Rejected text message from unauthorized Telegram user_id=%d", uid)
-            await self._safe_send_message(update, context, "抱歉，你没有使用本机器人的权限。")
+        if not await self._check_admin_authorized(update, context, "text message"):
             return None
         chat_id = update.effective_chat.id
         text = update.message.text.strip()
@@ -673,10 +680,7 @@ class TelegramBotHandlers:
         """
         if not hasattr(update, "message") or not update.message or not getattr(update.message, "voice", None):
             return None
-        if not self._is_admin(update):
-            uid = resolve_effective_user_id(update)
-            logger.warning("Rejected voice message from unauthorized Telegram user_id=%d", uid)
-            await self._safe_send_message(update, context, "抱歉，你没有使用本机器人的权限。")
+        if not await self._check_admin_authorized(update, context, "voice message"):
             return None
         chat_id = update.effective_chat.id
         voice = update.message.voice
@@ -694,7 +698,6 @@ class TelegramBotHandlers:
             if hasattr(tg_file, "download_as_bytearray"):
                 ogg_bytes = await tg_file.download_as_bytearray()
             elif hasattr(tg_file, "download_to_memory"):
-                from io import BytesIO
                 buf = BytesIO()
                 await tg_file.download_to_memory(buf)
                 ogg_bytes = buf.getvalue()

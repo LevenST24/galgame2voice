@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 import uuid
-from typing import Any, AsyncGenerator, Dict, List, Optional, Union
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
 
 from galgame2voice.config import get_settings
@@ -169,6 +169,21 @@ class VoiceManager:
     # Voice Profile Switching (Atomic 3-Step + Persistence)
     # ========================================================================
 
+    @staticmethod
+    def _extract_profile_identity(p: Any) -> Tuple[Any, Any, Any, Any, Any]:
+        """Extracts canonical (id, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text) tuple."""
+        p_dict = p if isinstance(p, dict) else None
+        p_id = getattr(p, "id", None) or (p_dict.get("id") if p_dict else None)
+        p_gpt = getattr(p, "gpt_weights_path", None) or (p_dict.get("gpt_weights_path") if p_dict else None)
+        p_sovits = getattr(p, "sovits_weights_path", None) or (p_dict.get("sovits_weights_path") if p_dict else None)
+        p_ref = getattr(p, "ref_audio_path", None) or getattr(p, "refer_audio_path", None) or (
+            p_dict.get("ref_audio_path") if p_dict else (p_dict.get("refer_audio_path") if p_dict else None)
+        )
+        p_prompt = getattr(p, "prompt_text", None) or getattr(p, "refer_text", None) or (
+            p_dict.get("prompt_text") if p_dict else (p_dict.get("refer_text") if p_dict else None)
+        )
+        return p_id, p_gpt, p_sovits, p_ref, p_prompt
+
     def is_active_profile(self, profile: Any, force: bool = False) -> bool:
         """
         Check if the given profile matches the currently active voice profile.
@@ -182,25 +197,7 @@ class VoiceManager:
         if not active_prof or not profile:
             return False
 
-        active_id = getattr(active_prof, "id", None) or (active_prof.get("id") if isinstance(active_prof, dict) else None)
-        active_gpt = getattr(active_prof, "gpt_weights_path", None) or (active_prof.get("gpt_weights_path") if isinstance(active_prof, dict) else None)
-        active_sovits = getattr(active_prof, "sovits_weights_path", None) or (active_prof.get("sovits_weights_path") if isinstance(active_prof, dict) else None)
-        active_ref = getattr(active_prof, "ref_audio_path", None) or getattr(active_prof, "refer_audio_path", None) or (active_prof.get("ref_audio_path") if isinstance(active_prof, dict) else (active_prof.get("refer_audio_path") if isinstance(active_prof, dict) else None))
-        active_prompt = getattr(active_prof, "prompt_text", None) or getattr(active_prof, "refer_text", None) or (active_prof.get("prompt_text") if isinstance(active_prof, dict) else (active_prof.get("refer_text") if isinstance(active_prof, dict) else None))
-
-        prof_id = getattr(profile, "id", None) or (profile.get("id") if isinstance(profile, dict) else None)
-        prof_gpt = getattr(profile, "gpt_weights_path", None) or (profile.get("gpt_weights_path") if isinstance(profile, dict) else None)
-        prof_sovits = getattr(profile, "sovits_weights_path", None) or (profile.get("sovits_weights_path") if isinstance(profile, dict) else None)
-        prof_ref = getattr(profile, "ref_audio_path", None) or getattr(profile, "refer_audio_path", None) or (profile.get("ref_audio_path") if isinstance(profile, dict) else (profile.get("refer_audio_path") if isinstance(profile, dict) else None))
-        prof_prompt = getattr(profile, "prompt_text", None) or getattr(profile, "refer_text", None) or (profile.get("prompt_text") if isinstance(profile, dict) else (profile.get("refer_text") if isinstance(profile, dict) else None))
-
-        return bool(
-            active_id == prof_id
-            and active_gpt == prof_gpt
-            and active_sovits == prof_sovits
-            and active_ref == prof_ref
-            and active_prompt == prof_prompt
-        )
+        return self._extract_profile_identity(active_prof) == self._extract_profile_identity(profile)
 
     async def switch_profile(
         self,
