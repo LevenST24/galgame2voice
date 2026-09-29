@@ -3,6 +3,7 @@ Voice profile CRUD operations for SQLite persistence in galgame2voice.
 """
 
 import logging
+import sqlite3
 from typing import Any, List, Optional
 
 import aiosqlite
@@ -38,6 +39,7 @@ def _row_to_voice_profile(row: Optional[aiosqlite.Row]) -> Optional[VoiceProfile
 
 
 async def list_voice_profiles(conn: aiosqlite.Connection) -> List[VoiceProfileResponse]:
+    """Lists all voice profiles ordered by ID."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM voice_profiles ORDER BY id ASC;")
     rows = await cursor.fetchall()
@@ -45,6 +47,7 @@ async def list_voice_profiles(conn: aiosqlite.Connection) -> List[VoiceProfileRe
 
 
 async def get_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> Optional[VoiceProfileResponse]:
+    """Fetches a voice profile by its ID."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM voice_profiles WHERE id = ?;", (profile_id,))
     row = await cursor.fetchone()
@@ -52,6 +55,7 @@ async def get_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> Opti
 
 
 async def get_voice_profile_by_name(conn: aiosqlite.Connection, name: str) -> Optional[VoiceProfileResponse]:
+    """Fetches a voice profile by character or profile name."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM voice_profiles WHERE name = ? LIMIT 1;", (name,))
     row = await cursor.fetchone()
@@ -59,6 +63,7 @@ async def get_voice_profile_by_name(conn: aiosqlite.Connection, name: str) -> Op
 
 
 async def get_active_voice_profile(conn: aiosqlite.Connection) -> Optional[VoiceProfileResponse]:
+    """Retrieves the currently active voice profile from settings with fallback to default."""
     conn.row_factory = aiosqlite.Row
     try:
         cursor = await conn.execute("SELECT active_voice_profile_id FROM settings WHERE id = 1;")
@@ -67,7 +72,7 @@ async def get_active_voice_profile(conn: aiosqlite.Connection) -> Optional[Voice
             profile = await get_voice_profile(conn, row["active_voice_profile_id"])
             if profile:
                 return profile
-    except Exception:
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
         try:
             cursor = await conn.execute("SELECT value FROM settings WHERE key = 'active_voice_profile_id';")
             row = await cursor.fetchone()
@@ -75,7 +80,7 @@ async def get_active_voice_profile(conn: aiosqlite.Connection) -> Optional[Voice
                 profile = await get_voice_profile(conn, int(row[0]))
                 if profile:
                     return profile
-        except Exception:
+        except (sqlite3.OperationalError, aiosqlite.OperationalError, ValueError):
             pass
 
     # Fallback to is_default = 1
@@ -91,6 +96,7 @@ async def get_active_voice_profile(conn: aiosqlite.Connection) -> Optional[Voice
 
 
 async def create_voice_profile(conn: aiosqlite.Connection, profile: VoiceProfileCreate) -> VoiceProfileResponse:
+    """Inserts a new voice profile record into the database."""
     conn.row_factory = aiosqlite.Row
     async with immediate_transaction(conn):
         if profile.is_default:
@@ -115,6 +121,7 @@ async def create_voice_profile(conn: aiosqlite.Connection, profile: VoiceProfile
 
 
 async def update_voice_profile(conn: aiosqlite.Connection, profile_id: int, updates: VoiceProfileUpdate) -> Optional[VoiceProfileResponse]:
+    """Updates fields of an existing voice profile."""
     current = await get_voice_profile(conn, profile_id)
     if not current:
         return None
@@ -142,6 +149,7 @@ async def update_voice_profile(conn: aiosqlite.Connection, profile_id: int, upda
 
 
 async def set_active_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> bool:
+    """Sets the active voice profile ID in the settings table."""
     try:
         async with immediate_transaction(conn):
             await conn.execute("UPDATE settings SET active_voice_profile_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1;", (profile_id,))
@@ -156,6 +164,7 @@ async def set_active_voice_profile(conn: aiosqlite.Connection, profile_id: int) 
 
 
 async def delete_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> bool:
+    """Deletes a voice profile record by its ID."""
     async with immediate_transaction(conn):
         cursor = await conn.execute("DELETE FROM voice_profiles WHERE id = ?;", (profile_id,))
     return cursor.rowcount > 0

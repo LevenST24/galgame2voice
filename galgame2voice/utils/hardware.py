@@ -10,6 +10,11 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+BYTES_PER_KB: int = 1024
+BYTES_PER_MB: int = 1024 * 1024
+BYTES_PER_GB: int = 1024 ** 3
+DEFAULT_SUBPROCESS_TIMEOUT: float = 2.0
+
 if sys.platform == "win32":
     import ctypes
 
@@ -56,7 +61,7 @@ def _resolve_cgroup_paths(root_path: Path) -> List[Path]:
                             cand_direct = root_path / subpath
                             if cand_direct.is_dir() and cand_direct not in candidates:
                                 candidates.append(cand_direct)
-        except Exception:
+        except (OSError, UnicodeDecodeError):
             pass
 
     # 2. Add root_path as fallback (for container environments with private cgroup namespaces)
@@ -89,7 +94,7 @@ def get_cgroup_memory_available_gb(cgroup_root: Optional[str] = None) -> Optiona
                 if max_val and max_val != "max":
                     limit_bytes = int(max_val)
                     curr_bytes = int(cg2_curr.read_text(encoding="utf-8").strip())
-                    return max(0.0, (limit_bytes - curr_bytes) / (1024 ** 3))
+                    return max(0.0, (limit_bytes - curr_bytes) / BYTES_PER_GB)
 
         # 2. Check cgroups v1 (memory.limit_in_bytes & memory.usage_in_bytes)
         for cdir in candidate_dirs:
@@ -105,8 +110,8 @@ def get_cgroup_memory_available_gb(cgroup_root: Optional[str] = None) -> Optiona
                         # cgroups v1 unlimited sentinel is typically >= 1 << 60 (e.g. 0x7FFFFFFFFFFFF000)
                         if limit_bytes < (1 << 60):
                             usage_bytes = int(use_p.read_text(encoding="utf-8").strip())
-                            return max(0.0, (limit_bytes - usage_bytes) / (1024 ** 3))
-    except Exception:
+                            return max(0.0, (limit_bytes - usage_bytes) / BYTES_PER_GB)
+    except (OSError, ValueError, UnicodeDecodeError):
         pass
 
     return None
@@ -144,8 +149,8 @@ def _detect_host_memory_status() -> Tuple[Optional[float], Optional[float]]:
             stat = MEMORYSTATUSEX()
             stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
             if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-                return round(stat.ullTotalPhys / (1024 ** 3), 2), round(stat.ullAvailPhys / (1024 ** 3), 2)
-        except Exception:
+                return round(stat.ullTotalPhys / BYTES_PER_GB, 2), round(stat.ullAvailPhys / BYTES_PER_GB, 2)
+        except (OSError, AttributeError):
             pass
 
     # 2. Linux /proc/meminfo (zero-dependency native inspection)
@@ -176,17 +181,17 @@ def _detect_host_memory_status() -> Tuple[Optional[float], Optional[float]]:
                         elif key == "Cached":
                             cached_kb = val
             if mem_total_kb is not None:
-                total_gb = round(mem_total_kb / (1024 * 1024), 2)
+                total_gb = round(mem_total_kb / BYTES_PER_MB, 2)
                 if mem_avail_kb is not None:
-                    avail_gb = round(mem_avail_kb / (1024 * 1024), 2)
+                    avail_gb = round(mem_avail_kb / BYTES_PER_MB, 2)
                 elif mem_free_kb is not None and buffers_kb is not None and cached_kb is not None:
-                    avail_gb = round((mem_free_kb + buffers_kb + cached_kb) / (1024 * 1024), 2)
+                    avail_gb = round((mem_free_kb + buffers_kb + cached_kb) / BYTES_PER_MB, 2)
                 elif mem_free_kb is not None:
-                    avail_gb = round(mem_free_kb / (1024 * 1024), 2)
+                    avail_gb = round(mem_free_kb / BYTES_PER_MB, 2)
                 else:
                     avail_gb = None
                 return total_gb, avail_gb
-        except Exception:
+        except (OSError, UnicodeDecodeError):
             pass
 
     # 3. macOS sysctl / os.sysconf inspection
@@ -200,21 +205,21 @@ def _detect_host_memory_status() -> Tuple[Optional[float], Optional[float]]:
                     ["sysctl", "-n", "hw.memsize"],
                     text=True,
                     stderr=subprocess.DEVNULL,
-                    timeout=2.0,
+                    timeout=DEFAULT_SUBPROCESS_TIMEOUT,
                 )
                 total_bytes = int(out.strip())
-            total_gb = round(total_bytes / (1024 ** 3), 2)
+            total_gb = round(total_bytes / BYTES_PER_GB, 2)
             # macOS does not expose a single trivial available sysctl; return total
             return total_gb, None
-        except Exception:
+        except (subprocess.SubprocessError, OSError, ValueError):
             pass
 
     # 4. Cross-platform psutil fallback
     try:
         import psutil
         vm = psutil.virtual_memory()
-        return round(vm.total / (1024 ** 3), 2), round(vm.available / (1024 ** 3), 2)
-    except Exception:
+        return round(vm.total / BYTES_PER_GB, 2), round(vm.available / BYTES_PER_GB, 2)
+    except (ImportError, Exception):
         pass
 
     return None, None
@@ -250,13 +255,13 @@ def _get_all_detected_gpu_names() -> List[str]:
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
             text=True,
             stderr=subprocess.DEVNULL,
-            timeout=2.0,
+            timeout=DEFAULT_SUBPROCESS_TIMEOUT,
         )
         names = [line.strip() for line in out.splitlines() if line.strip()]
         if names:
             gpu_names.extend(names)
             return gpu_names
-    except Exception:
+    except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
         pass
 
     # 3. Windows WMI / CIM query
@@ -266,7 +271,7 @@ def _get_all_detected_gpu_names() -> List[str]:
                 ["wmic", "path", "win32_VideoController", "get", "name"],
                 text=True,
                 stderr=subprocess.DEVNULL,
-                timeout=2.0,
+                timeout=DEFAULT_SUBPROCESS_TIMEOUT,
             )
             names = [
                 line.strip() for line in out.splitlines()
@@ -274,7 +279,7 @@ def _get_all_detected_gpu_names() -> List[str]:
             ]
             if names:
                 return names
-        except Exception:
+        except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
             pass
 
         try:
@@ -287,7 +292,7 @@ def _get_all_detected_gpu_names() -> List[str]:
             names = [line.strip() for line in out.splitlines() if line.strip()]
             if names:
                 return names
-        except Exception:
+        except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
             pass
 
     # 4. Linux lspci query
@@ -297,7 +302,7 @@ def _get_all_detected_gpu_names() -> List[str]:
                 ["lspci"],
                 text=True,
                 stderr=subprocess.DEVNULL,
-                timeout=2.0,
+                timeout=DEFAULT_SUBPROCESS_TIMEOUT,
             )
             vga_lines = [line.strip() for line in out.splitlines() if any(k in line.lower() for k in ["vga", "3d controller", "display"])]
             if vga_lines:
@@ -306,7 +311,7 @@ def _get_all_detected_gpu_names() -> List[str]:
                     parts = line.split(":")
                     names.append(parts[-1].strip() if len(parts) >= 3 else line)
                 return names
-        except Exception:
+        except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
             pass
 
     return gpu_names
@@ -363,22 +368,22 @@ def get_gpu_vram_status() -> Tuple[Optional[float], Optional[float]]:
             ["nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv,noheader,nounits"],
             text=True,
             stderr=subprocess.DEVNULL,
-            timeout=2.0,
+            timeout=DEFAULT_SUBPROCESS_TIMEOUT,
         )
         first_line = out.strip().splitlines()[0]
         parts = [float(x.strip()) for x in first_line.split(",")]
         if len(parts) >= 2:
-            return round(parts[0] / 1024, 2), round(parts[1] / 1024, 2)
-    except Exception:
+            return round(parts[0] / BYTES_PER_KB, 2), round(parts[1] / BYTES_PER_KB, 2)
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError):
         pass
 
     try:
         import torch
         if torch.cuda.is_available():
             props = torch.cuda.get_device_properties(0)
-            total_gb = round(props.total_memory / (1024 ** 3), 2)
+            total_gb = round(props.total_memory / BYTES_PER_GB, 2)
             free_bytes, _ = torch.cuda.mem_get_info()
-            return total_gb, round(free_bytes / (1024 ** 3), 2)
+            return total_gb, round(free_bytes / BYTES_PER_GB, 2)
     except Exception:
         pass
 

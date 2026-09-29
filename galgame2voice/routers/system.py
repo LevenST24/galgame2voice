@@ -193,8 +193,8 @@ def _rebuild_frontend_sync(project_root: Path, timeout: float = 120.0) -> Tuple[
             try:
                 from galgame2voice.utils.hardware import release_system_memory
                 release_system_memory()
-            except Exception:
-                pass
+            except Exception as mem_err:
+                logger.debug("Failed releasing system memory after npm deploy: %s", mem_err)
             return True, sanitized
         return False, f"npm run deploy 执行失败 (退出码 {proc.returncode}):\n{sanitized}"
     except subprocess.TimeoutExpired:

@@ -130,7 +130,7 @@ class CharacterPackage:
                             if ptr_target.exists():
                                 return to_project_relative_path(ptr_target)
                         return content
-            except Exception:
+            except (OSError, UnicodeDecodeError):
                 pass
             return to_project_relative_path(target_file)
 

@@ -13,7 +13,6 @@ from typing import Any, AsyncGenerator, Dict, Optional, Tuple, Union
 from galgame2voice.config import get_settings
 from galgame2voice.utils.path_guard import resolve_existing_audio_path
 from galgame2voice.utils.audio_spec import (
-    AudioSpecCache,
     _AUDIO_SPEC_CACHE,
     async_probe_audio_duration_seconds,
 )

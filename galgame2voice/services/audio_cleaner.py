@@ -21,6 +21,7 @@ logger = logging.getLogger("galgame2voice.services.audio_cleaner")
 
 # TTS cache retention in days: balances compute savings against disk storage
 CACHE_RETENTION_DAYS = 7
+PURGE_BATCH_SIZE: int = 100
 
 
 def _resolve_get_db() -> Any:
@@ -177,8 +178,8 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int) -> None:
                             for r in rows:
                                 if r and r[0]:
                                     protected_audio_names.add(Path(r[0]).name.lower())
-                        except Exception:
-                            pass
+                        except Exception as prof_err:
+                            logger.debug("Failed querying protected voice profile audio names: %s", prof_err)
 
                     # LRU Eviction: SQLite last_accessed_at is the sole authority for 7-day retention
                     now = time.time()
@@ -212,8 +213,8 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int) -> None:
                 try:
                     async with db_getter() as conn:
                         async with immediate_transaction(conn):
-                            for batch_idx in range(0, len(unlinked_keys), 100):
-                                batch = unlinked_keys[batch_idx:batch_idx + 100]
+                            for batch_idx in range(0, len(unlinked_keys), PURGE_BATCH_SIZE):
+                                batch = unlinked_keys[batch_idx:batch_idx + PURGE_BATCH_SIZE]
                                 filenames = [f"{k}.wav" for k in batch]
                                 all_params = batch + filenames + batch
                                 p_batch = ",".join(["?"] * len(batch))
@@ -230,8 +231,8 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int) -> None:
                 try:
                     from galgame2voice.utils.hardware import release_system_memory
                     release_system_memory()
-                except Exception:
-                    pass
+                except Exception as mem_err:
+                    logger.debug("Failed releasing system memory during audio cleanup: %s", mem_err)
         except asyncio.CancelledError:
             break
         except Exception as exc:

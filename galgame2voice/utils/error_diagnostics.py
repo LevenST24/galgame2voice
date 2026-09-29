@@ -11,6 +11,8 @@ from galgame2voice.utils.logger import MaskingFilter
 
 @dataclass
 class DiagnosticResult:
+    """Structured diagnostic representation of provider or runtime errors with user guidance."""
+
     error_code: str
     message: str
     guidance: str

@@ -74,8 +74,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 preset = get_provider_preset(str(pid))
                 if preset and preset.get("default_chat_model"):
                     return str(preset["default_chat_model"]).strip()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed getting provider preset for default model: %s", exc)
         burl = (self.base_url or "").lower()
         if "x.ai" in burl:
             return "grok-3"
@@ -341,8 +341,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 if stream_ctx:
                     try:
                         await stream_ctx.__aexit__(None, None, None)
-                    except Exception:
-                        pass
+                    except Exception as exit_err:
+                        logger.debug("Failed closing stream context after network error: %s", exit_err)
                 await client.aclose()
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay)
@@ -470,7 +470,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     try:
                         data = resp.json()
                         models = [m["id"] for m in data.get("data", []) if "id" in m]
-                    except Exception:
+                    except (ValueError, KeyError, TypeError):
                         pass
                     return TestResult(
                         success=True,

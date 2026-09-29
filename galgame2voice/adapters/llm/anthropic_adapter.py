@@ -283,8 +283,8 @@ class AnthropicAdapter(BaseLLMAdapter):
                 if stream_ctx:
                     try:
                         await stream_ctx.__aexit__(None, None, None)
-                    except Exception:
-                        pass
+                    except Exception as exit_err:
+                        logger.debug("Failed closing stream context after network error: %s", exit_err)
                 await client.aclose()
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay)

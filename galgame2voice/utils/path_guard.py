@@ -118,7 +118,7 @@ def get_authorized_roots(
                 target_dir = sovits_txt.read_text(encoding="utf-8-sig").strip()
                 if target_dir and Path(target_dir).is_dir():
                     roots.append(Path(target_dir).resolve())
-            except Exception:
+            except (OSError, UnicodeDecodeError):
                 pass
 
         # GPT-SoVITS installs discovered relative to the project (portable across machines)
@@ -136,7 +136,7 @@ def get_authorized_roots(
                 p = Path(r).resolve()
                 if p not in roots:
                     roots.append(p)
-            except Exception:
+            except (OSError, ValueError, TypeError):
                 pass
 
     return roots
@@ -314,7 +314,7 @@ def resolve_existing_audio_path(path: Union[str, Path]) -> Optional[Path]:
                         ref_cand = pkg.folder / "refs" / "gentle.ogg"
                         if ref_cand.is_file():
                             return ref_cand
-        except Exception:
+        except (AttributeError, KeyError, OSError):
             pass
     except OSError:
         return None

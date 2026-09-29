@@ -95,6 +95,7 @@ def _row_to_provider_dict(row: aiosqlite.Row) -> Dict[str, Any]:
 
 
 async def list_providers(conn: aiosqlite.Connection, mask: bool = True) -> List[ProviderResponse]:
+    """Lists all configured LLM providers with optional API key masking."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM providers ORDER BY id ASC;")
     rows = await cursor.fetchall()
@@ -109,6 +110,7 @@ async def list_providers(conn: aiosqlite.Connection, mask: bool = True) -> List[
 
 
 async def get_provider_raw(conn: aiosqlite.Connection, provider_id: str) -> Optional[ProviderInDB]:
+    """Fetches raw provider entity from database including unmasked decrypted credentials."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM providers WHERE id = ?;", (provider_id,))
     row = await cursor.fetchone()
@@ -118,6 +120,7 @@ async def get_provider_raw(conn: aiosqlite.Connection, provider_id: str) -> Opti
 
 
 async def get_provider(conn: aiosqlite.Connection, provider_id: str, mask: bool = True) -> Optional[ProviderResponse]:
+    """Fetches provider by ID with optional API key masking."""
     raw = await get_provider_raw(conn, provider_id)
     if not raw:
         return None
@@ -129,6 +132,7 @@ async def get_provider(conn: aiosqlite.Connection, provider_id: str, mask: bool 
 
 
 async def get_active_provider_raw(conn: aiosqlite.Connection) -> Optional[ProviderInDB]:
+    """Fetches the raw active provider model from database without masking."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM providers WHERE is_active = 1 LIMIT 1;")
     row = await cursor.fetchone()
@@ -142,6 +146,7 @@ async def get_active_provider_raw(conn: aiosqlite.Connection) -> Optional[Provid
 
 
 async def get_active_provider(conn: aiosqlite.Connection, mask: bool = True) -> Optional[ProviderResponse]:
+    """Fetches the currently active provider with optional masking."""
     raw = await get_active_provider_raw(conn)
     if not raw:
         return None
@@ -153,6 +158,7 @@ async def get_active_provider(conn: aiosqlite.Connection, mask: bool = True) -> 
 
 
 async def create_provider(conn: aiosqlite.Connection, provider: ProviderCreate) -> ProviderResponse:
+    """Creates and persists a new LLM provider record."""
     headers_str = json.dumps(provider.custom_headers)
     enc_key = encrypt_secret(provider.api_key) if provider.api_key else ""
     async with immediate_transaction(conn):
@@ -173,6 +179,7 @@ async def create_provider(conn: aiosqlite.Connection, provider: ProviderCreate) 
 
 
 async def update_provider(conn: aiosqlite.Connection, provider_id: str, updates: ProviderUpdate) -> Optional[ProviderResponse]:
+    """Updates fields of an existing provider with secret encryption and header merging."""
     current = await get_provider_raw(conn, provider_id)
     if not current:
         return None
@@ -219,6 +226,7 @@ async def update_provider(conn: aiosqlite.Connection, provider_id: str, updates:
 
 
 async def set_active_provider(conn: aiosqlite.Connection, provider_id: str) -> bool:
+    """Marks the specified provider as active and updates global settings."""
     provider = await get_provider_raw(conn, provider_id)
     if not provider:
         return False
@@ -232,6 +240,7 @@ async def set_active_provider(conn: aiosqlite.Connection, provider_id: str) -> b
 
 
 async def delete_provider(conn: aiosqlite.Connection, provider_id: str) -> bool:
+    """Deletes a provider record by ID."""
     async with immediate_transaction(conn):
         cursor = await conn.execute("DELETE FROM providers WHERE id = ?;", (provider_id,))
     return cursor.rowcount > 0

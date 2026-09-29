@@ -23,6 +23,7 @@ router = APIRouter(prefix="/api/affection", tags=["affection"])
 
 
 class AffectionUpdateRequest(BaseModel):
+    """Payload for manually updating character affection status and metrics."""
     user_id: str = Field(default="default_user", min_length=1, max_length=128)
     character_id: int = Field(default=1, ge=1)
     affection_score: Optional[int] = Field(default=None, ge=0, le=100)
@@ -33,6 +34,7 @@ class AffectionUpdateRequest(BaseModel):
 
 
 class AffectionResetRequest(BaseModel):
+    """Payload for resetting character affection scores to default levels."""
     user_id: str = Field(default="default_user", min_length=1, max_length=128)
     character_id: int = Field(default=1, ge=1)
 

@@ -74,6 +74,8 @@ async def _safe_put_chunk(
 
 
 class TtsPriority(IntEnum):
+    """Execution priority levels for queued TTS synthesis tasks (0=HIGH, 1=NORMAL, 2=LOW)."""
+
     HIGH = 0      # Active playing sentence (critical user-facing path)
     NORMAL = 1    # Next sentence prefetch
     LOW = 2       # Background character/emotion preheat
@@ -157,6 +159,8 @@ class SingleFlightCoordinator:
 
 @dataclass(order=True)
 class ScheduledTtsTask:
+    """Internal task tracking wrapper for prioritized scheduling of TTS jobs."""
+
     priority: int
     seq: int
     task_id: str = field(compare=False)
@@ -381,8 +385,8 @@ class TtsScheduler:
                 if stream_gen is not None:
                     try:
                         await stream_gen.aclose()
-                    except Exception:
-                        pass
+                    except Exception as close_err:
+                        logger.debug("Non-critical: error closing stream generator: %s", close_err)
                 await _safe_put_chunk(buffer_queue, _STREAM_EOF, stop_event)
 
         task.coro_fn = _run_stream
@@ -422,6 +426,22 @@ class TtsScheduler:
                 if not fut.done():
                     fut.cancel()
 
+    def _cancel_scheduled_task(self, task: ScheduledTtsTask) -> None:
+        """Internal helper to mark a task cancelled, cancel its future, and signal streams."""
+        task.cancelled = True
+        task.future.cancel()
+        if getattr(task, "is_stream", False):
+            if task.stop_event:
+                task.stop_event.set()
+            if task.stream_queue:
+                try:
+                    task.stream_queue.put_nowait(_STREAM_CANCELLED)
+                except (asyncio.QueueFull, Exception):
+                    pass
+            if not getattr(task, "stream_cancelled_counted", False):
+                task.stream_cancelled_counted = True
+                self._cancelled_streams += 1
+
     def cancel_generation(self, generation_id: str) -> int:
         """Cancels all queued, unexecuted tasks associated with generation_id."""
         if not generation_id:
@@ -432,19 +452,7 @@ class TtsScheduler:
             for tid in task_ids:
                 task = self._tasks_by_id.pop(tid, None)
                 if task and not task.future.done():
-                    task.cancelled = True
-                    task.future.cancel()
-                    if getattr(task, "is_stream", False):
-                        if task.stop_event:
-                            task.stop_event.set()
-                        if task.stream_queue:
-                            try:
-                                task.stream_queue.put_nowait(_STREAM_CANCELLED)
-                            except Exception:
-                                pass
-                        if not getattr(task, "stream_cancelled_counted", False):
-                            task.stream_cancelled_counted = True
-                            self._cancelled_streams += 1
+                    self._cancel_scheduled_task(task)
                     cancelled_count += 1
         if cancelled_count > 0:
             logger.info("TtsScheduler: Cancelled %d pending tasks for stale generation %s", cancelled_count, generation_id)
@@ -457,19 +465,7 @@ class TtsScheduler:
         with self._sync_lock:
             task = self._tasks_by_id.pop(task_id, None)
             if task and not task.future.done():
-                task.cancelled = True
-                task.future.cancel()
-                if getattr(task, "is_stream", False):
-                    if task.stop_event:
-                        task.stop_event.set()
-                    if task.stream_queue:
-                        try:
-                            task.stream_queue.put_nowait(_STREAM_CANCELLED)
-                        except Exception:
-                            pass
-                    if not getattr(task, "stream_cancelled_counted", False):
-                        task.stream_cancelled_counted = True
-                        self._cancelled_streams += 1
+                self._cancel_scheduled_task(task)
                 return True
         return False
 

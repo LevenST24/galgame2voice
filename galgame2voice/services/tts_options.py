@@ -113,6 +113,8 @@ _INTERNAL_INT_KEYS = {"voice_profile_id": (1, 100000)}
 
 
 class ChatTtsOptions(BaseModel):
+    """Pydantic model validating dynamic TTS inference options parsed from chat turns."""
+
     model_config = ConfigDict(extra="forbid")
 
     speed_factor: Optional[float] = Field(default=None, ge=0.1, le=3.0)
@@ -269,6 +271,8 @@ def resolve_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, A
 # ============================================================================
 
 class VoiceProfileWeightSpec(BaseModel):
+    """Normalized specification of model weight paths and reference audio metadata for a voice profile."""
+
     name: str
     gpt_weights_path: str
     sovits_weights_path: str
