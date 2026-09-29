@@ -10,7 +10,7 @@ import email.utils
 import json
 import logging
 import random
-from typing import AsyncIterator, Dict, Any, List, Optional, Set
+from typing import AsyncIterator, Dict, Any, List, Optional, Set, Tuple
 import httpx
 from pydantic import BaseModel, Field
 
@@ -122,6 +122,15 @@ def extract_stream_token(chunk: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _parse_and_extract_token(text: str) -> Tuple[bool, Optional[str]]:
+    """Attempts to decode JSON and extract token. Returns (is_valid_json, token)."""
+    try:
+        chunk = json.loads(text)
+        return True, extract_stream_token(chunk)
+    except (json.JSONDecodeError, TypeError):
+        return False, None
+
+
 async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
     """
     Asynchronously parses Server-Sent Events (SSE) lines into text tokens.
@@ -145,13 +154,9 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
                 data_buffer.clear()
                 if combined_data == "[DONE]":
                     break
-                try:
-                    chunk = json.loads(combined_data)
-                    token = extract_stream_token(chunk)
-                    if token:
-                        yield token
-                except json.JSONDecodeError:
-                    continue
+                is_json, token = _parse_and_extract_token(combined_data)
+                if is_json and token:
+                    yield token
             continue
 
         if stripped.startswith(":"):
@@ -175,49 +180,40 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
             if data_buffer:
                 # 1. Try joining with accumulated buffer
                 joined = "\n".join(data_buffer + [data_str])
-                try:
-                    chunk = json.loads(joined)
-                    token = extract_stream_token(chunk)
+                is_json, token = _parse_and_extract_token(joined)
+                if is_json:
                     if token:
                         yield token
                     data_buffer.clear()
                     continue
-                except json.JSONDecodeError:
-                    pass
 
                 # 2. Joined parse failed: check if data_str alone is a valid standalone chunk.
                 # If so, the prior buffer was corrupted/unfinishable: discard it and process data_str.
-                try:
-                    chunk = json.loads(data_str)
-                    token = extract_stream_token(chunk)
+                is_json, token = _parse_and_extract_token(data_str)
+                if is_json:
                     data_buffer.clear()
                     if token:
                         yield token
                     continue
-                except json.JSONDecodeError:
-                    # Both joined and standalone failed: keep accumulating
-                    data_buffer.append(data_str)
+
+                # Both joined and standalone failed: keep accumulating
+                data_buffer.append(data_str)
             else:
                 # Buffer is empty: try eager single-line parse (supports streams without blank delimiters)
-                try:
-                    chunk = json.loads(data_str)
-                    token = extract_stream_token(chunk)
+                is_json, token = _parse_and_extract_token(data_str)
+                if is_json:
                     if token:
                         yield token
-                except json.JSONDecodeError:
+                else:
                     data_buffer.append(data_str)
 
     # Flush any trailing buffer
     if data_buffer:
         combined_data = "\n".join(data_buffer).strip()
         if combined_data and combined_data != "[DONE]":
-            try:
-                chunk = json.loads(combined_data)
-                token = extract_stream_token(chunk)
-                if token:
-                    yield token
-            except json.JSONDecodeError:
-                pass
+            is_json, token = _parse_and_extract_token(combined_data)
+            if is_json and token:
+                yield token
 
 
 

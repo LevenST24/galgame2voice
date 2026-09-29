@@ -63,6 +63,15 @@ def _trim_unclosed_sentence(sentences: List[str], is_first: bool) -> List[str]:
     return sentences
 
 
+def _normalize_valid_emotion(val: Any) -> Optional[str]:
+    """Normalizes raw emotion label and verifies it belongs to VALID_EMOTIONS."""
+    if not val:
+        return None
+    raw_e = str(val).lower()
+    norm = EMOTION_NAME_MAP.get(raw_e, raw_e)
+    return norm if norm in VALID_EMOTIONS else None
+
+
 class StreamingBilingualParser:
     """
     Incremental state machine for parsing streaming LLM output tokens into
@@ -96,6 +105,22 @@ class StreamingBilingualParser:
         self.tts_fragment_interval: Optional[float] = None
         self.tts_emotion: Optional[str] = None
         self.tts_params: Dict[str, Any] = {}
+
+    def _advance_chinese(self, current_ch: str) -> str:
+        """Updates extracted Chinese buffer and returns new incremental delta text."""
+        new_delta = ""
+        if len(current_ch) > self.emitted_chinese_len:
+            new_delta = current_ch[self.emitted_chinese_len:]
+            self.emitted_chinese_len = len(current_ch)
+        self.chinese_extracted = current_ch
+        return new_delta
+
+    def _set_lead_emotion(self, emo: str) -> None:
+        """Sets lead extracted emotion and defaults TTS emotion parameter if unset."""
+        self.emotion_extracted = emo
+        if self.tts_emotion is None:
+            self.tts_emotion = emo
+            self.tts_params["emotion"] = emo
 
     def clean_markdown_delimiters(self, text: str) -> str:
         """Strips markdown ```json and ``` code block wrappers."""
@@ -261,22 +286,18 @@ class StreamingBilingualParser:
 
             emo_match_tts = re.search(r'["\']?emotion["\']?\s*:\s*["\']?([a-zA-Z\u4e00-\u9fa5]+)["\']?', tts_block)
             if emo_match_tts:
-                raw_emo = emo_match_tts.group(1).lower()
-                if raw_emo in EMOTION_NAME_MAP:
-                    raw_emo = EMOTION_NAME_MAP[raw_emo]
-                if raw_emo in VALID_EMOTIONS:
-                    self.tts_emotion = raw_emo
-                    self.emotion_extracted = raw_emo
-                    self.tts_params["emotion"] = raw_emo
+                norm_emo = _normalize_valid_emotion(emo_match_tts.group(1))
+                if norm_emo:
+                    self.tts_emotion = norm_emo
+                    self.emotion_extracted = norm_emo
+                    self.tts_params["emotion"] = norm_emo
 
         # Standalone emotion extraction
         emo_match = re.search(r'["\']?emotion["\']?\s*:\s*["\']?([a-zA-Z\u4e00-\u9fa5]+)["\']?', sanitized)
         if emo_match:
-            raw_emo = emo_match.group(1).lower()
-            if raw_emo in EMOTION_NAME_MAP:
-                raw_emo = EMOTION_NAME_MAP[raw_emo]
-            if raw_emo in VALID_EMOTIONS:
-                self.emotion_extracted = raw_emo
+            norm_emo = _normalize_valid_emotion(emo_match.group(1))
+            if norm_emo:
+                self.emotion_extracted = norm_emo
 
     def feed_chunk(self, chunk: str) -> Tuple[str, List[str]]:
         """
@@ -301,11 +322,7 @@ class StreamingBilingualParser:
         if ch_match:
             raw_ch = ch_match.group(1)
             current_ch = self._unescape_json_string(raw_ch)
-
-            if len(current_ch) > self.emitted_chinese_len:
-                new_chinese_delta = current_ch[self.emitted_chinese_len:]
-                self.chinese_extracted = current_ch
-                self.emitted_chinese_len = len(current_ch)
+            new_chinese_delta = self._advance_chinese(current_ch)
         else:
             # Fallback check: If the stream contains structured Chinese: / 中文:
             ch_fallback = re.search(r'(?:中文|Chinese)[:：]\s*(.*?)(?:(?:日文|Japanese)[:：]|$)', sanitized, flags=re.DOTALL | re.IGNORECASE)
@@ -313,19 +330,11 @@ class StreamingBilingualParser:
                 self.is_plain_text_fallback = True
                 current_ch = ch_fallback.group(1).strip()
                 if current_ch and current_ch != self.chinese_extracted:
-                    if len(current_ch) > self.emitted_chinese_len:
-                        new_chinese_delta = current_ch[self.emitted_chinese_len:]
-                        self.chinese_extracted = current_ch
-                        self.emitted_chinese_len = len(current_ch)
-                    else:
-                        self.chinese_extracted = current_ch
+                    new_chinese_delta = self._advance_chinese(current_ch)
             elif not self.chinese_extracted and len(sanitized) > 15 and not sanitized.lstrip().startswith(("{", "```")):
                 self.is_plain_text_fallback = True
                 current_ch = sanitized.strip()
-                if len(current_ch) > self.emitted_chinese_len:
-                    new_chinese_delta = current_ch[self.emitted_chinese_len:]
-                    self.chinese_extracted = current_ch
-                    self.emitted_chinese_len = len(current_ch)
+                new_chinese_delta = self._advance_chinese(current_ch)
 
         if not self.emotion_extracted:
             lead_emo = None
@@ -334,10 +343,7 @@ class StreamingBilingualParser:
             if not lead_emo and self.japanese_extracted:
                 lead_emo, _ = extract_bracketed_emotion(self.japanese_extracted)
             if lead_emo:
-                self.emotion_extracted = lead_emo
-                if self.tts_emotion is None:
-                    self.tts_emotion = lead_emo
-                    self.tts_params["emotion"] = lead_emo
+                self._set_lead_emotion(lead_emo)
 
         # 2. Incremental Japanese Sentence Slicing
         ja_match = re.search(r'"japanese"\s*:\s*"((?:[^"\\]|\\.)*)', sanitized)
@@ -349,10 +355,7 @@ class StreamingBilingualParser:
             if not self.emotion_extracted:
                 lead_emo_ja, _ = extract_bracketed_emotion(self.japanese_extracted)
                 if lead_emo_ja:
-                    self.emotion_extracted = lead_emo_ja
-                    if self.tts_emotion is None:
-                        self.tts_emotion = lead_emo_ja
-                        self.tts_params["emotion"] = lead_emo_ja
+                    self._set_lead_emotion(lead_emo_ja)
 
             is_first = not self.first_sentence_emitted
             all_sentences = split_japanese_sentences(current_ja, is_first_chunk=is_first)
@@ -431,11 +434,9 @@ class StreamingBilingualParser:
             self.chinese_extracted = parsed.get("chinese", self.chinese_extracted)
             self.japanese_extracted = parsed.get("japanese", self.japanese_extracted)
             if "emotion" in parsed:
-                raw_e = str(parsed["emotion"]).lower()
-                if raw_e in EMOTION_NAME_MAP:
-                    raw_e = EMOTION_NAME_MAP[raw_e]
-                if raw_e in VALID_EMOTIONS:
-                    self.emotion_extracted = raw_e
+                norm_e = _normalize_valid_emotion(parsed["emotion"])
+                if norm_e:
+                    self.emotion_extracted = norm_e
             # Parse tts block
             if "tts" in parsed and isinstance(parsed["tts"], dict):
                 t_dict = parsed["tts"]
@@ -449,13 +450,11 @@ class StreamingBilingualParser:
                     self.tts_params["temperature"] = self.tts_temperature
                     self.tts_params["temp"] = self.tts_temperature
                 if "emotion" in t_dict:
-                    raw_te = str(t_dict["emotion"]).lower()
-                    if raw_te in EMOTION_NAME_MAP:
-                        raw_te = EMOTION_NAME_MAP[raw_te]
-                    if raw_te in VALID_EMOTIONS:
-                        self.tts_emotion = raw_te
-                        self.emotion_extracted = self.tts_emotion
-                        self.tts_params["emotion"] = self.tts_emotion
+                    norm_te = _normalize_valid_emotion(t_dict["emotion"])
+                    if norm_te:
+                        self.tts_emotion = norm_te
+                        self.emotion_extracted = norm_te
+                        self.tts_params["emotion"] = norm_te
         else:
             # Try regex extraction for unclosed JSON
             ch_match = re.search(r'"chinese"\s*:\s*"((?:[^"\\]|\\.)*)', sanitized)
@@ -497,10 +496,7 @@ class StreamingBilingualParser:
                 if lead_emo and cl_ja:
                     self.japanese_extracted = cl_ja
             if lead_emo:
-                self.emotion_extracted = lead_emo
-                if self.tts_emotion is None:
-                    self.tts_emotion = lead_emo
-                    self.tts_params["emotion"] = lead_emo
+                self._set_lead_emotion(lead_emo)
 
         self.emotion_extracted = classify_emotion(self.chinese_extracted, self.japanese_extracted, self.emotion_extracted)
 

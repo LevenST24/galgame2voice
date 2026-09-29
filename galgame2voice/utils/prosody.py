@@ -146,6 +146,15 @@ _EMO_NORM_MAP: Dict[str, str] = {
 }
 
 
+# Pre-compiled prosody regex patterns
+_RE_HESITATION = re.compile(r'[…\.]{2,}|[〜~～]')
+_RE_EXCLAMATION = re.compile(r'[！!]+')
+_RE_QUESTION = re.compile(r'[？\?]+')
+_RE_VOCAL_CHARS = re.compile(r'[\w\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]')
+_RE_STUTTER_REPEAT = re.compile(r'([^\s、，,]{1,2})[、，,]\1')
+_RE_STUTTER_START = re.compile(r'^[あえそな][、，,]')
+
+
 # ============================================================================
 # 3. Contextual Micro-Prosody & Adaptive Acoustics Calculator
 # ============================================================================
@@ -189,7 +198,7 @@ def calculate_adaptive_prosody(
 
     if cleaned_text:
         # A. Trailing / embedded ellipsis, wave dashes, hesitation: '…', '...', '〜', '~'
-        has_trailing_hesitation = bool(re.search(r'[…\.]{2,}|[〜~～]', cleaned_text))
+        has_trailing_hesitation = bool(_RE_HESITATION.search(cleaned_text))
         if has_trailing_hesitation:
             if not has_custom_speed:
                 speed -= 0.04
@@ -201,7 +210,7 @@ def calculate_adaptive_prosody(
                 frag_interval += 0.06
 
         # B. Strong exclamations: '！', '!', '!?', '！？'
-        has_exclamation = bool(re.search(r'[！!]+', cleaned_text))
+        has_exclamation = bool(_RE_EXCLAMATION.search(cleaned_text))
         if has_exclamation:
             if not has_custom_speed:
                 speed += 0.05
@@ -213,7 +222,7 @@ def calculate_adaptive_prosody(
                 frag_interval -= 0.04
 
         # C. Interrogative intonation: '？', '?'
-        has_question = bool(re.search(r'[？\?]+', cleaned_text))
+        has_question = bool(_RE_QUESTION.search(cleaned_text))
         if has_question:
             if not has_custom_top_k:
                 top_k += 2
@@ -221,7 +230,7 @@ def calculate_adaptive_prosody(
                 temperature += 0.02
 
         # D. Utterance length modulation
-        vocal_chars_count = len(re.findall(r'[\w\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]', cleaned_text))
+        vocal_chars_count = len(_RE_VOCAL_CHARS.findall(cleaned_text))
         if vocal_chars_count > 0:
             if vocal_chars_count < 6 and not has_custom_speed and speed > 0.90:
                 # Very short interjection or single word (e.g., 'バカ...', 'うん', 'えっ')
@@ -232,7 +241,7 @@ def calculate_adaptive_prosody(
                 speed += 0.03
 
         # E. Stutter / Repetition detection (e.g. 'べ、別に', 'あ、あの', 'そ、そんな')
-        has_stutter = bool(re.search(r'([^\s、，,]{1,2})[、，,]\1', cleaned_text) or re.search(r'^[あえそな][、，,]', cleaned_text))
+        has_stutter = bool(_RE_STUTTER_REPEAT.search(cleaned_text) or _RE_STUTTER_START.search(cleaned_text))
         if has_stutter:
             if not has_custom_temp:
                 temperature += 0.04

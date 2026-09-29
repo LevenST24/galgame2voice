@@ -266,6 +266,25 @@ async def delete_voice_profile(profile_id: int):
 # ============================================================================
 
 
+async def _lookup_voice_profile(
+    conn: Any,
+    profile_id: Optional[int],
+    profile_name: Optional[str],
+) -> Optional[Any]:
+    """Looks up voice profile by ID or name (including list scan fallback)."""
+    if profile_id is not None:
+        return await crud.get_voice_profile(conn, profile_id)
+    if profile_name:
+        profile = await crud.get_voice_profile_by_name(conn, profile_name)
+        if profile:
+            return profile
+        profiles = await crud.list_voice_profiles(conn)
+        for p in profiles:
+            if p.name == profile_name:
+                return p
+    return None
+
+
 @router.post(
     "/switch",
     summary="Switch Active Voice Profile",
@@ -290,18 +309,7 @@ async def switch_voice(req: VoiceSwitchRequest):
 
     # 1. 404 Precedence: Resolve voice profile entity first from database
     async with get_db() as conn:
-        profile = None
-        if profile_id is not None:
-            profile = await crud.get_voice_profile(conn, profile_id)
-        elif profile_name:
-            profile = await crud.get_voice_profile_by_name(conn, profile_name)
-            if not profile:
-                profiles = await crud.list_voice_profiles(conn)
-                for p in profiles:
-                    if p.name == profile_name:
-                        profile = p
-                        break
-
+        profile = await _lookup_voice_profile(conn, profile_id, profile_name)
         if not profile:
             identifier = profile_id if profile_id is not None else profile_name
             raise HTTPException(
