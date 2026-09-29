@@ -19,8 +19,6 @@ import asyncio
 import json
 import logging
 import time
-import uuid
-import wave
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 from pathlib import Path
 
@@ -38,7 +36,6 @@ from galgame2voice.services.affection_service import AffectionService
 from galgame2voice.services.metrics_collector import get_metrics_collector, MetricsCollector
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.text_splitter import split_japanese_sentences
-from galgame2voice.utils.profiler import ChatTurnProfiler
 
 from galgame2voice.services.emotion_classifier import (
     EMOTION_KEYWORDS,
@@ -56,15 +53,8 @@ from galgame2voice.utils.prosody import (
 )
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
 from galgame2voice.services.chat_pipelines import (
-    LlmStreamPipeline,
     StreamCoordinator,
-    TextSegmentationPipeline,
-    TtsStreamPipeline,
     SseKeepAlive,
-)
-from galgame2voice.services.chat_pipelines.stream_coordinator import (
-    _CANCEL_SENTINEL,
-    _SENTINEL,
 )
 from galgame2voice.services.chat_pipelines.context_builder import build_chat_context
 from galgame2voice.utils.audio_concat import concat_wav_files
@@ -271,6 +261,125 @@ class ChatService:
         """Synchronous WAV concatenation with parameter validation and streaming frames — ALWAYS run via asyncio.to_thread()."""
         return concat_wav_files(chunk_paths, output_path, pause_duration)
 
+    @staticmethod
+    def _resolve_ai_adaptive_voice(
+        ai_adaptive_voice: Optional[bool],
+        tts_options: Optional[Dict[str, Any]],
+    ) -> bool:
+        """Resolves whether AI adaptive voice prosody is enabled."""
+        if ai_adaptive_voice is not None:
+            return bool(ai_adaptive_voice)
+        opts_map = tts_options or {}
+        return bool(opts_map.get("ai_adaptive_voice", opts_map.get("aiAdaptiveVoice", True)))
+
+    @staticmethod
+    async def _resolve_voice_profile(
+        conn: aiosqlite.Connection,
+        voice_profile_id: Optional[int],
+        tts_options: Optional[Dict[str, Any]],
+        sess_obj: Optional[Any],
+        character_name: Optional[str],
+    ) -> Optional[Any]:
+        """Resolves active voice profile: explicit voice_profile_id -> tts_options -> session -> character_name -> global active."""
+        target_profile_id = voice_profile_id or (tts_options or {}).get("voice_profile_id") or (sess_obj.voice_profile_id if sess_obj else None)
+        active_prof = None
+        if target_profile_id is not None:
+            active_prof = await crud.get_voice_profile(conn, int(target_profile_id))
+        if active_prof is None and character_name:
+            active_prof = await crud.get_voice_profile_by_name(conn, character_name)
+        if active_prof is None:
+            active_prof = await crud.get_active_voice_profile(conn)
+        return active_prof
+
+    async def _prune_orphaned_user_message(self, user_msg_id: Optional[int], context_label: str = "") -> None:
+        """Prunes orphaned user message when downstream processing fails before assistant reply persistence."""
+        if not user_msg_id:
+            return
+        try:
+            async with get_db(self.db_path) as conn:
+                async with immediate_transaction(conn):
+                    await conn.execute("DELETE FROM messages WHERE id = ?;", (user_msg_id,))
+        except Exception as prune_err:
+            logger.warning(
+                "Failed to prune orphaned user message %s%s: %s",
+                user_msg_id,
+                f" in {context_label}" if context_label else "",
+                prune_err,
+            )
+
+    async def _execute_sync_llm(
+        self,
+        adapter: BaseLLMAdapter,
+        messages: List[ChatMessage],
+        model_name: str,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+    ) -> Tuple[str, float]:
+        """Invokes LLM chat non-streaming and returns (completion_text, ttft_ms)."""
+        t_llm_start = time.perf_counter()
+        chat_kwargs: Dict[str, Any] = {"model": model_name}
+        if temperature is not None:
+            chat_kwargs["temperature"] = temperature
+        if top_p is not None:
+            chat_kwargs["top_p"] = top_p
+        if max_tokens is not None:
+            chat_kwargs["max_tokens"] = max_tokens
+        if frequency_penalty is not None:
+            chat_kwargs["frequency_penalty"] = frequency_penalty
+        if presence_penalty is not None:
+            chat_kwargs["presence_penalty"] = presence_penalty
+        llm_response = await adapter.chat(messages, **chat_kwargs)
+        ttft_ms = (time.perf_counter() - t_llm_start) * 1000.0
+        return llm_response.content, ttft_ms
+
+    async def _synthesize_sync_audio(
+        self,
+        japanese: str,
+        parser: StreamingBilingualParser,
+        tts_options: Optional[Dict[str, Any]],
+        ai_adaptive_voice: bool,
+        active_prof: Optional[Any],
+    ) -> Tuple[str, float, int, int]:
+        """Synthesizes complete audio for sync chat response."""
+        audio_url = ""
+        tts_first_chunk_ms = 0.0
+        tts_cached_chunks = 0
+        tts_generated_chunks = 0
+        if japanese.strip():
+            try:
+                t_tts_start = time.perf_counter()
+                sync_opts = parser.get_dynamic_tts_options(
+                    base_options=tts_options,
+                    adaptive_enabled=bool(ai_adaptive_voice),
+                    sentence_text=japanese,
+                )
+                if active_prof:
+                    sync_opts.setdefault("voice_profile_id", active_prof.id)
+                    sync_opts.setdefault("character_name", active_prof.name)
+                user_split_method = (
+                    (tts_options or {}).get("text_split_method")
+                    or (tts_options or {}).get("cut_option")
+                    or (tts_options or {}).get("how_to_cut")
+                )
+                if not user_split_method:
+                    sync_opts["text_split_method"] = "cut0" if len(japanese.strip()) <= 80 else "cut2"
+                audio_url, _, _ = await self.tts_service.synthesize_to_file(
+                    japanese,
+                    options=sync_opts,
+                    filename_prefix="voice",
+                )
+                tts_first_chunk_ms = (time.perf_counter() - t_tts_start) * 1000.0
+                if "/audio/cache/" in str(audio_url):
+                    tts_cached_chunks = 1
+                else:
+                    tts_generated_chunks = 1
+            except Exception as e:
+                logger.warning("TTS synthesis in chat_sync failed: %s", e)
+        return audio_url, tts_first_chunk_ms, tts_cached_chunks, tts_generated_chunks
+
     async def stream_chat(
         self,
         prompt: str,
@@ -300,10 +409,7 @@ class ChatService:
         All background tasks are guaranteed to be reaped in the finally block,
         even when the SSE consumer disconnects mid-stream.
         """
-        # Resolve AI adaptive voice mode (session setting or parameter)
-        if ai_adaptive_voice is None:
-            opts_map = tts_options or {}
-            ai_adaptive_voice = opts_map.get("ai_adaptive_voice", opts_map.get("aiAdaptiveVoice", True))
+        adaptive_enabled = self._resolve_ai_adaptive_voice(ai_adaptive_voice, tts_options)
 
         t_start = time.perf_counter()
 
@@ -328,15 +434,9 @@ class ChatService:
                         latency_ms=0,
                     ))
 
-                    # Resolve active voice profile: explicit voice_profile_id -> tts_options -> session -> character_name -> global active
-                    target_profile_id = voice_profile_id or (tts_options or {}).get("voice_profile_id") or (sess_obj.voice_profile_id if sess_obj else None)
-                    active_prof = None
-                    if target_profile_id is not None:
-                        active_prof = await crud.get_voice_profile(conn, int(target_profile_id))
-                    if active_prof is None and character_name:
-                        active_prof = await crud.get_voice_profile_by_name(conn, character_name)
-                    if active_prof is None:
-                        active_prof = await crud.get_active_voice_profile(conn)
+                    active_prof = await self._resolve_voice_profile(
+                        conn, voice_profile_id, tts_options, sess_obj, character_name
+                    )
 
                     user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
                     profile_id = active_prof.id if active_prof else None
@@ -385,7 +485,7 @@ class ChatService:
                 concat_wav_fn=self._concat_wav_files,
                 cancel_event=cancel_event,
                 tts_options=tts_options,
-                ai_adaptive_voice=bool(ai_adaptive_voice),
+                ai_adaptive_voice=adaptive_enabled,
                 temperature=temperature,
                 top_p=top_p,
                 max_tokens=max_tokens,
@@ -409,13 +509,8 @@ class ChatService:
                 "data": {"error": safe_err or "Chat service stream pipeline error"}
             }
         finally:
-            if coordinator is None and user_msg is not None and getattr(user_msg, "id", None):
-                try:
-                    async with get_db(self.db_path) as conn:
-                        async with immediate_transaction(conn):
-                            await conn.execute("DELETE FROM messages WHERE id = ?;", (user_msg.id,))
-                except Exception as prune_err:
-                    logger.warning("Failed to prune orphaned user message %s: %s", user_msg.id, prune_err)
+            if coordinator is None and user_msg is not None:
+                await self._prune_orphaned_user_message(getattr(user_msg, "id", None))
 
 
     async def stream_chat_events(
@@ -486,9 +581,7 @@ class ChatService:
         """
         Synchronous non-streaming bilingual completion and TTS synthesis.
         """
-        if ai_adaptive_voice is None:
-            opts_map = tts_options or {}
-            ai_adaptive_voice = opts_map.get("ai_adaptive_voice", opts_map.get("aiAdaptiveVoice", True))
+        adaptive_enabled = self._resolve_ai_adaptive_voice(ai_adaptive_voice, tts_options)
 
         t_start = time.perf_counter()
         user_msg = None
@@ -506,15 +599,9 @@ class ChatService:
                         latency_ms=0,
                     ))
 
-                    # Resolve active voice profile: explicit voice_profile_id -> tts_options -> session -> character_name -> global active
-                    target_profile_id = voice_profile_id or (tts_options or {}).get("voice_profile_id") or (sess_obj.voice_profile_id if sess_obj else None)
-                    active_prof = None
-                    if target_profile_id is not None:
-                        active_prof = await crud.get_voice_profile(conn, int(target_profile_id))
-                    if active_prof is None and character_name:
-                        active_prof = await crud.get_voice_profile_by_name(conn, character_name)
-                    if active_prof is None:
-                        active_prof = await crud.get_active_voice_profile(conn)
+                    active_prof = await self._resolve_voice_profile(
+                        conn, voice_profile_id, tts_options, sess_obj, character_name
+                    )
 
                     user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
                     profile_id = active_prof.id if active_prof else None
@@ -539,21 +626,16 @@ class ChatService:
                     session=sess_obj,
                 )
 
-            t_llm_start = time.perf_counter()
-            chat_kwargs: Dict[str, Any] = {"model": model_name}
-            if temperature is not None:
-                chat_kwargs["temperature"] = temperature
-            if top_p is not None:
-                chat_kwargs["top_p"] = top_p
-            if max_tokens is not None:
-                chat_kwargs["max_tokens"] = max_tokens
-            if frequency_penalty is not None:
-                chat_kwargs["frequency_penalty"] = frequency_penalty
-            if presence_penalty is not None:
-                chat_kwargs["presence_penalty"] = presence_penalty
-            llm_response = await adapter.chat(messages, **chat_kwargs)
-            ttft_ms = (time.perf_counter() - t_llm_start) * 1000.0
-            raw_text = llm_response.content
+            raw_text, ttft_ms = await self._execute_sync_llm(
+                adapter=adapter,
+                messages=messages,
+                model_name=model_name,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
+            )
 
             # Parse bilingual response
             parser = StreamingBilingualParser()
@@ -582,36 +664,13 @@ class ChatService:
                 affection_res = self._affection_fallback(final_emotion)
 
             # Synthesize full audio
-            audio_url = ""
-            tts_first_chunk_ms = 0.0
-            tts_cached_chunks = 0
-            tts_generated_chunks = 0
-            if japanese.strip():
-                try:
-                    t_tts_start = time.perf_counter()
-                    sync_opts = parser.get_dynamic_tts_options(
-                        base_options=tts_options,
-                        adaptive_enabled=bool(ai_adaptive_voice),
-                        sentence_text=japanese,
-                    )
-                    if active_prof:
-                        sync_opts.setdefault("voice_profile_id", active_prof.id)
-                        sync_opts.setdefault("character_name", active_prof.name)
-                    user_split_method = (tts_options or {}).get("text_split_method") or (tts_options or {}).get("cut_option") or (tts_options or {}).get("how_to_cut")
-                    if not user_split_method:
-                        sync_opts["text_split_method"] = "cut0" if len(japanese.strip()) <= 80 else "cut2"
-                    audio_url, _, _ = await self.tts_service.synthesize_to_file(
-                        japanese,
-                        options=sync_opts,
-                        filename_prefix="voice",
-                    )
-                    tts_first_chunk_ms = (time.perf_counter() - t_tts_start) * 1000.0
-                    if "/audio/cache/" in str(audio_url):
-                        tts_cached_chunks = 1
-                    else:
-                        tts_generated_chunks = 1
-                except Exception as e:
-                    logger.warning("TTS synthesis in chat_sync failed: %s", e)
+            audio_url, tts_first_chunk_ms, tts_cached_chunks, tts_generated_chunks = await self._synthesize_sync_audio(
+                japanese=japanese,
+                parser=parser,
+                tts_options=tts_options,
+                ai_adaptive_voice=adaptive_enabled,
+                active_prof=active_prof,
+            )
 
             latency_ms = int((time.perf_counter() - t_start) * 1000)
 
@@ -651,7 +710,7 @@ class ChatService:
                 "speed": parser.tts_speed,
                 "temperature": parser.tts_temperature,
                 "emotion": parser.tts_emotion,
-                "adaptive_enabled": bool(ai_adaptive_voice),
+                "adaptive_enabled": bool(adaptive_enabled),
             } if (parser.tts_speed is not None or parser.tts_temperature is not None or parser.tts_emotion is not None) else None
 
             return {
@@ -667,13 +726,8 @@ class ChatService:
                 "tts_params": final_tts_params,
             }
         finally:
-            if not persisted_assistant and user_msg is not None and getattr(user_msg, "id", None):
-                try:
-                    async with get_db(self.db_path) as conn:
-                        async with immediate_transaction(conn):
-                            await conn.execute("DELETE FROM messages WHERE id = ?;", (user_msg.id,))
-                except Exception as prune_err:
-                    logger.warning("Failed to prune orphaned user message %s in chat_sync: %s", user_msg.id, prune_err)
+            if not persisted_assistant and user_msg is not None:
+                await self._prune_orphaned_user_message(getattr(user_msg, "id", None), context_label="chat_sync")
 
     async def resolve_message_japanese(
         self,

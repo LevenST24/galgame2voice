@@ -6,7 +6,6 @@ sentence streaming, and the persistent TTS cache.
 
 import asyncio
 import logging
-import time
 import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Optional, Tuple, Union
@@ -293,11 +292,7 @@ class TtsService:
 
         from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
         scheduler = get_tts_scheduler()
-        raw_prio = opts.get("_priority", TtsPriority.NORMAL)
-        try:
-            priority = TtsPriority(int(raw_prio))
-        except (ValueError, TypeError):
-            priority = TtsPriority.NORMAL
+        priority = TtsPriority.from_options(opts)
         gen_id = opts.get("_generation_id")
         task_id = f"{gen_id}_{cache_key[:8]}_{uuid.uuid4().hex[:4]}" if gen_id and cache_key else None
 
@@ -334,11 +329,7 @@ class TtsService:
 
         from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
         scheduler = get_tts_scheduler()
-        raw_prio = opts.get("_priority", TtsPriority.NORMAL)
-        try:
-            priority = TtsPriority(int(raw_prio))
-        except (ValueError, TypeError):
-            priority = TtsPriority.NORMAL
+        priority = TtsPriority.from_options(opts)
         gen_id = opts.get("_generation_id")
 
         if use_cache:
@@ -422,11 +413,7 @@ class TtsService:
 
         from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
         scheduler = get_tts_scheduler()
-        raw_prio = opts.get("_priority", TtsPriority.NORMAL)
-        try:
-            priority = TtsPriority(int(raw_prio))
-        except (ValueError, TypeError):
-            priority = TtsPriority.NORMAL
+        priority = TtsPriority.from_options(opts)
 
         gen_id = opts.get("_generation_id")
         task_id = opts.get("_task_id")
