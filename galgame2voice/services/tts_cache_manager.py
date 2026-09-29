@@ -463,6 +463,88 @@ class TtsCacheManager:
         except Exception as exc:
             logger.warning("stream_cached failed for %s: %s", file_path, exc)
 
+    @staticmethod
+    def _write_audio_file_sync(file_path: Path, audio_bytes: bytes) -> None:
+        """Atomic write to file via unique temp file with Windows AV transient lock retries."""
+        tmp_path = file_path.with_suffix(f".tmp.{os.getpid()}_{time.time_ns()}_{uuid.uuid4().hex}.wav")
+        try:
+            tmp_path.write_bytes(audio_bytes)
+            for attempt in range(5):
+                try:
+                    tmp_path.replace(file_path)
+                    return
+                except (PermissionError, OSError) as err:
+                    try:
+                        if file_path.exists() and file_path.stat().st_size > 0:
+                            # Windows AV/indexer may transiently lock the target;
+                            # the existing file is a valid cache entry for this key,
+                            # so keep it rather than failing the whole put.
+                            logger.warning(
+                                "Cache file %s locked (%s); keeping existing file, "
+                                "fresh bytes discarded for this write.",
+                                file_path, err,
+                            )
+                            tmp_path.unlink(missing_ok=True)
+                            return
+                    except Exception:
+                        pass
+                    if attempt == 4:
+                        tmp_path.unlink(missing_ok=True)
+                        raise err
+                    time.sleep(0.005 * (attempt + 1))
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
+
+    async def _persist_cache_metadata(
+        self,
+        cache_key: str,
+        text: str,
+        clean_text: str,
+        voice_profile_id: Optional[int],
+        params_hash: str,
+        file_path: Path,
+        file_size: int,
+        duration_ms: int,
+    ) -> None:
+        """Persists cache metadata row into SQLite with locked/busy backoff and auto-init retry."""
+        last_exc = None
+        for db_attempt in range(5):
+            try:
+                async with get_db(self.db_path) as conn:
+                    await crud.upsert_tts_cache_entry(
+                        conn=conn,
+                        cache_key=cache_key,
+                        text=text,
+                        clean_text=clean_text,
+                        voice_profile_id=voice_profile_id or 1,
+                        params_hash=params_hash,
+                        file_path=str(file_path),
+                        file_size=file_size,
+                        duration_ms=duration_ms,
+                    )
+                return
+            except Exception as exc:
+                last_exc = exc
+                if ("locked" in str(exc).lower() or "busy" in str(exc).lower()) and db_attempt < 4:
+                    await asyncio.sleep(0.02 * (db_attempt + 1))
+                    continue
+                if "no such table" in str(exc).lower():
+                    try:
+                        from galgame2voice.database.session import init_db
+                        await init_db(self.db_path)
+                        continue
+                    except Exception as init_err:
+                        logger.warning("Failed to auto-init DB in TtsCacheManager: %s", init_err)
+                logger.warning("Failed to insert tts_cache_entry in DB: %s", exc)
+                break
+
+        try:
+            await asyncio.to_thread(file_path.unlink, missing_ok=True)
+        except Exception:
+            pass
+        raise RuntimeError(f"Failed to persist cache entry metadata for key {cache_key}: {last_exc}") from last_exc
+
     async def put(
         self,
         cache_key: str,
@@ -509,82 +591,21 @@ class TtsCacheManager:
             prev_file_size = _STATS_UNKNOWN  # stats fallback handled below
 
         async with self._write_lock:
-            # Atomic write to file via temp file to prevent 0-byte/corrupt files
-            def _atomic_write():
-                tmp_path = file_path.with_suffix(f".tmp.{os.getpid()}_{time.time_ns()}_{uuid.uuid4().hex}.wav")
-                try:
-                    tmp_path.write_bytes(audio_bytes)
-                    for attempt in range(5):
-                        try:
-                            tmp_path.replace(file_path)
-                            return
-                        except (PermissionError, OSError) as err:
-                            try:
-                                if file_path.exists() and file_path.stat().st_size > 0:
-                                    # Windows AV/indexer may transiently lock the target;
-                                    # the existing file is a valid cache entry for this key,
-                                    # so keep it rather than failing the whole put.
-                                    logger.warning(
-                                        "Cache file %s locked (%s); keeping existing file, "
-                                        "fresh bytes discarded for this write.",
-                                        file_path, err,
-                                    )
-                                    tmp_path.unlink(missing_ok=True)
-                                    return
-                            except Exception:
-                                pass
-                            if attempt == 4:
-                                tmp_path.unlink(missing_ok=True)
-                                raise err
-                            time.sleep(0.005 * (attempt + 1))
-                except Exception:
-                    tmp_path.unlink(missing_ok=True)
-                    raise
-
             try:
-                await asyncio.to_thread(_atomic_write)
+                await asyncio.to_thread(self._write_audio_file_sync, file_path, audio_bytes)
                 file_size = len(audio_bytes)
                 url_path = f"/audio/cache/{cache_key}.wav"
 
-                db_success = False
-                last_exc = None
-                for db_attempt in range(5):
-                    try:
-                        async with get_db(self.db_path) as conn:
-                            await crud.upsert_tts_cache_entry(
-                                conn=conn,
-                                cache_key=cache_key,
-                                text=text,
-                                clean_text=clean_text,
-                                voice_profile_id=voice_profile_id or 1,
-                                params_hash=params_hash,
-                                file_path=str(file_path),
-                                file_size=file_size,
-                                duration_ms=duration_ms,
-                            )
-                        db_success = True
-                        break
-                    except Exception as exc:
-                        last_exc = exc
-                        if ("locked" in str(exc).lower() or "busy" in str(exc).lower()) and db_attempt < 4:
-                            await asyncio.sleep(0.02 * (db_attempt + 1))
-                            continue
-                        if "no such table" in str(exc).lower():
-                            try:
-                                from galgame2voice.database.session import init_db
-                                await init_db(self.db_path)
-                                continue
-                            except Exception as init_err:
-                                logger.warning("Failed to auto-init DB in TtsCacheManager: %s", init_err)
-                        logger.warning("Failed to insert tts_cache_entry in DB: %s", exc)
-                        break
-
-                if not db_success:
-                    try:
-                        await asyncio.to_thread(file_path.unlink, missing_ok=True)
-                    except Exception:
-                        pass
-                    raise RuntimeError(f"Failed to persist cache entry metadata for key {cache_key}: {last_exc}") from last_exc
+                await self._persist_cache_metadata(
+                    cache_key=cache_key,
+                    text=text,
+                    clean_text=clean_text,
+                    voice_profile_id=voice_profile_id,
+                    params_hash=params_hash,
+                    file_path=file_path,
+                    file_size=file_size,
+                    duration_ms=duration_ms,
+                )
 
                 # Populate In-Memory LRU Cache only after successful persistence
                 async with self._lock:
