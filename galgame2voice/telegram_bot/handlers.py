@@ -53,6 +53,8 @@ from galgame2voice.telegram_bot.console_menus import (
     build_tts_menu,
     build_voice_menu,
     handle_callback_query,
+    resolve_effective_user_id,
+    resolve_session_key,
 )
 
 logger = logging.getLogger("galgame2voice.telegram_bot.handlers")
@@ -79,25 +81,15 @@ class TelegramBotHandlers:
         # Telegram user IDs allowed to use the bot; empty set = fail-closed (nobody authorized)
         self.admin_ids: set = set(admin_ids or [])
 
-    def _effective_user_id(self, update: Any) -> int:
-        """Resolves the individual Telegram user behind an update (0 if unknown)."""
-        user = getattr(update, "effective_user", None)
-        uid = getattr(user, "id", None) if user else None
-        return int(uid) if uid else 0
-
     def _is_admin(self, update: Any) -> bool:
         # Fail-closed: an empty whitelist must NOT mean "everyone is admin".
         if not self.admin_ids:
             return False
-        return self._effective_user_id(update) in self.admin_ids
+        return resolve_effective_user_id(update) in self.admin_ids
 
-    def _session_key(self, chat_id: int, user_id: int) -> str:
-        # Private chats (user_id == chat_id or unknown) keep the legacy
-        # per-chat key so existing history survives; group chats append the
-        # member's user id so each member gets private history/memory state.
-        if not user_id or user_id == chat_id:
-            return f"tg_{chat_id}"
-        return f"tg_{chat_id}_{user_id}"
+    # Backward compatibility aliases for external callers / tests
+    _effective_user_id = staticmethod(resolve_effective_user_id)
+    _session_key = staticmethod(resolve_session_key)
 
     def cancel_user_task(self, chat_id: int) -> None:
         """Cancels active background voice task for given chat_id if running."""
@@ -108,7 +100,7 @@ class TelegramBotHandlers:
 
     async def build_main_console(self, chat_id: int, user_id: int = 0) -> Tuple[str, Any]:
         """Constructs the rich text and inline keyboard for the Telegram Interactive Console."""
-        return await build_main_console(chat_id, user_id, db_path=self.db_path, session_key_fn=self._session_key)
+        return await build_main_console(chat_id, user_id, db_path=self.db_path, session_key_fn=resolve_session_key)
 
     async def build_voice_menu(self) -> Tuple[str, Any]:
         """Constructs rich sub-menu for switching voice profiles with 2-column layout and active character card."""
@@ -156,7 +148,7 @@ class TelegramBotHandlers:
 
     async def build_affection_menu(self, chat_id: int, user_id: int = 0) -> Tuple[str, Any]:
         """Constructs sub-menu for displaying affection details and emotion."""
-        return await build_affection_menu(chat_id, user_id, db_path=self.db_path, session_key_fn=self._session_key)
+        return await build_affection_menu(chat_id, user_id, db_path=self.db_path, session_key_fn=resolve_session_key)
 
     async def handle_callback_query(self, update: Any, context: Optional[Any] = None) -> None:
         """Handles inline button clicks in Telegram."""
@@ -252,7 +244,7 @@ class TelegramBotHandlers:
     async def handle_reset(self, update: Any, context: Optional[Any] = None) -> str:
         """Handler for /reset command."""
         chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
-        session_id = self._session_key(chat_id, self._effective_user_id(update))
+        session_id = resolve_session_key(chat_id, resolve_effective_user_id(update))
         self.cancel_user_task(chat_id)
 
         try:
@@ -374,7 +366,7 @@ class TelegramBotHandlers:
         - /character <name|id>: directly switches to target character and replies with character profile card.
         """
         chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
-        user_id = self._effective_user_id(update)
+        user_id = resolve_effective_user_id(update)
         raw_text = ""
         if hasattr(update, "message") and update.message and update.message.text:
             raw_text = update.message.text.strip()
@@ -485,7 +477,7 @@ class TelegramBotHandlers:
     async def handle_console(self, update: Any, context: Optional[Any] = None) -> str:
         """Handler for /console, /menu, /settings command rendering native Inline Keyboard Console."""
         chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
-        text, markup = await self.build_main_console(chat_id, self._effective_user_id(update))
+        text, markup = await self.build_main_console(chat_id, resolve_effective_user_id(update))
         await self._safe_send_message(update, context, text, reply_markup=markup)
         return text
 
@@ -563,7 +555,7 @@ class TelegramBotHandlers:
         # 1. Cancel previous pending voice task for this user if active
         self.cancel_user_task(chat_id)
 
-        session_id = self._session_key(chat_id, effective_user_id)
+        session_id = resolve_session_key(chat_id, effective_user_id)
 
         try:
             # 2. Query ChatService / LLM Adapter for bilingual response
@@ -664,7 +656,7 @@ class TelegramBotHandlers:
         if not hasattr(update, "message") or not update.message or not getattr(update.message, "text", None):
             return None
         if not self._is_admin(update):
-            uid = self._effective_user_id(update)
+            uid = resolve_effective_user_id(update)
             logger.warning("Rejected text message from unauthorized Telegram user_id=%d", uid)
             await self._safe_send_message(update, context, "抱歉，你没有使用本机器人的权限。")
             return None
@@ -672,7 +664,7 @@ class TelegramBotHandlers:
         text = update.message.text.strip()
         if text.startswith("/"):
             return None
-        return await self.process_text_chat(chat_id, text, context.bot, user_id=self._effective_user_id(update))
+        return await self.process_text_chat(chat_id, text, context.bot, user_id=resolve_effective_user_id(update))
 
     async def handle_voice_message(self, update: Any, context: Any) -> Optional[asyncio.Task]:
         """
@@ -682,7 +674,7 @@ class TelegramBotHandlers:
         if not hasattr(update, "message") or not update.message or not getattr(update.message, "voice", None):
             return None
         if not self._is_admin(update):
-            uid = self._effective_user_id(update)
+            uid = resolve_effective_user_id(update)
             logger.warning("Rejected voice message from unauthorized Telegram user_id=%d", uid)
             await self._safe_send_message(update, context, "抱歉，你没有使用本机器人的权限。")
             return None
@@ -723,7 +715,7 @@ class TelegramBotHandlers:
                 return None
 
             # 4. Forward to text chat pipeline
-            return await self.process_text_chat(chat_id, transcribed_text.strip(), context.bot, user_id=self._effective_user_id(update))
+            return await self.process_text_chat(chat_id, transcribed_text.strip(), context.bot, user_id=resolve_effective_user_id(update))
 
         except ValueError as val_err:
             logger.warning("Corrupted or unreadable voice file for chat_id=%d: %s", chat_id, val_err)

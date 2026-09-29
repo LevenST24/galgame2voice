@@ -35,6 +35,7 @@ from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.services.affection_service import AffectionService
 from galgame2voice.services.metrics_collector import get_metrics_collector, MetricsCollector
 from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.sse import format_sse_frame
 from galgame2voice.utils.text_splitter import split_japanese_sentences
 
 from galgame2voice.services.emotion_classifier import (
@@ -353,7 +354,7 @@ class ChatService:
         try:
             async with get_db(self.db_path) as conn:
                 async with immediate_transaction(conn):
-                    await conn.execute("DELETE FROM messages WHERE id = ?;", (user_msg_id,))
+                    await crud.delete_message(conn, user_msg_id)
         except Exception as prune_err:
             logger.warning(
                 "Failed to prune orphaned user message %s%s: %s",
@@ -611,15 +612,7 @@ class ChatService:
             presence_penalty=presence_penalty,
             ai_adaptive_voice=ai_adaptive_voice,
         ):
-            if isinstance(event, str):
-                yield event
-            elif isinstance(event, dict):
-                if event.get("event") == ":keep-alive" or "comment" in event:
-                    yield event.get("comment", ": keep-alive\n\n")
-                else:
-                    event_name = event.get("event", "message")
-                    event_data = json.dumps(event.get("data", {}), ensure_ascii=False)
-                    yield f"event: {event_name}\ndata: {event_data}\n\n"
+            yield format_sse_frame(event)
 
     async def chat_sync(
         self,

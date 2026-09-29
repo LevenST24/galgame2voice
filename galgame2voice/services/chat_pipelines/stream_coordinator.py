@@ -252,7 +252,7 @@ class StreamCoordinator:
 
     async def _put_with_cancel(
         self,
-        q: asyncio.Queue,
+        queue: asyncio.Queue,
         item: Any,
         cancel_event: Optional[asyncio.Event] = None,
     ) -> bool:
@@ -261,7 +261,7 @@ class StreamCoordinator:
         if ce and ce.is_set():
             return False
         try:
-            q.put_nowait(item)
+            queue.put_nowait(item)
             return True
         except asyncio.QueueFull:
             pass
@@ -269,7 +269,7 @@ class StreamCoordinator:
             if ce and ce.is_set():
                 return False
             try:
-                await asyncio.wait_for(q.put(item), timeout=0.1)
+                await asyncio.wait_for(queue.put(item), timeout=0.1)
                 return True
             except asyncio.TimeoutError:
                 continue
@@ -505,7 +505,7 @@ class StreamCoordinator:
             try:
                 async with get_db(self.db_path) as conn:
                     async with immediate_transaction(conn):
-                        await conn.execute("DELETE FROM messages WHERE id = ?;", (self.user_msg.id,))
+                        await crud.delete_message(conn, self.user_msg.id)
             except Exception as prune_err:
                 logger.warning("Failed to prune orphaned user message %s: %s", self.user_msg.id, prune_err)
 

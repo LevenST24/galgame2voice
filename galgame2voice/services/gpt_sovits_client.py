@@ -20,12 +20,14 @@ from typing import Any, AsyncGenerator, Dict, Optional, Union
 import httpx
 
 from galgame2voice.utils.audio_spec import (
+    PCM_32KHZ_16BIT_MONO_BYTE_RATE,
     REFERENCE_AUDIO_MAX_SECONDS,
     REFERENCE_AUDIO_MIN_SECONDS,
     SILENT_AUDIO_ERROR,
     AudioSpec,
     AudioSpecCache,
     _AUDIO_SPEC_CACHE,
+    _safe_resolve_path,
     async_probe_audio_duration_seconds,
     extract_wav_duration,
     is_silent_audio,
@@ -68,15 +70,6 @@ from galgame2voice.utils.japanese_phonetics import (
 logger = logging.getLogger("galgame2voice.services.gpt_sovits_client")
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _safe_resolve_path(path_val: Union[str, Path]) -> Path:
-    """Safely resolves path, falling back to absolute() on Windows permission errors."""
-    p = Path(path_val)
-    try:
-        return p.resolve()
-    except (OSError, PermissionError):
-        return p.absolute()
 
 
 # Backward-compatibility alias
@@ -670,7 +663,7 @@ class GptSovitsClient:
                 get_speed_tracker().record(
                     char_count=len(cleaned_text),
                     elapsed_s=elapsed_s,
-                    audio_dur_s=total_bytes_streamed / 64000.0,
+                    audio_dur_s=total_bytes_streamed / PCM_32KHZ_16BIT_MONO_BYTE_RATE,
                 )
             except Exception as exc:
                 logger.debug("Stream speed tracker record error: %s", exc)

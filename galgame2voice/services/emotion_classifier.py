@@ -96,18 +96,20 @@ for _cue_k, _cue_v in STAGE_CUE_EMOTION_MAP.items():
     if _cue_k not in EMOTION_NAME_MAP:
         EMOTION_NAME_MAP[_cue_k] = _cue_v
 
+_RE_PUNCT_STRIP = re.compile(r'[。！？!?….~〜 　\-\*]+')
+_RE_EMOTION_PREFIX = re.compile(r'^(?:情绪|心情|状态|emotion|emo)[:：\s]*', flags=re.IGNORECASE)
+_RE_WHITESPACE_COLLAPSE = re.compile(r'[ \t]{2,}')
+
 
 def _match_emotion_candidate(raw_candidate: str) -> Optional[str]:
     """Matches candidate emotion text against aliases, exact keywords, or substrings."""
     candidate = raw_candidate.strip().lower()
-    candidate_bare = re.sub(r'[。！？!?….~〜 　\-\*]+', '', candidate).strip()
+    candidate_bare = _RE_PUNCT_STRIP.sub('', candidate).strip()
 
     if candidate in EMOTION_NAME_MAP:
         return EMOTION_NAME_MAP[candidate]
     if candidate_bare in EMOTION_NAME_MAP:
         return EMOTION_NAME_MAP[candidate_bare]
-    if candidate in VALID_EMOTIONS:
-        return candidate
     for k, v in EMOTION_NAME_MAP.items():
         if k in candidate or k in candidate_bare:
             return v
@@ -137,7 +139,7 @@ def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
     if m_lead:
         quote_prefix = m_lead.group(1).strip()
         inner_content = m_lead.group(3).strip()
-        candidate = re.sub(r'^(?:情绪|心情|状态|emotion|emo)[:：\s]*', '', inner_content, flags=re.IGNORECASE)
+        candidate = _RE_EMOTION_PREFIX.sub('', inner_content)
         detected = _match_emotion_candidate(candidate)
 
         if detected in VALID_EMOTIONS:
@@ -153,19 +155,19 @@ def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
         detected = _match_emotion_candidate(inner_content)
         if detected in VALID_EMOTIONS:
             cleaned = f"{text[:m_ast.start()]}{text[m_ast.end():]}".strip()
-            cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
+            cleaned = _RE_WHITESPACE_COLLAPSE.sub(' ', cleaned)
             return detected, cleaned
 
     # 3. Secondary check: Embedded or trailing bracketed emotion tag
     any_pattern = r'([（\(\[【〖〔])([^）\)\]】〗〕]+)([）\)\]】〗〕])'
     for m in re.finditer(any_pattern, text):
         inner_content = m.group(2).strip()
-        candidate = re.sub(r'^(?:情绪|心情|状态|emotion|emo)[:：\s]*', '', inner_content, flags=re.IGNORECASE)
+        candidate = _RE_EMOTION_PREFIX.sub('', inner_content)
         detected = _match_emotion_candidate(candidate)
 
         if detected in VALID_EMOTIONS:
             cleaned = f"{text[:m.start()]}{text[m.end():]}".strip()
-            cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
+            cleaned = _RE_WHITESPACE_COLLAPSE.sub(' ', cleaned)
             return detected, cleaned
 
     return None, text

@@ -28,6 +28,7 @@ from galgame2voice.database import crud
 from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from galgame2voice.telegram_bot.proxy import get_proxy_url, get_telegram_request_kwargs
 from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.text_sanitize import sanitize_bot_token
 
 logger = logging.getLogger("galgame2voice.telegram_bot.bot")
 
@@ -53,6 +54,31 @@ def parse_admin_ids(raw: Optional[str]) -> List[int]:
         if part.isdigit():
             ids.append(int(part))
     return ids
+
+
+def _register_handlers(app: Any, handlers: Any, error_handler: Optional[Any] = None) -> None:
+    """Registers command, callback query, message, and error handlers to the Telegram Application."""
+    # Register command handlers
+    app.add_handler(CommandHandler("start", handlers.handle_start))
+    app.add_handler(CommandHandler("reset", handlers.handle_reset))
+    app.add_handler(CommandHandler("voice", handlers.handle_voice))
+    app.add_handler(CommandHandler(["character", "char", "switch"], handlers.handle_character))
+    app.add_handler(CommandHandler("model", handlers.handle_model))
+    app.add_handler(CommandHandler(["nickname", "name"], handlers.handle_nickname))
+    app.add_handler(CommandHandler(["console", "menu", "settings"], handlers.handle_console))
+    app.add_handler(CommandHandler("help", handlers.handle_help))
+
+    # Register callback query handler for inline keyboard buttons
+    app.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
+
+    # Register message handlers
+    app.add_handler(MessageHandler(filters.VOICE, handlers.handle_voice_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_text_message))
+    app.add_handler(MessageHandler(filters.COMMAND, handlers.handle_unknown))
+
+    # Register global error handler for Telegram network drops and exceptions
+    if error_handler and hasattr(app, "add_error_handler"):
+        app.add_error_handler(error_handler)
 
 
 class TelegramBotManager:
@@ -83,7 +109,7 @@ class TelegramBotManager:
         if not getattr(settings, "telegram_enabled", False):
             return False
 
-        token = settings.telegram_bot_token.replace(" ", "").replace("\r", "").replace("\n", "").strip() if settings and settings.telegram_bot_token else ""
+        token = sanitize_bot_token(settings.telegram_bot_token) if settings and settings.telegram_bot_token else ""
         if not token:
             logger.warning("Telegram Bot is enabled but token is empty; skipping bot startup.")
             return False
@@ -124,27 +150,7 @@ class TelegramBotManager:
         )
         self.app = builder.build()
 
-        # Register command handlers
-        self.app.add_handler(CommandHandler("start", self.handlers.handle_start))
-        self.app.add_handler(CommandHandler("reset", self.handlers.handle_reset))
-        self.app.add_handler(CommandHandler("voice", self.handlers.handle_voice))
-        self.app.add_handler(CommandHandler(["character", "char", "switch"], self.handlers.handle_character))
-        self.app.add_handler(CommandHandler("model", self.handlers.handle_model))
-        self.app.add_handler(CommandHandler(["nickname", "name"], self.handlers.handle_nickname))
-        self.app.add_handler(CommandHandler(["console", "menu", "settings"], self.handlers.handle_console))
-        self.app.add_handler(CommandHandler("help", self.handlers.handle_help))
-
-        # Register callback query handler for inline keyboard buttons
-        self.app.add_handler(CallbackQueryHandler(self.handlers.handle_callback_query))
-
-        # Register message handlers
-        self.app.add_handler(MessageHandler(filters.VOICE, self.handlers.handle_voice_message))
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handlers.handle_text_message))
-        self.app.add_handler(MessageHandler(filters.COMMAND, self.handlers.handle_unknown))
-
-        # Register global error handler for Telegram network drops and exceptions
-        if hasattr(self.app, "add_error_handler"):
-            self.app.add_error_handler(self._on_telegram_error)
+        _register_handlers(self.app, self.handlers, self._on_telegram_error)
 
         # Initialize and start polling
         try:

@@ -224,14 +224,7 @@ def clean_japanese_parentheses(text: str, max_passes: int = 5) -> str:
         if cleaned == prev:
             break
 
-    cleaned = (
-        cleaned.replace('（', '').replace('）', '')
-        .replace('(', '').replace(')', '')
-        .replace('【', '').replace('】', '')
-        .replace('[', '').replace(']', '')
-        .replace('〖', '').replace('〗', '')
-        .replace('〔', '').replace('〕', '')
-    )
+    cleaned = cleaned.translate(str.maketrans('', '', '（）()【】[]〖〗〔〕'))
     return cleaned.strip()
 
 

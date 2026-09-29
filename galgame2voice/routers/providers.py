@@ -34,6 +34,7 @@ from galgame2voice.security import url_guard
 from galgame2voice.telegram_bot.proxy import get_proxy_url
 from galgame2voice.utils.error_diagnostics import format_provider_error
 from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.text_sanitize import sanitize_bot_token
 
 logger = logging.getLogger("galgame2voice.routers.providers")
 router = APIRouter(tags=["Providers & Testing"])
@@ -462,6 +463,50 @@ test_provider_connectivity = test_provider
 # Telegram Bot Testing Endpoints
 # ============================================================================
 
+def _map_telegram_response(resp: httpx.Response, latency: float) -> Dict[str, Any]:
+    """Maps Telegram getMe HTTP response into test result payload."""
+    if resp.status_code == 200:
+        data = resp.json()
+        if data.get("ok"):
+            bot_user = data.get("result", {}).get("username", "")
+            return {
+                "success": True,
+                "message": f"连接成功！Bot: @{bot_user}",
+                "latency_ms": latency,
+                "bot_info": data.get("result"),
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Telegram API 错误: {data.get('description', '未知错误')}",
+                "latency_ms": latency,
+            }
+    elif resp.status_code == 401:
+        return {
+            "success": False,
+            "message": "Telegram 验证失败 (401 Unauthorized): Token 错误或已失效，请在 Telegram 中私聊 @BotFather 发送 /token 重新获取最新 Token",
+            "latency_ms": latency,
+        }
+    elif resp.status_code == 404:
+        return {
+            "success": False,
+            "message": "Telegram 验证失败 (404 Not Found): 无效的 Bot Token 格式，请检查 Token 是否包含多余字符或从 @BotFather 完整复制",
+            "latency_ms": latency,
+        }
+    else:
+        data = {}
+        try:
+            data = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            pass
+        err_desc = data.get("description") if isinstance(data, dict) else f"HTTP {resp.status_code}"
+        return {
+            "success": False,
+            "message": f"Telegram 验证失败 ({resp.status_code}): {err_desc}",
+            "latency_ms": latency,
+        }
+
+
 @router.post(
     "/telegram/test",
     summary="Test Telegram Bot Token & Connectivity",
@@ -474,7 +519,7 @@ async def test_telegram_bot(req: TelegramTestRequest):
             stored_settings = await crud.get_settings_raw(conn)
             token = stored_settings.telegram_bot_token or ""
 
-    token = token.replace(" ", "").replace("\r", "").replace("\n", "").strip()
+    token = sanitize_bot_token(token)
 
     if not token:
         return {"success": False, "message": "未配置 Telegram Bot Token"}
@@ -501,46 +546,7 @@ async def test_telegram_bot(req: TelegramTestRequest):
             async with httpx.AsyncClient(proxy=p_url, timeout=6.0) as client:
                 resp = await client.get(f"https://api.telegram.org/bot{token}/getMe")
                 latency = round((time.perf_counter() - t0) * 1000, 2)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("ok"):
-                        bot_user = data.get("result", {}).get("username", "")
-                        return {
-                            "success": True,
-                            "message": f"连接成功！Bot: @{bot_user}",
-                            "latency_ms": latency,
-                            "bot_info": data.get("result"),
-                        }
-                    else:
-                        return {
-                            "success": False,
-                            "message": f"Telegram API 错误: {data.get('description', '未知错误')}",
-                            "latency_ms": latency,
-                        }
-                elif resp.status_code == 401:
-                    return {
-                        "success": False,
-                        "message": "Telegram 验证失败 (401 Unauthorized): Token 错误或已失效，请在 Telegram 中私聊 @BotFather 发送 /token 重新获取最新 Token",
-                        "latency_ms": latency,
-                    }
-                elif resp.status_code == 404:
-                    return {
-                        "success": False,
-                        "message": "Telegram 验证失败 (404 Not Found): 无效的 Bot Token 格式，请检查 Token 是否包含多余字符或从 @BotFather 完整复制",
-                        "latency_ms": latency,
-                    }
-                else:
-                    data = {}
-                    try:
-                        data = resp.json()
-                    except (ValueError, json.JSONDecodeError):
-                        pass
-                    err_desc = data.get("description") if isinstance(data, dict) else f"HTTP {resp.status_code}"
-                    return {
-                        "success": False,
-                        "message": f"Telegram 验证失败 ({resp.status_code}): {err_desc}",
-                        "latency_ms": latency,
-                    }
+                return _map_telegram_response(resp, latency)
         except Exception as exc:
             last_err = exc
             continue
