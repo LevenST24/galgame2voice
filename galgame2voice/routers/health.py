@@ -450,8 +450,8 @@ async def _update_inference_precision_setting(precision_val: str) -> None:
         from galgame2voice.database.models import SettingsUpdate
         async with get_db() as conn:
             await crud.update_settings(conn, SettingsUpdate(inference_precision=precision_val))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed updating inference_precision setting: %s", exc)
 
 
 async def _apply_sovits_precision_config(
@@ -493,12 +493,16 @@ def _terminate_process_by_pid(pid: int, timeout: float = 3.0) -> None:
             for child in p.children(recursive=True):
                 try:
                     child.kill()
-                except Exception:
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
+                except Exception as child_err:
+                    logger.debug("Failed killing child process: %s", child_err)
             p.kill()
             p.wait(timeout=timeout)
-    except Exception:
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
         pass
+    except Exception as exc:
+        logger.debug("Error terminating process %d: %s", pid, exc)
 
 
 @router.post(
@@ -534,7 +538,7 @@ async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None
     if pid_file.exists():
         try:
             old_pid = int(pid_file.read_text(encoding="utf-8").strip())
-        except ValueError:
+        except (ValueError, OSError):
             pass
 
     # Terminate old process

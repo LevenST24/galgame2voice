@@ -182,7 +182,7 @@ async def immediate_transaction(
                 try:
                     await conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};")
                     await conn.execute(f"RELEASE SAVEPOINT {sp_id};")
-                except Exception:
+                except (sqlite3.Error, aiosqlite.Error):
                     pass
                 raise
             finally:
@@ -223,12 +223,12 @@ async def immediate_transaction(
                         try:
                             await conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};")
                             await conn.execute(f"RELEASE SAVEPOINT {sp_id};")
-                        except Exception:
+                        except (sqlite3.Error, aiosqlite.Error):
                             pass
                     else:
                         try:
                             await conn.rollback()
-                        except Exception:
+                        except (sqlite3.Error, aiosqlite.Error):
                             pass
                     raise
             finally:

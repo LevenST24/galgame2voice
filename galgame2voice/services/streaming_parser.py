@@ -419,12 +419,12 @@ class StreamingBilingualParser:
         parsed = None
         try:
             parsed = json.loads(sanitized)
-        except Exception:
+        except json.JSONDecodeError:
             json_match = re.search(r'\{.*\}', sanitized, flags=re.DOTALL)
             if json_match:
                 try:
                     parsed = json.loads(json_match.group(0))
-                except Exception:
+                except json.JSONDecodeError:
                     pass
 
         if isinstance(parsed, dict):

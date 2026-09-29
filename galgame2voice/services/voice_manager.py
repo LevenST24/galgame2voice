@@ -70,6 +70,14 @@ def _get_switch_min_free_vram_gb() -> float:
     return _MIN_FREE_VRAM_FLOOR_GB
 
 
+def _safe_invalidate_resolver(profile_id: Optional[int] = None) -> None:
+    """Safely invalidates the voice resolver cache without raising exceptions."""
+    try:
+        from galgame2voice.services.voice_resolver import get_voice_resolver
+        get_voice_resolver().invalidate(profile_id)
+    except Exception as exc:
+        logger.debug("Failed invalidating voice resolver cache: %s", exc)
+
 
 class VoiceManager:
     """
@@ -375,11 +383,7 @@ class VoiceManager:
                     logger.warning("Could not persist active voice profile ID to DB: %s", exc)
 
         # Invalidate in-memory voice resolver cache
-        try:
-            from galgame2voice.services.voice_resolver import get_voice_resolver
-            get_voice_resolver().invalidate()
-        except Exception:
-            pass
+        _safe_invalidate_resolver()
 
         # Trigger non-blocking background warm-up of newly activated voice profile
         try:
@@ -552,11 +556,7 @@ class VoiceManager:
         """Creates a new voice profile in database."""
         async with get_db(self.db_path) as conn:
             res = await crud.create_voice_profile(conn, profile)
-        try:
-            from galgame2voice.services.voice_resolver import get_voice_resolver
-            get_voice_resolver().invalidate(res.id if res else None)
-        except Exception:
-            pass
+        _safe_invalidate_resolver(res.id if res else None)
         return res
 
     async def update_profile(
@@ -565,22 +565,14 @@ class VoiceManager:
         """Updates an existing voice profile in database."""
         async with get_db(self.db_path) as conn:
             res = await crud.update_voice_profile(conn, profile_id, updates)
-        try:
-            from galgame2voice.services.voice_resolver import get_voice_resolver
-            get_voice_resolver().invalidate(profile_id)
-        except Exception:
-            pass
+        _safe_invalidate_resolver(profile_id)
         return res
 
     async def delete_profile(self, profile_id: int) -> bool:
         """Deletes a voice profile from database."""
         async with get_db(self.db_path) as conn:
             res = await crud.delete_voice_profile(conn, profile_id)
-        try:
-            from galgame2voice.services.voice_resolver import get_voice_resolver
-            get_voice_resolver().invalidate(profile_id)
-        except Exception:
-            pass
+        _safe_invalidate_resolver(profile_id)
         return res
 
 

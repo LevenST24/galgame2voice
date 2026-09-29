@@ -128,8 +128,8 @@ async def build_main_console(
                 msg_count = 0
             try:
                 cache_stats = await crud.get_tts_cache_stats(conn)
-            except Exception:
-                pass
+            except Exception as cache_err:
+                logger.debug("Failed reading cache stats in build_main_console: %s", cache_err)
     except Exception as exc:
         logger.debug("Database read failed in build_main_console: %s", exc)
 
@@ -733,8 +733,8 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
             _db_active = await crud.get_active_voice_profile(conn)
             if _db_active is not None:
                 _active_id = getattr(_db_active, "id", None)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed getting active voice profile in handle_select_character: %s", exc)
     if _active_id is not None and profile_id == _active_id:
         if hasattr(ctx.query, "answer"):
             await ctx.query.answer("已经是当前音色，无需切换")
@@ -1212,8 +1212,8 @@ async def route_callback_query(
         if hasattr(query, "answer"):
             try:
                 await query.answer("⛔ 此操作需要管理员权限！", show_alert=True)
-            except Exception:
-                pass
+            except Exception as ans_err:
+                logger.debug("Failed answering admin callback query: %s", ans_err)
         return
 
     actual_db_path = (
@@ -1248,8 +1248,8 @@ async def route_callback_query(
             try:
                 safe_err = sanitize_error_detail(exc)
                 await query.answer(f"操作异常: {safe_err}" if safe_err else "操作异常，请重试", show_alert=True)
-            except Exception:
-                pass
+            except Exception as ans_err:
+                logger.debug("Failed answering error callback query: %s", ans_err)
 
 
 # Alias for backward-compatibility and clean imports

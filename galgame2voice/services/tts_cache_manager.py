@@ -333,8 +333,8 @@ class TtsCacheManager:
             from galgame2voice.config import get_settings
             if get_settings().privacy_mode:
                 return None
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed checking privacy_mode: %s", exc)
 
         url_path = f"/audio/cache/{cache_key}.wav"
 
@@ -374,7 +374,7 @@ class TtsCacheManager:
                 self._misses += 1
             try:
                 file_path.unlink(missing_ok=True)
-            except Exception:
+            except OSError:
                 pass
             return None
 
@@ -407,8 +407,8 @@ class TtsCacheManager:
             from galgame2voice.config import get_settings
             if get_settings().privacy_mode:
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed checking privacy_mode: %s", exc)
 
         mem_data = None
         bounded_chunk_size = chunk_size if chunk_size > 0 else 4096
@@ -486,7 +486,7 @@ class TtsCacheManager:
                             )
                             tmp_path.unlink(missing_ok=True)
                             return
-                    except Exception:
+                    except OSError:
                         pass
                     if attempt == 4:
                         tmp_path.unlink(missing_ok=True)
@@ -541,7 +541,7 @@ class TtsCacheManager:
 
         try:
             await asyncio.to_thread(file_path.unlink, missing_ok=True)
-        except Exception:
+        except OSError:
             pass
         raise RuntimeError(f"Failed to persist cache entry metadata for key {cache_key}: {last_exc}") from last_exc
 
@@ -566,8 +566,8 @@ class TtsCacheManager:
             from galgame2voice.config import get_settings
             if get_settings().privacy_mode:
                 return "", Path(""), len(audio_bytes)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed checking privacy_mode: %s", exc)
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         file_path = self.cache_dir / f"{cache_key}.wav"
@@ -678,8 +678,8 @@ class TtsCacheManager:
 
         try:
             await self._flush_dirty_touches()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed flushing dirty touches during enforce_limits: %s", exc)
 
         async with self._write_lock:
             pruned_count = 0
@@ -775,8 +775,8 @@ class TtsCacheManager:
             try:
                 async with get_db(self.db_path) as conn:
                     await crud.clear_all_tts_cache_entries(conn)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to clear database cache entries: %s", exc)
 
             async with self._lock:
                 self._mem_cache.clear()
@@ -797,8 +797,8 @@ class TtsCacheManager:
         """Returns comprehensive TTS cache statistics."""
         try:
             await self._flush_dirty_touches()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed flushing dirty touches during get_stats: %s", exc)
 
         try:
             async with get_db(self.db_path) as conn:
@@ -807,7 +807,8 @@ class TtsCacheManager:
                     self._disk_bytes_total = db_stats["total_size_bytes"]
                     self._disk_files_total = db_stats["total_files"]
                     self._stats_initialized = True
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed querying cache stats from database: %s", exc)
             db_stats = {"total_files": 0, "total_size_bytes": 0, "total_size_mb": 0.0, "total_hits": 0}
 
         total_files = db_stats["total_files"]

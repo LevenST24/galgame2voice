@@ -216,7 +216,7 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
                 token = extract_stream_token(chunk)
                 if token:
                     yield token
-            except Exception:
+            except json.JSONDecodeError:
                 pass
 
 

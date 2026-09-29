@@ -22,6 +22,20 @@ from galgame2voice.services.emotion_references import resolve_emotion_reference
 
 logger = logging.getLogger("galgame2voice.services.voice_resolver")
 
+DEFAULT_EMOTION_KEYS: Tuple[str, ...] = (
+    "joy",
+    "anger",
+    "sorrow",
+    "fun",
+    "surprise",
+    "fear",
+    "shyness",
+    "neutral",
+    "tsundere",
+    "yandere",
+    "gentle",
+)
+
 
 @dataclass
 class ResolvedVoiceContext:
@@ -185,15 +199,15 @@ class VoiceProfileResolver:
                             if not prompt_text:
                                 prompt_text = emo.text
                                 prompt_lang = emo.lang
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed resolving audio path from character package '%s': %s", clean_name, exc)
         elif resolved_ref:
             ref_audio = resolved_ref
 
         # Pre-resolve known emotion references for this character
         emotions_map: Dict[str, Dict[str, str]] = {}
         if clean_name:
-            for emo_name in ["joy", "anger", "sorrow", "fun", "surprise", "fear", "shyness", "neutral", "tsundere", "yandere", "gentle"]:
+            for emo_name in DEFAULT_EMOTION_KEYS:
                 ref = resolve_emotion_reference(clean_name, emo_name)
                 if ref:
                     cand_audio = ref["ref_audio_path"]

@@ -162,8 +162,8 @@ class TelegramBotManager:
             try:
                 if self.app and hasattr(self.app, "shutdown"):
                     await self.app.shutdown()
-            except Exception:
-                pass
+            except Exception as shutdown_err:
+                logger.debug("Non-critical: error shutting down bot application on init failure: %s", shutdown_err)
             return False
 
     async def _on_telegram_error(self, update: object, context: Any) -> None:
@@ -192,8 +192,10 @@ class TelegramBotManager:
         if active_tasks:
             try:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
-            except Exception:
+            except asyncio.CancelledError:
                 pass
+            except Exception as wait_err:
+                logger.debug("Error awaiting active user tasks during bot stop: %s", wait_err)
 
         try:
             if self.app:

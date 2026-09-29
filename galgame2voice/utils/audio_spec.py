@@ -24,6 +24,7 @@ import io
 import struct
 import sys
 import threading
+import wave
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,6 +47,8 @@ def _safe_resolve_path(path_val: Union[str, Path]) -> Path:
 
 @dataclass(frozen=True)
 class AudioSpec:
+    """Audio specification containing duration in seconds, sample rate, and channel count."""
+
     duration_s: float
     sample_rate: int = 0
     channels: int = 1
@@ -87,7 +90,7 @@ def _probe_wav_riff_header(data: bytes) -> Optional[AudioSpec]:
                 sample_rate=sample_rate if sample_rate > 0 else 32000,
                 channels=channels if channels > 0 else 1,
             )
-    except Exception:
+    except (struct.error, IndexError, TypeError, ZeroDivisionError):
         pass
     return None
 
@@ -110,7 +113,7 @@ def _probe_ogg_granule(data: bytes, suffix: str = ".ogg") -> Optional[AudioSpec]
                         sample_rate=rate,
                         channels=1,
                     )
-        except Exception:
+        except (IndexError, TypeError, ValueError, ZeroDivisionError):
             pass
     return None
 
@@ -144,18 +147,16 @@ def _probe_from_bytes(data: bytes) -> Optional[AudioSpec]:
             sample_rate=int(info.samplerate),
             channels=int(info.channels),
         )
-    except Exception:
+    except (RuntimeError, ValueError, TypeError, OSError, ImportError):
         pass
 
     # 2. Try stdlib wave
     try:
-        import wave
-
         with wave.open(io.BytesIO(data), "rb") as w:
             spec = _spec_from_wave(w)
             if spec is not None:
                 return spec
-    except Exception:
+    except (wave.Error, EOFError, struct.error, OSError):
         pass
 
     # 3. Raw WAV RIFF header parsing fallback
@@ -229,19 +230,17 @@ class AudioSpecCache:
                 sample_rate=int(info.samplerate),
                 channels=int(info.channels),
             )
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, OSError, ImportError):
             pass
 
         suffix = p.suffix.lower()
         if suffix == ".wav":
             try:
-                import wave
-
                 with wave.open(str(p), "rb") as w:
                     spec = _spec_from_wave(w)
                     if spec is not None:
                         return spec
-            except Exception:
+            except (wave.Error, EOFError, struct.error, OSError):
                 pass
 
         if suffix in (".ogg", ".opus"):
@@ -250,14 +249,14 @@ class AudioSpecCache:
                 spec = _probe_ogg_granule(data, suffix=suffix)
                 if spec is not None:
                     return spec
-            except Exception:
+            except (OSError, ValueError, TypeError, IndexError):
                 pass
 
         # Fallback: read bytes and attempt raw header probing
         try:
             data = p.read_bytes()
             return _probe_from_bytes(data)
-        except Exception:
+        except (OSError, ValueError, TypeError, IndexError):
             pass
 
         return None
@@ -413,7 +412,7 @@ def extract_wav_duration(audio: bytes) -> Optional[float]:
                 if _byte_rate > 0:
                     effective_data_len = data_len if data_len is not None else max(0, len(audio) - 44)
                     return max(0.05, effective_data_len / float(_byte_rate))
-    except Exception:
+    except (struct.error, IndexError, TypeError, ZeroDivisionError):
         pass
     # Fallback: assume 32000Hz 16-bit mono PCM (64000 bytes/sec)
     return max(0.05, (len(audio) - 44) / 64000.0)

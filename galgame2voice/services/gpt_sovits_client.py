@@ -196,8 +196,10 @@ class GptSovitsClient:
                     while self._inflight_requests > 0 and loop.time() < deadline:
                         await asyncio.sleep(0.25)
                     force_closed = self._inflight_requests > 0
-                except Exception:
-                    pass
+                except asyncio.CancelledError:
+                    force_closed = True
+                except Exception as wait_err:
+                    logger.debug("Error while waiting for connection pool to drain: %s", wait_err)
                 if force_closed:
                     logger.warning(
                         "Force-closing stale GPT-SoVITS connection pool after %.0fs grace: "
@@ -207,8 +209,8 @@ class GptSovitsClient:
                     )
                 try:
                     await old_client.aclose()
-                except Exception:
-                    pass
+                except Exception as close_err:
+                    logger.debug("Non-critical: error closing old GPT-SoVITS client: %s", close_err)
 
             # Keep a strong reference so the task cannot be garbage collected.
             if self._close_task is not None and not self._close_task.done():
@@ -701,8 +703,8 @@ def get_gpt_sovits_client() -> GptSovitsClient:
         try:
             from galgame2voice.config import get_settings
             settings = get_settings()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Could not load settings for default GPT-SoVITS URL: %s", exc)
         base_url = settings.gpt_sovits_base_url if settings else "http://127.0.0.1:9880"
         _global_gpt_sovits_client = GptSovitsClient(base_url=base_url)
     return _global_gpt_sovits_client

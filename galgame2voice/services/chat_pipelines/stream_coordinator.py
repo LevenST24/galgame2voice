@@ -231,18 +231,18 @@ class StreamCoordinator:
         await run.cancel_event.wait()
         try:
             get_tts_scheduler().cancel_generation(run.stream_gen_id)
-        except Exception:
-            pass
+        except Exception as cancel_err:
+            logger.debug("Non-critical: error cancelling generation in _watch_cancel: %s", cancel_err)
         for t in (run.producer_task, run.worker_task):
             if t is not None and not t.done():
                 t.cancel()
         try:
             run.tts_queue.put_nowait(None)
-        except Exception:
+        except (asyncio.QueueFull, Exception):
             pass
         try:
             run.event_queue.put_nowait(_CANCEL_SENTINEL)
-        except Exception:
+        except (asyncio.QueueFull, Exception):
             pass
 
     async def _put_with_cancel(
@@ -406,8 +406,8 @@ class StreamCoordinator:
                     run.final_result["chinese"] = p_ch
                 if p_ja and not run.final_result.get("japanese"):
                     run.final_result["japanese"] = p_ja
-            except Exception:
-                pass
+            except Exception as finalize_err:
+                logger.debug("Non-critical: error finalizing text_pipe on LLM error: %s", finalize_err)
             safe_err = sanitize_error_detail(exc)
             await self._put_with_cancel(
                 event_queue,
@@ -692,8 +692,8 @@ class StreamCoordinator:
         """Finally-block teardown: cancels scheduled generation, reaps background tasks, ensures DB persistence."""
         try:
             get_tts_scheduler().cancel_generation(run.stream_gen_id)
-        except Exception:
-            pass
+        except Exception as cancel_err:
+            logger.debug("Non-critical: error cancelling generation in _teardown: %s", cancel_err)
 
         if run.cancel_monitor and not run.cancel_monitor.done():
             run.cancel_monitor.cancel()

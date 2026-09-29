@@ -47,6 +47,7 @@ router = APIRouter(prefix="/api/voice", tags=["Voice Profiles & TTS"])
 # ============================================================================
 
 class VoiceProfileCreateRequest(BaseModel):
+    """Payload for creating a new voice profile referencing GPT/SoVITS model weights."""
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(default="", max_length=1000)
     gpt_weights_path: str = Field(..., min_length=1, max_length=1000)
@@ -63,6 +64,7 @@ class VoiceProfileCreateRequest(BaseModel):
 
 
 class VoiceSwitchRequest(BaseModel):
+    """Payload for switching active voice profile by ID or name."""
     profile_id: Optional[int] = Field(default=None, ge=1)
     profile_name: Optional[str] = Field(default=None, max_length=100)
     id: Optional[int] = Field(default=None, ge=1)
@@ -71,6 +73,7 @@ class VoiceSwitchRequest(BaseModel):
 
 
 class SynthesizeRequest(BaseModel):
+    """Payload for standalone voice synthesis requests."""
     text: str = Field(..., min_length=1, max_length=2000)
     voice_profile_id: Optional[int] = Field(default=None, ge=1)
     options: Optional[Dict[str, Any]] = None
@@ -329,8 +332,8 @@ async def switch_voice(req: VoiceSwitchRequest):
                 active_prof = await manager.get_active_profile()
                 if active_prof:
                     manager.active_profile = active_prof
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed retrieving active profile: %s", exc)
 
         is_already_active = manager.is_active_profile(profile, force=req.force)
 
@@ -452,6 +455,7 @@ async def synthesize_speech(req: SynthesizeRequest):
 
 
 class BrowseFileRequest(BaseModel):
+    """Payload specifying file picker filter criteria and initial directory."""
     file_type: str = Field(default="all", description="'gpt', 'sovits', 'audio', or 'all'")
     initial_dir: Optional[str] = None
 

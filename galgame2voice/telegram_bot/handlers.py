@@ -523,8 +523,8 @@ class TelegramBotHandlers:
                 if bot and hasattr(bot, "send_chat_action"):
                     try:
                         await bot.send_chat_action(chat_id=chat_id, action="record_voice")
-                    except Exception:
-                        pass
+                    except Exception as action_err:
+                        logger.debug("Failed sending record_voice chat action for chat_id=%d: %s", chat_id, action_err)
 
                 clean_japanese = strip_stage_directions(japanese).strip() or japanese
                 tts_opts = dict(dynamic_tts or {})
@@ -598,8 +598,8 @@ class TelegramBotHandlers:
             if bot and hasattr(bot, "send_chat_action"):
                 try:
                     await bot.send_chat_action(chat_id=chat_id, action="typing")
-                except Exception:
-                    pass
+                except Exception as action_err:
+                    logger.debug("Failed sending typing chat action for chat_id=%d: %s", chat_id, action_err)
 
             llm_response = await adapter.chat(messages, model=model_name)
             raw_text = llm_response.content

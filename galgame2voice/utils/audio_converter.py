@@ -149,7 +149,7 @@ async def _terminate_subprocess(proc: asyncio.subprocess.Process, timeout: float
         pass
     try:
         await asyncio.wait_for(proc.wait(), timeout=timeout)
-    except Exception:
+    except (asyncio.TimeoutError, ProcessLookupError, OSError):
         pass
 
 

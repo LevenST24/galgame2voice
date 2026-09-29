@@ -14,6 +14,8 @@ from galgame2voice.services.metrics_collector import MetricsCollector
 
 
 class SessionTurn(BaseModel):
+    """Data model representing a single conversational turn in a session."""
+
     role: str = Field(..., description="'user' or 'assistant'")
     content_chinese: str = Field(default="")
     content_japanese: str = Field(default="")

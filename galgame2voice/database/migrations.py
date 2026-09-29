@@ -6,6 +6,7 @@ from runtime CRUD operations.
 
 import logging
 import os
+import sqlite3
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -59,7 +60,7 @@ def _save_console_token_file(token: str) -> None:
         token_file.write_text(token.strip(), encoding="utf-8")
         try:
             os.chmod(token_file, 0o600)
-        except Exception:
+        except OSError:
             pass
         masked = token[:4] + "****" + token[-4:]
         logger.warning(
@@ -446,7 +447,7 @@ async def _migration_v4_prompts_and_self_healing(conn: aiosqlite.Connection) -> 
     try:
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_tts_cache_last_accessed ON tts_cache_entries(last_accessed_at);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_tts_cache_clean_text ON tts_cache_entries(clean_text);")
-    except Exception:
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
         pass
 
 
@@ -572,8 +573,8 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
                 "UPDATE settings SET console_token = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1;",
                 (encrypted_token,),
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Could not auto-generate missing console token in initialize_database: %s", exc)
 
     # Auto-heal missing or broken reference audio paths across existing voice profiles
     try:

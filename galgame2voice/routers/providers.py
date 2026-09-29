@@ -6,11 +6,13 @@ and Telegram bot token verification.
 """
 
 import asyncio
+import json
 import logging
 import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 
+import aiosqlite
 import httpx
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
@@ -313,9 +315,11 @@ async def activate_provider(provider_id: str):
                 )
                 try:
                     await crud.create_provider(conn, new_provider)
-                except (sqlite3.IntegrityError, Exception):
+                except (sqlite3.IntegrityError, aiosqlite.IntegrityError):
                     # Concurrently created by parallel activation request (TOCTOU safe)
                     pass
+                except Exception as exc:
+                    logger.debug("Non-critical: error while creating preset provider: %s", exc)
         success = await crud.set_active_provider(conn, clean_id)
         if not success:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")
@@ -529,7 +533,7 @@ async def test_telegram_bot(req: TelegramTestRequest):
                     data = {}
                     try:
                         data = resp.json()
-                    except Exception:
+                    except (ValueError, json.JSONDecodeError):
                         pass
                     err_desc = data.get("description") if isinstance(data, dict) else f"HTTP {resp.status_code}"
                     return {

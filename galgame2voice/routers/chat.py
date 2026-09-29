@@ -52,6 +52,8 @@ def set_chat_service(service: Optional[ChatService]) -> None:
 # ============================================================================
 
 class ChatRequest(BaseModel):
+    """Request payload for initiating streaming or synchronous chat generation."""
+
     prompt: str = Field(..., min_length=1, max_length=PROMPT_MAX_LENGTH, description="User prompt text")
     session_id: str = Field(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Conversation session identifier")
     stream: Optional[bool] = Field(default=True, description="Whether client requested streaming")
@@ -299,6 +301,8 @@ async def legacy_post_chat(req: ChatRequest):
 # ============================================================================
 
 class SessionUpsertRequest(BaseModel):
+    """Request payload for creating or modifying a chat session and its settings."""
+
     id: Optional[str] = Field(default=None, max_length=SESSION_ID_MAX_LENGTH, description="Session ID (auto-generated if omitted)")
     title: Optional[str] = Field(default=None, max_length=200, description="Session display title")
     voice_profile_id: Optional[int] = Field(default=None, description="Bound voice profile ID")
@@ -428,6 +432,8 @@ async def clear_chat_history(
 
 
 class MessageJapaneseRequest(BaseModel):
+    """Request payload for retrieving or translating Japanese speech script for a message."""
+
     text: str = Field(..., min_length=1, max_length=PROMPT_MAX_LENGTH, description="Chinese text of the assistant message")
     session_id: Optional[str] = Field(default=None, max_length=SESSION_ID_MAX_LENGTH, description="Session ID if known")
 
