@@ -143,18 +143,18 @@ def _sync_precision_cache(new_precision: Optional[str]) -> None:
         sovits_dir_file = app_settings.project_root / "data" / "sovits_dir.txt"
         sovits_dir_str = sovits_dir_file.read_text(encoding="utf-8-sig").strip() if sovits_dir_file.exists() else ""
         prec_lower = str(new_precision).lower()
-        if prec_lower == "cpu":
-            write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=False, device="cpu")
+        precision_map = {
+            "cpu": (False, "cpu"),
+            "fp16": (True, "cuda"),
+            "half": (True, "cuda"),
+            "fp32": (False, "cuda"),
+            "float32": (False, "cuda"),
+        }
+        if prec_lower in precision_map:
+            is_half, device = precision_map[prec_lower]
+            write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=is_half, device=device)
             if sovits_dir_str:
-                write_sovits_yaml_config(sovits_dir_str, is_half=False, device="cpu")
-        elif prec_lower in ("fp16", "half"):
-            write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=True, device="cuda")
-            if sovits_dir_str:
-                write_sovits_yaml_config(sovits_dir_str, is_half=True, device="cuda")
-        elif prec_lower in ("fp32", "float32"):
-            write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=False, device="cuda")
-            if sovits_dir_str:
-                write_sovits_yaml_config(sovits_dir_str, is_half=False, device="cuda")
+                write_sovits_yaml_config(sovits_dir_str, is_half=is_half, device=device)
         elif prec_lower == "auto":
             cache_file = app_settings.project_root / "data" / "precision.json"
             if cache_file.exists():

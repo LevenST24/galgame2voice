@@ -187,27 +187,8 @@ PROVIDER_PRESETS: Dict[str, Dict[str, Any]] = {
 }
 
 
-def list_provider_presets() -> List[Dict[str, Any]]:
-    """Returns a list of all built-in provider preset descriptions."""
-    results = []
-    for p in PROVIDER_PRESETS.values():
-        results.append({
-            "id": p["id"],
-            "name": p["name"],
-            "default_base_url": p["default_base_url"],
-            "default_chat_model": p["default_chat_model"],
-            "default_stt_model": p["default_stt_model"],
-            "preset_models": p["preset_models"],
-            "description": p["description"],
-        })
-    return results
-
-
-def get_provider_preset(provider_id: str) -> Optional[Dict[str, Any]]:
-    """Retrieves preset information for a specific provider ID."""
-    p = PROVIDER_PRESETS.get(provider_id.lower())
-    if not p:
-        return None
+def _format_preset_dict(p: Dict[str, Any]) -> Dict[str, Any]:
+    """Formats raw provider preset entry into client-facing metadata dictionary."""
     return {
         "id": p["id"],
         "name": p["name"],
@@ -217,6 +198,19 @@ def get_provider_preset(provider_id: str) -> Optional[Dict[str, Any]]:
         "preset_models": p["preset_models"],
         "description": p["description"],
     }
+
+
+def list_provider_presets() -> List[Dict[str, Any]]:
+    """Returns a list of all built-in provider preset descriptions."""
+    return [_format_preset_dict(p) for p in PROVIDER_PRESETS.values()]
+
+
+def get_provider_preset(provider_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieves preset information for a specific provider ID."""
+    p = PROVIDER_PRESETS.get(provider_id.lower())
+    if not p:
+        return None
+    return _format_preset_dict(p)
 
 
 # Derived from PROVIDER_PRESETS so provider metadata and adapter routing

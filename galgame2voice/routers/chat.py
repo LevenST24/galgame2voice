@@ -139,6 +139,15 @@ def _validate_chat_request(req: ChatRequest) -> None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
 
+def _resolve_request_tts_options(req: ChatRequest) -> Dict[str, Any]:
+    tts_opts = dict(req.tts_options or {})
+    if req.preset:
+        tts_opts["preset"] = req.preset
+    if req.ai_adaptive_voice is not None:
+        tts_opts["ai_adaptive_voice"] = req.ai_adaptive_voice
+    return tts_opts
+
+
 @router.post("/api/chat/stream", summary="Real-time SSE bilingual streaming chat")
 async def chat_stream_endpoint(req: ChatRequest, request: Request):
     """
@@ -146,12 +155,7 @@ async def chat_stream_endpoint(req: ChatRequest, request: Request):
     and synthesized Japanese audio chunks.
     """
     _validate_chat_request(req)
-
-    tts_opts = dict(req.tts_options or {})
-    if req.preset:
-        tts_opts["preset"] = req.preset
-    if req.ai_adaptive_voice is not None:
-        tts_opts["ai_adaptive_voice"] = req.ai_adaptive_voice
+    tts_opts = _resolve_request_tts_options(req)
 
     cancel_event = asyncio.Event()
     disconnect_task: Optional[asyncio.Task] = None
@@ -213,11 +217,7 @@ async def chat_sync_endpoint(req: ChatRequest):
     """
     _validate_chat_request(req)
 
-    tts_opts = dict(req.tts_options or {})
-    if req.preset:
-        tts_opts["preset"] = req.preset
-    if req.ai_adaptive_voice is not None:
-        tts_opts["ai_adaptive_voice"] = req.ai_adaptive_voice
+    tts_opts = _resolve_request_tts_options(req)
 
     service = get_chat_service()
     try:

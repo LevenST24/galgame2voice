@@ -51,25 +51,24 @@ class TtsStreamPipeline:
         opts = dict(base_options) if base_options else {}
         if active_profile:
             is_dict = isinstance(active_profile, dict)
-            prof_id = active_profile.get("id") if is_dict else getattr(active_profile, "id", None)
+            get_val = active_profile.get if is_dict else (lambda k, d=None: getattr(active_profile, k, d))
+
+            prof_id = get_val("id")
             if prof_id is not None:
                 opts.setdefault("voice_profile_id", prof_id)
 
-            char_name = active_profile.get("name") if is_dict else getattr(active_profile, "name", None)
+            char_name = get_val("name")
             if char_name:
                 opts.setdefault("character_name", char_name)
 
-            p_lang = active_profile.get("prompt_lang") if is_dict else getattr(active_profile, "prompt_lang", None)
-            opts.setdefault("prompt_lang", p_lang or "ja")
+            opts.setdefault("prompt_lang", get_val("prompt_lang") or "ja")
+            opts.setdefault("text_lang", get_val("text_lang") or "ja")
 
-            t_lang = active_profile.get("text_lang") if is_dict else getattr(active_profile, "text_lang", None)
-            opts.setdefault("text_lang", t_lang or "ja")
-
-            ref_path = active_profile.get("ref_audio_path") if is_dict else getattr(active_profile, "ref_audio_path", None)
+            ref_path = get_val("ref_audio_path")
             if ref_path:
                 opts.setdefault("ref_audio_path", ref_path)
 
-            prompt_text = active_profile.get("prompt_text") if is_dict else getattr(active_profile, "prompt_text", None)
+            prompt_text = get_val("prompt_text")
             if prompt_text:
                 opts.setdefault("prompt_text", prompt_text)
 

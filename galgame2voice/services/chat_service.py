@@ -223,11 +223,11 @@ class ChatService:
         """
         Loads the configured or requested LLM adapter, target chat model, and resolved provider ID from DB.
         """
-        if conn is not None:
+        async def _fetch(active_conn: aiosqlite.Connection) -> Tuple[BaseLLMAdapter, str, str]:
             if provider_id:
-                provider = await crud.get_provider_raw(conn, provider_id)
+                provider = await crud.get_provider_raw(active_conn, provider_id)
             else:
-                provider = await crud.get_active_provider_raw(conn)
+                provider = await crud.get_active_provider_raw(active_conn)
 
             if provider:
                 adapter = get_llm_adapter(provider)
@@ -236,20 +236,12 @@ class ChatService:
 
             adapter = get_llm_adapter("openai")
             return adapter, "gpt-4o-mini", "openai"
+
+        if conn is not None:
+            return await _fetch(conn)
 
         async with get_db(self.db_path) as local_conn:
-            if provider_id:
-                provider = await crud.get_provider_raw(local_conn, provider_id)
-            else:
-                provider = await crud.get_active_provider_raw(local_conn)
-
-            if provider:
-                adapter = get_llm_adapter(provider)
-                chat_model = provider.chat_model or "gpt-4o-mini"
-                return adapter, chat_model, provider.id
-
-            adapter = get_llm_adapter("openai")
-            return adapter, "gpt-4o-mini", "openai"
+            return await _fetch(local_conn)
 
     async def get_active_llm_adapter(
         self,
@@ -810,34 +802,31 @@ class ChatService:
             return ""
 
         async with get_db(self.db_path) as conn:
-            # First attempt: match by session_id and exact/substring content_chinese
-            if session_id:
-                cursor = await conn.execute(
-                    """
+            async def _find_ja(sid: Optional[str]) -> Optional[str]:
+                where_clause = "session_id = ? AND " if sid else ""
+                query = f"""
                     SELECT content_japanese FROM messages
-                    WHERE session_id = ? AND role = 'assistant' AND content_japanese != ''
+                    WHERE {where_clause}role = 'assistant' AND content_japanese != ''
                       AND (content_chinese = ? OR ? LIKE '%' || content_chinese || '%' OR content_chinese LIKE '%' || ? || '%')
                     ORDER BY id DESC LIMIT 1
-                    """,
-                    (session_id, clean_text, clean_text, clean_text),
-                )
+                """
+                params = (sid, clean_text, clean_text, clean_text) if sid else (clean_text, clean_text, clean_text)
+                cursor = await conn.execute(query, params)
                 row = await cursor.fetchone()
                 if row and row[0] and str(row[0]).strip():
                     return str(row[0]).strip()
+                return None
+
+            # First attempt: match by session_id and exact/substring content_chinese
+            if session_id:
+                matched = await _find_ja(session_id)
+                if matched:
+                    return matched
 
             # Second attempt: search across all assistant messages in DB
-            cursor = await conn.execute(
-                """
-                SELECT content_japanese FROM messages
-                WHERE role = 'assistant' AND content_japanese != ''
-                  AND (content_chinese = ? OR ? LIKE '%' || content_chinese || '%' OR content_chinese LIKE '%' || ? || '%')
-                ORDER BY id DESC LIMIT 1
-                """,
-                (clean_text, clean_text, clean_text),
-            )
-            row = await cursor.fetchone()
-            if row and row[0] and str(row[0]).strip():
-                return str(row[0]).strip()
+            matched = await _find_ja(None)
+            if matched:
+                return matched
 
             # Third attempt: fallback to active LLM translation
             try:
