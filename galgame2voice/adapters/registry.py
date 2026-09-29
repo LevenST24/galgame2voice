@@ -294,12 +294,11 @@ def get_stt_adapter(
     """
     provider_id, key, url = _resolve_provider_request(provider_id_or_config, api_key, base_url, kwargs)
 
-    if provider_id == "siliconflow":
-        target_url = url or "https://api.siliconflow.cn/v1"
-        return SiliconFlowSTTAdapter(api_key=key, base_url=target_url, **kwargs)
-    elif provider_id == "qwen":
-        target_url = url or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        return QwenSTTAdapter(api_key=key, base_url=target_url, **kwargs)
+    preset = PROVIDER_PRESETS.get(provider_id)
+    if preset and preset.get("stt_adapter_class"):
+        adapter_cls = preset["stt_adapter_class"]
+        target_url = url or preset["default_base_url"]
+        return adapter_cls(api_key=key, base_url=target_url, **kwargs)
 
     target_url = url or "https://api.openai.com/v1"
     return OpenAICompatibleSTTAdapter(api_key=key, base_url=target_url, **kwargs)

@@ -461,18 +461,18 @@ async def _apply_sovits_precision_config(
 ) -> Tuple[str, bool, str]:
     """Applies target precision configuration to cache, YAML, and database settings.
     Returns (device, is_half, source)."""
-    if req_prec == "cpu":
-        device, is_half, source = "cpu", False, "request"
+    precision_map = {
+        "cpu": ("cpu", False, "cpu"),
+        "fp32": ("cuda", False, "fp32"),
+        "float32": ("cuda", False, "fp32"),
+        "fp16": ("cuda", True, "fp16"),
+        "half": ("cuda", True, "fp16"),
+    }
+    if req_prec in precision_map:
+        device, is_half, target_setting = precision_map[req_prec]
+        source = "request"
         write_precision_cache(project_root, str(sovits_dir), is_half=is_half, device=device)
-        await _update_inference_precision_setting("cpu")
-    elif req_prec in ("fp32", "float32"):
-        device, is_half, source = "cuda", False, "request"
-        write_precision_cache(project_root, str(sovits_dir), is_half=is_half, device=device)
-        await _update_inference_precision_setting("fp32")
-    elif req_prec in ("fp16", "half"):
-        device, is_half, source = "cuda", True, "request"
-        write_precision_cache(project_root, str(sovits_dir), is_half=is_half, device=device)
-        await _update_inference_precision_setting("fp16")
+        await _update_inference_precision_setting(target_setting)
     elif req_prec == "auto":
         cache_file = project_root / "data" / "precision.json"
         cache_file.unlink(missing_ok=True)

@@ -31,6 +31,15 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _STATS_UNKNOWN = object()
 
 
+def _get_prof_val(prof: Any, attr: str, default: Any = "") -> Any:
+    """Helper to extract attribute or key from voice profile object or dictionary."""
+    if prof is None:
+        return default
+    if isinstance(prof, dict):
+        return prof.get(attr, default)
+    return getattr(prof, attr, default)
+
+
 class TtsCacheManager:
     """
     Manages persistent disk & SQLite cache for synthesized TTS audio.
@@ -96,6 +105,24 @@ class TtsCacheManager:
         ):
             _, evicted = self._mem_cache.popitem(last=False)
             self._mem_bytes_total -= len(evicted)
+
+    def _update_disk_stats_after_write(self, file_size: int, prev_file_size: Optional[int]) -> None:
+        """Updates in-memory disk cache size delta after writing an entry."""
+        if prev_file_size is _STATS_UNKNOWN:
+            # The previous row could not be read, so this write may
+            # be an INSERT or an UPSERT overwrite: invalidate the
+            # stats and let the next prune/get_stats rebuild them
+            # from the DB truth instead of double-counting.
+            self._disk_bytes_total = None
+            self._disk_files_total = None
+            self._stats_initialized = False
+        elif self._disk_bytes_total is not None:
+            # Delta-based update: an UPSERT replaces the old row, so
+            # only the size difference counts; a fresh key adds a file.
+            delta = file_size - (prev_file_size or 0)
+            self._disk_bytes_total += delta
+            if prev_file_size is None:
+                self._disk_files_total = (self._disk_files_total or 0) + 1
 
     def _spawn_background(self, coro: Any) -> None:
         """Runs a coroutine in the background with strong ref (prevents GC mid-flight)."""
@@ -238,23 +265,19 @@ class TtsCacheManager:
         text_lang = opts.get("text_lang") or opts.get("text_language", "ja")
 
         if voice_profile is not None:
-            if hasattr(voice_profile, "id"):
-                voice_profile_id = voice_profile.id
-            elif isinstance(voice_profile, dict) and "id" in voice_profile:
-                voice_profile_id = voice_profile["id"]
-
-            if not gpt_weights and hasattr(voice_profile, "gpt_weights_path"):
-                gpt_weights = voice_profile.gpt_weights_path
-            if not sovits_weights and hasattr(voice_profile, "sovits_weights_path"):
-                sovits_weights = voice_profile.sovits_weights_path
-            if not ref_audio and hasattr(voice_profile, "ref_audio_path"):
-                ref_audio = voice_profile.ref_audio_path
-            if not prompt_text and hasattr(voice_profile, "prompt_text"):
-                prompt_text = voice_profile.prompt_text
-            if not prompt_lang and hasattr(voice_profile, "prompt_lang"):
-                prompt_lang = voice_profile.prompt_lang
-            if not text_lang and hasattr(voice_profile, "text_lang"):
-                text_lang = voice_profile.text_lang
+            voice_profile_id = _get_prof_val(voice_profile, "id", voice_profile_id)
+            if not gpt_weights:
+                gpt_weights = _get_prof_val(voice_profile, "gpt_weights_path", "")
+            if not sovits_weights:
+                sovits_weights = _get_prof_val(voice_profile, "sovits_weights_path", "")
+            if not ref_audio:
+                ref_audio = _get_prof_val(voice_profile, "ref_audio_path", "")
+            if not prompt_text:
+                prompt_text = _get_prof_val(voice_profile, "prompt_text", "")
+            if not prompt_lang:
+                prompt_lang = _get_prof_val(voice_profile, "prompt_lang", "")
+            if not text_lang:
+                text_lang = _get_prof_val(voice_profile, "text_lang", "")
 
         # Canonicalize inference parameters
         speed = float(opts.get("speed_factor", 1.0))
@@ -610,21 +633,7 @@ class TtsCacheManager:
                 # Populate In-Memory LRU Cache only after successful persistence
                 async with self._lock:
                     self._mem_cache_store(cache_key, audio_bytes)
-                    if prev_file_size is _STATS_UNKNOWN:
-                        # The previous row could not be read, so this write may
-                        # be an INSERT or an UPSERT overwrite: invalidate the
-                        # stats and let the next prune/get_stats rebuild them
-                        # from the DB truth instead of double-counting.
-                        self._disk_bytes_total = None
-                        self._disk_files_total = None
-                        self._stats_initialized = False
-                    elif self._disk_bytes_total is not None:
-                        # Delta-based update: an UPSERT replaces the old row, so
-                        # only the size difference counts; a fresh key adds a file.
-                        delta = file_size - (prev_file_size or 0)
-                        self._disk_bytes_total += delta
-                        if prev_file_size is None:
-                            self._disk_files_total = (self._disk_files_total or 0) + 1
+                    self._update_disk_stats_after_write(file_size, prev_file_size)
             except Exception:
                 async with self._lock:
                     self._mem_cache_discard(cache_key)

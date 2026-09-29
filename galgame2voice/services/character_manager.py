@@ -155,65 +155,7 @@ class CharacterManager:
                 system_prompt=system_prompt,
             )
 
-            seen_audio_paths: Dict[Path, str] = {}
-            seen_audio_hashes: Dict[str, str] = {}
-
-            for emo_name, emo_cfg in manifest.emotions.items():
-                audio_rel = emo_cfg.audio
-                if contains_traversal_payload(audio_rel):
-                    errors.append(f"Security error: Emotion '{emo_name}' audio path contains directory traversal: '{audio_rel}'")
-                    continue
-
-                resolved_audio = pkg_container.resolve_audio_path(audio_rel)
-                if not resolved_audio or not resolved_audio.is_file():
-                    errors.append(f"Emotion '{emo_name}' audio file not found: '{audio_rel}'")
-                    continue
-
-                # Check duplicate resolved physical path
-                canonical_path = resolved_audio.resolve()
-                if canonical_path in seen_audio_paths:
-                    errors.append(
-                        f"Duplicate audio path detected: emotion '{emo_name}' resolves to the same file as '{seen_audio_paths[canonical_path]}': '{audio_rel}'"
-                    )
-                else:
-                    seen_audio_paths[canonical_path] = emo_name
-
-                # Check duplicate MD5 hash across emotions in package and validate duration
-                try:
-                    st = resolved_audio.stat()
-                    cache_key = (str(canonical_path), st.st_size, st.st_mtime)
-                except Exception:
-                    cache_key = None
-
-                cached_probe = _AUDIO_PROBE_CACHE.get(cache_key) if cache_key else None
-                if cached_probe is not None:
-                    file_hash, duration = cached_probe
-                else:
-                    try:
-                        file_hash = hashlib.md5(resolved_audio.read_bytes()).hexdigest()
-                    except Exception as exc:
-                        errors.append(f"Failed to read audio file '{audio_rel}' for MD5 verification: {exc}")
-                        continue
-                    duration = TtsService.get_audio_duration(resolved_audio)
-                    if cache_key:
-                        _AUDIO_PROBE_CACHE[cache_key] = (file_hash, duration)
-
-                if file_hash in seen_audio_hashes:
-                    errors.append(
-                        f"Duplicate audio MD5 detected: emotion '{emo_name}' audio '{audio_rel}' has identical MD5 hash ({file_hash[:8]}) to emotion '{seen_audio_hashes[file_hash]}'"
-                    )
-                else:
-                    seen_audio_hashes[file_hash] = emo_name
-
-                # Validate duration: must be in [3.0s, 10.0s]
-                if duration is None:
-                    # Could not determine duration (unsupported or corrupted audio)
-                    errors.append(f"Emotion '{emo_name}' audio '{audio_rel}' could not be decoded or probed for duration")
-                elif duration < 3.0 or duration > 10.0:
-                    errors.append(
-                        f"Emotion '{emo_name}' audio '{audio_rel}' duration {duration:.2f}s "
-                        f"is out of required [3.0s, 10.0s] range"
-                    )
+            self._validate_package_emotions(pkg_container, manifest, errors)
 
         return CharacterPackage(
             folder_path=folder,
@@ -221,6 +163,76 @@ class CharacterManager:
             system_prompt=system_prompt,
             validation_errors=errors,
         )
+
+    @staticmethod
+    def _validate_package_emotions(
+        pkg_container: CharacterPackage,
+        manifest: CharacterManifest,
+        errors: List[str],
+    ) -> None:
+        """Validates package emotion audio references, paths, hashes, and durations."""
+        from galgame2voice.services.tts_service import TtsService
+        from galgame2voice.utils.path_guard import contains_traversal_payload
+
+        seen_audio_paths: Dict[Path, str] = {}
+        seen_audio_hashes: Dict[str, str] = {}
+
+        for emo_name, emo_cfg in manifest.emotions.items():
+            audio_rel = emo_cfg.audio
+            if contains_traversal_payload(audio_rel):
+                errors.append(f"Security error: Emotion '{emo_name}' audio path contains directory traversal: '{audio_rel}'")
+                continue
+
+            resolved_audio = pkg_container.resolve_audio_path(audio_rel)
+            if not resolved_audio or not resolved_audio.is_file():
+                errors.append(f"Emotion '{emo_name}' audio file not found: '{audio_rel}'")
+                continue
+
+            # Check duplicate resolved physical path
+            canonical_path = resolved_audio.resolve()
+            if canonical_path in seen_audio_paths:
+                errors.append(
+                    f"Duplicate audio path detected: emotion '{emo_name}' resolves to the same file as '{seen_audio_paths[canonical_path]}': '{audio_rel}'"
+                )
+            else:
+                seen_audio_paths[canonical_path] = emo_name
+
+            # Check duplicate MD5 hash across emotions in package and validate duration
+            try:
+                st = resolved_audio.stat()
+                cache_key = (str(canonical_path), st.st_size, st.st_mtime)
+            except Exception:
+                cache_key = None
+
+            cached_probe = _AUDIO_PROBE_CACHE.get(cache_key) if cache_key else None
+            if cached_probe is not None:
+                file_hash, duration = cached_probe
+            else:
+                try:
+                    file_hash = hashlib.md5(resolved_audio.read_bytes()).hexdigest()
+                except Exception as exc:
+                    errors.append(f"Failed to read audio file '{audio_rel}' for MD5 verification: {exc}")
+                    continue
+                duration = TtsService.get_audio_duration(resolved_audio)
+                if cache_key:
+                    _AUDIO_PROBE_CACHE[cache_key] = (file_hash, duration)
+
+            if file_hash in seen_audio_hashes:
+                errors.append(
+                    f"Duplicate audio MD5 detected: emotion '{emo_name}' audio '{audio_rel}' has identical MD5 hash ({file_hash[:8]}) to emotion '{seen_audio_hashes[file_hash]}'"
+                )
+            else:
+                seen_audio_hashes[file_hash] = emo_name
+
+            # Validate duration: must be in [3.0s, 10.0s]
+            if duration is None:
+                # Could not determine duration (unsupported or corrupted audio)
+                errors.append(f"Emotion '{emo_name}' audio '{audio_rel}' could not be decoded or probed for duration")
+            elif duration < 3.0 or duration > 10.0:
+                errors.append(
+                    f"Emotion '{emo_name}' audio '{audio_rel}' duration {duration:.2f}s "
+                    f"is out of required [3.0s, 10.0s] range"
+                )
 
     def _ensure_discovered(self) -> None:
         """Ensures character packages have been discovered at least once."""

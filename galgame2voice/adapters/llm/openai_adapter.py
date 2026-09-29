@@ -6,7 +6,7 @@ Supports standard OpenAI REST endpoints, streaming SSE parsing, connection testi
 import asyncio
 import logging
 import time
-from typing import AsyncIterator, Dict, Any, List, Optional
+from typing import AsyncIterator, Dict, Any, List, Optional, Tuple
 import httpx
 
 from galgame2voice.adapters.base import (
@@ -34,6 +34,17 @@ _GEMINI_UNSUPPORTED_PARAMS = frozenset({
     "frequency_penalty", "presence_penalty", "logit_bias",
     "logprobs", "top_logprobs", "n", "seed", "user",
 })
+
+# Default test models mapped by base URL substrings
+_URL_DEFAULT_MODELS: Tuple[Tuple[str, str], ...] = (
+    ("x.ai", "grok-3"),
+    ("googleapis.com", "gemini-2.0-flash"),
+    ("deepseek.com", "deepseek-chat"),
+    ("bigmodel.cn", "glm-4-flash"),
+    ("aliyuncs.com", "qwen-plus"),
+    ("siliconflow.cn", "deepseek-ai/DeepSeek-V3"),
+    ("anthropic.com", "claude-3-5-sonnet-20241022"),
+)
 
 
 async def _mock_lines_iter(text: str) -> AsyncIterator[str]:
@@ -77,20 +88,9 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             except Exception as exc:
                 logger.debug("Failed getting provider preset for default model: %s", exc)
         burl = (self.base_url or "").lower()
-        if "x.ai" in burl:
-            return "grok-3"
-        if "googleapis.com" in burl:
-            return "gemini-2.0-flash"
-        if "deepseek.com" in burl:
-            return "deepseek-chat"
-        if "bigmodel.cn" in burl:
-            return "glm-4-flash"
-        if "aliyuncs.com" in burl:
-            return "qwen-plus"
-        if "siliconflow.cn" in burl:
-            return "deepseek-ai/DeepSeek-V3"
-        if "anthropic.com" in burl:
-            return "claude-3-5-sonnet-20241022"
+        for domain_pattern, default_m in _URL_DEFAULT_MODELS:
+            if domain_pattern in burl:
+                return default_m
         return "gpt-4o-mini"
 
     def _get_headers(self) -> Dict[str, str]:
@@ -403,6 +403,20 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 await stream_ctx.__aexit__(None, None, None)
                 await client.aclose()
 
+    @staticmethod
+    def _diagnose_failure(
+        provider_id: Optional[str],
+        status_code: int,
+        raw_error: str,
+    ) -> Tuple[Dict[str, Any], str]:
+        from galgame2voice.utils.error_diagnostics import format_provider_error
+        diag = format_provider_error(
+            provider_id=provider_id,
+            status_code=status_code,
+            raw_error=raw_error,
+        )
+        return diag, diag.get("diagnostic", "")
+
     async def test_connection(self, model: Optional[str] = None) -> TestResult:
         """
         Tests connectivity and validates API credentials against the provider.
@@ -479,13 +493,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                         models=models if models else None,
                     )
                 elif is_auth_error:
-                    from galgame2voice.utils.error_diagnostics import format_provider_error
-                    diag = format_provider_error(
-                        provider_id=provider_id,
-                        status_code=resp.status_code,
-                        raw_error=resp_text,
-                    )
-                    diag_guide = diag.get("diagnostic", "")
+                    diag, diag_guide = self._diagnose_failure(provider_id, resp.status_code, resp_text)
                     return TestResult(
                         success=False,
                         message=f"Authentication failed ({resp.status_code}): {diag_guide or 'Invalid credentials'}",
@@ -511,13 +519,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                             latency_ms=latency_ms,
                         )
 
-                    from galgame2voice.utils.error_diagnostics import format_provider_error
-                    diag = format_provider_error(
-                        provider_id=provider_id,
-                        status_code=chat_resp.status_code,
-                        raw_error=chat_text,
-                    )
-                    diag_guide = diag.get("diagnostic", "")
+                    diag, diag_guide = self._diagnose_failure(provider_id, chat_resp.status_code, chat_text)
                     return TestResult(
                         success=False,
                         message=f"Provider test returned HTTP {chat_resp.status_code}: {diag_guide or chat_text[:200]}",
@@ -528,14 +530,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     )
             except Exception as exc:
                 latency_ms = round((time.perf_counter() - t0) * 1000, 2)
-                from galgame2voice.utils.error_diagnostics import format_provider_error
                 status_code_num = 504 if "timeout" in type(exc).__name__.lower() else 502
-                diag = format_provider_error(
-                    provider_id=provider_id,
-                    status_code=status_code_num,
-                    raw_error=str(exc),
-                )
-                diag_guide = diag.get("diagnostic", "")
+                diag, diag_guide = self._diagnose_failure(provider_id, status_code_num, str(exc))
                 return TestResult(
                     success=False,
                     message=f"Connection error: {type(exc).__name__} - {sanitize_error_detail(exc)}",
