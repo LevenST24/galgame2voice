@@ -45,7 +45,7 @@ class TtsCacheManager:
         max_entries: int = 5000,
         max_mem_entries: int = 128,
         max_mem_mb: int = 64,
-    ):
+    ) -> None:
         settings = get_settings()
         self.audio_root = Path(settings.audio_dir)
         self.cache_dir = Path(cache_dir or (self.audio_root / "cache"))
@@ -97,7 +97,7 @@ class TtsCacheManager:
             _, evicted = self._mem_cache.popitem(last=False)
             self._mem_bytes_total -= len(evicted)
 
-    def _spawn_background(self, coro) -> None:
+    def _spawn_background(self, coro: Any) -> None:
         """Runs a coroutine in the background with strong ref (prevents GC mid-flight)."""
         try:
             task = asyncio.create_task(coro)

@@ -13,6 +13,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
 from galgame2voice.utils.path_guard import resolve_weight_file_path, resolve_existing_audio_path
+from galgame2voice.utils.audio_spec import (
+    REFERENCE_AUDIO_MAX_SECONDS,
+    REFERENCE_AUDIO_MIN_SECONDS,
+)
 from galgame2voice.services.gpt_sovits_client import probe_audio_duration_seconds
 from galgame2voice.services.emotion_references import resolve_emotion_reference
 
@@ -47,7 +51,7 @@ class VoiceProfileResolver:
     and filesystem duration probes.
     """
 
-    def __init__(self, ttl_seconds: float = 300.0):
+    def __init__(self, ttl_seconds: float = 300.0) -> None:
         self._ttl = ttl_seconds
         # Keys: "id:<int>", "name:<str>", "active"
         self._cache: Dict[str, Tuple[float, ResolvedVoiceContext]] = {}
@@ -194,7 +198,7 @@ class VoiceProfileResolver:
                 if ref:
                     cand_audio = ref["ref_audio_path"]
                     cand_dur = probe_audio_duration_seconds(cand_audio)
-                    if cand_dur is not None and 3.0 <= cand_dur <= 10.0:
+                    if cand_dur is not None and REFERENCE_AUDIO_MIN_SECONDS <= cand_dur <= REFERENCE_AUDIO_MAX_SECONDS:
                         emotions_map[emo_name] = {
                             "ref_audio_path": cand_audio,
                             "prompt_text": ref["prompt_text"],

@@ -34,7 +34,7 @@ class CharacterPackage:
         manifest: CharacterManifest,
         system_prompt: str = "",
         validation_errors: Optional[List[str]] = None,
-    ):
+    ) -> None:
         self.folder_path = folder_path.resolve()
         self.manifest = manifest
         self.system_prompt = system_prompt or manifest.system_prompt or ""

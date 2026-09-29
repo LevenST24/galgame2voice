@@ -96,8 +96,8 @@ def _load_manifest_emotion_references(
                     "description": emo.description or f"Dynamic {k} emotion",
                 }
             return res
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed dynamically loading emotion references from manifest: %s", exc)
     return {}
 
 
@@ -106,48 +106,48 @@ class _DynamicEmotionReferences(dict):
     Data-driven dictionary proxy that reflects the character package manifest dynamically
     while maintaining 100% dictionary backward compatibility for legacy callers and tests.
     """
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self._loaded = False
+        self._loaded: bool = False
 
-    def _ensure_loaded(self):
+    def _ensure_loaded(self) -> None:
         if not self._loaded:
             data = _load_manifest_emotion_references()
             if data:
                 self.update(data)
                 self._loaded = True
 
-    def __getitem__(self, item):
+    def __getitem__(self, item: str) -> Dict[str, str]:
         self._ensure_loaded()
         if item not in self:
             return super().get("gentle", {})
         return super().__getitem__(item)
 
-    def get(self, item, default=None):
+    def get(self, item: str, default: Any = None) -> Any:
         self._ensure_loaded()
         return super().get(item, default)
 
-    def __contains__(self, item):
+    def __contains__(self, item: object) -> bool:
         self._ensure_loaded()
         return super().__contains__(item)
 
-    def __iter__(self):
+    def __iter__(self) -> Any:
         self._ensure_loaded()
         return super().__iter__()
 
-    def __len__(self):
+    def __len__(self) -> int:
         self._ensure_loaded()
         return super().__len__()
 
-    def items(self):
+    def items(self) -> Any:
         self._ensure_loaded()
         return super().items()
 
-    def keys(self):
+    def keys(self) -> Any:
         self._ensure_loaded()
         return super().keys()
 
-    def values(self):
+    def values(self) -> Any:
         self._ensure_loaded()
         return super().values()
 

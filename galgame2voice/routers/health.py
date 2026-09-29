@@ -7,12 +7,13 @@ All filesystem scans run in worker threads and are cached with a TTL so the
 """
 
 import asyncio
+import logging
 import os
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -35,6 +36,8 @@ from galgame2voice.utils.precision import (
     write_sovits_yaml_config,
 )
 
+logger = logging.getLogger("galgame2voice.routers.health")
+
 router = APIRouter(tags=["Health & Diagnostics"])
 
 
@@ -46,8 +49,8 @@ async def get_effective_sovits_url() -> str:
             db_settings = await crud.get_settings_raw(conn)
         if db_settings and getattr(db_settings, "gpt_sovits_url", ""):
             return db_settings.gpt_sovits_url
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed reading effective sovits url from database settings: %s", exc)
     return get_settings().gpt_sovits_base_url
 
 # Directory metrics are cached: the settings console polls every few seconds,
@@ -246,7 +249,7 @@ def _get_process_memory_mb() -> Optional[float]:
 
 
 @router.get("/api/health", response_model=HealthResponse, summary="Basic Health Check")
-async def health_check(request: Request):
+async def health_check(request: Request) -> HealthResponse:
     """
     Lightweight health check endpoint for automated liveness probing.
     Returns HTTP 200 immediately.
@@ -263,7 +266,7 @@ async def health_check(request: Request):
 
 
 @router.get("/status", response_model=LegacyStatusResponse, summary="Legacy Status Endpoint")
-async def legacy_status(request: Request):
+async def legacy_status(request: Request) -> LegacyStatusResponse:
     """
     Legacy compatibility endpoint.
     Performs quick reachability probe to GPT-SoVITS.
@@ -340,7 +343,7 @@ def _collect_hardware_telemetry_sync() -> HardwareTelemetry:
     summary="Comprehensive System Diagnostics",
     dependencies=[Depends(require_auth)],
 )
-async def system_status(request: Request):
+async def system_status(request: Request) -> SystemStatusResponse:
     """
     Deep diagnostic telemetry endpoint for Web Management Console.
     Inspects DB state, GPT-SoVITS latency, storage sizes, memory usage, and hardware telemetry.
@@ -503,7 +506,7 @@ def _terminate_process_by_pid(pid: int, timeout: float = 3.0) -> None:
     summary="Restart GPT-SoVITS Engine Subprocess",
     dependencies=[Depends(require_auth)],
 )
-async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None):
+async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None) -> Dict[str, Any]:
     """
     Terminates the existing GPT-SoVITS process and restarts it with the
     latest precision configuration (FP16 / FP32).

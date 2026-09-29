@@ -17,7 +17,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
-from starlette.types import Scope
+from starlette.types import Receive, Scope, Send
 
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
@@ -75,7 +75,7 @@ class HostValidationMiddleware:
 
     ALLOWED_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
-    def __init__(self, app):
+    def __init__(self, app: Any) -> None:
         self.app = app
 
     @staticmethod
@@ -100,7 +100,7 @@ class HostValidationMiddleware:
             allowed.add(configured)
         return allowed
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and str(scope.get("path", "")).startswith("/api/"):
             headers = {k.lower(): v for k, v in scope.get("headers") or []}
             raw_host = headers.get(b"host", b"").decode("latin-1")
@@ -407,10 +407,10 @@ class StaticCacheControlMiddleware:
     assets cached for 1 year, other static for 1 hour), while user-generated audio is private.
     """
 
-    def __init__(self, app):
+    def __init__(self, app: Any) -> None:
         self.app = app
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         path = scope.get("path", "") if scope["type"] == "http" else ""
         if path in ("/", "/index.html"):
             # 入口页面必须每次回源校验，避免发版后浏览器用旧 index 加载旧 JS
@@ -426,7 +426,7 @@ class StaticCacheControlMiddleware:
             cache_value = None
 
         if cache_value and scope.get("method") in ("GET", "HEAD"):
-            async def send_with_cache(message):
+            async def send_with_cache(message: Any) -> None:
                 if message["type"] == "http.response.start":
                     status_code = message.get("status", 200)
                     if status_code < 400:

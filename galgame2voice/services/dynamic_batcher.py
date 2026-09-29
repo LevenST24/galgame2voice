@@ -26,7 +26,7 @@ class SynthesisSpeedRecord:
         char_count: int,
         elapsed_s: float,
         audio_dur_s: Optional[float] = None,
-    ):
+    ) -> None:
         self.timestamp = time.time()
         self.char_count = max(1, char_count)
         self.elapsed_s = max(0.001, elapsed_s)
@@ -42,7 +42,7 @@ class SynthesisSpeedTracker:
     Computes rolling averages of RTF (Real-Time Factor) and character throughput.
     """
 
-    def __init__(self, max_history: int = 15):
+    def __init__(self, max_history: int = 15) -> None:
         self._max_history = max_history
         self._history: collections.deque[SynthesisSpeedRecord] = collections.deque(maxlen=max_history)
         self._lock = threading.Lock()
@@ -131,7 +131,7 @@ class DynamicBatchScheduler:
     4. Hardware runtime throughput & RTF feedback
     """
 
-    def __init__(self, tracker: Optional[SynthesisSpeedTracker] = None):
+    def __init__(self, tracker: Optional[SynthesisSpeedTracker] = None) -> None:
         self.tracker = tracker or get_speed_tracker()
 
     @staticmethod

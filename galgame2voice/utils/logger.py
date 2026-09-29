@@ -8,7 +8,7 @@ import logging.handlers
 import re
 import sys
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 
 class MaskingFilter(logging.Filter):
@@ -134,7 +134,7 @@ class MaskingFormatter(logging.Formatter):
         formatted = super().format(record)
         return MaskingFilter.sanitize(formatted)
 
-    def formatException(self, ei) -> str:
+    def formatException(self, ei: Any) -> str:
         """
         Formats exception traceback and sanitizes all frames and error messages.
         """

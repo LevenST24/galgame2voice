@@ -19,6 +19,7 @@ from galgame2voice.database.session import get_db, immediate_transaction
 from galgame2voice.services.affection_service import AffectionService
 from galgame2voice.services.emotion_classifier import classify_emotion
 from galgame2voice.services.metrics_collector import MetricsCollector
+from galgame2voice.services.tts_scheduler import get_tts_scheduler
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.audio_concat import concat_wav_files
 from galgame2voice.utils.logger import sanitize_error_detail
@@ -38,7 +39,7 @@ _CANCEL_SENTINEL = object()
 class SseKeepAlive(dict):
     """W3C Server-Sent Events keep-alive comment frame (: keep-alive\n\n)."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__({"event": ":keep-alive", "data": {}, "comment": ": keep-alive\n\n"})
 
     def __str__(self) -> str:
@@ -63,7 +64,7 @@ class _StreamRun:
         tts_pipe: TtsStreamPipeline,
         llm_pipe: LlmStreamPipeline,
         cancel_event: Optional[asyncio.Event] = None,
-    ):
+    ) -> None:
         self.t_start: float = t_start
         self.session_id: str = session_id
         self.stream_gen_id: str = stream_gen_id
@@ -129,7 +130,7 @@ class StreamCoordinator:
         frequency_penalty: Optional[float] = None,
         presence_penalty: Optional[float] = None,
         t_start: Optional[float] = None,
-    ):
+    ) -> None:
         self.adapter = adapter
         self.messages = messages
         self.model_name = model_name
@@ -229,7 +230,6 @@ class StreamCoordinator:
             return
         await run.cancel_event.wait()
         try:
-            from galgame2voice.services.tts_scheduler import get_tts_scheduler
             get_tts_scheduler().cancel_generation(run.stream_gen_id)
         except Exception:
             pass
@@ -691,7 +691,6 @@ class StreamCoordinator:
     async def _teardown(self, run: _StreamRun) -> None:
         """Finally-block teardown: cancels scheduled generation, reaps background tasks, ensures DB persistence."""
         try:
-            from galgame2voice.services.tts_scheduler import get_tts_scheduler
             get_tts_scheduler().cancel_generation(run.stream_gen_id)
         except Exception:
             pass

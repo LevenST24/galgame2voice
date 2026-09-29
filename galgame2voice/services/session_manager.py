@@ -39,7 +39,7 @@ class SessionManager:
         self,
         db_path: Optional[Union[str, Path]] = None,
         default_system_template: Optional[str] = None,
-    ):
+    ) -> None:
         self.db_path = str(db_path) if db_path is not None else get_database_path()
         self.system_template = default_system_template or self.DEFAULT_SYSTEM_TEMPLATE
         self._table_name: Optional[str] = None

@@ -177,7 +177,7 @@ class AudioSpecCache:
     Keyed by (resolved_path, mtime_ns, size) so modifications on disk automatically invalidate stale specs.
     """
 
-    def __init__(self, maxsize: int = 512):
+    def __init__(self, maxsize: int = 512) -> None:
         self._maxsize = maxsize
         self._cache: OrderedDict[Tuple[str, int, int], AudioSpec] = OrderedDict()
         self._lock = threading.Lock()

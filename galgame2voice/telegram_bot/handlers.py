@@ -518,7 +518,7 @@ class TelegramBotHandlers:
         dynamic_tts: Optional[Dict[str, Any]],
     ) -> asyncio.Task:
         """Schedules background voice synthesis and tracks task in user_tasks with auto-cleanup."""
-        async def background_voice_worker():
+        async def background_voice_worker() -> None:
             try:
                 if bot and hasattr(bot, "send_chat_action"):
                     try:

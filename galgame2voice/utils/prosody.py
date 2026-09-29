@@ -30,66 +30,52 @@ DYNAMIC_BATCH_SIZE_MAX = 16
 # 1. Clamping Functions
 # ============================================================================
 
-def clamp_dynamic_speed(val: Any, fallback: float = 1.0) -> float:
-    """Clamps dynamic voice inference speed into [0.50, 1.50]. Falls back if invalid."""
+def _clamp_float(val: Any, min_val: float, max_val: float, fallback: float, round_digits: int = 4) -> float:
     try:
         num = float(val)
         if math.isnan(num) or math.isinf(num):
             return fallback
-        return max(DYNAMIC_SPEED_MIN, min(DYNAMIC_SPEED_MAX, round(num, 4)))
+        return max(min_val, min(max_val, round(num, round_digits)))
     except (TypeError, ValueError):
         return fallback
+
+
+def _clamp_int(val: Any, min_val: int, max_val: int, fallback: int) -> int:
+    try:
+        return max(min_val, min(max_val, int(val)))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def clamp_dynamic_speed(val: Any, fallback: float = 1.0) -> float:
+    """Clamps dynamic voice inference speed into [0.50, 1.50]. Falls back if invalid."""
+    return _clamp_float(val, DYNAMIC_SPEED_MIN, DYNAMIC_SPEED_MAX, fallback)
 
 
 def clamp_dynamic_temperature(val: Any, fallback: float = 1.0) -> float:
     """Clamps dynamic voice inference temperature into [0.60, 1.20]. Falls back if invalid."""
-    try:
-        num = float(val)
-        if math.isnan(num) or math.isinf(num):
-            return fallback
-        return max(DYNAMIC_TEMP_MIN, min(DYNAMIC_TEMP_MAX, round(num, 4)))
-    except (TypeError, ValueError):
-        return fallback
+    return _clamp_float(val, DYNAMIC_TEMP_MIN, DYNAMIC_TEMP_MAX, fallback)
 
 
 def clamp_dynamic_top_k(val: Any, fallback: int = 15) -> int:
     """Clamps dynamic Top-K sampling parameter into [1, 50]. Falls back if invalid."""
-    try:
-        num = int(val)
-        return max(DYNAMIC_TOP_K_MIN, min(DYNAMIC_TOP_K_MAX, num))
-    except (TypeError, ValueError):
-        return fallback
+    return _clamp_int(val, DYNAMIC_TOP_K_MIN, DYNAMIC_TOP_K_MAX, fallback)
 
 
 def clamp_dynamic_top_p(val: Any, fallback: float = 1.0) -> float:
     """Clamps dynamic Top-P nucleus sampling parameter into [0.50, 1.00]. Falls back if invalid."""
-    try:
-        num = float(val)
-        if math.isnan(num) or math.isinf(num):
-            return fallback
-        return max(DYNAMIC_TOP_P_MIN, min(DYNAMIC_TOP_P_MAX, round(num, 4)))
-    except (TypeError, ValueError):
-        return fallback
+    return _clamp_float(val, DYNAMIC_TOP_P_MIN, DYNAMIC_TOP_P_MAX, fallback)
 
 
 def clamp_dynamic_fragment_interval(val: Any, fallback: float = 0.3) -> float:
     """Clamps inter-sentence pause fragment interval into [0.10, 1.00]. Falls back if invalid."""
-    try:
-        num = float(val)
-        if math.isnan(num) or math.isinf(num):
-            return fallback
-        return max(DYNAMIC_FRAGMENT_INTERVAL_MIN, min(DYNAMIC_FRAGMENT_INTERVAL_MAX, round(num, 4)))
-    except (TypeError, ValueError):
-        return fallback
+    return _clamp_float(val, DYNAMIC_FRAGMENT_INTERVAL_MIN, DYNAMIC_FRAGMENT_INTERVAL_MAX, fallback)
 
 
 def clamp_dynamic_batch_size(val: Any, fallback: int = 1) -> int:
     """Clamps inference batch size into [1, 16]. Falls back if invalid."""
-    try:
-        num = int(val)
-        return max(DYNAMIC_BATCH_SIZE_MIN, min(DYNAMIC_BATCH_SIZE_MAX, num))
-    except (TypeError, ValueError):
-        return fallback
+    return _clamp_int(val, DYNAMIC_BATCH_SIZE_MIN, DYNAMIC_BATCH_SIZE_MAX, fallback)
+
 
 
 # ============================================================================

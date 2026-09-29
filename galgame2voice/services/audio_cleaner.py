@@ -5,12 +5,13 @@ and LRU cached TTS audio fragments while strictly protecting reference audio fil
 """
 
 import asyncio
+from datetime import datetime, timezone
 import logging
+import sys
 import time
 from pathlib import Path
-from typing import List, Optional, Set, Tuple
+from typing import Any, List, Optional, Set, Tuple
 
-import sys
 import aiosqlite
 
 from galgame2voice.database.session import get_db, immediate_transaction
@@ -22,15 +23,12 @@ logger = logging.getLogger("galgame2voice.services.audio_cleaner")
 CACHE_RETENTION_DAYS = 7
 
 
-def _resolve_get_db():
+def _resolve_get_db() -> Any:
     """Resolves get_db dynamically to maintain 100% compatibility with test suites monkeypatching main.get_db."""
     main_mod = sys.modules.get("galgame2voice.main")
     if main_mod and hasattr(main_mod, "get_db"):
         return main_mod.get_db
     return get_db
-
-
-from datetime import datetime, timezone
 
 
 def _cache_scan_and_clean(
@@ -243,7 +241,7 @@ async def _audio_cleanup_loop(audio_dir: Path, interval_seconds: int) -> None:
 class AudioCleanerService:
     """Manages the background audio cleanup loop lifecycle."""
 
-    def __init__(self, audio_dir: Path, interval_seconds: int = 600):
+    def __init__(self, audio_dir: Path, interval_seconds: int = 600) -> None:
         self.audio_dir = audio_dir
         self.interval_seconds = interval_seconds
         self._task: Optional[asyncio.Task] = None

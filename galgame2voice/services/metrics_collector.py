@@ -79,7 +79,7 @@ class MetricsCollector:
     in-memory ring buffering, and asynchronous database persistence.
     """
 
-    def __init__(self, db_path: Optional[Union[str, Path]] = None, ring_buffer_size: int = 100):
+    def __init__(self, db_path: Optional[Union[str, Path]] = None, ring_buffer_size: int = 100) -> None:
         self.db_path = str(db_path) if db_path is not None else get_database_path()
         self.ring_buffer: deque = deque(maxlen=ring_buffer_size)
 
