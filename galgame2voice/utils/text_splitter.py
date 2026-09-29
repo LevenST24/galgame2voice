@@ -158,6 +158,11 @@ def split_japanese_sentences(
     terminal_punct = set("。！？!?\n")
     clause_punct = set("、，,")
 
+    def _emit_first_and_remainder(first_chunk: str, split_idx: int) -> List[str]:
+        rem_text = text[split_idx:]
+        subsequent = split_japanese_sentences(rem_text, is_first_chunk=False) if rem_text.strip() else []
+        return [first_chunk] + subsequent
+
     curr = []
     i = 0
     n = len(text)
@@ -170,9 +175,7 @@ def split_japanese_sentences(
                 curr.append(text[i])
             first_sent = "".join(curr).strip()
             if first_sent:
-                rem_text = text[i + 1:]
-                subsequent = split_japanese_sentences(rem_text, is_first_chunk=False) if rem_text.strip() else []
-                return [first_sent] + subsequent
+                return _emit_first_and_remainder(first_sent, i + 1)
         elif c in clause_punct:
             while i + 1 < n and (text[i + 1] in clause_punct or text[i + 1] in CLOSING_BRACKETS):
                 i += 1
@@ -180,9 +183,7 @@ def split_japanese_sentences(
             cand = "".join(curr).strip()
             clause = _RE_CLAUSE_TRAILING_PUNCT.sub('', cand)
             if len(cand) >= min_chars and is_natural_clause_boundary(clause):
-                rem_text = text[i + 1:]
-                subsequent = split_japanese_sentences(rem_text, is_first_chunk=False) if rem_text.strip() else []
-                return [cand] + subsequent
+                return _emit_first_and_remainder(cand, i + 1)
         i += 1
 
     remaining = "".join(curr).strip()

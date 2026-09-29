@@ -2,6 +2,7 @@
 Shared HTTP validation helpers for API routers in galgame2voice.
 """
 
+from typing import Any
 from fastapi import HTTPException, status
 
 
@@ -14,3 +15,24 @@ def validate_user_id(user_id: str) -> str:
             detail="user_id cannot be empty",
         )
     return clean_user
+
+
+async def switch_voice_profile_or_raise(manager: Any, profile: Any, force: bool = False) -> None:
+    """
+    Switches active voice profile via VoiceManager under its lock, translating
+    engine errors to standardized HTTPExceptions (503 for memory, 502 for load failure).
+    """
+    from galgame2voice.services.voice_manager import InsufficientMemoryError
+
+    try:
+        success = await manager.switch_profile(profile, persist=True, _already_locked=True, force=force)
+    except InsufficientMemoryError as mem_err:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(mem_err),
+        ) from mem_err
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to load GPT/SoVITS model weights onto backend service",
+        )

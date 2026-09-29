@@ -168,9 +168,6 @@ class TtsService:
                 fallback_prompt_text = ctx.prompt_text
                 fallback_prompt_lang = ctx.prompt_lang
 
-                ai_adaptive = opts.get("ai_adaptive_voice", opts.get("aiAdaptiveVoice", True))
-                emotion = opts.get("emotion")
-
                 resolved_emo = ctx.get_emotion_ref(str(emotion)) if (ai_adaptive and emotion) else None
                 if resolved_emo:
                     opts["ref_audio_path"] = str(resolved_emo["ref_audio_path"]) if resolved_emo.get("ref_audio_path") else ""

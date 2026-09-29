@@ -216,6 +216,20 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
                 yield token
 
 
+async def aclose_stream_context(stream_ctx: Any = None, client: Any = None) -> None:
+    """Defensively closes an httpx stream context and client, absorbing any cleanup exceptions."""
+    if stream_ctx is not None:
+        try:
+            await stream_ctx.__aexit__(None, None, None)
+        except Exception as exc:
+            logger.debug("Failed closing stream context: %s", exc)
+    if client is not None:
+        try:
+            await client.aclose()
+        except Exception as exc:
+            logger.debug("Failed closing client: %s", exc)
+
+
 
 class ChatMessage(BaseModel):
     """Normalized chat message structure."""
