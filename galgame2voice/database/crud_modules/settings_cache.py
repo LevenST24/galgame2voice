@@ -79,6 +79,7 @@ async def get_settings_raw(conn: aiosqlite.Connection) -> SettingsInDB:
             data["console_token"] = decrypt_secret(data.get("console_token", ""))
             return SettingsInDB(**data)
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        # Column-based settings table or columns missing; fall through to KV schema query
         pass
 
     # Fallback if settings table is key-value schema (e.g. in test fixture)
@@ -96,6 +97,7 @@ async def get_settings_raw(conn: aiosqlite.Connection) -> SettingsInDB:
             console_token=decrypt_secret(kv.get("console_token", "")),
         )
     except Exception:
+        # Return default settings instance if both column-based and KV queries fail
         return SettingsInDB(id=1)
 
 

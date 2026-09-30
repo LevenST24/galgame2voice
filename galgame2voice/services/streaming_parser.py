@@ -433,14 +433,17 @@ class StreamingBilingualParser:
     def _parse_json_payload(sanitized: str) -> Optional[Dict[str, Any]]:
         """Attempts to parse JSON payload directly or extracts embedded JSON block."""
         try:
+            # Fast path: direct JSON parse if buffer is a clean JSON object
             parsed = json.loads(sanitized)
         except json.JSONDecodeError:
+            # Only fall back to regex block extraction when direct JSON decoding fails
             parsed = None
             json_match = _RE_JSON_BLOCK.search(sanitized)
             if json_match:
                 try:
                     parsed = json.loads(json_match.group(0))
                 except json.JSONDecodeError:
+                    # Extracted block is also malformed JSON; fall through to buffer regex extraction
                     pass
         return parsed if isinstance(parsed, dict) else None
 

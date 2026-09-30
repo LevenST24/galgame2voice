@@ -578,8 +578,10 @@ class TtsCacheManager:
                 break
 
         try:
+            # Clean up orphaned cache file on disk if DB metadata persistence failed
             await asyncio.to_thread(file_path.unlink, missing_ok=True)
         except OSError:
+            # Best-effort unlink; suppress OSError so primary RuntimeError is raised
             pass
         raise RuntimeError(f"Failed to persist cache entry metadata for key {cache_key}: {last_exc}") from last_exc
 

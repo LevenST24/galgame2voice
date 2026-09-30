@@ -53,9 +53,11 @@ async def _safe_put_chunk(
         return False
 
     try:
+        # Fast path: non-blocking enqueue without task creation overhead
         queue.put_nowait(item)
         return True
     except asyncio.QueueFull:
+        # Queue full; fall back to racing async put against stop_event
         pass
 
     put_task = asyncio.create_task(queue.put(item))
@@ -69,6 +71,7 @@ async def _safe_put_chunk(
         try:
             await p
         except asyncio.CancelledError:
+            # Suppress CancelledError when draining cancelled helper tasks
             pass
     return put_task in done and not stop_event.is_set()
 

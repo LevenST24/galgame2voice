@@ -183,6 +183,7 @@ async def immediate_transaction(
                     await conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};")
                     await conn.execute(f"RELEASE SAVEPOINT {sp_id};")
                 except (sqlite3.Error, aiosqlite.Error):
+                    # Suppress secondary errors during rollback to ensure original exception propagates
                     pass
                 raise
             finally:
@@ -224,11 +225,13 @@ async def immediate_transaction(
                             await conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};")
                             await conn.execute(f"RELEASE SAVEPOINT {sp_id};")
                         except (sqlite3.Error, aiosqlite.Error):
+                            # Suppress secondary error during savepoint rollback to preserve original exception
                             pass
                     else:
                         try:
                             await conn.rollback()
                         except (sqlite3.Error, aiosqlite.Error):
+                            # Suppress secondary error during rollback to preserve original exception
                             pass
                     raise
             finally:

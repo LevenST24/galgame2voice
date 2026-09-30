@@ -145,6 +145,7 @@ def _sync_precision_cache(new_precision: Optional[str]) -> None:
     if not new_precision:
         return
     try:
+        # Lazy import avoids circular import with config; precision disk sync is best-effort
         from galgame2voice.utils.precision import write_precision_cache, write_sovits_yaml_config
         from galgame2voice.config import get_settings
         app_settings = get_settings()
@@ -162,6 +163,7 @@ def _sync_precision_cache(new_precision: Optional[str]) -> None:
                 cache_file.unlink(missing_ok=True)
         logger.info("Inference precision configuration synced: %s", new_precision)
     except Exception as exc:
+        # Disk sync failure is non-fatal and must not block or fail the configuration update API
         logger.warning("Failed to sync precision cache on config update: %s", exc)
 
 

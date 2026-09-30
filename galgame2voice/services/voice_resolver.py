@@ -143,6 +143,7 @@ class VoiceProfileResolver:
         from galgame2voice.database.session import get_db
 
         raw = None
+        # Tiered profile resolution: each tier catches exceptions so failures do not block subsequent fallbacks
         if profile_id is not None:
             try:
                 async with get_db(db_path) as conn:

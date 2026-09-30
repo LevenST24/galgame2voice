@@ -186,6 +186,7 @@ class TtsService:
             return opts
 
         try:
+            # Lazy import avoids circular import with voice_resolver; profile resolution is best-effort
             from galgame2voice.services.voice_resolver import get_voice_resolver
             resolver = get_voice_resolver()
 

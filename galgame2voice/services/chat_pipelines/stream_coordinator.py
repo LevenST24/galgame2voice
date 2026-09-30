@@ -255,9 +255,11 @@ class StreamCoordinator:
         if ce and ce.is_set():
             return False
         try:
+            # Fast path: non-blocking enqueue without coroutine suspension
             queue.put_nowait(item)
             return True
         except asyncio.QueueFull:
+            # Queue at capacity; fall back to short polling loop responsive to cancel_event
             pass
         while True:
             if ce and ce.is_set():
@@ -266,6 +268,7 @@ class StreamCoordinator:
                 await asyncio.wait_for(queue.put(item), timeout=0.1)
                 return True
             except asyncio.TimeoutError:
+                # Slot wait timed out; re-evaluate cancel_event before retrying
                 continue
 
     async def _tts_worker(self, run: _StreamRun) -> None:
