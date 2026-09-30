@@ -81,7 +81,7 @@ _GLOBAL_AUDIO_SPEC_CACHE = _AUDIO_SPEC_CACHE
 # ============================================================================
 
 # Tiered timeout profile: fail fast on connect, allow long GPU synthesis reads.
-# NOTE: connect is capped at 1s because some VPN/TUN proxy stacks delay even
+# NOTE: health probe connect is capped at 1s because some VPN/TUN proxy stacks delay even
 # loopback connection-refused to ~2s; a healthy local engine connects in <50ms.
 TTS_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=15.0, pool=15.0)
 SWITCH_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=15.0, pool=15.0)

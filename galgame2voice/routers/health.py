@@ -162,7 +162,7 @@ async def _probe_custom_gpt_sovits_target(target: str, base_url: str, t0: float)
 async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
     """
     Checks GPT-SoVITS reachability through the shared singleton client pool
-    (GET / — api_v2 answers on the root path). 3s connect/read budget:
+    (probing GET /control with fallback to /). Fast health probe budget:
     long enough for a busy GPU to answer, short enough for a 5s poll.
     HTTP 200/400 counts as reachable; other codes / network errors do not.
     """
