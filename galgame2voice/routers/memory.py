@@ -4,7 +4,7 @@ Supports listing, creating, updating, deleting, and clearing memories.
 """
 
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, status
 
 from galgame2voice.database import crud
@@ -27,7 +27,7 @@ async def list_user_memories(
     character_id: Optional[int] = Query(default=None, ge=1, description="Character Voice Profile ID filter"),
     category: Optional[str] = Query(default=None, max_length=64, description="Memory category filter (nickname, preference, promise, etc.)"),
     limit: int = Query(default=100, ge=1, le=500, description="Max items to return"),
-):
+) -> List[UserMemoryResponse]:
     """
     Returns list of stored user long-term facts and memories.
     """
@@ -51,7 +51,7 @@ async def list_user_memories(
 
 
 @router.post("", response_model=UserMemoryResponse, status_code=status.HTTP_201_CREATED, summary="Create or upsert memory")
-async def create_user_memory(mem: UserMemoryCreate):
+async def create_user_memory(mem: UserMemoryCreate) -> UserMemoryResponse:
     """
     Manually creates or upserts a fact memory for a user and character.
     """
@@ -102,7 +102,7 @@ async def create_user_memory(mem: UserMemoryCreate):
 
 
 @router.put("/{memory_id}", response_model=UserMemoryResponse, summary="Update user memory")
-async def update_user_memory(memory_id: int, updates: UserMemoryUpdate):
+async def update_user_memory(memory_id: int, updates: UserMemoryUpdate) -> UserMemoryResponse:
     """
     Updates an existing memory record by its ID.
     """
@@ -158,7 +158,7 @@ async def update_user_memory(memory_id: int, updates: UserMemoryUpdate):
 
 
 @router.delete("/{memory_id}", summary="Delete specific user memory")
-async def delete_user_memory(memory_id: int):
+async def delete_user_memory(memory_id: int) -> Dict[str, Any]:
     """
     Deletes a specific memory record by ID.
     """
@@ -190,7 +190,7 @@ async def delete_user_memory(memory_id: int):
 async def clear_user_memories(
     user_id: str = Query(default="default_user", min_length=1, max_length=128, description="User ID"),
     character_id: Optional[int] = Query(default=None, ge=1, description="Character ID filter"),
-):
+) -> Dict[str, Any]:
     """
     Clears all memories for the specified user and optional character.
     """

@@ -606,7 +606,7 @@ async def get_system_version(
         default=False,
         description="Whether to fetch remote origin to check for pending updates",
     )
-):
+) -> SystemVersionResponse:
     """Returns local git commit metadata and pending updates comparison."""
     settings = get_settings()
     async with _GIT_OP_LOCK:
@@ -619,7 +619,7 @@ async def get_system_version(
     summary="Check Updates from GitHub (Alias)",
     description="Alias endpoint for checking pending updates from GitHub remote.",
 )
-async def check_system_update():
+async def check_system_update() -> SystemVersionResponse:
     """Convenient alias explicitly checking for remote updates."""
     settings = get_settings()
     async with _GIT_OP_LOCK:
@@ -632,7 +632,7 @@ async def check_system_update():
     summary="Safely Pull and Apply Updates from GitHub",
     description="Pulls latest commits from origin/main, validates repo safety, rebuilds frontend if needed, and syncs characters.",
 )
-async def apply_system_update(payload: Optional[SystemUpdateRequest] = None):
+async def apply_system_update(payload: Optional[SystemUpdateRequest] = None) -> SystemUpdateResponse:
     """Executes safe pull from GitHub, rebuilds frontend, and syncs characters with SQLite DB."""
     settings = get_settings()
     force_rebuild = payload.force_rebuild_frontend if payload else False

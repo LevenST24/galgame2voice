@@ -7,7 +7,7 @@ and strict safety boundary clamping across all speech inference parameters.
 
 import math
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 # Dynamic AI-Driven Voice Prosody & Emotion Parameter Ranges
 DYNAMIC_SPEED_MIN = 0.50
@@ -159,6 +159,69 @@ _RE_STUTTER_START = re.compile(r'^[あえそな][、，,]')
 # 3. Contextual Micro-Prosody & Adaptive Acoustics Calculator
 # ============================================================================
 
+def _apply_text_prosody_modulations(
+    cleaned_text: str,
+    speed: float,
+    temperature: float,
+    top_k: int,
+    top_p: float,
+    frag_interval: float,
+    base_opts: Dict[str, Any],
+) -> Tuple[float, float, int, float, float]:
+    """Applies sentence-level micro-prosody cues (hesitation, exclamation, question, length, stutter)."""
+    has_custom_speed = "speed" in base_opts or "speed_factor" in base_opts
+    has_custom_temp = "temperature" in base_opts or "temp" in base_opts
+    has_custom_top_k = "top_k" in base_opts
+    has_custom_top_p = "top_p" in base_opts
+    has_custom_frag = "fragment_interval" in base_opts
+
+    # A. Trailing / embedded ellipsis, wave dashes, hesitation: '…', '...', '〜', '~'
+    if _RE_HESITATION.search(cleaned_text):
+        if not has_custom_speed:
+            speed -= 0.04
+        if not has_custom_temp:
+            temperature -= 0.03
+        if not has_custom_top_p:
+            top_p -= 0.04
+        if not has_custom_frag:
+            frag_interval += 0.06
+
+    # B. Strong exclamations: '！', '!', '!?', '！？'
+    if _RE_EXCLAMATION.search(cleaned_text):
+        if not has_custom_speed:
+            speed += 0.05
+        if not has_custom_temp:
+            temperature += 0.04
+        if not has_custom_top_k:
+            top_k += 3
+        if not has_custom_frag:
+            frag_interval -= 0.04
+
+    # C. Interrogative intonation: '？', '?'
+    if _RE_QUESTION.search(cleaned_text):
+        if not has_custom_top_k:
+            top_k += 2
+        if not has_custom_temp:
+            temperature += 0.02
+
+    # D. Utterance length modulation
+    vocal_chars_count = len(_RE_VOCAL_CHARS.findall(cleaned_text))
+    if vocal_chars_count > 0:
+        if vocal_chars_count < 6 and not has_custom_speed and speed > 0.90:
+            speed -= 0.05
+        elif vocal_chars_count > 45 and not has_custom_speed and speed < 1.15:
+            speed += 0.03
+
+    # E. Stutter / Repetition detection (e.g. 'べ、別に', 'あ、あの', 'そ、そんな')
+    if _RE_STUTTER_REPEAT.search(cleaned_text) or _RE_STUTTER_START.search(cleaned_text):
+        if not has_custom_temp:
+            temperature += 0.04
+        if not has_custom_speed:
+            speed += 0.03
+
+    return speed, temperature, top_k, top_p, frag_interval
+
+
 def calculate_adaptive_prosody(
     text: str,
     emotion: Optional[str] = None,
@@ -188,65 +251,10 @@ def calculate_adaptive_prosody(
     frag_interval = float(base_opts.get("fragment_interval", archetype["fragment_interval"]))
 
     cleaned_text = (text or "").strip()
-
-    # Apply contextual micro-prosody if user didn't explicitly lock every parameter
-    has_custom_speed = "speed" in base_opts or "speed_factor" in base_opts
-    has_custom_temp = "temperature" in base_opts or "temp" in base_opts
-    has_custom_top_k = "top_k" in base_opts
-    has_custom_top_p = "top_p" in base_opts
-    has_custom_frag = "fragment_interval" in base_opts
-
     if cleaned_text:
-        # A. Trailing / embedded ellipsis, wave dashes, hesitation: '…', '...', '〜', '~'
-        has_trailing_hesitation = bool(_RE_HESITATION.search(cleaned_text))
-        if has_trailing_hesitation:
-            if not has_custom_speed:
-                speed -= 0.04
-            if not has_custom_temp:
-                temperature -= 0.03
-            if not has_custom_top_p:
-                top_p -= 0.04
-            if not has_custom_frag:
-                frag_interval += 0.06
-
-        # B. Strong exclamations: '！', '!', '!?', '！？'
-        has_exclamation = bool(_RE_EXCLAMATION.search(cleaned_text))
-        if has_exclamation:
-            if not has_custom_speed:
-                speed += 0.05
-            if not has_custom_temp:
-                temperature += 0.04
-            if not has_custom_top_k:
-                top_k += 3
-            if not has_custom_frag:
-                frag_interval -= 0.04
-
-        # C. Interrogative intonation: '？', '?'
-        has_question = bool(_RE_QUESTION.search(cleaned_text))
-        if has_question:
-            if not has_custom_top_k:
-                top_k += 2
-            if not has_custom_temp:
-                temperature += 0.02
-
-        # D. Utterance length modulation
-        vocal_chars_count = len(_RE_VOCAL_CHARS.findall(cleaned_text))
-        if vocal_chars_count > 0:
-            if vocal_chars_count < 6 and not has_custom_speed and speed > 0.90:
-                # Very short interjection or single word (e.g., 'バカ...', 'うん', 'えっ')
-                # Moderately decelerate to prevent rushed audio and ensure clear articulation
-                speed -= 0.05
-            elif vocal_chars_count > 45 and not has_custom_speed and speed < 1.15:
-                # Extra-long monologue: slight acceleration to avoid sluggish delivery
-                speed += 0.03
-
-        # E. Stutter / Repetition detection (e.g. 'べ、別に', 'あ、あの', 'そ、そんな')
-        has_stutter = bool(_RE_STUTTER_REPEAT.search(cleaned_text) or _RE_STUTTER_START.search(cleaned_text))
-        if has_stutter:
-            if not has_custom_temp:
-                temperature += 0.04
-            if not has_custom_speed:
-                speed += 0.03
+        speed, temperature, top_k, top_p, frag_interval = _apply_text_prosody_modulations(
+            cleaned_text, speed, temperature, top_k, top_p, frag_interval, base_opts
+        )
 
     # Safely clamp all results
     final_speed = clamp_dynamic_speed(speed)

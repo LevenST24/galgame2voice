@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
+import aiosqlite
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -21,6 +22,17 @@ from galgame2voice.utils.logger import sanitize_error_detail
 logger = logging.getLogger("galgame2voice.routers.characters")
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
+
+
+async def _get_voice_profile_or_404(conn: aiosqlite.Connection, character_id: int) -> Any:
+    """Fetches voice profile by ID or raises 404 HTTPException if not found."""
+    prof = await crud.get_voice_profile(conn, character_id)
+    if not prof:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Character with ID {character_id} not found",
+        )
+    return prof
 
 
 def _rewrite_sprite_urls(data: Dict[str, Any], character_id: int) -> None:
@@ -91,7 +103,7 @@ class CharacterSwitchRequest(BaseModel):
 )
 async def list_characters(
     user_id: str = Query(default="default_user", min_length=1, max_length=128, description="User ID"),
-):
+) -> Dict[str, Any]:
     clean_user = validate_user_id(user_id)
 
     async with get_db() as conn:
@@ -141,7 +153,7 @@ async def list_characters(
 async def get_character_detail(
     character_id: int,
     user_id: str = Query(default="default_user", min_length=1, max_length=128, description="User ID"),
-):
+) -> Dict[str, Any]:
     if character_id < 1:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -152,12 +164,7 @@ async def get_character_detail(
 
     async with get_db() as conn:
         try:
-            prof = await crud.get_voice_profile(conn, character_id)
-            if not prof:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Character with ID {character_id} not found",
-                )
+            prof = await _get_voice_profile_or_404(conn, character_id)
 
             active_profile = await crud.get_active_voice_profile(conn)
             active_id = active_profile.id if active_profile else 1
@@ -196,14 +203,9 @@ async def get_character_detail(
     summary="Get Character Standing CG Portrait Manifest",
     description="Returns available standing CG sprites, outfits, emotions and coordinates.",
 )
-async def get_character_portrait(character_id: int):
+async def get_character_portrait(character_id: int) -> Dict[str, Any]:
     async with get_db() as conn:
-        prof = await crud.get_voice_profile(conn, character_id)
-        if not prof:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Character with ID {character_id} not found",
-            )
+        prof = await _get_voice_profile_or_404(conn, character_id)
         portrait = _resolve_character_portrait(prof.name, character_id)
         if not portrait:
             return {"enabled": False, "message": "No standing CG portrait available for this character"}
@@ -215,18 +217,13 @@ async def get_character_portrait(character_id: int):
     summary="Get Character Portrait Sprite Image",
     description="Serves a standing CG portrait sprite image from the character's self-contained package.",
 )
-async def get_character_portrait_file(character_id: int, costume: str, file_name: str):
+async def get_character_portrait_file(character_id: int, costume: str, file_name: str) -> FileResponse:
     # 安全：拒绝路径遍历
     if ".." in costume or ".." in file_name or "/" in file_name or "\\" in file_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid sprite path")
 
     async with get_db() as conn:
-        prof = await crud.get_voice_profile(conn, character_id)
-        if not prof:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Character with ID {character_id} not found",
-            )
+        prof = await _get_voice_profile_or_404(conn, character_id)
 
     mgr = get_character_manager()
     pkg = mgr.get_character(prof.name)
@@ -254,7 +251,7 @@ class SystemPromptUpdate(BaseModel):
     description="Writes the persona prompt back into the character package manifest.json "
                 "(the single source of truth) and refreshes the database mirror.",
 )
-async def update_character_system_prompt(character_id: int, req: SystemPromptUpdate):
+async def update_character_system_prompt(character_id: int, req: SystemPromptUpdate) -> Dict[str, Any]:
     text = req.system_prompt.strip()
     if not text:
         raise HTTPException(
@@ -263,12 +260,7 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
         )
 
     async with get_db() as conn:
-        prof = await crud.get_voice_profile(conn, character_id)
-        if not prof:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Character with ID {character_id} not found",
-            )
+        prof = await _get_voice_profile_or_404(conn, character_id)
 
     mgr = get_character_manager()
     pkg = mgr.get_character(prof.name)
@@ -330,7 +322,7 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
     }
 
 
-async def _resolve_profile_by_name(conn, char_name: str) -> Optional[Any]:
+async def _resolve_profile_by_name(conn: aiosqlite.Connection, char_name: str) -> Optional[Any]:
     """Resolves a voice profile by character name using exact, flexible, or package-synced match."""
     cm = get_character_manager()
     pkg = cm.get_character(char_name)
@@ -383,7 +375,7 @@ async def _resolve_profile_by_name(conn, char_name: str) -> Optional[Any]:
     summary="Switch Active Character",
     description="Atomically switches the active character voice profile with memory safety and auto-rollback.",
 )
-async def switch_character(req: CharacterSwitchRequest):
+async def switch_character(req: CharacterSwitchRequest) -> Dict[str, Any]:
     char_id = req.character_id
     raw_name = req.character_name
     char_name = raw_name.strip() if raw_name else None
