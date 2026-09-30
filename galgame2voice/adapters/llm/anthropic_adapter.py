@@ -32,6 +32,15 @@ _parse_retry_after = parse_retry_after
 _calculate_backoff_delay = calculate_backoff_delay
 
 
+def _extract_content_text(data: Dict[str, Any]) -> str:
+    """Concatenates text blocks from an Anthropic messages response."""
+    return "".join(
+        block.get("text", "")
+        for block in data.get("content", [])
+        if block.get("type") == "text"
+    )
+
+
 class AnthropicAdapter(BaseLLMAdapter):
     """
     Adapter for Anthropic Claude native /v1/messages API.
@@ -172,11 +181,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                 if resp.status_code != 200:
                     raise RuntimeError(f"Anthropic API returned {resp.status_code}: {resp.text}")
                 data = resp.json()
-                content = ""
-                for block in data.get("content", []):
-                    if block.get("type") == "text":
-                        content += block.get("text", "")
-                return LLMResponse(content=content, usage=None)
+                return LLMResponse(content=_extract_content_text(data), usage=None)
 
         allow_private = bool(self.extra_config.get("allow_private", False))
         from galgame2voice.security.url_guard import assert_llm_url_safe
@@ -217,11 +222,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                     raise RuntimeError(f"Anthropic API error ({resp.status_code}): {resp.text}")
 
                 data = resp.json()
-                content = ""
-                for block in data.get("content", []):
-                    if block.get("type") == "text":
-                        content += block.get("text", "")
-                return LLMResponse(content=content, usage=None)
+                return LLMResponse(content=_extract_content_text(data), usage=None)
             raise RuntimeError("Max retries exceeded without a response")
         finally:
             await client.aclose()

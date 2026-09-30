@@ -221,6 +221,13 @@ ADAPTER_CLASS_MAP: Dict[str, Tuple[Type[BaseLLMAdapter], str]] = {
 }
 
 
+def _get_config_attr(config: Any, key: str, default: Any = None) -> Any:
+    """Retrieves an attribute or key from a config dictionary or object."""
+    if isinstance(config, dict):
+        return config.get(key, default)
+    return getattr(config, key, default)
+
+
 def _resolve_provider_request(
     provider_id_or_config: Union[str, Dict[str, Any], Any],
     api_key: Optional[str],
@@ -234,18 +241,13 @@ def _resolve_provider_request(
 
     if isinstance(provider_id_or_config, str):
         provider_id = provider_id_or_config.lower()
-    elif isinstance(provider_id_or_config, dict):
-        provider_id = str(provider_id_or_config.get("provider_type") or provider_id_or_config.get("id") or "openai").lower()
-        key = key or provider_id_or_config.get("api_key", "")
-        url = url or provider_id_or_config.get("api_base_url") or provider_id_or_config.get("base_url")
-        custom_headers = provider_id_or_config.get("custom_headers")
-        if custom_headers and "custom_headers" not in kwargs:
-            kwargs["custom_headers"] = custom_headers
-    elif hasattr(provider_id_or_config, "id"):
-        provider_id = str(getattr(provider_id_or_config, "provider_type", None) or getattr(provider_id_or_config, "id", "openai")).lower()
-        key = key or getattr(provider_id_or_config, "api_key", "")
-        url = url or getattr(provider_id_or_config, "api_base_url", None) or getattr(provider_id_or_config, "base_url", None)
-        custom_headers = getattr(provider_id_or_config, "custom_headers", None)
+    elif isinstance(provider_id_or_config, dict) or hasattr(provider_id_or_config, "id"):
+        cfg = provider_id_or_config
+        p_type = _get_config_attr(cfg, "provider_type") or _get_config_attr(cfg, "id", "openai")
+        provider_id = str(p_type).lower()
+        key = key or _get_config_attr(cfg, "api_key", "")
+        url = url or _get_config_attr(cfg, "api_base_url") or _get_config_attr(cfg, "base_url")
+        custom_headers = _get_config_attr(cfg, "custom_headers")
         if custom_headers and "custom_headers" not in kwargs:
             kwargs["custom_headers"] = custom_headers
 

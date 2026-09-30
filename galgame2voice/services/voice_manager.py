@@ -163,19 +163,25 @@ class VoiceManager:
     # ========================================================================
 
     @staticmethod
+    def _resolve_profile_field(p: Any, name: str, alias: Optional[str] = None) -> Any:
+        """Resolves profile field with attribute, fallback alias, and dict key lookups."""
+        p_dict = p if isinstance(p, dict) else None
+        val = getattr(p, name, None) or (p_dict.get(name) if p_dict else None)
+        if not val and alias:
+            val = getattr(p, alias, None) or (p_dict.get(alias) if p_dict else None)
+        return val
+
+    @staticmethod
     def _extract_profile_identity(p: Any) -> Tuple[Any, Any, Any, Any, Any]:
         """Extracts canonical (id, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text) tuple."""
-        p_dict = p if isinstance(p, dict) else None
-        p_id = getattr(p, "id", None) or (p_dict.get("id") if p_dict else None)
-        p_gpt = getattr(p, "gpt_weights_path", None) or (p_dict.get("gpt_weights_path") if p_dict else None)
-        p_sovits = getattr(p, "sovits_weights_path", None) or (p_dict.get("sovits_weights_path") if p_dict else None)
-        p_ref = getattr(p, "ref_audio_path", None) or getattr(p, "refer_audio_path", None) or (
-            p_dict.get("ref_audio_path") if p_dict else (p_dict.get("refer_audio_path") if p_dict else None)
+        resolve = VoiceManager._resolve_profile_field
+        return (
+            resolve(p, "id"),
+            resolve(p, "gpt_weights_path"),
+            resolve(p, "sovits_weights_path"),
+            resolve(p, "ref_audio_path", "refer_audio_path"),
+            resolve(p, "prompt_text", "refer_text"),
         )
-        p_prompt = getattr(p, "prompt_text", None) or getattr(p, "refer_text", None) or (
-            p_dict.get("prompt_text") if p_dict else (p_dict.get("refer_text") if p_dict else None)
-        )
-        return p_id, p_gpt, p_sovits, p_ref, p_prompt
 
     def is_active_profile(self, profile: Any, force: bool = False) -> bool:
         """
@@ -422,6 +428,32 @@ class VoiceManager:
             return await self.tts_service.synthesize(text, options=opts, use_cache=use_cache)
         return await self.client.synthesize(text, options=opts)
 
+    def _schedule_stream_cache_put(
+        self,
+        cache_mgr: Any,
+        cache_key: str,
+        text: str,
+        clean_text: str,
+        vpid: Any,
+        params_hash: str,
+        audio_bytes: bytes,
+    ) -> None:
+        """Schedules asynchronous population of the TTS cache for a completed stream."""
+        async def _async_cache_put() -> None:
+            try:
+                await cache_mgr.put(
+                    cache_key=cache_key,
+                    text=text,
+                    clean_text=clean_text,
+                    voice_profile_id=vpid,
+                    params_hash=params_hash,
+                    audio_bytes=audio_bytes,
+                )
+            except Exception as put_exc:
+                logger.debug("Failed to asynchronously cache streamed TTS: %s", put_exc)
+
+        self._spawn_background(_async_cache_put())
+
     async def stream_tts(
         self,
         text: str,
@@ -501,27 +533,15 @@ class VoiceManager:
                 full_bytes = b"".join(collected_chunks)
                 if full_bytes:
                     vpid = opts.get("voice_profile_id", 1)
-                    async def _async_cache_put(
-                        b_key: str = cache_key,
-                        b_text: str = text,
-                        b_clean: str = clean_text,
-                        b_vpid: Any = vpid,
-                        b_hash: str = params_hash,
-                        b_audio: bytes = full_bytes,
-                    ) -> None:
-                        try:
-                            await cache_mgr.put(
-                                cache_key=b_key,
-                                text=b_text,
-                                clean_text=b_clean,
-                                voice_profile_id=b_vpid,
-                                params_hash=b_hash,
-                                audio_bytes=b_audio,
-                            )
-                        except Exception as put_exc:
-                            logger.debug("Failed to asynchronously cache streamed TTS: %s", put_exc)
-
-                    self._spawn_background(_async_cache_put())
+                    self._schedule_stream_cache_put(
+                        cache_mgr=cache_mgr,
+                        cache_key=cache_key,
+                        text=text,
+                        clean_text=clean_text,
+                        vpid=vpid,
+                        params_hash=params_hash,
+                        audio_bytes=full_bytes,
+                    )
 
     # ========================================================================
     # Voice Profile Database CRUD Operations

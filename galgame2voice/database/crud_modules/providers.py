@@ -94,19 +94,21 @@ def _row_to_provider_dict(row: aiosqlite.Row) -> Dict[str, Any]:
     return d
 
 
+def _build_provider_response(data: Dict[str, Any], mask: bool = True) -> ProviderResponse:
+    """Builds a ProviderResponse from a dictionary, optionally masking credentials."""
+    payload = dict(data)
+    if mask:
+        payload["api_key"] = mask_api_key(payload.get("api_key"))
+        payload["custom_headers"] = mask_custom_headers(payload.get("custom_headers"))
+    return ProviderResponse(**payload)
+
+
 async def list_providers(conn: aiosqlite.Connection, mask: bool = True) -> List[ProviderResponse]:
     """Lists all configured LLM providers with optional API key masking."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM providers ORDER BY id ASC;")
     rows = await cursor.fetchall()
-    result = []
-    for r in rows:
-        d = _row_to_provider_dict(r)
-        if mask:
-            d["api_key"] = mask_api_key(d["api_key"])
-            d["custom_headers"] = mask_custom_headers(d.get("custom_headers"))
-        result.append(ProviderResponse(**d))
-    return result
+    return [_build_provider_response(_row_to_provider_dict(r), mask=mask) for r in rows]
 
 
 async def get_provider_raw(conn: aiosqlite.Connection, provider_id: str) -> Optional[ProviderInDB]:
@@ -124,11 +126,7 @@ async def get_provider(conn: aiosqlite.Connection, provider_id: str, mask: bool 
     raw = await get_provider_raw(conn, provider_id)
     if not raw:
         return None
-    d = raw.model_dump()
-    if mask:
-        d["api_key"] = mask_api_key(raw.api_key)
-        d["custom_headers"] = mask_custom_headers(raw.custom_headers)
-    return ProviderResponse(**d)
+    return _build_provider_response(raw.model_dump(), mask=mask)
 
 
 async def get_active_provider_raw(conn: aiosqlite.Connection) -> Optional[ProviderInDB]:
@@ -150,11 +148,7 @@ async def get_active_provider(conn: aiosqlite.Connection, mask: bool = True) -> 
     raw = await get_active_provider_raw(conn)
     if not raw:
         return None
-    d = raw.model_dump()
-    if mask:
-        d["api_key"] = mask_api_key(raw.api_key)
-        d["custom_headers"] = mask_custom_headers(raw.custom_headers)
-    return ProviderResponse(**d)
+    return _build_provider_response(raw.model_dump(), mask=mask)
 
 
 async def create_provider(conn: aiosqlite.Connection, provider: ProviderCreate) -> ProviderResponse:
