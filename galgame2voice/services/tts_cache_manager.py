@@ -385,7 +385,6 @@ class TtsCacheManager:
         Returns (audio_bytes, url_path, file_size) if hit, None if miss.
         """
         try:
-            from galgame2voice.config import get_settings
             if get_settings().privacy_mode:
                 return None
         except Exception as exc:
@@ -450,7 +449,6 @@ class TtsCacheManager:
         Avoids loading multi-megabyte audio files entirely into temporary memory.
         """
         try:
-            from galgame2voice.config import get_settings
             if get_settings().privacy_mode:
                 return
         except Exception as exc:
@@ -603,7 +601,6 @@ class TtsCacheManager:
             raise ValueError("Cannot cache empty audio bytes")
 
         try:
-            from galgame2voice.config import get_settings
             if get_settings().privacy_mode:
                 return "", Path(""), len(audio_bytes)
         except Exception as exc:

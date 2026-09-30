@@ -14,18 +14,12 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-    from telegram.ext import ContextTypes, CallbackQueryHandler
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     HAS_TELEGRAM = True
 except ImportError:
     HAS_TELEGRAM = False
-    Update = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
-    class _ContextTypes:
-        DEFAULT_TYPE = Any
-    ContextTypes = _ContextTypes
-    CallbackQueryHandler = Any
 
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud

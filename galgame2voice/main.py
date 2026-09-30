@@ -185,6 +185,8 @@ async def _init_database_and_characters(settings) -> None:
 async def _init_gpt_sovits_client(settings) -> None:
     """Initializes shared GPT-SoVITS client, pre-seeds active profile, and triggers background warm-up."""
     try:
+        from galgame2voice.services.voice_manager import get_voice_manager
+
         sovits_url = None
         try:
             async with get_db(settings.db_path) as conn:
@@ -200,7 +202,6 @@ async def _init_gpt_sovits_client(settings) -> None:
 
         # Pre-seed active voice profile from DB so frontend's initial switch is instantaneous
         try:
-            from galgame2voice.services.voice_manager import get_voice_manager
             vm = get_voice_manager()
             async with get_db(settings.db_path) as conn:
                 default_profile = await crud.get_active_voice_profile(conn)
@@ -224,7 +225,6 @@ async def _init_gpt_sovits_client(settings) -> None:
 
         # Trigger non-blocking background warm-up of default voice profile
         try:
-            from galgame2voice.services.voice_manager import get_voice_manager
             vm = get_voice_manager()
             vm._spawn_background(vm.warmup_current_profile())
         except Exception as warmup_err:

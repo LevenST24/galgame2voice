@@ -468,8 +468,6 @@ class RestartSovitsPayload(BaseModel):
 
 async def _update_inference_precision_setting(precision_val: str) -> None:
     try:
-        from galgame2voice.database.session import get_db
-        from galgame2voice.database import crud
         from galgame2voice.database.models import SettingsUpdate
         async with get_db() as conn:
             await crud.update_settings(conn, SettingsUpdate(inference_precision=precision_val))

@@ -7,15 +7,15 @@ import asyncio
 import logging
 import os
 from typing import Any, Dict, Optional
+
 import httpx
 
 try:
-    from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+    from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
     from telegram.request import HTTPXRequest
     HAS_TELEGRAM = True
 except ImportError:
     HAS_TELEGRAM = False
-    Application = Any
     ApplicationBuilder = Any
     CommandHandler = Any
     MessageHandler = Any

@@ -144,7 +144,6 @@ class CharacterManager:
         if not manifest.emotions:
             errors.append("Manifest contains no emotions definitions")
         else:
-            from galgame2voice.services.tts_service import TtsService
             from galgame2voice.utils.path_guard import contains_traversal_payload
 
             for wf in ("gpt_weights", "sovits_weights"):

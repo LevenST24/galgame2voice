@@ -16,11 +16,10 @@ Pipeline hardening (v2.1):
 """
 
 import asyncio
-import json
 import logging
+from pathlib import Path
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
-from pathlib import Path
 
 import aiosqlite
 

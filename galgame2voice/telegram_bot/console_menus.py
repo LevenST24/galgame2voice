@@ -16,11 +16,10 @@ import logging
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 try:
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     HAS_TELEGRAM = True
 except ImportError:
     HAS_TELEGRAM = False
-    Update = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
 
