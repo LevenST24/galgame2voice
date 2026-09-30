@@ -263,34 +263,8 @@ def _start_telegram_bg(settings) -> Optional[asyncio.Task]:
         return None
 
 
-async def _shutdown_services(settings, cleanup_task: asyncio.Task, tg_startup_task: Optional[asyncio.Task]) -> None:
-    """Gracefully drains background tasks, closes connections, and checkpoints SQLite WAL."""
-    cleanup_task.cancel()
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
-
-    # Stop Telegram Bot
-    if tg_startup_task and not tg_startup_task.done():
-        tg_startup_task.cancel()
-        try:
-            await tg_startup_task
-        except asyncio.CancelledError:
-            pass
-    try:
-        from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
-        await get_telegram_bot_manager().stop()
-    except Exception as exc:
-        logger.debug("Error stopping Telegram Bot: %s", exc)
-
-    # Release the shared GPT-SoVITS connection pool.
-    try:
-        await close_gpt_sovits_client()
-    except Exception as exc:
-        logger.debug("Error closing GPT-SoVITS client: %s", exc)
-
-    # Drain background tasks from ChatService, SessionManager, and caches before WAL checkpoint
+async def _drain_active_services() -> None:
+    """Drains background tasks from ChatService, SessionManager, and caches before WAL checkpoint."""
     try:
         from galgame2voice.routers import chat as chat_router_mod
         active_svcs = {
@@ -331,6 +305,37 @@ async def _shutdown_services(settings, cleanup_task: asyncio.Task, tg_startup_ta
                 loop._default_executor = None
     except Exception as exc:
         logger.debug("Error draining background tasks on shutdown: %s", exc)
+
+
+async def _shutdown_services(settings, cleanup_task: asyncio.Task, tg_startup_task: Optional[asyncio.Task]) -> None:
+    """Gracefully drains background tasks, closes connections, and checkpoints SQLite WAL."""
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
+
+    # Stop Telegram Bot
+    if tg_startup_task and not tg_startup_task.done():
+        tg_startup_task.cancel()
+        try:
+            await tg_startup_task
+        except asyncio.CancelledError:
+            pass
+    try:
+        from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
+        await get_telegram_bot_manager().stop()
+    except Exception as exc:
+        logger.debug("Error stopping Telegram Bot: %s", exc)
+
+    # Release the shared GPT-SoVITS connection pool.
+    try:
+        await close_gpt_sovits_client()
+    except Exception as exc:
+        logger.debug("Error closing GPT-SoVITS client: %s", exc)
+
+    # Drain background tasks from ChatService, SessionManager, and caches before WAL checkpoint
+    await _drain_active_services()
 
     # Safe SQLite WAL truncation checkpoint
     try:

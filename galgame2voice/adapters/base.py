@@ -131,6 +131,33 @@ def _parse_and_extract_token(text: str) -> Tuple[bool, Optional[str]]:
         return False, None
 
 
+def _extract_sse_data(line: str, has_buffer: bool) -> Optional[str]:
+    """Extracts data content from an SSE line, accounting for data: prefixes and continuation lines."""
+    if line.startswith("data: "):
+        return line[6:]
+    if line.startswith("data:"):
+        return line[5:].lstrip()
+    if has_buffer and not any(line.startswith(prefix) for prefix in ("event:", "id:", "retry:")):
+        return line
+    return None
+
+
+def _flush_sse_data_buffer(data_buffer: List[str]) -> Tuple[Optional[str], bool]:
+    """Flushes data buffer into a combined payload. Returns (token, is_done)."""
+    if not data_buffer:
+        return None, False
+    combined_data = "\n".join(data_buffer).strip()
+    data_buffer.clear()
+    if combined_data == "[DONE]":
+        return None, True
+    if not combined_data:
+        return None, False
+    is_json, token = _parse_and_extract_token(combined_data)
+    if is_json and token:
+        return token, False
+    return None, False
+
+
 async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
     """
     Asynchronously parses Server-Sent Events (SSE) lines into text tokens.
@@ -149,29 +176,18 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
 
         if not stripped:
             # Blank line: event boundary per SSE standard
-            if data_buffer:
-                combined_data = "\n".join(data_buffer).strip()
-                data_buffer.clear()
-                if combined_data == "[DONE]":
-                    break
-                is_json, token = _parse_and_extract_token(combined_data)
-                if is_json and token:
-                    yield token
+            token, is_done = _flush_sse_data_buffer(data_buffer)
+            if is_done:
+                break
+            if token:
+                yield token
             continue
 
         if stripped.startswith(":"):
             # Comment or keepalive
             continue
 
-        # Extract data content
-        data_str: Optional[str] = None
-        if line.startswith("data: "):
-            data_str = line[6:]
-        elif line.startswith("data:"):
-            data_str = line[5:].lstrip()
-        elif data_buffer and not any(line.startswith(prefix) for prefix in ("event:", "id:", "retry:")):
-            # Continuation line of a multi-line fragmented block
-            data_str = line
+        data_str = _extract_sse_data(line, bool(data_buffer))
 
         if data_str is not None:
             if data_str.strip() == "[DONE]":
@@ -208,12 +224,9 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
                     data_buffer.append(data_str)
 
     # Flush any trailing buffer
-    if data_buffer:
-        combined_data = "\n".join(data_buffer).strip()
-        if combined_data and combined_data != "[DONE]":
-            is_json, token = _parse_and_extract_token(combined_data)
-            if is_json and token:
-                yield token
+    token, _ = _flush_sse_data_buffer(data_buffer)
+    if token:
+        yield token
 
 
 async def aclose_stream_context(stream_ctx: Any = None, client: Any = None) -> None:

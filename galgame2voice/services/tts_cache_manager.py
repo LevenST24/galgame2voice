@@ -41,6 +41,61 @@ def _get_prof_val(prof: Any, attr: str, default: Any = "") -> Any:
     return getattr(prof, attr, default)
 
 
+def _extract_voice_profile_cache_fields(
+    opts: Dict[str, Any],
+    voice_profile: Optional[Any],
+) -> Dict[str, Any]:
+    """Extracts voice profile parameters from opts or fallback voice_profile object."""
+    voice_profile_id = 1
+    gpt_weights = opts.get("gpt_weights_path", "")
+    sovits_weights = opts.get("sovits_weights_path", "")
+    ref_audio = opts.get("ref_audio_path") or opts.get("refer_audio_path", "")
+    prompt_text = opts.get("prompt_text") or opts.get("refer_text", "")
+    prompt_lang = opts.get("prompt_lang") or opts.get("refer_language") or opts.get("prompt_language", "ja")
+    text_lang = opts.get("text_lang") or opts.get("text_language", "ja")
+
+    if voice_profile is not None:
+        voice_profile_id = _get_prof_val(voice_profile, "id", voice_profile_id)
+        if not gpt_weights:
+            gpt_weights = _get_prof_val(voice_profile, "gpt_weights_path", "")
+        if not sovits_weights:
+            sovits_weights = _get_prof_val(voice_profile, "sovits_weights_path", "")
+        if not ref_audio:
+            ref_audio = _get_prof_val(voice_profile, "ref_audio_path", "")
+        if not prompt_text:
+            prompt_text = _get_prof_val(voice_profile, "prompt_text", "")
+        if not prompt_lang:
+            prompt_lang = _get_prof_val(voice_profile, "prompt_lang", "")
+        if not text_lang:
+            text_lang = _get_prof_val(voice_profile, "text_lang", "")
+
+    return {
+        "voice_profile_id": voice_profile_id,
+        "gpt_weights": gpt_weights,
+        "sovits_weights": sovits_weights,
+        "ref_audio": ref_audio,
+        "prompt_text": prompt_text,
+        "prompt_lang": prompt_lang,
+        "text_lang": text_lang,
+    }
+
+
+def _normalize_ref_audio(ref_audio: str) -> str:
+    """Normalizes reference audio path to name:mtime_ns:size if file exists, falling back to name."""
+    if not ref_audio:
+        return ""
+    p = Path(ref_audio)
+    if not p.is_file() and (_PROJECT_ROOT / ref_audio).is_file():
+        p = _PROJECT_ROOT / ref_audio
+    if p.is_file():
+        try:
+            st = p.stat()
+            return f"{p.name}:{st.st_mtime_ns}:{st.st_size}"
+        except OSError:
+            return p.name
+    return p.name
+
+
 class TtsCacheManager:
     """
     Manages persistent disk & SQLite cache for synthesized TTS audio.
@@ -260,29 +315,7 @@ class TtsCacheManager:
         clean_text = normalize_japanese_for_tts(text).strip()
         opts = dict(options or {})
 
-        # Extract voice profile info if provided
-        voice_profile_id = 1
-        gpt_weights = opts.get("gpt_weights_path", "")
-        sovits_weights = opts.get("sovits_weights_path", "")
-        ref_audio = opts.get("ref_audio_path") or opts.get("refer_audio_path", "")
-        prompt_text = opts.get("prompt_text") or opts.get("refer_text", "")
-        prompt_lang = opts.get("prompt_lang") or opts.get("refer_language") or opts.get("prompt_language", "ja")
-        text_lang = opts.get("text_lang") or opts.get("text_language", "ja")
-
-        if voice_profile is not None:
-            voice_profile_id = _get_prof_val(voice_profile, "id", voice_profile_id)
-            if not gpt_weights:
-                gpt_weights = _get_prof_val(voice_profile, "gpt_weights_path", "")
-            if not sovits_weights:
-                sovits_weights = _get_prof_val(voice_profile, "sovits_weights_path", "")
-            if not ref_audio:
-                ref_audio = _get_prof_val(voice_profile, "ref_audio_path", "")
-            if not prompt_text:
-                prompt_text = _get_prof_val(voice_profile, "prompt_text", "")
-            if not prompt_lang:
-                prompt_lang = _get_prof_val(voice_profile, "prompt_lang", "")
-            if not text_lang:
-                text_lang = _get_prof_val(voice_profile, "text_lang", "")
+        prof_fields = _extract_voice_profile_cache_fields(opts, voice_profile)
 
         # Canonicalize inference parameters
         speed = float(opts.get("speed_factor", 1.0))
@@ -306,29 +339,16 @@ class TtsCacheManager:
         fragment_interval = float(opts.get("fragment_interval", 0.3))
         frag_str = f"{fragment_interval:.3f}"
 
-        # Ref audio normalization (include name:mtime_ns:size if file exists on disk, fallback to name)
-        ref_audio_norm = ""
-        if ref_audio:
-            p = Path(ref_audio)
-            if not p.is_file() and (_PROJECT_ROOT / ref_audio).is_file():
-                p = _PROJECT_ROOT / ref_audio
-            if p.is_file():
-                try:
-                    st = p.stat()
-                    ref_audio_norm = f"{p.name}:{st.st_mtime_ns}:{st.st_size}"
-                except OSError:
-                    ref_audio_norm = p.name
-            else:
-                ref_audio_norm = p.name
+        ref_audio_norm = _normalize_ref_audio(prof_fields["ref_audio"])
 
         params_dict = {
-            "voice_profile_id": voice_profile_id,
-            "gpt_weights": str(gpt_weights),
-            "sovits_weights": str(sovits_weights),
+            "voice_profile_id": prof_fields["voice_profile_id"],
+            "gpt_weights": str(prof_fields["gpt_weights"]),
+            "sovits_weights": str(prof_fields["sovits_weights"]),
             "ref_audio": ref_audio_norm,
-            "prompt_text": str(prompt_text),
-            "prompt_lang": str(prompt_lang).lower(),
-            "text_lang": str(text_lang).lower(),
+            "prompt_text": str(prof_fields["prompt_text"]),
+            "prompt_lang": str(prof_fields["prompt_lang"]).lower(),
+            "text_lang": str(prof_fields["text_lang"]).lower(),
             "speed": speed_str,
             "temperature": temp_str,
             "top_k": top_k,
