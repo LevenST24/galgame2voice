@@ -97,7 +97,8 @@ def get_authorized_roots(
 ) -> List[Path]:
     """
     Returns resolved absolute paths of all authorized system directories:
-    audio_dir, data_dir, and project_root.
+    audio_dir, data_dir, project_root, optionally discovered GPT-SoVITS directories,
+    and any custom roots provided.
     """
     settings = get_settings()
     roots: List[Path] = [
@@ -294,8 +295,9 @@ def _search_character_packages_for_audio(raw: str, filename: str) -> Optional[Pa
 
 def resolve_existing_audio_path(path: Union[str, Path]) -> Optional[Path]:
     """
-    Resolves a reference audio path across the three canonical bases in order:
-    absolute path, project_root-relative, audio_dir-relative.
+    Resolves a reference audio path across canonical bases and installed packages in order:
+    absolute path, project_root-relative, audio_dir-relative, characters_dir-relative,
+    and fallback search across installed character packages.
     Returns the first existing file, or None if it cannot be resolved.
     Does not enforce containment: reference audio legitimately lives in
     external directories (e.g. game voice packs on another drive).

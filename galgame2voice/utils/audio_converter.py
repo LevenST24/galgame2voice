@@ -55,8 +55,8 @@ def find_ffmpeg(custom_path: Optional[str] = None) -> Optional[str]:
     Discovers and caches the ffmpeg executable location.
     Checks:
     1. custom_path (if provided and resolvable)
-    2. Environment variable FFMPEG_PATH or FFMPEG_BIN
-    3. Cached path from previous discovery
+    2. Cached path from previous discovery
+    3. Environment variable FFMPEG_PATH or FFMPEG_BIN
     4. System PATH via shutil.which("ffmpeg")
     5. Local virtualenv (sys.prefix/Scripts/ffmpeg.exe or bin/ffmpeg)
     6. Bundled / project tools directories (tools/ffmpeg, runtime/ffmpeg, etc.)
