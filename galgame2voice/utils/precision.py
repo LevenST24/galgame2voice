@@ -17,6 +17,10 @@ logger = logging.getLogger("galgame2voice.utils.precision")
 
 _PRECISION_ENV_VAR = "GPT_SOVITS_PRECISION"
 
+DEVICE_CPU = "cpu"
+DEVICE_CUDA = "cuda"
+KEY_IS_HALF = "is_half"
+
 _RE_YAML_CUSTOM_DEVICE = re.compile(r"custom:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+device:\s*([a-zA-Z0-9_]+)")
 _RE_YAML_DEVICE = re.compile(r"device:\s*([a-zA-Z0-9_]+)")
 _RE_YAML_CUSTOM_IS_HALF = re.compile(r"custom:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+is_half:\s*(true|false|True|False)")
@@ -36,7 +40,7 @@ def read_precision_cache(project_root: Path) -> Optional[Dict[str, Any]]:
         if not path.is_file():
             return None
         data = json.loads(path.read_text(encoding="utf-8-sig"))
-        if not isinstance(data, dict) or not isinstance(data.get("is_half"), bool):
+        if not isinstance(data, dict) or not isinstance(data.get(KEY_IS_HALF), bool):
             return None
         return data
     except (OSError, ValueError):
@@ -47,7 +51,7 @@ def write_precision_cache(
     project_root: Path,
     sovits_dir: str,
     is_half: bool,
-    device: str = "cuda",
+    device: str = DEVICE_CUDA,
 ) -> None:
     """Persists a verified precision calibration and device bound to the engine directory."""
     try:
@@ -55,7 +59,7 @@ def write_precision_cache(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps({
-                "is_half": is_half,
+                KEY_IS_HALF: is_half,
                 "device": device.lower(),
                 "sovits_dir": str(sovits_dir),
                 "verified_at": int(time.time()),
@@ -197,21 +201,21 @@ def resolve_initial_device_and_half(
     override = str(env.get(_PRECISION_ENV_VAR, "")).strip().lower()
     dev_override = str(env.get("GPT_SOVITS_DEVICE", "")).strip().lower()
 
-    if dev_override == "cpu" or override == "cpu":
-        return "cpu", False, "env"
+    if dev_override == DEVICE_CPU or override == DEVICE_CPU:
+        return DEVICE_CPU, False, "env"
     if override in ("fp16", "half", "true", "1"):
-        return "cuda", True, "env"
+        return DEVICE_CUDA, True, "env"
     if override in ("fp32", "float32", "false", "0"):
-        return "cuda", False, "env"
+        return DEVICE_CUDA, False, "env"
 
     # User configured setting in SQLite database
     db_prec = read_db_precision(project_root)
-    if db_prec == "cpu":
-        return "cpu", False, "db"
+    if db_prec == DEVICE_CPU:
+        return DEVICE_CPU, False, "db"
     if db_prec in ("fp32", "float32"):
-        return "cuda", False, "db"
+        return DEVICE_CUDA, False, "db"
     if db_prec in ("fp16", "half"):
-        return "cuda", True, "db"
+        return DEVICE_CUDA, True, "db"
 
     # Calibration cache in precision.json
     cache = read_precision_cache(project_root)
@@ -222,18 +226,18 @@ def resolve_initial_device_and_half(
         except Exception:
             matched = (cached_dir == str(sovits_dir))
         if matched:
-            cached_dev = str(cache.get("device", "cuda")).lower()
-            if cached_dev == "cpu":
-                return "cpu", False, "cache"
-            return "cuda", bool(cache.get("is_half", True)), "cache"
+            cached_dev = str(cache.get("device", DEVICE_CUDA)).lower()
+            if cached_dev == DEVICE_CPU:
+                return DEVICE_CPU, False, "cache"
+            return DEVICE_CUDA, bool(cache.get(KEY_IS_HALF, True)), "cache"
 
     # Existing YAML on disk
     yaml_dev = read_sovits_yaml_device(sovits_dir)
-    if yaml_dev == "cpu":
-        return "cpu", False, "yaml"
+    if yaml_dev == DEVICE_CPU:
+        return DEVICE_CPU, False, "yaml"
     yaml_half = read_sovits_yaml_is_half(sovits_dir)
     if yaml_half is False:
-        return "cuda", False, "yaml"
+        return DEVICE_CUDA, False, "yaml"
 
     # Default fallback: check discrete GPU availability
     try:
@@ -243,8 +247,8 @@ def resolve_initial_device_and_half(
         has_gpu = True
 
     if not has_gpu:
-        return "cpu", False, "default"
-    return "cuda", True, "default"
+        return DEVICE_CPU, False, "default"
+    return DEVICE_CUDA, True, "default"
 
 
 def resolve_initial_is_half(

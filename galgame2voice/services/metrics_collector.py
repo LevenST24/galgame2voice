@@ -19,53 +19,55 @@ from galgame2voice.services.tts_cache_manager import get_tts_cache_manager
 logger = logging.getLogger("galgame2voice.services.metrics_collector")
 
 # USD Pricing per 1,000,000 Tokens (Input / Output)
+DEFAULT_MODEL_KEY = "default"
+
 MODEL_PRICING_MAP: Dict[str, Dict[str, Tuple[float, float]]] = {
     "deepseek": {
-        "default": (0.14, 0.28),
+        DEFAULT_MODEL_KEY: (0.14, 0.28),
         "deepseek-chat": (0.14, 0.28),
         "deepseek-reasoner": (0.55, 2.19),
     },
     "openai": {
-        "default": (0.15, 0.60),
+        DEFAULT_MODEL_KEY: (0.15, 0.60),
         "gpt-4o-mini": (0.15, 0.60),
         "gpt-4o": (2.50, 10.00),
         "o3-mini": (1.10, 4.40),
     },
     "gemini": {
-        "default": (0.075, 0.30),
+        DEFAULT_MODEL_KEY: (0.075, 0.30),
         "gemini-2.5-flash": (0.15, 0.60),
         "gemini-2.5-pro": (1.25, 10.00),
         "gemini-2.0-flash": (0.10, 0.40),
     },
     "anthropic": {
-        "default": (3.00, 15.00),
+        DEFAULT_MODEL_KEY: (3.00, 15.00),
         "claude-sonnet-4-20250514": (3.00, 15.00),
         "claude-haiku-4-20250414": (0.80, 4.00),
         "claude-3-5-sonnet-20241022": (3.00, 15.00),
     },
     "qwen": {
-        "default": (0.05, 0.20),
+        DEFAULT_MODEL_KEY: (0.05, 0.20),
         "qwen-max-latest": (0.20, 0.60),
         "qwen-plus-latest": (0.05, 0.20),
     },
     "glm": {
-        "default": (0.05, 0.05),
+        DEFAULT_MODEL_KEY: (0.05, 0.05),
         "glm-4-plus": (0.05, 0.05),
         "glm-4-flash": (0.01, 0.01),
     },
     "xai": {
-        "default": (3.00, 15.00),
+        DEFAULT_MODEL_KEY: (3.00, 15.00),
         "grok-3": (3.00, 15.00),
         "grok-3-mini": (0.30, 0.50),
     },
     "siliconflow": {
-        "default": (0.14, 0.28),
+        DEFAULT_MODEL_KEY: (0.14, 0.28),
     },
     "moonshot": {
-        "default": (0.20, 0.60),
+        DEFAULT_MODEL_KEY: (0.20, 0.60),
     },
     "custom": {
-        "default": (0.0, 0.0),  # Local models have no API cost
+        DEFAULT_MODEL_KEY: (0.0, 0.0),  # Local models have no API cost
     },
 }
 
@@ -114,7 +116,7 @@ class MetricsCollector:
         m_name = (model_name or "").lower().strip()
 
         provider_models = MODEL_PRICING_MAP.get(pid, {})
-        input_rate, output_rate = provider_models.get(m_name, provider_models.get("default", DEFAULT_FALLBACK_PRICE))
+        input_rate, output_rate = provider_models.get(m_name, provider_models.get(DEFAULT_MODEL_KEY, DEFAULT_FALLBACK_PRICE))
 
         p_tok = _safe_nonneg_int(prompt_tokens)
         c_tok = _safe_nonneg_int(completion_tokens)

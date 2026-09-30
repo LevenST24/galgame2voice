@@ -31,13 +31,17 @@ from galgame2voice.utils.prosody import (
 # Presets & Slicing Methods
 # ============================================================================
 
+DEFAULT_SPLIT_METHOD = "cut5"
+DEFAULT_PRESET = "balanced"
+DEFAULT_LANGUAGE = "ja"
+
 SLICING_METHODS = {
     "cut0": "No slice / 不切",
     "cut1": "Slice by 4 sentences / 凑四句切",
     "cut2": "Slice by 50 characters / 凑50字切",
     "cut3": "Slice by Chinese punctuation / 按中文句号。切",
     "cut4": "Slice by English punctuation / 按英文句号.切",
-    "cut5": "Slice by punctuation / 按标点符号切",
+    DEFAULT_SPLIT_METHOD: "Slice by punctuation / 按标点符号切",
 }
 
 TTS_PRESETS: Dict[str, Dict[str, Any]] = {
@@ -48,17 +52,17 @@ TTS_PRESETS: Dict[str, Dict[str, Any]] = {
         "top_k": 20,
         "top_p": 1.0,
         "temperature": 0.8,
-        "text_split_method": "cut5",
+        "text_split_method": DEFAULT_SPLIT_METHOD,
         "batch_size": 1,
     },
-    "balanced": {
+    DEFAULT_PRESET: {
         "name": "Balanced",
         "speed": 1.0,
         "speed_factor": 1.0,
         "top_k": 15,
         "top_p": 1.0,
         "temperature": 1.0,
-        "text_split_method": "cut5",
+        "text_split_method": DEFAULT_SPLIT_METHOD,
         "batch_size": 1,
     },
     "low_latency": {
@@ -68,7 +72,7 @@ TTS_PRESETS: Dict[str, Dict[str, Any]] = {
         "top_k": 5,
         "top_p": 0.9,
         "temperature": 0.5,
-        "text_split_method": "cut5",
+        "text_split_method": DEFAULT_SPLIT_METHOD,
         "batch_size": 1,
     },
 }
@@ -194,8 +198,8 @@ def resolve_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, A
     Numeric values are clamped to their legal ranges as defense in depth.
     """
     options = options or {}
-    preset_key = str(options.get("preset", "balanced")).lower().replace(" ", "_")
-    base_params = dict(TTS_PRESETS.get(preset_key, TTS_PRESETS["balanced"]))
+    preset_key = str(options.get("preset", DEFAULT_PRESET)).lower().replace(" ", "_")
+    base_params = dict(TTS_PRESETS.get(preset_key, TTS_PRESETS[DEFAULT_PRESET]))
 
     def _clamped(key: str, value: Any, fallback: Any) -> Any:
         low, high, caster = _TTS_NUMERIC_RANGES[key]
@@ -214,9 +218,9 @@ def resolve_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, A
     if is_adaptive:
         speed_val = clamp_dynamic_speed(speed_val, fallback=1.0)
 
-    text_lang_val = str(options.get("text_lang", options.get("text_language", "ja")))[:32]
-    prompt_lang_val = str(options.get("prompt_lang", options.get("prompt_language", options.get("refer_language", "ja"))))[:32]
-    split_val = str(options.get("text_split_method", options.get("how_to_cut", options.get("cut_option", base_params.get("text_split_method", "cut5")))))[:64]
+    text_lang_val = str(options.get("text_lang", options.get("text_language", DEFAULT_LANGUAGE)))[:32]
+    prompt_lang_val = str(options.get("prompt_lang", options.get("prompt_language", options.get("refer_language", DEFAULT_LANGUAGE))))[:32]
+    split_val = str(options.get("text_split_method", options.get("how_to_cut", options.get("cut_option", base_params.get("text_split_method", DEFAULT_SPLIT_METHOD)))))[:64]
 
     temp_val = _clamped("temperature", options.get("temperature", options.get("temp", base_params.get("temperature", 1.0))), base_params.get("temperature", 1.0))
     if is_adaptive:
@@ -278,9 +282,9 @@ class VoiceProfileWeightSpec(BaseModel):
     sovits_weights_path: str
     refer_audio_path: str
     refer_text: str
-    refer_language: str = "ja"
-    prompt_language: str = "ja"
-    text_language: str = "ja"
+    refer_language: str = DEFAULT_LANGUAGE
+    prompt_language: str = DEFAULT_LANGUAGE
+    text_language: str = DEFAULT_LANGUAGE
 
 
 def _extract_weight_spec(target: Any) -> VoiceProfileWeightSpec:
@@ -303,9 +307,9 @@ def _extract_weight_spec(target: Any) -> VoiceProfileWeightSpec:
         sovits_weights_path=resolve_weight_file_path(getter("sovits_weights_path", "")),
         refer_audio_path=get_fallback("refer_audio_path", "ref_audio_path", ""),
         refer_text=get_fallback("refer_text", "prompt_text", ""),
-        refer_language=get_fallback("refer_language", "prompt_lang", "ja"),
-        prompt_language=get_fallback("prompt_language", "prompt_lang", "ja"),
-        text_language=get_fallback("text_language", "text_lang", "ja"),
+        refer_language=get_fallback("refer_language", "prompt_lang", DEFAULT_LANGUAGE),
+        prompt_language=get_fallback("prompt_language", "prompt_lang", DEFAULT_LANGUAGE),
+        text_language=get_fallback("text_language", "text_lang", DEFAULT_LANGUAGE),
     )
 
 

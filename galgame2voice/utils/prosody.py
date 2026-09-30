@@ -26,6 +26,12 @@ DYNAMIC_FRAGMENT_INTERVAL_MAX = 1.00
 DYNAMIC_BATCH_SIZE_MIN = 1
 DYNAMIC_BATCH_SIZE_MAX = 16
 
+PARAM_SPEED = "speed"
+PARAM_TEMPERATURE = "temperature"
+PARAM_TOP_K = "top_k"
+PARAM_TOP_P = "top_p"
+PARAM_FRAGMENT_INTERVAL = "fragment_interval"
+
 # ============================================================================
 # 1. Clamping Functions
 # ============================================================================
@@ -84,53 +90,53 @@ def clamp_dynamic_batch_size(val: Any, fallback: int = 1) -> int:
 
 EMOTION_PROSODY_MATRIX: Dict[str, Dict[str, Any]] = {
     "gentle": {
-        "speed": 0.98,
-        "temperature": 0.78,
-        "top_k": 15,
-        "top_p": 0.85,
-        "fragment_interval": 0.32,
+        PARAM_SPEED: 0.98,
+        PARAM_TEMPERATURE: 0.78,
+        PARAM_TOP_K: 15,
+        PARAM_TOP_P: 0.85,
+        PARAM_FRAGMENT_INTERVAL: 0.32,
     },
     "happy": {
-        "speed": 1.12,
-        "temperature": 0.95,
-        "top_k": 20,
-        "top_p": 0.95,
-        "fragment_interval": 0.22,
+        PARAM_SPEED: 1.12,
+        PARAM_TEMPERATURE: 0.95,
+        PARAM_TOP_K: 20,
+        PARAM_TOP_P: 0.95,
+        PARAM_FRAGMENT_INTERVAL: 0.22,
     },
     "tsundere": {
-        "speed": 1.15,
-        "temperature": 0.92,
-        "top_k": 14,
-        "top_p": 0.88,
-        "fragment_interval": 0.20,
+        PARAM_SPEED: 1.15,
+        PARAM_TEMPERATURE: 0.92,
+        PARAM_TOP_K: 14,
+        PARAM_TOP_P: 0.88,
+        PARAM_FRAGMENT_INTERVAL: 0.20,
     },
     "shy": {
-        "speed": 0.88,
-        "temperature": 0.72,
-        "top_k": 10,
-        "top_p": 0.78,
-        "fragment_interval": 0.38,
+        PARAM_SPEED: 0.88,
+        PARAM_TEMPERATURE: 0.72,
+        PARAM_TOP_K: 10,
+        PARAM_TOP_P: 0.78,
+        PARAM_FRAGMENT_INTERVAL: 0.38,
     },
     "sad": {
-        "speed": 0.82,
-        "temperature": 0.65,
-        "top_k": 8,
-        "top_p": 0.70,
-        "fragment_interval": 0.42,
+        PARAM_SPEED: 0.82,
+        PARAM_TEMPERATURE: 0.65,
+        PARAM_TOP_K: 8,
+        PARAM_TOP_P: 0.70,
+        PARAM_FRAGMENT_INTERVAL: 0.42,
     },
     "angry": {
-        "speed": 1.22,
-        "temperature": 0.90,
-        "top_k": 12,
-        "top_p": 0.85,
-        "fragment_interval": 0.16,
+        PARAM_SPEED: 1.22,
+        PARAM_TEMPERATURE: 0.90,
+        PARAM_TOP_K: 12,
+        PARAM_TOP_P: 0.85,
+        PARAM_FRAGMENT_INTERVAL: 0.16,
     },
     "cool": {
-        "speed": 0.94,
-        "temperature": 0.68,
-        "top_k": 10,
-        "top_p": 0.72,
-        "fragment_interval": 0.28,
+        PARAM_SPEED: 0.94,
+        PARAM_TEMPERATURE: 0.68,
+        PARAM_TOP_K: 10,
+        PARAM_TOP_P: 0.72,
+        PARAM_FRAGMENT_INTERVAL: 0.28,
     },
 }
 
@@ -169,11 +175,11 @@ def _apply_text_prosody_modulations(
     base_opts: Dict[str, Any],
 ) -> Tuple[float, float, int, float, float]:
     """Applies sentence-level micro-prosody cues (hesitation, exclamation, question, length, stutter)."""
-    has_custom_speed = "speed" in base_opts or "speed_factor" in base_opts
-    has_custom_temp = "temperature" in base_opts or "temp" in base_opts
-    has_custom_top_k = "top_k" in base_opts
-    has_custom_top_p = "top_p" in base_opts
-    has_custom_frag = "fragment_interval" in base_opts
+    has_custom_speed = PARAM_SPEED in base_opts or "speed_factor" in base_opts
+    has_custom_temp = PARAM_TEMPERATURE in base_opts or "temp" in base_opts
+    has_custom_top_k = PARAM_TOP_K in base_opts
+    has_custom_top_p = PARAM_TOP_P in base_opts
+    has_custom_frag = PARAM_FRAGMENT_INTERVAL in base_opts
 
     # A. Trailing / embedded ellipsis, wave dashes, hesitation: '…', '...', '〜', '~'
     if _RE_HESITATION.search(cleaned_text):
@@ -244,11 +250,11 @@ def calculate_adaptive_prosody(
     base_opts = dict(base_params or {})
 
     # Start with baseline archetype or explicit base values
-    speed = float(base_opts.get("speed", base_opts.get("speed_factor", archetype["speed"])))
-    temperature = float(base_opts.get("temperature", base_opts.get("temp", archetype["temperature"])))
-    top_k = int(base_opts.get("top_k", archetype["top_k"]))
-    top_p = float(base_opts.get("top_p", archetype["top_p"]))
-    frag_interval = float(base_opts.get("fragment_interval", archetype["fragment_interval"]))
+    speed = float(base_opts.get(PARAM_SPEED, base_opts.get("speed_factor", archetype[PARAM_SPEED])))
+    temperature = float(base_opts.get(PARAM_TEMPERATURE, base_opts.get("temp", archetype[PARAM_TEMPERATURE])))
+    top_k = int(base_opts.get(PARAM_TOP_K, archetype[PARAM_TOP_K]))
+    top_p = float(base_opts.get(PARAM_TOP_P, archetype[PARAM_TOP_P]))
+    frag_interval = float(base_opts.get(PARAM_FRAGMENT_INTERVAL, archetype[PARAM_FRAGMENT_INTERVAL]))
 
     cleaned_text = (text or "").strip()
     if cleaned_text:
@@ -264,13 +270,13 @@ def calculate_adaptive_prosody(
     final_frag = clamp_dynamic_fragment_interval(frag_interval)
 
     return {
-        "speed": final_speed,
+        PARAM_SPEED: final_speed,
         "speed_factor": final_speed,
-        "temperature": final_temp,
+        PARAM_TEMPERATURE: final_temp,
         "temp": final_temp,
-        "top_k": final_top_k,
-        "top_p": final_top_p,
-        "fragment_interval": final_frag,
+        PARAM_TOP_K: final_top_k,
+        PARAM_TOP_P: final_top_p,
+        PARAM_FRAGMENT_INTERVAL: final_frag,
         "emotion": norm_emo,
     }
 
