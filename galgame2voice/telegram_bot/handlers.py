@@ -545,7 +545,7 @@ class TelegramBotHandlers:
                     return
 
                 ogg_bytes = await convert_wav_to_ogg(wav_bytes)
-                caption = clean_japanese[:1020] if len(clean_japanese) > 1020 else clean_japanese
+                caption = clean_japanese[:1020]
                 await bot.send_voice(chat_id=chat_id, voice=ogg_bytes, caption=caption)
             except asyncio.CancelledError:
                 logger.info("Voice synthesis cancelled for chat_id=%d", chat_id)

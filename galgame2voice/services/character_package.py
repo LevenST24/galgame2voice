@@ -59,7 +59,7 @@ class CharacterPackage:
         self.manifest = manifest
         self.system_prompt = system_prompt or manifest.system_prompt or ""
         self.validation_errors: list[str] = validation_errors or []
-        self.is_valid: bool = len(self.validation_errors) == 0
+        self.is_valid: bool = not self.validation_errors
 
     @property
     def id(self) -> str:
