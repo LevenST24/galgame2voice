@@ -429,6 +429,94 @@ class StreamingBilingualParser:
             self.first_sentence_emitted = True
         return new_sentences
 
+    @staticmethod
+    def _parse_json_payload(sanitized: str) -> Optional[Dict[str, Any]]:
+        """Attempts to parse JSON payload directly or extracts embedded JSON block."""
+        try:
+            parsed = json.loads(sanitized)
+        except json.JSONDecodeError:
+            parsed = None
+            json_match = _RE_JSON_BLOCK.search(sanitized)
+            if json_match:
+                try:
+                    parsed = json.loads(json_match.group(0))
+                except json.JSONDecodeError:
+                    pass
+        return parsed if isinstance(parsed, dict) else None
+
+    def _apply_parsed_json_dict(self, parsed: Dict[str, Any]) -> None:
+        """Applies parsed JSON fields to extracted Chinese, Japanese, and TTS parameters."""
+        self.chinese_extracted = parsed.get("chinese", self.chinese_extracted)
+        self.japanese_extracted = parsed.get("japanese", self.japanese_extracted)
+        if "emotion" in parsed:
+            norm_e = _normalize_valid_emotion(parsed["emotion"])
+            if norm_e:
+                self.emotion_extracted = norm_e
+        # Parse tts block
+        if "tts" in parsed and isinstance(parsed["tts"], dict):
+            t_dict = parsed["tts"]
+            if "speed" in t_dict or "speed_factor" in t_dict:
+                raw_sp = t_dict.get("speed", t_dict.get("speed_factor"))
+                self.tts_speed = clamp_dynamic_speed(raw_sp)
+                self.tts_params["speed"] = self.tts_speed
+            if "temp" in t_dict or "temperature" in t_dict:
+                raw_temp = t_dict.get("temp", t_dict.get("temperature"))
+                self.tts_temperature = clamp_dynamic_temperature(raw_temp)
+                self.tts_params["temperature"] = self.tts_temperature
+                self.tts_params["temp"] = self.tts_temperature
+            if "emotion" in t_dict:
+                norm_te = _normalize_valid_emotion(t_dict["emotion"])
+                if norm_te:
+                    self.tts_emotion = norm_te
+                    self.emotion_extracted = norm_te
+                    self.tts_params["emotion"] = norm_te
+
+    def _apply_fallback_buffer_parsing(self, sanitized: str) -> None:
+        """Extracts Chinese, Japanese, and TTS parameters using regex and heuristics on unclosed buffer."""
+        ch_match = _RE_CHINESE_FIELD.search(sanitized)
+        if ch_match:
+            self.chinese_extracted = self._unescape_json_string(ch_match.group(1))
+        ja_match = _RE_JAPANESE_FIELD.search(sanitized)
+        if ja_match:
+            self.japanese_extracted = self._unescape_json_string(ja_match.group(1))
+        self._parse_dynamic_tts_block(sanitized)
+
+        # Fallback for structured text without valid JSON
+        ch_fallback = _RE_CHINESE_FALLBACK.search(sanitized)
+        ja_fallback = _RE_JAPANESE_FALLBACK.search(sanitized)
+        if ch_fallback:
+            self.chinese_extracted = ch_fallback.group(1).strip()
+        if ja_fallback:
+            self.japanese_extracted = ja_fallback.group(1).strip()
+        if not self.chinese_extracted:
+            self.chinese_extracted = sanitized
+
+        if self.chinese_extracted and "【" in self.chinese_extracted and "】" in self.chinese_extracted:
+            ja_bracket = _RE_BRACKETED_JAPANESE.search(self.chinese_extracted)
+            if ja_bracket:
+                if not self.japanese_extracted or self.japanese_extracted == self.chinese_extracted:
+                    self.japanese_extracted = ja_bracket.group(1).strip()
+                self.chinese_extracted = _RE_BRACKETED_JAPANESE_STRIP.sub('', self.chinese_extracted).strip()
+
+        if not self.japanese_extracted:
+            self.japanese_extracted = self.chinese_extracted
+
+    def _extract_trailing_bracketed_emotion(self) -> None:
+        """Extracts and strips bracketed emotion from extracted Chinese or Japanese text if emotion is unset."""
+        if self.emotion_extracted:
+            return
+        lead_emo = None
+        if self.chinese_extracted:
+            lead_emo, cl_ch = extract_bracketed_emotion(self.chinese_extracted)
+            if lead_emo and cl_ch:
+                self.chinese_extracted = cl_ch
+        if not lead_emo and self.japanese_extracted:
+            lead_emo, cl_ja = extract_bracketed_emotion(self.japanese_extracted)
+            if lead_emo and cl_ja:
+                self.japanese_extracted = cl_ja
+        if lead_emo:
+            self._set_lead_emotion(lead_emo)
+
     def finalize(self) -> Tuple[str, str, List[str]]:
         """
         Flushes parser buffer at end of stream.
@@ -437,86 +525,13 @@ class StreamingBilingualParser:
         """
         sanitized = self.clean_markdown_delimiters(self.buffer).strip()
 
-        # Try full JSON parsing (including finding JSON block within leading text)
-        parsed = None
-        try:
-            parsed = json.loads(sanitized)
-        except json.JSONDecodeError:
-            json_match = _RE_JSON_BLOCK.search(sanitized)
-            if json_match:
-                try:
-                    parsed = json.loads(json_match.group(0))
-                except json.JSONDecodeError:
-                    pass
-
-        if isinstance(parsed, dict):
-            self.chinese_extracted = parsed.get("chinese", self.chinese_extracted)
-            self.japanese_extracted = parsed.get("japanese", self.japanese_extracted)
-            if "emotion" in parsed:
-                norm_e = _normalize_valid_emotion(parsed["emotion"])
-                if norm_e:
-                    self.emotion_extracted = norm_e
-            # Parse tts block
-            if "tts" in parsed and isinstance(parsed["tts"], dict):
-                t_dict = parsed["tts"]
-                if "speed" in t_dict or "speed_factor" in t_dict:
-                    raw_sp = t_dict.get("speed", t_dict.get("speed_factor"))
-                    self.tts_speed = clamp_dynamic_speed(raw_sp)
-                    self.tts_params["speed"] = self.tts_speed
-                if "temp" in t_dict or "temperature" in t_dict:
-                    raw_temp = t_dict.get("temp", t_dict.get("temperature"))
-                    self.tts_temperature = clamp_dynamic_temperature(raw_temp)
-                    self.tts_params["temperature"] = self.tts_temperature
-                    self.tts_params["temp"] = self.tts_temperature
-                if "emotion" in t_dict:
-                    norm_te = _normalize_valid_emotion(t_dict["emotion"])
-                    if norm_te:
-                        self.tts_emotion = norm_te
-                        self.emotion_extracted = norm_te
-                        self.tts_params["emotion"] = norm_te
+        parsed = self._parse_json_payload(sanitized)
+        if parsed is not None:
+            self._apply_parsed_json_dict(parsed)
         else:
-            # Try regex extraction for unclosed JSON
-            ch_match = _RE_CHINESE_FIELD.search(sanitized)
-            if ch_match:
-                self.chinese_extracted = self._unescape_json_string(ch_match.group(1))
-            ja_match = _RE_JAPANESE_FIELD.search(sanitized)
-            if ja_match:
-                self.japanese_extracted = self._unescape_json_string(ja_match.group(1))
-            self._parse_dynamic_tts_block(sanitized)
+            self._apply_fallback_buffer_parsing(sanitized)
 
-            # Fallback for structured text without valid JSON
-            ch_fallback = _RE_CHINESE_FALLBACK.search(sanitized)
-            ja_fallback = _RE_JAPANESE_FALLBACK.search(sanitized)
-            if ch_fallback:
-                self.chinese_extracted = ch_fallback.group(1).strip()
-            if ja_fallback:
-                self.japanese_extracted = ja_fallback.group(1).strip()
-            if not self.chinese_extracted:
-                self.chinese_extracted = sanitized
-
-            if self.chinese_extracted and "【" in self.chinese_extracted and "】" in self.chinese_extracted:
-                ja_bracket = _RE_BRACKETED_JAPANESE.search(self.chinese_extracted)
-                if ja_bracket:
-                    if not self.japanese_extracted or self.japanese_extracted == self.chinese_extracted:
-                        self.japanese_extracted = ja_bracket.group(1).strip()
-                    self.chinese_extracted = _RE_BRACKETED_JAPANESE_STRIP.sub('', self.chinese_extracted).strip()
-
-            if not self.japanese_extracted:
-                self.japanese_extracted = self.chinese_extracted
-
-        if not self.emotion_extracted:
-            lead_emo = None
-            if self.chinese_extracted:
-                lead_emo, cl_ch = extract_bracketed_emotion(self.chinese_extracted)
-                if lead_emo and cl_ch:
-                    self.chinese_extracted = cl_ch
-            if not lead_emo and self.japanese_extracted:
-                lead_emo, cl_ja = extract_bracketed_emotion(self.japanese_extracted)
-                if lead_emo and cl_ja:
-                    self.japanese_extracted = cl_ja
-            if lead_emo:
-                self._set_lead_emotion(lead_emo)
-
+        self._extract_trailing_bracketed_emotion()
         self.emotion_extracted = classify_emotion(self.chinese_extracted, self.japanese_extracted, self.emotion_extracted)
 
         remaining_sentences: List[str] = []
