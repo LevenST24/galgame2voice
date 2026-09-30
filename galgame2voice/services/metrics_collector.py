@@ -73,6 +73,22 @@ DEFAULT_FALLBACK_PRICE = (0.15, 0.60)
 USD_TO_CNY_RATE = 7.20
 
 
+def _safe_nonneg_int(val: Any) -> int:
+    """Safely coerces val to a non-negative integer, returning 0 on None or conversion error."""
+    try:
+        return max(0, int(val)) if val is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_nonneg_float(val: Any) -> float:
+    """Safely coerces val to a non-negative float, returning 0.0 on None or conversion error."""
+    try:
+        return max(0.0, float(val)) if val is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class MetricsCollector:
     """
     Coordinates real-time metric emission, token estimation, cost calculation,
@@ -100,14 +116,8 @@ class MetricsCollector:
         provider_models = MODEL_PRICING_MAP.get(pid, {})
         input_rate, output_rate = provider_models.get(m_name, provider_models.get("default", DEFAULT_FALLBACK_PRICE))
 
-        try:
-            p_tok = max(0, int(prompt_tokens)) if prompt_tokens is not None else 0
-        except (TypeError, ValueError):
-            p_tok = 0
-        try:
-            c_tok = max(0, int(completion_tokens)) if completion_tokens is not None else 0
-        except (TypeError, ValueError):
-            c_tok = 0
+        p_tok = _safe_nonneg_int(prompt_tokens)
+        c_tok = _safe_nonneg_int(completion_tokens)
 
         cost_usd = ((p_tok * input_rate) + (c_tok * output_rate)) / 1_000_000.0
         cost_cny = cost_usd * USD_TO_CNY_RATE
@@ -157,14 +167,8 @@ class MetricsCollector:
         Records telemetry for an end-to-end request.
         Updates in-memory ring buffer and persists asynchronously to SQLite.
         """
-        try:
-            safe_prompt_tok = max(0, int(prompt_tokens)) if prompt_tokens is not None else 0
-        except (TypeError, ValueError):
-            safe_prompt_tok = 0
-        try:
-            safe_comp_tok = max(0, int(completion_tokens)) if completion_tokens is not None else 0
-        except (TypeError, ValueError):
-            safe_comp_tok = 0
+        safe_prompt_tok = _safe_nonneg_int(prompt_tokens)
+        safe_comp_tok = _safe_nonneg_int(completion_tokens)
 
         cost_usd, cost_cny = self.calculate_cost(
             provider_id=provider_id,
@@ -175,18 +179,9 @@ class MetricsCollector:
         total_tokens = safe_prompt_tok + safe_comp_tok
         iso_timestamp = datetime.now(timezone.utc).isoformat()
 
-        try:
-            safe_ttft = max(0.0, float(ttft_ms))
-        except (TypeError, ValueError):
-            safe_ttft = 0.0
-        try:
-            safe_tts_first = max(0.0, float(tts_first_chunk_ms))
-        except (TypeError, ValueError):
-            safe_tts_first = 0.0
-        try:
-            safe_total_lat = max(0.0, float(total_latency_ms))
-        except (TypeError, ValueError):
-            safe_total_lat = 0.0
+        safe_ttft = _safe_nonneg_float(ttft_ms)
+        safe_tts_first = _safe_nonneg_float(tts_first_chunk_ms)
+        safe_total_lat = _safe_nonneg_float(total_latency_ms)
 
         metric_record = {
             "timestamp": iso_timestamp,
@@ -202,8 +197,8 @@ class MetricsCollector:
             "ttft_ms": round(safe_ttft, 1),
             "tts_first_chunk_ms": round(safe_tts_first, 1),
             "total_latency_ms": round(safe_total_lat, 1),
-            "tts_cached_chunks": max(0, int(tts_cached_chunks or 0)),
-            "tts_generated_chunks": max(0, int(tts_generated_chunks or 0)),
+            "tts_cached_chunks": _safe_nonneg_int(tts_cached_chunks),
+            "tts_generated_chunks": _safe_nonneg_int(tts_generated_chunks),
         }
 
         # Add to in-memory ring buffer

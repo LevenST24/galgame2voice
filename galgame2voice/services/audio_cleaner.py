@@ -148,6 +148,37 @@ async def _clean_lru_cache_from_db(
     return len(unlinked_keys), unlinked_keys
 
 
+async def _fetch_protected_audio_names(conn: Optional[aiosqlite.Connection]) -> Set[str]:
+    """Queries voice_profiles to protect active reference audio files from cleanup."""
+    protected: Set[str] = set()
+    if conn is None:
+        return protected
+    try:
+        cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles;")
+        rows = await cur.fetchall()
+        for r in rows:
+            if r and r[0]:
+                protected.add(Path(r[0]).name.lower())
+    except Exception as prof_err:
+        logger.debug("Failed querying protected voice profile audio names: %s", prof_err)
+    return protected
+
+
+async def _purge_unlinked_cache_entries(conn: aiosqlite.Connection, unlinked_keys: List[str]) -> None:
+    """Purges database records for unlinked cache files in batches."""
+    async with immediate_transaction(conn):
+        for batch_idx in range(0, len(unlinked_keys), PURGE_BATCH_SIZE):
+            batch = unlinked_keys[batch_idx:batch_idx + PURGE_BATCH_SIZE]
+            filenames = [f"{k}.wav" for k in batch]
+            all_params = batch + filenames + batch
+            p_batch = ",".join(["?"] * len(batch))
+            p_files = ",".join(["?"] * len(filenames))
+            await conn.execute(
+                f"DELETE FROM tts_cache_entries WHERE cache_key IN ({p_batch}) OR audio_filename IN ({p_files}) OR audio_filename IN ({p_batch});",
+                all_params,
+            )
+
+
 async def _run_audio_cleanup_cycle(audio_dir: Path) -> None:
     """Executes a single cycle of audio retention and LRU cache eviction."""
     db_getter = _resolve_get_db()
@@ -158,15 +189,7 @@ async def _run_audio_cleanup_cycle(audio_dir: Path) -> None:
     try:
         async with db_getter() as conn:
             db_settings = await crud.get_settings_raw(conn)
-            if conn is not None:
-                try:
-                    cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles;")
-                    rows = await cur.fetchall()
-                    for r in rows:
-                        if r and r[0]:
-                            protected_audio_names.add(Path(r[0]).name.lower())
-                except Exception as prof_err:
-                    logger.debug("Failed querying protected voice profile audio names: %s", prof_err)
+            protected_audio_names = await _fetch_protected_audio_names(conn)
 
             # LRU Eviction: SQLite last_accessed_at is the sole authority for 7-day retention
             now = time.time()
@@ -199,17 +222,7 @@ async def _run_audio_cleanup_cycle(audio_dir: Path) -> None:
     if unlinked_keys:
         try:
             async with db_getter() as conn:
-                async with immediate_transaction(conn):
-                    for batch_idx in range(0, len(unlinked_keys), PURGE_BATCH_SIZE):
-                        batch = unlinked_keys[batch_idx:batch_idx + PURGE_BATCH_SIZE]
-                        filenames = [f"{k}.wav" for k in batch]
-                        all_params = batch + filenames + batch
-                        p_batch = ",".join(["?"] * len(batch))
-                        p_files = ",".join(["?"] * len(filenames))
-                        await conn.execute(
-                            f"DELETE FROM tts_cache_entries WHERE cache_key IN ({p_batch}) OR audio_filename IN ({p_files}) OR audio_filename IN ({p_batch});",
-                            all_params,
-                        )
+                await _purge_unlinked_cache_entries(conn, unlinked_keys)
         except Exception as db_clean_err:
             logger.debug("Failed to purge tts_cache_entries for unlinked keys: %s", db_clean_err)
 
