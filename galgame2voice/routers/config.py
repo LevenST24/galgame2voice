@@ -77,7 +77,7 @@ class ConfigPayload(BaseModel):
     summary="Get Global Configuration",
     description="Returns current system settings and active provider with masked sensitive keys.",
 )
-async def get_config():
+async def get_config() -> Dict[str, Any]:
     async with get_db() as conn:
         settings = await crud.get_settings(conn, mask=True)
         active_provider = await crud.get_active_provider(conn, mask=True)
@@ -169,7 +169,7 @@ def _sync_precision_cache(new_precision: Optional[str]) -> None:
     summary="Update Global Configuration",
     description="Updates system configuration values in SQLite persistence. GPT-SoVITS URL changes are applied live (no restart needed).",
 )
-async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, Any]]):
+async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, Any]]) -> Dict[str, Any]:
     update_data: Dict[str, Any] = {}
     if isinstance(payload, ConfigPayload) and payload.settings is not None:
         update_data = payload.settings

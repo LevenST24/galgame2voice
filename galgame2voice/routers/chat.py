@@ -144,7 +144,7 @@ def _resolve_request_tts_options(req: ChatRequest) -> Dict[str, Any]:
 
 
 @router.post("/api/chat/stream", summary="Real-time SSE bilingual streaming chat")
-async def chat_stream_endpoint(req: ChatRequest, request: Request):
+async def chat_stream_endpoint(req: ChatRequest, request: Request) -> StreamingResponse:
     """
     Server-Sent Events endpoint streaming real-time Chinese delta text
     and synthesized Japanese audio chunks.
@@ -206,7 +206,7 @@ async def chat_stream_endpoint(req: ChatRequest, request: Request):
 # ============================================================================
 
 @router.post("/api/chat", summary="Synchronous chat completion")
-async def chat_sync_endpoint(req: ChatRequest):
+async def chat_sync_endpoint(req: ChatRequest) -> Dict[str, Any]:
     """
     Non-streaming synchronous chat completion returning bilingual text and audio URL.
     """
@@ -250,7 +250,7 @@ async def legacy_get_chat(
     session_id: str = Query(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Session ID"),
     character_name: Optional[str] = Query(default=None, max_length=100, description="Character name"),
     preset: Optional[str] = Query(default=None, max_length=64, description="TTS preset"),
-):
+) -> Dict[str, Any]:
     """
     Legacy backward-compatible GET endpoint for simple chat queries.
     """
@@ -284,7 +284,7 @@ async def legacy_get_chat(
 
 
 @router.post("/ai/chat", summary="Legacy POST chat completion endpoint")
-async def legacy_post_chat(req: ChatRequest):
+async def legacy_post_chat(req: ChatRequest) -> Dict[str, Any]:
     """
     Legacy backward-compatible POST endpoint.
     """
@@ -306,7 +306,7 @@ class SessionUpsertRequest(BaseModel):
 
 
 @router.get("/api/chat/sessions", summary="List all chat sessions with metadata")
-async def list_chat_sessions(limit: int = Query(default=50, ge=1, le=200)):
+async def list_chat_sessions(limit: int = Query(default=50, ge=1, le=200)) -> Dict[str, Any]:
     """
     Returns list of all conversation sessions from SQLite database in reverse-chronological order,
     including inferred human-readable title, message count, and last message preview.
@@ -349,7 +349,7 @@ def _validate_non_empty_session_id(session_id: str) -> str:
 
 
 @router.post("/api/chat/sessions", summary="Create or update conversation session")
-async def upsert_chat_session(req: SessionUpsertRequest):
+async def upsert_chat_session(req: SessionUpsertRequest) -> Dict[str, Any]:
     """
     Creates or updates a conversation session in SQLite database,
     persisting title and custom generation parameters.
@@ -375,7 +375,7 @@ async def upsert_chat_session(req: SessionUpsertRequest):
 
 
 @router.delete("/api/chat/sessions/{session_id}", summary="Delete conversation session")
-async def delete_chat_session_by_id(session_id: str):
+async def delete_chat_session_by_id(session_id: str) -> Dict[str, Any]:
     """
     Deletes a conversation session and all its cascading messages.
     """
@@ -393,7 +393,7 @@ async def delete_chat_session_by_id(session_id: str):
 async def get_chat_history(
     session_id: str = Query(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Conversation session ID"),
     limit: int = Query(default=100, ge=1, le=500, description="Max message count to return"),
-):
+) -> Dict[str, Any]:
     """
     Returns chronological list of previous messages in the session for UI restoration.
     """
@@ -410,7 +410,7 @@ async def get_chat_history(
 @router.delete("/api/chat/history", summary="Clear session message history")
 async def clear_chat_history(
     session_id: str = Query(..., max_length=SESSION_ID_MAX_LENGTH, description="Conversation session ID to reset"),
-):
+) -> Dict[str, Any]:
     """
     Deletes all messages associated with the specified session ID.
     """
@@ -432,7 +432,7 @@ class MessageJapaneseRequest(BaseModel):
 
 
 @router.post("/api/chat/japanese", summary="Get or resolve backend synthesized Japanese text")
-async def get_message_japanese_endpoint(req: MessageJapaneseRequest):
+async def get_message_japanese_endpoint(req: MessageJapaneseRequest) -> Dict[str, Any]:
     """
     Returns the Japanese original text used for TTS synthesis of this message.
     Looks up database history first, falling back to LLM translation.

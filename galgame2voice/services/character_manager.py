@@ -425,6 +425,21 @@ class CharacterManager:
             return True
         return not Path(w_path).exists()
 
+    @staticmethod
+    def _is_cross_character_audio(current_ref: str, pkg: CharacterPackage) -> bool:
+        """Determines if the referenced audio path belongs to a different character package."""
+        if not current_ref:
+            return False
+        norm_ref = current_ref.replace("\\", "/").lower()
+        is_natsume = (pkg.id.lower() in ("natsume", "shiki_natsume") or "夏目" in pkg.name)
+        if not is_natsume and "natsume" in norm_ref:
+            return True
+        if "characters/" in current_ref.replace("\\", "/"):
+            ref_char_part = current_ref.replace("\\", "/").split("characters/")[1].split("/")[0]
+            if ref_char_part and ref_char_part.lower() != pkg.id.lower() and ref_char_part != pkg.name:
+                return True
+        return False
+
     async def _prune_ghost_profiles(self, conn: aiosqlite.Connection) -> int:
         """Prunes ghost voice_profile records whose package directory under characters/ no longer exists."""
         pruned_count = 0
@@ -542,20 +557,10 @@ class CharacterManager:
         # 1) current path is empty or does not exist on disk
         # 2) character has ref pointing to a different character's package directory
         # 3) non-Natsume character has ref pointing to Natsume audio
-        cross_character_audio = False
-        norm_ref = current_ref.replace("\\", "/").lower()
-        is_natsume = (pkg.id.lower() in ("natsume", "shiki_natsume") or "夏目" in pkg.name)
-        if not is_natsume and "natsume" in norm_ref:
-            cross_character_audio = True
-        elif current_ref and "characters/" in current_ref.replace("\\", "/"):
-            ref_char_part = current_ref.replace("\\", "/").split("characters/")[1].split("/")[0]
-            if ref_char_part and ref_char_part.lower() != pkg.id.lower() and ref_char_part != pkg.name:
-                cross_character_audio = True
-
         ref_needs_update = (
             not current_ref
             or not Path(current_ref).exists()
-            or cross_character_audio
+            or cls._is_cross_character_audio(current_ref, pkg)
         )
 
         if ref_needs_update and ref_audio_str:

@@ -333,6 +333,34 @@ class ChatService:
             active_prof = await crud.get_active_voice_profile(conn)
         return active_prof
 
+    async def _init_turn_session_and_message(
+        self,
+        conn: aiosqlite.Connection,
+        session_id: str,
+        prompt: str,
+        voice_profile_id: Optional[int],
+        tts_options: Optional[Dict[str, Any]],
+        character_name: Optional[str],
+    ) -> Tuple[Any, Any, Optional[Any], str, Optional[int]]:
+        """Atomically initializes session, records user message, and resolves voice profile & user identifiers."""
+        sess_obj = await crud.get_or_create_session(conn, session_id)
+        user_msg = await crud.add_message(conn, MessageCreate(
+            session_id=session_id,
+            role="user",
+            content_chinese=prompt,
+            content_japanese="",
+            audio_url="",
+            latency_ms=0,
+        ))
+
+        active_prof = await self._resolve_voice_profile(
+            conn, voice_profile_id, tts_options, sess_obj, character_name
+        )
+
+        user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
+        profile_id = active_prof.id if active_prof else None
+        return sess_obj, user_msg, active_prof, user_id, profile_id
+
     async def _prune_orphaned_user_message(self, user_msg_id: Optional[int], context_label: str = "") -> None:
         """Prunes orphaned user message when downstream processing fails before assistant reply persistence."""
         if not user_msg_id:
@@ -465,23 +493,15 @@ class ChatService:
         try:
             async with get_db(self.db_path) as conn:
                 async with immediate_transaction(conn):
-                    # Ensure session exists and record user message in a single atomic write transaction
-                    sess_obj = await crud.get_or_create_session(conn, session_id)
-                    user_msg = await crud.add_message(conn, MessageCreate(
-                        session_id=session_id,
-                        role="user",
-                        content_chinese=prompt,
-                        content_japanese="",
-                        audio_url="",
-                        latency_ms=0,
-                    ))
-
-                    active_prof = await self._resolve_voice_profile(
-                        conn, voice_profile_id, tts_options, sess_obj, character_name
+                    (
+                        sess_obj,
+                        user_msg,
+                        active_prof,
+                        user_id,
+                        profile_id,
+                    ) = await self._init_turn_session_and_message(
+                        conn, session_id, prompt, voice_profile_id, tts_options, character_name
                     )
-
-                    user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
-                    profile_id = active_prof.id if active_prof else None
 
                 # Extract user memory facts and init character affection in a TRUE background task (off TTFT path)
                 async def _bg_affection_and_memory():
@@ -628,22 +648,15 @@ class ChatService:
         try:
             async with get_db(self.db_path) as conn:
                 async with immediate_transaction(conn):
-                    sess_obj = await crud.get_or_create_session(conn, session_id)
-                    user_msg = await crud.add_message(conn, MessageCreate(
-                        session_id=session_id,
-                        role="user",
-                        content_chinese=prompt,
-                        content_japanese="",
-                        audio_url="",
-                        latency_ms=0,
-                    ))
-
-                    active_prof = await self._resolve_voice_profile(
-                        conn, voice_profile_id, tts_options, sess_obj, character_name
+                    (
+                        sess_obj,
+                        user_msg,
+                        active_prof,
+                        user_id,
+                        profile_id,
+                    ) = await self._init_turn_session_and_message(
+                        conn, session_id, prompt, voice_profile_id, tts_options, character_name
                     )
-
-                    user_id = sess_obj.user_id if sess_obj and sess_obj.user_id else "default_user"
-                    profile_id = active_prof.id if active_prof else None
                     await crud.get_or_create_character_affection(
                         conn, user_id=user_id, character_id=profile_id or 1
                     )

@@ -10,6 +10,7 @@ import os
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
+import aiosqlite
 from fastapi import APIRouter, HTTPException, Query, status, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -101,7 +102,7 @@ class SynthesizeRequest(BaseModel):
     summary="List Voice Profiles",
     description="Returns all character voice profiles and active profile ID.",
 )
-async def list_voice_profiles():
+async def list_voice_profiles() -> Dict[str, Any]:
     async with get_db() as conn:
         profiles = await crud.list_voice_profiles(conn)
         active = await crud.get_active_voice_profile(conn)
@@ -117,7 +118,7 @@ async def list_voice_profiles():
     summary="Create Voice Profile",
     description="Creates a new character voice profile with GPT/SoVITS weights and reference audio.",
 )
-async def create_voice_profile(req: VoiceProfileCreateRequest):
+async def create_voice_profile(req: VoiceProfileCreateRequest) -> Dict[str, Any]:
     ref_audio = to_project_relative_path(req.refer_audio_path or req.ref_audio_path or "")
     prompt_txt = req.refer_text or req.prompt_text or ""
     prompt_l = req.refer_language or req.prompt_lang or "ja"
@@ -173,7 +174,7 @@ async def create_voice_profile(req: VoiceProfileCreateRequest):
     summary="Get Voice Profile by ID",
     description="Returns detailed parameters of a single voice profile.",
 )
-async def get_voice_profile(profile_id: int):
+async def get_voice_profile(profile_id: int) -> Dict[str, Any]:
     if profile_id < 1:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -194,7 +195,7 @@ async def get_voice_profile(profile_id: int):
     summary="Update Voice Profile",
     description="Updates existing voice profile weights and prompt parameters.",
 )
-async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate):
+async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate) -> Dict[str, Any]:
     if profile_id < 1:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -238,7 +239,7 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate):
     summary="Delete Voice Profile",
     description="Deletes a voice profile by ID.",
 )
-async def delete_voice_profile(profile_id: int):
+async def delete_voice_profile(profile_id: int) -> Dict[str, Any]:
     if profile_id < 1:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -268,7 +269,7 @@ async def delete_voice_profile(profile_id: int):
 
 
 async def _lookup_voice_profile(
-    conn: Any,
+    conn: aiosqlite.Connection,
     profile_id: Optional[int],
     profile_name: Optional[str],
 ) -> Optional[Any]:
@@ -291,7 +292,7 @@ async def _lookup_voice_profile(
     summary="Switch Active Voice Profile",
     description="Atomically switches GPT-SoVITS weights to selected profile with automatic rollback.",
 )
-async def switch_voice(req: VoiceSwitchRequest):
+async def switch_voice(req: VoiceSwitchRequest) -> Dict[str, Any]:
     profile_id = req.profile_id if req.profile_id is not None else req.id
     raw_name = req.profile_name or req.name
     profile_name = raw_name.strip() if raw_name else None
@@ -372,7 +373,7 @@ async def switch_voice(req: VoiceSwitchRequest):
     summary="Synthesize Text to Speech",
     description="Synthesizes text into WAV audio using active voice profile and specified parameters.",
 )
-async def synthesize_speech(req: SynthesizeRequest):
+async def synthesize_speech(req: SynthesizeRequest) -> Response:
     cleaned_text = normalize_japanese_for_tts(req.text)
     if not cleaned_text:
         raise HTTPException(
@@ -463,7 +464,7 @@ _FS_BROWSE_EXTS: Dict[str, set[str]] = {
     summary="Open Native Windows File Browser",
     description="Opens native OS file dialog to let the user select a file (.ckpt, .pth, audio).",
 )
-async def open_native_file_dialog(req: BrowseFileRequest):
+async def open_native_file_dialog(req: BrowseFileRequest) -> Dict[str, Any]:
     def _run_picker():
         try:
             import tkinter as tk
