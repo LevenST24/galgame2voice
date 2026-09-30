@@ -402,16 +402,23 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     await asyncio.sleep(delay)
                     continue
                 raise RuntimeError(f"Streaming request failed to {url}: {exc}") from exc
+            except BaseException:
+                await aclose_stream_context(stream_ctx, client)
+                raise
 
             if response.status_code in (401, 403):
-                error_body = await response.aread()
-                await aclose_stream_context(stream_ctx, client)
+                try:
+                    error_body = await response.aread()
+                finally:
+                    await aclose_stream_context(stream_ctx, client)
                 raise ValueError(f"Authentication error ({response.status_code}): {error_body.decode('utf-8', errors='ignore')}")
 
             if response.status_code in TRANSIENT_STATUS_CODES:
-                error_body = await response.aread()
+                try:
+                    error_body = await response.aread()
+                finally:
+                    await aclose_stream_context(stream_ctx, client)
                 retry_after = parse_retry_after(response.headers)
-                await aclose_stream_context(stream_ctx, client)
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay, retry_after)
                     logger.warning(
@@ -425,8 +432,10 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 raise RuntimeError(f"API returned status {response.status_code}: {error_body.decode('utf-8', errors='ignore')}")
 
             if response.status_code != 200:
-                error_body = await response.aread()
-                await aclose_stream_context(stream_ctx, client)
+                try:
+                    error_body = await response.aread()
+                finally:
+                    await aclose_stream_context(stream_ctx, client)
                 raise RuntimeError(f"API returned status {response.status_code}: {error_body.decode('utf-8', errors='ignore')}")
 
             yielded_any = False

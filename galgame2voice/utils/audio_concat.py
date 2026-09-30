@@ -119,6 +119,7 @@ def concat_wav_files(
                     silence_bytes = _build_silence_bytes(base_params, pause_duration)
                     if silence_bytes:
                         w_out.writeframes(silence_bytes)
+                raw_frames = b""
                 try:
                     with wave.open(str(p), "rb") as w_in:
                         n_frames = w_in.getnframes()
@@ -126,10 +127,25 @@ def concat_wav_files(
                         if not raw_frames:
                             continue
                         raw_frames = _apply_micro_fade(raw_frames, base_params)
-                        w_out.writeframes(raw_frames)
                 except Exception as err:
                     logger.warning("Error reading frames from chunk %s: %s", p, err)
+                    continue
+
+                if raw_frames:
+                    w_out.writeframes(raw_frames)
         return True
     except Exception as exc:
         logger.error("Failed to write concatenated WAV to %s: %s", out_p, exc)
+        try:
+            if out_p.exists():
+                out_p.unlink(missing_ok=True)
+        except OSError:
+            pass
         return False
+    except BaseException:
+        try:
+            if out_p.exists():
+                out_p.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise

@@ -193,6 +193,16 @@ async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
     except asyncio.CancelledError:
         await _terminate_subprocess(proc)
         raise
+    except BaseException:
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=3.0)
+        except Exception:
+            pass
+        raise
 
     if proc.returncode != 0:
         err_msg = stderr.decode("utf-8", errors="replace")
