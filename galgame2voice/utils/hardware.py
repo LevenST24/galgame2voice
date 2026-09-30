@@ -281,12 +281,17 @@ def _detect_torch_gpus() -> list[str]:
     return []
 
 
+def _clean_output_lines(output: str | None) -> list[str]:
+    """Splits command output into stripped non-empty lines."""
+    if not output:
+        return []
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
 def _detect_nvidia_smi_gpus() -> list[str]:
     """Detects GPU names using nvidia-smi tool output."""
     out = _exec_command_output(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
-    if out:
-        return [line.strip() for line in out.splitlines() if line.strip()]
-    return []
+    return _clean_output_lines(out)
 
 
 def _detect_windows_gpus() -> list[str]:
@@ -304,9 +309,7 @@ def _detect_windows_gpus() -> list[str]:
         ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
         timeout=3.0,
     )
-    if out:
-        return [line.strip() for line in out.splitlines() if line.strip()]
-    return []
+    return _clean_output_lines(out)
 
 
 def _detect_linux_lspci_gpus() -> list[str]:

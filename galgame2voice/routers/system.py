@@ -382,32 +382,33 @@ def _create_pre_update_backup(project_root: Path, modified_files: list[str]) -> 
         return None
 
 
+def _make_update_failure_response(
+    output: str,
+    version: str = "unknown",
+    error: str | None = None,
+) -> SystemUpdateResponse:
+    """Helper to construct a standardized failed SystemUpdateResponse."""
+    return SystemUpdateResponse(
+        success=False,
+        rebuilt_frontend=False,
+        restart_required=False,
+        output=output,
+        current_version=version,
+        previous_version=version,
+        error=error if error is not None else output,
+    )
+
+
 def _verify_update_preflight(project_root: Path) -> tuple[str | None, SystemUpdateResponse | None]:
     """Checks git repo validity, allowed remote source, and detached HEAD state."""
     rc, out, _ = _run_git_cmd(["rev-parse", "--is-inside-work-tree"], cwd=project_root, timeout=5.0)
     if rc != 0 or out != "true":
         msg = "更新失败: 当前项目目录不是有效 Git 仓库。"
-        return None, SystemUpdateResponse(
-            success=False,
-            rebuilt_frontend=False,
-            restart_required=False,
-            output=msg,
-            current_version="unknown",
-            previous_version="unknown",
-            error=msg,
-        )
+        return None, _make_update_failure_response(msg, version="unknown", error=msg)
 
     remote_err = _verify_remote_url_allowed(project_root)
     if remote_err:
-        return None, SystemUpdateResponse(
-            success=False,
-            rebuilt_frontend=False,
-            restart_required=False,
-            output=remote_err,
-            current_version="unknown",
-            previous_version="unknown",
-            error=remote_err,
-        )
+        return None, _make_update_failure_response(remote_err, version="unknown", error=remote_err)
 
     _, before_short, _ = _run_git_cmd(["rev-parse", "--short", "HEAD"], cwd=project_root)
     before_short = before_short or "unknown"
@@ -415,15 +416,7 @@ def _verify_update_preflight(project_root: Path) -> tuple[str | None, SystemUpda
     rc, branch, _ = _run_git_cmd(["rev-parse", "--abbrev-ref", "HEAD"], cwd=project_root)
     if branch == "HEAD" or rc != 0:
         msg = "当前 Git 仓库处于游离分支 (Detached HEAD) 状态，无法自动拉取。请先签出具体分支 (如 git checkout main)。"
-        return before_short, SystemUpdateResponse(
-            success=False,
-            rebuilt_frontend=False,
-            restart_required=False,
-            output=msg,
-            current_version=before_short,
-            previous_version=before_short,
-            error="Detached HEAD",
-        )
+        return before_short, _make_update_failure_response(msg, version=before_short, error="Detached HEAD")
 
     return before_short, None
 
@@ -475,13 +468,9 @@ def _handle_uncommitted_modifications(
             "请先提交 (git commit) 或开启暂存选项 (stash_changes) 后再尝试更新：\n" +
             "\n".join(f" - {f}" for f in modified_files[:10])
         )
-        return SystemUpdateResponse(
-            success=False,
-            rebuilt_frontend=False,
-            restart_required=False,
-            output=msg,
-            current_version=before_short,
-            previous_version=before_short,
+        return _make_update_failure_response(
+            msg,
+            version=before_short,
             error="Uncommitted changes in local workspace",
         )
     return None
@@ -504,15 +493,7 @@ def _execute_update_pull_and_build(
     if pull_rc != 0:
         err_msg = pull_err or pull_out or "Git pull 异常退出"
         msg = f"Git 拉取更新失败 (退出码 {pull_rc}):\n{err_msg}"
-        return SystemUpdateResponse(
-            success=False,
-            rebuilt_frontend=False,
-            restart_required=False,
-            output=msg,
-            current_version=before_short,
-            previous_version=before_short,
-            error=err_msg,
-        ), []
+        return _make_update_failure_response(msg, version=before_short, error=err_msg), []
 
     _, after_full, _ = _run_git_cmd(["rev-parse", "HEAD"], cwd=project_root)
     _, after_short, _ = _run_git_cmd(["rev-parse", "--short", "HEAD"], cwd=project_root)

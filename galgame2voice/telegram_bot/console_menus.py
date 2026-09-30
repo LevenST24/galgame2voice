@@ -697,12 +697,22 @@ async def _edit_menu_text(
         await ctx.query.edit_message_text(text=text, reply_markup=markup)
 
 
+def _build_main_console_for_ctx(ctx: _CallbackContext) -> Any:
+    """Builds the main console coroutine configured with the callback context's chat/user/db identity."""
+    return build_main_console(
+        chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
+    )
+
+
+async def _return_to_main_console(ctx: _CallbackContext) -> None:
+    """Updates Telegram message text/markup to the main console."""
+    await _edit_menu_text(ctx, _build_main_console_for_ctx(ctx))
+
+
 async def _handle_main_menu(ctx: _CallbackContext) -> None:
     await _render_menu(
         ctx,
-        build_main_console(
-            chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
-        ),
+        _build_main_console_for_ctx(ctx),
         answer_text="已刷新控制台" if ctx.data == "menu_refresh" else None,
     )
 
@@ -767,12 +777,7 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
     else:
         if hasattr(ctx.query, "answer"):
             await ctx.query.answer(f"🌸 音色已切换为: {char_name}{warning_note}", show_alert=True)
-        await _edit_menu_text(
-            ctx,
-            build_main_console(
-                chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
-            ),
-        )
+        await _return_to_main_console(ctx)
 
 
 async def _handle_tts_menu(ctx: _CallbackContext) -> None:
@@ -951,9 +956,7 @@ async def _handle_set_history(ctx: _CallbackContext) -> None:
         setting_key="max_history_messages",
         log_name="History",
         success_tmpl="🧠 记忆轮数已调整为: {val} 轮",
-        menu_builder=lambda: build_main_console(
-            chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
-        ),
+        menu_builder=lambda: _build_main_console_for_ctx(ctx),
     )
 
 
@@ -995,12 +998,7 @@ async def _handle_set_model(ctx: _CallbackContext) -> None:
     else:
         if hasattr(ctx.query, "answer"):
             await ctx.query.answer(f"🤖 已激活大模型: {prov_name}", show_alert=True)
-        await _edit_menu_text(
-            ctx,
-            build_main_console(
-                chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
-            ),
-        )
+        await _return_to_main_console(ctx)
 
 
 async def _handle_metrics_menu(ctx: _CallbackContext) -> None:
@@ -1052,12 +1050,7 @@ async def _handle_reset_session(ctx: _CallbackContext) -> None:
         logger.warning("Could not clear session %s: %s", session_id, exc)
     if hasattr(ctx.query, "answer"):
         await ctx.query.answer("🗑️ 当前会话记忆已清空！", show_alert=True)
-    await _edit_menu_text(
-        ctx,
-        build_main_console(
-            chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
-        ),
-    )
+    await _return_to_main_console(ctx)
 
 
 _EXACT_CALLBACK_HANDLERS: dict[str, Callable] = {

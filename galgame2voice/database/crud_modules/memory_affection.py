@@ -267,24 +267,16 @@ async def get_or_create_character_affection(
     user_id: str = "default_user",
     character_id: int = 1
 ) -> CharacterAffectionResponse:
-    conn.row_factory = aiosqlite.Row
-    cursor = await conn.execute("""
-        SELECT * FROM character_affection WHERE user_id = ? AND character_id = ?;
-    """, (user_id, character_id))
-    row = await cursor.fetchone()
-
-    if row:
-        return _format_affection_response(dict(row))
+    existing = await get_character_affection(conn, user_id=user_id, character_id=character_id)
+    if existing is not None:
+        return existing
 
     async with immediate_transaction(conn):
         await conn.execute(_INSERT_DEFAULT_AFFECTION_SQL, (user_id, character_id))
 
-    cursor = await conn.execute("""
-        SELECT * FROM character_affection WHERE user_id = ? AND character_id = ?;
-    """, (user_id, character_id))
-    row = await cursor.fetchone()
-    if row:
-        return _format_affection_response(dict(row))
+    created = await get_character_affection(conn, user_id=user_id, character_id=character_id)
+    if created is not None:
+        return created
 
     return _build_default_affection_response(user_id=user_id, character_id=character_id)
 

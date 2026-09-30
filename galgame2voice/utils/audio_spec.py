@@ -148,23 +148,30 @@ def _spec_from_wave(w: Any) -> AudioSpec | None:
     return None
 
 
-def _probe_from_bytes(data: bytes) -> AudioSpec | None:
-    """Probes AudioSpec from in-memory byte buffer using soundfile, wave, and fallback parsers."""
-    if not data or len(data) < 12:
-        return None
-
-    # 1. Try soundfile
+def _probe_soundfile(source: Any) -> AudioSpec | None:
+    """Probes AudioSpec from path string or file-like buffer using soundfile."""
     try:
         import soundfile as sf
 
-        info = sf.info(io.BytesIO(data))
+        info = sf.info(source)
         return AudioSpec(
             duration_s=float(info.duration),
             sample_rate=int(info.samplerate),
             channels=int(info.channels),
         )
     except (RuntimeError, ValueError, TypeError, OSError, ImportError):
-        pass
+        return None
+
+
+def _probe_from_bytes(data: bytes) -> AudioSpec | None:
+    """Probes AudioSpec from in-memory byte buffer using soundfile, wave, and fallback parsers."""
+    if not data or len(data) < 12:
+        return None
+
+    # 1. Try soundfile
+    spec = _probe_soundfile(io.BytesIO(data))
+    if spec is not None:
+        return spec
 
     # 2. Try stdlib wave
     try:
@@ -237,17 +244,9 @@ class AudioSpecCache:
     @staticmethod
     def _probe(p: Path) -> AudioSpec | None:
         # 1. Try soundfile first
-        try:
-            import soundfile as sf
-
-            info = sf.info(str(p))
-            return AudioSpec(
-                duration_s=float(info.duration),
-                sample_rate=int(info.samplerate),
-                channels=int(info.channels),
-            )
-        except (RuntimeError, ValueError, TypeError, OSError, ImportError):
-            pass
+        spec = _probe_soundfile(str(p))
+        if spec is not None:
+            return spec
 
         suffix = p.suffix.lower()
         if suffix == ".wav":

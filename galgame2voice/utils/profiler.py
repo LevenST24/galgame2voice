@@ -103,17 +103,31 @@ class ChatTurnProfiler:
     def _diff_ms(self, t: float | None) -> float:
         return (t - self.t_start) * 1000.0 if t is not None else 0.0
 
+    def _calculate_milestones(self) -> dict[str, float]:
+        """Calculates elapsed milliseconds for all checkpoints relative to t_start."""
+        now = time.perf_counter()
+        return {
+            "ttft_ms": self._diff_ms(self.t_llm_first_token),
+            "sent_ms": self._diff_ms(self.t_first_sentence),
+            "disp_ms": self._diff_ms(self.t_tts_dispatch),
+            "upstream_ms": self._diff_ms(self.t_upstream_first_byte),
+            "infer_ms": self._diff_ms(self.t_tts_inference_done),
+            "ttfa_ms": self._diff_ms(self.t_first_audio) or (now - self.t_start) * 1000.0,
+            "delivered_ms": self._diff_ms(self.t_frontend_delivered),
+            "playback_ms": self._diff_ms(self.t_playback_started),
+        }
+
     def to_dict(self) -> dict[str, Any]:
         """Returns structured JSON-serializable telemetry data."""
-        now = time.perf_counter()
-        ttft_ms = self._diff_ms(self.t_llm_first_token)
-        sent_ms = self._diff_ms(self.t_first_sentence)
-        disp_ms = self._diff_ms(self.t_tts_dispatch)
-        upstream_ms = self._diff_ms(self.t_upstream_first_byte)
-        infer_ms = self._diff_ms(self.t_tts_inference_done)
-        ttfa_ms = self._diff_ms(self.t_first_audio) or (now - self.t_start) * 1000.0
-        delivered_ms = self._diff_ms(self.t_frontend_delivered)
-        playback_ms = self._diff_ms(self.t_playback_started)
+        m = self._calculate_milestones()
+        ttft_ms = m["ttft_ms"]
+        sent_ms = m["sent_ms"]
+        disp_ms = m["disp_ms"]
+        upstream_ms = m["upstream_ms"]
+        infer_ms = m["infer_ms"]
+        ttfa_ms = m["ttfa_ms"]
+        delivered_ms = m["delivered_ms"]
+        playback_ms = m["playback_ms"]
 
         cached_count = len(self.cache_hits)
         generated_count = len(self.cache_misses)
@@ -148,15 +162,15 @@ class ChatTurnProfiler:
 
     def render_ascii(self) -> str:
         """Renders the ASCII waterfall diagram regardless of enabled flag."""
-        now = time.perf_counter()
-        ttft_ms = self._diff_ms(self.t_llm_first_token)
-        sent_ms = self._diff_ms(self.t_first_sentence)
-        disp_ms = self._diff_ms(self.t_tts_dispatch)
-        upstream_ms = self._diff_ms(self.t_upstream_first_byte)
-        infer_ms = self._diff_ms(self.t_tts_inference_done)
-        ttfa_ms = self._diff_ms(self.t_first_audio) or (now - self.t_start) * 1000.0
-        deliv_ms = self._diff_ms(self.t_frontend_delivered)
-        play_ms = self._diff_ms(self.t_playback_started)
+        m = self._calculate_milestones()
+        ttft_ms = m["ttft_ms"]
+        sent_ms = m["sent_ms"]
+        disp_ms = m["disp_ms"]
+        upstream_ms = m["upstream_ms"]
+        infer_ms = m["infer_ms"]
+        ttfa_ms = m["ttfa_ms"]
+        deliv_ms = m["delivered_ms"]
+        play_ms = m["playback_ms"]
 
         max_metric = max(100.0, ttfa_ms, infer_ms, deliv_ms, play_ms)
         status = "PASS (<1000ms)" if ttfa_ms < 1000.0 else "WARN (>=1000ms)"
