@@ -356,6 +356,49 @@ async def switch_voice(req: VoiceSwitchRequest) -> Dict[str, Any]:
 # 3. Speech Synthesis Endpoints
 # ============================================================================
 
+def _collect_synthesize_options(req: SynthesizeRequest) -> Dict[str, Any]:
+    """Collects and merges top-level request fields into options dictionary."""
+    options: Dict[str, Any] = dict(req.options or {})
+    for field in (
+        "voice_profile_id", "speed", "top_k", "temperature", "top_p",
+        "text_language", "cut_option", "preset", "fragment_interval",
+        "batch_size", "emotion", "ai_adaptive_voice",
+    ):
+        val = getattr(req, field, None)
+        if val is not None:
+            options[field] = val
+    return options
+
+
+def _validate_synthesize_ref_audio(options: Dict[str, Any]) -> None:
+    """Validates reference audio path if present in options."""
+    ref_audio = options.get("ref_audio_path") or options.get("refer_audio_path")
+    if ref_audio:
+        try:
+            safe_resolve_audio_path(ref_audio)
+        except PathTraversalError as pte:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid reference audio path: {pte}",
+            ) from pte
+
+
+async def _ensure_voice_profile_available(manager: Any, options: Dict[str, Any]) -> None:
+    """Rejects synthesis if no character package or voice profile is available."""
+    if not options.get("ref_audio_path") and not options.get("refer_audio_path"):
+        async with get_db() as conn:
+            profiles = await crud.list_voice_profiles(conn)
+            has_server_audio = bool(
+                getattr(manager.client, "server", None)
+                and getattr(manager.client.server, "current_refer_audio", None)
+            )
+            if not profiles and not manager.client.current_refer_audio and not has_server_audio:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No character package or voice profile installed. Please install a character package to characters/ or configure a voice profile.",
+                )
+
+
 @router.post(
     "/synthesize",
     summary="Synthesize Text to Speech",
@@ -369,44 +412,15 @@ async def synthesize_speech(req: SynthesizeRequest) -> Response:
             detail="Text is empty after cleaning stage directions",
         )
 
-    # Collect and normalize options
-    options: Dict[str, Any] = dict(req.options or {})
-    for field in (
-        "voice_profile_id", "speed", "top_k", "temperature", "top_p",
-        "text_language", "cut_option", "preset", "fragment_interval",
-        "batch_size", "emotion", "ai_adaptive_voice",
-    ):
-        val = getattr(req, field, None)
-        if val is not None:
-            options[field] = val
-
+    options = _collect_synthesize_options(req)
     try:
         validate_user_tts_options(options)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
-    ref_audio = options.get("ref_audio_path") or options.get("refer_audio_path")
-    if ref_audio:
-        try:
-            safe_resolve_audio_path(ref_audio)
-        except PathTraversalError as pte:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid reference audio path: {pte}",
-            ) from pte
-
+    _validate_synthesize_ref_audio(options)
     manager = get_voice_manager()
-
-    # Reject synthesis if no character package or voice profile is available
-    if not options.get("ref_audio_path") and not options.get("refer_audio_path"):
-        async with get_db() as conn:
-            profiles = await crud.list_voice_profiles(conn)
-            has_server_audio = bool(getattr(manager.client, "server", None) and getattr(manager.client.server, "current_refer_audio", None))
-            if not profiles and not manager.client.current_refer_audio and not has_server_audio:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="No character package or voice profile installed. Please install a character package to characters/ or configure a voice profile.",
-                )
+    await _ensure_voice_profile_available(manager, options)
 
     try:
         if req.stream:

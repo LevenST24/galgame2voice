@@ -401,14 +401,7 @@ class TelegramBotHandlers:
             logger.warning("Database read exception in handle_character: %s", exc)
 
         if not matched_profile:
-            avail_names = "、".join([p.name.split("(")[0].strip() for p in profiles[:6]])
-            if len(profiles) > 6:
-                avail_names += " 等"
-            reply = (
-                f"❌ 未找到与「{query_str}」匹配的角色！\n\n"
-                f"💡 当前可用角色：{avail_names or '（暂无）'}\n"
-                f"💡 发送 `/character` 可直接在下方点击按钮选择角色。"
-            )
+            reply = self._build_character_not_found_reply(query_str, profiles)
             _, markup = await self.build_voice_menu()
             await self._safe_send_message(update, context, reply, reply_markup=markup)
             return reply
@@ -443,6 +436,18 @@ class TelegramBotHandlers:
             ])
         await self._safe_send_message(update, context, reply, reply_markup=reply_markup)
         return reply
+
+    @staticmethod
+    def _build_character_not_found_reply(query_str: str, profiles: List[Any]) -> str:
+        """Formats the not-found notification message when direct character lookup fails."""
+        avail_names = "、".join([p.name.split("(")[0].strip() for p in profiles[:6]])
+        if len(profiles) > 6:
+            avail_names += " 等"
+        return (
+            f"❌ 未找到与「{query_str}」匹配的角色！\n\n"
+            f"💡 当前可用角色：{avail_names or '（暂无）'}\n"
+            f"💡 发送 `/character` 可直接在下方点击按钮选择角色。"
+        )
 
     @staticmethod
     def _format_character_switch_reply(
@@ -709,6 +714,17 @@ class TelegramBotHandlers:
             return None
         return await self.process_text_chat(chat_id, text, context.bot, user_id=resolve_effective_user_id(update))
 
+    @staticmethod
+    async def _download_tg_file_bytes(tg_file: Any) -> bytes:
+        """Downloads Telegram file bytes into memory via download_as_bytearray or download_to_memory."""
+        if hasattr(tg_file, "download_as_bytearray"):
+            return bytes(await tg_file.download_as_bytearray())
+        if hasattr(tg_file, "download_to_memory"):
+            buf = BytesIO()
+            await tg_file.download_to_memory(buf)
+            return buf.getvalue()
+        return b""
+
     async def handle_voice_message(self, update: Any, context: Any) -> Optional[asyncio.Task]:
         """
         Handler for Telegram voice notes:
@@ -731,14 +747,7 @@ class TelegramBotHandlers:
         try:
             # 1. Download voice file bytes
             tg_file = await context.bot.get_file(voice.file_id)
-            if hasattr(tg_file, "download_as_bytearray"):
-                ogg_bytes = await tg_file.download_as_bytearray()
-            elif hasattr(tg_file, "download_to_memory"):
-                buf = BytesIO()
-                await tg_file.download_to_memory(buf)
-                ogg_bytes = buf.getvalue()
-            else:
-                ogg_bytes = b""
+            ogg_bytes = await self._download_tg_file_bytes(tg_file)
 
             # 2. Convert OGG to 16kHz mono WAV
             wav_bytes = await convert_ogg_to_wav(bytes(ogg_bytes))

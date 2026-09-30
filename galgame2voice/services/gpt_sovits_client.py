@@ -438,6 +438,16 @@ class GptSovitsClient:
     # Synthesis Endpoints (/tts)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _resolve_payload_ref_audio(ref_audio: str) -> str:
+        """Resolves reference audio path to absolute path checking project root fallback."""
+        p = Path(ref_audio)
+        if not p.is_file() and (_PROJECT_ROOT / ref_audio).is_file():
+            return str(_safe_resolve_path(_PROJECT_ROOT / ref_audio))
+        if p.is_file():
+            return str(_safe_resolve_path(p))
+        return ref_audio
+
     def _build_tts_payload(self, text: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Builds standardized GPT-SoVITS official /tts request payload."""
         resolved = resolve_tts_options(options)
@@ -459,12 +469,7 @@ class GptSovitsClient:
                 reason,
             )
 
-        p = Path(ref_audio)
-        if not p.is_file() and (_PROJECT_ROOT / ref_audio).is_file():
-            ref_audio = str(_safe_resolve_path(_PROJECT_ROOT / ref_audio))
-        elif p.is_file():
-            ref_audio = str(_safe_resolve_path(p))
-
+        ref_audio = self._resolve_payload_ref_audio(ref_audio)
         norm_text = normalize_dialogue_prosody(text) or text
 
         # Latency-driven dynamic batch size calculation
@@ -563,6 +568,22 @@ class GptSovitsClient:
                         continue
                     raise
 
+    async def _stream_mock_server(
+        self,
+        payload: Dict[str, Any],
+        chunk_size: int,
+    ) -> AsyncGenerator[bytes, None]:
+        """Streams synthesis from in-process mock server (used in test suite stubs)."""
+        async with self.lock:
+            resp = await self.server.handle_request("POST", "/tts", json_data=payload)
+            if resp.status_code != 200:
+                raise RuntimeError(f"TTS synthesis failed with status {resp.status_code}: {resp.text}")
+            audio_bytes = resp.content
+            if wav_is_silent(audio_bytes):
+                raise RuntimeError(SILENT_AUDIO_ERROR)
+            for i in range(0, len(audio_bytes), chunk_size):
+                yield audio_bytes[i:i + chunk_size]
+
     async def stream_tts(
         self,
         text: str,
@@ -590,15 +611,8 @@ class GptSovitsClient:
 
         # Mock server mode (used in test suite stubs)
         if self.server is not None and hasattr(self.server, "handle_request"):
-            async with self.lock:
-                resp = await self.server.handle_request("POST", "/tts", json_data=payload)
-                if resp.status_code != 200:
-                    raise RuntimeError(f"TTS synthesis failed with status {resp.status_code}: {resp.text}")
-                audio_bytes = resp.content
-                if wav_is_silent(audio_bytes):
-                    raise RuntimeError(SILENT_AUDIO_ERROR)
-                for i in range(0, len(audio_bytes), chunk_size):
-                    yield audio_bytes[i:i + chunk_size]
+            async for chunk in self._stream_mock_server(payload, chunk_size):
+                yield chunk
             return
 
         # Real GPT-SoVITS engine mode: true upstream -> downstream streaming pipeline
