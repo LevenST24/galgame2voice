@@ -263,7 +263,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                 if resp.status_code != 200:
                     raise RuntimeError(f"Anthropic API returned status {resp.status_code}: {resp.text}")
 
-                async def _mock_lines_iter(text: str = resp.text):
+                async def _mock_lines_iter(text: str = resp.text) -> AsyncGenerator[str, None]:
                     for line in text.split("\n"):
                         yield line
 

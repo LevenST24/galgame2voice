@@ -562,7 +562,7 @@ class TelegramBotHandlers:
         task = asyncio.create_task(background_voice_worker())
         self.user_tasks[chat_id] = task
 
-        def _cleanup_task(t, cid=chat_id):
+        def _cleanup_task(t: asyncio.Task, cid: int = chat_id) -> None:
             if self.user_tasks.get(cid) is t:
                 self.user_tasks.pop(cid, None)
 
@@ -699,7 +699,7 @@ class TelegramBotHandlers:
                 logger.error("Failed to send error notification to Telegram chat_id=%d: %s", chat_id, send_err)
 
             # Return a resolved task
-            async def _noop(): pass
+            async def _noop() -> None: pass
             return asyncio.create_task(_noop())
 
     async def handle_text_message(self, update: Any, context: Any) -> Optional[asyncio.Task]:

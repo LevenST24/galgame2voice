@@ -12,7 +12,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiosqlite
 from galgame2voice.config import get_settings
@@ -676,7 +676,7 @@ class CharacterManager:
             return 0
 
         # Deterministic default order: prioritize packages marked with is_default=True, then by name
-        def _pkg_sort_key(p: CharacterPackage):
+        def _pkg_sort_key(p: CharacterPackage) -> Tuple[int, str]:
             is_def = getattr(p.manifest, "is_default", False)
             return (0 if is_def else 1, p.name)
 

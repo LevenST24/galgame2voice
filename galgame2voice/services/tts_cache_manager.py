@@ -673,7 +673,7 @@ class TtsCacheManager:
 
         return url_path, file_path, file_size
 
-    async def _check_and_prune(self):
+    async def _check_and_prune(self) -> None:
         """Asynchronously checks if capacity thresholds are exceeded and prunes LRU entries.
         Guarded by _prune_lock to coalesce redundant triggers and prevent concurrent stampedes."""
         if self._prune_lock.locked():

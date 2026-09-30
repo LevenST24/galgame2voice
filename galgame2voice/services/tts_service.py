@@ -369,7 +369,7 @@ class TtsService:
             task_id = f"{gen_id}_{cache_key[:8]}_{uuid.uuid4().hex[:4]}" if gen_id else None
 
             # Synthesize exactly once on miss, coordinated via scheduler + single-flight
-            async def _do_synth_file():
+            async def _do_synth_file() -> Tuple[str, Path, int]:
                 audio_b = await self.client.synthesize(text, options=opts)
                 if audio_b and cache_key:
                     try:
@@ -393,7 +393,7 @@ class TtsService:
             )
 
         # Ephemeral non-cached file write (when use_cache=False)
-        async def _do_ephemeral_file():
+        async def _do_ephemeral_file() -> Tuple[str, Path, int]:
             audio_bytes = await self.client.synthesize(text, options=opts)
             return await self._write_ephemeral_audio_file(audio_bytes, filename_prefix)
 

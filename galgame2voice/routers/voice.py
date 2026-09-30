@@ -467,7 +467,7 @@ _FS_BROWSE_EXTS: Dict[str, set[str]] = {
     description="Opens native OS file dialog to let the user select a file (.ckpt, .pth, audio).",
 )
 async def open_native_file_dialog(req: BrowseFileRequest) -> Dict[str, Any]:
-    def _run_picker():
+    def _run_picker() -> str:
         try:
             import tkinter as tk
             from tkinter import filedialog

@@ -5,7 +5,7 @@ Asynchronous task management and background worker utilities for galgame2voice.
 from __future__ import annotations
 
 import asyncio
-from typing import Collection, Optional
+from typing import Collection
 
 
 async def drain_background_tasks(

@@ -505,7 +505,7 @@ class ChatService:
                     )
 
                 # Extract user memory facts and init character affection in a TRUE background task (off TTFT path)
-                async def _bg_affection_and_memory():
+                async def _bg_affection_and_memory() -> None:
                     try:
                         async with get_db(self.db_path) as conn_bg:
                             await crud.get_or_create_character_affection(

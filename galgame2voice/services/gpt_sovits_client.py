@@ -15,7 +15,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, Optional, Union
+from typing import Any, AsyncGenerator, Dict, Optional
 
 import httpx
 
@@ -181,7 +181,7 @@ class GptSovitsClient:
                 min_grace,
             )
 
-            async def _close_when_drained():
+            async def _close_when_drained() -> None:
                 force_closed = False
                 try:
                     loop = asyncio.get_running_loop()

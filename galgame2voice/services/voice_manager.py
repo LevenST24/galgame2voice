@@ -226,7 +226,7 @@ class VoiceManager:
         """Alias for switch_profile to preserve backwards compatibility."""
         return await self.switch_profile(target, persist=persist, force=force)
 
-    def _check_vram_guard(self, min_free_vram_gb: float = 0.45) -> None:
+    def _check_vram_guard(self, min_free_vram_gb: Optional[float] = 0.45) -> None:
         """
         Verifies discrete GPU VRAM safety floor before switching models.
         If discrete NVIDIA CUDA GPU is detected and free VRAM < floor,

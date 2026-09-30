@@ -156,7 +156,7 @@ async def chat_stream_endpoint(req: ChatRequest, request: Request) -> StreamingR
     disconnect_task: Optional[asyncio.Task] = None
 
     if request is not None:
-        async def _client_disconnect_watcher():
+        async def _client_disconnect_watcher() -> None:
             try:
                 while not cancel_event.is_set():
                     if await request.is_disconnected():
