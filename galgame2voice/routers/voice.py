@@ -609,12 +609,10 @@ def _discover_gpt_sovits_roots() -> List[str]:
     if env_dir:
         roots.append(env_dir)
 
-    # Known user installation + generic drive layouts.
-    roots.extend([
-        r"E:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604",
-        r"D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604",
-        r"C:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604",
-    ])
+    # NOTE: previously this listed the author's machine-specific versioned paths
+    # (e.g. E:\GPT-SoVITS-v2pro-20250604\...). Those were removed; set the
+    # GPT_SOVITS_DIR environment variable to pin an exact install location.
+    # Generic drive layouts below still cover renamed/relocated installs.
     # Generic drive fallbacks for renamed versions.
     for drive in ("C", "D", "E", "F"):
         roots.extend(glob.glob(rf"{drive}:\GPT-SoVITS*\GPT-SoVITS*"))
