@@ -61,9 +61,7 @@ def _is_duplicate_user_prompt(last_msg: Optional[Dict[str, str]], prompt: str) -
     if not last_msg or last_msg.get("role") != "user":
         return False
     content = last_msg.get("content")
-    if content == prompt:
-        return True
-    return content == json.dumps({"chinese": prompt, "japanese": ""}, ensure_ascii=False)
+    return content == prompt or content == json.dumps({"chinese": prompt, "japanese": ""}, ensure_ascii=False)
 
 
 class SessionManager:

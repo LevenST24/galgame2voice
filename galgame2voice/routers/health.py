@@ -151,7 +151,7 @@ async def _probe_custom_gpt_sovits_target(target: str, base_url: str, t0: float)
         except Exception:
             resp = await one_shot.get(f"{target}/")
         latency = round((time.perf_counter() - t0) * 1000, 2)
-        if resp.status_code in (200, 400):
+        if resp.status_code in (status.HTTP_200_OK, status.HTTP_400_BAD_REQUEST):
             return GptSovitsTelemetry(
                 status="reachable", base_url=base_url, latency_ms=latency, error=None)
         return GptSovitsTelemetry(

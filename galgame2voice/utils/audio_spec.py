@@ -408,7 +408,7 @@ def extract_wav_duration(audio: bytes) -> Optional[float]:
     Extracts exact audio duration in seconds from RIFF/WAVE header and fmt chunk byte_rate,
     falling back to 32kHz 16-bit mono PCM estimation.
     """
-    if not audio or len(audio) <= 44:
+    if not audio or len(audio) <= WAV_HEADER_BYTES:
         return None
     try:
         fmt, data_len, _ = _parse_wav_chunks(audio)
@@ -445,7 +445,7 @@ def wav_peak_amplitude(audio: bytes) -> Optional[float]:
     A zero-length data chunk counts as undeterminable (None), not silent.
     """
     try:
-        if len(audio) < 44:
+        if len(audio) < WAV_HEADER_BYTES:
             return None
         fmt, _, data = _parse_wav_chunks(audio, include_data_bytes=True)
         if not fmt or len(fmt) < 16 or not data:

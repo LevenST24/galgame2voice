@@ -469,7 +469,7 @@ async def test_provider(req: ProviderTestRequest):
         safe_msg = sanitize_error_detail(exc)
         diag_info = format_provider_error(
             provider_id=provider_id,
-            status_code=504 if "timeout" in type(exc).__name__.lower() else 502,
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT if "timeout" in type(exc).__name__.lower() else status.HTTP_502_BAD_GATEWAY,
             raw_error=f"{type(exc).__name__}: {safe_msg}",
         )
         return ProviderTestResponse(
@@ -491,7 +491,7 @@ test_provider_connectivity = test_provider
 
 def _map_telegram_response(resp: httpx.Response, latency: float) -> Dict[str, Any]:
     """Maps Telegram getMe HTTP response into test result payload."""
-    if resp.status_code == 200:
+    if resp.status_code == status.HTTP_200_OK:
         data = resp.json()
         if data.get("ok"):
             bot_user = data.get("result", {}).get("username", "")
@@ -507,13 +507,13 @@ def _map_telegram_response(resp: httpx.Response, latency: float) -> Dict[str, An
                 "message": f"Telegram API 错误: {data.get('description', '未知错误')}",
                 "latency_ms": latency,
             }
-    elif resp.status_code == 401:
+    elif resp.status_code == status.HTTP_401_UNAUTHORIZED:
         return {
             "success": False,
             "message": "Telegram 验证失败 (401 Unauthorized): Token 错误或已失效，请在 Telegram 中私聊 @BotFather 发送 /token 重新获取最新 Token",
             "latency_ms": latency,
         }
-    elif resp.status_code == 404:
+    elif resp.status_code == status.HTTP_404_NOT_FOUND:
         return {
             "success": False,
             "message": "Telegram 验证失败 (404 Not Found): 无效的 Bot Token 格式，请检查 Token 是否包含多余字符或从 @BotFather 完整复制",

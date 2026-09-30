@@ -12,7 +12,7 @@ from galgame2voice.database.models import (
     UserMemoryCreate, UserMemoryUpdate, UserMemoryResponse
 )
 from galgame2voice.database.session import get_db
-from galgame2voice.routers.common import validate_user_id
+from galgame2voice.routers.common import validate_positive_profile_id, validate_user_id
 from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.utils.logger import sanitize_error_detail
 
@@ -58,11 +58,8 @@ def _validate_and_sanitize_memory_create(mem: UserMemoryCreate) -> UserMemoryCre
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="user_id cannot be empty",
         )
-    if mem.character_id is not None and mem.character_id < 1:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="character_id must be a positive integer >= 1",
-        )
+    if mem.character_id is not None:
+        validate_positive_profile_id(mem.character_id, field_name="character_id")
     if not mem.fact_key or not mem.fact_key.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
