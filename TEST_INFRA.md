@@ -6,7 +6,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 
 ### Core Testing Tenets:
 1. **Opaque-Box Contract Verification**: Tests evaluate system behaviors solely through public APIs, HTTP/SSE protocols, exported service interfaces, and CLI boundaries without depending on internal implementation quirks.
-2. **Deterministic Derivation**: Every test assertion is derived from unambiguous requirements in `PROJECT.md` and `ORIGINAL_REQUEST.md`.
+2. **Deterministic Derivation**: Every test assertion is derived from unambiguous requirements in `docs/PROJECT.md` and `ORIGINAL_REQUEST.md`.
 3. **No Facade or Flaky Tests**: Tests perform real compute, file I/O, database WAL transactions, and concurrency stress without mock bypasses that fabricate passing results.
 4. **Adversarial & Chaos Hardening**: Explicit injection of malicious payloads, path traversal attempts, prompt injection delimiters, connection drops, and burst I/O locks.
 
