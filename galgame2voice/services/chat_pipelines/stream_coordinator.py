@@ -11,7 +11,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Union
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple, Union
 
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate
@@ -578,6 +578,71 @@ class StreamCoordinator:
             logger.warning("Failed to concatenate audio chunks: %s", cat_err)
             return audio_chunks[0]["audio_url"]
 
+    @staticmethod
+    def _clean_audio_chunks(audio_chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Cleans local_path from audio_chunks before emitting to frontend."""
+        return [
+            {"index": c.get("index", i), "audio_url": c.get("audio_url", ""), "sentence": c.get("sentence", "")}
+            for i, c in enumerate(audio_chunks)
+        ]
+
+    @staticmethod
+    def _build_final_tts_params(parser: Any, ai_adaptive_voice: Any) -> Optional[Dict[str, Any]]:
+        """Constructs final TTS parameter payload from parser attributes if available."""
+        if parser.tts_speed is not None or parser.tts_temperature is not None or parser.tts_emotion is not None:
+            return {
+                "speed": parser.tts_speed,
+                "temperature": parser.tts_temperature,
+                "emotion": parser.tts_emotion,
+                "adaptive_enabled": bool(ai_adaptive_voice),
+            }
+        return None
+
+    async def _persist_turn_message(
+        self,
+        full_chinese: str,
+        full_japanese: str,
+        total_audio_url: str,
+        total_latency: int,
+    ) -> bool:
+        """Persists the assistant message to the database, or prunes orphaned user message if empty."""
+        has_meaningful_content = _has_meaningful_text(full_chinese, full_japanese)
+        if has_meaningful_content:
+            async with get_db(self.db_path) as conn:
+                async with immediate_transaction(conn):
+                    await crud.add_message(conn, MessageCreate(
+                        session_id=self.session_id,
+                        role="assistant",
+                        content_chinese=full_chinese,
+                        content_japanese=full_japanese,
+                        audio_url=total_audio_url,
+                        latency_ms=total_latency,
+                    ))
+            self.persisted_assistant = True
+        else:
+            await self._prune_orphaned_user_message()
+        return has_meaningful_content
+
+    async def _update_turn_affection(
+        self,
+        full_chinese: str,
+        final_emotion: str,
+    ) -> Tuple[Dict[str, Any], str]:
+        """Updates character affection state machine based on user prompt and assistant response."""
+        try:
+            affection_res = await self.affection_service.handle_turn_affection(
+                user_id=self.user_id,
+                character_id=self.profile_id,
+                user_text=self.prompt,
+                assistant_text=full_chinese,
+                explicit_emotion=final_emotion,
+            )
+            final_emotion = affection_res.get("emotion", final_emotion)
+        except Exception as aff_err:
+            logger.warning("Affection update in stream_chat failed: %s", aff_err)
+            affection_res = self._affection_fallback(final_emotion)
+        return affection_res, final_emotion
+
     async def _finalize_success(
         self,
         run: _StreamRun,
@@ -596,12 +661,8 @@ class StreamCoordinator:
         total_audio_url = await self._concat_audio_chunks(audio_chunks)
 
         total_latency = int((time.perf_counter() - t_start) * 1000)
-        ttft_ms = run.ttft_ms
-        if ttft_ms == 0.0:
-            ttft_ms = float(total_latency)
-        tts_first_chunk_ms = run.tts_first_chunk_ms
-        if tts_first_chunk_ms == 0.0:
-            tts_first_chunk_ms = float(total_latency)
+        ttft_ms = run.ttft_ms if run.ttft_ms != 0.0 else float(total_latency)
+        tts_first_chunk_ms = run.tts_first_chunk_ms if run.tts_first_chunk_ms != 0.0 else float(total_latency)
 
         metric_record = await self.metrics_collector.record_chat_turn(
             session_id=self.session_id,
@@ -618,49 +679,16 @@ class StreamCoordinator:
             tts_generated_chunks=run.tts_generated_chunks,
         )
 
-        has_meaningful_content = _has_meaningful_text(full_chinese, full_japanese)
-        if has_meaningful_content:
-            # Persist assistant message in DB
-            async with get_db(self.db_path) as conn:
-                async with immediate_transaction(conn):
-                    await crud.add_message(conn, MessageCreate(
-                        session_id=self.session_id,
-                        role="assistant",
-                        content_chinese=full_chinese,
-                        content_japanese=full_japanese,
-                        audio_url=total_audio_url,
-                        latency_ms=total_latency,
-                    ))
-                self.persisted_assistant = True
-        else:
-            await self._prune_orphaned_user_message()
+        has_meaningful_content = await self._persist_turn_message(
+            full_chinese=full_chinese,
+            full_japanese=full_japanese,
+            total_audio_url=total_audio_url,
+            total_latency=total_latency,
+        )
 
-        # Clean local_path from audio_chunks before emitting to frontend
-        clean_chunks = [
-            {"index": c.get("index", i), "audio_url": c.get("audio_url", ""), "sentence": c.get("sentence", "")}
-            for i, c in enumerate(audio_chunks)
-        ]
-
-        # Affection State Machine update
-        try:
-            affection_res = await self.affection_service.handle_turn_affection(
-                user_id=self.user_id,
-                character_id=self.profile_id,
-                user_text=self.prompt,
-                assistant_text=full_chinese,
-                explicit_emotion=final_emotion,
-            )
-            final_emotion = affection_res.get("emotion", final_emotion)
-        except Exception as aff_err:
-            logger.warning("Affection update in stream_chat failed: %s", aff_err)
-            affection_res = self._affection_fallback(final_emotion)
-
-        final_tts_params = {
-            "speed": parser.tts_speed,
-            "temperature": parser.tts_temperature,
-            "emotion": parser.tts_emotion,
-            "adaptive_enabled": bool(self.ai_adaptive_voice),
-        } if (parser.tts_speed is not None or parser.tts_temperature is not None or parser.tts_emotion is not None) else None
+        clean_chunks = self._clean_audio_chunks(audio_chunks)
+        affection_res, final_emotion = await self._update_turn_affection(full_chinese, final_emotion)
+        final_tts_params = self._build_final_tts_params(parser, self.ai_adaptive_voice)
 
         # Emit final done event
         yield {

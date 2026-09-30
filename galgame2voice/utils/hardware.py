@@ -262,71 +262,96 @@ def _detect_host_memory_status() -> Tuple[Optional[float], Optional[float]]:
     return _detect_psutil_memory()
 
 
+def _detect_torch_gpus() -> List[str]:
+    """Detects GPU names via PyTorch CUDA interface if available."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            count = torch.cuda.device_count()
+            names = []
+            for i in range(count):
+                try:
+                    name = torch.cuda.get_device_name(i)
+                    if name:
+                        names.append(name)
+                except Exception:
+                    pass
+            return names
+    except Exception:
+        pass
+    return []
+
+
+def _detect_nvidia_smi_gpus() -> List[str]:
+    """Detects GPU names using nvidia-smi tool output."""
+    out = _exec_command_output(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
+    if out:
+        return [line.strip() for line in out.splitlines() if line.strip()]
+    return []
+
+
+def _detect_windows_gpus() -> List[str]:
+    """Detects GPU names via Windows WMI or PowerShell CIM commands."""
+    out = _exec_command_output(["wmic", "path", "win32_VideoController", "get", "name"])
+    if out:
+        names = [
+            line.strip() for line in out.splitlines()
+            if line.strip() and line.strip().lower() != "name"
+        ]
+        if names:
+            return names
+
+    out = _exec_command_output(
+        ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
+        timeout=3.0,
+    )
+    if out:
+        return [line.strip() for line in out.splitlines() if line.strip()]
+    return []
+
+
+def _detect_linux_lspci_gpus() -> List[str]:
+    """Detects GPU names via Linux lspci tool output."""
+    out = _exec_command_output(["lspci"])
+    if out:
+        vga_lines = [line.strip() for line in out.splitlines() if any(k in line.lower() for k in ["vga", "3d controller", "display"])]
+        if vga_lines:
+            names = []
+            for line in vga_lines:
+                parts = line.split(":")
+                names.append(parts[-1].strip() if len(parts) >= 3 else line)
+            return names
+    return []
+
+
 def _get_all_detected_gpu_names() -> List[str]:
     """
     Internal helper collecting graphics device names from PyTorch, nvidia-smi,
     Windows WMI/CIM, or Linux lspci.
     """
-    gpu_names: List[str] = []
-
     # 1. PyTorch CUDA inspection if available
-    try:
-        import torch
-        if torch.cuda.is_available():
-            count = torch.cuda.device_count()
-            for i in range(count):
-                try:
-                    name = torch.cuda.get_device_name(i)
-                    if name:
-                        gpu_names.append(name)
-                except Exception:
-                    pass
-            if gpu_names:
-                return gpu_names
-    except Exception:
-        pass
+    torch_names = _detect_torch_gpus()
+    if torch_names:
+        return torch_names
 
     # 2. nvidia-smi tool inspection
-    out = _exec_command_output(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
-    if out:
-        names = [line.strip() for line in out.splitlines() if line.strip()]
-        if names:
-            gpu_names.extend(names)
-            return gpu_names
+    smi_names = _detect_nvidia_smi_gpus()
+    if smi_names:
+        return smi_names
 
     # 3. Windows WMI / CIM query
     if sys.platform == "win32":
-        out = _exec_command_output(["wmic", "path", "win32_VideoController", "get", "name"])
-        if out:
-            names = [
-                line.strip() for line in out.splitlines()
-                if line.strip() and line.strip().lower() != "name"
-            ]
-            if names:
-                return names
-
-        out = _exec_command_output(
-            ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
-            timeout=3.0,
-        )
-        if out:
-            names = [line.strip() for line in out.splitlines() if line.strip()]
-            if names:
-                return names
+        win_names = _detect_windows_gpus()
+        if win_names:
+            return win_names
 
     # 4. Linux lspci query
     if sys.platform.startswith("linux"):
-        out = _exec_command_output(["lspci"])
-        if out:
-            vga_lines = [line.strip() for line in out.splitlines() if any(k in line.lower() for k in ["vga", "3d controller", "display"])]
-            if vga_lines:
-                names = []
-                for line in vga_lines:
-                    parts = line.split(":")
-                    names.append(parts[-1].strip() if len(parts) >= 3 else line)
-                return names
+        linux_names = _detect_linux_lspci_gpus()
+        if linux_names:
+            return linux_names
 
-    return gpu_names
+    return []
 
 
 def detect_gpu_capability() -> Tuple[bool, str, Optional[int]]:

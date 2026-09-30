@@ -28,7 +28,10 @@ from galgame2voice.services.gpt_sovits_client import (
     TTS_PRESETS,
     SLICING_METHODS,
 )
-from galgame2voice.routers.common import switch_voice_profile_or_raise
+from galgame2voice.routers.common import (
+    switch_voice_profile_or_raise,
+    validate_positive_profile_id,
+)
 from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.path_guard import (
@@ -175,11 +178,7 @@ async def create_voice_profile(req: VoiceProfileCreateRequest) -> Dict[str, Any]
     description="Returns detailed parameters of a single voice profile.",
 )
 async def get_voice_profile(profile_id: int) -> Dict[str, Any]:
-    if profile_id < 1:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Profile ID must be a positive integer >= 1",
-        )
+    validate_positive_profile_id(profile_id)
     async with get_db() as conn:
         profile = await crud.get_voice_profile(conn, profile_id)
         if not profile:
@@ -196,11 +195,7 @@ async def get_voice_profile(profile_id: int) -> Dict[str, Any]:
     description="Updates existing voice profile weights and prompt parameters.",
 )
 async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate) -> Dict[str, Any]:
-    if profile_id < 1:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Profile ID must be a positive integer >= 1",
-        )
+    validate_positive_profile_id(profile_id)
 
     try:
         validate_voice_profile_paths(
@@ -240,11 +235,7 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate) -> Dict
     description="Deletes a voice profile by ID.",
 )
 async def delete_voice_profile(profile_id: int) -> Dict[str, Any]:
-    if profile_id < 1:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Profile ID must be a positive integer >= 1",
-        )
+    validate_positive_profile_id(profile_id)
     async with get_db() as conn:
         try:
             success = await crud.delete_voice_profile(conn, profile_id)
@@ -303,11 +294,8 @@ async def switch_voice(req: VoiceSwitchRequest) -> Dict[str, Any]:
             detail="Missing profile_id or profile_name in switch request",
         )
 
-    if profile_id is not None and profile_id < 1:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="profile_id must be a positive integer >= 1",
-        )
+    if profile_id is not None:
+        validate_positive_profile_id(profile_id, field_name="profile_id")
 
     # 1. 404 Precedence: Resolve voice profile entity first from database
     async with get_db() as conn:
@@ -503,10 +491,53 @@ async def fs_browse(
     return result
 
 
+def _get_available_drives() -> List[str]:
+    """Returns available drive paths on Windows or root directory on POSIX."""
+    if sys.platform == "win32":
+        import string
+        drives = []
+        for letter in string.ascii_uppercase:
+            drive_path = f"{letter}:\\"
+            if os.path.exists(drive_path):
+                drives.append(drive_path)
+        return drives
+    return ["/"]
+
+
+def _scan_dir_entries(
+    current_path: str,
+    exts: Optional[set[str]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Scandir helper returning sorted (directories, files) for a directory path."""
+    directories: List[Dict[str, Any]] = []
+    files: List[Dict[str, Any]] = []
+    with os.scandir(current_path) as it:
+        for entry in it:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if not entry.name.startswith("."):
+                        directories.append({
+                            "name": entry.name,
+                            "path": entry.path,
+                        })
+                elif entry.is_file(follow_symlinks=False):
+                    ext = os.path.splitext(entry.name)[1].lower()
+                    if exts is None or ext in exts:
+                        files.append({
+                            "name": entry.name,
+                            "path": entry.path,
+                            "size_bytes": entry.stat().st_size,
+                        })
+            except (PermissionError, OSError):
+                continue
+
+    directories.sort(key=lambda x: x["name"].lower())
+    files.sort(key=lambda x: x["name"].lower())
+    return directories, files
+
+
 def _fs_browse_sync(path: Optional[str], file_type: Optional[str]) -> Dict[str, Any]:
     """Blocking directory listing (runs in a worker thread)."""
-    import string
-
     # Path traversal and device name safety check
     if path and (contains_traversal_payload(path) or is_windows_device_name(path)):
         return {
@@ -518,47 +549,16 @@ def _fs_browse_sync(path: Optional[str], file_type: Optional[str]) -> Dict[str, 
             "error": "Invalid or unsafe directory path",
         }
 
-    # 1. Available drives (Windows)
-    drives = []
-    if sys.platform == "win32":
-        for letter in string.ascii_uppercase:
-            drive_path = f"{letter}:\\"
-            if os.path.exists(drive_path):
-                drives.append(drive_path)
-    else:
-        drives = ["/"]
-
+    drives = _get_available_drives()
     current_path = os.path.abspath(path) if path and os.path.exists(path) else (drives[0] if drives else "/")
     if os.path.isfile(current_path):
         current_path = os.path.dirname(current_path)
 
     parent_path = os.path.dirname(current_path) if current_path != os.path.dirname(current_path) else None
-
-    # Filter extensions
     exts = _FS_BROWSE_EXTS.get(file_type)
 
-    directories = []
-    files = []
     try:
-        with os.scandir(current_path) as it:
-            for entry in it:
-                try:
-                    if entry.is_dir(follow_symlinks=False):
-                        if not entry.name.startswith("."):
-                            directories.append({
-                                "name": entry.name,
-                                "path": entry.path,
-                            })
-                    elif entry.is_file(follow_symlinks=False):
-                        ext = os.path.splitext(entry.name)[1].lower()
-                        if exts is None or ext in exts:
-                            files.append({
-                                "name": entry.name,
-                                "path": entry.path,
-                                "size_bytes": entry.stat().st_size,
-                            })
-                except (PermissionError, OSError):
-                    continue
+        directories, files = _scan_dir_entries(current_path, exts)
     except (PermissionError, OSError) as exc:
         return {
             "current_path": current_path,
@@ -568,9 +568,6 @@ def _fs_browse_sync(path: Optional[str], file_type: Optional[str]) -> Dict[str, 
             "files": [],
             "error": f"无法访问目录: {exc}",
         }
-
-    directories.sort(key=lambda x: x["name"].lower())
-    files.sort(key=lambda x: x["name"].lower())
 
     return {
         "current_path": current_path,

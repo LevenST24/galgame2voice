@@ -432,22 +432,7 @@ class TelegramBotHandlers:
         except Exception:
             affection = None
 
-        aff_str = f"Lv.{affection.affection_level} {affection.level_name} ({affection.current_emotion})" if affection else "Lv.1 初识"
-        clean_name = char_name.split("(")[0].strip()
-        desc = matched_profile.description or "暂无角色简介"
-        if len(desc) > 80:
-            desc = desc[:77] + "..."
-
-        reply = (
-            f"🌸 【角色切换成功】\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🎭 当前角色: {char_name}\n"
-            f"📖 人设简介: {desc}\n"
-            f"🎙️ 语言设定: {matched_profile.prompt_lang} / {matched_profile.text_lang}\n"
-            f"💖 专属好感: {aff_str}\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"💬 现在就可以直接发送文字或语音与 {clean_name} 对话啦！{warning_note}"
-        )
+        reply = self._format_character_switch_reply(matched_profile, affection, warning_note)
         reply_markup = None
         if HAS_TELEGRAM and InlineKeyboardButton and InlineKeyboardMarkup:
             reply_markup = InlineKeyboardMarkup([
@@ -458,6 +443,31 @@ class TelegramBotHandlers:
             ])
         await self._safe_send_message(update, context, reply, reply_markup=reply_markup)
         return reply
+
+    @staticmethod
+    def _format_character_switch_reply(
+        profile: Any,
+        affection: Optional[Any],
+        warning_note: str,
+    ) -> str:
+        """Formats the confirmation card reply when switching active character."""
+        char_name = profile.name
+        aff_str = f"Lv.{affection.affection_level} {affection.level_name} ({affection.current_emotion})" if affection else "Lv.1 初识"
+        clean_name = char_name.split("(")[0].strip()
+        desc = profile.description or "暂无角色简介"
+        if len(desc) > 80:
+            desc = desc[:77] + "..."
+
+        return (
+            f"🌸 【角色切换成功】\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"🎭 当前角色: {char_name}\n"
+            f"📖 人设简介: {desc}\n"
+            f"🎙️ 语言设定: {profile.prompt_lang} / {profile.text_lang}\n"
+            f"💖 专属好感: {aff_str}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"💬 现在就可以直接发送文字或语音与 {clean_name} 对话啦！{warning_note}"
+        )
 
     async def handle_model(self, update: Any, context: Optional[Any] = None) -> str:
         """Handler for /model command."""
@@ -554,6 +564,71 @@ class TelegramBotHandlers:
         task.add_done_callback(_cleanup_task)
         return task
 
+    async def _setup_user_chat_turn(
+        self,
+        session_id: str,
+        effective_user_id: int,
+        text: str,
+    ) -> Tuple[Any, str, int, List[Any]]:
+        """Prepares session, persists user message, extracts memory facts, and retrieves LLM adapter & messages."""
+        async with get_db(self.db_path) as conn:
+            await crud.get_or_create_session(conn, session_id, channel="telegram", user_id=str(effective_user_id))
+            await crud.add_message(conn, MessageCreate(
+                session_id=session_id,
+                role="user",
+                content_chinese=text,
+                content_japanese="",
+                audio_url="",
+                latency_ms=0,
+            ))
+            # Extract and persist facts into long-term memory
+            profile = await crud.get_active_voice_profile(conn)
+            profile_id = profile.id if profile else 1
+            try:
+                if hasattr(self.chat_service, "memory_service"):
+                    await self.chat_service.memory_service.process_user_message(
+                        user_id=str(effective_user_id),
+                        character_id=profile_id,
+                        message_text=text,
+                        conn=conn,
+                    )
+            except Exception as mem_err:
+                logger.debug("Telegram non-critical memory extraction exception: %s", mem_err)
+
+            adapter, model_name, _provider_id = await self.chat_service.get_active_llm_adapter(conn=conn)
+            messages = await self.chat_service.prepare_messages(conn, session_id, text)
+            return adapter, model_name, profile_id, messages
+
+    async def _persist_assistant_chat_turn(
+        self,
+        session_id: str,
+        effective_user_id: int,
+        profile_id: int,
+        user_text: str,
+        display_chinese: str,
+        japanese: str,
+    ) -> None:
+        """Persists assistant reply to DB and triggers affection progression."""
+        async with get_db(self.db_path) as conn:
+            await crud.add_message(conn, MessageCreate(
+                session_id=session_id,
+                role="assistant",
+                content_chinese=display_chinese,
+                content_japanese=japanese,
+                audio_url="",
+                latency_ms=0,
+            ))
+            try:
+                if hasattr(self.chat_service, "affection_service"):
+                    await self.chat_service.affection_service.handle_turn_affection(
+                        user_id=str(effective_user_id),
+                        character_id=profile_id,
+                        user_text=user_text,
+                        assistant_text=display_chinese,
+                    )
+            except Exception as aff_err:
+                logger.debug("Telegram non-critical affection update exception: %s", aff_err)
+
     async def process_text_chat(self, chat_id: int, text: str, bot: Any, user_id: int = 0) -> asyncio.Task:
         """
         Executes immediate text reply, immediately persists assistant turn to DB,
@@ -569,32 +644,11 @@ class TelegramBotHandlers:
 
         try:
             # 2. Query ChatService / LLM Adapter for bilingual response
-            async with get_db(self.db_path) as conn:
-                await crud.get_or_create_session(conn, session_id, channel="telegram", user_id=str(effective_user_id))
-                await crud.add_message(conn, MessageCreate(
-                    session_id=session_id,
-                    role="user",
-                    content_chinese=text,
-                    content_japanese="",
-                    audio_url="",
-                    latency_ms=0,
-                ))
-                # Extract and persist facts into long-term memory
-                profile = await crud.get_active_voice_profile(conn)
-                profile_id = profile.id if profile else 1
-                try:
-                    if hasattr(self.chat_service, "memory_service"):
-                        await self.chat_service.memory_service.process_user_message(
-                            user_id=str(effective_user_id),
-                            character_id=profile_id,
-                            message_text=text,
-                            conn=conn,
-                        )
-                except Exception as mem_err:
-                    logger.debug("Telegram non-critical memory extraction exception: %s", mem_err)
-
-                adapter, model_name, _provider_id = await self.chat_service.get_active_llm_adapter(conn=conn)
-                messages = await self.chat_service.prepare_messages(conn, session_id, text)
+            adapter, model_name, profile_id, messages = await self._setup_user_chat_turn(
+                session_id=session_id,
+                effective_user_id=effective_user_id,
+                text=text,
+            )
 
             # Send typing chat action so Telegram shows "typing..." in status bar
             if bot and hasattr(bot, "send_chat_action"):
@@ -615,25 +669,14 @@ class TelegramBotHandlers:
             await bot.send_message(chat_id=chat_id, text=display_chinese)
 
             # 4. Immediately persist assistant message to DB & process affection progression
-            async with get_db(self.db_path) as conn:
-                await crud.add_message(conn, MessageCreate(
-                    session_id=session_id,
-                    role="assistant",
-                    content_chinese=display_chinese,
-                    content_japanese=japanese,
-                    audio_url="",
-                    latency_ms=0,
-                ))
-                try:
-                    if hasattr(self.chat_service, "affection_service"):
-                        await self.chat_service.affection_service.handle_turn_affection(
-                            user_id=str(effective_user_id),
-                            character_id=profile_id,
-                            user_text=text,
-                            assistant_text=display_chinese,
-                        )
-                except Exception as aff_err:
-                    logger.debug("Telegram non-critical affection update exception: %s", aff_err)
+            await self._persist_assistant_chat_turn(
+                session_id=session_id,
+                effective_user_id=effective_user_id,
+                profile_id=profile_id,
+                user_text=text,
+                display_chinese=display_chinese,
+                japanese=japanese,
+            )
 
             # 5. Schedule background voice synthesis task
             return self._spawn_background_voice_task(chat_id, bot, japanese, dynamic_tts)

@@ -348,6 +348,35 @@ def _resolve_telegram_status(is_running: bool, is_enabled: bool, has_token: bool
     return "unconfigured"
 
 
+def _resolve_rel_db_path(db_path: Path, project_root: Path, data_dir_name: str) -> str:
+    """Returns normalized relative database path with safe fallback for out-of-tree test databases."""
+    try:
+        return db_path.relative_to(project_root).as_posix()
+    except Exception:
+        return f"{data_dir_name}/{db_path.name}"
+
+
+async def _collect_telegram_telemetry(db_path: Path) -> TelegramTelemetry:
+    """Inspects telegram bot runtime manager and database configuration."""
+    tg_running = False
+    try:
+        from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
+        tg_mgr = get_telegram_bot_manager(db_path=db_path)
+        tg_running = getattr(tg_mgr, "is_running", False)
+    except Exception:
+        tg_running = False
+
+    async with get_db(db_path) as conn:
+        db_s = await crud.get_settings_raw(conn)
+        has_token = bool(db_s and db_s.telegram_bot_token and db_s.telegram_bot_token.strip())
+        is_enabled = bool(db_s and getattr(db_s, "telegram_enabled", False))
+
+    return TelegramTelemetry(
+        enabled=is_enabled,
+        status=_resolve_telegram_status(tg_running, is_enabled, has_token),
+    )
+
+
 @router.get(
     "/api/system/status",
     response_model=SystemStatusResponse,
@@ -382,17 +411,10 @@ async def system_status(request: Request) -> SystemStatusResponse:
     hardware_telemetry = await hardware_task
 
     # 2. Database Status Check (Normalized Relative Path)
-    db_exists = settings.db_path.exists()
-    try:
-        rel_db_path = settings.db_path.relative_to(settings.project_root).as_posix()
-    except Exception:
-        # Safe relative path fallback when testing with temp paths outside project_root
-        rel_db_path = f"{settings.data_dir_name}/{settings.db_path.name}"
-
     db_telemetry = DatabaseTelemetry(
-        status="connected" if db_exists else "initializing",
+        status="connected" if settings.db_path.exists() else "initializing",
         wal_mode=True,
-        path=rel_db_path,
+        path=_resolve_rel_db_path(settings.db_path, settings.project_root, settings.data_dir_name),
     )
 
     # 3. Storage Metrics
@@ -414,23 +436,7 @@ async def system_status(request: Request) -> SystemStatusResponse:
     )
 
     # 5. Telegram Status
-    tg_running = False
-    try:
-        from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
-        tg_mgr = get_telegram_bot_manager(db_path=settings.db_path)
-        tg_running = getattr(tg_mgr, "is_running", False)
-    except Exception:
-        tg_running = False
-
-    async with get_db(settings.db_path) as conn:
-        db_s = await crud.get_settings_raw(conn)
-        has_token = bool(db_s and db_s.telegram_bot_token and db_s.telegram_bot_token.strip())
-        is_enabled = bool(db_s and getattr(db_s, "telegram_enabled", False))
-
-    tg_telemetry = TelegramTelemetry(
-        enabled=is_enabled,
-        status=_resolve_telegram_status(tg_running, is_enabled, has_token),
-    )
+    tg_telemetry = await _collect_telegram_telemetry(settings.db_path)
 
     overall_status = "healthy" if gpt_probe.status == "reachable" else "degraded"
 

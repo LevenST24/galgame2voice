@@ -253,6 +253,58 @@ class AffectionService:
                 return egg
         return None
 
+    def _resolve_turn_emotion(
+        self,
+        current: Any,
+        explicit_emotion: Optional[str],
+        u_text: str,
+        a_text: str,
+        triggered_egg: Optional[Dict[str, Any]],
+    ) -> str:
+        """Resolves target emotion using explicit classification, dynamic classification, or easter egg triggers."""
+        clean_exp = (explicit_emotion or "").strip().lower()
+        if clean_exp and clean_exp in EMOTION_SYNONYMS:
+            emotion = EMOTION_SYNONYMS[clean_exp]
+        elif clean_exp and clean_exp in VALID_EMOTIONS:
+            emotion = clean_exp
+        elif clean_exp and clean_exp in EMOTION_NAME_MAP:
+            emotion = EMOTION_NAME_MAP[clean_exp]
+        else:
+            raw_emo = self.classify_emotion(
+                assistant_text=a_text,
+                user_text=u_text,
+                current_emotion=current.current_emotion,
+                affection_level=current.affection_level,
+            )
+            raw_clean = (raw_emo or "").strip().lower()
+            emotion = EMOTION_SYNONYMS.get(raw_clean, EMOTION_NAME_MAP.get(raw_clean, raw_clean))
+
+        if triggered_egg:
+            egg_emo = (triggered_egg.get("emotion") or "").strip().lower()
+            if egg_emo:
+                emotion = EMOTION_SYNONYMS.get(egg_emo, EMOTION_NAME_MAP.get(egg_emo, egg_emo))
+
+        if emotion not in VALID_EMOTIONS:
+            emotion = "gentle"
+        return emotion
+
+    def _collect_new_dialogue_ids(
+        self,
+        updated: Any,
+        triggered_egg: Optional[Dict[str, Any]],
+    ) -> List[str]:
+        """Collects unlocked milestone and easter egg dialogue IDs for the current affection level."""
+        new_dialogue_ids: List[str] = []
+        for lvl in range(1, updated.affection_level + 1):
+            milestone_id = f"milestone_lv{lvl}"
+            if milestone_id in self.MILESTONES and milestone_id not in updated.unlocked_dialogues:
+                new_dialogue_ids.append(milestone_id)
+
+        if triggered_egg and triggered_egg["id"] not in updated.unlocked_dialogues:
+            new_dialogue_ids.append(triggered_egg["id"])
+
+        return new_dialogue_ids
+
     async def handle_turn_affection(
         self,
         user_id: str = "default_user",
@@ -286,32 +338,8 @@ class AffectionService:
 
         async with get_db(self.db_path) as conn:
             current = await crud.get_or_create_character_affection(conn, u_id, char_id)
-            clean_exp = (explicit_emotion or "").strip().lower()
-            if clean_exp and clean_exp in EMOTION_SYNONYMS:
-                emotion = EMOTION_SYNONYMS[clean_exp]
-            elif clean_exp and clean_exp in VALID_EMOTIONS:
-                emotion = clean_exp
-            elif clean_exp and clean_exp in EMOTION_NAME_MAP:
-                emotion = EMOTION_NAME_MAP[clean_exp]
-            else:
-                raw_emo = self.classify_emotion(
-                    assistant_text=a_text,
-                    user_text=u_text,
-                    current_emotion=current.current_emotion,
-                    affection_level=current.affection_level,
-                )
-                raw_clean = (raw_emo or "").strip().lower()
-                emotion = EMOTION_SYNONYMS.get(raw_clean, EMOTION_NAME_MAP.get(raw_clean, raw_clean))
-
-            # Check easter egg
             triggered_egg = self.check_easter_eggs(u_text, current.affection_level)
-            if triggered_egg:
-                egg_emo = (triggered_egg.get("emotion") or "").strip().lower()
-                if egg_emo:
-                    emotion = EMOTION_SYNONYMS.get(egg_emo, EMOTION_NAME_MAP.get(egg_emo, egg_emo))
-
-            if emotion not in VALID_EMOTIONS:
-                emotion = "gentle"
+            emotion = self._resolve_turn_emotion(current, explicit_emotion, u_text, a_text, triggered_egg)
 
             # Increment points atomically
             updated, actual_gain, level_up = await crud.increment_affection(
@@ -324,15 +352,7 @@ class AffectionService:
             )
 
             # Collect new dialogues to unlock (unlock all milestone lines up to current level)
-            new_dialogue_ids = []
-            for lvl in range(1, updated.affection_level + 1):
-                milestone_id = f"milestone_lv{lvl}"
-                if milestone_id in self.MILESTONES and milestone_id not in updated.unlocked_dialogues:
-                    new_dialogue_ids.append(milestone_id)
-
-            if triggered_egg and triggered_egg["id"] not in updated.unlocked_dialogues:
-                new_dialogue_ids.append(triggered_egg["id"])
-
+            new_dialogue_ids = self._collect_new_dialogue_ids(updated, triggered_egg)
             if new_dialogue_ids:
                 await crud.unlock_character_dialogues(
                     conn=conn,

@@ -9,8 +9,20 @@ from galgame2voice.services.voice_manager import InsufficientMemoryError
 
 __all__ = [
     "validate_user_id",
+    "validate_positive_profile_id",
     "switch_voice_profile_or_raise",
 ]
+
+
+def validate_positive_profile_id(profile_id: int, field_name: str = "Profile ID") -> int:
+    """Validates that a profile ID is a positive integer >= 1."""
+    if profile_id < 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"{field_name} must be a positive integer >= 1",
+        )
+    return profile_id
+
 
 
 def validate_user_id(user_id: str) -> str:

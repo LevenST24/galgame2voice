@@ -10,7 +10,7 @@ import json
 import logging
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiosqlite
 import httpx
@@ -376,20 +376,12 @@ async def get_provider_models(provider_id: str):
             return {"provider_id": clean_id, "models": fallback, "warning": sanitize_error_detail(exc)}
 
 
-@router.post(
-    "/providers/test",
-    response_model=ProviderTestResponse,
-    summary="Test Provider Connectivity",
-    description="Probes connection, verifies credentials, measures latency, and discovers available models.",
-)
-async def test_provider(req: ProviderTestRequest):
-    provider_id = (req.provider_type or req.id or "openai").strip().lower()
-    api_key = req.api_key or ""
-    base_url = req.base_url or req.api_base_url
-    model = req.model or req.chat_model
-    custom_headers = req.custom_headers or {}
-
-    # If api_key is omitted or masked, lookup the stored unmasked key from DB
+async def _resolve_provider_test_credentials(
+    provider_id: str,
+    api_key: str,
+    base_url: Optional[str],
+) -> Tuple[str, Optional[str]]:
+    """Resolves unmasked API key and base URL from database with SSRF validation."""
     if not api_key or "****" in api_key:
         async with get_db() as conn:
             stored = await crud.get_provider_raw(conn, provider_id)
@@ -403,7 +395,15 @@ async def test_provider(req: ProviderTestRequest):
                 api_key = stored.api_key
                 if not base_url:
                     base_url = stored.api_base_url
-    # If model or base_url is not specified, resolve from preset defaults
+    return api_key, base_url
+
+
+def _resolve_provider_preset_defaults(
+    provider_id: str,
+    model: Optional[str],
+    base_url: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Fills missing model or base_url from predefined provider presets."""
     if not model or not base_url:
         preset = get_provider_preset(provider_id)
         if preset:
@@ -411,6 +411,24 @@ async def test_provider(req: ProviderTestRequest):
                 model = preset.get("default_chat_model")
             if not base_url:
                 base_url = preset.get("default_base_url")
+    return model, base_url
+
+
+@router.post(
+    "/providers/test",
+    response_model=ProviderTestResponse,
+    summary="Test Provider Connectivity",
+    description="Probes connection, verifies credentials, measures latency, and discovers available models.",
+)
+async def test_provider(req: ProviderTestRequest):
+    provider_id = (req.provider_type or req.id or "openai").strip().lower()
+    api_key = req.api_key or ""
+    base_url = req.base_url or req.api_base_url
+    model = req.model or req.chat_model
+    custom_headers = req.custom_headers or {}
+
+    api_key, base_url = await _resolve_provider_test_credentials(provider_id, api_key, base_url)
+    model, base_url = _resolve_provider_preset_defaults(provider_id, model, base_url)
 
     # SSRF guard: the effective base_url (explicit or stored) must pass the
     # private-network check before any credentials are attached to the request.
