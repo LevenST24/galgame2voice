@@ -236,6 +236,24 @@ def _format_affection_response(row_dict: Dict[str, Any]) -> CharacterAffectionRe
     return CharacterAffectionResponse(**d)
 
 
+def _build_default_affection_response(user_id: str, character_id: int) -> CharacterAffectionResponse:
+    """Builds a default blank affection record response."""
+    return CharacterAffectionResponse(
+        id=0,
+        user_id=user_id,
+        character_id=character_id,
+        affection_score=0,
+        affection_level=1,
+        level_name="初识/生疏",
+        current_emotion="normal",
+        interaction_count=0,
+        daily_points_earned=0,
+        last_interaction_date="",
+        unlocked_dialogues=[],
+        custom_nickname=None,
+    )
+
+
 async def get_or_create_character_affection(
     conn: aiosqlite.Connection,
     user_id: str = "default_user",
@@ -266,20 +284,7 @@ async def get_or_create_character_affection(
     if row:
         return _format_affection_response(dict(row))
 
-    return CharacterAffectionResponse(
-        id=0,
-        user_id=user_id,
-        character_id=character_id,
-        affection_score=0,
-        affection_level=1,
-        level_name="初识/生疏",
-        current_emotion="normal",
-        interaction_count=0,
-        daily_points_earned=0,
-        last_interaction_date="",
-        unlocked_dialogues=[],
-        custom_nickname=None,
-    )
+    return _build_default_affection_response(user_id=user_id, character_id=character_id)
 
 
 async def get_user_affections_for_profiles(
@@ -327,20 +332,7 @@ async def get_user_affections_for_profiles(
 
         for pid in missing_ids:
             if pid not in result_map:
-                result_map[pid] = CharacterAffectionResponse(
-                    id=0,
-                    user_id=user_id,
-                    character_id=pid,
-                    affection_score=0,
-                    affection_level=1,
-                    level_name="初识/生疏",
-                    current_emotion="normal",
-                    interaction_count=0,
-                    daily_points_earned=0,
-                    last_interaction_date="",
-                    unlocked_dialogues=[],
-                    custom_nickname=None,
-                )
+                result_map[pid] = _build_default_affection_response(user_id=user_id, character_id=pid)
 
     return result_map
 

@@ -28,7 +28,7 @@ from galgame2voice.adapters.base import ChatMessage, BaseLLMAdapter
 from galgame2voice.adapters.registry import get_llm_adapter
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate
-from galgame2voice.database.session import get_db, immediate_transaction
+from galgame2voice.database.session import get_database_path, get_db, immediate_transaction
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.services.session_manager import SessionManager
 from galgame2voice.services.memory_service import MemoryService
@@ -80,7 +80,6 @@ class ChatService:
         db_path: Optional[Union[str, Path]] = None,
         metrics_collector: Optional[MetricsCollector] = None,
     ):
-        from galgame2voice.database.session import get_database_path
         self.tts_service = tts_service or TtsService()
         self.db_path = str(db_path or get_database_path())
         self.session_manager = SessionManager(db_path=self.db_path)

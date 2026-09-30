@@ -47,6 +47,18 @@ __all__ = [
 
 USD_TO_CNY_RATE: float = 7.20
 
+PROVIDER_DISPLAY_NAMES: Dict[str, str] = {
+    "deepseek": "DeepSeek",
+    "openai": "OpenAI",
+    "gemini": "Google Gemini",
+    "anthropic": "Anthropic Claude",
+    "qwen": "通义千问 (Qwen)",
+    "glm": "智谱 GLM",
+    "xai": "xAI (Grok)",
+    "siliconflow": "SiliconFlow",
+    "custom": "自定义模型",
+}
+
 
 async def get_settings_raw(conn: aiosqlite.Connection) -> SettingsInDB:
     """Reads raw decrypted settings entity from database."""
@@ -431,25 +443,13 @@ async def get_provider_metrics_breakdown(conn: aiosqlite.Connection) -> List[Dic
     rows = await cursor.fetchall()
     results = []
 
-    provider_names = {
-        "deepseek": "DeepSeek",
-        "openai": "OpenAI",
-        "gemini": "Google Gemini",
-        "anthropic": "Anthropic Claude",
-        "qwen": "通义千问 (Qwen)",
-        "glm": "智谱 GLM",
-        "xai": "xAI (Grok)",
-        "siliconflow": "SiliconFlow",
-        "custom": "自定义模型"
-    }
-
     for r in rows:
         pid = r["provider_id"]
         t_tokens = r["total_tokens"] or 0
         pct = round((t_tokens / grand_total) * 100.0, 1)
         results.append({
             "provider_id": pid,
-            "name": provider_names.get(pid, pid.capitalize()),
+            "name": PROVIDER_DISPLAY_NAMES.get(pid, pid.capitalize()),
             "request_count": r["request_count"] or 0,
             "total_tokens": t_tokens,
             "prompt_tokens": r["prompt_tokens"] or 0,
