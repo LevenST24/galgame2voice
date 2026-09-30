@@ -47,7 +47,7 @@ async def get_effective_sovits_url() -> str:
     try:
         async with get_db() as conn:
             db_settings = await crud.get_settings_raw(conn)
-        if db_settings and getattr(db_settings, "gpt_sovits_url", ""):
+        if getattr(db_settings, "gpt_sovits_url", ""):
             return db_settings.gpt_sovits_url
     except Exception as exc:
         logger.debug("Failed reading effective sovits url from database settings: %s", exc)
@@ -374,8 +374,8 @@ async def _collect_telegram_telemetry(db_path: Path) -> TelegramTelemetry:
 
     async with get_db(db_path) as conn:
         db_s = await crud.get_settings_raw(conn)
-        has_token = bool(db_s and db_s.telegram_bot_token and db_s.telegram_bot_token.strip())
-        is_enabled = bool(db_s and getattr(db_s, "telegram_enabled", False))
+        has_token = bool(db_s.telegram_bot_token and db_s.telegram_bot_token.strip())
+        is_enabled = bool(getattr(db_s, "telegram_enabled", False))
 
     return TelegramTelemetry(
         enabled=is_enabled,

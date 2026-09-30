@@ -108,7 +108,7 @@ async def _get_setting_field(
     try:
         async with get_db(db_path) as conn:
             settings = await crud.get_settings_raw(conn)
-            return getattr(settings, field_name, default) if settings else default
+            return getattr(settings, field_name, default)
     except Exception as exc:
         logger.error("Database read failed in %s: %s", caller_name, exc)
         return default
@@ -460,9 +460,8 @@ async def build_sampling_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
     try:
         async with get_db(db_path) as conn:
             settings = await crud.get_settings_raw(conn)
-            if settings:
-                top_k = getattr(settings, "top_k", 15)
-                top_p = getattr(settings, "top_p", 1.0)
+            top_k = getattr(settings, "top_k", 15)
+            top_p = getattr(settings, "top_p", 1.0)
     except Exception as exc:
         logger.error("Database read failed in build_sampling_menu: %s", exc)
 

@@ -117,7 +117,7 @@ def _validate_chat_request(req: ChatRequest) -> None:
             detail="Prompt cannot be empty",
         )
     # Defensively normalize and validate session_id
-    req.session_id = (req.session_id or "").strip() or "default"
+    req.session_id = req.session_id.strip() or "default"
     if len(req.session_id) > SESSION_ID_MAX_LENGTH:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

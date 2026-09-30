@@ -189,7 +189,7 @@ async def _init_gpt_sovits_client(settings) -> None:
         try:
             async with get_db(settings.db_path) as conn:
                 db_settings = await crud.get_settings_raw(conn)
-                if db_settings and getattr(db_settings, "gpt_sovits_url", None):
+                if getattr(db_settings, "gpt_sovits_url", None):
                     sovits_url = db_settings.gpt_sovits_url
         except Exception as exc:
             logger.warning("Could not read gpt_sovits_url from DB: %s", exc)

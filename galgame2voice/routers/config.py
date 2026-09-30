@@ -177,7 +177,8 @@ async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, 
     elif isinstance(payload, SettingsUpdate):
         update_data = payload.model_dump(exclude_unset=True)
     elif isinstance(payload, dict):
-        update_data = payload.get("settings", payload)
+        raw_settings = payload.get("settings")
+        update_data = raw_settings if isinstance(raw_settings, dict) else payload
 
     async with get_db() as conn:
         # Filter valid settings fields for update

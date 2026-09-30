@@ -494,7 +494,7 @@ def _map_telegram_response(resp: httpx.Response, latency: float) -> Dict[str, An
     if resp.status_code == status.HTTP_200_OK:
         data = resp.json()
         if data.get("ok"):
-            bot_user = data.get("result", {}).get("username", "")
+            bot_user = (data.get("result") or {}).get("username", "")
             return {
                 "success": True,
                 "message": f"连接成功！Bot: @{bot_user}",

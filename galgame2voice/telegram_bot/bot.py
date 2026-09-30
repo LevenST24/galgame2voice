@@ -97,7 +97,7 @@ class TelegramBotManager:
         if not getattr(settings, "telegram_enabled", False):
             return False
 
-        token = sanitize_bot_token(settings.telegram_bot_token) if settings and settings.telegram_bot_token else ""
+        token = sanitize_bot_token(settings.telegram_bot_token) if settings.telegram_bot_token else ""
         if not token:
             logger.warning("Telegram Bot is enabled but token is empty; skipping bot startup.")
             return False
@@ -216,7 +216,7 @@ class TelegramBotManager:
                 if resp.status_code == 200:
                     data = resp.json()
                     if data.get("ok"):
-                        username = data.get("result", {}).get("username", "")
+                        username = (data.get("result") or {}).get("username", "")
                         return {"success": True, "message": f"Connected to @{username}", "info": data.get("result")}
                 return {"success": False, "message": f"Telegram API error (code {resp.status_code})"}
         except Exception as exc:
