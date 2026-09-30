@@ -8,7 +8,6 @@ import os
 import sys
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 BYTES_PER_KB: int = 1024
 BYTES_PER_MB: int = 1024 * 1024
@@ -32,7 +31,7 @@ if sys.platform == "win32":
         ]
 
 
-def _exec_command_output(cmd: List[str], timeout: float = DEFAULT_SUBPROCESS_TIMEOUT) -> Optional[str]:
+def _exec_command_output(cmd: list[str], timeout: float = DEFAULT_SUBPROCESS_TIMEOUT) -> str | None:
     """Safely executes a system command, suppressing stderr and subprocess exceptions."""
     try:
         return subprocess.check_output(
@@ -45,12 +44,12 @@ def _exec_command_output(cmd: List[str], timeout: float = DEFAULT_SUBPROCESS_TIM
         return None
 
 
-def _resolve_cgroup_paths(root_path: Path) -> List[Path]:
+def _resolve_cgroup_paths(root_path: Path) -> list[Path]:
     """
     Returns a list of candidate cgroup directory paths to inspect for the current process,
     ordered from most specific (container subpath via /proc/self/cgroup) to root_path.
     """
-    candidates: List[Path] = []
+    candidates: list[Path] = []
 
     def _add_if_dir(cand: Path) -> None:
         if cand.is_dir() and cand not in candidates:
@@ -86,7 +85,7 @@ def _resolve_cgroup_paths(root_path: Path) -> List[Path]:
     return candidates
 
 
-def get_cgroup_memory_available_gb(cgroup_root: Optional[str] = None) -> Optional[float]:
+def get_cgroup_memory_available_gb(cgroup_root: str | None = None) -> float | None:
     """
     Detects container memory quota limits via Linux cgroups (v2 and v1).
     Inspects container-specific cgroup hierarchies (e.g. Kubernetes, Docker) via /proc/self/cgroup
@@ -132,7 +131,7 @@ def get_cgroup_memory_available_gb(cgroup_root: Optional[str] = None) -> Optiona
     return None
 
 
-def get_system_memory_status() -> Tuple[Optional[float], Optional[float]]:
+def get_system_memory_status() -> tuple[float | None, float | None]:
     """
     Returns (total_ram_gb, available_ram_gb) for the host system.
     In containerized environments (Docker, Kubernetes, cgroups v1/v2) the available
@@ -151,7 +150,7 @@ def get_system_memory_status() -> Tuple[Optional[float], Optional[float]]:
     return total_gb, avail_gb
 
 
-def _detect_windows_memory() -> Tuple[Optional[float], Optional[float]]:
+def _detect_windows_memory() -> tuple[float | None, float | None]:
     """Native Windows GlobalMemoryStatusEx memory inspection."""
     if sys.platform != "win32":
         return None, None
@@ -165,12 +164,12 @@ def _detect_windows_memory() -> Tuple[Optional[float], Optional[float]]:
     return None, None
 
 
-def _detect_linux_proc_meminfo() -> Tuple[Optional[float], Optional[float]]:
+def _detect_linux_proc_meminfo() -> tuple[float | None, float | None]:
     """Zero-dependency Linux /proc/meminfo inspection."""
     if not (sys.platform.startswith("linux") or os.path.exists("/proc/meminfo")):
         return None, None
     try:
-        mem_info: Dict[str, float] = {}
+        mem_info: dict[str, float] = {}
         with open("/proc/meminfo", "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
                 parts = line.split()
@@ -204,7 +203,7 @@ def _detect_linux_proc_meminfo() -> Tuple[Optional[float], Optional[float]]:
     return None, None
 
 
-def _detect_darwin_memory() -> Tuple[Optional[float], Optional[float]]:
+def _detect_darwin_memory() -> tuple[float | None, float | None]:
     """macOS sysctl / os.sysconf inspection."""
     if sys.platform != "darwin":
         return None, None
@@ -225,7 +224,7 @@ def _detect_darwin_memory() -> Tuple[Optional[float], Optional[float]]:
     return None, None
 
 
-def _detect_psutil_memory() -> Tuple[Optional[float], Optional[float]]:
+def _detect_psutil_memory() -> tuple[float | None, float | None]:
     """Cross-platform psutil fallback inspection."""
     try:
         import psutil
@@ -236,7 +235,7 @@ def _detect_psutil_memory() -> Tuple[Optional[float], Optional[float]]:
     return None, None
 
 
-def _detect_host_memory_status() -> Tuple[Optional[float], Optional[float]]:
+def _detect_host_memory_status() -> tuple[float | None, float | None]:
     """
     Returns (total_ram_gb, available_ram_gb) for the host system.
     Supports Windows (Win32 GlobalMemoryStatusEx), Linux (/proc/meminfo),
@@ -262,7 +261,7 @@ def _detect_host_memory_status() -> Tuple[Optional[float], Optional[float]]:
     return _detect_psutil_memory()
 
 
-def _detect_torch_gpus() -> List[str]:
+def _detect_torch_gpus() -> list[str]:
     """Detects GPU names via PyTorch CUDA interface if available."""
     try:
         import torch
@@ -282,7 +281,7 @@ def _detect_torch_gpus() -> List[str]:
     return []
 
 
-def _detect_nvidia_smi_gpus() -> List[str]:
+def _detect_nvidia_smi_gpus() -> list[str]:
     """Detects GPU names using nvidia-smi tool output."""
     out = _exec_command_output(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
     if out:
@@ -290,7 +289,7 @@ def _detect_nvidia_smi_gpus() -> List[str]:
     return []
 
 
-def _detect_windows_gpus() -> List[str]:
+def _detect_windows_gpus() -> list[str]:
     """Detects GPU names via Windows WMI or PowerShell CIM commands."""
     out = _exec_command_output(["wmic", "path", "win32_VideoController", "get", "name"])
     if out:
@@ -310,7 +309,7 @@ def _detect_windows_gpus() -> List[str]:
     return []
 
 
-def _detect_linux_lspci_gpus() -> List[str]:
+def _detect_linux_lspci_gpus() -> list[str]:
     """Detects GPU names via Linux lspci tool output."""
     out = _exec_command_output(["lspci"])
     if out:
@@ -324,7 +323,7 @@ def _detect_linux_lspci_gpus() -> List[str]:
     return []
 
 
-def _get_all_detected_gpu_names() -> List[str]:
+def _get_all_detected_gpu_names() -> list[str]:
     """
     Internal helper collecting graphics device names from PyTorch, nvidia-smi,
     Windows WMI/CIM, or Linux lspci.
@@ -354,7 +353,7 @@ def _get_all_detected_gpu_names() -> List[str]:
     return []
 
 
-def detect_gpu_capability() -> Tuple[bool, str, Optional[int]]:
+def detect_gpu_capability() -> tuple[bool, str, int | None]:
     """
     Detects GPU compute availability and primary device metadata.
     Returns: (gpu_available, gpu_name, device_count)
@@ -395,7 +394,7 @@ def release_system_memory() -> None:
             pass
 
 
-def get_gpu_vram_status() -> Tuple[Optional[float], Optional[float]]:
+def get_gpu_vram_status() -> tuple[float | None, float | None]:
     """
     Returns (total_vram_gb, free_vram_gb) of primary NVIDIA GPU if available, else (None, None).
     Inspects nvidia-smi first (fast, zero PyTorch CUDA context overhead), falling back to PyTorch.

@@ -8,17 +8,16 @@ from __future__ import annotations
 import array
 import logging
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
 import wave
 
 logger = logging.getLogger(__name__)
 
 
 def _collect_valid_chunks(
-    chunk_paths: List[Union[str, Path]],
-) -> Tuple[List[Path], Optional[wave._wave_params]]:
+    chunk_paths: list[str | Path],
+) -> tuple[list[Path], wave._wave_params | None]:
     """Filters chunk paths to existing readable WAV files matching the base format."""
-    valid_files: List[Path] = []
+    valid_files: list[Path] = []
     base_params = None
 
     for local_p in chunk_paths:
@@ -89,8 +88,8 @@ def _build_silence_bytes(base_params: wave._wave_params, pause_duration: float) 
 
 
 def concat_wav_files(
-    chunk_paths: List[Union[str, Path]],
-    output_path: Union[str, Path],
+    chunk_paths: list[str | Path],
+    output_path: str | Path,
     pause_duration: float = 0.0,
 ) -> bool:
     """

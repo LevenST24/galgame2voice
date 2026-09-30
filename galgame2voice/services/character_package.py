@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 from galgame2voice.config import get_settings
 from galgame2voice.schemas.character_manifest import CharacterManifest
@@ -22,10 +21,10 @@ from galgame2voice.utils.path_guard import (
 logger = logging.getLogger("galgame2voice.services.character_package")
 
 # Lightweight in-memory audio probe cache: (canonical_path, file_size, mtime) -> (file_hash, duration)
-_AUDIO_PROBE_CACHE: Dict[Tuple[str, int, float], Tuple[str, Optional[float]]] = {}
+_AUDIO_PROBE_CACHE: dict[tuple[str, int, float], tuple[str, float | None]] = {}
 
 
-def _resolve_pointer_file_target(target_file: Path) -> Optional[str]:
+def _resolve_pointer_file_target(target_file: Path) -> str | None:
     """Inspects if target_file is a lightweight pointer file (<4KB) referencing model weights."""
     try:
         if target_file.stat().st_size >= 4096:
@@ -54,12 +53,12 @@ class CharacterPackage:
         folder_path: Path,
         manifest: CharacterManifest,
         system_prompt: str = "",
-        validation_errors: Optional[List[str]] = None,
+        validation_errors: list[str] | None = None,
     ) -> None:
         self.folder_path = folder_path.resolve()
         self.manifest = manifest
         self.system_prompt = system_prompt or manifest.system_prompt or ""
-        self.validation_errors: List[str] = validation_errors or []
+        self.validation_errors: list[str] = validation_errors or []
         self.is_valid: bool = len(self.validation_errors) == 0
 
     @property
@@ -74,7 +73,7 @@ class CharacterPackage:
     def name(self) -> str:
         return self.manifest.name
 
-    def resolve_audio_path(self, relative_or_absolute: str) -> Optional[Path]:
+    def resolve_audio_path(self, relative_or_absolute: str) -> Path | None:
         """
         Resolves an audio path relative to the character package directory.
         Strictly guarded against directory traversal and out-of-boundary references.

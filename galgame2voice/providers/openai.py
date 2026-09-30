@@ -2,7 +2,7 @@
 OpenAI LLM Provider implementation for galgame2voice.
 """
 
-from typing import Any, Optional
+from typing import Any
 from galgame2voice.providers.base import BaseLLMProvider
 from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 
@@ -16,7 +16,7 @@ class OpenAIProvider(BaseLLMProvider, OpenAICompatibleLLMAdapter):
         self,
         api_key: str,
         base_url: str = "https://api.openai.com/v1",
-        client_override: Optional[Any] = None,
+        client_override: Any | None = None,
         **kwargs: Any,
     ):
         OpenAICompatibleLLMAdapter.__init__(

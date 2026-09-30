@@ -6,8 +6,6 @@ Abstracts all LLM service integrations with typed protocols and error normalizat
 from typing import (
     Any,
     AsyncIterator,
-    List,
-    Optional,
     Protocol,
     runtime_checkable,
 )
@@ -27,8 +25,8 @@ class ProviderError(BaseModel):
     """Normalized error details across LLM and STT providers."""
     code: str = Field(default="UNKNOWN_ERROR", description="Standardized error code")
     message: str = Field(default="", description="Original provider error message")
-    status_code: Optional[int] = Field(default=None, description="HTTP status code if applicable")
-    diagnostic: Optional[str] = Field(default=None, description="User-friendly diagnosis or troubleshooting steps")
+    status_code: int | None = Field(default=None, description="HTTP status code if applicable")
+    diagnostic: str | None = Field(default=None, description="User-friendly diagnosis or troubleshooting steps")
     retryable: bool = Field(default=False, description="Whether request can be retried safely")
 
 
@@ -42,7 +40,7 @@ class LLMProvider(Protocol):
 
     async def chat(
         self,
-        messages: List[ChatMessage],
+        messages: list[ChatMessage],
         model: str,
         temperature: float = 1.0,
         **kwargs: Any,
@@ -52,7 +50,7 @@ class LLMProvider(Protocol):
 
     def stream_chat(
         self,
-        messages: List[ChatMessage],
+        messages: list[ChatMessage],
         model: str,
         temperature: float = 1.0,
         **kwargs: Any,
@@ -60,11 +58,11 @@ class LLMProvider(Protocol):
         """Asynchronously streams incremental text delta tokens."""
         ...
 
-    async def test_connection(self, model: Optional[str] = None) -> TestResult:
+    async def test_connection(self, model: str | None = None) -> TestResult:
         """Verifies API credentials and measures endpoint latency."""
         ...
 
-    async def list_models(self) -> List[str]:
+    async def list_models(self) -> list[str]:
         """Discovers supported or available model IDs from provider endpoint."""
         ...
 
@@ -81,7 +79,7 @@ class BaseLLMProvider(BaseLLMAdapter):
 
     def stream(
         self,
-        messages: List[ChatMessage],
+        messages: list[ChatMessage],
         model: str,
         temperature: float = 1.0,
         **kwargs: Any,

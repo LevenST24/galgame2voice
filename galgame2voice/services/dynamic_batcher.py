@@ -10,7 +10,7 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 from galgame2voice.utils.prosody import clamp_dynamic_batch_size
 
@@ -28,7 +28,7 @@ class SynthesisSpeedRecord:
         self,
         char_count: int,
         elapsed_s: float,
-        audio_dur_s: Optional[float] = None,
+        audio_dur_s: float | None = None,
     ) -> None:
         self.timestamp = time.time()
         self.char_count = max(1, char_count)
@@ -54,7 +54,7 @@ class SynthesisSpeedTracker:
         self,
         char_count: int,
         elapsed_s: float,
-        audio_dur_s: Optional[float] = None,
+        audio_dur_s: float | None = None,
     ) -> SynthesisSpeedRecord:
         """Records a completed synthesis operation into the moving window."""
         rec = SynthesisSpeedRecord(char_count=char_count, elapsed_s=elapsed_s, audio_dur_s=audio_dur_s)
@@ -66,7 +66,7 @@ class SynthesisSpeedTracker:
         )
         return rec
 
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_metrics(self) -> dict[str, Any]:
         """Returns statistical metrics over recent synthesis operations."""
         with self._lock:
             items = list(self._history)
@@ -102,7 +102,7 @@ class SynthesisSpeedTracker:
     def is_high_throughput(self) -> bool:
         return bool(self.get_metrics()["is_high_throughput"])
 
-    def get_telemetry(self) -> Dict[str, Any]:
+    def get_telemetry(self) -> dict[str, Any]:
         """Returns comprehensive telemetry dictionary for API endpoints."""
         metrics = self.get_metrics()
         scheduler = get_batch_scheduler()
@@ -134,7 +134,7 @@ class DynamicBatchScheduler:
     4. Hardware runtime throughput & RTF feedback
     """
 
-    def __init__(self, tracker: Optional[SynthesisSpeedTracker] = None) -> None:
+    def __init__(self, tracker: SynthesisSpeedTracker | None = None) -> None:
         self.tracker = tracker or get_speed_tracker()
 
     @staticmethod
@@ -189,7 +189,7 @@ class DynamicBatchScheduler:
         text: str,
         is_streaming: bool = False,
         split_method: str = "cut0",
-        user_batch_size: Optional[Any] = None,
+        user_batch_size: Any | None = None,
     ) -> int:
         """
         Computes the optimal batch size for GPT-SoVITS inference.
@@ -225,8 +225,8 @@ class DynamicBatchScheduler:
 
 
 # Global singletons
-_GLOBAL_TRACKER: Optional[SynthesisSpeedTracker] = None
-_GLOBAL_SCHEDULER: Optional[DynamicBatchScheduler] = None
+_GLOBAL_TRACKER: SynthesisSpeedTracker | None = None
+_GLOBAL_SCHEDULER: DynamicBatchScheduler | None = None
 _INIT_LOCK = threading.RLock()
 
 

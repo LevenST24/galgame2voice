@@ -9,7 +9,7 @@ import os
 import re
 import urllib.parse
 from pathlib import Path
-from typing import List, Optional, Sequence, Union
+from typing import Sequence
 
 from galgame2voice.config import get_settings
 
@@ -92,16 +92,16 @@ def is_safe_filename(filename: str) -> bool:
 
 
 def get_authorized_roots(
-    custom_roots: Optional[Sequence[Union[str, Path]]] = None,
+    custom_roots: Sequence[str | Path] | None = None,
     include_sovits: bool = True,
-) -> List[Path]:
+) -> list[Path]:
     """
     Returns resolved absolute paths of all authorized system directories:
     audio_dir, data_dir, project_root, optionally discovered GPT-SoVITS directories,
     and any custom roots provided.
     """
     settings = get_settings()
-    roots: List[Path] = [
+    roots: list[Path] = [
         settings.audio_dir.resolve(),
         settings.data_dir.resolve(),
         settings.project_root.resolve(),
@@ -144,9 +144,9 @@ def get_authorized_roots(
 
 
 def validate_path_containment(
-    path: Union[str, Path],
-    allowed_roots: Optional[Sequence[Union[str, Path]]] = None,
-    base_dir: Optional[Union[str, Path]] = None,
+    path: str | Path,
+    allowed_roots: Sequence[str | Path] | None = None,
+    base_dir: str | Path | None = None,
 ) -> Path:
     """
     Validates that a path is strictly contained within authorized root directories.
@@ -205,9 +205,9 @@ def validate_path_containment(
 
 
 def is_path_safe(
-    path: Union[str, Path],
-    allowed_roots: Optional[Sequence[Union[str, Path]]] = None,
-    base_dir: Optional[Union[str, Path]] = None,
+    path: str | Path,
+    allowed_roots: Sequence[str | Path] | None = None,
+    base_dir: str | Path | None = None,
 ) -> bool:
     """Returns True if path is valid and strictly bounded, False otherwise."""
     try:
@@ -218,8 +218,8 @@ def is_path_safe(
 
 
 def safe_resolve_audio_path(
-    path_or_filename: Union[str, Path],
-    allowed_roots: Optional[Sequence[Union[str, Path]]] = None,
+    path_or_filename: str | Path,
+    allowed_roots: Sequence[str | Path] | None = None,
 ) -> Path:
     """
     Specifically validates and resolves audio file paths (reference audio, cache audio).
@@ -231,10 +231,10 @@ def safe_resolve_audio_path(
 
 
 def validate_voice_profile_paths(
-    gpt_weights_path: Optional[str] = None,
-    sovits_weights_path: Optional[str] = None,
-    ref_audio_path: Optional[str] = None,
-    allowed_roots: Optional[Sequence[Union[str, Path]]] = None,
+    gpt_weights_path: str | None = None,
+    sovits_weights_path: str | None = None,
+    ref_audio_path: str | None = None,
+    allowed_roots: Sequence[str | Path] | None = None,
 ) -> None:
     """
     Validates all file path references for a voice profile (weights and reference audio).
@@ -252,7 +252,7 @@ def validate_voice_profile_paths(
         validate_path_containment(ref_audio_path, allowed_roots=roots)
 
 
-def _search_character_packages_for_audio(raw: str, filename: str) -> Optional[Path]:
+def _search_character_packages_for_audio(raw: str, filename: str) -> Path | None:
     """Inspects installed character packages for matching reference audio file."""
     try:
         from galgame2voice.services.character_manager import get_character_manager
@@ -293,7 +293,7 @@ def _search_character_packages_for_audio(raw: str, filename: str) -> Optional[Pa
     return None
 
 
-def resolve_existing_audio_path(path: Union[str, Path]) -> Optional[Path]:
+def resolve_existing_audio_path(path: str | Path) -> Path | None:
     """
     Resolves a reference audio path across canonical bases and installed packages in order:
     absolute path, project_root-relative, audio_dir-relative, characters_dir-relative,
@@ -356,7 +356,7 @@ def resolve_weight_file_path(path: str) -> str:
     return raw
 
 
-def to_project_relative_path(path: Union[str, Path]) -> str:
+def to_project_relative_path(path: str | Path) -> str:
     """
     Normalizes a path for storage so voice profiles stay portable across machines:
     paths under project_root are stored project_root-relative (POSIX separators),

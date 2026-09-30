@@ -7,7 +7,7 @@ emotion classification, and pause/prosody normalization.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
 from galgame2voice.services.emotion_classifier import classify_emotion
@@ -23,10 +23,10 @@ class TextSegmentationPipeline:
     3. Emotion metadata
     """
 
-    def __init__(self, parser: Optional[StreamingBilingualParser] = None) -> None:
+    def __init__(self, parser: StreamingBilingualParser | None = None) -> None:
         self.parser = parser or StreamingBilingualParser()
 
-    def feed_token(self, token: str) -> Tuple[str, List[str], Optional[str]]:
+    def feed_token(self, token: str) -> tuple[str, list[str], str | None]:
         """
         Feeds an LLM token into the parser.
         Returns:
@@ -43,7 +43,7 @@ class TextSegmentationPipeline:
             )
         return delta_ch, completed_sentences, emotion
 
-    def finalize(self) -> Tuple[str, str, str, List[str], Optional[str]]:
+    def finalize(self) -> tuple[str, str, str, list[str], str | None]:
         """
         Finalizes the text stream.
         Returns:
@@ -63,10 +63,10 @@ class TextSegmentationPipeline:
 
     def get_dynamic_tts_options(
         self,
-        base_options: Optional[Dict[str, Any]] = None,
+        base_options: dict[str, Any] | None = None,
         adaptive_enabled: bool = False,
         sentence_text: str = "",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Calculates emotion-aware, dynamic speed/pitch/prompt TTS options."""
         return self.parser.get_dynamic_tts_options(
             base_options=base_options,
@@ -75,7 +75,7 @@ class TextSegmentationPipeline:
         )
 
     @property
-    def emotion_extracted(self) -> Optional[str]:
+    def emotion_extracted(self) -> str | None:
         return self.parser.emotion_extracted
 
     @property
@@ -87,13 +87,13 @@ class TextSegmentationPipeline:
         return self.parser.japanese_extracted
 
     @property
-    def tts_speed(self) -> Optional[float]:
+    def tts_speed(self) -> float | None:
         return self.parser.tts_speed
 
     @property
-    def tts_temperature(self) -> Optional[float]:
+    def tts_temperature(self) -> float | None:
         return self.parser.tts_temperature
 
     @property
-    def tts_emotion(self) -> Optional[str]:
+    def tts_emotion(self) -> str | None:
         return self.parser.tts_emotion

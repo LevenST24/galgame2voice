@@ -13,7 +13,7 @@ import time
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, Optional, Tuple, Union
+from typing import Any, AsyncGenerator
 
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
@@ -42,9 +42,9 @@ def _get_prof_val(prof: Any, attr: str, default: Any = "") -> Any:
 
 
 def _extract_voice_profile_cache_fields(
-    opts: Dict[str, Any],
-    voice_profile: Optional[Any],
-) -> Dict[str, Any]:
+    opts: dict[str, Any],
+    voice_profile: Any | None,
+) -> dict[str, Any]:
     """Extracts voice profile parameters from opts or fallback voice_profile object."""
     voice_profile_id = 1
     gpt_weights = opts.get("gpt_weights_path", "")
@@ -97,10 +97,10 @@ def _normalize_ref_audio(ref_audio: str) -> str:
 
 
 def _build_canonical_params_dict(
-    opts: Dict[str, Any],
-    prof_fields: Dict[str, Any],
+    opts: dict[str, Any],
+    prof_fields: dict[str, Any],
     clean_text: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Builds canonical parameter dictionary for cache key hashing."""
     speed = float(opts.get("speed_factor", 1.0))
     speed_str = f"{speed:.3f}"
@@ -152,8 +152,8 @@ class TtsCacheManager:
 
     def __init__(
         self,
-        cache_dir: Optional[Union[str, Path]] = None,
-        db_path: Optional[Union[str, Path]] = None,
+        cache_dir: str | Path | None = None,
+        db_path: str | Path | None = None,
         max_cache_mb: int = 1024,
         max_entries: int = 5000,
         max_mem_entries: int = 128,
@@ -178,16 +178,16 @@ class TtsCacheManager:
         # High-speed In-Memory LRU Cache layer (<0.1ms access time)
         self._mem_cache: OrderedDict[str, bytes] = OrderedDict()
         self._mem_bytes_total: int = 0
-        self._touch_throttle: Dict[str, float] = {}
+        self._touch_throttle: dict[str, float] = {}
         # Batch write cache access times: in-memory buffer protected by self._lock
-        self._dirty_touches: Dict[str, int] = {}
+        self._dirty_touches: dict[str, int] = {}
         self._flush_interval: float = 15.0
-        self._flush_task: Optional[asyncio.Task] = None
+        self._flush_task: asyncio.Task | None = None
         # Strong references for fire-and-forget background tasks (prevent GC mid-flight).
         self._bg_tasks: set = set()
         # In-memory disk cache metadata tracking to avoid DB/disk scans on every synthesis
-        self._disk_bytes_total: Optional[int] = None
-        self._disk_files_total: Optional[int] = None
+        self._disk_bytes_total: int | None = None
+        self._disk_files_total: int | None = None
         self._stats_initialized: bool = False
         self._ensure_flusher_running()
 
@@ -210,7 +210,7 @@ class TtsCacheManager:
             _, evicted = self._mem_cache.popitem(last=False)
             self._mem_bytes_total -= len(evicted)
 
-    def _update_disk_stats_after_write(self, file_size: int, prev_file_size: Optional[int]) -> None:
+    def _update_disk_stats_after_write(self, file_size: int, prev_file_size: int | None) -> None:
         """Updates in-memory disk cache size delta after writing an entry."""
         if prev_file_size is _STATS_UNKNOWN:
             # The previous row could not be read, so this write may
@@ -352,9 +352,9 @@ class TtsCacheManager:
     def compute_cache_key(
         self,
         text: str,
-        options: Optional[Dict[str, Any]] = None,
-        voice_profile: Optional[Any] = None,
-    ) -> Tuple[str, str, str]:
+        options: dict[str, Any] | None = None,
+        voice_profile: Any | None = None,
+    ) -> tuple[str, str, str]:
         """
         Computes canonical SHA256 cache key from normalized text and inference parameters.
         Returns:
@@ -378,7 +378,7 @@ class TtsCacheManager:
 
         return cache_key, clean_text, params_hash
 
-    async def get(self, cache_key: str) -> Optional[Tuple[bytes, str, int]]:
+    async def get(self, cache_key: str) -> tuple[bytes, str, int] | None:
         """
         Retrieves cached audio bytes and URL for the given cache key.
         Checks high-speed in-memory LRU cache first (<0.005ms), falling back to disk (<15ms).
@@ -539,7 +539,7 @@ class TtsCacheManager:
         cache_key: str,
         text: str,
         clean_text: str,
-        voice_profile_id: Optional[int],
+        voice_profile_id: int | None,
         params_hash: str,
         file_path: Path,
         file_size: int,
@@ -590,11 +590,11 @@ class TtsCacheManager:
         cache_key: str,
         text: str,
         clean_text: str,
-        voice_profile_id: Optional[int],
+        voice_profile_id: int | None,
         params_hash: str,
         audio_bytes: bytes,
         duration_ms: int = 0,
-    ) -> Tuple[str, Path, int]:
+    ) -> tuple[str, Path, int]:
         """
         Persists synthesized audio bytes to disk, memory cache, and registers metadata in SQLite.
         Returns (url_path, local_file_path, byte_count).
@@ -618,7 +618,7 @@ class TtsCacheManager:
         # _STATS_UNKNOWN distinguishes "query failed, INSERT/UPDATE unknown"
         # from prev_file_size=None which unambiguously means "no previous row"
         # (i.e. this write inserts a new cache entry).
-        prev_file_size: Optional[int] = _STATS_UNKNOWN
+        prev_file_size: int | None = _STATS_UNKNOWN
         try:
             async with get_db(self.db_path) as _conn:
                 _prev = await crud.get_tts_cache_entry(_conn, cache_key)
@@ -700,8 +700,8 @@ class TtsCacheManager:
 
     async def prune(
         self,
-        max_mb: Optional[int] = None,
-        max_entries: Optional[int] = None,
+        max_mb: int | None = None,
+        max_entries: int | None = None,
     ) -> int:
         """
         Performs LRU pruning of cache files when limits are exceeded.
@@ -772,7 +772,7 @@ class TtsCacheManager:
                 logger.info("Pruned %d oldest TTS cache entries from disk.", pruned_count)
             return pruned_count
 
-    async def clear(self) -> Tuple[int, float]:
+    async def clear(self) -> tuple[int, float]:
         """
         Clears all cache files in audio/cache/ and purges SQLite metadata.
         Guarded by _write_lock to serialize against concurrent put() and prune() operations.
@@ -782,7 +782,7 @@ class TtsCacheManager:
             freed_bytes = 0
             deleted_count = 0
 
-            def _scan_and_delete() -> Tuple[int, int]:
+            def _scan_and_delete() -> tuple[int, int]:
                 freed = 0
                 count = 0
                 if self.cache_dir.exists():
@@ -822,7 +822,7 @@ class TtsCacheManager:
             logger.info("Cleared TTS cache: deleted %d files, freed %.2f MB", deleted_count, freed_mb)
             return deleted_count, freed_mb
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """Returns comprehensive TTS cache statistics."""
         try:
             await self._flush_dirty_touches()
@@ -864,12 +864,12 @@ class TtsCacheManager:
 
 
 # Singleton accessor
-_tts_cache_manager_instance: Optional[TtsCacheManager] = None
+_tts_cache_manager_instance: TtsCacheManager | None = None
 
 
 def get_tts_cache_manager(
-    cache_dir: Optional[Union[str, Path]] = None,
-    db_path: Optional[Union[str, Path]] = None,
+    cache_dir: str | Path | None = None,
+    db_path: str | Path | None = None,
 ) -> TtsCacheManager:
     """Returns singleton instance of TtsCacheManager."""
     global _tts_cache_manager_instance

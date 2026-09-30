@@ -9,7 +9,7 @@ and SQLite persistent storage for long-term historical analytics.
 from collections import deque
 from datetime import datetime, timezone
 import logging
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 from pathlib import Path
 
 from galgame2voice.database import crud
@@ -21,7 +21,7 @@ logger = logging.getLogger("galgame2voice.services.metrics_collector")
 # USD Pricing per 1,000,000 Tokens (Input / Output)
 DEFAULT_MODEL_KEY = "default"
 
-MODEL_PRICING_MAP: Dict[str, Dict[str, Tuple[float, float]]] = {
+MODEL_PRICING_MAP: dict[str, dict[str, tuple[float, float]]] = {
     "deepseek": {
         DEFAULT_MODEL_KEY: (0.14, 0.28),
         "deepseek-chat": (0.14, 0.28),
@@ -97,7 +97,7 @@ class MetricsCollector:
     in-memory ring buffering, and asynchronous database persistence.
     """
 
-    def __init__(self, db_path: Optional[Union[str, Path]] = None, ring_buffer_size: int = 100) -> None:
+    def __init__(self, db_path: str | Path | None = None, ring_buffer_size: int = 100) -> None:
         self.db_path = str(db_path) if db_path is not None else get_database_path()
         self.ring_buffer: deque = deque(maxlen=ring_buffer_size)
 
@@ -107,7 +107,7 @@ class MetricsCollector:
         model_name: str,
         prompt_tokens: int,
         completion_tokens: int,
-    ) -> Tuple[float, float]:
+    ) -> tuple[float, float]:
         """
         Calculates estimated cost in USD and CNY for prompt and completion tokens.
         Returns (cost_usd, cost_cny).
@@ -164,7 +164,7 @@ class MetricsCollector:
         total_latency_ms: float = 0.0,
         tts_cached_chunks: int = 0,
         tts_generated_chunks: int = 0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Records telemetry for an end-to-end request.
         Updates in-memory ring buffer and persists asynchronously to SQLite.
@@ -234,7 +234,7 @@ class MetricsCollector:
         session_id: str,
         provider_id: str,
         model_name: str,
-        messages: List[Any],
+        messages: list[Any],
         chinese: str,
         japanese: str,
         ttft_ms: float,
@@ -243,7 +243,7 @@ class MetricsCollector:
         tts_cached_chunks: int = 0,
         tts_generated_chunks: int = 0,
         channel: str = "web",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Calculates prompt and completion tokens from conversation messages and bilingual response,
         then records telemetry record.
@@ -265,7 +265,7 @@ class MetricsCollector:
             tts_generated_chunks=tts_generated_chunks,
         )
 
-    async def get_overview(self) -> Dict[str, Any]:
+    async def get_overview(self) -> dict[str, Any]:
         """
         Retrieves global token telemetry aggregated overview combined with TTS cache stats.
         """
@@ -297,7 +297,7 @@ class MetricsCollector:
 
         return overview
 
-    async def get_providers(self) -> List[Dict[str, Any]]:
+    async def get_providers(self) -> list[dict[str, Any]]:
         """Retrieves breakdown of token usage and costs by provider."""
         try:
             async with get_db(self.db_path) as conn:
@@ -306,7 +306,7 @@ class MetricsCollector:
             logger.warning("Could not read provider metrics breakdown: %s", exc)
             return []
 
-    async def get_latency_trend(self, limit: int = 30) -> List[Dict[str, Any]]:
+    async def get_latency_trend(self, limit: int = 30) -> list[dict[str, Any]]:
         """
         Retrieves recent latency measurements from in-memory ring buffer or database.
         """
@@ -334,10 +334,10 @@ class MetricsCollector:
 
 
 # Singleton accessor
-_metrics_collector_instance: Optional[MetricsCollector] = None
+_metrics_collector_instance: MetricsCollector | None = None
 
 
-def get_metrics_collector(db_path: Optional[Union[str, Path]] = None) -> MetricsCollector:
+def get_metrics_collector(db_path: str | Path | None = None) -> MetricsCollector:
     """Returns singleton instance of MetricsCollector."""
     global _metrics_collector_instance
     if _metrics_collector_instance is None:

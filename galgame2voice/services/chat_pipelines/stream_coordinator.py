@@ -11,7 +11,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, Callable
 
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate
@@ -51,7 +51,7 @@ class SseKeepAlive(dict):
         return super().__eq__(other)
 
 
-def _has_meaningful_text(chinese: Optional[str], japanese: Optional[str]) -> bool:
+def _has_meaningful_text(chinese: str | None, japanese: str | None) -> bool:
     """Returns True if either Chinese or Japanese string contains non-whitespace text."""
     return bool((chinese and chinese.strip()) or (japanese and japanese.strip()))
 
@@ -68,12 +68,12 @@ class _StreamRun:
         text_pipe: TextSegmentationPipeline,
         tts_pipe: TtsStreamPipeline,
         llm_pipe: LlmStreamPipeline,
-        cancel_event: Optional[asyncio.Event] = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> None:
         self.t_start: float = t_start
         self.session_id: str = session_id
         self.stream_gen_id: str = stream_gen_id
-        self.cancel_event: Optional[asyncio.Event] = cancel_event
+        self.cancel_event: asyncio.Event | None = cancel_event
 
         self.text_pipe: TextSegmentationPipeline = text_pipe
         self.parser = text_pipe.parser
@@ -83,12 +83,12 @@ class _StreamRun:
         self.tts_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
         self.event_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
 
-        self.producer_task: Optional[asyncio.Task] = None
-        self.worker_task: Optional[asyncio.Task] = None
-        self.cancel_monitor: Optional[asyncio.Task] = None
+        self.producer_task: asyncio.Task | None = None
+        self.worker_task: asyncio.Task | None = None
+        self.cancel_monitor: asyncio.Task | None = None
 
-        self.final_result: Dict[str, Any] = {}
-        self.audio_chunks: List[Dict[str, Any]] = []
+        self.final_result: dict[str, Any] = {}
+        self.audio_chunks: list[dict[str, Any]] = []
         self.profiler: ChatTurnProfiler = ChatTurnProfiler(turn_id=str(session_id))
 
         self.ttft_ms: float = 0.0
@@ -111,30 +111,30 @@ class StreamCoordinator:
         self,
         *,
         adapter: Any,
-        messages: List[Any],
+        messages: list[Any],
         model_name: str,
         actual_provider_id: str,
         session_id: str,
         prompt: str,
-        user_msg: Optional[Any] = None,
+        user_msg: Any | None = None,
         user_id: str = "default_user",
-        profile_id: Optional[int] = None,
-        active_prof: Optional[Any] = None,
+        profile_id: int | None = None,
+        active_prof: Any | None = None,
         tts_service: TtsService,
         db_path: str,
         metrics_collector: MetricsCollector,
         affection_service: AffectionService,
-        spawn_background: Optional[Callable[[Any], None]] = None,
-        concat_wav_fn: Optional[Callable[..., bool]] = None,
-        cancel_event: Optional[asyncio.Event] = None,
-        tts_options: Optional[Dict[str, Any]] = None,
+        spawn_background: Callable[[Any], None] | None = None,
+        concat_wav_fn: Callable[..., bool] | None = None,
+        cancel_event: asyncio.Event | None = None,
+        tts_options: dict[str, Any] | None = None,
         ai_adaptive_voice: bool = True,
-        temperature: Optional[float] = None,
-        top_p: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        frequency_penalty: Optional[float] = None,
-        presence_penalty: Optional[float] = None,
-        t_start: Optional[float] = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        t_start: float | None = None,
     ) -> None:
         self.adapter = adapter
         self.messages = messages
@@ -173,8 +173,8 @@ class StreamCoordinator:
 
     def _concat_wav(
         self,
-        chunk_paths: List[Union[str, Path]],
-        output_path: Union[str, Path],
+        chunk_paths: list[str | Path],
+        output_path: str | Path,
         pause_duration: float = 0.0,
     ) -> bool:
         """Concatenates audio WAV files."""
@@ -183,11 +183,11 @@ class StreamCoordinator:
         return concat_wav_files(chunk_paths, output_path, pause_duration)
 
     @staticmethod
-    def _affection_fallback(emotion: str) -> Dict[str, Any]:
+    def _affection_fallback(emotion: str) -> dict[str, Any]:
         """Neutral affection payload used when the affection update fails."""
         return AffectionService.get_fallback_payload(emotion)
 
-    def __aiter__(self) -> AsyncGenerator[Dict[str, Any], None]:
+    def __aiter__(self) -> AsyncGenerator[dict[str, Any], None]:
         return self.stream()
 
     def _init_stream_run(self) -> _StreamRun:
@@ -248,7 +248,7 @@ class StreamCoordinator:
         self,
         queue: asyncio.Queue,
         item: Any,
-        cancel_event: Optional[asyncio.Event] = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> bool:
         """Puts an item into a bounded queue with ultra-low latency while remaining responsive to cancel_event."""
         ce = cancel_event if cancel_event is not None else self.cancel_event
@@ -423,7 +423,7 @@ class StreamCoordinator:
     async def _pump_events(
         self,
         run: _StreamRun,
-    ) -> AsyncGenerator[Union[Dict[str, Any], SseKeepAlive], None]:
+    ) -> AsyncGenerator[dict[str, Any] | SseKeepAlive, None]:
         """Event pump loop: responsive wait on event queue, keep-alive frames, and cancel event."""
         sentinels_received = 0
         last_event_time = time.monotonic()
@@ -478,8 +478,8 @@ class StreamCoordinator:
 
     async def _persist_partial_message(
         self,
-        partial_ch: Optional[str],
-        partial_ja: Optional[str],
+        partial_ch: str | None,
+        partial_ja: str | None,
         t_start: float,
     ) -> None:
         """Persists partial assistant response to the database in background."""
@@ -510,7 +510,7 @@ class StreamCoordinator:
         self,
         run: _StreamRun,
         error_seen: bool,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Handles early termination due to pipeline errors or client cancellation."""
         cancel_event = run.cancel_event
         is_cancelled = bool(cancel_event and cancel_event.is_set())
@@ -545,7 +545,7 @@ class StreamCoordinator:
                 },
             }
 
-    async def _concat_audio_chunks(self, audio_chunks: List[Dict[str, Any]]) -> str:
+    async def _concat_audio_chunks(self, audio_chunks: list[dict[str, Any]]) -> str:
         """Concatenates chunk WAVs into a master WAV file in a worker thread."""
         if not audio_chunks:
             return ""
@@ -582,7 +582,7 @@ class StreamCoordinator:
             return audio_chunks[0]["audio_url"]
 
     @staticmethod
-    def _clean_audio_chunks(audio_chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _clean_audio_chunks(audio_chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Cleans local_path from audio_chunks before emitting to frontend."""
         return [
             {"index": c.get("index", i), "audio_url": c.get("audio_url", ""), "sentence": c.get("sentence", "")}
@@ -590,7 +590,7 @@ class StreamCoordinator:
         ]
 
     @staticmethod
-    def _build_final_tts_params(parser: Any, ai_adaptive_voice: Any) -> Optional[Dict[str, Any]]:
+    def _build_final_tts_params(parser: Any, ai_adaptive_voice: Any) -> dict[str, Any] | None:
         """Constructs final TTS parameter payload from parser attributes if available."""
         if parser.tts_speed is not None or parser.tts_temperature is not None or parser.tts_emotion is not None:
             return {
@@ -630,7 +630,7 @@ class StreamCoordinator:
         self,
         full_chinese: str,
         final_emotion: str,
-    ) -> Tuple[Dict[str, Any], str]:
+    ) -> tuple[dict[str, Any], str]:
         """Updates character affection state machine based on user prompt and assistant response."""
         try:
             affection_res = await self.affection_service.handle_turn_affection(
@@ -649,7 +649,7 @@ class StreamCoordinator:
     async def _finalize_success(
         self,
         run: _StreamRun,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Performs success-path finalization: WAV concat, metrics, DB persist, affection, and done event."""
         parser = run.parser
         audio_chunks = run.audio_chunks
@@ -773,7 +773,7 @@ class StreamCoordinator:
 
         run.profiler.print_waterfall()
 
-    async def stream(self) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream(self) -> AsyncGenerator[dict[str, Any], None]:
         """
         Asynchronously streams bilingual SSE event dictionaries:
           - text: incremental Chinese delta tokens

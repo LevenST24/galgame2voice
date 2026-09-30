@@ -9,7 +9,7 @@ import os
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 import aiosqlite
 
 from galgame2voice.database.session import (
@@ -585,7 +585,7 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     await conn.commit()
 
 
-async def auto_heal_voice_profiles(conn: aiosqlite.Connection, char_mgr: Optional[Any] = None) -> int:
+async def auto_heal_voice_profiles(conn: aiosqlite.Connection, char_mgr: Any | None = None) -> int:
     """
     Scans voice_profiles table and auto-heals any missing or invalid reference audio paths.
     If ref_audio_path points to a non-existent file or an unresolvable path,

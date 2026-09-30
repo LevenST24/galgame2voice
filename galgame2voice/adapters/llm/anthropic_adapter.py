@@ -7,7 +7,7 @@ system parameter separation, content_block_delta streaming, and exponential back
 import asyncio
 import logging
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator
 
 import httpx
 
@@ -32,7 +32,7 @@ _parse_retry_after = parse_retry_after
 _calculate_backoff_delay = calculate_backoff_delay
 
 
-def _extract_content_text(data: Dict[str, Any]) -> str:
+def _extract_content_text(data: dict[str, Any]) -> str:
     """Concatenates text blocks from an Anthropic messages response."""
     return "".join(
         block.get("text", "")
@@ -53,9 +53,9 @@ class AnthropicAdapter(BaseLLMAdapter):
     def __init__(
         self,
         api_key: str = "",
-        base_url: Optional[str] = None,
+        base_url: str | None = None,
         default_model: str = DEFAULT_MODEL,
-        custom_headers: Optional[Dict[str, Any]] = None,
+        custom_headers: dict[str, Any] | None = None,
         **kwargs: Any,
     ):
         raw_url = base_url or self.DEFAULT_BASE_URL
@@ -70,7 +70,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         self.default_model = default_model
         self.custom_headers = custom_headers or {}
 
-    def _get_headers(self) -> Dict[str, str]:
+    def _get_headers(self) -> dict[str, str]:
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": self.ANTHROPIC_VERSION,
@@ -83,16 +83,16 @@ class AnthropicAdapter(BaseLLMAdapter):
 
     def _prepare_anthropic_payload(
         self,
-        messages: List[ChatMessage],
-        model: Optional[str] = None,
+        messages: list[ChatMessage],
+        model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 1024,
         stream: bool = False,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Separates system prompt and formats messages for Anthropic API."""
         system_content = ""
-        user_assistant_msgs: List[Dict[str, str]] = []
+        user_assistant_msgs: list[dict[str, str]] = []
 
         for m in messages:
             role = m.role if hasattr(m, "role") else m.get("role")
@@ -109,7 +109,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         # 1. Non-empty string for each message content (>= 1 char)
         # 2. Alternating user/assistant roles (consecutive same roles must be merged)
         # 3. First message must be 'user'
-        merged_msgs: List[Dict[str, str]] = []
+        merged_msgs: list[dict[str, str]] = []
         for msg_dict in user_assistant_msgs:
             role = msg_dict["role"]
             raw_content = msg_dict.get("content") or ""
@@ -127,7 +127,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         elif merged_msgs[0]["role"] != "user":
             merged_msgs.insert(0, {"role": "user", "content": "Hello"})
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": model or self.default_model,
             "messages": merged_msgs,
             "max_tokens": max_tokens,
@@ -147,8 +147,8 @@ class AnthropicAdapter(BaseLLMAdapter):
 
     async def chat(
         self,
-        messages: List[ChatMessage],
-        model: Optional[str] = None,
+        messages: list[ChatMessage],
+        model: str | None = None,
         temperature: float = 0.7,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -229,8 +229,8 @@ class AnthropicAdapter(BaseLLMAdapter):
 
     async def stream_chat(
         self,
-        messages: List[ChatMessage],
-        model: Optional[str] = None,
+        messages: list[ChatMessage],
+        model: str | None = None,
         temperature: float = 0.7,
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
@@ -345,7 +345,7 @@ class AnthropicAdapter(BaseLLMAdapter):
             finally:
                 await aclose_stream_context(stream_ctx, client)
 
-    async def list_models(self) -> List[str]:
+    async def list_models(self) -> list[str]:
         """Returns known Anthropic Claude models."""
         return [
             "claude-opus-4-20250514",
@@ -356,7 +356,7 @@ class AnthropicAdapter(BaseLLMAdapter):
             "claude-3-5-haiku-20241022",
         ]
 
-    async def test_connection(self, model: Optional[str] = None) -> TestResult:
+    async def test_connection(self, model: str | None = None) -> TestResult:
         """Tests Anthropic API credentials with a minimal prompt."""
         t0 = time.time()
         try:

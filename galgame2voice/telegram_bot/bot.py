@@ -6,7 +6,7 @@ Manages python-telegram-bot Application instance, token validation, polling, and
 import asyncio
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -33,7 +33,7 @@ from galgame2voice.utils.text_sanitize import parse_admin_ids, sanitize_bot_toke
 logger = logging.getLogger("galgame2voice.telegram_bot.bot")
 
 
-def validate_bot_token(token: Optional[str]) -> bool:
+def validate_bot_token(token: str | None) -> bool:
     """
     Validates Telegram bot token format.
     Must be non-empty, >= 10 chars, not contain 'invalid', and contain ':'.
@@ -44,7 +44,7 @@ def validate_bot_token(token: Optional[str]) -> bool:
     return len(t) >= 10 and "invalid" not in t.lower() and ":" in t
 
 
-def _register_handlers(app: Any, handlers: Any, error_handler: Optional[Any] = None) -> None:
+def _register_handlers(app: Any, handlers: Any, error_handler: Any | None = None) -> None:
     """Registers command, callback query, message, and error handlers to the Telegram Application."""
     # Register command handlers
     app.add_handler(CommandHandler("start", handlers.handle_start))
@@ -74,12 +74,12 @@ class TelegramBotManager:
     Manages Telegram Bot async application lifecycle, handlers, and background polling.
     """
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: str | None = None):
         self.db_path = db_path
-        self.app: Optional[Any] = None
+        self.app: Any | None = None
         self.handlers = TelegramBotHandlers(db_path=db_path)
         self.is_running: bool = False
-        self._polling_task: Optional[asyncio.Task] = None
+        self._polling_task: asyncio.Task | None = None
 
     async def start(self) -> bool:
         """
@@ -204,7 +204,7 @@ class TelegramBotManager:
 
         logger.info("Telegram Bot service stopped cleanly.")
 
-    async def test_token(self, token: str, proxy_url: Optional[str] = None) -> Dict[str, Any]:
+    async def test_token(self, token: str, proxy_url: str | None = None) -> dict[str, Any]:
         """Tests validity of a Telegram bot token via getMe API."""
         if not validate_bot_token(token):
             return {"success": False, "message": "Invalid Telegram Bot Token format"}
@@ -224,10 +224,10 @@ class TelegramBotManager:
             return {"success": False, "message": f"Network connection failed: {safe_err}"}
 
 
-_global_bot_manager: Optional[TelegramBotManager] = None
+_global_bot_manager: TelegramBotManager | None = None
 
 
-def get_telegram_bot_manager(db_path: Optional[str] = None) -> TelegramBotManager:
+def get_telegram_bot_manager(db_path: str | None = None) -> TelegramBotManager:
     """Returns singleton TelegramBotManager instance."""
     global _global_bot_manager
     if _global_bot_manager is None:

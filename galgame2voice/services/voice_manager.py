@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 import uuid
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncGenerator
 
 
 from galgame2voice.config import get_settings
@@ -71,7 +71,7 @@ def _get_switch_min_free_vram_gb() -> float:
     return _MIN_FREE_VRAM_FLOOR_GB
 
 
-def _safe_invalidate_resolver(profile_id: Optional[int] = None) -> None:
+def _safe_invalidate_resolver(profile_id: int | None = None) -> None:
     """Safely invalidates the voice resolver cache without raising exceptions."""
     try:
         from galgame2voice.services.voice_resolver import get_voice_resolver
@@ -91,8 +91,8 @@ class VoiceManager:
 
     def __init__(
         self,
-        gpt_sovits_client_or_server: Union[GptSovitsClient, Any, str, None] = None,
-        db_path: Optional[str] = None,
+        gpt_sovits_client_or_server: GptSovitsClient | Any | str | None = None,
+        db_path: str | None = None,
     ):
         settings = get_settings()
         self.db_path = db_path or str(settings.db_path)
@@ -136,7 +136,7 @@ class VoiceManager:
         return self._switch_lock
 
     @property
-    def server(self) -> Optional[Any]:
+    def server(self) -> Any | None:
         """Access mock/internal server if configured."""
         return self.client.server
 
@@ -145,7 +145,7 @@ class VoiceManager:
         self.client.server = val
 
     @property
-    def active_profile(self) -> Optional[Any]:
+    def active_profile(self) -> Any | None:
         """Currently active voice profile model."""
         return self.client.active_profile
 
@@ -163,7 +163,7 @@ class VoiceManager:
     # ========================================================================
 
     @staticmethod
-    def _resolve_profile_field(p: Any, name: str, alias: Optional[str] = None) -> Any:
+    def _resolve_profile_field(p: Any, name: str, alias: str | None = None) -> Any:
         """Resolves profile field with attribute, fallback alias, and dict key lookups."""
         p_dict = p if isinstance(p, dict) else None
         val = getattr(p, name, None) or (p_dict.get(name) if p_dict else None)
@@ -172,7 +172,7 @@ class VoiceManager:
         return val
 
     @staticmethod
-    def _extract_profile_identity(p: Any) -> Tuple[Any, Any, Any, Any, Any]:
+    def _extract_profile_identity(p: Any) -> tuple[Any, Any, Any, Any, Any]:
         """Extracts canonical (id, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text) tuple."""
         resolve = VoiceManager._resolve_profile_field
         return (
@@ -200,7 +200,7 @@ class VoiceManager:
 
     async def switch_profile(
         self,
-        target: Union[int, str, VoiceProfileResponse, VoiceProfileInDB, Dict[str, Any], Any],
+        target: int | str | VoiceProfileResponse | VoiceProfileInDB | dict[str, Any] | Any,
         persist: bool = True,
         _already_locked: bool = False,
         force: bool = False,
@@ -219,14 +219,14 @@ class VoiceManager:
 
     async def switch_active_profile(
         self,
-        target: Union[int, str, VoiceProfileResponse, VoiceProfileInDB, Dict[str, Any], Any],
+        target: int | str | VoiceProfileResponse | VoiceProfileInDB | dict[str, Any] | Any,
         persist: bool = True,
         force: bool = False,
     ) -> bool:
         """Alias for switch_profile to preserve backwards compatibility."""
         return await self.switch_profile(target, persist=persist, force=force)
 
-    def _check_vram_guard(self, min_free_vram_gb: Optional[float] = 0.45) -> None:
+    def _check_vram_guard(self, min_free_vram_gb: float | None = 0.45) -> None:
         """
         Verifies discrete GPU VRAM safety floor before switching models.
         If discrete NVIDIA CUDA GPU is detected and free VRAM < floor,
@@ -312,8 +312,8 @@ class VoiceManager:
 
     async def _resolve_switch_target(
         self,
-        target: Union[int, str, VoiceProfileResponse, VoiceProfileInDB, Dict[str, Any], Any],
-    ) -> Optional[Any]:
+        target: int | str | VoiceProfileResponse | VoiceProfileInDB | dict[str, Any] | Any,
+    ) -> Any | None:
         """Resolves target identifier into a DB voice profile model or object."""
         if isinstance(target, int) or (isinstance(target, str) and target.isdigit()):
             profile_id = int(target)
@@ -366,7 +366,7 @@ class VoiceManager:
 
     async def _execute_switch(
         self,
-        target: Union[int, str, VoiceProfileResponse, VoiceProfileInDB, Dict[str, Any], Any],
+        target: int | str | VoiceProfileResponse | VoiceProfileInDB | dict[str, Any] | Any,
         persist: bool = True,
         force: bool = False,
     ) -> bool:
@@ -407,7 +407,7 @@ class VoiceManager:
     # Synthesis & Streaming
     # ========================================================================
 
-    async def _resolve_active_options(self, options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    async def _resolve_active_options(self, options: dict[str, Any] | None) -> dict[str, Any]:
         opts = dict(options or {})
         if not opts.get("ref_audio_path") and not opts.get("refer_audio_path") and not self.client.current_refer_audio:
             target_profile = None
@@ -433,7 +433,7 @@ class VoiceManager:
     async def synthesize(
         self,
         text: str,
-        options: Optional[Dict[str, Any]] = None,
+        options: dict[str, Any] | None = None,
         use_cache: bool = True,
     ) -> bytes:
         """Synthesizes text into complete audio bytes using active weights, persistent cache and inference mutex."""
@@ -471,7 +471,7 @@ class VoiceManager:
     async def stream_tts(
         self,
         text: str,
-        options: Optional[Dict[str, Any]] = None,
+        options: dict[str, Any] | None = None,
         chunk_size: int = 4096,
         use_cache: bool = True,
     ) -> AsyncGenerator[bytes, None]:
@@ -527,7 +527,7 @@ class VoiceManager:
         def _client_stream_fn() -> AsyncGenerator[bytes, None]:
             return self.client.stream_tts(text, options=opts, chunk_size=chunk_size)
 
-        collected_chunks: List[bytes] = []
+        collected_chunks: list[bytes] = []
         completed_normally = False
         try:
             async for chunk in scheduler.schedule_stream(
@@ -561,17 +561,17 @@ class VoiceManager:
     # Voice Profile Database CRUD Operations
     # ========================================================================
 
-    async def list_profiles(self) -> List[VoiceProfileResponse]:
+    async def list_profiles(self) -> list[VoiceProfileResponse]:
         """Lists all voice profiles in database."""
         async with get_db(self.db_path) as conn:
             return await crud.list_voice_profiles(conn)
 
-    async def get_profile(self, profile_id: int) -> Optional[VoiceProfileResponse]:
+    async def get_profile(self, profile_id: int) -> VoiceProfileResponse | None:
         """Gets voice profile by ID."""
         async with get_db(self.db_path) as conn:
             return await crud.get_voice_profile(conn, profile_id)
 
-    async def get_active_profile(self) -> Optional[VoiceProfileResponse]:
+    async def get_active_profile(self) -> VoiceProfileResponse | None:
         """Gets currently configured active voice profile from database."""
         async with get_db(self.db_path) as conn:
             return await crud.get_active_voice_profile(conn)
@@ -585,7 +585,7 @@ class VoiceManager:
 
     async def update_profile(
         self, profile_id: int, updates: VoiceProfileUpdate
-    ) -> Optional[VoiceProfileResponse]:
+    ) -> VoiceProfileResponse | None:
         """Updates an existing voice profile in database."""
         async with get_db(self.db_path) as conn:
             res = await crud.update_voice_profile(conn, profile_id, updates)
@@ -604,7 +604,7 @@ class VoiceManager:
 # Global Singleton Accessor
 # ============================================================================
 
-_global_voice_manager: Optional[VoiceManager] = None
+_global_voice_manager: VoiceManager | None = None
 
 
 def get_voice_manager() -> VoiceManager:
@@ -615,7 +615,7 @@ def get_voice_manager() -> VoiceManager:
     return _global_voice_manager
 
 
-def set_voice_manager(manager: Optional[VoiceManager]) -> None:
+def set_voice_manager(manager: VoiceManager | None) -> None:
     """Sets or resets application singleton VoiceManager instance (useful for tests)."""
     global _global_voice_manager
     _global_voice_manager = manager

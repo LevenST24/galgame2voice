@@ -2,7 +2,6 @@
 Multi-turn Conversational Memory, Sliding Window Truncation, and Prompt Templating Service.
 """
 
-from typing import List, Dict, Optional, Union
 from pathlib import Path
 import json
 import aiosqlite
@@ -20,7 +19,7 @@ class SessionTurn(BaseModel):
     content_chinese: str = Field(default="")
     content_japanese: str = Field(default="")
     emotion: str = Field(default="gentle", description="Emotion archetype: gentle, shy, happy, tsundere, cool, sad, angry")
-    raw_content: Optional[str] = None
+    raw_content: str | None = None
     audio_url: str = Field(default="")
     latency_ms: int = Field(default=0)
 
@@ -56,7 +55,7 @@ def _format_assistant_turn(turn: SessionTurn) -> str:
     return json.dumps(data_dict, ensure_ascii=False)
 
 
-def _is_duplicate_user_prompt(last_msg: Optional[Dict[str, str]], prompt: str) -> bool:
+def _is_duplicate_user_prompt(last_msg: dict[str, str] | None, prompt: str) -> bool:
     """Checks whether the prompt matches the immediately preceding user message."""
     if not last_msg or last_msg.get("role") != "user":
         return False
@@ -78,12 +77,12 @@ class SessionManager:
 
     def __init__(
         self,
-        db_path: Optional[Union[str, Path]] = None,
-        default_system_template: Optional[str] = None,
+        db_path: str | Path | None = None,
+        default_system_template: str | None = None,
     ) -> None:
         self.db_path = str(db_path) if db_path is not None else get_database_path()
         self.system_template = default_system_template or self.DEFAULT_SYSTEM_TEMPLATE
-        self._table_name: Optional[str] = None
+        self._table_name: str | None = None
 
     def estimate_tokens(self, text: str) -> int:
         """
@@ -99,7 +98,7 @@ class SessionManager:
         role: str,
         chinese: str,
         japanese: str = "",
-        raw: Optional[str] = None,
+        raw: str | None = None,
         audio_url: str = "",
         latency_ms: int = 0,
         emotion: str = "gentle",
@@ -146,8 +145,8 @@ class SessionManager:
         session_id: str,
         max_messages: int = 10,
         max_tokens: int = 8000,
-        conn: Optional[aiosqlite.Connection] = None,
-    ) -> List[SessionTurn]:
+        conn: aiosqlite.Connection | None = None,
+    ) -> list[SessionTurn]:
         """
         Retrieves chronological history with two-stage sliding window:
         1. Max message count limit (most recent N turns).
@@ -176,7 +175,7 @@ class SessionManager:
             LIMIT ?
         """
 
-    async def _detect_table_name(self, db: aiosqlite.Connection) -> Optional[str]:
+    async def _detect_table_name(self, db: aiosqlite.Connection) -> str | None:
         """Detects and caches the messages table name (session_messages vs messages)."""
         if self._table_name is None:
             cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
@@ -195,7 +194,7 @@ class SessionManager:
         session_id: str,
         max_messages: int,
         max_tokens: int,
-    ) -> List[SessionTurn]:
+    ) -> list[SessionTurn]:
         db.row_factory = aiosqlite.Row
         if not await self._detect_table_name(db):
             return []
@@ -250,11 +249,11 @@ class SessionManager:
     def format_llm_messages(
         self,
         character_name: str,
-        history: List[SessionTurn],
-        new_user_prompt: Optional[str] = None,
-        system_template: Optional[str] = None,
-        memory_prompt_block: Optional[str] = None,
-    ) -> List[Dict[str, str]]:
+        history: list[SessionTurn],
+        new_user_prompt: str | None = None,
+        system_template: str | None = None,
+        memory_prompt_block: str | None = None,
+    ) -> list[dict[str, str]]:
         """
         Constructs system prompt and formatted OpenAI-compatible message list.
         User messages are formatted as plain text; assistant messages as bilingual JSON.
@@ -288,13 +287,13 @@ class SessionManager:
         self,
         session_id: str,
         user_prompt: str,
-        character_name: Optional[str] = None,
-        custom_system_prompt: Optional[str] = None,
+        character_name: str | None = None,
+        custom_system_prompt: str | None = None,
         max_messages: int = 10,
         max_tokens: int = 8000,
-        memory_prompt_block: Optional[str] = None,
-        conn: Optional[aiosqlite.Connection] = None,
-    ) -> List[ChatMessage]:
+        memory_prompt_block: str | None = None,
+        conn: aiosqlite.Connection | None = None,
+    ) -> list[ChatMessage]:
         """High-level helper returning List[ChatMessage] for BaseLLMAdapter."""
         history = await self.get_history(
             session_id, max_messages=max_messages, max_tokens=max_tokens, conn=conn

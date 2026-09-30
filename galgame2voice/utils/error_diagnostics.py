@@ -5,7 +5,7 @@ translating them into user-friendly Chinese diagnostic recommendations.
 """
 
 from dataclasses import dataclass
-from typing import Optional, Union, Dict, Any
+from typing import Any
 from galgame2voice.utils.logger import MaskingFilter
 
 
@@ -16,10 +16,10 @@ class DiagnosticResult:
     error_code: str
     message: str
     guidance: str
-    status_code: Optional[int] = None
-    raw_error: Optional[str] = None
+    status_code: int | None = None
+    raw_error: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "error": self.message,
             "diagnostic": self.guidance,
@@ -29,10 +29,10 @@ class DiagnosticResult:
 
 
 def format_provider_error(
-    provider_id: Optional[str] = None,
-    status_code: Optional[int] = None,
-    raw_error: Optional[str] = None,
-) -> Dict[str, Any]:
+    provider_id: str | None = None,
+    status_code: int | None = None,
+    raw_error: str | None = None,
+) -> dict[str, Any]:
     """
     Translates HTTP status code and raw error from a provider into structured
     Chinese guidance dictionary {"error": ..., "diagnostic": ..., "error_code": ..., "status_code": ...}.
@@ -46,7 +46,7 @@ def format_provider_error(
     return diag.to_dict()
 
 
-def _extract_status_code(status_code: Optional[int], raw_lower: str) -> Optional[int]:
+def _extract_status_code(status_code: int | None, raw_lower: str) -> int | None:
     if status_code is not None:
         return status_code
     for code in (401, 403, 429, 404, 400, 408, 502, 503, 504):
@@ -58,9 +58,9 @@ def _extract_status_code(status_code: Optional[int], raw_lower: str) -> Optional
 def _diagnose_transport_fault(
     exc_type: str,
     raw_lower: str,
-    status_code: Optional[int],
+    status_code: int | None,
     sanitized_raw: str,
-) -> Optional[DiagnosticResult]:
+) -> DiagnosticResult | None:
     if (
         "timeout" in exc_type
         or "timeouterror" in raw_lower
@@ -109,9 +109,9 @@ def _diagnose_transport_fault(
 
 def _diagnose_model_not_found(
     raw_lower: str,
-    status_code: Optional[int],
+    status_code: int | None,
     sanitized_raw: str,
-) -> Optional[DiagnosticResult]:
+) -> DiagnosticResult | None:
     if "bot token" not in raw_lower and (
         status_code == 404
         or any(
@@ -138,9 +138,9 @@ def _diagnose_model_not_found(
 
 def _diagnose_gemini(
     raw_lower: str,
-    status_code: Optional[int],
+    status_code: int | None,
     sanitized_raw: str,
-) -> Optional[DiagnosticResult]:
+) -> DiagnosticResult | None:
     if (
         status_code == 403
         or "location is not supported" in raw_lower
@@ -183,9 +183,9 @@ def _diagnose_gemini(
 
 def _diagnose_xai(
     raw_lower: str,
-    status_code: Optional[int],
+    status_code: int | None,
     sanitized_raw: str,
-) -> Optional[DiagnosticResult]:
+) -> DiagnosticResult | None:
     if (
         status_code in (400, 401)
         or "incorrect api key" in raw_lower
@@ -223,9 +223,9 @@ def _diagnose_xai(
 
 def _diagnose_openai(
     raw_lower: str,
-    status_code: Optional[int],
+    status_code: int | None,
     sanitized_raw: str,
-) -> Optional[DiagnosticResult]:
+) -> DiagnosticResult | None:
     if (
         status_code == 401
         or "invalid_api_key" in raw_lower
@@ -261,9 +261,9 @@ def _diagnose_openai(
 
 def _diagnose_anthropic(
     raw_lower: str,
-    status_code: Optional[int],
+    status_code: int | None,
     sanitized_raw: str,
-) -> Optional[DiagnosticResult]:
+) -> DiagnosticResult | None:
     if status_code == 401 or "authentication_error" in raw_lower:
         return DiagnosticResult(
             error_code="ANTHROPIC_AUTH_FAILED",
@@ -286,9 +286,9 @@ def _diagnose_anthropic(
 def _diagnose_provider_specific(
     p_id: str,
     raw_lower: str,
-    status_code: Optional[int],
+    status_code: int | None,
     sanitized_raw: str,
-) -> Optional[DiagnosticResult]:
+) -> DiagnosticResult | None:
     if p_id == "gemini" or "generativelanguage.googleapis.com" in raw_lower or "googleapis.com" in raw_lower:
         diag = _diagnose_gemini(raw_lower, status_code, sanitized_raw)
         if diag:
@@ -314,9 +314,9 @@ def _diagnose_provider_specific(
 
 def _diagnose_generic_http(
     raw_lower: str,
-    status_code: Optional[int],
+    status_code: int | None,
     sanitized_raw: str,
-) -> Optional[DiagnosticResult]:
+) -> DiagnosticResult | None:
     if status_code == 401 or "unauthorized" in raw_lower or "invalid key" in raw_lower:
         return DiagnosticResult(
             error_code="AUTH_FAILED",
@@ -356,7 +356,7 @@ def _diagnose_generic_http(
 
 
 def _diagnose_final_fallback(
-    status_code: Optional[int],
+    status_code: int | None,
     sanitized_raw: str,
 ) -> DiagnosticResult:
     clean_err = sanitized_raw or f"HTTP {status_code or 'Error'}"
@@ -370,10 +370,10 @@ def _diagnose_final_fallback(
 
 
 def diagnose_llm_error(
-    exc_or_msg: Optional[Union[Exception, str]] = None,
-    provider_id: Optional[str] = None,
-    status_code: Optional[int] = None,
-    raw_body: Optional[str] = None,
+    exc_or_msg: Exception | str | None = None,
+    provider_id: str | None = None,
+    status_code: int | None = None,
+    raw_body: str | None = None,
 ) -> DiagnosticResult:
     """
     Inspects exceptions, status codes, and provider context to produce

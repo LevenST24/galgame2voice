@@ -13,7 +13,7 @@ Provides rich inline keyboard menus and callback processing for:
 
 from dataclasses import dataclass
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable
 
 try:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -32,11 +32,11 @@ logger = logging.getLogger("galgame2voice.telegram_bot.console_menus")
 
 # Callback data that mutates global state and therefore requires admin privileges
 # when an admin whitelist is configured. Empty whitelist = open access (single-user setups).
-ADMIN_CALLBACK_PREFIXES: Tuple[str, ...] = (
+ADMIN_CALLBACK_PREFIXES: tuple[str, ...] = (
     "set_voice_", "set_char_", "set_speed_", "set_temp_", "set_split_", "set_topk_",
     "set_topp_", "set_batch_", "set_interval_", "set_history_", "set_model_",
 )
-ADMIN_CALLBACK_ACTIONS: Set[str] = {"action_clear_cache"}
+ADMIN_CALLBACK_ACTIONS: set[str] = {"action_clear_cache"}
 
 
 def resolve_effective_user_id(update: Any) -> int:
@@ -46,7 +46,7 @@ def resolve_effective_user_id(update: Any) -> int:
     return int(uid) if uid else 0
 
 
-def check_is_admin(update: Any, admin_ids: Optional[Set[int]] = None) -> bool:
+def check_is_admin(update: Any, admin_ids: set[int] | None = None) -> bool:
     """Checks whether the effective user is authorized as an administrator."""
     if not admin_ids:
         return True
@@ -68,9 +68,9 @@ def resolve_session_key(chat_id: int, user_id: int = 0) -> str:
 def _resolve_menu_context(
     chat_id: Any = 0,
     user_id: int = 0,
-    db_path: Optional[str] = None,
-    session_key_fn: Optional[Callable[[int, int], str]] = None,
-) -> Tuple[Optional[str], int, int, str]:
+    db_path: str | None = None,
+    session_key_fn: Callable[[int, int], str] | None = None,
+) -> tuple[str | None, int, int, str]:
     """Resolves (actual_db_path, actual_chat_id, actual_user_id, session_key) for interactive menus."""
     if isinstance(chat_id, str) and not chat_id.isdigit():
         actual_db_path = chat_id
@@ -86,7 +86,7 @@ def _resolve_menu_context(
     return actual_db_path, actual_chat_id, actual_user_id, session_key
 
 
-async def _get_affection_safe(conn, user_id_key: str, profile: Any) -> Optional[Any]:
+async def _get_affection_safe(conn, user_id_key: str, profile: Any) -> Any | None:
     """Safely retrieves or initializes character affection without throwing on errors."""
     profile_id = profile.id if profile else 1
     try:
@@ -98,7 +98,7 @@ async def _get_affection_safe(conn, user_id_key: str, profile: Any) -> Optional[
 
 
 async def _get_setting_field(
-    db_path: Optional[str],
+    db_path: str | None,
     field_name: str,
     default: Any,
     caller_name: str,
@@ -121,7 +121,7 @@ def _tts_nav_row() -> list:
     ]
 
 
-def _make_inline_markup(keyboard: Optional[List[List[Any]]]) -> Optional[Any]:
+def _make_inline_markup(keyboard: list[list[Any]] | None) -> Any | None:
     """Wraps button rows into InlineKeyboardMarkup if telegram package is available and keyboard is non-empty."""
     if not (HAS_TELEGRAM and InlineKeyboardMarkup and keyboard):
         return None
@@ -129,10 +129,10 @@ def _make_inline_markup(keyboard: Optional[List[List[Any]]]) -> Optional[Any]:
 
 
 def _build_single_col_options_markup(
-    options: List[Tuple[Any, str]],
+    options: list[tuple[Any, str]],
     current_val: Any,
     callback_prefix: str,
-    nav_row: Optional[list] = None,
+    nav_row: list | None = None,
     is_float: bool = False,
 ) -> Any:
     """Builds a single-column inline keyboard for selectable scalar options."""
@@ -154,9 +154,9 @@ def _build_single_col_options_markup(
 async def build_main_console(
     chat_id: Any = 0,
     user_id: int = 0,
-    db_path: Optional[str] = None,
-    session_key_fn: Optional[Callable[[int, int], str]] = None,
-) -> Tuple[str, Any]:
+    db_path: str | None = None,
+    session_key_fn: Callable[[int, int], str] | None = None,
+) -> tuple[str, Any]:
     """Constructs the rich text and inline keyboard for the Telegram Interactive Console."""
     actual_db_path, actual_chat_id, actual_user_id, session_key = _resolve_menu_context(
         chat_id, user_id, db_path, session_key_fn
@@ -233,7 +233,7 @@ async def build_main_console(
     return text, reply_markup
 
 
-async def build_voice_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_voice_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs rich sub-menu for switching voice profiles with 2-column layout and active character card."""
     profiles = []
     active_id = None
@@ -286,7 +286,7 @@ async def build_voice_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
     return text, reply_markup
 
 
-async def build_model_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_model_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for switching active LLM provider with API key safety indicators."""
     providers = []
     active_id = None
@@ -337,7 +337,7 @@ async def build_model_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
     return text, reply_markup
 
 
-async def build_tts_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_tts_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for advanced TTS parameters."""
     settings = None
     try:
@@ -388,7 +388,7 @@ async def build_tts_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
     return text, reply_markup
 
 
-async def build_speed_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_speed_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for adjusting voice speed factor."""
     current_speed = await _get_setting_field(db_path, "speed_factor", 1.05, "build_speed_menu")
 
@@ -407,7 +407,7 @@ async def build_speed_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
     return text, reply_markup
 
 
-async def build_temp_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_temp_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for adjusting voice temperature."""
     current_temp = await _get_setting_field(db_path, "temperature", 0.8, "build_temp_menu")
 
@@ -429,7 +429,7 @@ async def build_temp_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
     return text, reply_markup
 
 
-async def build_split_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_split_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for text split method."""
     current_split = await _get_setting_field(db_path, "text_split_method", "cut5", "build_split_menu")
 
@@ -452,7 +452,7 @@ async def build_split_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
     return text, reply_markup
 
 
-async def build_sampling_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_sampling_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for Top-K and Top-P sampling parameters."""
     top_k = 15
     top_p = 1.0
@@ -491,7 +491,7 @@ async def build_sampling_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
     return text, reply_markup
 
 
-async def build_batch_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_batch_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for batch size."""
     current_batch = await _get_setting_field(db_path, "batch_size", 1, "build_batch_menu")
 
@@ -511,7 +511,7 @@ async def build_batch_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
     return text, reply_markup
 
 
-async def build_interval_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_interval_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for fragment interval."""
     current_interval = await _get_setting_field(db_path, "fragment_interval", 0.3, "build_interval_menu")
 
@@ -532,7 +532,7 @@ async def build_interval_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
     return text, reply_markup
 
 
-async def build_history_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_history_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for conversational memory history length."""
     current_hist = await _get_setting_field(db_path, "max_history_messages", 10, "build_history_menu")
 
@@ -554,10 +554,10 @@ async def build_history_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
     return text, reply_markup
 
 
-async def build_metrics_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_metrics_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for performance metrics and TTS cache control."""
     cache_stats = {"total_files": 0, "total_size_mb": 0.0, "total_hits": 0}
-    metrics: Dict[str, Any] = {}
+    metrics: dict[str, Any] = {}
     try:
         async with get_db(db_path) as conn:
             cache_stats = await crud.get_tts_cache_stats(conn)
@@ -611,9 +611,9 @@ async def build_metrics_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
 async def build_affection_menu(
     chat_id: Any = 0,
     user_id: int = 0,
-    db_path: Optional[str] = None,
-    session_key_fn: Optional[Callable[[int, int], str]] = None,
-) -> Tuple[str, Any]:
+    db_path: str | None = None,
+    session_key_fn: Callable[[int, int], str] | None = None,
+) -> tuple[str, Any]:
     """Constructs sub-menu for displaying affection details and emotion."""
     actual_db_path, actual_chat_id, actual_user_id, session_key = _resolve_menu_context(
         chat_id, user_id, db_path, session_key_fn
@@ -669,7 +669,7 @@ class _CallbackContext:
     query: Any
     chat_id: int
     user_id: int
-    db_path: Optional[str]
+    db_path: str | None
     session_key_fn: Callable[[int, int], str]
     cancel_task: Callable[[int], None]
 
@@ -677,7 +677,7 @@ class _CallbackContext:
 async def _render_menu(
     ctx: _CallbackContext,
     menu_coro: Any,
-    answer_text: Optional[str] = None,
+    answer_text: str | None = None,
 ) -> None:
     """Executes a menu builder coroutine and safely updates the Telegram message text and markup."""
     text, markup = await menu_coro
@@ -787,8 +787,8 @@ async def _handle_scalar_setting(
     ctx: _CallbackContext,
     prefix: str,
     parser: Callable[[str], Any],
-    val_min: Union[int, float],
-    val_max: Union[int, float],
+    val_min: int | float,
+    val_max: int | float,
     range_msg: str,
     setting_key: str,
     log_name: str,
@@ -1060,7 +1060,7 @@ async def _handle_reset_session(ctx: _CallbackContext) -> None:
     )
 
 
-_EXACT_CALLBACK_HANDLERS: Dict[str, Callable] = {
+_EXACT_CALLBACK_HANDLERS: dict[str, Callable] = {
     "menu_main": _handle_main_menu,
     "menu_refresh": _handle_main_menu,
     "menu_voice": _handle_voice_menu,
@@ -1079,7 +1079,7 @@ _EXACT_CALLBACK_HANDLERS: Dict[str, Callable] = {
     "action_reset": _handle_reset_session,
 }
 
-_PREFIX_CALLBACK_HANDLERS: Tuple[Tuple[Tuple[str, ...], Callable], ...] = (
+_PREFIX_CALLBACK_HANDLERS: tuple[tuple[tuple[str, ...], Callable], ...] = (
     (("set_voice_", "set_char_"), _handle_set_voice),
     (("set_speed_",), _handle_set_speed),
     (("set_temp_",), _handle_set_temp),
@@ -1095,10 +1095,10 @@ _PREFIX_CALLBACK_HANDLERS: Tuple[Tuple[Tuple[str, ...], Callable], ...] = (
 
 def _extract_callback_caller_info(
     handlers_or_update: Any,
-    update_or_context: Optional[Any],
-    context: Optional[Any],
-    admin_ids: Optional[Set[int]],
-) -> Tuple[Any, Any, Any, int, int, bool, str]:
+    update_or_context: Any | None,
+    context: Any | None,
+    admin_ids: set[int] | None,
+) -> tuple[Any, Any, Any, int, int, bool, str]:
     """Extracts normalized handlers, update, query, chat_id, user_id, is_admin, and callback data."""
     if hasattr(handlers_or_update, "callback_query") or (
         hasattr(handlers_or_update, "effective_chat") and not hasattr(handlers_or_update, "user_tasks")
@@ -1133,11 +1133,11 @@ def _extract_callback_caller_info(
 
 async def route_callback_query(
     handlers_or_update: Any,
-    update_or_context: Optional[Any] = None,
-    context: Optional[Any] = None,
+    update_or_context: Any | None = None,
+    context: Any | None = None,
     *,
-    db_path: Optional[str] = None,
-    admin_ids: Optional[Set[int]] = None,
+    db_path: str | None = None,
+    admin_ids: set[int] | None = None,
 ) -> None:
     """
     Routes and handles inline button clicks in Telegram.

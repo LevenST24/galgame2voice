@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 import aiosqlite
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse
@@ -36,7 +36,7 @@ async def _get_voice_profile_or_404(conn: aiosqlite.Connection, character_id: in
     return prof
 
 
-def _rewrite_sprite_urls(data: Dict[str, Any], character_id: int) -> None:
+def _rewrite_sprite_urls(data: dict[str, Any], character_id: int) -> None:
     """把立绘清单里 sprites 的 file 路径改写为后端文件接口 URL（自包含读取）。"""
     sprites = data.get("sprites") or {}
     if not isinstance(sprites, dict):
@@ -50,7 +50,7 @@ def _rewrite_sprite_urls(data: Dict[str, Any], character_id: int) -> None:
                 sprite["file"] = f"/api/characters/{character_id}/portrait/file/{costume_id}/{file_name}"
 
 
-def _resolve_character_portrait(char_name: str, character_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+def _resolve_character_portrait(char_name: str, character_id: int | None = None) -> dict[str, Any] | None:
     """立绘完全由角色包内的 portrait/expressions.json 驱动（表情编号差分体系）。"""
     if not char_name:
         return None
@@ -72,7 +72,7 @@ def _resolve_character_portrait(char_name: str, character_id: Optional[int] = No
     if not costumes:
         return None
 
-    data: Dict[str, Any] = {
+    data: dict[str, Any] = {
         "enabled": True,
         "character_id": pkg.manifest.id,
         "character_name": pkg.manifest.name,
@@ -92,8 +92,8 @@ def _resolve_character_portrait(char_name: str, character_id: Optional[int] = No
 
 
 class CharacterSwitchRequest(BaseModel):
-    character_id: Optional[int] = Field(default=None, ge=1)
-    character_name: Optional[str] = Field(default=None, max_length=100)
+    character_id: int | None = Field(default=None, ge=1)
+    character_name: str | None = Field(default=None, max_length=100)
     force: bool = False
 
 
@@ -104,7 +104,7 @@ class CharacterSwitchRequest(BaseModel):
 )
 async def list_characters(
     user_id: str = Query(default="default_user", min_length=1, max_length=128, description="User ID"),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     clean_user = validate_user_id(user_id)
 
     async with get_db() as conn:
@@ -154,7 +154,7 @@ async def list_characters(
 async def get_character_detail(
     character_id: int,
     user_id: str = Query(default="default_user", min_length=1, max_length=128, description="User ID"),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if character_id < 1:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -204,7 +204,7 @@ async def get_character_detail(
     summary="Get Character Standing CG Portrait Manifest",
     description="Returns available standing CG sprites, outfits, emotions and coordinates.",
 )
-async def get_character_portrait(character_id: int) -> Dict[str, Any]:
+async def get_character_portrait(character_id: int) -> dict[str, Any]:
     async with get_db() as conn:
         prof = await _get_voice_profile_or_404(conn, character_id)
         portrait = _resolve_character_portrait(prof.name, character_id)
@@ -279,7 +279,7 @@ def _write_manifest_system_prompt(manifest_path: Path, text: str) -> None:
     description="Writes the persona prompt back into the character package manifest.json "
                 "(the single source of truth) and refreshes the database mirror.",
 )
-async def update_character_system_prompt(character_id: int, req: SystemPromptUpdate) -> Dict[str, Any]:
+async def update_character_system_prompt(character_id: int, req: SystemPromptUpdate) -> dict[str, Any]:
     text = req.system_prompt.strip()
     if not text:
         raise HTTPException(
@@ -328,12 +328,12 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
     }
 
 
-async def _resolve_profile_by_name(conn: aiosqlite.Connection, char_name: str) -> Optional[Any]:
+async def _resolve_profile_by_name(conn: aiosqlite.Connection, char_name: str) -> Any | None:
     """Resolves a voice profile by character name using exact, flexible, or package-synced match."""
     cm = get_character_manager()
     pkg = cm.get_character(char_name)
 
-    candidate_names: List[str] = []
+    candidate_names: list[str] = []
     if pkg:
         candidate_names.extend([pkg.name, pkg.id])
     candidate_names.append(char_name)
@@ -378,9 +378,9 @@ async def _resolve_profile_by_name(conn: aiosqlite.Connection, char_name: str) -
 
 async def _lookup_character_profile(
     conn: aiosqlite.Connection,
-    char_id: Optional[int],
-    char_name: Optional[str],
-) -> Optional[Any]:
+    char_id: int | None,
+    char_name: str | None,
+) -> Any | None:
     """Resolves character profile by ID or name fallback."""
     if char_id is not None:
         return await crud.get_voice_profile(conn, char_id)
@@ -394,7 +394,7 @@ async def _lookup_character_profile(
     summary="Switch Active Character",
     description="Atomically switches the active character voice profile with memory safety and auto-rollback.",
 )
-async def switch_character(req: CharacterSwitchRequest) -> Dict[str, Any]:
+async def switch_character(req: CharacterSwitchRequest) -> dict[str, Any]:
     char_id = req.character_id
     raw_name = req.character_name
     char_name = raw_name.strip() if raw_name else None

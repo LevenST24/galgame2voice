@@ -11,7 +11,7 @@ Implements:
 import asyncio
 from io import BytesIO
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 try:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -63,16 +63,16 @@ class TelegramBotHandlers:
 
     def __init__(
         self,
-        chat_service: Optional[ChatService] = None,
-        tts_service: Optional[TtsService] = None,
-        db_path: Optional[str] = None,
-        admin_ids: Optional[List[int]] = None,
+        chat_service: ChatService | None = None,
+        tts_service: TtsService | None = None,
+        db_path: str | None = None,
+        admin_ids: list[int] | None = None,
     ):
         self.db_path = db_path
         self.chat_service = chat_service or ChatService(db_path=db_path)
         self.tts_service = tts_service or TtsService()
         # User voice synthesis background tasks mapped by chat_id
-        self.user_tasks: Dict[int, asyncio.Task] = {}
+        self.user_tasks: dict[int, asyncio.Task] = {}
         # Telegram user IDs allowed to use the bot; empty set = fail-closed (nobody authorized)
         self.admin_ids: set = set(admin_ids or [])
 
@@ -102,64 +102,64 @@ class TelegramBotHandlers:
             task.cancel()
             logger.info("Cancelled ongoing voice synthesis task for chat_id=%d", chat_id)
 
-    async def build_main_console(self, chat_id: int, user_id: int = 0) -> Tuple[str, Any]:
+    async def build_main_console(self, chat_id: int, user_id: int = 0) -> tuple[str, Any]:
         """Constructs the rich text and inline keyboard for the Telegram Interactive Console."""
         return await build_main_console(chat_id, user_id, db_path=self.db_path, session_key_fn=resolve_session_key)
 
-    async def build_voice_menu(self) -> Tuple[str, Any]:
+    async def build_voice_menu(self) -> tuple[str, Any]:
         """Constructs rich sub-menu for switching voice profiles with 2-column layout and active character card."""
         return await build_voice_menu(db_path=self.db_path)
 
-    async def build_model_menu(self) -> Tuple[str, Any]:
+    async def build_model_menu(self) -> tuple[str, Any]:
         """Constructs sub-menu for switching active LLM provider with API key safety indicators."""
         return await build_model_menu(db_path=self.db_path)
 
-    async def build_tts_menu(self) -> Tuple[str, Any]:
+    async def build_tts_menu(self) -> tuple[str, Any]:
         """Constructs sub-menu for advanced TTS parameters."""
         return await build_tts_menu(db_path=self.db_path)
 
-    async def build_speed_menu(self) -> Tuple[str, Any]:
+    async def build_speed_menu(self) -> tuple[str, Any]:
         """Constructs sub-menu for adjusting voice speed factor."""
         return await build_speed_menu(db_path=self.db_path)
 
-    async def build_temp_menu(self) -> Tuple[str, Any]:
+    async def build_temp_menu(self) -> tuple[str, Any]:
         """Constructs sub-menu for adjusting voice temperature."""
         return await build_temp_menu(db_path=self.db_path)
 
-    async def build_split_menu(self) -> Tuple[str, Any]:
+    async def build_split_menu(self) -> tuple[str, Any]:
         """Constructs sub-menu for text split method."""
         return await build_split_menu(db_path=self.db_path)
 
-    async def build_sampling_menu(self) -> Tuple[str, Any]:
+    async def build_sampling_menu(self) -> tuple[str, Any]:
         """Constructs sub-menu for Top-K and Top-P sampling parameters."""
         return await build_sampling_menu(db_path=self.db_path)
 
-    async def build_batch_menu(self) -> Tuple[str, Any]:
+    async def build_batch_menu(self) -> tuple[str, Any]:
         """Constructs sub-menu for batch size."""
         return await build_batch_menu(db_path=self.db_path)
 
-    async def build_interval_menu(self) -> Tuple[str, Any]:
+    async def build_interval_menu(self) -> tuple[str, Any]:
         """Constructs sub-menu for fragment interval."""
         return await build_interval_menu(db_path=self.db_path)
 
-    async def build_history_menu(self) -> Tuple[str, Any]:
+    async def build_history_menu(self) -> tuple[str, Any]:
         """Constructs sub-menu for conversational memory history length."""
         return await build_history_menu(db_path=self.db_path)
 
-    async def build_metrics_menu(self) -> Tuple[str, Any]:
+    async def build_metrics_menu(self) -> tuple[str, Any]:
         """Constructs sub-menu for performance metrics and TTS cache control."""
         return await build_metrics_menu(db_path=self.db_path)
 
-    async def build_affection_menu(self, chat_id: int, user_id: int = 0) -> Tuple[str, Any]:
+    async def build_affection_menu(self, chat_id: int, user_id: int = 0) -> tuple[str, Any]:
         """Constructs sub-menu for displaying affection details and emotion."""
         return await build_affection_menu(chat_id, user_id, db_path=self.db_path, session_key_fn=resolve_session_key)
 
-    async def handle_callback_query(self, update: Any, context: Optional[Any] = None) -> None:
+    async def handle_callback_query(self, update: Any, context: Any | None = None) -> None:
         """Handles inline button clicks in Telegram."""
         await handle_callback_query(self, update, context)
 
     async def _safe_send_message(
-        self, update: Any, context: Optional[Any], text: str, reply_markup: Optional[Any] = None
+        self, update: Any, context: Any | None, text: str, reply_markup: Any | None = None
     ) -> bool:
         """Safely sends Telegram message, absorbing network drops and client errors."""
         try:
@@ -180,7 +180,7 @@ class TelegramBotHandlers:
             logger.warning("Failed sending Telegram message: %s", exc)
         return False
 
-    async def handle_start(self, update: Any, context: Optional[Any] = None) -> str:
+    async def handle_start(self, update: Any, context: Any | None = None) -> str:
         """Handler for /start command."""
         reply = (
             "你好！我是你的二次元AI伴侣。\n"
@@ -197,7 +197,7 @@ class TelegramBotHandlers:
         await self._safe_send_message(update, context, reply)
         return reply
 
-    async def handle_nickname(self, update: Any, context: Optional[Any] = None) -> str:
+    async def handle_nickname(self, update: Any, context: Any | None = None) -> str:
         """Handler for /nickname command to customize user nickname for character affection."""
         chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
         raw_text = ""
@@ -245,7 +245,7 @@ class TelegramBotHandlers:
         await self._safe_send_message(update, context, reply)
         return reply
 
-    async def handle_reset(self, update: Any, context: Optional[Any] = None) -> str:
+    async def handle_reset(self, update: Any, context: Any | None = None) -> str:
         """Handler for /reset command."""
         chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
         session_id = resolve_session_key(chat_id, resolve_effective_user_id(update))
@@ -262,7 +262,7 @@ class TelegramBotHandlers:
         await self._safe_send_message(update, context, reply)
         return reply
 
-    async def handle_voice(self, update: Any, context: Optional[Any] = None) -> str:
+    async def handle_voice(self, update: Any, context: Any | None = None) -> str:
         """Handler for /voice command."""
         profile = None
         settings = None
@@ -306,8 +306,8 @@ class TelegramBotHandlers:
         self,
         conn: Any,
         query_str: str,
-        profiles: List[Any],
-    ) -> Optional[Any]:
+        profiles: list[Any],
+    ) -> Any | None:
         """Matches character profile by numeric ID, exact name, or CharacterManager flexible aliases."""
         if query_str.isdigit():
             matched = await crud.get_voice_profile(conn, int(query_str))
@@ -338,7 +338,7 @@ class TelegramBotHandlers:
 
         return None
 
-    async def _switch_character_weights(self, profile_id: int) -> Tuple[Optional[str], str]:
+    async def _switch_character_weights(self, profile_id: int) -> tuple[str | None, str]:
         """Switches model weights in VoiceManager and updates active profile in SQLite.
         Returns (error_message, warning_note)."""
         warning_note = ""
@@ -363,7 +363,7 @@ class TelegramBotHandlers:
         except Exception as exc:
             return f"切换异常: {sanitize_error_detail(exc)}", ""
 
-    async def handle_character(self, update: Any, context: Optional[Any] = None) -> str:
+    async def handle_character(self, update: Any, context: Any | None = None) -> str:
         """
         Handler for /character, /char, /switch command.
         - /character: opens character selection inline keyboard menu.
@@ -432,7 +432,7 @@ class TelegramBotHandlers:
         return reply
 
     @staticmethod
-    def _build_character_not_found_reply(query_str: str, profiles: List[Any]) -> str:
+    def _build_character_not_found_reply(query_str: str, profiles: list[Any]) -> str:
         """Formats the not-found notification message when direct character lookup fails."""
         avail_names = "、".join([p.name.split("(")[0].strip() for p in profiles[:6]])
         if len(profiles) > 6:
@@ -446,7 +446,7 @@ class TelegramBotHandlers:
     @staticmethod
     def _format_character_switch_reply(
         profile: Any,
-        affection: Optional[Any],
+        affection: Any | None,
         warning_note: str,
     ) -> str:
         """Formats the confirmation card reply when switching active character."""
@@ -468,7 +468,7 @@ class TelegramBotHandlers:
             f"💬 现在就可以直接发送文字或语音与 {clean_name} 对话啦！{warning_note}"
         )
 
-    async def handle_model(self, update: Any, context: Optional[Any] = None) -> str:
+    async def handle_model(self, update: Any, context: Any | None = None) -> str:
         """Handler for /model command."""
         provider = None
         try:
@@ -493,14 +493,14 @@ class TelegramBotHandlers:
         await self._safe_send_message(update, context, reply)
         return reply
 
-    async def handle_console(self, update: Any, context: Optional[Any] = None) -> str:
+    async def handle_console(self, update: Any, context: Any | None = None) -> str:
         """Handler for /console, /menu, /settings command rendering native Inline Keyboard Console."""
         chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
         text, markup = await self.build_main_console(chat_id, resolve_effective_user_id(update))
         await self._safe_send_message(update, context, text, reply_markup=markup)
         return text
 
-    async def handle_help(self, update: Any, context: Optional[Any] = None) -> str:
+    async def handle_help(self, update: Any, context: Any | None = None) -> str:
         """Handler for /help command."""
         reply = (
             "【支持的快捷指令】\n"
@@ -515,7 +515,7 @@ class TelegramBotHandlers:
         await self._safe_send_message(update, context, reply)
         return reply
 
-    async def handle_unknown(self, update: Any, context: Optional[Any] = None) -> str:
+    async def handle_unknown(self, update: Any, context: Any | None = None) -> str:
         """Handler for unknown commands."""
         reply = "未知指令，支持 /console, /character, /voice, /model, /nickname, /reset, /help"
         await self._safe_send_message(update, context, reply)
@@ -526,7 +526,7 @@ class TelegramBotHandlers:
         chat_id: int,
         bot: Any,
         japanese: str,
-        dynamic_tts: Optional[Dict[str, Any]],
+        dynamic_tts: dict[str, Any] | None,
     ) -> asyncio.Task:
         """Schedules background voice synthesis and tracks task in user_tasks with auto-cleanup."""
         async def background_voice_worker() -> None:
@@ -568,7 +568,7 @@ class TelegramBotHandlers:
         session_id: str,
         effective_user_id: int,
         text: str,
-    ) -> Tuple[Any, str, int, List[Any]]:
+    ) -> tuple[Any, str, int, list[Any]]:
         """Prepares session, persists user message, extracts memory facts, and retrieves LLM adapter & messages."""
         async with get_db(self.db_path) as conn:
             await crud.get_or_create_session(conn, session_id, channel="telegram", user_id=str(effective_user_id))
@@ -696,7 +696,7 @@ class TelegramBotHandlers:
             async def _noop() -> None: pass
             return asyncio.create_task(_noop())
 
-    async def handle_text_message(self, update: Any, context: Any) -> Optional[asyncio.Task]:
+    async def handle_text_message(self, update: Any, context: Any) -> asyncio.Task | None:
         """Handler for normal text messages."""
         if not hasattr(update, "message") or not update.message or not getattr(update.message, "text", None):
             return None
@@ -719,7 +719,7 @@ class TelegramBotHandlers:
             return buf.getvalue()
         return b""
 
-    async def handle_voice_message(self, update: Any, context: Any) -> Optional[asyncio.Task]:
+    async def handle_voice_message(self, update: Any, context: Any) -> asyncio.Task | None:
         """
         Handler for Telegram voice notes:
         Downloads OGG, converts to 16kHz mono WAV, transcribes via STT, and triggers text chat.

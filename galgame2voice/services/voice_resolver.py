@@ -10,7 +10,7 @@ Supports clean cache invalidation upon profile creation, update, or deletion.
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from galgame2voice.utils.path_guard import resolve_weight_file_path, resolve_existing_audio_path
 from galgame2voice.utils.audio_spec import (
@@ -22,7 +22,7 @@ from galgame2voice.services.emotion_references import resolve_emotion_reference
 
 logger = logging.getLogger("galgame2voice.services.voice_resolver")
 
-DEFAULT_EMOTION_KEYS: Tuple[str, ...] = (
+DEFAULT_EMOTION_KEYS: tuple[str, ...] = (
     "joy",
     "anger",
     "sorrow",
@@ -40,7 +40,7 @@ DEFAULT_EMOTION_KEYS: Tuple[str, ...] = (
 @dataclass
 class ResolvedVoiceContext:
     """Pre-resolved, immutable-in-memory representation of an active voice profile."""
-    profile_id: Optional[int]
+    profile_id: int | None
     name: str
     gpt_weights_path: str
     sovits_weights_path: str
@@ -48,10 +48,10 @@ class ResolvedVoiceContext:
     prompt_text: str
     prompt_lang: str
     text_lang: str
-    emotions: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    emotions: dict[str, dict[str, str]] = field(default_factory=dict)
     resolved_at: float = field(default_factory=time.monotonic)
 
-    def get_emotion_ref(self, emotion: str) -> Optional[Dict[str, str]]:
+    def get_emotion_ref(self, emotion: str) -> dict[str, str] | None:
         """Returns pre-validated emotion reference audio options if available."""
         if not emotion:
             return None
@@ -77,9 +77,9 @@ class VoiceProfileResolver:
     def __init__(self, ttl_seconds: float = 300.0) -> None:
         self._ttl = ttl_seconds
         # Keys: "id:<int>", "name:<str>", "active"
-        self._cache: Dict[str, Tuple[float, ResolvedVoiceContext]] = {}
+        self._cache: dict[str, tuple[float, ResolvedVoiceContext]] = {}
 
-    def invalidate(self, profile_id: Optional[int] = None, name: Optional[str] = None) -> None:
+    def invalidate(self, profile_id: int | None = None, name: str | None = None) -> None:
         """Invalidates cached contexts. If no arguments provided, clears all."""
         if profile_id is None and name is None:
             self._cache.clear()
@@ -99,10 +99,10 @@ class VoiceProfileResolver:
 
     async def resolve_context(
         self,
-        db_path: Optional[str] = None,
-        profile_id: Optional[int] = None,
-        character_name: Optional[str] = None,
-    ) -> Optional[ResolvedVoiceContext]:
+        db_path: str | None = None,
+        profile_id: int | None = None,
+        character_name: str | None = None,
+    ) -> ResolvedVoiceContext | None:
         """
         Resolves a voice profile from memory cache, falling back to SQLite and package manifests.
         """
@@ -135,10 +135,10 @@ class VoiceProfileResolver:
 
     async def _fetch_raw_profile(
         self,
-        db_path: Optional[str],
-        profile_id: Optional[int],
-        character_name: Optional[str],
-    ) -> Optional[Any]:
+        db_path: str | None,
+        profile_id: int | None,
+        character_name: str | None,
+    ) -> Any | None:
         from galgame2voice.database import crud
         from galgame2voice.database.session import get_db
 
@@ -215,7 +215,7 @@ class VoiceProfileResolver:
             ref_audio = resolved_ref
 
         # Pre-resolve known emotion references for this character
-        emotions_map: Dict[str, Dict[str, str]] = {}
+        emotions_map: dict[str, dict[str, str]] = {}
         if clean_name:
             for emo_name in DEFAULT_EMOTION_KEYS:
                 ref = resolve_emotion_reference(clean_name, emo_name)
@@ -242,7 +242,7 @@ class VoiceProfileResolver:
         )
 
 
-_GLOBAL_VOICE_RESOLVER: Optional[VoiceProfileResolver] = None
+_GLOBAL_VOICE_RESOLVER: VoiceProfileResolver | None = None
 
 
 def get_voice_resolver() -> VoiceProfileResolver:

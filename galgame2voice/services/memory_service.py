@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Union, Tuple
+from typing import Any
 from pathlib import Path
 import aiosqlite
 
@@ -25,7 +25,7 @@ _RE_DELIMITERS_TAGS = re.compile(r"[\r\n\t\[\]【】`'\"<>{}]")
 _RE_WHITESPACE_COLLAPSE = re.compile(r"\s+")
 _RE_KEY_SUFFIX_CHARS = re.compile(r"[^\w\u4e00-\u9fff]")
 
-_STAGE_GUIDANCE_TIERS: Tuple[Tuple[int, str], ...] = (
+_STAGE_GUIDANCE_TIERS: tuple[tuple[int, str], ...] = (
     (20, "阶段一（0-20分【初识相识】）：保持适度礼貌与客套距离感，略带拘谨，展现初次相识的克制，不可过早过度亲昵或轻易表白"),
     (50, "阶段二（21-50分【日常相伴】）：熟悉的朋友与同伴关系，日常轻松互动，可互相调侃与关照，保持好友边界"),
     (80, "阶段三（51-80分【心动共鸣】）：深厚信赖与心动萌芽，偶现害羞脸红或傲娇依赖，展现明显羁绊，情感自然递进"),
@@ -87,7 +87,7 @@ class MemoryService:
     ]
 
     @classmethod
-    def sanitize_fact_value(cls, val: str, max_len: int = 50) -> Optional[str]:
+    def sanitize_fact_value(cls, val: str, max_len: int = 50) -> str | None:
         """
         Defensively cleans and validates extracted memory fact values.
         Strips control characters, bidi overrides, newlines, tabs, structural delimiters, quotes.
@@ -114,10 +114,10 @@ class MemoryService:
 
         return cleaned if cleaned else None
 
-    def __init__(self, db_path: Optional[Union[str, Path]] = None):
+    def __init__(self, db_path: str | Path | None = None):
         self.db_path = str(db_path) if db_path is not None else get_database_path()
 
-    def extract_facts_heuristic(self, text: str) -> List[Dict[str, Any]]:
+    def extract_facts_heuristic(self, text: str) -> list[dict[str, Any]]:
         """
         Extracts structured facts from raw user input using fast deterministic regex
         with defensive prompt injection filtering and sanitization.
@@ -126,7 +126,7 @@ class MemoryService:
         if not text or not isinstance(text, str):
             return []
 
-        facts: List[Dict[str, Any]] = []
+        facts: list[dict[str, Any]] = []
         # Clamp extreme input text to 4000 characters to prevent ReDoS / CPU exhaustion
         cleaned = text[:4000].strip()
 
@@ -163,11 +163,11 @@ class MemoryService:
     async def process_user_message(
         self,
         user_id: str,
-        character_id: Optional[int],
+        character_id: int | None,
         message_text: str,
-        source_message_id: Optional[int] = None,
-        conn: Optional[aiosqlite.Connection] = None,
-    ) -> List[UserMemoryResponse]:
+        source_message_id: int | None = None,
+        conn: aiosqlite.Connection | None = None,
+    ) -> list[UserMemoryResponse]:
         """
         Extracts facts from message, stores or updates them in SQLite,
         and synchronizes custom nickname if recognized.
@@ -185,8 +185,8 @@ class MemoryService:
         if not extracted:
             return []
 
-        async def _save_with_conn(db_conn: aiosqlite.Connection) -> List[UserMemoryResponse]:
-            saved_list: List[UserMemoryResponse] = []
+        async def _save_with_conn(db_conn: aiosqlite.Connection) -> list[UserMemoryResponse]:
+            saved_list: list[UserMemoryResponse] = []
             for item in extracted:
                 mem_create = UserMemoryCreate(
                     user_id=u_id,
@@ -250,11 +250,11 @@ class MemoryService:
     async def retrieve_relevant_memories(
         self,
         user_id: str = "default_user",
-        character_id: Optional[int] = 1,
+        character_id: int | None = 1,
         prompt: str = "",
         top_k: int = 5,
-        conn: Optional[aiosqlite.Connection] = None,
-    ) -> List[UserMemoryResponse]:
+        conn: aiosqlite.Connection | None = None,
+    ) -> list[UserMemoryResponse]:
         """
         Retrieves Top-K relevant memories using Anchor Priority + Dynamic Composite Scoring.
         Anchors (nickname, identity) are always prioritized.
@@ -288,8 +288,8 @@ class MemoryService:
             return []
 
         # 1. Separate Anchors from Contextual Memories
-        anchor_memories: List[UserMemoryResponse] = []
-        candidate_memories: List[UserMemoryResponse] = []
+        anchor_memories: list[UserMemoryResponse] = []
+        candidate_memories: list[UserMemoryResponse] = []
 
         for m in all_memories:
             if m.category in ("nickname", "identity") or m.fact_key in ("player_name", "occupation"):
@@ -318,12 +318,12 @@ class MemoryService:
 
     def _score_candidate_memories(
         self,
-        candidate_memories: List[UserMemoryResponse],
+        candidate_memories: list[UserMemoryResponse],
         safe_prompt: str,
         now_ts: float,
-    ) -> List[Tuple[float, UserMemoryResponse]]:
+    ) -> list[tuple[float, UserMemoryResponse]]:
         """Scores candidate memories by composite overlap, recency, and confidence."""
-        scored: List[Tuple[float, UserMemoryResponse]] = []
+        scored: list[tuple[float, UserMemoryResponse]] = []
         for m in candidate_memories:
             overlap = self._calculate_overlap_score(safe_prompt, m.fact_value, m.fact_key)
             confidence = m.confidence
@@ -346,12 +346,12 @@ class MemoryService:
 
     @staticmethod
     def _select_top_memories(
-        anchor_memories: List[UserMemoryResponse],
-        scored_candidates: List[Tuple[float, UserMemoryResponse]],
+        anchor_memories: list[UserMemoryResponse],
+        scored_candidates: list[tuple[float, UserMemoryResponse]],
         safe_top_k: int,
-    ) -> List[UserMemoryResponse]:
+    ) -> list[UserMemoryResponse]:
         """Combines anchor memories and top candidate memories up to safe_top_k."""
-        selected: List[UserMemoryResponse] = []
+        selected: list[UserMemoryResponse] = []
         seen_keys = set()
 
         for m in anchor_memories:
@@ -370,7 +370,7 @@ class MemoryService:
 
         return selected
 
-    def _format_memories_block(self, memories: List[UserMemoryResponse]) -> Optional[str]:
+    def _format_memories_block(self, memories: list[UserMemoryResponse]) -> str | None:
         """Formats long-term memory facts with defensive prompt framing."""
         lines = ["【角色长程记忆（关于玩家的事实与约定）】"]
         for m in memories:
@@ -403,7 +403,7 @@ class MemoryService:
             return "\n".join(lines)
         return None
 
-    def _format_affection_block(self, affection_info: Dict[str, Any]) -> str:
+    def _format_affection_block(self, affection_info: dict[str, Any]) -> str:
         """Formats affection level, emotion, nickname, and progressive stage guidance."""
         lvl = affection_info.get("level", 1)
         raw_lvl_name = affection_info.get("level_name", "初识/生疏")
@@ -439,14 +439,14 @@ class MemoryService:
 
     def format_memory_prompt_block(
         self,
-        memories: Optional[List[UserMemoryResponse]],
-        affection_info: Optional[Dict[str, Any]] = None,
+        memories: list[UserMemoryResponse] | None,
+        affection_info: dict[str, Any] | None = None,
     ) -> str:
         """
         Formats retrieved memories and affection status into a structured prompt block
         with defensive prompt framing to prevent indirect prompt injection.
         """
-        blocks: List[str] = []
+        blocks: list[str] = []
 
         if memories and isinstance(memories, list):
             mem_block = self._format_memories_block(memories)

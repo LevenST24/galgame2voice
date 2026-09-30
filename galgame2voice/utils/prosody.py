@@ -7,7 +7,7 @@ and strict safety boundary clamping across all speech inference parameters.
 
 import math
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 # Dynamic AI-Driven Voice Prosody & Emotion Parameter Ranges
 DYNAMIC_SPEED_MIN = 0.50
@@ -88,7 +88,7 @@ def clamp_dynamic_batch_size(val: Any, fallback: int = 1) -> int:
 # 2. Emotion Archetype Baseline Acoustic Profiles
 # ============================================================================
 
-EMOTION_PROSODY_MATRIX: Dict[str, Dict[str, Any]] = {
+EMOTION_PROSODY_MATRIX: dict[str, dict[str, Any]] = {
     "gentle": {
         PARAM_SPEED: 0.98,
         PARAM_TEMPERATURE: 0.78,
@@ -141,7 +141,7 @@ EMOTION_PROSODY_MATRIX: Dict[str, Dict[str, Any]] = {
 }
 
 # Emotion name normalization mapping
-_EMO_NORM_MAP: Dict[str, str] = {
+_EMO_NORM_MAP: dict[str, str] = {
     "gentle": "gentle", "温柔": "gentle", "温和": "gentle", "柔和": "gentle", "微笑": "gentle",
     "happy": "happy", "开心": "happy", "高兴": "happy", "喜悦": "happy", "兴奋": "happy",
     "tsundere": "tsundere", "傲娇": "tsundere", "ツンデレ": "tsundere", "娇蛮": "tsundere",
@@ -172,8 +172,8 @@ def _apply_text_prosody_modulations(
     top_k: int,
     top_p: float,
     frag_interval: float,
-    base_opts: Dict[str, Any],
-) -> Tuple[float, float, int, float, float]:
+    base_opts: dict[str, Any],
+) -> tuple[float, float, int, float, float]:
     """Applies sentence-level micro-prosody cues (hesitation, exclamation, question, length, stutter)."""
     has_custom_speed = PARAM_SPEED in base_opts or "speed_factor" in base_opts
     has_custom_temp = PARAM_TEMPERATURE in base_opts or "temp" in base_opts
@@ -230,9 +230,9 @@ def _apply_text_prosody_modulations(
 
 def calculate_adaptive_prosody(
     text: str,
-    emotion: Optional[str] = None,
-    base_params: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    emotion: str | None = None,
+    base_params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Computes fine-grained voice synthesis parameters based on emotion archetype
     and sentence-level micro-prosody cues (punctuation, utterance length, stuttering).

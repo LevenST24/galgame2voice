@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 import re
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import aiosqlite
 
@@ -98,7 +98,7 @@ async def get_or_create_session(
     )
 
 
-async def get_session(conn: aiosqlite.Connection, session_id: str) -> Optional[SessionResponse]:
+async def get_session(conn: aiosqlite.Connection, session_id: str) -> SessionResponse | None:
     """Fetches a session by session ID."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM sessions WHERE id = ?;", (session_id,))
@@ -111,12 +111,12 @@ async def get_session(conn: aiosqlite.Connection, session_id: str) -> Optional[S
 async def upsert_session(
     conn: aiosqlite.Connection,
     session_id: str,
-    title: Optional[str] = None,
+    title: str | None = None,
     channel: str = "web",
     user_id: str = "",
-    voice_profile_id: Optional[int] = None,
-    custom_system_prompt: Optional[str] = None,
-    settings_json: Optional[str] = None,
+    voice_profile_id: int | None = None,
+    custom_system_prompt: str | None = None,
+    settings_json: str | None = None,
 ) -> SessionResponse:
     """Inserts or updates session configuration and metadata."""
     conn.row_factory = aiosqlite.Row
@@ -125,7 +125,7 @@ async def upsert_session(
     row = await cursor.fetchone()
     if row:
         updates = ["updated_at = CURRENT_TIMESTAMP"]
-        params: List[Any] = []
+        params: list[Any] = []
         if title is not None:
             updates.append("title = ?")
             params.append(clean_title)
@@ -162,7 +162,7 @@ async def upsert_session(
     return SessionResponse(**dict(new_row))
 
 
-async def list_sessions(conn: aiosqlite.Connection, limit: int = 50) -> List[SessionResponse]:
+async def list_sessions(conn: aiosqlite.Connection, limit: int = 50) -> list[SessionResponse]:
     """Lists sessions ordered by last updated timestamp."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?;", (limit,))
@@ -170,7 +170,7 @@ async def list_sessions(conn: aiosqlite.Connection, limit: int = 50) -> List[Ses
     return [SessionResponse(**dict(r)) for r in rows]
 
 
-async def list_sessions_overview(conn: aiosqlite.Connection, limit: int = 50) -> List[Dict[str, Any]]:
+async def list_sessions_overview(conn: aiosqlite.Connection, limit: int = 50) -> list[dict[str, Any]]:
     """
     Returns sessions ordered by updated_at DESC, augmented with message count,
     last message preview, and dynamically inferred title if not explicitly set.
@@ -209,7 +209,7 @@ async def list_sessions_overview(conn: aiosqlite.Connection, limit: int = 50) ->
     return result
 
 
-def _cascade_delete_message_audios(audio_urls: List[str]) -> None:
+def _cascade_delete_message_audios(audio_urls: list[str]) -> None:
     try:
         from galgame2voice.config import get_settings
         audio_dir = get_settings().audio_dir
@@ -311,7 +311,7 @@ async def get_recent_messages(
     conn: aiosqlite.Connection,
     session_id: str,
     limit: int = 10,
-) -> List[MessageResponse]:
+) -> list[MessageResponse]:
     """Fetches the most recent messages for a session in chronological order."""
     conn.row_factory = aiosqlite.Row
     try:

@@ -5,7 +5,7 @@ Settings, TTS Cache metadata, and telemetry metrics CRUD operations for SQLite i
 import hmac
 import logging
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import aiosqlite
 
@@ -47,7 +47,7 @@ __all__ = [
 
 USD_TO_CNY_RATE: float = 7.20
 
-PROVIDER_DISPLAY_NAMES: Dict[str, str] = {
+PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "deepseek": "DeepSeek",
     "openai": "OpenAI",
     "gemini": "Google Gemini",
@@ -119,7 +119,7 @@ async def update_settings(conn: aiosqlite.Connection, updates: SettingsUpdate) -
     # schema + row, otherwise the UPDATE below (WHERE id = 1) is a silent no-op.
     await get_settings_raw(conn)
     fields = []
-    values: List[Any] = []
+    values: list[Any] = []
 
     update_dict = updates.model_dump(exclude_unset=True)
     for k, v in update_dict.items():
@@ -182,7 +182,7 @@ async def verify_console_token(conn: aiosqlite.Connection, token: str) -> bool:
     return hmac.compare_digest(decrypted, token)
 
 
-async def get_tts_cache_entry(conn: aiosqlite.Connection, cache_key: str) -> Optional[TtsCacheEntry]:
+async def get_tts_cache_entry(conn: aiosqlite.Connection, cache_key: str) -> TtsCacheEntry | None:
     """Fetches a TTS cache entry record by cache key."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM tts_cache_entries WHERE cache_key = ?;", (cache_key,))
@@ -202,7 +202,7 @@ async def touch_tts_cache_entry(conn: aiosqlite.Connection, cache_key: str) -> N
         """, (cache_key,))
 
 
-async def batch_touch_tts_cache_entries(conn: aiosqlite.Connection, touches: Dict[str, int]) -> None:
+async def batch_touch_tts_cache_entries(conn: aiosqlite.Connection, touches: dict[str, int]) -> None:
     """Uses an immediate_transaction to batch-update hit counts and last_accessed_at for multiple cache keys in a single transaction."""
     if not touches:
         return
@@ -222,7 +222,7 @@ async def record_tts_cache_hit(conn: aiosqlite.Connection, cache_key: str) -> No
     await touch_tts_cache_entry(conn, cache_key)
 
 
-async def record_tts_cache_miss(conn: aiosqlite.Connection, cache_key: Optional[str] = None) -> None:
+async def record_tts_cache_miss(conn: aiosqlite.Connection, cache_key: str | None = None) -> None:
     """Record a TTS cache miss (placeholder hook for SQLite telemetry if needed)."""
     # SQLite cache table does not store misses; this is a safe telemetry hook.
     pass
@@ -233,7 +233,7 @@ async def upsert_tts_cache_entry(
     cache_key: str,
     text: str,
     clean_text: str,
-    voice_profile_id: Optional[int],
+    voice_profile_id: int | None,
     params_hash: str,
     file_path: str,
     file_size: int,
@@ -265,7 +265,7 @@ async def delete_tts_cache_entry(conn: aiosqlite.Connection, cache_key: str) -> 
     return cursor.rowcount > 0
 
 
-async def get_oldest_tts_cache_entries(conn: aiosqlite.Connection, limit: int = 100) -> List[TtsCacheEntry]:
+async def get_oldest_tts_cache_entries(conn: aiosqlite.Connection, limit: int = 100) -> list[TtsCacheEntry]:
     """Retrieves oldest TTS cache entries ordered by last_accessed_at."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("""
@@ -280,7 +280,7 @@ async def get_oldest_tts_cache_entries(conn: aiosqlite.Connection, limit: int = 
 async def clean_tts_cache_lru(
     conn: aiosqlite.Connection,
     max_entries: int = 5000,
-    max_mb: Optional[int] = None,
+    max_mb: int | None = None,
 ) -> int:
     """
     Prunes the oldest entries in SQLite TTS cache when total entries or size exceed limits.
@@ -319,7 +319,7 @@ async def clean_tts_cache_lru(
     return deleted_count
 
 
-async def get_tts_cache_stats(conn: aiosqlite.Connection) -> Dict[str, Any]:
+async def get_tts_cache_stats(conn: aiosqlite.Connection) -> dict[str, Any]:
     """Returns summary statistics of TTS cache entries."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("""
@@ -386,7 +386,7 @@ async def insert_token_metric(
     return new_id
 
 
-async def get_metrics_overview(conn: aiosqlite.Connection) -> Dict[str, Any]:
+async def get_metrics_overview(conn: aiosqlite.Connection) -> dict[str, Any]:
     """Computes aggregated token usage, cost, and latency metrics."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("""
@@ -423,7 +423,7 @@ async def get_metrics_overview(conn: aiosqlite.Connection) -> Dict[str, Any]:
     }
 
 
-async def get_provider_metrics_breakdown(conn: aiosqlite.Connection) -> List[Dict[str, Any]]:
+async def get_provider_metrics_breakdown(conn: aiosqlite.Connection) -> list[dict[str, Any]]:
     """Calculates token usage and cost breakdown grouped by provider."""
     conn.row_factory = aiosqlite.Row
     cur_tot = await conn.execute("SELECT COALESCE(SUM(total_tokens), 0) as grand_total FROM token_usage_metrics;")
@@ -462,7 +462,7 @@ async def get_provider_metrics_breakdown(conn: aiosqlite.Connection) -> List[Dic
     return results
 
 
-async def get_recent_latency_trends(conn: aiosqlite.Connection, limit: int = 30) -> List[Dict[str, Any]]:
+async def get_recent_latency_trends(conn: aiosqlite.Connection, limit: int = 30) -> list[dict[str, Any]]:
     """Retrieves recent chronological latency measurements."""
     conn.row_factory = aiosqlite.Row
     try:

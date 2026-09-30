@@ -6,7 +6,7 @@ Supports standard OpenAI REST endpoints, streaming SSE parsing, connection testi
 import asyncio
 import logging
 import time
-from typing import AsyncIterator, Dict, Any, List, Optional, Tuple
+from typing import AsyncIterator, Any
 import httpx
 
 from galgame2voice.adapters.base import (
@@ -37,7 +37,7 @@ _GEMINI_UNSUPPORTED_PARAMS = frozenset({
 })
 
 # Default test models mapped by base URL substrings
-_URL_DEFAULT_MODELS: Tuple[Tuple[str, str], ...] = (
+_URL_DEFAULT_MODELS: tuple[tuple[str, str], ...] = (
     ("x.ai", "grok-3"),
     ("googleapis.com", "gemini-2.0-flash"),
     ("deepseek.com", "deepseek-chat"),
@@ -47,7 +47,7 @@ _URL_DEFAULT_MODELS: Tuple[Tuple[str, str], ...] = (
     ("anthropic.com", "claude-3-5-sonnet-20241022"),
 )
 
-_AUTH_ERROR_KEYWORDS: Tuple[str, ...] = (
+_AUTH_ERROR_KEYWORDS: tuple[str, ...] = (
     "api key",
     "apikey",
     "unauthorized",
@@ -74,15 +74,15 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         self,
         api_key: str,
         base_url: str = "https://api.openai.com/v1",
-        client_override: Optional[Any] = None,
-        default_model: Optional[str] = None,
+        client_override: Any | None = None,
+        default_model: str | None = None,
         **kwargs: Any,
     ):
         super().__init__(api_key=api_key, base_url=base_url, **kwargs)
         self.mock_server = client_override
         self.default_model = default_model or kwargs.get("chat_model") or kwargs.get("model")
 
-    def _resolve_test_model(self, model: Optional[str] = None) -> str:
+    def _resolve_test_model(self, model: str | None = None) -> str:
         """Resolves appropriate test model for connection testing without defaulting to gpt-4o-mini."""
         if model and str(model).strip():
             return str(model).strip()
@@ -106,7 +106,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 return default_m
         return "gpt-4o-mini"
 
-    def _get_headers(self) -> Dict[str, str]:
+    def _get_headers(self) -> dict[str, str]:
         """Constructs request headers including bearer auth and custom extra headers."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -127,7 +127,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         """Returns True if base_url points to Google Gemini's OpenAI-compat endpoint."""
         return "googleapis.com" in (self.base_url or "")
 
-    def _filter_payload_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    def _filter_payload_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         """Filters out kwargs that are internal or unsupported by the current provider."""
         _INTERNAL = {"client_override", "custom_headers", "timeout_s", "max_retries", "base_delay"}
         skip = _INTERNAL | (_GEMINI_UNSUPPORTED_PARAMS if self._is_gemini else frozenset())
@@ -135,14 +135,14 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
     def _build_payload(
         self,
-        messages: List[ChatMessage],
+        messages: list[ChatMessage],
         model: str,
         temperature: float = 1.0,
         stream: bool = False,
-        extra: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Formats chat messages and parameters into standard OpenAI completion payload."""
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": model,
             "messages": [
                 {
@@ -162,12 +162,12 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
     async def _chat_mock(
         self,
-        messages: List[ChatMessage],
+        messages: list[ChatMessage],
         model: str,
         temperature: float,
         max_retries: int,
         base_delay: float,
-        kwargs: Dict[str, Any],
+        kwargs: dict[str, Any],
     ) -> LLMResponse:
         """Executes non-streaming completion against test mock server with retry logic."""
         for attempt in range(max_retries + 1):
@@ -206,7 +206,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
     async def chat(
         self,
-        messages: List[ChatMessage],
+        messages: list[ChatMessage],
         model: str,
         temperature: float = 1.0,
         **kwargs: Any,
@@ -290,12 +290,12 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
     async def _stream_chat_mock(
         self,
-        messages: List[ChatMessage],
+        messages: list[ChatMessage],
         model: str,
         temperature: float,
         max_retries: int,
         base_delay: float,
-        kwargs: Dict[str, Any],
+        kwargs: dict[str, Any],
     ) -> AsyncIterator[str]:
         """Executes streaming completion against test mock server with retry logic."""
         for attempt in range(max_retries + 1):
@@ -329,7 +329,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
     async def stream_chat(
         self,
-        messages: List[ChatMessage],
+        messages: list[ChatMessage],
         model: str,
         temperature: float = 1.0,
         **kwargs: Any,
@@ -459,10 +459,10 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
     @staticmethod
     def _diagnose_failure(
-        provider_id: Optional[str],
+        provider_id: str | None,
         status_code: int,
         raw_error: str,
-    ) -> Tuple[Dict[str, Any], str]:
+    ) -> tuple[dict[str, Any], str]:
         from galgame2voice.utils.error_diagnostics import format_provider_error
         diag = format_provider_error(
             provider_id=provider_id,
@@ -475,8 +475,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         self,
         client: httpx.AsyncClient,
         test_model: str,
-        headers: Dict[str, str],
-        provider_id: Optional[str],
+        headers: dict[str, str],
+        provider_id: str | None,
         t0: float,
     ) -> TestResult:
         """Fallback connectivity probe via 1-token chat completion when /models is unsupported."""
@@ -505,7 +505,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             status_code=chat_resp.status_code,
         )
 
-    async def test_connection(self, model: Optional[str] = None) -> TestResult:
+    async def test_connection(self, model: str | None = None) -> TestResult:
         """
         Tests connectivity and validates API credentials against the provider.
         """
@@ -592,7 +592,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     status_code=status_code_num,
                 )
 
-    async def list_models(self) -> List[str]:
+    async def list_models(self) -> list[str]:
         """
         Fetches the available model list from the provider API.
         """

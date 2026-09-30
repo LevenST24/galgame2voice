@@ -5,14 +5,13 @@ and isolated testing.
 """
 
 import re
-from typing import Dict, List, Optional, Tuple
 
 from galgame2voice.utils.japanese_phonetics import STAGE_CUE_EMOTION_MAP
 
 # Archetype keyword lexicon mapping
 # 注意：逐句情绪现在会驱动立绘差分切换（见 stream_coordinator 的 audio_chunk），
 # 所以这里补了一批该角色高频说法；缺失只会退到 gentle，不会误报。
-EMOTION_KEYWORDS: Dict[str, List[str]] = {
+EMOTION_KEYWORDS: dict[str, list[str]] = {
     "tsundere": ["傲娇", "才不是", "才没有", "べ、別に", "勘違い", "ツン", "哼", "才不会", "別にあんた", "不要误会", "谁要你管",
                  "真是的", "别误会", "只是顺路", "顺路而已", "不是特意", "才不是特意", "特意等", "拿你没办法", "真拿你", "何よ", "しょうがない"],
     "shy": ["害羞", "脸红", "照れ", "恥ずか", "///", "……///", "笨蛋", "讨厌", "えっと", "ばか",
@@ -27,7 +26,7 @@ EMOTION_KEYWORDS: Dict[str, List[str]] = {
 
 VALID_EMOTIONS = {"gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"}
 
-EMOTION_NAME_MAP: Dict[str, str] = {
+EMOTION_NAME_MAP: dict[str, str] = {
     # Tsundere
     "傲娇": "tsundere",
     "ツンデレ": "tsundere",
@@ -104,7 +103,7 @@ _RE_ASTERISK_EMOTION = re.compile(r'(?<!\*)\*([^*]{1,30})\*(?!\*)')
 _RE_ANY_BRACKETED_EMOTION = re.compile(r'([（\(\[【〖〔])([^）\)\]】〗〕]+)([）\)\]】〗〕])')
 
 
-def _match_emotion_candidate(raw_candidate: str) -> Optional[str]:
+def _match_emotion_candidate(raw_candidate: str) -> str | None:
     """Matches candidate emotion text against aliases, exact keywords, or substrings."""
     candidate = raw_candidate.strip().lower()
     candidate_bare = _RE_PUNCT_STRIP.sub('', candidate).strip()
@@ -119,7 +118,7 @@ def _match_emotion_candidate(raw_candidate: str) -> Optional[str]:
     return None
 
 
-def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
+def extract_bracketed_emotion(text: str) -> tuple[str | None, str]:
     """
     Extracts emotion archetype from bracketed stage cues such as:
     【傲娇】才不是因为喜欢你呢！ -> ("tsundere", "才不是因为喜欢你呢！")
@@ -177,7 +176,7 @@ def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
 def classify_emotion(
     chinese: str = "",
     japanese: str = "",
-    explicit_emotion: Optional[str] = None,
+    explicit_emotion: str | None = None,
 ) -> str:
     """
     Determines character emotion archetype ('gentle', 'shy', 'happy', 'tsundere', 'cool', 'sad', 'angry').

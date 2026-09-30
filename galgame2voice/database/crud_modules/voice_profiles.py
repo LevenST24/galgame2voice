@@ -4,7 +4,7 @@ Voice profile CRUD operations for SQLite persistence in galgame2voice.
 
 import logging
 import sqlite3
-from typing import Any, List, Optional
+from typing import Any
 
 import aiosqlite
 
@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 
-def _row_to_voice_profile(row: Optional[aiosqlite.Row]) -> Optional[VoiceProfileResponse]:
+def _row_to_voice_profile(row: aiosqlite.Row | None) -> VoiceProfileResponse | None:
     """Helper to convert a SQLite Row to VoiceProfileResponse with normalized boolean is_default."""
     if not row:
         return None
@@ -38,7 +38,7 @@ def _row_to_voice_profile(row: Optional[aiosqlite.Row]) -> Optional[VoiceProfile
     return VoiceProfileResponse(**d)
 
 
-async def list_voice_profiles(conn: aiosqlite.Connection) -> List[VoiceProfileResponse]:
+async def list_voice_profiles(conn: aiosqlite.Connection) -> list[VoiceProfileResponse]:
     """Lists all voice profiles ordered by ID."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM voice_profiles ORDER BY id ASC;")
@@ -46,7 +46,7 @@ async def list_voice_profiles(conn: aiosqlite.Connection) -> List[VoiceProfileRe
     return [p for r in rows if (p := _row_to_voice_profile(r)) is not None]
 
 
-async def get_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> Optional[VoiceProfileResponse]:
+async def get_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> VoiceProfileResponse | None:
     """Fetches a voice profile by its ID."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM voice_profiles WHERE id = ?;", (profile_id,))
@@ -54,7 +54,7 @@ async def get_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> Opti
     return _row_to_voice_profile(row)
 
 
-async def get_voice_profile_by_name(conn: aiosqlite.Connection, name: str) -> Optional[VoiceProfileResponse]:
+async def get_voice_profile_by_name(conn: aiosqlite.Connection, name: str) -> VoiceProfileResponse | None:
     """Fetches a voice profile by character or profile name."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM voice_profiles WHERE name = ? LIMIT 1;", (name,))
@@ -62,7 +62,7 @@ async def get_voice_profile_by_name(conn: aiosqlite.Connection, name: str) -> Op
     return _row_to_voice_profile(row)
 
 
-async def get_active_voice_profile(conn: aiosqlite.Connection) -> Optional[VoiceProfileResponse]:
+async def get_active_voice_profile(conn: aiosqlite.Connection) -> VoiceProfileResponse | None:
     """Retrieves the currently active voice profile from settings with fallback to default."""
     conn.row_factory = aiosqlite.Row
     try:
@@ -120,14 +120,14 @@ async def create_voice_profile(conn: aiosqlite.Connection, profile: VoiceProfile
     return res
 
 
-async def update_voice_profile(conn: aiosqlite.Connection, profile_id: int, updates: VoiceProfileUpdate) -> Optional[VoiceProfileResponse]:
+async def update_voice_profile(conn: aiosqlite.Connection, profile_id: int, updates: VoiceProfileUpdate) -> VoiceProfileResponse | None:
     """Updates fields of an existing voice profile."""
     current = await get_voice_profile(conn, profile_id)
     if not current:
         return None
 
     fields = []
-    values: List[Any] = []
+    values: list[Any] = []
     up_dict = updates.model_dump(exclude_unset=True)
 
     for k, v in up_dict.items():

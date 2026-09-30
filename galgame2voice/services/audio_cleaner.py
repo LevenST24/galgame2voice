@@ -10,7 +10,7 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any, List, Optional, Set, Tuple
+from typing import Any
 
 import aiosqlite
 
@@ -36,8 +36,8 @@ def _resolve_get_db() -> Any:
 def _cache_scan_and_clean(
     cache_dir: Path,
     cutoff: float,
-    active_cache_keys: Optional[Set[str]] = None,
-) -> Tuple[int, List[str]]:
+    active_cache_keys: set[str] | None = None,
+) -> tuple[int, list[str]]:
     """
     Removes cached audio files.
     When active_cache_keys is provided:
@@ -48,7 +48,7 @@ def _cache_scan_and_clean(
         Fallback legacy mode: unlinks files where mtime < cutoff.
     """
     cleaned = 0
-    unlinked_keys: List[str] = []
+    unlinked_keys: list[str] = []
     if not cache_dir.is_dir():
         return 0, []
 
@@ -74,11 +74,11 @@ def _cache_scan_and_clean(
 
 def _scan_and_clean(
     audio_dir: Path,
-    protected_audio_names: Set[str],
+    protected_audio_names: set[str],
     cutoff: float,
     cache_cutoff: float,
-    active_cache_keys: Optional[Set[str]] = None,
-) -> Tuple[int, List[str]]:
+    active_cache_keys: set[str] | None = None,
+) -> tuple[int, list[str]]:
     """Scans and unlinks expired ephemeral audio files and invokes cache cleanup."""
     cleaned = 0
     if audio_dir.exists():
@@ -107,7 +107,7 @@ def _scan_and_clean(
 
 async def _clean_lru_cache_from_db(
     conn: aiosqlite.Connection, cache_dir: Path, cache_cutoff: float
-) -> Tuple[int, List[str]]:
+) -> tuple[int, list[str]]:
     """
     Evicts cached TTS entries based on SQLite last_accessed_at (single source of truth for LRU).
     Deletes the underlying audio files and drops the DB records in batches.
@@ -122,7 +122,7 @@ async def _clean_lru_cache_from_db(
         (cutoff_iso, cutoff_iso),
     )
     rows = await cur.fetchall()
-    unlinked_keys: List[str] = []
+    unlinked_keys: list[str] = []
     for r in rows:
         key = r[0]
         raw_path = r[1]
@@ -148,9 +148,9 @@ async def _clean_lru_cache_from_db(
     return len(unlinked_keys), unlinked_keys
 
 
-async def _fetch_protected_audio_names(conn: Optional[aiosqlite.Connection]) -> Set[str]:
+async def _fetch_protected_audio_names(conn: aiosqlite.Connection | None) -> set[str]:
     """Queries voice_profiles to protect active reference audio files from cleanup."""
-    protected: Set[str] = set()
+    protected: set[str] = set()
     if conn is None:
         return protected
     try:
@@ -164,7 +164,7 @@ async def _fetch_protected_audio_names(conn: Optional[aiosqlite.Connection]) -> 
     return protected
 
 
-async def _purge_unlinked_cache_entries(conn: aiosqlite.Connection, unlinked_keys: List[str]) -> None:
+async def _purge_unlinked_cache_entries(conn: aiosqlite.Connection, unlinked_keys: list[str]) -> None:
     """Purges database records for unlinked cache files in batches."""
     async with immediate_transaction(conn):
         for batch_idx in range(0, len(unlinked_keys), PURGE_BATCH_SIZE):
@@ -182,8 +182,8 @@ async def _purge_unlinked_cache_entries(conn: aiosqlite.Connection, unlinked_key
 async def _run_audio_cleanup_cycle(audio_dir: Path) -> None:
     """Executes a single cycle of audio retention and LRU cache eviction."""
     db_getter = _resolve_get_db()
-    protected_audio_names: Set[str] = set()
-    active_cache_keys: Optional[Set[str]] = None
+    protected_audio_names: set[str] = set()
+    active_cache_keys: set[str] | None = None
     db_evicted_count = 0
 
     try:
@@ -257,7 +257,7 @@ class AudioCleanerService:
     def __init__(self, audio_dir: Path, interval_seconds: int = 600) -> None:
         self.audio_dir = audio_dir
         self.interval_seconds = interval_seconds
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
 
     def start(self) -> asyncio.Task:
         """Starts the background audio cleanup task if not already running."""

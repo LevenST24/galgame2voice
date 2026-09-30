@@ -5,7 +5,7 @@ latency trends, and TTS persistent audio cache management.
 """
 
 import logging
-from typing import Any, Dict
+from typing import Any
 from fastapi import APIRouter, Query
 
 from galgame2voice.database.models import (
@@ -78,7 +78,7 @@ async def get_cache_stats() -> CacheStatsResponse:
     summary="Get TTS Synthesis Speed & Throughput Telemetry",
     description="Returns real-time synthesis metrics including RTF (Real-Time Factor), chars/sec, and dynamic batch size status.",
 )
-async def get_tts_speed_metrics() -> Dict[str, Any]:
+async def get_tts_speed_metrics() -> dict[str, Any]:
     tracker = get_speed_tracker()
     return tracker.get_telemetry()
 
@@ -88,7 +88,7 @@ async def get_tts_speed_metrics() -> Dict[str, Any]:
     summary="Clear TTS Persistent Audio Cache",
     description="Deletes all cached audio files in audio/cache/ and purges SQLite metadata.",
 )
-async def clear_cache() -> Dict[str, Any]:
+async def clear_cache() -> dict[str, Any]:
     cache_mgr = get_tts_cache_manager()
     deleted_files, freed_mb = await cache_mgr.clear()
     return {

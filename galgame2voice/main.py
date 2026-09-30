@@ -9,7 +9,7 @@ import mimetypes
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -240,7 +240,7 @@ async def _init_gpt_sovits_client(settings) -> None:
         )
 
 
-def _start_telegram_bg(settings) -> Optional[asyncio.Task]:
+def _start_telegram_bg(settings) -> asyncio.Task | None:
     """Starts Telegram Bot polling in a background task if enabled in DB."""
     try:
         from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
@@ -307,7 +307,7 @@ async def _drain_active_services() -> None:
         logger.debug("Error draining background tasks on shutdown: %s", exc)
 
 
-async def _shutdown_services(settings, cleanup_task: asyncio.Task, tg_startup_task: Optional[asyncio.Task]) -> None:
+async def _shutdown_services(settings, cleanup_task: asyncio.Task, tg_startup_task: asyncio.Task | None) -> None:
     """Gracefully drains background tasks, closes connections, and checkpoints SQLite WAL."""
     cleanup_task.cancel()
     try:

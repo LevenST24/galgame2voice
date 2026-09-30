@@ -4,7 +4,7 @@ Provides REST endpoints for global system configuration.
 """
 
 import logging
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
@@ -65,7 +65,7 @@ __all__ = [
 
 class ConfigPayload(BaseModel):
     """Flexible configuration update payload accepting nested settings or direct attributes."""
-    settings: Optional[Dict[str, Any]] = None
+    settings: dict[str, Any] | None = None
 
 
 # ============================================================================
@@ -77,7 +77,7 @@ class ConfigPayload(BaseModel):
     summary="Get Global Configuration",
     description="Returns current system settings and active provider with masked sensitive keys.",
 )
-async def get_config() -> Dict[str, Any]:
+async def get_config() -> dict[str, Any]:
     async with get_db() as conn:
         settings = await crud.get_settings(conn, mask=True)
         active_provider = await crud.get_active_provider(conn, mask=True)
@@ -102,7 +102,7 @@ TELEGRAM_CONFIG_KEYS = frozenset({
     "telegram_chat_id",
 })
 
-_PRECISION_CONFIG_MAP: Dict[str, Tuple[bool, str]] = {
+_PRECISION_CONFIG_MAP: dict[str, tuple[bool, str]] = {
     "cpu": (False, "cpu"),
     "fp16": (True, "cuda"),
     "half": (True, "cuda"),
@@ -111,7 +111,7 @@ _PRECISION_CONFIG_MAP: Dict[str, Tuple[bool, str]] = {
 }
 
 
-async def _apply_sovits_url_update(new_sovits_url: Optional[str]) -> None:
+async def _apply_sovits_url_update(new_sovits_url: str | None) -> None:
     """Hot-applies GPT-SoVITS endpoint change to the shared client so it takes effect immediately."""
     if not new_sovits_url:
         return
@@ -123,7 +123,7 @@ async def _apply_sovits_url_update(new_sovits_url: Optional[str]) -> None:
         logger.error("Failed to hot-apply GPT-SoVITS URL '%s': %s", new_sovits_url, exc)
 
 
-async def _reload_telegram_if_needed(sanitized_updates: Dict[str, Any], updated_settings: Any) -> None:
+async def _reload_telegram_if_needed(sanitized_updates: dict[str, Any], updated_settings: Any) -> None:
     """Hot-reloads Telegram Bot service when Telegram credentials/proxy/enabled/admin state changes."""
     if not any(k in sanitized_updates for k in TELEGRAM_CONFIG_KEYS):
         return
@@ -140,7 +140,7 @@ async def _reload_telegram_if_needed(sanitized_updates: Dict[str, Any], updated_
         logger.warning("Failed to hot-reload Telegram Bot: %s", exc)
 
 
-def _sync_precision_cache(new_precision: Optional[str]) -> None:
+def _sync_precision_cache(new_precision: str | None) -> None:
     """Syncs precision cache files on disk when inference_precision is updated."""
     if not new_precision:
         return
@@ -172,8 +172,8 @@ def _sync_precision_cache(new_precision: Optional[str]) -> None:
     summary="Update Global Configuration",
     description="Updates system configuration values in SQLite persistence. GPT-SoVITS URL changes are applied live (no restart needed).",
 )
-async def update_config(payload: Union[ConfigPayload, SettingsUpdate, Dict[str, Any]]) -> Dict[str, Any]:
-    update_data: Dict[str, Any] = {}
+async def update_config(payload: ConfigPayload | SettingsUpdate | dict[str, Any]) -> dict[str, Any]:
+    update_data: dict[str, Any] = {}
     if isinstance(payload, ConfigPayload) and payload.settings is not None:
         update_data = payload.settings
     elif isinstance(payload, SettingsUpdate):

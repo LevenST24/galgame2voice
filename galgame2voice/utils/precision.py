@@ -11,7 +11,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any
 
 logger = logging.getLogger("galgame2voice.utils.precision")
 
@@ -33,7 +33,7 @@ def _cache_path(project_root: Path) -> Path:
     return Path(project_root) / "data" / "precision.json"
 
 
-def read_precision_cache(project_root: Path) -> Optional[Dict[str, Any]]:
+def read_precision_cache(project_root: Path) -> dict[str, Any] | None:
     """Returns the stored calibration dict, or None if missing/corrupt."""
     try:
         path = _cache_path(project_root)
@@ -70,7 +70,7 @@ def write_precision_cache(
         logger.debug("Could not write precision cache: %s", exc)
 
 
-def find_sovits_yaml_path(sovits_dir: Optional[Union[str, Path]]) -> Optional[Path]:
+def find_sovits_yaml_path(sovits_dir: str | Path | None) -> Path | None:
     """Locates the tts_infer.yaml configuration inside the GPT-SoVITS directory."""
     if not sovits_dir:
         return None
@@ -85,7 +85,7 @@ def find_sovits_yaml_path(sovits_dir: Optional[Union[str, Path]]) -> Optional[Pa
     return None
 
 
-def read_sovits_yaml_device(sovits_dir: Optional[Union[str, Path]]) -> Optional[str]:
+def read_sovits_yaml_device(sovits_dir: str | Path | None) -> str | None:
     """Reads the custom.device setting ('cuda' | 'cpu') directly from tts_infer.yaml."""
     yaml_path = find_sovits_yaml_path(sovits_dir)
     if not yaml_path:
@@ -103,7 +103,7 @@ def read_sovits_yaml_device(sovits_dir: Optional[Union[str, Path]]) -> Optional[
     return None
 
 
-def read_sovits_yaml_is_half(sovits_dir: Optional[Union[str, Path]]) -> Optional[bool]:
+def read_sovits_yaml_is_half(sovits_dir: str | Path | None) -> bool | None:
     """Reads the custom.is_half setting directly from tts_infer.yaml."""
     yaml_path = find_sovits_yaml_path(sovits_dir)
     if not yaml_path:
@@ -122,10 +122,10 @@ def read_sovits_yaml_is_half(sovits_dir: Optional[Union[str, Path]]) -> Optional
 
 
 def write_sovits_yaml_config(
-    sovits_dir: Optional[Union[str, Path]],
+    sovits_dir: str | Path | None,
     is_half: bool,
-    device: Optional[str] = None,
-) -> Optional[Path]:
+    device: str | None = None,
+) -> Path | None:
     """
     Physically synchronizes custom.is_half and custom.device in tts_infer.yaml on disk.
     GPT-SoVITS api_v2.py ONLY determines precision and compute device from this YAML file;
@@ -164,12 +164,12 @@ def write_sovits_yaml_config(
         return None
 
 
-def write_sovits_yaml_is_half(sovits_dir: Optional[Union[str, Path]], is_half: bool) -> Optional[Path]:
+def write_sovits_yaml_is_half(sovits_dir: str | Path | None, is_half: bool) -> Path | None:
     """Compatibility helper for synchronizing custom.is_half."""
     return write_sovits_yaml_config(sovits_dir, is_half=is_half)
 
 
-def read_db_precision(project_root: Path) -> Optional[str]:
+def read_db_precision(project_root: Path) -> str | None:
     """Reads inference_precision ('auto' | 'fp16' | 'fp32' | 'cpu') from SQLite settings table."""
     db_path = project_root / "data" / "galgame2voice.db"
     if not db_path.is_file():
@@ -190,7 +190,7 @@ def read_db_precision(project_root: Path) -> Optional[str]:
 def resolve_initial_device_and_half(
     project_root: Path,
     sovits_dir: Path,
-    environ: Optional[Dict[str, str]] = None,
+    environ: dict[str, str] | None = None,
 ) -> tuple[str, bool, str]:
     """
     Decides the initial device ('cuda' | 'cpu') and is_half setting for engine launch.
@@ -254,7 +254,7 @@ def resolve_initial_device_and_half(
 def resolve_initial_is_half(
     project_root: Path,
     sovits_dir: Path,
-    environ: Optional[Dict[str, str]] = None,
+    environ: dict[str, str] | None = None,
 ) -> tuple[bool, str]:
     """Compatibility helper returning (is_half, source)."""
     _, is_half, source = resolve_initial_device_and_half(project_root, sovits_dir, environ)

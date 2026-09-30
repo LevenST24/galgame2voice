@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -19,8 +19,8 @@ class VoiceParamsConfig(BaseModel):
     """Default voice generation parameters for a character."""
     speed: float = Field(default=1.0, ge=0.1, le=3.0, description="Default speech speed factor")
     temperature: float = Field(default=0.8, ge=0.0, le=2.0, description="Default sampling temperature")
-    top_k: Optional[int] = Field(default=15, ge=1, le=100, description="Top-k sampling parameter")
-    top_p: Optional[float] = Field(default=1.0, ge=0.0, le=1.0, description="Top-p sampling parameter")
+    top_k: int | None = Field(default=15, ge=1, le=100, description="Top-k sampling parameter")
+    top_p: float | None = Field(default=1.0, ge=0.0, le=1.0, description="Top-p sampling parameter")
 
 
 class EmotionConfig(BaseModel):
@@ -28,8 +28,8 @@ class EmotionConfig(BaseModel):
     audio: str = Field(..., min_length=1, description="Relative path to reference audio, e.g., 'refs/gentle.ogg'")
     text: str = Field(..., min_length=1, description="Transcript of the reference audio")
     lang: str = Field(default="ja", description="Language code of reference audio (ja, zh, en)")
-    description: Optional[str] = Field(default=None, description="Human-readable description of this emotion")
-    voice_params: Optional[VoiceParamsConfig] = Field(default=None, description="Optional custom voice parameters for this emotion")
+    description: str | None = Field(default=None, description="Human-readable description of this emotion")
+    voice_params: VoiceParamsConfig | None = Field(default=None, description="Optional custom voice parameters for this emotion")
 
 
 class CharacterManifest(BaseModel):
@@ -38,14 +38,14 @@ class CharacterManifest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="Display name of the character")
     version: str = Field(default="1.0.0", description="Character package semantic version")
     description: str = Field(default="", description="Character background or lore description")
-    system_prompt: Optional[str] = Field(default="", description="Personality prompt template")
+    system_prompt: str | None = Field(default="", description="Personality prompt template")
     default_voice_params: VoiceParamsConfig = Field(default_factory=VoiceParamsConfig)
-    gpt_weights: Optional[str] = Field(default=None, description="Path or pointer to GPT model weights")
-    sovits_weights: Optional[str] = Field(default=None, description="Path or pointer to SoVITS model weights")
-    emotions: Dict[str, EmotionConfig] = Field(default_factory=dict, description="Emotion to reference audio mapping")
+    gpt_weights: str | None = Field(default=None, description="Path or pointer to GPT model weights")
+    sovits_weights: str | None = Field(default=None, description="Path or pointer to SoVITS model weights")
+    emotions: dict[str, EmotionConfig] = Field(default_factory=dict, description="Emotion to reference audio mapping")
     is_default: bool = Field(default=False, description="Whether this character is the default character")
-    aliases: List[str] = Field(default_factory=list, description="Optional alternate names or aliases for matching")
-    portrait: Optional[Dict[str, Any]] = Field(default=None, description="Optional portrait metadata")
+    aliases: list[str] = Field(default_factory=list, description="Optional alternate names or aliases for matching")
+    portrait: dict[str, Any] | None = Field(default=None, description="Optional portrait metadata")
 
 
 class CharacterManifestV2(CharacterManifest):
@@ -55,10 +55,10 @@ class CharacterManifestV2(CharacterManifest):
     enhanced voice parameters, and strict reference audio constraints.
     """
     manifest_version: str = Field(default="2.0", description="Manifest schema version (e.g. 2.0)")
-    default_emotion: Optional[str] = Field(default="gentle", description="Default emotion identifier")
+    default_emotion: str | None = Field(default="gentle", description="Default emotion identifier")
 
 
-def validate_character_package(character_dir: Path) -> Tuple[bool, List[str]]:
+def validate_character_package(character_dir: Path) -> tuple[bool, list[str]]:
     """
     Validates a character package directory on disk:
     1. Checks for presence of manifest.json
@@ -67,7 +67,7 @@ def validate_character_package(character_dir: Path) -> Tuple[bool, List[str]]:
     4. Probes and verifies reference audio duration is strictly within [3.0s, 10.0s]
     Returns (is_valid, list_of_errors).
     """
-    errors: List[str] = []
+    errors: list[str] = []
     char_dir = Path(character_dir).resolve()
     if not char_dir.is_dir():
         return False, [f"目录不存在: {char_dir}"]

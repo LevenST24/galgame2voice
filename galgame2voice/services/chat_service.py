@@ -19,7 +19,7 @@ import asyncio
 import logging
 from pathlib import Path
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncGenerator
 
 import aiosqlite
 
@@ -75,9 +75,9 @@ class ChatService:
 
     def __init__(
         self,
-        tts_service: Optional[TtsService] = None,
-        db_path: Optional[Union[str, Path]] = None,
-        metrics_collector: Optional[MetricsCollector] = None,
+        tts_service: TtsService | None = None,
+        db_path: str | Path | None = None,
+        metrics_collector: MetricsCollector | None = None,
     ):
         self.tts_service = tts_service or TtsService()
         self.db_path = str(db_path or get_database_path())
@@ -110,7 +110,7 @@ class ChatService:
         await drain_background_tasks(self._bg_tasks, timeout=3.0)
 
     async def _extract_memory_safe(
-        self, user_id: str, profile_id: Optional[int], message_text: str, message_id: int
+        self, user_id: str, profile_id: int | None, message_text: str, message_id: int
     ) -> None:
         """Background memory fact extraction that never raises."""
         try:
@@ -125,10 +125,10 @@ class ChatService:
 
     async def _resolve_adapter_triple(
         self,
-        res: Tuple[BaseLLMAdapter, str, Optional[str]],
+        res: tuple[BaseLLMAdapter, str, str | None],
         conn: aiosqlite.Connection,
-        provider_id: Optional[str] = None,
-    ) -> Tuple[BaseLLMAdapter, str, str]:
+        provider_id: str | None = None,
+    ) -> tuple[BaseLLMAdapter, str, str]:
         """Normalizes the adapter-factory result into (adapter, model, provider_id)."""
         if isinstance(res, (tuple, list)) and len(res) >= 3:
             return res[0], res[1], res[2] or "custom"
@@ -142,13 +142,13 @@ class ChatService:
         conn: aiosqlite.Connection,
         session_id: str,
         prompt: str,
-        character_name: Optional[str] = None,
-        provider_id: Optional[str] = None,
-        system_prompt: Optional[str] = None,
-        max_context: Optional[int] = None,
-        active_prof: Optional[Any] = None,
-        session: Optional[Any] = None,
-    ) -> Tuple[BaseLLMAdapter, str, str, List[ChatMessage]]:
+        character_name: str | None = None,
+        provider_id: str | None = None,
+        system_prompt: str | None = None,
+        max_context: int | None = None,
+        active_prof: Any | None = None,
+        session: Any | None = None,
+    ) -> tuple[BaseLLMAdapter, str, str, list[ChatMessage]]:
         """Resolves active LLM adapter, model name, provider ID, and prepared chat messages."""
         res = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
         adapter, model_name, actual_provider_id = await self._resolve_adapter_triple(
@@ -172,13 +172,13 @@ class ChatService:
         chinese: str,
         japanese: str,
         emotion: str,
-        affection_res: Dict[str, Any],
+        affection_res: dict[str, Any],
         metric_record: Any,
         audio_url: str,
         latency_ms: int,
         parser: Any,
         adaptive_enabled: bool,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Formats standard response dictionary for chat_sync."""
         final_tts_params = {
             "speed": parser.tts_speed,
@@ -201,15 +201,15 @@ class ChatService:
         }
 
     @staticmethod
-    def _affection_fallback(emotion: str) -> Dict[str, Any]:
+    def _affection_fallback(emotion: str) -> dict[str, Any]:
         """Neutral affection payload used when the affection update fails."""
         return AffectionService.get_fallback_payload(emotion)
 
-    async def _get_active_llm_adapter(self, conn: Optional[aiosqlite.Connection] = None, provider_id: Optional[str] = None) -> Tuple[BaseLLMAdapter, str, str]:
+    async def _get_active_llm_adapter(self, conn: aiosqlite.Connection | None = None, provider_id: str | None = None) -> tuple[BaseLLMAdapter, str, str]:
         """
         Loads the configured or requested LLM adapter, target chat model, and resolved provider ID from DB.
         """
-        async def _fetch(active_conn: aiosqlite.Connection) -> Tuple[BaseLLMAdapter, str, str]:
+        async def _fetch(active_conn: aiosqlite.Connection) -> tuple[BaseLLMAdapter, str, str]:
             if provider_id:
                 provider = await crud.get_provider_raw(active_conn, provider_id)
             else:
@@ -231,9 +231,9 @@ class ChatService:
 
     async def get_active_llm_adapter(
         self,
-        conn: Optional[aiosqlite.Connection] = None,
-        provider_id: Optional[str] = None,
-    ) -> Tuple[BaseLLMAdapter, str, str]:
+        conn: aiosqlite.Connection | None = None,
+        provider_id: str | None = None,
+    ) -> tuple[BaseLLMAdapter, str, str]:
         """Public interface for getting the active LLM adapter.
 
         Returns (adapter, chat_model, provider_id). External callers (e.g. the
@@ -246,12 +246,12 @@ class ChatService:
         conn: aiosqlite.Connection,
         session_id: str,
         user_prompt: str,
-        character_name: Optional[str] = None,
-        system_prompt_override: Optional[str] = None,
-        max_history_override: Optional[int] = None,
-        active_profile: Optional[Any] = None,
-        session: Optional[Any] = None,
-    ) -> List[ChatMessage]:
+        character_name: str | None = None,
+        system_prompt_override: str | None = None,
+        max_history_override: int | None = None,
+        active_profile: Any | None = None,
+        session: Any | None = None,
+    ) -> list[ChatMessage]:
         """
         Constructs system prompt and conversation history messages for LLM using SessionManager.
         Injects dynamically recalled memories and character affection status into prompt context.
@@ -274,12 +274,12 @@ class ChatService:
         conn: aiosqlite.Connection,
         session_id: str,
         user_prompt: str,
-        character_name: Optional[str] = None,
-        system_prompt_override: Optional[str] = None,
-        max_history_override: Optional[int] = None,
-        active_profile: Optional[Any] = None,
-        session: Optional[Any] = None,
-    ) -> List[ChatMessage]:
+        character_name: str | None = None,
+        system_prompt_override: str | None = None,
+        max_history_override: int | None = None,
+        active_profile: Any | None = None,
+        session: Any | None = None,
+    ) -> list[ChatMessage]:
         """Public interface for preparing chat messages.
 
         External callers (e.g. the Telegram bot) should use this instead of the
@@ -295,8 +295,8 @@ class ChatService:
 
     def _concat_wav_files(
         self,
-        chunk_paths: List[Union[str, Path]],
-        output_path: Union[str, Path],
+        chunk_paths: list[str | Path],
+        output_path: str | Path,
         pause_duration: float = 0.0,
     ) -> bool:
         """Synchronous WAV concatenation with parameter validation and streaming frames — ALWAYS run via asyncio.to_thread()."""
@@ -304,8 +304,8 @@ class ChatService:
 
     @staticmethod
     def _resolve_ai_adaptive_voice(
-        ai_adaptive_voice: Optional[bool],
-        tts_options: Optional[Dict[str, Any]],
+        ai_adaptive_voice: bool | None,
+        tts_options: dict[str, Any] | None,
     ) -> bool:
         """Resolves whether AI adaptive voice prosody is enabled."""
         if ai_adaptive_voice is not None:
@@ -316,11 +316,11 @@ class ChatService:
     @staticmethod
     async def _resolve_voice_profile(
         conn: aiosqlite.Connection,
-        voice_profile_id: Optional[int],
-        tts_options: Optional[Dict[str, Any]],
-        sess_obj: Optional[Any],
-        character_name: Optional[str],
-    ) -> Optional[Any]:
+        voice_profile_id: int | None,
+        tts_options: dict[str, Any] | None,
+        sess_obj: Any | None,
+        character_name: str | None,
+    ) -> Any | None:
         """Resolves active voice profile: explicit voice_profile_id -> tts_options -> session -> character_name -> global active."""
         target_profile_id = voice_profile_id or (tts_options or {}).get("voice_profile_id") or (sess_obj.voice_profile_id if sess_obj else None)
         active_prof = None
@@ -337,10 +337,10 @@ class ChatService:
         conn: aiosqlite.Connection,
         session_id: str,
         prompt: str,
-        voice_profile_id: Optional[int],
-        tts_options: Optional[Dict[str, Any]],
-        character_name: Optional[str],
-    ) -> Tuple[Any, Any, Optional[Any], str, Optional[int]]:
+        voice_profile_id: int | None,
+        tts_options: dict[str, Any] | None,
+        character_name: str | None,
+    ) -> tuple[Any, Any, Any | None, str, int | None]:
         """Atomically initializes session, records user message, and resolves voice profile & user identifiers."""
         sess_obj = await crud.get_or_create_session(conn, session_id)
         user_msg = await crud.add_message(conn, MessageCreate(
@@ -360,7 +360,7 @@ class ChatService:
         profile_id = active_prof.id if active_prof else None
         return sess_obj, user_msg, active_prof, user_id, profile_id
 
-    async def _prune_orphaned_user_message(self, user_msg_id: Optional[int], context_label: str = "") -> None:
+    async def _prune_orphaned_user_message(self, user_msg_id: int | None, context_label: str = "") -> None:
         """Prunes orphaned user message when downstream processing fails before assistant reply persistence."""
         if not user_msg_id:
             return
@@ -379,17 +379,17 @@ class ChatService:
     async def _execute_sync_llm(
         self,
         adapter: BaseLLMAdapter,
-        messages: List[ChatMessage],
+        messages: list[ChatMessage],
         model_name: str,
-        temperature: Optional[float] = None,
-        top_p: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        frequency_penalty: Optional[float] = None,
-        presence_penalty: Optional[float] = None,
-    ) -> Tuple[str, float]:
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+    ) -> tuple[str, float]:
         """Invokes LLM chat non-streaming and returns (completion_text, ttft_ms)."""
         t_llm_start = time.perf_counter()
-        chat_kwargs: Dict[str, Any] = {"model": model_name}
+        chat_kwargs: dict[str, Any] = {"model": model_name}
         if temperature is not None:
             chat_kwargs["temperature"] = temperature
         if top_p is not None:
@@ -408,10 +408,10 @@ class ChatService:
         self,
         japanese: str,
         parser: StreamingBilingualParser,
-        tts_options: Optional[Dict[str, Any]],
+        tts_options: dict[str, Any] | None,
         ai_adaptive_voice: bool,
-        active_prof: Optional[Any],
-    ) -> Tuple[str, float, int, int]:
+        active_prof: Any | None,
+    ) -> tuple[str, float, int, int]:
         """Synthesizes complete audio for sync chat response."""
         audio_url = ""
         tts_first_chunk_ms = 0.0
@@ -454,20 +454,20 @@ class ChatService:
         self,
         prompt: str,
         session_id: str = "default",
-        character_name: Optional[str] = None,
-        provider_id: Optional[str] = None,
-        tts_options: Optional[Dict[str, Any]] = None,
-        cancel_event: Optional[asyncio.Event] = None,
-        system_prompt: Optional[str] = None,
-        temperature: Optional[float] = None,
-        max_context: Optional[int] = None,
-        top_p: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        frequency_penalty: Optional[float] = None,
-        presence_penalty: Optional[float] = None,
-        ai_adaptive_voice: Optional[bool] = None,
-        voice_profile_id: Optional[int] = None,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+        character_name: str | None = None,
+        provider_id: str | None = None,
+        tts_options: dict[str, Any] | None = None,
+        cancel_event: asyncio.Event | None = None,
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        max_context: int | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        ai_adaptive_voice: bool | None = None,
+        voice_profile_id: int | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """
         Asynchronously streams bilingual SSE events:
           - text: incremental Chinese delta tokens
@@ -487,8 +487,8 @@ class ChatService:
             logger.info("Stream chat cancelled before starting for session %s", session_id)
             return
 
-        coordinator: Optional[StreamCoordinator] = None
-        user_msg: Optional[Any] = None
+        coordinator: StreamCoordinator | None = None
+        user_msg: Any | None = None
 
         try:
             async with get_db(self.db_path) as conn:
@@ -591,19 +591,19 @@ class ChatService:
         self,
         prompt: str,
         session_id: str = "default",
-        character_name: Optional[str] = None,
-        provider_id: Optional[str] = None,
-        tts_options: Optional[Dict[str, Any]] = None,
-        cancel_event: Optional[asyncio.Event] = None,
-        system_prompt: Optional[str] = None,
-        temperature: Optional[float] = None,
-        max_context: Optional[int] = None,
-        top_p: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        frequency_penalty: Optional[float] = None,
-        presence_penalty: Optional[float] = None,
-        ai_adaptive_voice: Optional[bool] = None,
-    ) -> AsyncGenerator[Union[str, Dict[str, Any]], None]:
+        character_name: str | None = None,
+        provider_id: str | None = None,
+        tts_options: dict[str, Any] | None = None,
+        cancel_event: asyncio.Event | None = None,
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        max_context: int | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        ai_adaptive_voice: bool | None = None,
+    ) -> AsyncGenerator[str | dict[str, Any], None]:
         """
         Asynchronously streams bilingual SSE formatted event strings.
         Yields standard W3C SSE frames (event: <name>\ndata: <json>\n\n) and emits
@@ -631,19 +631,19 @@ class ChatService:
         self,
         prompt: str,
         session_id: str = "default",
-        character_name: Optional[str] = None,
-        provider_id: Optional[str] = None,
-        tts_options: Optional[Dict[str, Any]] = None,
-        system_prompt: Optional[str] = None,
-        temperature: Optional[float] = None,
-        max_context: Optional[int] = None,
-        top_p: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        frequency_penalty: Optional[float] = None,
-        presence_penalty: Optional[float] = None,
-        ai_adaptive_voice: Optional[bool] = None,
-        voice_profile_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        character_name: str | None = None,
+        provider_id: str | None = None,
+        tts_options: dict[str, Any] | None = None,
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        max_context: int | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        ai_adaptive_voice: bool | None = None,
+        voice_profile_id: int | None = None,
+    ) -> dict[str, Any]:
         """
         Synchronous non-streaming bilingual completion and TTS synthesis.
         """
@@ -779,7 +779,7 @@ class ChatService:
     async def resolve_message_japanese(
         self,
         text: str,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
     ) -> str:
         """
         Resolves the Japanese original text used during backend synthesis for a given Chinese message.
@@ -791,7 +791,7 @@ class ChatService:
             return ""
 
         async with get_db(self.db_path) as conn:
-            async def _find_ja(sid: Optional[str]) -> Optional[str]:
+            async def _find_ja(sid: str | None) -> str | None:
                 where_clause = "session_id = ? AND " if sid else ""
                 query = f"""
                     SELECT content_japanese FROM messages

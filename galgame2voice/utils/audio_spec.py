@@ -28,7 +28,6 @@ import wave
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple, Union
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -38,7 +37,7 @@ WAV_HEADER_BYTES: int = 44
 PCM_32KHZ_16BIT_MONO_BYTE_RATE: float = 64000.0
 
 
-def _safe_resolve_path(path_val: Union[str, Path]) -> Path:
+def _safe_resolve_path(path_val: str | Path) -> Path:
     """Safely resolves path, falling back to absolute() on Windows permission errors."""
     p = Path(path_val)
     try:
@@ -59,15 +58,15 @@ class AudioSpec:
 def _parse_wav_chunks(
     data: bytes,
     include_data_bytes: bool = False,
-) -> Tuple[Optional[bytes], Optional[int], Optional[bytes]]:
+) -> tuple[bytes | None, int | None, bytes | None]:
     """Scans RIFF/WAVE chunks and returns (fmt_bytes, data_len, data_bytes)."""
     if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
         return None, None, None
     try:
         pos = 12
-        fmt: Optional[bytes] = None
-        data_len: Optional[int] = None
-        data_bytes: Optional[bytes] = None
+        fmt: bytes | None = None
+        data_len: int | None = None
+        data_bytes: bytes | None = None
         while pos + 8 <= len(data):
             chunk_id = data[pos : pos + 4]
             chunk_size = int.from_bytes(data[pos + 4 : pos + 8], "little")
@@ -84,7 +83,7 @@ def _parse_wav_chunks(
         return None, None, None
 
 
-def _probe_wav_riff_header(data: bytes) -> Optional[AudioSpec]:
+def _probe_wav_riff_header(data: bytes) -> AudioSpec | None:
     """
     Parses raw WAV RIFF header and fmt chunk to determine sample rate, channels,
     and duration without requiring third-party libraries.
@@ -112,7 +111,7 @@ def _probe_wav_riff_header(data: bytes) -> Optional[AudioSpec]:
     return None
 
 
-def _probe_ogg_granule(data: bytes, suffix: str = ".ogg") -> Optional[AudioSpec]:
+def _probe_ogg_granule(data: bytes, suffix: str = ".ogg") -> AudioSpec | None:
     """Parses OggS container granules to estimate duration and sample rate."""
     idx = data.rfind(b"OggS")
     if idx >= 0 and idx + 14 <= len(data):
@@ -135,7 +134,7 @@ def _probe_ogg_granule(data: bytes, suffix: str = ".ogg") -> Optional[AudioSpec]
     return None
 
 
-def _spec_from_wave(w: Any) -> Optional[AudioSpec]:
+def _spec_from_wave(w: Any) -> AudioSpec | None:
     """Constructs AudioSpec from an opened stdlib wave reader."""
     framerate = w.getframerate()
     channels = w.getnchannels()
@@ -149,7 +148,7 @@ def _spec_from_wave(w: Any) -> Optional[AudioSpec]:
     return None
 
 
-def _probe_from_bytes(data: bytes) -> Optional[AudioSpec]:
+def _probe_from_bytes(data: bytes) -> AudioSpec | None:
     """Probes AudioSpec from in-memory byte buffer using soundfile, wave, and fallback parsers."""
     if not data or len(data) < 12:
         return None
@@ -197,10 +196,10 @@ class AudioSpecCache:
 
     def __init__(self, maxsize: int = 512) -> None:
         self._maxsize = maxsize
-        self._cache: OrderedDict[Tuple[str, int, int], AudioSpec] = OrderedDict()
+        self._cache: OrderedDict[tuple[str, int, int], AudioSpec] = OrderedDict()
         self._lock = threading.Lock()
 
-    def get_spec(self, path: Union[str, Path, bytes, bytearray, memoryview]) -> Optional[AudioSpec]:
+    def get_spec(self, path: str | Path | bytes | bytearray | memoryview) -> AudioSpec | None:
         if isinstance(path, (bytes, bytearray, memoryview)):
             return _probe_from_bytes(bytes(path))
         try:
@@ -227,7 +226,7 @@ class AudioSpecCache:
                     self._cache.popitem(last=False)
         return spec
 
-    def get_duration(self, path: Union[str, Path, bytes, bytearray, memoryview]) -> Optional[float]:
+    def get_duration(self, path: str | Path | bytes | bytearray | memoryview) -> float | None:
         spec = self.get_spec(path)
         return spec.duration_s if spec else None
 
@@ -236,7 +235,7 @@ class AudioSpecCache:
             self._cache.clear()
 
     @staticmethod
-    def _probe(p: Path) -> Optional[AudioSpec]:
+    def _probe(p: Path) -> AudioSpec | None:
         # 1. Try soundfile first
         try:
             import soundfile as sf
@@ -284,8 +283,8 @@ _GLOBAL_AUDIO_SPEC_CACHE = _AUDIO_SPEC_CACHE
 
 
 def probe_audio_spec(
-    path_or_bytes: Union[str, Path, bytes, bytearray, memoryview, None],
-) -> Optional[AudioSpec]:
+    path_or_bytes: str | Path | bytes | bytearray | memoryview | None,
+) -> AudioSpec | None:
     """
     Probes full audio specification (duration_s, sample_rate, channels).
     Accepts a file path (str or Path) or raw audio bytes/bytearray/memoryview.
@@ -299,8 +298,8 @@ def probe_audio_spec(
 
 
 def probe_audio_duration_seconds(
-    path_or_bytes: Union[str, Path, bytes, bytearray, memoryview, None],
-) -> Optional[float]:
+    path_or_bytes: str | Path | bytes | bytearray | memoryview | None,
+) -> float | None:
     """
     Returns audio duration in seconds for WAV, OGG, Opus, etc., or None if
     the duration cannot be determined. Uses AudioSpecCache for file paths.
@@ -312,8 +311,8 @@ def probe_audio_duration_seconds(
 
 
 async def async_probe_audio_duration_seconds(
-    path_or_bytes: Union[str, Path, bytes, bytearray, memoryview, None],
-) -> Optional[float]:
+    path_or_bytes: str | Path | bytes | bytearray | memoryview | None,
+) -> float | None:
     """
     Asynchronously probes audio duration in seconds.
     If the spec is already cached by stat (mtime_ns, size), returns immediately
@@ -345,8 +344,8 @@ async def async_probe_audio_duration_seconds(
 
 
 def validate_reference_audio(
-    path_or_bytes: Union[str, Path, bytes, bytearray, memoryview, None],
-) -> Tuple[bool, str]:
+    path_or_bytes: str | Path | bytes | bytearray | memoryview | None,
+) -> tuple[bool, str]:
     """
     Checks reference audio (file path or raw bytes) against GPT-SoVITS's 3~10s hard constraint.
     Returns (True, "") on success, or (False, error_message) on violation.
@@ -403,7 +402,7 @@ def resolve_reference_audio_path(path: str) -> str:
     return path
 
 
-def extract_wav_duration(audio: bytes) -> Optional[float]:
+def extract_wav_duration(audio: bytes) -> float | None:
     """
     Extracts exact audio duration in seconds from RIFF/WAVE header and fmt chunk byte_rate,
     falling back to 32kHz 16-bit mono PCM estimation.
@@ -438,7 +437,7 @@ SILENT_AUDIO_ERROR = (
 )
 
 
-def wav_peak_amplitude(audio: bytes) -> Optional[float]:
+def wav_peak_amplitude(audio: bytes) -> float | None:
     """
     Returns the peak absolute sample value (normalized 0.0~1.0) of a RIFF/WAVE
     payload (PCM16 or float32), or None if the container/samples cannot be parsed.

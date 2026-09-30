@@ -4,7 +4,7 @@ Supports querying affection status, manual adjustments, resets, and dialogue unl
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
@@ -26,11 +26,11 @@ class AffectionUpdateRequest(BaseModel):
     """Payload for manually updating character affection status and metrics."""
     user_id: str = Field(default="default_user", min_length=1, max_length=128)
     character_id: int = Field(default=1, ge=1)
-    affection_score: Optional[int] = Field(default=None, ge=0, le=100)
-    affection_level: Optional[int] = Field(default=None, ge=1, le=5)
-    current_emotion: Optional[str] = Field(default=None, max_length=32)
-    custom_nickname: Optional[str] = Field(default=None, max_length=50)
-    unlocked_dialogues: Optional[List[str]] = None
+    affection_score: int | None = Field(default=None, ge=0, le=100)
+    affection_level: int | None = Field(default=None, ge=1, le=5)
+    current_emotion: str | None = Field(default=None, max_length=32)
+    custom_nickname: str | None = Field(default=None, max_length=50)
+    unlocked_dialogues: list[str] | None = None
 
 
 class AffectionResetRequest(BaseModel):
@@ -98,7 +98,7 @@ async def update_character_affection_endpoint(req: AffectionUpdateRequest) -> Ch
 
 @router.post("/reset", response_model=CharacterAffectionResponse, summary="Reset character affection state")
 async def reset_character_affection_endpoint(
-    req: Optional[AffectionResetRequest] = None,
+    req: AffectionResetRequest | None = None,
 ) -> CharacterAffectionResponse:
     """
     Resets affection score to 0, level to 1, and emotion to 'normal'.
@@ -117,7 +117,7 @@ async def reset_character_affection_endpoint(
 async def get_dialogue_gallery_endpoint(
     user_id: str = Query(default="default_user", min_length=1, max_length=128, description="User ID"),
     character_id: int = Query(default=1, ge=1, description="Character ID"),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Returns full list of milestone lines and easter egg voicelines with unlock status.
     """

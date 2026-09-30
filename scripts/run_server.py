@@ -14,7 +14,7 @@ import webbrowser
 import subprocess
 import argparse
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -691,7 +691,7 @@ def _spawn_sovits_process(
     return proc
 
 
-def _probe_synth_peak(host: str, port: int, timeout: float = 90.0) -> Optional[float]:
+def _probe_synth_peak(host: str, port: int, timeout: float = 90.0) -> float | None:
     """
     Synthesizes one short test sentence via the engine's /tts endpoint and returns
     the WAV peak amplitude (0.0~1.0). Returns None when the probe is INCONCLUSIVE
@@ -801,7 +801,7 @@ def _calibrate_precision_after_ready(
     if precision_source != "default" or device == "cpu":
         return  # env override or CPU mode needs no probe
 
-    def probe() -> Optional[float]:
+    def probe() -> float | None:
         return _probe_synth_peak(host, port)
 
     def restart(new_is_half: bool):

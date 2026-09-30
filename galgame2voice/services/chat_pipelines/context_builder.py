@@ -7,7 +7,7 @@ into model-ready ChatMessage lists.
 from __future__ import annotations
 
 import logging
-from typing import Any, List, Optional
+from typing import Any
 import aiosqlite
 
 from galgame2voice.adapters.base import ChatMessage
@@ -39,10 +39,10 @@ def upgrade_legacy_system_prompt(prompt: str) -> str:
 
 async def _resolve_context_voice_profile(
     conn: aiosqlite.Connection,
-    session: Optional[Any],
-    character_name: Optional[str],
-    active_profile: Optional[Any] = None,
-) -> Optional[Any]:
+    session: Any | None,
+    character_name: str | None,
+    active_profile: Any | None = None,
+) -> Any | None:
     """Resolves target voice profile for context building: explicit -> session -> character_name -> global active."""
     if active_profile is not None:
         return active_profile
@@ -62,7 +62,7 @@ async def _build_memory_prompt_block(
     profile_id: int,
     user_prompt: str,
     conn: aiosqlite.Connection,
-) -> Optional[str]:
+) -> str | None:
     """Retrieves relevant memory facts and character affection to build prompt injection block."""
     if memory_service is None:
         return None
@@ -94,12 +94,12 @@ async def build_chat_context(
     user_prompt: str,
     session_manager: Any,
     memory_service: Any,
-    character_name: Optional[str] = None,
-    system_prompt_override: Optional[str] = None,
-    max_history_override: Optional[int] = None,
-    active_profile: Optional[Any] = None,
-    session: Optional[Any] = None,
-) -> List[ChatMessage]:
+    character_name: str | None = None,
+    system_prompt_override: str | None = None,
+    max_history_override: int | None = None,
+    active_profile: Any | None = None,
+    session: Any | None = None,
+) -> list[ChatMessage]:
     """
     Builds the complete message history and prompt context for LLM execution:
     1. Resolves session and character voice profile.

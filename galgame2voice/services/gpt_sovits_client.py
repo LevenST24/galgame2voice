@@ -15,7 +15,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, Optional
+from typing import Any, AsyncGenerator
 
 import httpx
 
@@ -114,8 +114,8 @@ class GptSovitsClient:
         self,
         base_url: str = "http://127.0.0.1:9880",
         timeout: float = 300.0,
-        client: Optional[httpx.AsyncClient] = None,
-        server: Optional[Any] = None,
+        client: httpx.AsyncClient | None = None,
+        server: Any | None = None,
     ):
         self.base_url = str(base_url).rstrip("/")
         self.timeout = timeout
@@ -124,19 +124,19 @@ class GptSovitsClient:
         self.lock = asyncio.Lock()
 
         # State tracking
-        self.active_profile: Optional[Any] = None
+        self.active_profile: Any | None = None
         self.is_switching: bool = False
-        self.current_gpt_weights: Optional[str] = None
-        self.current_sovits_weights: Optional[str] = None
-        self.current_refer_audio: Optional[str] = None
-        self.current_refer_text: Optional[str] = None
-        self.current_refer_language: Optional[str] = None
+        self.current_gpt_weights: str | None = None
+        self.current_sovits_weights: str | None = None
+        self.current_refer_audio: str | None = None
+        self.current_refer_text: str | None = None
+        self.current_refer_language: str | None = None
 
         # In-flight request tracking for hot URL swaps: the old connection
         # pool is closed once in-flight requests drain or the grace period
         # expires, whichever comes first (read timeout is up to 300s).
         self._inflight_requests = 0
-        self._close_task: Optional[asyncio.Task] = None
+        self._close_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Connection pool lifecycle
@@ -224,9 +224,9 @@ class GptSovitsClient:
         self,
         method: str,
         path: str,
-        json_data: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None,
-        timeout: Optional[httpx.Timeout] = None,
+        json_data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        timeout: httpx.Timeout | None = None,
     ) -> httpx.Response:
         """Internal HTTP request dispatcher supporting mock server or pooled httpx."""
         if self.server is not None and hasattr(self.server, "handle_request"):
@@ -242,7 +242,7 @@ class GptSovitsClient:
     # Health & Diagnostic Endpoints
     # ------------------------------------------------------------------
 
-    async def check_health(self) -> Dict[str, Any]:
+    async def check_health(self) -> dict[str, Any]:
         """
         Probes GPT-SoVITS reachability via GET /control (api_v2 control endpoint returns 400 when active).
         HTTP 200/400 proves the engine is alive and listening; other codes / network errors are unreachable.
@@ -289,7 +289,7 @@ class GptSovitsClient:
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
-    async def control(self, command: str = "restart") -> Dict[str, Any]:
+    async def control(self, command: str = "restart") -> dict[str, Any]:
         """Sends control command to GPT-SoVITS service."""
         resp = await self._request("POST", ENDPOINT_CONTROL, json_data={"command": command})
         if resp.status_code == 200:
@@ -346,8 +346,8 @@ class GptSovitsClient:
 
     async def _rollback_weights(
         self,
-        prev_spec: Optional[VoiceProfileWeightSpec],
-        current_spec: Optional[VoiceProfileWeightSpec] = None,
+        prev_spec: VoiceProfileWeightSpec | None,
+        current_spec: VoiceProfileWeightSpec | None = None,
         rollback_sovits: bool = False,
         rollback_gpt: bool = False,
         rollback_refer: bool = False,
@@ -458,7 +458,7 @@ class GptSovitsClient:
             return str(_safe_resolve_path(_PROJECT_ROOT / ref_audio))
         return ref_audio
 
-    def _build_tts_payload(self, text: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _build_tts_payload(self, text: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
         """Builds standardized GPT-SoVITS official /tts request payload."""
         resolved = resolve_tts_options(options)
         ref_audio = resolved.get("ref_audio_path") or self.current_refer_audio or ""
@@ -520,7 +520,7 @@ class GptSovitsClient:
     async def synthesize(
         self,
         text: str,
-        options: Optional[Dict[str, Any]] = None,
+        options: dict[str, Any] | None = None,
         retries: int = 1,
     ) -> bytes:
         """
@@ -579,7 +579,7 @@ class GptSovitsClient:
 
     async def _stream_mock_server(
         self,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
         chunk_size: int,
     ) -> AsyncGenerator[bytes, None]:
         """Streams synthesis from in-process mock server (used in test suite stubs)."""
@@ -597,10 +597,10 @@ class GptSovitsClient:
         self,
         client: Any,
         url: str,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
         queue: asyncio.Queue,
         sentinel: object,
-        profiler: Optional[Any],
+        profiler: Any | None,
         chunk_size: int,
     ) -> None:
         """Pumps streamed bytes from upstream GPT-SoVITS into queue with concurrency & inflight tracking."""
@@ -632,7 +632,7 @@ class GptSovitsClient:
     async def stream_tts(
         self,
         text: str,
-        options: Optional[Dict[str, Any]] = None,
+        options: dict[str, Any] | None = None,
         chunk_size: int = 4096,
     ) -> AsyncGenerator[bytes, None]:
         """
@@ -738,7 +738,7 @@ class GptSovitsClient:
 # Application-Level Singleton
 # ============================================================================
 
-_global_gpt_sovits_client: Optional[GptSovitsClient] = None
+_global_gpt_sovits_client: GptSovitsClient | None = None
 
 
 def get_gpt_sovits_client() -> GptSovitsClient:
@@ -766,7 +766,7 @@ async def reload_gpt_sovits_client_base_url(new_url: str) -> None:
     await client.set_base_url(new_url)
 
 
-def set_gpt_sovits_client(client: Optional[GptSovitsClient]) -> None:
+def set_gpt_sovits_client(client: GptSovitsClient | None) -> None:
     """Replaces or resets the singleton (used by tests)."""
     global _global_gpt_sovits_client
     _global_gpt_sovits_client = client

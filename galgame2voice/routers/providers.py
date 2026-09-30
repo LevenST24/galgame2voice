@@ -10,7 +10,7 @@ import json
 import logging
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import aiosqlite
 import httpx
@@ -47,7 +47,7 @@ async def _allow_private_endpoints() -> bool:
     return bool(getattr(settings, "allow_private_llm_endpoints", False))
 
 
-async def _enforce_llm_url_guard(base_url: Optional[str]) -> None:
+async def _enforce_llm_url_guard(base_url: str | None) -> None:
     """Rejects LLM provider base URLs that resolve to loopback/private ranges
     unless the operator explicitly enabled private endpoints."""
     if not base_url:
@@ -60,14 +60,14 @@ async def _enforce_llm_url_guard(base_url: Optional[str]) -> None:
 
 class ProviderTestRequest(BaseModel):
     """Payload for real-time provider connectivity and credential testing."""
-    provider_type: Optional[str] = None
-    id: Optional[str] = None
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
-    api_base_url: Optional[str] = None
-    model: Optional[str] = None
-    chat_model: Optional[str] = None
-    custom_headers: Optional[Dict[str, Any]] = None
+    provider_type: str | None = None
+    id: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    api_base_url: str | None = None
+    model: str | None = None
+    chat_model: str | None = None
+    custom_headers: dict[str, Any] | None = None
 
 
 class ProviderTestResponse(BaseModel):
@@ -75,19 +75,19 @@ class ProviderTestResponse(BaseModel):
     __test__ = False
     success: bool
     message: str
-    latency_ms: Optional[float] = None
-    models: Optional[List[str]] = None
-    error: Optional[str] = None
-    diagnostic: Optional[str] = None
+    latency_ms: float | None = None
+    models: list[str] | None = None
+    error: str | None = None
+    diagnostic: str | None = None
 
 
 class TelegramTestRequest(BaseModel):
     """Payload for real-time Telegram bot token connectivity testing."""
-    token: Optional[str] = None
-    bot_token: Optional[str] = None
-    proxy_enabled: Optional[bool] = False
-    proxy_host: Optional[str] = "127.0.0.1"
-    proxy_port: Optional[int] = Field(default=10809, ge=1, le=65535)
+    token: str | None = None
+    bot_token: str | None = None
+    proxy_enabled: bool | None = False
+    proxy_host: str | None = "127.0.0.1"
+    proxy_port: int | None = Field(default=10809, ge=1, le=65535)
 
 
 # ============================================================================
@@ -163,10 +163,10 @@ async def get_provider(provider_id: str):
 
 
 async def _update_existing_provider(
-    conn: Any, provider_id: str, provider_data: Dict[str, Any]
-) -> Dict[str, Any]:
+    conn: Any, provider_id: str, provider_data: dict[str, Any]
+) -> dict[str, Any]:
     """Updates an existing LLM provider configuration with validation."""
-    update_kwargs: Dict[str, Any] = {}
+    update_kwargs: dict[str, Any] = {}
     if "name" in provider_data and provider_data["name"] is not None:
         update_kwargs["name"] = provider_data["name"]
     if "api_base_url" in provider_data or "base_url" in provider_data:
@@ -200,8 +200,8 @@ async def _update_existing_provider(
 
 
 async def _create_new_provider(
-    conn: Any, provider_id: str, provider_data: Dict[str, Any]
-) -> Dict[str, Any]:
+    conn: Any, provider_id: str, provider_data: dict[str, Any]
+) -> dict[str, Any]:
     """Creates a new LLM provider record populated with preset defaults."""
     preset = get_provider_preset(provider_id)
     name = provider_data.get("name") or (preset["name"] if preset else provider_id.capitalize())
@@ -253,7 +253,7 @@ async def _create_new_provider(
     summary="Create or Update Provider",
     description="Upserts an LLM/STT provider profile, safely retaining existing secret keys if masked.",
 )
-async def create_or_update_provider(provider_data: Dict[str, Any]):
+async def create_or_update_provider(provider_data: dict[str, Any]):
     raw_id = provider_data.get("id") or provider_data.get("provider_type")
     if not raw_id:
         raise HTTPException(
@@ -280,7 +280,7 @@ async def create_or_update_provider(provider_data: Dict[str, Any]):
     summary="Update Provider",
     description="Updates an existing provider configuration by ID.",
 )
-async def update_provider(provider_id: str, provider_data: Dict[str, Any]):
+async def update_provider(provider_id: str, provider_data: dict[str, Any]):
     data = dict(provider_data)
     data["id"] = provider_id
     return await create_or_update_provider(data)
@@ -379,8 +379,8 @@ async def get_provider_models(provider_id: str):
 async def _resolve_provider_test_credentials(
     provider_id: str,
     api_key: str,
-    base_url: Optional[str],
-) -> Tuple[str, Optional[str]]:
+    base_url: str | None,
+) -> tuple[str, str | None]:
     """Resolves unmasked API key and base URL from database with SSRF validation."""
     if not api_key or "****" in api_key:
         async with get_db() as conn:
@@ -400,9 +400,9 @@ async def _resolve_provider_test_credentials(
 
 def _resolve_provider_preset_defaults(
     provider_id: str,
-    model: Optional[str],
-    base_url: Optional[str],
-) -> Tuple[Optional[str], Optional[str]]:
+    model: str | None,
+    base_url: str | None,
+) -> tuple[str | None, str | None]:
     """Fills missing model or base_url from predefined provider presets."""
     if not model or not base_url:
         preset = get_provider_preset(provider_id)
@@ -489,7 +489,7 @@ test_provider_connectivity = test_provider
 # Telegram Bot Testing Endpoints
 # ============================================================================
 
-def _map_telegram_response(resp: httpx.Response, latency: float) -> Dict[str, Any]:
+def _map_telegram_response(resp: httpx.Response, latency: float) -> dict[str, Any]:
     """Maps Telegram getMe HTTP response into test result payload."""
     if resp.status_code == status.HTTP_200_OK:
         data = resp.json()

@@ -10,7 +10,7 @@ and isolated unit testing.
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from galgame2voice.services.emotion_classifier import (
     EMOTION_NAME_MAP,
@@ -67,7 +67,7 @@ def _extract_numeric_param(
     pattern: re.Pattern,
     converter: type,
     clamp_fn: Any,
-) -> Optional[Any]:
+) -> Any | None:
     """Searches pattern in text, parses numerical value, and applies safety clamping."""
     match = pattern.search(text)
     if match:
@@ -78,7 +78,7 @@ def _extract_numeric_param(
     return None
 
 
-def _trim_unclosed_sentence(sentences: List[str], is_first: bool) -> List[str]:
+def _trim_unclosed_sentence(sentences: list[str], is_first: bool) -> list[str]:
     """Trims incomplete trailing sentence chunk if sentence ending punctuation is missing."""
     if not sentences:
         return sentences
@@ -101,7 +101,7 @@ def _trim_unclosed_sentence(sentences: List[str], is_first: bool) -> List[str]:
     return sentences
 
 
-def _normalize_valid_emotion(val: Any) -> Optional[str]:
+def _normalize_valid_emotion(val: Any) -> str | None:
     """Normalizes raw emotion label and verifies it belongs to VALID_EMOTIONS."""
     if not val:
         return None
@@ -136,13 +136,13 @@ class StreamingBilingualParser:
         self.emitted_japanese_len: int = 0
         self.first_sentence_emitted: bool = False
         self.is_plain_text_fallback: bool = False
-        self.tts_speed: Optional[float] = None
-        self.tts_temperature: Optional[float] = None
-        self.tts_top_k: Optional[int] = None
-        self.tts_top_p: Optional[float] = None
-        self.tts_fragment_interval: Optional[float] = None
-        self.tts_emotion: Optional[str] = None
-        self.tts_params: Dict[str, Any] = {}
+        self.tts_speed: float | None = None
+        self.tts_temperature: float | None = None
+        self.tts_top_k: int | None = None
+        self.tts_top_p: float | None = None
+        self.tts_fragment_interval: float | None = None
+        self.tts_emotion: str | None = None
+        self.tts_params: dict[str, Any] = {}
 
     def _advance_chinese(self, current_ch: str) -> str:
         """Updates extracted Chinese buffer and returns new incremental delta text."""
@@ -198,10 +198,10 @@ class StreamingBilingualParser:
 
     def get_dynamic_tts_options(
         self,
-        base_options: Optional[Dict[str, Any]] = None,
+        base_options: dict[str, Any] | None = None,
         adaptive_enabled: bool = True,
-        sentence_text: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        sentence_text: str | None = None,
+    ) -> dict[str, Any]:
         """
         Merges base session TTS options with dynamic parameters if adaptive_enabled is True.
         When adaptive_enabled is False, returns base_options without dynamic overrides.
@@ -318,7 +318,7 @@ class StreamingBilingualParser:
             if norm_emo:
                 self.emotion_extracted = norm_emo
 
-    def feed_chunk(self, chunk: str) -> Tuple[str, List[str]]:
+    def feed_chunk(self, chunk: str) -> tuple[str, list[str]]:
         """
         Feeds an incoming stream token chunk.
         Returns:
@@ -331,7 +331,7 @@ class StreamingBilingualParser:
         sanitized = self.clean_markdown_delimiters(self.buffer)
 
         new_chinese_delta = ""
-        new_sentences: List[str] = []
+        new_sentences: list[str] = []
 
         # 0. Dynamic TTS Parameter & Emotion Extraction
         self._parse_dynamic_tts_block(sanitized)
@@ -390,7 +390,7 @@ class StreamingBilingualParser:
 
         return new_chinese_delta, new_sentences
 
-    def _extract_new_ja_sentences(self, current_ja: str, is_closed: bool) -> List[str]:
+    def _extract_new_ja_sentences(self, current_ja: str, is_closed: bool) -> list[str]:
         """Splits accumulated Japanese text into sentences and drains newly confirmed ones."""
         is_first = not self.first_sentence_emitted
         all_sentences = split_japanese_sentences(current_ja, is_first_chunk=is_first)
@@ -399,7 +399,7 @@ class StreamingBilingualParser:
             all_sentences = _trim_unclosed_sentence(all_sentences, is_first)
         return self._drain_new_ja_sentences(all_sentences)
 
-    def _drain_new_ja_sentences(self, confirmed_sentences: List[str]) -> List[str]:
+    def _drain_new_ja_sentences(self, confirmed_sentences: list[str]) -> list[str]:
         """
         Advances the monotone character cursor over the confirmed-completed
         Japanese prefix and returns only the newly confirmed sentences.
@@ -430,7 +430,7 @@ class StreamingBilingualParser:
         return new_sentences
 
     @staticmethod
-    def _parse_json_payload(sanitized: str) -> Optional[Dict[str, Any]]:
+    def _parse_json_payload(sanitized: str) -> dict[str, Any] | None:
         """Attempts to parse JSON payload directly or extracts embedded JSON block."""
         try:
             # Fast path: direct JSON parse if buffer is a clean JSON object
@@ -447,7 +447,7 @@ class StreamingBilingualParser:
                     pass
         return parsed if isinstance(parsed, dict) else None
 
-    def _apply_parsed_json_dict(self, parsed: Dict[str, Any]) -> None:
+    def _apply_parsed_json_dict(self, parsed: dict[str, Any]) -> None:
         """Applies parsed JSON fields to extracted Chinese, Japanese, and TTS parameters."""
         self.chinese_extracted = parsed.get("chinese", self.chinese_extracted)
         self.japanese_extracted = parsed.get("japanese", self.japanese_extracted)
@@ -520,7 +520,7 @@ class StreamingBilingualParser:
         if lead_emo:
             self._set_lead_emotion(lead_emo)
 
-    def finalize(self) -> Tuple[str, str, List[str]]:
+    def finalize(self) -> tuple[str, str, list[str]]:
         """
         Flushes parser buffer at end of stream.
         Returns:
@@ -537,7 +537,7 @@ class StreamingBilingualParser:
         self._extract_trailing_bracketed_emotion()
         self.emotion_extracted = classify_emotion(self.chinese_extracted, self.japanese_extracted, self.emotion_extracted)
 
-        remaining_sentences: List[str] = []
+        remaining_sentences: list[str] = []
         if self.japanese_extracted:
             # Re-split the full accumulated Japanese text with the same
             # is_first_chunk parameter as feed_chunk, then drain everything
@@ -548,7 +548,7 @@ class StreamingBilingualParser:
         return self.chinese_extracted, self.japanese_extracted, remaining_sentences
 
     @classmethod
-    def parse_full_text(cls, raw_text: str) -> Tuple[str, str, "StreamingBilingualParser"]:
+    def parse_full_text(cls, raw_text: str) -> tuple[str, str, "StreamingBilingualParser"]:
         """
         Parses non-streaming bilingual completion text into (chinese, japanese, parser).
         Guarantees fallback to raw_text if extracted fields are empty.

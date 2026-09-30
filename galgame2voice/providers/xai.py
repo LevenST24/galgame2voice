@@ -2,7 +2,7 @@
 xAI Grok LLM Provider implementation for galgame2voice.
 """
 
-from typing import Any, Optional
+from typing import Any
 from galgame2voice.providers.base import BaseLLMProvider
 from galgame2voice.adapters.llm.xai_adapter import XAILLMAdapter
 
@@ -16,7 +16,7 @@ class XAIProvider(BaseLLMProvider, XAILLMAdapter):
         self,
         api_key: str,
         base_url: str = "https://api.x.ai/v1",
-        client_override: Optional[Any] = None,
+        client_override: Any | None = None,
         **kwargs: Any,
     ):
         XAILLMAdapter.__init__(

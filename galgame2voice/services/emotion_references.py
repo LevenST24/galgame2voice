@@ -6,13 +6,13 @@ Provides seamless backward compatibility for legacy callers.
 """
 
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any
 import logging
 
 logger = logging.getLogger("galgame2voice.services.emotion_references")
 
 # Emotion synonym normalizer (maps emotional keywords and Japanese/Chinese terms to canonical archetypes)
-EMOTION_SYNONYMS: Dict[str, str] = {
+EMOTION_SYNONYMS: dict[str, str] = {
     "happy": "happy",
     "cheerful": "happy",
     "joy": "happy",
@@ -76,9 +76,9 @@ EMOTION_SYNONYMS: Dict[str, str] = {
 
 # Dynamic data-driven emotion references proxy
 def _load_manifest_emotion_references(
-    character_name: Optional[str] = None,
-    char_mgr: Optional[Any] = None,
-) -> Dict[str, Dict[str, str]]:
+    character_name: str | None = None,
+    char_mgr: Any | None = None,
+) -> dict[str, dict[str, str]]:
     """
     Dynamically loads emotion references from the character package manifest.json.
     """
@@ -87,7 +87,7 @@ def _load_manifest_emotion_references(
         mgr = char_mgr or get_character_manager()
         pkg = mgr.get_character(character_name) if character_name else mgr.get_default_character()
         if pkg and pkg.manifest and pkg.manifest.emotions:
-            res: Dict[str, Dict[str, str]] = {}
+            res: dict[str, dict[str, str]] = {}
             for k, emo in pkg.manifest.emotions.items():
                 res[k] = {
                     "audio_name": Path(emo.audio).name,
@@ -117,7 +117,7 @@ class _DynamicEmotionReferences(dict):
                 self.update(data)
                 self._loaded = True
 
-    def __getitem__(self, item: str) -> Dict[str, str]:
+    def __getitem__(self, item: str) -> dict[str, str]:
         self._ensure_loaded()
         if item not in self:
             return super().get("gentle", {})
@@ -152,10 +152,10 @@ class _DynamicEmotionReferences(dict):
         return super().values()
 
 
-NATSUME_EMOTION_REFERENCES: Dict[str, Dict[str, str]] = _DynamicEmotionReferences()
+NATSUME_EMOTION_REFERENCES: dict[str, dict[str, str]] = _DynamicEmotionReferences()
 
 
-def normalize_emotion(emotion: Optional[str]) -> str:
+def normalize_emotion(emotion: str | None) -> str:
     """Normalizes an emotion string to one of the canonical archetypes."""
     if not emotion:
         return "gentle"
@@ -164,10 +164,10 @@ def normalize_emotion(emotion: Optional[str]) -> str:
 
 
 def resolve_emotion_reference(
-    character_name: Optional[str],
-    emotion: Optional[str],
-    base_dir: Optional[Path] = None,
-) -> Optional[Dict[str, str]]:
+    character_name: str | None,
+    emotion: str | None,
+    base_dir: Path | None = None,
+) -> dict[str, str] | None:
     """
     Data-driven resolution of emotion reference audio file path, prompt text, and prompt lang.
     Queries the CharacterManager for the active/named character package manifest.

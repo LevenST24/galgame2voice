@@ -5,7 +5,7 @@ emotional state transitions, and interactive easter egg voicelines.
 """
 
 import logging
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import Any
 from pathlib import Path
 
 from galgame2voice.database import crud
@@ -32,7 +32,7 @@ class AffectionService:
     }
 
     @staticmethod
-    def get_fallback_payload(emotion: str) -> Dict[str, Any]:
+    def get_fallback_payload(emotion: str) -> dict[str, Any]:
         """Returns standard neutral affection payload used when an affection update fails."""
         return {
             "score": 0,
@@ -137,10 +137,10 @@ class AffectionService:
         },
     }
 
-    def __init__(self, db_path: Optional[Union[str, Path]] = None) -> None:
+    def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = str(db_path) if db_path is not None else get_database_path()
 
-    def calculate_level(self, score: int) -> Tuple[int, str]:
+    def calculate_level(self, score: int) -> tuple[int, str]:
         """Calculates intimacy level and tier name based on total affection score."""
         try:
             score = int(score)
@@ -152,7 +152,7 @@ class AffectionService:
                 return level, tier["name"]
         return 1, self.LEVEL_TIERS[1]["name"]
 
-    def calculate_turn_points(self, user_text: str, assistant_text: str = "") -> Tuple[int, List[str]]:
+    def calculate_turn_points(self, user_text: str, assistant_text: str = "") -> tuple[int, list[str]]:
         """Calculates turn affection points and reason tags."""
         if not user_text or not isinstance(user_text, str):
             return 1, ["base_turn", "base_interaction (+1)"]
@@ -176,11 +176,11 @@ class AffectionService:
 
         return points, reasons
 
-    def calculate_interaction_points(self, user_text: str, assistant_text: str = "") -> Tuple[int, List[str]]:
+    def calculate_interaction_points(self, user_text: str, assistant_text: str = "") -> tuple[int, list[str]]:
         """Calculates affection points earned for a turn based on content analysis."""
         return self.calculate_turn_points(user_text, assistant_text)
 
-    def check_easter_egg(self, user_text: str, current_level: int = 1) -> Optional[Dict[str, Any]]:
+    def check_easter_egg(self, user_text: str, current_level: int = 1) -> dict[str, Any] | None:
         """Alias to check_easter_eggs."""
         return self.check_easter_eggs(user_text, current_level)
 
@@ -236,7 +236,7 @@ class AffectionService:
             return "gentle"
         return current_emotion or "normal"
 
-    def check_easter_eggs(self, user_text: str, current_level: int = 1) -> Optional[Dict[str, Any]]:
+    def check_easter_eggs(self, user_text: str, current_level: int = 1) -> dict[str, Any] | None:
         """
         Checks if the user input triggers a specific Galgame easter egg dialogue.
         """
@@ -256,10 +256,10 @@ class AffectionService:
     def _resolve_turn_emotion(
         self,
         current: Any,
-        explicit_emotion: Optional[str],
+        explicit_emotion: str | None,
         u_text: str,
         a_text: str,
-        triggered_egg: Optional[Dict[str, Any]],
+        triggered_egg: dict[str, Any] | None,
     ) -> str:
         """Resolves target emotion using explicit classification, dynamic classification, or easter egg triggers."""
         clean_exp = (explicit_emotion or "").strip().lower()
@@ -289,10 +289,10 @@ class AffectionService:
     def _collect_new_dialogue_ids(
         self,
         updated: Any,
-        triggered_egg: Optional[Dict[str, Any]],
-    ) -> List[str]:
+        triggered_egg: dict[str, Any] | None,
+    ) -> list[str]:
         """Collects unlocked milestone and easter egg dialogue IDs for the current affection level."""
-        new_dialogue_ids: List[str] = []
+        new_dialogue_ids: list[str] = []
         for lvl in range(1, updated.affection_level + 1):
             milestone_id = f"milestone_lv{lvl}"
             if milestone_id in self.MILESTONES and milestone_id not in updated.unlocked_dialogues:
@@ -304,7 +304,7 @@ class AffectionService:
         return new_dialogue_ids
 
     @staticmethod
-    def _normalize_user_and_character_ids(user_id: Any, character_id: Any) -> Tuple[str, int]:
+    def _normalize_user_and_character_ids(user_id: Any, character_id: Any) -> tuple[str, int]:
         """Normalizes user_id string and character_id integer with safe defaults."""
         u_id = (user_id or "").strip() or "default_user"
         try:
@@ -320,8 +320,8 @@ class AffectionService:
         user_text: str = "",
         assistant_text: str = "",
         daily_limit: int = 15,
-        explicit_emotion: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        explicit_emotion: str | None = None,
+    ) -> dict[str, Any]:
         """
         Processes a full turn of affection update:
         1. Calculate points
@@ -386,7 +386,7 @@ class AffectionService:
         self,
         user_id: str = "default_user",
         character_id: int = 1,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Returns full list of milestone and easter egg dialogues with unlock status.
         """
@@ -396,7 +396,7 @@ class AffectionService:
             aff = await crud.get_or_create_character_affection(conn, u_id, char_id)
 
         unlocked_set = set(aff.unlocked_dialogues)
-        gallery: List[Dict[str, Any]] = []
+        gallery: list[dict[str, Any]] = []
 
         # 1. Add Milestones
         for m_id, m in self.MILESTONES.items():

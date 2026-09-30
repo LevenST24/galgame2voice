@@ -3,7 +3,7 @@ Moonshot / Kimi LLM Adapter for galgame2voice.
 Connects to Moonshot AI Open Platform API.
 """
 
-from typing import Any, Optional
+from typing import Any
 from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 
 
@@ -14,7 +14,7 @@ class MoonshotLLMAdapter(OpenAICompatibleLLMAdapter):
         self,
         api_key: str,
         base_url: str = "https://api.moonshot.cn/v1",
-        client_override: Optional[Any] = None,
+        client_override: Any | None = None,
         **kwargs: Any,
     ):
         super().__init__(

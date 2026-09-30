@@ -8,7 +8,7 @@ import asyncio
 import logging
 import uuid
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, Optional, Tuple, Union
+from typing import Any, AsyncGenerator
 
 from galgame2voice.config import get_settings
 from galgame2voice.utils.path_guard import resolve_existing_audio_path
@@ -55,7 +55,7 @@ def clear_tts_profile_cache() -> None:
     _AUDIO_SPEC_CACHE.clear()
 
 
-async def async_get_audio_duration(path: Union[str, Path, None]) -> Optional[float]:
+async def async_get_audio_duration(path: str | Path | None) -> float | None:
     """
     Safely inspects and measures reference audio duration asynchronously.
     Returns float duration, or None if file is missing, unreadable, or invalid.
@@ -88,10 +88,10 @@ class TtsService:
 
     def __init__(
         self,
-        client: Optional[GptSovitsClient] = None,
-        audio_dir: Optional[Union[str, Path]] = None,
-        cache_manager: Optional[TtsCacheManager] = None,
-        db_path: Optional[str] = None,
+        client: GptSovitsClient | None = None,
+        audio_dir: str | Path | None = None,
+        cache_manager: TtsCacheManager | None = None,
+        db_path: str | None = None,
     ):
         settings = get_settings()
         self.client = client or get_gpt_sovits_client()
@@ -104,7 +104,7 @@ class TtsService:
         )
 
     @staticmethod
-    def get_audio_duration(path: Union[str, Path, None]) -> Optional[float]:
+    def get_audio_duration(path: str | Path | None) -> float | None:
         """
         Safely inspects and measures reference audio duration in seconds.
         Returns float duration, or None if file is missing, unreadable, or invalid.
@@ -122,7 +122,7 @@ class TtsService:
             return None
 
     @staticmethod
-    async def async_get_audio_duration(path: Union[str, Path, None]) -> Optional[float]:
+    async def async_get_audio_duration(path: str | Path | None) -> float | None:
         """
         Asynchronously measures reference audio duration in seconds.
         Delegates to AudioSpecCache to keep the main asyncio event loop unblocked.
@@ -131,10 +131,10 @@ class TtsService:
 
     async def _resolve_fallback_ref_audio(
         self,
-        opts: Dict[str, Any],
-        fallback_ref_audio: Optional[str],
-        fallback_prompt_text: Optional[str],
-        fallback_prompt_lang: Optional[str],
+        opts: dict[str, Any],
+        fallback_ref_audio: str | None,
+        fallback_prompt_text: str | None,
+        fallback_prompt_lang: str | None,
         has_explicit_voice: bool,
     ) -> None:
         """Validates user-provided reference audio or falls back to profile default reference."""
@@ -168,7 +168,7 @@ class TtsService:
                 opts.setdefault("prompt_text", fallback_prompt_text)
                 opts.setdefault("prompt_lang", fallback_prompt_lang)
 
-    async def _populate_voice_profile_opts(self, opts: Dict[str, Any]) -> Dict[str, Any]:
+    async def _populate_voice_profile_opts(self, opts: dict[str, Any]) -> dict[str, Any]:
         """Auto-populates active voice profile parameters, applying dynamic emotion reference audios if available."""
         if opts.get("_pre_resolved"):
             return opts
@@ -226,7 +226,7 @@ class TtsService:
             logger.debug("Could not auto-populate active profile options in TtsService: %s", exc)
         return opts
 
-    def _sanitize_dynamic_voice_options(self, opts: Dict[str, Any], text: Optional[str] = None) -> Dict[str, Any]:
+    def _sanitize_dynamic_voice_options(self, opts: dict[str, Any], text: str | None = None) -> dict[str, Any]:
         """Safely clamps and enriches speech prosody parameters (speed, temperature, top_k, top_p, fragment_interval, batch_size)."""
         if opts.get("ai_adaptive_voice", opts.get("aiAdaptiveVoice", False)):
             emo = opts.get("emotion")
@@ -270,7 +270,7 @@ class TtsService:
     async def synthesize(
         self,
         text: str,
-        options: Optional[Dict[str, Any]] = None,
+        options: dict[str, Any] | None = None,
         use_cache: bool = True,
     ) -> bytes:
         """
@@ -331,7 +331,7 @@ class TtsService:
         self,
         audio_bytes: bytes,
         filename_prefix: str,
-    ) -> Tuple[str, Path, int]:
+    ) -> tuple[str, Path, int]:
         """Writes audio bytes to a new file in audio_dir and returns (url_path, local_file_path, byte_count)."""
         filename = f"{filename_prefix}_{uuid.uuid4().hex[:12]}.wav"
         file_path = self.audio_dir / filename
@@ -342,10 +342,10 @@ class TtsService:
     async def synthesize_to_file(
         self,
         text: str,
-        options: Optional[Dict[str, Any]] = None,
+        options: dict[str, Any] | None = None,
         filename_prefix: str = "voice",
         use_cache: bool = True,
-    ) -> Tuple[str, Path, int]:
+    ) -> tuple[str, Path, int]:
         """
         Synthesizes text and saves or retrieves the resulting WAV file.
         Returns (url_path, local_file_path, byte_count).
@@ -370,7 +370,7 @@ class TtsService:
             task_id = f"{gen_id}_{cache_key[:8]}_{uuid.uuid4().hex[:4]}" if gen_id else None
 
             # Synthesize exactly once on miss, coordinated via scheduler + single-flight
-            async def _do_synth_file() -> Tuple[str, Path, int]:
+            async def _do_synth_file() -> tuple[str, Path, int]:
                 audio_b = await self.client.synthesize(text, options=opts)
                 if audio_b and cache_key:
                     try:
@@ -394,7 +394,7 @@ class TtsService:
             )
 
         # Ephemeral non-cached file write (when use_cache=False)
-        async def _do_ephemeral_file() -> Tuple[str, Path, int]:
+        async def _do_ephemeral_file() -> tuple[str, Path, int]:
             audio_bytes = await self.client.synthesize(text, options=opts)
             return await self._write_ephemeral_audio_file(audio_bytes, filename_prefix)
 
@@ -407,7 +407,7 @@ class TtsService:
     async def stream_tts(
         self,
         text: str,
-        options: Optional[Dict[str, Any]] = None,
+        options: dict[str, Any] | None = None,
         chunk_size: int = 4096,
         use_cache: bool = True,
     ) -> AsyncGenerator[bytes, None]:

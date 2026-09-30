@@ -13,11 +13,11 @@ import sys
 import tempfile
 import wave
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable
 
 logger = logging.getLogger("galgame2voice.utils.audio_converter")
 
-_cached_ffmpeg_bin: Optional[str] = None
+_cached_ffmpeg_bin: str | None = None
 
 
 def reset_ffmpeg_cache() -> None:
@@ -26,7 +26,7 @@ def reset_ffmpeg_cache() -> None:
     _cached_ffmpeg_bin = None
 
 
-def _find_ffmpeg_in_python_env(exe_name: str, scripts_dir: str) -> Optional[str]:
+def _find_ffmpeg_in_python_env(exe_name: str, scripts_dir: str) -> str | None:
     """Checks virtualenv and base Python scripts directories for ffmpeg binary."""
     for prefix in (sys.prefix, sys.base_prefix):
         candidate = Path(prefix) / scripts_dir / exe_name
@@ -35,7 +35,7 @@ def _find_ffmpeg_in_python_env(exe_name: str, scripts_dir: str) -> Optional[str]
     return None
 
 
-def _find_ffmpeg_in_project_dirs(exe_name: str) -> Optional[str]:
+def _find_ffmpeg_in_project_dirs(exe_name: str) -> str | None:
     """Checks project root and bundled tool directories for ffmpeg binary."""
     try:
         from galgame2voice.config import get_settings
@@ -50,7 +50,7 @@ def _find_ffmpeg_in_project_dirs(exe_name: str) -> Optional[str]:
     return None
 
 
-def find_ffmpeg(custom_path: Optional[str] = None) -> Optional[str]:
+def find_ffmpeg(custom_path: str | None = None) -> str | None:
     """
     Discovers and caches the ffmpeg executable location.
     Checks:
@@ -108,7 +108,7 @@ def find_ffmpeg(custom_path: Optional[str] = None) -> Optional[str]:
     return None
 
 
-def is_ffmpeg_available(ffmpeg_path: Optional[str] = None) -> bool:
+def is_ffmpeg_available(ffmpeg_path: str | None = None) -> bool:
     """Checks if ffmpeg executable is installed and available."""
     return find_ffmpeg(ffmpeg_path) is not None
 
@@ -210,7 +210,7 @@ async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
         raise RuntimeError(f"ffmpeg conversion failed (code {proc.returncode}): {err_msg[:200]}")
 
 
-def _require_ffmpeg_bin(ffmpeg_path: Optional[str] = None) -> str:
+def _require_ffmpeg_bin(ffmpeg_path: str | None = None) -> str:
     """Discovers ffmpeg binary or raises RuntimeError with an informative message."""
     ffmpeg_bin = find_ffmpeg(ffmpeg_path)
     if not ffmpeg_bin:
@@ -221,7 +221,7 @@ def _require_ffmpeg_bin(ffmpeg_path: Optional[str] = None) -> str:
     return ffmpeg_bin
 
 
-async def _cleanup_temp_paths(*paths: Optional[Path]) -> None:
+async def _cleanup_temp_paths(*paths: Path | None) -> None:
     """Unlinks temporary paths with retry logic to handle file locking on Windows/Linux."""
     for p in paths:
         if p is not None:
@@ -238,16 +238,16 @@ async def _run_ffmpeg_transcode(
     input_bytes: bytes,
     in_suffix: str,
     out_suffix: str,
-    build_args: Callable[[str, str], List[str]],
+    build_args: Callable[[str, str], list[str]],
     expected_header: bytes,
     header_error: str,
-    ffmpeg_path: Optional[str] = None,
+    ffmpeg_path: str | None = None,
     timeout: float = 30.0,
 ) -> bytes:
     """Executes ffmpeg transcode across temporary files with validation and auto-cleanup."""
     ffmpeg_bin = _require_ffmpeg_bin(ffmpeg_path)
-    in_path: Optional[Path] = None
-    out_path: Optional[Path] = None
+    in_path: Path | None = None
+    out_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(suffix=in_suffix, delete=False) as in_file:
             in_path = Path(in_file.name)
@@ -271,7 +271,7 @@ async def convert_ogg_to_wav(
     ogg_bytes: bytes,
     sample_rate: int = 16000,
     channels: int = 1,
-    ffmpeg_path: Optional[str] = None,
+    ffmpeg_path: str | None = None,
     timeout: float = 30.0,
 ) -> bytes:
     """
@@ -314,7 +314,7 @@ async def convert_ogg_to_wav(
 async def convert_wav_to_ogg(
     wav_bytes: bytes,
     bitrate: str = "64k",
-    ffmpeg_path: Optional[str] = None,
+    ffmpeg_path: str | None = None,
     timeout: float = 30.0,
 ) -> bytes:
     """

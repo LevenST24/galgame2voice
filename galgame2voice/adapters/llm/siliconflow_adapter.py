@@ -3,7 +3,7 @@ SiliconFlow LLM Adapter for galgame2voice.
 Connects to SiliconFlow API for hosting open-source models.
 """
 
-from typing import Any, Optional
+from typing import Any
 from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 
 
@@ -14,7 +14,7 @@ class SiliconFlowLLMAdapter(OpenAICompatibleLLMAdapter):
         self,
         api_key: str,
         base_url: str = "https://api.siliconflow.cn/v1",
-        client_override: Optional[Any] = None,
+        client_override: Any | None = None,
         **kwargs: Any,
     ):
         super().__init__(

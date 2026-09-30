@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 import zipfile
 
 from fastapi import APIRouter, Query
@@ -41,7 +40,7 @@ _DEFAULT_ALLOWED_REMOTES = (
 )
 
 
-def _get_allowed_remotes() -> List[str]:
+def _get_allowed_remotes() -> list[str]:
     raw = os.getenv("GALGAME2VOICE_UPDATE_ALLOWED_REMOTES", "").strip()
     if raw:
         return [entry.strip() for entry in raw.split(",") if entry.strip()]
@@ -53,7 +52,7 @@ def _is_allowed_remote(url: str) -> bool:
     return any(normalized == allowed.rstrip("/") for allowed in _get_allowed_remotes())
 
 
-def _verify_remote_url_allowed(project_root: Path) -> Optional[str]:
+def _verify_remote_url_allowed(project_root: Path) -> str | None:
     """Returns an error message if `origin` is not an allowed update source, else None."""
     rc, remote_url, err = _run_git_cmd(["remote", "get-url", "origin"], cwd=project_root)
     if rc != 0 or not remote_url:
@@ -83,11 +82,11 @@ class SystemVersionResponse(BaseModel):
     has_update: bool = Field(default=False, description="Whether newer commits exist on remote")
     behind_count: int = Field(default=0, description="Number of commits local HEAD is behind remote")
     remote_url: str = Field(default="", description="Configured git remote repository URL")
-    commits_log: List[str] = Field(default_factory=list, description="List of pending update commit descriptions")
+    commits_log: list[str] = Field(default_factory=list, description="List of pending update commit descriptions")
     current_branch: str = Field(default="main", description="Current git branch name")
-    commit_date: Optional[str] = Field(default=None, description="Current commit ISO date string")
-    commit_message: Optional[str] = Field(default=None, description="Current commit subject message")
-    error: Optional[str] = Field(default=None, description="Error or diagnostic detail if remote check failed")
+    commit_date: str | None = Field(default=None, description="Current commit ISO date string")
+    commit_message: str | None = Field(default=None, description="Current commit subject message")
+    error: str | None = Field(default=None, description="Error or diagnostic detail if remote check failed")
 
 
 class SystemUpdateRequest(BaseModel):
@@ -114,7 +113,7 @@ class SystemUpdateResponse(BaseModel):
     output: str = Field(..., description="Detailed execution log and status messages")
     current_version: str = Field(..., description="Commit short hash after update")
     previous_version: str = Field(..., description="Commit short hash before update")
-    error: Optional[str] = Field(default=None, description="Error detail if operation failed")
+    error: str | None = Field(default=None, description="Error detail if operation failed")
 
 
 # ============================================================================
@@ -122,11 +121,11 @@ class SystemUpdateResponse(BaseModel):
 # ============================================================================
 
 def _run_git_cmd(
-    args: List[str],
+    args: list[str],
     cwd: Path,
     timeout: float = 30.0,
-    env_overrides: Optional[Dict[str, str]] = None,
-) -> Tuple[int, str, str]:
+    env_overrides: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
     """
     Executes a git command safely with non-interactive terminal flags
     and strict timeout guard.
@@ -161,7 +160,7 @@ def _run_git_cmd(
         return -1, "", f"执行 Git 命令异常: {sanitize_error_detail(exc)}"
 
 
-def _rebuild_frontend_sync(project_root: Path, timeout: float = 120.0) -> Tuple[bool, str]:
+def _rebuild_frontend_sync(project_root: Path, timeout: float = 120.0) -> tuple[bool, str]:
     """
     Executes `npm run deploy` inside the frontend/ directory
     to compile assets and deploy to galgame2voice/static/.
@@ -205,7 +204,7 @@ def _rebuild_frontend_sync(project_root: Path, timeout: float = 120.0) -> Tuple[
         return False, f"前端构建发生异常: {sanitize_error_detail(exc)}"
 
 
-def _get_remote_and_branch(project_root: Path) -> Tuple[str, str]:
+def _get_remote_and_branch(project_root: Path) -> tuple[str, str]:
     """
     Determines the remote name (default 'origin') and remote branch (default 'main').
     Queries the upstream tracking branch of current HEAD via @{u}.
@@ -222,7 +221,7 @@ def _get_remote_and_branch(project_root: Path) -> Tuple[str, str]:
     return remote_name, "main"
 
 
-def _inspect_local_git_repo(project_root: Path) -> Optional[Tuple[str, str, Optional[str], Optional[str], str]]:
+def _inspect_local_git_repo(project_root: Path) -> tuple[str, str, str | None, str | None, str] | None:
     """Validates git work tree and retrieves (cur_short, branch, commit_date, commit_msg, remote_url)."""
     rc, out, _ = _run_git_cmd(["rev-parse", "--is-inside-work-tree"], cwd=project_root, timeout=5.0)
     if rc != 0 or out != "true":
@@ -253,7 +252,7 @@ def _query_remote_git_status(
     project_root: Path,
     cur_short: str,
     remote_url: str,
-) -> Tuple[str, bool, int, List[str], Optional[str]]:
+) -> tuple[str, bool, int, list[str], str | None]:
     """Fetches remote tracking ref and queries (remote_short, has_update, behind_count, commits_log, error)."""
     remote_name, remote_branch = _get_remote_and_branch(project_root)
 
@@ -292,7 +291,7 @@ def _query_remote_git_status(
     behind_count = int(count_str) if (count_str and count_str.isdigit()) else 0
     has_update = behind_count > 0
 
-    commits_log: List[str] = []
+    commits_log: list[str] = []
     if has_update:
         rc, log_out, _ = _run_git_cmd(
             ["log", f"HEAD..{remote_name}/{remote_branch}", "--pretty=format:%h %s (%cd)", "--date=short", "-n", "20"],
@@ -360,7 +359,7 @@ def _check_version_sync(project_root: Path, check_remote: bool = True) -> System
     )
 
 
-def _create_pre_update_backup(project_root: Path, modified_files: List[str]) -> Optional[Path]:
+def _create_pre_update_backup(project_root: Path, modified_files: list[str]) -> Path | None:
     """Zips uncommitted/untracked files to data/backups before git operations to prevent any data loss."""
     try:
         backup_dir = project_root / "data" / "backups"
@@ -383,7 +382,7 @@ def _create_pre_update_backup(project_root: Path, modified_files: List[str]) -> 
         return None
 
 
-def _verify_update_preflight(project_root: Path) -> Tuple[Optional[str], Optional[SystemUpdateResponse]]:
+def _verify_update_preflight(project_root: Path) -> tuple[str | None, SystemUpdateResponse | None]:
     """Checks git repo validity, allowed remote source, and detached HEAD state."""
     rc, out, _ = _run_git_cmd(["rev-parse", "--is-inside-work-tree"], cwd=project_root, timeout=5.0)
     if rc != 0 or out != "true":
@@ -434,14 +433,14 @@ def _handle_uncommitted_modifications(
     before_short: str,
     stash_changes: bool,
     discard_local_changes: bool,
-) -> Optional[SystemUpdateResponse]:
+) -> SystemUpdateResponse | None:
     """Inspects porcelain status and safely handles local uncommitted modifications."""
     rc, status_out, _ = _run_git_cmd(["status", "--porcelain"], cwd=project_root)
     if not status_out.strip():
         return None
 
     status_lines = [line.strip() for line in status_out.splitlines() if line.strip()]
-    modified_files: List[str] = []
+    modified_files: list[str] = []
     for line in status_lines:
         content = line[2:].strip()
         parts = content.split(" -> ")
@@ -492,7 +491,7 @@ def _execute_update_pull_and_build(
     project_root: Path,
     before_short: str,
     force_rebuild_frontend: bool,
-) -> Tuple[SystemUpdateResponse, List[str]]:
+) -> tuple[SystemUpdateResponse, list[str]]:
     """Executes git pull, inspects changed files, and runs conditional frontend rebuild."""
     _, before_full, _ = _run_git_cmd(["rev-parse", "HEAD"], cwd=project_root)
     remote_name, remote_branch = _get_remote_and_branch(project_root)
@@ -520,7 +519,7 @@ def _execute_update_pull_and_build(
 
     output_lines = [f"[Git Pull 成功] {pull_out}"]
 
-    changed_files: List[str] = []
+    changed_files: list[str] = []
     if before_full and after_full and before_full != after_full:
         _, diff_out, _ = _run_git_cmd(["diff", "--name-only", before_full, after_full], cwd=project_root)
         changed_files = [line.strip() for line in diff_out.splitlines() if line.strip()]
@@ -570,7 +569,7 @@ def _apply_update_sync(
     force_rebuild_frontend: bool = False,
     stash_changes: bool = False,
     discard_local_changes: bool = False,
-) -> Tuple[SystemUpdateResponse, List[str]]:
+) -> tuple[SystemUpdateResponse, list[str]]:
     """
     Synchronous git pull execution with pre-flight safety validations
     (detached HEAD, uncommitted modifications).
@@ -632,7 +631,7 @@ async def check_system_update() -> SystemVersionResponse:
     summary="Safely Pull and Apply Updates from GitHub",
     description="Pulls latest commits from origin/main, validates repo safety, rebuilds frontend if needed, and syncs characters.",
 )
-async def apply_system_update(payload: Optional[SystemUpdateRequest] = None) -> SystemUpdateResponse:
+async def apply_system_update(payload: SystemUpdateRequest | None = None) -> SystemUpdateResponse:
     """Executes safe pull from GitHub, rebuilds frontend, and syncs characters with SQLite DB."""
     settings = get_settings()
     force_rebuild = payload.force_rebuild_frontend if payload else False

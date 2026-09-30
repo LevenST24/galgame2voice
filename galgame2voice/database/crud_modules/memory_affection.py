@@ -5,7 +5,7 @@ User memory and character affection CRUD operations for SQLite persistence in ga
 from datetime import date
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import aiosqlite
 
@@ -72,7 +72,7 @@ async def create_memory(conn: aiosqlite.Connection, memory: UserMemoryCreate) ->
     return UserMemoryResponse(**dict(row))
 
 
-async def get_memory(conn: aiosqlite.Connection, memory_id: int) -> Optional[UserMemoryResponse]:
+async def get_memory(conn: aiosqlite.Connection, memory_id: int) -> UserMemoryResponse | None:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM user_memories WHERE id = ?;", (memory_id,))
     row = await cursor.fetchone()
@@ -84,13 +84,13 @@ async def get_memory(conn: aiosqlite.Connection, memory_id: int) -> Optional[Use
 async def list_memories(
     conn: aiosqlite.Connection,
     user_id: str = "default_user",
-    character_id: Optional[int] = None,
-    category: Optional[str] = None,
+    character_id: int | None = None,
+    category: str | None = None,
     limit: int = 100
-) -> List[UserMemoryResponse]:
+) -> list[UserMemoryResponse]:
     conn.row_factory = aiosqlite.Row
     conditions = ["user_id = ?"]
-    params: List[Any] = [user_id]
+    params: list[Any] = [user_id]
 
     if character_id is not None:
         conditions.append("(character_id = ? OR character_id IS NULL)")
@@ -113,13 +113,13 @@ async def update_memory(
     conn: aiosqlite.Connection,
     memory_id: int,
     updates: UserMemoryUpdate
-) -> Optional[UserMemoryResponse]:
+) -> UserMemoryResponse | None:
     current = await get_memory(conn, memory_id)
     if not current:
         return None
 
     fields = []
-    values: List[Any] = []
+    values: list[Any] = []
     up_dict = updates.model_dump(exclude_unset=True)
 
     for k, v in up_dict.items():
@@ -146,10 +146,10 @@ async def delete_memory(conn: aiosqlite.Connection, memory_id: int) -> bool:
 async def clear_memories(
     conn: aiosqlite.Connection,
     user_id: str = "default_user",
-    character_id: Optional[int] = None
+    character_id: int | None = None
 ) -> int:
     conditions = ["user_id = ?"]
-    params: List[Any] = [user_id]
+    params: list[Any] = [user_id]
     if character_id is not None:
         conditions.append("character_id = ?")
         params.append(character_id)
@@ -160,7 +160,7 @@ async def clear_memories(
     return cursor.rowcount
 
 
-async def upsert_memory(conn: aiosqlite.Connection, memory: UserMemoryCreate) -> Optional[UserMemoryResponse]:
+async def upsert_memory(conn: aiosqlite.Connection, memory: UserMemoryCreate) -> UserMemoryResponse | None:
     conn.row_factory = aiosqlite.Row
     character_id = memory.character_id if memory.character_id is not None else 1
     async with immediate_transaction(conn):
@@ -199,7 +199,7 @@ async def record_memory_recall(conn: aiosqlite.Connection, memory_id: int) -> No
         """, (memory_id,))
 
 
-async def record_memory_recall_batch(conn: aiosqlite.Connection, memory_ids: List[int]) -> None:
+async def record_memory_recall_batch(conn: aiosqlite.Connection, memory_ids: list[int]) -> None:
     """Records recall for multiple memories in a single transaction."""
     ids = list(dict.fromkeys(memory_ids))
     if not ids:
@@ -212,7 +212,7 @@ async def record_memory_recall_batch(conn: aiosqlite.Connection, memory_ids: Lis
         """, [(mid,) for mid in ids])
 
 
-def calculate_affection_level(score: int) -> Tuple[int, str]:
+def calculate_affection_level(score: int) -> tuple[int, str]:
     """Calculates intimacy tier (1-5) and Chinese tier name from 0-100 score."""
     clamped = max(0, min(100, score))
     if clamped >= 80:
@@ -227,7 +227,7 @@ def calculate_affection_level(score: int) -> Tuple[int, str]:
         return 1, "初识/生疏"
 
 
-def _format_affection_response(row_dict: Dict[str, Any]) -> CharacterAffectionResponse:
+def _format_affection_response(row_dict: dict[str, Any]) -> CharacterAffectionResponse:
     d = dict(row_dict)
     raw_unlocked = d.get("unlocked_dialogues", "[]")
     if isinstance(raw_unlocked, str):
@@ -292,8 +292,8 @@ async def get_or_create_character_affection(
 async def get_user_affections_for_profiles(
     conn: aiosqlite.Connection,
     user_id: str = "default_user",
-    profile_ids: Optional[List[int]] = None,
-) -> Dict[int, CharacterAffectionResponse]:
+    profile_ids: list[int] | None = None,
+) -> dict[int, CharacterAffectionResponse]:
     """
     Fetches character affections for multiple profiles in a single batched query,
     preserving get-or-create semantics per profile.
@@ -307,7 +307,7 @@ async def get_user_affections_for_profiles(
         SELECT * FROM character_affection WHERE user_id = ? AND character_id IN ({placeholders});
     """, [user_id, *profile_ids])
     rows = await cursor.fetchall()
-    result_map: Dict[int, CharacterAffectionResponse] = {
+    result_map: dict[int, CharacterAffectionResponse] = {
         row["character_id"]: _format_affection_response(dict(row))
         for row in rows
     }
@@ -337,7 +337,7 @@ async def get_character_affection(
     conn: aiosqlite.Connection,
     user_id: str = "default_user",
     character_id: int = 1
-) -> Optional[CharacterAffectionResponse]:
+) -> CharacterAffectionResponse | None:
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("""
         SELECT * FROM character_affection WHERE user_id = ? AND character_id = ?;
@@ -352,14 +352,14 @@ async def update_character_affection(
     conn: aiosqlite.Connection,
     user_id: str = "default_user",
     character_id: int = 1,
-    updates: Optional[CharacterAffectionUpdate] = None
-) -> Optional[CharacterAffectionResponse]:
+    updates: CharacterAffectionUpdate | None = None
+) -> CharacterAffectionResponse | None:
     current = await get_or_create_character_affection(conn, user_id, character_id)
     if not updates:
         return current
 
     fields = []
-    values: List[Any] = []
+    values: list[Any] = []
     up_dict = updates.model_dump(exclude_unset=True)
 
     if "affection_score" in up_dict and up_dict["affection_score"] is not None:
@@ -413,8 +413,8 @@ async def unlock_character_dialogues(
     conn: aiosqlite.Connection,
     user_id: str,
     character_id: int,
-    dialogue_ids_to_add: List[str],
-) -> List[str]:
+    dialogue_ids_to_add: list[str],
+) -> list[str]:
     """
     Atomically appends new dialogue IDs to unlocked_dialogues under an immediate transaction.
     Guarantees no lost updates or race conditions when concurrent requests unlock dialogues.
@@ -461,10 +461,10 @@ async def increment_affection(
     user_id: str,
     character_id: int,
     delta_points: int,
-    emotion: Optional[str] = None,
+    emotion: str | None = None,
     daily_limit: int = 15,
-    today_date_str: Optional[str] = None
-) -> Tuple[CharacterAffectionResponse, int, bool]:
+    today_date_str: str | None = None
+) -> tuple[CharacterAffectionResponse, int, bool]:
     """
     Increments affection with daily cap checking atomically in a single transaction.
     Returns (updated_affection, actual_points_gained, did_level_up).

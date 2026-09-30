@@ -13,7 +13,7 @@ Provides:
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -44,7 +44,7 @@ SLICING_METHODS = {
     DEFAULT_SPLIT_METHOD: "Slice by punctuation / 按标点符号切",
 }
 
-TTS_PRESETS: Dict[str, Dict[str, Any]] = {
+TTS_PRESETS: dict[str, dict[str, Any]] = {
     "high_quality": {
         "name": "High Quality",
         "speed": 0.9,
@@ -121,35 +121,35 @@ class ChatTtsOptions(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    speed_factor: Optional[float] = Field(default=None, ge=0.1, le=3.0)
-    speed: Optional[float] = Field(default=None, ge=0.1, le=3.0)
-    top_k: Optional[int] = Field(default=None, ge=1, le=100)
-    top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-    temp: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-    batch_size: Optional[int] = Field(default=None, ge=1, le=16)
-    fragment_interval: Optional[float] = Field(default=None, ge=0.0, le=5.0)
-    seed: Optional[int] = Field(default=None, ge=-1, le=2**31 - 1)
-    text_lang: Optional[str] = Field(default=None, max_length=32)
-    prompt_lang: Optional[str] = Field(default=None, max_length=32)
-    text_language: Optional[str] = Field(default=None, max_length=32)
-    prompt_language: Optional[str] = Field(default=None, max_length=32)
-    refer_language: Optional[str] = Field(default=None, max_length=32)
-    text_split_method: Optional[str] = Field(default=None, max_length=64)
-    how_to_cut: Optional[str] = Field(default=None, max_length=64)
-    cut_option: Optional[str] = Field(default=None, max_length=64)
-    ref_audio_path: Optional[str] = Field(default=None, max_length=512)
-    refer_audio_path: Optional[str] = Field(default=None, max_length=512)
-    prompt_text: Optional[str] = Field(default=None, max_length=500)
-    refer_text: Optional[str] = Field(default=None, max_length=500)
-    emotion: Optional[str] = Field(default=None, max_length=64)
-    preset: Optional[str] = Field(default=None, max_length=64)
-    ai_adaptive_voice: Optional[bool] = None
-    aiAdaptiveVoice: Optional[bool] = None
-    voice_profile_id: Optional[int] = Field(default=None, ge=1, le=100000)
+    speed_factor: float | None = Field(default=None, ge=0.1, le=3.0)
+    speed: float | None = Field(default=None, ge=0.1, le=3.0)
+    top_k: int | None = Field(default=None, ge=1, le=100)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    temp: float | None = Field(default=None, ge=0.0, le=2.0)
+    batch_size: int | None = Field(default=None, ge=1, le=16)
+    fragment_interval: float | None = Field(default=None, ge=0.0, le=5.0)
+    seed: int | None = Field(default=None, ge=-1, le=2**31 - 1)
+    text_lang: str | None = Field(default=None, max_length=32)
+    prompt_lang: str | None = Field(default=None, max_length=32)
+    text_language: str | None = Field(default=None, max_length=32)
+    prompt_language: str | None = Field(default=None, max_length=32)
+    refer_language: str | None = Field(default=None, max_length=32)
+    text_split_method: str | None = Field(default=None, max_length=64)
+    how_to_cut: str | None = Field(default=None, max_length=64)
+    cut_option: str | None = Field(default=None, max_length=64)
+    ref_audio_path: str | None = Field(default=None, max_length=512)
+    refer_audio_path: str | None = Field(default=None, max_length=512)
+    prompt_text: str | None = Field(default=None, max_length=500)
+    refer_text: str | None = Field(default=None, max_length=500)
+    emotion: str | None = Field(default=None, max_length=64)
+    preset: str | None = Field(default=None, max_length=64)
+    ai_adaptive_voice: bool | None = None
+    aiAdaptiveVoice: bool | None = None
+    voice_profile_id: int | None = Field(default=None, ge=1, le=100000)
 
 
-def validate_user_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def validate_user_tts_options(options: dict[str, Any] | None = None) -> dict[str, Any]:
     """
     Validates untrusted TTS options at the API boundary.
     Enforces extra="forbid" behavior, limits parameter counts, and raises ValueError
@@ -191,7 +191,7 @@ def validate_user_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[
     return options
 
 
-def resolve_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def resolve_tts_options(options: dict[str, Any] | None = None) -> dict[str, Any]:
     """
     Merges preset defaults with user-supplied TTS inference options.
     Normalizes parameter keys to official GPT-SoVITS api_v2.py format.

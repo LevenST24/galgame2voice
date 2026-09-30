@@ -13,7 +13,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -56,7 +56,7 @@ async def get_effective_sovits_url() -> str:
 # Directory metrics are cached: the settings console polls every few seconds,
 # and scanning thousands of cache files each time would freeze the event loop.
 _DIR_METRICS_TTL_SECONDS = 15.0
-_dir_metrics_cache: Dict[str, Tuple[float, Tuple[int, float]]] = {}
+_dir_metrics_cache: dict[str, tuple[float, tuple[int, float]]] = {}
 
 
 class HealthResponse(BaseModel):
@@ -83,7 +83,7 @@ class AppTelemetry(BaseModel):
     start_time: str
     python_version: str
     pid: int
-    memory_usage_mb: Optional[float] = None
+    memory_usage_mb: float | None = None
 
 
 class DatabaseTelemetry(BaseModel):
@@ -97,8 +97,8 @@ class GptSovitsTelemetry(BaseModel):
     """GPT-SoVITS backend reachability telemetry."""
     status: str  # "reachable" | "unreachable"
     base_url: str
-    latency_ms: Optional[float] = None
-    error: Optional[str] = None
+    latency_ms: float | None = None
+    error: str | None = None
 
 
 class StorageTelemetry(BaseModel):
@@ -121,8 +121,8 @@ class HardwareTelemetry(BaseModel):
     fp32_forced: bool
     inference_precision: str = "FP32"
     configured_precision: str = "auto"
-    system_memory_gb: Optional[float] = None
-    system_memory_avail_gb: Optional[float] = None
+    system_memory_gb: float | None = None
+    system_memory_avail_gb: float | None = None
 
 
 class SystemStatusResponse(BaseModel):
@@ -205,7 +205,7 @@ async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
         )
 
 
-def _scan_dir_sync(directory: Path) -> Tuple[int, float]:
+def _scan_dir_sync(directory: Path) -> tuple[int, float]:
     """Blocking recursive file count + size scan (runs in a worker thread)."""
     if not directory.exists() or not directory.is_dir():
         return 0, 0.0
@@ -224,7 +224,7 @@ def _scan_dir_sync(directory: Path) -> Tuple[int, float]:
     return count, round(total_bytes / (1024 * 1024), 2)
 
 
-async def _get_dir_metrics_cached(directory: Path) -> Tuple[int, float]:
+async def _get_dir_metrics_cached(directory: Path) -> tuple[int, float]:
     """TTL-cached directory metrics computed off the event loop."""
     key = str(directory)
     now = time.monotonic()
@@ -239,12 +239,12 @@ async def _get_dir_metrics_cached(directory: Path) -> Tuple[int, float]:
 
 
 # Backward-compatible sync alias (kept for existing tooling/tests).
-def _get_dir_metrics(directory: Path) -> Tuple[int, float]:
+def _get_dir_metrics(directory: Path) -> tuple[int, float]:
     """Synchronous directory metrics — blocking, prefer _get_dir_metrics_cached."""
     return _scan_dir_sync(directory)
 
 
-def _get_process_memory_mb() -> Optional[float]:
+def _get_process_memory_mb() -> float | None:
     """Retrieves RSS memory usage in MB using psutil if available."""
     try:
         import psutil
@@ -288,10 +288,10 @@ async def legacy_status(request: Request) -> LegacyStatusResponse:
 
 
 _GPU_METRICS_TTL_SECONDS = 60.0
-_gpu_telemetry_cache: Optional[Tuple[float, Tuple[bool, str]]] = None
+_gpu_telemetry_cache: tuple[float, tuple[bool, str]] | None = None
 
 
-def _get_gpu_telemetry_cached() -> Tuple[bool, str]:
+def _get_gpu_telemetry_cached() -> tuple[bool, str]:
     """TTL-cached static GPU capability to prevent blocking subprocess spawning on frequent status polls."""
     global _gpu_telemetry_cache
     now = time.monotonic()
@@ -460,7 +460,7 @@ async def system_status(request: Request) -> SystemStatusResponse:
 
 class RestartSovitsPayload(BaseModel):
     """Optional payload for restarting GPT-SoVITS subprocess with explicit precision."""
-    precision: Optional[str] = Field(
+    precision: str | None = Field(
         default=None,
         description="Optional precision override: 'fp16', 'fp32', or 'auto'. If omitted, uses current setting.",
     )
@@ -478,8 +478,8 @@ async def _update_inference_precision_setting(precision_val: str) -> None:
 async def _apply_sovits_precision_config(
     project_root: Path,
     sovits_dir: Path,
-    req_prec: Optional[str],
-) -> Tuple[str, bool, str]:
+    req_prec: str | None,
+) -> tuple[str, bool, str]:
     """Applies target precision configuration to cache, YAML, and database settings.
     Returns (device, is_half, source)."""
     precision_map = {
@@ -561,7 +561,7 @@ def _terminate_existing_sovits_process(pid_file: Path) -> None:
     summary="Restart GPT-SoVITS Engine Subprocess",
     dependencies=[Depends(require_auth)],
 )
-async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None) -> Dict[str, Any]:
+async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -> dict[str, Any]:
     """
     Terminates the existing GPT-SoVITS process and restarts it with the
     latest precision configuration (FP16 / FP32).

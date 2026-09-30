@@ -3,7 +3,7 @@ DashScope / Qwen Audio STT Adapter for galgame2voice.
 Supports Alibaba Cloud DashScope ASR / Audio transcription.
 """
 
-from typing import Any, Optional
+from typing import Any
 from galgame2voice.adapters.stt.openai_stt import OpenAICompatibleSTTAdapter
 
 
@@ -16,7 +16,7 @@ class QwenSTTAdapter(OpenAICompatibleSTTAdapter):
         self,
         api_key: str,
         base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        client_override: Optional[Any] = None,
+        client_override: Any | None = None,
         default_model: str = "qwen-audio-asr",
         **kwargs: Any,
     ):

@@ -14,7 +14,14 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, AsyncGenerator, Callable, Coroutine, Dict, Optional, Set, TypeVar
+from typing import (
+    Any,
+    AsyncGenerator,
+    Callable,
+    Coroutine,
+    Optional,
+    TypeVar,
+)
 
 logger = logging.getLogger("galgame2voice.services.tts_scheduler")
 
@@ -86,7 +93,7 @@ class TtsPriority(IntEnum):
     @classmethod
     def from_options(
         cls,
-        options: Optional[Dict[str, Any]] = None,
+        options: dict[str, Any] | None = None,
         default: Optional["TtsPriority"] = None,
     ) -> "TtsPriority":
         """
@@ -110,9 +117,9 @@ class SingleFlightCoordinator:
     """
 
     def __init__(self) -> None:
-        self._flights: Dict[str, asyncio.Future] = {}
-        self._lock: Optional[asyncio.Lock] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._flights: dict[str, asyncio.Future] = {}
+        self._lock: asyncio.Lock | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def _ensure_lock(self) -> asyncio.Lock:
         try:
@@ -167,15 +174,15 @@ class ScheduledTtsTask:
     priority: int
     seq: int
     task_id: str = field(compare=False)
-    generation_id: Optional[str] = field(compare=False)
-    coro_fn: Optional[Callable[[], Coroutine[Any, Any, Any]]] = field(compare=False, default=None)
+    generation_id: str | None = field(compare=False)
+    coro_fn: Callable[[], Coroutine[Any, Any, Any]] | None = field(compare=False, default=None)
     future: asyncio.Future = field(compare=False, default=None)
     created_at: float = field(compare=False, default_factory=time.monotonic)
     cancelled: bool = field(compare=False, default=False)
     is_stream: bool = field(compare=False, default=False)
-    stream_fn: Optional[Callable[[], Any]] = field(compare=False, default=None)
-    stream_queue: Optional[asyncio.Queue] = field(compare=False, default=None)
-    stop_event: Optional[asyncio.Event] = field(compare=False, default=None)
+    stream_fn: Callable[[], Any] | None = field(compare=False, default=None)
+    stream_queue: asyncio.Queue | None = field(compare=False, default=None)
+    stop_event: asyncio.Event | None = field(compare=False, default=None)
     stream_cancelled_counted: bool = field(compare=False, default=False)
 
 
@@ -187,15 +194,15 @@ class TtsScheduler:
     """
 
     def __init__(self) -> None:
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._queue: Optional[asyncio.PriorityQueue[ScheduledTtsTask]] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._queue: asyncio.PriorityQueue[ScheduledTtsTask] | None = None
         self._seq: int = 0
-        self._lock: Optional[asyncio.Lock] = None
+        self._lock: asyncio.Lock | None = None
         self._sync_lock = threading.Lock()
-        self._tasks_by_id: Dict[str, ScheduledTtsTask] = {}
-        self._tasks_by_gen: Dict[str, Set[str]] = {}
+        self._tasks_by_id: dict[str, ScheduledTtsTask] = {}
+        self._tasks_by_gen: dict[str, set[str]] = {}
         self._single_flight = SingleFlightCoordinator()
-        self._worker_task: Optional[asyncio.Task] = None
+        self._worker_task: asyncio.Task | None = None
         self._running: bool = False
 
         # Metrics telemetry
@@ -252,7 +259,7 @@ class TtsScheduler:
     def total_queue_wait_time(self) -> float:
         return self._total_queue_wait_time
 
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_metrics(self) -> dict[str, Any]:
         return {
             "queue_depth": self.get_queue_depth(),
             "active_streams": self._active_streams,
@@ -286,8 +293,8 @@ class TtsScheduler:
         self,
         coro_fn: Callable[[], Coroutine[Any, Any, T]],
         priority: TtsPriority = TtsPriority.NORMAL,
-        generation_id: Optional[str] = None,
-        task_id: Optional[str] = None,
+        generation_id: str | None = None,
+        task_id: str | None = None,
     ) -> T:
         """
         Schedules a TTS coroutine with the given priority and generation tracking.
@@ -330,8 +337,8 @@ class TtsScheduler:
         self,
         stream_fn: Callable[[], AsyncGenerator[bytes, None]],
         priority: TtsPriority = TtsPriority.NORMAL,
-        generation_id: Optional[str] = None,
-        task_id: Optional[str] = None,
+        generation_id: str | None = None,
+        task_id: str | None = None,
     ) -> AsyncGenerator[bytes, None]:
         """
         Enqueues an asynchronous streaming TTS generator in the priority queue.
@@ -523,7 +530,7 @@ class TtsScheduler:
                 pass
 
 
-_GLOBAL_TTS_SCHEDULER: Optional[TtsScheduler] = None
+_GLOBAL_TTS_SCHEDULER: TtsScheduler | None = None
 
 
 def get_tts_scheduler() -> TtsScheduler:

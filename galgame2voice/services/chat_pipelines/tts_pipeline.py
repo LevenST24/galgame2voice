@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.logger import sanitize_error_detail
@@ -49,11 +49,11 @@ class TtsStreamPipeline:
 
     def prepare_chunk_options(
         self,
-        base_options: Optional[Dict[str, Any]],
-        active_profile: Optional[Any],
+        base_options: dict[str, Any] | None,
+        active_profile: Any | None,
         chunk_index: int,
         sentence: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Prepares options dictionary for a specific sentence chunk."""
         opts = dict(base_options) if base_options else {}
         if active_profile:
@@ -88,9 +88,9 @@ class TtsStreamPipeline:
         self,
         sentence: str,
         chunk_index: int,
-        options: Dict[str, Any],
-        profiler: Optional[ChatTurnProfiler] = None,
-    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        options: dict[str, Any],
+        profiler: ChatTurnProfiler | None = None,
+    ) -> tuple[dict[str, Any] | None, str | None]:
         """
         Synthesizes a single vocal sentence chunk.
         Returns:

@@ -5,7 +5,6 @@ and parses inline Japanese furigana brackets before sending text to GPT-SoVITS.
 """
 
 import re
-from typing import Dict, List, Optional, Tuple
 
 # ============================================================================
 # Japanese Parentheses Cleaner (Stage Direction Stripper)
@@ -100,7 +99,7 @@ CHINESE_STAGE_MODIFIERS_PATTERN = re.compile(
 )
 
 # Mapping stage cue actions to standard emotion archetypes
-STAGE_CUE_EMOTION_MAP: Dict[str, str] = {
+STAGE_CUE_EMOTION_MAP: dict[str, str] = {
     # shy
     "脸红": "shy", "害羞": "shy", "羞涩": "shy", "羞怯": "shy", "照れ": "shy", "赤面": "shy",
     "blush": "shy", "blushes": "shy", "blushing": "shy", "面红耳赤": "shy", "满脸通红": "shy",
@@ -242,7 +241,7 @@ def clean_japanese_parentheses(text: str, max_passes: int = 5) -> str:
 strip_stage_directions = clean_japanese_parentheses
 
 
-def extract_stage_directions_and_emotion(text: str) -> Tuple[str, Optional[str]]:
+def extract_stage_directions_and_emotion(text: str) -> tuple[str, str | None]:
     """
     Cleans stage cues and action prompts from text for pure dialogue speech synthesis,
     while simultaneously inferring character emotion ('gentle', 'shy', 'happy', 'tsundere', 'cool', 'sad', 'angry')
@@ -252,7 +251,7 @@ def extract_stage_directions_and_emotion(text: str) -> Tuple[str, Optional[str]]
     if not text:
         return "", None
 
-    inferred_emotion: Optional[str] = None
+    inferred_emotion: str | None = None
 
     # Scan bracketed contents and asterisks to infer emotion
     bracket_cues = _RE_BRACKET_CUES.findall(text)
@@ -288,7 +287,7 @@ INLINE_FURIGANA_PATTERN = re.compile(
 # Canonical Galgame character name & vocative phonetic mappings for Yuzusoft titles
 # (Tenshi Souzou RE-BOOT!, RIDDLE JOKER, Senren * Banka, Cafe Stella, Sanoba Witch, etc.)
 # Note: Longer multi-kanji names must precede shorter substrings to prevent partial collisions.
-GALGAME_PHONETIC_REPLACEMENTS: List[Tuple[re.Pattern, str]] = [
+GALGAME_PHONETIC_REPLACEMENTS: list[tuple[re.Pattern, str]] = [
     # --- Tenshi Souzou RE-BOOT! (天使☆騒々 RE-BOOT!) ---
     # 白雪乃愛 (Shirayuki Noa) - MeCab erroneously maps 乃愛 to リノ (rino)!
     (re.compile(r'白雪乃[愛爱]'), 'しらゆきのあ'),

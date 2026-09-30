@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 def is_profiling_enabled() -> bool:
@@ -38,22 +38,22 @@ class ChatTurnProfiler:
     T7: Audio playback started
     """
 
-    def __init__(self, turn_id: Optional[str] = None, enabled: Optional[bool] = None) -> None:
+    def __init__(self, turn_id: str | None = None, enabled: bool | None = None) -> None:
         self.turn_id = turn_id or str(int(time.time() * 1000) % 10000)
         self.enabled = is_profiling_enabled() if enabled is None else enabled
         self.t_start = time.perf_counter()
 
-        self.t_llm_first_token: Optional[float] = None
-        self.t_first_sentence: Optional[float] = None
-        self.t_tts_dispatch: Optional[float] = None
-        self.t_upstream_first_byte: Optional[float] = None
-        self.t_tts_inference_done: Optional[float] = None
-        self.t_first_audio: Optional[float] = None
-        self.t_frontend_delivered: Optional[float] = None
-        self.t_playback_started: Optional[float] = None
+        self.t_llm_first_token: float | None = None
+        self.t_first_sentence: float | None = None
+        self.t_tts_dispatch: float | None = None
+        self.t_upstream_first_byte: float | None = None
+        self.t_tts_inference_done: float | None = None
+        self.t_first_audio: float | None = None
+        self.t_frontend_delivered: float | None = None
+        self.t_playback_started: float | None = None
 
-        self.cache_hits: List[int] = []
-        self.cache_misses: List[int] = []
+        self.cache_hits: list[int] = []
+        self.cache_misses: list[int] = []
         self.chunk_count: int = 0
 
     def record_llm_first_token(self) -> None:
@@ -97,13 +97,13 @@ class ChatTurnProfiler:
             self.t_playback_started = time.perf_counter()
 
     @property
-    def app_first_chunk_ts(self) -> Optional[float]:
+    def app_first_chunk_ts(self) -> float | None:
         return self.t_first_audio
 
-    def _diff_ms(self, t: Optional[float]) -> float:
+    def _diff_ms(self, t: float | None) -> float:
         return (t - self.t_start) * 1000.0 if t is not None else 0.0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Returns structured JSON-serializable telemetry data."""
         now = time.perf_counter()
         ttft_ms = self._diff_ms(self.t_llm_first_token)

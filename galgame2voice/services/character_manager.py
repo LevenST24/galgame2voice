@@ -12,7 +12,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import aiosqlite
 from galgame2voice.config import get_settings
@@ -44,20 +44,20 @@ class CharacterManager:
     and audio durations, syncs with SQLite database, and resolves emotion audios.
     """
 
-    _instance: Optional[CharacterManager] = None
+    _instance: CharacterManager | None = None
 
-    def __init__(self, characters_dir: Optional[Path] = None):
+    def __init__(self, characters_dir: Path | None = None):
         if characters_dir is not None:
             self.characters_dir = Path(characters_dir).resolve()
         else:
             settings = get_settings()
             self.characters_dir = settings.characters_dir.resolve()
 
-        self._packages: Dict[str, CharacterPackage] = {}
-        self._name_index: Dict[str, str] = {}  # Normalized name/alias -> id
+        self._packages: dict[str, CharacterPackage] = {}
+        self._name_index: dict[str, str] = {}  # Normalized name/alias -> id
 
     @classmethod
-    def get_instance(cls, characters_dir: Optional[Path] = None) -> CharacterManager:
+    def get_instance(cls, characters_dir: Path | None = None) -> CharacterManager:
         if cls._instance is None:
             cls._instance = cls(characters_dir)
         elif characters_dir is not None and cls._instance.characters_dir != Path(characters_dir).resolve():
@@ -68,7 +68,7 @@ class CharacterManager:
     def reset_instance(cls) -> None:
         cls._instance = None
 
-    def discover_characters(self, characters_dir: Optional[Path] = None) -> List[CharacterPackage]:
+    def discover_characters(self, characters_dir: Path | None = None) -> list[CharacterPackage]:
         """
         Discovers all character packages in the specified directory.
         Validates manifests and verifies reference audio files.
@@ -82,7 +82,7 @@ class CharacterManager:
             logger.debug("Characters directory does not exist: %s", target_dir)
             return []
 
-        discovered: List[CharacterPackage] = []
+        discovered: list[CharacterPackage] = []
 
         for item in target_dir.iterdir():
             if not item.is_dir():
@@ -117,7 +117,7 @@ class CharacterManager:
 
     def _load_and_validate_package(self, folder: Path, manifest_path: Path) -> CharacterPackage:
         """Loads and thoroughly validates a single character package folder."""
-        errors: List[str] = []
+        errors: list[str] = []
 
         try:
             raw_text = manifest_path.read_text(encoding="utf-8")
@@ -170,7 +170,7 @@ class CharacterManager:
     def _probe_audio_file(
         resolved_audio: Path,
         canonical_path: Path,
-    ) -> Tuple[Optional[str], Optional[float], Optional[Exception]]:
+    ) -> tuple[str | None, float | None, Exception | None]:
         """Computes or retrieves cached MD5 hash and duration for an audio file."""
         from galgame2voice.services.tts_service import TtsService
         try:
@@ -198,13 +198,13 @@ class CharacterManager:
         cls,
         pkg_container: CharacterPackage,
         manifest: CharacterManifest,
-        errors: List[str],
+        errors: list[str],
     ) -> None:
         """Validates package emotion audio references, paths, hashes, and durations."""
         from galgame2voice.utils.path_guard import contains_traversal_payload
 
-        seen_audio_paths: Dict[Path, str] = {}
-        seen_audio_hashes: Dict[str, str] = {}
+        seen_audio_paths: dict[Path, str] = {}
+        seen_audio_hashes: dict[str, str] = {}
 
         for emo_name, emo_cfg in manifest.emotions.items():
             audio_rel = emo_cfg.audio
@@ -272,7 +272,7 @@ class CharacterManager:
                 self._name_index[alias.lower()] = pid
                 self._name_index["".join(alias.lower().split())] = pid
 
-    def get_character(self, id_or_name: str) -> Optional[CharacterPackage]:
+    def get_character(self, id_or_name: str) -> CharacterPackage | None:
         """Looks up a character package by ID or name/alias."""
         if not id_or_name or not id_or_name.strip():
             return None
@@ -317,11 +317,11 @@ class CharacterManager:
                 return pkg
         return None
 
-    def get_default_character(self) -> Optional[CharacterPackage]:
+    def get_default_character(self) -> CharacterPackage | None:
         """Returns the default character package, or None if none installed."""
         return self.get_character("default")
 
-    def get_available_characters(self) -> List[CharacterPackage]:
+    def get_available_characters(self) -> list[CharacterPackage]:
         """Returns all valid, discovered character packages."""
         self._ensure_discovered()
         seen = set()
@@ -332,7 +332,7 @@ class CharacterManager:
                 result.append(pkg)
         return result
 
-    def get_active_character_manifest(self, active_profile_name: Optional[str] = None) -> Optional[CharacterManifest]:
+    def get_active_character_manifest(self, active_profile_name: str | None = None) -> CharacterManifest | None:
         """Returns the active character manifest, or falls back to default character."""
         self._ensure_discovered()
         if active_profile_name:
@@ -355,9 +355,9 @@ class CharacterManager:
     def resolve_emotion_audio_path(
         self,
         character_id_or_name: str,
-        emotion: Optional[str],
-        base_dir: Optional[Path] = None,
-    ) -> Optional[Dict[str, str]]:
+        emotion: str | None,
+        base_dir: Path | None = None,
+    ) -> dict[str, str] | None:
         """
         Resolves emotion reference audio path, prompt text, and prompt language
         for a given character from its manifest.
@@ -392,7 +392,7 @@ class CharacterManager:
             if custom_file.is_file():
                 resolved_path = custom_file.resolve()
 
-        res: Dict[str, Any] = {
+        res: dict[str, Any] = {
             "ref_audio_path": str(resolved_path),
             "prompt_text": target_cfg.text,
             "prompt_lang": target_cfg.lang,
@@ -405,10 +405,10 @@ class CharacterManager:
     @staticmethod
     def _select_emotion_config(
         pkg: CharacterPackage,
-        emotions: Dict[str, Any],
+        emotions: dict[str, Any],
         canonical_emo: str,
-        emotion: Optional[str],
-    ) -> Tuple[Optional[Any], Optional[Path], str]:
+        emotion: str | None,
+    ) -> tuple[Any | None, Path | None, str]:
         """Resolves target emotion config and valid audio path with gentle/first fallback."""
         target_cfg = emotions.get(canonical_emo)
         matched_emo = canonical_emo
@@ -497,8 +497,8 @@ class CharacterManager:
     async def _find_existing_profile_row(
         conn: aiosqlite.Connection,
         char_name: str,
-        aliases: Optional[List[str]],
-    ) -> Optional[Any]:
+        aliases: list[str] | None,
+    ) -> Any | None:
         """Queries an existing voice_profile row by character name or configured aliases."""
         cursor = await conn.execute(
             "SELECT * FROM voice_profiles WHERE name = ? OR name LIKE ? OR name LIKE ? LIMIT 1;",
@@ -519,7 +519,7 @@ class CharacterManager:
         return existing_row
 
     @staticmethod
-    def _resolve_package_profile_defaults(pkg: CharacterPackage) -> Dict[str, Any]:
+    def _resolve_package_profile_defaults(pkg: CharacterPackage) -> dict[str, Any]:
         """Resolves default reference audio, weights, and prompt settings for a package."""
         manifest = pkg.manifest
         default_emo = manifest.emotions.get("gentle") or (
@@ -553,8 +553,8 @@ class CharacterManager:
         cls,
         existing_row: Any,
         pkg: CharacterPackage,
-        defaults: Dict[str, Any],
-    ) -> Tuple[List[str], List[Any]]:
+        defaults: dict[str, Any],
+    ) -> tuple[list[str], list[Any]]:
         """Constructs SQL update expressions and bound parameters for an existing profile."""
         manifest = pkg.manifest
         ref_audio_str = defaults["ref_audio_str"]
@@ -570,8 +570,8 @@ class CharacterManager:
         current_prompt = existing_row["prompt_text"] or ""
         current_sys = existing_row["system_prompt"] or ""
 
-        update_fields: List[str] = []
-        params: List[Any] = []
+        update_fields: list[str] = []
+        params: list[Any] = []
 
         ref_needs_update = (
             not current_ref
@@ -619,7 +619,7 @@ class CharacterManager:
         conn: aiosqlite.Connection,
         existing_row: Any,
         pkg: CharacterPackage,
-        defaults: Dict[str, Any],
+        defaults: dict[str, Any],
     ) -> bool:
         """Idempotently updates existing voice_profile row with healed paths and prompt updates."""
         update_fields, params = cls._build_profile_update_fields(existing_row, pkg, defaults)
@@ -636,7 +636,7 @@ class CharacterManager:
         conn: aiosqlite.Connection,
         char_name: str,
         manifest: Any,
-        defaults: Dict[str, Any],
+        defaults: dict[str, Any],
         is_default_val: int,
     ) -> None:
         """Inserts a new voice_profile record from character package manifest and defaults."""
@@ -675,7 +675,7 @@ class CharacterManager:
             return 0
 
         # Deterministic default order: prioritize packages marked with is_default=True, then by name
-        def _pkg_sort_key(p: CharacterPackage) -> Tuple[int, str]:
+        def _pkg_sort_key(p: CharacterPackage) -> tuple[int, str]:
             is_def = getattr(p.manifest, "is_default", False)
             return (0 if is_def else 1, p.name)
 
@@ -718,7 +718,7 @@ class CharacterManager:
         return synced_count
 
 
-def get_character_manager(characters_dir: Optional[Path] = None) -> CharacterManager:
+def get_character_manager(characters_dir: Path | None = None) -> CharacterManager:
     """Returns singleton instance of CharacterManager."""
     return CharacterManager.get_instance(characters_dir)
 

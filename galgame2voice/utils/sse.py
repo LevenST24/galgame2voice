@@ -3,10 +3,10 @@ Server-Sent Events (SSE) utility formatting for galgame2voice.
 """
 
 import json
-from typing import Any, Dict, Union
+from typing import Any
 
 
-def format_sse_frame(event: Union[Dict[str, Any], str]) -> str:
+def format_sse_frame(event: dict[str, Any] | str) -> str:
     """Formats an event dictionary or string into a standard Server-Sent Events text frame."""
     if isinstance(event, str):
         return event

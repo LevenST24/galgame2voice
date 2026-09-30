@@ -5,7 +5,6 @@ Preserves punctuation with the sentence and removes empty segments.
 """
 
 import re
-from typing import List
 
 # Modal particles (语气词) and soft connective particles in Japanese and Chinese dialogue.
 # When a clause ends with one of these particles before a soft comma (、, ，, ,),
@@ -119,7 +118,7 @@ def split_japanese_sentences(
     text: str,
     is_first_chunk: bool = False,
     min_chars: int = 6,
-) -> List[str]:
+) -> list[str]:
     """
     Splits Japanese text by punctuation markers (。, ！, ？, !, ?, \n).
     Preserves punctuation with the sentence and removes empty segments.
@@ -158,7 +157,7 @@ def split_japanese_sentences(
     terminal_punct = set("。！？!?\n")
     clause_punct = set("、，,")
 
-    def _emit_first_and_remainder(first_chunk: str, split_idx: int) -> List[str]:
+    def _emit_first_and_remainder(first_chunk: str, split_idx: int) -> list[str]:
         rem_text = text[split_idx:]
         subsequent = split_japanese_sentences(rem_text, is_first_chunk=False) if rem_text.strip() else []
         return [first_chunk] + subsequent

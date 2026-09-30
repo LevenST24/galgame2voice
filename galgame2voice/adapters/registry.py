@@ -3,7 +3,7 @@ Provider Registry and Adapter Factory for galgame2voice.
 Maintains default configurations and model presets for 10+ major LLM and STT providers.
 """
 
-from typing import Dict, Any, List, Optional, Type, Union, Tuple
+from typing import Any
 
 from galgame2voice.adapters.base import BaseLLMAdapter, BaseSTTAdapter
 from galgame2voice.adapters.llm import (
@@ -25,7 +25,7 @@ from galgame2voice.adapters.stt import (
 )
 
 
-PROVIDER_PRESETS: Dict[str, Dict[str, Any]] = {
+PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
     "gemini": {
         "id": "gemini",
         "name": "Google Gemini",
@@ -187,7 +187,7 @@ PROVIDER_PRESETS: Dict[str, Dict[str, Any]] = {
 }
 
 
-def _format_preset_dict(p: Dict[str, Any]) -> Dict[str, Any]:
+def _format_preset_dict(p: dict[str, Any]) -> dict[str, Any]:
     """Formats raw provider preset entry into client-facing metadata dictionary."""
     return {
         "id": p["id"],
@@ -200,12 +200,12 @@ def _format_preset_dict(p: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def list_provider_presets() -> List[Dict[str, Any]]:
+def list_provider_presets() -> list[dict[str, Any]]:
     """Returns a list of all built-in provider preset descriptions."""
     return [_format_preset_dict(p) for p in PROVIDER_PRESETS.values()]
 
 
-def get_provider_preset(provider_id: str) -> Optional[Dict[str, Any]]:
+def get_provider_preset(provider_id: str) -> dict[str, Any] | None:
     """Retrieves preset information for a specific provider ID."""
     p = PROVIDER_PRESETS.get(provider_id.lower())
     if not p:
@@ -215,7 +215,7 @@ def get_provider_preset(provider_id: str) -> Optional[Dict[str, Any]]:
 
 # Derived from PROVIDER_PRESETS so provider metadata and adapter routing
 # can never drift apart.
-ADAPTER_CLASS_MAP: Dict[str, Tuple[Type[BaseLLMAdapter], str]] = {
+ADAPTER_CLASS_MAP: dict[str, tuple[type[BaseLLMAdapter], str]] = {
     pid: (p["adapter_class"], p["default_base_url"])
     for pid, p in PROVIDER_PRESETS.items()
 }
@@ -229,11 +229,11 @@ def _get_config_attr(config: Any, key: str, default: Any = None) -> Any:
 
 
 def _resolve_provider_request(
-    provider_id_or_config: Union[str, Dict[str, Any], Any],
-    api_key: Optional[str],
-    base_url: Optional[str],
-    kwargs: Dict[str, Any],
-) -> Tuple[str, str, Optional[str]]:
+    provider_id_or_config: str | dict[str, Any] | Any,
+    api_key: str | None,
+    base_url: str | None,
+    kwargs: dict[str, Any],
+) -> tuple[str, str, str | None]:
     """Normalizes provider id, api key, and base url from id/dict/object config."""
     provider_id = "openai"
     key = api_key or ""
@@ -255,9 +255,9 @@ def _resolve_provider_request(
 
 
 def get_llm_adapter(
-    provider_id_or_config: Union[str, Dict[str, Any], Any],
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
+    provider_id_or_config: str | dict[str, Any] | Any,
+    api_key: str | None = None,
+    base_url: str | None = None,
     **kwargs: Any,
 ) -> BaseLLMAdapter:
     """
@@ -281,9 +281,9 @@ def get_llm_adapter(
 
 
 def get_stt_adapter(
-    provider_id_or_config: Union[str, Dict[str, Any], Any],
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
+    provider_id_or_config: str | dict[str, Any] | Any,
+    api_key: str | None = None,
+    base_url: str | None = None,
     **kwargs: Any,
 ) -> BaseSTTAdapter:
     """
