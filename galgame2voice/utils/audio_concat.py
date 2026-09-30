@@ -131,8 +131,7 @@ def concat_wav_files(
                     logger.warning("Error reading frames from chunk %s: %s", p, err)
                     continue
 
-                if raw_frames:
-                    w_out.writeframes(raw_frames)
+                w_out.writeframes(raw_frames)
         return True
     except Exception as exc:
         logger.error("Failed to write concatenated WAV to %s: %s", out_p, exc)

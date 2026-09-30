@@ -265,8 +265,6 @@ class AffectionService:
         clean_exp = (explicit_emotion or "").strip().lower()
         if clean_exp and clean_exp in EMOTION_SYNONYMS:
             emotion = EMOTION_SYNONYMS[clean_exp]
-        elif clean_exp and clean_exp in VALID_EMOTIONS:
-            emotion = clean_exp
         elif clean_exp and clean_exp in EMOTION_NAME_MAP:
             emotion = EMOTION_NAME_MAP[clean_exp]
         else:

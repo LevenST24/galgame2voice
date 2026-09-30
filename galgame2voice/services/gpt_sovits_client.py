@@ -442,10 +442,10 @@ class GptSovitsClient:
     def _resolve_payload_ref_audio(ref_audio: str) -> str:
         """Resolves reference audio path to absolute path checking project root fallback."""
         p = Path(ref_audio)
-        if not p.is_file() and (_PROJECT_ROOT / ref_audio).is_file():
-            return str(_safe_resolve_path(_PROJECT_ROOT / ref_audio))
         if p.is_file():
             return str(_safe_resolve_path(p))
+        if (_PROJECT_ROOT / ref_audio).is_file():
+            return str(_safe_resolve_path(_PROJECT_ROOT / ref_audio))
         return ref_audio
 
     def _build_tts_payload(self, text: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -527,7 +527,6 @@ class GptSovitsClient:
             opts = dict(options or {})
             opts["streaming_mode"] = False
             payload = self._build_tts_payload(cleaned_text, opts)
-            payload["streaming_mode"] = False
 
             attempt = 0
             while True:

@@ -130,7 +130,7 @@ async def build_chat_context(
     char_name = character_name or (active_profile.name if active_profile else "Character")
 
     settings_raw = await crud.get_settings_raw(conn)
-    max_history = max_history_override or (settings_raw.max_history_messages if settings_raw else 10)
+    max_history = max_history_override or settings_raw.max_history_messages
 
     user_id = session.user_id if session and session.user_id else "default_user"
     profile_id = active_profile.id if active_profile else 1

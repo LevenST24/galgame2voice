@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -445,7 +444,7 @@ class CharacterManager:
         if not w_path:
             return True
         norm_w = w_path.replace("/", "\\")
-        if norm_w.startswith(("E:", "E:\\")) or (os.path.isabs(w_path) and not Path(w_path).exists()):
+        if norm_w.startswith(("E:", "E:\\")):
             return True
         return not Path(w_path).exists()
 

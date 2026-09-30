@@ -378,7 +378,7 @@ class StreamingBilingualParser:
 
             is_ja_closed = bool(
                 _RE_JAPANESE_CLOSED.search(sanitized)
-                or sanitized.rstrip().endswith(('"}', '"}`', '"} \n`', '"} \n', '"}'))
+                or sanitized.rstrip().endswith(('"}', '"}`', '"} \n`', '"} \n'))
             )
             new_sentences = self._extract_new_ja_sentences(current_ja, is_closed=is_ja_closed)
         elif self.is_plain_text_fallback:

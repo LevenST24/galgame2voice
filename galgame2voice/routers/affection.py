@@ -104,7 +104,7 @@ async def reset_character_affection_endpoint(
     Resets affection score to 0, level to 1, and emotion to 'normal'.
     """
     user_id = (req.user_id.strip() if req and req.user_id else "default_user") or "default_user"
-    character_id = req.character_id if req and req.character_id >= 1 else 1
+    character_id = req.character_id if req else 1
 
     async with get_db() as conn:
         reset_result = await crud.reset_character_affection(

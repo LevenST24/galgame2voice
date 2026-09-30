@@ -106,7 +106,7 @@ def validate_character_package(character_dir: Path) -> Tuple[bool, List[str]]:
                 f"情感 '{emo_key}' 音频时长 ({duration:.2f}s) 超出标准范围 [3.0s, 10.0s]: {emo.audio}"
             )
 
-    return len(errors) == 0, errors
+    return not errors, errors
 
 
 __all__ = [

@@ -52,7 +52,7 @@ def mask_api_key(key: Optional[str]) -> str:
         return ""
     if len(key) <= 8:
         return "********"
-    if key.startswith("sk-") and len(key) > 8:
+    if key.startswith("sk-"):
         return f"sk-****{key[-4:]}"
     return f"{key[:3]}****{key[-4:]}"
 
