@@ -4,7 +4,7 @@ Provides REST endpoints for global system configuration.
 """
 
 import logging
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
@@ -102,6 +102,14 @@ TELEGRAM_CONFIG_KEYS = frozenset({
     "telegram_chat_id",
 })
 
+_PRECISION_CONFIG_MAP: Dict[str, Tuple[bool, str]] = {
+    "cpu": (False, "cpu"),
+    "fp16": (True, "cuda"),
+    "half": (True, "cuda"),
+    "fp32": (False, "cuda"),
+    "float32": (False, "cuda"),
+}
+
 
 async def _apply_sovits_url_update(new_sovits_url: Optional[str]) -> None:
     """Hot-applies GPT-SoVITS endpoint change to the shared client so it takes effect immediately."""
@@ -143,15 +151,8 @@ def _sync_precision_cache(new_precision: Optional[str]) -> None:
         sovits_dir_file = app_settings.project_root / "data" / "sovits_dir.txt"
         sovits_dir_str = sovits_dir_file.read_text(encoding="utf-8-sig").strip() if sovits_dir_file.exists() else ""
         prec_lower = str(new_precision).lower()
-        precision_map = {
-            "cpu": (False, "cpu"),
-            "fp16": (True, "cuda"),
-            "half": (True, "cuda"),
-            "fp32": (False, "cuda"),
-            "float32": (False, "cuda"),
-        }
-        if prec_lower in precision_map:
-            is_half, device = precision_map[prec_lower]
+        if prec_lower in _PRECISION_CONFIG_MAP:
+            is_half, device = _PRECISION_CONFIG_MAP[prec_lower]
             write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=is_half, device=device)
             if sovits_dir_str:
                 write_sovits_yaml_config(sovits_dir_str, is_half=is_half, device=device)

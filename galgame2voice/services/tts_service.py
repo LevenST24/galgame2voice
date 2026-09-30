@@ -129,6 +129,45 @@ class TtsService:
         """
         return await async_get_audio_duration(path)
 
+    async def _resolve_fallback_ref_audio(
+        self,
+        opts: Dict[str, Any],
+        fallback_ref_audio: Optional[str],
+        fallback_prompt_text: Optional[str],
+        fallback_prompt_lang: Optional[str],
+        has_explicit_voice: bool,
+    ) -> None:
+        """Validates user-provided reference audio or falls back to profile default reference."""
+        user_ref = opts.get("ref_audio_path") or opts.get("refer_audio_path")
+        if user_ref:
+            file_exists = resolve_existing_audio_path(user_ref) is not None
+            dur = await self.async_get_audio_duration(user_ref)
+            is_mock_client = (
+                getattr(self.client, "_mock_return_value", None) is not None
+                or type(self.client).__name__ == "MagicMock"
+                or getattr(self.client, "server", None) is not None
+            )
+            needs_fallback = False
+            if dur is not None and not (REFERENCE_AUDIO_MIN_SECONDS <= dur <= REFERENCE_AUDIO_MAX_SECONDS):
+                needs_fallback = True
+            elif not is_mock_client and not file_exists:
+                needs_fallback = True
+
+            if needs_fallback:
+                logger.warning(
+                    "Reference audio '%s' is invalid (exists: %s, duration: %s, required: [3.0, 10.0]s). "
+                    "Falling back to default reference audio: %s",
+                    user_ref, file_exists, dur, fallback_ref_audio
+                )
+                opts["ref_audio_path"] = str(fallback_ref_audio) if fallback_ref_audio else ""
+                opts["prompt_text"] = fallback_prompt_text
+                opts["prompt_lang"] = fallback_prompt_lang
+        else:
+            if has_explicit_voice or not getattr(self.client, "current_refer_audio", None):
+                opts.setdefault("ref_audio_path", str(fallback_ref_audio) if fallback_ref_audio else "")
+                opts.setdefault("prompt_text", fallback_prompt_text)
+                opts.setdefault("prompt_lang", fallback_prompt_lang)
+
     async def _populate_voice_profile_opts(self, opts: Dict[str, Any]) -> Dict[str, Any]:
         """Auto-populates active voice profile parameters, applying dynamic emotion reference audios if available."""
         if opts.get("_pre_resolved"):
@@ -175,35 +214,13 @@ class TtsService:
                     opts["prompt_text"] = resolved_emo["prompt_text"]
                     opts["prompt_lang"] = resolved_emo["prompt_lang"]
                 else:
-                    user_ref = opts.get("ref_audio_path") or opts.get("refer_audio_path")
-                    if user_ref:
-                        file_exists = resolve_existing_audio_path(user_ref) is not None
-                        dur = await self.async_get_audio_duration(user_ref)
-                        is_mock_client = (
-                            getattr(self.client, "_mock_return_value", None) is not None
-                            or type(self.client).__name__ == "MagicMock"
-                            or getattr(self.client, "server", None) is not None
-                        )
-                        needs_fallback = False
-                        if dur is not None and not (REFERENCE_AUDIO_MIN_SECONDS <= dur <= REFERENCE_AUDIO_MAX_SECONDS):
-                            needs_fallback = True
-                        elif not is_mock_client and not file_exists:
-                            needs_fallback = True
-
-                        if needs_fallback:
-                            logger.warning(
-                                "Reference audio '%s' is invalid (exists: %s, duration: %s, required: [3.0, 10.0]s). "
-                                "Falling back to default reference audio: %s",
-                                user_ref, file_exists, dur, fallback_ref_audio
-                            )
-                            opts["ref_audio_path"] = str(fallback_ref_audio) if fallback_ref_audio else ""
-                            opts["prompt_text"] = fallback_prompt_text
-                            opts["prompt_lang"] = fallback_prompt_lang
-                    else:
-                        if has_explicit_voice or not getattr(self.client, "current_refer_audio", None):
-                            opts.setdefault("ref_audio_path", str(fallback_ref_audio) if fallback_ref_audio else "")
-                            opts.setdefault("prompt_text", fallback_prompt_text)
-                            opts.setdefault("prompt_lang", fallback_prompt_lang)
+                    await self._resolve_fallback_ref_audio(
+                        opts=opts,
+                        fallback_ref_audio=fallback_ref_audio,
+                        fallback_prompt_text=fallback_prompt_text,
+                        fallback_prompt_lang=fallback_prompt_lang,
+                        has_explicit_voice=has_explicit_voice,
+                    )
         except Exception as exc:
             logger.debug("Could not auto-populate active profile options in TtsService: %s", exc)
         return opts
@@ -309,6 +326,18 @@ class TtsService:
             task_id=task_id,
         )
 
+    async def _write_ephemeral_audio_file(
+        self,
+        audio_bytes: bytes,
+        filename_prefix: str,
+    ) -> Tuple[str, Path, int]:
+        """Writes audio bytes to a new file in audio_dir and returns (url_path, local_file_path, byte_count)."""
+        filename = f"{filename_prefix}_{uuid.uuid4().hex[:12]}.wav"
+        file_path = self.audio_dir / filename
+        await asyncio.to_thread(file_path.write_bytes, audio_bytes)
+        url_path = f"/audio/{filename}"
+        return url_path, file_path, len(audio_bytes)
+
     async def synthesize_to_file(
         self,
         text: str,
@@ -354,11 +383,7 @@ class TtsService:
                         )
                     except Exception as exc:
                         logger.warning("TTS cache put failed, writing ephemeral file instead: %s", exc)
-                filename = f"{filename_prefix}_{uuid.uuid4().hex[:12]}.wav"
-                file_path = self.audio_dir / filename
-                await asyncio.to_thread(file_path.write_bytes, audio_b)
-                url_path = f"/audio/{filename}"
-                return url_path, file_path, len(audio_b)
+                return await self._write_ephemeral_audio_file(audio_b, filename_prefix)
 
             return await scheduler.schedule(
                 lambda: scheduler.single_flight.execute(f"file_{cache_key}", _do_synth_file),
@@ -370,11 +395,7 @@ class TtsService:
         # Ephemeral non-cached file write (when use_cache=False)
         async def _do_ephemeral_file():
             audio_bytes = await self.client.synthesize(text, options=opts)
-            filename = f"{filename_prefix}_{uuid.uuid4().hex[:12]}.wav"
-            file_path = self.audio_dir / filename
-            await asyncio.to_thread(file_path.write_bytes, audio_bytes)
-            url_path = f"/audio/{filename}"
-            return url_path, file_path, len(audio_bytes)
+            return await self._write_ephemeral_audio_file(audio_bytes, filename_prefix)
 
         return await scheduler.schedule(
             _do_ephemeral_file,

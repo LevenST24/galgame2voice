@@ -305,6 +305,16 @@ class AffectionService:
 
         return new_dialogue_ids
 
+    @staticmethod
+    def _normalize_user_and_character_ids(user_id: Any, character_id: Any) -> Tuple[str, int]:
+        """Normalizes user_id string and character_id integer with safe defaults."""
+        u_id = (user_id or "").strip() or "default_user"
+        try:
+            char_id = int(character_id) if character_id is not None and int(character_id) > 0 else 1
+        except (TypeError, ValueError):
+            char_id = 1
+        return u_id, char_id
+
     async def handle_turn_affection(
         self,
         user_id: str = "default_user",
@@ -321,11 +331,7 @@ class AffectionService:
         3. Check easter eggs and unlock milestones
         4. Update SQLite state machine
         """
-        u_id = (user_id or "").strip() or "default_user"
-        try:
-            char_id = int(character_id) if character_id is not None and int(character_id) > 0 else 1
-        except (TypeError, ValueError):
-            char_id = 1
+        u_id, char_id = self._normalize_user_and_character_ids(user_id, character_id)
         try:
             d_limit = max(0, int(daily_limit))
         except (TypeError, ValueError):
@@ -386,11 +392,7 @@ class AffectionService:
         """
         Returns full list of milestone and easter egg dialogues with unlock status.
         """
-        u_id = (user_id or "").strip() or "default_user"
-        try:
-            char_id = int(character_id) if character_id is not None and int(character_id) > 0 else 1
-        except (TypeError, ValueError):
-            char_id = 1
+        u_id, char_id = self._normalize_user_and_character_ids(user_id, character_id)
 
         async with get_db(self.db_path) as conn:
             aff = await crud.get_or_create_character_affection(conn, u_id, char_id)

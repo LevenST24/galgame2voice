@@ -1095,36 +1095,24 @@ _PREFIX_CALLBACK_HANDLERS: Tuple[Tuple[Tuple[str, ...], Callable], ...] = (
 )
 
 
-async def route_callback_query(
+def _extract_callback_caller_info(
     handlers_or_update: Any,
-    update_or_context: Optional[Any] = None,
-    context: Optional[Any] = None,
-    *,
-    db_path: Optional[str] = None,
-    admin_ids: Optional[Set[int]] = None,
-) -> None:
-    """
-    Routes and handles inline button clicks in Telegram.
-    Accepts either:
-    - (handlers, update, context) when called from TelegramBotHandlers method
-    - (update, context, db_path=..., admin_ids=...) when called directly
-    """
+    update_or_context: Optional[Any],
+    context: Optional[Any],
+    admin_ids: Optional[Set[int]],
+) -> Tuple[Any, Any, Any, int, int, bool, str]:
+    """Extracts normalized handlers, update, query, chat_id, user_id, is_admin, and callback data."""
     if hasattr(handlers_or_update, "callback_query") or (
         hasattr(handlers_or_update, "effective_chat") and not hasattr(handlers_or_update, "user_tasks")
     ):
         handlers = None
         update = handlers_or_update
-        _ = update_or_context
     else:
         handlers = handlers_or_update
         update = update_or_context
-        _ = context
 
-    query = getattr(update, "callback_query", None)
-    if not query:
-        return
-
-    data = getattr(query, "data", "") or ""
+    query = getattr(update, "callback_query", None) if update else None
+    data = (getattr(query, "data", "") or "") if query else ""
     chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
 
     if handlers and hasattr(handlers, "_effective_user_id"):
@@ -1141,6 +1129,36 @@ async def route_callback_query(
         is_admin = handlers._is_admin(update)
     else:
         is_admin = check_is_admin(update, effective_admin_ids)
+
+    return handlers, update, query, chat_id, user_id, is_admin, data
+
+
+async def route_callback_query(
+    handlers_or_update: Any,
+    update_or_context: Optional[Any] = None,
+    context: Optional[Any] = None,
+    *,
+    db_path: Optional[str] = None,
+    admin_ids: Optional[Set[int]] = None,
+) -> None:
+    """
+    Routes and handles inline button clicks in Telegram.
+    Accepts either:
+    - (handlers, update, context) when called from TelegramBotHandlers method
+    - (update, context, db_path=..., admin_ids=...) when called directly
+    """
+    (
+        handlers,
+        update,
+        query,
+        chat_id,
+        user_id,
+        is_admin,
+        data,
+    ) = _extract_callback_caller_info(handlers_or_update, update_or_context, context, admin_ids)
+
+    if not query:
+        return
 
     if (data in ADMIN_CALLBACK_ACTIONS or data.startswith(ADMIN_CALLBACK_PREFIXES)) and not is_admin:
         logger.warning("Denied admin callback '%s' from user_id=%s in chat_id=%s", data, user_id, chat_id)
