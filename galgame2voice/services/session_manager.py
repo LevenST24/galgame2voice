@@ -25,6 +25,47 @@ class SessionTurn(BaseModel):
     latency_ms: int = Field(default=0)
 
 
+def _render_system_template(tpl: str, character_name: str) -> str:
+    """Renders a system template string with character_name substitution."""
+    if "{character_name}" in tpl:
+        rendered = tpl.replace("{character_name}", character_name)
+        return rendered.replace("{{", "{").replace("}}", "}")
+    if "{" in tpl:
+        try:
+            return tpl.format(character_name=character_name)
+        except Exception:
+            return tpl.replace("{character_name}", character_name)
+    return tpl
+
+
+def _format_assistant_turn(turn: SessionTurn) -> str:
+    """Formats an assistant session turn as raw_content or bilingual JSON string."""
+    if turn.raw_content:
+        return turn.raw_content
+    data_dict = {
+        "tts": {
+            "speed": 1.0,
+            "temp": 1.0,
+            "emotion": getattr(turn, "emotion", "gentle") or "gentle",
+        },
+        "chinese": turn.content_chinese,
+        "japanese": turn.content_japanese,
+    }
+    if getattr(turn, "emotion", None):
+        data_dict["emotion"] = turn.emotion
+    return json.dumps(data_dict, ensure_ascii=False)
+
+
+def _is_duplicate_user_prompt(last_msg: Optional[Dict[str, str]], prompt: str) -> bool:
+    """Checks whether the prompt matches the immediately preceding user message."""
+    if not last_msg or last_msg.get("role") != "user":
+        return False
+    content = last_msg.get("content")
+    if content == prompt:
+        return True
+    return content == json.dumps({"chinese": prompt, "japanese": ""}, ensure_ascii=False)
+
+
 class SessionManager:
     """
     Manages multi-turn conversation context, sliding window history, and prompt templating.
@@ -223,17 +264,7 @@ class SessionManager:
         Injects optional long-term memory & affection context block into system prompt.
         """
         tpl = system_template or self.system_template
-
-        if "{character_name}" in tpl:
-            system_content = tpl.replace("{character_name}", character_name)
-            system_content = system_content.replace("{{", "{").replace("}}", "}")
-        elif "{" in tpl:
-            try:
-                system_content = tpl.format(character_name=character_name)
-            except Exception:
-                system_content = tpl.replace("{character_name}", character_name)
-        else:
-            system_content = tpl
+        system_content = _render_system_template(tpl, character_name)
 
         if memory_prompt_block and memory_prompt_block.strip():
             system_content = f"{system_content}\n\n{memory_prompt_block.strip()}"
@@ -244,24 +275,13 @@ class SessionManager:
             if turn.role == "user":
                 content = turn.content_chinese or turn.raw_content or ""
             else:
-                data_dict = {
-                    "tts": {
-                        "speed": 1.0,
-                        "temp": 1.0,
-                        "emotion": getattr(turn, "emotion", "gentle") or "gentle"
-                    },
-                    "chinese": turn.content_chinese,
-                    "japanese": turn.content_japanese,
-                }
-                if getattr(turn, "emotion", None):
-                    data_dict["emotion"] = turn.emotion
-                content = turn.raw_content or json.dumps(data_dict, ensure_ascii=False)
+                content = _format_assistant_turn(turn)
             messages.append({"role": turn.role, "content": content})
 
         # Append new_user_prompt only if it is not already the last message in history
         if new_user_prompt:
             last_msg = messages[-1] if len(messages) > 1 else None
-            if not last_msg or last_msg.get("role") != "user" or (last_msg.get("content") != new_user_prompt and last_msg.get("content") != json.dumps({"chinese": new_user_prompt, "japanese": ""}, ensure_ascii=False)):
+            if not _is_duplicate_user_prompt(last_msg, new_user_prompt):
                 messages.append({"role": "user", "content": new_user_prompt})
 
         return messages

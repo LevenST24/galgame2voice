@@ -289,29 +289,24 @@ def _extract_weight_spec(target: Any) -> VoiceProfileWeightSpec:
     loadable absolute paths whether the profile stores project-relative package
     paths or engine-relative paths."""
     if isinstance(target, dict):
-        return VoiceProfileWeightSpec(
-            name=target.get("name", "Unnamed"),
-            gpt_weights_path=resolve_weight_file_path(target.get("gpt_weights_path", "")),
-            sovits_weights_path=resolve_weight_file_path(target.get("sovits_weights_path", "")),
-            refer_audio_path=target.get("refer_audio_path") or target.get("ref_audio_path") or "",
-            refer_text=target.get("refer_text") or target.get("prompt_text") or "",
-            refer_language=target.get("refer_language") or target.get("prompt_lang") or "ja",
-            prompt_language=target.get("prompt_language") or target.get("prompt_lang") or "ja",
-            text_language=target.get("text_language") or target.get("text_lang") or "ja",
-        )
+        getter = lambda k, d=None: target.get(k, d)
+        get_fallback = lambda k, fb, d="": target.get(k) or target.get(fb) or d
     elif hasattr(target, "gpt_weights_path"):
-        return VoiceProfileWeightSpec(
-            name=getattr(target, "name", "Unnamed"),
-            gpt_weights_path=resolve_weight_file_path(getattr(target, "gpt_weights_path", "")),
-            sovits_weights_path=resolve_weight_file_path(getattr(target, "sovits_weights_path", "")),
-            refer_audio_path=getattr(target, "refer_audio_path", getattr(target, "ref_audio_path", "")),
-            refer_text=getattr(target, "refer_text", getattr(target, "prompt_text", "")),
-            refer_language=getattr(target, "refer_language", getattr(target, "prompt_lang", "ja")),
-            prompt_language=getattr(target, "prompt_language", getattr(target, "prompt_lang", "ja")),
-            text_language=getattr(target, "text_language", getattr(target, "text_lang", "ja")),
-        )
+        getter = lambda k, d=None: getattr(target, k, d)
+        get_fallback = lambda k, fb, d="": getattr(target, k, getattr(target, fb, d))
     else:
         raise ValueError(f"Cannot extract weight spec from object of type {type(target)}")
+
+    return VoiceProfileWeightSpec(
+        name=getter("name", "Unnamed"),
+        gpt_weights_path=resolve_weight_file_path(getter("gpt_weights_path", "")),
+        sovits_weights_path=resolve_weight_file_path(getter("sovits_weights_path", "")),
+        refer_audio_path=get_fallback("refer_audio_path", "ref_audio_path", ""),
+        refer_text=get_fallback("refer_text", "prompt_text", ""),
+        refer_language=get_fallback("refer_language", "prompt_lang", "ja"),
+        prompt_language=get_fallback("prompt_language", "prompt_lang", "ja"),
+        text_language=get_fallback("text_language", "text_lang", "ja"),
+    )
 
 
 __all__ = [

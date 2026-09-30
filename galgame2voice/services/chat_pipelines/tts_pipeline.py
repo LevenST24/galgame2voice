@@ -21,6 +21,13 @@ logger = logging.getLogger("galgame2voice.services.chat_pipelines.tts_pipeline")
 _VOCAL_RE = re.compile(r'[\w\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]')
 
 
+def _get_profile_attr(profile: Any, key: str, default: Any = None) -> Any:
+    """Safely retrieves a key or attribute from a voice profile dict or model."""
+    if isinstance(profile, dict):
+        return profile.get(key, default)
+    return getattr(profile, key, default)
+
+
 class TtsStreamPipeline:
     """
     Manages audio synthesis for sentence chunks produced by the chat parser.
@@ -50,25 +57,22 @@ class TtsStreamPipeline:
         """Prepares options dictionary for a specific sentence chunk."""
         opts = dict(base_options) if base_options else {}
         if active_profile:
-            is_dict = isinstance(active_profile, dict)
-            get_val = active_profile.get if is_dict else (lambda k, d=None: getattr(active_profile, k, d))
-
-            prof_id = get_val("id")
+            prof_id = _get_profile_attr(active_profile, "id")
             if prof_id is not None:
                 opts.setdefault("voice_profile_id", prof_id)
 
-            char_name = get_val("name")
+            char_name = _get_profile_attr(active_profile, "name")
             if char_name:
                 opts.setdefault("character_name", char_name)
 
-            opts.setdefault("prompt_lang", get_val("prompt_lang") or "ja")
-            opts.setdefault("text_lang", get_val("text_lang") or "ja")
+            opts.setdefault("prompt_lang", _get_profile_attr(active_profile, "prompt_lang") or "ja")
+            opts.setdefault("text_lang", _get_profile_attr(active_profile, "text_lang") or "ja")
 
-            ref_path = get_val("ref_audio_path")
+            ref_path = _get_profile_attr(active_profile, "ref_audio_path")
             if ref_path:
                 opts.setdefault("ref_audio_path", ref_path)
 
-            prompt_text = get_val("prompt_text")
+            prompt_text = _get_profile_attr(active_profile, "prompt_text")
             if prompt_text:
                 opts.setdefault("prompt_text", prompt_text)
 

@@ -168,6 +168,22 @@ class DynamicBatchScheduler:
 
         return max(1, len(parts))
 
+    @staticmethod
+    def _scale_batch_size_for_throughput(slice_count: int, is_high_throughput: bool) -> int:
+        """Scales batch size according to slice count and GPU throughput tier."""
+        if is_high_throughput:
+            if slice_count >= 8:
+                return 8
+            if slice_count >= 4:
+                return 4
+            return min(2, slice_count)
+
+        if slice_count >= 6:
+            return 4
+        if slice_count >= 3:
+            return 3
+        return min(2, slice_count)
+
     def compute_batch_size(
         self,
         text: str,
@@ -205,20 +221,7 @@ class DynamicBatchScheduler:
         if samples < 2 or metrics["is_resource_constrained"]:
             return min(2, slice_count)
 
-        # High throughput GPU environment (RTF < 0.5, chars/s >= 20):
-        if metrics["is_high_throughput"]:
-            if slice_count >= 8:
-                return 8
-            if slice_count >= 4:
-                return 4
-            return min(2, slice_count)
-
-        # Moderate throughput:
-        if slice_count >= 6:
-            return 4
-        if slice_count >= 3:
-            return 3
-        return min(2, slice_count)
+        return self._scale_batch_size_for_throughput(slice_count, metrics["is_high_throughput"])
 
 
 # Global singletons

@@ -20,6 +20,14 @@ from galgame2voice.database.session import immediate_transaction
 
 logger = logging.getLogger("galgame2voice.database.crud_modules.memory_affection")
 
+_INSERT_DEFAULT_AFFECTION_SQL = """
+    INSERT INTO character_affection (
+        user_id, character_id, affection_score, affection_level, current_emotion,
+        interaction_count, daily_points_earned, last_interaction_date, unlocked_dialogues, custom_nickname
+    ) VALUES (?, ?, 0, 1, 'normal', 0, 0, '', '[]', NULL)
+    ON CONFLICT(user_id, character_id) DO NOTHING;
+"""
+
 __all__ = [
     "create_memory",
     "get_memory",
@@ -269,13 +277,7 @@ async def get_or_create_character_affection(
         return _format_affection_response(dict(row))
 
     async with immediate_transaction(conn):
-        await conn.execute("""
-            INSERT INTO character_affection (
-                user_id, character_id, affection_score, affection_level, current_emotion,
-                interaction_count, daily_points_earned, last_interaction_date, unlocked_dialogues, custom_nickname
-            ) VALUES (?, ?, 0, 1, 'normal', 0, 0, '', '[]', NULL)
-            ON CONFLICT(user_id, character_id) DO NOTHING;
-        """, (user_id, character_id))
+        await conn.execute(_INSERT_DEFAULT_AFFECTION_SQL, (user_id, character_id))
 
     cursor = await conn.execute("""
         SELECT * FROM character_affection WHERE user_id = ? AND character_id = ?;
@@ -314,13 +316,7 @@ async def get_user_affections_for_profiles(
     if missing_ids:
         async with immediate_transaction(conn):
             insert_params = [(user_id, pid) for pid in missing_ids]
-            await conn.executemany("""
-                INSERT INTO character_affection (
-                    user_id, character_id, affection_score, affection_level, current_emotion,
-                    interaction_count, daily_points_earned, last_interaction_date, unlocked_dialogues, custom_nickname
-                ) VALUES (?, ?, 0, 1, 'normal', 0, 0, '', '[]', NULL)
-                ON CONFLICT(user_id, character_id) DO NOTHING;
-            """, insert_params)
+            await conn.executemany(_INSERT_DEFAULT_AFFECTION_SQL, insert_params)
 
         missing_placeholders = ",".join("?" for _ in missing_ids)
         cursor = await conn.execute(f"""

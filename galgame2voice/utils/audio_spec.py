@@ -56,17 +56,18 @@ class AudioSpec:
     channels: int = 1
 
 
-def _probe_wav_riff_header(data: bytes) -> Optional[AudioSpec]:
-    """
-    Parses raw WAV RIFF header and fmt chunk to determine sample rate, channels,
-    and duration without requiring third-party libraries.
-    """
+def _parse_wav_chunks(
+    data: bytes,
+    include_data_bytes: bool = False,
+) -> Tuple[Optional[bytes], Optional[int], Optional[bytes]]:
+    """Scans RIFF/WAVE chunks and returns (fmt_bytes, data_len, data_bytes)."""
     if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
-        return None
+        return None, None, None
     try:
         pos = 12
         fmt: Optional[bytes] = None
         data_len: Optional[int] = None
+        data_bytes: Optional[bytes] = None
         while pos + 8 <= len(data):
             chunk_id = data[pos : pos + 4]
             chunk_size = int.from_bytes(data[pos + 4 : pos + 8], "little")
@@ -74,9 +75,23 @@ def _probe_wav_riff_header(data: bytes) -> Optional[AudioSpec]:
                 fmt = data[pos + 8 : pos + 8 + chunk_size]
             elif chunk_id == b"data":
                 data_len = chunk_size
+                if include_data_bytes:
+                    data_bytes = data[pos + 8 : pos + 8 + chunk_size]
                 break
             pos += 8 + chunk_size + (chunk_size & 1)
-        if fmt and len(fmt) >= 16:
+        return fmt, data_len, data_bytes
+    except (IndexError, TypeError, ValueError):
+        return None, None, None
+
+
+def _probe_wav_riff_header(data: bytes) -> Optional[AudioSpec]:
+    """
+    Parses raw WAV RIFF header and fmt chunk to determine sample rate, channels,
+    and duration without requiring third-party libraries.
+    """
+    fmt, data_len, _ = _parse_wav_chunks(data)
+    if fmt and len(fmt) >= 16:
+        try:
             channels = struct.unpack_from("<H", fmt, 2)[0]
             sample_rate = struct.unpack_from("<I", fmt, 4)[0]
             byte_rate = struct.unpack_from("<I", fmt, 8)[0]
@@ -92,8 +107,8 @@ def _probe_wav_riff_header(data: bytes) -> Optional[AudioSpec]:
                 sample_rate=sample_rate if sample_rate > 0 else 32000,
                 channels=channels if channels > 0 else 1,
             )
-    except (struct.error, IndexError, TypeError, ZeroDivisionError):
-        pass
+        except (struct.error, IndexError, TypeError, ZeroDivisionError):
+            pass
     return None
 
 
@@ -396,24 +411,12 @@ def extract_wav_duration(audio: bytes) -> Optional[float]:
     if not audio or len(audio) <= 44:
         return None
     try:
-        if audio[:4] == b"RIFF" and audio[8:12] == b"WAVE":
-            pos = 12
-            fmt: Optional[bytes] = None
-            data_len: Optional[int] = None
-            while pos + 8 <= len(audio):
-                chunk_id = audio[pos : pos + 4]
-                chunk_size = int.from_bytes(audio[pos + 4 : pos + 8], "little")
-                if chunk_id == b"fmt ":
-                    fmt = audio[pos + 8 : pos + 8 + chunk_size]
-                elif chunk_id == b"data":
-                    data_len = chunk_size
-                    break
-                pos += 8 + chunk_size + (chunk_size & 1)
-            if fmt and len(fmt) >= 16:
-                _byte_rate = struct.unpack_from("<I", fmt, 8)[0]
-                if _byte_rate > 0:
-                    effective_data_len = data_len if data_len is not None else max(0, len(audio) - WAV_HEADER_BYTES)
-                    return max(0.05, effective_data_len / float(_byte_rate))
+        fmt, data_len, _ = _parse_wav_chunks(audio)
+        if fmt and len(fmt) >= 16:
+            _byte_rate = struct.unpack_from("<I", fmt, 8)[0]
+            if _byte_rate > 0:
+                effective_data_len = data_len if data_len is not None else max(0, len(audio) - WAV_HEADER_BYTES)
+                return max(0.05, effective_data_len / float(_byte_rate))
     except (struct.error, IndexError, TypeError, ZeroDivisionError):
         pass
     # Fallback: assume 32000Hz 16-bit mono PCM (64000 bytes/sec)
@@ -442,20 +445,9 @@ def wav_peak_amplitude(audio: bytes) -> Optional[float]:
     A zero-length data chunk counts as undeterminable (None), not silent.
     """
     try:
-        if len(audio) < 44 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+        if len(audio) < 44:
             return None
-        fmt: Optional[bytes] = None
-        data: Optional[bytes] = None
-        pos = 12
-        while pos + 8 <= len(audio):
-            chunk_id = audio[pos : pos + 4]
-            chunk_size = int.from_bytes(audio[pos + 4 : pos + 8], "little")
-            if chunk_id == b"fmt ":
-                fmt = audio[pos + 8 : pos + 8 + chunk_size]
-            elif chunk_id == b"data":
-                data = audio[pos + 8 : pos + 8 + chunk_size]
-                break
-            pos += 8 + chunk_size + (chunk_size & 1)
+        fmt, _, data = _parse_wav_chunks(audio, include_data_bytes=True)
         if not fmt or len(fmt) < 16 or not data:
             return None
         audio_format, _channels, _rate, _byte_rate, _align, bits = struct.unpack_from("<HHIIHH", fmt, 0)
