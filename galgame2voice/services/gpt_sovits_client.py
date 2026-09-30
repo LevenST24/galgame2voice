@@ -584,6 +584,42 @@ class GptSovitsClient:
             for i in range(0, len(audio_bytes), chunk_size):
                 yield audio_bytes[i:i + chunk_size]
 
+    async def _produce_stream_tts_chunks(
+        self,
+        client: Any,
+        url: str,
+        payload: Dict[str, Any],
+        queue: asyncio.Queue,
+        sentinel: object,
+        profiler: Optional[Any],
+        chunk_size: int,
+    ) -> None:
+        """Pumps streamed bytes from upstream GPT-SoVITS into queue with concurrency & inflight tracking."""
+        try:
+            async with self.lock:
+                self._inflight_requests += 1
+                try:
+                    async with client.stream("POST", url, json=payload, timeout=TTS_TIMEOUT) as resp:
+                        if resp.status_code != 200:
+                            err_bytes = await resp.aread()
+                            raise RuntimeError(
+                                f"TTS synthesis failed with status {resp.status_code}: {err_bytes.decode('utf-8', errors='ignore')[:300]}"
+                            )
+                        first_upstream_chunk = True
+                        async for chunk in resp.aiter_bytes(chunk_size=chunk_size):
+                            if chunk:
+                                if first_upstream_chunk:
+                                    if profiler and hasattr(profiler, "record_upstream_first_byte"):
+                                        profiler.record_upstream_first_byte()
+                                    first_upstream_chunk = False
+                                await queue.put(chunk)
+                finally:
+                    self._inflight_requests -= 1
+        except BaseException as exc:
+            await queue.put(exc)
+        finally:
+            await queue.put(sentinel)
+
     async def stream_tts(
         self,
         text: str,
@@ -622,33 +658,17 @@ class GptSovitsClient:
         sentinel = object()
         profiler = opts.get("profiler")
 
-        async def _stream_producer():
-            try:
-                async with self.lock:
-                    self._inflight_requests += 1
-                    try:
-                        async with client.stream("POST", url, json=payload, timeout=TTS_TIMEOUT) as resp:
-                            if resp.status_code != 200:
-                                err_bytes = await resp.aread()
-                                raise RuntimeError(
-                                    f"TTS synthesis failed with status {resp.status_code}: {err_bytes.decode('utf-8', errors='ignore')[:300]}"
-                                )
-                            first_upstream_chunk = True
-                            async for chunk in resp.aiter_bytes(chunk_size=chunk_size):
-                                if chunk:
-                                    if first_upstream_chunk:
-                                        if profiler and hasattr(profiler, "record_upstream_first_byte"):
-                                            profiler.record_upstream_first_byte()
-                                        first_upstream_chunk = False
-                                    await queue.put(chunk)
-                    finally:
-                        self._inflight_requests -= 1
-            except BaseException as exc:
-                await queue.put(exc)
-            finally:
-                await queue.put(sentinel)
-
-        producer_task = asyncio.create_task(_stream_producer())
+        producer_task = asyncio.create_task(
+            self._produce_stream_tts_chunks(
+                client=client,
+                url=url,
+                payload=payload,
+                queue=queue,
+                sentinel=sentinel,
+                profiler=profiler,
+                chunk_size=chunk_size,
+            )
+        )
         pre_buffer = bytearray()
         checked_silence = False
         total_bytes_streamed = 0

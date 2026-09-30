@@ -308,41 +308,33 @@ class VoiceManager:
             logger.warning("Voice profile warm-up encountered error: %s", exc)
             return False
 
-    async def _execute_switch(
+    async def _resolve_switch_target(
         self,
         target: Union[int, str, VoiceProfileResponse, VoiceProfileInDB, Dict[str, Any], Any],
-        persist: bool = True,
-        force: bool = False,
-    ) -> bool:
-        profile_obj = target
-
-        # 1. Resolve Profile from DB if ID or Name provided
+    ) -> Optional[Any]:
+        """Resolves target identifier into a DB voice profile model or object."""
         if isinstance(target, int) or (isinstance(target, str) and target.isdigit()):
             profile_id = int(target)
             async with get_db(self.db_path) as conn:
                 db_profile = await crud.get_voice_profile(conn, profile_id)
                 if not db_profile:
                     logger.error("Voice profile ID %d not found in database", profile_id)
-                    return False
-                profile_obj = db_profile
+                    return None
+                return db_profile
 
-        elif isinstance(target, str):
-            # Target may be a character profile name
+        if isinstance(target, str):
             async with get_db(self.db_path) as conn:
                 db_profile = await crud.get_voice_profile_by_name(conn, target)
                 if db_profile:
-                    profile_obj = db_profile
-                else:
-                    logger.warning("Voice profile name '%s' not found in database", target)
+                    return db_profile
+                logger.warning("Voice profile name '%s' not found in database", target)
+                logger.error("Cannot switch voice profile: unresolved string target '%s'", target)
+                return None
 
-        # Bail out if the target failed to resolve to an actual profile object
-        if isinstance(profile_obj, str):
-            logger.error("Cannot switch voice profile: unresolved string target '%s'", profile_obj)
-            return False
+        return target
 
-        # Memory precheck: new and old weights briefly co-reside during a switch; loading
-        # with too little free memory OOM-crashes the engine. Sits here (not in the HTTP
-        # layer) so every call path — REST, Telegram, auto-bind — gets the same guard.
+    def _check_switch_memory_guard(self, force: bool) -> None:
+        """Memory precheck: verifies free RAM/VRAM to prevent engine OOM crash."""
         if not force and not os.getenv("GALGAME2VOICE_SKIP_MEM_CHECK"):
             release_system_memory()
             _, free_gb = get_system_memory_status()
@@ -354,6 +346,38 @@ class VoiceManager:
                 )
             self._check_vram_guard()
 
+    async def _persist_active_switch_profile(self, profile_obj: Any) -> None:
+        """Persists the newly active voice profile ID into SQLite settings."""
+        profile_id = None
+        if hasattr(profile_obj, "id") and profile_obj.id is not None:
+            profile_id = profile_obj.id
+        elif isinstance(profile_obj, dict) and "id" in profile_obj:
+            profile_id = profile_obj["id"]
+
+        if profile_id:
+            try:
+                async with get_db(self.db_path) as conn:
+                    await crud.set_active_voice_profile(conn, profile_id)
+                    logger.info("Persisted active voice profile ID %d in settings", profile_id)
+            except Exception as exc:
+                logger.warning("Could not persist active voice profile ID to DB: %s", exc)
+
+    async def _execute_switch(
+        self,
+        target: Union[int, str, VoiceProfileResponse, VoiceProfileInDB, Dict[str, Any], Any],
+        persist: bool = True,
+        force: bool = False,
+    ) -> bool:
+        # 1. Resolve Profile from DB if ID or Name provided
+        profile_obj = await self._resolve_switch_target(target)
+        if profile_obj is None:
+            return False
+
+        # Memory precheck: new and old weights briefly co-reside during a switch; loading
+        # with too little free memory OOM-crashes the engine. Sits here (not in the HTTP
+        # layer) so every call path — REST, Telegram, auto-bind — gets the same guard.
+        self._check_switch_memory_guard(force)
+
         # 2. Execute 3-step atomic model switch with auto-rollback
         release_system_memory()
         success = await self.client.switch_voice_profile(profile_obj, force=force)
@@ -364,19 +388,7 @@ class VoiceManager:
 
         # 3. Update Persistence in SQLite (under switch lock)
         if persist:
-            profile_id = None
-            if hasattr(profile_obj, "id") and profile_obj.id is not None:
-                profile_id = profile_obj.id
-            elif isinstance(profile_obj, dict) and "id" in profile_obj:
-                profile_id = profile_obj["id"]
-
-            if profile_id:
-                try:
-                    async with get_db(self.db_path) as conn:
-                        await crud.set_active_voice_profile(conn, profile_id)
-                        logger.info("Persisted active voice profile ID %d in settings", profile_id)
-                except Exception as exc:
-                    logger.warning("Could not persist active voice profile ID to DB: %s", exc)
+            await self._persist_active_switch_profile(profile_obj)
 
         # Invalidate in-memory voice resolver cache
         _safe_invalidate_resolver()

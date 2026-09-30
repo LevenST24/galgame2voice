@@ -169,13 +169,40 @@ class CharacterManager:
         )
 
     @staticmethod
+    def _probe_audio_file(
+        resolved_audio: Path,
+        canonical_path: Path,
+    ) -> Tuple[Optional[str], Optional[float], Optional[Exception]]:
+        """Computes or retrieves cached MD5 hash and duration for an audio file."""
+        from galgame2voice.services.tts_service import TtsService
+        try:
+            st = resolved_audio.stat()
+            cache_key = (str(canonical_path), st.st_size, st.st_mtime)
+        except Exception:
+            cache_key = None
+
+        cached_probe = _AUDIO_PROBE_CACHE.get(cache_key) if cache_key else None
+        if cached_probe is not None:
+            return cached_probe[0], cached_probe[1], None
+
+        try:
+            file_hash = hashlib.md5(resolved_audio.read_bytes()).hexdigest()
+        except Exception as exc:
+            return None, None, exc
+
+        duration = TtsService.get_audio_duration(resolved_audio)
+        if cache_key:
+            _AUDIO_PROBE_CACHE[cache_key] = (file_hash, duration)
+        return file_hash, duration, None
+
+    @classmethod
     def _validate_package_emotions(
+        cls,
         pkg_container: CharacterPackage,
         manifest: CharacterManifest,
         errors: List[str],
     ) -> None:
         """Validates package emotion audio references, paths, hashes, and durations."""
-        from galgame2voice.services.tts_service import TtsService
         from galgame2voice.utils.path_guard import contains_traversal_payload
 
         seen_audio_paths: Dict[Path, str] = {}
@@ -202,24 +229,10 @@ class CharacterManager:
                 seen_audio_paths[canonical_path] = emo_name
 
             # Check duplicate MD5 hash across emotions in package and validate duration
-            try:
-                st = resolved_audio.stat()
-                cache_key = (str(canonical_path), st.st_size, st.st_mtime)
-            except Exception:
-                cache_key = None
-
-            cached_probe = _AUDIO_PROBE_CACHE.get(cache_key) if cache_key else None
-            if cached_probe is not None:
-                file_hash, duration = cached_probe
-            else:
-                try:
-                    file_hash = hashlib.md5(resolved_audio.read_bytes()).hexdigest()
-                except Exception as exc:
-                    errors.append(f"Failed to read audio file '{audio_rel}' for MD5 verification: {exc}")
-                    continue
-                duration = TtsService.get_audio_duration(resolved_audio)
-                if cache_key:
-                    _AUDIO_PROBE_CACHE[cache_key] = (file_hash, duration)
+            file_hash, duration, read_err = cls._probe_audio_file(resolved_audio, canonical_path)
+            if read_err is not None:
+                errors.append(f"Failed to read audio file '{audio_rel}' for MD5 verification: {read_err}")
+                continue
 
             if file_hash in seen_audio_hashes:
                 errors.append(
