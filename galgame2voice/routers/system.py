@@ -435,7 +435,7 @@ def _handle_uncommitted_modifications(
     discard_local_changes: bool,
 ) -> SystemUpdateResponse | None:
     """Inspects porcelain status and safely handles local uncommitted modifications."""
-    rc, status_out, _ = _run_git_cmd(["status", "--porcelain"], cwd=project_root)
+    _, status_out, _ = _run_git_cmd(["status", "--porcelain"], cwd=project_root)
     if not status_out.strip():
         return None
 
@@ -641,7 +641,7 @@ async def apply_system_update(payload: SystemUpdateRequest | None = None) -> Sys
     # Execute git pull and frontend rebuild in worker thread (serialized to
     # avoid concurrent git operations racing on the repository lock)
     async with _GIT_OP_LOCK:
-        res, changed_files = await asyncio.to_thread(
+        res, _ = await asyncio.to_thread(
             _apply_update_sync,
             settings.project_root,
             force_rebuild,

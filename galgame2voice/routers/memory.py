@@ -34,14 +34,13 @@ async def list_user_memories(
     clean_user = validate_user_id(user_id)
     async with get_db() as conn:
         try:
-            memories = await crud.list_memories(
+            return await crud.list_memories(
                 conn,
                 user_id=clean_user,
                 character_id=character_id,
                 category=category.strip() if category else None,
                 limit=limit,
             )
-            return memories
         except Exception as exc:
             safe_err = sanitize_error_detail(exc)
             raise HTTPException(
@@ -123,8 +122,7 @@ async def create_user_memory(mem: UserMemoryCreate) -> UserMemoryResponse:
 
     async with get_db() as conn:
         try:
-            created = await crud.upsert_memory(conn, sanitized_mem)
-            return created
+            return await crud.upsert_memory(conn, sanitized_mem)
         except Exception as exc:
             safe_err = sanitize_error_detail(exc)
             raise HTTPException(

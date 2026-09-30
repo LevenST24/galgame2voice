@@ -501,8 +501,7 @@ async def fs_browse(
     path: str | None = Query(None, description="Directory path to explore"),
     file_type: str | None = Query("all", description="'gpt', 'sovits', 'audio', or 'all'"),
 ):
-    result = await asyncio.to_thread(_fs_browse_sync, path, file_type)
-    return result
+    return await asyncio.to_thread(_fs_browse_sync, path, file_type)
 
 
 def _get_available_drives() -> list[str]:

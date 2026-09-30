@@ -234,7 +234,7 @@ class VoiceManager:
         If still below floor, raises InsufficientMemoryError.
         Skips cleanly if no CUDA GPU is detected (e.g. CPU or MPS mode).
         """
-        total_vram, free_vram = get_gpu_vram_status()
+        _, free_vram = get_gpu_vram_status()
         if free_vram is None:
             return
 

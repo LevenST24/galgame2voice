@@ -185,7 +185,7 @@ async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except (asyncio.TimeoutError, TimeoutError) as exc:
         logger.error("ffmpeg conversion timed out after %.1f seconds: %s", timeout, cmd_args[:4])
         await _terminate_subprocess(proc)

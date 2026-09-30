@@ -163,8 +163,7 @@ class StreamingBilingualParser:
     def clean_markdown_delimiters(self, text: str) -> str:
         """Strips markdown ```json and ``` code block wrappers."""
         cleaned = _RE_MD_CODE_BLOCK.sub('', text)
-        cleaned = _RE_MD_LEADING_BACKTICK.sub('', cleaned)
-        return cleaned
+        return _RE_MD_LEADING_BACKTICK.sub('', cleaned)
 
     def _strip_incomplete_escape(self, s: str) -> str:
         """Strips trailing incomplete unicode or dangling backslash escape sequence."""

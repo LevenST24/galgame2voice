@@ -49,10 +49,9 @@ async def get_character_affection_endpoint(
     """
     clean_user = user_id.strip() or "default_user"
     async with get_db() as conn:
-        affection = await crud.get_or_create_character_affection(
+        return await crud.get_or_create_character_affection(
             conn, user_id=clean_user, character_id=character_id
         )
-        return affection
 
 
 @router.post("/update", response_model=CharacterAffectionResponse, summary="Update character affection state")
@@ -107,10 +106,9 @@ async def reset_character_affection_endpoint(
     character_id = req.character_id if req else 1
 
     async with get_db() as conn:
-        reset_result = await crud.reset_character_affection(
+        return await crud.reset_character_affection(
             conn, user_id=user_id, character_id=character_id
         )
-        return reset_result
 
 
 @router.get("/dialogues", summary="Get milestone & easter egg dialogue gallery")

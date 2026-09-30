@@ -216,7 +216,7 @@ async def chat_sync_endpoint(req: ChatRequest) -> dict[str, Any]:
 
     service = get_chat_service()
     try:
-        result = await service.chat_sync(
+        return await service.chat_sync(
             prompt=req.prompt.strip(),
             session_id=req.session_id,
             character_name=req.character_name,
@@ -232,7 +232,6 @@ async def chat_sync_endpoint(req: ChatRequest) -> dict[str, Any]:
             presence_penalty=req.presence_penalty,
             ai_adaptive_voice=req.ai_adaptive_voice,
         )
-        return result
     except HTTPException:
         raise
     except Exception as exc:
@@ -272,13 +271,12 @@ async def legacy_get_chat(
     service = get_chat_service()
     tts_opts = {"preset": preset} if preset else {}
     try:
-        result = await service.chat_sync(
+        return await service.chat_sync(
             prompt=prompt.strip(),
             session_id=clean_session_id,
             character_name=clean_char_name,
             tts_options=tts_opts,
         )
-        return result
     except HTTPException:
         raise
     except Exception as exc:

@@ -1147,7 +1147,7 @@ async def route_callback_query(
     """
     (
         handlers,
-        update,
+        _,
         query,
         chat_id,
         user_id,

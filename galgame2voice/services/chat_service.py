@@ -829,8 +829,7 @@ class ChatService:
                 chat_msg = ChatMessage(role="user", content=translation_prompt)
                 resp = await adapter.chat([chat_msg], model=model_name, temperature=0.3)
                 raw_ja = resp.content if hasattr(resp, "content") else str(resp)
-                ja = raw_ja.strip().strip('"\'`「」『』')
-                return ja
+                return raw_ja.strip().strip('"\'`「」『』')
             except Exception as exc:
                 logger.warning("LLM translation fallback in resolve_message_japanese failed: %s", exc)
                 return ""

@@ -779,9 +779,6 @@ class TtsCacheManager:
         Returns (count_deleted, freed_mb).
         """
         async with self._write_lock:
-            freed_bytes = 0
-            deleted_count = 0
-
             def _scan_and_delete() -> tuple[int, int]:
                 freed = 0
                 count = 0
