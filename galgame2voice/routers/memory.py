@@ -50,11 +50,8 @@ async def list_user_memories(
             ) from exc
 
 
-@router.post("", response_model=UserMemoryResponse, status_code=status.HTTP_201_CREATED, summary="Create or upsert memory")
-async def create_user_memory(mem: UserMemoryCreate) -> UserMemoryResponse:
-    """
-    Manually creates or upserts a fact memory for a user and character.
-    """
+def _validate_and_sanitize_memory_create(mem: UserMemoryCreate) -> UserMemoryCreate:
+    """Validates required memory fields and sanitizes values before database insertion."""
     clean_user = mem.user_id.strip() if mem.user_id else "default_user"
     if not clean_user:
         raise HTTPException(
@@ -82,35 +79,16 @@ async def create_user_memory(mem: UserMemoryCreate) -> UserMemoryResponse:
     clean_val = MemoryService.sanitize_fact_value(mem.fact_value.strip(), max_len=500)
     clean_cat = mem.category.strip()[:64] if mem.category else "preference"
 
-    sanitized_mem = mem.model_copy(update={
+    return mem.model_copy(update={
         "user_id": clean_user,
         "fact_key": clean_key,
         "fact_value": clean_val,
         "category": clean_cat,
     })
 
-    async with get_db() as conn:
-        try:
-            created = await crud.upsert_memory(conn, sanitized_mem)
-            return created
-        except Exception as exc:
-            safe_err = sanitize_error_detail(exc)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create or upsert memory: {safe_err}",
-            ) from exc
 
-
-@router.put("/{memory_id}", response_model=UserMemoryResponse, summary="Update user memory")
-async def update_user_memory(memory_id: int, updates: UserMemoryUpdate) -> UserMemoryResponse:
-    """
-    Updates an existing memory record by its ID.
-    """
-    if memory_id < 1:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="memory_id must be a positive integer >= 1",
-        )
+def _sanitize_memory_update(updates: UserMemoryUpdate) -> UserMemoryUpdate:
+    """Validates update constraints and sanitizes non-None update attributes."""
     if updates.fact_key is not None and not updates.fact_key.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -136,7 +114,39 @@ async def update_user_memory(memory_id: int, updates: UserMemoryUpdate) -> UserM
     if updates.last_recalled_at is not None:
         clean_updates_dict["last_recalled_at"] = updates.last_recalled_at
 
-    sanitized_updates = updates.model_copy(update=clean_updates_dict)
+    return updates.model_copy(update=clean_updates_dict)
+
+
+@router.post("", response_model=UserMemoryResponse, status_code=status.HTTP_201_CREATED, summary="Create or upsert memory")
+async def create_user_memory(mem: UserMemoryCreate) -> UserMemoryResponse:
+    """
+    Manually creates or upserts a fact memory for a user and character.
+    """
+    sanitized_mem = _validate_and_sanitize_memory_create(mem)
+
+    async with get_db() as conn:
+        try:
+            created = await crud.upsert_memory(conn, sanitized_mem)
+            return created
+        except Exception as exc:
+            safe_err = sanitize_error_detail(exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create or upsert memory: {safe_err}",
+            ) from exc
+
+
+@router.put("/{memory_id}", response_model=UserMemoryResponse, summary="Update user memory")
+async def update_user_memory(memory_id: int, updates: UserMemoryUpdate) -> UserMemoryResponse:
+    """
+    Updates an existing memory record by its ID.
+    """
+    if memory_id < 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="memory_id must be a positive integer >= 1",
+        )
+    sanitized_updates = _sanitize_memory_update(updates)
 
     async with get_db() as conn:
         try:

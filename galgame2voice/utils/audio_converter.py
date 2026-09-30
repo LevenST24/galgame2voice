@@ -26,6 +26,30 @@ def reset_ffmpeg_cache() -> None:
     _cached_ffmpeg_bin = None
 
 
+def _find_ffmpeg_in_python_env(exe_name: str, scripts_dir: str) -> Optional[str]:
+    """Checks virtualenv and base Python scripts directories for ffmpeg binary."""
+    for prefix in (sys.prefix, sys.base_prefix):
+        candidate = Path(prefix) / scripts_dir / exe_name
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return None
+
+
+def _find_ffmpeg_in_project_dirs(exe_name: str) -> Optional[str]:
+    """Checks project root and bundled tool directories for ffmpeg binary."""
+    try:
+        from galgame2voice.config import get_settings
+        root = get_settings().project_root
+    except Exception:
+        root = Path(__file__).resolve().parent.parent.parent
+
+    for candidate_dir in ("tools", "runtime", "bin", "ffmpeg"):
+        bundled = root / candidate_dir / exe_name
+        if bundled.is_file():
+            return str(bundled.resolve())
+    return None
+
+
 def find_ffmpeg(custom_path: Optional[str] = None) -> Optional[str]:
     """
     Discovers and caches the ffmpeg executable location.
@@ -70,28 +94,16 @@ def find_ffmpeg(custom_path: Optional[str] = None) -> Optional[str]:
     is_win = sys.platform == "win32"
     exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
     scripts_dir = "Scripts" if is_win else "bin"
-    venv_candidate = Path(sys.prefix) / scripts_dir / exe_name
-    if venv_candidate.is_file():
-        _cached_ffmpeg_bin = str(venv_candidate.resolve())
-        return _cached_ffmpeg_bin
-
-    base_candidate = Path(sys.base_prefix) / scripts_dir / exe_name
-    if base_candidate.is_file():
-        _cached_ffmpeg_bin = str(base_candidate.resolve())
+    py_env_ffmpeg = _find_ffmpeg_in_python_env(exe_name, scripts_dir)
+    if py_env_ffmpeg:
+        _cached_ffmpeg_bin = py_env_ffmpeg
         return _cached_ffmpeg_bin
 
     # 4. Project root & bundled tools
-    try:
-        from galgame2voice.config import get_settings
-        root = get_settings().project_root
-    except Exception:
-        root = Path(__file__).resolve().parent.parent.parent
-
-    for candidate_dir in ("tools", "runtime", "bin", "ffmpeg"):
-        bundled = root / candidate_dir / exe_name
-        if bundled.is_file():
-            _cached_ffmpeg_bin = str(bundled.resolve())
-            return _cached_ffmpeg_bin
+    bundled_ffmpeg = _find_ffmpeg_in_project_dirs(exe_name)
+    if bundled_ffmpeg:
+        _cached_ffmpeg_bin = bundled_ffmpeg
+        return _cached_ffmpeg_bin
 
     return None
 

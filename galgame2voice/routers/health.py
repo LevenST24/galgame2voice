@@ -137,6 +137,28 @@ class SystemStatusResponse(BaseModel):
     hardware: HardwareTelemetry
 
 
+async def _probe_custom_gpt_sovits_target(target: str, base_url: str, t0: float) -> GptSovitsTelemetry:
+    """
+    One-shot probe against an explicitly different URL.
+    Connect budget 1s: healthy local engines connect in <50ms;
+    some VPN/TUN stacks delay loopback refusals to ~2s, so a tight
+    budget converts 'engine down' into a fast unreachable verdict.
+    """
+    timeout = httpx.Timeout(connect=1.0, read=2.5, write=2.5, pool=2.5)
+    async with httpx.AsyncClient(trust_env=False, timeout=timeout) as one_shot:
+        try:
+            resp = await one_shot.get(f"{target}/control")
+        except Exception:
+            resp = await one_shot.get(f"{target}/")
+        latency = round((time.perf_counter() - t0) * 1000, 2)
+        if resp.status_code in (200, 400):
+            return GptSovitsTelemetry(
+                status="reachable", base_url=base_url, latency_ms=latency, error=None)
+        return GptSovitsTelemetry(
+            status="unreachable", base_url=base_url, latency_ms=latency,
+            error=f"Unexpected status code: {resp.status_code}")
+
+
 async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
     """
     Checks GPT-SoVITS reachability through the shared singleton client pool
@@ -159,23 +181,7 @@ async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
         client = get_gpt_sovits_client()
 
         if target and target != client.base_url.rstrip("/"):
-            # One-shot probe against an explicitly different URL.
-            # Connect budget 1s: healthy local engines connect in <50ms;
-            # some VPN/TUN stacks delay loopback refusals to ~2s, so a tight
-            # budget converts "engine down" into a fast unreachable verdict.
-            timeout = httpx.Timeout(connect=1.0, read=2.5, write=2.5, pool=2.5)
-            async with httpx.AsyncClient(trust_env=False, timeout=timeout) as one_shot:
-                try:
-                    resp = await one_shot.get(f"{target}/control")
-                except Exception:
-                    resp = await one_shot.get(f"{target}/")
-                latency = round((time.perf_counter() - t0) * 1000, 2)
-                if resp.status_code in (200, 400):
-                    return GptSovitsTelemetry(
-                        status="reachable", base_url=base_url, latency_ms=latency, error=None)
-                return GptSovitsTelemetry(
-                    status="unreachable", base_url=base_url, latency_ms=latency,
-                    error=f"Unexpected status code: {resp.status_code}")
+            return await _probe_custom_gpt_sovits_target(target, base_url, t0)
 
         result = await client.check_health()
         latency = round((time.perf_counter() - t0) * 1000, 2)
@@ -522,18 +528,9 @@ def _terminate_process_by_pid(pid: int, timeout: float = 3.0) -> None:
         logger.debug("Error terminating process %d: %s", pid, exc)
 
 
-@router.post(
-    "/api/system/restart_sovits",
-    summary="Restart GPT-SoVITS Engine Subprocess",
-    dependencies=[Depends(require_auth)],
-)
-async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None) -> Dict[str, Any]:
-    """
-    Terminates the existing GPT-SoVITS process and restarts it with the
-    latest precision configuration (FP16 / FP32).
-    """
-    settings = get_settings()
-    sovits_dir_file = settings.project_root / "data" / "sovits_dir.txt"
+def _resolve_sovits_directory(project_root: Path) -> Path:
+    """Resolves and validates GPT-SoVITS directory from data/sovits_dir.txt."""
+    sovits_dir_file = project_root / "data" / "sovits_dir.txt"
     if not sovits_dir_file.exists():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -545,22 +542,41 @@ async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"GPT-SoVITS 目录不存在: {sovits_dir}",
         )
+    return sovits_dir
+
+
+def _terminate_existing_sovits_process(pid_file: Path) -> None:
+    """Reads PID from pid_file and terminates existing process if running."""
+    if not pid_file.exists():
+        return
+    old_pid = None
+    try:
+        old_pid = int(pid_file.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        pass
+    if old_pid:
+        _terminate_process_by_pid(old_pid)
+
+
+@router.post(
+    "/api/system/restart_sovits",
+    summary="Restart GPT-SoVITS Engine Subprocess",
+    dependencies=[Depends(require_auth)],
+)
+async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None) -> Dict[str, Any]:
+    """
+    Terminates the existing GPT-SoVITS process and restarts it with the
+    latest precision configuration (FP16 / FP32).
+    """
+    settings = get_settings()
+    sovits_dir = _resolve_sovits_directory(settings.project_root)
 
     # Determine precision and device target
     req_prec = str(payload.precision).strip().lower() if (payload and payload.precision) else None
     device, is_half, source = await _apply_sovits_precision_config(settings.project_root, sovits_dir, req_prec)
 
     pid_file = settings.project_root / "gptsovits.pid"
-    old_pid = None
-    if pid_file.exists():
-        try:
-            old_pid = int(pid_file.read_text(encoding="utf-8").strip())
-        except (ValueError, OSError):
-            pass
-
-    # Terminate old process
-    if old_pid:
-        _terminate_process_by_pid(old_pid)
+    _terminate_existing_sovits_process(pid_file)
 
     await asyncio.sleep(1.0)
 

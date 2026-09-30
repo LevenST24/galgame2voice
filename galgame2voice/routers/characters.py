@@ -376,6 +376,19 @@ async def _resolve_profile_by_name(conn: aiosqlite.Connection, char_name: str) -
     return None
 
 
+async def _lookup_character_profile(
+    conn: aiosqlite.Connection,
+    char_id: Optional[int],
+    char_name: Optional[str],
+) -> Optional[Any]:
+    """Resolves character profile by ID or name fallback."""
+    if char_id is not None:
+        return await crud.get_voice_profile(conn, char_id)
+    if char_name:
+        return await _resolve_profile_by_name(conn, char_name)
+    return None
+
+
 @router.post(
     "/switch",
     summary="Switch Active Character",
@@ -399,15 +412,10 @@ async def switch_character(req: CharacterSwitchRequest) -> Dict[str, Any]:
         )
 
     # 1. 404 Precedence: Resolve character entity first from database
+    ident = char_id if char_id is not None else char_name
     async with get_db() as conn:
-        profile = None
-        if char_id is not None:
-            profile = await crud.get_voice_profile(conn, char_id)
-        elif char_name:
-            profile = await _resolve_profile_by_name(conn, char_name)
-
+        profile = await _lookup_character_profile(conn, char_id, char_name)
         if not profile:
-            ident = char_id if char_id is not None else char_name
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Character '{ident}' not found",
@@ -420,7 +428,6 @@ async def switch_character(req: CharacterSwitchRequest) -> Dict[str, Any]:
         async with get_db() as conn:
             verified_profile = await crud.get_voice_profile(conn, profile.id)
             if not verified_profile:
-                ident = char_id if char_id is not None else char_name
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Character '{ident}' not found",
