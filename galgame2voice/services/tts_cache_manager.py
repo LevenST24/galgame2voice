@@ -96,6 +96,54 @@ def _normalize_ref_audio(ref_audio: str) -> str:
     return p.name
 
 
+def _build_canonical_params_dict(
+    opts: Dict[str, Any],
+    prof_fields: Dict[str, Any],
+    clean_text: str,
+) -> Dict[str, Any]:
+    """Builds canonical parameter dictionary for cache key hashing."""
+    speed = float(opts.get("speed_factor", 1.0))
+    speed_str = f"{speed:.3f}"
+    temperature = float(opts.get("temperature", 1.0))
+    temp_str = f"{temperature:.3f}"
+    top_k = int(opts.get("top_k", 15))
+    top_p = float(opts.get("top_p", 1.0))
+    top_p_str = f"{top_p:.3f}"
+    seed = int(opts.get("seed", -1))
+    batch_size = int(opts.get("batch_size", 1))
+    user_split = (
+        opts.get("text_split_method")
+        or opts.get("cut_option")
+        or opts.get("how_to_cut")
+    )
+    if user_split:
+        text_split_method = str(user_split).lower()
+    else:
+        text_split_method = "cut0" if len(clean_text.strip()) <= 80 else "cut2"
+    fragment_interval = float(opts.get("fragment_interval", 0.3))
+    frag_str = f"{fragment_interval:.3f}"
+
+    ref_audio_norm = _normalize_ref_audio(prof_fields["ref_audio"])
+
+    return {
+        "voice_profile_id": prof_fields["voice_profile_id"],
+        "gpt_weights": str(prof_fields["gpt_weights"]),
+        "sovits_weights": str(prof_fields["sovits_weights"]),
+        "ref_audio": ref_audio_norm,
+        "prompt_text": str(prof_fields["prompt_text"]),
+        "prompt_lang": str(prof_fields["prompt_lang"]).lower(),
+        "text_lang": str(prof_fields["text_lang"]).lower(),
+        "speed": speed_str,
+        "temperature": temp_str,
+        "top_k": top_k,
+        "top_p": top_p_str,
+        "seed": seed,
+        "batch_size": batch_size,
+        "text_split_method": text_split_method,
+        "fragment_interval": frag_str,
+    }
+
+
 class TtsCacheManager:
     """
     Manages persistent disk & SQLite cache for synthesized TTS audio.
@@ -316,48 +364,7 @@ class TtsCacheManager:
         opts = dict(options or {})
 
         prof_fields = _extract_voice_profile_cache_fields(opts, voice_profile)
-
-        # Canonicalize inference parameters
-        speed = float(opts.get("speed_factor", 1.0))
-        speed_str = f"{speed:.3f}"
-        temperature = float(opts.get("temperature", 1.0))
-        temp_str = f"{temperature:.3f}"
-        top_k = int(opts.get("top_k", 15))
-        top_p = float(opts.get("top_p", 1.0))
-        top_p_str = f"{top_p:.3f}"
-        seed = int(opts.get("seed", -1))
-        batch_size = int(opts.get("batch_size", 1))
-        user_split = (
-            opts.get("text_split_method")
-            or opts.get("cut_option")
-            or opts.get("how_to_cut")
-        )
-        if user_split:
-            text_split_method = str(user_split).lower()
-        else:
-            text_split_method = "cut0" if len(clean_text.strip()) <= 80 else "cut2"
-        fragment_interval = float(opts.get("fragment_interval", 0.3))
-        frag_str = f"{fragment_interval:.3f}"
-
-        ref_audio_norm = _normalize_ref_audio(prof_fields["ref_audio"])
-
-        params_dict = {
-            "voice_profile_id": prof_fields["voice_profile_id"],
-            "gpt_weights": str(prof_fields["gpt_weights"]),
-            "sovits_weights": str(prof_fields["sovits_weights"]),
-            "ref_audio": ref_audio_norm,
-            "prompt_text": str(prof_fields["prompt_text"]),
-            "prompt_lang": str(prof_fields["prompt_lang"]).lower(),
-            "text_lang": str(prof_fields["text_lang"]).lower(),
-            "speed": speed_str,
-            "temperature": temp_str,
-            "top_k": top_k,
-            "top_p": top_p_str,
-            "seed": seed,
-            "batch_size": batch_size,
-            "text_split_method": text_split_method,
-            "fragment_interval": frag_str,
-        }
+        params_dict = _build_canonical_params_dict(opts, prof_fields, clean_text)
 
         params_json = json.dumps(params_dict, sort_keys=True, separators=(",", ":"))
         params_hash = hashlib.sha256(params_json.encode("utf-8")).hexdigest()
@@ -680,6 +687,18 @@ class TtsCacheManager:
             except Exception as exc:
                 logger.debug("Error during automatic cache pruning: %s", exc)
 
+    @staticmethod
+    async def _try_unlink_cache_file(file_p: Path) -> bool:
+        """Attempts to delete cache file from disk, returning False if locked or failing."""
+        if not file_p.exists():
+            return True
+        try:
+            await asyncio.to_thread(file_p.unlink, missing_ok=True)
+            return True
+        except Exception as unl_err:
+            logger.debug("Skipping DB deletion for locked cache file %s: %s", file_p, unl_err)
+            return False
+
     async def prune(
         self,
         max_mb: Optional[int] = None,
@@ -730,15 +749,7 @@ class TtsCacheManager:
                             if total_bytes <= target_bytes and total_files <= target_files:
                                 break
 
-                            file_p = Path(entry.file_path)
-                            unlink_ok = True
-                            if file_p.exists():
-                                try:
-                                    await asyncio.to_thread(file_p.unlink, missing_ok=True)
-                                except Exception as unl_err:
-                                    unlink_ok = False
-                                    logger.debug("Skipping DB deletion for locked cache file %s: %s", file_p, unl_err)
-
+                            unlink_ok = await self._try_unlink_cache_file(Path(entry.file_path))
                             if unlink_ok:
                                 await crud.delete_tts_cache_entry(conn, entry.cache_key)
                                 async with self._lock:
