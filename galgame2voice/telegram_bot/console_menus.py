@@ -122,6 +122,13 @@ def _tts_nav_row() -> list:
     ]
 
 
+def _make_inline_markup(keyboard: Optional[List[List[Any]]]) -> Optional[Any]:
+    """Wraps button rows into InlineKeyboardMarkup if telegram package is available and keyboard is non-empty."""
+    if not (HAS_TELEGRAM and InlineKeyboardMarkup and keyboard):
+        return None
+    return InlineKeyboardMarkup(keyboard)
+
+
 def _build_single_col_options_markup(
     options: List[Tuple[Any, str]],
     current_val: Any,
@@ -130,7 +137,7 @@ def _build_single_col_options_markup(
     is_float: bool = False,
 ) -> Any:
     """Builds a single-column inline keyboard for selectable scalar options."""
-    if not (HAS_TELEGRAM and InlineKeyboardButton and InlineKeyboardMarkup):
+    if not (HAS_TELEGRAM and InlineKeyboardButton):
         return None
     keyboard = []
     for val, label in options:
@@ -142,7 +149,7 @@ def _build_single_col_options_markup(
         keyboard.append([InlineKeyboardButton(f"{mark}{label}", callback_data=f"{callback_prefix}{val}")])
     if nav_row:
         keyboard.append(nav_row)
-    return InlineKeyboardMarkup(keyboard)
+    return _make_inline_markup(keyboard)
 
 
 async def build_main_console(
@@ -222,7 +229,7 @@ async def build_main_console(
                 InlineKeyboardButton("🔄 刷新控制台", callback_data="menu_refresh"),
             ],
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = _make_inline_markup(keyboard)
 
     return text, reply_markup
 
@@ -276,7 +283,7 @@ async def build_voice_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
             InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main"),
         ])
 
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup and keyboard else None
+    reply_markup = _make_inline_markup(keyboard)
     return text, reply_markup
 
 
@@ -327,7 +334,7 @@ async def build_model_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
         keyboard.append(temp_row)
 
     keyboard.append([InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main")])
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _make_inline_markup(keyboard)
     return text, reply_markup
 
 
@@ -378,7 +385,7 @@ async def build_tts_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
             InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main"),
         ],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _make_inline_markup(keyboard)
     return text, reply_markup
 
 
@@ -397,7 +404,7 @@ async def build_speed_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
         [_speed_btn(s) for s in speeds[4:]],
         _tts_nav_row(),
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _make_inline_markup(keyboard)
     return text, reply_markup
 
 
@@ -482,7 +489,7 @@ async def build_sampling_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
         row_p,
         _tts_nav_row(),
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _make_inline_markup(keyboard)
     return text, reply_markup
 
 
@@ -599,7 +606,7 @@ async def build_metrics_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
             InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main"),
         ],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _make_inline_markup(keyboard)
     return text, reply_markup
 
 
@@ -654,7 +661,7 @@ async def build_affection_menu(
         ],
         [InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main")],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _make_inline_markup(keyboard)
     return text, reply_markup
 
 

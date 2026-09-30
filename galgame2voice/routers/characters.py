@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db
 from galgame2voice.routers.common import switch_voice_profile_or_raise, validate_user_id
+from galgame2voice.services.character_manager import get_character_manager
 from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.utils.logger import sanitize_error_detail
 
@@ -40,7 +41,6 @@ def _resolve_character_portrait(char_name: str, character_id: Optional[int] = No
     """立绘完全由角色包内的 portrait/expressions.json 驱动（表情编号差分体系）。"""
     if not char_name:
         return None
-    from galgame2voice.services.character_manager import get_character_manager
     mgr = get_character_manager()
     pkg = mgr.get_character(char_name)
     if pkg is None:
@@ -228,7 +228,6 @@ async def get_character_portrait_file(character_id: int, costume: str, file_name
                 detail=f"Character with ID {character_id} not found",
             )
 
-    from galgame2voice.services.character_manager import get_character_manager
     mgr = get_character_manager()
     pkg = mgr.get_character(prof.name)
     if pkg is None:
@@ -271,7 +270,6 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
                 detail=f"Character with ID {character_id} not found",
             )
 
-    from galgame2voice.services.character_manager import get_character_manager
     mgr = get_character_manager()
     pkg = mgr.get_character(prof.name)
     if pkg is None:
@@ -334,7 +332,6 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
 
 async def _resolve_profile_by_name(conn, char_name: str) -> Optional[Any]:
     """Resolves a voice profile by character name using exact, flexible, or package-synced match."""
-    from galgame2voice.services.character_manager import get_character_manager
     cm = get_character_manager()
     pkg = cm.get_character(char_name)
 

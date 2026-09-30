@@ -201,12 +201,8 @@ class DynamicBatchScheduler:
         metrics = self.tracker.get_metrics()
         samples = metrics["sample_count"]
 
-        # Cold start (few or no samples): conservative parallelism
-        if samples < 2:
-            return min(2, slice_count)
-
-        # Resource-constrained (e.g. CPU or high RTF > 1.2): keep batch size low
-        if metrics["is_resource_constrained"]:
+        # Cold start (few or no samples) or resource-constrained: conservative parallelism
+        if samples < 2 or metrics["is_resource_constrained"]:
             return min(2, slice_count)
 
         # High throughput GPU environment (RTF < 0.5, chars/s >= 20):

@@ -5,6 +5,13 @@ Shared HTTP validation helpers for API routers in galgame2voice.
 from typing import Any
 from fastapi import HTTPException, status
 
+from galgame2voice.services.voice_manager import InsufficientMemoryError
+
+__all__ = [
+    "validate_user_id",
+    "switch_voice_profile_or_raise",
+]
+
 
 def validate_user_id(user_id: str) -> str:
     """Validates user_id parameter, ensuring non-empty stripped value."""
@@ -22,8 +29,6 @@ async def switch_voice_profile_or_raise(manager: Any, profile: Any, force: bool 
     Switches active voice profile via VoiceManager under its lock, translating
     engine errors to standardized HTTPExceptions (503 for memory, 502 for load failure).
     """
-    from galgame2voice.services.voice_manager import InsufficientMemoryError
-
     try:
         success = await manager.switch_profile(profile, persist=True, _already_locked=True, force=force)
     except InsufficientMemoryError as mem_err:
