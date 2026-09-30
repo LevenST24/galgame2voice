@@ -302,10 +302,12 @@ class VoiceManager:
                 logger.info("GPT-SoVITS prompt audio cache warm-up succeeded for profile '%s'.", getattr(profile, "name", "unknown"))
                 return True
             except Exception as probe_err:
-                logger.warning("Lightweight probe during warm-up failed or timed out: %s", probe_err)
+                prof_name = getattr(profile, "name", "unknown")
+                logger.warning("Lightweight probe during warm-up for profile '%s' failed or timed out: %s", prof_name, probe_err)
                 return False
         except Exception as exc:
-            logger.warning("Voice profile warm-up encountered error: %s", exc)
+            prof_name = getattr(profile, "name", "unknown")
+            logger.warning("Voice profile '%s' warm-up encountered error: %s", prof_name, exc)
             return False
 
     async def _resolve_switch_target(
@@ -360,7 +362,7 @@ class VoiceManager:
                     await crud.set_active_voice_profile(conn, profile_id)
                     logger.info("Persisted active voice profile ID %d in settings", profile_id)
             except Exception as exc:
-                logger.warning("Could not persist active voice profile ID to DB: %s", exc)
+                logger.warning("Could not persist active voice profile ID %d to DB: %s", profile_id, exc)
 
     async def _execute_switch(
         self,
@@ -506,7 +508,7 @@ class VoiceManager:
                     is_cached = True
                     yield chunk
             except Exception as exc:
-                logger.warning("Error reading from TTS stream cache: %s", exc)
+                logger.warning("Error reading from TTS stream cache for key %s: %s", cache_key, exc)
 
             if is_cached:
                 logger.debug("TTS Cache HIT (stream) for key %s ('%s')", cache_key[:12], text[:20])

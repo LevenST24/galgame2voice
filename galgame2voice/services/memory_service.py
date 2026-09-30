@@ -312,7 +312,7 @@ class MemoryService:
                 async with get_db(self.db_path) as local_conn:
                     await crud.record_memory_recall_batch(local_conn, selected_ids)
         except Exception as e:
-            logger.warning("Failed to record memory recall count: %s", e)
+            logger.warning("Failed to record memory recall count for memory IDs %s: %s", selected_ids, e)
 
         return selected
 

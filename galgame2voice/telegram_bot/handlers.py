@@ -244,7 +244,7 @@ class TelegramBotHandlers:
                         )
                     reply = f"🌸 称呼已成功更新为「{new_nick}」！\n{profile_name}在接下来的对话中就会这样称呼你啦~"
                 except Exception as exc:
-                    logger.error("Failed to update nickname: %s", exc)
+                    logger.error("Failed to update nickname for user %s: %s", chat_id, exc)
                     safe_err = sanitize_error_detail(exc)
                     reply = f"❌ 更新称呼失败: {safe_err}" if safe_err else "❌ 更新称呼失败，请稍后重试！"
 
@@ -261,7 +261,7 @@ class TelegramBotHandlers:
             async with get_db(self.db_path) as conn:
                 await crud.clear_session_messages(conn, session_id)
         except Exception as exc:
-            logger.warning("Could not clear session via crud: %s; using SessionManager", exc)
+            logger.warning("Could not clear session %s via crud: %s; using SessionManager", session_id, exc)
             await self.chat_service.session_manager.clear_session(session_id)
 
         reply = "已清空当前对话上下文！"
@@ -398,7 +398,7 @@ class TelegramBotHandlers:
                 profiles = await crud.list_voice_profiles(conn)
                 matched_profile = await self._lookup_character_profile_by_query(conn, query_str, profiles)
         except Exception as exc:
-            logger.warning("Database read exception in handle_character: %s", exc)
+            logger.warning("Database read exception in handle_character for query '%s': %s", query_str, exc)
 
         if not matched_profile:
             reply = self._build_character_not_found_reply(query_str, profiles)

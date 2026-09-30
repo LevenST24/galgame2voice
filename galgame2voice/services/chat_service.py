@@ -447,7 +447,8 @@ class ChatService:
                 else:
                     tts_generated_chunks = 1
             except Exception as e:
-                logger.warning("TTS synthesis in chat_sync failed: %s", e)
+                profile_name = getattr(active_prof, "name", "unknown") if active_prof else "unknown"
+                logger.warning("TTS synthesis in chat_sync failed for profile '%s': %s", profile_name, e)
         return audio_url, tts_first_chunk_ms, tts_cached_chunks, tts_generated_chunks
 
     async def stream_chat(
@@ -569,7 +570,14 @@ class ChatService:
                 await stream_iter.aclose()
 
         except Exception as exc:
-            logger.error("Error in stream_chat pipeline: %s", exc, exc_info=True)
+            logger.error(
+                "Error in stream_chat pipeline (session_id=%s, character=%s, provider=%s): %s",
+                session_id,
+                character_name,
+                provider_id,
+                exc,
+                exc_info=True,
+            )
             safe_err = sanitize_error_detail(exc)
             yield {
                 "event": "error",

@@ -236,7 +236,14 @@ async def chat_sync_endpoint(req: ChatRequest) -> Dict[str, Any]:
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Error in synchronous chat completion: %s", exc, exc_info=True)
+        logger.error(
+            "Error in synchronous chat completion (session_id=%s, character=%s, provider=%s): %s",
+            req.session_id,
+            req.character_name,
+            req.provider_id,
+            exc,
+            exc_info=True,
+        )
         safe_err = sanitize_error_detail(exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -275,7 +282,13 @@ async def legacy_get_chat(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Error in legacy GET chat completion: %s", exc, exc_info=True)
+        logger.error(
+            "Error in legacy GET chat completion (session_id=%s, character=%s): %s",
+            clean_session_id,
+            clean_char_name,
+            exc,
+            exc_info=True,
+        )
         safe_err = sanitize_error_detail(exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

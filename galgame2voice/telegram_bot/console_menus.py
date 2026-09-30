@@ -760,7 +760,7 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
         logger.warning("Insufficient memory switching to profile %d: %s", profile_id, mem_err)
     except Exception as exc:
         err_msg = f"切换异常: {sanitize_error_detail(exc)}"
-        logger.warning("Voice switch exception: %s", exc)
+        logger.warning("Voice switch exception for profile %d: %s", profile_id, exc)
 
     if err_msg:
         if hasattr(ctx.query, "answer"):
@@ -987,7 +987,7 @@ async def _handle_set_model(ctx: _CallbackContext) -> None:
                 else:
                     await crud.set_active_provider(conn, provider_id)
     except Exception as exc:
-        logger.warning("Model switch exception: %s", exc)
+        logger.warning("Model switch exception for provider '%s': %s", provider_id, exc)
         err_msg = f"切换模型异常: {exc}"
 
     if err_msg:
@@ -1051,7 +1051,7 @@ async def _handle_reset_session(ctx: _CallbackContext) -> None:
         async with get_db(ctx.db_path) as conn:
             await crud.clear_session_messages(conn, session_id)
     except Exception as exc:
-        logger.warning("Could not clear session: %s", exc)
+        logger.warning("Could not clear session %s: %s", session_id, exc)
     if hasattr(ctx.query, "answer"):
         await ctx.query.answer("🗑️ 当前会话记忆已清空！", show_alert=True)
     await _edit_menu_text(
