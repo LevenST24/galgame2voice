@@ -6,6 +6,7 @@ Provides unified character profile query, active character switching, and affect
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 import aiosqlite
 from fastapi import APIRouter, HTTPException, Query, status
@@ -245,6 +246,33 @@ class SystemPromptUpdate(BaseModel):
     )
 
 
+def _write_manifest_system_prompt(manifest_path: Path, text: str) -> None:
+    """Safely updates system_prompt in manifest.json using atomic temp file replacement."""
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        safe_err = sanitize_error_detail(exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"无法解析角色 manifest.json: {safe_err}",
+        ) from exc
+
+    data["system_prompt"] = text
+    tmp_path = manifest_path.with_name("manifest.json.tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        os.replace(tmp_path, manifest_path)
+    except OSError as exc:
+        tmp_path.unlink(missing_ok=True)
+        safe_err = sanitize_error_detail(exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"写入角色 manifest.json 失败: {safe_err}",
+        ) from exc
+
+
 @router.put(
     "/{character_id}/system-prompt",
     summary="Update Character System Prompt",
@@ -277,29 +305,7 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
             detail=f"角色包缺少 manifest.json: {manifest_path}",
         )
 
-    try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        safe_err = sanitize_error_detail(exc)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"无法解析角色 manifest.json: {safe_err}",
-        ) from exc
-
-    data["system_prompt"] = text
-    tmp_path = manifest_path.with_name("manifest.json.tmp")
-    try:
-        tmp_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        os.replace(tmp_path, manifest_path)
-    except OSError as exc:
-        tmp_path.unlink(missing_ok=True)
-        safe_err = sanitize_error_detail(exc)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"写入角色 manifest.json 失败: {safe_err}",
-        ) from exc
+    _write_manifest_system_prompt(manifest_path, text)
 
     # 内存里的角色包缓存也要刷新，否则本进程后续仍读到旧人设
     mgr.discover_characters()

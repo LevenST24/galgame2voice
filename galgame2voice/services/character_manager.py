@@ -369,35 +369,11 @@ class CharacterManager:
         from galgame2voice.services.emotion_references import normalize_emotion
         canonical_emo = normalize_emotion(emotion)
 
-        # 1. Try canonical emotion or raw emotion string
-        target_cfg: Optional[EmotionConfig] = emotions.get(canonical_emo)
-        matched_emo = canonical_emo
-        if target_cfg is None and emotion:
-            target_cfg = emotions.get(str(emotion).strip().lower())
-            if target_cfg:
-                matched_emo = str(emotion).strip().lower()
-
-
-        # 2. Fallback to gentle or first emotion in manifest
-        if target_cfg is None:
-            if "gentle" in emotions:
-                target_cfg = emotions["gentle"]
-                matched_emo = "gentle"
-            else:
-                first_key = next(iter(emotions))
-                target_cfg = emotions[first_key]
-                matched_emo = first_key
-
-        resolved_audio = pkg.resolve_audio_path(target_cfg.audio)
-
-        # 3. If resolved audio is invalid, fallback to gentle or first valid audio
-        if resolved_audio is None or not resolved_audio.is_file():
-            fallback_cfg = emotions.get("gentle") or next(iter(emotions.values()))
-            resolved_audio = pkg.resolve_audio_path(fallback_cfg.audio)
-            if resolved_audio is None or not resolved_audio.is_file():
-                return None
-            target_cfg = fallback_cfg
-            matched_emo = "gentle"
+        target_cfg, resolved_audio, matched_emo = self._select_emotion_config(
+            pkg, emotions, canonical_emo, emotion
+        )
+        if target_cfg is None or resolved_audio is None:
+            return None
 
         resolved_path = resolved_audio.resolve()
         if base_dir is not None:
@@ -414,6 +390,41 @@ class CharacterManager:
         if target_cfg.voice_params is not None:
             res["voice_params"] = target_cfg.voice_params.model_dump()
         return res
+
+    @staticmethod
+    def _select_emotion_config(
+        pkg: CharacterPackage,
+        emotions: Dict[str, Any],
+        canonical_emo: str,
+        emotion: Optional[str],
+    ) -> Tuple[Optional[Any], Optional[Path], str]:
+        """Resolves target emotion config and valid audio path with gentle/first fallback."""
+        target_cfg = emotions.get(canonical_emo)
+        matched_emo = canonical_emo
+        if target_cfg is None and emotion:
+            target_cfg = emotions.get(str(emotion).strip().lower())
+            if target_cfg:
+                matched_emo = str(emotion).strip().lower()
+
+        if target_cfg is None:
+            if "gentle" in emotions:
+                target_cfg = emotions["gentle"]
+                matched_emo = "gentle"
+            else:
+                first_key = next(iter(emotions))
+                target_cfg = emotions[first_key]
+                matched_emo = first_key
+
+        resolved_audio = pkg.resolve_audio_path(target_cfg.audio)
+        if resolved_audio is None or not resolved_audio.is_file():
+            fallback_cfg = emotions.get("gentle") or next(iter(emotions.values()))
+            resolved_audio = pkg.resolve_audio_path(fallback_cfg.audio)
+            if resolved_audio is None or not resolved_audio.is_file():
+                return None, None, matched_emo
+            target_cfg = fallback_cfg
+            matched_emo = "gentle"
+
+        return target_cfg, resolved_audio, matched_emo
 
     @staticmethod
     def _weight_needs_healing(w_path: str) -> bool:
@@ -527,14 +538,13 @@ class CharacterManager:
         }
 
     @classmethod
-    async def _update_existing_profile(
+    def _build_profile_update_fields(
         cls,
-        conn: aiosqlite.Connection,
         existing_row: Any,
         pkg: CharacterPackage,
         defaults: Dict[str, Any],
-    ) -> bool:
-        """Idempotently updates existing voice_profile row with healed paths and prompt updates."""
+    ) -> Tuple[List[str], List[Any]]:
+        """Constructs SQL update expressions and bound parameters for an existing profile."""
         manifest = pkg.manifest
         ref_audio_str = defaults["ref_audio_str"]
         prompt_text = defaults["prompt_text"]
@@ -543,20 +553,15 @@ class CharacterManager:
         sovits_weights = defaults["sovits_weights"]
         system_prompt = defaults["system_prompt"]
 
-        p_id = existing_row["id"]
         current_ref = existing_row["ref_audio_path"] or ""
         current_gpt = existing_row["gpt_weights_path"] or ""
         current_sovits = existing_row["sovits_weights_path"] or ""
         current_prompt = existing_row["prompt_text"] or ""
         current_sys = existing_row["system_prompt"] or ""
 
-        update_fields = []
-        params = []
+        update_fields: List[str] = []
+        params: List[Any] = []
 
-        # Determine if ref_audio_path needs healing:
-        # 1) current path is empty or does not exist on disk
-        # 2) character has ref pointing to a different character's package directory
-        # 3) non-Natsume character has ref pointing to Natsume audio
         ref_needs_update = (
             not current_ref
             or not Path(current_ref).exists()
@@ -567,7 +572,6 @@ class CharacterManager:
             update_fields.append("ref_audio_path = ?")
             params.append(ref_audio_str)
 
-        # Prompt text should be updated if empty or if ref_audio was cross-character/healed
         if (not current_prompt.strip() or ref_needs_update) and prompt_text:
             update_fields.append("prompt_text = ?")
             params.append(prompt_text)
@@ -596,9 +600,21 @@ class CharacterManager:
             update_fields.append("description = ?")
             params.append(char_desc)
 
+        return update_fields, params
+
+    @classmethod
+    async def _update_existing_profile(
+        cls,
+        conn: aiosqlite.Connection,
+        existing_row: Any,
+        pkg: CharacterPackage,
+        defaults: Dict[str, Any],
+    ) -> bool:
+        """Idempotently updates existing voice_profile row with healed paths and prompt updates."""
+        update_fields, params = cls._build_profile_update_fields(existing_row, pkg, defaults)
         if update_fields:
             update_fields.append("updated_at = CURRENT_TIMESTAMP")
-            params.append(p_id)
+            params.append(existing_row["id"])
             query = f"UPDATE voice_profiles SET {', '.join(update_fields)} WHERE id = ?;"
             await conn.execute(query, tuple(params))
             return True
