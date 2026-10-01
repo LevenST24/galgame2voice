@@ -40,7 +40,6 @@ def main() -> None:
 
     root = Path(args.index).parent
     data = json.loads(Path(args.index).read_text(encoding="utf-8"))
-    faces = data.get("faces") or {}
     pools = data.get("expression_sets") or {}
 
     # Signatures are per costume because each outfit is a separate canvas.
