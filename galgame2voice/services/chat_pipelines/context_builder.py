@@ -103,7 +103,7 @@ async def build_chat_context(
     """
     Builds the complete message history and prompt context for LLM execution:
     1. Resolves session and character voice profile.
-    2. Resolves effective system prompt (override -> custom -> profile template -> default).
+    2. Resolves effective system prompt (override -> profile template -> default).
     3. Retrieves relevant long-term memory facts and affection status.
     4. Truncates dialogue history within the configured window.
     """

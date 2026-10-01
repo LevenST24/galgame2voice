@@ -67,7 +67,7 @@ class TextSegmentationPipeline:
         adaptive_enabled: bool = False,
         sentence_text: str = "",
     ) -> dict[str, Any]:
-        """Calculates emotion-aware, dynamic speed/pitch/prompt TTS options."""
+        """Calculates emotion-aware, dynamic speed/temperature/top_k/top_p/fragment_interval TTS options."""
         return self.parser.get_dynamic_tts_options(
             base_options=base_options,
             adaptive_enabled=adaptive_enabled,

@@ -9,8 +9,8 @@ Pipeline hardening (v2.1):
   - TTS sentence failures emit an `audio_chunk_error` SSE event instead of
     being silently swallowed, so the frontend can skip that sentence and keep
     playing the rest.
-  - The event pump blocks on the queue (1s heartbeat only for cancel
-    responsiveness) instead of busy-polling every 50ms.
+  - The event pump waits on the queue in 0.5s cancel-responsive slices and emits
+    a keep-alive comment frame after 5.0s of queue silence (no 50ms busy-poll).
   - WAV concatenation runs in a worker thread so the event loop never freezes.
   - Memory fact extraction runs in a true background task, off the TTFT path.
 """

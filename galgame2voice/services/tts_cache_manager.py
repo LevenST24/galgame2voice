@@ -446,7 +446,8 @@ class TtsCacheManager:
     ) -> AsyncGenerator[bytes, None]:
         """
         Streams cached audio chunks directly from in-memory cache or disk cache.
-        Avoids loading multi-megabyte audio files entirely into temporary memory.
+        Yields disk reads chunk by chunk; files within max_mem_bytes are additionally buffered
+        in full to populate the in-memory cache.
         """
         try:
             if get_settings().privacy_mode:
@@ -716,7 +717,7 @@ class TtsCacheManager:
         try:
             await self._flush_dirty_touches()
         except Exception as exc:
-            logger.debug("Failed flushing dirty touches during enforce_limits: %s", exc)
+            logger.debug("Failed flushing dirty touches during prune: %s", exc)
 
         async with self._write_lock:
             pruned_count = 0
@@ -842,7 +843,7 @@ class TtsCacheManager:
         total_size_mb = db_stats["total_size_mb"]
         db_hits = db_stats["total_hits"]
 
-        # Report memory hits and db hits separately
+        # self._hits counts memory-tier and disk hits together; report it alongside the DB-recorded hits
         hit_rate = self._hits / (self._hits + self._misses) if (self._hits + self._misses) > 0 else 0.0
         # Estimated computation saved: average 1.5s GPU inference time per cache hit
         estimated_saved_seconds = round(self._hits * 1.5, 2)
