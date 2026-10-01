@@ -30,8 +30,9 @@ from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.telegram_bot.console_menus")
 
-# Callback data that mutates global state and therefore requires admin privileges
-# when an admin whitelist is configured. Empty whitelist = open access (single-user setups).
+# Callback data that mutates global state and therefore requires admin privileges.
+# Via handlers the whitelist is fail-closed (empty = nobody); only the handlers-less
+# path treats an empty whitelist as open access (single-user setups).
 ADMIN_CALLBACK_PREFIXES: tuple[str, ...] = (
     "set_voice_", "set_char_", "set_speed_", "set_temp_", "set_split_", "set_topk_",
     "set_topp_", "set_batch_", "set_interval_", "set_history_", "set_model_",

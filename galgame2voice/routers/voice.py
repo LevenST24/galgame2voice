@@ -384,7 +384,7 @@ def _validate_synthesize_ref_audio(options: dict[str, Any]) -> None:
 
 
 async def _ensure_voice_profile_available(manager: Any, options: dict[str, Any]) -> None:
-    """Rejects synthesis if no character package or voice profile is available."""
+    """Rejects synthesis when no reference audio is supplied and no profile or character package exists."""
     if not options.get("ref_audio_path") and not options.get("refer_audio_path"):
         async with get_db() as conn:
             profiles = await crud.list_voice_profiles(conn)

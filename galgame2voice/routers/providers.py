@@ -381,12 +381,12 @@ async def _resolve_provider_test_credentials(
     api_key: str,
     base_url: str | None,
 ) -> tuple[str, str | None]:
-    """Resolves unmasked API key and base URL from database with SSRF validation."""
+    """Resolves unmasked API key and base URL from database; the SSRF guard runs in the caller."""
     if not api_key or "****" in api_key:
         async with get_db() as conn:
             stored = await crud.get_provider_raw(conn, provider_id)
             if stored and stored.api_key:
-                # SSRF Protection: only allow stored credentials against the configured base_url
+                # Credential leak guard: stored keys may only be sent to the base_url they were saved with
                 if base_url and stored.api_base_url and base_url.rstrip("/") != stored.api_base_url.rstrip("/"):
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,

@@ -692,7 +692,7 @@ class TelegramBotHandlers:
             except Exception as send_err:
                 logger.error("Failed to send error notification to Telegram chat_id=%d: %s", chat_id, send_err)
 
-            # Return a resolved task
+            # Return a pending no-op task so callers still get a Task to track
             async def _noop() -> None: pass
             return asyncio.create_task(_noop())
 

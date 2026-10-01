@@ -163,7 +163,7 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
     Asynchronously parses Server-Sent Events (SSE) lines into text tokens.
     Guarantees resilience against:
     - Fragmented lines / multi-line data blocks
-    - Malformed or partial JSON chunks (logged and skipped without crashing stream)
+    - Malformed or partial JSON chunks (retried across lines, then skipped without logging)
     - SSE comments (: keepalive)
     - Whitespace variations in 'data:' prefix
     - Stream termination tokens ([DONE])

@@ -202,7 +202,7 @@ class TelegramBotManager:
         except Exception as exc:
             logger.warning("Error stopping Telegram Bot application: %s", exc)
 
-        logger.info("Telegram Bot service stopped cleanly.")
+        logger.info("Telegram Bot service stopped.")
 
     async def test_token(self, token: str, proxy_url: str | None = None) -> dict[str, Any]:
         """Tests validity of a Telegram bot token via getMe API."""

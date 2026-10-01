@@ -555,7 +555,8 @@ def _apply_update_sync(
     Synchronous git pull execution with pre-flight safety validations
     (detached HEAD, uncommitted modifications).
     Automatically creates pre-update backup archive and safely handles tracked build artifacts.
-    Never executes destructive git reset --hard or git clean -fd.
+    Runs git reset --hard HEAD only when discard_local_changes is set; git clean -fd is
+    scoped to the galgame2voice/static build output.
     Returns (response_object, list_of_changed_files).
     """
     before_short, preflight_err = _verify_update_preflight(project_root)

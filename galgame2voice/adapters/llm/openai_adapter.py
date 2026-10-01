@@ -83,7 +83,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         self.default_model = default_model or kwargs.get("chat_model") or kwargs.get("model")
 
     def _resolve_test_model(self, model: str | None = None) -> str:
-        """Resolves appropriate test model for connection testing without defaulting to gpt-4o-mini."""
+        """Resolves the test model: arg, then configured default, then provider preset/domain map, then gpt-4o-mini."""
         if model and str(model).strip():
             return str(model).strip()
         if getattr(self, "default_model", None) and str(self.default_model).strip():
@@ -118,7 +118,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         return headers
 
     def _validate_credentials(self) -> None:
-        """Validates presence and syntax of API key."""
+        """Validates that an API key is present."""
         if not self.api_key:
             raise ValueError("Authentication error: Invalid API key")
 

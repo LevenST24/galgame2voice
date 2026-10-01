@@ -3,7 +3,7 @@ Health check and system diagnostic router for galgame2voice.
 Provides /api/health, /status, and /api/system/status endpoints.
 
 All filesystem scans run in worker threads and are cached with a TTL so the
-5-second frontend status poll never blocks the event loop.
+frontend's on-demand status requests never block the event loop.
 """
 
 import asyncio
@@ -53,7 +53,7 @@ async def get_effective_sovits_url() -> str:
         logger.debug("Failed reading effective sovits url from database settings: %s", exc)
     return get_settings().gpt_sovits_base_url
 
-# Directory metrics are cached: the settings console polls every few seconds,
+# Directory metrics are cached: the settings console re-requests status on demand,
 # and scanning thousands of cache files each time would freeze the event loop.
 _DIR_METRICS_TTL_SECONDS = 15.0
 _dir_metrics_cache: dict[str, tuple[float, tuple[int, float]]] = {}
@@ -111,7 +111,7 @@ class StorageTelemetry(BaseModel):
 class TelegramTelemetry(BaseModel):
     """Telegram bot integration status."""
     enabled: bool
-    status: str  # "disabled" | "running" | "error"
+    status: str  # "disabled" | "standby" | "unconfigured" | "running"
 
 
 class HardwareTelemetry(BaseModel):
