@@ -34,7 +34,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 | 19 | Evidence-Based Precision Calibration (Probe replaces GPU whitelist) | Deleted the `is_turing_tu116_tu117_gpu` GPU-model-name whitelist entirely (hardware.py, run_server.py branches, health telemetry `turing_fp32_active`→`fp32_forced`). New `utils/precision.py` store (`data/precision.json`, keyed to engine dir, BOM-safe). Launcher now: reads `GPT_SOVITS_PRECISION` env override > verified cache > FP16 default; after engine readiness synthesizes a one-sentence probe via `/tts` and checks `wav_peak_amplitude` — FP16 silent → auto-restarts engine with FP32 → re-probes → caches verified result. Inconclusive probes never cache. Refactored spawn into `_spawn_sovits_process` (reused for FP32 restart). No user knowledge required; any future GPU auto-adapts | M3_FINAL_VERIFICATION | Precision calibration pass (DONE) |
 | 20 | Repository Quarantine & Asset Exclusion | Hardened `.gitignore` (all weight formats, temp audio, explicit characters recursion, data/audio_cache, temp_test/tmp_check, fix line 82 CRLF), update `scripts/package_release.py` | M4_HARDENING | Survey R1 (DONE) |
 | 21 | 16GB RAM Memory Lifecycle Reclamation | `release_system_memory()` with `gc.collect()` + PyTorch empty_cache in `hardware.py`; invoked before memory guard and on model switch in `voice_manager.py` | M4_HARDENING | Survey R2 (DONE) |
-| 22 | Frontend Memory & Listener De-allocation | Bounded LRU cache for audio blobs (50 entries) in `frontend/src/cache.js`, clean listener detachment via `curAudio.ontimeupdate` in `main.js`, rebuild assets | M4_HARDENING | Survey R2 (DONE) |
+| 22 | Frontend Memory & Listener De-allocation | Bounded LRU cache for audio blobs (50 entries) in `frontend/src/cache.js`, clean listener detachment via `audio.ontimeupdate` in `frontend/src/controllers/audio_player_ui.js`, rebuild assets | M4_HARDENING | Survey R2 (DONE) |
 | 23 | URL Authority Userinfo Credential Masking | Sanitize `user:password@host` in `MaskingFilter.PATTERNS` in `utils/logger.py` to prevent credential leaks in stdout/file logs on connection errors | M4_HARDENING | Survey R3 (DONE) |
 | 24 | Code Hygiene & v2.0 Documentation | Fix F821 undefined `updated` -> `updated_settings` in `routers/config.py:166`, remove dead imports, update `README.md` with AI Dynamic Voice, env vars, SPA settings | M4_HARDENING | Survey R4 (DONE) |
 | 25 | Full Test Suite Calibration & 100% Pass Verification | Fix `test_adversarial_m2_challenger2.py:412` (style.css path) and `test_character_manager.py:472` (soundfile dependency), verify 100% tests pass | M4_HARDENING | Survey R5 (DONE) |
@@ -102,7 +102,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 
 ### Memory Extraction & Framing Contract
 - `MemoryService.extract_facts_heuristic(text: str)`: Cleans input (strips newlines, tags, control chars, limits length to <= 50 chars).
-- `MemoryService.format_memory_prompt_block(memories: List[CharacterMemory])`: Formats memory facts in defensive quotes with clear non-executable context markers.
+- `MemoryService.format_memory_prompt_block(memories: list[UserMemoryResponse])`: Formats memory facts in defensive quotes with clear non-executable context markers.
 
 ### TTS Cache Latency Contract
 - `TtsCacheManager.get(cache_key)`: Checks `self._mem_cache` first. If hit, returns immediately without disk I/O. Latency must measure `< 0.05ms`.
