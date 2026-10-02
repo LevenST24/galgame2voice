@@ -14,7 +14,7 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
   const msg = String(rawMessage || '');
   const lower = (msg + ' ' + (backendDiagnostic || '')).toLowerCase();
 
-  // 若后端已有结构化诊断，优先结合提供商特色进行润色
+  // 若后端已有结构化诊断：标题按关键词归类，guidance 直接透传后端诊断原文（不区分提供商）
   if (backendDiagnostic && backendDiagnostic.trim()) {
     let title = '连通性诊断提示';
     if (lower.includes('401') || lower.includes('key') || lower.includes('auth')) {
