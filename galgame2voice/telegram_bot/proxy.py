@@ -4,7 +4,7 @@ Supports HTTP, HTTPS, and SOCKS5 proxies with fallback and connection probing.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 import httpx
 
 from galgame2voice.database.models import SettingsInDB
@@ -12,7 +12,7 @@ from galgame2voice.database.models import SettingsInDB
 logger = logging.getLogger("galgame2voice.telegram_bot.proxy")
 
 
-def get_proxy_url(settings: Optional[SettingsInDB] = None, proxy_str: Optional[str] = None) -> Optional[str]:
+def get_proxy_url(settings: SettingsInDB | None = None, proxy_str: str | None = None) -> str | None:
     """
     Constructs normalized proxy URL from settings or explicit proxy string.
     Returns e.g. 'http://127.0.0.1:10808' or 'socks5://127.0.0.1:10808', or None if disabled.
@@ -35,14 +35,14 @@ def get_proxy_url(settings: Optional[SettingsInDB] = None, proxy_str: Optional[s
 
 
 def get_telegram_request_kwargs(
-    proxy_url: Optional[str] = None,
+    proxy_url: str | None = None,
     read_timeout: float = 30.0,
     connect_timeout: float = 15.0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Builds keyword arguments for python-telegram-bot HTTPXRequest.
     """
-    kwargs: Dict[str, Any] = {
+    kwargs: dict[str, Any] = {
         "read_timeout": read_timeout,
         "connect_timeout": connect_timeout,
     }

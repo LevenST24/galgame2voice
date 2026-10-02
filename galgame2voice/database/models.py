@@ -3,7 +3,7 @@ Pydantic data models and schemas for SQLite entities in galgame2voice.
 Includes DB representations, Create/Update DTOs, and Safe Response models.
 """
 
-from typing import Optional, Dict, Any, List
+from typing import Any
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 class SettingsBase(BaseModel):
     active_provider_id: str = "deepseek"
-    active_voice_profile_id: Optional[int] = None
+    active_voice_profile_id: int | None = None
     gpt_sovits_url: str = "http://127.0.0.1:9880"
     audio_output_dir: str = "audio"
     audio_retention_minutes: int = Field(default=30, ge=1)
@@ -33,9 +33,9 @@ class SettingsBase(BaseModel):
     allow_private_llm_endpoints: bool = False  # Permit private/loopback LLM provider base URLs
     console_url: str = ""
     max_history_messages: int = Field(default=10, ge=1, le=100)
-    inference_precision: str = "auto"  # "auto" (probe), "fp16" (half), or "fp32" (single)
-    stt_engine: Optional[str] = "browser"
-    telegram_chat_id: Optional[str] = None
+    inference_precision: str = "auto"  # "auto" (probe), "fp16" (half), "fp32" (single), or "cpu" (force CPU fp32)
+    stt_engine: str | None = "browser"
+    telegram_chat_id: str | None = None
 
     @model_validator(mode="after")
     def sync_telegram_chat_id(self) -> "SettingsBase":
@@ -45,34 +45,34 @@ class SettingsBase(BaseModel):
 
 
 class SettingsUpdate(BaseModel):
-    active_provider_id: Optional[str] = None
-    active_voice_profile_id: Optional[int] = None
-    gpt_sovits_url: Optional[str] = None
-    audio_output_dir: Optional[str] = None
-    audio_retention_minutes: Optional[int] = Field(default=None, ge=1)
-    audio_cleanup_interval_sec: Optional[int] = Field(default=None, ge=10)
-    speed_factor: Optional[float] = Field(default=None, ge=0.1, le=3.0)
-    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-    top_k: Optional[int] = Field(default=None, ge=1, le=100)
-    top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    seed: Optional[int] = None
-    batch_size: Optional[int] = Field(default=None, ge=1, le=16)
-    text_split_method: Optional[str] = None
-    fragment_interval: Optional[float] = Field(default=None, ge=0.0, le=5.0)
-    telegram_enabled: Optional[bool] = None
-    telegram_bot_token: Optional[str] = None
-    telegram_bot_username: Optional[str] = None
-    telegram_proxy_host: Optional[str] = None
-    telegram_proxy_port: Optional[int] = Field(default=None, ge=1, le=65535)
-    telegram_proxy_enabled: Optional[bool] = None
-    telegram_admin_ids: Optional[str] = None
-    telegram_chat_id: Optional[str] = None
-    allow_private_llm_endpoints: Optional[bool] = None
-    console_url: Optional[str] = None
-    max_history_messages: Optional[int] = Field(default=None, ge=1, le=100)
-    inference_precision: Optional[str] = None
-    stt_engine: Optional[str] = None
-    console_token: Optional[str] = None
+    active_provider_id: str | None = None
+    active_voice_profile_id: int | None = None
+    gpt_sovits_url: str | None = None
+    audio_output_dir: str | None = None
+    audio_retention_minutes: int | None = Field(default=None, ge=1)
+    audio_cleanup_interval_sec: int | None = Field(default=None, ge=10)
+    speed_factor: float | None = Field(default=None, ge=0.1, le=3.0)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_k: int | None = Field(default=None, ge=1, le=100)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    seed: int | None = None
+    batch_size: int | None = Field(default=None, ge=1, le=16)
+    text_split_method: str | None = None
+    fragment_interval: float | None = Field(default=None, ge=0.0, le=5.0)
+    telegram_enabled: bool | None = None
+    telegram_bot_token: str | None = None
+    telegram_bot_username: str | None = None
+    telegram_proxy_host: str | None = None
+    telegram_proxy_port: int | None = Field(default=None, ge=1, le=65535)
+    telegram_proxy_enabled: bool | None = None
+    telegram_admin_ids: str | None = None
+    telegram_chat_id: str | None = None
+    allow_private_llm_endpoints: bool | None = None
+    console_url: str | None = None
+    max_history_messages: int | None = Field(default=None, ge=1, le=100)
+    inference_precision: str | None = None
+    stt_engine: str | None = None
+    console_token: str | None = None
 
     @model_validator(mode="after")
     def sync_telegram_ids(self) -> "SettingsUpdate":
@@ -87,17 +87,17 @@ class SettingsInDB(SettingsBase):
     id: int = 1
     telegram_bot_token: str = ""
     console_token: str = ""
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    created_at: str | None = None
+    updated_at: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
 class SettingsResponse(SettingsBase):
     telegram_bot_token: str = ""  # Masked
     console_token: str = ""
-    stt_engine: Optional[str] = "browser"
-    telegram_chat_id: Optional[str] = None
-    updated_at: Optional[str] = None
+    stt_engine: str | None = "browser"
+    telegram_chat_id: str | None = None
+    updated_at: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -110,7 +110,7 @@ class ProviderBase(BaseModel):
     chat_model: str
     stt_model: str = ""
     is_active: bool = False
-    custom_headers: Dict[str, Any] = Field(default_factory=dict)
+    custom_headers: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProviderCreate(ProviderBase):
@@ -118,25 +118,25 @@ class ProviderCreate(ProviderBase):
 
 
 class ProviderUpdate(BaseModel):
-    name: Optional[str] = None
-    api_base_url: Optional[str] = None
-    api_key: Optional[str] = None
-    chat_model: Optional[str] = None
-    stt_model: Optional[str] = None
-    is_active: Optional[bool] = None
-    custom_headers: Optional[Dict[str, Any]] = None
+    name: str | None = None
+    api_base_url: str | None = None
+    api_key: str | None = None
+    chat_model: str | None = None
+    stt_model: str | None = None
+    is_active: bool | None = None
+    custom_headers: dict[str, Any] | None = None
 
 
 class ProviderInDB(ProviderBase):
     api_key: str = ""
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    created_at: str | None = None
+    updated_at: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
 class ProviderResponse(ProviderBase):
     api_key: str = ""  # Masked
-    updated_at: Optional[str] = None
+    updated_at: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -178,16 +178,16 @@ class VoiceProfileCreate(VoiceProfileBase):
 
 
 class VoiceProfileUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    gpt_weights_path: Optional[str] = None
-    sovits_weights_path: Optional[str] = None
-    ref_audio_path: Optional[str] = None
-    prompt_text: Optional[str] = None
-    prompt_lang: Optional[str] = None
-    text_lang: Optional[str] = None
-    system_prompt: Optional[str] = None
-    is_default: Optional[bool] = None
+    name: str | None = None
+    description: str | None = None
+    gpt_weights_path: str | None = None
+    sovits_weights_path: str | None = None
+    ref_audio_path: str | None = None
+    prompt_text: str | None = None
+    prompt_lang: str | None = None
+    text_lang: str | None = None
+    system_prompt: str | None = None
+    is_default: bool | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -210,8 +210,8 @@ class VoiceProfileUpdate(BaseModel):
 
 class VoiceProfileInDB(VoiceProfileBase):
     id: int
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    created_at: str | None = None
+    updated_at: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -235,10 +235,10 @@ class SessionBase(BaseModel):
     id: str
     channel: str = "web"
     user_id: str = ""
-    voice_profile_id: Optional[int] = 1
-    custom_system_prompt: Optional[str] = None
+    voice_profile_id: int | None = 1
+    custom_system_prompt: str | None = None
     title: str = ""
-    settings_json: Optional[str] = None
+    settings_json: str | None = None
     token_budget: int = 4096
 
 
@@ -247,16 +247,16 @@ class SessionCreate(SessionBase):
 
 
 class SessionUpdate(BaseModel):
-    voice_profile_id: Optional[int] = None
-    custom_system_prompt: Optional[str] = None
-    title: Optional[str] = None
-    settings_json: Optional[str] = None
-    token_budget: Optional[int] = Field(default=None, ge=128, le=131072)
+    voice_profile_id: int | None = None
+    custom_system_prompt: str | None = None
+    title: str | None = None
+    settings_json: str | None = None
+    token_budget: int | None = Field(default=None, ge=128, le=131072)
 
 
 class SessionInDB(SessionBase):
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    created_at: str | None = None
+    updated_at: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -281,7 +281,7 @@ class MessageCreate(MessageBase):
 
 class MessageInDB(MessageBase):
     id: int
-    created_at: Optional[str] = None
+    created_at: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -308,14 +308,14 @@ class TtsCacheEntry(BaseModel):
     cache_key: str
     text: str
     clean_text: str
-    voice_profile_id: Optional[int] = 1
+    voice_profile_id: int | None = 1
     params_hash: str
     file_path: str
     file_size: int
     duration_ms: int = 0
     hit_count: int = 0
-    created_at: Optional[str] = None
-    last_accessed_at: Optional[str] = None
+    created_at: str | None = None
+    last_accessed_at: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -342,7 +342,7 @@ class MetricsOverviewResponse(BaseModel):
     avg_tts_first_chunk_ms: float = 0.0
     avg_total_latency_ms: float = 0.0
     cache_stats: CacheStatsResponse = Field(default_factory=CacheStatsResponse)
-    tts_speed: Optional[Dict[str, Any]] = None
+    tts_speed: dict[str, Any] | None = None
 
 
 class ProviderMetricItem(BaseModel):
@@ -357,7 +357,7 @@ class ProviderMetricItem(BaseModel):
 
 
 class ProvidersMetricsResponse(BaseModel):
-    providers: List[ProviderMetricItem] = Field(default_factory=list)
+    providers: list[ProviderMetricItem] = Field(default_factory=list)
 
 
 class LatencyTrendItem(BaseModel):
@@ -370,21 +370,21 @@ class LatencyTrendItem(BaseModel):
 
 
 class LatencyTrendResponse(BaseModel):
-    trend: List[LatencyTrendItem] = Field(default_factory=list)
+    trend: list[LatencyTrendItem] = Field(default_factory=list)
 
 
 # ==================== Memory & Affection Models ====================
 
 class UserMemoryBase(BaseModel):
     user_id: str = "default_user"
-    character_id: Optional[int] = 1
+    character_id: int | None = 1
     category: str = "preference"  # 'nickname', 'preference', 'promise', 'identity', 'event', 'taboo'
     fact_key: str
     fact_value: str
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    source_message_id: Optional[int] = None
+    source_message_id: int | None = None
     recall_count: int = 0
-    last_recalled_at: Optional[str] = None
+    last_recalled_at: str | None = None
 
 
 class UserMemoryCreate(UserMemoryBase):
@@ -392,18 +392,18 @@ class UserMemoryCreate(UserMemoryBase):
 
 
 class UserMemoryUpdate(BaseModel):
-    category: Optional[str] = None
-    fact_key: Optional[str] = None
-    fact_value: Optional[str] = None
-    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    recall_count: Optional[int] = None
-    last_recalled_at: Optional[str] = None
+    category: str | None = None
+    fact_key: str | None = None
+    fact_value: str | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    recall_count: int | None = None
+    last_recalled_at: str | None = None
 
 
 class UserMemoryInDB(UserMemoryBase):
     id: int
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    created_at: str | None = None
+    updated_at: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -420,8 +420,8 @@ class CharacterAffectionBase(BaseModel):
     interaction_count: int = 0
     daily_points_earned: int = 0
     last_interaction_date: str = ""
-    unlocked_dialogues: List[str] = Field(default_factory=list)
-    custom_nickname: Optional[str] = None
+    unlocked_dialogues: list[str] = Field(default_factory=list)
+    custom_nickname: str | None = None
 
 
 class CharacterAffectionCreate(CharacterAffectionBase):
@@ -429,14 +429,14 @@ class CharacterAffectionCreate(CharacterAffectionBase):
 
 
 class CharacterAffectionUpdate(BaseModel):
-    affection_score: Optional[int] = Field(default=None, ge=0, le=100)
-    affection_level: Optional[int] = Field(default=None, ge=1, le=5)
-    current_emotion: Optional[str] = None
-    interaction_count: Optional[int] = None
-    daily_points_earned: Optional[int] = None
-    last_interaction_date: Optional[str] = None
-    unlocked_dialogues: Optional[List[str]] = None
-    custom_nickname: Optional[str] = None
+    affection_score: int | None = Field(default=None, ge=0, le=100)
+    affection_level: int | None = Field(default=None, ge=1, le=5)
+    current_emotion: str | None = None
+    interaction_count: int | None = None
+    daily_points_earned: int | None = None
+    last_interaction_date: str | None = None
+    unlocked_dialogues: list[str] | None = None
+    custom_nickname: str | None = None
 
 
 class CharacterAffectionInDB(BaseModel):
@@ -450,17 +450,17 @@ class CharacterAffectionInDB(BaseModel):
     daily_points_earned: int = 0
     last_interaction_date: str = ""
     unlocked_dialogues: str = "[]"
-    custom_nickname: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    custom_nickname: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
 class CharacterAffectionResponse(CharacterAffectionBase):
     id: int
     level_name: str = "初识/生疏"
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    created_at: str | None = None
+    updated_at: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 

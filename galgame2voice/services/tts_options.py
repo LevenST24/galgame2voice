@@ -13,7 +13,7 @@ Provides:
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,16 +31,20 @@ from galgame2voice.utils.prosody import (
 # Presets & Slicing Methods
 # ============================================================================
 
+DEFAULT_SPLIT_METHOD = "cut5"
+DEFAULT_PRESET = "balanced"
+DEFAULT_LANGUAGE = "ja"
+
 SLICING_METHODS = {
     "cut0": "No slice / 不切",
     "cut1": "Slice by 4 sentences / 凑四句切",
     "cut2": "Slice by 50 characters / 凑50字切",
     "cut3": "Slice by Chinese punctuation / 按中文句号。切",
     "cut4": "Slice by English punctuation / 按英文句号.切",
-    "cut5": "Slice by punctuation / 按标点符号切",
+    DEFAULT_SPLIT_METHOD: "Slice by punctuation / 按标点符号切",
 }
 
-TTS_PRESETS: Dict[str, Dict[str, Any]] = {
+TTS_PRESETS: dict[str, dict[str, Any]] = {
     "high_quality": {
         "name": "High Quality",
         "speed": 0.9,
@@ -48,17 +52,17 @@ TTS_PRESETS: Dict[str, Dict[str, Any]] = {
         "top_k": 20,
         "top_p": 1.0,
         "temperature": 0.8,
-        "text_split_method": "cut5",
+        "text_split_method": DEFAULT_SPLIT_METHOD,
         "batch_size": 1,
     },
-    "balanced": {
+    DEFAULT_PRESET: {
         "name": "Balanced",
         "speed": 1.0,
         "speed_factor": 1.0,
         "top_k": 15,
         "top_p": 1.0,
         "temperature": 1.0,
-        "text_split_method": "cut5",
+        "text_split_method": DEFAULT_SPLIT_METHOD,
         "batch_size": 1,
     },
     "low_latency": {
@@ -68,7 +72,7 @@ TTS_PRESETS: Dict[str, Dict[str, Any]] = {
         "top_k": 5,
         "top_p": 0.9,
         "temperature": 0.5,
-        "text_split_method": "cut5",
+        "text_split_method": DEFAULT_SPLIT_METHOD,
         "batch_size": 1,
     },
 }
@@ -113,37 +117,39 @@ _INTERNAL_INT_KEYS = {"voice_profile_id": (1, 100000)}
 
 
 class ChatTtsOptions(BaseModel):
+    """Pydantic model validating dynamic TTS inference options parsed from chat turns."""
+
     model_config = ConfigDict(extra="forbid")
 
-    speed_factor: Optional[float] = Field(default=None, ge=0.1, le=3.0)
-    speed: Optional[float] = Field(default=None, ge=0.1, le=3.0)
-    top_k: Optional[int] = Field(default=None, ge=1, le=100)
-    top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-    temp: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-    batch_size: Optional[int] = Field(default=None, ge=1, le=16)
-    fragment_interval: Optional[float] = Field(default=None, ge=0.0, le=5.0)
-    seed: Optional[int] = Field(default=None, ge=-1, le=2**31 - 1)
-    text_lang: Optional[str] = Field(default=None, max_length=32)
-    prompt_lang: Optional[str] = Field(default=None, max_length=32)
-    text_language: Optional[str] = Field(default=None, max_length=32)
-    prompt_language: Optional[str] = Field(default=None, max_length=32)
-    refer_language: Optional[str] = Field(default=None, max_length=32)
-    text_split_method: Optional[str] = Field(default=None, max_length=64)
-    how_to_cut: Optional[str] = Field(default=None, max_length=64)
-    cut_option: Optional[str] = Field(default=None, max_length=64)
-    ref_audio_path: Optional[str] = Field(default=None, max_length=512)
-    refer_audio_path: Optional[str] = Field(default=None, max_length=512)
-    prompt_text: Optional[str] = Field(default=None, max_length=500)
-    refer_text: Optional[str] = Field(default=None, max_length=500)
-    emotion: Optional[str] = Field(default=None, max_length=64)
-    preset: Optional[str] = Field(default=None, max_length=64)
-    ai_adaptive_voice: Optional[bool] = None
-    aiAdaptiveVoice: Optional[bool] = None
-    voice_profile_id: Optional[int] = Field(default=None, ge=1, le=100000)
+    speed_factor: float | None = Field(default=None, ge=0.1, le=3.0)
+    speed: float | None = Field(default=None, ge=0.1, le=3.0)
+    top_k: int | None = Field(default=None, ge=1, le=100)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    temp: float | None = Field(default=None, ge=0.0, le=2.0)
+    batch_size: int | None = Field(default=None, ge=1, le=16)
+    fragment_interval: float | None = Field(default=None, ge=0.0, le=5.0)
+    seed: int | None = Field(default=None, ge=-1, le=2**31 - 1)
+    text_lang: str | None = Field(default=None, max_length=32)
+    prompt_lang: str | None = Field(default=None, max_length=32)
+    text_language: str | None = Field(default=None, max_length=32)
+    prompt_language: str | None = Field(default=None, max_length=32)
+    refer_language: str | None = Field(default=None, max_length=32)
+    text_split_method: str | None = Field(default=None, max_length=64)
+    how_to_cut: str | None = Field(default=None, max_length=64)
+    cut_option: str | None = Field(default=None, max_length=64)
+    ref_audio_path: str | None = Field(default=None, max_length=512)
+    refer_audio_path: str | None = Field(default=None, max_length=512)
+    prompt_text: str | None = Field(default=None, max_length=500)
+    refer_text: str | None = Field(default=None, max_length=500)
+    emotion: str | None = Field(default=None, max_length=64)
+    preset: str | None = Field(default=None, max_length=64)
+    ai_adaptive_voice: bool | None = None
+    aiAdaptiveVoice: bool | None = None
+    voice_profile_id: int | None = Field(default=None, ge=1, le=100000)
 
 
-def validate_user_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def validate_user_tts_options(options: dict[str, Any] | None = None) -> dict[str, Any]:
     """
     Validates untrusted TTS options at the API boundary.
     Enforces extra="forbid" behavior, limits parameter counts, and raises ValueError
@@ -185,15 +191,15 @@ def validate_user_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[
     return options
 
 
-def resolve_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def resolve_tts_options(options: dict[str, Any] | None = None) -> dict[str, Any]:
     """
     Merges preset defaults with user-supplied TTS inference options.
     Normalizes parameter keys to official GPT-SoVITS api_v2.py format.
     Numeric values are clamped to their legal ranges as defense in depth.
     """
     options = options or {}
-    preset_key = str(options.get("preset", "balanced")).lower().replace(" ", "_")
-    base_params = dict(TTS_PRESETS.get(preset_key, TTS_PRESETS["balanced"]))
+    preset_key = str(options.get("preset", DEFAULT_PRESET)).lower().replace(" ", "_")
+    base_params = dict(TTS_PRESETS.get(preset_key, TTS_PRESETS[DEFAULT_PRESET]))
 
     def _clamped(key: str, value: Any, fallback: Any) -> Any:
         low, high, caster = _TTS_NUMERIC_RANGES[key]
@@ -212,9 +218,9 @@ def resolve_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, A
     if is_adaptive:
         speed_val = clamp_dynamic_speed(speed_val, fallback=1.0)
 
-    text_lang_val = str(options.get("text_lang", options.get("text_language", "ja")))[:32]
-    prompt_lang_val = str(options.get("prompt_lang", options.get("prompt_language", options.get("refer_language", "ja"))))[:32]
-    split_val = str(options.get("text_split_method", options.get("how_to_cut", options.get("cut_option", base_params.get("text_split_method", "cut5")))))[:64]
+    text_lang_val = str(options.get("text_lang", options.get("text_language", DEFAULT_LANGUAGE)))[:32]
+    prompt_lang_val = str(options.get("prompt_lang", options.get("prompt_language", options.get("refer_language", DEFAULT_LANGUAGE))))[:32]
+    split_val = str(options.get("text_split_method", options.get("how_to_cut", options.get("cut_option", base_params.get("text_split_method", DEFAULT_SPLIT_METHOD)))))[:64]
 
     temp_val = _clamped("temperature", options.get("temperature", options.get("temp", base_params.get("temperature", 1.0))), base_params.get("temperature", 1.0))
     if is_adaptive:
@@ -269,14 +275,16 @@ def resolve_tts_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, A
 # ============================================================================
 
 class VoiceProfileWeightSpec(BaseModel):
+    """Normalized specification of model weight paths and reference audio metadata for a voice profile."""
+
     name: str
     gpt_weights_path: str
     sovits_weights_path: str
     refer_audio_path: str
     refer_text: str
-    refer_language: str = "ja"
-    prompt_language: str = "ja"
-    text_language: str = "ja"
+    refer_language: str = DEFAULT_LANGUAGE
+    prompt_language: str = DEFAULT_LANGUAGE
+    text_language: str = DEFAULT_LANGUAGE
 
 
 def _extract_weight_spec(target: Any) -> VoiceProfileWeightSpec:
@@ -285,29 +293,24 @@ def _extract_weight_spec(target: Any) -> VoiceProfileWeightSpec:
     loadable absolute paths whether the profile stores project-relative package
     paths or engine-relative paths."""
     if isinstance(target, dict):
-        return VoiceProfileWeightSpec(
-            name=target.get("name", "Unnamed"),
-            gpt_weights_path=resolve_weight_file_path(target.get("gpt_weights_path", "")),
-            sovits_weights_path=resolve_weight_file_path(target.get("sovits_weights_path", "")),
-            refer_audio_path=target.get("refer_audio_path") or target.get("ref_audio_path") or "",
-            refer_text=target.get("refer_text") or target.get("prompt_text") or "",
-            refer_language=target.get("refer_language") or target.get("prompt_lang") or "ja",
-            prompt_language=target.get("prompt_language") or target.get("prompt_lang") or "ja",
-            text_language=target.get("text_language") or target.get("text_lang") or "ja",
-        )
+        getter = lambda k, d=None: target.get(k, d)
+        get_fallback = lambda k, fb, d="": target.get(k) or target.get(fb) or d
     elif hasattr(target, "gpt_weights_path"):
-        return VoiceProfileWeightSpec(
-            name=getattr(target, "name", "Unnamed"),
-            gpt_weights_path=resolve_weight_file_path(getattr(target, "gpt_weights_path", "")),
-            sovits_weights_path=resolve_weight_file_path(getattr(target, "sovits_weights_path", "")),
-            refer_audio_path=getattr(target, "refer_audio_path", getattr(target, "ref_audio_path", "")),
-            refer_text=getattr(target, "refer_text", getattr(target, "prompt_text", "")),
-            refer_language=getattr(target, "refer_language", getattr(target, "prompt_lang", "ja")),
-            prompt_language=getattr(target, "prompt_language", getattr(target, "prompt_lang", "ja")),
-            text_language=getattr(target, "text_language", getattr(target, "text_lang", "ja")),
-        )
+        getter = lambda k, d=None: getattr(target, k, d)
+        get_fallback = lambda k, fb, d="": getattr(target, k, getattr(target, fb, d))
     else:
         raise ValueError(f"Cannot extract weight spec from object of type {type(target)}")
+
+    return VoiceProfileWeightSpec(
+        name=getter("name", "Unnamed"),
+        gpt_weights_path=resolve_weight_file_path(getter("gpt_weights_path", "")),
+        sovits_weights_path=resolve_weight_file_path(getter("sovits_weights_path", "")),
+        refer_audio_path=get_fallback("refer_audio_path", "ref_audio_path", ""),
+        refer_text=get_fallback("refer_text", "prompt_text", ""),
+        refer_language=get_fallback("refer_language", "prompt_lang", DEFAULT_LANGUAGE),
+        prompt_language=get_fallback("prompt_language", "prompt_lang", DEFAULT_LANGUAGE),
+        text_language=get_fallback("text_language", "text_lang", DEFAULT_LANGUAGE),
+    )
 
 
 __all__ = [

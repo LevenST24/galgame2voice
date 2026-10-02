@@ -9,12 +9,17 @@
 
 ## 认证
 
-- 除 `/api/health`、`/status`、静态资源与音频文件外，**所有 API 路由均要求控制台 Token 认证**
-  （`Authorization: Bearer <token>` 或 `X-Console-Token` 头）。
+- 除 `/api/health`、`/status`、静态资源与音频文件外，**所有 API 路由均声明了控制台 Token 认证依赖**
+  （`Authorization: Bearer <token>` 或 `X-Console-Token` 头，见 `main.py` 的 `auth_deps`）。
+- **本地默认模式下鉴权实际上是关闭的**：`Settings.auth_disabled` 默认 `True`
+  （`galgame2voice/config.py`），`require_auth()` 在该开关为真时直接放行
+  （`galgame2voice/security/auth.py`）。容器/局域网/公网部署必须显式设置
+  `GALGAME2VOICE_AUTH_DISABLED=0`（`docker-compose.yml` 已内置该设置）。
 - Token 来源优先级：环境变量 `GALGAME2VOICE_CONSOLE_TOKEN` > SQLite `settings.console_token`。
 - 首次启动时若 DB 中无 Token，会自动生成 `uuid4().hex` 并**打印到启动日志**（仅一次）。
 - 比较使用 `hmac.compare_digest`（常量时间）。
-- 前端（聊天页与设置控制台）在收到 401 时会弹出输入框收集 Token 并存入 `localStorage` 自动重试。
+- 前端（聊天页与设置控制台）在收到 401 时会弹出输入框收集 Token 并存入 `sessionStorage`（不写
+  `localStorage`、不落盘，关闭标签页即失效）后自动重试。
 - `/docs` 与 `/redoc` 默认关闭，需 `GALGAME2VOICE_ENABLE_DOCS=true` 显式开启。
 
 ## SSRF 防护（LLM 服务商接口）
@@ -45,8 +50,12 @@
 
 ## 数据与凭据
 
-- **API Key、Telegram Token、控制台 Token 目前以明文存储于 SQLite**（`data/galgame2voice.db`），
-  依赖文件系统权限保护。Windows DPAPI 加密为可选后续项，尚未实现。
+- **API Key、Telegram Token、控制台 Token 在写入 SQLite（`data/galgame2voice.db`）前已加密**：
+  Windows 使用 DPAPI（`dpapi:` 前缀），其他平台回退到 AES-GCM / HMAC 认证的加密流（`enc:` 前缀），
+  密钥来自 `GALGAME2VOICE_SECRET_KEY`（或 `GALGAME2VOICE_MASTER_KEY`）环境变量，缺省时使用
+  `data/.master_key`（0600 权限）。读写分别经 `security/crypto.py` 的 `encrypt_secret()` /
+  `decrypt_secret()`，在 `database/crud_modules/settings_cache.py`、`providers.py` 落库前调用，
+  历史明文记录由 `database/migrations.py` 自动改写。仍需依赖文件系统权限保护密钥文件与 DB。
 - 所有 API 响应对密钥做脱敏（`sk-****xxxx` 形式）；自定义认证头同样脱敏，
   且前端回传的脱敏值不会被写回覆盖真实值。
 - 用户生成的音频文件以 `private, max-age=0` 缓存策略返回，不进共享代理缓存。
@@ -56,4 +65,5 @@
 - 单用户模型：session_id / user_id 由客户端声明，认证即门禁，不做多租户所有权校验。
 - CRUD 层多个写操作各自独立提交，未做全面事务上移（关键路径——好感度累计与记忆
   upsert——已原子化）。
-- 前端为无构建工具的多文件脚本（共享 `localStorage` Token），未做模块化拆分。
+- 前端源码已按模块拆分（`frontend/src/*.js` + `src/controllers/`），但依赖 Vite 构建：
+  `npm run build` + `node deploy.mjs` 才产出 `galgame2voice/static/`，仓库内同时保留了已构建产物。

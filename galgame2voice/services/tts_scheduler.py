@@ -14,7 +14,14 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, AsyncGenerator, Callable, Coroutine, Dict, List, Optional, Set, TypeVar
+from typing import (
+    Any,
+    AsyncGenerator,
+    Callable,
+    Coroutine,
+    Optional,
+    TypeVar,
+)
 
 logger = logging.getLogger("galgame2voice.services.tts_scheduler")
 
@@ -53,9 +60,11 @@ async def _safe_put_chunk(
         return False
 
     try:
+        # Fast path: non-blocking enqueue without task creation overhead
         queue.put_nowait(item)
         return True
     except asyncio.QueueFull:
+        # Queue full; fall back to racing async put against stop_event
         pass
 
     put_task = asyncio.create_task(queue.put(item))
@@ -69,14 +78,36 @@ async def _safe_put_chunk(
         try:
             await p
         except asyncio.CancelledError:
+            # Suppress CancelledError when draining cancelled helper tasks
             pass
     return put_task in done and not stop_event.is_set()
 
 
 class TtsPriority(IntEnum):
+    """Execution priority levels for queued TTS synthesis tasks (0=HIGH, 1=NORMAL, 2=LOW)."""
+
     HIGH = 0      # Active playing sentence (critical user-facing path)
     NORMAL = 1    # Next sentence prefetch
     LOW = 2       # Background character/emotion preheat
+
+    @classmethod
+    def from_options(
+        cls,
+        options: dict[str, Any] | None = None,
+        default: Optional["TtsPriority"] = None,
+    ) -> "TtsPriority":
+        """
+        Parses TTS scheduling priority from options dict (under '_priority' key).
+        Safely falls back to default (NORMAL) on missing, invalid, or malformed values.
+        """
+        fallback = default if default is not None else cls.NORMAL
+        if not options:
+            return fallback
+        raw_prio = options.get("_priority", fallback)
+        try:
+            return cls(int(raw_prio))
+        except (ValueError, TypeError):
+            return fallback
 
 
 class SingleFlightCoordinator:
@@ -85,10 +116,10 @@ class SingleFlightCoordinator:
     Subsequent callers await the single leader's result instead of duplicating GPU inference.
     """
 
-    def __init__(self):
-        self._flights: Dict[str, asyncio.Future] = {}
-        self._lock: Optional[asyncio.Lock] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+    def __init__(self) -> None:
+        self._flights: dict[str, asyncio.Future] = {}
+        self._lock: asyncio.Lock | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def _ensure_lock(self) -> asyncio.Lock:
         try:
@@ -138,18 +169,20 @@ class SingleFlightCoordinator:
 
 @dataclass(order=True)
 class ScheduledTtsTask:
+    """Internal task tracking wrapper for prioritized scheduling of TTS jobs."""
+
     priority: int
     seq: int
     task_id: str = field(compare=False)
-    generation_id: Optional[str] = field(compare=False)
-    coro_fn: Optional[Callable[[], Coroutine[Any, Any, Any]]] = field(compare=False, default=None)
+    generation_id: str | None = field(compare=False)
+    coro_fn: Callable[[], Coroutine[Any, Any, Any]] | None = field(compare=False, default=None)
     future: asyncio.Future = field(compare=False, default=None)
     created_at: float = field(compare=False, default_factory=time.monotonic)
     cancelled: bool = field(compare=False, default=False)
     is_stream: bool = field(compare=False, default=False)
-    stream_fn: Optional[Callable[[], Any]] = field(compare=False, default=None)
-    stream_queue: Optional[asyncio.Queue] = field(compare=False, default=None)
-    stop_event: Optional[asyncio.Event] = field(compare=False, default=None)
+    stream_fn: Callable[[], Any] | None = field(compare=False, default=None)
+    stream_queue: asyncio.Queue | None = field(compare=False, default=None)
+    stop_event: asyncio.Event | None = field(compare=False, default=None)
     stream_cancelled_counted: bool = field(compare=False, default=False)
 
 
@@ -160,16 +193,16 @@ class TtsScheduler:
     and enabling proactive elimination of stale tasks on dialogue interruptions.
     """
 
-    def __init__(self):
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._queue: Optional[asyncio.PriorityQueue[ScheduledTtsTask]] = None
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._queue: asyncio.PriorityQueue[ScheduledTtsTask] | None = None
         self._seq: int = 0
-        self._lock: Optional[asyncio.Lock] = None
+        self._lock: asyncio.Lock | None = None
         self._sync_lock = threading.Lock()
-        self._tasks_by_id: Dict[str, ScheduledTtsTask] = {}
-        self._tasks_by_gen: Dict[str, Set[str]] = {}
+        self._tasks_by_id: dict[str, ScheduledTtsTask] = {}
+        self._tasks_by_gen: dict[str, set[str]] = {}
         self._single_flight = SingleFlightCoordinator()
-        self._worker_task: Optional[asyncio.Task] = None
+        self._worker_task: asyncio.Task | None = None
         self._running: bool = False
 
         # Metrics telemetry
@@ -226,7 +259,7 @@ class TtsScheduler:
     def total_queue_wait_time(self) -> float:
         return self._total_queue_wait_time
 
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_metrics(self) -> dict[str, Any]:
         return {
             "queue_depth": self.get_queue_depth(),
             "active_streams": self._active_streams,
@@ -260,8 +293,8 @@ class TtsScheduler:
         self,
         coro_fn: Callable[[], Coroutine[Any, Any, T]],
         priority: TtsPriority = TtsPriority.NORMAL,
-        generation_id: Optional[str] = None,
-        task_id: Optional[str] = None,
+        generation_id: str | None = None,
+        task_id: str | None = None,
     ) -> T:
         """
         Schedules a TTS coroutine with the given priority and generation tracking.
@@ -272,30 +305,40 @@ class TtsScheduler:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
 
+        task = ScheduledTtsTask(
+            priority=int(priority),
+            seq=0,
+            task_id=tid,
+            generation_id=generation_id,
+            coro_fn=coro_fn,
+            future=fut,
+        )
+        await self._enqueue_task(task)
+        return await fut
+
+    def _mark_stream_cancelled(self, task: ScheduledTtsTask) -> None:
+        """Atomically marks a streaming task cancelled and increments telemetry."""
+        if not task.stream_cancelled_counted:
+            task.stream_cancelled_counted = True
+            self._cancelled_streams += 1
+
+    async def _enqueue_task(self, task: ScheduledTtsTask) -> None:
+        """Assigns sequence number and adds task to priority queue under scheduler lock."""
         assert self._lock is not None and self._queue is not None
         async with self._lock:
             self._seq += 1
-            task = ScheduledTtsTask(
-                priority=int(priority),
-                seq=self._seq,
-                task_id=tid,
-                generation_id=generation_id,
-                coro_fn=coro_fn,
-                future=fut,
-            )
-            self._tasks_by_id[tid] = task
-            if generation_id:
-                self._tasks_by_gen.setdefault(generation_id, set()).add(tid)
+            task.seq = self._seq
+            self._tasks_by_id[task.task_id] = task
+            if task.generation_id:
+                self._tasks_by_gen.setdefault(task.generation_id, set()).add(task.task_id)
             await self._queue.put(task)
-
-        return await fut
 
     async def schedule_stream(
         self,
         stream_fn: Callable[[], AsyncGenerator[bytes, None]],
         priority: TtsPriority = TtsPriority.NORMAL,
-        generation_id: Optional[str] = None,
-        task_id: Optional[str] = None,
+        generation_id: str | None = None,
+        task_id: str | None = None,
     ) -> AsyncGenerator[bytes, None]:
         """
         Enqueues an asynchronous streaming TTS generator in the priority queue.
@@ -323,9 +366,7 @@ class TtsScheduler:
 
         async def _run_stream() -> None:
             if task.cancelled or task.future.cancelled() or stop_event.is_set():
-                if not task.stream_cancelled_counted:
-                    task.stream_cancelled_counted = True
-                    self._cancelled_streams += 1
+                self._mark_stream_cancelled(task)
                 return
 
             self._active_streams += 1
@@ -339,21 +380,15 @@ class TtsScheduler:
 
                 async for chunk in stream_gen:
                     if task.cancelled or task.future.cancelled() or stop_event.is_set():
-                        if not task.stream_cancelled_counted:
-                            task.stream_cancelled_counted = True
-                            self._cancelled_streams += 1
+                        self._mark_stream_cancelled(task)
                         break
                     put_ok = await _safe_put_chunk(buffer_queue, chunk, stop_event)
                     if not put_ok:
-                        if not task.stream_cancelled_counted:
-                            task.stream_cancelled_counted = True
-                            self._cancelled_streams += 1
+                        self._mark_stream_cancelled(task)
                         break
             except BaseException as exc:
                 if isinstance(exc, (asyncio.CancelledError, GeneratorExit)):
-                    if not task.stream_cancelled_counted:
-                        task.stream_cancelled_counted = True
-                        self._cancelled_streams += 1
+                    self._mark_stream_cancelled(task)
                 else:
                     await _safe_put_chunk(buffer_queue, _StreamError(exc), stop_event)
                 raise
@@ -362,20 +397,12 @@ class TtsScheduler:
                 if stream_gen is not None:
                     try:
                         await stream_gen.aclose()
-                    except Exception:
-                        pass
+                    except Exception as close_err:
+                        logger.debug("Non-critical: error closing stream generator: %s", close_err)
                 await _safe_put_chunk(buffer_queue, _STREAM_EOF, stop_event)
 
         task.coro_fn = _run_stream
-
-        assert self._lock is not None and self._queue is not None
-        async with self._lock:
-            self._seq += 1
-            task.seq = self._seq
-            self._tasks_by_id[tid] = task
-            if generation_id:
-                self._tasks_by_gen.setdefault(generation_id, set()).add(tid)
-            await self._queue.put(task)
+        await self._enqueue_task(task)
 
         is_normal_eof = False
         try:
@@ -397,11 +424,25 @@ class TtsScheduler:
             stop_event.set()
             if not is_normal_eof:
                 task.cancelled = True
-                if not task.stream_cancelled_counted:
-                    task.stream_cancelled_counted = True
-                    self._cancelled_streams += 1
+                self._mark_stream_cancelled(task)
                 if not fut.done():
                     fut.cancel()
+
+    def _cancel_scheduled_task(self, task: ScheduledTtsTask) -> None:
+        """Internal helper to mark a task cancelled, cancel its future, and signal streams."""
+        task.cancelled = True
+        task.future.cancel()
+        if getattr(task, "is_stream", False):
+            if task.stop_event:
+                task.stop_event.set()
+            if task.stream_queue:
+                try:
+                    task.stream_queue.put_nowait(_STREAM_CANCELLED)
+                except (asyncio.QueueFull, Exception):
+                    pass
+            if not getattr(task, "stream_cancelled_counted", False):
+                task.stream_cancelled_counted = True
+                self._cancelled_streams += 1
 
     def cancel_generation(self, generation_id: str) -> int:
         """Cancels all queued, unexecuted tasks associated with generation_id."""
@@ -413,19 +454,7 @@ class TtsScheduler:
             for tid in task_ids:
                 task = self._tasks_by_id.pop(tid, None)
                 if task and not task.future.done():
-                    task.cancelled = True
-                    task.future.cancel()
-                    if getattr(task, "is_stream", False):
-                        if task.stop_event:
-                            task.stop_event.set()
-                        if task.stream_queue:
-                            try:
-                                task.stream_queue.put_nowait(_STREAM_CANCELLED)
-                            except Exception:
-                                pass
-                        if not getattr(task, "stream_cancelled_counted", False):
-                            task.stream_cancelled_counted = True
-                            self._cancelled_streams += 1
+                    self._cancel_scheduled_task(task)
                     cancelled_count += 1
         if cancelled_count > 0:
             logger.info("TtsScheduler: Cancelled %d pending tasks for stale generation %s", cancelled_count, generation_id)
@@ -438,19 +467,7 @@ class TtsScheduler:
         with self._sync_lock:
             task = self._tasks_by_id.pop(task_id, None)
             if task and not task.future.done():
-                task.cancelled = True
-                task.future.cancel()
-                if getattr(task, "is_stream", False):
-                    if task.stop_event:
-                        task.stop_event.set()
-                    if task.stream_queue:
-                        try:
-                            task.stream_queue.put_nowait(_STREAM_CANCELLED)
-                        except Exception:
-                            pass
-                    if not getattr(task, "stream_cancelled_counted", False):
-                        task.stream_cancelled_counted = True
-                        self._cancelled_streams += 1
+                self._cancel_scheduled_task(task)
                 return True
         return False
 
@@ -513,7 +530,7 @@ class TtsScheduler:
                 pass
 
 
-_GLOBAL_TTS_SCHEDULER: Optional[TtsScheduler] = None
+_GLOBAL_TTS_SCHEDULER: TtsScheduler | None = None
 
 
 def get_tts_scheduler() -> TtsScheduler:

@@ -34,7 +34,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 | 19 | Evidence-Based Precision Calibration (Probe replaces GPU whitelist) | Deleted the `is_turing_tu116_tu117_gpu` GPU-model-name whitelist entirely (hardware.py, run_server.py branches, health telemetry `turing_fp32_active`→`fp32_forced`). New `utils/precision.py` store (`data/precision.json`, keyed to engine dir, BOM-safe). Launcher now: reads `GPT_SOVITS_PRECISION` env override > verified cache > FP16 default; after engine readiness synthesizes a one-sentence probe via `/tts` and checks `wav_peak_amplitude` — FP16 silent → auto-restarts engine with FP32 → re-probes → caches verified result. Inconclusive probes never cache. Refactored spawn into `_spawn_sovits_process` (reused for FP32 restart). No user knowledge required; any future GPU auto-adapts | M3_FINAL_VERIFICATION | Precision calibration pass (DONE) |
 | 20 | Repository Quarantine & Asset Exclusion | Hardened `.gitignore` (all weight formats, temp audio, explicit characters recursion, data/audio_cache, temp_test/tmp_check, fix line 82 CRLF), update `scripts/package_release.py` | M4_HARDENING | Survey R1 (DONE) |
 | 21 | 16GB RAM Memory Lifecycle Reclamation | `release_system_memory()` with `gc.collect()` + PyTorch empty_cache in `hardware.py`; invoked before memory guard and on model switch in `voice_manager.py` | M4_HARDENING | Survey R2 (DONE) |
-| 22 | Frontend Memory & Listener De-allocation | Bounded LRU cache for audio blobs (50 entries) in `frontend/src/cache.js`, clean listener detachment via `curAudio.ontimeupdate` in `main.js`, rebuild assets | M4_HARDENING | Survey R2 (DONE) |
+| 22 | Frontend Memory & Listener De-allocation | Bounded LRU cache for audio blobs (50 entries) in `frontend/src/cache.js`, clean listener detachment via `audio.ontimeupdate` in `frontend/src/controllers/audio_player_ui.js`, rebuild assets | M4_HARDENING | Survey R2 (DONE) |
 | 23 | URL Authority Userinfo Credential Masking | Sanitize `user:password@host` in `MaskingFilter.PATTERNS` in `utils/logger.py` to prevent credential leaks in stdout/file logs on connection errors | M4_HARDENING | Survey R3 (DONE) |
 | 24 | Code Hygiene & v2.0 Documentation | Fix F821 undefined `updated` -> `updated_settings` in `routers/config.py:166`, remove dead imports, update `README.md` with AI Dynamic Voice, env vars, SPA settings | M4_HARDENING | Survey R4 (DONE) |
 | 25 | Full Test Suite Calibration & 100% Pass Verification | Fix `test_adversarial_m2_challenger2.py:412` (style.css path) and `test_character_manager.py:472` (soundfile dependency), verify 100% tests pass | M4_HARDENING | Survey R5 (DONE) |
@@ -90,7 +90,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 - `MaskingFormatter`: Subclass of `logging.Formatter`. Overrides `format(record)` to run `MaskingFilter.sanitize()` on the fully formatted string (including `formatException`).
 - `MaskingFilter.PATTERNS`: Regex patterns updated to match:
   1. `api_key=...`, `token=...`, `secret=...` (quoted or unquoted)
-  2. `https://api.telegram.org/bot<token>/...` -> `https://api.telegram.org/bot***REDACTED***`
+  2. `https://api.telegram.org/bot<token>/...` -> `https://api.telegram.org/bot[MASKED_TELEGRAM_TOKEN]` (replacement literal defined in `utils/logger.py` PATTERNS #8/#9; the codebase never emits `***REDACTED***`)
   3. `AIzaSy[A-Za-z0-9_-]{33}` (Google API Key)
   4. `hf_[A-Za-z0-9]{34}` (HuggingFace token)
 
@@ -102,7 +102,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 
 ### Memory Extraction & Framing Contract
 - `MemoryService.extract_facts_heuristic(text: str)`: Cleans input (strips newlines, tags, control chars, limits length to <= 50 chars).
-- `MemoryService.format_memory_prompt_block(memories: List[CharacterMemory])`: Formats memory facts in defensive quotes with clear non-executable context markers.
+- `MemoryService.format_memory_prompt_block(memories: list[UserMemoryResponse])`: Formats memory facts in defensive quotes with clear non-executable context markers.
 
 ### TTS Cache Latency Contract
 - `TtsCacheManager.get(cache_key)`: Checks `self._mem_cache` first. If hit, returns immediately without disk I/O. Latency must measure `< 0.05ms`.
@@ -121,21 +121,21 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 - SQLite table `settings`: Contains `stt_engine` column with default `'browser'`.
 
 ### Emotion State Machine & Package Validation Contract
-- `EmotionClassifier.VALID_EMOTIONS`: Exactly 7 canonical emotions: `{"gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"}`.
-- `EmotionClassifier.classify(text)`: Strictly resolves angry keywords (`怒`, `生气`, `烦死了`, `讨厌`, `ムカつく`, `怒り`, `ふざけるな`, etc.) to `"angry"`. Does NOT hijack into `"tsundere"`.
-- `EmotionClassifier.resolve_emotion(text, fallback)`: Canonical emotion resolution mapping with explicit angry handling.
-- `EmotionReferenceService.resolve_emotion_reference()`: Direct lookup with support for Japanese synonyms (`ツンデレ`, `照れ`, `怒り`, `嬉しい`, `悲しい`, `優しい`, `クール`).
+- `emotion_classifier.VALID_EMOTIONS` (module-level set in `services/emotion_classifier.py`): Exactly 7 canonical emotions: `{"gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"}`.
+- `emotion_classifier.classify_emotion(chinese, japanese, explicit_emotion)`: Module function (no `EmotionClassifier` class exists). Priority: explicit_emotion > leading bracketed emotion tag > deterministic keyword scan over `EMOTION_KEYWORDS` > `gentle` fallback. The `angry` keyword list (`生气`, `愤怒`, `气愤`, `怒り`, `怒る`, `怒`, `恼怒`, `烦人`, `讨厌死了`, `吵死了`, `うるさい`, `ふざけるな`) resolves to `"angry"` and is not hijacked into `"tsundere"`; note the bare token `讨厌` is registered under `shy`, not `angry`.
+- `emotion_references.normalize_emotion(emotion)`: Canonical emotion resolution via the `EMOTION_SYNONYMS` map (there is no `resolve_emotion(text, fallback)` symbol).
+- `emotion_references.resolve_emotion_reference(character_name, emotion, base_dir)`: Module function (no `EmotionReferenceService` class); delegates to `CharacterManager.resolve_emotion_audio_path` with support for Japanese synonyms (`ツンデレ`, `照れ`, `怒り`, `嬉しい`, `悲しい`, `優しい`, `クール`).
 - 13-Character Package Asset Standard: All 13 discovered characters (adding 《天使☆騒々 RE-BOOT!》 白雪乃爱, 谷风天音, 小云雀来海, 星河辉耶, 高楯欧丽叶) have `is_valid == True`, containing 7 distinct audio files each (91 total) strictly in `[3.0s, 9.0s]` with accurate Japanese transcriptions, genuine binary weights (>100MB), and progressive affection system prompts.
 
 ---
 
 ## Code Layout
 - `galgame2voice/utils/`: Security masking, logging formatters, and hardware utilities (`logger.py`, `path_guard.py`, `error_diagnostics.py`, `hardware.py`).
-- `galgame2voice/routers/`: FastAPI endpoints (`chat.py`, `config.py`, `health.py`, `characters.py`, `audio.py`, `providers.py`, `affection.py`, `memories.py`).
+- `galgame2voice/routers/`: FastAPI endpoints (`chat.py`, `config.py`, `health.py`, `characters.py`, `voice.py`, `memory.py`, `affection.py`, `providers.py`, `metrics.py`, `system.py`, `common.py`). There is no `audio.py` or `memories.py`: audio files are served by the `AudioStaticFiles` mount declared in `galgame2voice/main.py`, and `providers.py` is mounted inside `config.py` (`router.include_router(providers_router)`).
 - `galgame2voice/services/`: Core business logic (`chat_service.py`, `character_manager.py`, `voice_manager.py`, `audio_cleaner.py`, `dynamic_batcher.py`, `tts_cache_manager.py`, `memory_service.py`, `gpt_sovits_client.py`, `session_manager.py`).
 - `galgame2voice/database/`: SQLite engine, schema version migrations, and CRUD operations (`session.py`, `migrations.py`, `crud.py`, `models.py`).
 - `galgame2voice/telegram_bot/`: Telegram bot client and command/chat handlers (`bot.py`, `handlers.py`).
 - `scripts/`: Launcher, packaging, and maintenance scripts (`run_server.py`, `package_release.py`, `apply_character_fixes.py`).
 - `scripts/tools/`: Diagnostic and verification utilities (`audit_character_emotions.py`).
 - `tests/`: Automated test suite (50+ test files, 1500+ tests).
-- `.agents/`: Agent coordination metadata (briefings, plans, progress, handoffs).
+- `galgame2voice/security/`: Console token auth dependency, at-rest credential encryption, sliding-window rate limiter and LLM base-URL SSRF guard (`auth.py`, `crypto.py`, `rate_limit.py`, `url_guard.py`).

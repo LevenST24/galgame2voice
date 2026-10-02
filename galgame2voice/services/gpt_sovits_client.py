@@ -15,17 +15,19 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, Optional, Tuple, Union
+from typing import Any, AsyncGenerator
 
 import httpx
 
 from galgame2voice.utils.audio_spec import (
+    PCM_32KHZ_16BIT_MONO_BYTE_RATE,
     REFERENCE_AUDIO_MAX_SECONDS,
     REFERENCE_AUDIO_MIN_SECONDS,
     SILENT_AUDIO_ERROR,
     AudioSpec,
     AudioSpecCache,
     _AUDIO_SPEC_CACHE,
+    _safe_resolve_path,
     async_probe_audio_duration_seconds,
     extract_wav_duration,
     is_silent_audio,
@@ -70,15 +72,6 @@ logger = logging.getLogger("galgame2voice.services.gpt_sovits_client")
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _safe_resolve_path(path_val: Union[str, Path]) -> Path:
-    """Safely resolves path, falling back to absolute() on Windows permission errors."""
-    p = Path(path_val)
-    try:
-        return p.resolve()
-    except (OSError, PermissionError):
-        return p.absolute()
-
-
 # Backward-compatibility alias
 _GLOBAL_AUDIO_SPEC_CACHE = _AUDIO_SPEC_CACHE
 
@@ -88,11 +81,21 @@ _GLOBAL_AUDIO_SPEC_CACHE = _AUDIO_SPEC_CACHE
 # ============================================================================
 
 # Tiered timeout profile: fail fast on connect, allow long GPU synthesis reads.
-# NOTE: connect is capped at 1s because some VPN/TUN proxy stacks delay even
+# NOTE: health probe connect is capped at 1s because some VPN/TUN proxy stacks delay even
 # loopback connection-refused to ~2s; a healthy local engine connects in <50ms.
 TTS_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=15.0, pool=15.0)
 SWITCH_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=15.0, pool=15.0)
 HEALTH_TIMEOUT = httpx.Timeout(connect=1.0, read=2.5, write=2.5, pool=2.5)
+
+ENDPOINT_SET_GPT_WEIGHTS = "/set_gpt_weights"
+ENDPOINT_SET_SOVITS_WEIGHTS = "/set_sovits_weights"
+ENDPOINT_SET_REFER_AUDIO = "/set_refer_audio"
+ENDPOINT_CONTROL = "/control"
+ENDPOINT_TTS = "/tts"
+
+PARAM_WEIGHTS_PATH = "weights_path"
+PARAM_REFER_AUDIO_PATH = "refer_audio_path"
+PARAM_STREAMING_MODE = "streaming_mode"
 
 
 class GptSovitsClient:
@@ -111,8 +114,8 @@ class GptSovitsClient:
         self,
         base_url: str = "http://127.0.0.1:9880",
         timeout: float = 300.0,
-        client: Optional[httpx.AsyncClient] = None,
-        server: Optional[Any] = None,
+        client: httpx.AsyncClient | None = None,
+        server: Any | None = None,
     ):
         self.base_url = str(base_url).rstrip("/")
         self.timeout = timeout
@@ -121,19 +124,19 @@ class GptSovitsClient:
         self.lock = asyncio.Lock()
 
         # State tracking
-        self.active_profile: Optional[Any] = None
+        self.active_profile: Any | None = None
         self.is_switching: bool = False
-        self.current_gpt_weights: Optional[str] = None
-        self.current_sovits_weights: Optional[str] = None
-        self.current_refer_audio: Optional[str] = None
-        self.current_refer_text: Optional[str] = None
-        self.current_refer_language: Optional[str] = None
+        self.current_gpt_weights: str | None = None
+        self.current_sovits_weights: str | None = None
+        self.current_refer_audio: str | None = None
+        self.current_refer_text: str | None = None
+        self.current_refer_language: str | None = None
 
         # In-flight request tracking for hot URL swaps: the old connection
         # pool is closed once in-flight requests drain or the grace period
         # expires, whichever comes first (read timeout is up to 300s).
         self._inflight_requests = 0
-        self._close_task: Optional[asyncio.Task] = None
+        self._close_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Connection pool lifecycle
@@ -188,7 +191,7 @@ class GptSovitsClient:
                 min_grace,
             )
 
-            async def _close_when_drained():
+            async def _close_when_drained() -> None:
                 force_closed = False
                 try:
                     loop = asyncio.get_running_loop()
@@ -196,8 +199,10 @@ class GptSovitsClient:
                     while self._inflight_requests > 0 and loop.time() < deadline:
                         await asyncio.sleep(0.25)
                     force_closed = self._inflight_requests > 0
-                except Exception:
-                    pass
+                except asyncio.CancelledError:
+                    force_closed = True
+                except Exception as wait_err:
+                    logger.debug("Error while waiting for connection pool to drain: %s", wait_err)
                 if force_closed:
                     logger.warning(
                         "Force-closing stale GPT-SoVITS connection pool after %.0fs grace: "
@@ -207,8 +212,8 @@ class GptSovitsClient:
                     )
                 try:
                     await old_client.aclose()
-                except Exception:
-                    pass
+                except Exception as close_err:
+                    logger.debug("Non-critical: error closing old GPT-SoVITS client: %s", close_err)
 
             # Keep a strong reference so the task cannot be garbage collected.
             if self._close_task is not None and not self._close_task.done():
@@ -219,9 +224,9 @@ class GptSovitsClient:
         self,
         method: str,
         path: str,
-        json_data: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None,
-        timeout: Optional[httpx.Timeout] = None,
+        json_data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        timeout: httpx.Timeout | None = None,
     ) -> httpx.Response:
         """Internal HTTP request dispatcher supporting mock server or pooled httpx."""
         if self.server is not None and hasattr(self.server, "handle_request"):
@@ -237,7 +242,7 @@ class GptSovitsClient:
     # Health & Diagnostic Endpoints
     # ------------------------------------------------------------------
 
-    async def check_health(self) -> Dict[str, Any]:
+    async def check_health(self) -> dict[str, Any]:
         """
         Probes GPT-SoVITS reachability via GET /control (api_v2 control endpoint returns 400 when active).
         HTTP 200/400 proves the engine is alive and listening; other codes / network errors are unreachable.
@@ -246,12 +251,12 @@ class GptSovitsClient:
         try:
             if self.server is not None and hasattr(self.server, "handle_request"):
                 try:
-                    resp = await self.server.handle_request("GET", "/control")
+                    resp = await self.server.handle_request("GET", ENDPOINT_CONTROL)
                 except Exception:
                     resp = await self.server.handle_request("GET", "/")
             else:
                 client = self._get_http_client()
-                url = f"{self.base_url}/control"
+                url = f"{self.base_url}{ENDPOINT_CONTROL}"
                 try:
                     resp = await client.get(url, timeout=HEALTH_TIMEOUT)
                 except Exception:
@@ -284,9 +289,9 @@ class GptSovitsClient:
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
-    async def control(self, command: str = "restart") -> Dict[str, Any]:
+    async def control(self, command: str = "restart") -> dict[str, Any]:
         """Sends control command to GPT-SoVITS service."""
-        resp = await self._request("POST", "/control", json_data={"command": command})
+        resp = await self._request("POST", ENDPOINT_CONTROL, json_data={"command": command})
         if resp.status_code == 200:
             return resp.json()
         raise RuntimeError(f"Control command failed with status {resp.status_code}: {resp.text}")
@@ -297,7 +302,7 @@ class GptSovitsClient:
 
     async def set_gpt_weights(self, weights_path: str) -> bool:
         """Sets GPT weights path. Loading onto GPU may take tens of seconds."""
-        resp = await self._request("GET", "/set_gpt_weights", params={"weights_path": weights_path}, timeout=SWITCH_TIMEOUT)
+        resp = await self._request("GET", ENDPOINT_SET_GPT_WEIGHTS, params={PARAM_WEIGHTS_PATH: weights_path}, timeout=SWITCH_TIMEOUT)
         if resp.status_code == 200:
             self.current_gpt_weights = weights_path
             return True
@@ -306,7 +311,7 @@ class GptSovitsClient:
 
     async def set_sovits_weights(self, weights_path: str) -> bool:
         """Sets SoVITS weights path. Loading onto GPU may take tens of seconds."""
-        resp = await self._request("GET", "/set_sovits_weights", params={"weights_path": weights_path}, timeout=SWITCH_TIMEOUT)
+        resp = await self._request("GET", ENDPOINT_SET_SOVITS_WEIGHTS, params={PARAM_WEIGHTS_PATH: weights_path}, timeout=SWITCH_TIMEOUT)
         if resp.status_code == 200:
             self.current_sovits_weights = weights_path
             return True
@@ -326,7 +331,7 @@ class GptSovitsClient:
         elif p.is_file():
             refer_audio_path = str(p.resolve())
 
-        resp = await self._request("GET", "/set_refer_audio", params={"refer_audio_path": refer_audio_path})
+        resp = await self._request("GET", ENDPOINT_SET_REFER_AUDIO, params={PARAM_REFER_AUDIO_PATH: refer_audio_path})
         if resp.status_code == 200:
             self.current_refer_audio = refer_audio_path
             self.current_refer_text = refer_text
@@ -338,6 +343,29 @@ class GptSovitsClient:
     # ------------------------------------------------------------------
     # 3-Step Atomic Model Switching with Auto-Rollback
     # ------------------------------------------------------------------
+
+    async def _rollback_weights(
+        self,
+        prev_spec: VoiceProfileWeightSpec | None,
+        current_spec: VoiceProfileWeightSpec | None = None,
+        rollback_sovits: bool = False,
+        rollback_gpt: bool = False,
+        rollback_refer: bool = False,
+    ) -> None:
+        """Rolls back GPT-SoVITS server weights and reference audio to previous spec."""
+        if not prev_spec:
+            return
+        if rollback_sovits and prev_spec.sovits_weights_path:
+            if not current_spec or prev_spec.sovits_weights_path != current_spec.sovits_weights_path:
+                await self._request("GET", ENDPOINT_SET_SOVITS_WEIGHTS, params={PARAM_WEIGHTS_PATH: prev_spec.sovits_weights_path}, timeout=SWITCH_TIMEOUT)
+                self.current_sovits_weights = prev_spec.sovits_weights_path
+        if rollback_gpt and prev_spec.gpt_weights_path:
+            if not current_spec or prev_spec.gpt_weights_path != current_spec.gpt_weights_path:
+                await self._request("GET", ENDPOINT_SET_GPT_WEIGHTS, params={PARAM_WEIGHTS_PATH: prev_spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
+                self.current_gpt_weights = prev_spec.gpt_weights_path
+        if rollback_refer and prev_spec.refer_audio_path:
+            rollback_ref = resolve_reference_audio_path(prev_spec.refer_audio_path)
+            await self._request("GET", ENDPOINT_SET_REFER_AUDIO, params={PARAM_REFER_AUDIO_PATH: rollback_ref})
 
     async def switch_voice_profile(self, target: Any, force: bool = False) -> bool:
         """
@@ -360,23 +388,23 @@ class GptSovitsClient:
 
             try:
                 # Step 1: GPT weights (skip if identical weights already loaded and not force)
-                if force or not (self.current_gpt_weights and self.current_gpt_weights == spec.gpt_weights_path):
-                    r1 = await self._request("GET", "/set_gpt_weights", params={"weights_path": spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
+                needs_gpt_update = force or not self.current_gpt_weights or self.current_gpt_weights != spec.gpt_weights_path
+                if needs_gpt_update:
+                    r1 = await self._request("GET", ENDPOINT_SET_GPT_WEIGHTS, params={PARAM_WEIGHTS_PATH: spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
                     if r1.status_code != 200:
-                        logger.error("Switch failed at Step 1 (GPT weights): %s", r1.text)
+                        logger.error("Switch to '%s' failed at Step 1 (GPT weights %s): %s", spec.name, spec.gpt_weights_path, r1.text)
                         return False
                     self.current_gpt_weights = spec.gpt_weights_path
                 else:
                     logger.debug("Skipping /set_gpt_weights: '%s' already loaded", spec.gpt_weights_path)
 
                 # Step 2: SoVITS weights (skip if identical weights already loaded and not force)
-                if force or not (self.current_sovits_weights and self.current_sovits_weights == spec.sovits_weights_path):
-                    r2 = await self._request("GET", "/set_sovits_weights", params={"weights_path": spec.sovits_weights_path}, timeout=SWITCH_TIMEOUT)
+                needs_sovits_update = force or not self.current_sovits_weights or self.current_sovits_weights != spec.sovits_weights_path
+                if needs_sovits_update:
+                    r2 = await self._request("GET", ENDPOINT_SET_SOVITS_WEIGHTS, params={PARAM_WEIGHTS_PATH: spec.sovits_weights_path}, timeout=SWITCH_TIMEOUT)
                     if r2.status_code != 200:
-                        logger.error("Switch failed at Step 2 (SoVITS weights): %s. Initiating rollback...", r2.text)
-                        if prev_spec and prev_spec.gpt_weights_path and prev_spec.gpt_weights_path != spec.gpt_weights_path:
-                            await self._request("GET", "/set_gpt_weights", params={"weights_path": prev_spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
-                            self.current_gpt_weights = prev_spec.gpt_weights_path
+                        logger.error("Switch to '%s' failed at Step 2 (SoVITS weights %s): %s. Initiating rollback...", spec.name, spec.sovits_weights_path, r2.text)
+                        await self._rollback_weights(prev_spec, spec, rollback_gpt=True)
                         return False
                     self.current_sovits_weights = spec.sovits_weights_path
                 else:
@@ -384,20 +412,17 @@ class GptSovitsClient:
 
                 # Step 3: Reference Audio
                 resolved_ref_audio = resolve_reference_audio_path(spec.refer_audio_path)
-                if force or not (self.current_refer_audio and self.current_refer_audio == resolved_ref_audio and self.current_refer_text == spec.refer_text and self.current_refer_language == spec.refer_language):
-                    r3 = await self._request("GET", "/set_refer_audio", params={"refer_audio_path": resolved_ref_audio})
+                is_same_refer = bool(
+                    self.current_refer_audio
+                    and self.current_refer_audio == resolved_ref_audio
+                    and self.current_refer_text == spec.refer_text
+                    and self.current_refer_language == spec.refer_language
+                )
+                if force or not is_same_refer:
+                    r3 = await self._request("GET", ENDPOINT_SET_REFER_AUDIO, params={PARAM_REFER_AUDIO_PATH: resolved_ref_audio})
                     if r3.status_code != 200:
-                        logger.error("Switch failed at Step 3 (Refer Audio): %s. Initiating rollback...", r3.text)
-                        if prev_spec:
-                            if prev_spec.sovits_weights_path and prev_spec.sovits_weights_path != spec.sovits_weights_path:
-                                await self._request("GET", "/set_sovits_weights", params={"weights_path": prev_spec.sovits_weights_path}, timeout=SWITCH_TIMEOUT)
-                                self.current_sovits_weights = prev_spec.sovits_weights_path
-                            if prev_spec.gpt_weights_path and prev_spec.gpt_weights_path != spec.gpt_weights_path:
-                                await self._request("GET", "/set_gpt_weights", params={"weights_path": prev_spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
-                                self.current_gpt_weights = prev_spec.gpt_weights_path
-                            if prev_spec.refer_audio_path:
-                                rollback_ref = resolve_reference_audio_path(prev_spec.refer_audio_path)
-                                await self._request("GET", "/set_refer_audio", params={"refer_audio_path": rollback_ref})
+                        logger.error("Switch to '%s' failed at Step 3 (Refer Audio %s): %s. Initiating rollback...", spec.name, resolved_ref_audio, r3.text)
+                        await self._rollback_weights(prev_spec, spec, rollback_sovits=True, rollback_gpt=True, rollback_refer=True)
                         return False
 
                 self.current_refer_audio = resolved_ref_audio
@@ -408,19 +433,13 @@ class GptSovitsClient:
                 return True
 
             except Exception as exc:
-                logger.error("Exception during voice profile switch: %s. Rolling back...", exc, exc_info=True)
+                logger.error("Exception during voice profile switch to '%s': %s. Rolling back...", spec.name, exc, exc_info=True)
                 if prev_spec:
                     try:
-                        if prev_spec.sovits_weights_path:
-                            await self._request("GET", "/set_sovits_weights", params={"weights_path": prev_spec.sovits_weights_path}, timeout=SWITCH_TIMEOUT)
-                        if prev_spec.gpt_weights_path:
-                            await self._request("GET", "/set_gpt_weights", params={"weights_path": prev_spec.gpt_weights_path}, timeout=SWITCH_TIMEOUT)
-                        if prev_spec.refer_audio_path:
-                            rollback_ref = resolve_reference_audio_path(prev_spec.refer_audio_path)
-                            await self._request("GET", "/set_refer_audio", params={"refer_audio_path": rollback_ref})
+                        await self._rollback_weights(prev_spec, rollback_sovits=True, rollback_gpt=True, rollback_refer=True)
                     except Exception as rollback_exc:
                         # Rollback failure leaves server state diverged from local state — surface it loudly.
-                        logger.error("ROLLBACK FAILED after switch error (server state may diverge): %s", rollback_exc)
+                        logger.error("ROLLBACK FAILED after switch error for profile '%s' (server state may diverge): %s", spec.name, rollback_exc, exc_info=True)
                 return False
             finally:
                 self.is_switching = False
@@ -429,7 +448,17 @@ class GptSovitsClient:
     # Synthesis Endpoints (/tts)
     # ------------------------------------------------------------------
 
-    def _build_tts_payload(self, text: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    @staticmethod
+    def _resolve_payload_ref_audio(ref_audio: str) -> str:
+        """Resolves reference audio path to absolute path checking project root fallback."""
+        p = Path(ref_audio)
+        if p.is_file():
+            return str(_safe_resolve_path(p))
+        if (_PROJECT_ROOT / ref_audio).is_file():
+            return str(_safe_resolve_path(_PROJECT_ROOT / ref_audio))
+        return ref_audio
+
+    def _build_tts_payload(self, text: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
         """Builds standardized GPT-SoVITS official /tts request payload."""
         resolved = resolve_tts_options(options)
         ref_audio = resolved.get("ref_audio_path") or self.current_refer_audio or ""
@@ -450,17 +479,12 @@ class GptSovitsClient:
                 reason,
             )
 
-        p = Path(ref_audio)
-        if not p.is_file() and (_PROJECT_ROOT / ref_audio).is_file():
-            ref_audio = str(_safe_resolve_path(_PROJECT_ROOT / ref_audio))
-        elif p.is_file():
-            ref_audio = str(_safe_resolve_path(p))
-
+        ref_audio = self._resolve_payload_ref_audio(ref_audio)
         norm_text = normalize_dialogue_prosody(text) or text
 
         # Latency-driven dynamic batch size calculation
         user_batch_size = (options or {}).get("batch_size")
-        is_streaming = bool(resolved.get("streaming_mode", False))
+        is_streaming = bool(resolved.get(PARAM_STREAMING_MODE, False))
         final_batch_size = get_batch_scheduler().compute_batch_size(
             text=norm_text,
             is_streaming=is_streaming,
@@ -481,7 +505,7 @@ class GptSovitsClient:
             "fragment_interval": resolved.get("fragment_interval", 0.3),
             "batch_size": final_batch_size,
             "speed_factor": resolved["speed_factor"],
-            "streaming_mode": resolved.get("streaming_mode", False),
+            PARAM_STREAMING_MODE: resolved.get(PARAM_STREAMING_MODE, False),
             "seed": resolved["seed"],
         }
 
@@ -496,7 +520,7 @@ class GptSovitsClient:
     async def synthesize(
         self,
         text: str,
-        options: Optional[Dict[str, Any]] = None,
+        options: dict[str, Any] | None = None,
         retries: int = 1,
     ) -> bytes:
         """
@@ -511,9 +535,8 @@ class GptSovitsClient:
                 raise ValueError("Text is empty after cleaning stage directions")
 
             opts = dict(options or {})
-            opts["streaming_mode"] = False
+            opts[PARAM_STREAMING_MODE] = False
             payload = self._build_tts_payload(cleaned_text, opts)
-            payload["streaming_mode"] = False
 
             attempt = 0
             while True:
@@ -522,7 +545,7 @@ class GptSovitsClient:
                     t_synth_start = time.perf_counter()
                     self._inflight_requests += 1
                     try:
-                        resp = await self._request("POST", "/tts", json_data=payload)
+                        resp = await self._request("POST", ENDPOINT_TTS, json_data=payload)
                     finally:
                         self._inflight_requests -= 1
                     elapsed_s = time.perf_counter() - t_synth_start
@@ -554,10 +577,62 @@ class GptSovitsClient:
                         continue
                     raise
 
+    async def _stream_mock_server(
+        self,
+        payload: dict[str, Any],
+        chunk_size: int,
+    ) -> AsyncGenerator[bytes, None]:
+        """Streams synthesis from in-process mock server (used in test suite stubs)."""
+        async with self.lock:
+            resp = await self.server.handle_request("POST", ENDPOINT_TTS, json_data=payload)
+            if resp.status_code != 200:
+                raise RuntimeError(f"TTS synthesis failed with status {resp.status_code}: {resp.text}")
+            audio_bytes = resp.content
+            if wav_is_silent(audio_bytes):
+                raise RuntimeError(SILENT_AUDIO_ERROR)
+            for i in range(0, len(audio_bytes), chunk_size):
+                yield audio_bytes[i:i + chunk_size]
+
+    async def _produce_stream_tts_chunks(
+        self,
+        client: Any,
+        url: str,
+        payload: dict[str, Any],
+        queue: asyncio.Queue,
+        sentinel: object,
+        profiler: Any | None,
+        chunk_size: int,
+    ) -> None:
+        """Pumps streamed bytes from upstream GPT-SoVITS into queue with concurrency & inflight tracking."""
+        try:
+            async with self.lock:
+                self._inflight_requests += 1
+                try:
+                    async with client.stream("POST", url, json=payload, timeout=TTS_TIMEOUT) as resp:
+                        if resp.status_code != 200:
+                            err_bytes = await resp.aread()
+                            raise RuntimeError(
+                                f"TTS synthesis failed with status {resp.status_code}: {err_bytes.decode('utf-8', errors='ignore')[:300]}"
+                            )
+                        first_upstream_chunk = True
+                        async for chunk in resp.aiter_bytes(chunk_size=chunk_size):
+                            if chunk:
+                                if first_upstream_chunk:
+                                    if profiler and hasattr(profiler, "record_upstream_first_byte"):
+                                        profiler.record_upstream_first_byte()
+                                    first_upstream_chunk = False
+                                await queue.put(chunk)
+                finally:
+                    self._inflight_requests -= 1
+        except BaseException as exc:
+            await queue.put(exc)
+        finally:
+            await queue.put(sentinel)
+
     async def stream_tts(
         self,
         text: str,
-        options: Optional[Dict[str, Any]] = None,
+        options: dict[str, Any] | None = None,
         chunk_size: int = 4096,
     ) -> AsyncGenerator[bytes, None]:
         """
@@ -573,59 +648,36 @@ class GptSovitsClient:
             raise ValueError("Text is empty after cleaning stage directions")
 
         opts = dict(options or {})
-        opts["streaming_mode"] = True
+        opts[PARAM_STREAMING_MODE] = True
         payload = self._build_tts_payload(cleaned_text, opts)
-        payload["streaming_mode"] = True
+        payload[PARAM_STREAMING_MODE] = True
 
         t_stream_start = time.perf_counter()
 
         # Mock server mode (used in test suite stubs)
         if self.server is not None and hasattr(self.server, "handle_request"):
-            async with self.lock:
-                resp = await self.server.handle_request("POST", "/tts", json_data=payload)
-                if resp.status_code != 200:
-                    raise RuntimeError(f"TTS synthesis failed with status {resp.status_code}: {resp.text}")
-                audio_bytes = resp.content
-                if wav_is_silent(audio_bytes):
-                    raise RuntimeError(SILENT_AUDIO_ERROR)
-                for i in range(0, len(audio_bytes), chunk_size):
-                    yield audio_bytes[i:i + chunk_size]
+            async for chunk in self._stream_mock_server(payload, chunk_size):
+                yield chunk
             return
 
         # Real GPT-SoVITS engine mode: true upstream -> downstream streaming pipeline
-        url = f"{self.base_url}/tts"
+        url = f"{self.base_url}{ENDPOINT_TTS}"
         client = self._get_http_client()
         queue: asyncio.Queue = asyncio.Queue(maxsize=16)
         sentinel = object()
         profiler = opts.get("profiler")
 
-        async def _stream_producer():
-            try:
-                async with self.lock:
-                    self._inflight_requests += 1
-                    try:
-                        async with client.stream("POST", url, json=payload, timeout=TTS_TIMEOUT) as resp:
-                            if resp.status_code != 200:
-                                err_bytes = await resp.aread()
-                                raise RuntimeError(
-                                    f"TTS synthesis failed with status {resp.status_code}: {err_bytes.decode('utf-8', errors='ignore')[:300]}"
-                                )
-                            first_upstream_chunk = True
-                            async for chunk in resp.aiter_bytes(chunk_size=chunk_size):
-                                if chunk:
-                                    if first_upstream_chunk:
-                                        if profiler and hasattr(profiler, "record_upstream_first_byte"):
-                                            profiler.record_upstream_first_byte()
-                                        first_upstream_chunk = False
-                                    await queue.put(chunk)
-                    finally:
-                        self._inflight_requests -= 1
-            except BaseException as exc:
-                await queue.put(exc)
-            finally:
-                await queue.put(sentinel)
-
-        producer_task = asyncio.create_task(_stream_producer())
+        producer_task = asyncio.create_task(
+            self._produce_stream_tts_chunks(
+                client=client,
+                url=url,
+                payload=payload,
+                queue=queue,
+                sentinel=sentinel,
+                profiler=profiler,
+                chunk_size=chunk_size,
+            )
+        )
         pre_buffer = bytearray()
         checked_silence = False
         total_bytes_streamed = 0
@@ -668,7 +720,7 @@ class GptSovitsClient:
                 get_speed_tracker().record(
                     char_count=len(cleaned_text),
                     elapsed_s=elapsed_s,
-                    audio_dur_s=total_bytes_streamed / 64000.0,
+                    audio_dur_s=total_bytes_streamed / PCM_32KHZ_16BIT_MONO_BYTE_RATE,
                 )
             except Exception as exc:
                 logger.debug("Stream speed tracker record error: %s", exc)
@@ -686,7 +738,7 @@ class GptSovitsClient:
 # Application-Level Singleton
 # ============================================================================
 
-_global_gpt_sovits_client: Optional[GptSovitsClient] = None
+_global_gpt_sovits_client: GptSovitsClient | None = None
 
 
 def get_gpt_sovits_client() -> GptSovitsClient:
@@ -701,8 +753,8 @@ def get_gpt_sovits_client() -> GptSovitsClient:
         try:
             from galgame2voice.config import get_settings
             settings = get_settings()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Could not load settings for default GPT-SoVITS URL: %s", exc)
         base_url = settings.gpt_sovits_base_url if settings else "http://127.0.0.1:9880"
         _global_gpt_sovits_client = GptSovitsClient(base_url=base_url)
     return _global_gpt_sovits_client
@@ -714,7 +766,7 @@ async def reload_gpt_sovits_client_base_url(new_url: str) -> None:
     await client.set_base_url(new_url)
 
 
-def set_gpt_sovits_client(client: Optional[GptSovitsClient]) -> None:
+def set_gpt_sovits_client(client: GptSovitsClient | None) -> None:
     """Replaces or resets the singleton (used by tests)."""
     global _global_gpt_sovits_client
     _global_gpt_sovits_client = client

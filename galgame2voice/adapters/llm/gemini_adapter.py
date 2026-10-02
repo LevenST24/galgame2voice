@@ -3,7 +3,7 @@ Google Gemini OpenAI-compatible LLM Adapter for galgame2voice.
 Connects to Google Generative Language OpenAI compatibility endpoint.
 """
 
-from typing import Any, Optional
+from typing import Any
 from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 
 
@@ -14,7 +14,7 @@ class GeminiLLMAdapter(OpenAICompatibleLLMAdapter):
         self,
         api_key: str,
         base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai",
-        client_override: Optional[Any] = None,
+        client_override: Any | None = None,
         **kwargs: Any,
     ):
         super().__init__(

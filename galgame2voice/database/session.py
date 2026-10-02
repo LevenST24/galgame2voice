@@ -4,15 +4,17 @@ Enforces WAL mode, foreign keys, and async connection management via aiosqlite.
 """
 
 import asyncio
+from datetime import datetime
 import logging
 import os
 import random
+import shutil
 import sqlite3
 import uuid
 import weakref
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator, Optional, Union
+from typing import AsyncGenerator
 
 import aiosqlite
 
@@ -38,7 +40,7 @@ def get_database_path() -> str:
         return DEFAULT_DB_PATH
 
 
-async def configure_connection(conn: aiosqlite.Connection, resolved_path: Optional[str] = None) -> None:
+async def configure_connection(conn: aiosqlite.Connection, resolved_path: str | None = None) -> None:
     """Configure SQLite pragmas for performance and data integrity."""
     conn.row_factory = aiosqlite.Row
     key = str(os.path.abspath(resolved_path)) if resolved_path else None
@@ -117,7 +119,7 @@ def _get_conn_imm_tx_lock(conn: aiosqlite.Connection) -> asyncio.Lock:
 
 
 @asynccontextmanager
-async def get_db(db_path: Optional[Union[str, Path]] = None) -> AsyncGenerator[aiosqlite.Connection, None]:
+async def get_db(db_path: str | Path | None = None) -> AsyncGenerator[aiosqlite.Connection, None]:
     """Async context manager yielding an active, configured aiosqlite connection."""
     resolved_path = str(db_path) if db_path is not None else get_database_path()
     parent_dir = os.path.dirname(os.path.abspath(resolved_path))
@@ -154,7 +156,7 @@ async def immediate_transaction(
     # the depth restore would run asynchronously -- racing the outer commit and
     # letting rolled-back writes be committed anyway.
     current_task = asyncio.current_task()
-    conn_lock: Optional[asyncio.Lock] = None
+    conn_lock: asyncio.Lock | None = None
     if getattr(conn, "_imm_tx_lock_owner", None) is not current_task:
         conn_lock = _get_conn_imm_tx_lock(conn)
         await conn_lock.acquire()
@@ -180,7 +182,8 @@ async def immediate_transaction(
                 try:
                     await conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};")
                     await conn.execute(f"RELEASE SAVEPOINT {sp_id};")
-                except Exception:
+                except (sqlite3.Error, aiosqlite.Error):
+                    # Suppress secondary errors during rollback to ensure original exception propagates
                     pass
                 raise
             finally:
@@ -194,7 +197,7 @@ async def immediate_transaction(
         try:
             conn._imm_tx_depth = 1
             try:
-                sp_id: Optional[str] = None
+                sp_id: str | None = None
                 if is_in_tx:
                     # Connection was already in a transaction (e.g. uncommitted raw DML), use savepoint under outermost block
                     sp_id = f"sp_{uuid.uuid4().hex[:8]}"
@@ -221,12 +224,14 @@ async def immediate_transaction(
                         try:
                             await conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};")
                             await conn.execute(f"RELEASE SAVEPOINT {sp_id};")
-                        except Exception:
+                        except (sqlite3.Error, aiosqlite.Error):
+                            # Suppress secondary error during savepoint rollback to preserve original exception
                             pass
                     else:
                         try:
                             await conn.rollback()
-                        except Exception:
+                        except (sqlite3.Error, aiosqlite.Error):
+                            # Suppress secondary error during rollback to preserve original exception
                             pass
                     raise
             finally:
@@ -255,7 +260,7 @@ async def set_schema_version(conn: aiosqlite.Connection, version: int) -> None:
     await conn.execute(f"PRAGMA user_version = {int(version)};")
 
 
-async def init_db(db_path: Optional[Union[str, Path]] = None) -> None:
+async def init_db(db_path: str | Path | None = None) -> None:
     """Initialize database schema, tables, indexes, and seed data with concurrency guards and pre-migration backup."""
     from galgame2voice.database.crud import init_schema_and_seeds
 
@@ -263,8 +268,6 @@ async def init_db(db_path: Optional[Union[str, Path]] = None) -> None:
     # Automated pre-migration restorable backup
     if resolved_path.exists() and resolved_path.is_file() and resolved_path.stat().st_size > 0:
         try:
-            from datetime import datetime
-            import shutil
             backup_dir = resolved_path.parent / "backups"
             backup_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -1,6 +1,6 @@
 """
 Hardware Detection & Telemetry Utilities for galgame2voice.
-Provides robust GPU capability detection, Turing TU116/TU117 identification,
+Provides robust GPU capability detection by NVIDIA vendor-name matching,
 and cross-platform host system memory status telemetry.
 """
 
@@ -8,7 +8,11 @@ import os
 import sys
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Tuple
+
+BYTES_PER_KB: int = 1024
+BYTES_PER_MB: int = 1024 * 1024
+BYTES_PER_GB: int = 1024 ** 3
+DEFAULT_SUBPROCESS_TIMEOUT: float = 2.0
 
 if sys.platform == "win32":
     import ctypes
@@ -27,36 +31,51 @@ if sys.platform == "win32":
         ]
 
 
-def _resolve_cgroup_paths(root_path: Path) -> List[Path]:
+def _exec_command_output(cmd: list[str], timeout: float = DEFAULT_SUBPROCESS_TIMEOUT) -> str | None:
+    """Safely executes a system command, suppressing stderr and subprocess exceptions."""
+    try:
+        return subprocess.check_output(
+            cmd,
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+        )
+    except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
+        return None
+
+
+def _resolve_cgroup_paths(root_path: Path) -> list[Path]:
     """
     Returns a list of candidate cgroup directory paths to inspect for the current process,
     ordered from most specific (container subpath via /proc/self/cgroup) to root_path.
     """
-    candidates: List[Path] = []
+    candidates: list[Path] = []
+
+    def _add_if_dir(cand: Path) -> None:
+        if cand.is_dir() and cand not in candidates:
+            candidates.append(cand)
+
     # 1. Inspect /proc/self/cgroup to detect specific container slices in K8s, Docker, systemd
     proc_cgroup = Path("/proc/self/cgroup")
     if proc_cgroup.is_file():
         try:
             for line in proc_cgroup.read_text(encoding="utf-8").splitlines():
                 parts = line.strip().split(":")
-                if len(parts) == 3:
-                    subpath = parts[2].lstrip("/")
-                    if subpath:
-                        # cgroups v2 entry: 0::<path>
-                        if parts[0] == "0" and parts[1] == "":
-                            cand = root_path / subpath
-                            if cand.is_dir() and cand not in candidates:
-                                candidates.append(cand)
-                        # cgroups v1 entry: <num>:memory:<path>
-                        elif "memory" in parts[1].split(","):
-                            # On cgroups v1, controllers are submounted under root_path/memory/
-                            cand_mem = root_path / "memory" / subpath
-                            if cand_mem.is_dir() and cand_mem not in candidates:
-                                candidates.append(cand_mem)
-                            cand_direct = root_path / subpath
-                            if cand_direct.is_dir() and cand_direct not in candidates:
-                                candidates.append(cand_direct)
-        except Exception:
+                if len(parts) != 3:
+                    continue
+                subpath = parts[2].lstrip("/")
+                if not subpath:
+                    continue
+
+                # cgroups v2 entry: 0::<path>
+                if parts[0] == "0" and parts[1] == "":
+                    _add_if_dir(root_path / subpath)
+                # cgroups v1 entry: <num>:memory:<path>
+                elif "memory" in parts[1].split(","):
+                    # On cgroups v1, controllers are submounted under root_path/memory/
+                    _add_if_dir(root_path / "memory" / subpath)
+                    _add_if_dir(root_path / subpath)
+        except (OSError, UnicodeDecodeError):
             pass
 
     # 2. Add root_path as fallback (for container environments with private cgroup namespaces)
@@ -66,7 +85,7 @@ def _resolve_cgroup_paths(root_path: Path) -> List[Path]:
     return candidates
 
 
-def get_cgroup_memory_available_gb(cgroup_root: Optional[str] = None) -> Optional[float]:
+def get_cgroup_memory_available_gb(cgroup_root: str | None = None) -> float | None:
     """
     Detects container memory quota limits via Linux cgroups (v2 and v1).
     Inspects container-specific cgroup hierarchies (e.g. Kubernetes, Docker) via /proc/self/cgroup
@@ -89,7 +108,7 @@ def get_cgroup_memory_available_gb(cgroup_root: Optional[str] = None) -> Optiona
                 if max_val and max_val != "max":
                     limit_bytes = int(max_val)
                     curr_bytes = int(cg2_curr.read_text(encoding="utf-8").strip())
-                    return max(0.0, (limit_bytes - curr_bytes) / (1024 ** 3))
+                    return max(0.0, (limit_bytes - curr_bytes) / BYTES_PER_GB)
 
         # 2. Check cgroups v1 (memory.limit_in_bytes & memory.usage_in_bytes)
         for cdir in candidate_dirs:
@@ -105,14 +124,14 @@ def get_cgroup_memory_available_gb(cgroup_root: Optional[str] = None) -> Optiona
                         # cgroups v1 unlimited sentinel is typically >= 1 << 60 (e.g. 0x7FFFFFFFFFFFF000)
                         if limit_bytes < (1 << 60):
                             usage_bytes = int(use_p.read_text(encoding="utf-8").strip())
-                            return max(0.0, (limit_bytes - usage_bytes) / (1024 ** 3))
-    except Exception:
+                            return max(0.0, (limit_bytes - usage_bytes) / BYTES_PER_GB)
+    except (OSError, ValueError, UnicodeDecodeError):
         pass
 
     return None
 
 
-def get_system_memory_status() -> Tuple[Optional[float], Optional[float]]:
+def get_system_memory_status() -> tuple[float | None, float | None]:
     """
     Returns (total_ram_gb, available_ram_gb) for the host system.
     In containerized environments (Docker, Kubernetes, cgroups v1/v2) the available
@@ -131,7 +150,92 @@ def get_system_memory_status() -> Tuple[Optional[float], Optional[float]]:
     return total_gb, avail_gb
 
 
-def _detect_host_memory_status() -> Tuple[Optional[float], Optional[float]]:
+def _detect_windows_memory() -> tuple[float | None, float | None]:
+    """Native Windows GlobalMemoryStatusEx memory inspection."""
+    if sys.platform != "win32":
+        return None, None
+    try:
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return round(stat.ullTotalPhys / BYTES_PER_GB, 2), round(stat.ullAvailPhys / BYTES_PER_GB, 2)
+    except (OSError, AttributeError):
+        pass
+    return None, None
+
+
+def _detect_linux_proc_meminfo() -> tuple[float | None, float | None]:
+    """Zero-dependency Linux /proc/meminfo inspection."""
+    if not (sys.platform.startswith("linux") or os.path.exists("/proc/meminfo")):
+        return None, None
+    try:
+        mem_info: dict[str, float] = {}
+        with open("/proc/meminfo", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        mem_info[parts[0].rstrip(":")] = float(parts[1])
+                    except ValueError:
+                        continue
+
+        mem_total_kb = mem_info.get("MemTotal")
+        if mem_total_kb is None:
+            return None, None
+
+        total_gb = round(mem_total_kb / BYTES_PER_MB, 2)
+        mem_avail_kb = mem_info.get("MemAvailable")
+        mem_free_kb = mem_info.get("MemFree")
+        buffers_kb = mem_info.get("Buffers")
+        cached_kb = mem_info.get("Cached")
+
+        if mem_avail_kb is not None:
+            avail_gb = round(mem_avail_kb / BYTES_PER_MB, 2)
+        elif mem_free_kb is not None and buffers_kb is not None and cached_kb is not None:
+            avail_gb = round((mem_free_kb + buffers_kb + cached_kb) / BYTES_PER_MB, 2)
+        elif mem_free_kb is not None:
+            avail_gb = round(mem_free_kb / BYTES_PER_MB, 2)
+        else:
+            avail_gb = None
+        return total_gb, avail_gb
+    except (OSError, UnicodeDecodeError):
+        pass
+    return None, None
+
+
+def _detect_darwin_memory() -> tuple[float | None, float | None]:
+    """macOS sysctl / os.sysconf inspection."""
+    if sys.platform != "darwin":
+        return None, None
+    try:
+        total_bytes = None
+        if hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names and "SC_PHYS_PAGES" in os.sysconf_names:
+            total_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        if total_bytes is None:
+            out = _exec_command_output(["sysctl", "-n", "hw.memsize"])
+            if out:
+                total_bytes = int(out.strip())
+        if total_bytes is not None:
+            total_gb = round(total_bytes / BYTES_PER_GB, 2)
+            # macOS does not expose a single trivial available sysctl; return total
+            return total_gb, None
+    except (OSError, ValueError):
+        pass
+    return None, None
+
+
+def _detect_psutil_memory() -> tuple[float | None, float | None]:
+    """Cross-platform psutil fallback inspection."""
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        return round(vm.total / BYTES_PER_GB, 2), round(vm.available / BYTES_PER_GB, 2)
+    except (ImportError, Exception):
+        pass
+    return None, None
+
+
+def _detect_host_memory_status() -> tuple[float | None, float | None]:
     """
     Returns (total_ram_gb, available_ram_gb) for the host system.
     Supports Windows (Win32 GlobalMemoryStatusEx), Linux (/proc/meminfo),
@@ -139,180 +243,120 @@ def _detect_host_memory_status() -> Tuple[Optional[float], Optional[float]]:
     Returns (None, None) if all detection methods fail.
     """
     # 1. Windows Win32 API
-    if sys.platform == "win32":
-        try:
-            stat = MEMORYSTATUSEX()
-            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-                return round(stat.ullTotalPhys / (1024 ** 3), 2), round(stat.ullAvailPhys / (1024 ** 3), 2)
-        except Exception:
-            pass
+    total, avail = _detect_windows_memory()
+    if total is not None:
+        return total, avail
 
-    # 2. Linux /proc/meminfo (zero-dependency native inspection)
-    if sys.platform.startswith("linux") or os.path.exists("/proc/meminfo"):
-        try:
-            mem_total_kb = None
-            mem_avail_kb = None
-            mem_free_kb = None
-            buffers_kb = None
-            cached_kb = None
-            with open("/proc/meminfo", "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        key = parts[0].rstrip(":")
-                        try:
-                            val = float(parts[1])
-                        except ValueError:
-                            continue
-                        if key == "MemTotal":
-                            mem_total_kb = val
-                        elif key == "MemAvailable":
-                            mem_avail_kb = val
-                        elif key == "MemFree":
-                            mem_free_kb = val
-                        elif key == "Buffers":
-                            buffers_kb = val
-                        elif key == "Cached":
-                            cached_kb = val
-            if mem_total_kb is not None:
-                total_gb = round(mem_total_kb / (1024 * 1024), 2)
-                if mem_avail_kb is not None:
-                    avail_gb = round(mem_avail_kb / (1024 * 1024), 2)
-                elif mem_free_kb is not None and buffers_kb is not None and cached_kb is not None:
-                    avail_gb = round((mem_free_kb + buffers_kb + cached_kb) / (1024 * 1024), 2)
-                elif mem_free_kb is not None:
-                    avail_gb = round(mem_free_kb / (1024 * 1024), 2)
-                else:
-                    avail_gb = None
-                return total_gb, avail_gb
-        except Exception:
-            pass
+    # 2. Linux /proc/meminfo
+    total, avail = _detect_linux_proc_meminfo()
+    if total is not None:
+        return total, avail
 
-    # 3. macOS sysctl / os.sysconf inspection
-    if sys.platform == "darwin":
-        try:
-            total_bytes = None
-            if hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names and "SC_PHYS_PAGES" in os.sysconf_names:
-                total_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-            if total_bytes is None:
-                out = subprocess.check_output(
-                    ["sysctl", "-n", "hw.memsize"],
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                    timeout=2.0,
-                )
-                total_bytes = int(out.strip())
-            total_gb = round(total_bytes / (1024 ** 3), 2)
-            # macOS does not expose a single trivial available sysctl; return total
-            return total_gb, None
-        except Exception:
-            pass
+    # 3. macOS sysctl / os.sysconf
+    total, avail = _detect_darwin_memory()
+    if total is not None:
+        return total, avail
 
     # 4. Cross-platform psutil fallback
-    try:
-        import psutil
-        vm = psutil.virtual_memory()
-        return round(vm.total / (1024 ** 3), 2), round(vm.available / (1024 ** 3), 2)
-    except Exception:
-        pass
-
-    return None, None
+    return _detect_psutil_memory()
 
 
-def _get_all_detected_gpu_names() -> List[str]:
-    """
-    Internal helper collecting graphics device names from PyTorch, nvidia-smi,
-    Windows WMI/CIM, or Linux lspci.
-    """
-    gpu_names: List[str] = []
-
-    # 1. PyTorch CUDA inspection if available
+def _detect_torch_gpus() -> list[str]:
+    """Detects GPU names via PyTorch CUDA interface if available."""
     try:
         import torch
         if torch.cuda.is_available():
             count = torch.cuda.device_count()
+            names = []
             for i in range(count):
                 try:
                     name = torch.cuda.get_device_name(i)
                     if name:
-                        gpu_names.append(name)
+                        names.append(name)
                 except Exception:
                     pass
-            if gpu_names:
-                return gpu_names
+            return names
     except Exception:
         pass
+    return []
+
+
+def _clean_output_lines(output: str | None) -> list[str]:
+    """Splits command output into stripped non-empty lines."""
+    if not output:
+        return []
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def _detect_nvidia_smi_gpus() -> list[str]:
+    """Detects GPU names using nvidia-smi tool output."""
+    out = _exec_command_output(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
+    return _clean_output_lines(out)
+
+
+def _detect_windows_gpus() -> list[str]:
+    """Detects GPU names via Windows WMI or PowerShell CIM commands."""
+    out = _exec_command_output(["wmic", "path", "win32_VideoController", "get", "name"])
+    if out:
+        names = [
+            line.strip() for line in out.splitlines()
+            if line.strip() and line.strip().lower() != "name"
+        ]
+        if names:
+            return names
+
+    out = _exec_command_output(
+        ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
+        timeout=3.0,
+    )
+    return _clean_output_lines(out)
+
+
+def _detect_linux_lspci_gpus() -> list[str]:
+    """Detects GPU names via Linux lspci tool output."""
+    out = _exec_command_output(["lspci"])
+    if out:
+        vga_lines = [line.strip() for line in out.splitlines() if any(k in line.lower() for k in ["vga", "3d controller", "display"])]
+        if vga_lines:
+            names = []
+            for line in vga_lines:
+                parts = line.split(":")
+                names.append(parts[-1].strip() if len(parts) >= 3 else line)
+            return names
+    return []
+
+
+def _get_all_detected_gpu_names() -> list[str]:
+    """
+    Internal helper collecting graphics device names from PyTorch, nvidia-smi,
+    Windows WMI/CIM, or Linux lspci.
+    """
+    # 1. PyTorch CUDA inspection if available
+    torch_names = _detect_torch_gpus()
+    if torch_names:
+        return torch_names
 
     # 2. nvidia-smi tool inspection
-    try:
-        out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-            timeout=2.0,
-        )
-        names = [line.strip() for line in out.splitlines() if line.strip()]
-        if names:
-            gpu_names.extend(names)
-            return gpu_names
-    except Exception:
-        pass
+    smi_names = _detect_nvidia_smi_gpus()
+    if smi_names:
+        return smi_names
 
     # 3. Windows WMI / CIM query
     if sys.platform == "win32":
-        try:
-            out = subprocess.check_output(
-                ["wmic", "path", "win32_VideoController", "get", "name"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-                timeout=2.0,
-            )
-            names = [
-                line.strip() for line in out.splitlines()
-                if line.strip() and line.strip().lower() != "name"
-            ]
-            if names:
-                return names
-        except Exception:
-            pass
-
-        try:
-            out = subprocess.check_output(
-                ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-                timeout=3.0,
-            )
-            names = [line.strip() for line in out.splitlines() if line.strip()]
-            if names:
-                return names
-        except Exception:
-            pass
+        win_names = _detect_windows_gpus()
+        if win_names:
+            return win_names
 
     # 4. Linux lspci query
     if sys.platform.startswith("linux"):
-        try:
-            out = subprocess.check_output(
-                ["lspci"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-                timeout=2.0,
-            )
-            vga_lines = [line.strip() for line in out.splitlines() if any(k in line.lower() for k in ["vga", "3d controller", "display"])]
-            if vga_lines:
-                names = []
-                for line in vga_lines:
-                    parts = line.split(":")
-                    names.append(parts[-1].strip() if len(parts) >= 3 else line)
-                return names
-        except Exception:
-            pass
+        linux_names = _detect_linux_lspci_gpus()
+        if linux_names:
+            return linux_names
 
-    return gpu_names
+    return []
 
 
-def detect_gpu_capability() -> Tuple[bool, str, Optional[int]]:
+def detect_gpu_capability() -> tuple[bool, str, int | None]:
     """
     Detects GPU compute availability and primary device metadata.
     Returns: (gpu_available, gpu_name, device_count)
@@ -353,7 +397,7 @@ def release_system_memory() -> None:
             pass
 
 
-def get_gpu_vram_status() -> Tuple[Optional[float], Optional[float]]:
+def get_gpu_vram_status() -> tuple[float | None, float | None]:
     """
     Returns (total_vram_gb, free_vram_gb) of primary NVIDIA GPU if available, else (None, None).
     Inspects nvidia-smi first (fast, zero PyTorch CUDA context overhead), falling back to PyTorch.
@@ -363,22 +407,22 @@ def get_gpu_vram_status() -> Tuple[Optional[float], Optional[float]]:
             ["nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv,noheader,nounits"],
             text=True,
             stderr=subprocess.DEVNULL,
-            timeout=2.0,
+            timeout=DEFAULT_SUBPROCESS_TIMEOUT,
         )
         first_line = out.strip().splitlines()[0]
         parts = [float(x.strip()) for x in first_line.split(",")]
         if len(parts) >= 2:
-            return round(parts[0] / 1024, 2), round(parts[1] / 1024, 2)
-    except Exception:
+            return round(parts[0] / BYTES_PER_KB, 2), round(parts[1] / BYTES_PER_KB, 2)
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError):
         pass
 
     try:
         import torch
         if torch.cuda.is_available():
             props = torch.cuda.get_device_properties(0)
-            total_gb = round(props.total_memory / (1024 ** 3), 2)
+            total_gb = round(props.total_memory / BYTES_PER_GB, 2)
             free_bytes, _ = torch.cuda.mem_get_info()
-            return total_gb, round(free_bytes / (1024 ** 3), 2)
+            return total_gb, round(free_bytes / BYTES_PER_GB, 2)
     except Exception:
         pass
 

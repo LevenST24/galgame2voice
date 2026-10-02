@@ -7,7 +7,7 @@ system parameter separation, content_block_delta streaming, and exponential back
 import asyncio
 import logging
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator
 
 import httpx
 
@@ -21,6 +21,7 @@ from galgame2voice.adapters.base import (
     parse_retry_after,
     calculate_backoff_delay,
     parse_sse_lines,
+    aclose_stream_context,
 )
 from galgame2voice.utils.logger import sanitize_error_detail
 
@@ -29,6 +30,15 @@ logger = logging.getLogger("galgame2voice.adapters.llm.anthropic")
 # Backward compatibility aliases
 _parse_retry_after = parse_retry_after
 _calculate_backoff_delay = calculate_backoff_delay
+
+
+def _extract_content_text(data: dict[str, Any]) -> str:
+    """Concatenates text blocks from an Anthropic messages response."""
+    return "".join(
+        block.get("text", "")
+        for block in data.get("content", [])
+        if block.get("type") == "text"
+    )
 
 
 class AnthropicAdapter(BaseLLMAdapter):
@@ -43,9 +53,9 @@ class AnthropicAdapter(BaseLLMAdapter):
     def __init__(
         self,
         api_key: str = "",
-        base_url: Optional[str] = None,
+        base_url: str | None = None,
         default_model: str = DEFAULT_MODEL,
-        custom_headers: Optional[Dict[str, Any]] = None,
+        custom_headers: dict[str, Any] | None = None,
         **kwargs: Any,
     ):
         raw_url = base_url or self.DEFAULT_BASE_URL
@@ -60,7 +70,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         self.default_model = default_model
         self.custom_headers = custom_headers or {}
 
-    def _get_headers(self) -> Dict[str, str]:
+    def _get_headers(self) -> dict[str, str]:
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": self.ANTHROPIC_VERSION,
@@ -73,16 +83,16 @@ class AnthropicAdapter(BaseLLMAdapter):
 
     def _prepare_anthropic_payload(
         self,
-        messages: List[ChatMessage],
-        model: Optional[str] = None,
+        messages: list[ChatMessage],
+        model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 1024,
         stream: bool = False,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Separates system prompt and formats messages for Anthropic API."""
         system_content = ""
-        user_assistant_msgs: List[Dict[str, str]] = []
+        user_assistant_msgs: list[dict[str, str]] = []
 
         for m in messages:
             role = m.role if hasattr(m, "role") else m.get("role")
@@ -99,7 +109,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         # 1. Non-empty string for each message content (>= 1 char)
         # 2. Alternating user/assistant roles (consecutive same roles must be merged)
         # 3. First message must be 'user'
-        merged_msgs: List[Dict[str, str]] = []
+        merged_msgs: list[dict[str, str]] = []
         for msg_dict in user_assistant_msgs:
             role = msg_dict["role"]
             raw_content = msg_dict.get("content") or ""
@@ -117,7 +127,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         elif merged_msgs[0]["role"] != "user":
             merged_msgs.insert(0, {"role": "user", "content": "Hello"})
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": model or self.default_model,
             "messages": merged_msgs,
             "max_tokens": max_tokens,
@@ -137,8 +147,8 @@ class AnthropicAdapter(BaseLLMAdapter):
 
     async def chat(
         self,
-        messages: List[ChatMessage],
-        model: Optional[str] = None,
+        messages: list[ChatMessage],
+        model: str | None = None,
         temperature: float = 0.7,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -171,11 +181,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                 if resp.status_code != 200:
                     raise RuntimeError(f"Anthropic API returned {resp.status_code}: {resp.text}")
                 data = resp.json()
-                content = ""
-                for block in data.get("content", []):
-                    if block.get("type") == "text":
-                        content += block.get("text", "")
-                return LLMResponse(content=content, usage=None)
+                return LLMResponse(content=_extract_content_text(data), usage=None)
 
         allow_private = bool(self.extra_config.get("allow_private", False))
         from galgame2voice.security.url_guard import assert_llm_url_safe
@@ -216,19 +222,15 @@ class AnthropicAdapter(BaseLLMAdapter):
                     raise RuntimeError(f"Anthropic API error ({resp.status_code}): {resp.text}")
 
                 data = resp.json()
-                content = ""
-                for block in data.get("content", []):
-                    if block.get("type") == "text":
-                        content += block.get("text", "")
-                return LLMResponse(content=content, usage=None)
+                return LLMResponse(content=_extract_content_text(data), usage=None)
             raise RuntimeError("Max retries exceeded without a response")
         finally:
             await client.aclose()
 
     async def stream_chat(
         self,
-        messages: List[ChatMessage],
-        model: Optional[str] = None,
+        messages: list[ChatMessage],
+        model: str | None = None,
         temperature: float = 0.7,
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
@@ -261,7 +263,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                 if resp.status_code != 200:
                     raise RuntimeError(f"Anthropic API returned status {resp.status_code}: {resp.text}")
 
-                async def _mock_lines_iter(text: str = resp.text):
+                async def _mock_lines_iter(text: str = resp.text) -> AsyncGenerator[str, None]:
                     for line in text.split("\n"):
                         yield line
 
@@ -280,12 +282,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                 stream_ctx = client.stream("POST", url, json=payload, headers=headers)
                 response = await stream_ctx.__aenter__()
             except TRANSIENT_NETWORK_EXCEPTIONS as exc:
-                if stream_ctx:
-                    try:
-                        await stream_ctx.__aexit__(None, None, None)
-                    except Exception:
-                        pass
-                await client.aclose()
+                await aclose_stream_context(stream_ctx, client)
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay)
                     logger.warning(
@@ -295,18 +292,23 @@ class AnthropicAdapter(BaseLLMAdapter):
                     await asyncio.sleep(delay)
                     continue
                 raise RuntimeError(f"Streaming request failed to {url}: {exc}") from exc
+            except BaseException:
+                await aclose_stream_context(stream_ctx, client)
+                raise
 
             if response.status_code in (401, 403):
-                err_body = await response.aread()
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
+                try:
+                    err_body = await response.aread()
+                finally:
+                    await aclose_stream_context(stream_ctx, client)
                 raise ValueError(f"Anthropic auth failed ({response.status_code}): {err_body.decode('utf-8', errors='ignore')}")
 
             if response.status_code in TRANSIENT_STATUS_CODES:
-                err_body = await response.aread()
+                try:
+                    err_body = await response.aread()
+                finally:
+                    await aclose_stream_context(stream_ctx, client)
                 retry_after = parse_retry_after(response.headers)
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay, retry_after)
                     logger.warning(
@@ -318,9 +320,10 @@ class AnthropicAdapter(BaseLLMAdapter):
                 raise RuntimeError(f"Anthropic API error ({response.status_code}): {err_body.decode('utf-8', errors='ignore')}")
 
             if response.status_code != 200:
-                err_body = await response.aread()
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
+                try:
+                    err_body = await response.aread()
+                finally:
+                    await aclose_stream_context(stream_ctx, client)
                 raise RuntimeError(f"Anthropic API error ({response.status_code}): {err_body.decode('utf-8', errors='ignore')}")
 
             yielded_any = False
@@ -340,10 +343,9 @@ class AnthropicAdapter(BaseLLMAdapter):
                     continue
                 raise RuntimeError(f"Streaming request failed to {url}: {exc}") from exc
             finally:
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
+                await aclose_stream_context(stream_ctx, client)
 
-    async def list_models(self) -> List[str]:
+    async def list_models(self) -> list[str]:
         """Returns known Anthropic Claude models."""
         return [
             "claude-opus-4-20250514",
@@ -354,7 +356,7 @@ class AnthropicAdapter(BaseLLMAdapter):
             "claude-3-5-haiku-20241022",
         ]
 
-    async def test_connection(self, model: Optional[str] = None) -> TestResult:
+    async def test_connection(self, model: str | None = None) -> TestResult:
         """Tests Anthropic API credentials with a minimal prompt."""
         t0 = time.time()
         try:

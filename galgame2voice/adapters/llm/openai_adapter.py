@@ -6,7 +6,7 @@ Supports standard OpenAI REST endpoints, streaming SSE parsing, connection testi
 import asyncio
 import logging
 import time
-from typing import AsyncIterator, Dict, Any, List, Optional
+from typing import AsyncIterator, Any
 import httpx
 
 from galgame2voice.adapters.base import (
@@ -19,6 +19,7 @@ from galgame2voice.adapters.base import (
     parse_retry_after,
     calculate_backoff_delay,
     parse_sse_lines,
+    aclose_stream_context,
 )
 from galgame2voice.utils.logger import sanitize_error_detail
 
@@ -35,6 +36,34 @@ _GEMINI_UNSUPPORTED_PARAMS = frozenset({
     "logprobs", "top_logprobs", "n", "seed", "user",
 })
 
+# Default test models mapped by base URL substrings
+_URL_DEFAULT_MODELS: tuple[tuple[str, str], ...] = (
+    ("x.ai", "grok-3"),
+    ("googleapis.com", "gemini-2.0-flash"),
+    ("deepseek.com", "deepseek-chat"),
+    ("bigmodel.cn", "glm-4-flash"),
+    ("aliyuncs.com", "qwen-plus"),
+    ("siliconflow.cn", "deepseek-ai/DeepSeek-V3"),
+    ("anthropic.com", "claude-3-5-sonnet-20241022"),
+)
+
+_AUTH_ERROR_KEYWORDS: tuple[str, ...] = (
+    "api key",
+    "apikey",
+    "unauthorized",
+    "invalid key",
+    "incorrect api key",
+    "valid api key",
+    "invalid-argument",
+    "invalid_argument",
+    "authentication",
+)
+
+
+async def _mock_lines_iter(text: str) -> AsyncIterator[str]:
+    for line in text.split("\n"):
+        yield line
+
 
 class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
     """
@@ -45,16 +74,16 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         self,
         api_key: str,
         base_url: str = "https://api.openai.com/v1",
-        client_override: Optional[Any] = None,
-        default_model: Optional[str] = None,
+        client_override: Any | None = None,
+        default_model: str | None = None,
         **kwargs: Any,
     ):
         super().__init__(api_key=api_key, base_url=base_url, **kwargs)
         self.mock_server = client_override
         self.default_model = default_model or kwargs.get("chat_model") or kwargs.get("model")
 
-    def _resolve_test_model(self, model: Optional[str] = None) -> str:
-        """Resolves appropriate test model for connection testing without defaulting to gpt-4o-mini."""
+    def _resolve_test_model(self, model: str | None = None) -> str:
+        """Resolves the test model: arg, then configured default, then provider preset/domain map, then gpt-4o-mini."""
         if model and str(model).strip():
             return str(model).strip()
         if getattr(self, "default_model", None) and str(self.default_model).strip():
@@ -69,26 +98,15 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 preset = get_provider_preset(str(pid))
                 if preset and preset.get("default_chat_model"):
                     return str(preset["default_chat_model"]).strip()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed getting provider preset for default model: %s", exc)
         burl = (self.base_url or "").lower()
-        if "x.ai" in burl:
-            return "grok-3"
-        if "googleapis.com" in burl:
-            return "gemini-2.0-flash"
-        if "deepseek.com" in burl:
-            return "deepseek-chat"
-        if "bigmodel.cn" in burl:
-            return "glm-4-flash"
-        if "aliyuncs.com" in burl:
-            return "qwen-plus"
-        if "siliconflow.cn" in burl:
-            return "deepseek-ai/DeepSeek-V3"
-        if "anthropic.com" in burl:
-            return "claude-3-5-sonnet-20241022"
+        for domain_pattern, default_m in _URL_DEFAULT_MODELS:
+            if domain_pattern in burl:
+                return default_m
         return "gpt-4o-mini"
 
-    def _get_headers(self) -> Dict[str, str]:
+    def _get_headers(self) -> dict[str, str]:
         """Constructs request headers including bearer auth and custom extra headers."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -100,7 +118,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         return headers
 
     def _validate_credentials(self) -> None:
-        """Validates presence and syntax of API key."""
+        """Validates that an API key is present."""
         if not self.api_key:
             raise ValueError("Authentication error: Invalid API key")
 
@@ -109,15 +127,86 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         """Returns True if base_url points to Google Gemini's OpenAI-compat endpoint."""
         return "googleapis.com" in (self.base_url or "")
 
-    def _filter_payload_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    def _filter_payload_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         """Filters out kwargs that are internal or unsupported by the current provider."""
         _INTERNAL = {"client_override", "custom_headers", "timeout_s", "max_retries", "base_delay"}
         skip = _INTERNAL | (_GEMINI_UNSUPPORTED_PARAMS if self._is_gemini else frozenset())
         return {k: v for k, v in kwargs.items() if k not in skip}
 
+    def _build_payload(
+        self,
+        messages: list[ChatMessage],
+        model: str,
+        temperature: float = 1.0,
+        stream: bool = False,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Formats chat messages and parameters into standard OpenAI completion payload."""
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {
+                    "role": m.role if hasattr(m, "role") else m.get("role"),
+                    "content": m.content if hasattr(m, "content") else m.get("content"),
+                }
+                for m in messages
+            ],
+            "temperature": temperature,
+        }
+        if stream:
+            payload["stream"] = True
+        if extra:
+            for k, v in self._filter_payload_kwargs(extra).items():
+                payload[k] = v
+        return payload
+
+    async def _chat_mock(
+        self,
+        messages: list[ChatMessage],
+        model: str,
+        temperature: float,
+        max_retries: int,
+        base_delay: float,
+        kwargs: dict[str, Any],
+    ) -> LLMResponse:
+        """Executes non-streaming completion against test mock server with retry logic."""
+        for attempt in range(max_retries + 1):
+            resp = await self.mock_server.handle_chat_completion(
+                {
+                    "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in messages],
+                    "model": model,
+                    "temperature": temperature,
+                    **kwargs,
+                },
+                headers={"authorization": f"Bearer {self.api_key}"},
+            )
+            if resp.status_code in (401, 403):
+                raise ValueError(f"Authentication error: {resp.json() if hasattr(resp, 'json') else resp.text}")
+            if resp.status_code in TRANSIENT_STATUS_CODES:
+                if attempt < max_retries:
+                    retry_after = parse_retry_after(getattr(resp, "headers", None))
+                    delay = calculate_backoff_delay(attempt, base_delay, retry_after)
+                    logger.warning(
+                        "Mock LLM chat received status %d. Retrying (%d/%d) in %.2fs...",
+                        resp.status_code, attempt + 1, max_retries, delay
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                if resp.status_code == 429:
+                    raise RuntimeError(f"Rate limit exceeded (429): {resp.json() if hasattr(resp, 'json') else resp.text}")
+                raise RuntimeError(f"API returned status {resp.status_code}: {resp.json() if hasattr(resp, 'json') else resp.text}")
+            if resp.status_code != 200:
+                raise RuntimeError(f"API returned status {resp.status_code}: {resp.json() if hasattr(resp, 'json') else resp.text}")
+            data = resp.json()
+            return LLMResponse(
+                content=data["choices"][0]["message"]["content"],
+                usage=data.get("usage"),
+            )
+        raise RuntimeError("Max retries exceeded without a response")
+
     async def chat(
         self,
-        messages: List[ChatMessage],
+        messages: list[ChatMessage],
         model: str,
         temperature: float = 1.0,
         **kwargs: Any,
@@ -133,53 +222,17 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
         # Handle mock server for test environments
         if self.mock_server:
-            for attempt in range(max_retries + 1):
-                resp = await self.mock_server.handle_chat_completion(
-                    {
-                        "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in messages],
-                        "model": model,
-                        "temperature": temperature,
-                        **kwargs,
-                    },
-                    headers={"authorization": f"Bearer {self.api_key}"},
-                )
-                if resp.status_code in (401, 403):
-                    raise ValueError(f"Authentication error: {resp.json() if hasattr(resp, 'json') else resp.text}")
-                if resp.status_code in TRANSIENT_STATUS_CODES:
-                    if attempt < max_retries:
-                        retry_after = parse_retry_after(getattr(resp, "headers", None))
-                        delay = calculate_backoff_delay(attempt, base_delay, retry_after)
-                        logger.warning(
-                            "Mock LLM chat received status %d. Retrying (%d/%d) in %.2fs...",
-                            resp.status_code, attempt + 1, max_retries, delay
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-                    if resp.status_code == 429:
-                        raise RuntimeError(f"Rate limit exceeded (429): {resp.json() if hasattr(resp, 'json') else resp.text}")
-                    raise RuntimeError(f"API returned status {resp.status_code}: {resp.json() if hasattr(resp, 'json') else resp.text}")
-                if resp.status_code != 200:
-                    raise RuntimeError(f"API returned status {resp.status_code}: {resp.json() if hasattr(resp, 'json') else resp.text}")
-                data = resp.json()
-                return LLMResponse(
-                    content=data["choices"][0]["message"]["content"],
-                    usage=data.get("usage"),
-                )
+            return await self._chat_mock(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_retries=max_retries,
+                base_delay=base_delay,
+                kwargs=kwargs,
+            )
 
         url = f"{self.base_url}/chat/completions"
-        payload: Dict[str, Any] = {
-            "model": model,
-            "messages": [
-                {
-                    "role": m.role if hasattr(m, "role") else m.get("role"),
-                    "content": m.content if hasattr(m, "content") else m.get("content"),
-                }
-                for m in messages
-            ],
-            "temperature": temperature,
-        }
-        for k, v in self._filter_payload_kwargs(kwargs).items():
-            payload[k] = v
+        payload = self._build_payload(messages, model, temperature=temperature, stream=False, extra=kwargs)
 
         timeout_s = float(self.extra_config.get("timeout_s", kwargs.get("timeout_s", 60.0)))
         headers = self._get_headers()
@@ -235,9 +288,48 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         finally:
             await client.aclose()
 
+    async def _stream_chat_mock(
+        self,
+        messages: list[ChatMessage],
+        model: str,
+        temperature: float,
+        max_retries: int,
+        base_delay: float,
+        kwargs: dict[str, Any],
+    ) -> AsyncIterator[str]:
+        """Executes streaming completion against test mock server with retry logic."""
+        for attempt in range(max_retries + 1):
+            resp = await self.mock_server.handle_chat_completion(
+                {
+                    "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in messages],
+                    "model": model,
+                    "temperature": temperature,
+                    "stream": True,
+                    **kwargs,
+                },
+                headers={"authorization": f"Bearer {self.api_key}"},
+            )
+            if resp.status_code in (401, 403):
+                raise ValueError(f"Authentication error: {resp.text}")
+            if resp.status_code in TRANSIENT_STATUS_CODES:
+                if attempt < max_retries:
+                    retry_after = parse_retry_after(getattr(resp, "headers", None))
+                    delay = calculate_backoff_delay(attempt, base_delay, retry_after)
+                    await asyncio.sleep(delay)
+                    continue
+                if resp.status_code == 429:
+                    raise RuntimeError(f"Rate limit exceeded (429): {resp.text}")
+                raise RuntimeError(f"API returned status {resp.status_code}: {resp.text}")
+            if resp.status_code != 200:
+                raise RuntimeError(f"API returned status {resp.status_code}: {resp.text}")
+
+            async for token in parse_sse_lines(_mock_lines_iter(resp.text)):
+                yield token
+            return
+
     async def stream_chat(
         self,
-        messages: List[ChatMessage],
+        messages: list[ChatMessage],
         model: str,
         temperature: float = 1.0,
         **kwargs: Any,
@@ -250,18 +342,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             # Client provided by caller (e.g. test mock); execute directly without retry loop
             resp = await client.post(
                 f"{self.base_url}/chat/completions",
-                json={
-                    "model": model,
-                    "messages": [
-                        {
-                            "role": m.role if hasattr(m, "role") else m.get("role"),
-                            "content": m.content if hasattr(m, "content") else m.get("content"),
-                        }
-                        for m in messages
-                    ],
-                    "temperature": temperature,
-                    "stream": True,
-                },
+                json=self._build_payload(messages, model, temperature=temperature, stream=True),
                 headers={"Authorization": f"Bearer {self.api_key}"},
             )
             if resp.status_code in TRANSIENT_STATUS_CODES:
@@ -271,11 +352,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             if resp.status_code != 200:
                 raise RuntimeError(f"API returned status {resp.status_code}: {resp.text}")
 
-            async def _mock_lines_iter(text: str = resp.text):
-                for line in text.split("\n"):
-                    yield line
-
-            async for token in parse_sse_lines(_mock_lines_iter()):
+            async for token in parse_sse_lines(_mock_lines_iter(resp.text)):
                 yield token
             return
         self._validate_credentials()
@@ -286,54 +363,19 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
         # Handle mock server for test environments
         if self.mock_server:
-            for attempt in range(max_retries + 1):
-                resp = await self.mock_server.handle_chat_completion(
-                    {
-                        "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in messages],
-                        "model": model,
-                        "temperature": temperature,
-                        "stream": True,
-                        **kwargs,
-                    },
-                    headers={"authorization": f"Bearer {self.api_key}"},
-                )
-                if resp.status_code in (401, 403):
-                    raise ValueError(f"Authentication error: {resp.text}")
-                if resp.status_code in TRANSIENT_STATUS_CODES:
-                    if attempt < max_retries:
-                        retry_after = parse_retry_after(getattr(resp, "headers", None))
-                        delay = calculate_backoff_delay(attempt, base_delay, retry_after)
-                        await asyncio.sleep(delay)
-                        continue
-                    if resp.status_code == 429:
-                        raise RuntimeError(f"Rate limit exceeded (429): {resp.text}")
-                    raise RuntimeError(f"API returned status {resp.status_code}: {resp.text}")
-                if resp.status_code != 200:
-                    raise RuntimeError(f"API returned status {resp.status_code}: {resp.text}")
-
-                async def _mock_lines_iter(text: str = resp.text):
-                    for line in text.split("\n"):
-                        yield line
-
-                async for token in parse_sse_lines(_mock_lines_iter()):
-                    yield token
-                return
+            async for token in self._stream_chat_mock(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_retries=max_retries,
+                base_delay=base_delay,
+                kwargs=kwargs,
+            ):
+                yield token
+            return
 
         url = f"{self.base_url}/chat/completions"
-        payload: Dict[str, Any] = {
-            "model": model,
-            "messages": [
-                {
-                    "role": m.role if hasattr(m, "role") else m.get("role"),
-                    "content": m.content if hasattr(m, "content") else m.get("content"),
-                }
-                for m in messages
-            ],
-            "temperature": temperature,
-            "stream": True,
-        }
-        for k, v in self._filter_payload_kwargs(kwargs).items():
-            payload[k] = v
+        payload = self._build_payload(messages, model, temperature=temperature, stream=True, extra=kwargs)
 
         timeout_s = float(self.extra_config.get("timeout_s", kwargs.get("timeout_s", 60.0)))
         headers = self._get_headers()
@@ -350,12 +392,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 stream_ctx = client.stream("POST", url, json=payload, headers=headers)
                 response = await stream_ctx.__aenter__()
             except TRANSIENT_NETWORK_EXCEPTIONS as exc:
-                if stream_ctx:
-                    try:
-                        await stream_ctx.__aexit__(None, None, None)
-                    except Exception:
-                        pass
-                await client.aclose()
+                await aclose_stream_context(stream_ctx, client)
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay)
                     logger.warning(
@@ -365,18 +402,23 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     await asyncio.sleep(delay)
                     continue
                 raise RuntimeError(f"Streaming request failed to {url}: {exc}") from exc
+            except BaseException:
+                await aclose_stream_context(stream_ctx, client)
+                raise
 
             if response.status_code in (401, 403):
-                error_body = await response.aread()
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
+                try:
+                    error_body = await response.aread()
+                finally:
+                    await aclose_stream_context(stream_ctx, client)
                 raise ValueError(f"Authentication error ({response.status_code}): {error_body.decode('utf-8', errors='ignore')}")
 
             if response.status_code in TRANSIENT_STATUS_CODES:
-                error_body = await response.aread()
+                try:
+                    error_body = await response.aread()
+                finally:
+                    await aclose_stream_context(stream_ctx, client)
                 retry_after = parse_retry_after(response.headers)
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
                 if attempt < max_retries:
                     delay = calculate_backoff_delay(attempt, base_delay, retry_after)
                     logger.warning(
@@ -390,9 +432,10 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 raise RuntimeError(f"API returned status {response.status_code}: {error_body.decode('utf-8', errors='ignore')}")
 
             if response.status_code != 200:
-                error_body = await response.aread()
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
+                try:
+                    error_body = await response.aread()
+                finally:
+                    await aclose_stream_context(stream_ctx, client)
                 raise RuntimeError(f"API returned status {response.status_code}: {error_body.decode('utf-8', errors='ignore')}")
 
             yielded_any = False
@@ -412,10 +455,57 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     continue
                 raise RuntimeError(f"Streaming request failed to {url}: {exc}") from exc
             finally:
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
+                await aclose_stream_context(stream_ctx, client)
 
-    async def test_connection(self, model: Optional[str] = None) -> TestResult:
+    @staticmethod
+    def _diagnose_failure(
+        provider_id: str | None,
+        status_code: int,
+        raw_error: str,
+    ) -> tuple[dict[str, Any], str]:
+        from galgame2voice.utils.error_diagnostics import format_provider_error
+        diag = format_provider_error(
+            provider_id=provider_id,
+            status_code=status_code,
+            raw_error=raw_error,
+        )
+        return diag, diag.get("diagnostic", "")
+
+    async def _probe_chat_fallback(
+        self,
+        client: httpx.AsyncClient,
+        test_model: str,
+        headers: dict[str, str],
+        provider_id: str | None,
+        t0: float,
+    ) -> TestResult:
+        """Fallback connectivity probe via 1-token chat completion when /models is unsupported."""
+        chat_url = f"{self.base_url}/chat/completions"
+        chat_resp = await client.post(
+            chat_url,
+            json={"model": test_model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1},
+            headers=headers,
+        )
+        latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+        chat_text = chat_resp.text or ""
+        if chat_resp.status_code == 200:
+            return TestResult(
+                success=True,
+                message=f"Connected successfully to {self.base_url}",
+                latency_ms=latency_ms,
+            )
+
+        diag, diag_guide = self._diagnose_failure(provider_id, chat_resp.status_code, chat_text)
+        return TestResult(
+            success=False,
+            message=f"Provider test returned HTTP {chat_resp.status_code}: {diag_guide or chat_text[:200]}",
+            latency_ms=latency_ms,
+            error=diag.get("error", f"HTTP {chat_resp.status_code}"),
+            diagnostic=diag_guide,
+            status_code=chat_resp.status_code,
+        )
+
+    async def test_connection(self, model: str | None = None) -> TestResult:
         """
         Tests connectivity and validates API credentials against the provider.
         """
@@ -461,20 +551,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 # and Gemini returns 400 with "API key not valid" or "Please pass a valid API key".
                 is_auth_error = resp.status_code in (401, 403) or (
                     resp.status_code == 400
-                    and any(
-                        kw in resp_lower
-                        for kw in (
-                            "api key",
-                            "apikey",
-                            "unauthorized",
-                            "invalid key",
-                            "incorrect api key",
-                            "valid api key",
-                            "invalid-argument",
-                            "invalid_argument",
-                            "authentication",
-                        )
-                    )
+                    and any(kw in resp_lower for kw in _AUTH_ERROR_KEYWORDS)
                 )
 
                 if resp.status_code == 200:
@@ -482,7 +559,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     try:
                         data = resp.json()
                         models = [m["id"] for m in data.get("data", []) if "id" in m]
-                    except Exception:
+                    except (ValueError, KeyError, TypeError):
                         pass
                     return TestResult(
                         success=True,
@@ -491,13 +568,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                         models=models if models else None,
                     )
                 elif is_auth_error:
-                    from galgame2voice.utils.error_diagnostics import format_provider_error
-                    diag = format_provider_error(
-                        provider_id=provider_id,
-                        status_code=resp.status_code,
-                        raw_error=resp_text,
-                    )
-                    diag_guide = diag.get("diagnostic", "")
+                    diag, diag_guide = self._diagnose_failure(provider_id, resp.status_code, resp_text)
                     return TestResult(
                         success=False,
                         message=f"Authentication failed ({resp.status_code}): {diag_guide or 'Invalid credentials'}",
@@ -507,47 +578,11 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                         status_code=resp.status_code,
                     )
                 else:
-                    # Fallback probe via chat completion
-                    chat_url = f"{self.base_url}/chat/completions"
-                    chat_resp = await client.post(
-                        chat_url,
-                        json={"model": test_model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1},
-                        headers=headers,
-                    )
-                    latency_ms = round((time.perf_counter() - t0) * 1000, 2)
-                    chat_text = chat_resp.text or ""
-                    if chat_resp.status_code == 200:
-                        return TestResult(
-                            success=True,
-                            message=f"Connected successfully to {self.base_url}",
-                            latency_ms=latency_ms,
-                        )
-
-                    from galgame2voice.utils.error_diagnostics import format_provider_error
-                    diag = format_provider_error(
-                        provider_id=provider_id,
-                        status_code=chat_resp.status_code,
-                        raw_error=chat_text,
-                    )
-                    diag_guide = diag.get("diagnostic", "")
-                    return TestResult(
-                        success=False,
-                        message=f"Provider test returned HTTP {chat_resp.status_code}: {diag_guide or chat_text[:200]}",
-                        latency_ms=latency_ms,
-                        error=diag.get("error", f"HTTP {chat_resp.status_code}"),
-                        diagnostic=diag_guide,
-                        status_code=chat_resp.status_code,
-                    )
+                    return await self._probe_chat_fallback(client, test_model, headers, provider_id, t0)
             except Exception as exc:
                 latency_ms = round((time.perf_counter() - t0) * 1000, 2)
-                from galgame2voice.utils.error_diagnostics import format_provider_error
                 status_code_num = 504 if "timeout" in type(exc).__name__.lower() else 502
-                diag = format_provider_error(
-                    provider_id=provider_id,
-                    status_code=status_code_num,
-                    raw_error=str(exc),
-                )
-                diag_guide = diag.get("diagnostic", "")
+                diag, diag_guide = self._diagnose_failure(provider_id, status_code_num, str(exc))
                 return TestResult(
                     success=False,
                     message=f"Connection error: {type(exc).__name__} - {sanitize_error_detail(exc)}",
@@ -557,7 +592,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     status_code=status_code_num,
                 )
 
-    async def list_models(self) -> List[str]:
+    async def list_models(self) -> list[str]:
         """
         Fetches the available model list from the provider API.
         """

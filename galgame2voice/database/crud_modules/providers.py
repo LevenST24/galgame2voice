@@ -4,7 +4,7 @@ Provider CRUD and API key masking module for SQLite persistence in galgame2voice
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import aiosqlite
 
@@ -35,7 +35,7 @@ __all__ = [
 ]
 
 
-def mask_api_key(key: Optional[str]) -> str:
+def mask_api_key(key: str | None) -> str:
     """
     Mask sensitive keys for safe display in web console or logs.
     Examples:
@@ -52,19 +52,19 @@ def mask_api_key(key: Optional[str]) -> str:
         return ""
     if len(key) <= 8:
         return "********"
-    if key.startswith("sk-") and len(key) > 8:
+    if key.startswith("sk-"):
         return f"sk-****{key[-4:]}"
     return f"{key[:3]}****{key[-4:]}"
 
 
-def is_masked_key(key: Optional[str]) -> bool:
+def is_masked_key(key: str | None) -> bool:
     """Return True if string contains masking pattern."""
     if not key:
         return False
     return "****" in str(key)
 
 
-def mask_custom_headers(headers: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def mask_custom_headers(headers: dict[str, Any] | None) -> dict[str, Any]:
     """Mask sensitive authentication headers inside custom_headers dictionary.
 
     Uses an exact-name list plus a substring heuristic so names like
@@ -82,34 +82,8 @@ def mask_custom_headers(headers: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return masked
 
 
-async def list_providers(conn: aiosqlite.Connection, mask: bool = True) -> List[ProviderResponse]:
-    conn.row_factory = aiosqlite.Row
-    cursor = await conn.execute("SELECT * FROM providers ORDER BY id ASC;")
-    rows = await cursor.fetchall()
-    result = []
-    for r in rows:
-        d = dict(r)
-        d["is_active"] = bool(d.get("is_active", 0))
-        try:
-            d["custom_headers"] = json.loads(d.get("custom_headers") or "{}")
-        except Exception:
-            d["custom_headers"] = {}
-        raw_key = decrypt_secret(d.get("api_key", ""))
-        if mask:
-            d["api_key"] = mask_api_key(raw_key)
-            d["custom_headers"] = mask_custom_headers(d.get("custom_headers"))
-        else:
-            d["api_key"] = raw_key
-        result.append(ProviderResponse(**d))
-    return result
-
-
-async def get_provider_raw(conn: aiosqlite.Connection, provider_id: str) -> Optional[ProviderInDB]:
-    conn.row_factory = aiosqlite.Row
-    cursor = await conn.execute("SELECT * FROM providers WHERE id = ?;", (provider_id,))
-    row = await cursor.fetchone()
-    if not row:
-        return None
+def _row_to_provider_dict(row: aiosqlite.Row) -> dict[str, Any]:
+    """Converts a SQLite providers row to a dict with decrypted api_key and parsed custom_headers."""
     d = dict(row)
     d["is_active"] = bool(d.get("is_active", 0))
     d["api_key"] = decrypt_secret(d.get("api_key", ""))
@@ -117,21 +91,46 @@ async def get_provider_raw(conn: aiosqlite.Connection, provider_id: str) -> Opti
         d["custom_headers"] = json.loads(d.get("custom_headers") or "{}")
     except Exception:
         d["custom_headers"] = {}
-    return ProviderInDB(**d)
+    return d
 
 
-async def get_provider(conn: aiosqlite.Connection, provider_id: str, mask: bool = True) -> Optional[ProviderResponse]:
+def _build_provider_response(data: dict[str, Any], mask: bool = True) -> ProviderResponse:
+    """Builds a ProviderResponse from a dictionary, optionally masking credentials."""
+    payload = dict(data)
+    if mask:
+        payload["api_key"] = mask_api_key(payload.get("api_key"))
+        payload["custom_headers"] = mask_custom_headers(payload.get("custom_headers"))
+    return ProviderResponse(**payload)
+
+
+async def list_providers(conn: aiosqlite.Connection, mask: bool = True) -> list[ProviderResponse]:
+    """Lists all configured LLM providers with optional API key masking."""
+    conn.row_factory = aiosqlite.Row
+    cursor = await conn.execute("SELECT * FROM providers ORDER BY id ASC;")
+    rows = await cursor.fetchall()
+    return [_build_provider_response(_row_to_provider_dict(r), mask=mask) for r in rows]
+
+
+async def get_provider_raw(conn: aiosqlite.Connection, provider_id: str) -> ProviderInDB | None:
+    """Fetches raw provider entity from database including unmasked decrypted credentials."""
+    conn.row_factory = aiosqlite.Row
+    cursor = await conn.execute("SELECT * FROM providers WHERE id = ?;", (provider_id,))
+    row = await cursor.fetchone()
+    if not row:
+        return None
+    return ProviderInDB(**_row_to_provider_dict(row))
+
+
+async def get_provider(conn: aiosqlite.Connection, provider_id: str, mask: bool = True) -> ProviderResponse | None:
+    """Fetches provider by ID with optional API key masking."""
     raw = await get_provider_raw(conn, provider_id)
     if not raw:
         return None
-    d = raw.model_dump()
-    if mask:
-        d["api_key"] = mask_api_key(raw.api_key)
-        d["custom_headers"] = mask_custom_headers(raw.custom_headers)
-    return ProviderResponse(**d)
+    return _build_provider_response(raw.model_dump(), mask=mask)
 
 
-async def get_active_provider_raw(conn: aiosqlite.Connection) -> Optional[ProviderInDB]:
+async def get_active_provider_raw(conn: aiosqlite.Connection) -> ProviderInDB | None:
+    """Fetches the raw active provider model from database without masking."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM providers WHERE is_active = 1 LIMIT 1;")
     row = await cursor.fetchone()
@@ -141,28 +140,19 @@ async def get_active_provider_raw(conn: aiosqlite.Connection) -> Optional[Provid
         if s_row and s_row["active_provider_id"]:
             return await get_provider_raw(conn, s_row["active_provider_id"])
         return None
-    d = dict(row)
-    d["is_active"] = bool(d.get("is_active", 0))
-    d["api_key"] = decrypt_secret(d.get("api_key", ""))
-    try:
-        d["custom_headers"] = json.loads(d.get("custom_headers") or "{}")
-    except Exception:
-        d["custom_headers"] = {}
-    return ProviderInDB(**d)
+    return ProviderInDB(**_row_to_provider_dict(row))
 
 
-async def get_active_provider(conn: aiosqlite.Connection, mask: bool = True) -> Optional[ProviderResponse]:
+async def get_active_provider(conn: aiosqlite.Connection, mask: bool = True) -> ProviderResponse | None:
+    """Fetches the currently active provider with optional masking."""
     raw = await get_active_provider_raw(conn)
     if not raw:
         return None
-    d = raw.model_dump()
-    if mask:
-        d["api_key"] = mask_api_key(raw.api_key)
-        d["custom_headers"] = mask_custom_headers(raw.custom_headers)
-    return ProviderResponse(**d)
+    return _build_provider_response(raw.model_dump(), mask=mask)
 
 
 async def create_provider(conn: aiosqlite.Connection, provider: ProviderCreate) -> ProviderResponse:
+    """Creates and persists a new LLM provider record."""
     headers_str = json.dumps(provider.custom_headers)
     enc_key = encrypt_secret(provider.api_key) if provider.api_key else ""
     async with immediate_transaction(conn):
@@ -182,13 +172,14 @@ async def create_provider(conn: aiosqlite.Connection, provider: ProviderCreate) 
     return res
 
 
-async def update_provider(conn: aiosqlite.Connection, provider_id: str, updates: ProviderUpdate) -> Optional[ProviderResponse]:
+async def update_provider(conn: aiosqlite.Connection, provider_id: str, updates: ProviderUpdate) -> ProviderResponse | None:
+    """Updates fields of an existing provider with secret encryption and header merging."""
     current = await get_provider_raw(conn, provider_id)
     if not current:
         return None
 
     fields = []
-    values: List[Any] = []
+    values: list[Any] = []
     up_dict = updates.model_dump(exclude_unset=True)
 
     for k, v in up_dict.items():
@@ -229,6 +220,7 @@ async def update_provider(conn: aiosqlite.Connection, provider_id: str, updates:
 
 
 async def set_active_provider(conn: aiosqlite.Connection, provider_id: str) -> bool:
+    """Marks the specified provider as active and updates global settings."""
     provider = await get_provider_raw(conn, provider_id)
     if not provider:
         return False
@@ -242,6 +234,7 @@ async def set_active_provider(conn: aiosqlite.Connection, provider_id: str) -> b
 
 
 async def delete_provider(conn: aiosqlite.Connection, provider_id: str) -> bool:
+    """Deletes a provider record by ID."""
     async with immediate_transaction(conn):
         cursor = await conn.execute("DELETE FROM providers WHERE id = ?;", (provider_id,))
     return cursor.rowcount > 0

@@ -3,9 +3,10 @@ Session and message CRUD operations for SQLite persistence in galgame2voice.
 """
 
 import logging
+from pathlib import Path
 import re
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import aiosqlite
 
@@ -21,6 +22,7 @@ from galgame2voice.database.session import immediate_transaction
 logger = logging.getLogger("galgame2voice.database.crud_modules.sessions")
 
 __all__ = [
+    "DEFAULT_TOKEN_BUDGET",
     "get_or_create_session",
     "get_session",
     "upsert_session",
@@ -29,9 +31,12 @@ __all__ = [
     "delete_session",
     "clear_session_messages",
     "add_message",
+    "delete_message",
     "get_recent_messages",
     "count_session_messages",
 ]
+
+DEFAULT_TOKEN_BUDGET: int = 4096
 
 
 async def get_or_create_session(
@@ -40,6 +45,7 @@ async def get_or_create_session(
     channel: str = "web",
     user_id: str = "",
 ) -> SessionResponse:
+    """Fetches an existing session or creates a new one with default voice profile."""
     conn.row_factory = aiosqlite.Row
     try:
         cursor = await conn.execute("SELECT * FROM sessions WHERE id = ?;", (session_id,))
@@ -63,19 +69,19 @@ async def get_or_create_session(
         async with immediate_transaction(conn):
             await conn.execute("""
                 INSERT INTO sessions (id, channel, user_id, voice_profile_id, token_budget)
-                VALUES (?, ?, ?, ?, 4096)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO NOTHING;
-            """, (session_id, channel, user_id, profile_id))
+            """, (session_id, channel, user_id, profile_id, DEFAULT_TOKEN_BUDGET))
     except (sqlite3.IntegrityError, aiosqlite.IntegrityError):
         # Fallback if profile_id had a foreign key issue
         try:
             async with immediate_transaction(conn):
                 await conn.execute("""
                     INSERT INTO sessions (id, channel, user_id, voice_profile_id, token_budget)
-                    VALUES (?, ?, ?, NULL, 4096)
+                    VALUES (?, ?, ?, NULL, ?)
                     ON CONFLICT(id) DO NOTHING;
-                """, (session_id, channel, user_id))
-        except Exception:
+                """, (session_id, channel, user_id, DEFAULT_TOKEN_BUDGET))
+        except (sqlite3.IntegrityError, aiosqlite.IntegrityError):
             pass
 
     cursor = await conn.execute("SELECT * FROM sessions WHERE id = ?;", (session_id,))
@@ -88,11 +94,12 @@ async def get_or_create_session(
         channel=channel,
         user_id=user_id,
         voice_profile_id=profile_id,
-        token_budget=4096,
+        token_budget=DEFAULT_TOKEN_BUDGET,
     )
 
 
-async def get_session(conn: aiosqlite.Connection, session_id: str) -> Optional[SessionResponse]:
+async def get_session(conn: aiosqlite.Connection, session_id: str) -> SessionResponse | None:
+    """Fetches a session by session ID."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM sessions WHERE id = ?;", (session_id,))
     row = await cursor.fetchone()
@@ -104,20 +111,21 @@ async def get_session(conn: aiosqlite.Connection, session_id: str) -> Optional[S
 async def upsert_session(
     conn: aiosqlite.Connection,
     session_id: str,
-    title: Optional[str] = None,
+    title: str | None = None,
     channel: str = "web",
     user_id: str = "",
-    voice_profile_id: Optional[int] = None,
-    custom_system_prompt: Optional[str] = None,
-    settings_json: Optional[str] = None,
+    voice_profile_id: int | None = None,
+    custom_system_prompt: str | None = None,
+    settings_json: str | None = None,
 ) -> SessionResponse:
+    """Inserts or updates session configuration and metadata."""
     conn.row_factory = aiosqlite.Row
     clean_title = (title or "").strip()
     cursor = await conn.execute("SELECT * FROM sessions WHERE id = ?;", (session_id,))
     row = await cursor.fetchone()
     if row:
         updates = ["updated_at = CURRENT_TIMESTAMP"]
-        params: List[Any] = []
+        params: list[Any] = []
         if title is not None:
             updates.append("title = ?")
             params.append(clean_title)
@@ -140,28 +148,29 @@ async def upsert_session(
         async with immediate_transaction(conn):
             await conn.execute("""
                 INSERT INTO sessions (id, channel, user_id, voice_profile_id, custom_system_prompt, title, settings_json, token_budget)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 4096)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     title = COALESCE(excluded.title, sessions.title),
                     voice_profile_id = COALESCE(excluded.voice_profile_id, sessions.voice_profile_id),
                     custom_system_prompt = COALESCE(excluded.custom_system_prompt, sessions.custom_system_prompt),
                     settings_json = COALESCE(excluded.settings_json, sessions.settings_json),
                     updated_at = CURRENT_TIMESTAMP;
-            """, (session_id, channel, user_id, voice_profile_id, custom_system_prompt, clean_title, settings_json))
+            """, (session_id, channel, user_id, voice_profile_id, custom_system_prompt, clean_title, settings_json, DEFAULT_TOKEN_BUDGET))
 
     cursor = await conn.execute("SELECT * FROM sessions WHERE id = ?;", (session_id,))
     new_row = await cursor.fetchone()
     return SessionResponse(**dict(new_row))
 
 
-async def list_sessions(conn: aiosqlite.Connection, limit: int = 50) -> List[SessionResponse]:
+async def list_sessions(conn: aiosqlite.Connection, limit: int = 50) -> list[SessionResponse]:
+    """Lists sessions ordered by last updated timestamp."""
     conn.row_factory = aiosqlite.Row
     cursor = await conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?;", (limit,))
     rows = await cursor.fetchall()
     return [SessionResponse(**dict(r)) for r in rows]
 
 
-async def list_sessions_overview(conn: aiosqlite.Connection, limit: int = 50) -> List[Dict[str, Any]]:
+async def list_sessions_overview(conn: aiosqlite.Connection, limit: int = 50) -> list[dict[str, Any]]:
     """
     Returns sessions ordered by updated_at DESC, augmented with message count,
     last message preview, and dynamically inferred title if not explicitly set.
@@ -200,8 +209,7 @@ async def list_sessions_overview(conn: aiosqlite.Connection, limit: int = 50) ->
     return result
 
 
-def _cascade_delete_message_audios(audio_urls: List[str]) -> None:
-    from pathlib import Path
+def _cascade_delete_message_audios(audio_urls: list[str]) -> None:
     try:
         from galgame2voice.config import get_settings
         audio_dir = get_settings().audio_dir
@@ -228,8 +236,8 @@ def _cascade_delete_message_audios(audio_urls: List[str]) -> None:
             logger.debug("Failed cascading audio deletion for %s: %s", raw_url, e)
 
 
-async def delete_session(conn: aiosqlite.Connection, session_id: str) -> bool:
-    # Query audio_urls for cascade deletion
+async def _cleanup_session_audios(conn: aiosqlite.Connection, session_id: str, context: str) -> None:
+    """Helper to query and cascade-delete ephemeral audios belonging to a session."""
     try:
         cur_urls = await conn.execute(
             "SELECT audio_url FROM messages WHERE session_id = ? AND audio_url IS NOT NULL AND audio_url != '';",
@@ -238,7 +246,12 @@ async def delete_session(conn: aiosqlite.Connection, session_id: str) -> bool:
         audio_urls = [r[0] for r in await cur_urls.fetchall() if r and r[0]]
         _cascade_delete_message_audios(audio_urls)
     except Exception as exc:
-        logger.debug("Cascade audio cleanup on delete_session skipped: %s", exc)
+        logger.debug("Cascade audio cleanup on %s skipped: %s", context, exc)
+
+
+async def delete_session(conn: aiosqlite.Connection, session_id: str) -> bool:
+    """Deletes a session, all its messages, and cascades ephemeral audio removal."""
+    await _cleanup_session_audios(conn, session_id, "delete_session")
 
     async with immediate_transaction(conn):
         await conn.execute("DELETE FROM messages WHERE session_id = ?;", (session_id,))
@@ -247,16 +260,8 @@ async def delete_session(conn: aiosqlite.Connection, session_id: str) -> bool:
 
 
 async def clear_session_messages(conn: aiosqlite.Connection, session_id: str) -> bool:
-    # Query audio_urls for cascade deletion
-    try:
-        cur_urls = await conn.execute(
-            "SELECT audio_url FROM messages WHERE session_id = ? AND audio_url IS NOT NULL AND audio_url != '';",
-            (session_id,),
-        )
-        audio_urls = [r[0] for r in await cur_urls.fetchall() if r and r[0]]
-        _cascade_delete_message_audios(audio_urls)
-    except Exception as exc:
-        logger.debug("Cascade audio cleanup on clear_session_messages skipped: %s", exc)
+    """Deletes all messages for a session and removes associated ephemeral audios."""
+    await _cleanup_session_audios(conn, session_id, "clear_session_messages")
 
     cleared = False
     async with immediate_transaction(conn):
@@ -279,6 +284,7 @@ async def clear_session_messages(conn: aiosqlite.Connection, session_id: str) ->
 
 
 async def add_message(conn: aiosqlite.Connection, msg: MessageCreate) -> MessageResponse:
+    """Appends a new conversation message to a session."""
     conn.row_factory = aiosqlite.Row
     # Ensure session exists
     await get_or_create_session(conn, msg.session_id)
@@ -305,7 +311,8 @@ async def get_recent_messages(
     conn: aiosqlite.Connection,
     session_id: str,
     limit: int = 10,
-) -> List[MessageResponse]:
+) -> list[MessageResponse]:
+    """Fetches the most recent messages for a session in chronological order."""
     conn.row_factory = aiosqlite.Row
     try:
         cursor = await conn.execute("""
@@ -326,6 +333,12 @@ async def get_recent_messages(
 
 
 async def count_session_messages(conn: aiosqlite.Connection, session_id: str) -> int:
+    """Counts total messages recorded for a session."""
     cursor = await conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?;", (session_id,))
     row = await cursor.fetchone()
     return row[0] if row else 0
+
+
+async def delete_message(conn: aiosqlite.Connection, message_id: int) -> None:
+    """Deletes a message by its ID."""
+    await conn.execute("DELETE FROM messages WHERE id = ?;", (message_id,))

@@ -3,7 +3,7 @@ SiliconFlow SenseVoice / FunAudioLLM STT Adapter for galgame2voice.
 Supports SenseVoiceSmall high-accuracy multilingual speech recognition.
 """
 
-from typing import Any, Optional
+from typing import Any
 from galgame2voice.adapters.stt.openai_stt import OpenAICompatibleSTTAdapter
 
 
@@ -16,7 +16,7 @@ class SiliconFlowSTTAdapter(OpenAICompatibleSTTAdapter):
         self,
         api_key: str,
         base_url: str = "https://api.siliconflow.cn/v1",
-        client_override: Optional[Any] = None,
+        client_override: Any | None = None,
         default_model: str = "FunAudioLLM/SenseVoiceSmall",
         **kwargs: Any,
     ):

@@ -9,7 +9,8 @@ import logging
 import os
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
+import aiosqlite
 from fastapi import APIRouter, HTTPException, Query, status, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -27,7 +28,11 @@ from galgame2voice.services.gpt_sovits_client import (
     TTS_PRESETS,
     SLICING_METHODS,
 )
-from galgame2voice.services.voice_manager import get_voice_manager, InsufficientMemoryError
+from galgame2voice.routers.common import (
+    switch_voice_profile_or_raise,
+    validate_positive_profile_id,
+)
+from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.path_guard import (
     PathTraversalError,
@@ -47,45 +52,48 @@ router = APIRouter(prefix="/api/voice", tags=["Voice Profiles & TTS"])
 # ============================================================================
 
 class VoiceProfileCreateRequest(BaseModel):
+    """Payload for creating a new voice profile referencing GPT/SoVITS model weights."""
     name: str = Field(..., min_length=1, max_length=100)
-    description: Optional[str] = Field(default="", max_length=1000)
+    description: str | None = Field(default="", max_length=1000)
     gpt_weights_path: str = Field(..., min_length=1, max_length=1000)
     sovits_weights_path: str = Field(..., min_length=1, max_length=1000)
-    refer_audio_path: Optional[str] = Field(default=None, max_length=1000)
-    ref_audio_path: Optional[str] = Field(default=None, max_length=1000)
-    refer_text: Optional[str] = Field(default=None, max_length=1000)
-    prompt_text: Optional[str] = Field(default=None, max_length=1000)
-    refer_language: Optional[str] = Field(default="ja", max_length=32)
-    prompt_lang: Optional[str] = Field(default="ja", max_length=32)
-    text_lang: Optional[str] = Field(default="ja", max_length=32)
-    system_prompt: Optional[str] = Field(default="", max_length=10000)
+    refer_audio_path: str | None = Field(default=None, max_length=1000)
+    ref_audio_path: str | None = Field(default=None, max_length=1000)
+    refer_text: str | None = Field(default=None, max_length=1000)
+    prompt_text: str | None = Field(default=None, max_length=1000)
+    refer_language: str | None = Field(default="ja", max_length=32)
+    prompt_lang: str | None = Field(default="ja", max_length=32)
+    text_lang: str | None = Field(default="ja", max_length=32)
+    system_prompt: str | None = Field(default="", max_length=10000)
     is_default: bool = False
 
 
 class VoiceSwitchRequest(BaseModel):
-    profile_id: Optional[int] = Field(default=None, ge=1)
-    profile_name: Optional[str] = Field(default=None, max_length=100)
-    id: Optional[int] = Field(default=None, ge=1)
-    name: Optional[str] = Field(default=None, max_length=100)
+    """Payload for switching active voice profile by ID or name."""
+    profile_id: int | None = Field(default=None, ge=1)
+    profile_name: str | None = Field(default=None, max_length=100)
+    id: int | None = Field(default=None, ge=1)
+    name: str | None = Field(default=None, max_length=100)
     force: bool = False
 
 
 class SynthesizeRequest(BaseModel):
+    """Payload for standalone voice synthesis requests."""
     text: str = Field(..., min_length=1, max_length=2000)
-    voice_profile_id: Optional[int] = Field(default=None, ge=1)
-    options: Optional[Dict[str, Any]] = None
-    speed: Optional[float] = Field(default=None, ge=0.1, le=3.0)
-    top_k: Optional[int] = Field(default=None, ge=1, le=100)
-    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-    top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    text_language: Optional[str] = Field(default=None, max_length=32)
-    cut_option: Optional[str] = Field(default=None, max_length=64)
-    preset: Optional[str] = Field(default=None, max_length=64)
-    fragment_interval: Optional[float] = Field(default=None, ge=0.0, le=5.0)
-    batch_size: Optional[int] = Field(default=None, ge=1, le=16)
-    emotion: Optional[str] = Field(default=None, max_length=64)
+    voice_profile_id: int | None = Field(default=None, ge=1)
+    options: dict[str, Any] | None = None
+    speed: float | None = Field(default=None, ge=0.1, le=3.0)
+    top_k: int | None = Field(default=None, ge=1, le=100)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    text_language: str | None = Field(default=None, max_length=32)
+    cut_option: str | None = Field(default=None, max_length=64)
+    preset: str | None = Field(default=None, max_length=64)
+    fragment_interval: float | None = Field(default=None, ge=0.0, le=5.0)
+    batch_size: int | None = Field(default=None, ge=1, le=16)
+    emotion: str | None = Field(default=None, max_length=64)
     stream: bool = False
-    ai_adaptive_voice: Optional[bool] = Field(default=None, description="Whether AI-driven dynamic voice inference is enabled")
+    ai_adaptive_voice: bool | None = Field(default=None, description="Whether AI-driven dynamic voice inference is enabled")
 
 
 # ============================================================================
@@ -97,7 +105,7 @@ class SynthesizeRequest(BaseModel):
     summary="List Voice Profiles",
     description="Returns all character voice profiles and active profile ID.",
 )
-async def list_voice_profiles():
+async def list_voice_profiles() -> dict[str, Any]:
     async with get_db() as conn:
         profiles = await crud.list_voice_profiles(conn)
         active = await crud.get_active_voice_profile(conn)
@@ -113,7 +121,7 @@ async def list_voice_profiles():
     summary="Create Voice Profile",
     description="Creates a new character voice profile with GPT/SoVITS weights and reference audio.",
 )
-async def create_voice_profile(req: VoiceProfileCreateRequest):
+async def create_voice_profile(req: VoiceProfileCreateRequest) -> dict[str, Any]:
     ref_audio = to_project_relative_path(req.refer_audio_path or req.ref_audio_path or "")
     prompt_txt = req.refer_text or req.prompt_text or ""
     prompt_l = req.refer_language or req.prompt_lang or "ja"
@@ -169,12 +177,8 @@ async def create_voice_profile(req: VoiceProfileCreateRequest):
     summary="Get Voice Profile by ID",
     description="Returns detailed parameters of a single voice profile.",
 )
-async def get_voice_profile(profile_id: int):
-    if profile_id < 1:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Profile ID must be a positive integer >= 1",
-        )
+async def get_voice_profile(profile_id: int) -> dict[str, Any]:
+    validate_positive_profile_id(profile_id)
     async with get_db() as conn:
         profile = await crud.get_voice_profile(conn, profile_id)
         if not profile:
@@ -190,12 +194,8 @@ async def get_voice_profile(profile_id: int):
     summary="Update Voice Profile",
     description="Updates existing voice profile weights and prompt parameters.",
 )
-async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate):
-    if profile_id < 1:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Profile ID must be a positive integer >= 1",
-        )
+async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate) -> dict[str, Any]:
+    validate_positive_profile_id(profile_id)
 
     try:
         validate_voice_profile_paths(
@@ -234,12 +234,8 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate):
     summary="Delete Voice Profile",
     description="Deletes a voice profile by ID.",
 )
-async def delete_voice_profile(profile_id: int):
-    if profile_id < 1:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Profile ID must be a positive integer >= 1",
-        )
+async def delete_voice_profile(profile_id: int) -> dict[str, Any]:
+    validate_positive_profile_id(profile_id)
     async with get_db() as conn:
         try:
             success = await crud.delete_voice_profile(conn, profile_id)
@@ -263,12 +259,31 @@ async def delete_voice_profile(profile_id: int):
 # ============================================================================
 
 
+async def _lookup_voice_profile(
+    conn: aiosqlite.Connection,
+    profile_id: int | None,
+    profile_name: str | None,
+) -> Any | None:
+    """Looks up voice profile by ID or name (including list scan fallback)."""
+    if profile_id is not None:
+        return await crud.get_voice_profile(conn, profile_id)
+    if profile_name:
+        profile = await crud.get_voice_profile_by_name(conn, profile_name)
+        if profile:
+            return profile
+        profiles = await crud.list_voice_profiles(conn)
+        for p in profiles:
+            if p.name == profile_name:
+                return p
+    return None
+
+
 @router.post(
     "/switch",
     summary="Switch Active Voice Profile",
     description="Atomically switches GPT-SoVITS weights to selected profile with automatic rollback.",
 )
-async def switch_voice(req: VoiceSwitchRequest):
+async def switch_voice(req: VoiceSwitchRequest) -> dict[str, Any]:
     profile_id = req.profile_id if req.profile_id is not None else req.id
     raw_name = req.profile_name or req.name
     profile_name = raw_name.strip() if raw_name else None
@@ -279,26 +294,12 @@ async def switch_voice(req: VoiceSwitchRequest):
             detail="Missing profile_id or profile_name in switch request",
         )
 
-    if profile_id is not None and profile_id < 1:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="profile_id must be a positive integer >= 1",
-        )
+    if profile_id is not None:
+        validate_positive_profile_id(profile_id, field_name="profile_id")
 
     # 1. 404 Precedence: Resolve voice profile entity first from database
     async with get_db() as conn:
-        profile = None
-        if profile_id is not None:
-            profile = await crud.get_voice_profile(conn, profile_id)
-        elif profile_name:
-            profile = await crud.get_voice_profile_by_name(conn, profile_name)
-            if not profile:
-                profiles = await crud.list_voice_profiles(conn)
-                for p in profiles:
-                    if p.name == profile_name:
-                        profile = p
-                        break
-
+        profile = await _lookup_voice_profile(conn, profile_id, profile_name)
         if not profile:
             identifier = profile_id if profile_id is not None else profile_name
             raise HTTPException(
@@ -329,8 +330,8 @@ async def switch_voice(req: VoiceSwitchRequest):
                 active_prof = await manager.get_active_profile()
                 if active_prof:
                     manager.active_profile = active_prof
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed retrieving active profile: %s", exc)
 
         is_already_active = manager.is_active_profile(profile, force=req.force)
 
@@ -342,18 +343,7 @@ async def switch_voice(req: VoiceSwitchRequest):
             except Exception as exc:
                 logger.debug("Failed syncing active voice profile to settings: %s", exc)
         else:
-            try:
-                success = await manager.switch_profile(profile, persist=True, _already_locked=True, force=req.force)
-            except InsufficientMemoryError as mem_err:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=str(mem_err),
-                ) from mem_err
-            if not success:
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="Failed to load GPT/SoVITS model weights onto backend service",
-                )
+            await switch_voice_profile_or_raise(manager, profile, force=req.force)
 
         return {
             "status": "switched",
@@ -366,51 +356,22 @@ async def switch_voice(req: VoiceSwitchRequest):
 # 3. Speech Synthesis Endpoints
 # ============================================================================
 
-@router.post(
-    "/synthesize",
-    summary="Synthesize Text to Speech",
-    description="Synthesizes text into WAV audio using active voice profile and specified parameters.",
-)
-async def synthesize_speech(req: SynthesizeRequest):
-    cleaned_text = normalize_japanese_for_tts(req.text)
-    if not cleaned_text:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Text is empty after cleaning stage directions",
-        )
+def _collect_synthesize_options(req: SynthesizeRequest) -> dict[str, Any]:
+    """Collects and merges top-level request fields into options dictionary."""
+    options: dict[str, Any] = dict(req.options or {})
+    for field in (
+        "voice_profile_id", "speed", "top_k", "temperature", "top_p",
+        "text_language", "cut_option", "preset", "fragment_interval",
+        "batch_size", "emotion", "ai_adaptive_voice",
+    ):
+        val = getattr(req, field, None)
+        if val is not None:
+            options[field] = val
+    return options
 
-    # Collect and normalize options
-    options: Dict[str, Any] = dict(req.options or {})
-    if req.voice_profile_id is not None:
-        options["voice_profile_id"] = req.voice_profile_id
-    if req.speed is not None:
-        options["speed"] = req.speed
-    if req.top_k is not None:
-        options["top_k"] = req.top_k
-    if req.temperature is not None:
-        options["temperature"] = req.temperature
-    if req.top_p is not None:
-        options["top_p"] = req.top_p
-    if req.text_language is not None:
-        options["text_language"] = req.text_language
-    if req.cut_option is not None:
-        options["cut_option"] = req.cut_option
-    if req.preset is not None:
-        options["preset"] = req.preset
-    if req.fragment_interval is not None:
-        options["fragment_interval"] = req.fragment_interval
-    if req.batch_size is not None:
-        options["batch_size"] = req.batch_size
-    if req.emotion is not None:
-        options["emotion"] = req.emotion
-    if req.ai_adaptive_voice is not None:
-        options["ai_adaptive_voice"] = req.ai_adaptive_voice
 
-    try:
-        validate_user_tts_options(options)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
-
+def _validate_synthesize_ref_audio(options: dict[str, Any]) -> None:
+    """Validates reference audio path if present in options."""
     ref_audio = options.get("ref_audio_path") or options.get("refer_audio_path")
     if ref_audio:
         try:
@@ -421,18 +382,45 @@ async def synthesize_speech(req: SynthesizeRequest):
                 detail=f"Invalid reference audio path: {pte}",
             ) from pte
 
-    manager = get_voice_manager()
 
-    # Reject synthesis if no character package or voice profile is available
+async def _ensure_voice_profile_available(manager: Any, options: dict[str, Any]) -> None:
+    """Rejects synthesis when no reference audio is supplied and no profile or character package exists."""
     if not options.get("ref_audio_path") and not options.get("refer_audio_path"):
         async with get_db() as conn:
             profiles = await crud.list_voice_profiles(conn)
-            has_server_audio = bool(getattr(manager.client, "server", None) and getattr(manager.client.server, "current_refer_audio", None))
+            has_server_audio = bool(
+                getattr(manager.client, "server", None)
+                and getattr(manager.client.server, "current_refer_audio", None)
+            )
             if not profiles and not manager.client.current_refer_audio and not has_server_audio:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="No character package or voice profile installed. Please install a character package to characters/ or configure a voice profile.",
                 )
+
+
+@router.post(
+    "/synthesize",
+    summary="Synthesize Text to Speech",
+    description="Synthesizes text into WAV audio using active voice profile and specified parameters.",
+)
+async def synthesize_speech(req: SynthesizeRequest) -> Response:
+    cleaned_text = normalize_japanese_for_tts(req.text)
+    if not cleaned_text:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Text is empty after cleaning stage directions",
+        )
+
+    options = _collect_synthesize_options(req)
+    try:
+        validate_user_tts_options(options)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    _validate_synthesize_ref_audio(options)
+    manager = get_voice_manager()
+    await _ensure_voice_profile_available(manager, options)
 
     try:
         if req.stream:
@@ -452,8 +440,25 @@ async def synthesize_speech(req: SynthesizeRequest):
 
 
 class BrowseFileRequest(BaseModel):
+    """Payload specifying file picker filter criteria and initial directory."""
     file_type: str = Field(default="all", description="'gpt', 'sovits', 'audio', or 'all'")
-    initial_dir: Optional[str] = None
+    initial_dir: str | None = None
+
+
+_NATIVE_FILE_PICKER_CONFIG: dict[str, tuple[str, list[tuple[str, str]]]] = {
+    "gpt": ("选择 GPT 权重文件 (.ckpt)", [("GPT 权重 (*.ckpt)", "*.ckpt"), ("所有文件 (*.*)", "*.*")]),
+    "sovits": ("选择 SoVITS 权重文件 (.pth)", [("SoVITS 权重 (*.pth)", "*.pth"), ("所有文件 (*.*)", "*.*")]),
+    "audio": (
+        "选择参考音频文件 (.wav, .ogg, .mp3, .flac)",
+        [("音频文件 (*.wav;*.ogg;*.mp3;*.flac)", "*.wav;*.ogg;*.mp3;*.flac"), ("所有文件 (*.*)", "*.*")],
+    ),
+}
+
+_FS_BROWSE_EXTS: dict[str, set[str]] = {
+    "gpt": {".ckpt"},
+    "sovits": {".pth"},
+    "audio": {".wav", ".ogg", ".mp3", ".flac", ".m4a"},
+}
 
 
 @router.post(
@@ -461,8 +466,8 @@ class BrowseFileRequest(BaseModel):
     summary="Open Native Windows File Browser",
     description="Opens native OS file dialog to let the user select a file (.ckpt, .pth, audio).",
 )
-async def open_native_file_dialog(req: BrowseFileRequest):
-    def _run_picker():
+async def open_native_file_dialog(req: BrowseFileRequest) -> dict[str, Any]:
+    def _run_picker() -> str:
         try:
             import tkinter as tk
             from tkinter import filedialog
@@ -471,17 +476,9 @@ async def open_native_file_dialog(req: BrowseFileRequest):
             root.withdraw()
             root.attributes("-topmost", True)
 
-            title = "选择模型文件"
-            filetypes = [("所有文件 (*.*)", "*.*")]
-            if req.file_type == "gpt":
-                title = "选择 GPT 权重文件 (.ckpt)"
-                filetypes = [("GPT 权重 (*.ckpt)", "*.ckpt"), ("所有文件 (*.*)", "*.*")]
-            elif req.file_type == "sovits":
-                title = "选择 SoVITS 权重文件 (.pth)"
-                filetypes = [("SoVITS 权重 (*.pth)", "*.pth"), ("所有文件 (*.*)", "*.*")]
-            elif req.file_type == "audio":
-                title = "选择参考音频文件 (.wav, .ogg, .mp3, .flac)"
-                filetypes = [("音频文件 (*.wav;*.ogg;*.mp3;*.flac)", "*.wav;*.ogg;*.mp3;*.flac"), ("所有文件 (*.*)", "*.*")]
+            default_title = "选择模型文件"
+            default_filetypes = [("所有文件 (*.*)", "*.*")]
+            title, filetypes = _NATIVE_FILE_PICKER_CONFIG.get(req.file_type, (default_title, default_filetypes))
 
             init_dir = req.initial_dir if req.initial_dir and os.path.exists(req.initial_dir) else None
             selected = filedialog.askopenfilename(title=title, filetypes=filetypes, initialdir=init_dir)
@@ -501,75 +498,80 @@ async def open_native_file_dialog(req: BrowseFileRequest):
     description="Lists drives, directories, and files with filtering for in-browser selection.",
 )
 async def fs_browse(
-    path: Optional[str] = Query(None, description="Directory path to explore"),
-    file_type: Optional[str] = Query("all", description="'gpt', 'sovits', 'audio', or 'all'"),
+    path: str | None = Query(None, description="Directory path to explore"),
+    file_type: str | None = Query("all", description="'gpt', 'sovits', 'audio', or 'all'"),
 ):
-    result = await asyncio.to_thread(_fs_browse_sync, path, file_type)
-    return result
+    return await asyncio.to_thread(_fs_browse_sync, path, file_type)
 
 
-def _fs_browse_sync(path: Optional[str], file_type: Optional[str]) -> Dict[str, Any]:
-    """Blocking directory listing (runs in a worker thread)."""
-    import string
-
-    # Path traversal and device name safety check
-    if path and (contains_traversal_payload(path) or is_windows_device_name(path)):
-            return {
-                "current_path": path,
-                "parent_path": None,
-                "drives": [],
-                "directories": [],
-                "files": [],
-                "error": "Invalid or unsafe directory path",
-            }
-
-    # 1. Available drives (Windows)
-    drives = []
+def _get_available_drives() -> list[str]:
+    """Returns available drive paths on Windows or root directory on POSIX."""
     if sys.platform == "win32":
+        import string
+        drives = []
         for letter in string.ascii_uppercase:
             drive_path = f"{letter}:\\"
             if os.path.exists(drive_path):
                 drives.append(drive_path)
-    else:
-        drives = ["/"]
+        return drives
+    return ["/"]
 
+
+def _scan_dir_entries(
+    current_path: str,
+    exts: set[str] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Scandir helper returning sorted (directories, files) for a directory path."""
+    directories: list[dict[str, Any]] = []
+    files: list[dict[str, Any]] = []
+    with os.scandir(current_path) as it:
+        for entry in it:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if not entry.name.startswith("."):
+                        directories.append({
+                            "name": entry.name,
+                            "path": entry.path,
+                        })
+                elif entry.is_file(follow_symlinks=False):
+                    ext = os.path.splitext(entry.name)[1].lower()
+                    if exts is None or ext in exts:
+                        files.append({
+                            "name": entry.name,
+                            "path": entry.path,
+                            "size_bytes": entry.stat().st_size,
+                        })
+            except (PermissionError, OSError):
+                continue
+
+    directories.sort(key=lambda x: x["name"].lower())
+    files.sort(key=lambda x: x["name"].lower())
+    return directories, files
+
+
+def _fs_browse_sync(path: str | None, file_type: str | None) -> dict[str, Any]:
+    """Blocking directory listing (runs in a worker thread)."""
+    # Path traversal and device name safety check
+    if path and (contains_traversal_payload(path) or is_windows_device_name(path)):
+        return {
+            "current_path": path,
+            "parent_path": None,
+            "drives": [],
+            "directories": [],
+            "files": [],
+            "error": "Invalid or unsafe directory path",
+        }
+
+    drives = _get_available_drives()
     current_path = os.path.abspath(path) if path and os.path.exists(path) else (drives[0] if drives else "/")
     if os.path.isfile(current_path):
         current_path = os.path.dirname(current_path)
 
     parent_path = os.path.dirname(current_path) if current_path != os.path.dirname(current_path) else None
+    exts = _FS_BROWSE_EXTS.get(file_type)
 
-    # Filter extensions
-    exts = None
-    if file_type == "gpt":
-        exts = {".ckpt"}
-    elif file_type == "sovits":
-        exts = {".pth"}
-    elif file_type == "audio":
-        exts = {".wav", ".ogg", ".mp3", ".flac", ".m4a"}
-
-    directories = []
-    files = []
     try:
-        with os.scandir(current_path) as it:
-            for entry in it:
-                try:
-                    if entry.is_dir(follow_symlinks=False):
-                        if not entry.name.startswith("."):
-                            directories.append({
-                                "name": entry.name,
-                                "path": entry.path,
-                            })
-                    elif entry.is_file(follow_symlinks=False):
-                        ext = os.path.splitext(entry.name)[1].lower()
-                        if exts is None or ext in exts:
-                            files.append({
-                                "name": entry.name,
-                                "path": entry.path,
-                                "size_bytes": entry.stat().st_size,
-                            })
-                except (PermissionError, OSError):
-                    continue
+        directories, files = _scan_dir_entries(current_path, exts)
     except (PermissionError, OSError) as exc:
         return {
             "current_path": current_path,
@@ -579,9 +581,6 @@ def _fs_browse_sync(path: Optional[str], file_type: Optional[str]) -> Dict[str, 
             "files": [],
             "error": f"无法访问目录: {exc}",
         }
-
-    directories.sort(key=lambda x: x["name"].lower())
-    files.sort(key=lambda x: x["name"].lower())
 
     return {
         "current_path": current_path,
@@ -596,14 +595,14 @@ def _fs_browse_sync(path: Optional[str], file_type: Optional[str]) -> Dict[str, 
 # Model Scanning (thread-offloaded + TTL cached)
 # ============================================================================
 
-_scan_cache: Dict[str, Any] = {}
+_scan_cache: dict[str, Any] = {}
 _SCAN_TTL_SECONDS = 60.0
 
 
-def _discover_gpt_sovits_roots() -> List[str]:
+def _discover_gpt_sovits_roots() -> list[str]:
     """Builds candidate GPT-SoVITS install roots from env + known layouts."""
     import glob
-    roots: List[str] = []
+    roots: list[str] = []
 
     env_dir = os.environ.get("GPT_SOVITS_DIR")
     if env_dir:
@@ -622,9 +621,9 @@ def _discover_gpt_sovits_roots() -> List[str]:
     return roots
 
 
-def _scan_models_sync() -> Dict[str, List[Dict[str, Any]]]:
+def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
     """Blocking filesystem scan for weights & reference audio (worker thread)."""
-    candidate_roots: List[str] = []
+    candidate_roots: list[str] = []
     for root in _discover_gpt_sovits_roots():
         if root not in candidate_roots and os.path.isdir(root):
             candidate_roots.append(root)
@@ -637,9 +636,9 @@ def _scan_models_sync() -> Dict[str, List[Dict[str, Any]]]:
         str(settings.project_root / "audio"),
     ])
 
-    gpt_weights: List[Dict[str, Any]] = []
-    sovits_weights: List[Dict[str, Any]] = []
-    audio_files: List[Dict[str, Any]] = []
+    gpt_weights: list[dict[str, Any]] = []
+    sovits_weights: list[dict[str, Any]] = []
+    audio_files: list[dict[str, Any]] = []
     seen = set()
 
     for root_dir in candidate_roots:

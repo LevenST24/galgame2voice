@@ -3,7 +3,7 @@ xAI Grok LLM Adapter for galgame2voice.
 Connects to xAI API (grok-2, grok-beta).
 """
 
-from typing import Any, Optional
+from typing import Any
 from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 
 
@@ -16,8 +16,8 @@ class XAILLMAdapter(OpenAICompatibleLLMAdapter):
         self,
         api_key: str,
         base_url: str = "https://api.x.ai/v1",
-        client_override: Optional[Any] = None,
-        default_model: Optional[str] = None,
+        client_override: Any | None = None,
+        default_model: str | None = None,
         **kwargs: Any,
     ):
         super().__init__(

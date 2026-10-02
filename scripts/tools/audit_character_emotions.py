@@ -15,7 +15,6 @@ import json
 from pathlib import Path
 import struct
 import sys
-from typing import Dict, List, Tuple
 import wave
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -75,7 +74,7 @@ def md5_file(path: Path) -> str:
 def audit_characters(
     chars_dir: Path = CHARACTERS_DIR,
     strict_duration: bool = True,
-) -> Tuple[int, int, List[str]]:
+) -> tuple[int, int, list[str]]:
     """
     Audits all character packages in chars_dir.
     Returns (total_emotions, passed_emotions, error_messages).
@@ -85,7 +84,7 @@ def audit_characters(
 
     total_emotions = 0
     passed_emotions = 0
-    errors: List[str] = []
+    errors: list[str] = []
 
     print(f"[*] Auditing {len(char_dirs)} character packages in '{chars_dir}'...")
 
@@ -98,8 +97,8 @@ def audit_characters(
             errors.append(f"[{cname}] Failed to parse manifest.json: {exc}")
             continue
 
-        emotions: Dict = manifest.get("emotions", {})
-        seen_md5s: Dict[str, str] = {}
+        emotions: dict = manifest.get("emotions", {})
+        seen_md5s: dict[str, str] = {}
 
         print(f"\n- Character: {cname} ({manifest.get('name', 'N/A')})")
 

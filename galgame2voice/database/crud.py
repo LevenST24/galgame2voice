@@ -19,6 +19,7 @@ from galgame2voice.database.crud_modules.memory_affection import (
     get_character_affection,
     get_memory,
     get_or_create_character_affection,
+    get_user_affections_for_profiles,
     increment_affection,
     list_memories,
     record_memory_recall,
@@ -45,6 +46,7 @@ from galgame2voice.database.crud_modules.providers import (
 )
 from galgame2voice.database.crud_modules.sessions import (
     add_message,
+    delete_message,
     clear_session_messages,
     count_session_messages,
     delete_session,
@@ -152,6 +154,7 @@ __all__ = [
     "delete_session",
     "clear_session_messages",
     "add_message",
+    "delete_message",
     "get_recent_messages",
     "count_session_messages",
     # Memory & Affection
@@ -167,6 +170,7 @@ __all__ = [
     "calculate_affection_level",
     "_format_affection_response",
     "get_or_create_character_affection",
+    "get_user_affections_for_profiles",
     "get_character_affection",
     "update_character_affection",
     "reset_character_affection",

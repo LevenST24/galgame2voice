@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 import uuid
-from typing import Any, AsyncGenerator, Dict, List, Optional, Union
+from typing import Any, AsyncGenerator
 
 
 from galgame2voice.config import get_settings
@@ -24,6 +24,7 @@ from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
     get_gpt_sovits_client,
 )
+from galgame2voice.utils.async_tasks import drain_background_tasks
 from galgame2voice.utils.hardware import (
     get_system_memory_status,
     get_gpu_vram_status,
@@ -70,6 +71,14 @@ def _get_switch_min_free_vram_gb() -> float:
     return _MIN_FREE_VRAM_FLOOR_GB
 
 
+def _safe_invalidate_resolver(profile_id: int | None = None) -> None:
+    """Safely invalidates the voice resolver cache without raising exceptions."""
+    try:
+        from galgame2voice.services.voice_resolver import get_voice_resolver
+        get_voice_resolver().invalidate(profile_id)
+    except Exception as exc:
+        logger.debug("Failed invalidating voice resolver cache: %s", exc)
+
 
 class VoiceManager:
     """
@@ -82,8 +91,8 @@ class VoiceManager:
 
     def __init__(
         self,
-        gpt_sovits_client_or_server: Union[GptSovitsClient, Any, str, None] = None,
-        db_path: Optional[str] = None,
+        gpt_sovits_client_or_server: GptSovitsClient | Any | str | None = None,
+        db_path: str | None = None,
     ):
         settings = get_settings()
         self.db_path = db_path or str(settings.db_path)
@@ -105,7 +114,7 @@ class VoiceManager:
         self._switch_lock = asyncio.Lock()
         self._bg_tasks: set[asyncio.Task] = set()
 
-    def _spawn_background(self, coro) -> asyncio.Task:
+    def _spawn_background(self, coro: Any) -> asyncio.Task:
         """Spawns and retains a strong reference to a background task, preventing GC mid-execution."""
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
@@ -114,15 +123,7 @@ class VoiceManager:
 
     async def aclose(self) -> None:
         """Gracefully drains and cancels pending background warmup tasks upon service shutdown."""
-        pending = [t for t in self._bg_tasks if not t.done()]
-        if pending:
-            await asyncio.wait(pending, timeout=3.0)
-        stragglers = [t for t in self._bg_tasks if not t.done()]
-        for t in stragglers:
-            t.cancel()
-        if stragglers:
-            await asyncio.gather(*stragglers, return_exceptions=True)
-        self._bg_tasks.clear()
+        await drain_background_tasks(self._bg_tasks, timeout=3.0)
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -135,21 +136,21 @@ class VoiceManager:
         return self._switch_lock
 
     @property
-    def server(self) -> Optional[Any]:
+    def server(self) -> Any | None:
         """Access mock/internal server if configured."""
         return self.client.server
 
     @server.setter
-    def server(self, val: Any):
+    def server(self, val: Any) -> None:
         self.client.server = val
 
     @property
-    def active_profile(self) -> Optional[Any]:
+    def active_profile(self) -> Any | None:
         """Currently active voice profile model."""
         return self.client.active_profile
 
     @active_profile.setter
-    def active_profile(self, val: Any):
+    def active_profile(self, val: Any) -> None:
         self.client.active_profile = val
 
     @property
@@ -160,6 +161,27 @@ class VoiceManager:
     # ========================================================================
     # Voice Profile Switching (Atomic 3-Step + Persistence)
     # ========================================================================
+
+    @staticmethod
+    def _resolve_profile_field(p: Any, name: str, alias: str | None = None) -> Any:
+        """Resolves profile field with attribute, fallback alias, and dict key lookups."""
+        p_dict = p if isinstance(p, dict) else None
+        val = getattr(p, name, None) or (p_dict.get(name) if p_dict else None)
+        if not val and alias:
+            val = getattr(p, alias, None) or (p_dict.get(alias) if p_dict else None)
+        return val
+
+    @staticmethod
+    def _extract_profile_identity(p: Any) -> tuple[Any, Any, Any, Any, Any]:
+        """Extracts canonical (id, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text) tuple."""
+        resolve = VoiceManager._resolve_profile_field
+        return (
+            resolve(p, "id"),
+            resolve(p, "gpt_weights_path"),
+            resolve(p, "sovits_weights_path"),
+            resolve(p, "ref_audio_path", "refer_audio_path"),
+            resolve(p, "prompt_text", "refer_text"),
+        )
 
     def is_active_profile(self, profile: Any, force: bool = False) -> bool:
         """
@@ -174,29 +196,11 @@ class VoiceManager:
         if not active_prof or not profile:
             return False
 
-        active_id = getattr(active_prof, "id", None) or (active_prof.get("id") if isinstance(active_prof, dict) else None)
-        active_gpt = getattr(active_prof, "gpt_weights_path", None) or (active_prof.get("gpt_weights_path") if isinstance(active_prof, dict) else None)
-        active_sovits = getattr(active_prof, "sovits_weights_path", None) or (active_prof.get("sovits_weights_path") if isinstance(active_prof, dict) else None)
-        active_ref = getattr(active_prof, "ref_audio_path", None) or getattr(active_prof, "refer_audio_path", None) or (active_prof.get("ref_audio_path") if isinstance(active_prof, dict) else (active_prof.get("refer_audio_path") if isinstance(active_prof, dict) else None))
-        active_prompt = getattr(active_prof, "prompt_text", None) or getattr(active_prof, "refer_text", None) or (active_prof.get("prompt_text") if isinstance(active_prof, dict) else (active_prof.get("refer_text") if isinstance(active_prof, dict) else None))
-
-        prof_id = getattr(profile, "id", None) or (profile.get("id") if isinstance(profile, dict) else None)
-        prof_gpt = getattr(profile, "gpt_weights_path", None) or (profile.get("gpt_weights_path") if isinstance(profile, dict) else None)
-        prof_sovits = getattr(profile, "sovits_weights_path", None) or (profile.get("sovits_weights_path") if isinstance(profile, dict) else None)
-        prof_ref = getattr(profile, "ref_audio_path", None) or getattr(profile, "refer_audio_path", None) or (profile.get("ref_audio_path") if isinstance(profile, dict) else (profile.get("refer_audio_path") if isinstance(profile, dict) else None))
-        prof_prompt = getattr(profile, "prompt_text", None) or getattr(profile, "refer_text", None) or (profile.get("prompt_text") if isinstance(profile, dict) else (profile.get("refer_text") if isinstance(profile, dict) else None))
-
-        return bool(
-            active_id == prof_id
-            and active_gpt == prof_gpt
-            and active_sovits == prof_sovits
-            and active_ref == prof_ref
-            and active_prompt == prof_prompt
-        )
+        return self._extract_profile_identity(active_prof) == self._extract_profile_identity(profile)
 
     async def switch_profile(
         self,
-        target: Union[int, str, VoiceProfileResponse, VoiceProfileInDB, Dict[str, Any], Any],
+        target: int | str | VoiceProfileResponse | VoiceProfileInDB | dict[str, Any] | Any,
         persist: bool = True,
         _already_locked: bool = False,
         force: bool = False,
@@ -215,14 +219,14 @@ class VoiceManager:
 
     async def switch_active_profile(
         self,
-        target: Union[int, str, VoiceProfileResponse, VoiceProfileInDB, Dict[str, Any], Any],
+        target: int | str | VoiceProfileResponse | VoiceProfileInDB | dict[str, Any] | Any,
         persist: bool = True,
         force: bool = False,
     ) -> bool:
         """Alias for switch_profile to preserve backwards compatibility."""
         return await self.switch_profile(target, persist=persist, force=force)
 
-    def _check_vram_guard(self, min_free_vram_gb: float = 0.45) -> None:
+    def _check_vram_guard(self, min_free_vram_gb: float | None = 0.45) -> None:
         """
         Verifies discrete GPU VRAM safety floor before switching models.
         If discrete NVIDIA CUDA GPU is detected and free VRAM < floor,
@@ -230,7 +234,7 @@ class VoiceManager:
         If still below floor, raises InsufficientMemoryError.
         Skips cleanly if no CUDA GPU is detected (e.g. CPU or MPS mode).
         """
-        total_vram, free_vram = get_gpu_vram_status()
+        _, free_vram = get_gpu_vram_status()
         if free_vram is None:
             return
 
@@ -273,7 +277,7 @@ class VoiceManager:
             # Ensure weights and reference audio are set
             ok = await self.client.switch_voice_profile(profile, force=False)
             if not ok:
-                logger.debug("Warm-up skipped: weight switch to profile '%s' failed (engine offline).", getattr(profile, "name", "unknown"))
+                logger.debug("Warm-up skipped: weight switch to profile '%s' failed.", getattr(profile, "name", "unknown"))
                 return False
 
             # Probe synthesis to warm up HuBERT, STFT, and RoBERTa prompt_cache via LOW priority scheduling
@@ -298,47 +302,41 @@ class VoiceManager:
                 logger.info("GPT-SoVITS prompt audio cache warm-up succeeded for profile '%s'.", getattr(profile, "name", "unknown"))
                 return True
             except Exception as probe_err:
-                logger.warning("Lightweight probe during warm-up failed or timed out: %s", probe_err)
+                prof_name = getattr(profile, "name", "unknown")
+                logger.warning("Lightweight probe during warm-up for profile '%s' failed or timed out: %s", prof_name, probe_err)
                 return False
         except Exception as exc:
-            logger.warning("Voice profile warm-up encountered error: %s", exc)
+            prof_name = getattr(profile, "name", "unknown")
+            logger.warning("Voice profile '%s' warm-up encountered error: %s", prof_name, exc)
             return False
 
-    async def _execute_switch(
+    async def _resolve_switch_target(
         self,
-        target: Union[int, str, VoiceProfileResponse, VoiceProfileInDB, Dict[str, Any], Any],
-        persist: bool = True,
-        force: bool = False,
-    ) -> bool:
-        profile_obj = target
-
-        # 1. Resolve Profile from DB if ID or Name provided
+        target: int | str | VoiceProfileResponse | VoiceProfileInDB | dict[str, Any] | Any,
+    ) -> Any | None:
+        """Resolves target identifier into a DB voice profile model or object."""
         if isinstance(target, int) or (isinstance(target, str) and target.isdigit()):
             profile_id = int(target)
             async with get_db(self.db_path) as conn:
                 db_profile = await crud.get_voice_profile(conn, profile_id)
                 if not db_profile:
                     logger.error("Voice profile ID %d not found in database", profile_id)
-                    return False
-                profile_obj = db_profile
+                    return None
+                return db_profile
 
-        elif isinstance(target, str):
-            # Target may be a character profile name
+        if isinstance(target, str):
             async with get_db(self.db_path) as conn:
                 db_profile = await crud.get_voice_profile_by_name(conn, target)
                 if db_profile:
-                    profile_obj = db_profile
-                else:
-                    logger.warning("Voice profile name '%s' not found in database", target)
+                    return db_profile
+                logger.warning("Voice profile name '%s' not found in database", target)
+                logger.error("Cannot switch voice profile: unresolved string target '%s'", target)
+                return None
 
-        # Bail out if the target failed to resolve to an actual profile object
-        if isinstance(profile_obj, str):
-            logger.error("Cannot switch voice profile: unresolved string target '%s'", profile_obj)
-            return False
+        return target
 
-        # Memory precheck: new and old weights briefly co-reside during a switch; loading
-        # with too little free memory OOM-crashes the engine. Sits here (not in the HTTP
-        # layer) so every call path — REST, Telegram, auto-bind — gets the same guard.
+    def _check_switch_memory_guard(self, force: bool) -> None:
+        """Memory precheck: verifies free RAM/VRAM to prevent engine OOM crash."""
         if not force and not os.getenv("GALGAME2VOICE_SKIP_MEM_CHECK"):
             release_system_memory()
             _, free_gb = get_system_memory_status()
@@ -350,6 +348,38 @@ class VoiceManager:
                 )
             self._check_vram_guard()
 
+    async def _persist_active_switch_profile(self, profile_obj: Any) -> None:
+        """Persists the newly active voice profile ID into SQLite settings."""
+        profile_id = None
+        if hasattr(profile_obj, "id") and profile_obj.id is not None:
+            profile_id = profile_obj.id
+        elif isinstance(profile_obj, dict) and "id" in profile_obj:
+            profile_id = profile_obj["id"]
+
+        if profile_id:
+            try:
+                async with get_db(self.db_path) as conn:
+                    await crud.set_active_voice_profile(conn, profile_id)
+                    logger.info("Persisted active voice profile ID %d in settings", profile_id)
+            except Exception as exc:
+                logger.warning("Could not persist active voice profile ID %d to DB: %s", profile_id, exc)
+
+    async def _execute_switch(
+        self,
+        target: int | str | VoiceProfileResponse | VoiceProfileInDB | dict[str, Any] | Any,
+        persist: bool = True,
+        force: bool = False,
+    ) -> bool:
+        # 1. Resolve Profile from DB if ID or Name provided
+        profile_obj = await self._resolve_switch_target(target)
+        if profile_obj is None:
+            return False
+
+        # Memory precheck: new and old weights briefly co-reside during a switch; loading
+        # with too little free memory OOM-crashes the engine. Sits here (not in the HTTP
+        # layer) so every call path — REST, Telegram, auto-bind — gets the same guard.
+        self._check_switch_memory_guard(force)
+
         # 2. Execute 3-step atomic model switch with auto-rollback
         release_system_memory()
         success = await self.client.switch_voice_profile(profile_obj, force=force)
@@ -360,26 +390,10 @@ class VoiceManager:
 
         # 3. Update Persistence in SQLite (under switch lock)
         if persist:
-            profile_id = None
-            if hasattr(profile_obj, "id") and profile_obj.id is not None:
-                profile_id = profile_obj.id
-            elif isinstance(profile_obj, dict) and "id" in profile_obj:
-                profile_id = profile_obj["id"]
-
-            if profile_id:
-                try:
-                    async with get_db(self.db_path) as conn:
-                        await crud.set_active_voice_profile(conn, profile_id)
-                        logger.info("Persisted active voice profile ID %d in settings", profile_id)
-                except Exception as exc:
-                    logger.warning("Could not persist active voice profile ID to DB: %s", exc)
+            await self._persist_active_switch_profile(profile_obj)
 
         # Invalidate in-memory voice resolver cache
-        try:
-            from galgame2voice.services.voice_resolver import get_voice_resolver
-            get_voice_resolver().invalidate()
-        except Exception:
-            pass
+        _safe_invalidate_resolver()
 
         # Trigger non-blocking background warm-up of newly activated voice profile
         try:
@@ -393,7 +407,7 @@ class VoiceManager:
     # Synthesis & Streaming
     # ========================================================================
 
-    async def _resolve_active_options(self, options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    async def _resolve_active_options(self, options: dict[str, Any] | None) -> dict[str, Any]:
         opts = dict(options or {})
         if not opts.get("ref_audio_path") and not opts.get("refer_audio_path") and not self.client.current_refer_audio:
             target_profile = None
@@ -419,7 +433,7 @@ class VoiceManager:
     async def synthesize(
         self,
         text: str,
-        options: Optional[Dict[str, Any]] = None,
+        options: dict[str, Any] | None = None,
         use_cache: bool = True,
     ) -> bytes:
         """Synthesizes text into complete audio bytes using active weights, persistent cache and inference mutex."""
@@ -428,10 +442,36 @@ class VoiceManager:
             return await self.tts_service.synthesize(text, options=opts, use_cache=use_cache)
         return await self.client.synthesize(text, options=opts)
 
+    def _schedule_stream_cache_put(
+        self,
+        cache_mgr: Any,
+        cache_key: str,
+        text: str,
+        clean_text: str,
+        vpid: Any,
+        params_hash: str,
+        audio_bytes: bytes,
+    ) -> None:
+        """Schedules asynchronous population of the TTS cache for a completed stream."""
+        async def _async_cache_put() -> None:
+            try:
+                await cache_mgr.put(
+                    cache_key=cache_key,
+                    text=text,
+                    clean_text=clean_text,
+                    voice_profile_id=vpid,
+                    params_hash=params_hash,
+                    audio_bytes=audio_bytes,
+                )
+            except Exception as put_exc:
+                logger.debug("Failed to asynchronously cache streamed TTS: %s", put_exc)
+
+        self._spawn_background(_async_cache_put())
+
     async def stream_tts(
         self,
         text: str,
-        options: Optional[Dict[str, Any]] = None,
+        options: dict[str, Any] | None = None,
         chunk_size: int = 4096,
         use_cache: bool = True,
     ) -> AsyncGenerator[bytes, None]:
@@ -468,7 +508,7 @@ class VoiceManager:
                     is_cached = True
                     yield chunk
             except Exception as exc:
-                logger.warning("Error reading from TTS stream cache: %s", exc)
+                logger.warning("Error reading from TTS stream cache for key %s: %s", cache_key, exc)
 
             if is_cached:
                 logger.debug("TTS Cache HIT (stream) for key %s ('%s')", cache_key[:12], text[:20])
@@ -477,12 +517,7 @@ class VoiceManager:
         # 2. If cache miss, route through tts_scheduler.schedule_stream(...)
         from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
         scheduler = get_tts_scheduler()
-
-        raw_prio = opts.get("_priority", TtsPriority.NORMAL)
-        try:
-            priority = TtsPriority(int(raw_prio))
-        except (ValueError, TypeError):
-            priority = TtsPriority.NORMAL
+        priority = TtsPriority.from_options(opts)
 
         gen_id = opts.get("_generation_id")
         task_id = opts.get("_task_id") or (
@@ -492,7 +527,7 @@ class VoiceManager:
         def _client_stream_fn() -> AsyncGenerator[bytes, None]:
             return self.client.stream_tts(text, options=opts, chunk_size=chunk_size)
 
-        collected_chunks: List[bytes] = []
+        collected_chunks: list[bytes] = []
         completed_normally = False
         try:
             async for chunk in scheduler.schedule_stream(
@@ -512,43 +547,31 @@ class VoiceManager:
                 full_bytes = b"".join(collected_chunks)
                 if full_bytes:
                     vpid = opts.get("voice_profile_id", 1)
-                    async def _async_cache_put(
-                        b_key=cache_key,
-                        b_text=text,
-                        b_clean=clean_text,
-                        b_vpid=vpid,
-                        b_hash=params_hash,
-                        b_audio=full_bytes,
-                    ):
-                        try:
-                            await cache_mgr.put(
-                                cache_key=b_key,
-                                text=b_text,
-                                clean_text=b_clean,
-                                voice_profile_id=b_vpid,
-                                params_hash=b_hash,
-                                audio_bytes=b_audio,
-                            )
-                        except Exception as put_exc:
-                            logger.debug("Failed to asynchronously cache streamed TTS: %s", put_exc)
-
-                    self._spawn_background(_async_cache_put())
+                    self._schedule_stream_cache_put(
+                        cache_mgr=cache_mgr,
+                        cache_key=cache_key,
+                        text=text,
+                        clean_text=clean_text,
+                        vpid=vpid,
+                        params_hash=params_hash,
+                        audio_bytes=full_bytes,
+                    )
 
     # ========================================================================
     # Voice Profile Database CRUD Operations
     # ========================================================================
 
-    async def list_profiles(self) -> List[VoiceProfileResponse]:
+    async def list_profiles(self) -> list[VoiceProfileResponse]:
         """Lists all voice profiles in database."""
         async with get_db(self.db_path) as conn:
             return await crud.list_voice_profiles(conn)
 
-    async def get_profile(self, profile_id: int) -> Optional[VoiceProfileResponse]:
+    async def get_profile(self, profile_id: int) -> VoiceProfileResponse | None:
         """Gets voice profile by ID."""
         async with get_db(self.db_path) as conn:
             return await crud.get_voice_profile(conn, profile_id)
 
-    async def get_active_profile(self) -> Optional[VoiceProfileResponse]:
+    async def get_active_profile(self) -> VoiceProfileResponse | None:
         """Gets currently configured active voice profile from database."""
         async with get_db(self.db_path) as conn:
             return await crud.get_active_voice_profile(conn)
@@ -557,35 +580,23 @@ class VoiceManager:
         """Creates a new voice profile in database."""
         async with get_db(self.db_path) as conn:
             res = await crud.create_voice_profile(conn, profile)
-        try:
-            from galgame2voice.services.voice_resolver import get_voice_resolver
-            get_voice_resolver().invalidate(res.id if res else None)
-        except Exception:
-            pass
+        _safe_invalidate_resolver(res.id if res else None)
         return res
 
     async def update_profile(
         self, profile_id: int, updates: VoiceProfileUpdate
-    ) -> Optional[VoiceProfileResponse]:
+    ) -> VoiceProfileResponse | None:
         """Updates an existing voice profile in database."""
         async with get_db(self.db_path) as conn:
             res = await crud.update_voice_profile(conn, profile_id, updates)
-        try:
-            from galgame2voice.services.voice_resolver import get_voice_resolver
-            get_voice_resolver().invalidate(profile_id)
-        except Exception:
-            pass
+        _safe_invalidate_resolver(profile_id)
         return res
 
     async def delete_profile(self, profile_id: int) -> bool:
         """Deletes a voice profile from database."""
         async with get_db(self.db_path) as conn:
             res = await crud.delete_voice_profile(conn, profile_id)
-        try:
-            from galgame2voice.services.voice_resolver import get_voice_resolver
-            get_voice_resolver().invalidate(profile_id)
-        except Exception:
-            pass
+        _safe_invalidate_resolver(profile_id)
         return res
 
 
@@ -593,7 +604,7 @@ class VoiceManager:
 # Global Singleton Accessor
 # ============================================================================
 
-_global_voice_manager: Optional[VoiceManager] = None
+_global_voice_manager: VoiceManager | None = None
 
 
 def get_voice_manager() -> VoiceManager:
@@ -604,7 +615,7 @@ def get_voice_manager() -> VoiceManager:
     return _global_voice_manager
 
 
-def set_voice_manager(manager: Optional[VoiceManager]) -> None:
+def set_voice_manager(manager: VoiceManager | None) -> None:
     """Sets or resets application singleton VoiceManager instance (useful for tests)."""
     global _global_voice_manager
     _global_voice_manager = manager

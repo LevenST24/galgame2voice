@@ -9,7 +9,7 @@ import os
 import re
 import urllib.parse
 from pathlib import Path
-from typing import List, Optional, Sequence, Union
+from typing import Sequence
 
 from galgame2voice.config import get_settings
 
@@ -92,15 +92,16 @@ def is_safe_filename(filename: str) -> bool:
 
 
 def get_authorized_roots(
-    custom_roots: Optional[Sequence[Union[str, Path]]] = None,
+    custom_roots: Sequence[str | Path] | None = None,
     include_sovits: bool = True,
-) -> List[Path]:
+) -> list[Path]:
     """
     Returns resolved absolute paths of all authorized system directories:
-    audio_dir, data_dir, and project_root.
+    audio_dir, data_dir, project_root, optionally discovered GPT-SoVITS directories,
+    and any custom roots provided.
     """
     settings = get_settings()
-    roots: List[Path] = [
+    roots: list[Path] = [
         settings.audio_dir.resolve(),
         settings.data_dir.resolve(),
         settings.project_root.resolve(),
@@ -118,7 +119,7 @@ def get_authorized_roots(
                 target_dir = sovits_txt.read_text(encoding="utf-8-sig").strip()
                 if target_dir and Path(target_dir).is_dir():
                     roots.append(Path(target_dir).resolve())
-            except Exception:
+            except (OSError, UnicodeDecodeError):
                 pass
 
         # GPT-SoVITS installs discovered relative to the project (portable across machines)
@@ -136,16 +137,16 @@ def get_authorized_roots(
                 p = Path(r).resolve()
                 if p not in roots:
                     roots.append(p)
-            except Exception:
+            except (OSError, ValueError, TypeError):
                 pass
 
     return roots
 
 
 def validate_path_containment(
-    path: Union[str, Path],
-    allowed_roots: Optional[Sequence[Union[str, Path]]] = None,
-    base_dir: Optional[Union[str, Path]] = None,
+    path: str | Path,
+    allowed_roots: Sequence[str | Path] | None = None,
+    base_dir: str | Path | None = None,
 ) -> Path:
     """
     Validates that a path is strictly contained within authorized root directories.
@@ -204,9 +205,9 @@ def validate_path_containment(
 
 
 def is_path_safe(
-    path: Union[str, Path],
-    allowed_roots: Optional[Sequence[Union[str, Path]]] = None,
-    base_dir: Optional[Union[str, Path]] = None,
+    path: str | Path,
+    allowed_roots: Sequence[str | Path] | None = None,
+    base_dir: str | Path | None = None,
 ) -> bool:
     """Returns True if path is valid and strictly bounded, False otherwise."""
     try:
@@ -217,8 +218,8 @@ def is_path_safe(
 
 
 def safe_resolve_audio_path(
-    path_or_filename: Union[str, Path],
-    allowed_roots: Optional[Sequence[Union[str, Path]]] = None,
+    path_or_filename: str | Path,
+    allowed_roots: Sequence[str | Path] | None = None,
 ) -> Path:
     """
     Specifically validates and resolves audio file paths (reference audio, cache audio).
@@ -230,10 +231,10 @@ def safe_resolve_audio_path(
 
 
 def validate_voice_profile_paths(
-    gpt_weights_path: Optional[str] = None,
-    sovits_weights_path: Optional[str] = None,
-    ref_audio_path: Optional[str] = None,
-    allowed_roots: Optional[Sequence[Union[str, Path]]] = None,
+    gpt_weights_path: str | None = None,
+    sovits_weights_path: str | None = None,
+    ref_audio_path: str | None = None,
+    allowed_roots: Sequence[str | Path] | None = None,
 ) -> None:
     """
     Validates all file path references for a voice profile (weights and reference audio).
@@ -251,10 +252,52 @@ def validate_voice_profile_paths(
         validate_path_containment(ref_audio_path, allowed_roots=roots)
 
 
-def resolve_existing_audio_path(path: Union[str, Path]) -> Optional[Path]:
+def _search_character_packages_for_audio(raw: str, filename: str) -> Path | None:
+    """Inspects installed character packages for matching reference audio file."""
+    try:
+        from galgame2voice.services.character_manager import get_character_manager
+        mgr = get_character_manager()
+        # Normalize to lowercase path segments; character attribution must
+        # match a complete path segment exactly (substring matching would
+        # let a crafted path like "foo/<char_id>evil/x.ogg" impersonate a
+        # character package).
+        segments = [seg for seg in raw.lower().replace("\\", "/").split("/") if seg]
+        seg_set = set(segments)
+        for pkg in mgr.get_available_characters():
+            # If path references this character by ID, name, or alias as an
+            # exact path segment, or starts with refs/
+            is_match = (
+                pkg.id.lower() in seg_set
+                or pkg.name.lower() in seg_set
+                or any(a.lower() in seg_set for a in (getattr(pkg.manifest, "aliases", None) or []))
+                or (segments and segments[0] == "refs")
+                or segments == ["audio", "nat002_032.ogg"]
+            )
+            if not is_match:
+                continue
+
+            ref_cand = pkg.folder / "refs" / filename
+            if ref_cand.is_file():
+                return ref_cand
+            for emo in (getattr(pkg.manifest, "emotions", None) or {}).values():
+                if Path(emo.audio).name == filename:
+                    resolved = pkg.resolve_audio_path(emo.audio)
+                    if resolved and resolved.is_file():
+                        return resolved
+            if filename == "nat002_032.ogg" and ("natsume" in pkg.id.lower() or "夏目" in pkg.name):
+                ref_cand = pkg.folder / "refs" / "gentle.ogg"
+                if ref_cand.is_file():
+                    return ref_cand
+    except (AttributeError, KeyError, OSError):
+        pass
+    return None
+
+
+def resolve_existing_audio_path(path: str | Path) -> Path | None:
     """
-    Resolves a reference audio path across the three canonical bases in order:
-    absolute path, project_root-relative, audio_dir-relative.
+    Resolves a reference audio path across canonical bases and installed packages in order:
+    absolute path, project_root-relative, audio_dir-relative, characters_dir-relative,
+    and fallback search across installed character packages.
     Returns the first existing file, or None if it cannot be resolved.
     Does not enforce containment: reference audio legitimately lives in
     external directories (e.g. game voice packs on another drive).
@@ -281,44 +324,9 @@ def resolve_existing_audio_path(path: Union[str, Path]) -> Optional[Path]:
                 return cand
 
         # Check if an installed character package contains this reference file
-        try:
-            from galgame2voice.services.character_manager import get_character_manager
-            mgr = get_character_manager()
-            filename = p.name
-            # Normalize to lowercase path segments; character attribution must
-            # match a complete path segment exactly (substring matching would
-            # let a crafted path like "foo/<char_id>evil/x.ogg" impersonate a
-            # character package).
-            segments = [seg for seg in raw.lower().replace("\\", "/").split("/") if seg]
-            seg_set = set(segments)
-            for pkg in mgr.get_available_characters():
-                # If path references this character by ID, name, or alias as an
-                # exact path segment, or starts with refs/
-                is_match = (
-                    pkg.id.lower() in seg_set
-                    or pkg.name.lower() in seg_set
-                    or any(a.lower() in seg_set for a in (getattr(pkg.manifest, "aliases", None) or []))
-                    or (segments and segments[0] == "refs")
-                    or segments == ["audio", "nat002_032.ogg"]
-                )
-                if is_match:
-                    ref_cand = pkg.folder / "refs" / filename
-                    if ref_cand.is_file():
-                        return ref_cand
-                    for emo in (getattr(pkg.manifest, "emotions", None) or {}).values():
-                        if Path(emo.audio).name == filename:
-                            resolved = pkg.resolve_audio_path(emo.audio)
-                            if resolved and resolved.is_file():
-                                return resolved
-                    if filename == "nat002_032.ogg" and ("natsume" in pkg.id.lower() or "夏目" in pkg.name):
-                        ref_cand = pkg.folder / "refs" / "gentle.ogg"
-                        if ref_cand.is_file():
-                            return ref_cand
-        except Exception:
-            pass
+        return _search_character_packages_for_audio(raw, p.name)
     except OSError:
         return None
-    return None
 
 
 def resolve_weight_file_path(path: str) -> str:
@@ -348,7 +356,7 @@ def resolve_weight_file_path(path: str) -> str:
     return raw
 
 
-def to_project_relative_path(path: Union[str, Path]) -> str:
+def to_project_relative_path(path: str | Path) -> str:
     """
     Normalizes a path for storage so voice profiles stay portable across machines:
     paths under project_root are stored project_root-relative (POSIX separators),

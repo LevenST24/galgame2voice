@@ -3,7 +3,7 @@ Custom OpenAI-compatible LLM Adapter for galgame2voice.
 Connects to local/self-hosted endpoints (Ollama, vLLM, LM Studio, LocalAI, etc.).
 """
 
-from typing import Any, Optional
+from typing import Any
 from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 
 
@@ -14,7 +14,7 @@ class CustomLLMAdapter(OpenAICompatibleLLMAdapter):
         self,
         api_key: str = "custom",
         base_url: str = "http://127.0.0.1:11434/v1",
-        client_override: Optional[Any] = None,
+        client_override: Any | None = None,
         **kwargs: Any,
     ):
         # Allow default or user api_key for local proxies

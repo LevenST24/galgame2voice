@@ -5,7 +5,7 @@ emotional state transitions, and interactive easter egg voicelines.
 """
 
 import logging
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import Any
 from pathlib import Path
 
 from galgame2voice.database import crud
@@ -30,6 +30,17 @@ class AffectionService:
         4: {"min_score": 60, "max_score": 79, "name": "亲密/依赖", "desc": "害羞傲娇、依赖撒娇，偶现脸红与占有欲"},
         5: {"min_score": 80, "max_score": 100, "name": "恋慕/誓约", "desc": "专属心意与誓约羁绊，解锁全部隐藏告白台词"},
     }
+
+    @staticmethod
+    def get_fallback_payload(emotion: str) -> dict[str, Any]:
+        """Returns standard neutral affection payload used when an affection update fails."""
+        return {
+            "score": 0,
+            "level": 1,
+            "level_name": "初识/生疏",
+            "emotion": emotion,
+            "points_earned": 0,
+        }
 
     # Keyword scoring rules
     COMPLIMENT_KEYWORDS = [
@@ -126,10 +137,10 @@ class AffectionService:
         },
     }
 
-    def __init__(self, db_path: Optional[Union[str, Path]] = None):
+    def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = str(db_path) if db_path is not None else get_database_path()
 
-    def calculate_level(self, score: int) -> Tuple[int, str]:
+    def calculate_level(self, score: int) -> tuple[int, str]:
         """Calculates intimacy level and tier name based on total affection score."""
         try:
             score = int(score)
@@ -141,7 +152,7 @@ class AffectionService:
                 return level, tier["name"]
         return 1, self.LEVEL_TIERS[1]["name"]
 
-    def calculate_turn_points(self, user_text: str, assistant_text: str = "") -> Tuple[int, List[str]]:
+    def calculate_turn_points(self, user_text: str, assistant_text: str = "") -> tuple[int, list[str]]:
         """Calculates turn affection points and reason tags."""
         if not user_text or not isinstance(user_text, str):
             return 1, ["base_turn", "base_interaction (+1)"]
@@ -165,11 +176,11 @@ class AffectionService:
 
         return points, reasons
 
-    def calculate_interaction_points(self, user_text: str, assistant_text: str = "") -> Tuple[int, List[str]]:
+    def calculate_interaction_points(self, user_text: str, assistant_text: str = "") -> tuple[int, list[str]]:
         """Calculates affection points earned for a turn based on content analysis."""
         return self.calculate_turn_points(user_text, assistant_text)
 
-    def check_easter_egg(self, user_text: str, current_level: int = 1) -> Optional[Dict[str, Any]]:
+    def check_easter_egg(self, user_text: str, current_level: int = 1) -> dict[str, Any] | None:
         """Alias to check_easter_eggs."""
         return self.check_easter_eggs(user_text, current_level)
 
@@ -225,7 +236,7 @@ class AffectionService:
             return "gentle"
         return current_emotion or "normal"
 
-    def check_easter_eggs(self, user_text: str, current_level: int = 1) -> Optional[Dict[str, Any]]:
+    def check_easter_eggs(self, user_text: str, current_level: int = 1) -> dict[str, Any] | None:
         """
         Checks if the user input triggers a specific Galgame easter egg dialogue.
         """
@@ -242,6 +253,66 @@ class AffectionService:
                 return egg
         return None
 
+    def _resolve_turn_emotion(
+        self,
+        current: Any,
+        explicit_emotion: str | None,
+        u_text: str,
+        a_text: str,
+        triggered_egg: dict[str, Any] | None,
+    ) -> str:
+        """Resolves target emotion using explicit classification, dynamic classification, or easter egg triggers."""
+        clean_exp = (explicit_emotion or "").strip().lower()
+        if clean_exp and clean_exp in EMOTION_SYNONYMS:
+            emotion = EMOTION_SYNONYMS[clean_exp]
+        elif clean_exp and clean_exp in EMOTION_NAME_MAP:
+            emotion = EMOTION_NAME_MAP[clean_exp]
+        else:
+            raw_emo = self.classify_emotion(
+                assistant_text=a_text,
+                user_text=u_text,
+                current_emotion=current.current_emotion,
+                affection_level=current.affection_level,
+            )
+            raw_clean = (raw_emo or "").strip().lower()
+            emotion = EMOTION_SYNONYMS.get(raw_clean, EMOTION_NAME_MAP.get(raw_clean, raw_clean))
+
+        if triggered_egg:
+            egg_emo = (triggered_egg.get("emotion") or "").strip().lower()
+            if egg_emo:
+                emotion = EMOTION_SYNONYMS.get(egg_emo, EMOTION_NAME_MAP.get(egg_emo, egg_emo))
+
+        if emotion not in VALID_EMOTIONS:
+            emotion = "gentle"
+        return emotion
+
+    def _collect_new_dialogue_ids(
+        self,
+        updated: Any,
+        triggered_egg: dict[str, Any] | None,
+    ) -> list[str]:
+        """Collects unlocked milestone and easter egg dialogue IDs for the current affection level."""
+        new_dialogue_ids: list[str] = []
+        for lvl in range(1, updated.affection_level + 1):
+            milestone_id = f"milestone_lv{lvl}"
+            if milestone_id in self.MILESTONES and milestone_id not in updated.unlocked_dialogues:
+                new_dialogue_ids.append(milestone_id)
+
+        if triggered_egg and triggered_egg["id"] not in updated.unlocked_dialogues:
+            new_dialogue_ids.append(triggered_egg["id"])
+
+        return new_dialogue_ids
+
+    @staticmethod
+    def _normalize_user_and_character_ids(user_id: Any, character_id: Any) -> tuple[str, int]:
+        """Normalizes user_id string and character_id integer with safe defaults."""
+        u_id = (user_id or "").strip() or "default_user"
+        try:
+            char_id = int(character_id) if character_id is not None and int(character_id) > 0 else 1
+        except (TypeError, ValueError):
+            char_id = 1
+        return u_id, char_id
+
     async def handle_turn_affection(
         self,
         user_id: str = "default_user",
@@ -249,20 +320,17 @@ class AffectionService:
         user_text: str = "",
         assistant_text: str = "",
         daily_limit: int = 15,
-        explicit_emotion: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        explicit_emotion: str | None = None,
+    ) -> dict[str, Any]:
         """
         Processes a full turn of affection update:
         1. Calculate points
-        2. Detect emotion (or adopt explicit classified emotion)
-        3. Check easter eggs and unlock milestones
-        4. Update SQLite state machine
+        2. Detect a triggered easter egg from the user text
+        3. Resolve emotion (explicit classification, or the easter egg's emotion)
+        4. Increment score and emotion in SQLite
+        5. Unlock milestone and easter egg dialogues
         """
-        u_id = (user_id or "").strip() or "default_user"
-        try:
-            char_id = int(character_id) if character_id is not None and int(character_id) > 0 else 1
-        except (TypeError, ValueError):
-            char_id = 1
+        u_id, char_id = self._normalize_user_and_character_ids(user_id, character_id)
         try:
             d_limit = max(0, int(daily_limit))
         except (TypeError, ValueError):
@@ -275,32 +343,8 @@ class AffectionService:
 
         async with get_db(self.db_path) as conn:
             current = await crud.get_or_create_character_affection(conn, u_id, char_id)
-            clean_exp = (explicit_emotion or "").strip().lower()
-            if clean_exp and clean_exp in EMOTION_SYNONYMS:
-                emotion = EMOTION_SYNONYMS[clean_exp]
-            elif clean_exp and clean_exp in VALID_EMOTIONS:
-                emotion = clean_exp
-            elif clean_exp and clean_exp in EMOTION_NAME_MAP:
-                emotion = EMOTION_NAME_MAP[clean_exp]
-            else:
-                raw_emo = self.classify_emotion(
-                    assistant_text=a_text,
-                    user_text=u_text,
-                    current_emotion=current.current_emotion,
-                    affection_level=current.affection_level,
-                )
-                raw_clean = (raw_emo or "").strip().lower()
-                emotion = EMOTION_SYNONYMS.get(raw_clean, EMOTION_NAME_MAP.get(raw_clean, raw_clean))
-
-            # Check easter egg
             triggered_egg = self.check_easter_eggs(u_text, current.affection_level)
-            if triggered_egg:
-                egg_emo = (triggered_egg.get("emotion") or "").strip().lower()
-                if egg_emo:
-                    emotion = EMOTION_SYNONYMS.get(egg_emo, EMOTION_NAME_MAP.get(egg_emo, egg_emo))
-
-            if emotion not in VALID_EMOTIONS:
-                emotion = "gentle"
+            emotion = self._resolve_turn_emotion(current, explicit_emotion, u_text, a_text, triggered_egg)
 
             # Increment points atomically
             updated, actual_gain, level_up = await crud.increment_affection(
@@ -313,15 +357,7 @@ class AffectionService:
             )
 
             # Collect new dialogues to unlock (unlock all milestone lines up to current level)
-            new_dialogue_ids = []
-            for lvl in range(1, updated.affection_level + 1):
-                milestone_id = f"milestone_lv{lvl}"
-                if milestone_id in self.MILESTONES and milestone_id not in updated.unlocked_dialogues:
-                    new_dialogue_ids.append(milestone_id)
-
-            if triggered_egg and triggered_egg["id"] not in updated.unlocked_dialogues:
-                new_dialogue_ids.append(triggered_egg["id"])
-
+            new_dialogue_ids = self._collect_new_dialogue_ids(updated, triggered_egg)
             if new_dialogue_ids:
                 await crud.unlock_character_dialogues(
                     conn=conn,
@@ -351,21 +387,17 @@ class AffectionService:
         self,
         user_id: str = "default_user",
         character_id: int = 1,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Returns full list of milestone and easter egg dialogues with unlock status.
         """
-        u_id = (user_id or "").strip() or "default_user"
-        try:
-            char_id = int(character_id) if character_id is not None and int(character_id) > 0 else 1
-        except (TypeError, ValueError):
-            char_id = 1
+        u_id, char_id = self._normalize_user_and_character_ids(user_id, character_id)
 
         async with get_db(self.db_path) as conn:
             aff = await crud.get_or_create_character_affection(conn, u_id, char_id)
 
         unlocked_set = set(aff.unlocked_dialogues)
-        gallery: List[Dict[str, Any]] = []
+        gallery: list[dict[str, Any]] = []
 
         # 1. Add Milestones
         for m_id, m in self.MILESTONES.items():

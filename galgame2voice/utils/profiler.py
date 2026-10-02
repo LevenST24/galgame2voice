@@ -7,9 +7,8 @@ TTS dispatch, TTS synthesis, and TTFA (Time To First Audio).
 from __future__ import annotations
 
 import os
-import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 def is_profiling_enabled() -> bool:
@@ -39,22 +38,22 @@ class ChatTurnProfiler:
     T7: Audio playback started
     """
 
-    def __init__(self, turn_id: Optional[str] = None, enabled: Optional[bool] = None):
+    def __init__(self, turn_id: str | None = None, enabled: bool | None = None) -> None:
         self.turn_id = turn_id or str(int(time.time() * 1000) % 10000)
         self.enabled = is_profiling_enabled() if enabled is None else enabled
         self.t_start = time.perf_counter()
 
-        self.t_llm_first_token: Optional[float] = None
-        self.t_first_sentence: Optional[float] = None
-        self.t_tts_dispatch: Optional[float] = None
-        self.t_upstream_first_byte: Optional[float] = None
-        self.t_tts_inference_done: Optional[float] = None
-        self.t_first_audio: Optional[float] = None
-        self.t_frontend_delivered: Optional[float] = None
-        self.t_playback_started: Optional[float] = None
+        self.t_llm_first_token: float | None = None
+        self.t_first_sentence: float | None = None
+        self.t_tts_dispatch: float | None = None
+        self.t_upstream_first_byte: float | None = None
+        self.t_tts_inference_done: float | None = None
+        self.t_first_audio: float | None = None
+        self.t_frontend_delivered: float | None = None
+        self.t_playback_started: float | None = None
 
-        self.cache_hits: List[int] = []
-        self.cache_misses: List[int] = []
+        self.cache_hits: list[int] = []
+        self.cache_misses: list[int] = []
         self.chunk_count: int = 0
 
     def record_llm_first_token(self) -> None:
@@ -98,23 +97,37 @@ class ChatTurnProfiler:
             self.t_playback_started = time.perf_counter()
 
     @property
-    def app_first_chunk_ts(self) -> Optional[float]:
+    def app_first_chunk_ts(self) -> float | None:
         return self.t_first_audio
 
-    def _diff_ms(self, t: Optional[float]) -> float:
+    def _diff_ms(self, t: float | None) -> float:
         return (t - self.t_start) * 1000.0 if t is not None else 0.0
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Returns structured JSON-serializable telemetry data."""
+    def _calculate_milestones(self) -> dict[str, float]:
+        """Calculates elapsed milliseconds for all checkpoints relative to t_start."""
         now = time.perf_counter()
-        ttft_ms = self._diff_ms(self.t_llm_first_token)
-        sent_ms = self._diff_ms(self.t_first_sentence)
-        disp_ms = self._diff_ms(self.t_tts_dispatch)
-        upstream_ms = self._diff_ms(self.t_upstream_first_byte)
-        infer_ms = self._diff_ms(self.t_tts_inference_done)
-        ttfa_ms = self._diff_ms(self.t_first_audio) or (now - self.t_start) * 1000.0
-        delivered_ms = self._diff_ms(self.t_frontend_delivered)
-        playback_ms = self._diff_ms(self.t_playback_started)
+        return {
+            "ttft_ms": self._diff_ms(self.t_llm_first_token),
+            "sent_ms": self._diff_ms(self.t_first_sentence),
+            "disp_ms": self._diff_ms(self.t_tts_dispatch),
+            "upstream_ms": self._diff_ms(self.t_upstream_first_byte),
+            "infer_ms": self._diff_ms(self.t_tts_inference_done),
+            "ttfa_ms": self._diff_ms(self.t_first_audio) or (now - self.t_start) * 1000.0,
+            "delivered_ms": self._diff_ms(self.t_frontend_delivered),
+            "playback_ms": self._diff_ms(self.t_playback_started),
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        """Returns structured JSON-serializable telemetry data."""
+        m = self._calculate_milestones()
+        ttft_ms = m["ttft_ms"]
+        sent_ms = m["sent_ms"]
+        disp_ms = m["disp_ms"]
+        upstream_ms = m["upstream_ms"]
+        infer_ms = m["infer_ms"]
+        ttfa_ms = m["ttfa_ms"]
+        delivered_ms = m["delivered_ms"]
+        playback_ms = m["playback_ms"]
 
         cached_count = len(self.cache_hits)
         generated_count = len(self.cache_misses)
@@ -149,15 +162,15 @@ class ChatTurnProfiler:
 
     def render_ascii(self) -> str:
         """Renders the ASCII waterfall diagram regardless of enabled flag."""
-        now = time.perf_counter()
-        ttft_ms = self._diff_ms(self.t_llm_first_token)
-        sent_ms = self._diff_ms(self.t_first_sentence)
-        disp_ms = self._diff_ms(self.t_tts_dispatch)
-        upstream_ms = self._diff_ms(self.t_upstream_first_byte)
-        infer_ms = self._diff_ms(self.t_tts_inference_done)
-        ttfa_ms = self._diff_ms(self.t_first_audio) or (now - self.t_start) * 1000.0
-        deliv_ms = self._diff_ms(self.t_frontend_delivered)
-        play_ms = self._diff_ms(self.t_playback_started)
+        m = self._calculate_milestones()
+        ttft_ms = m["ttft_ms"]
+        sent_ms = m["sent_ms"]
+        disp_ms = m["disp_ms"]
+        upstream_ms = m["upstream_ms"]
+        infer_ms = m["infer_ms"]
+        ttfa_ms = m["ttfa_ms"]
+        deliv_ms = m["delivered_ms"]
+        play_ms = m["playback_ms"]
 
         max_metric = max(100.0, ttfa_ms, infer_ms, deliv_ms, play_ms)
         status = "PASS (<1000ms)" if ttfa_ms < 1000.0 else "WARN (>=1000ms)"

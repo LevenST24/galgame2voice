@@ -10,14 +10,14 @@ import email.utils
 import json
 import logging
 import random
-from typing import AsyncIterator, Dict, Any, List, Optional, Set
+from typing import AsyncIterator, Any
 import httpx
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("galgame2voice.adapters.base")
 
 # HTTP status codes that indicate transient failure and can be retried with exponential backoff
-TRANSIENT_STATUS_CODES: Set[int] = {408, 429, 500, 502, 503, 504}
+TRANSIENT_STATUS_CODES: set[int] = {408, 429, 500, 502, 503, 504}
 
 # Network-level exceptions that indicate transient transport issues
 TRANSIENT_NETWORK_EXCEPTIONS = (
@@ -35,7 +35,7 @@ TRANSIENT_NETWORK_EXCEPTIONS = (
 )
 
 
-def parse_retry_after(headers: Optional[Any]) -> Optional[float]:
+def parse_retry_after(headers: Any | None) -> float | None:
     """
     Extracts and parses Retry-After header (seconds or RFC HTTP date).
     Returns non-negative delay in seconds, or None if missing or unparseable.
@@ -64,7 +64,7 @@ def parse_retry_after(headers: Optional[Any]) -> Optional[float]:
 def calculate_backoff_delay(
     attempt: int,
     base_delay: float = 1.0,
-    retry_after: Optional[float] = None,
+    retry_after: float | None = None,
     max_delay: float = 60.0,
     jitter_min: float = 0.1,
     jitter_max: float = 0.4,
@@ -80,7 +80,7 @@ def calculate_backoff_delay(
     return min(max_delay, exp_backoff + jitter)
 
 
-def extract_stream_token(chunk: Dict[str, Any]) -> Optional[str]:
+def extract_stream_token(chunk: dict[str, Any]) -> str | None:
     """
     Extracts delta text token from normalized OpenAI or Anthropic streaming SSE JSON chunks.
     Raises RuntimeError if provider returns an explicit stream error object.
@@ -122,17 +122,53 @@ def extract_stream_token(chunk: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _parse_and_extract_token(text: str) -> tuple[bool, str | None]:
+    """Attempts to decode JSON and extract token. Returns (is_valid_json, token)."""
+    try:
+        chunk = json.loads(text)
+        return True, extract_stream_token(chunk)
+    except (json.JSONDecodeError, TypeError):
+        return False, None
+
+
+def _extract_sse_data(line: str, has_buffer: bool) -> str | None:
+    """Extracts data content from an SSE line, accounting for data: prefixes and continuation lines."""
+    if line.startswith("data: "):
+        return line[6:]
+    if line.startswith("data:"):
+        return line[5:].lstrip()
+    if has_buffer and not any(line.startswith(prefix) for prefix in ("event:", "id:", "retry:")):
+        return line
+    return None
+
+
+def _flush_sse_data_buffer(data_buffer: list[str]) -> tuple[str | None, bool]:
+    """Flushes data buffer into a combined payload. Returns (token, is_done)."""
+    if not data_buffer:
+        return None, False
+    combined_data = "\n".join(data_buffer).strip()
+    data_buffer.clear()
+    if combined_data == "[DONE]":
+        return None, True
+    if not combined_data:
+        return None, False
+    is_json, token = _parse_and_extract_token(combined_data)
+    if is_json and token:
+        return token, False
+    return None, False
+
+
 async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
     """
     Asynchronously parses Server-Sent Events (SSE) lines into text tokens.
     Guarantees resilience against:
     - Fragmented lines / multi-line data blocks
-    - Malformed or partial JSON chunks (logged and skipped without crashing stream)
+    - Malformed or partial JSON chunks (retried across lines, then skipped without logging)
     - SSE comments (: keepalive)
     - Whitespace variations in 'data:' prefix
     - Stream termination tokens ([DONE])
     """
-    data_buffer: List[str] = []
+    data_buffer: list[str] = []
 
     async for raw_line in lines_iter:
         line = raw_line.rstrip("\r\n")
@@ -140,33 +176,18 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
 
         if not stripped:
             # Blank line: event boundary per SSE standard
-            if data_buffer:
-                combined_data = "\n".join(data_buffer).strip()
-                data_buffer.clear()
-                if combined_data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(combined_data)
-                    token = extract_stream_token(chunk)
-                    if token:
-                        yield token
-                except json.JSONDecodeError:
-                    continue
+            token, is_done = _flush_sse_data_buffer(data_buffer)
+            if is_done:
+                break
+            if token:
+                yield token
             continue
 
         if stripped.startswith(":"):
             # Comment or keepalive
             continue
 
-        # Extract data content
-        data_str: Optional[str] = None
-        if line.startswith("data: "):
-            data_str = line[6:]
-        elif line.startswith("data:"):
-            data_str = line[5:].lstrip()
-        elif data_buffer and not any(line.startswith(prefix) for prefix in ("event:", "id:", "retry:")):
-            # Continuation line of a multi-line fragmented block
-            data_str = line
+        data_str = _extract_sse_data(line, bool(data_buffer))
 
         if data_str is not None:
             if data_str.strip() == "[DONE]":
@@ -175,49 +196,51 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
             if data_buffer:
                 # 1. Try joining with accumulated buffer
                 joined = "\n".join(data_buffer + [data_str])
-                try:
-                    chunk = json.loads(joined)
-                    token = extract_stream_token(chunk)
+                is_json, token = _parse_and_extract_token(joined)
+                if is_json:
                     if token:
                         yield token
                     data_buffer.clear()
                     continue
-                except json.JSONDecodeError:
-                    pass
 
                 # 2. Joined parse failed: check if data_str alone is a valid standalone chunk.
                 # If so, the prior buffer was corrupted/unfinishable: discard it and process data_str.
-                try:
-                    chunk = json.loads(data_str)
-                    token = extract_stream_token(chunk)
+                is_json, token = _parse_and_extract_token(data_str)
+                if is_json:
                     data_buffer.clear()
                     if token:
                         yield token
                     continue
-                except json.JSONDecodeError:
-                    # Both joined and standalone failed: keep accumulating
-                    data_buffer.append(data_str)
+
+                # Both joined and standalone failed: keep accumulating
+                data_buffer.append(data_str)
             else:
                 # Buffer is empty: try eager single-line parse (supports streams without blank delimiters)
-                try:
-                    chunk = json.loads(data_str)
-                    token = extract_stream_token(chunk)
+                is_json, token = _parse_and_extract_token(data_str)
+                if is_json:
                     if token:
                         yield token
-                except json.JSONDecodeError:
+                else:
                     data_buffer.append(data_str)
 
     # Flush any trailing buffer
-    if data_buffer:
-        combined_data = "\n".join(data_buffer).strip()
-        if combined_data and combined_data != "[DONE]":
-            try:
-                chunk = json.loads(combined_data)
-                token = extract_stream_token(chunk)
-                if token:
-                    yield token
-            except Exception:
-                pass
+    token, _ = _flush_sse_data_buffer(data_buffer)
+    if token:
+        yield token
+
+
+async def aclose_stream_context(stream_ctx: Any = None, client: Any = None) -> None:
+    """Defensively closes an httpx stream context and client, absorbing any cleanup exceptions."""
+    if stream_ctx is not None:
+        try:
+            await stream_ctx.__aexit__(None, None, None)
+        except Exception as exc:
+            logger.debug("Failed closing stream context: %s", exc)
+    if client is not None:
+        try:
+            await client.aclose()
+        except Exception as exc:
+            logger.debug("Failed closing client: %s", exc)
 
 
 
@@ -230,7 +253,7 @@ class ChatMessage(BaseModel):
 class LLMResponse(BaseModel):
     """Normalized LLM completion response."""
     content: str = Field(..., description="Generated text content")
-    usage: Optional[Dict[str, Any]] = Field(default=None, description="Token usage statistics")
+    usage: dict[str, Any] | None = Field(default=None, description="Token usage statistics")
 
 
 # Alias for backward compatibility
@@ -242,11 +265,11 @@ class TestResult(BaseModel):
     __test__ = False  # Avoid pytest test collector discovery
     success: bool = Field(..., description="Whether connection and auth succeeded")
     message: str = Field(..., description="Informative status message or error details")
-    latency_ms: Optional[float] = Field(default=None, description="Round-trip latency in milliseconds")
-    models: Optional[List[str]] = Field(default=None, description="Discovered available models")
-    error: Optional[str] = Field(default=None, description="Error classification")
-    diagnostic: Optional[str] = Field(default=None, description="User-friendly Chinese troubleshooting guidance")
-    status_code: Optional[int] = Field(default=None, description="HTTP status code from probe")
+    latency_ms: float | None = Field(default=None, description="Round-trip latency in milliseconds")
+    models: list[str] | None = Field(default=None, description="Discovered available models")
+    error: str | None = Field(default=None, description="Error classification")
+    diagnostic: str | None = Field(default=None, description="User-friendly Chinese troubleshooting guidance")
+    status_code: int | None = Field(default=None, description="HTTP status code from probe")
 
 
 # Alias for backward compatibility with tests
@@ -268,12 +291,12 @@ class BaseLLMAdapter(ABC):
     ):
         self.api_key = str(api_key).strip() if api_key else ""
         self.base_url = str(base_url).rstrip("/") if base_url else ""
-        self.extra_config: Dict[str, Any] = kwargs
+        self.extra_config: dict[str, Any] = kwargs
 
     @abstractmethod
     async def chat(
         self,
-        messages: List[ChatMessage],
+        messages: list[ChatMessage],
         model: str,
         temperature: float = 1.0,
         **kwargs: Any,
@@ -285,7 +308,7 @@ class BaseLLMAdapter(ABC):
     @abstractmethod
     def stream_chat(
         self,
-        messages: List[ChatMessage],
+        messages: list[ChatMessage],
         model: str,
         temperature: float = 1.0,
         **kwargs: Any,
@@ -295,13 +318,13 @@ class BaseLLMAdapter(ABC):
         """
 
     @abstractmethod
-    async def test_connection(self, model: Optional[str] = None) -> TestResult:
+    async def test_connection(self, model: str | None = None) -> TestResult:
         """
         Verifies API credentials and measures endpoint latency.
         """
 
     @abstractmethod
-    async def list_models(self) -> List[str]:
+    async def list_models(self) -> list[str]:
         """
         Discovers supported or available model IDs from provider endpoint.
         """
@@ -322,14 +345,14 @@ class BaseSTTAdapter(ABC):
     ):
         self.api_key = str(api_key).strip() if api_key else ""
         self.base_url = str(base_url).rstrip("/") if base_url else ""
-        self.extra_config: Dict[str, Any] = kwargs
+        self.extra_config: dict[str, Any] = kwargs
 
     @abstractmethod
     async def transcribe(
         self,
         audio_bytes: bytes,
         filename: str = "audio.wav",
-        language: Optional[str] = None,
+        language: str | None = None,
         **kwargs: Any,
     ) -> str:
         """

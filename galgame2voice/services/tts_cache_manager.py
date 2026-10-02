@@ -13,7 +13,7 @@ import time
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, Optional, Tuple, Union
+from typing import Any, AsyncGenerator
 
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
@@ -21,6 +21,7 @@ from galgame2voice.database.session import get_db, get_database_path
 from galgame2voice.services.gpt_sovits_client import (
     normalize_japanese_for_tts,
 )
+from galgame2voice.utils.async_tasks import drain_background_tasks
 
 logger = logging.getLogger("galgame2voice.services.tts_cache_manager")
 
@@ -31,6 +32,118 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _STATS_UNKNOWN = object()
 
 
+def _get_prof_val(prof: Any, attr: str, default: Any = "") -> Any:
+    """Helper to extract attribute or key from voice profile object or dictionary."""
+    if prof is None:
+        return default
+    if isinstance(prof, dict):
+        return prof.get(attr, default)
+    return getattr(prof, attr, default)
+
+
+def _extract_voice_profile_cache_fields(
+    opts: dict[str, Any],
+    voice_profile: Any | None,
+) -> dict[str, Any]:
+    """Extracts voice profile parameters from opts or fallback voice_profile object."""
+    voice_profile_id = 1
+    gpt_weights = opts.get("gpt_weights_path", "")
+    sovits_weights = opts.get("sovits_weights_path", "")
+    ref_audio = opts.get("ref_audio_path") or opts.get("refer_audio_path", "")
+    prompt_text = opts.get("prompt_text") or opts.get("refer_text", "")
+    prompt_lang = opts.get("prompt_lang") or opts.get("refer_language") or opts.get("prompt_language", "ja")
+    text_lang = opts.get("text_lang") or opts.get("text_language", "ja")
+
+    if voice_profile is not None:
+        voice_profile_id = _get_prof_val(voice_profile, "id", voice_profile_id)
+        if not gpt_weights:
+            gpt_weights = _get_prof_val(voice_profile, "gpt_weights_path", "")
+        if not sovits_weights:
+            sovits_weights = _get_prof_val(voice_profile, "sovits_weights_path", "")
+        if not ref_audio:
+            ref_audio = _get_prof_val(voice_profile, "ref_audio_path", "")
+        if not prompt_text:
+            prompt_text = _get_prof_val(voice_profile, "prompt_text", "")
+        if not prompt_lang:
+            prompt_lang = _get_prof_val(voice_profile, "prompt_lang", "")
+        if not text_lang:
+            text_lang = _get_prof_val(voice_profile, "text_lang", "")
+
+    return {
+        "voice_profile_id": voice_profile_id,
+        "gpt_weights": gpt_weights,
+        "sovits_weights": sovits_weights,
+        "ref_audio": ref_audio,
+        "prompt_text": prompt_text,
+        "prompt_lang": prompt_lang,
+        "text_lang": text_lang,
+    }
+
+
+def _normalize_ref_audio(ref_audio: str) -> str:
+    """Normalizes reference audio path to name:mtime_ns:size if file exists, falling back to name."""
+    if not ref_audio:
+        return ""
+    p = Path(ref_audio)
+    if not p.is_file() and (_PROJECT_ROOT / ref_audio).is_file():
+        p = _PROJECT_ROOT / ref_audio
+    if p.is_file():
+        try:
+            st = p.stat()
+            return f"{p.name}:{st.st_mtime_ns}:{st.st_size}"
+        except OSError:
+            return p.name
+    return p.name
+
+
+def _build_canonical_params_dict(
+    opts: dict[str, Any],
+    prof_fields: dict[str, Any],
+    clean_text: str,
+) -> dict[str, Any]:
+    """Builds canonical parameter dictionary for cache key hashing."""
+    speed = float(opts.get("speed_factor", 1.0))
+    speed_str = f"{speed:.3f}"
+    temperature = float(opts.get("temperature", 1.0))
+    temp_str = f"{temperature:.3f}"
+    top_k = int(opts.get("top_k", 15))
+    top_p = float(opts.get("top_p", 1.0))
+    top_p_str = f"{top_p:.3f}"
+    seed = int(opts.get("seed", -1))
+    batch_size = int(opts.get("batch_size", 1))
+    user_split = (
+        opts.get("text_split_method")
+        or opts.get("cut_option")
+        or opts.get("how_to_cut")
+    )
+    if user_split:
+        text_split_method = str(user_split).lower()
+    else:
+        text_split_method = "cut0" if len(clean_text.strip()) <= 80 else "cut2"
+    fragment_interval = float(opts.get("fragment_interval", 0.3))
+    frag_str = f"{fragment_interval:.3f}"
+
+    ref_audio_norm = _normalize_ref_audio(prof_fields["ref_audio"])
+
+    return {
+        "voice_profile_id": prof_fields["voice_profile_id"],
+        "gpt_weights": str(prof_fields["gpt_weights"]),
+        "sovits_weights": str(prof_fields["sovits_weights"]),
+        "ref_audio": ref_audio_norm,
+        "prompt_text": str(prof_fields["prompt_text"]),
+        "prompt_lang": str(prof_fields["prompt_lang"]).lower(),
+        "text_lang": str(prof_fields["text_lang"]).lower(),
+        "speed": speed_str,
+        "temperature": temp_str,
+        "top_k": top_k,
+        "top_p": top_p_str,
+        "seed": seed,
+        "batch_size": batch_size,
+        "text_split_method": text_split_method,
+        "fragment_interval": frag_str,
+    }
+
+
 class TtsCacheManager:
     """
     Manages persistent disk & SQLite cache for synthesized TTS audio.
@@ -39,13 +152,13 @@ class TtsCacheManager:
 
     def __init__(
         self,
-        cache_dir: Optional[Union[str, Path]] = None,
-        db_path: Optional[Union[str, Path]] = None,
+        cache_dir: str | Path | None = None,
+        db_path: str | Path | None = None,
         max_cache_mb: int = 1024,
         max_entries: int = 5000,
         max_mem_entries: int = 128,
         max_mem_mb: int = 64,
-    ):
+    ) -> None:
         settings = get_settings()
         self.audio_root = Path(settings.audio_dir)
         self.cache_dir = Path(cache_dir or (self.audio_root / "cache"))
@@ -65,16 +178,16 @@ class TtsCacheManager:
         # High-speed In-Memory LRU Cache layer (<0.1ms access time)
         self._mem_cache: OrderedDict[str, bytes] = OrderedDict()
         self._mem_bytes_total: int = 0
-        self._touch_throttle: Dict[str, float] = {}
+        self._touch_throttle: dict[str, float] = {}
         # Batch write cache access times: in-memory buffer protected by self._lock
-        self._dirty_touches: Dict[str, int] = {}
+        self._dirty_touches: dict[str, int] = {}
         self._flush_interval: float = 15.0
-        self._flush_task: Optional[asyncio.Task] = None
+        self._flush_task: asyncio.Task | None = None
         # Strong references for fire-and-forget background tasks (prevent GC mid-flight).
         self._bg_tasks: set = set()
         # In-memory disk cache metadata tracking to avoid DB/disk scans on every synthesis
-        self._disk_bytes_total: Optional[int] = None
-        self._disk_files_total: Optional[int] = None
+        self._disk_bytes_total: int | None = None
+        self._disk_files_total: int | None = None
         self._stats_initialized: bool = False
         self._ensure_flusher_running()
 
@@ -97,7 +210,25 @@ class TtsCacheManager:
             _, evicted = self._mem_cache.popitem(last=False)
             self._mem_bytes_total -= len(evicted)
 
-    def _spawn_background(self, coro) -> None:
+    def _update_disk_stats_after_write(self, file_size: int, prev_file_size: int | None) -> None:
+        """Updates in-memory disk cache size delta after writing an entry."""
+        if prev_file_size is _STATS_UNKNOWN:
+            # The previous row could not be read, so this write may
+            # be an INSERT or an UPSERT overwrite: invalidate the
+            # stats and let the next prune/get_stats rebuild them
+            # from the DB truth instead of double-counting.
+            self._disk_bytes_total = None
+            self._disk_files_total = None
+            self._stats_initialized = False
+        elif self._disk_bytes_total is not None:
+            # Delta-based update: an UPSERT replaces the old row, so
+            # only the size difference counts; a fresh key adds a file.
+            delta = file_size - (prev_file_size or 0)
+            self._disk_bytes_total += delta
+            if prev_file_size is None:
+                self._disk_files_total = (self._disk_files_total or 0) + 1
+
+    def _spawn_background(self, coro: Any) -> None:
         """Runs a coroutine in the background with strong ref (prevents GC mid-flight)."""
         try:
             task = asyncio.create_task(coro)
@@ -204,22 +335,26 @@ class TtsCacheManager:
 
         await self._flush_dirty_touches()
 
-        pending = [t for t in self._bg_tasks if not t.done()]
-        if pending:
-            await asyncio.wait(pending, timeout=5.0)
-        stragglers = [t for t in self._bg_tasks if not t.done()]
-        for t in stragglers:
-            t.cancel()
-        if stragglers:
-            await asyncio.gather(*stragglers, return_exceptions=True)
-        self._bg_tasks.clear()
+        await drain_background_tasks(self._bg_tasks, timeout=5.0)
+
+    def _record_hit_locked(self, cache_key: str) -> None:
+        """Records a cache hit, queues throttled DB touch, and triggers flusher. Must be called under self._lock."""
+        self._hits += 1
+        self._dirty_touches[cache_key] = self._dirty_touches.get(cache_key, 0) + 1
+        self._throttle_touch(cache_key)
+        self._ensure_flusher_running()
+
+    def _record_miss_discard_locked(self, cache_key: str) -> None:
+        """Evicts cache key from in-memory cache and records a cache miss. Must be called under self._lock."""
+        self._mem_cache_discard(cache_key)
+        self._misses += 1
 
     def compute_cache_key(
         self,
         text: str,
-        options: Optional[Dict[str, Any]] = None,
-        voice_profile: Optional[Any] = None,
-    ) -> Tuple[str, str, str]:
+        options: dict[str, Any] | None = None,
+        voice_profile: Any | None = None,
+    ) -> tuple[str, str, str]:
         """
         Computes canonical SHA256 cache key from normalized text and inference parameters.
         Returns:
@@ -228,88 +363,8 @@ class TtsCacheManager:
         clean_text = normalize_japanese_for_tts(text).strip()
         opts = dict(options or {})
 
-        # Extract voice profile info if provided
-        voice_profile_id = 1
-        gpt_weights = opts.get("gpt_weights_path", "")
-        sovits_weights = opts.get("sovits_weights_path", "")
-        ref_audio = opts.get("ref_audio_path") or opts.get("refer_audio_path", "")
-        prompt_text = opts.get("prompt_text") or opts.get("refer_text", "")
-        prompt_lang = opts.get("prompt_lang") or opts.get("refer_language") or opts.get("prompt_language", "ja")
-        text_lang = opts.get("text_lang") or opts.get("text_language", "ja")
-
-        if voice_profile is not None:
-            if hasattr(voice_profile, "id"):
-                voice_profile_id = voice_profile.id
-            elif isinstance(voice_profile, dict) and "id" in voice_profile:
-                voice_profile_id = voice_profile["id"]
-
-            if not gpt_weights and hasattr(voice_profile, "gpt_weights_path"):
-                gpt_weights = voice_profile.gpt_weights_path
-            if not sovits_weights and hasattr(voice_profile, "sovits_weights_path"):
-                sovits_weights = voice_profile.sovits_weights_path
-            if not ref_audio and hasattr(voice_profile, "ref_audio_path"):
-                ref_audio = voice_profile.ref_audio_path
-            if not prompt_text and hasattr(voice_profile, "prompt_text"):
-                prompt_text = voice_profile.prompt_text
-            if not prompt_lang and hasattr(voice_profile, "prompt_lang"):
-                prompt_lang = voice_profile.prompt_lang
-            if not text_lang and hasattr(voice_profile, "text_lang"):
-                text_lang = voice_profile.text_lang
-
-        # Canonicalize inference parameters
-        speed = float(opts.get("speed_factor", 1.0))
-        speed_str = f"{speed:.3f}"
-        temperature = float(opts.get("temperature", 1.0))
-        temp_str = f"{temperature:.3f}"
-        top_k = int(opts.get("top_k", 15))
-        top_p = float(opts.get("top_p", 1.0))
-        top_p_str = f"{top_p:.3f}"
-        seed = int(opts.get("seed", -1))
-        batch_size = int(opts.get("batch_size", 1))
-        user_split = (
-            opts.get("text_split_method")
-            or opts.get("cut_option")
-            or opts.get("how_to_cut")
-        )
-        if user_split:
-            text_split_method = str(user_split).lower()
-        else:
-            text_split_method = "cut0" if len(clean_text.strip()) <= 80 else "cut2"
-        fragment_interval = float(opts.get("fragment_interval", 0.3))
-        frag_str = f"{fragment_interval:.3f}"
-
-        # Ref audio normalization (include name:mtime_ns:size if file exists on disk, fallback to name)
-        ref_audio_norm = ""
-        if ref_audio:
-            p = Path(ref_audio)
-            if not p.is_file() and (_PROJECT_ROOT / ref_audio).is_file():
-                p = _PROJECT_ROOT / ref_audio
-            if p.is_file():
-                try:
-                    st = p.stat()
-                    ref_audio_norm = f"{p.name}:{st.st_mtime_ns}:{st.st_size}"
-                except OSError:
-                    ref_audio_norm = p.name
-            else:
-                ref_audio_norm = p.name
-
-        params_dict = {
-            "voice_profile_id": voice_profile_id,
-            "gpt_weights": str(gpt_weights),
-            "sovits_weights": str(sovits_weights),
-            "ref_audio": ref_audio_norm,
-            "prompt_text": str(prompt_text),
-            "prompt_lang": str(prompt_lang).lower(),
-            "text_lang": str(text_lang).lower(),
-            "speed": speed_str,
-            "temperature": temp_str,
-            "top_k": top_k,
-            "top_p": top_p_str,
-            "seed": seed,
-            "batch_size": batch_size,
-            "text_split_method": text_split_method,
-            "fragment_interval": frag_str,
-        }
+        prof_fields = _extract_voice_profile_cache_fields(opts, voice_profile)
+        params_dict = _build_canonical_params_dict(opts, prof_fields, clean_text)
 
         params_json = json.dumps(params_dict, sort_keys=True, separators=(",", ":"))
         params_hash = hashlib.sha256(params_json.encode("utf-8")).hexdigest()
@@ -323,18 +378,17 @@ class TtsCacheManager:
 
         return cache_key, clean_text, params_hash
 
-    async def get(self, cache_key: str) -> Optional[Tuple[bytes, str, int]]:
+    async def get(self, cache_key: str) -> tuple[bytes, str, int] | None:
         """
         Retrieves cached audio bytes and URL for the given cache key.
         Checks high-speed in-memory LRU cache first (<0.005ms), falling back to disk (<15ms).
         Returns (audio_bytes, url_path, file_size) if hit, None if miss.
         """
         try:
-            from galgame2voice.config import get_settings
             if get_settings().privacy_mode:
                 return None
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed checking privacy_mode: %s", exc)
 
         url_path = f"/audio/cache/{cache_key}.wav"
 
@@ -343,10 +397,7 @@ class TtsCacheManager:
             if cache_key in self._mem_cache:
                 self._mem_cache.move_to_end(cache_key)
                 data = self._mem_cache[cache_key]
-                self._hits += 1
-                self._dirty_touches[cache_key] = self._dirty_touches.get(cache_key, 0) + 1
-                self._throttle_touch(cache_key)
-                self._ensure_flusher_running()
+                self._record_hit_locked(cache_key)
                 return data, url_path, len(data)
 
         # 2. Slow path: Disk & SQLite cache (miss in memory)
@@ -355,36 +406,30 @@ class TtsCacheManager:
         # Verify disk file presence and non-zero size to detect manual unlinking or corruption
         if not file_path.exists():
             async with self._lock:
-                self._mem_cache_discard(cache_key)
-                self._misses += 1
+                self._record_miss_discard_locked(cache_key)
             return None
 
         try:
             file_size = file_path.stat().st_size
         except OSError:
             async with self._lock:
-                self._mem_cache_discard(cache_key)
-                self._misses += 1
+                self._record_miss_discard_locked(cache_key)
             return None
 
         if file_size == 0:
             # Corrupted 0-byte file on disk -> evict from memory cache and delete
             async with self._lock:
-                self._mem_cache_discard(cache_key)
-                self._misses += 1
+                self._record_miss_discard_locked(cache_key)
             try:
                 file_path.unlink(missing_ok=True)
-            except Exception:
+            except OSError:
                 pass
             return None
 
         try:
             audio_bytes = await asyncio.to_thread(file_path.read_bytes)
             async with self._lock:
-                self._hits += 1
-                self._dirty_touches[cache_key] = self._dirty_touches.get(cache_key, 0) + 1
-                self._throttle_touch(cache_key)
-                self._ensure_flusher_running()
+                self._record_hit_locked(cache_key)
                 # Populate In-Memory LRU Cache
                 self._mem_cache_store(cache_key, audio_bytes)
             return audio_bytes, url_path, len(audio_bytes)
@@ -401,14 +446,14 @@ class TtsCacheManager:
     ) -> AsyncGenerator[bytes, None]:
         """
         Streams cached audio chunks directly from in-memory cache or disk cache.
-        Avoids loading multi-megabyte audio files entirely into temporary memory.
+        Yields disk reads chunk by chunk; files within max_mem_bytes are additionally buffered
+        in full to populate the in-memory cache.
         """
         try:
-            from galgame2voice.config import get_settings
             if get_settings().privacy_mode:
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed checking privacy_mode: %s", exc)
 
         mem_data = None
         bounded_chunk_size = chunk_size if chunk_size > 0 else 4096
@@ -417,10 +462,7 @@ class TtsCacheManager:
             if cache_key in self._mem_cache:
                 self._mem_cache.move_to_end(cache_key)
                 mem_data = self._mem_cache[cache_key]
-                self._hits += 1
-                self._dirty_touches[cache_key] = self._dirty_touches.get(cache_key, 0) + 1
-                self._throttle_touch(cache_key)
-                self._ensure_flusher_running()
+                self._record_hit_locked(cache_key)
 
         if mem_data is not None:
             for i in range(0, len(mem_data), bounded_chunk_size):
@@ -444,10 +486,7 @@ class TtsCacheManager:
         try:
             with open(file_path, "rb") as f:
                 async with self._lock:
-                    self._hits += 1
-                    self._dirty_touches[cache_key] = self._dirty_touches.get(cache_key, 0) + 1
-                    self._throttle_touch(cache_key)
-                    self._ensure_flusher_running()
+                    self._record_hit_locked(cache_key)
 
                 while True:
                     chunk = await asyncio.to_thread(f.read, bounded_chunk_size)
@@ -463,16 +502,100 @@ class TtsCacheManager:
         except Exception as exc:
             logger.warning("stream_cached failed for %s: %s", file_path, exc)
 
+    @staticmethod
+    def _write_audio_file_sync(file_path: Path, audio_bytes: bytes) -> None:
+        """Atomic write to file via unique temp file with Windows AV transient lock retries."""
+        tmp_path = file_path.with_suffix(f".tmp.{os.getpid()}_{time.time_ns()}_{uuid.uuid4().hex}.wav")
+        try:
+            tmp_path.write_bytes(audio_bytes)
+            for attempt in range(5):
+                try:
+                    tmp_path.replace(file_path)
+                    return
+                except (PermissionError, OSError) as err:
+                    try:
+                        if file_path.exists() and file_path.stat().st_size > 0:
+                            # Windows AV/indexer may transiently lock the target;
+                            # the existing file is a valid cache entry for this key,
+                            # so keep it rather than failing the whole put.
+                            logger.warning(
+                                "Cache file %s locked (%s); keeping existing file, "
+                                "fresh bytes discarded for this write.",
+                                file_path, err,
+                            )
+                            tmp_path.unlink(missing_ok=True)
+                            return
+                    except OSError:
+                        pass
+                    if attempt == 4:
+                        tmp_path.unlink(missing_ok=True)
+                        raise err
+                    time.sleep(0.005 * (attempt + 1))
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
+
+    async def _persist_cache_metadata(
+        self,
+        cache_key: str,
+        text: str,
+        clean_text: str,
+        voice_profile_id: int | None,
+        params_hash: str,
+        file_path: Path,
+        file_size: int,
+        duration_ms: int,
+    ) -> None:
+        """Persists cache metadata row into SQLite with locked/busy backoff and auto-init retry."""
+        last_exc = None
+        for db_attempt in range(5):
+            try:
+                async with get_db(self.db_path) as conn:
+                    await crud.upsert_tts_cache_entry(
+                        conn=conn,
+                        cache_key=cache_key,
+                        text=text,
+                        clean_text=clean_text,
+                        voice_profile_id=voice_profile_id or 1,
+                        params_hash=params_hash,
+                        file_path=str(file_path),
+                        file_size=file_size,
+                        duration_ms=duration_ms,
+                    )
+                return
+            except Exception as exc:
+                last_exc = exc
+                if ("locked" in str(exc).lower() or "busy" in str(exc).lower()) and db_attempt < 4:
+                    await asyncio.sleep(0.02 * (db_attempt + 1))
+                    continue
+                if "no such table" in str(exc).lower():
+                    try:
+                        from galgame2voice.database.session import init_db
+                        await init_db(self.db_path)
+                        continue
+                    except Exception as init_err:
+                        logger.warning("Failed to auto-init DB in TtsCacheManager: %s", init_err)
+                logger.warning("Failed to insert tts_cache_entry in DB: %s", exc)
+                break
+
+        try:
+            # Clean up orphaned cache file on disk if DB metadata persistence failed
+            await asyncio.to_thread(file_path.unlink, missing_ok=True)
+        except OSError:
+            # Best-effort unlink; suppress OSError so primary RuntimeError is raised
+            pass
+        raise RuntimeError(f"Failed to persist cache entry metadata for key {cache_key}: {last_exc}") from last_exc
+
     async def put(
         self,
         cache_key: str,
         text: str,
         clean_text: str,
-        voice_profile_id: Optional[int],
+        voice_profile_id: int | None,
         params_hash: str,
         audio_bytes: bytes,
         duration_ms: int = 0,
-    ) -> Tuple[str, Path, int]:
+    ) -> tuple[str, Path, int]:
         """
         Persists synthesized audio bytes to disk, memory cache, and registers metadata in SQLite.
         Returns (url_path, local_file_path, byte_count).
@@ -481,11 +604,10 @@ class TtsCacheManager:
             raise ValueError("Cannot cache empty audio bytes")
 
         try:
-            from galgame2voice.config import get_settings
             if get_settings().privacy_mode:
                 return "", Path(""), len(audio_bytes)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed checking privacy_mode: %s", exc)
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         file_path = self.cache_dir / f"{cache_key}.wav"
@@ -497,7 +619,7 @@ class TtsCacheManager:
         # _STATS_UNKNOWN distinguishes "query failed, INSERT/UPDATE unknown"
         # from prev_file_size=None which unambiguously means "no previous row"
         # (i.e. this write inserts a new cache entry).
-        prev_file_size: Optional[int] = _STATS_UNKNOWN
+        prev_file_size: int | None = _STATS_UNKNOWN
         try:
             async with get_db(self.db_path) as _conn:
                 _prev = await crud.get_tts_cache_entry(_conn, cache_key)
@@ -509,101 +631,26 @@ class TtsCacheManager:
             prev_file_size = _STATS_UNKNOWN  # stats fallback handled below
 
         async with self._write_lock:
-            # Atomic write to file via temp file to prevent 0-byte/corrupt files
-            def _atomic_write():
-                tmp_path = file_path.with_suffix(f".tmp.{os.getpid()}_{time.time_ns()}_{uuid.uuid4().hex}.wav")
-                try:
-                    tmp_path.write_bytes(audio_bytes)
-                    for attempt in range(5):
-                        try:
-                            tmp_path.replace(file_path)
-                            return
-                        except (PermissionError, OSError) as err:
-                            try:
-                                if file_path.exists() and file_path.stat().st_size > 0:
-                                    # Windows AV/indexer may transiently lock the target;
-                                    # the existing file is a valid cache entry for this key,
-                                    # so keep it rather than failing the whole put.
-                                    logger.warning(
-                                        "Cache file %s locked (%s); keeping existing file, "
-                                        "fresh bytes discarded for this write.",
-                                        file_path, err,
-                                    )
-                                    tmp_path.unlink(missing_ok=True)
-                                    return
-                            except Exception:
-                                pass
-                            if attempt == 4:
-                                tmp_path.unlink(missing_ok=True)
-                                raise err
-                            time.sleep(0.005 * (attempt + 1))
-                except Exception:
-                    tmp_path.unlink(missing_ok=True)
-                    raise
-
             try:
-                await asyncio.to_thread(_atomic_write)
+                await asyncio.to_thread(self._write_audio_file_sync, file_path, audio_bytes)
                 file_size = len(audio_bytes)
                 url_path = f"/audio/cache/{cache_key}.wav"
 
-                db_success = False
-                last_exc = None
-                for db_attempt in range(5):
-                    try:
-                        async with get_db(self.db_path) as conn:
-                            await crud.upsert_tts_cache_entry(
-                                conn=conn,
-                                cache_key=cache_key,
-                                text=text,
-                                clean_text=clean_text,
-                                voice_profile_id=voice_profile_id or 1,
-                                params_hash=params_hash,
-                                file_path=str(file_path),
-                                file_size=file_size,
-                                duration_ms=duration_ms,
-                            )
-                        db_success = True
-                        break
-                    except Exception as exc:
-                        last_exc = exc
-                        if ("locked" in str(exc).lower() or "busy" in str(exc).lower()) and db_attempt < 4:
-                            await asyncio.sleep(0.02 * (db_attempt + 1))
-                            continue
-                        if "no such table" in str(exc).lower():
-                            try:
-                                from galgame2voice.database.session import init_db
-                                await init_db(self.db_path)
-                                continue
-                            except Exception as init_err:
-                                logger.warning("Failed to auto-init DB in TtsCacheManager: %s", init_err)
-                        logger.warning("Failed to insert tts_cache_entry in DB: %s", exc)
-                        break
-
-                if not db_success:
-                    try:
-                        await asyncio.to_thread(file_path.unlink, missing_ok=True)
-                    except Exception:
-                        pass
-                    raise RuntimeError(f"Failed to persist cache entry metadata for key {cache_key}: {last_exc}") from last_exc
+                await self._persist_cache_metadata(
+                    cache_key=cache_key,
+                    text=text,
+                    clean_text=clean_text,
+                    voice_profile_id=voice_profile_id,
+                    params_hash=params_hash,
+                    file_path=file_path,
+                    file_size=file_size,
+                    duration_ms=duration_ms,
+                )
 
                 # Populate In-Memory LRU Cache only after successful persistence
                 async with self._lock:
                     self._mem_cache_store(cache_key, audio_bytes)
-                    if prev_file_size is _STATS_UNKNOWN:
-                        # The previous row could not be read, so this write may
-                        # be an INSERT or an UPSERT overwrite: invalidate the
-                        # stats and let the next prune/get_stats rebuild them
-                        # from the DB truth instead of double-counting.
-                        self._disk_bytes_total = None
-                        self._disk_files_total = None
-                        self._stats_initialized = False
-                    elif self._disk_bytes_total is not None:
-                        # Delta-based update: an UPSERT replaces the old row, so
-                        # only the size difference counts; a fresh key adds a file.
-                        delta = file_size - (prev_file_size or 0)
-                        self._disk_bytes_total += delta
-                        if prev_file_size is None:
-                            self._disk_files_total = (self._disk_files_total or 0) + 1
+                    self._update_disk_stats_after_write(file_size, prev_file_size)
             except Exception:
                 async with self._lock:
                     self._mem_cache_discard(cache_key)
@@ -626,7 +673,7 @@ class TtsCacheManager:
 
         return url_path, file_path, file_size
 
-    async def _check_and_prune(self):
+    async def _check_and_prune(self) -> None:
         """Asynchronously checks if capacity thresholds are exceeded and prunes LRU entries.
         Guarded by _prune_lock to coalesce redundant triggers and prevent concurrent stampedes."""
         if self._prune_lock.locked():
@@ -640,10 +687,22 @@ class TtsCacheManager:
             except Exception as exc:
                 logger.debug("Error during automatic cache pruning: %s", exc)
 
+    @staticmethod
+    async def _try_unlink_cache_file(file_p: Path) -> bool:
+        """Attempts to delete cache file from disk, returning False if locked or failing."""
+        if not file_p.exists():
+            return True
+        try:
+            await asyncio.to_thread(file_p.unlink, missing_ok=True)
+            return True
+        except Exception as unl_err:
+            logger.debug("Skipping DB deletion for locked cache file %s: %s", file_p, unl_err)
+            return False
+
     async def prune(
         self,
-        max_mb: Optional[int] = None,
-        max_entries: Optional[int] = None,
+        max_mb: int | None = None,
+        max_entries: int | None = None,
     ) -> int:
         """
         Performs LRU pruning of cache files when limits are exceeded.
@@ -657,8 +716,8 @@ class TtsCacheManager:
 
         try:
             await self._flush_dirty_touches()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed flushing dirty touches during prune: %s", exc)
 
         async with self._write_lock:
             pruned_count = 0
@@ -690,15 +749,7 @@ class TtsCacheManager:
                             if total_bytes <= target_bytes and total_files <= target_files:
                                 break
 
-                            file_p = Path(entry.file_path)
-                            unlink_ok = True
-                            if file_p.exists():
-                                try:
-                                    await asyncio.to_thread(file_p.unlink, missing_ok=True)
-                                except Exception as unl_err:
-                                    unlink_ok = False
-                                    logger.debug("Skipping DB deletion for locked cache file %s: %s", file_p, unl_err)
-
+                            unlink_ok = await self._try_unlink_cache_file(Path(entry.file_path))
                             if unlink_ok:
                                 await crud.delete_tts_cache_entry(conn, entry.cache_key)
                                 async with self._lock:
@@ -722,17 +773,14 @@ class TtsCacheManager:
                 logger.info("Pruned %d oldest TTS cache entries from disk.", pruned_count)
             return pruned_count
 
-    async def clear(self) -> Tuple[int, float]:
+    async def clear(self) -> tuple[int, float]:
         """
         Clears all cache files in audio/cache/ and purges SQLite metadata.
         Guarded by _write_lock to serialize against concurrent put() and prune() operations.
         Returns (count_deleted, freed_mb).
         """
         async with self._write_lock:
-            freed_bytes = 0
-            deleted_count = 0
-
-            def _scan_and_delete() -> Tuple[int, int]:
+            def _scan_and_delete() -> tuple[int, int]:
                 freed = 0
                 count = 0
                 if self.cache_dir.exists():
@@ -754,8 +802,8 @@ class TtsCacheManager:
             try:
                 async with get_db(self.db_path) as conn:
                     await crud.clear_all_tts_cache_entries(conn)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to clear database cache entries: %s", exc)
 
             async with self._lock:
                 self._mem_cache.clear()
@@ -772,12 +820,12 @@ class TtsCacheManager:
             logger.info("Cleared TTS cache: deleted %d files, freed %.2f MB", deleted_count, freed_mb)
             return deleted_count, freed_mb
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """Returns comprehensive TTS cache statistics."""
         try:
             await self._flush_dirty_touches()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed flushing dirty touches during get_stats: %s", exc)
 
         try:
             async with get_db(self.db_path) as conn:
@@ -786,7 +834,8 @@ class TtsCacheManager:
                     self._disk_bytes_total = db_stats["total_size_bytes"]
                     self._disk_files_total = db_stats["total_files"]
                     self._stats_initialized = True
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed querying cache stats from database: %s", exc)
             db_stats = {"total_files": 0, "total_size_bytes": 0, "total_size_mb": 0.0, "total_hits": 0}
 
         total_files = db_stats["total_files"]
@@ -794,7 +843,7 @@ class TtsCacheManager:
         total_size_mb = db_stats["total_size_mb"]
         db_hits = db_stats["total_hits"]
 
-        # Report memory hits and db hits separately
+        # self._hits counts memory-tier and disk hits together; report it alongside the DB-recorded hits
         hit_rate = self._hits / (self._hits + self._misses) if (self._hits + self._misses) > 0 else 0.0
         # Estimated computation saved: average 1.5s GPU inference time per cache hit
         estimated_saved_seconds = round(self._hits * 1.5, 2)
@@ -813,12 +862,12 @@ class TtsCacheManager:
 
 
 # Singleton accessor
-_tts_cache_manager_instance: Optional[TtsCacheManager] = None
+_tts_cache_manager_instance: TtsCacheManager | None = None
 
 
 def get_tts_cache_manager(
-    cache_dir: Optional[Union[str, Path]] = None,
-    db_path: Optional[Union[str, Path]] = None,
+    cache_dir: str | Path | None = None,
+    db_path: str | Path | None = None,
 ) -> TtsCacheManager:
     """Returns singleton instance of TtsCacheManager."""
     global _tts_cache_manager_instance

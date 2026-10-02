@@ -4,7 +4,7 @@ Supports OpenAI Whisper and other OpenAI-compatible audio transcription endpoint
 """
 
 import time
-from typing import Dict, Any, Optional
+from typing import Any
 import httpx
 
 from galgame2voice.adapters.base import BaseSTTAdapter, TestResult
@@ -33,7 +33,7 @@ class OpenAICompatibleSTTAdapter(BaseSTTAdapter):
         self,
         api_key: str,
         base_url: str = "https://api.openai.com/v1",
-        client_override: Optional[Any] = None,
+        client_override: Any | None = None,
         default_model: str = "whisper-1",
         **kwargs: Any,
     ):
@@ -49,7 +49,7 @@ class OpenAICompatibleSTTAdapter(BaseSTTAdapter):
         self,
         audio_bytes: bytes,
         filename: str = "audio.wav",
-        language: Optional[str] = None,
+        language: str | None = None,
         **kwargs: Any,
     ) -> str:
         """
@@ -82,7 +82,7 @@ class OpenAICompatibleSTTAdapter(BaseSTTAdapter):
         if isinstance(custom_headers, dict):
             headers.update(custom_headers)
 
-        data_fields: Dict[str, Any] = {"model": model}
+        data_fields: dict[str, Any] = {"model": model}
         if language:
             data_fields["language"] = language
 

@@ -13,14 +13,13 @@ Provides rich inline keyboard menus and callback processing for:
 
 from dataclasses import dataclass
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable
 
 try:
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     HAS_TELEGRAM = True
 except ImportError:
     HAS_TELEGRAM = False
-    Update = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
 
@@ -31,13 +30,14 @@ from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.telegram_bot.console_menus")
 
-# Callback data that mutates global state and therefore requires admin privileges
-# when an admin whitelist is configured. Empty whitelist = open access (single-user setups).
-ADMIN_CALLBACK_PREFIXES: Tuple[str, ...] = (
+# Callback data that mutates global state and therefore requires admin privileges.
+# Via handlers the whitelist is fail-closed (empty = nobody); only the handlers-less
+# path treats an empty whitelist as open access (single-user setups).
+ADMIN_CALLBACK_PREFIXES: tuple[str, ...] = (
     "set_voice_", "set_char_", "set_speed_", "set_temp_", "set_split_", "set_topk_",
     "set_topp_", "set_batch_", "set_interval_", "set_history_", "set_model_",
 )
-ADMIN_CALLBACK_ACTIONS: Set[str] = {"action_clear_cache"}
+ADMIN_CALLBACK_ACTIONS: set[str] = {"action_clear_cache"}
 
 
 def resolve_effective_user_id(update: Any) -> int:
@@ -47,7 +47,7 @@ def resolve_effective_user_id(update: Any) -> int:
     return int(uid) if uid else 0
 
 
-def check_is_admin(update: Any, admin_ids: Optional[Set[int]] = None) -> bool:
+def check_is_admin(update: Any, admin_ids: set[int] | None = None) -> bool:
     """Checks whether the effective user is authorized as an administrator."""
     if not admin_ids:
         return True
@@ -66,13 +66,13 @@ def resolve_session_key(chat_id: int, user_id: int = 0) -> str:
     return f"tg_{chat_id}_{user_id}"
 
 
-async def build_main_console(
+def _resolve_menu_context(
     chat_id: Any = 0,
     user_id: int = 0,
-    db_path: Optional[str] = None,
-    session_key_fn: Optional[Callable[[int, int], str]] = None,
-) -> Tuple[str, Any]:
-    """Constructs the rich text and inline keyboard for the Telegram Interactive Console."""
+    db_path: str | None = None,
+    session_key_fn: Callable[[int, int], str] | None = None,
+) -> tuple[str | None, int, int, str]:
+    """Resolves (actual_db_path, actual_chat_id, actual_user_id, session_key) for interactive menus."""
     if isinstance(chat_id, str) and not chat_id.isdigit():
         actual_db_path = chat_id
         actual_chat_id = user_id
@@ -84,6 +84,84 @@ async def build_main_console(
 
     key_fn = session_key_fn or resolve_session_key
     session_key = key_fn(actual_chat_id, actual_user_id)
+    return actual_db_path, actual_chat_id, actual_user_id, session_key
+
+
+async def _get_affection_safe(conn, user_id_key: str, profile: Any) -> Any | None:
+    """Safely retrieves or initializes character affection without throwing on errors."""
+    profile_id = profile.id if profile else 1
+    try:
+        return await crud.get_or_create_character_affection(
+            conn, user_id=user_id_key, character_id=profile_id
+        )
+    except Exception:
+        return None
+
+
+async def _get_setting_field(
+    db_path: str | None,
+    field_name: str,
+    default: Any,
+    caller_name: str,
+) -> Any:
+    """Reads a single scalar field from settings with fallback and error logging."""
+    try:
+        async with get_db(db_path) as conn:
+            settings = await crud.get_settings_raw(conn)
+            return getattr(settings, field_name, default)
+    except Exception as exc:
+        logger.error("Database read failed in %s: %s", caller_name, exc)
+        return default
+
+
+def _tts_nav_row() -> list:
+    """Constructs navigation row linking back to TTS tuning menu and main console."""
+    return [
+        InlineKeyboardButton("🔙 返回语音调参", callback_data="menu_tts"),
+        InlineKeyboardButton("🏠 返回主控制台", callback_data="menu_main"),
+    ]
+
+
+def _make_inline_markup(keyboard: list[list[Any]] | None) -> Any | None:
+    """Wraps button rows into InlineKeyboardMarkup if telegram package is available and keyboard is non-empty."""
+    if not (HAS_TELEGRAM and InlineKeyboardMarkup and keyboard):
+        return None
+    return InlineKeyboardMarkup(keyboard)
+
+
+def _build_single_col_options_markup(
+    options: list[tuple[Any, str]],
+    current_val: Any,
+    callback_prefix: str,
+    nav_row: list | None = None,
+    is_float: bool = False,
+) -> Any:
+    """Builds a single-column inline keyboard for selectable scalar options."""
+    if not (HAS_TELEGRAM and InlineKeyboardButton):
+        return None
+    keyboard = []
+    for val, label in options:
+        if is_float and isinstance(current_val, (int, float)) and isinstance(val, (int, float)):
+            is_active = abs(current_val - val) < 0.01
+        else:
+            is_active = (current_val == val)
+        mark = "✓ " if is_active else ""
+        keyboard.append([InlineKeyboardButton(f"{mark}{label}", callback_data=f"{callback_prefix}{val}")])
+    if nav_row:
+        keyboard.append(nav_row)
+    return _make_inline_markup(keyboard)
+
+
+async def build_main_console(
+    chat_id: Any = 0,
+    user_id: int = 0,
+    db_path: str | None = None,
+    session_key_fn: Callable[[int, int], str] | None = None,
+) -> tuple[str, Any]:
+    """Constructs the rich text and inline keyboard for the Telegram Interactive Console."""
+    actual_db_path, actual_chat_id, actual_user_id, session_key = _resolve_menu_context(
+        chat_id, user_id, db_path, session_key_fn
+    )
 
     profile = None
     settings = None
@@ -97,21 +175,15 @@ async def build_main_console(
             profile = await crud.get_active_voice_profile(conn)
             settings = await crud.get_settings_raw(conn)
             provider = await crud.get_active_provider(conn, mask=True)
-            profile_id = profile.id if profile else 1
-            try:
-                affection = await crud.get_or_create_character_affection(
-                    conn, user_id=str(actual_user_id or actual_chat_id), character_id=profile_id
-                )
-            except Exception:
-                affection = None
+            affection = await _get_affection_safe(conn, str(actual_user_id or actual_chat_id), profile)
             try:
                 msg_count = await crud.count_session_messages(conn, session_key)
             except Exception:
                 msg_count = 0
             try:
                 cache_stats = await crud.get_tts_cache_stats(conn)
-            except Exception:
-                pass
+            except Exception as cache_err:
+                logger.debug("Failed reading cache stats in build_main_console: %s", cache_err)
     except Exception as exc:
         logger.debug("Database read failed in build_main_console: %s", exc)
 
@@ -157,12 +229,12 @@ async def build_main_console(
                 InlineKeyboardButton("🔄 刷新控制台", callback_data="menu_refresh"),
             ],
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = _make_inline_markup(keyboard)
 
     return text, reply_markup
 
 
-async def build_voice_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_voice_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs rich sub-menu for switching voice profiles with 2-column layout and active character card."""
     profiles = []
     active_id = None
@@ -211,11 +283,11 @@ async def build_voice_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
             InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main"),
         ])
 
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup and keyboard else None
+    reply_markup = _make_inline_markup(keyboard)
     return text, reply_markup
 
 
-async def build_model_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_model_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for switching active LLM provider with API key safety indicators."""
     providers = []
     active_id = None
@@ -262,11 +334,11 @@ async def build_model_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
         keyboard.append(temp_row)
 
     keyboard.append([InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main")])
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _make_inline_markup(keyboard)
     return text, reply_markup
 
 
-async def build_tts_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_tts_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for advanced TTS parameters."""
     settings = None
     try:
@@ -313,52 +385,32 @@ async def build_tts_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
             InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main"),
         ],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _make_inline_markup(keyboard)
     return text, reply_markup
 
 
-async def build_speed_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_speed_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for adjusting voice speed factor."""
-    current_speed = 1.05
-    try:
-        async with get_db(db_path) as conn:
-            settings = await crud.get_settings_raw(conn)
-            current_speed = getattr(settings, "speed_factor", 1.05) if settings else 1.05
-    except Exception as exc:
-        logger.error("Database read failed in build_speed_menu: %s", exc)
+    current_speed = await _get_setting_field(db_path, "speed_factor", 1.05, "build_speed_menu")
 
     text = f"⚡ 【调节语音语速】\n当前语速: {current_speed}x\n请选择你期望的发音语速："
     speeds = [0.8, 0.9, 1.0, 1.05, 1.1, 1.2, 1.3, 1.5]
-    row1 = []
-    row2 = []
-    for s in speeds[:4]:
+    def _speed_btn(s: float) -> Any:
         mark = "✓ " if abs(current_speed - s) < 0.01 else ""
-        row1.append(InlineKeyboardButton(f"{mark}{s}x", callback_data=f"set_speed_{s}"))
-    for s in speeds[4:]:
-        mark = "✓ " if abs(current_speed - s) < 0.01 else ""
-        row2.append(InlineKeyboardButton(f"{mark}{s}x", callback_data=f"set_speed_{s}"))
+        return InlineKeyboardButton(f"{mark}{s}x", callback_data=f"set_speed_{s}")
 
     keyboard = [
-        row1,
-        row2,
-        [
-            InlineKeyboardButton("🔙 返回语音调参", callback_data="menu_tts"),
-            InlineKeyboardButton("🏠 返回主控制台", callback_data="menu_main"),
-        ],
+        [_speed_btn(s) for s in speeds[:4]],
+        [_speed_btn(s) for s in speeds[4:]],
+        _tts_nav_row(),
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _make_inline_markup(keyboard)
     return text, reply_markup
 
 
-async def build_temp_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_temp_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for adjusting voice temperature."""
-    current_temp = 0.8
-    try:
-        async with get_db(db_path) as conn:
-            settings = await crud.get_settings_raw(conn)
-            current_temp = getattr(settings, "temperature", 0.8) if settings else 0.8
-    except Exception as exc:
-        logger.error("Database read failed in build_temp_menu: %s", exc)
+    current_temp = await _get_setting_field(db_path, "temperature", 0.8, "build_temp_menu")
 
     text = (
         f"🌡️ 【调节发音温度 (Temperature)】\n"
@@ -372,28 +424,15 @@ async def build_temp_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
         (1.0, "1.0 (生动活泼)"),
         (1.2, "1.2 (高昂起伏)"),
     ]
-    keyboard = []
-    for t_val, t_label in temps:
-        mark = "✓ " if abs(current_temp - t_val) < 0.01 else ""
-        keyboard.append([InlineKeyboardButton(f"{mark}{t_label}", callback_data=f"set_temp_{t_val}")])
-
-    keyboard.append([
-        InlineKeyboardButton("🔙 返回语音调参", callback_data="menu_tts"),
-        InlineKeyboardButton("🏠 返回主控制台", callback_data="menu_main"),
-    ])
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _build_single_col_options_markup(
+        temps, current_temp, "set_temp_", nav_row=_tts_nav_row(), is_float=True
+    )
     return text, reply_markup
 
 
-async def build_split_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_split_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for text split method."""
-    current_split = "cut5"
-    try:
-        async with get_db(db_path) as conn:
-            settings = await crud.get_settings_raw(conn)
-            current_split = getattr(settings, "text_split_method", "cut5") if settings else "cut5"
-    except Exception as exc:
-        logger.error("Database read failed in build_split_menu: %s", exc)
+    current_split = await _get_setting_field(db_path, "text_split_method", "cut5", "build_split_menu")
 
     text = (
         f"✂️ 【选择文本切分方式 (Text Split)】\n"
@@ -408,29 +447,21 @@ async def build_split_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
         ("cut4", "↵ cut4 按换行切分"),
         ("cut0", "🚫 cut0 不切分 (整段合成)"),
     ]
-    keyboard = []
-    for s_key, s_label in splits:
-        mark = "✓ " if current_split == s_key else ""
-        keyboard.append([InlineKeyboardButton(f"{mark}{s_label}", callback_data=f"set_split_{s_key}")])
-
-    keyboard.append([
-        InlineKeyboardButton("🔙 返回语音调参", callback_data="menu_tts"),
-        InlineKeyboardButton("🏠 返回主控制台", callback_data="menu_main"),
-    ])
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _build_single_col_options_markup(
+        splits, current_split, "set_split_", nav_row=_tts_nav_row(), is_float=False
+    )
     return text, reply_markup
 
 
-async def build_sampling_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_sampling_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for Top-K and Top-P sampling parameters."""
     top_k = 15
     top_p = 1.0
     try:
         async with get_db(db_path) as conn:
             settings = await crud.get_settings_raw(conn)
-            if settings:
-                top_k = getattr(settings, "top_k", 15)
-                top_p = getattr(settings, "top_p", 1.0)
+            top_k = getattr(settings, "top_k", 15)
+            top_p = getattr(settings, "top_p", 1.0)
     except Exception as exc:
         logger.error("Database read failed in build_sampling_menu: %s", exc)
 
@@ -455,24 +486,15 @@ async def build_sampling_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
     keyboard = [
         row_k,
         row_p,
-        [
-            InlineKeyboardButton("🔙 返回语音调参", callback_data="menu_tts"),
-            InlineKeyboardButton("🏠 返回主控制台", callback_data="menu_main"),
-        ],
+        _tts_nav_row(),
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _make_inline_markup(keyboard)
     return text, reply_markup
 
 
-async def build_batch_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_batch_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for batch size."""
-    current_batch = 1
-    try:
-        async with get_db(db_path) as conn:
-            settings = await crud.get_settings_raw(conn)
-            current_batch = getattr(settings, "batch_size", 1) if settings else 1
-    except Exception as exc:
-        logger.error("Database read failed in build_batch_menu: %s", exc)
+    current_batch = await _get_setting_field(db_path, "batch_size", 1, "build_batch_menu")
 
     text = (
         f"📦 【调节批量生成大小 (Batch Size)】\n"
@@ -484,28 +506,15 @@ async def build_batch_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
         (2, "📦 2 (双句并行 / 均衡推荐)"),
         (4, "📦 4 (四句并发 / 极速模式)"),
     ]
-    keyboard = []
-    for b_val, b_label in batches:
-        mark = "✓ " if current_batch == b_val else ""
-        keyboard.append([InlineKeyboardButton(f"{mark}{b_label}", callback_data=f"set_batch_{b_val}")])
-
-    keyboard.append([
-        InlineKeyboardButton("🔙 返回语音调参", callback_data="menu_tts"),
-        InlineKeyboardButton("🏠 返回主控制台", callback_data="menu_main"),
-    ])
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _build_single_col_options_markup(
+        batches, current_batch, "set_batch_", nav_row=_tts_nav_row(), is_float=False
+    )
     return text, reply_markup
 
 
-async def build_interval_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_interval_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for fragment interval."""
-    current_interval = 0.3
-    try:
-        async with get_db(db_path) as conn:
-            settings = await crud.get_settings_raw(conn)
-            current_interval = getattr(settings, "fragment_interval", 0.3) if settings else 0.3
-    except Exception as exc:
-        logger.error("Database read failed in build_interval_menu: %s", exc)
+    current_interval = await _get_setting_field(db_path, "fragment_interval", 0.3, "build_interval_menu")
 
     text = (
         f"⏱️ 【调节分句连播间隔 (Fragment Interval)】\n"
@@ -518,28 +527,15 @@ async def build_interval_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
         (0.3, "0.3s (标准推荐)"),
         (0.5, "0.5s (舒缓沉浸)"),
     ]
-    keyboard = []
-    for i_val, i_label in intervals:
-        mark = "✓ " if abs(current_interval - i_val) < 0.01 else ""
-        keyboard.append([InlineKeyboardButton(f"{mark}{i_label}", callback_data=f"set_interval_{i_val}")])
-
-    keyboard.append([
-        InlineKeyboardButton("🔙 返回语音调参", callback_data="menu_tts"),
-        InlineKeyboardButton("🏠 返回主控制台", callback_data="menu_main"),
-    ])
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _build_single_col_options_markup(
+        intervals, current_interval, "set_interval_", nav_row=_tts_nav_row(), is_float=True
+    )
     return text, reply_markup
 
 
-async def build_history_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_history_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for conversational memory history length."""
-    current_hist = 10
-    try:
-        async with get_db(db_path) as conn:
-            settings = await crud.get_settings_raw(conn)
-            current_hist = getattr(settings, "max_history_messages", 10) if settings else 10
-    except Exception as exc:
-        logger.error("Database read failed in build_history_menu: %s", exc)
+    current_hist = await _get_setting_field(db_path, "max_history_messages", 10, "build_history_menu")
 
     text = (
         f"🧠 【调节对话上下文记忆轮数】\n"
@@ -552,20 +548,17 @@ async def build_history_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
         (20, "20 轮 (深度长程连贯)"),
         (30, "30 轮 (超长对话沉浸)"),
     ]
-    keyboard = []
-    for h_val, h_label in histories:
-        mark = "✓ " if current_hist == h_val else ""
-        keyboard.append([InlineKeyboardButton(f"{mark}{h_label}", callback_data=f"set_history_{h_val}")])
-
-    keyboard.append([InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main")])
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    nav_row = [InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main")]
+    reply_markup = _build_single_col_options_markup(
+        histories, current_hist, "set_history_", nav_row=nav_row, is_float=False
+    )
     return text, reply_markup
 
 
-async def build_metrics_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
+async def build_metrics_menu(db_path: str | None = None) -> tuple[str, Any]:
     """Constructs sub-menu for performance metrics and TTS cache control."""
     cache_stats = {"total_files": 0, "total_size_mb": 0.0, "total_hits": 0}
-    metrics: Dict[str, Any] = {}
+    metrics: dict[str, Any] = {}
     try:
         async with get_db(db_path) as conn:
             cache_stats = await crud.get_tts_cache_stats(conn)
@@ -612,28 +605,20 @@ async def build_metrics_menu(db_path: Optional[str] = None) -> Tuple[str, Any]:
             InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main"),
         ],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _make_inline_markup(keyboard)
     return text, reply_markup
 
 
 async def build_affection_menu(
     chat_id: Any = 0,
     user_id: int = 0,
-    db_path: Optional[str] = None,
-    session_key_fn: Optional[Callable[[int, int], str]] = None,
-) -> Tuple[str, Any]:
+    db_path: str | None = None,
+    session_key_fn: Callable[[int, int], str] | None = None,
+) -> tuple[str, Any]:
     """Constructs sub-menu for displaying affection details and emotion."""
-    if isinstance(chat_id, str) and not chat_id.isdigit():
-        actual_db_path = chat_id
-        actual_chat_id = user_id
-        actual_user_id = 0
-    else:
-        actual_db_path = db_path
-        actual_chat_id = int(chat_id or 0)
-        actual_user_id = int(user_id or 0)
-
-    key_fn = session_key_fn or resolve_session_key
-    session_key = key_fn(actual_chat_id, actual_user_id)
+    actual_db_path, actual_chat_id, actual_user_id, session_key = _resolve_menu_context(
+        chat_id, user_id, db_path, session_key_fn
+    )
 
     profile = None
     affection = None
@@ -641,13 +626,7 @@ async def build_affection_menu(
     try:
         async with get_db(actual_db_path) as conn:
             profile = await crud.get_active_voice_profile(conn)
-            profile_id = profile.id if profile else 1
-            try:
-                affection = await crud.get_or_create_character_affection(
-                    conn, user_id=str(actual_user_id or actual_chat_id), character_id=profile_id
-                )
-            except Exception:
-                affection = None
+            affection = await _get_affection_safe(conn, str(actual_user_id or actual_chat_id), profile)
             try:
                 msg_count = await crud.count_session_messages(conn, session_key)
             except Exception:
@@ -681,7 +660,7 @@ async def build_affection_menu(
         ],
         [InlineKeyboardButton("🔙 返回主控制台", callback_data="menu_main")],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard) if HAS_TELEGRAM and InlineKeyboardMarkup else None
+    reply_markup = _make_inline_markup(keyboard)
     return text, reply_markup
 
 
@@ -691,27 +670,56 @@ class _CallbackContext:
     query: Any
     chat_id: int
     user_id: int
-    db_path: Optional[str]
+    db_path: str | None
     session_key_fn: Callable[[int, int], str]
     cancel_task: Callable[[int], None]
 
 
-async def _handle_main_menu(ctx: _CallbackContext) -> None:
-    text, markup = await build_main_console(
-        chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
-    )
+async def _render_menu(
+    ctx: _CallbackContext,
+    menu_coro: Any,
+    answer_text: str | None = None,
+) -> None:
+    """Executes a menu builder coroutine and safely updates the Telegram message text and markup."""
+    text, markup = await menu_coro
     if hasattr(ctx.query, "answer"):
-        await ctx.query.answer("已刷新控制台" if ctx.data == "menu_refresh" else None)
+        await ctx.query.answer(answer_text)
     if hasattr(ctx.query, "edit_message_text"):
         await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+async def _edit_menu_text(
+    ctx: _CallbackContext,
+    menu_coro: Any,
+) -> None:
+    """Executes a menu builder coroutine and updates message text/markup without answering the query."""
+    text, markup = await menu_coro
+    if hasattr(ctx.query, "edit_message_text"):
+        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+
+
+def _build_main_console_for_ctx(ctx: _CallbackContext) -> Any:
+    """Builds the main console coroutine configured with the callback context's chat/user/db identity."""
+    return build_main_console(
+        chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
+    )
+
+
+async def _return_to_main_console(ctx: _CallbackContext) -> None:
+    """Updates Telegram message text/markup to the main console."""
+    await _edit_menu_text(ctx, _build_main_console_for_ctx(ctx))
+
+
+async def _handle_main_menu(ctx: _CallbackContext) -> None:
+    await _render_menu(
+        ctx,
+        _build_main_console_for_ctx(ctx),
+        answer_text="已刷新控制台" if ctx.data == "menu_refresh" else None,
+    )
 
 
 async def _handle_voice_menu(ctx: _CallbackContext) -> None:
-    text, markup = await build_voice_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer()
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _render_menu(ctx, build_voice_menu(db_path=ctx.db_path))
 
 
 async def _handle_set_voice(ctx: _CallbackContext) -> None:
@@ -729,8 +737,8 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
             _db_active = await crud.get_active_voice_profile(conn)
             if _db_active is not None:
                 _active_id = getattr(_db_active, "id", None)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed getting active voice profile in handle_select_character: %s", exc)
     if _active_id is not None and profile_id == _active_id:
         if hasattr(ctx.query, "answer"):
             await ctx.query.answer("已经是当前音色，无需切换")
@@ -761,98 +769,93 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
         logger.warning("Insufficient memory switching to profile %d: %s", profile_id, mem_err)
     except Exception as exc:
         err_msg = f"切换异常: {sanitize_error_detail(exc)}"
-        logger.warning("Voice switch exception: %s", exc)
+        logger.warning("Voice switch exception for profile %d: %s", profile_id, exc)
 
     if err_msg:
         if hasattr(ctx.query, "answer"):
             await ctx.query.answer(f"⚠️ {err_msg}", show_alert=True)
-        text, markup = await build_voice_menu(db_path=ctx.db_path)
-        if hasattr(ctx.query, "edit_message_text"):
-            await ctx.query.edit_message_text(text=text, reply_markup=markup)
+        await _edit_menu_text(ctx, build_voice_menu(db_path=ctx.db_path))
     else:
         if hasattr(ctx.query, "answer"):
             await ctx.query.answer(f"🌸 音色已切换为: {char_name}{warning_note}", show_alert=True)
-        text, markup = await build_main_console(
-            chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
-        )
-        if hasattr(ctx.query, "edit_message_text"):
-            await ctx.query.edit_message_text(text=text, reply_markup=markup)
+        await _return_to_main_console(ctx)
 
 
 async def _handle_tts_menu(ctx: _CallbackContext) -> None:
-    text, markup = await build_tts_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer()
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _render_menu(ctx, build_tts_menu(db_path=ctx.db_path))
 
 
 async def _handle_speed_menu(ctx: _CallbackContext) -> None:
-    text, markup = await build_speed_menu(db_path=ctx.db_path)
+    await _render_menu(ctx, build_speed_menu(db_path=ctx.db_path))
+
+
+async def _handle_scalar_setting(
+    ctx: _CallbackContext,
+    prefix: str,
+    parser: Callable[[str], Any],
+    val_min: int | float,
+    val_max: int | float,
+    range_msg: str,
+    setting_key: str,
+    log_name: str,
+    success_tmpl: str,
+    menu_builder: Callable[[], Any],
+) -> None:
+    raw = ctx.data.replace(prefix, "").strip()
+    try:
+        new_val = parser(raw)
+        if not (val_min <= new_val <= val_max):
+            raise ValueError()
+    except (ValueError, TypeError):
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer(range_msg, show_alert=True)
+        return
+    try:
+        async with get_db(ctx.db_path) as conn:
+            await crud.update_settings(conn, SettingsUpdate(**{setting_key: new_val}))
+    except Exception as exc:
+        logger.warning("%s update exception: %s", log_name, exc)
     if hasattr(ctx.query, "answer"):
-        await ctx.query.answer()
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+        await ctx.query.answer(success_tmpl.format(val=new_val), show_alert=True)
+    await _edit_menu_text(ctx, menu_builder())
 
 
 async def _handle_set_speed(ctx: _CallbackContext) -> None:
-    raw_s = ctx.data.replace("set_speed_", "").strip()
-    try:
-        new_speed = float(raw_s)
-        if not (0.1 <= new_speed <= 3.0):
-            raise ValueError()
-    except (ValueError, TypeError):
-        if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("⚠️ 语速参数超出范围 (0.1~3.0)", show_alert=True)
-        return
-    try:
-        async with get_db(ctx.db_path) as conn:
-            await crud.update_settings(conn, SettingsUpdate(speed_factor=new_speed))
-    except Exception as exc:
-        logger.warning("Speed update exception: %s", exc)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer(f"⚡ 语速已调整为: {new_speed}x", show_alert=True)
-    text, markup = await build_tts_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _handle_scalar_setting(
+        ctx,
+        prefix="set_speed_",
+        parser=float,
+        val_min=0.1,
+        val_max=3.0,
+        range_msg="⚠️ 语速参数超出范围 (0.1~3.0)",
+        setting_key="speed_factor",
+        log_name="Speed",
+        success_tmpl="⚡ 语速已调整为: {val}x",
+        menu_builder=lambda: build_tts_menu(db_path=ctx.db_path),
+    )
 
 
 async def _handle_temp_menu(ctx: _CallbackContext) -> None:
-    text, markup = await build_temp_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer()
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _render_menu(ctx, build_temp_menu(db_path=ctx.db_path))
 
 
 async def _handle_set_temp(ctx: _CallbackContext) -> None:
-    raw_t = ctx.data.replace("set_temp_", "").strip()
-    try:
-        new_temp = float(raw_t)
-        if not (0.0 <= new_temp <= 2.0):
-            raise ValueError()
-    except (ValueError, TypeError):
-        if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("⚠️ 发音温度超出范围 (0.0~2.0)", show_alert=True)
-        return
-    try:
-        async with get_db(ctx.db_path) as conn:
-            await crud.update_settings(conn, SettingsUpdate(temperature=new_temp))
-    except Exception as exc:
-        logger.warning("Temperature update exception: %s", exc)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer(f"🌡️ 发音温度已设置为: {new_temp}", show_alert=True)
-    text, markup = await build_tts_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _handle_scalar_setting(
+        ctx,
+        prefix="set_temp_",
+        parser=float,
+        val_min=0.0,
+        val_max=2.0,
+        range_msg="⚠️ 发音温度超出范围 (0.0~2.0)",
+        setting_key="temperature",
+        log_name="Temperature",
+        success_tmpl="🌡️ 发音温度已设置为: {val}",
+        menu_builder=lambda: build_tts_menu(db_path=ctx.db_path),
+    )
 
 
 async def _handle_split_menu(ctx: _CallbackContext) -> None:
-    text, markup = await build_split_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer()
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _render_menu(ctx, build_split_menu(db_path=ctx.db_path))
 
 
 async def _handle_set_split(ctx: _CallbackContext) -> None:
@@ -864,161 +867,102 @@ async def _handle_set_split(ctx: _CallbackContext) -> None:
         logger.warning("Split method update exception: %s", exc)
     if hasattr(ctx.query, "answer"):
         await ctx.query.answer(f"✂️ 切分方式已设置为: {new_split}", show_alert=True)
-    text, markup = await build_tts_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _edit_menu_text(ctx, build_tts_menu(db_path=ctx.db_path))
 
 
 async def _handle_sampling_menu(ctx: _CallbackContext) -> None:
-    text, markup = await build_sampling_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer()
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _render_menu(ctx, build_sampling_menu(db_path=ctx.db_path))
 
 
 async def _handle_set_topk(ctx: _CallbackContext) -> None:
-    raw_k = ctx.data.replace("set_topk_", "").strip()
-    try:
-        new_topk = int(raw_k)
-        if not (1 <= new_topk <= 100):
-            raise ValueError()
-    except (ValueError, TypeError):
-        if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("⚠️ Top-K 参数超出范围 (1~100)", show_alert=True)
-        return
-    try:
-        async with get_db(ctx.db_path) as conn:
-            await crud.update_settings(conn, SettingsUpdate(top_k=new_topk))
-    except Exception as exc:
-        logger.warning("Top-K update exception: %s", exc)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer(f"🎯 Top-K 已设置为: {new_topk}", show_alert=True)
-    text, markup = await build_sampling_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _handle_scalar_setting(
+        ctx,
+        prefix="set_topk_",
+        parser=int,
+        val_min=1,
+        val_max=100,
+        range_msg="⚠️ Top-K 参数超出范围 (1~100)",
+        setting_key="top_k",
+        log_name="Top-K",
+        success_tmpl="🎯 Top-K 已设置为: {val}",
+        menu_builder=lambda: build_sampling_menu(db_path=ctx.db_path),
+    )
 
 
 async def _handle_set_topp(ctx: _CallbackContext) -> None:
-    raw_p = ctx.data.replace("set_topp_", "").strip()
-    try:
-        new_topp = float(raw_p)
-        if not (0.0 <= new_topp <= 1.0):
-            raise ValueError()
-    except (ValueError, TypeError):
-        if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("⚠️ Top-P 参数超出范围 (0.0~1.0)", show_alert=True)
-        return
-    try:
-        async with get_db(ctx.db_path) as conn:
-            await crud.update_settings(conn, SettingsUpdate(top_p=new_topp))
-    except Exception as exc:
-        logger.warning("Top-P update exception: %s", exc)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer(f"🎯 Top-P 已设置为: {new_topp}", show_alert=True)
-    text, markup = await build_sampling_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _handle_scalar_setting(
+        ctx,
+        prefix="set_topp_",
+        parser=float,
+        val_min=0.0,
+        val_max=1.0,
+        range_msg="⚠️ Top-P 参数超出范围 (0.0~1.0)",
+        setting_key="top_p",
+        log_name="Top-P",
+        success_tmpl="🎯 Top-P 已设置为: {val}",
+        menu_builder=lambda: build_sampling_menu(db_path=ctx.db_path),
+    )
 
 
 async def _handle_batch_menu(ctx: _CallbackContext) -> None:
-    text, markup = await build_batch_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer()
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _render_menu(ctx, build_batch_menu(db_path=ctx.db_path))
 
 
 async def _handle_set_batch(ctx: _CallbackContext) -> None:
-    raw_b = ctx.data.replace("set_batch_", "").strip()
-    try:
-        new_batch = int(raw_b)
-        if not (1 <= new_batch <= 16):
-            raise ValueError()
-    except (ValueError, TypeError):
-        if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("⚠️ 批量大小超出范围 (1~16)", show_alert=True)
-        return
-    try:
-        async with get_db(ctx.db_path) as conn:
-            await crud.update_settings(conn, SettingsUpdate(batch_size=new_batch))
-    except Exception as exc:
-        logger.warning("Batch update exception: %s", exc)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer(f"📦 批量大小已设置为: {new_batch}", show_alert=True)
-    text, markup = await build_tts_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _handle_scalar_setting(
+        ctx,
+        prefix="set_batch_",
+        parser=int,
+        val_min=1,
+        val_max=16,
+        range_msg="⚠️ 批量大小超出范围 (1~16)",
+        setting_key="batch_size",
+        log_name="Batch",
+        success_tmpl="📦 批量大小已设置为: {val}",
+        menu_builder=lambda: build_tts_menu(db_path=ctx.db_path),
+    )
 
 
 async def _handle_interval_menu(ctx: _CallbackContext) -> None:
-    text, markup = await build_interval_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer()
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _render_menu(ctx, build_interval_menu(db_path=ctx.db_path))
 
 
 async def _handle_set_interval(ctx: _CallbackContext) -> None:
-    raw_i = ctx.data.replace("set_interval_", "").strip()
-    try:
-        new_interval = float(raw_i)
-        if not (0.0 <= new_interval <= 5.0):
-            raise ValueError()
-    except (ValueError, TypeError):
-        if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("⚠️ 分句间隔超出范围 (0.0~5.0s)", show_alert=True)
-        return
-    try:
-        async with get_db(ctx.db_path) as conn:
-            await crud.update_settings(conn, SettingsUpdate(fragment_interval=new_interval))
-    except Exception as exc:
-        logger.warning("Interval update exception: %s", exc)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer(f"⏱️ 分句连播间隔已设置为: {new_interval}s", show_alert=True)
-    text, markup = await build_tts_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _handle_scalar_setting(
+        ctx,
+        prefix="set_interval_",
+        parser=float,
+        val_min=0.0,
+        val_max=5.0,
+        range_msg="⚠️ 分句间隔超出范围 (0.0~5.0s)",
+        setting_key="fragment_interval",
+        log_name="Interval",
+        success_tmpl="⏱️ 分句连播间隔已设置为: {val}s",
+        menu_builder=lambda: build_tts_menu(db_path=ctx.db_path),
+    )
 
 
 async def _handle_history_menu(ctx: _CallbackContext) -> None:
-    text, markup = await build_history_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer()
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _render_menu(ctx, build_history_menu(db_path=ctx.db_path))
 
 
 async def _handle_set_history(ctx: _CallbackContext) -> None:
-    raw_h = ctx.data.replace("set_history_", "").strip()
-    try:
-        new_hist = int(raw_h)
-        if not (1 <= new_hist <= 100):
-            raise ValueError()
-    except (ValueError, TypeError):
-        if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("⚠️ 记忆轮数超出范围 (1~100)", show_alert=True)
-        return
-    try:
-        async with get_db(ctx.db_path) as conn:
-            await crud.update_settings(conn, SettingsUpdate(max_history_messages=new_hist))
-    except Exception as exc:
-        logger.warning("History update exception: %s", exc)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer(f"🧠 记忆轮数已调整为: {new_hist} 轮", show_alert=True)
-    text, markup = await build_main_console(
-        chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
+    await _handle_scalar_setting(
+        ctx,
+        prefix="set_history_",
+        parser=int,
+        val_min=1,
+        val_max=100,
+        range_msg="⚠️ 记忆轮数超出范围 (1~100)",
+        setting_key="max_history_messages",
+        log_name="History",
+        success_tmpl="🧠 记忆轮数已调整为: {val} 轮",
+        menu_builder=lambda: _build_main_console_for_ctx(ctx),
     )
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
 
 
 async def _handle_model_menu(ctx: _CallbackContext) -> None:
-    text, markup = await build_model_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer()
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _render_menu(ctx, build_model_menu(db_path=ctx.db_path))
 
 
 async def _handle_set_model(ctx: _CallbackContext) -> None:
@@ -1045,31 +989,25 @@ async def _handle_set_model(ctx: _CallbackContext) -> None:
                 else:
                     await crud.set_active_provider(conn, provider_id)
     except Exception as exc:
-        logger.warning("Model switch exception: %s", exc)
+        logger.warning("Model switch exception for provider '%s': %s", provider_id, exc)
         err_msg = f"切换模型异常: {exc}"
 
     if err_msg:
         if hasattr(ctx.query, "answer"):
             await ctx.query.answer(err_msg, show_alert=True)
-        text, markup = await build_model_menu(db_path=ctx.db_path)
-        if hasattr(ctx.query, "edit_message_text"):
-            await ctx.query.edit_message_text(text=text, reply_markup=markup)
+        await _edit_menu_text(ctx, build_model_menu(db_path=ctx.db_path))
     else:
         if hasattr(ctx.query, "answer"):
             await ctx.query.answer(f"🤖 已激活大模型: {prov_name}", show_alert=True)
-        text, markup = await build_main_console(
-            chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
-        )
-        if hasattr(ctx.query, "edit_message_text"):
-            await ctx.query.edit_message_text(text=text, reply_markup=markup)
+        await _return_to_main_console(ctx)
 
 
 async def _handle_metrics_menu(ctx: _CallbackContext) -> None:
-    text, markup = await build_metrics_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer("已刷新性能与缓存监控" if ctx.data == "menu_metrics" else None)
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _render_menu(
+        ctx,
+        build_metrics_menu(db_path=ctx.db_path),
+        answer_text="已刷新性能与缓存监控" if ctx.data == "menu_metrics" else None,
+    )
 
 
 async def _handle_clear_cache(ctx: _CallbackContext) -> None:
@@ -1091,19 +1029,16 @@ async def _handle_clear_cache(ctx: _CallbackContext) -> None:
             f"🧹 本地语音缓存已清空 (清理了 {cleared_count} 条记录, {disk_cleared} 个磁盘文件)！",
             show_alert=True,
         )
-    text, markup = await build_metrics_menu(db_path=ctx.db_path)
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _edit_menu_text(ctx, build_metrics_menu(db_path=ctx.db_path))
 
 
 async def _handle_affection_menu(ctx: _CallbackContext) -> None:
-    text, markup = await build_affection_menu(
-        chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
+    await _render_menu(
+        ctx,
+        build_affection_menu(
+            chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
+        ),
     )
-    if hasattr(ctx.query, "answer"):
-        await ctx.query.answer()
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
 
 
 async def _handle_reset_session(ctx: _CallbackContext) -> None:
@@ -1113,17 +1048,13 @@ async def _handle_reset_session(ctx: _CallbackContext) -> None:
         async with get_db(ctx.db_path) as conn:
             await crud.clear_session_messages(conn, session_id)
     except Exception as exc:
-        logger.warning("Could not clear session: %s", exc)
+        logger.warning("Could not clear session %s: %s", session_id, exc)
     if hasattr(ctx.query, "answer"):
         await ctx.query.answer("🗑️ 当前会话记忆已清空！", show_alert=True)
-    text, markup = await build_main_console(
-        chat_id=ctx.chat_id, user_id=ctx.user_id, db_path=ctx.db_path, session_key_fn=ctx.session_key_fn
-    )
-    if hasattr(ctx.query, "edit_message_text"):
-        await ctx.query.edit_message_text(text=text, reply_markup=markup)
+    await _return_to_main_console(ctx)
 
 
-_EXACT_CALLBACK_HANDLERS: Dict[str, Callable] = {
+_EXACT_CALLBACK_HANDLERS: dict[str, Callable] = {
     "menu_main": _handle_main_menu,
     "menu_refresh": _handle_main_menu,
     "menu_voice": _handle_voice_menu,
@@ -1142,7 +1073,7 @@ _EXACT_CALLBACK_HANDLERS: Dict[str, Callable] = {
     "action_reset": _handle_reset_session,
 }
 
-_PREFIX_CALLBACK_HANDLERS: Tuple[Tuple[Tuple[str, ...], Callable], ...] = (
+_PREFIX_CALLBACK_HANDLERS: tuple[tuple[tuple[str, ...], Callable], ...] = (
     (("set_voice_", "set_char_"), _handle_set_voice),
     (("set_speed_",), _handle_set_speed),
     (("set_temp_",), _handle_set_temp),
@@ -1156,36 +1087,24 @@ _PREFIX_CALLBACK_HANDLERS: Tuple[Tuple[Tuple[str, ...], Callable], ...] = (
 )
 
 
-async def route_callback_query(
+def _extract_callback_caller_info(
     handlers_or_update: Any,
-    update_or_context: Optional[Any] = None,
-    context: Optional[Any] = None,
-    *,
-    db_path: Optional[str] = None,
-    admin_ids: Optional[Set[int]] = None,
-) -> None:
-    """
-    Routes and handles inline button clicks in Telegram.
-    Accepts either:
-    - (handlers, update, context) when called from TelegramBotHandlers method
-    - (update, context, db_path=..., admin_ids=...) when called directly
-    """
+    update_or_context: Any | None,
+    context: Any | None,
+    admin_ids: set[int] | None,
+) -> tuple[Any, Any, Any, int, int, bool, str]:
+    """Extracts normalized handlers, update, query, chat_id, user_id, is_admin, and callback data."""
     if hasattr(handlers_or_update, "callback_query") or (
         hasattr(handlers_or_update, "effective_chat") and not hasattr(handlers_or_update, "user_tasks")
     ):
         handlers = None
         update = handlers_or_update
-        _ = update_or_context
     else:
         handlers = handlers_or_update
         update = update_or_context
-        _ = context
 
-    query = getattr(update, "callback_query", None)
-    if not query:
-        return
-
-    data = getattr(query, "data", "") or ""
+    query = getattr(update, "callback_query", None) if update else None
+    data = (getattr(query, "data", "") or "") if query else ""
     chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
 
     if handlers and hasattr(handlers, "_effective_user_id"):
@@ -1203,13 +1122,43 @@ async def route_callback_query(
     else:
         is_admin = check_is_admin(update, effective_admin_ids)
 
+    return handlers, update, query, chat_id, user_id, is_admin, data
+
+
+async def route_callback_query(
+    handlers_or_update: Any,
+    update_or_context: Any | None = None,
+    context: Any | None = None,
+    *,
+    db_path: str | None = None,
+    admin_ids: set[int] | None = None,
+) -> None:
+    """
+    Routes and handles inline button clicks in Telegram.
+    Accepts either:
+    - (handlers, update, context) when called from TelegramBotHandlers method
+    - (update, context, db_path=..., admin_ids=...) when called directly
+    """
+    (
+        handlers,
+        _,
+        query,
+        chat_id,
+        user_id,
+        is_admin,
+        data,
+    ) = _extract_callback_caller_info(handlers_or_update, update_or_context, context, admin_ids)
+
+    if not query:
+        return
+
     if (data in ADMIN_CALLBACK_ACTIONS or data.startswith(ADMIN_CALLBACK_PREFIXES)) and not is_admin:
         logger.warning("Denied admin callback '%s' from user_id=%s in chat_id=%s", data, user_id, chat_id)
         if hasattr(query, "answer"):
             try:
                 await query.answer("⛔ 此操作需要管理员权限！", show_alert=True)
-            except Exception:
-                pass
+            except Exception as ans_err:
+                logger.debug("Failed answering admin callback query: %s", ans_err)
         return
 
     actual_db_path = (
@@ -1244,8 +1193,8 @@ async def route_callback_query(
             try:
                 safe_err = sanitize_error_detail(exc)
                 await query.answer(f"操作异常: {safe_err}" if safe_err else "操作异常，请重试", show_alert=True)
-            except Exception:
-                pass
+            except Exception as ans_err:
+                logger.debug("Failed answering error callback query: %s", ans_err)
 
 
 # Alias for backward-compatibility and clean imports

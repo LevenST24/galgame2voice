@@ -6,16 +6,16 @@ Manages python-telegram-bot Application instance, token validation, polling, and
 import asyncio
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import httpx
 
 try:
-    from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+    from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
     from telegram.request import HTTPXRequest
     HAS_TELEGRAM = True
 except ImportError:
     HAS_TELEGRAM = False
-    Application = Any
     ApplicationBuilder = Any
     CommandHandler = Any
     MessageHandler = Any
@@ -28,11 +28,12 @@ from galgame2voice.database import crud
 from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from galgame2voice.telegram_bot.proxy import get_proxy_url, get_telegram_request_kwargs
 from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.text_sanitize import parse_admin_ids, sanitize_bot_token
 
 logger = logging.getLogger("galgame2voice.telegram_bot.bot")
 
 
-def validate_bot_token(token: Optional[str]) -> bool:
+def validate_bot_token(token: str | None) -> bool:
     """
     Validates Telegram bot token format.
     Must be non-empty, >= 10 chars, not contain 'invalid', and contain ':'.
@@ -43,16 +44,29 @@ def validate_bot_token(token: Optional[str]) -> bool:
     return len(t) >= 10 and "invalid" not in t.lower() and ":" in t
 
 
-def parse_admin_ids(raw: Optional[str]) -> List[int]:
-    """Parses a comma-separated list of Telegram user IDs."""
-    if not raw:
-        return []
-    ids = []
-    for part in str(raw).replace("，", ",").split(","):
-        part = part.strip()
-        if part.isdigit():
-            ids.append(int(part))
-    return ids
+def _register_handlers(app: Any, handlers: Any, error_handler: Any | None = None) -> None:
+    """Registers command, callback query, message, and error handlers to the Telegram Application."""
+    # Register command handlers
+    app.add_handler(CommandHandler("start", handlers.handle_start))
+    app.add_handler(CommandHandler("reset", handlers.handle_reset))
+    app.add_handler(CommandHandler("voice", handlers.handle_voice))
+    app.add_handler(CommandHandler(["character", "char", "switch"], handlers.handle_character))
+    app.add_handler(CommandHandler("model", handlers.handle_model))
+    app.add_handler(CommandHandler(["nickname", "name"], handlers.handle_nickname))
+    app.add_handler(CommandHandler(["console", "menu", "settings"], handlers.handle_console))
+    app.add_handler(CommandHandler("help", handlers.handle_help))
+
+    # Register callback query handler for inline keyboard buttons
+    app.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
+
+    # Register message handlers
+    app.add_handler(MessageHandler(filters.VOICE, handlers.handle_voice_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_text_message))
+    app.add_handler(MessageHandler(filters.COMMAND, handlers.handle_unknown))
+
+    # Register global error handler for Telegram network drops and exceptions
+    if error_handler and hasattr(app, "add_error_handler"):
+        app.add_error_handler(error_handler)
 
 
 class TelegramBotManager:
@@ -60,12 +74,12 @@ class TelegramBotManager:
     Manages Telegram Bot async application lifecycle, handlers, and background polling.
     """
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: str | None = None):
         self.db_path = db_path
-        self.app: Optional[Any] = None
+        self.app: Any | None = None
         self.handlers = TelegramBotHandlers(db_path=db_path)
         self.is_running: bool = False
-        self._polling_task: Optional[asyncio.Task] = None
+        self._polling_task: asyncio.Task | None = None
 
     async def start(self) -> bool:
         """
@@ -83,7 +97,7 @@ class TelegramBotManager:
         if not getattr(settings, "telegram_enabled", False):
             return False
 
-        token = settings.telegram_bot_token.replace(" ", "").replace("\r", "").replace("\n", "").strip() if settings and settings.telegram_bot_token else ""
+        token = sanitize_bot_token(settings.telegram_bot_token) if settings.telegram_bot_token else ""
         if not token:
             logger.warning("Telegram Bot is enabled but token is empty; skipping bot startup.")
             return False
@@ -124,27 +138,7 @@ class TelegramBotManager:
         )
         self.app = builder.build()
 
-        # Register command handlers
-        self.app.add_handler(CommandHandler("start", self.handlers.handle_start))
-        self.app.add_handler(CommandHandler("reset", self.handlers.handle_reset))
-        self.app.add_handler(CommandHandler("voice", self.handlers.handle_voice))
-        self.app.add_handler(CommandHandler(["character", "char", "switch"], self.handlers.handle_character))
-        self.app.add_handler(CommandHandler("model", self.handlers.handle_model))
-        self.app.add_handler(CommandHandler(["nickname", "name"], self.handlers.handle_nickname))
-        self.app.add_handler(CommandHandler(["console", "menu", "settings"], self.handlers.handle_console))
-        self.app.add_handler(CommandHandler("help", self.handlers.handle_help))
-
-        # Register callback query handler for inline keyboard buttons
-        self.app.add_handler(CallbackQueryHandler(self.handlers.handle_callback_query))
-
-        # Register message handlers
-        self.app.add_handler(MessageHandler(filters.VOICE, self.handlers.handle_voice_message))
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handlers.handle_text_message))
-        self.app.add_handler(MessageHandler(filters.COMMAND, self.handlers.handle_unknown))
-
-        # Register global error handler for Telegram network drops and exceptions
-        if hasattr(self.app, "add_error_handler"):
-            self.app.add_error_handler(self._on_telegram_error)
+        _register_handlers(self.app, self.handlers, self._on_telegram_error)
 
         # Initialize and start polling
         try:
@@ -162,8 +156,8 @@ class TelegramBotManager:
             try:
                 if self.app and hasattr(self.app, "shutdown"):
                     await self.app.shutdown()
-            except Exception:
-                pass
+            except Exception as shutdown_err:
+                logger.debug("Non-critical: error shutting down bot application on init failure: %s", shutdown_err)
             return False
 
     async def _on_telegram_error(self, update: object, context: Any) -> None:
@@ -192,8 +186,10 @@ class TelegramBotManager:
         if active_tasks:
             try:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
-            except Exception:
+            except asyncio.CancelledError:
                 pass
+            except Exception as wait_err:
+                logger.debug("Error awaiting active user tasks during bot stop: %s", wait_err)
 
         try:
             if self.app:
@@ -206,9 +202,9 @@ class TelegramBotManager:
         except Exception as exc:
             logger.warning("Error stopping Telegram Bot application: %s", exc)
 
-        logger.info("Telegram Bot service stopped cleanly.")
+        logger.info("Telegram Bot service stopped.")
 
-    async def test_token(self, token: str, proxy_url: Optional[str] = None) -> Dict[str, Any]:
+    async def test_token(self, token: str, proxy_url: str | None = None) -> dict[str, Any]:
         """Tests validity of a Telegram bot token via getMe API."""
         if not validate_bot_token(token):
             return {"success": False, "message": "Invalid Telegram Bot Token format"}
@@ -220,7 +216,7 @@ class TelegramBotManager:
                 if resp.status_code == 200:
                     data = resp.json()
                     if data.get("ok"):
-                        username = data.get("result", {}).get("username", "")
+                        username = (data.get("result") or {}).get("username", "")
                         return {"success": True, "message": f"Connected to @{username}", "info": data.get("result")}
                 return {"success": False, "message": f"Telegram API error (code {resp.status_code})"}
         except Exception as exc:
@@ -228,10 +224,10 @@ class TelegramBotManager:
             return {"success": False, "message": f"Network connection failed: {safe_err}"}
 
 
-_global_bot_manager: Optional[TelegramBotManager] = None
+_global_bot_manager: TelegramBotManager | None = None
 
 
-def get_telegram_bot_manager(db_path: Optional[str] = None) -> TelegramBotManager:
+def get_telegram_bot_manager(db_path: str | None = None) -> TelegramBotManager:
     """Returns singleton TelegramBotManager instance."""
     global _global_bot_manager
     if _global_bot_manager is None:
@@ -241,6 +237,7 @@ def get_telegram_bot_manager(db_path: Optional[str] = None) -> TelegramBotManage
 
 __all__ = [
     "validate_bot_token",
+    "parse_admin_ids",
     "TelegramBotManager",
     "get_telegram_bot_manager",
     "HAS_TELEGRAM",

@@ -11,7 +11,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Union
+from typing import Any, AsyncGenerator, Callable
 
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate
@@ -19,6 +19,7 @@ from galgame2voice.database.session import get_db, immediate_transaction
 from galgame2voice.services.affection_service import AffectionService
 from galgame2voice.services.emotion_classifier import classify_emotion
 from galgame2voice.services.metrics_collector import MetricsCollector
+from galgame2voice.services.tts_scheduler import get_tts_scheduler
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.audio_concat import concat_wav_files
 from galgame2voice.utils.logger import sanitize_error_detail
@@ -38,7 +39,7 @@ _CANCEL_SENTINEL = object()
 class SseKeepAlive(dict):
     """W3C Server-Sent Events keep-alive comment frame (: keep-alive\n\n)."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__({"event": ":keep-alive", "data": {}, "comment": ": keep-alive\n\n"})
 
     def __str__(self) -> str:
@@ -48,6 +49,11 @@ class SseKeepAlive(dict):
         if isinstance(other, str) and other == ": keep-alive\n\n":
             return True
         return super().__eq__(other)
+
+
+def _has_meaningful_text(chinese: str | None, japanese: str | None) -> bool:
+    """Returns True if either Chinese or Japanese string contains non-whitespace text."""
+    return bool((chinese and chinese.strip()) or (japanese and japanese.strip()))
 
 
 class _StreamRun:
@@ -62,12 +68,12 @@ class _StreamRun:
         text_pipe: TextSegmentationPipeline,
         tts_pipe: TtsStreamPipeline,
         llm_pipe: LlmStreamPipeline,
-        cancel_event: Optional[asyncio.Event] = None,
-    ):
+        cancel_event: asyncio.Event | None = None,
+    ) -> None:
         self.t_start: float = t_start
         self.session_id: str = session_id
         self.stream_gen_id: str = stream_gen_id
-        self.cancel_event: Optional[asyncio.Event] = cancel_event
+        self.cancel_event: asyncio.Event | None = cancel_event
 
         self.text_pipe: TextSegmentationPipeline = text_pipe
         self.parser = text_pipe.parser
@@ -77,12 +83,12 @@ class _StreamRun:
         self.tts_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
         self.event_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
 
-        self.producer_task: Optional[asyncio.Task] = None
-        self.worker_task: Optional[asyncio.Task] = None
-        self.cancel_monitor: Optional[asyncio.Task] = None
+        self.producer_task: asyncio.Task | None = None
+        self.worker_task: asyncio.Task | None = None
+        self.cancel_monitor: asyncio.Task | None = None
 
-        self.final_result: Dict[str, Any] = {}
-        self.audio_chunks: List[Dict[str, Any]] = []
+        self.final_result: dict[str, Any] = {}
+        self.audio_chunks: list[dict[str, Any]] = []
         self.profiler: ChatTurnProfiler = ChatTurnProfiler(turn_id=str(session_id))
 
         self.ttft_ms: float = 0.0
@@ -105,31 +111,31 @@ class StreamCoordinator:
         self,
         *,
         adapter: Any,
-        messages: List[Any],
+        messages: list[Any],
         model_name: str,
         actual_provider_id: str,
         session_id: str,
         prompt: str,
-        user_msg: Optional[Any] = None,
+        user_msg: Any | None = None,
         user_id: str = "default_user",
-        profile_id: Optional[int] = None,
-        active_prof: Optional[Any] = None,
+        profile_id: int | None = None,
+        active_prof: Any | None = None,
         tts_service: TtsService,
         db_path: str,
         metrics_collector: MetricsCollector,
         affection_service: AffectionService,
-        spawn_background: Optional[Callable[[Any], None]] = None,
-        concat_wav_fn: Optional[Callable[..., bool]] = None,
-        cancel_event: Optional[asyncio.Event] = None,
-        tts_options: Optional[Dict[str, Any]] = None,
+        spawn_background: Callable[[Any], None] | None = None,
+        concat_wav_fn: Callable[..., bool] | None = None,
+        cancel_event: asyncio.Event | None = None,
+        tts_options: dict[str, Any] | None = None,
         ai_adaptive_voice: bool = True,
-        temperature: Optional[float] = None,
-        top_p: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        frequency_penalty: Optional[float] = None,
-        presence_penalty: Optional[float] = None,
-        t_start: Optional[float] = None,
-    ):
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        t_start: float | None = None,
+    ) -> None:
         self.adapter = adapter
         self.messages = messages
         self.model_name = model_name
@@ -167,8 +173,8 @@ class StreamCoordinator:
 
     def _concat_wav(
         self,
-        chunk_paths: List[Union[str, Path]],
-        output_path: Union[str, Path],
+        chunk_paths: list[str | Path],
+        output_path: str | Path,
         pause_duration: float = 0.0,
     ) -> bool:
         """Concatenates audio WAV files."""
@@ -177,17 +183,11 @@ class StreamCoordinator:
         return concat_wav_files(chunk_paths, output_path, pause_duration)
 
     @staticmethod
-    def _affection_fallback(emotion: str) -> Dict[str, Any]:
+    def _affection_fallback(emotion: str) -> dict[str, Any]:
         """Neutral affection payload used when the affection update fails."""
-        return {
-            "score": 0,
-            "level": 1,
-            "level_name": "初识/生疏",
-            "emotion": emotion,
-            "points_earned": 0,
-        }
+        return AffectionService.get_fallback_payload(emotion)
 
-    def __aiter__(self) -> AsyncGenerator[Dict[str, Any], None]:
+    def __aiter__(self) -> AsyncGenerator[dict[str, Any], None]:
         return self.stream()
 
     def _init_stream_run(self) -> _StreamRun:
@@ -229,44 +229,46 @@ class StreamCoordinator:
             return
         await run.cancel_event.wait()
         try:
-            from galgame2voice.services.tts_scheduler import get_tts_scheduler
             get_tts_scheduler().cancel_generation(run.stream_gen_id)
-        except Exception:
-            pass
+        except Exception as cancel_err:
+            logger.debug("Non-critical: error cancelling generation in _watch_cancel: %s", cancel_err)
         for t in (run.producer_task, run.worker_task):
             if t is not None and not t.done():
                 t.cancel()
         try:
             run.tts_queue.put_nowait(None)
-        except Exception:
+        except (asyncio.QueueFull, Exception):
             pass
         try:
             run.event_queue.put_nowait(_CANCEL_SENTINEL)
-        except Exception:
+        except (asyncio.QueueFull, Exception):
             pass
 
     async def _put_with_cancel(
         self,
-        q: asyncio.Queue,
+        queue: asyncio.Queue,
         item: Any,
-        cancel_event: Optional[asyncio.Event] = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> bool:
         """Puts an item into a bounded queue with ultra-low latency while remaining responsive to cancel_event."""
         ce = cancel_event if cancel_event is not None else self.cancel_event
         if ce and ce.is_set():
             return False
         try:
-            q.put_nowait(item)
+            # Fast path: non-blocking enqueue without coroutine suspension
+            queue.put_nowait(item)
             return True
         except asyncio.QueueFull:
+            # Queue at capacity; fall back to short polling loop responsive to cancel_event
             pass
         while True:
             if ce and ce.is_set():
                 return False
             try:
-                await asyncio.wait_for(q.put(item), timeout=0.1)
+                await asyncio.wait_for(queue.put(item), timeout=0.1)
                 return True
             except asyncio.TimeoutError:
+                # Slot wait timed out; re-evaluate cancel_event before retrying
                 continue
 
     async def _tts_worker(self, run: _StreamRun) -> None:
@@ -406,8 +408,8 @@ class StreamCoordinator:
                     run.final_result["chinese"] = p_ch
                 if p_ja and not run.final_result.get("japanese"):
                     run.final_result["japanese"] = p_ja
-            except Exception:
-                pass
+            except Exception as finalize_err:
+                logger.debug("Non-critical: error finalizing text_pipe on LLM error: %s", finalize_err)
             safe_err = sanitize_error_detail(exc)
             await self._put_with_cancel(
                 event_queue,
@@ -421,7 +423,7 @@ class StreamCoordinator:
     async def _pump_events(
         self,
         run: _StreamRun,
-    ) -> AsyncGenerator[Union[Dict[str, Any], SseKeepAlive], None]:
+    ) -> AsyncGenerator[dict[str, Any] | SseKeepAlive, None]:
         """Event pump loop: responsive wait on event queue, keep-alive frames, and cancel event."""
         sentinels_received = 0
         last_event_time = time.monotonic()
@@ -476,8 +478,8 @@ class StreamCoordinator:
 
     async def _persist_partial_message(
         self,
-        partial_ch: Optional[str],
-        partial_ja: Optional[str],
+        partial_ch: str | None,
+        partial_ja: str | None,
         t_start: float,
     ) -> None:
         """Persists partial assistant response to the database in background."""
@@ -494,11 +496,21 @@ class StreamCoordinator:
         except Exception as persist_err:
             logger.warning("Failed to persist partial assistant message: %s", persist_err)
 
+    async def _prune_orphaned_user_message(self) -> None:
+        """Prunes orphaned user message when no meaningful assistant response was generated."""
+        if self.user_msg is not None and getattr(self.user_msg, "id", None):
+            try:
+                async with get_db(self.db_path) as conn:
+                    async with immediate_transaction(conn):
+                        await crud.delete_message(conn, self.user_msg.id)
+            except Exception as prune_err:
+                logger.warning("Failed to prune orphaned user message %s: %s", self.user_msg.id, prune_err)
+
     async def _finalize_early_exit(
         self,
         run: _StreamRun,
         error_seen: bool,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Handles early termination due to pipeline errors or client cancellation."""
         cancel_event = run.cancel_event
         is_cancelled = bool(cancel_event and cancel_event.is_set())
@@ -518,10 +530,7 @@ class StreamCoordinator:
         # not silently dropped from history (the user message was saved).
         partial_ch = run.final_result.get("chinese") or run.parser.chinese_extracted
         partial_ja = run.final_result.get("japanese") or run.parser.japanese_extracted
-        has_meaningful_content = bool(
-            (partial_ch and partial_ch.strip()) or (partial_ja and partial_ja.strip())
-        )
-        if has_meaningful_content:
+        if _has_meaningful_text(partial_ch, partial_ja):
             self._spawn_bg(self._persist_partial_message(partial_ch, partial_ja, run.t_start))
 
         if is_cancelled:
@@ -536,7 +545,7 @@ class StreamCoordinator:
                 },
             }
 
-    async def _concat_audio_chunks(self, audio_chunks: List[Dict[str, Any]]) -> str:
+    async def _concat_audio_chunks(self, audio_chunks: list[dict[str, Any]]) -> str:
         """Concatenates chunk WAVs into a master WAV file in a worker thread."""
         if not audio_chunks:
             return ""
@@ -572,10 +581,75 @@ class StreamCoordinator:
             logger.warning("Failed to concatenate audio chunks: %s", cat_err)
             return audio_chunks[0]["audio_url"]
 
+    @staticmethod
+    def _clean_audio_chunks(audio_chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Cleans local_path from audio_chunks before emitting to frontend."""
+        return [
+            {"index": c.get("index", i), "audio_url": c.get("audio_url", ""), "sentence": c.get("sentence", "")}
+            for i, c in enumerate(audio_chunks)
+        ]
+
+    @staticmethod
+    def _build_final_tts_params(parser: Any, ai_adaptive_voice: Any) -> dict[str, Any] | None:
+        """Constructs final TTS parameter payload from parser attributes if available."""
+        if parser.tts_speed is not None or parser.tts_temperature is not None or parser.tts_emotion is not None:
+            return {
+                "speed": parser.tts_speed,
+                "temperature": parser.tts_temperature,
+                "emotion": parser.tts_emotion,
+                "adaptive_enabled": bool(ai_adaptive_voice),
+            }
+        return None
+
+    async def _persist_turn_message(
+        self,
+        full_chinese: str,
+        full_japanese: str,
+        total_audio_url: str,
+        total_latency: int,
+    ) -> bool:
+        """Persists the assistant message to the database, or prunes orphaned user message if empty."""
+        has_meaningful_content = _has_meaningful_text(full_chinese, full_japanese)
+        if has_meaningful_content:
+            async with get_db(self.db_path) as conn:
+                async with immediate_transaction(conn):
+                    await crud.add_message(conn, MessageCreate(
+                        session_id=self.session_id,
+                        role="assistant",
+                        content_chinese=full_chinese,
+                        content_japanese=full_japanese,
+                        audio_url=total_audio_url,
+                        latency_ms=total_latency,
+                    ))
+            self.persisted_assistant = True
+        else:
+            await self._prune_orphaned_user_message()
+        return has_meaningful_content
+
+    async def _update_turn_affection(
+        self,
+        full_chinese: str,
+        final_emotion: str,
+    ) -> tuple[dict[str, Any], str]:
+        """Updates character affection state machine based on user prompt and assistant response."""
+        try:
+            affection_res = await self.affection_service.handle_turn_affection(
+                user_id=self.user_id,
+                character_id=self.profile_id,
+                user_text=self.prompt,
+                assistant_text=full_chinese,
+                explicit_emotion=final_emotion,
+            )
+            final_emotion = affection_res.get("emotion", final_emotion)
+        except Exception as aff_err:
+            logger.warning("Affection update in stream_chat failed: %s", aff_err)
+            affection_res = self._affection_fallback(final_emotion)
+        return affection_res, final_emotion
+
     async def _finalize_success(
         self,
         run: _StreamRun,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Performs success-path finalization: WAV concat, metrics, DB persist, affection, and done event."""
         parser = run.parser
         audio_chunks = run.audio_chunks
@@ -590,25 +664,17 @@ class StreamCoordinator:
         total_audio_url = await self._concat_audio_chunks(audio_chunks)
 
         total_latency = int((time.perf_counter() - t_start) * 1000)
-        ttft_ms = run.ttft_ms
-        if ttft_ms == 0.0:
-            ttft_ms = float(total_latency)
-        tts_first_chunk_ms = run.tts_first_chunk_ms
-        if tts_first_chunk_ms == 0.0:
-            tts_first_chunk_ms = float(total_latency)
+        ttft_ms = run.ttft_ms if run.ttft_ms != 0.0 else float(total_latency)
+        tts_first_chunk_ms = run.tts_first_chunk_ms if run.tts_first_chunk_ms != 0.0 else float(total_latency)
 
-        # Calculate and record token and latency metrics
-        prompt_text = "".join([getattr(m, "content", "") for m in self.messages])
-        prompt_tokens = self.metrics_collector.estimate_tokens(prompt_text)
-        completion_tokens = self.metrics_collector.estimate_tokens(full_chinese + full_japanese)
-
-        metric_record = await self.metrics_collector.record_metric(
+        metric_record = await self.metrics_collector.record_chat_turn(
             session_id=self.session_id,
             channel="web",
             provider_id=self.actual_provider_id,
             model_name=self.model_name,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
+            messages=self.messages,
+            chinese=full_chinese,
+            japanese=full_japanese,
             ttft_ms=ttft_ms,
             tts_first_chunk_ms=tts_first_chunk_ms,
             total_latency_ms=float(total_latency),
@@ -616,58 +682,16 @@ class StreamCoordinator:
             tts_generated_chunks=run.tts_generated_chunks,
         )
 
-        has_meaningful_content = bool(
-            (full_chinese and full_chinese.strip()) or (full_japanese and full_japanese.strip())
+        has_meaningful_content = await self._persist_turn_message(
+            full_chinese=full_chinese,
+            full_japanese=full_japanese,
+            total_audio_url=total_audio_url,
+            total_latency=total_latency,
         )
-        if has_meaningful_content:
-            # Persist assistant message in DB
-            async with get_db(self.db_path) as conn:
-                async with immediate_transaction(conn):
-                    await crud.add_message(conn, MessageCreate(
-                        session_id=self.session_id,
-                        role="assistant",
-                        content_chinese=full_chinese,
-                        content_japanese=full_japanese,
-                        audio_url=total_audio_url,
-                        latency_ms=total_latency,
-                    ))
-                self.persisted_assistant = True
-        elif self.user_msg is not None and getattr(self.user_msg, "id", None):
-            # No meaningful assistant tokens were generated.
-            # Prune the orphaned user message to prevent consecutive user turns in DB history.
-            try:
-                async with get_db(self.db_path) as conn:
-                    async with immediate_transaction(conn):
-                        await conn.execute("DELETE FROM messages WHERE id = ?;", (self.user_msg.id,))
-            except Exception as prune_err:
-                logger.warning("Failed to prune orphaned user message %s: %s", self.user_msg.id, prune_err)
 
-        # Clean local_path from audio_chunks before emitting to frontend
-        clean_chunks = [
-            {"index": c.get("index", i), "audio_url": c.get("audio_url", ""), "sentence": c.get("sentence", "")}
-            for i, c in enumerate(audio_chunks)
-        ]
-
-        # Affection State Machine update
-        try:
-            affection_res = await self.affection_service.handle_turn_affection(
-                user_id=self.user_id,
-                character_id=self.profile_id,
-                user_text=self.prompt,
-                assistant_text=full_chinese,
-                explicit_emotion=final_emotion,
-            )
-            final_emotion = affection_res.get("emotion", final_emotion)
-        except Exception as aff_err:
-            logger.warning("Affection update in stream_chat failed: %s", aff_err)
-            affection_res = self._affection_fallback(final_emotion)
-
-        final_tts_params = {
-            "speed": parser.tts_speed,
-            "temperature": parser.tts_temperature,
-            "emotion": parser.tts_emotion,
-            "adaptive_enabled": bool(self.ai_adaptive_voice),
-        } if (parser.tts_speed is not None or parser.tts_temperature is not None or parser.tts_emotion is not None) else None
+        clean_chunks = self._clean_audio_chunks(audio_chunks)
+        affection_res, final_emotion = await self._update_turn_affection(full_chinese, final_emotion)
+        final_tts_params = self._build_final_tts_params(parser, self.ai_adaptive_voice)
 
         # Emit final done event
         yield {
@@ -691,10 +715,9 @@ class StreamCoordinator:
     async def _teardown(self, run: _StreamRun) -> None:
         """Finally-block teardown: cancels scheduled generation, reaps background tasks, ensures DB persistence."""
         try:
-            from galgame2voice.services.tts_scheduler import get_tts_scheduler
             get_tts_scheduler().cancel_generation(run.stream_gen_id)
-        except Exception:
-            pass
+        except Exception as cancel_err:
+            logger.debug("Non-critical: error cancelling generation in _teardown: %s", cancel_err)
 
         if run.cancel_monitor and not run.cancel_monitor.done():
             run.cancel_monitor.cancel()
@@ -730,10 +753,7 @@ class StreamCoordinator:
         if not self.persisted_assistant and self.user_msg is not None:
             partial_ch = run.final_result.get("chinese") or run.parser.chinese_extracted
             partial_ja = run.final_result.get("japanese") or run.parser.japanese_extracted
-            has_meaningful_content = bool(
-                (partial_ch and partial_ch.strip()) or (partial_ja and partial_ja.strip())
-            )
-            if has_meaningful_content:
+            if _has_meaningful_text(partial_ch, partial_ja):
                 try:
                     async with get_db(self.db_path) as conn:
                         async with immediate_transaction(conn):
@@ -748,19 +768,12 @@ class StreamCoordinator:
                         self.persisted_assistant = True
                 except Exception as persist_err:
                     logger.warning("Failed to persist partial assistant message in finally: %s", persist_err)
-            elif getattr(self.user_msg, "id", None):
-                # No meaningful assistant tokens were generated before disconnect.
-                # Prune the orphaned user message to prevent consecutive user turns in DB history.
-                try:
-                    async with get_db(self.db_path) as conn:
-                        async with immediate_transaction(conn):
-                            await conn.execute("DELETE FROM messages WHERE id = ?;", (self.user_msg.id,))
-                except Exception as prune_err:
-                    logger.warning("Failed to prune orphaned user message %s: %s", self.user_msg.id, prune_err)
+            else:
+                await self._prune_orphaned_user_message()
 
         run.profiler.print_waterfall()
 
-    async def stream(self) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream(self) -> AsyncGenerator[dict[str, Any], None]:
         """
         Asynchronously streams bilingual SSE event dictionaries:
           - text: incremental Chinese delta tokens

@@ -3,27 +3,40 @@ Character Management REST API Router for galgame2voice (/api/characters).
 Provides unified character profile query, active character switching, and affection integration.
 """
 
+import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any
+import aiosqlite
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db
-from galgame2voice.services.voice_manager import get_voice_manager, InsufficientMemoryError
+from galgame2voice.routers.common import switch_voice_profile_or_raise, validate_user_id
+from galgame2voice.services.character_manager import get_character_manager
+from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.utils.logger import sanitize_error_detail
-
-import json
-from galgame2voice.config import get_settings
 
 logger = logging.getLogger("galgame2voice.routers.characters")
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 
 
-def _rewrite_sprite_urls(data: Dict[str, Any], character_id: int) -> None:
+async def _get_voice_profile_or_404(conn: aiosqlite.Connection, character_id: int) -> Any:
+    """Fetches voice profile by ID or raises 404 HTTPException if not found."""
+    prof = await crud.get_voice_profile(conn, character_id)
+    if not prof:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Character with ID {character_id} not found",
+        )
+    return prof
+
+
+def _rewrite_sprite_urls(data: dict[str, Any], character_id: int) -> None:
     """把立绘清单里 sprites 的 file 路径改写为后端文件接口 URL（自包含读取）。"""
     sprites = data.get("sprites") or {}
     if not isinstance(sprites, dict):
@@ -37,11 +50,10 @@ def _rewrite_sprite_urls(data: Dict[str, Any], character_id: int) -> None:
                 sprite["file"] = f"/api/characters/{character_id}/portrait/file/{costume_id}/{file_name}"
 
 
-def _resolve_character_portrait(char_name: str, character_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+def _resolve_character_portrait(char_name: str, character_id: int | None = None) -> dict[str, Any] | None:
     """立绘完全由角色包内的 portrait/expressions.json 驱动（表情编号差分体系）。"""
     if not char_name:
         return None
-    from galgame2voice.services.character_manager import get_character_manager
     mgr = get_character_manager()
     pkg = mgr.get_character(char_name)
     if pkg is None:
@@ -60,7 +72,7 @@ def _resolve_character_portrait(char_name: str, character_id: Optional[int] = No
     if not costumes:
         return None
 
-    data: Dict[str, Any] = {
+    data: dict[str, Any] = {
         "enabled": True,
         "character_id": pkg.manifest.id,
         "character_name": pkg.manifest.name,
@@ -80,8 +92,8 @@ def _resolve_character_portrait(char_name: str, character_id: Optional[int] = No
 
 
 class CharacterSwitchRequest(BaseModel):
-    character_id: Optional[int] = Field(default=None, ge=1)
-    character_name: Optional[str] = Field(default=None, max_length=100)
+    character_id: int | None = Field(default=None, ge=1)
+    character_name: str | None = Field(default=None, max_length=100)
     force: bool = False
 
 
@@ -92,13 +104,8 @@ class CharacterSwitchRequest(BaseModel):
 )
 async def list_characters(
     user_id: str = Query(default="default_user", min_length=1, max_length=128, description="User ID"),
-):
-    clean_user = user_id.strip()
-    if not clean_user:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="user_id cannot be empty",
-        )
+) -> dict[str, Any]:
+    clean_user = validate_user_id(user_id)
 
     async with get_db() as conn:
         try:
@@ -106,11 +113,14 @@ async def list_characters(
             active_profile = await crud.get_active_voice_profile(conn)
             active_id = active_profile.id if active_profile else (profiles[0].id if profiles else None)
 
+            profile_ids = [prof.id for prof in profiles]
+            affections_by_id = await crud.get_user_affections_for_profiles(
+                conn, user_id=clean_user, profile_ids=profile_ids
+            )
+
             results = []
             for prof in profiles:
-                affection = await crud.get_or_create_character_affection(
-                    conn, user_id=clean_user, character_id=prof.id
-                )
+                affection = affections_by_id.get(prof.id)
                 results.append({
                     "id": prof.id,
                     "name": prof.name,
@@ -144,28 +154,18 @@ async def list_characters(
 async def get_character_detail(
     character_id: int,
     user_id: str = Query(default="default_user", min_length=1, max_length=128, description="User ID"),
-):
+) -> dict[str, Any]:
     if character_id < 1:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="character_id must be a positive integer >= 1",
         )
 
-    clean_user = user_id.strip()
-    if not clean_user:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="user_id cannot be empty",
-        )
+    clean_user = validate_user_id(user_id)
 
     async with get_db() as conn:
         try:
-            prof = await crud.get_voice_profile(conn, character_id)
-            if not prof:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Character with ID {character_id} not found",
-                )
+            prof = await _get_voice_profile_or_404(conn, character_id)
 
             active_profile = await crud.get_active_voice_profile(conn)
             active_id = active_profile.id if active_profile else 1
@@ -204,14 +204,9 @@ async def get_character_detail(
     summary="Get Character Standing CG Portrait Manifest",
     description="Returns available standing CG sprites, outfits, emotions and coordinates.",
 )
-async def get_character_portrait(character_id: int):
+async def get_character_portrait(character_id: int) -> dict[str, Any]:
     async with get_db() as conn:
-        prof = await crud.get_voice_profile(conn, character_id)
-        if not prof:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Character with ID {character_id} not found",
-            )
+        prof = await _get_voice_profile_or_404(conn, character_id)
         portrait = _resolve_character_portrait(prof.name, character_id)
         if not portrait:
             return {"enabled": False, "message": "No standing CG portrait available for this character"}
@@ -223,20 +218,14 @@ async def get_character_portrait(character_id: int):
     summary="Get Character Portrait Sprite Image",
     description="Serves a standing CG portrait sprite image from the character's self-contained package.",
 )
-async def get_character_portrait_file(character_id: int, costume: str, file_name: str):
+async def get_character_portrait_file(character_id: int, costume: str, file_name: str) -> FileResponse:
     # 安全：拒绝路径遍历
     if ".." in costume or ".." in file_name or "/" in file_name or "\\" in file_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid sprite path")
 
     async with get_db() as conn:
-        prof = await crud.get_voice_profile(conn, character_id)
-        if not prof:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Character with ID {character_id} not found",
-            )
+        prof = await _get_voice_profile_or_404(conn, character_id)
 
-    from galgame2voice.services.character_manager import get_character_manager
     mgr = get_character_manager()
     pkg = mgr.get_character(prof.name)
     if pkg is None:
@@ -257,44 +246,8 @@ class SystemPromptUpdate(BaseModel):
     )
 
 
-@router.put(
-    "/{character_id}/system-prompt",
-    summary="Update Character System Prompt",
-    description="Writes the persona prompt back into the character package manifest.json "
-                "(the single source of truth) and refreshes the database mirror.",
-)
-async def update_character_system_prompt(character_id: int, req: SystemPromptUpdate):
-    text = req.system_prompt.strip()
-    if not text:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="人设提示词不能为空",
-        )
-
-    async with get_db() as conn:
-        prof = await crud.get_voice_profile(conn, character_id)
-        if not prof:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Character with ID {character_id} not found",
-            )
-
-    from galgame2voice.services.character_manager import get_character_manager
-    mgr = get_character_manager()
-    pkg = mgr.get_character(prof.name)
-    if pkg is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="角色包目录不存在，无法写回人设提示词；请先确认 characters/ 下的角色包完整",
-        )
-
-    manifest_path = pkg.folder / "manifest.json"
-    if not manifest_path.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"角色包缺少 manifest.json: {manifest_path}",
-        )
-
+def _write_manifest_system_prompt(manifest_path: Path, text: str) -> None:
+    """Safely updates system_prompt in manifest.json using atomic temp file replacement."""
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception as exc:
@@ -319,6 +272,41 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
             detail=f"写入角色 manifest.json 失败: {safe_err}",
         ) from exc
 
+
+@router.put(
+    "/{character_id}/system-prompt",
+    summary="Update Character System Prompt",
+    description="Writes the persona prompt back into the character package manifest.json "
+                "(the single source of truth) and refreshes the database mirror.",
+)
+async def update_character_system_prompt(character_id: int, req: SystemPromptUpdate) -> dict[str, Any]:
+    text = req.system_prompt.strip()
+    if not text:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="人设提示词不能为空",
+        )
+
+    async with get_db() as conn:
+        prof = await _get_voice_profile_or_404(conn, character_id)
+
+    mgr = get_character_manager()
+    pkg = mgr.get_character(prof.name)
+    if pkg is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="角色包目录不存在，无法写回人设提示词；请先确认 characters/ 下的角色包完整",
+        )
+
+    manifest_path = pkg.folder / "manifest.json"
+    if not manifest_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"角色包缺少 manifest.json: {manifest_path}",
+        )
+
+    _write_manifest_system_prompt(manifest_path, text)
+
     # 内存里的角色包缓存也要刷新，否则本进程后续仍读到旧人设
     mgr.discover_characters()
 
@@ -340,12 +328,73 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
     }
 
 
+async def _resolve_profile_by_name(conn: aiosqlite.Connection, char_name: str) -> Any | None:
+    """Resolves a voice profile by character name using exact, flexible, or package-synced match."""
+    cm = get_character_manager()
+    pkg = cm.get_character(char_name)
+
+    candidate_names: list[str] = []
+    if pkg:
+        candidate_names.extend([pkg.name, pkg.id])
+    candidate_names.append(char_name)
+
+    # 1. Exact name match in DB
+    for c_name in candidate_names:
+        profile = await crud.get_voice_profile_by_name(conn, c_name)
+        if profile:
+            return profile
+
+    # 2. Flexible matching against existing DB voice profiles
+    profiles = await crud.list_voice_profiles(conn)
+    for p in profiles:
+        for c_name in candidate_names:
+            if p.name.lower() == c_name.lower():
+                return p
+
+    if pkg:
+        for p in profiles:
+            if p.name.startswith(pkg.name) or pkg.name.startswith(p.name):
+                return p
+            if pkg.id.lower() in p.name.lower() or pkg.name in p.name:
+                return p
+
+    for p in profiles:
+        if p.name.startswith(char_name) or char_name in p.name:
+            return p
+
+    # 3. If still not found but package exists on disk, sync with DB and retry
+    if pkg:
+        await cm.sync_with_db(conn)
+        profile = await crud.get_voice_profile_by_name(conn, pkg.name)
+        if profile:
+            return profile
+        profiles = await crud.list_voice_profiles(conn)
+        for p in profiles:
+            if p.name.startswith(pkg.name) or pkg.name in p.name:
+                return p
+
+    return None
+
+
+async def _lookup_character_profile(
+    conn: aiosqlite.Connection,
+    char_id: int | None,
+    char_name: str | None,
+) -> Any | None:
+    """Resolves character profile by ID or name fallback."""
+    if char_id is not None:
+        return await crud.get_voice_profile(conn, char_id)
+    if char_name:
+        return await _resolve_profile_by_name(conn, char_name)
+    return None
+
+
 @router.post(
     "/switch",
     summary="Switch Active Character",
     description="Atomically switches the active character voice profile with memory safety and auto-rollback.",
 )
-async def switch_character(req: CharacterSwitchRequest):
+async def switch_character(req: CharacterSwitchRequest) -> dict[str, Any]:
     char_id = req.character_id
     raw_name = req.character_name
     char_name = raw_name.strip() if raw_name else None
@@ -363,65 +412,10 @@ async def switch_character(req: CharacterSwitchRequest):
         )
 
     # 1. 404 Precedence: Resolve character entity first from database
+    ident = char_id if char_id is not None else char_name
     async with get_db() as conn:
-        profile = None
-        if char_id is not None:
-            profile = await crud.get_voice_profile(conn, char_id)
-        elif char_name:
-            from galgame2voice.services.character_manager import get_character_manager
-            cm = get_character_manager()
-            pkg = cm.get_character(char_name)
-
-            candidate_names: List[str] = []
-            if pkg:
-                candidate_names.extend([pkg.name, pkg.id])
-            candidate_names.append(char_name)
-
-            # 1. Exact name match in DB
-            for c_name in candidate_names:
-                profile = await crud.get_voice_profile_by_name(conn, c_name)
-                if profile:
-                    break
-
-            # 2. Flexible matching against existing DB voice profiles
-            if not profile:
-                profiles = await crud.list_voice_profiles(conn)
-                for p in profiles:
-                    for c_name in candidate_names:
-                        if p.name.lower() == c_name.lower():
-                            profile = p
-                            break
-                    if profile:
-                        break
-
-                if not profile and pkg:
-                    for p in profiles:
-                        if p.name.startswith(pkg.name) or pkg.name.startswith(p.name):
-                            profile = p
-                            break
-                        if pkg.id.lower() in p.name.lower() or pkg.name in p.name:
-                            profile = p
-                            break
-
-                if not profile:
-                    for p in profiles:
-                        if p.name.startswith(char_name) or char_name in p.name:
-                            profile = p
-                            break
-
-            # 3. If still not found but package exists on disk, sync with DB and retry
-            if not profile and pkg:
-                await cm.sync_with_db(conn)
-                profile = await crud.get_voice_profile_by_name(conn, pkg.name)
-                if not profile:
-                    profiles = await crud.list_voice_profiles(conn)
-                    for p in profiles:
-                        if p.name.startswith(pkg.name) or pkg.name in p.name:
-                            profile = p
-                            break
-
+        profile = await _lookup_character_profile(conn, char_id, char_name)
         if not profile:
-            ident = char_id if char_id is not None else char_name
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Character '{ident}' not found",
@@ -434,7 +428,6 @@ async def switch_character(req: CharacterSwitchRequest):
         async with get_db() as conn:
             verified_profile = await crud.get_voice_profile(conn, profile.id)
             if not verified_profile:
-                ident = char_id if char_id is not None else char_name
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Character '{ident}' not found",
@@ -450,18 +443,7 @@ async def switch_character(req: CharacterSwitchRequest):
             except Exception as exc:
                 logger.debug("Failed syncing active character to settings: %s", exc)
         else:
-            try:
-                success = await manager.switch_profile(profile, persist=True, _already_locked=True, force=req.force)
-            except InsufficientMemoryError as mem_err:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=str(mem_err),
-                ) from mem_err
-            if not success:
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="Failed to load GPT/SoVITS model weights onto backend service",
-                )
+            await switch_voice_profile_or_raise(manager, profile, force=req.force)
 
         return {
             "status": "switched",

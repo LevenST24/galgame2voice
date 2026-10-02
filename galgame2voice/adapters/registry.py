@@ -3,7 +3,7 @@ Provider Registry and Adapter Factory for galgame2voice.
 Maintains default configurations and model presets for 10+ major LLM and STT providers.
 """
 
-from typing import Dict, Any, List, Optional, Type, Union, Tuple
+from typing import Any
 
 from galgame2voice.adapters.base import BaseLLMAdapter, BaseSTTAdapter
 from galgame2voice.adapters.llm import (
@@ -25,7 +25,7 @@ from galgame2voice.adapters.stt import (
 )
 
 
-PROVIDER_PRESETS: Dict[str, Dict[str, Any]] = {
+PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
     "gemini": {
         "id": "gemini",
         "name": "Google Gemini",
@@ -187,27 +187,8 @@ PROVIDER_PRESETS: Dict[str, Dict[str, Any]] = {
 }
 
 
-def list_provider_presets() -> List[Dict[str, Any]]:
-    """Returns a list of all built-in provider preset descriptions."""
-    results = []
-    for p in PROVIDER_PRESETS.values():
-        results.append({
-            "id": p["id"],
-            "name": p["name"],
-            "default_base_url": p["default_base_url"],
-            "default_chat_model": p["default_chat_model"],
-            "default_stt_model": p["default_stt_model"],
-            "preset_models": p["preset_models"],
-            "description": p["description"],
-        })
-    return results
-
-
-def get_provider_preset(provider_id: str) -> Optional[Dict[str, Any]]:
-    """Retrieves preset information for a specific provider ID."""
-    p = PROVIDER_PRESETS.get(provider_id.lower())
-    if not p:
-        return None
+def _format_preset_dict(p: dict[str, Any]) -> dict[str, Any]:
+    """Formats raw provider preset entry into client-facing metadata dictionary."""
     return {
         "id": p["id"],
         "name": p["name"],
@@ -219,20 +200,40 @@ def get_provider_preset(provider_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def list_provider_presets() -> list[dict[str, Any]]:
+    """Returns a list of all built-in provider preset descriptions."""
+    return [_format_preset_dict(p) for p in PROVIDER_PRESETS.values()]
+
+
+def get_provider_preset(provider_id: str) -> dict[str, Any] | None:
+    """Retrieves preset information for a specific provider ID."""
+    p = PROVIDER_PRESETS.get(provider_id.lower())
+    if not p:
+        return None
+    return _format_preset_dict(p)
+
+
 # Derived from PROVIDER_PRESETS so provider metadata and adapter routing
 # can never drift apart.
-ADAPTER_CLASS_MAP: Dict[str, Tuple[Type[BaseLLMAdapter], str]] = {
+ADAPTER_CLASS_MAP: dict[str, tuple[type[BaseLLMAdapter], str]] = {
     pid: (p["adapter_class"], p["default_base_url"])
     for pid, p in PROVIDER_PRESETS.items()
 }
 
 
+def _get_config_attr(config: Any, key: str, default: Any = None) -> Any:
+    """Retrieves an attribute or key from a config dictionary or object."""
+    if isinstance(config, dict):
+        return config.get(key, default)
+    return getattr(config, key, default)
+
+
 def _resolve_provider_request(
-    provider_id_or_config: Union[str, Dict[str, Any], Any],
-    api_key: Optional[str],
-    base_url: Optional[str],
-    kwargs: Dict[str, Any],
-) -> Tuple[str, str, Optional[str]]:
+    provider_id_or_config: str | dict[str, Any] | Any,
+    api_key: str | None,
+    base_url: str | None,
+    kwargs: dict[str, Any],
+) -> tuple[str, str, str | None]:
     """Normalizes provider id, api key, and base url from id/dict/object config."""
     provider_id = "openai"
     key = api_key or ""
@@ -240,18 +241,13 @@ def _resolve_provider_request(
 
     if isinstance(provider_id_or_config, str):
         provider_id = provider_id_or_config.lower()
-    elif isinstance(provider_id_or_config, dict):
-        provider_id = str(provider_id_or_config.get("provider_type") or provider_id_or_config.get("id") or "openai").lower()
-        key = key or provider_id_or_config.get("api_key", "")
-        url = url or provider_id_or_config.get("api_base_url") or provider_id_or_config.get("base_url")
-        custom_headers = provider_id_or_config.get("custom_headers")
-        if custom_headers and "custom_headers" not in kwargs:
-            kwargs["custom_headers"] = custom_headers
-    elif hasattr(provider_id_or_config, "id"):
-        provider_id = str(getattr(provider_id_or_config, "provider_type", None) or getattr(provider_id_or_config, "id", "openai")).lower()
-        key = key or getattr(provider_id_or_config, "api_key", "")
-        url = url or getattr(provider_id_or_config, "api_base_url", None) or getattr(provider_id_or_config, "base_url", None)
-        custom_headers = getattr(provider_id_or_config, "custom_headers", None)
+    elif isinstance(provider_id_or_config, dict) or hasattr(provider_id_or_config, "id"):
+        cfg = provider_id_or_config
+        p_type = _get_config_attr(cfg, "provider_type") or _get_config_attr(cfg, "id", "openai")
+        provider_id = str(p_type).lower()
+        key = key or _get_config_attr(cfg, "api_key", "")
+        url = url or _get_config_attr(cfg, "api_base_url") or _get_config_attr(cfg, "base_url")
+        custom_headers = _get_config_attr(cfg, "custom_headers")
         if custom_headers and "custom_headers" not in kwargs:
             kwargs["custom_headers"] = custom_headers
 
@@ -259,9 +255,9 @@ def _resolve_provider_request(
 
 
 def get_llm_adapter(
-    provider_id_or_config: Union[str, Dict[str, Any], Any],
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
+    provider_id_or_config: str | dict[str, Any] | Any,
+    api_key: str | None = None,
+    base_url: str | None = None,
     **kwargs: Any,
 ) -> BaseLLMAdapter:
     """
@@ -279,20 +275,15 @@ def get_llm_adapter(
         target_url = url or default_url
         return adapter_cls(api_key=key, base_url=target_url, **kwargs)
 
-    if preset:
-        preset_cls: Type[BaseLLMAdapter] = preset.get("adapter_class", OpenAICompatibleLLMAdapter)
-        target_url = url or preset["default_base_url"]
-        return preset_cls(api_key=key, base_url=target_url, **kwargs)
-
     # Fallback to general OpenAI-compatible adapter
     target_url = url or "https://api.openai.com/v1"
     return OpenAICompatibleLLMAdapter(api_key=key, base_url=target_url, **kwargs)
 
 
 def get_stt_adapter(
-    provider_id_or_config: Union[str, Dict[str, Any], Any],
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
+    provider_id_or_config: str | dict[str, Any] | Any,
+    api_key: str | None = None,
+    base_url: str | None = None,
     **kwargs: Any,
 ) -> BaseSTTAdapter:
     """
@@ -300,12 +291,11 @@ def get_stt_adapter(
     """
     provider_id, key, url = _resolve_provider_request(provider_id_or_config, api_key, base_url, kwargs)
 
-    if provider_id == "siliconflow":
-        target_url = url or "https://api.siliconflow.cn/v1"
-        return SiliconFlowSTTAdapter(api_key=key, base_url=target_url, **kwargs)
-    elif provider_id == "qwen":
-        target_url = url or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        return QwenSTTAdapter(api_key=key, base_url=target_url, **kwargs)
+    preset = PROVIDER_PRESETS.get(provider_id)
+    if preset and preset.get("stt_adapter_class"):
+        adapter_cls = preset["stt_adapter_class"]
+        target_url = url or preset["default_base_url"]
+        return adapter_cls(api_key=key, base_url=target_url, **kwargs)
 
     target_url = url or "https://api.openai.com/v1"
     return OpenAICompatibleSTTAdapter(api_key=key, base_url=target_url, **kwargs)

@@ -5,7 +5,6 @@ Provides type-safe environment and runtime settings via Pydantic V2.
 
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -55,7 +54,7 @@ class Settings(BaseSettings):
     )
 
     # Security & Auth
-    console_token: Optional[str] = Field(
+    console_token: str | None = Field(
         default=None,
         validation_alias=AliasChoices("GALGAME2VOICE_CONSOLE_TOKEN", "CONSOLE_TOKEN"),
         description="Console access token override (GALGAME2VOICE_CONSOLE_TOKEN); DB token used when unset",
@@ -118,7 +117,7 @@ class Settings(BaseSettings):
     )
 
     # CORS Security Configuration
-    cors_origins: List[str] = Field(
+    cors_origins: list[str] = Field(
         default=["http://127.0.0.1:8080", "http://localhost:8080"],
         validation_alias=AliasChoices("GALGAME2VOICE_CORS_ORIGINS", "CORS_ORIGINS"),
         description="Allowed origins for CORS middleware",
@@ -128,10 +127,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GALGAME2VOICE_CORS_ALLOW_CREDENTIALS", "CORS_ALLOW_CREDENTIALS"),
         description="Allow credentials in CORS requests",
     )
-    cors_allow_methods: List[str] = Field(
+    cors_allow_methods: list[str] = Field(
         default=["*"], description="Allowed HTTP methods"
     )
-    cors_allow_headers: List[str] = Field(
+    cors_allow_headers: list[str] = Field(
         default=["*"], description="Allowed HTTP headers"
     )
 
@@ -148,17 +147,22 @@ class Settings(BaseSettings):
     )
 
     # Telegram Bot Configuration
+    # Parsed from the environment for compatibility, but the running bot never consults these
+    # three fields: enabled flag, bot token and proxy are loaded from the SQLite settings row
+    # edited in the web console (telegram_bot/bot.py::TelegramBotManager.start). The Telegram
+    # values read straight from the environment are TELEGRAM_ADMIN_IDS and
+    # TELEGRAM_DROP_PENDING_UPDATES.
     telegram_enabled: bool = Field(
         default=False,
         validation_alias=AliasChoices("GALGAME2VOICE_TELEGRAM_ENABLED", "TELEGRAM_ENABLED"),
         description="Enable Telegram bot service",
     )
-    telegram_token: Optional[str] = Field(
+    telegram_token: str | None = Field(
         default=None,
         validation_alias=AliasChoices("GALGAME2VOICE_TELEGRAM_TOKEN", "TELEGRAM_TOKEN"),
         description="Telegram Bot API token",
     )
-    telegram_proxy: Optional[str] = Field(
+    telegram_proxy: str | None = Field(
         default=None,
         validation_alias=AliasChoices("GALGAME2VOICE_TELEGRAM_PROXY", "TELEGRAM_PROXY"),
         description="HTTP/SOCKS5 proxy URL for Telegram bot",

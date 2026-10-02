@@ -10,23 +10,37 @@ Supports clean cache invalidation upon profile creation, update, or deletion.
 import logging
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any
 
 from galgame2voice.utils.path_guard import resolve_weight_file_path, resolve_existing_audio_path
-from galgame2voice.services.gpt_sovits_client import (
-    probe_audio_duration_seconds,
-    async_probe_audio_duration_seconds,
+from galgame2voice.utils.audio_spec import (
+    REFERENCE_AUDIO_MAX_SECONDS,
+    REFERENCE_AUDIO_MIN_SECONDS,
 )
+from galgame2voice.services.gpt_sovits_client import probe_audio_duration_seconds
 from galgame2voice.services.emotion_references import resolve_emotion_reference
 
 logger = logging.getLogger("galgame2voice.services.voice_resolver")
+
+DEFAULT_EMOTION_KEYS: tuple[str, ...] = (
+    "joy",
+    "anger",
+    "sorrow",
+    "fun",
+    "surprise",
+    "fear",
+    "shyness",
+    "neutral",
+    "tsundere",
+    "yandere",
+    "gentle",
+)
 
 
 @dataclass
 class ResolvedVoiceContext:
     """Pre-resolved, immutable-in-memory representation of an active voice profile."""
-    profile_id: Optional[int]
+    profile_id: int | None
     name: str
     gpt_weights_path: str
     sovits_weights_path: str
@@ -34,14 +48,23 @@ class ResolvedVoiceContext:
     prompt_text: str
     prompt_lang: str
     text_lang: str
-    emotions: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    emotions: dict[str, dict[str, str]] = field(default_factory=dict)
     resolved_at: float = field(default_factory=time.monotonic)
 
-    def get_emotion_ref(self, emotion: str) -> Optional[Dict[str, str]]:
+    def get_emotion_ref(self, emotion: str) -> dict[str, str] | None:
         """Returns pre-validated emotion reference audio options if available."""
         if not emotion:
             return None
         return self.emotions.get(str(emotion).strip().lower())
+
+
+def _extract_field(raw: Any, key: str, default: Any = "") -> Any:
+    """Safely extracts a field from a model, dataclass, object or dict."""
+    if hasattr(raw, key):
+        return getattr(raw, key)
+    if isinstance(raw, dict):
+        return raw.get(key, default)
+    return default
 
 
 class VoiceProfileResolver:
@@ -51,12 +74,12 @@ class VoiceProfileResolver:
     and filesystem duration probes.
     """
 
-    def __init__(self, ttl_seconds: float = 300.0):
+    def __init__(self, ttl_seconds: float = 300.0) -> None:
         self._ttl = ttl_seconds
         # Keys: "id:<int>", "name:<str>", "active"
-        self._cache: Dict[str, Tuple[float, ResolvedVoiceContext]] = {}
+        self._cache: dict[str, tuple[float, ResolvedVoiceContext]] = {}
 
-    def invalidate(self, profile_id: Optional[int] = None, name: Optional[str] = None) -> None:
+    def invalidate(self, profile_id: int | None = None, name: str | None = None) -> None:
         """Invalidates cached contexts. If no arguments provided, clears all."""
         if profile_id is None and name is None:
             self._cache.clear()
@@ -76,10 +99,10 @@ class VoiceProfileResolver:
 
     async def resolve_context(
         self,
-        db_path: Optional[str] = None,
-        profile_id: Optional[int] = None,
-        character_name: Optional[str] = None,
-    ) -> Optional[ResolvedVoiceContext]:
+        db_path: str | None = None,
+        profile_id: int | None = None,
+        character_name: str | None = None,
+    ) -> ResolvedVoiceContext | None:
         """
         Resolves a voice profile from memory cache, falling back to SQLite and package manifests.
         """
@@ -112,14 +135,15 @@ class VoiceProfileResolver:
 
     async def _fetch_raw_profile(
         self,
-        db_path: Optional[str],
-        profile_id: Optional[int],
-        character_name: Optional[str],
-    ) -> Optional[Any]:
+        db_path: str | None,
+        profile_id: int | None,
+        character_name: str | None,
+    ) -> Any | None:
         from galgame2voice.database import crud
         from galgame2voice.database.session import get_db
 
         raw = None
+        # Tiered profile resolution: each tier catches exceptions so failures do not block subsequent fallbacks
         if profile_id is not None:
             try:
                 async with get_db(db_path) as conn:
@@ -154,16 +178,16 @@ class VoiceProfileResolver:
 
     def _build_context(self, raw: Any) -> ResolvedVoiceContext:
         """Constructs a validated ResolvedVoiceContext from a raw DB model or dict."""
-        pid = getattr(raw, "id", None) if hasattr(raw, "id") else raw.get("id") if isinstance(raw, dict) else None
-        name = getattr(raw, "name", "") if hasattr(raw, "name") else raw.get("name", "") if isinstance(raw, dict) else "Default"
+        pid = _extract_field(raw, "id", None)
+        name = _extract_field(raw, "name", "Default") or "Default"
         clean_name = name.split("(")[0].strip()
 
-        gpt_path = getattr(raw, "gpt_weights_path", "") if hasattr(raw, "gpt_weights_path") else raw.get("gpt_weights_path", "") if isinstance(raw, dict) else ""
-        sovits_path = getattr(raw, "sovits_weights_path", "") if hasattr(raw, "sovits_weights_path") else raw.get("sovits_weights_path", "") if isinstance(raw, dict) else ""
-        ref_audio = getattr(raw, "ref_audio_path", "") if hasattr(raw, "ref_audio_path") else raw.get("ref_audio_path", "") if isinstance(raw, dict) else ""
-        prompt_text = getattr(raw, "prompt_text", "") if hasattr(raw, "prompt_text") else raw.get("prompt_text", "") if isinstance(raw, dict) else ""
-        prompt_lang = getattr(raw, "prompt_lang", "ja") if hasattr(raw, "prompt_lang") else raw.get("prompt_lang", "ja") if isinstance(raw, dict) else "ja"
-        text_lang = getattr(raw, "text_lang", "ja") if hasattr(raw, "text_lang") else raw.get("text_lang", "ja") if isinstance(raw, dict) else "ja"
+        gpt_path = _extract_field(raw, "gpt_weights_path", "") or ""
+        sovits_path = _extract_field(raw, "sovits_weights_path", "") or ""
+        ref_audio = _extract_field(raw, "ref_audio_path", "") or ""
+        prompt_text = _extract_field(raw, "prompt_text", "") or ""
+        prompt_lang = _extract_field(raw, "prompt_lang", "ja") or "ja"
+        text_lang = _extract_field(raw, "text_lang", "ja") or "ja"
 
         # Absolutize weight paths
         abs_gpt = resolve_weight_file_path(gpt_path)
@@ -185,20 +209,20 @@ class VoiceProfileResolver:
                             if not prompt_text:
                                 prompt_text = emo.text
                                 prompt_lang = emo.lang
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed resolving audio path from character package '%s': %s", clean_name, exc)
         elif resolved_ref:
             ref_audio = resolved_ref
 
         # Pre-resolve known emotion references for this character
-        emotions_map: Dict[str, Dict[str, str]] = {}
+        emotions_map: dict[str, dict[str, str]] = {}
         if clean_name:
-            for emo_name in ["joy", "anger", "sorrow", "fun", "surprise", "fear", "shyness", "neutral", "tsundere", "yandere", "gentle"]:
+            for emo_name in DEFAULT_EMOTION_KEYS:
                 ref = resolve_emotion_reference(clean_name, emo_name)
                 if ref:
                     cand_audio = ref["ref_audio_path"]
                     cand_dur = probe_audio_duration_seconds(cand_audio)
-                    if cand_dur is not None and 3.0 <= cand_dur <= 10.0:
+                    if cand_dur is not None and REFERENCE_AUDIO_MIN_SECONDS <= cand_dur <= REFERENCE_AUDIO_MAX_SECONDS:
                         emotions_map[emo_name] = {
                             "ref_audio_path": cand_audio,
                             "prompt_text": ref["prompt_text"],
@@ -218,7 +242,7 @@ class VoiceProfileResolver:
         )
 
 
-_GLOBAL_VOICE_RESOLVER: Optional[VoiceProfileResolver] = None
+_GLOBAL_VOICE_RESOLVER: VoiceProfileResolver | None = None
 
 
 def get_voice_resolver() -> VoiceProfileResolver:

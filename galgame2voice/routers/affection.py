@@ -4,7 +4,7 @@ Supports querying affection status, manual adjustments, resets, and dialogue unl
 """
 
 import logging
-from typing import List, Optional
+from typing import Any
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
@@ -23,16 +23,18 @@ router = APIRouter(prefix="/api/affection", tags=["affection"])
 
 
 class AffectionUpdateRequest(BaseModel):
+    """Payload for manually updating character affection status and metrics."""
     user_id: str = Field(default="default_user", min_length=1, max_length=128)
     character_id: int = Field(default=1, ge=1)
-    affection_score: Optional[int] = Field(default=None, ge=0, le=100)
-    affection_level: Optional[int] = Field(default=None, ge=1, le=5)
-    current_emotion: Optional[str] = Field(default=None, max_length=32)
-    custom_nickname: Optional[str] = Field(default=None, max_length=50)
-    unlocked_dialogues: Optional[List[str]] = None
+    affection_score: int | None = Field(default=None, ge=0, le=100)
+    affection_level: int | None = Field(default=None, ge=1, le=5)
+    current_emotion: str | None = Field(default=None, max_length=32)
+    custom_nickname: str | None = Field(default=None, max_length=50)
+    unlocked_dialogues: list[str] | None = None
 
 
 class AffectionResetRequest(BaseModel):
+    """Payload for resetting character affection scores to default levels."""
     user_id: str = Field(default="default_user", min_length=1, max_length=128)
     character_id: int = Field(default=1, ge=1)
 
@@ -41,20 +43,19 @@ class AffectionResetRequest(BaseModel):
 async def get_character_affection_endpoint(
     user_id: str = Query(default="default_user", min_length=1, max_length=128, description="User identifier"),
     character_id: int = Query(default=1, ge=1, description="Character Voice Profile ID"),
-):
+) -> CharacterAffectionResponse:
     """
     Retrieves current affection score, level, emotion, and unlocked dialogue count.
     """
     clean_user = user_id.strip() or "default_user"
     async with get_db() as conn:
-        affection = await crud.get_or_create_character_affection(
+        return await crud.get_or_create_character_affection(
             conn, user_id=clean_user, character_id=character_id
         )
-        return affection
 
 
 @router.post("/update", response_model=CharacterAffectionResponse, summary="Update character affection state")
-async def update_character_affection_endpoint(req: AffectionUpdateRequest):
+async def update_character_affection_endpoint(req: AffectionUpdateRequest) -> CharacterAffectionResponse:
     """
     Manually modifies character affection score, level, emotion, or custom nickname.
     """
@@ -95,25 +96,26 @@ async def update_character_affection_endpoint(req: AffectionUpdateRequest):
 
 
 @router.post("/reset", response_model=CharacterAffectionResponse, summary="Reset character affection state")
-async def reset_character_affection_endpoint(req: Optional[AffectionResetRequest] = None):
+async def reset_character_affection_endpoint(
+    req: AffectionResetRequest | None = None,
+) -> CharacterAffectionResponse:
     """
     Resets affection score to 0, level to 1, and emotion to 'normal'.
     """
-    user_id = (req.user_id.strip() if req and req.user_id else "default_user") or "default_user"
-    character_id = req.character_id if req and req.character_id >= 1 else 1
+    user_id = (req.user_id.strip() if req else "default_user") or "default_user"
+    character_id = req.character_id if req else 1
 
     async with get_db() as conn:
-        reset_result = await crud.reset_character_affection(
+        return await crud.reset_character_affection(
             conn, user_id=user_id, character_id=character_id
         )
-        return reset_result
 
 
 @router.get("/dialogues", summary="Get milestone & easter egg dialogue gallery")
 async def get_dialogue_gallery_endpoint(
     user_id: str = Query(default="default_user", min_length=1, max_length=128, description="User ID"),
     character_id: int = Query(default=1, ge=1, description="Character ID"),
-):
+) -> dict[str, Any]:
     """
     Returns full list of milestone lines and easter egg voicelines with unlock status.
     """

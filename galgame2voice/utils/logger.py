@@ -8,7 +8,7 @@ import logging.handlers
 import re
 import sys
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any
 
 
 class MaskingFilter(logging.Filter):
@@ -134,7 +134,7 @@ class MaskingFormatter(logging.Formatter):
         formatted = super().format(record)
         return MaskingFilter.sanitize(formatted)
 
-    def formatException(self, ei) -> str:
+    def formatException(self, ei: Any) -> str:
         """
         Formats exception traceback and sanitizes all frames and error messages.
         """
@@ -149,7 +149,7 @@ class MaskingFormatter(logging.Formatter):
         return MaskingFilter.sanitize(stack_text)
 
 
-def sanitize_error_detail(exc_or_msg: Optional[Union[Exception, str]]) -> str:
+def sanitize_error_detail(exc_or_msg: Exception | str | None) -> str:
     """
     Sanitizes an exception or error string before returning to client or logging.
     Guarantees no API keys, tokens, or URL query secrets are disclosed.
@@ -162,7 +162,7 @@ def sanitize_error_detail(exc_or_msg: Optional[Union[Exception, str]]) -> str:
 
 def setup_logger(
     log_level: str = "INFO",
-    logs_dir: Optional[Path] = None,
+    logs_dir: Path | None = None,
     log_to_file: bool = True,
 ) -> logging.Logger:
     """

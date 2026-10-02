@@ -9,7 +9,7 @@
 
 - 🎭 **AI Dynamic Voice（情绪感知自适应音色与韵律）**：
   - **情感感知多维映射**：基于大模型输出的情感语义，自适应识别 7 种核心情绪（温柔 `gentle`、开朗 `happy`、悲伤 `sad`、傲娇 `tsundere`、生气 `angry`、害羞 `shy`、冷静 `cool`）。
-  - **动态选取参考音频**：自动从角色包 `refs/` 中选取对应情绪的高保真参考音频，配合动态语速（`speed`: 0.8~1.4）与采样温度（`temperature`: 0.7~1.3），告别千篇一律的机械声线。
+  - **动态选取参考音频**：自动从角色包 `refs/` 中选取对应情绪的高保真参考音频，配合动态语速（`speed`: 0.50~1.50）与采样温度（`temperature`: 0.60~1.20），告别千篇一律的机械声线。
 - 🧩 **角色包即插即用（Self-Contained Packages）**：
   - 核心系统与角色资产彻底解耦。将角色包放置于 `characters/` 目录下即可被引擎自动扫描、校验并加载，完全无需手动编写代码或重启服务。
   - 角色包与权重文件均处于本地沙箱环境，绝不上传云端，保障个人数字资产隐私。
@@ -20,7 +20,7 @@
   - **FP16 半精度**：显存占用直降 50%，推理速度提升 1.5x~2x，RTX 20/30/40 等主流显卡首选。
   - **FP32 单精度**：高兼容性模式，彻底解决 GTX 16 系列（TU116/TU117）或部分显卡驱动下的静音/哑音故障。
   - **CPU 稳定模式 (免显存占用)**：专为入门/老旧显卡（如 MX450, GTX 1050/1650 显存 ≤ 4GB）设计。依托宿主机大内存（如 16GB）进行运算，彻底杜绝显存溢出 (CUDA OOM) 与显卡驱动崩溃。
-  - **自适应试声探针 (Auto)**：服务启动后自动合成试声探测包并分析峰值振幅，静音时全自动平滑回退至 FP32，零学习成本。可通过 Web 控制台仪表盘一键无缝热切换（FP16 ⇄ FP32 ⇄ CPU）。
+  - **自适应试声探针 (Auto)**：只有当精度没有任何显式来源（CLI 参数 `--fp16/--fp32/--cpu/--precision`、环境变量 `GPT_SOVITS_PRECISION`/`GPT_SOVITS_DEVICE`、数据库设置、已验证校准缓存、引擎 YAML 已声明 FP32/CPU）时才会执行：启动后就地合成试声探测包并分析峰值振幅，全静音则平滑回退至 FP32 并把结果写入 `data/precision.json`；命中已验证缓存的后续启动不再重复探针，CPU 模式亦跳过。可通过 Web 控制台仪表盘一键无缝热切换（FP16 ⇄ FP32 ⇄ CPU）。
 - 💻 **现代化单页控制台 (Unified SPA Web Console)**：
   - 基于极简高性能架构打造，首屏加载小于 50ms，彻底拔除历史多页面重定向与跳转延迟。
   - **双层设置架构**：
@@ -28,7 +28,7 @@
     - **会话设置（主界面右上角 🎚️）**：为当前会话独立绑定角色音色、专属 System Prompt、生成采样参数及 AI 自适应音色开关，实现多窗口与不同角色并行对话。
 - ✈️ **Telegram 伴侣机器人（完全可选）**：
   - 默认彻底关闭，未启用时不启动后台轮询与网络握手，保证终端零冗余日志。
-  - 开启后支持异步长轮询、多用户隔离、快捷打断、常用指令集（`/start`, `/reset`, `/voice`, `/settings`, `/status`, `/help`）以及专用的 HTTP/SOCKS5 代理热重载。
+  - 开启后支持异步长轮询、多用户隔离、快捷打断、常用指令集（`/start`, `/reset`, `/voice`, `/character`, `/model`, `/nickname`, `/console`, `/settings`, `/help`）以及专用的 HTTP/SOCKS5 代理热重载。
 - 🌸 **Galgame 专有日文读音注音与舞台提示音清洗**：
   - **人名与专有名词音标修正**：针对经典作品与角色进行深层假名注音校准（如白雪乃爱 `白雪乃愛` 严谨注音为 `のあ` 而非误读，谷风天音 `天音` 读 `あまね`，矢来美羽 `やらいみう`，布良梓 `めらあずさ`，稻丛莉音 `いなむらりおん`，千岁佐奈 `ちとせさな`，义妹 `ぎまい` 等），杜绝 TTS 将人名误读为陌生生僻字音。
   - **舞台动作拟声提示词清洗**：自动剔除大模型生成的括号舞台提示、动作拟声词（如 `(微笑)`、`（ふふっ）`、`（ドキドキ）`、`（にっこり）` 等），确保语音合成输入纯净真实。
@@ -78,7 +78,7 @@ python scripts/run_server.py
 ```bash
 python scripts/run_server.py --help
   --host HOST             绑定监听地址 (默认: 127.0.0.1)
-  --port PORT             监听端口 (默认: 8080，被占用时自动递增)
+  --port PORT             监听端口 (默认: 8080，被占用时依次探测 8081/8082/8085/8088/8888/18080/28080)
   --fp16                  启用 FP16 半精度推理 (显存省半，推理快)
   --fp32                  强制 FP32 单精度 (杜绝哑音静音)
   --cpu                   强制纯 CPU 稳定模式 (零显存占用，利用主机大内存)
@@ -86,28 +86,35 @@ python scripts/run_server.py --help
                           显式指定推理精度/运行模式
   --no-browser            启动后不自动唤起默认浏览器
   --check-only            仅执行环境依赖与硬件巡检，不启动常驻服务
+  --profile               启用实时延迟瀑布图分析 (T0~T7，等价于设置 GALGAME2VOICE_PROFILE=1)
 ```
 
 ---
 
 ## 🔧 环境变量速查表 (Environment Variables)
 
-系统支持通过环境变量或根目录下的 `.env` 文件进行无缝配置：
+系统支持通过环境变量进行无缝配置。只有在下表「来源」列标为 `Settings` 的项才同时支持根目录 `.env`
+文件（`.env` 只被 Pydantic Settings 读入配置对象，不会注入进程环境）；标为 `os.environ` 的项必须由
+启动进程前导出真实环境变量，写进 `.env` 不生效：
 
-| 环境变量名 | 默认值 | 类型 | 作用说明 |
-| :--- | :--- | :---: | :--- |
-| `HOST` | `127.0.0.1` | string | 后端 FastAPI 服务绑定的网卡监听地址 |
-| `PORT` | `8080` | int | 后端服务监听端口（若被占用自动探测可用端口） |
-| `LOG_LEVEL` | `INFO` | string | 日志记录级别 (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `GPT_SOVITS_BASE_URL` | `http://127.0.0.1:9880` | string | GPT-SoVITS 语音推理引擎的 HTTP API 地址 |
-| `GPT_SOVITS_PRECISION` | `auto` | string | 强制推理精度与模式 (`fp16`, `fp32`, `cpu`, `auto`) |
-| `TELEGRAM_ENABLED` | `false` | bool | 是否在启动时自动拉起 Telegram 伴侣机器人 |
-| `TELEGRAM_TOKEN` | 空 | string | Telegram Bot API 访问凭据 Token |
-| `TELEGRAM_PROXY` | 空 | string | Telegram 代理服务器地址（支持 `http://` 或 `socks5://`） |
-| `AUDIO_RETENTION_MINUTES`| `30` | int | 合成临时音频在磁盘中的最长保留分钟数 |
-| `GALGAME2VOICE_CONSOLE_TOKEN` | 空 | string | 设置控制台管理鉴权令牌（非空时访问设置需输入 Token） |
-| `GALGAME2VOICE_ENABLE_DOCS` | `false`| bool | 是否开启 `/docs` 与 `/redoc` 接口文档页面 |
-| `GALGAME2VOICE_SKIP_MEM_CHECK` | `false`| bool | 是否跳过跨角色切换时的空闲内存保护检查 |
+| 环境变量名 | 来源 | 默认值 | 类型 | 作用说明 |
+| :--- | :---: | :--- | :---: | :--- |
+| `HOST` | `Settings` | `127.0.0.1` | string | 后端 FastAPI 服务绑定的网卡监听地址 |
+| `PORT` | `Settings` | `8080` | int | 后端服务监听端口（若被占用自动探测可用端口） |
+| `LOG_LEVEL` | `Settings` | `INFO` | string | 日志记录级别 (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `GPT_SOVITS_BASE_URL` | `Settings` | `http://127.0.0.1:9880` | string | GPT-SoVITS 语音推理引擎的 HTTP API 地址 |
+| `GPT_SOVITS_PRECISION` | `os.environ` | 未设置 | string | 强制推理精度与模式：`fp16`/`half`/`true`/`1` 半精度，`fp32`/`float32`/`false`/`0` 单精度，`cpu` 纯 CPU；其它取值（含 `auto`）不构成覆盖，回落到 CLI 参数 > 数据库设置 > 校准缓存 > 引擎 YAML > 硬件默认 的自动判定 |
+| `GPT_SOVITS_DEVICE` | `os.environ` | 未设置 | string | 设为 `cpu` 时强制纯 CPU 推理（效果同 `GPT_SOVITS_PRECISION=cpu`）；其它取值不构成覆盖 |
+| `AUDIO_RETENTION_MINUTES`| `Settings` | `30` | int | 合成临时音频在磁盘中的最长保留分钟数 |
+| `GALGAME2VOICE_CONSOLE_TOKEN` | `Settings` | 空 | string | 设置控制台管理鉴权令牌（非空时访问设置需输入 Token） |
+| `GALGAME2VOICE_ENABLE_DOCS` | `Settings` | `false`| bool | 是否开启 `/docs` 与 `/redoc` 接口文档页面 |
+| `GALGAME2VOICE_SKIP_MEM_CHECK` | `os.environ` | 未设置 | string | 只要设为任意非空值即跳过跨角色切换的空闲内存/显存保护检查（写 `false`/`0` 也会跳过；不设该变量才会检查） |
+| `TELEGRAM_ADMIN_IDS` | `os.environ` | 未设置 | string | 追加 Telegram 管理员白名单（与控制台保存的 `telegram_admin_ids` 合并生效） |
+| `TELEGRAM_DROP_PENDING_UPDATES` | `os.environ` | 未设置 | string | 启动时丢弃 Telegram 积压的未处理更新（`1`/`true`/`yes` 生效） |
+
+> **Telegram 配置来源**：机器人开关、Bot Token 与代理地址一律读自控制台写入 SQLite 的设置，
+> `TELEGRAM_ENABLED` / `TELEGRAM_TOKEN` / `TELEGRAM_PROXY` 环境变量没有任何消费方；
+> 直接从环境读取的 Telegram 变量只有 `TELEGRAM_ADMIN_IDS` 与 `TELEGRAM_DROP_PENDING_UPDATES`。
 
 ---
 
@@ -144,7 +151,7 @@ characters/
 - `/start`：唤出欢迎信息与快速交互键盘菜单
 - `/reset`：清空当前 Telegram 会话的历史上下文与记忆碎片
 - `/voice [名称]`：快速查询或切换当前绑定的角色音色
-- `/status`：实时查看系统当前运行状态、CPU/内存/显存负载
+- `/character [名称]`：切换当前角色与音色（如 `/character 栞那`）
 - `/settings`：查看当前语音生成采样参数与 AI 动态音色状态
 - `/help`：获取完整的操作指令与使用提示
 
@@ -163,4 +170,4 @@ characters/
 
 ## 📄 开源许可证
 
-本项目采用 [MIT License](LICENSE) 开源。
+本项目采用 MIT License 开源（许可证声明见 `pyproject.toml` 的 `license` 字段；仓库当前未附带独立的 `LICENSE` 文件）。

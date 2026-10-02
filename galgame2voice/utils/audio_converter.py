@@ -13,11 +13,11 @@ import sys
 import tempfile
 import wave
 from pathlib import Path
-from typing import Optional
+from typing import Callable
 
 logger = logging.getLogger("galgame2voice.utils.audio_converter")
 
-_cached_ffmpeg_bin: Optional[str] = None
+_cached_ffmpeg_bin: str | None = None
 
 
 def reset_ffmpeg_cache() -> None:
@@ -26,13 +26,37 @@ def reset_ffmpeg_cache() -> None:
     _cached_ffmpeg_bin = None
 
 
-def find_ffmpeg(custom_path: Optional[str] = None) -> Optional[str]:
+def _find_ffmpeg_in_python_env(exe_name: str, scripts_dir: str) -> str | None:
+    """Checks virtualenv and base Python scripts directories for ffmpeg binary."""
+    for prefix in (sys.prefix, sys.base_prefix):
+        candidate = Path(prefix) / scripts_dir / exe_name
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return None
+
+
+def _find_ffmpeg_in_project_dirs(exe_name: str) -> str | None:
+    """Checks project root and bundled tool directories for ffmpeg binary."""
+    try:
+        from galgame2voice.config import get_settings
+        root = get_settings().project_root
+    except Exception:
+        root = Path(__file__).resolve().parent.parent.parent
+
+    for candidate_dir in ("tools", "runtime", "bin", "ffmpeg"):
+        bundled = root / candidate_dir / exe_name
+        if bundled.is_file():
+            return str(bundled.resolve())
+    return None
+
+
+def find_ffmpeg(custom_path: str | None = None) -> str | None:
     """
     Discovers and caches the ffmpeg executable location.
     Checks:
     1. custom_path (if provided and resolvable)
-    2. Environment variable FFMPEG_PATH or FFMPEG_BIN
-    3. Cached path from previous discovery
+    2. Cached path from previous discovery
+    3. Environment variable FFMPEG_PATH or FFMPEG_BIN
     4. System PATH via shutil.which("ffmpeg")
     5. Local virtualenv (sys.prefix/Scripts/ffmpeg.exe or bin/ffmpeg)
     6. Bundled / project tools directories (tools/ffmpeg, runtime/ffmpeg, etc.)
@@ -70,33 +94,21 @@ def find_ffmpeg(custom_path: Optional[str] = None) -> Optional[str]:
     is_win = sys.platform == "win32"
     exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
     scripts_dir = "Scripts" if is_win else "bin"
-    venv_candidate = Path(sys.prefix) / scripts_dir / exe_name
-    if venv_candidate.is_file():
-        _cached_ffmpeg_bin = str(venv_candidate.resolve())
-        return _cached_ffmpeg_bin
-
-    base_candidate = Path(sys.base_prefix) / scripts_dir / exe_name
-    if base_candidate.is_file():
-        _cached_ffmpeg_bin = str(base_candidate.resolve())
+    py_env_ffmpeg = _find_ffmpeg_in_python_env(exe_name, scripts_dir)
+    if py_env_ffmpeg:
+        _cached_ffmpeg_bin = py_env_ffmpeg
         return _cached_ffmpeg_bin
 
     # 4. Project root & bundled tools
-    try:
-        from galgame2voice.config import get_settings
-        root = get_settings().project_root
-    except Exception:
-        root = Path(__file__).resolve().parent.parent.parent
-
-    for candidate_dir in ("tools", "runtime", "bin", "ffmpeg"):
-        bundled = root / candidate_dir / exe_name
-        if bundled.is_file():
-            _cached_ffmpeg_bin = str(bundled.resolve())
-            return _cached_ffmpeg_bin
+    bundled_ffmpeg = _find_ffmpeg_in_project_dirs(exe_name)
+    if bundled_ffmpeg:
+        _cached_ffmpeg_bin = bundled_ffmpeg
+        return _cached_ffmpeg_bin
 
     return None
 
 
-def is_ffmpeg_available(ffmpeg_path: Optional[str] = None) -> bool:
+def is_ffmpeg_available(ffmpeg_path: str | None = None) -> bool:
     """Checks if ffmpeg executable is installed and available."""
     return find_ffmpeg(ffmpeg_path) is not None
 
@@ -141,6 +153,18 @@ def is_target_wav_pcm(
         return False
 
 
+async def _terminate_subprocess(proc: asyncio.subprocess.Process, timeout: float = 3.0) -> None:
+    """Defensively terminates a subprocess and waits for exit."""
+    try:
+        proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=timeout)
+    except (asyncio.TimeoutError, ProcessLookupError, OSError):
+        pass
+
+
 async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
     """
     Runs ffmpeg command asynchronously with bounded timeout and process cleanup.
@@ -161,19 +185,15 @@ async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except (asyncio.TimeoutError, TimeoutError) as exc:
         logger.error("ffmpeg conversion timed out after %.1f seconds: %s", timeout, cmd_args[:4])
-        try:
-            proc.kill()
-        except (ProcessLookupError, OSError):
-            pass
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=3.0)
-        except Exception:
-            pass
+        await _terminate_subprocess(proc)
         raise TimeoutError(f"ffmpeg conversion timed out after {timeout} seconds") from exc
     except asyncio.CancelledError:
+        await _terminate_subprocess(proc)
+        raise
+    except BaseException:
         try:
             proc.kill()
         except (ProcessLookupError, OSError):
@@ -190,11 +210,68 @@ async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
         raise RuntimeError(f"ffmpeg conversion failed (code {proc.returncode}): {err_msg[:200]}")
 
 
+def _require_ffmpeg_bin(ffmpeg_path: str | None = None) -> str:
+    """Discovers ffmpeg binary or raises RuntimeError with an informative message."""
+    ffmpeg_bin = find_ffmpeg(ffmpeg_path)
+    if not ffmpeg_bin:
+        raise RuntimeError(
+            f"ffmpeg executable not found: '{ffmpeg_path or 'ffmpeg'}'. "
+            "Install ffmpeg and ensure it is on PATH, or provide ffmpeg_path."
+        )
+    return ffmpeg_bin
+
+
+async def _cleanup_temp_paths(*paths: Path | None) -> None:
+    """Unlinks temporary paths with retry logic to handle file locking on Windows/Linux."""
+    for p in paths:
+        if p is not None:
+            for _ in range(10):
+                try:
+                    if p.exists():
+                        p.unlink(missing_ok=True)
+                    break
+                except OSError:
+                    await asyncio.sleep(0.02)
+
+
+async def _run_ffmpeg_transcode(
+    input_bytes: bytes,
+    in_suffix: str,
+    out_suffix: str,
+    build_args: Callable[[str, str], list[str]],
+    expected_header: bytes,
+    header_error: str,
+    ffmpeg_path: str | None = None,
+    timeout: float = 30.0,
+) -> bytes:
+    """Executes ffmpeg transcode across temporary files with validation and auto-cleanup."""
+    ffmpeg_bin = _require_ffmpeg_bin(ffmpeg_path)
+    in_path: Path | None = None
+    out_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=in_suffix, delete=False) as in_file:
+            in_path = Path(in_file.name)
+        with tempfile.NamedTemporaryFile(suffix=out_suffix, delete=False) as out_file:
+            out_path = Path(out_file.name)
+
+        in_path.write_bytes(input_bytes)
+        cmd = [ffmpeg_bin, "-y", *build_args(str(in_path), str(out_path))]
+        await run_ffmpeg_command(*cmd, timeout=timeout)
+        result_bytes = out_path.read_bytes()
+        if not result_bytes or not result_bytes.startswith(expected_header):
+            raise ValueError(header_error)
+        return result_bytes
+    except (RuntimeError, TimeoutError, ValueError) as exc:
+        raise ValueError(f"Audio conversion failed: {exc}") from exc
+    finally:
+        await _cleanup_temp_paths(in_path, out_path)
+
+
 async def convert_ogg_to_wav(
     ogg_bytes: bytes,
     sample_rate: int = 16000,
     channels: int = 1,
-    ffmpeg_path: Optional[str] = None,
+    ffmpeg_path: str | None = None,
     timeout: float = 30.0,
 ) -> bytes:
     """
@@ -216,54 +293,28 @@ async def convert_ogg_to_wav(
     if is_target_wav_pcm(ogg_bytes, sample_rate=sample_rate, channels=channels, sample_width=2):
         return ogg_bytes
 
-    ffmpeg_bin = find_ffmpeg(ffmpeg_path)
-    if not ffmpeg_bin:
-        raise RuntimeError(
-            f"ffmpeg executable not found: '{ffmpeg_path or 'ffmpeg'}'. "
-            "Install ffmpeg and ensure it is on PATH, or provide ffmpeg_path."
-        )
-
-    in_path: Optional[Path] = None
-    out_path: Optional[Path] = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as in_file:
-            in_path = Path(in_file.name)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as out_file:
-            out_path = Path(out_file.name)
-
-        in_path.write_bytes(ogg_bytes)
-        cmd = [
-            ffmpeg_bin, "-y",
-            "-i", str(in_path),
+    return await _run_ffmpeg_transcode(
+        input_bytes=ogg_bytes,
+        in_suffix=".ogg",
+        out_suffix=".wav",
+        build_args=lambda inp, outp: [
+            "-i", inp,
             "-ar", str(sample_rate),
             "-ac", str(channels),
             "-f", "wav",
-            str(out_path),
-        ]
-        await run_ffmpeg_command(*cmd, timeout=timeout)
-        wav_bytes = out_path.read_bytes()
-        if not wav_bytes or not wav_bytes.startswith(b"RIFF"):
-            raise ValueError("ffmpeg output is not valid WAV audio")
-        return wav_bytes
-    except (RuntimeError, TimeoutError, ValueError) as exc:
-        raise ValueError(f"Audio conversion failed: {exc}") from exc
-    finally:
-        for p in (in_path, out_path):
-            if p is not None:
-                for _ in range(10):
-                    try:
-                        if p.exists():
-                            p.unlink(missing_ok=True)
-                        break
-                    except OSError:
-                        await asyncio.sleep(0.02)
-
+            outp,
+        ],
+        expected_header=b"RIFF",
+        header_error="ffmpeg output is not valid WAV audio",
+        ffmpeg_path=ffmpeg_path,
+        timeout=timeout,
+    )
 
 
 async def convert_wav_to_ogg(
     wav_bytes: bytes,
     bitrate: str = "64k",
-    ffmpeg_path: Optional[str] = None,
+    ffmpeg_path: str | None = None,
     timeout: float = 30.0,
 ) -> bytes:
     """
@@ -282,47 +333,22 @@ async def convert_wav_to_ogg(
     if _is_known_non_audio(wav_bytes):
         raise ValueError("Corrupted or unsupported audio format")
 
-    ffmpeg_bin = find_ffmpeg(ffmpeg_path)
-    if not ffmpeg_bin:
-        raise RuntimeError(
-            f"ffmpeg executable not found: '{ffmpeg_path or 'ffmpeg'}'. "
-            "Install ffmpeg and ensure it is on PATH, or provide ffmpeg_path."
-        )
-
-    in_path: Optional[Path] = None
-    out_path: Optional[Path] = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as in_file:
-            in_path = Path(in_file.name)
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as out_file:
-            out_path = Path(out_file.name)
-
-        in_path.write_bytes(wav_bytes)
-        cmd = [
-            ffmpeg_bin, "-y",
-            "-i", str(in_path),
+    return await _run_ffmpeg_transcode(
+        input_bytes=wav_bytes,
+        in_suffix=".wav",
+        out_suffix=".ogg",
+        build_args=lambda inp, outp: [
+            "-i", inp,
             "-c:a", "libopus",
             "-b:a", str(bitrate),
             "-f", "ogg",
-            str(out_path),
-        ]
-        await run_ffmpeg_command(*cmd, timeout=timeout)
-        ogg_bytes = out_path.read_bytes()
-        if not ogg_bytes or not ogg_bytes.startswith(b"OggS"):
-            raise ValueError("ffmpeg output is not valid OGG audio")
-        return ogg_bytes
-    except (RuntimeError, TimeoutError, ValueError) as exc:
-        raise ValueError(f"Audio conversion failed: {exc}") from exc
-    finally:
-        for p in (in_path, out_path):
-            if p is not None:
-                for _ in range(10):
-                    try:
-                        if p.exists():
-                            p.unlink(missing_ok=True)
-                        break
-                    except OSError:
-                        await asyncio.sleep(0.02)
+            outp,
+        ],
+        expected_header=b"OggS",
+        header_error="ffmpeg output is not valid OGG audio",
+        ffmpeg_path=ffmpeg_path,
+        timeout=timeout,
+    )
 
 
 

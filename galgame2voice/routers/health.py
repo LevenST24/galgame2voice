@@ -3,16 +3,17 @@ Health check and system diagnostic router for galgame2voice.
 Provides /api/health, /status, and /api/system/status endpoints.
 
 All filesystem scans run in worker threads and are cached with a TTL so the
-5-second frontend status poll never blocks the event loop.
+frontend's on-demand status requests never block the event loop.
 """
 
 import asyncio
+import logging
 import os
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -35,6 +36,8 @@ from galgame2voice.utils.precision import (
     write_sovits_yaml_config,
 )
 
+logger = logging.getLogger("galgame2voice.routers.health")
+
 router = APIRouter(tags=["Health & Diagnostics"])
 
 
@@ -44,16 +47,16 @@ async def get_effective_sovits_url() -> str:
     try:
         async with get_db() as conn:
             db_settings = await crud.get_settings_raw(conn)
-        if db_settings and getattr(db_settings, "gpt_sovits_url", ""):
+        if getattr(db_settings, "gpt_sovits_url", ""):
             return db_settings.gpt_sovits_url
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed reading effective sovits url from database settings: %s", exc)
     return get_settings().gpt_sovits_base_url
 
-# Directory metrics are cached: the settings console polls every few seconds,
+# Directory metrics are cached: the settings console re-requests status on demand,
 # and scanning thousands of cache files each time would freeze the event loop.
 _DIR_METRICS_TTL_SECONDS = 15.0
-_dir_metrics_cache: Dict[str, Tuple[float, Tuple[int, float]]] = {}
+_dir_metrics_cache: dict[str, tuple[float, tuple[int, float]]] = {}
 
 
 class HealthResponse(BaseModel):
@@ -80,7 +83,7 @@ class AppTelemetry(BaseModel):
     start_time: str
     python_version: str
     pid: int
-    memory_usage_mb: Optional[float] = None
+    memory_usage_mb: float | None = None
 
 
 class DatabaseTelemetry(BaseModel):
@@ -94,8 +97,8 @@ class GptSovitsTelemetry(BaseModel):
     """GPT-SoVITS backend reachability telemetry."""
     status: str  # "reachable" | "unreachable"
     base_url: str
-    latency_ms: Optional[float] = None
-    error: Optional[str] = None
+    latency_ms: float | None = None
+    error: str | None = None
 
 
 class StorageTelemetry(BaseModel):
@@ -108,7 +111,7 @@ class StorageTelemetry(BaseModel):
 class TelegramTelemetry(BaseModel):
     """Telegram bot integration status."""
     enabled: bool
-    status: str  # "disabled" | "running" | "error"
+    status: str  # "disabled" | "standby" | "unconfigured" | "running"
 
 
 class HardwareTelemetry(BaseModel):
@@ -118,8 +121,8 @@ class HardwareTelemetry(BaseModel):
     fp32_forced: bool
     inference_precision: str = "FP32"
     configured_precision: str = "auto"
-    system_memory_gb: Optional[float] = None
-    system_memory_avail_gb: Optional[float] = None
+    system_memory_gb: float | None = None
+    system_memory_avail_gb: float | None = None
 
 
 class SystemStatusResponse(BaseModel):
@@ -134,10 +137,32 @@ class SystemStatusResponse(BaseModel):
     hardware: HardwareTelemetry
 
 
+async def _probe_custom_gpt_sovits_target(target: str, base_url: str, t0: float) -> GptSovitsTelemetry:
+    """
+    One-shot probe against an explicitly different URL.
+    Connect budget 1s: healthy local engines connect in <50ms;
+    some VPN/TUN stacks delay loopback refusals to ~2s, so a tight
+    budget converts 'engine down' into a fast unreachable verdict.
+    """
+    timeout = httpx.Timeout(connect=1.0, read=2.5, write=2.5, pool=2.5)
+    async with httpx.AsyncClient(trust_env=False, timeout=timeout) as one_shot:
+        try:
+            resp = await one_shot.get(f"{target}/control")
+        except Exception:
+            resp = await one_shot.get(f"{target}/")
+        latency = round((time.perf_counter() - t0) * 1000, 2)
+        if resp.status_code in (status.HTTP_200_OK, status.HTTP_400_BAD_REQUEST):
+            return GptSovitsTelemetry(
+                status="reachable", base_url=base_url, latency_ms=latency, error=None)
+        return GptSovitsTelemetry(
+            status="unreachable", base_url=base_url, latency_ms=latency,
+            error=f"Unexpected status code: {resp.status_code}")
+
+
 async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
     """
     Checks GPT-SoVITS reachability through the shared singleton client pool
-    (GET / — api_v2 answers on the root path). 3s connect/read budget:
+    (probing GET /control with fallback to /). Fast health probe budget:
     long enough for a busy GPU to answer, short enough for a 5s poll.
     HTTP 200/400 counts as reachable; other codes / network errors do not.
     """
@@ -156,23 +181,7 @@ async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
         client = get_gpt_sovits_client()
 
         if target and target != client.base_url.rstrip("/"):
-            # One-shot probe against an explicitly different URL.
-            # Connect budget 1s: healthy local engines connect in <50ms;
-            # some VPN/TUN stacks delay loopback refusals to ~2s, so a tight
-            # budget converts "engine down" into a fast unreachable verdict.
-            timeout = httpx.Timeout(connect=1.0, read=2.5, write=2.5, pool=2.5)
-            async with httpx.AsyncClient(trust_env=False, timeout=timeout) as one_shot:
-                try:
-                    resp = await one_shot.get(f"{target}/control")
-                except Exception:
-                    resp = await one_shot.get(f"{target}/")
-                latency = round((time.perf_counter() - t0) * 1000, 2)
-                if resp.status_code in (200, 400):
-                    return GptSovitsTelemetry(
-                        status="reachable", base_url=base_url, latency_ms=latency, error=None)
-                return GptSovitsTelemetry(
-                    status="unreachable", base_url=base_url, latency_ms=latency,
-                    error=f"Unexpected status code: {resp.status_code}")
+            return await _probe_custom_gpt_sovits_target(target, base_url, t0)
 
         result = await client.check_health()
         latency = round((time.perf_counter() - t0) * 1000, 2)
@@ -196,7 +205,7 @@ async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
         )
 
 
-def _scan_dir_sync(directory: Path) -> Tuple[int, float]:
+def _scan_dir_sync(directory: Path) -> tuple[int, float]:
     """Blocking recursive file count + size scan (runs in a worker thread)."""
     if not directory.exists() or not directory.is_dir():
         return 0, 0.0
@@ -215,7 +224,7 @@ def _scan_dir_sync(directory: Path) -> Tuple[int, float]:
     return count, round(total_bytes / (1024 * 1024), 2)
 
 
-async def _get_dir_metrics_cached(directory: Path) -> Tuple[int, float]:
+async def _get_dir_metrics_cached(directory: Path) -> tuple[int, float]:
     """TTL-cached directory metrics computed off the event loop."""
     key = str(directory)
     now = time.monotonic()
@@ -230,12 +239,12 @@ async def _get_dir_metrics_cached(directory: Path) -> Tuple[int, float]:
 
 
 # Backward-compatible sync alias (kept for existing tooling/tests).
-def _get_dir_metrics(directory: Path) -> Tuple[int, float]:
+def _get_dir_metrics(directory: Path) -> tuple[int, float]:
     """Synchronous directory metrics — blocking, prefer _get_dir_metrics_cached."""
     return _scan_dir_sync(directory)
 
 
-def _get_process_memory_mb() -> Optional[float]:
+def _get_process_memory_mb() -> float | None:
     """Retrieves RSS memory usage in MB using psutil if available."""
     try:
         import psutil
@@ -246,7 +255,7 @@ def _get_process_memory_mb() -> Optional[float]:
 
 
 @router.get("/api/health", response_model=HealthResponse, summary="Basic Health Check")
-async def health_check(request: Request):
+async def health_check(request: Request) -> HealthResponse:
     """
     Lightweight health check endpoint for automated liveness probing.
     Returns HTTP 200 immediately.
@@ -263,7 +272,7 @@ async def health_check(request: Request):
 
 
 @router.get("/status", response_model=LegacyStatusResponse, summary="Legacy Status Endpoint")
-async def legacy_status(request: Request):
+async def legacy_status(request: Request) -> LegacyStatusResponse:
     """
     Legacy compatibility endpoint.
     Performs quick reachability probe to GPT-SoVITS.
@@ -279,10 +288,10 @@ async def legacy_status(request: Request):
 
 
 _GPU_METRICS_TTL_SECONDS = 60.0
-_gpu_telemetry_cache: Optional[Tuple[float, Tuple[bool, str, bool]]] = None
+_gpu_telemetry_cache: tuple[float, tuple[bool, str]] | None = None
 
 
-def _get_gpu_telemetry_cached() -> Tuple[bool, str, bool]:
+def _get_gpu_telemetry_cached() -> tuple[bool, str]:
     """TTL-cached static GPU capability to prevent blocking subprocess spawning on frequent status polls."""
     global _gpu_telemetry_cache
     now = time.monotonic()
@@ -334,13 +343,53 @@ def _collect_hardware_telemetry_sync() -> HardwareTelemetry:
     )
 
 
+def _resolve_telegram_status(is_running: bool, is_enabled: bool, has_token: bool) -> str:
+    """Computes categorical telegram telemetry status string without nested conditionals."""
+    if is_running:
+        return "running"
+    if not is_enabled:
+        return "disabled"
+    if has_token:
+        return "standby"
+    return "unconfigured"
+
+
+def _resolve_rel_db_path(db_path: Path, project_root: Path, data_dir_name: str) -> str:
+    """Returns normalized relative database path with safe fallback for out-of-tree test databases."""
+    try:
+        return db_path.relative_to(project_root).as_posix()
+    except Exception:
+        return f"{data_dir_name}/{db_path.name}"
+
+
+async def _collect_telegram_telemetry(db_path: Path) -> TelegramTelemetry:
+    """Inspects telegram bot runtime manager and database configuration."""
+    tg_running = False
+    try:
+        from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
+        tg_mgr = get_telegram_bot_manager(db_path=db_path)
+        tg_running = getattr(tg_mgr, "is_running", False)
+    except Exception:
+        tg_running = False
+
+    async with get_db(db_path) as conn:
+        db_s = await crud.get_settings_raw(conn)
+        has_token = bool(db_s.telegram_bot_token and db_s.telegram_bot_token.strip())
+        is_enabled = bool(getattr(db_s, "telegram_enabled", False))
+
+    return TelegramTelemetry(
+        enabled=is_enabled,
+        status=_resolve_telegram_status(tg_running, is_enabled, has_token),
+    )
+
+
 @router.get(
     "/api/system/status",
     response_model=SystemStatusResponse,
     summary="Comprehensive System Diagnostics",
     dependencies=[Depends(require_auth)],
 )
-async def system_status(request: Request):
+async def system_status(request: Request) -> SystemStatusResponse:
     """
     Deep diagnostic telemetry endpoint for Web Management Console.
     Inspects DB state, GPT-SoVITS latency, storage sizes, memory usage, and hardware telemetry.
@@ -368,17 +417,10 @@ async def system_status(request: Request):
     hardware_telemetry = await hardware_task
 
     # 2. Database Status Check (Normalized Relative Path)
-    db_exists = settings.db_path.exists()
-    try:
-        rel_db_path = settings.db_path.relative_to(settings.project_root).as_posix()
-    except Exception:
-        # Safe relative path fallback when testing with temp paths outside project_root
-        rel_db_path = f"{settings.data_dir_name}/{settings.db_path.name}"
-
     db_telemetry = DatabaseTelemetry(
-        status="connected" if db_exists else "initializing",
+        status="connected" if settings.db_path.exists() else "initializing",
         wal_mode=True,
-        path=rel_db_path,
+        path=_resolve_rel_db_path(settings.db_path, settings.project_root, settings.data_dir_name),
     )
 
     # 3. Storage Metrics
@@ -400,23 +442,7 @@ async def system_status(request: Request):
     )
 
     # 5. Telegram Status
-    tg_running = False
-    try:
-        from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
-        tg_mgr = get_telegram_bot_manager(db_path=settings.db_path)
-        tg_running = getattr(tg_mgr, "is_running", False)
-    except Exception:
-        tg_running = False
-
-    async with get_db(settings.db_path) as conn:
-        db_s = await crud.get_settings_raw(conn)
-        has_token = bool(db_s and db_s.telegram_bot_token and db_s.telegram_bot_token.strip())
-        is_enabled = bool(db_s and getattr(db_s, "telegram_enabled", False))
-
-    tg_telemetry = TelegramTelemetry(
-        enabled=is_enabled,
-        status="running" if tg_running else ("disabled" if not is_enabled else ("standby" if has_token else "unconfigured")),
-    )
+    tg_telemetry = await _collect_telegram_telemetry(settings.db_path)
 
     overall_status = "healthy" if gpt_probe.status == "reachable" else "degraded"
 
@@ -434,24 +460,75 @@ async def system_status(request: Request):
 
 class RestartSovitsPayload(BaseModel):
     """Optional payload for restarting GPT-SoVITS subprocess with explicit precision."""
-    precision: Optional[str] = Field(
+    precision: str | None = Field(
         default=None,
         description="Optional precision override: 'fp16', 'fp32', or 'auto'. If omitted, uses current setting.",
     )
 
 
-@router.post(
-    "/api/system/restart_sovits",
-    summary="Restart GPT-SoVITS Engine Subprocess",
-    dependencies=[Depends(require_auth)],
-)
-async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None):
-    """
-    Terminates the existing GPT-SoVITS process and restarts it with the
-    latest precision configuration (FP16 / FP32).
-    """
-    settings = get_settings()
-    sovits_dir_file = settings.project_root / "data" / "sovits_dir.txt"
+async def _update_inference_precision_setting(precision_val: str) -> None:
+    try:
+        from galgame2voice.database.models import SettingsUpdate
+        async with get_db() as conn:
+            await crud.update_settings(conn, SettingsUpdate(inference_precision=precision_val))
+    except Exception as exc:
+        logger.debug("Failed updating inference_precision setting: %s", exc)
+
+
+async def _apply_sovits_precision_config(
+    project_root: Path,
+    sovits_dir: Path,
+    req_prec: str | None,
+) -> tuple[str, bool, str]:
+    """Applies target precision configuration to cache, YAML, and database settings.
+    Returns (device, is_half, source)."""
+    precision_map = {
+        "cpu": ("cpu", False, "cpu"),
+        "fp32": ("cuda", False, "fp32"),
+        "float32": ("cuda", False, "fp32"),
+        "fp16": ("cuda", True, "fp16"),
+        "half": ("cuda", True, "fp16"),
+    }
+    if req_prec in precision_map:
+        device, is_half, target_setting = precision_map[req_prec]
+        source = "request"
+        write_precision_cache(project_root, str(sovits_dir), is_half=is_half, device=device)
+        await _update_inference_precision_setting(target_setting)
+    elif req_prec == "auto":
+        cache_file = project_root / "data" / "precision.json"
+        cache_file.unlink(missing_ok=True)
+        await _update_inference_precision_setting("auto")
+        device, is_half, source = resolve_initial_device_and_half(project_root, sovits_dir)
+    else:
+        device, is_half, source = resolve_initial_device_and_half(project_root, sovits_dir)
+
+    write_sovits_yaml_config(sovits_dir, is_half=is_half, device=device)
+    return device, is_half, source
+
+
+def _terminate_process_by_pid(pid: int, timeout: float = 3.0) -> None:
+    try:
+        import psutil
+        if psutil.pid_exists(pid):
+            p = psutil.Process(pid)
+            for child in p.children(recursive=True):
+                try:
+                    child.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+                except Exception as child_err:
+                    logger.debug("Failed killing child process: %s", child_err)
+            p.kill()
+            p.wait(timeout=timeout)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+    except Exception as exc:
+        logger.debug("Error terminating process %d: %s", pid, exc)
+
+
+def _resolve_sovits_directory(project_root: Path) -> Path:
+    """Resolves and validates GPT-SoVITS directory from data/sovits_dir.txt."""
+    sovits_dir_file = project_root / "data" / "sovits_dir.txt"
     if not sovits_dir_file.exists():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -463,91 +540,41 @@ async def restart_sovits_endpoint(payload: Optional[RestartSovitsPayload] = None
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"GPT-SoVITS 目录不存在: {sovits_dir}",
         )
+    return sovits_dir
+
+
+def _terminate_existing_sovits_process(pid_file: Path) -> None:
+    """Reads PID from pid_file and terminates existing process if running."""
+    if not pid_file.exists():
+        return
+    old_pid = None
+    try:
+        old_pid = int(pid_file.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        pass
+    if old_pid:
+        _terminate_process_by_pid(old_pid)
+
+
+@router.post(
+    "/api/system/restart_sovits",
+    summary="Restart GPT-SoVITS Engine Subprocess",
+    dependencies=[Depends(require_auth)],
+)
+async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -> dict[str, Any]:
+    """
+    Terminates the existing GPT-SoVITS process and restarts it with the
+    latest precision configuration (FP16 / FP32).
+    """
+    settings = get_settings()
+    sovits_dir = _resolve_sovits_directory(settings.project_root)
 
     # Determine precision and device target
     req_prec = str(payload.precision).strip().lower() if (payload and payload.precision) else None
-    if req_prec == "cpu":
-        device = "cpu"
-        is_half = False
-        source = "request"
-        write_precision_cache(settings.project_root, str(sovits_dir), is_half=False, device="cpu")
-        write_sovits_yaml_config(sovits_dir, is_half=False, device="cpu")
-        try:
-            from galgame2voice.database.session import get_db
-            from galgame2voice.database import crud
-            from galgame2voice.database.models import SettingsUpdate
-            async with get_db() as conn:
-                await crud.update_settings(conn, SettingsUpdate(inference_precision="cpu"))
-        except Exception:
-            pass
-    elif req_prec in ("fp32", "float32"):
-        device = "cuda"
-        is_half = False
-        source = "request"
-        write_precision_cache(settings.project_root, str(sovits_dir), is_half=False, device="cuda")
-        write_sovits_yaml_config(sovits_dir, is_half=False, device="cuda")
-        try:
-            from galgame2voice.database.session import get_db
-            from galgame2voice.database import crud
-            from galgame2voice.database.models import SettingsUpdate
-            async with get_db() as conn:
-                await crud.update_settings(conn, SettingsUpdate(inference_precision="fp32"))
-        except Exception:
-            pass
-    elif req_prec in ("fp16", "half"):
-        device = "cuda"
-        is_half = True
-        source = "request"
-        write_precision_cache(settings.project_root, str(sovits_dir), is_half=True, device="cuda")
-        write_sovits_yaml_config(sovits_dir, is_half=True, device="cuda")
-        try:
-            from galgame2voice.database.session import get_db
-            from galgame2voice.database import crud
-            from galgame2voice.database.models import SettingsUpdate
-            async with get_db() as conn:
-                await crud.update_settings(conn, SettingsUpdate(inference_precision="fp16"))
-        except Exception:
-            pass
-    elif req_prec == "auto":
-        cache_file = settings.project_root / "data" / "precision.json"
-        cache_file.unlink(missing_ok=True)
-        try:
-            from galgame2voice.database.session import get_db
-            from galgame2voice.database import crud
-            from galgame2voice.database.models import SettingsUpdate
-            async with get_db() as conn:
-                await crud.update_settings(conn, SettingsUpdate(inference_precision="auto"))
-        except Exception:
-            pass
-        device, is_half, source = resolve_initial_device_and_half(settings.project_root, sovits_dir)
-        write_sovits_yaml_config(sovits_dir, is_half, device=device)
-    else:
-        device, is_half, source = resolve_initial_device_and_half(settings.project_root, sovits_dir)
-        write_sovits_yaml_config(sovits_dir, is_half, device=device)
+    device, is_half, source = await _apply_sovits_precision_config(settings.project_root, sovits_dir, req_prec)
 
     pid_file = settings.project_root / "gptsovits.pid"
-    old_pid = None
-    if pid_file.exists():
-        try:
-            old_pid = int(pid_file.read_text(encoding="utf-8").strip())
-        except ValueError:
-            pass
-
-    # Terminate old process
-    if old_pid:
-        try:
-            import psutil
-            if psutil.pid_exists(old_pid):
-                p = psutil.Process(old_pid)
-                for child in p.children(recursive=True):
-                    try:
-                        child.kill()
-                    except Exception:
-                        pass
-                p.kill()
-                p.wait(timeout=3.0)
-        except Exception:
-            pass
+    _terminate_existing_sovits_process(pid_file)
 
     await asyncio.sleep(1.0)
 

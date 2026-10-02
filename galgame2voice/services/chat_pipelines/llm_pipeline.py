@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator
 
 logger = logging.getLogger("galgame2voice.services.chat_pipelines.llm_pipeline")
 
@@ -21,15 +21,15 @@ class LlmStreamPipeline:
     def __init__(
         self,
         adapter: Any,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         model_name: str,
-        cancel_event: Optional[asyncio.Event] = None,
-        temperature: Optional[float] = None,
-        top_p: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        frequency_penalty: Optional[float] = None,
-        presence_penalty: Optional[float] = None,
-    ):
+        cancel_event: asyncio.Event | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+    ) -> None:
         self.adapter = adapter
         self.messages = messages
         self.model_name = model_name
@@ -45,7 +45,7 @@ class LlmStreamPipeline:
         Streams raw tokens from the underlying adapter while checking cancel_event.
         Guarantees socket/generator aclose() cleanup upon completion or interruption.
         """
-        stream_kwargs: Dict[str, Any] = {"model": self.model_name}
+        stream_kwargs: dict[str, Any] = {"model": self.model_name}
         if self.temperature is not None:
             stream_kwargs["temperature"] = self.temperature
         if self.top_p is not None:

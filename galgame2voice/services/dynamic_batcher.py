@@ -10,11 +10,14 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 from galgame2voice.utils.prosody import clamp_dynamic_batch_size
 
 logger = logging.getLogger("galgame2voice.services.dynamic_batcher")
+
+_RE_SPLIT_PUNCT_COMMA = re.compile(r'[。！？\.\!\?，,、\n]+')
+_RE_SPLIT_PUNCT_PERIOD = re.compile(r'[。！？\.\!\?\n]+')
 
 
 class SynthesisSpeedRecord:
@@ -25,8 +28,8 @@ class SynthesisSpeedRecord:
         self,
         char_count: int,
         elapsed_s: float,
-        audio_dur_s: Optional[float] = None,
-    ):
+        audio_dur_s: float | None = None,
+    ) -> None:
         self.timestamp = time.time()
         self.char_count = max(1, char_count)
         self.elapsed_s = max(0.001, elapsed_s)
@@ -42,7 +45,7 @@ class SynthesisSpeedTracker:
     Computes rolling averages of RTF (Real-Time Factor) and character throughput.
     """
 
-    def __init__(self, max_history: int = 15):
+    def __init__(self, max_history: int = 15) -> None:
         self._max_history = max_history
         self._history: collections.deque[SynthesisSpeedRecord] = collections.deque(maxlen=max_history)
         self._lock = threading.Lock()
@@ -51,7 +54,7 @@ class SynthesisSpeedTracker:
         self,
         char_count: int,
         elapsed_s: float,
-        audio_dur_s: Optional[float] = None,
+        audio_dur_s: float | None = None,
     ) -> SynthesisSpeedRecord:
         """Records a completed synthesis operation into the moving window."""
         rec = SynthesisSpeedRecord(char_count=char_count, elapsed_s=elapsed_s, audio_dur_s=audio_dur_s)
@@ -63,7 +66,7 @@ class SynthesisSpeedTracker:
         )
         return rec
 
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_metrics(self) -> dict[str, Any]:
         """Returns statistical metrics over recent synthesis operations."""
         with self._lock:
             items = list(self._history)
@@ -99,7 +102,7 @@ class SynthesisSpeedTracker:
     def is_high_throughput(self) -> bool:
         return bool(self.get_metrics()["is_high_throughput"])
 
-    def get_telemetry(self) -> Dict[str, Any]:
+    def get_telemetry(self) -> dict[str, Any]:
         """Returns comprehensive telemetry dictionary for API endpoints."""
         metrics = self.get_metrics()
         scheduler = get_batch_scheduler()
@@ -125,13 +128,13 @@ class SynthesisSpeedTracker:
 class DynamicBatchScheduler:
     """
     Determines the optimal VITS inference batch_size based on:
-    1. Streaming status (always 1 for lowest TTFA)
-    2. Explicit user parameter override (if specified)
+    1. Explicit user parameter override (if specified)
+    2. Streaming status (1 for lowest TTFA when no override is given)
     3. Sentence/fragment count in target text
     4. Hardware runtime throughput & RTF feedback
     """
 
-    def __init__(self, tracker: Optional[SynthesisSpeedTracker] = None):
+    def __init__(self, tracker: SynthesisSpeedTracker | None = None) -> None:
         self.tracker = tracker or get_speed_tracker()
 
     @staticmethod
@@ -156,21 +159,37 @@ class DynamicBatchScheduler:
         # cut4: 凑50字切
         # cut5: 按标点切
         if method in ("cut2", "cut5"):
-            parts = [p for p in re.split(r'[。！？\.\!\?，,、\n]+', cleaned) if p.strip()]
+            parts = [p for p in _RE_SPLIT_PUNCT_COMMA.split(cleaned) if p.strip()]
         elif method in ("cut1", "cut3"):
-            parts = [p for p in re.split(r'[。！？\.\!\?\n]+', cleaned) if p.strip()]
+            parts = [p for p in _RE_SPLIT_PUNCT_PERIOD.split(cleaned) if p.strip()]
         else:
             # Approx 25-30 chars per fragment
             parts = [cleaned[i:i + 30] for i in range(0, len(cleaned), 30)]
 
         return max(1, len(parts))
 
+    @staticmethod
+    def _scale_batch_size_for_throughput(slice_count: int, is_high_throughput: bool) -> int:
+        """Scales batch size according to slice count and GPU throughput tier."""
+        if is_high_throughput:
+            if slice_count >= 8:
+                return 8
+            if slice_count >= 4:
+                return 4
+            return min(2, slice_count)
+
+        if slice_count >= 6:
+            return 4
+        if slice_count >= 3:
+            return 3
+        return min(2, slice_count)
+
     def compute_batch_size(
         self,
         text: str,
         is_streaming: bool = False,
         split_method: str = "cut0",
-        user_batch_size: Optional[Any] = None,
+        user_batch_size: Any | None = None,
     ) -> int:
         """
         Computes the optimal batch size for GPT-SoVITS inference.
@@ -198,33 +217,16 @@ class DynamicBatchScheduler:
         metrics = self.tracker.get_metrics()
         samples = metrics["sample_count"]
 
-        # Cold start (few or no samples): conservative parallelism
-        if samples < 2:
+        # Cold start (few or no samples) or resource-constrained: conservative parallelism
+        if samples < 2 or metrics["is_resource_constrained"]:
             return min(2, slice_count)
 
-        # Resource-constrained (e.g. CPU or high RTF > 1.2): keep batch size low
-        if metrics["is_resource_constrained"]:
-            return min(2, slice_count)
-
-        # High throughput GPU environment (RTF < 0.5, chars/s >= 20):
-        if metrics["is_high_throughput"]:
-            if slice_count >= 8:
-                return min(8, slice_count)
-            if slice_count >= 4:
-                return min(4, slice_count)
-            return min(2, slice_count)
-
-        # Moderate throughput:
-        if slice_count >= 6:
-            return min(4, slice_count)
-        if slice_count >= 3:
-            return min(3, slice_count)
-        return min(2, slice_count)
+        return self._scale_batch_size_for_throughput(slice_count, metrics["is_high_throughput"])
 
 
 # Global singletons
-_GLOBAL_TRACKER: Optional[SynthesisSpeedTracker] = None
-_GLOBAL_SCHEDULER: Optional[DynamicBatchScheduler] = None
+_GLOBAL_TRACKER: SynthesisSpeedTracker | None = None
+_GLOBAL_SCHEDULER: DynamicBatchScheduler | None = None
 _INIT_LOCK = threading.RLock()
 
 

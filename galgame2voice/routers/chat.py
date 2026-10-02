@@ -7,7 +7,9 @@ backward-compatible synchronous chat endpoints (/api/chat, /ai/chat).
 import asyncio
 import json
 import logging
-from typing import Any, AsyncGenerator, Dict, Optional, Union
+import time
+from typing import Any, AsyncGenerator
+import uuid
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -17,6 +19,7 @@ from galgame2voice.services.gpt_sovits_client import validate_user_tts_options
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path
 from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.sse import format_sse_frame
 
 logger = logging.getLogger("galgame2voice.routers.chat")
 
@@ -26,8 +29,8 @@ PROMPT_MAX_LENGTH = 4000
 SESSION_ID_MAX_LENGTH = 128
 
 # Module-level ChatService instance
-_chat_service: Optional[ChatService] = None
-_explicit_chat_service: Optional[ChatService] = None
+_chat_service: ChatService | None = None
+_explicit_chat_service: ChatService | None = None
 
 
 def get_chat_service() -> ChatService:
@@ -41,7 +44,7 @@ def get_chat_service() -> ChatService:
     return _chat_service
 
 
-def set_chat_service(service: Optional[ChatService]) -> None:
+def set_chat_service(service: ChatService | None) -> None:
     """Overrides singleton ChatService instance (e.g. in tests)."""
     global _explicit_chat_service
     _explicit_chat_service = service
@@ -52,22 +55,24 @@ def set_chat_service(service: Optional[ChatService]) -> None:
 # ============================================================================
 
 class ChatRequest(BaseModel):
+    """Request payload for initiating streaming or synchronous chat generation."""
+
     prompt: str = Field(..., min_length=1, max_length=PROMPT_MAX_LENGTH, description="User prompt text")
     session_id: str = Field(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Conversation session identifier")
-    stream: Optional[bool] = Field(default=True, description="Whether client requested streaming")
-    character_name: Optional[str] = Field(default=None, max_length=100, description="Character persona name override")
-    voice_profile_id: Optional[int] = Field(default=None, description="Active voice profile ID for character")
-    provider_id: Optional[str] = Field(default=None, max_length=64, description="LLM provider ID override")
-    tts_options: Optional[Dict[str, Any]] = Field(default=None, description="Inference parameters (speed, top_k, etc.)")
-    preset: Optional[str] = Field(default=None, max_length=64, description="TTS Preset name (high_quality, balanced, low_latency)")
-    system_prompt: Optional[str] = Field(default=None, max_length=4000, description="Per-request system prompt override (frontend session persona)")
-    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0, description="Per-request LLM temperature override")
-    max_context: Optional[int] = Field(default=None, ge=2, le=100, description="Per-request max history messages override")
-    top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Per-request nucleus sampling override")
-    max_tokens: Optional[int] = Field(default=None, ge=16, le=32768, description="Per-request max generated tokens override")
-    frequency_penalty: Optional[float] = Field(default=None, ge=-2.0, le=2.0, description="Per-request frequency penalty override")
-    presence_penalty: Optional[float] = Field(default=None, ge=-2.0, le=2.0, description="Per-request presence penalty override")
-    ai_adaptive_voice: Optional[bool] = Field(default=True, description="Whether AI-driven dynamic voice inference is enabled")
+    stream: bool | None = Field(default=True, description="Whether client requested streaming")
+    character_name: str | None = Field(default=None, max_length=100, description="Character persona name override")
+    voice_profile_id: int | None = Field(default=None, description="Active voice profile ID for character")
+    provider_id: str | None = Field(default=None, max_length=64, description="LLM provider ID override")
+    tts_options: dict[str, Any] | None = Field(default=None, description="Inference parameters (speed, top_k, etc.)")
+    preset: str | None = Field(default=None, max_length=64, description="TTS Preset name (high_quality, balanced, low_latency)")
+    system_prompt: str | None = Field(default=None, max_length=PROMPT_MAX_LENGTH, description="Per-request system prompt override (frontend session persona)")
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="Per-request LLM temperature override")
+    max_context: int | None = Field(default=None, ge=2, le=100, description="Per-request max history messages override")
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0, description="Per-request nucleus sampling override")
+    max_tokens: int | None = Field(default=None, ge=16, le=32768, description="Per-request max generated tokens override")
+    frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0, description="Per-request frequency penalty override")
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0, description="Per-request presence penalty override")
+    ai_adaptive_voice: bool | None = Field(default=True, description="Whether AI-driven dynamic voice inference is enabled")
 
 
 # ============================================================================
@@ -75,24 +80,16 @@ class ChatRequest(BaseModel):
 # ============================================================================
 
 async def sse_event_formatter(
-    event_generator: AsyncGenerator[Union[Dict[str, Any], str], None],
-    cancel_event: Optional[asyncio.Event] = None,
-    cleanup_task: Optional[asyncio.Task] = None,
+    event_generator: AsyncGenerator[dict[str, Any] | str, None],
+    cancel_event: asyncio.Event | None = None,
+    cleanup_task: asyncio.Task | None = None,
 ) -> AsyncGenerator[str, None]:
     """Formats event dictionaries into standard Server-Sent Events SSE text stream."""
     try:
         async for event in event_generator:
             if cancel_event and cancel_event.is_set():
                 break
-            if isinstance(event, str):
-                yield event
-                continue
-            if isinstance(event, dict) and (event.get("event") == ":keep-alive" or "comment" in event):
-                yield str(event.get("comment", ": keep-alive\n\n"))
-                continue
-            event_name = event.get("event", "message")
-            event_data = json.dumps(event.get("data", {}), ensure_ascii=False)
-            yield f"event: {event_name}\ndata: {event_data}\n\n"
+            yield format_sse_frame(event)
     except (asyncio.CancelledError, GeneratorExit):
         if cancel_event:
             cancel_event.set()
@@ -120,7 +117,7 @@ def _validate_chat_request(req: ChatRequest) -> None:
             detail="Prompt cannot be empty",
         )
     # Defensively normalize and validate session_id
-    req.session_id = (req.session_id or "").strip() or "default"
+    req.session_id = req.session_id.strip() or "default"
     if len(req.session_id) > SESSION_ID_MAX_LENGTH:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -137,25 +134,29 @@ def _validate_chat_request(req: ChatRequest) -> None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
 
-@router.post("/api/chat/stream", summary="Real-time SSE bilingual streaming chat")
-async def chat_stream_endpoint(req: ChatRequest, request: Request):
-    """
-    Server-Sent Events endpoint streaming real-time Chinese delta text
-    and synthesized Japanese audio chunks.
-    """
-    _validate_chat_request(req)
-
+def _resolve_request_tts_options(req: ChatRequest) -> dict[str, Any]:
     tts_opts = dict(req.tts_options or {})
     if req.preset:
         tts_opts["preset"] = req.preset
     if req.ai_adaptive_voice is not None:
         tts_opts["ai_adaptive_voice"] = req.ai_adaptive_voice
+    return tts_opts
+
+
+@router.post("/api/chat/stream", summary="Real-time SSE bilingual streaming chat")
+async def chat_stream_endpoint(req: ChatRequest, request: Request) -> StreamingResponse:
+    """
+    Server-Sent Events endpoint streaming real-time Chinese delta text
+    and synthesized Japanese audio chunks.
+    """
+    _validate_chat_request(req)
+    tts_opts = _resolve_request_tts_options(req)
 
     cancel_event = asyncio.Event()
-    disconnect_task: Optional[asyncio.Task] = None
+    disconnect_task: asyncio.Task | None = None
 
     if request is not None:
-        async def _client_disconnect_watcher():
+        async def _client_disconnect_watcher() -> None:
             try:
                 while not cancel_event.is_set():
                     if await request.is_disconnected():
@@ -205,21 +206,17 @@ async def chat_stream_endpoint(req: ChatRequest, request: Request):
 # ============================================================================
 
 @router.post("/api/chat", summary="Synchronous chat completion")
-async def chat_sync_endpoint(req: ChatRequest):
+async def chat_sync_endpoint(req: ChatRequest) -> dict[str, Any]:
     """
     Non-streaming synchronous chat completion returning bilingual text and audio URL.
     """
     _validate_chat_request(req)
 
-    tts_opts = dict(req.tts_options or {})
-    if req.preset:
-        tts_opts["preset"] = req.preset
-    if req.ai_adaptive_voice is not None:
-        tts_opts["ai_adaptive_voice"] = req.ai_adaptive_voice
+    tts_opts = _resolve_request_tts_options(req)
 
     service = get_chat_service()
     try:
-        result = await service.chat_sync(
+        return await service.chat_sync(
             prompt=req.prompt.strip(),
             session_id=req.session_id,
             character_name=req.character_name,
@@ -235,11 +232,17 @@ async def chat_sync_endpoint(req: ChatRequest):
             presence_penalty=req.presence_penalty,
             ai_adaptive_voice=req.ai_adaptive_voice,
         )
-        return result
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Error in synchronous chat completion: %s", exc, exc_info=True)
+        logger.error(
+            "Error in synchronous chat completion (session_id=%s, character=%s, provider=%s): %s",
+            req.session_id,
+            req.character_name,
+            req.provider_id,
+            exc,
+            exc_info=True,
+        )
         safe_err = sanitize_error_detail(exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -251,9 +254,9 @@ async def chat_sync_endpoint(req: ChatRequest):
 async def legacy_get_chat(
     prompt: str = Query(..., min_length=1, max_length=PROMPT_MAX_LENGTH, description="Prompt text"),
     session_id: str = Query(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Session ID"),
-    character_name: Optional[str] = Query(default=None, max_length=100, description="Character name"),
-    preset: Optional[str] = Query(default=None, max_length=64, description="TTS preset"),
-):
+    character_name: str | None = Query(default=None, max_length=100, description="Character name"),
+    preset: str | None = Query(default=None, max_length=64, description="TTS preset"),
+) -> dict[str, Any]:
     """
     Legacy backward-compatible GET endpoint for simple chat queries.
     """
@@ -268,17 +271,22 @@ async def legacy_get_chat(
     service = get_chat_service()
     tts_opts = {"preset": preset} if preset else {}
     try:
-        result = await service.chat_sync(
+        return await service.chat_sync(
             prompt=prompt.strip(),
             session_id=clean_session_id,
             character_name=clean_char_name,
             tts_options=tts_opts,
         )
-        return result
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Error in legacy GET chat completion: %s", exc, exc_info=True)
+        logger.error(
+            "Error in legacy GET chat completion (session_id=%s, character=%s): %s",
+            clean_session_id,
+            clean_char_name,
+            exc,
+            exc_info=True,
+        )
         safe_err = sanitize_error_detail(exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -287,7 +295,7 @@ async def legacy_get_chat(
 
 
 @router.post("/ai/chat", summary="Legacy POST chat completion endpoint")
-async def legacy_post_chat(req: ChatRequest):
+async def legacy_post_chat(req: ChatRequest) -> dict[str, Any]:
     """
     Legacy backward-compatible POST endpoint.
     """
@@ -299,15 +307,17 @@ async def legacy_post_chat(req: ChatRequest):
 # ============================================================================
 
 class SessionUpsertRequest(BaseModel):
-    id: Optional[str] = Field(default=None, max_length=SESSION_ID_MAX_LENGTH, description="Session ID (auto-generated if omitted)")
-    title: Optional[str] = Field(default=None, max_length=200, description="Session display title")
-    voice_profile_id: Optional[int] = Field(default=None, description="Bound voice profile ID")
-    custom_system_prompt: Optional[str] = Field(default=None, max_length=4000, description="Custom persona system prompt")
-    settings: Optional[Dict[str, Any]] = Field(default=None, description="Session-specific generation & voice parameters")
+    """Request payload for creating or modifying a chat session and its settings."""
+
+    id: str | None = Field(default=None, max_length=SESSION_ID_MAX_LENGTH, description="Session ID (auto-generated if omitted)")
+    title: str | None = Field(default=None, max_length=200, description="Session display title")
+    voice_profile_id: int | None = Field(default=None, description="Bound voice profile ID")
+    custom_system_prompt: str | None = Field(default=None, max_length=PROMPT_MAX_LENGTH, description="Custom persona system prompt")
+    settings: dict[str, Any] | None = Field(default=None, description="Session-specific generation & voice parameters")
 
 
 @router.get("/api/chat/sessions", summary="List all chat sessions with metadata")
-async def list_chat_sessions(limit: int = Query(default=50, ge=1, le=200)):
+async def list_chat_sessions(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
     """
     Returns list of all conversation sessions from SQLite database in reverse-chronological order,
     including inferred human-readable title, message count, and last message preview.
@@ -320,7 +330,7 @@ async def list_chat_sessions(limit: int = Query(default=50, ge=1, le=200)):
             if s.get("settings_json"):
                 try:
                     settings_dict = json.loads(s["settings_json"])
-                except Exception:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     settings_dict = {}
             results.append({
                 "id": s["id"],
@@ -339,14 +349,22 @@ async def list_chat_sessions(limit: int = Query(default=50, ge=1, le=200)):
         }
 
 
+def _validate_non_empty_session_id(session_id: str) -> str:
+    clean_id = (session_id or "").strip()
+    if not clean_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="session_id cannot be empty",
+        )
+    return clean_id
+
+
 @router.post("/api/chat/sessions", summary="Create or update conversation session")
-async def upsert_chat_session(req: SessionUpsertRequest):
+async def upsert_chat_session(req: SessionUpsertRequest) -> dict[str, Any]:
     """
     Creates or updates a conversation session in SQLite database,
     persisting title and custom generation parameters.
     """
-    import uuid
-    import time
     sess_id = (req.id or "").strip()
     if not sess_id:
         sess_id = f"s_{int(time.time()):x}_{uuid.uuid4().hex[:6]}"
@@ -368,16 +386,11 @@ async def upsert_chat_session(req: SessionUpsertRequest):
 
 
 @router.delete("/api/chat/sessions/{session_id}", summary="Delete conversation session")
-async def delete_chat_session_by_id(session_id: str):
+async def delete_chat_session_by_id(session_id: str) -> dict[str, Any]:
     """
     Deletes a conversation session and all its cascading messages.
     """
-    clean_id = (session_id or "").strip()
-    if not clean_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="session_id cannot be empty",
-        )
+    clean_id = _validate_non_empty_session_id(session_id)
     async with get_db() as conn:
         success = await crud.delete_session(conn, clean_id)
         return {
@@ -391,7 +404,7 @@ async def delete_chat_session_by_id(session_id: str):
 async def get_chat_history(
     session_id: str = Query(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Conversation session ID"),
     limit: int = Query(default=100, ge=1, le=500, description="Max message count to return"),
-):
+) -> dict[str, Any]:
     """
     Returns chronological list of previous messages in the session for UI restoration.
     """
@@ -408,16 +421,11 @@ async def get_chat_history(
 @router.delete("/api/chat/history", summary="Clear session message history")
 async def clear_chat_history(
     session_id: str = Query(..., max_length=SESSION_ID_MAX_LENGTH, description="Conversation session ID to reset"),
-):
+) -> dict[str, Any]:
     """
     Deletes all messages associated with the specified session ID.
     """
-    clean_session_id = (session_id or "").strip()
-    if not clean_session_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="session_id cannot be empty",
-        )
+    clean_session_id = _validate_non_empty_session_id(session_id)
     async with get_db() as conn:
         cleared = await crud.clear_session_messages(conn, session_id=clean_session_id)
         return {
@@ -428,12 +436,14 @@ async def clear_chat_history(
 
 
 class MessageJapaneseRequest(BaseModel):
+    """Request payload for retrieving or translating Japanese speech script for a message."""
+
     text: str = Field(..., min_length=1, max_length=PROMPT_MAX_LENGTH, description="Chinese text of the assistant message")
-    session_id: Optional[str] = Field(default=None, max_length=SESSION_ID_MAX_LENGTH, description="Session ID if known")
+    session_id: str | None = Field(default=None, max_length=SESSION_ID_MAX_LENGTH, description="Session ID if known")
 
 
 @router.post("/api/chat/japanese", summary="Get or resolve backend synthesized Japanese text")
-async def get_message_japanese_endpoint(req: MessageJapaneseRequest):
+async def get_message_japanese_endpoint(req: MessageJapaneseRequest) -> dict[str, Any]:
     """
     Returns the Japanese original text used for TTS synthesis of this message.
     Looks up database history first, falling back to LLM translation.

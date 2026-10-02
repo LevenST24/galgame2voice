@@ -9,7 +9,7 @@ and SQLite persistent storage for long-term historical analytics.
 from collections import deque
 from datetime import datetime, timezone
 import logging
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 from pathlib import Path
 
 from galgame2voice.database import crud
@@ -19,58 +19,76 @@ from galgame2voice.services.tts_cache_manager import get_tts_cache_manager
 logger = logging.getLogger("galgame2voice.services.metrics_collector")
 
 # USD Pricing per 1,000,000 Tokens (Input / Output)
-MODEL_PRICING_MAP: Dict[str, Dict[str, Tuple[float, float]]] = {
+DEFAULT_MODEL_KEY = "default"
+
+MODEL_PRICING_MAP: dict[str, dict[str, tuple[float, float]]] = {
     "deepseek": {
-        "default": (0.14, 0.28),
+        DEFAULT_MODEL_KEY: (0.14, 0.28),
         "deepseek-chat": (0.14, 0.28),
         "deepseek-reasoner": (0.55, 2.19),
     },
     "openai": {
-        "default": (0.15, 0.60),
+        DEFAULT_MODEL_KEY: (0.15, 0.60),
         "gpt-4o-mini": (0.15, 0.60),
         "gpt-4o": (2.50, 10.00),
         "o3-mini": (1.10, 4.40),
     },
     "gemini": {
-        "default": (0.075, 0.30),
+        DEFAULT_MODEL_KEY: (0.075, 0.30),
         "gemini-2.5-flash": (0.15, 0.60),
         "gemini-2.5-pro": (1.25, 10.00),
         "gemini-2.0-flash": (0.10, 0.40),
     },
     "anthropic": {
-        "default": (3.00, 15.00),
+        DEFAULT_MODEL_KEY: (3.00, 15.00),
         "claude-sonnet-4-20250514": (3.00, 15.00),
         "claude-haiku-4-20250414": (0.80, 4.00),
         "claude-3-5-sonnet-20241022": (3.00, 15.00),
     },
     "qwen": {
-        "default": (0.05, 0.20),
+        DEFAULT_MODEL_KEY: (0.05, 0.20),
         "qwen-max-latest": (0.20, 0.60),
         "qwen-plus-latest": (0.05, 0.20),
     },
     "glm": {
-        "default": (0.05, 0.05),
+        DEFAULT_MODEL_KEY: (0.05, 0.05),
         "glm-4-plus": (0.05, 0.05),
         "glm-4-flash": (0.01, 0.01),
     },
     "xai": {
-        "default": (3.00, 15.00),
+        DEFAULT_MODEL_KEY: (3.00, 15.00),
         "grok-3": (3.00, 15.00),
         "grok-3-mini": (0.30, 0.50),
     },
     "siliconflow": {
-        "default": (0.14, 0.28),
+        DEFAULT_MODEL_KEY: (0.14, 0.28),
     },
     "moonshot": {
-        "default": (0.20, 0.60),
+        DEFAULT_MODEL_KEY: (0.20, 0.60),
     },
     "custom": {
-        "default": (0.0, 0.0),  # Local models have no API cost
+        DEFAULT_MODEL_KEY: (0.0, 0.0),  # Local models have no API cost
     },
 }
 
 DEFAULT_FALLBACK_PRICE = (0.15, 0.60)
 USD_TO_CNY_RATE = 7.20
+
+
+def _safe_nonneg_int(val: Any) -> int:
+    """Safely coerces val to a non-negative integer, returning 0 on None or conversion error."""
+    try:
+        return max(0, int(val)) if val is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_nonneg_float(val: Any) -> float:
+    """Safely coerces val to a non-negative float, returning 0.0 on None or conversion error."""
+    try:
+        return max(0.0, float(val)) if val is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class MetricsCollector:
@@ -79,7 +97,7 @@ class MetricsCollector:
     in-memory ring buffering, and asynchronous database persistence.
     """
 
-    def __init__(self, db_path: Optional[Union[str, Path]] = None, ring_buffer_size: int = 100):
+    def __init__(self, db_path: str | Path | None = None, ring_buffer_size: int = 100) -> None:
         self.db_path = str(db_path) if db_path is not None else get_database_path()
         self.ring_buffer: deque = deque(maxlen=ring_buffer_size)
 
@@ -89,7 +107,7 @@ class MetricsCollector:
         model_name: str,
         prompt_tokens: int,
         completion_tokens: int,
-    ) -> Tuple[float, float]:
+    ) -> tuple[float, float]:
         """
         Calculates estimated cost in USD and CNY for prompt and completion tokens.
         Returns (cost_usd, cost_cny).
@@ -98,16 +116,10 @@ class MetricsCollector:
         m_name = (model_name or "").lower().strip()
 
         provider_models = MODEL_PRICING_MAP.get(pid, {})
-        input_rate, output_rate = provider_models.get(m_name, provider_models.get("default", DEFAULT_FALLBACK_PRICE))
+        input_rate, output_rate = provider_models.get(m_name, provider_models.get(DEFAULT_MODEL_KEY, DEFAULT_FALLBACK_PRICE))
 
-        try:
-            p_tok = max(0, int(prompt_tokens)) if prompt_tokens is not None else 0
-        except (TypeError, ValueError):
-            p_tok = 0
-        try:
-            c_tok = max(0, int(completion_tokens)) if completion_tokens is not None else 0
-        except (TypeError, ValueError):
-            c_tok = 0
+        p_tok = _safe_nonneg_int(prompt_tokens)
+        c_tok = _safe_nonneg_int(completion_tokens)
 
         cost_usd = ((p_tok * input_rate) + (c_tok * output_rate)) / 1_000_000.0
         cost_cny = cost_usd * USD_TO_CNY_RATE
@@ -152,19 +164,13 @@ class MetricsCollector:
         total_latency_ms: float = 0.0,
         tts_cached_chunks: int = 0,
         tts_generated_chunks: int = 0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Records telemetry for an end-to-end request.
         Updates in-memory ring buffer and persists asynchronously to SQLite.
         """
-        try:
-            safe_prompt_tok = max(0, int(prompt_tokens)) if prompt_tokens is not None else 0
-        except (TypeError, ValueError):
-            safe_prompt_tok = 0
-        try:
-            safe_comp_tok = max(0, int(completion_tokens)) if completion_tokens is not None else 0
-        except (TypeError, ValueError):
-            safe_comp_tok = 0
+        safe_prompt_tok = _safe_nonneg_int(prompt_tokens)
+        safe_comp_tok = _safe_nonneg_int(completion_tokens)
 
         cost_usd, cost_cny = self.calculate_cost(
             provider_id=provider_id,
@@ -175,18 +181,9 @@ class MetricsCollector:
         total_tokens = safe_prompt_tok + safe_comp_tok
         iso_timestamp = datetime.now(timezone.utc).isoformat()
 
-        try:
-            safe_ttft = max(0.0, float(ttft_ms))
-        except (TypeError, ValueError):
-            safe_ttft = 0.0
-        try:
-            safe_tts_first = max(0.0, float(tts_first_chunk_ms))
-        except (TypeError, ValueError):
-            safe_tts_first = 0.0
-        try:
-            safe_total_lat = max(0.0, float(total_latency_ms))
-        except (TypeError, ValueError):
-            safe_total_lat = 0.0
+        safe_ttft = _safe_nonneg_float(ttft_ms)
+        safe_tts_first = _safe_nonneg_float(tts_first_chunk_ms)
+        safe_total_lat = _safe_nonneg_float(total_latency_ms)
 
         metric_record = {
             "timestamp": iso_timestamp,
@@ -202,8 +199,8 @@ class MetricsCollector:
             "ttft_ms": round(safe_ttft, 1),
             "tts_first_chunk_ms": round(safe_tts_first, 1),
             "total_latency_ms": round(safe_total_lat, 1),
-            "tts_cached_chunks": max(0, int(tts_cached_chunks or 0)),
-            "tts_generated_chunks": max(0, int(tts_generated_chunks or 0)),
+            "tts_cached_chunks": _safe_nonneg_int(tts_cached_chunks),
+            "tts_generated_chunks": _safe_nonneg_int(tts_generated_chunks),
         }
 
         # Add to in-memory ring buffer
@@ -232,7 +229,43 @@ class MetricsCollector:
 
         return metric_record
 
-    async def get_overview(self) -> Dict[str, Any]:
+    async def record_chat_turn(
+        self,
+        session_id: str,
+        provider_id: str,
+        model_name: str,
+        messages: list[Any],
+        chinese: str,
+        japanese: str,
+        ttft_ms: float,
+        tts_first_chunk_ms: float,
+        total_latency_ms: float,
+        tts_cached_chunks: int = 0,
+        tts_generated_chunks: int = 0,
+        channel: str = "web",
+    ) -> dict[str, Any]:
+        """
+        Calculates prompt and completion tokens from conversation messages and bilingual response,
+        then records telemetry record.
+        """
+        prompt_text = "".join([getattr(m, "content", "") for m in messages])
+        prompt_tokens = self.estimate_tokens(prompt_text)
+        completion_tokens = self.estimate_tokens(chinese + japanese)
+        return await self.record_metric(
+            session_id=session_id,
+            channel=channel,
+            provider_id=provider_id,
+            model_name=model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            ttft_ms=ttft_ms,
+            tts_first_chunk_ms=tts_first_chunk_ms,
+            total_latency_ms=total_latency_ms,
+            tts_cached_chunks=tts_cached_chunks,
+            tts_generated_chunks=tts_generated_chunks,
+        )
+
+    async def get_overview(self) -> dict[str, Any]:
         """
         Retrieves global token telemetry aggregated overview combined with TTS cache stats.
         """
@@ -264,7 +297,7 @@ class MetricsCollector:
 
         return overview
 
-    async def get_providers(self) -> List[Dict[str, Any]]:
+    async def get_providers(self) -> list[dict[str, Any]]:
         """Retrieves breakdown of token usage and costs by provider."""
         try:
             async with get_db(self.db_path) as conn:
@@ -273,7 +306,7 @@ class MetricsCollector:
             logger.warning("Could not read provider metrics breakdown: %s", exc)
             return []
 
-    async def get_latency_trend(self, limit: int = 30) -> List[Dict[str, Any]]:
+    async def get_latency_trend(self, limit: int = 30) -> list[dict[str, Any]]:
         """
         Retrieves recent latency measurements from in-memory ring buffer or database.
         """
@@ -301,10 +334,10 @@ class MetricsCollector:
 
 
 # Singleton accessor
-_metrics_collector_instance: Optional[MetricsCollector] = None
+_metrics_collector_instance: MetricsCollector | None = None
 
 
-def get_metrics_collector(db_path: Optional[Union[str, Path]] = None) -> MetricsCollector:
+def get_metrics_collector(db_path: str | Path | None = None) -> MetricsCollector:
     """Returns singleton instance of MetricsCollector."""
     global _metrics_collector_instance
     if _metrics_collector_instance is None:

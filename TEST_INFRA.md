@@ -6,7 +6,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 
 ### Core Testing Tenets:
 1. **Opaque-Box Contract Verification**: Tests evaluate system behaviors solely through public APIs, HTTP/SSE protocols, exported service interfaces, and CLI boundaries without depending on internal implementation quirks.
-2. **Deterministic Derivation**: Every test assertion is derived from unambiguous requirements in `PROJECT.md` and `ORIGINAL_REQUEST.md`.
+2. **Deterministic Derivation**: Every test assertion is derived from unambiguous requirements in `PROJECT.md` (Feature Inventory & Interface Contracts). The formerly referenced `ORIGINAL_REQUEST.md` does not exist in this repository.
 3. **No Facade or Flaky Tests**: Tests perform real compute, file I/O, database WAL transactions, and concurrency stress without mock bypasses that fabricate passing results.
 4. **Adversarial & Chaos Hardening**: Explicit injection of malicious payloads, path traversal attempts, prompt injection delimiters, connection drops, and burst I/O locks.
 
@@ -87,7 +87,7 @@ Every functional domain is validated against its primary functional contracts:
 ### F7: Path Traversal & Audio File Security
 - `T1_SEC_01`: Rejects `../` path traversal attempts in static audio endpoints.
 - `T1_SEC_02`: Rejects absolute path escapes and URL encoded `%2e%2e%2f` sequences.
-- `T1_SEC_03`: `fs-browse` endpoint restricts access and filters by whitelisted extensions (`.ckpt`, `.pth`, `.wav`).
+- `T1_SEC_03`: `fs-browse` endpoint restricts access and filters by the per-`file_type` whitelists in `_FS_BROWSE_EXTS` (`gpt` → `.ckpt`, `sovits` → `.pth`, `audio` → `.wav`/`.ogg`/`.mp3`/`.flac`/`.m4a`).
 - `T1_SEC_04`: SSRF protection blocks private/loopback IP requests for external LLM base URLs.
 - `T1_SEC_05`: Temporary cache write names isolate pid and timestamp to avoid collisions.
 

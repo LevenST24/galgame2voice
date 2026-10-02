@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.logger import sanitize_error_detail
@@ -21,12 +21,19 @@ logger = logging.getLogger("galgame2voice.services.chat_pipelines.tts_pipeline")
 _VOCAL_RE = re.compile(r'[\w\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]')
 
 
+def _get_profile_attr(profile: Any, key: str, default: Any = None) -> Any:
+    """Safely retrieves a key or attribute from a voice profile dict or model."""
+    if isinstance(profile, dict):
+        return profile.get(key, default)
+    return getattr(profile, key, default)
+
+
 class TtsStreamPipeline:
     """
     Manages audio synthesis for sentence chunks produced by the chat parser.
     """
 
-    def __init__(self, tts_service: TtsService, generation_id: str):
+    def __init__(self, tts_service: TtsService, generation_id: str) -> None:
         self.tts_service = tts_service
         self.generation_id = generation_id
 
@@ -42,34 +49,30 @@ class TtsStreamPipeline:
 
     def prepare_chunk_options(
         self,
-        base_options: Optional[Dict[str, Any]],
-        active_profile: Optional[Any],
+        base_options: dict[str, Any] | None,
+        active_profile: Any | None,
         chunk_index: int,
         sentence: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Prepares options dictionary for a specific sentence chunk."""
         opts = dict(base_options) if base_options else {}
         if active_profile:
-            is_dict = isinstance(active_profile, dict)
-            prof_id = active_profile.get("id") if is_dict else getattr(active_profile, "id", None)
+            prof_id = _get_profile_attr(active_profile, "id")
             if prof_id is not None:
                 opts.setdefault("voice_profile_id", prof_id)
 
-            char_name = active_profile.get("name") if is_dict else getattr(active_profile, "name", None)
+            char_name = _get_profile_attr(active_profile, "name")
             if char_name:
                 opts.setdefault("character_name", char_name)
 
-            p_lang = active_profile.get("prompt_lang") if is_dict else getattr(active_profile, "prompt_lang", None)
-            opts.setdefault("prompt_lang", p_lang or "ja")
+            opts.setdefault("prompt_lang", _get_profile_attr(active_profile, "prompt_lang") or "ja")
+            opts.setdefault("text_lang", _get_profile_attr(active_profile, "text_lang") or "ja")
 
-            t_lang = active_profile.get("text_lang") if is_dict else getattr(active_profile, "text_lang", None)
-            opts.setdefault("text_lang", t_lang or "ja")
-
-            ref_path = active_profile.get("ref_audio_path") if is_dict else getattr(active_profile, "ref_audio_path", None)
+            ref_path = _get_profile_attr(active_profile, "ref_audio_path")
             if ref_path:
                 opts.setdefault("ref_audio_path", ref_path)
 
-            prompt_text = active_profile.get("prompt_text") if is_dict else getattr(active_profile, "prompt_text", None)
+            prompt_text = _get_profile_attr(active_profile, "prompt_text")
             if prompt_text:
                 opts.setdefault("prompt_text", prompt_text)
 
@@ -85,9 +88,9 @@ class TtsStreamPipeline:
         self,
         sentence: str,
         chunk_index: int,
-        options: Dict[str, Any],
-        profiler: Optional[ChatTurnProfiler] = None,
-    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        options: dict[str, Any],
+        profiler: ChatTurnProfiler | None = None,
+    ) -> tuple[dict[str, Any] | None, str | None]:
         """
         Synthesizes a single vocal sentence chunk.
         Returns:

@@ -6,11 +6,13 @@ and Telegram bot token verification.
 """
 
 import asyncio
+import json
 import logging
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
+import aiosqlite
 import httpx
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
@@ -32,6 +34,7 @@ from galgame2voice.security import url_guard
 from galgame2voice.telegram_bot.proxy import get_proxy_url
 from galgame2voice.utils.error_diagnostics import format_provider_error
 from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.text_sanitize import sanitize_bot_token
 
 logger = logging.getLogger("galgame2voice.routers.providers")
 router = APIRouter(tags=["Providers & Testing"])
@@ -44,7 +47,7 @@ async def _allow_private_endpoints() -> bool:
     return bool(getattr(settings, "allow_private_llm_endpoints", False))
 
 
-async def _enforce_llm_url_guard(base_url: Optional[str]) -> None:
+async def _enforce_llm_url_guard(base_url: str | None) -> None:
     """Rejects LLM provider base URLs that resolve to loopback/private ranges
     unless the operator explicitly enabled private endpoints."""
     if not base_url:
@@ -57,14 +60,14 @@ async def _enforce_llm_url_guard(base_url: Optional[str]) -> None:
 
 class ProviderTestRequest(BaseModel):
     """Payload for real-time provider connectivity and credential testing."""
-    provider_type: Optional[str] = None
-    id: Optional[str] = None
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
-    api_base_url: Optional[str] = None
-    model: Optional[str] = None
-    chat_model: Optional[str] = None
-    custom_headers: Optional[Dict[str, Any]] = None
+    provider_type: str | None = None
+    id: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    api_base_url: str | None = None
+    model: str | None = None
+    chat_model: str | None = None
+    custom_headers: dict[str, Any] | None = None
 
 
 class ProviderTestResponse(BaseModel):
@@ -72,19 +75,19 @@ class ProviderTestResponse(BaseModel):
     __test__ = False
     success: bool
     message: str
-    latency_ms: Optional[float] = None
-    models: Optional[List[str]] = None
-    error: Optional[str] = None
-    diagnostic: Optional[str] = None
+    latency_ms: float | None = None
+    models: list[str] | None = None
+    error: str | None = None
+    diagnostic: str | None = None
 
 
 class TelegramTestRequest(BaseModel):
     """Payload for real-time Telegram bot token connectivity testing."""
-    token: Optional[str] = None
-    bot_token: Optional[str] = None
-    proxy_enabled: Optional[bool] = False
-    proxy_host: Optional[str] = "127.0.0.1"
-    proxy_port: Optional[int] = Field(default=10809, ge=1, le=65535)
+    token: str | None = None
+    bot_token: str | None = None
+    proxy_enabled: bool | None = False
+    proxy_host: str | None = "127.0.0.1"
+    proxy_port: int | None = Field(default=10809, ge=1, le=65535)
 
 
 # ============================================================================
@@ -159,12 +162,98 @@ async def get_provider(provider_id: str):
         return {"provider": provider.model_dump()}
 
 
+async def _update_existing_provider(
+    conn: Any, provider_id: str, provider_data: dict[str, Any]
+) -> dict[str, Any]:
+    """Updates an existing LLM provider configuration with validation."""
+    update_kwargs: dict[str, Any] = {}
+    if "name" in provider_data and provider_data["name"] is not None:
+        update_kwargs["name"] = provider_data["name"]
+    if "api_base_url" in provider_data or "base_url" in provider_data:
+        url_val = provider_data.get("api_base_url") or provider_data.get("base_url")
+        if url_val is not None:
+            await _enforce_llm_url_guard(url_val)
+            update_kwargs["api_base_url"] = url_val
+    if "api_key" in provider_data and provider_data["api_key"] is not None:
+        update_kwargs["api_key"] = provider_data["api_key"]
+    if "chat_model" in provider_data or "model" in provider_data:
+        model_val = provider_data.get("chat_model") or provider_data.get("model")
+        if model_val is not None:
+            update_kwargs["chat_model"] = model_val
+    if "stt_model" in provider_data and provider_data["stt_model"] is not None:
+        update_kwargs["stt_model"] = provider_data["stt_model"]
+    if "is_active" in provider_data and provider_data["is_active"] is not None:
+        update_kwargs["is_active"] = provider_data["is_active"]
+    if "custom_headers" in provider_data and provider_data["custom_headers"] is not None:
+        update_kwargs["custom_headers"] = provider_data["custom_headers"]
+
+    try:
+        updates = ProviderUpdate(**update_kwargs)
+        updated = await crud.update_provider(conn, provider_id, updates)
+        return {"status": "success", "provider": updated.model_dump() if updated else None}
+    except Exception as exc:
+        safe_err = sanitize_error_detail(exc)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Invalid provider parameters: {safe_err}",
+        ) from exc
+
+
+async def _create_new_provider(
+    conn: Any, provider_id: str, provider_data: dict[str, Any]
+) -> dict[str, Any]:
+    """Creates a new LLM provider record populated with preset defaults."""
+    preset = get_provider_preset(provider_id)
+    name = provider_data.get("name") or (preset["name"] if preset else provider_id.capitalize())
+    user_supplied_url = provider_data.get("api_base_url") or provider_data.get("base_url")
+    if user_supplied_url:
+        await _enforce_llm_url_guard(user_supplied_url)
+    base_url = (
+        user_supplied_url
+        or (preset["default_base_url"] if preset else "https://api.openai.com/v1")
+    )
+    chat_model = (
+        provider_data.get("chat_model")
+        or provider_data.get("model")
+        or (preset["default_chat_model"] if preset else "gpt-4o-mini")
+    )
+    stt_model = (
+        provider_data.get("stt_model")
+        or (preset["default_stt_model"] if preset else "")
+    )
+    is_active = bool(provider_data.get("is_active", False))
+    api_key = provider_data.get("api_key", "")
+    if is_masked_key(api_key):
+        api_key = ""
+    custom_headers = provider_data.get("custom_headers") or {}
+
+    try:
+        new_provider = ProviderCreate(
+            id=provider_id,
+            name=name,
+            api_base_url=base_url,
+            api_key=api_key,
+            chat_model=chat_model,
+            stt_model=stt_model,
+            is_active=is_active,
+            custom_headers=custom_headers,
+        )
+        created = await crud.create_provider(conn, new_provider)
+        return {"status": "created", "provider": created.model_dump()}
+    except Exception as exc:
+        safe_err = sanitize_error_detail(exc)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Invalid provider creation parameters: {safe_err}",
+        ) from exc
+
+
 @router.post(
     "/providers",
     summary="Create or Update Provider",
     description="Upserts an LLM/STT provider profile, safely retaining existing secret keys if masked.",
 )
-async def create_or_update_provider(provider_data: Dict[str, Any]):
+async def create_or_update_provider(provider_data: dict[str, Any]):
     raw_id = provider_data.get("id") or provider_data.get("provider_type")
     if not raw_id:
         raise HTTPException(
@@ -182,83 +271,8 @@ async def create_or_update_provider(provider_data: Dict[str, Any]):
     async with get_db() as conn:
         existing = await crud.get_provider_raw(conn, provider_id)
         if existing:
-            # Update existing provider
-            update_kwargs = {}
-            if "name" in provider_data and provider_data["name"] is not None:
-                update_kwargs["name"] = provider_data["name"]
-            if "api_base_url" in provider_data or "base_url" in provider_data:
-                url_val = provider_data.get("api_base_url") or provider_data.get("base_url")
-                if url_val is not None:
-                    await _enforce_llm_url_guard(url_val)
-                    update_kwargs["api_base_url"] = url_val
-            if "api_key" in provider_data and provider_data["api_key"] is not None:
-                update_kwargs["api_key"] = provider_data["api_key"]
-            if "chat_model" in provider_data or "model" in provider_data:
-                model_val = provider_data.get("chat_model") or provider_data.get("model")
-                if model_val is not None:
-                    update_kwargs["chat_model"] = model_val
-            if "stt_model" in provider_data and provider_data["stt_model"] is not None:
-                update_kwargs["stt_model"] = provider_data["stt_model"]
-            if "is_active" in provider_data and provider_data["is_active"] is not None:
-                update_kwargs["is_active"] = provider_data["is_active"]
-            if "custom_headers" in provider_data and provider_data["custom_headers"] is not None:
-                update_kwargs["custom_headers"] = provider_data["custom_headers"]
-
-            try:
-                updates = ProviderUpdate(**update_kwargs)
-                updated = await crud.update_provider(conn, provider_id, updates)
-                return {"status": "success", "provider": updated.model_dump() if updated else None}
-            except Exception as exc:
-                safe_err = sanitize_error_detail(exc)
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail=f"Invalid provider parameters: {safe_err}",
-                ) from exc
-        else:
-            # Preset default values if not provided
-            preset = get_provider_preset(provider_id)
-            name = provider_data.get("name") or (preset["name"] if preset else provider_id.capitalize())
-            user_supplied_url = provider_data.get("api_base_url") or provider_data.get("base_url")
-            if user_supplied_url:
-                await _enforce_llm_url_guard(user_supplied_url)
-            base_url = (
-                user_supplied_url
-                or (preset["default_base_url"] if preset else "https://api.openai.com/v1")
-            )
-            chat_model = (
-                provider_data.get("chat_model")
-                or provider_data.get("model")
-                or (preset["default_chat_model"] if preset else "gpt-4o-mini")
-            )
-            stt_model = (
-                provider_data.get("stt_model")
-                or (preset["default_stt_model"] if preset else "")
-            )
-            is_active = bool(provider_data.get("is_active", False))
-            api_key = provider_data.get("api_key", "")
-            if is_masked_key(api_key):
-                api_key = ""
-            custom_headers = provider_data.get("custom_headers") or {}
-
-            try:
-                new_provider = ProviderCreate(
-                    id=provider_id,
-                    name=name,
-                    api_base_url=base_url,
-                    api_key=api_key,
-                    chat_model=chat_model,
-                    stt_model=stt_model,
-                    is_active=is_active,
-                    custom_headers=custom_headers,
-                )
-                created = await crud.create_provider(conn, new_provider)
-                return {"status": "created", "provider": created.model_dump()}
-            except Exception as exc:
-                safe_err = sanitize_error_detail(exc)
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail=f"Invalid provider creation parameters: {safe_err}",
-                ) from exc
+            return await _update_existing_provider(conn, provider_id, provider_data)
+        return await _create_new_provider(conn, provider_id, provider_data)
 
 
 @router.put(
@@ -266,7 +280,7 @@ async def create_or_update_provider(provider_data: Dict[str, Any]):
     summary="Update Provider",
     description="Updates an existing provider configuration by ID.",
 )
-async def update_provider(provider_id: str, provider_data: Dict[str, Any]):
+async def update_provider(provider_id: str, provider_data: dict[str, Any]):
     data = dict(provider_data)
     data["id"] = provider_id
     return await create_or_update_provider(data)
@@ -313,9 +327,11 @@ async def activate_provider(provider_id: str):
                 )
                 try:
                     await crud.create_provider(conn, new_provider)
-                except (sqlite3.IntegrityError, Exception):
+                except (sqlite3.IntegrityError, aiosqlite.IntegrityError):
                     # Concurrently created by parallel activation request (TOCTOU safe)
                     pass
+                except Exception as exc:
+                    logger.debug("Non-critical: error while creating preset provider: %s", exc)
         success = await crud.set_active_provider(conn, clean_id)
         if not success:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")
@@ -360,6 +376,44 @@ async def get_provider_models(provider_id: str):
             return {"provider_id": clean_id, "models": fallback, "warning": sanitize_error_detail(exc)}
 
 
+async def _resolve_provider_test_credentials(
+    provider_id: str,
+    api_key: str,
+    base_url: str | None,
+) -> tuple[str, str | None]:
+    """Resolves unmasked API key and base URL from database; the SSRF guard runs in the caller."""
+    if not api_key or "****" in api_key:
+        async with get_db() as conn:
+            stored = await crud.get_provider_raw(conn, provider_id)
+            if stored and stored.api_key:
+                # Credential leak guard: stored keys may only be sent to the base_url they were saved with
+                if base_url and stored.api_base_url and base_url.rstrip("/") != stored.api_base_url.rstrip("/"):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Cannot test custom base_url with stored API key. Please provide the explicit API key."
+                    )
+                api_key = stored.api_key
+                if not base_url:
+                    base_url = stored.api_base_url
+    return api_key, base_url
+
+
+def _resolve_provider_preset_defaults(
+    provider_id: str,
+    model: str | None,
+    base_url: str | None,
+) -> tuple[str | None, str | None]:
+    """Fills missing model or base_url from predefined provider presets."""
+    if not model or not base_url:
+        preset = get_provider_preset(provider_id)
+        if preset:
+            if not model:
+                model = preset.get("default_chat_model")
+            if not base_url:
+                base_url = preset.get("default_base_url")
+    return model, base_url
+
+
 @router.post(
     "/providers/test",
     response_model=ProviderTestResponse,
@@ -373,31 +427,8 @@ async def test_provider(req: ProviderTestRequest):
     model = req.model or req.chat_model
     custom_headers = req.custom_headers or {}
 
-    # If api_key is omitted or masked, lookup the stored unmasked key from DB
-    if not api_key or "****" in api_key:
-        async with get_db() as conn:
-            stored = await crud.get_provider_raw(conn, provider_id)
-            if stored and stored.api_key:
-                # SSRF Protection: only allow stored credentials against the configured base_url
-                if base_url and stored.api_base_url and base_url.rstrip("/") != stored.api_base_url.rstrip("/"):
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Cannot test custom base_url with stored API key. Please provide the explicit API key."
-                    )
-                api_key = stored.api_key
-                if not base_url:
-                    base_url = stored.api_base_url
-    # If model is not specified, resolve from preset defaults
-    if not model:
-        preset = get_provider_preset(provider_id)
-        if preset:
-            model = preset.get("default_chat_model")
-
-    # If base_url is not specified, resolve from preset defaults
-    if not base_url:
-        preset = get_provider_preset(provider_id)
-        if preset:
-            base_url = preset.get("default_base_url")
+    api_key, base_url = await _resolve_provider_test_credentials(provider_id, api_key, base_url)
+    model, base_url = _resolve_provider_preset_defaults(provider_id, model, base_url)
 
     # SSRF guard: the effective base_url (explicit or stored) must pass the
     # private-network check before any credentials are attached to the request.
@@ -438,7 +469,7 @@ async def test_provider(req: ProviderTestRequest):
         safe_msg = sanitize_error_detail(exc)
         diag_info = format_provider_error(
             provider_id=provider_id,
-            status_code=504 if "timeout" in type(exc).__name__.lower() else 502,
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT if "timeout" in type(exc).__name__.lower() else status.HTTP_502_BAD_GATEWAY,
             raw_error=f"{type(exc).__name__}: {safe_msg}",
         )
         return ProviderTestResponse(
@@ -458,6 +489,50 @@ test_provider_connectivity = test_provider
 # Telegram Bot Testing Endpoints
 # ============================================================================
 
+def _map_telegram_response(resp: httpx.Response, latency: float) -> dict[str, Any]:
+    """Maps Telegram getMe HTTP response into test result payload."""
+    if resp.status_code == status.HTTP_200_OK:
+        data = resp.json()
+        if data.get("ok"):
+            bot_user = (data.get("result") or {}).get("username", "")
+            return {
+                "success": True,
+                "message": f"连接成功！Bot: @{bot_user}",
+                "latency_ms": latency,
+                "bot_info": data.get("result"),
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Telegram API 错误: {data.get('description', '未知错误')}",
+                "latency_ms": latency,
+            }
+    elif resp.status_code == status.HTTP_401_UNAUTHORIZED:
+        return {
+            "success": False,
+            "message": "Telegram 验证失败 (401 Unauthorized): Token 错误或已失效，请在 Telegram 中私聊 @BotFather 发送 /token 重新获取最新 Token",
+            "latency_ms": latency,
+        }
+    elif resp.status_code == status.HTTP_404_NOT_FOUND:
+        return {
+            "success": False,
+            "message": "Telegram 验证失败 (404 Not Found): 无效的 Bot Token 格式，请检查 Token 是否包含多余字符或从 @BotFather 完整复制",
+            "latency_ms": latency,
+        }
+    else:
+        data = {}
+        try:
+            data = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            pass
+        err_desc = data.get("description") if isinstance(data, dict) else f"HTTP {resp.status_code}"
+        return {
+            "success": False,
+            "message": f"Telegram 验证失败 ({resp.status_code}): {err_desc}",
+            "latency_ms": latency,
+        }
+
+
 @router.post(
     "/telegram/test",
     summary="Test Telegram Bot Token & Connectivity",
@@ -470,7 +545,7 @@ async def test_telegram_bot(req: TelegramTestRequest):
             stored_settings = await crud.get_settings_raw(conn)
             token = stored_settings.telegram_bot_token or ""
 
-    token = token.replace(" ", "").replace("\r", "").replace("\n", "").strip()
+    token = sanitize_bot_token(token)
 
     if not token:
         return {"success": False, "message": "未配置 Telegram Bot Token"}
@@ -497,53 +572,14 @@ async def test_telegram_bot(req: TelegramTestRequest):
             async with httpx.AsyncClient(proxy=p_url, timeout=6.0) as client:
                 resp = await client.get(f"https://api.telegram.org/bot{token}/getMe")
                 latency = round((time.perf_counter() - t0) * 1000, 2)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("ok"):
-                        bot_user = data.get("result", {}).get("username", "")
-                        return {
-                            "success": True,
-                            "message": f"连接成功！Bot: @{bot_user}",
-                            "latency_ms": latency,
-                            "bot_info": data.get("result"),
-                        }
-                    else:
-                        return {
-                            "success": False,
-                            "message": f"Telegram API 错误: {data.get('description', '未知错误')}",
-                            "latency_ms": latency,
-                        }
-                elif resp.status_code == 401:
-                    return {
-                        "success": False,
-                        "message": "Telegram 验证失败 (401 Unauthorized): Token 错误或已失效，请在 Telegram 中私聊 @BotFather 发送 /token 重新获取最新 Token",
-                        "latency_ms": latency,
-                    }
-                elif resp.status_code == 404:
-                    return {
-                        "success": False,
-                        "message": "Telegram 验证失败 (404 Not Found): 无效的 Bot Token 格式，请检查 Token 是否包含多余字符或从 @BotFather 完整复制",
-                        "latency_ms": latency,
-                    }
-                else:
-                    data = {}
-                    try:
-                        data = resp.json()
-                    except Exception:
-                        pass
-                    err_desc = data.get("description") if isinstance(data, dict) else f"HTTP {resp.status_code}"
-                    return {
-                        "success": False,
-                        "message": f"Telegram 验证失败 ({resp.status_code}): {err_desc}",
-                        "latency_ms": latency,
-                    }
+                return _map_telegram_response(resp, latency)
         except Exception as exc:
             last_err = exc
             continue
 
     latency = round((time.perf_counter() - t0) * 1000, 2)
     sanitized_err_msg = sanitize_error_detail(last_err)
-    if "ConnectError" in str(type(last_err)) or "10061" in sanitized_err_msg or "refused" in sanitized_err_msg.lower():
+    if isinstance(last_err, httpx.ConnectError) or "10061" in sanitized_err_msg or "refused" in sanitized_err_msg.lower():
         hint = "连接被拒绝。请检查代理端口是否填写正确（例如 v2rayN 常用 10808，Clash 常用 7890）且代理客户端处于运行状态。"
         return {
             "success": False,

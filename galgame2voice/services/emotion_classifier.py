@@ -5,14 +5,13 @@ and isolated testing.
 """
 
 import re
-from typing import Dict, List, Optional, Tuple
 
 from galgame2voice.utils.japanese_phonetics import STAGE_CUE_EMOTION_MAP
 
 # Archetype keyword lexicon mapping
 # 注意：逐句情绪现在会驱动立绘差分切换（见 stream_coordinator 的 audio_chunk），
 # 所以这里补了一批该角色高频说法；缺失只会退到 gentle，不会误报。
-EMOTION_KEYWORDS: Dict[str, List[str]] = {
+EMOTION_KEYWORDS: dict[str, list[str]] = {
     "tsundere": ["傲娇", "才不是", "才没有", "べ、別に", "勘違い", "ツン", "哼", "才不会", "別にあんた", "不要误会", "谁要你管",
                  "真是的", "别误会", "只是顺路", "顺路而已", "不是特意", "才不是特意", "特意等", "拿你没办法", "真拿你", "何よ", "しょうがない"],
     "shy": ["害羞", "脸红", "照れ", "恥ずか", "///", "……///", "笨蛋", "讨厌", "えっと", "ばか",
@@ -27,7 +26,7 @@ EMOTION_KEYWORDS: Dict[str, List[str]] = {
 
 VALID_EMOTIONS = {"gentle", "shy", "happy", "tsundere", "cool", "sad", "angry"}
 
-EMOTION_NAME_MAP: Dict[str, str] = {
+EMOTION_NAME_MAP: dict[str, str] = {
     # Tsundere
     "傲娇": "tsundere",
     "ツンデレ": "tsundere",
@@ -96,8 +95,30 @@ for _cue_k, _cue_v in STAGE_CUE_EMOTION_MAP.items():
     if _cue_k not in EMOTION_NAME_MAP:
         EMOTION_NAME_MAP[_cue_k] = _cue_v
 
+_RE_PUNCT_STRIP = re.compile(r'[。！？!?….~〜 　\-\*]+')
+_RE_EMOTION_PREFIX = re.compile(r'^(?:情绪|心情|状态|emotion|emo)[:：\s]*', flags=re.IGNORECASE)
+_RE_WHITESPACE_COLLAPSE = re.compile(r'[ \t]{2,}')
+_RE_LEADING_BRACKETED_EMOTION = re.compile(r'^\s*([「『"\'“]?\s*)([（\(\[【〖〔])([^）\)\]】〗〕]+)([）\)\]】〗〕])\s*')
+_RE_ASTERISK_EMOTION = re.compile(r'(?<!\*)\*([^*]{1,30})\*(?!\*)')
+_RE_ANY_BRACKETED_EMOTION = re.compile(r'([（\(\[【〖〔])([^）\)\]】〗〕]+)([）\)\]】〗〕])')
 
-def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
+
+def _match_emotion_candidate(raw_candidate: str) -> str | None:
+    """Matches candidate emotion text against aliases, exact keywords, or substrings."""
+    candidate = raw_candidate.strip().lower()
+    candidate_bare = _RE_PUNCT_STRIP.sub('', candidate).strip()
+
+    if candidate in EMOTION_NAME_MAP:
+        return EMOTION_NAME_MAP[candidate]
+    if candidate_bare in EMOTION_NAME_MAP:
+        return EMOTION_NAME_MAP[candidate_bare]
+    for k, v in EMOTION_NAME_MAP.items():
+        if k in candidate or k in candidate_bare:
+            return v
+    return None
+
+
+def extract_bracketed_emotion(text: str) -> tuple[str | None, str]:
     """
     Extracts emotion archetype from bracketed stage cues such as:
     【傲娇】才不是因为喜欢你呢！ -> ("tsundere", "才不是因为喜欢你呢！")
@@ -115,25 +136,12 @@ def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
         return None, ""
 
     # 1. Primary check: Leading bracketed emotion tag (preserving dialogue quote wrappers)
-    leading_pattern = r'^\s*([「『"\'“]?\s*)([（\(\[【〖〔])([^）\)\]】〗〕]+)([）\)\]】〗〕])\s*'
-    m_lead = re.match(leading_pattern, text)
+    m_lead = _RE_LEADING_BRACKETED_EMOTION.match(text)
     if m_lead:
         quote_prefix = m_lead.group(1).strip()
         inner_content = m_lead.group(3).strip()
-        candidate = re.sub(r'^(?:情绪|心情|状态|emotion|emo)[:：\s]*', '', inner_content, flags=re.IGNORECASE).strip().lower()
-        candidate_bare = re.sub(r'[。！？!?….~〜 　\-\*]+', '', candidate).strip()
-        detected = None
-        if candidate in EMOTION_NAME_MAP:
-            detected = EMOTION_NAME_MAP[candidate]
-        elif candidate_bare in EMOTION_NAME_MAP:
-            detected = EMOTION_NAME_MAP[candidate_bare]
-        elif candidate in VALID_EMOTIONS:
-            detected = candidate
-        else:
-            for k, v in EMOTION_NAME_MAP.items():
-                if k in candidate or k in candidate_bare:
-                    detected = v
-                    break
+        candidate = _RE_EMOTION_PREFIX.sub('', inner_content)
+        detected = _match_emotion_candidate(candidate)
 
         if detected in VALID_EMOTIONS:
             cleaned = text[m_lead.end():].strip()
@@ -142,47 +150,24 @@ def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
             return detected, cleaned
 
     # 2. Markdown asterisk action cue at start or embedded: *blushes*, *sighs*, *叹气*
-    m_ast = re.search(r'(?<!\*)\*([^*]{1,30})\*(?!\*)', text)
+    m_ast = _RE_ASTERISK_EMOTION.search(text)
     if m_ast:
-        inner_content = m_ast.group(1).strip().lower()
-        inner_bare = re.sub(r'[。！？!?….~〜 　\-\*]+', '', inner_content).strip()
-        detected = None
-        if inner_content in EMOTION_NAME_MAP:
-            detected = EMOTION_NAME_MAP[inner_content]
-        elif inner_bare in EMOTION_NAME_MAP:
-            detected = EMOTION_NAME_MAP[inner_bare]
-        else:
-            for k, v in EMOTION_NAME_MAP.items():
-                if k in inner_content or k in inner_bare:
-                    detected = v
-                    break
+        inner_content = m_ast.group(1).strip()
+        detected = _match_emotion_candidate(inner_content)
         if detected in VALID_EMOTIONS:
             cleaned = f"{text[:m_ast.start()]}{text[m_ast.end():]}".strip()
-            cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
+            cleaned = _RE_WHITESPACE_COLLAPSE.sub(' ', cleaned)
             return detected, cleaned
 
     # 3. Secondary check: Embedded or trailing bracketed emotion tag
-    any_pattern = r'([（\(\[【〖〔])([^）\)\]】〗〕]+)([）\)\]】〗〕])'
-    for m in re.finditer(any_pattern, text):
+    for m in _RE_ANY_BRACKETED_EMOTION.finditer(text):
         inner_content = m.group(2).strip()
-        candidate = re.sub(r'^(?:情绪|心情|状态|emotion|emo)[:：\s]*', '', inner_content, flags=re.IGNORECASE).strip().lower()
-        candidate_bare = re.sub(r'[。！？!?….~〜 　\-\*]+', '', candidate).strip()
-        detected = None
-        if candidate in EMOTION_NAME_MAP:
-            detected = EMOTION_NAME_MAP[candidate]
-        elif candidate_bare in EMOTION_NAME_MAP:
-            detected = EMOTION_NAME_MAP[candidate_bare]
-        elif candidate in VALID_EMOTIONS:
-            detected = candidate
-        else:
-            for k, v in EMOTION_NAME_MAP.items():
-                if k in candidate or k in candidate_bare:
-                    detected = v
-                    break
+        candidate = _RE_EMOTION_PREFIX.sub('', inner_content)
+        detected = _match_emotion_candidate(candidate)
 
         if detected in VALID_EMOTIONS:
             cleaned = f"{text[:m.start()]}{text[m.end():]}".strip()
-            cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
+            cleaned = _RE_WHITESPACE_COLLAPSE.sub(' ', cleaned)
             return detected, cleaned
 
     return None, text
@@ -191,7 +176,7 @@ def extract_bracketed_emotion(text: str) -> Tuple[Optional[str], str]:
 def classify_emotion(
     chinese: str = "",
     japanese: str = "",
-    explicit_emotion: Optional[str] = None,
+    explicit_emotion: str | None = None,
 ) -> str:
     """
     Determines character emotion archetype ('gentle', 'shy', 'happy', 'tsundere', 'cool', 'sad', 'angry').
