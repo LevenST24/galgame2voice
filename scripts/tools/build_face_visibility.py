@@ -78,7 +78,8 @@ def main() -> None:
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    # Report what the previous "most similar part" strategy would have shown.
+    # Spot-check the head-delta ranking just computed: first costume's tsundere pool,
+    # largest vs smallest contrast neighbour.
     sample = next(iter(visibility.values()), {}).get("tsundere", {})
     for fid, neighbours in list(sample.items())[:4]:
         best = neighbours[0] if neighbours else None

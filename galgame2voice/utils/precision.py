@@ -194,7 +194,9 @@ def resolve_initial_device_and_half(
 ) -> tuple[str, bool, str]:
     """
     Decides the initial device ('cuda' | 'cpu') and is_half setting for engine launch.
-    Priority: CLI/ENV override > SQLite settings > verified cache > existing YAML setting > hardware default.
+    Priority: ENV override (GPT_SOVITS_PRECISION / GPT_SOVITS_DEVICE) > SQLite settings >
+    verified cache > existing YAML setting > hardware default. CLI flags are resolved by the
+    caller before this function is reached, so they never appear as a source here.
     Returns (device, is_half, source) where source is "env" | "db" | "cache" | "yaml" | "default".
     """
     env = environ if environ is not None else os.environ

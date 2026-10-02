@@ -129,7 +129,7 @@ def build_release_zip(version: str = "2.0.0") -> Path:
                 rel_path = abs_path.relative_to(PROJECT_ROOT)
 
                 if should_include(rel_path):
-                    # Write file into zip under top-level 'galgame2voice' folder for clean extraction
+                    # Write file into the zip under the versioned top-level folder galgame2voice-v<version>
                     archive_name = Path(f"galgame2voice-v{version}") / rel_path
                     zf.write(abs_path, str(archive_name))
                     total_files += 1

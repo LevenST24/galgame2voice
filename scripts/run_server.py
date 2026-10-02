@@ -543,7 +543,7 @@ def get_system_ram_gb() -> tuple[float, float]:
 def run_hardware_diagnostics() -> dict[str, Any]:
     """
     Comprehensive pre-flight hardware and environment diagnostics.
-    Inspects GPU architecture, CUDA availability, and system memory.
+    Inspects GPU availability via NVIDIA vendor-name matching, plus VRAM and system memory.
     Displays upfront commercial-grade notices and guidance.
     """
     diag: dict[str, Any] = {
@@ -799,7 +799,7 @@ def _calibrate_precision_after_ready(
 ) -> None:
     """Runs the calibration probe in the readiness-monitor thread once the engine answers."""
     if precision_source != "default" or device == "cpu":
-        return  # env override or CPU mode needs no probe
+        return  # an already-resolved precision (cli/env/db/cache/yaml) or CPU mode skips the probe
 
     def probe() -> float | None:
         return _probe_synth_peak(host, port)
@@ -1108,7 +1108,7 @@ def main(args: list[str] | None = None):
         print(f"[2/2] 正在启动 Galgame2Voice 伴侣服务 ({bind_host}:{active_port})...")
         if not parsed.no_browser:
             auto_open_browser(active_port, host=bind_host)
-            print(f"      [OK] 正在打开浏览器: http://{display_host}:{active_port}/")
+            print(f"      [OK] 浏览器将在后台探测到 /api/health 返回 200 后自动打开: http://{display_host}:{active_port}/")
         else:
             print(f"      [提示] 已开启 --no-browser，跳过自动打开浏览器。访问地址: http://{display_host}:{active_port}/")
         print("      关闭此窗口即可退出并释放显存。")

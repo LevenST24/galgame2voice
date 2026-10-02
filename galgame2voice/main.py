@@ -473,8 +473,9 @@ def create_app() -> FastAPI:
         allow_headers=settings.cors_allow_headers,
     )
 
-    # Request rate limiting (outermost middleware). 429s bypassing CORS is
-    # acceptable: the console is same-origin.
+    # Request rate limiting. Middleware added later wraps this one, so the
+    # cache-control/gzip/host-validation layers run first; CORS is inside it, so
+    # 429s bypassing CORS is acceptable: the console is same-origin.
     app.add_middleware(RateLimitMiddleware)
 
     # DNS Rebinding mitigation (audit finding: Host header validation).
@@ -495,7 +496,9 @@ def create_app() -> FastAPI:
     # Cache headers: static assets vs user-generated audio
     app.add_middleware(StaticCacheControlMiddleware)
 
-    # 2. Register API Routers (all management/data routes require console token auth)
+    # 2. Register API Routers (every router except health gets console token auth as a
+    # router-level dependency; health declares it per-route for /api/system/*, leaving
+    # /api/health and /status unauthenticated)
     auth_deps = [Depends(require_auth)]
     app.include_router(health.router)
     app.include_router(config.router, dependencies=auth_deps)

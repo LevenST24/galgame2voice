@@ -9,8 +9,8 @@ Script to apply comprehensive fixes to all 13 character prompts, manifests, and 
    - 四季夏目, 明月栞那, 三司绫濑, 二条院羽月, 在原七海, 西园寺风莉, 常陆茉子, 丛雨, 白雪乃爱, 星河辉耶, 小云雀来海, 高楯欧丽叶, 谷风天音
 3. Manifest sync:
    - manifest.json['system_prompt'] == system_prompt.txt (100% equality)
-   - default_emotion = gentle (夏目, 栞那, etc.)
-   - emotions include gentle|shy|happy|tsundere|cool|sad|angry
+   - default_emotion = DEFAULT_EMOTIONS[角色]（夏目/栞那 等为 gentle，谷风天音为 tsundere）
+   - system_prompt 文本须列出全部七个情绪键 gentle|shy|happy|tsundere|cool|sad|angry（仅断言提示词，不改写 manifest['emotions']）
    - default_voice_params.speed alignment
 4. SQLite persistence:
    - data/galgame2voice.db and galgame2voice.db voice_profiles table updated
