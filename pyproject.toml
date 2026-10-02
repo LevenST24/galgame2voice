@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "galgame2voice"
 version = "2.0.0"
-description = "Lightweight Python/FastAPI companion extension patch for GPT-SoVITS"
+description = "Local FastAPI server for galgame character AI chat and real-time TTS voice streaming, using an external GPT-SoVITS engine over HTTP"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -59,7 +59,8 @@ extend-exclude = ["tests"]
 
 [tool.ruff.lint]
 # Progressive adoption: hard errors only for now (syntax errors, undefined
-# names, unbound locals). Widen the rule set as the codebase is cleaned up.
+# names, locals used before assignment, unused locals). Widen the rule set as
+# the codebase is cleaned up.
 select = ["E9", "F821", "F823", "F841"]
 
 [tool.mypy]
