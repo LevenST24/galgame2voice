@@ -5,7 +5,7 @@
 - **Framework**: `pytest` + `pytest-asyncio` + `httpx` + `aiosqlite`
 - **Primary Test Artifact**: `tests/test_e2e_industrial_hardening.py`
 - **Total New Industrial Tests**: **61 Tests** (0 failures, 0 errors)
-- **Total Regression Suite**: **40 Test Modules, 718+ Tests**
+- **Total Regression Suite**: **100 Test Modules (`tests/test_*.py`), 718+ Tests**
 - **Test Strategy Standard**: 4-Tier Opaque-Box Hierarchy (`TEST_INFRA.md`)
 
 ---
