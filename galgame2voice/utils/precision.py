@@ -128,8 +128,9 @@ def write_sovits_yaml_config(
 ) -> Path | None:
     """
     Physically synchronizes custom.is_half and custom.device in tts_infer.yaml on disk.
-    GPT-SoVITS api_v2.py ONLY determines precision and compute device from this YAML file;
-    setting OS environment variables alone has zero effect.
+    This YAML is the channel the launcher hands to api_v2.py via -c, so it is written here;
+    scripts/run_server.py additionally exports the same resolved is_half into the engine
+    child process environment (build_gpt_sovits_env), keeping both channels in agreement.
     """
     yaml_path = find_sovits_yaml_path(sovits_dir)
     if not yaml_path:

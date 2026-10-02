@@ -147,6 +147,11 @@ class Settings(BaseSettings):
     )
 
     # Telegram Bot Configuration
+    # Parsed from the environment for compatibility, but the running bot never consults these
+    # three fields: enabled flag, bot token and proxy are loaded from the SQLite settings row
+    # edited in the web console (telegram_bot/bot.py::TelegramBotManager.start). The Telegram
+    # values read straight from the environment are TELEGRAM_ADMIN_IDS and
+    # TELEGRAM_DROP_PENDING_UPDATES.
     telegram_enabled: bool = Field(
         default=False,
         validation_alias=AliasChoices("GALGAME2VOICE_TELEGRAM_ENABLED", "TELEGRAM_ENABLED"),

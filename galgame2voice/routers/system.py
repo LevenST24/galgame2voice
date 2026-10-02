@@ -28,8 +28,9 @@ router = APIRouter(prefix="/api/system", tags=["System & Update"])
 
 # Supply-chain hardening: one-click update executes code freshly pulled from
 # `origin` (npm build etc.), so the remote URL must be pinned to the upstream
-# repository. Operators can override/extend via a comma-separated list in the
-# GALGAME2VOICE_UPDATE_ALLOWED_REMOTES environment variable.
+# repository. Operators can replace this allowlist with a comma-separated list in
+# the GALGAME2VOICE_UPDATE_ALLOWED_REMOTES environment variable; when that variable
+# is set the built-in entries below are dropped entirely, not extended.
 _DEFAULT_ALLOWED_REMOTES = (
     "https://github.com/LevenST24/galgame2voice",
     "https://github.com/LevenST24/galgame2voice.git",
