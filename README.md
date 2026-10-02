@@ -78,7 +78,7 @@ python scripts/run_server.py
 ```bash
 python scripts/run_server.py --help
   --host HOST             绑定监听地址 (默认: 127.0.0.1)
-  --port PORT             监听端口 (默认: 8080，被占用时自动递增)
+  --port PORT             监听端口 (默认: 8080，被占用时依次探测 8081/8082/8085/8088/8888/18080/28080)
   --fp16                  启用 FP16 半精度推理 (显存省半，推理快)
   --fp32                  强制 FP32 单精度 (杜绝哑音静音)
   --cpu                   强制纯 CPU 稳定模式 (零显存占用，利用主机大内存)
@@ -86,6 +86,7 @@ python scripts/run_server.py --help
                           显式指定推理精度/运行模式
   --no-browser            启动后不自动唤起默认浏览器
   --check-only            仅执行环境依赖与硬件巡检，不启动常驻服务
+  --profile               启用实时延迟瀑布图分析 (T0~T7，等价于设置 GALGAME2VOICE_PROFILE=1)
 ```
 
 ---

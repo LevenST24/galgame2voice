@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 # Canonical part names as authored in the sinfo face entries.
-# zh = badge label, en = human readable stem, emotions = app emotion keys.
+# zh = badge label, romaji = human readable stem, emotions = app emotion keys.
 LEXICON: dict[str, dict] = {
     "基本表情": {"romaji": "base", "zh": "平常", "emotions": {"gentle": 2}},
     "基本": {"romaji": "base", "zh": "平常", "emotions": {"gentle": 2}},
