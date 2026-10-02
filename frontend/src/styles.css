@@ -492,7 +492,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .voice-bar.kind-ai .vb-dur { color: var(--brand-ink); }
 .voice-bar.kind-user .vb-dur { color: #fff; }
 
-/* 分组标题（会话设置：语音模型 / 连接） */
+/* 分组标题（会话设置：采样参数 / 生成控制 / 语音推理参数；全局设置：语音输入识别） */
 .field-group-title {
   margin: 14px 0 -2px;
   padding-top: 12px;
@@ -746,7 +746,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 .modal-note { font-size: 11.5px; line-height: 1.7; color: var(--text-3); }
 
-/* 自定义模型表单（全局设置） */
+/* 新建自定义音色表单（会话设置） */
 .custom-provider-box {
   display: flex; flex-direction: column; gap: 14px;
   padding: 14px;
@@ -938,7 +938,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   display: none;
 }
 
-/* 状态诊断卡片 2x2 对称网格 */
+/* 状态诊断卡片两列网格（当前 5 张卡片） */
 .status-cards-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

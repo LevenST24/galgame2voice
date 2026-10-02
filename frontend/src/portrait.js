@@ -1,7 +1,7 @@
 /**
  * 角色立绘舞台演出控制器 (Galgame Character Portrait Stage System)
  * 立绘完全由角色包内的表情编号差分体系（portrait/expressions.json）驱动：
- * 交叉淡入淡出、逐句同情绪微漂移、好感度解锁红脸差分、服装差分切换、发声呼吸动画。
+ * 交叉淡入淡出、逐句同情绪微漂移、好感度解锁红脸差分、服装差分切换、发声静态光晕。
  */
 
 // 对话管线会请求的情绪 → 中文标签
@@ -397,7 +397,7 @@ export class PortraitStageController {
     }
   }
 
-  /** 角色发声说话状态联动（触发微动效与柔和呼吸光晕） */
+  /** 角色发声说话状态联动（切换 is-speaking，仅柔和静态光晕，无缩放/位移动效） */
   setSpeaking(isSpeaking) {
     this.isSpeaking = Boolean(isSpeaking);
     if (this.viewportEl) {
