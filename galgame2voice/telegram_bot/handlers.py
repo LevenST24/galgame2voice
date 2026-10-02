@@ -359,7 +359,7 @@ class TelegramBotHandlers:
                 await crud.set_active_voice_profile(conn, profile_id)
             return None, warning_note
         except InsufficientMemoryError as mem_err:
-            return f"系统内存不足，无法加载该角色模型: {mem_err}", ""
+            return f"系统内存或显存不足，无法加载该角色模型: {mem_err}", ""
         except Exception as exc:
             return f"切换异常: {sanitize_error_detail(exc)}", ""
 
