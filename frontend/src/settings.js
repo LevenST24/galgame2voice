@@ -42,7 +42,7 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
     lower.includes('incorrect api key') ||
     (lower.includes('400') && (lower.includes('api_key') || lower.includes('api key') || pid === 'xai' || pid === 'gemini'))
   ) {
-    title = 'API Key 凭据无效或未授权 (HTTP 401)';
+    title = 'API Key 凭据无效或未授权 (HTTP 400/401)';
     if (pid === 'xai') {
       guidance = 'xAI (Grok) 密钥认证失败：请检查输入的 API Key 是否正确（通常以 xai- 开头），或前往 xAI 开发者控制台 (https://console.x.ai) 确认密钥启用状态与额度绑定。';
     } else if (pid === 'gemini') {

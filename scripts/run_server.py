@@ -580,7 +580,7 @@ def run_hardware_diagnostics() -> dict[str, Any]:
             if vram_total <= 4.1:
                 print(f"      [显存提示] 显卡物理显存为 {vram_total:.1f} GB (显存较紧凑)。")
                 print("                长时间连续多轮对话或高并发时可能存在显存溢出(OOM)风险。")
-                print("                若遇显存不足，可在控制面板或通过 `启动.bat --cpu` 启用「CPU 稳定模式」（依托大内存，彻底杜绝崩溃）。")
+                print("                若遇显存不足，可在控制面板或通过 `启动.bat --cpu`（Linux/macOS 下为 `bash run.sh --cpu`）启用「CPU 稳定模式」（依托大内存，彻底杜绝崩溃）。")
             else:
                 print(f"      [显存就绪] 显存容量: {vram_total:.1f} GB (当前空闲约 {vram_free:.1f} GB)")
 
@@ -1111,7 +1111,7 @@ def main(args: list[str] | None = None):
             print(f"      [OK] 浏览器将在后台探测到 /api/health 返回 200 后自动打开: http://{display_host}:{active_port}/")
         else:
             print(f"      [提示] 已开启 --no-browser，跳过自动打开浏览器。访问地址: http://{display_host}:{active_port}/")
-        print("      关闭此窗口即可退出并释放显存。")
+        print("      关闭此窗口即可退出并释放资源。")
         try:
             import uvicorn
             uvicorn.run("galgame2voice.main:app", host=bind_host, port=active_port, log_level="info")
