@@ -128,8 +128,8 @@ class SynthesisSpeedTracker:
 class DynamicBatchScheduler:
     """
     Determines the optimal VITS inference batch_size based on:
-    1. Streaming status (always 1 for lowest TTFA)
-    2. Explicit user parameter override (if specified)
+    1. Explicit user parameter override (if specified)
+    2. Streaming status (1 for lowest TTFA when no override is given)
     3. Sentence/fragment count in target text
     4. Hardware runtime throughput & RTF feedback
     """

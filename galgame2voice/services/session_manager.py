@@ -257,7 +257,7 @@ class SessionManager:
         """
         Constructs system prompt and formatted OpenAI-compatible message list.
         User messages are formatted as plain text; assistant messages as bilingual JSON.
-        Ensures new_user_prompt is never duplicated.
+        Appends new_user_prompt unless it duplicates the immediately preceding message.
         Injects optional long-term memory & affection context block into system prompt.
         """
         tpl = system_template or self.system_template

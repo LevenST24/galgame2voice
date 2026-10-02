@@ -666,7 +666,7 @@ class CharacterManager:
         """
         Idempotently syncs/upserts discovered character packages into SQLite voice_profiles
         table without mutating or corrupting existing user configurations or settings.
-        Returns the count of synced/updated profiles.
+        Returns the count of synced/updated profiles plus pruned ghost profiles.
         """
         self._ensure_discovered()
 

@@ -33,7 +33,7 @@ class SettingsBase(BaseModel):
     allow_private_llm_endpoints: bool = False  # Permit private/loopback LLM provider base URLs
     console_url: str = ""
     max_history_messages: int = Field(default=10, ge=1, le=100)
-    inference_precision: str = "auto"  # "auto" (probe), "fp16" (half), or "fp32" (single)
+    inference_precision: str = "auto"  # "auto" (probe), "fp16" (half), "fp32" (single), or "cpu" (force CPU fp32)
     stt_engine: str | None = "browser"
     telegram_chat_id: str | None = None
 

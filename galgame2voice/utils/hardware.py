@@ -1,6 +1,6 @@
 """
 Hardware Detection & Telemetry Utilities for galgame2voice.
-Provides robust GPU capability detection, Turing TU116/TU117 identification,
+Provides robust GPU capability detection by NVIDIA vendor-name matching,
 and cross-platform host system memory status telemetry.
 """
 

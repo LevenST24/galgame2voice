@@ -476,8 +476,8 @@ class ChatService:
           - done: final complete Chinese/Japanese text and full audio URL
           - error: error detail if an exception occurs
 
-        All background tasks are guaranteed to be reaped in the finally block,
-        even when the SSE consumer disconnects mid-stream.
+        The pipeline producer/worker tasks are reaped by the coordinator's teardown
+        finally block, even when the SSE consumer disconnects mid-stream.
         """
         adaptive_enabled = self._resolve_ai_adaptive_voice(ai_adaptive_voice, tts_options)
 

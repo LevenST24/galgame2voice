@@ -415,7 +415,7 @@ async def _migration_v3_security_and_indexes(conn: aiosqlite.Connection) -> None
 
 
 async def _migration_v4_prompts_and_self_healing(conn: aiosqlite.Connection) -> None:
-    """Migration 4: Upgrade legacy default voice profile prompt with dynamic TTS parameters and self-heal audios."""
+    """Migration 4: Upgrade legacy default voice profile prompt with dynamic TTS parameters and ensure TTS cache indexes."""
     try:
         cur = await conn.execute("SELECT id, system_prompt FROM voice_profiles WHERE is_default = 1 OR id = 1;")
         rows = await cur.fetchall()

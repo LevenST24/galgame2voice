@@ -277,7 +277,7 @@ class VoiceManager:
             # Ensure weights and reference audio are set
             ok = await self.client.switch_voice_profile(profile, force=False)
             if not ok:
-                logger.debug("Warm-up skipped: weight switch to profile '%s' failed (engine offline).", getattr(profile, "name", "unknown"))
+                logger.debug("Warm-up skipped: weight switch to profile '%s' failed.", getattr(profile, "name", "unknown"))
                 return False
 
             # Probe synthesis to warm up HuBERT, STFT, and RoBERTa prompt_cache via LOW priority scheduling

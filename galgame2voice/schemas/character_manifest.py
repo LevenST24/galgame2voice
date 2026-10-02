@@ -64,7 +64,7 @@ def validate_character_package(character_dir: Path) -> tuple[bool, list[str]]:
     1. Checks for presence of manifest.json
     2. Parses and validates JSON against CharacterManifestV2
     3. Verifies every emotion reference audio exists on disk
-    4. Probes and verifies reference audio duration is strictly within [3.0s, 10.0s]
+    4. Probes audio duration and verifies it lies inside the inclusive [3.0s, 10.0s] range
     Returns (is_valid, list_of_errors).
     """
     errors: list[str] = []

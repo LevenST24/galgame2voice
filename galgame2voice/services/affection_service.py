@@ -325,9 +325,10 @@ class AffectionService:
         """
         Processes a full turn of affection update:
         1. Calculate points
-        2. Detect emotion (or adopt explicit classified emotion)
-        3. Check easter eggs and unlock milestones
-        4. Update SQLite state machine
+        2. Detect a triggered easter egg from the user text
+        3. Resolve emotion (explicit classification, or the easter egg's emotion)
+        4. Increment score and emotion in SQLite
+        5. Unlock milestone and easter egg dialogues
         """
         u_id, char_id = self._normalize_user_and_character_ids(user_id, character_id)
         try:
