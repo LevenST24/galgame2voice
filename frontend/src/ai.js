@@ -1,5 +1,5 @@
 // 对接 Galgame2Voice 本地后端的流式聊天客户端
-// SSE 事件：text（增量中文）→ audio_chunk（逐句 GPT-SoVITS 音频 URL）→ done / error
+// SSE 事件：text（增量中文）→ audio_chunk（逐句 GPT-SoVITS 音频 URL）/ audio_chunk_error（分句合成失败，仅告警跳过）→ done / error
 
 /**
  * 流式请求本地后端
@@ -48,8 +48,8 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
     if (typeof settings.freqPenalty === 'number') body.frequency_penalty = settings.freqPenalty;
     if (typeof settings.presPenalty === 'number') body.presence_penalty = settings.presPenalty;
     const ttsOpts = {};
-    // voice_profile_id 走 ChatRequest 顶层字段；塞进 tts_options 会被后端
-    // ChatTtsOptions(extra="forbid") 的白名单判为非法参数并返回 422。
+    // voice_profile_id 走 ChatRequest 顶层字段：后端解析音色时优先取顶层，
+    // tts_options 里的同名键只是音色回退路由（chat_service 取值顺序：顶层 → tts_options）。
     if (typeof settings.ttsSpeed === 'number') ttsOpts.speed = settings.ttsSpeed;
     if (typeof settings.ttsTopK === 'number') ttsOpts.top_k = Math.round(settings.ttsTopK);
     if (typeof settings.ttsTopP === 'number') ttsOpts.top_p = settings.ttsTopP;
