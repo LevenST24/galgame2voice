@@ -194,7 +194,7 @@ export async function handleApplyUpdate() {
       }
       if (_dom.gUpdateSpinner) _dom.gUpdateSpinner.classList.add('hidden');
       if (_dom.gBtnReloadPage) _dom.gBtnReloadPage.classList.remove('hidden');
-      showToast('版本更新成功！请刷新页面体验最新功能', 'success');
+      showToast('版本更新成功！请按下方提示刷新页面或重启服务', 'success');
 
       await loadSystemVersionInfo(false);
     } else {
