@@ -1,6 +1,6 @@
 """
 Japanese phonetics and character name normalizer for galgame2voice TTS synthesis.
-Corrects MeCab / OpenJTalk mispronunciations of Galgame proper nouns (names, places, vocatives),
+Corrects MeCab / OpenJTalk mispronunciations of Galgame proper nouns (character names, series titles, vocatives),
 and parses inline Japanese furigana brackets before sending text to GPT-SoVITS.
 """
 

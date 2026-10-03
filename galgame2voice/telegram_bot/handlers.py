@@ -5,7 +5,8 @@ Implements:
 - Per-user task cancellation on new input (interruption handling).
 - Multi-user isolation across concurrent chat IDs.
 - Voice note download, OGG -> WAV conversion, STT transcription, and response dispatch.
-- Slash command dispatch table (/start, /reset, /voice, /help, /model, /console, /unknown).
+- Slash command dispatch table (/start, /reset, /voice, /character|/char|/switch, /model,
+  /nickname|/name, /console|/menu|/settings, /help), plus a catch-all unknown-command handler.
 """
 
 import asyncio
