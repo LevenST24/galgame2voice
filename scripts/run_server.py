@@ -763,7 +763,7 @@ def calibrate_engine_precision(
     """
     peak = probe_fn()
     if peak is None:
-        print("      [精度校准] 探针未完成 (超时/网络)，跳过本次校准，沿用当前精度。")
+        print("      [精度校准] 探针未完成 (缺少参考音频/超时/网络)，跳过本次校准，沿用当前精度。")
         return is_half, False
     if peak > 0:
         write_precision_cache(PROJECT_ROOT, str(sovits_dir), is_half)
@@ -900,7 +900,7 @@ def ensure_gpt_sovits_running(
         elif precision_source == "yaml":
             print(f"      [推理精度] 使用现有引擎配置文件: {prec_str} (来源: tts_infer.yaml)")
         else:
-            print("      [推理精度] 未指定固定精度，进入自动校准模式 (初始 FP16，就绪后验证发声)。")
+            print("      [推理精度] 未指定固定精度，按硬件检测选择初始精度 (CUDA 显卡为 FP16，否则 CPU FP32)；FP16 模式下引擎就绪后将自动校准。")
     try:
         proc = _spawn_sovits_process(sovits_dir, sovits_host, sovits_port, is_half, device=device)
 
