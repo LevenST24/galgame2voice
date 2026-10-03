@@ -319,8 +319,9 @@ class SessionUpsertRequest(BaseModel):
 @router.get("/api/chat/sessions", summary="List all chat sessions with metadata")
 async def list_chat_sessions(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
     """
-    Returns list of all conversation sessions from SQLite database in reverse-chronological order,
-    including inferred human-readable title, message count, and last message preview.
+    Returns a {count, sessions} envelope holding the most recently updated sessions
+    from SQLite (capped by `limit`), each including the inferred human-readable
+    title, message count, and last message preview.
     """
     async with get_db() as conn:
         sessions = await crud.list_sessions_overview(conn, limit=limit)
@@ -406,7 +407,8 @@ async def get_chat_history(
     limit: int = Query(default=100, ge=1, le=500, description="Max message count to return"),
 ) -> dict[str, Any]:
     """
-    Returns chronological list of previous messages in the session for UI restoration.
+    Returns a {session_id, count, messages} envelope containing the session's most
+    recent messages (capped by `limit`) in chronological order, for UI restoration.
     """
     clean_session_id = (session_id or "").strip() or "default"
     async with get_db() as conn:

@@ -11,7 +11,7 @@
  *
  * 模块:
  *  - AutoModeController / SkipController / EmotionManager / LogDrawerController
- *  - ChatApp: SSE 客户端与事件编排
+ *  - SSE 客户端与事件编排: DOMContentLoaded 内的应用引导逻辑（见下方 "14. Streaming Chat Form Submit"）
  */
 
 // ============================================================================
@@ -385,7 +385,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let abortController = null;
     let lastVoiceData = null;
     let currentDialogueHistory = [];
-    let lastUserPrompt = ''; // for one-click resend after failure
+    let lastUserPrompt = ''; // 最近一次发送的用户输入；「重新发送」按钮用的是提交闭包里的 text，并未读取本变量
 
     // Typewriter state
     let typewriterTimer = null;

@@ -83,7 +83,7 @@ def _safe_invalidate_resolver(profile_id: int | None = None) -> None:
 class VoiceManager:
     """
     Coordinates character voice profile management and atomic model switching with GPT-SoVITS.
-    Ensures thread-safe operations via an inference mutex and atomic SQLite persistence.
+    Ensures coroutine-safe operations via an asyncio inference mutex and atomic SQLite persistence.
 
     By default binds to the application-wide shared GptSovitsClient singleton so
     that synthesis and switching are serialized against the GPU by a single lock.
