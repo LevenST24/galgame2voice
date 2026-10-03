@@ -48,7 +48,13 @@ def resolve_effective_user_id(update: Any) -> int:
 
 
 def check_is_admin(update: Any, admin_ids: set[int] | None = None) -> bool:
-    """Checks whether the effective user is authorized as an administrator."""
+    """
+    Checks whether the effective user is authorized as an administrator.
+
+    An empty or None admin_ids allows every user through (open-access fallback
+    for the handlers-less direct-call path); TelegramBotHandlers._is_admin is the
+    fail-closed variant that rejects everyone when its whitelist is empty.
+    """
     if not admin_ids:
         return True
     return resolve_effective_user_id(update) in admin_ids
@@ -680,7 +686,12 @@ async def _render_menu(
     menu_coro: Any,
     answer_text: str | None = None,
 ) -> None:
-    """Executes a menu builder coroutine and safely updates the Telegram message text and markup."""
+    """
+    Executes a menu builder coroutine, answers the callback query with optional
+    text, then updates the Telegram message text and markup.
+
+    API errors raised by the answer/edit calls propagate to the caller.
+    """
     text, markup = await menu_coro
     if hasattr(ctx.query, "answer"):
         await ctx.query.answer(answer_text)
