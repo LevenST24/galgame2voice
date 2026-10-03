@@ -43,8 +43,8 @@ frontend/dist/
 # Frontend bundle deployed into the backend static dir. It is intentionally
 # TRACKED so a fresh clone runs without a Node toolchain; regenerate it with
 # `cd frontend && npm run deploy` after changing frontend/src (the Docker build
-# always rebuilds it from source). galgame2voice/static/characters/ and static/js/
-# are hand-maintained assets.
+# always rebuilds it from source). Only static/js/ under the deploy target is a
+# hand-maintained asset; CGs live in the ignored characters/<name>/portrait/.
 
 # galgame2voice runtime data, databases & logs
 data/
