@@ -1,6 +1,6 @@
 """
 Base abstract interfaces and common data models for LLM and STT adapters in galgame2voice.
-Adheres to PROJECT.md §138-150 interface specifications.
+Adheres to PROJECT.md's "Interface Contracts" section (§88-128).
 """
 
 from abc import ABC, abstractmethod
