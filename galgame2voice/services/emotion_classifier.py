@@ -180,7 +180,8 @@ def classify_emotion(
 ) -> str:
     """
     Determines character emotion archetype ('gentle', 'shy', 'happy', 'tsundere', 'cool', 'sad', 'angry').
-    Priority: explicit_emotion > leading bracketed emotion tag > deterministic keyword scan > 'gentle' fallback.
+    Priority: explicit_emotion > bracketed or *asterisked* emotion cue found anywhere in the
+    text (leading, embedded, or trailing) > deterministic keyword scan > 'gentle' fallback.
     """
     if explicit_emotion:
         clean = explicit_emotion.strip().lower()
@@ -189,7 +190,7 @@ def classify_emotion(
         if clean in VALID_EMOTIONS:
             return clean
 
-    # Check for leading bracketed emotion tags in chinese or japanese
+    # Check for bracketed/asterisked emotion cues anywhere in chinese or japanese
     emo_ch, _ = extract_bracketed_emotion(chinese or "")
     if emo_ch:
         return emo_ch
