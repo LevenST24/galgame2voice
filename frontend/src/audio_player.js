@@ -172,7 +172,7 @@ export class StreamAudioController {
    * @param {Object} options
    * @param {string} options.url - 音频切片 URL
    * @param {number} options.index - 切片索引
-   * @param {string} [options.sentence] - 切片日文/中文文本
+   * @param {string} [options.sentence] - 切片对应的日文台词文本
    * @param {Object} [options.ctl] - UI 控制句柄 { setPlaying, setProgress }
    * @param {Blob} [options.blob] - 本地预加载的 Blob（若有）
    * @param {number} [options.totalExpected] - 预期总切片数（用于计算进度）

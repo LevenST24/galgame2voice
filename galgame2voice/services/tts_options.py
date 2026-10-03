@@ -262,7 +262,9 @@ def resolve_tts_options(options: dict[str, Any] | None = None) -> dict[str, Any]
         "ai_adaptive_voice": is_adaptive,
     }
 
-    # streaming_mode: accept bool or int (1/2/3 presets), normalized to bool later.
+    # streaming_mode: passed through untouched here. GptSovitsClient overwrites it with its own
+    # bool per call mode before building the payload (synthesize -> False, stream_tts -> True),
+    # so a caller-supplied value never reaches the engine.
     streaming_raw = options.get("streaming_mode", options.get("stream_mode"))
     if streaming_raw is not None:
         merged["streaming_mode"] = streaming_raw
