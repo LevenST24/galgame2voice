@@ -2,7 +2,7 @@
 TTS Scheduler and Single-Flight Coordination Module for galgame2voice.
 
 Replaces naive global mutex contention with:
-  1. Priority-aware scheduling (ACTIVE_PLAYING > NEXT_PREFETCH > BACKGROUND_PREHEAT).
+  1. Priority-aware scheduling (TtsPriority.HIGH > NORMAL > LOW).
   2. Generation-scoped stale task cancellation (drops old sentence syntheses when user interrupts).
   3. Single-Flight request coalescing to eliminate cache stampedes and duplicate GPU inference.
 """
