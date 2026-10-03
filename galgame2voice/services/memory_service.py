@@ -145,7 +145,8 @@ class MemoryService:
                 if "key" in pat:
                     key = pat["key"]
                 else:
-                    # Sanitize key name: alphanumeric and CJK only, <= 10 chars
+                    # Sanitize key name: strips everything that is not a \w word char
+                    # (letters of any script, digits, underscore) or CJK, <= 10 chars
                     sanitized_key_suffix = _RE_KEY_SUFFIX_CHARS.sub("", sanitized_val)[:10]
                     if not sanitized_key_suffix:
                         sanitized_key_suffix = "item"

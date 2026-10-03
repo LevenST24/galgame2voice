@@ -291,7 +291,7 @@ class VoiceProfileWeightSpec(BaseModel):
 
 def _extract_weight_spec(target: Any) -> VoiceProfileWeightSpec:
     """Extracts weight paths and refer audio fields from various object types.
-    Weight paths are absolutized here (single choke point) so the engine receives
+    Weight paths are absolutized here and in voice_resolver._build_context so the engine receives
     loadable absolute paths whether the profile stores project-relative package
     paths or engine-relative paths."""
     if isinstance(target, dict):

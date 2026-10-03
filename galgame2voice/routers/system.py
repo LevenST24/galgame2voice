@@ -257,7 +257,8 @@ def _query_remote_git_status(
     """Fetches remote tracking ref and queries (remote_short, has_update, behind_count, commits_log, error)."""
     remote_name, remote_branch = _get_remote_and_branch(project_root)
 
-    # Supply-chain guard: never fetch from an untrusted remote
+    # Supply-chain guard: when the tracked remote is origin, refuse to fetch from a URL
+    # outside the allowed update sources (remotes with other names are not validated)
     if remote_name == "origin" and not _is_allowed_remote(remote_url):
         logger.warning("Blocked remote update check from untrusted remote: %s", remote_url)
         return cur_short, False, 0, [], "安全拦截: git remote origin 不在允许的更新源白名单内，已跳过远端检查。"
