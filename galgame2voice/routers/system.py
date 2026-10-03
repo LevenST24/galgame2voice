@@ -79,7 +79,7 @@ _GIT_OP_LOCK = asyncio.Lock()
 class SystemVersionResponse(BaseModel):
     """System version, git commit state, and remote update availability telemetry."""
     current_version: str = Field(..., description="Current local commit short hash (e.g. eb94d85)")
-    latest_version: str = Field(..., description="Latest remote origin commit short hash")
+    latest_version: str = Field(..., description="Latest remote origin commit short hash, or current_version when no remote check is performed or the check fails")
     has_update: bool = Field(default=False, description="Whether newer commits exist on remote")
     behind_count: int = Field(default=0, description="Number of commits local HEAD is behind remote")
     remote_url: str = Field(default="", description="Configured git remote repository URL")
@@ -108,7 +108,7 @@ class SystemUpdateRequest(BaseModel):
 
 class SystemUpdateResponse(BaseModel):
     """Result of one-click update operation from GitHub."""
-    success: bool = Field(..., description="Whether git pull and subsequent tasks succeeded")
+    success: bool = Field(..., description="Whether the git pull itself succeeded; a failed frontend rebuild or character package sync is reported in output without changing this flag")
     rebuilt_frontend: bool = Field(default=False, description="Whether frontend static assets were rebuilt")
     restart_required: bool = Field(default=False, description="Whether backend restart is recommended")
     output: str = Field(..., description="Detailed execution log and status messages")

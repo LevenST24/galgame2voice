@@ -65,7 +65,7 @@ class ChatRequest(BaseModel):
     provider_id: str | None = Field(default=None, max_length=64, description="LLM provider ID override")
     tts_options: dict[str, Any] | None = Field(default=None, description="Inference parameters (speed, top_k, etc.)")
     preset: str | None = Field(default=None, max_length=64, description="TTS Preset name (high_quality, balanced, low_latency)")
-    system_prompt: str | None = Field(default=None, max_length=PROMPT_MAX_LENGTH, description="Per-request system prompt override (frontend session persona)")
+    system_prompt: str | None = Field(default=None, max_length=PROMPT_MAX_LENGTH, description="Per-request system prompt override (takes precedence over the character package persona prompt)")
     temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="Per-request LLM temperature override")
     max_context: int | None = Field(default=None, ge=2, le=100, description="Per-request max history messages override")
     top_p: float | None = Field(default=None, ge=0.0, le=1.0, description="Per-request nucleus sampling override")
@@ -312,7 +312,7 @@ class SessionUpsertRequest(BaseModel):
     id: str | None = Field(default=None, max_length=SESSION_ID_MAX_LENGTH, description="Session ID (auto-generated if omitted)")
     title: str | None = Field(default=None, max_length=200, description="Session display title")
     voice_profile_id: int | None = Field(default=None, description="Bound voice profile ID")
-    custom_system_prompt: str | None = Field(default=None, max_length=PROMPT_MAX_LENGTH, description="Custom persona system prompt")
+    custom_system_prompt: str | None = Field(default=None, max_length=PROMPT_MAX_LENGTH, description="Custom persona system prompt (persisted to the session row only; session-level personas are not applied to prompts)")
     settings: dict[str, Any] | None = Field(default=None, description="Session-specific generation & voice parameters")
 
 
