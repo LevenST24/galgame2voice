@@ -40,7 +40,7 @@ LEXICON: dict[str, dict] = {
     "頬": {"romaji": "blush", "zh": "脸红", "emotions": {"blush": 3}},
 }
 
-# Longest-first so 笑顔1 never loses to 笑顔, and 基本表情 before 基本.
+# Longest-first so 基本表情 is tried before its own prefix 基本 (the only prefix pair here).
 _PART_RE = re.compile(
     "|".join(sorted((re.escape(k) for k in LEXICON), key=len, reverse=True))
 )
