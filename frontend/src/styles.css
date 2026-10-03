@@ -460,7 +460,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .vb-ico-pause { display: none; }
 .voice-bar.playing .vb-ico-play { display: none; }
 .voice-bar.playing .vb-ico-pause { display: block; }
-/* 等待后端合成：整条呼吸微光，允许用户点击取消合成 */
+/* 等待后端合成：整条呼吸微光（点击会重新触发合成，而非取消） */
 .voice-bar.loading { animation: vbBreath 1.6s ease-in-out infinite; }
 .voice-bar.loading .vb-waves { opacity: 0.35; }
 @keyframes vbBreath {

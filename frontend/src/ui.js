@@ -167,7 +167,7 @@ function buildVoiceBar({ dur, kind, seed, onToggle }) {
     bar.classList.toggle('loading', loading);
     const label = playing
       ? '点击暂停语音'
-      : (loading ? '正在合成语音，点击取消' : (progress > 0 && progress < 1 ? '点击继续播放语音' : '点击播放语音'));
+      : (loading ? '正在合成语音' : (progress > 0 && progress < 1 ? '点击继续播放语音' : '点击播放语音'));
     bar.title = label;
     bar.setAttribute('aria-label', label.replace('点击', ''));
   };
