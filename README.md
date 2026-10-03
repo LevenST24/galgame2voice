@@ -72,6 +72,8 @@ pip install -r requirements.txt
 python scripts/run_server.py
 ```
 
+> **Linux/macOS 一键脚本**：根目录提供 `run.sh`，会自动创建 `.venv`、安装依赖并拉起服务，等价于上述两步，且同样透传 `--fp16/--fp32/--cpu` 等参数（该脚本未设可执行位，用 `bash run.sh` 运行即可）。
+
 > **前端构建产物说明**：`galgame2voice/static/index.html` 与 `static/assets/` 为前端构建产物，仓库中保留了可直接运行的版本（克隆后无需 Node 环境即可启动控制台）；修改 `frontend/src` 后请执行 `cd frontend && npm ci && npm run deploy` 重新生成，否则界面与源码会不一致（Docker 镜像构建时会自动重新构建，无需手动操作）。
 
 常用命令行参数：
@@ -105,8 +107,8 @@ python scripts/run_server.py --help
 | `GPT_SOVITS_BASE_URL` | `Settings` | `http://127.0.0.1:9880` | string | GPT-SoVITS 语音推理引擎的 HTTP API 地址 |
 | `GPT_SOVITS_PRECISION` | `os.environ` | 未设置 | string | 强制推理精度与模式：`fp16`/`half`/`true`/`1` 半精度，`fp32`/`float32`/`false`/`0` 单精度，`cpu` 纯 CPU；其它取值（含 `auto`）不构成覆盖，回落到 CLI 参数 > 数据库设置 > 校准缓存 > 引擎 YAML > 硬件默认 的自动判定 |
 | `GPT_SOVITS_DEVICE` | `os.environ` | 未设置 | string | 设为 `cpu` 时强制纯 CPU 推理（效果同 `GPT_SOVITS_PRECISION=cpu`）；其它取值不构成覆盖 |
-| `AUDIO_RETENTION_MINUTES`| `Settings` | `30` | int | 合成临时音频在磁盘中的最长保留分钟数 |
-| `GALGAME2VOICE_CONSOLE_TOKEN` | `Settings` | 空 | string | 设置控制台管理鉴权令牌（非空时访问设置需输入 Token） |
+| `AUDIO_RETENTION_MINUTES`| `Settings`（解析后无消费方） | `30` | int | 仅被 Pydantic Settings 读入配置对象，不影响实际清理：音频保留时长由清理循环每轮重新读取的 SQLite 设置行 `settings.audio_retention_minutes` 决定，请在 Web 控制台全局设置中修改 |
+| `GALGAME2VOICE_CONSOLE_TOKEN` | `Settings` | 空 | string | 控制台管理鉴权令牌：在开启鉴权时作为访问设置类接口所需的校验 Token（本地回环默认 `GALGAME2VOICE_AUTH_DISABLED=1` 免鉴权，容器/生产部署会强制开启鉴权） |
 | `GALGAME2VOICE_ENABLE_DOCS` | `Settings` | `false`| bool | 是否开启 `/docs` 与 `/redoc` 接口文档页面 |
 | `GALGAME2VOICE_SKIP_MEM_CHECK` | `os.environ` | 未设置 | string | 只要设为任意非空值即跳过跨角色切换的空闲内存/显存保护检查（写 `false`/`0` 也会跳过；不设该变量才会检查） |
 | `TELEGRAM_ADMIN_IDS` | `os.environ` | 未设置 | string | 追加 Telegram 管理员白名单（与控制台保存的 `telegram_admin_ids` 合并生效） |
@@ -148,15 +150,15 @@ characters/
 在主界面全局设置中开启 Telegram Bot 后，您可以通过手机或桌面客户端随时随地与角色聊天：
 
 ### 支持的指令集
-- `/start`：唤出欢迎信息与快速交互键盘菜单
-- `/reset`：清空当前 Telegram 会话的历史上下文与记忆碎片
-- `/voice [名称]`：快速查询或切换当前绑定的角色音色
+- `/start`：唤出欢迎信息与快捷指令列表
+- `/reset`：清空当前 Telegram 会话的历史上下文（仅删除会话消息，不会清除长期记忆库）
+- `/voice`：查看当前绑定的角色音色与语音生成参数（该指令不接受名称参数、也不切换音色；切换请用 `/character [名称]` 或 `/console` 内的「角色音色切换」按钮）
 - `/character [名称]`：切换当前角色与音色（如 `/character 栞那`）
-- `/settings`：查看当前语音生成采样参数与 AI 动态音色状态
+- `/settings`：打开原生交互控制台（等价于 `/console`、`/menu`），可查看并调节当前角色音色、语音生成参数（语速/温度/切分/Top-K/Top-P）与对话模型等设置
 - `/help`：获取完整的操作指令与使用提示
 
 ### 代理连通性
-若您处于需要代理访问 Telegram 的网络环境，直接在网页设置面板中填写 **Telegram 代理地址**（例如 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:10808`），点击「保存并热重载」即可立刻生效，无需重启后端服务。
+若您处于需要代理访问 Telegram 的网络环境，直接在网页设置面板中填写 **Telegram 代理地址**（例如 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:10808`），点击全局设置底部的「保存全局配置」即可立刻生效，无需重启后端服务。
 
 ---
 

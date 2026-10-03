@@ -467,8 +467,8 @@ class GptSovitsClient:
 
         if not ref_audio:
             raise ValueError(
-                "No reference audio provided and no active character profile configured. "
-                "Please configure an active character package or supply valid reference audio."
+                "No reference audio in the request and none loaded in the GPT-SoVITS client. "
+                "Supply ref_audio_path, or select a voice profile / character package that includes reference audio."
             )
 
         ok, reason = validate_reference_audio(ref_audio)

@@ -373,7 +373,8 @@ export async function synthesizeAiVoice(msg, ctl) {
 
 /**
  * 切片是否还取得到：先看 Cache Storage，再探一次 HTTP。
- * 只探最早那条即可 —— audio_cleaner 按时间过期，最旧的还在就说明后面的都在。
+ * 只探最早那条作抽样 —— 分句 wav 由 audio_cleaner 按时间清理（缓存文件按最后访问
+ * 7 天 LRU 淘汰，临时文件按保留期 30 分钟过期），同批生成的分句通常一起到期。
  */
 async function firstChunkStillExists(url) {
   try {
@@ -438,8 +439,9 @@ export async function playAiVoice(msg, ctl) {
 
   const urls = chunked.length ? chunked.map((c) => c.url) : (msg.audioUrls || []).filter(Boolean);
   if (urls.length && !(await firstChunkStillExists(urls[0]))) {
-    // 切片 wav 已被 audio_cleaner 按保留期删掉（默认 30 分钟）。enqueueChunk 会
-    // 静默吞掉 404 继续排期，结果是"点了没声音、进度条却满格"，所以这里主动
+    // 切片 wav 已被 audio_cleaner 清掉（分句通常存于 /audio/cache，按最后访问超 7 天
+    // 被 LRU 淘汰；只有写缓存失败落的临时分句才按保留期默认 30 分钟过期）。enqueueChunk
+    // 会静默吞掉 404 继续排期，结果是"点了没声音、进度条却满格"，所以这里主动
     // 放弃这些 URL，改走按需合成。
     msg.audioUrls = [];
     msg.audioChunks = [];

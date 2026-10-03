@@ -45,7 +45,8 @@ async def get_character_affection_endpoint(
     character_id: int = Query(default=1, ge=1, description="Character Voice Profile ID"),
 ) -> CharacterAffectionResponse:
     """
-    Retrieves current affection score, level, emotion, and unlocked dialogue count.
+    Retrieves the current affection score, level, emotion, and unlocked dialogue
+    IDs, creating the default record on first access.
     """
     clean_user = user_id.strip() or "default_user"
     async with get_db() as conn:
@@ -117,7 +118,8 @@ async def get_dialogue_gallery_endpoint(
     character_id: int = Query(default=1, ge=1, description="Character ID"),
 ) -> dict[str, Any]:
     """
-    Returns full list of milestone lines and easter egg voicelines with unlock status.
+    Returns a summary envelope (total and unlocked counts) wrapping the full list
+    of milestone lines and easter egg voicelines with their unlock status.
     """
     clean_user = user_id.strip() or "default_user"
     service = AffectionService()
