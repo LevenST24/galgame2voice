@@ -48,7 +48,13 @@ def resolve_effective_user_id(update: Any) -> int:
 
 
 def check_is_admin(update: Any, admin_ids: set[int] | None = None) -> bool:
-    """Checks whether the effective user is authorized as an administrator."""
+    """
+    Checks whether the effective user is authorized as an administrator.
+
+    An empty or None admin_ids allows every user through (open-access fallback
+    for the handlers-less direct-call path); TelegramBotHandlers._is_admin is the
+    fail-closed variant that rejects everyone when its whitelist is empty.
+    """
     if not admin_ids:
         return True
     return resolve_effective_user_id(update) in admin_ids
@@ -440,11 +446,11 @@ async def build_split_menu(db_path: str | None = None) -> tuple[str, Any]:
         "选择语音合成长句时的自动切分断句策略："
     )
     splits = [
-        ("cut5", "🌸 cut5 智能自然切分 (推荐)"),
-        ("cut1", "✂️ cut1 凑四句切分"),
-        ("cut2", "。 cut2 按句号切分"),
-        ("cut3", "， cut3 按全标点切分"),
-        ("cut4", "↵ cut4 按换行切分"),
+        ("cut5", "🌸 cut5 按标点符号切 (推荐)"),
+        ("cut1", "✂️ cut1 凑四句切"),
+        ("cut2", "✂️ cut2 凑50字切"),
+        ("cut3", "✂️ cut3 按中文句号。切"),
+        ("cut4", "✂️ cut4 按英文句号.切"),
         ("cut0", "🚫 cut0 不切分 (整段合成)"),
     ]
     reply_markup = _build_single_col_options_markup(
@@ -680,7 +686,12 @@ async def _render_menu(
     menu_coro: Any,
     answer_text: str | None = None,
 ) -> None:
-    """Executes a menu builder coroutine and safely updates the Telegram message text and markup."""
+    """
+    Executes a menu builder coroutine, answers the callback query with optional
+    text, then updates the Telegram message text and markup.
+
+    API errors raised by the answer/edit calls propagate to the caller.
+    """
     text, markup = await menu_coro
     if hasattr(ctx.query, "answer"):
         await ctx.query.answer(answer_text)
@@ -738,7 +749,7 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
             if _db_active is not None:
                 _active_id = getattr(_db_active, "id", None)
     except Exception as exc:
-        logger.debug("Failed getting active voice profile in handle_select_character: %s", exc)
+        logger.debug("Failed getting active voice profile in _handle_set_voice: %s", exc)
     if _active_id is not None and profile_id == _active_id:
         if hasattr(ctx.query, "answer"):
             await ctx.query.answer("已经是当前音色，无需切换")
@@ -765,7 +776,7 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
             if profile:
                 char_name = profile.name
     except InsufficientMemoryError as mem_err:
-        err_msg = f"系统内存不足，无法加载该模型: {mem_err}"
+        err_msg = f"系统内存或显存不足，无法加载该模型: {mem_err}"
         logger.warning("Insufficient memory switching to profile %d: %s", profile_id, mem_err)
     except Exception as exc:
         err_msg = f"切换异常: {sanitize_error_detail(exc)}"

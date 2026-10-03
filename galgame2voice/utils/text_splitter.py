@@ -64,10 +64,15 @@ def is_short_salutation(clause: str) -> bool:
 
 def is_natural_clause_boundary(clause: str) -> bool:
     """
-    Determines if a clause ending with a comma is a natural pause point suitable for agile first-chunk TTS:
+    Determines if a clause is a natural pause point suitable for agile first-chunk TTS:
     - Formulaic greetings (e.g. お久しぶりですね) are natural standalone salutations.
     - Modal particles and soft connectors (e.g. ね, よ, わ, な, けど, から, ので, etc.) indicate continuation
       of a thought and should NOT be split to avoid awkward disjoint pauses.
+
+    The greeting test strips trailing punctuation before matching, but the modal-particle test matches the
+    string as passed and is anchored at its end, so it only fires once the trailing comma has been removed
+    (as split_japanese_sentences does before calling here); a clause still ending in a comma is always
+    reported as a natural boundary.
     """
     if not clause:
         return False
@@ -94,7 +99,8 @@ _RE_CLAUSE_TRAILING_PUNCT = re.compile(r'[、，,\s…\.〜~ー\-」』"\'”’
 def normalize_dialogue_prosody(text: str) -> str:
     """
     Normalizes punctuation and prosodic markers in spoken dialogue for natural TTS synthesis:
-    - Strips whitespace before punctuation marks
+    - Strips whitespace on both sides of CJK punctuation (、，。！？…) and whitespace before
+      halfwidth punctuation (,.!?); fullwidth spaces count as whitespace
     - Collapses consecutive commas (、、 -> 、)
     - Normalizes awkward ellipsis + comma sequences (……、 -> ……)
     - Normalizes commas immediately preceding terminal punctuation (、。 -> 。)
