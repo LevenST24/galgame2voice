@@ -16,7 +16,7 @@
   （`galgame2voice/security/auth.py`）。容器/局域网/公网部署必须显式设置
   `GALGAME2VOICE_AUTH_DISABLED=0`（`docker-compose.yml` 已内置该设置）。
 - Token 来源优先级：环境变量 `GALGAME2VOICE_CONSOLE_TOKEN` > SQLite `settings.console_token`。
-- 首次启动时若 DB 中无 Token，会自动生成 `uuid4().hex` 并**打印到启动日志**（仅一次）。
+- 首次启动时若 DB 中无 Token，会自动生成 `uuid4().hex`：加密存入 SQLite，明文写入 `data/.console_token`（0600）；启动日志仅打印脱敏值（前后各 4 位），不会输出完整 token。
 - 比较使用 `hmac.compare_digest`（常量时间）。
 - 前端（聊天页与设置控制台）在收到 401 时会弹出输入框收集 Token 并存入 `sessionStorage`（不写
   `localStorage`、不落盘，关闭标签页即失效）后自动重试。
