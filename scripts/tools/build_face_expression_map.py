@@ -120,7 +120,7 @@ def decompose(desc: str) -> list[dict]:
 
 
 def merge(parts: list[dict]) -> tuple[dict, dict]:
-    """Collapse part weights into per-emotion strength and per-emotion part count."""
+    """Collapse part weights into per-emotion strength, plus a part-presence map keyed by romaji."""
     emotions: dict[str, int] = {}
     for part in parts:
         for key, weight in part["emotions"].items():
