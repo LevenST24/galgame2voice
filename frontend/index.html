@@ -202,7 +202,7 @@
     </aside>
   </div>
 
-  <!-- 全局控制与系统配置中心（系统诊断 / 语音推理 / 大模型与STT / Telegram / 记忆与人设） -->
+  <!-- 全局控制与系统配置中心（系统诊断 / 语音推理 / 大模型与STT / Telegram / 记忆与人设 / 系统与更新） -->
   <div class="overlay hidden" id="globalModal">
     <div class="modal modal-lg" role="dialog" aria-modal="true" aria-label="全局控制与系统配置">
       <header class="modal-head">
@@ -419,7 +419,7 @@
             <select id="gProvider"></select>
           </div>
 
-          <!-- 2. 通用配置卡片 (适用于所有提供商：Gemini / OpenAI / Claude / DeepSeek / xAI (Grok) / SiliconFlow / 自定义) -->
+          <!-- 2. 通用配置卡片 (一套表单服务下拉中的全部提供商：Gemini / OpenAI / Claude / DeepSeek / xAI (Grok) / 智谱 GLM / 通义千问 / SiliconFlow / Moonshot / 自定义) -->
           <div id="gProviderCard" class="provider-config-card">
             <!-- 提供商简介与密钥配置状态 -->
             <div class="provider-desc-banner" id="gProviderDescBanner">
@@ -502,7 +502,7 @@
             </div>
           </div>
 
-          <!-- 隐藏兼容占位节点，防止旧代码引用报错 -->
+          <!-- 旧版自定义提供商表单的遗留隐藏节点：入口脚本仍按 id 查询这 4 个元素，但没有任何控制器读写它们，缺失时也只是 null -->
           <div id="gCustomBox" style="display:none;">
             <input id="gCustomBaseUrl" style="display:none;" />
             <input id="gCustomApiKey" style="display:none;" />
