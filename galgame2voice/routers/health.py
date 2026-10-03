@@ -566,7 +566,7 @@ def _terminate_existing_sovits_process(pid_file: Path) -> None:
 async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -> dict[str, Any]:
     """
     Terminates the existing GPT-SoVITS process and restarts it with the
-    latest precision configuration (FP16 / FP32).
+    latest precision configuration (FP16 / FP32 / CPU, or re-detected for 'auto').
     """
     settings = get_settings()
     sovits_dir = _resolve_sovits_directory(settings.project_root)
