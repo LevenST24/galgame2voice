@@ -84,7 +84,9 @@ class TelegramBotManager:
     async def start(self) -> bool:
         """
         Loads configuration from SQLite and starts Telegram Bot long-polling.
-        Returns True if started successfully, False if disabled or unconfigured.
+        Returns True if the application initialized and started; False if already
+        running, disabled, unconfigured, python-telegram-bot is unavailable,
+        or polling initialization failed.
         """
         if self.is_running:
             logger.warning("Telegram Bot is already running.")
