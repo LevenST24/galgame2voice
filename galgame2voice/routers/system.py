@@ -615,7 +615,8 @@ async def check_system_update() -> SystemVersionResponse:
     description="Pulls latest commits from origin/main, validates repo safety, rebuilds frontend if needed, and syncs characters.",
 )
 async def apply_system_update(payload: SystemUpdateRequest | None = None) -> SystemUpdateResponse:
-    """Executes safe pull from GitHub, rebuilds frontend, and syncs characters with SQLite DB."""
+    """Executes safe pull from GitHub, rebuilds the frontend only when frontend files
+    changed (or when forced), then syncs character packages into the SQLite DB."""
     settings = get_settings()
     force_rebuild = payload.force_rebuild_frontend if payload else False
     stash_changes = payload.stash_changes if payload else False
