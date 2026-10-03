@@ -88,8 +88,9 @@ class HostValidationMiddleware:
             # IPv6 literal, e.g. "[::1]:8080" -> "::1"
             return host[1:].split("]", 1)[0].lower()
         if host.count(":") == 1:
-            # "host:port" -> "host"; a bare IPv6 without brackets has 2+ colons
-            # and is deliberately NOT accepted (it cannot be parsed unambiguously).
+            # "host:port" -> "host"; a bare IPv6 without brackets has 2+ colons, so it is not
+            # port-split here and falls through to the verbatim comparison below (a bracket-less
+            # "::1" therefore still matches the "::1" entry in ALLOWED_LOOPBACK_HOSTS).
             return host.split(":", 1)[0].lower()
         return host.lower()
 

@@ -14,7 +14,7 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
   const msg = String(rawMessage || '');
   const lower = (msg + ' ' + (backendDiagnostic || '')).toLowerCase();
 
-  // 若后端已有结构化诊断，优先结合提供商特色进行润色
+  // 若后端已有结构化诊断：标题按关键词归类，guidance 直接透传后端诊断原文（不区分提供商）
   if (backendDiagnostic && backendDiagnostic.trim()) {
     let title = '连通性诊断提示';
     if (lower.includes('401') || lower.includes('key') || lower.includes('auth')) {
@@ -42,7 +42,7 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
     lower.includes('incorrect api key') ||
     (lower.includes('400') && (lower.includes('api_key') || lower.includes('api key') || pid === 'xai' || pid === 'gemini'))
   ) {
-    title = 'API Key 凭据无效或未授权 (HTTP 401)';
+    title = 'API Key 凭据无效或未授权 (HTTP 400/401)';
     if (pid === 'xai') {
       guidance = 'xAI (Grok) 密钥认证失败：请检查输入的 API Key 是否正确（通常以 xai- 开头），或前往 xAI 开发者控制台 (https://console.x.ai) 确认密钥启用状态与额度绑定。';
     } else if (pid === 'gemini') {
