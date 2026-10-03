@@ -178,7 +178,7 @@ async def _init_database_and_characters(settings) -> None:
         async with get_db(settings.db_path) as conn:
             synced = await char_mgr.sync_with_db(conn)
             if synced > 0:
-                logger.info("Synced %d character package(s) with voice profiles", synced)
+                logger.info("Character packages sync updated or pruned %d voice profile record(s)", synced)
     except Exception as exc:
         logger.debug("Startup character packages sync skipped: %s", exc)
 

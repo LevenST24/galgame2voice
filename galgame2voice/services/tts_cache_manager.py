@@ -577,7 +577,7 @@ class TtsCacheManager:
                         continue
                     except Exception as init_err:
                         logger.warning("Failed to auto-init DB in TtsCacheManager: %s", init_err)
-                logger.warning("Failed to insert tts_cache_entry in DB: %s", exc)
+                logger.warning("Failed to upsert tts_cache_entry in DB: %s", exc)
                 break
 
         try:
