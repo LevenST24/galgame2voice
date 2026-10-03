@@ -271,7 +271,7 @@ export class BoundedAudioStore extends Map {
       super.delete(key);
     }
     super.set(key, value);
-    // LRU 淘汰：超出容量时驱逐最早访问的条目并释放 Blob URL
+    // 溢出淘汰：超出容量时驱逐最早写入/更新的条目并释放 Blob URL（Map.get 读取不刷新顺序）
     if (this.size > MAX_AUDIO_STORE_ENTRIES) {
       const oldestKey = this.keys().next().value;
       if (oldestKey !== undefined) {
