@@ -22,7 +22,7 @@ from galgame2voice.adapters.base import (
 
 
 class ProviderError(BaseModel):
-    """Normalized error details across LLM and STT providers."""
+    """Normalized error details produced by LLM provider error normalization."""
     code: str = Field(default="UNKNOWN_ERROR", description="Standardized error code")
     message: str = Field(default="", description="Original provider error message")
     status_code: int | None = Field(default=None, description="HTTP status code if applicable")
