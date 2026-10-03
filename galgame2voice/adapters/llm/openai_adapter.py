@@ -286,7 +286,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     usage = data.get("usage")
                     return LLMResponse(content=content, usage=usage)
                 except Exception as exc:
-                    raise RuntimeError(f"Failed to parse LLM response JSON: {exc} | Body: {resp.text[:200]}") from exc
+                    raise RuntimeError(f"Failed to extract LLM response content from JSON: {exc} | Body: {resp.text[:200]}") from exc
             raise RuntimeError("Max retries exceeded without a response")
         finally:
             await client.aclose()
