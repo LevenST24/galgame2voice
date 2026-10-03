@@ -39,7 +39,7 @@ DEFAULT_EMOTION_KEYS: tuple[str, ...] = (
 
 @dataclass
 class ResolvedVoiceContext:
-    """Pre-resolved, immutable-in-memory representation of an active voice profile."""
+    """Pre-resolved, in-memory representation of an active voice profile."""
     profile_id: int | None
     name: str
     gpt_weights_path: str

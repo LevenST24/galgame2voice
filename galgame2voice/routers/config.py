@@ -64,7 +64,7 @@ __all__ = [
 
 
 class ConfigPayload(BaseModel):
-    """Flexible configuration update payload accepting nested settings or direct attributes."""
+    """Configuration update payload carrying a nested settings mapping of overrides."""
     settings: dict[str, Any] | None = None
 
 

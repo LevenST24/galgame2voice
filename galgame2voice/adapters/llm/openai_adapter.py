@@ -124,7 +124,10 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
     @property
     def _is_gemini(self) -> bool:
-        """Returns True if base_url points to Google Gemini's OpenAI-compat endpoint."""
+        """Returns True if base_url contains the 'googleapis.com' substring.
+
+        Matches any Google APIs host, not only Gemini's OpenAI-compat endpoint.
+        """
         return "googleapis.com" in (self.base_url or "")
 
     def _filter_payload_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -283,7 +286,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     usage = data.get("usage")
                     return LLMResponse(content=content, usage=usage)
                 except Exception as exc:
-                    raise RuntimeError(f"Failed to parse LLM response JSON: {exc} | Body: {resp.text[:200]}") from exc
+                    raise RuntimeError(f"Failed to extract LLM response content from JSON: {exc} | Body: {resp.text[:200]}") from exc
             raise RuntimeError("Max retries exceeded without a response")
         finally:
             await client.aclose()

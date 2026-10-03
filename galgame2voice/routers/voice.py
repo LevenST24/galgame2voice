@@ -395,7 +395,10 @@ async def _ensure_voice_profile_available(manager: Any, options: dict[str, Any])
             if not profiles and not manager.client.current_refer_audio and not has_server_audio:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="No character package or voice profile installed. Please install a character package to characters/ or configure a voice profile.",
+                    detail=(
+                        "No voice profile is configured and no reference audio is loaded in the GPT-SoVITS client. "
+                        "Configure a voice profile or install a valid character package under characters/."
+                    ),
                 )
 
 
