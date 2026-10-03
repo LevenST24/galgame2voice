@@ -512,7 +512,7 @@ def _execute_update_pull_and_build(
 
     rebuilt_frontend = False
     if should_rebuild:
-        output_lines.append("\n[前端更新] 检测到前端资源变动，正在执行静态产物重新编译与部署 (npm run deploy)...")
+        output_lines.append("\n[前端更新] 检测到前端资源变动或启用了强制重建，正在执行静态产物重新编译与部署 (npm run deploy)...")
         build_ok, build_out = _rebuild_frontend_sync(project_root)
         rebuilt_frontend = build_ok
         if build_ok:
@@ -615,7 +615,8 @@ async def check_system_update() -> SystemVersionResponse:
     description="Pulls latest commits from origin/main, validates repo safety, rebuilds frontend if needed, and syncs characters.",
 )
 async def apply_system_update(payload: SystemUpdateRequest | None = None) -> SystemUpdateResponse:
-    """Executes safe pull from GitHub, rebuilds frontend, and syncs characters with SQLite DB."""
+    """Executes safe pull from GitHub, rebuilds the frontend only when frontend files
+    changed (or when forced), then syncs character packages into the SQLite DB."""
     settings = get_settings()
     force_rebuild = payload.force_rebuild_frontend if payload else False
     stash_changes = payload.stash_changes if payload else False
@@ -642,7 +643,7 @@ async def apply_system_update(payload: SystemUpdateRequest | None = None) -> Sys
             async with get_db(settings.db_path) as conn:
                 synced = await char_mgr.sync_with_db(conn)
                 if synced > 0:
-                    res.output += f"\n[角色设定同步] 成功同步 {synced} 个角色设定包至数据库。"
+                    res.output += f"\n[角色设定同步] 角色设定包同步完成：新增/更新与失效档案清理共 {synced} 项。"
         except Exception as exc:
             logger.warning("Character packages sync after update: %s", exc)
             res.output += f"\n[角色设定同步提示] 角色同步跳过: {sanitize_error_detail(exc)}"

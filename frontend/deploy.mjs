@@ -1,5 +1,5 @@
 // 构建产物部署：dist → 后端 static 目录
-// 清理旧 assets 与冗余文件，消除构建产物双源漂移，同时严格保护立绘资源与关键目录
+// 清理旧 assets 与冗余文件，消除构建产物双源漂移，同时严格保护白名单里的关键目录
 import { cpSync, rmSync, readdirSync, statSync, existsSync, realpathSync } from 'node:fs';
 import { join, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,7 +29,7 @@ console.log(`[deploy] 部署目标: ${realTarget}`);
 
 // 关键目录白名单：即使不在 dist 根目录或构建产物中也必须予以保留
 const PRESERVED_DIRS = new Set([
-  'characters', // 角色立绘、差分表情及配置清单
+  'characters', // 历史回退目录（立绘已迁入角色包 characters/<角色>/portrait/）
   'js',         // 向后兼容脚本（如 audio_player.js, chat_client.js）
 ]);
 
@@ -46,7 +46,7 @@ if (existsSync(target)) {
       continue;
     }
 
-    // 2. 保护关键保留目录（如 characters 立绘目录、js 兼容脚本目录）
+    // 2. 保护关键保留目录（characters 历史回退目录、js 兼容脚本目录）
     if (PRESERVED_DIRS.has(entry)) {
       continue;
     }
