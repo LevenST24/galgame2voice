@@ -20,8 +20,10 @@ from galgame2voice.security.crypto import encrypt_secret, is_encrypted_secret
 
 logger = logging.getLogger("galgame2voice.database.migrations")
 
-# Default reference audio ships inside the repo using portable relative paths.
-# Converted to absolute at the client boundary when dispatching to GPT-SoVITS.
+# Seed reference audio for the default voice profile, kept as a portable project-relative path.
+# Converted to absolute at the client boundary when dispatching to GPT-SoVITS. Audio assets are
+# NOT tracked in this repo (audio/* and *.ogg are git-ignored), so auto_heal_voice_profiles below
+# repoints profiles to an installed character-package reference when this file is missing.
 _DEFAULT_REF_AUDIO = "audio/references/natsume/gentle.ogg"
 _DEFAULT_REF_TEXT = "とりあえず、今日見たことは忘れて、わかった?"
 
