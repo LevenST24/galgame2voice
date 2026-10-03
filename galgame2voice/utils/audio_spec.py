@@ -439,8 +439,10 @@ SILENT_AUDIO_ERROR = (
 
 def wav_peak_amplitude(audio: bytes) -> float | None:
     """
-    Returns the peak absolute sample value (normalized 0.0~1.0) of a RIFF/WAVE
-    payload (PCM16 or float32), or None if the container/samples cannot be parsed.
+    Returns the peak absolute sample value of a RIFF/WAVE payload (PCM16 or float32),
+    or None if the container/samples cannot be parsed.
+    PCM16 is scaled to full scale (0.0~1.0); float32 samples are returned as stored, so a
+    clipped float payload can report a peak above 1.0.
     A zero-length data chunk counts as undeterminable (None), not silent.
     """
     try:

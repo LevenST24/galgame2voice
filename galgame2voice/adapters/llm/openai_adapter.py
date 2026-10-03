@@ -124,7 +124,10 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
     @property
     def _is_gemini(self) -> bool:
-        """Returns True if base_url points to Google Gemini's OpenAI-compat endpoint."""
+        """Returns True if base_url contains the 'googleapis.com' substring.
+
+        Matches any Google APIs host, not only Gemini's OpenAI-compat endpoint.
+        """
         return "googleapis.com" in (self.base_url or "")
 
     def _filter_payload_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:

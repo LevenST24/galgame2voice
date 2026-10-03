@@ -202,7 +202,8 @@ class TtsCacheManager:
         self._mem_cache[cache_key] = audio_bytes
         self._mem_bytes_total += len(audio_bytes)
         self._mem_cache.move_to_end(cache_key)
-        # Byte-based cap with entry-count fallback; newest entry always retained.
+        # Byte cap and entry-count cap are both enforced (whichever trips first);
+        # the newest entry is always retained.
         while len(self._mem_cache) > 1 and (
             len(self._mem_cache) > self.max_mem_entries
             or self._mem_bytes_total > self.max_mem_bytes
@@ -400,7 +401,8 @@ class TtsCacheManager:
                 self._record_hit_locked(cache_key)
                 return data, url_path, len(data)
 
-        # 2. Slow path: Disk & SQLite cache (miss in memory)
+        # 2. Slow path: on-disk cache file (miss in memory). SQLite metadata is not queried to
+        # serve a read here; the hit is only queued for the deferred last_accessed_at touch.
         file_path = self.cache_dir / f"{cache_key}.wav"
 
         # Verify disk file presence and non-zero size to detect manual unlinking or corruption
