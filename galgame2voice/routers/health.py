@@ -403,8 +403,10 @@ async def system_status(request: Request) -> SystemStatusResponse:
         datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat(),
     )
 
-    # 1-5 gathered in PARALLEL: the GPT-SoVITS probe (network-bound) overlaps
-    # with storage scans, memory retrieval, and hardware telemetry (thread-bound) so total latency = max, not sum.
+    # GPT-SoVITS probe (#1), storage scans (#3) and process memory / hardware telemetry (#4)
+    # are gathered in PARALLEL: the network-bound probe overlaps the thread-bound scans so their
+    # combined latency is max, not sum. #2 is a local stat check done inline, and #5 Telegram
+    # runs its own DB query sequentially after those tasks have been awaited.
     gpt_probe_task = asyncio.create_task(_probe_gpt_sovits(await get_effective_sovits_url()))
     audio_metrics_task = asyncio.create_task(_get_dir_metrics_cached(settings.audio_dir))
     data_metrics_task = asyncio.create_task(_get_dir_metrics_cached(settings.data_dir))
@@ -462,7 +464,7 @@ class RestartSovitsPayload(BaseModel):
     """Optional payload for restarting GPT-SoVITS subprocess with explicit precision."""
     precision: str | None = Field(
         default=None,
-        description="Optional precision override: 'fp16', 'fp32', or 'auto'. If omitted, uses current setting.",
+        description="Optional precision override: 'fp16', 'fp32', 'cpu', or 'auto'. If omitted, uses current setting.",
     )
 
 
@@ -564,7 +566,7 @@ def _terminate_existing_sovits_process(pid_file: Path) -> None:
 async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -> dict[str, Any]:
     """
     Terminates the existing GPT-SoVITS process and restarts it with the
-    latest precision configuration (FP16 / FP32).
+    latest precision configuration (FP16 / FP32 / CPU, or re-detected for 'auto').
     """
     settings = get_settings()
     sovits_dir = _resolve_sovits_directory(settings.project_root)

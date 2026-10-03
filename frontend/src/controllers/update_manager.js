@@ -163,8 +163,8 @@ export async function handleCheckUpdate() {
 export async function handleApplyUpdate() {
   const isLatest = currentVersionData && !currentVersionData.has_update;
   const promptText = isLatest
-    ? '当前本地版本已是最新。确定要从 GitHub 重新拉取并重构前端静态产物吗？'
-    : '确定要从 GitHub 拉取最新版本吗？\n拉取后系统将自动构建前端静态资源并同步角色包。';
+    ? '当前本地版本已是最新。确定要从 GitHub 重新拉取吗？（前端文件无变更时将跳过静态产物构建）'
+    : '确定要从 GitHub 拉取最新版本吗？\n拉取后系统会在检测到前端文件变更时自动构建静态资源，并同步角色包。';
 
   if (!confirm(promptText)) {
     return;
@@ -194,7 +194,7 @@ export async function handleApplyUpdate() {
       }
       if (_dom.gUpdateSpinner) _dom.gUpdateSpinner.classList.add('hidden');
       if (_dom.gBtnReloadPage) _dom.gBtnReloadPage.classList.remove('hidden');
-      showToast('版本更新成功！请刷新页面体验最新功能', 'success');
+      showToast('版本更新成功！请按下方提示刷新页面或重启服务', 'success');
 
       await loadSystemVersionInfo(false);
     } else {

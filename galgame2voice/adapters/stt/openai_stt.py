@@ -112,7 +112,7 @@ class OpenAICompatibleSTTAdapter(BaseSTTAdapter):
                 result_json = resp.json()
                 return result_json.get("text", "")
             except Exception as exc:
-                raise RuntimeError(f"Failed to parse STT response JSON: {exc} | Body: {resp.text[:200]}") from exc
+                raise RuntimeError(f"Failed to extract transcription text from STT response JSON: {exc} | Body: {resp.text[:200]}") from exc
 
     async def test_connection(self) -> TestResult:
         """
