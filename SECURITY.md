@@ -16,7 +16,7 @@
   （`galgame2voice/security/auth.py`）。容器/局域网/公网部署必须显式设置
   `GALGAME2VOICE_AUTH_DISABLED=0`（`docker-compose.yml` 已内置该设置）。
 - Token 来源优先级：环境变量 `GALGAME2VOICE_CONSOLE_TOKEN` > SQLite `settings.console_token`。
-- 首次启动时若 DB 中无 Token，会自动生成 `uuid4().hex` 并**打印到启动日志**（仅一次）。
+- 首次启动时若 DB 中无 Token，会自动生成 `uuid4().hex`：加密存入 SQLite，明文写入 `data/.console_token`（0600）；启动日志仅打印脱敏值（前后各 4 位），不会输出完整 token。
 - 比较使用 `hmac.compare_digest`（常量时间）。
 - 前端（聊天页与设置控制台）在收到 401 时会弹出输入框收集 Token 并存入 `sessionStorage`（不写
   `localStorage`、不落盘，关闭标签页即失效）后自动重试。
@@ -36,7 +36,8 @@
 
 - **管理员白名单**：`settings.telegram_admin_ids`（逗号分隔）或环境变量 `TELEGRAM_ADMIN_IDS`。
   配置后，全局管理类操作（切换模型/音色、修改全局推理参数、清空缓存）仅限白名单用户；
-  **白名单为空时所有人可执行**（向后兼容单机场景），启动日志会给出警告。
+  **白名单为空时 fail-closed**：所有用户（包括管理员自己）的文字与语音消息都会被拒绝，
+  管理类按钮回调同样被拒，启动日志会给出警告。
 - **群聊隔离**：群聊会话键为 `tg_{chat_id}_{user_id}`，每个成员拥有独立的对话历史、
   长期记忆、昵称与好感度；私聊保持旧键 `tg_{chat_id}` 以兼容既有历史。
 

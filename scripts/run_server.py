@@ -580,7 +580,7 @@ def run_hardware_diagnostics() -> dict[str, Any]:
             if vram_total <= 4.1:
                 print(f"      [显存提示] 显卡物理显存为 {vram_total:.1f} GB (显存较紧凑)。")
                 print("                长时间连续多轮对话或高并发时可能存在显存溢出(OOM)风险。")
-                print("                若遇显存不足，可在控制面板或通过 `启动.bat --cpu` 启用「CPU 稳定模式」（依托大内存，彻底杜绝崩溃）。")
+                print("                若遇显存不足，可在控制面板或通过 `启动.bat --cpu`（Linux/macOS 下为 `bash run.sh --cpu`）启用「CPU 稳定模式」（依托大内存，彻底杜绝崩溃）。")
             else:
                 print(f"      [显存就绪] 显存容量: {vram_total:.1f} GB (当前空闲约 {vram_free:.1f} GB)")
 
@@ -763,7 +763,7 @@ def calibrate_engine_precision(
     """
     peak = probe_fn()
     if peak is None:
-        print("      [精度校准] 探针未完成 (超时/网络)，跳过本次校准，沿用当前精度。")
+        print("      [精度校准] 探针未完成 (缺少参考音频/超时/网络)，跳过本次校准，沿用当前精度。")
         return is_half, False
     if peak > 0:
         write_precision_cache(PROJECT_ROOT, str(sovits_dir), is_half)
@@ -900,7 +900,7 @@ def ensure_gpt_sovits_running(
         elif precision_source == "yaml":
             print(f"      [推理精度] 使用现有引擎配置文件: {prec_str} (来源: tts_infer.yaml)")
         else:
-            print("      [推理精度] 未指定固定精度，进入自动校准模式 (初始 FP16，就绪后验证发声)。")
+            print("      [推理精度] 未指定固定精度，按硬件检测选择初始精度 (CUDA 显卡为 FP16，否则 CPU FP32)；FP16 模式下引擎就绪后将自动校准。")
     try:
         proc = _spawn_sovits_process(sovits_dir, sovits_host, sovits_port, is_half, device=device)
 
@@ -1111,7 +1111,7 @@ def main(args: list[str] | None = None):
             print(f"      [OK] 浏览器将在后台探测到 /api/health 返回 200 后自动打开: http://{display_host}:{active_port}/")
         else:
             print(f"      [提示] 已开启 --no-browser，跳过自动打开浏览器。访问地址: http://{display_host}:{active_port}/")
-        print("      关闭此窗口即可退出并释放显存。")
+        print("      关闭此窗口即可退出并释放资源。")
         try:
             import uvicorn
             uvicorn.run("galgame2voice.main:app", host=bind_host, port=active_port, log_level="info")

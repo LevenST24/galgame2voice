@@ -291,7 +291,7 @@ class AffectionService:
         updated: Any,
         triggered_egg: dict[str, Any] | None,
     ) -> list[str]:
-        """Collects unlocked milestone and easter egg dialogue IDs for the current affection level."""
+        """Collects milestone and easter egg dialogue IDs not yet unlocked at the current affection level."""
         new_dialogue_ids: list[str] = []
         for lvl in range(1, updated.affection_level + 1):
             milestone_id = f"milestone_lv{lvl}"

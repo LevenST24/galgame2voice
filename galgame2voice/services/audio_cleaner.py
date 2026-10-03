@@ -227,7 +227,7 @@ async def _run_audio_cleanup_cycle(audio_dir: Path) -> None:
             logger.debug("Failed to purge tts_cache_entries for unlinked keys: %s", db_clean_err)
 
     if total_cleaned > 0 or unlinked_keys:
-        logger.info("Audio cleanup removed %d expired/orphan audio files.", total_cleaned)
+        logger.info("Audio cleanup removed %d expired/orphan audio files or cache records.", total_cleaned)
         try:
             from galgame2voice.utils.hardware import release_system_memory
             release_system_memory()

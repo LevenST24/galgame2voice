@@ -65,7 +65,7 @@ class ChatRequest(BaseModel):
     provider_id: str | None = Field(default=None, max_length=64, description="LLM provider ID override")
     tts_options: dict[str, Any] | None = Field(default=None, description="Inference parameters (speed, top_k, etc.)")
     preset: str | None = Field(default=None, max_length=64, description="TTS Preset name (high_quality, balanced, low_latency)")
-    system_prompt: str | None = Field(default=None, max_length=PROMPT_MAX_LENGTH, description="Per-request system prompt override (frontend session persona)")
+    system_prompt: str | None = Field(default=None, max_length=PROMPT_MAX_LENGTH, description="Per-request system prompt override (takes precedence over the character package persona prompt)")
     temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="Per-request LLM temperature override")
     max_context: int | None = Field(default=None, ge=2, le=100, description="Per-request max history messages override")
     top_p: float | None = Field(default=None, ge=0.0, le=1.0, description="Per-request nucleus sampling override")
@@ -312,15 +312,16 @@ class SessionUpsertRequest(BaseModel):
     id: str | None = Field(default=None, max_length=SESSION_ID_MAX_LENGTH, description="Session ID (auto-generated if omitted)")
     title: str | None = Field(default=None, max_length=200, description="Session display title")
     voice_profile_id: int | None = Field(default=None, description="Bound voice profile ID")
-    custom_system_prompt: str | None = Field(default=None, max_length=PROMPT_MAX_LENGTH, description="Custom persona system prompt")
+    custom_system_prompt: str | None = Field(default=None, max_length=PROMPT_MAX_LENGTH, description="Custom persona system prompt (persisted to the session row only; session-level personas are not applied to prompts)")
     settings: dict[str, Any] | None = Field(default=None, description="Session-specific generation & voice parameters")
 
 
 @router.get("/api/chat/sessions", summary="List all chat sessions with metadata")
 async def list_chat_sessions(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
     """
-    Returns list of all conversation sessions from SQLite database in reverse-chronological order,
-    including inferred human-readable title, message count, and last message preview.
+    Returns a {count, sessions} envelope holding the most recently updated sessions
+    from SQLite (capped by `limit`), each including the inferred human-readable
+    title, message count, and last message preview.
     """
     async with get_db() as conn:
         sessions = await crud.list_sessions_overview(conn, limit=limit)
@@ -406,7 +407,8 @@ async def get_chat_history(
     limit: int = Query(default=100, ge=1, le=500, description="Max message count to return"),
 ) -> dict[str, Any]:
     """
-    Returns chronological list of previous messages in the session for UI restoration.
+    Returns a {session_id, count, messages} envelope containing the session's most
+    recent messages (capped by `limit`) in chronological order, for UI restoration.
     """
     clean_session_id = (session_id or "").strip() or "default"
     async with get_db() as conn:
