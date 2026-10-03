@@ -1,4 +1,4 @@
-/* ============ 墨谈 Inkwell · 清澈浅色设计系统 ============ */
+/* ============ Gal2Voice · 清澈浅色设计系统 ============ */
 :root {
   --bg: #f6f8f9;
   --panel: #ffffff;
@@ -505,6 +505,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 }
 .field-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
+/* ---- 流式输出光标与等待打字指示 ---- */
 .msg-content.streaming::after {
   content: '';
   display: inline-block;
@@ -757,7 +758,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .inline-link { color: var(--brand); font-weight: 600; text-decoration: none; }
 .inline-link:hover { text-decoration: underline; }
 
-/* 全局设置：系统状态行 + 复选行 */
+/* 旧版全局设置系统状态行样式 + 复选行：下方 .status-line/.status-row/.st-dot 当前 UI 已无引用（系统状态改由控制台状态看板卡片展示），.check-line 用于全局设置 Telegram / 记忆选项卡 */
 .status-line {
   display: flex; flex-direction: column; gap: 9px;
   padding: 12px 14px;
