@@ -1,6 +1,6 @@
 """
 Japanese phonetics and character name normalizer for galgame2voice TTS synthesis.
-Corrects MeCab / OpenJTalk mispronunciations of Galgame proper nouns (names, places, vocatives),
+Corrects MeCab / OpenJTalk mispronunciations of Galgame proper nouns (character names, series titles, vocatives),
 and parses inline Japanese furigana brackets before sending text to GPT-SoVITS.
 """
 
@@ -160,7 +160,8 @@ def is_spoken_dialogue_inside_brackets(content: str) -> bool:
     if ENGLISH_STAGE_CUES.match(c):
         return False
 
-    # Bare string without surrounding punctuation / ellipses / whitespace
+    # Bare string: the unanchored pattern strips punctuation / ellipses / whitespace
+    # characters anywhere in the content, not only the surrounding ones
     c_bare = _RE_PUNCT_ELLIPSIS_STRIP.sub('', c).strip()
 
     # Strip exact action cue nouns/phrases across Japanese and Chinese
