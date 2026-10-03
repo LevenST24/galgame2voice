@@ -102,7 +102,7 @@ async def get_settings_raw(conn: aiosqlite.Connection) -> SettingsInDB:
 
 
 async def get_settings(conn: aiosqlite.Connection, mask: bool = True) -> SettingsResponse:
-    """Reads settings from database with optional API key masking."""
+    """Reads settings from database, optionally masking the stored bot token and console token."""
     raw = await get_settings_raw(conn)
     resp_data = raw.model_dump()
     if mask:
