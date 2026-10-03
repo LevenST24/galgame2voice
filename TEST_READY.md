@@ -48,7 +48,7 @@ python -m pytest tests/test_e2e_industrial_hardening.py --durations=10 -v
 
 ## 4. 4-Tier Test Breakdown
 
-### Tier 1: Feature Coverage (29 Tests)
+### Tier 1: Feature Coverage (37 Tests)
 - **Logging & Security Masking**: F1-01 to F1-05 (OpenAI, Gemini, HuggingFace, Telegram, LogRecord args).
 - **Error Response Sanitization**: F2-01 to F2-05 (HTTP 4xx/5xx, SSE error event, Telegram test, Provider test, validation).
 - **System Telemetry**: F3-01 to F3-05 (Health, status, database relative path, storage metrics, memory RSS).
@@ -59,7 +59,7 @@ python -m pytest tests/test_e2e_industrial_hardening.py --durations=10 -v
 - **SSE Stream Pipeline**: F8-01 (Incremental chunk parser, lookahead Japanese sentence extraction).
 - **Telegram Bot Handlers**: F9-01, F9-02 (Session isolation, task cancellation).
 
-### Tier 2: Boundary & Corner Cases (18 Tests)
+### Tier 2: Boundary & Corner Cases (15 Tests)
 - **Logging Extremes**: Empty strings, 100KB+ payloads, concatenated secrets, non-string objects.
 - **Error Propagation**: Chained exceptions with root cause, control chars and unicode emojis.
 - **Memory Extraction Edge Cases**: Injection delimiter framing, 10,000-char ReDoS resistance, mixed CJK & emoji.
