@@ -22,7 +22,7 @@ class StreamingAudioPlayer {
         this.analyser = null;
         this.freqData = null;
 
-        /** @type {Array<{id:number,index:number,url:string,sentence:string,audioBuffer:AudioBuffer|null,status:string,sessionId:number}>} */
+        /** @type {Array<{id:string,index:number,url:string,sentence:string,audioBuffer:AudioBuffer|null,status:string,sessionId:number}>} */
         this.queue = [];
         this.activeSources = [];
         this.nextStartTime = 0;
@@ -297,7 +297,7 @@ class StreamingAudioPlayer {
             const buffer = nextItem.audioBuffer;
             const startTime = this.nextStartTime;
             const duration = buffer.duration;
-            // Fade duration guarded against very short clips (<50ms).
+            // Fade duration is clamped to a quarter of the clip length, guarding very short clips.
             const fadeDur = Math.min(this.crossFadeDuration, duration / 4);
 
             const source = this.audioCtx.createBufferSource();
