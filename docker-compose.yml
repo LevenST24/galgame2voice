@@ -17,8 +17,12 @@ services:
       # 日志只打印脱敏值，不会输出完整 token（见 galgame2voice/database/migrations.py::_save_console_token_file）。
       # 生产部署建议通过 .env 显式设置 GALGAME2VOICE_CONSOLE_TOKEN。
       - GALGAME2VOICE_CONSOLE_TOKEN=${GALGAME2VOICE_CONSOLE_TOKEN:-}
-      # If GPT-SoVITS is running on host machine:
-      # - GPT_SOVITS_BASE_URL=http://host.docker.internal:9880
+      # If GPT-SoVITS runs on the host machine, set the console's GPT-SoVITS URL to
+      # http://host.docker.internal:9880 (the extra_hosts mapping below makes that name resolve).
+      # TTS traffic always follows the SQLite settings row: galgame2voice/main.py::_init_gpt_sovits_client
+      # re-applies it over GALGAME2VOICE_GPT_SOVITS_BASE_URL at startup, and the row is seeded
+      # non-empty (http://127.0.0.1:9880), so the env var below only seeds the pre-startup default.
+      # - GALGAME2VOICE_GPT_SOVITS_BASE_URL=http://host.docker.internal:9880
     volumes:
       - ./data:/app/data
       - ./audio:/app/audio
