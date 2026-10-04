@@ -323,7 +323,10 @@ export class StreamAudioController {
       const source = this.ctx.createBufferSource();
       source.buffer = buffer;
 
-      // 独立切片增益节点：负责 12ms 头尾微渐变 (Micro-fade)，彻底消除直流偏置阶跃爆音
+      // 独立切片增益节点：负责头尾微渐变 (Micro-fade)，抑制切片衔接处的直流偏置阶跃。
+      // 渐变时长为 min(crossFadeMs, duration/4)，切片短于 48ms 时不足 12ms；且只覆盖正常
+      // 排期衔接：interrupt(fadeMs <= 0)（startSession 即如此调用）会立即 stop 并 disconnect
+      // 活动源，此刻波形相位任意，仍会产生阶跃爆音（见下方 interrupt 注释）。
       const chunkGain = this.ctx.createGain();
       chunkGain.gain.setValueAtTime(0.0001, startTime);
       chunkGain.gain.linearRampToValueAtTime(1.0, startTime + fadeDur);

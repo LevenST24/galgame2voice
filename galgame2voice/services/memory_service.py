@@ -258,7 +258,11 @@ class MemoryService:
     ) -> list[UserMemoryResponse]:
         """
         Retrieves Top-K relevant memories using Anchor Priority + Dynamic Composite Scoring.
-        Anchors (nickname, identity) are always prioritized.
+        Anchors (nickname, identity) are placed first among the memories that were fetched.
+        They are not unconditionally present: crud.list_memories is called with limit=200 and
+        ORDER BY updated_at DESC, and recall bookkeeping bumps last_recalled_at rather than
+        updated_at, so an anchor that has not been edited for a long time can fall outside the
+        fetched window and never reach the anchor branch at all. top_k=0 returns nothing.
         """
         try:
             safe_top_k = max(0, min(int(top_k), 50))

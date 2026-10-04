@@ -378,7 +378,11 @@ class VoiceManager:
 
         # Memory precheck: new and old weights briefly co-reside during a switch; loading
         # with too little free memory OOM-crashes the engine. Sits here (not in the HTTP
-        # layer) so every call path — REST, Telegram, auto-bind — gets the same guard.
+        # layer) so the switch entry points — REST, Telegram, auto-bind — all get the same
+        # guard. warmup_current_profile() is the exception: it calls
+        # client.switch_voice_profile() directly and therefore loads weights with neither
+        # this RAM guard nor the VRAM guard (it runs at startup from main.py and again after
+        # every successful switch).
         self._check_switch_memory_guard(force)
 
         # 2. Execute 3-step atomic model switch with auto-rollback

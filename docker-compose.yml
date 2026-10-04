@@ -19,9 +19,14 @@ services:
       - GALGAME2VOICE_CONSOLE_TOKEN=${GALGAME2VOICE_CONSOLE_TOKEN:-}
       # If GPT-SoVITS runs on the host machine, set the console's GPT-SoVITS URL to
       # http://host.docker.internal:9880 (the extra_hosts mapping below makes that name resolve).
-      # TTS traffic always follows the SQLite settings row: galgame2voice/main.py::_init_gpt_sovits_client
+      # TTS traffic normally follows the SQLite settings row: galgame2voice/main.py::_init_gpt_sovits_client
       # re-applies it over GALGAME2VOICE_GPT_SOVITS_BASE_URL at startup, and the row is seeded
-      # non-empty (http://127.0.0.1:9880), so the env var below only seeds the pre-startup default.
+      # non-empty (http://127.0.0.1:9880). It is not unconditional though: the override only happens
+      # when the DB read succeeds AND gpt_sovits_url is non-empty, so if get_settings_raw raises
+      # (logged as "Could not read gpt_sovits_url from DB") or the console has saved an empty value
+      # (crud.update_settings writes the submitted string through verbatim), the env-var value stays
+      # in effect for real traffic — routers/health.py::get_effective_sovits_url has the same
+      # env fallback. Treat the env var below as the startup default that normally gets overridden.
       # - GALGAME2VOICE_GPT_SOVITS_BASE_URL=http://host.docker.internal:9880
     volumes:
       - ./data:/app/data

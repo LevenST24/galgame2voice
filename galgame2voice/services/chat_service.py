@@ -112,7 +112,12 @@ class ChatService:
     async def _extract_memory_safe(
         self, user_id: str, profile_id: int | None, message_text: str, message_id: int
     ) -> None:
-        """Background memory fact extraction that never raises."""
+        """Background memory fact extraction: failures are logged, never propagated.
+
+        Catches Exception only, so an asyncio.CancelledError raised when shutdown's
+        drain_background_tasks() cancels a still-running extraction escapes as task
+        cancellation (the done-callback skips cancelled tasks, so it is not logged).
+        """
         try:
             await self.memory_service.process_user_message(
                 user_id=user_id,

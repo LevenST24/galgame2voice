@@ -103,8 +103,14 @@ def _load_manifest_emotion_references(
 
 class _DynamicEmotionReferences(dict):
     """
-    Data-driven dictionary proxy that reflects the character package manifest dynamically
-    while maintaining 100% dictionary backward compatibility for legacy callers and tests.
+    Data-driven dictionary proxy that reflects the character package manifest dynamically.
+    Read-compatible with the legacy static dict, but not fully dict-faithful in two ways:
+    (1) __getitem__ never raises KeyError -- an unknown key returns the 'gentle' entry (or {}),
+    even though __contains__ reports that key absent; (2) the lazy load is hooked only into
+    __getitem__/get/__contains__/__iter__/__len__/keys/values/items, so inherited mutators and
+    comparison (pop, setdefault, popitem, update, clear, copy, __eq__) still see the empty
+    pre-load dict on an instance nobody has read from yet -- e.g. pop('happy') raises KeyError
+    and `proxy == {...}` is False until some hooked access triggers _ensure_loaded().
     """
     def __init__(self) -> None:
         super().__init__()

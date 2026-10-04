@@ -56,8 +56,12 @@ async def _add_column_if_missing(
 def _save_console_token_file(token: str) -> None:
     """Writes the plaintext console token to data/.console_token, then tries to chmod it
     to 0600. The chmod is best-effort (an OSError there is swallowed), so on platforms or
-    filesystems where it fails the file keeps whatever mode the umask gave it; a failed
-    write is logged as a warning and leaves no token file at all."""
+    filesystems where it fails the file keeps whatever mode the umask gave it. A failed
+    write is logged as a warning; whether anything is left behind depends on where it
+    fails: a failure before/at open (missing data dir, EACCES) leaves no new file, but
+    Path.write_text opens with mode "w", so once the open succeeds a later failure
+    (ENOSPC/EDQUOT surfacing at flush/close inside the with-block) leaves a zero-length or
+    partially written file, and truncates any token file that was already there."""
     try:
         from galgame2voice.config import get_settings
         token_file = get_settings().data_dir / ".console_token"
