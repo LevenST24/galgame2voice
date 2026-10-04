@@ -625,5 +625,6 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 if isinstance(exc, ValueError):
                     raise
 
-        # Provider does not support the model listing endpoint
+        # No usable listing: /models answered a non-auth error status, returned 200 with
+        # no model entries, or the request itself failed (timeout/DNS/refused).
         return []
