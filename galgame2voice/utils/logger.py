@@ -17,7 +17,10 @@ class MaskingFilter(logging.Filter):
     bearer tokens, Telegram bot tokens, passwords, and sensitive fields.
     """
 
-    # Compiled patterns for high-performance string sanitization (linear O(N), ReDoS-safe)
+    # Compiled patterns for high-performance string sanitization. Patterns 1-12 cost O(N) per
+    # pass, but pattern 13's unbounded `(?:[a-zA-Z0-9+.-]+)://` scheme prefix restarts at every
+    # position of an alphanumeric run and backtracks through each prefix length, so sanitize() is
+    # worst-case quadratic — O(R^2) in R = the longest [a-zA-Z0-9+.-] run, not linear in N.
     PATTERNS = [
         # 1. OpenAI / generic API keys with visible prefix & suffix
         (
