@@ -763,12 +763,12 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
         try:
             switched = await vm.switch_active_profile(profile_id)
             if not switched:
-                warning_note = "（语音引擎离线）"
+                warning_note = "（语音权重未能加载：引擎不可达，或引擎在线但拒绝了权重）"
         except InsufficientMemoryError:
             raise
         except Exception as sw_err:
             logger.debug("VoiceManager weight switch skipped: %s", sw_err)
-            warning_note = "（语音引擎离线）"
+            warning_note = "（语音权重未能加载：引擎不可达，或引擎在线但拒绝了权重）"
 
         async with get_db(ctx.db_path) as conn:
             await crud.set_active_voice_profile(conn, profile_id)

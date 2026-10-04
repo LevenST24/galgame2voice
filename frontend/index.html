@@ -515,8 +515,8 @@
             <label for="gSttEngine">STT 语音识别引擎（仅作全局配置保存；控制台麦克风固定使用浏览器 Web Speech API）</label>
             <select id="gSttEngine">
               <option value="browser">浏览器原生 Web Speech API (推荐，零GPU开销，即说即转)</option>
-              <option value="sensevoice">本地 SenseVoice-Small (极速精准，支持情感与多语言)</option>
-              <option value="whisper">OpenAI Whisper (多语言离线识别)</option>
+              <option value="sensevoice">云端 SenseVoice-Small (SiliconFlow API，需联网；极速精准，支持情感与多语言)</option>
+              <option value="whisper">OpenAI Whisper (api.openai.com 云端转写，需联网与 API Key；多语言识别)</option>
             </select>
           </div>
         </div>
