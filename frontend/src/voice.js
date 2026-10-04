@@ -259,7 +259,7 @@ function safeRevokeUrl(url) {
 }
 
 /**
- * BoundedAudioStore — 具备 30 条硬上限、LRU 淘汰机制与自动 URL.revokeObjectURL 的安全存储
+ * BoundedAudioStore — 具备 30 条硬上限、按最早写入/更新顺序 FIFO 淘汰（Map.get 读取不刷新顺序，非 LRU）与自动 URL.revokeObjectURL 的安全存储
  */
 export class BoundedAudioStore extends Map {
   set(key, value) {
@@ -305,11 +305,11 @@ export class BoundedAudioStore extends Map {
   }
 }
 
-/** 语音消息的内存暂存（严格受控 LRU 30 项上限） */
+/** 语音消息的内存暂存（严格受控 30 项上限，按最早写入/更新顺序 FIFO 淘汰） */
 export const audioStore = new BoundedAudioStore();
 
 /**
- * 辅助存储方法：设置录音并自动受控于 LRU 队列
+ * 辅助存储方法：设置录音并纳入 30 项 FIFO 上限管理（超出时驱逐最早写入/更新的条目）
  */
 export function setAudioStore(msgId, rec) {
   audioStore.set(msgId, rec);
