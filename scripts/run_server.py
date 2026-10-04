@@ -590,7 +590,7 @@ def run_hardware_diagnostics() -> dict[str, Any]:
         elif cached and cached.get("is_half") is False:
             print("      [精度校准] 已缓存校准结果: 此设备使用 FP32 单精度推理 (保证发声正常)。")
         else:
-            print("      [精度校准] 引擎就绪后将自动校准 FP16/FP32 精度，无需手动配置。")
+            print("      [精度校准] 未显式指定精度、由本脚本新拉起引擎且无已验证缓存时，就绪后会自动校准 FP16/FP32 精度；否则直接沿用当前精度来源，无需手动配置。")
     else:
         print("      [硬件提示] 未检测到兼容的 NVIDIA 独立显卡或 CUDA 推理环境。")
         print("                系统将以 CPU 兼容模式运行。首次模型加载与推理耗时较长属于正常现象，建议在配置 NVIDIA 显卡的电脑上使用以获得最佳体验。")
