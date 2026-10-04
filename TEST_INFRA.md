@@ -369,4 +369,9 @@ python -m pytest --cov=galgame2voice --cov-report=term-missing
 ### Flakiness Mitigation Standards:
 - **Zero Fixed Sleeps**: All asynchronous wait states utilize `asyncio.Event`, `asyncio.wait_for`, or bounded polling loops.
 - **Isolated SQLite Instances**: Every test run uses isolated SQLite in-memory or temporary disk databases (`tmp_path`).
-- **Deterministic Time Mocking**: High-precision timers (`time.perf_counter()`, `time.monotonic()`) are used for microsecond benchmarking.
+- **Real-Clock Timers, No Global Clock Mocking**: Microsecond benchmarking reads the wall clock with
+  `time.perf_counter()` / `time.monotonic()` and asserts generous thresholds (for example
+  `tests/test_adversarial_m3_challenger2.py:198` asserts `statistics.mean(latencies) < 50.0`), so those
+  measurements are machine-load dependent and are explicitly NOT deterministic; no test freezes the clock
+  suite-wide. The only clock patching is per-test `monkeypatch.setattr(time, "monotonic", ...)` in
+  `tests/test_benchmark_resilience_r4.py:576` and `tests/test_m3_resilience_regression.py:114`.

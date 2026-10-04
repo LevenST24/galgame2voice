@@ -389,9 +389,17 @@ async def lifespan(app: FastAPI):
 class AudioStaticFiles(StaticFiles):
     """
     Enhanced StaticFiles handler for audio files.
-    Applies aggressive Cache-Control headers to immutable content-addressed cache files
-    (e.g., /audio/cache/*.wav) and standard cache lifetimes to ephemeral chunks,
+    Applies an aggressive Cache-Control header to the cache files under
+    /audio/cache/*.wav and standard cache lifetimes to ephemeral chunks,
     while ensuring Accept-Ranges: bytes support.
+    These filenames are NOT content hashes: TtsCacheManager.compute_cache_key hashes the
+    normalized text plus the request's inference parameters, so the audio bytes themselves
+    never enter the name. The name is therefore stable but the bytes behind it are not: LRU
+    pruning unlinks entries, get() drops missing or zero-byte files, and the next request
+    re-synthesizes and put() rewrites the very same path. Note also that
+    StaticCacheControlMiddleware is the outermost middleware in create_app and replaces
+    Cache-Control on every /audio/ response with "private, max-age=0", so the header set here
+    only survives when this handler is used without that middleware.
     """
 
     async def get_response(self, path: str, scope: Scope) -> Response:
