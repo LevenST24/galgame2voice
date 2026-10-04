@@ -27,7 +27,8 @@
 - 所有用户提供的 LLM provider `api_base_url` 均经过 `security/url_guard.py` 校验：
   - 仅允许 http/https；官方预置服务商域名强制 https；
   - DNS 解析后拒绝环回/私网/链路本地/保留/多播网段（含云元数据 `169.254.169.254`）。
-- 连接本地模型（Ollama/vLLM 等）需在设置中显式开启 `allow_private_llm_endpoints`。
+- 连接本地模型（Ollama/vLLM 等）需显式开启 `allow_private_llm_endpoints`。Web 控制台没有该开关，
+  只能写入 SQLite 设置行：`POST /api/config`，请求体 `{"allow_private_llm_endpoints": true}`。
 - **不校验 GPT-SoVITS 地址**：其默认值 `http://127.0.0.1:9880` 本身就是合法私网端点。
 - 已知限制：采用"保存时预检"而非传输层逐跳校验，DNS rebinding 理论上仍可行（预检通过后
   域名重解析到私网）；该残余风险在认证门禁之后，且要求操作者主动配置恶意域名。
