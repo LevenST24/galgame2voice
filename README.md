@@ -102,7 +102,7 @@ python scripts/run_server.py --help
 | 环境变量名 | 来源 | 默认值 | 类型 | 作用说明 |
 | :--- | :---: | :--- | :---: | :--- |
 | `HOST` | `Settings` | `127.0.0.1` | string | 后端 FastAPI 服务绑定的网卡监听地址 |
-| `PORT` | `Settings` | `8080` | int | 后端服务监听端口（若被占用自动探测可用端口） |
+| `PORT` | `Settings` | `8080` | int | 后端服务监听端口。注意本行**没有**自动换端口行为：`galgame2voice` 命令行入口把 `Settings.port` 直接交给 `uvicorn.run()`（`galgame2voice/main.py` 的 `run()`），容器则由 `Dockerfile` 固定 `--port 8080` 绑定，端口被占用即启动失败。「被占用后自动改探可用端口」是启动器 `scripts/run_server.py`（`find_available_port`，即上文 `--port` 说明的行为）专属功能，而它的首选端口只取自 `--port` / `GALGAME_PORT`，并不读取 `PORT` |
 | `LOG_LEVEL` | `Settings` | `INFO` | string | 日志记录级别 (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `GPT_SOVITS_BASE_URL` | `Settings` | `http://127.0.0.1:9880` | string | GPT-SoVITS 语音推理引擎的 HTTP API 地址 |
 | `GPT_SOVITS_PRECISION` | `os.environ` | 未设置 | string | 强制推理精度与模式：`fp16`/`half`/`true`/`1` 半精度，`fp32`/`float32`/`false`/`0` 单精度，`cpu` 纯 CPU；其它取值（含 `auto`）不构成覆盖，回落到 CLI 参数 > 数据库设置 > 校准缓存 > 引擎 YAML > 硬件默认 的自动判定 |
