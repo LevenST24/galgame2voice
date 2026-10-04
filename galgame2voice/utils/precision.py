@@ -53,7 +53,14 @@ def write_precision_cache(
     is_half: bool,
     device: str = DEVICE_CUDA,
 ) -> None:
-    """Persists a verified precision calibration and device bound to the engine directory."""
+    """Persists the given precision/device bound to the engine directory.
+
+    The stored entry is stamped `verified_at`, but nothing here verifies anything:
+    callers include the launcher's probe-verified calibration and plain user
+    configuration writes (routers/config.py::_sync_precision_cache,
+    routers/health.py::_apply_sovits_precision_config), which persist an
+    un-probed value under the same shape. Write failures are swallowed at debug.
+    """
     try:
         path = _cache_path(project_root)
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -5,7 +5,9 @@
  * 1. AudioContext 惰性初始化与用户手势自动唤醒 (resume)。
  * 2. 采样级高精度排期调度 (currentTime + source.start(nextScheduledTime))，实现切片间零死寂缝隙 (Gapless)。
  * 3. 12ms 微渐变包络 (Micro-fade Gain Envelope: 12ms attack & decay)，消除 PCM 直流偏置切片衔接爆音。
- * 4. 40ms 平滑线性渐出打断 (40ms Linear Fade-Out Interrupt)，彻底杜绝硬截断爆音与跨会话串音。
+ * 4. 打断默认 40ms 线性渐出 (Linear Fade-Out Interrupt)，抑制常规打断的硬截断爆音；
+ *    渐出时长由调用方 fadeMs 决定，fadeMs <= 0 时改为立即硬停（startSession 即以 0 调用，
+ *    10ms 也有一处调用方），跨会话串音则由 currentSessionId 递增与清空队列阻断。
  * 5. 健壮队列自愈：单切片网络/解码异常自动跳过并推进后续切片，杜绝队列死锁。
  * 6. 与 CacheStorage / memory blob 缓存无缝衔接，极速秒开。
  */
@@ -396,9 +398,10 @@ export class StreamAudioController {
   }
 
   /**
-   * 40ms 平滑线性渐出打断 (Smooth Interrupt)
-   * 立即中止网络拉取、停止活动源并渐出静音，杜绝瞬间截断造成的硬件爆破杂音
-   * @param {number} fadeMs 渐出毫秒数，默认 40ms
+   * 线性渐出打断 (Smooth Interrupt)
+   * 中止网络拉取并清空播放队列。fadeMs > 0 时先线性渐出 masterGain 再停止活动源；
+   * fadeMs <= 0 时跳过渐出、立即 stop 所有活动源并把音量复位（即硬截断，仍可能产生瞬态爆音）。
+   * @param {number} fadeMs 渐出毫秒数，默认 40ms；startSession() 以 0 调用
    */
   interrupt(fadeMs = 40) {
     this.currentSessionId += 1;

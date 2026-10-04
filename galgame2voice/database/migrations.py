@@ -54,7 +54,10 @@ async def _add_column_if_missing(
 
 
 def _save_console_token_file(token: str) -> None:
-    """Securely writes console token to data/.console_token (0600 permissions)."""
+    """Writes the plaintext console token to data/.console_token, then tries to chmod it
+    to 0600. The chmod is best-effort (an OSError there is swallowed), so on platforms or
+    filesystems where it fails the file keeps whatever mode the umask gave it; a failed
+    write is logged as a warning and leaves no token file at all."""
     try:
         from galgame2voice.config import get_settings
         token_file = get_settings().data_dir / ".console_token"
@@ -518,7 +521,12 @@ async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
 
 
 async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
-    """Create tables, indexes, apply schema version migrations, and guarantee credentials."""
+    """Create tables and apply schema version migrations, then run the follow-up steps:
+    the legacy column backfills (which raise if they fail) and four individually
+    best-effort steps — the composite messages index, plaintext-credential encryption,
+    console-token minting, and voice-profile auto-heal — each wrapped in its own
+    try/except that logs at debug and continues, so a failing step is silently skipped
+    rather than guaranteed to have run."""
     conn.row_factory = aiosqlite.Row
     await run_schema_migrations(conn)
 
@@ -563,9 +571,16 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     except Exception as exc:
         logger.debug("Credentials encryption migration step skipped: %s", exc)
 
-    # Guarantee a console token exists so the API is never left unauthenticated.
-    # The token is saved encrypted in the DB, and written to data/.console_token (0600).
+    # Mint a console token when the settings row exists and its token column is blank.
+    # This is best-effort, not a guarantee: the whole block (including encrypt_secret and
+    # the file write) is wrapped in a try/except that only logs at debug, and it does
+    # nothing when the id=1 row is missing, so the row can stay blank.
+    # The token is saved encrypted in the DB, and written to data/.console_token
+    # (chmod 0600 is best-effort — see _save_console_token_file).
     # Logs NEVER print the complete plaintext token (only masked).
+    # Whether requests are actually authenticated does not follow from this row: auth is
+    # gated by Settings.auth_disabled (default True), so with auth disabled an empty or
+    # present token makes no difference.
     try:
         cursor = await conn.execute("SELECT console_token FROM settings WHERE id = 1;")
         row = await cursor.fetchone()

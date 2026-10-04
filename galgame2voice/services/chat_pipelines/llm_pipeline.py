@@ -43,7 +43,12 @@ class LlmStreamPipeline:
     async def stream_tokens(self) -> AsyncGenerator[str, None]:
         """
         Streams raw tokens from the underlying adapter while checking cancel_event.
-        Guarantees socket/generator aclose() cleanup upon completion or interruption.
+        Best-effort generator cleanup: the finally block requests ``aclose()`` on the
+        adapter stream when that object exposes one, but the close is not guaranteed to
+        complete. On completion/clean interruption it is awaited with a 50ms timeout and
+        a timeout (or any other close error) is swallowed at debug level; when
+        cancel_event is set it is only scheduled as a fire-and-forget task and never
+        awaited here.
         """
         stream_kwargs: dict[str, Any] = {"model": self.model_name}
         if self.temperature is not None:

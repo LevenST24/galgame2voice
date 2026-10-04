@@ -31,12 +31,12 @@
   - 开启后支持异步长轮询、多用户隔离、快捷打断、常用指令集（`/start`, `/reset`, `/voice`, `/character`, `/model`, `/nickname`, `/console`, `/settings`, `/help`）以及专用的 HTTP/SOCKS5 代理热重载。
 - 🌸 **Galgame 专有日文读音注音与舞台提示音清洗**：
   - **人名与专有名词音标修正**：针对经典作品与角色进行深层假名注音校准（如白雪乃爱 `白雪乃愛` 严谨注音为 `のあ` 而非误读，谷风天音 `天音` 读 `あまね`，矢来美羽 `やらいみう`，布良梓 `めらあずさ`，稻丛莉音 `いなむらりおん`，千岁佐奈 `ちとせさな`，义妹 `ぎまい` 等），杜绝 TTS 将人名误读为陌生生僻字音。
-  - **舞台动作拟声提示词清洗**：自动剔除大模型生成的括号舞台提示、动作拟声词（如 `(微笑)`、`（ふふっ）`、`（ドキドキ）`、`（にっこり）` 等），确保语音合成输入纯净真实。
+  - **舞台动作拟声提示词清洗**：每个送入 TTS 的文本都会先走 `normalize_japanese_for_tts`，剔除**命中内置舞台提示词表与句式**的括号提示、动作拟声词（如 `(微笑)`、`（ふふっ）`、`（ドキドキ）`、`（にっこり）`）。判定器对无法识别的括号内容默认视为台词保留（`utils/japanese_phonetics.py::is_spoken_dialogue_inside_brackets` 的兜底分支 `return True`），所以超出词表或长度阈值的长描述ト書き仍会被照读出来——语音输入纯净以命中这些词表/句式为前提，并非无条件剔除所有括号提示。
 - ⌨️ **极速交互与键盘流体验**：
   - **快捷发送**：支持 `Enter`（无 Shift）及 `Ctrl+Enter` / `Cmd+Enter` 瞬时发送对话。
   - **一键打断与关闭**：按下 `Esc` 键智能关闭弹窗设置与侧边栏抽屉，在主界面可一秒平滑打断正在播放的语音与流式回复。
 - 🛡️ **工业级安全脱敏与 16GB 内存保障**：
-  - 全链路日志、异常回溯与 HTTP 响应体实施敏感信息过滤（API Key、Telegram Token、内嵌凭据 URL `user:password@` 100% 自动打码脱敏）。
+  - 全链路日志、异常回溯与 HTTP 响应体实施敏感信息过滤：按 `utils/logger.py::MaskingFilter.PATTERNS` 的已知格式打码脱敏（`sk-`/`AIzaSy`/`hf_` 前缀密钥、`Bearer <token>`、Telegram Token、已列名的 `api_key/token/secret/password` 键值与查询参数、`user:password@` 内嵌凭据 URL）。该过滤是格式匹配式的：未命中任何格式的凭据（无标签的裸密钥值、不带 `Bearer` 字样的 `Authorization` 值如裸 JWT 或 `Basic <base64>`、未列名的查询参数如 `?subscription-key=`）会原样透出。
   - 内置显存与内存水位防护，跨角色切换时触发主动垃圾回收与 PyTorch 缓存释放，16GB 内存设备稳定运行不崩溃。
 
 ---
@@ -164,7 +164,7 @@ characters/
 
 ## 🛡️ 安全、隐私与内存控制
 
-- **零敏感信息泄漏**：全自动日志与报错脱敏引擎，覆盖 Bearer Token、OpenAI/DeepSeek Key、Telegram Token 及 URL 用户身份凭据。
+- **敏感信息自动脱敏（格式匹配式）**：日志与报错脱敏引擎覆盖 Bearer Token、OpenAI/DeepSeek Key、Telegram Token 及 URL 用户身份凭据；只打码 `MaskingFilter.PATTERNS` 命中的已知格式，未命中格式的凭据不会被屏蔽（见上文说明）。
 - **16GB 主机内存防护**：在模型加载与音色切换前主动触发 `release_system_memory()`（包含 Python `gc.collect()` 与 PyTorch CUDA/MPS 显存池释放），并在切换完成后二次回收，杜绝长期运行内存缓慢膨胀。
 - **完全本地化沙箱**：对话历史、记忆数据、好感度等级均储存在本地 SQLite 数据库中，自主掌控个人隐私。
 

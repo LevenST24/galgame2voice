@@ -591,9 +591,9 @@ def run_hardware_diagnostics() -> dict[str, Any]:
         if cached and cached.get("device") == "cpu":
             print("      [推理模式] 已配置为 CPU 稳定模式推理 (免显存占用，利用大内存防爆显存)。")
         elif cached and cached.get("is_half") is False:
-            print("      [精度校准] 已缓存校准结果: 此设备使用 FP32 单精度推理 (保证发声正常)。")
+            print("      [精度设置] 已读取缓存的精度记录: 此设备按 FP32 单精度推理（该记录可能来自探针校准，也可能来自控制台手动配置；后者并未经过探针验证，因此不保证发声正常）。")
         else:
-            print("      [精度校准] 未显式指定精度、由本脚本新拉起引擎且无已验证缓存时，就绪后会自动校准 FP16/FP32 精度；否则直接沿用当前精度来源，无需手动配置。")
+            print("      [精度校准] 未显式指定精度、由本脚本新拉起引擎且没有任何精度来源记录（env/CLI/DB/缓存/yaml）时，就绪后才会自动校准 FP16/FP32 精度；只要命中其中任一来源就直接沿用，不再探针验证，无需手动配置。")
     else:
         print("      [硬件提示] 未检测到兼容的 NVIDIA 独立显卡或 CUDA 推理环境。")
         print("                系统将以 CPU 兼容模式运行。首次模型加载与推理耗时较长属于正常现象，建议在配置 NVIDIA 显卡的电脑上使用以获得最佳体验。")
@@ -899,7 +899,7 @@ def ensure_gpt_sovits_running(
         elif precision_source == "db":
             print(f"      [推理精度] 使用控制台保存的配置: {prec_str} (来源: SQLite数据库设置)")
         elif precision_source == "cache":
-            print(f"      [推理精度] 使用已验证的校准结果: {prec_str} (来源: data/precision.json)")
+            print(f"      [推理精度] 使用缓存的精度记录: {prec_str} (来源: data/precision.json，可能由探针校准写入，也可能由控制台手动配置写入，本脚本沿用该记录不再探针验证)")
         elif precision_source == "yaml":
             print(f"      [推理精度] 使用现有引擎配置文件: {prec_str} (来源: tts_infer.yaml)")
         else:
