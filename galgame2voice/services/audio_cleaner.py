@@ -191,7 +191,9 @@ async def _run_audio_cleanup_cycle(audio_dir: Path) -> None:
             db_settings = await crud.get_settings_raw(conn)
             protected_audio_names = await _fetch_protected_audio_names(conn)
 
-            # LRU Eviction: SQLite last_accessed_at is the sole authority for 7-day retention
+            # LRU Eviction: 7-day retention is driven by SQLite last_accessed_at. If this
+            # block fails, active_cache_keys stays None and _cache_scan_and_clean falls
+            # back to mtime < cache_cutoff for the same 7-day window.
             now = time.time()
             cache_cutoff = now - (CACHE_RETENTION_DAYS * 86400)
             try:

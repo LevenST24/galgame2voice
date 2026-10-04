@@ -19,6 +19,6 @@
 - ❌ 暗色鎏金主题 → 用户反馈不实用，已重做为主色紫浅色方案；勿再引入深色装饰元素。
 
 ## Lessons
-- 顶栏徽章外层 span 必须带 `id="modelBadge"`（updateBadge 依赖该元素，缺失会在启动时抛 TypeError 中断首条消息渲染）。
+- 顶栏徽章外层 span 必须带 `id="modelBadge"`（updateBadge 靠它改写徽章文案；`src/main.js` 用 `if (dom.badge)` 判空，所以元素缺失时不抛 TypeError、也不中断渲染，只是徽章文案不再更新）。
 - `ui.js` 渲染语音时长依赖 voice.js 的 `estimateDuration`，import 列表曾遗漏导致 ReferenceError，新增语音相关调用时检查导入完整性。
 - 验证脚本（puppeteer-core + 系统 Chrome）判断"回复完成"要等 `#stopBtn` 隐藏，语音条在问候语上始终存在，不能作为流结束信号。

@@ -40,7 +40,8 @@ class InsufficientMemoryError(RuntimeError):
 
 # 切换权重时新旧模型会短暂同时驻留内存（GPT约155MB + SoVITS约172MB = 约330MB，极端过渡期约660MB）；
 # 默认安全阈值：总内存的 6% 或最低 0.8GB，并设有 1.5GB 安全上限（大内存机器不会被百分比过度拦截）。
-# 16GB 设备所需空闲仅约 0.96GB，只要空闲内存大于 1GB 即可丝滑切换。
+# 16GB 设备所需空闲仅约 0.96GB；但同一预检还会查空闲显存（_check_vram_guard 要求 ≥ 0.45GB），
+# 两项都通过才会放行切换，光看内存不够。
 _MIN_FREE_MEMORY_RATIO = 0.06
 _MIN_FREE_MEMORY_FLOOR_GB = 0.8
 _MIN_FREE_MEMORY_CEILING_GB = 1.5

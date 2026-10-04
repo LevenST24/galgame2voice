@@ -25,7 +25,9 @@
 ## SSRF 防护（LLM 服务商接口）
 
 - 所有用户提供的 LLM provider `api_base_url` 均经过 `security/url_guard.py` 校验：
-  - 仅允许 http/https；官方预置服务商域名强制 https；
+  - 仅允许 http/https；`url_guard.OFFICIAL_LLM_HOSTS` 内的官方域名（api.openai.com / api.deepseek.com / api.anthropic.com /
+    api.x.ai / open.bigmodel.cn / dashscope.aliyuncs.com / generativelanguage.googleapis.com）强制 https；
+    另外两个预置服务商 `api.siliconflow.cn` 与 `api.moonshot.cn` 不在该强制列表内（预设地址本身是 https，但填 http 不会被拦下）；
   - DNS 解析后拒绝环回/私网/链路本地/保留/多播网段（含云元数据 `169.254.169.254`）。
 - 连接本地模型（Ollama/vLLM 等）需显式开启 `allow_private_llm_endpoints`。Web 控制台没有该开关，
   只能写入 SQLite 设置行：`POST /api/config`，请求体 `{"allow_private_llm_endpoints": true}`。
