@@ -302,8 +302,11 @@ def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
 
 def get_sovits_host_port() -> tuple[str, int]:
     """
-    Single source of truth for the engine address: parses GPT_SOVITS_BASE_URL
-    (env or config) so launcher, backend client and Docker all agree.
+    Parses the engine address from GPT_SOVITS_BASE_URL (env or config) so the
+    launcher's "is the engine already up?" probe checks the configured address.
+    Not a project-wide single source: both spawn paths hardcode 127.0.0.1:9880
+    (here in ensure_gpt_sovits_running, and routers/health.py restart endpoint),
+    and the backend client reads gpt_sovits_base_url from settings on its own.
     """
     from urllib.parse import urlparse
     try:
