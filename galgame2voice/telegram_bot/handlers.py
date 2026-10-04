@@ -401,7 +401,8 @@ class TelegramBotHandlers:
             await self._safe_send_message(update, context, reply, reply_markup=markup)
             return reply
 
-        # Perform atomic switch
+        # Perform two-step switch: engine weights are best-effort; DB active-profile
+        # activation is then committed in its own transaction (not atomic across the two)
         char_name = matched_profile.name
         err_msg, warning_note = await self._switch_character_weights(matched_profile.id)
 
