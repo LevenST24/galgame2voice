@@ -244,7 +244,7 @@ class TtsCacheManager:
             pass
 
     def _throttle_touch(self, cache_key: str) -> bool:
-        """Records a throttled DB touch; returns True when a touch should be scheduled.
+        """Records this key's last touch timestamp; returns False only when a touch landed within the last 5s.
 
         The throttle map is bounded: entries older than 60s are dropped once the map
         grows past 4x the in-memory entry cap, so long uptimes with many distinct

@@ -160,7 +160,7 @@ def validate_local_service_url(url: Optional[str]) -> Tuple[bool, str]:
 
 async def assert_llm_url_safe(url: str, allow_private: bool = False) -> None:
     """
-    Validates the target URL before making outbound LLM or STT requests.
+    Validates the target URL before making outbound LLM requests.
     Defends against DNS Rebinding attacks where an approved domain subsequently resolves
     to internal or loopback IP addresses.
     """

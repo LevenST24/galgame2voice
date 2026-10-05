@@ -540,8 +540,9 @@ class StreamingBilingualParser:
         if self.japanese_extracted:
             # Re-split the full accumulated Japanese text with the same
             # is_first_chunk parameter as feed_chunk, then drain everything
-            # beyond the monotone emitted-sentence cursor so feed_chunk and
-            # finalize stay aligned (no duplicated or skipped sentences).
+            # beyond the monotone character cursor (emitted_japanese_len) so
+            # feed_chunk and finalize stay aligned (no duplicated or skipped
+            # sentences).
             remaining_sentences = self._extract_new_ja_sentences(self.japanese_extracted, is_closed=True)
 
         return self.chinese_extracted, self.japanese_extracted, remaining_sentences

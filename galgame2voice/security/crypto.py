@@ -1,7 +1,7 @@
 """
 Security-hardened at-rest encryption and decryption for sensitive credentials.
 Supports native Windows DPAPI (tied to OS user account) with seamless cross-platform
-AES-GCM / PBKDF2 fallback and transparent legacy plaintext migration.
+AES-GCM / HMAC-SHA256 fallback with SHA-256 key derivation and transparent legacy plaintext migration.
 """
 
 import base64

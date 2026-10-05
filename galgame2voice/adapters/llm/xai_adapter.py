@@ -1,6 +1,6 @@
 """
 xAI Grok LLM Adapter for galgame2voice.
-Connects to xAI API (grok-2, grok-beta).
+Connects to xAI API (grok-3, grok-3-mini, grok-2).
 """
 
 from typing import Any

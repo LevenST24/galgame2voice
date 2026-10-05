@@ -1,6 +1,8 @@
 """
 Services module for galgame2voice.
-Exports GptSovitsClient, VoiceManager, TtsService, and TTS utilities.
+Exports GptSovitsClient, VoiceManager, TtsService, ChatService, AffectionService,
+MemoryService, SessionManager, MetricsCollector, TtsCacheManager, the dynamic
+batcher, CharacterManager, AudioCleanerService, and TTS/emotion/streaming utilities.
 """
 
 from galgame2voice.services.gpt_sovits_client import (

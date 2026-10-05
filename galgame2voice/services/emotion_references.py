@@ -171,7 +171,8 @@ def resolve_emotion_reference(
     """
     Data-driven resolution of emotion reference audio file path, prompt text, and prompt lang.
     Queries the CharacterManager for the active/named character package manifest.
-    Falls back to default character package if specified character is not found.
+    Uses the default character package when no character name is supplied;
+    an explicitly named but undiscovered character resolves to None.
 
     Returns:
         {

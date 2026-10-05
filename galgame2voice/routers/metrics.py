@@ -1,6 +1,6 @@
 """
 Metrics & Telemetry API Router for galgame2voice.
-Provides endpoints for global token telemetry, model distribution,
+Provides endpoints for global token telemetry, provider-level cost breakdown,
 latency trends, and TTS persistent audio cache management.
 """
 

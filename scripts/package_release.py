@@ -69,7 +69,7 @@ def should_include(rel_path: Path) -> bool:
     if any(filename.endswith(ext) for ext in EXCLUDE_EXTENSIONS):
         return False
 
-    # Don't bundle frontend source node_modules if inside frontend
+    # Never bundle node_modules dependency trees (frontend or anywhere else)
     if "node_modules" in parts:
         return False
 

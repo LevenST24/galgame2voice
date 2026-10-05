@@ -121,7 +121,7 @@ function fmtDur(d) {
 
 /**
  * 语音消息条：播放按钮 + 渐进点亮波形 + 时长
- * onToggle 收到控制器 { setPlaying, setProgress }，由播放器上报进度
+ * onToggle 收到控制器 { setPlaying, setProgress, setLoading }，由播放器上报播放状态、播放进度与等待合成状态
  */
 function buildVoiceBar({ dur, kind, seed, onToggle }) {
   const bar = document.createElement('div');

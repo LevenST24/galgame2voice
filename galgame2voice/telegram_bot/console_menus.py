@@ -1186,7 +1186,7 @@ async def route_callback_query(
                     break
         if handler is not None:
             await handler(ctx)
-        # unknown callback_data: fall through silently (original code had no else branch)
+        # unknown callback_data: no handler matched, so the query is left unacknowledged
     except Exception as exc:
         logger.error("Error processing callback query '%s': %s", data, exc, exc_info=True)
         if hasattr(query, "answer"):

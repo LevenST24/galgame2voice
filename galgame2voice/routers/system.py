@@ -216,7 +216,7 @@ def _get_remote_and_branch(project_root: Path) -> tuple[str, str]:
         parts = upstream.split("/", 1)
         return parts[0], parts[1]
 
-    # Verify if 'origin' is a valid remote
+    # Fallback when no upstream is configured: assume the conventional 'origin' remote
     rc, remotes, _ = _run_git_cmd(["remote"], cwd=project_root)
     remote_name = "origin" if (rc == 0 and "origin" in remotes.split()) else "origin"
     return remote_name, "main"

@@ -48,8 +48,8 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
     if (typeof settings.freqPenalty === 'number') body.frequency_penalty = settings.freqPenalty;
     if (typeof settings.presPenalty === 'number') body.presence_penalty = settings.presPenalty;
     const ttsOpts = {};
-    // voice_profile_id 走 ChatRequest 顶层字段；塞进 tts_options 会被后端
-    // ChatTtsOptions(extra="forbid") 的白名单判为非法参数并返回 422。
+    // voice_profile_id 走 ChatRequest 顶层字段（前端权威来源）；tts_options
+    // 白名单现也接受 voice_profile_id（仅作音色 ID 透传，非推理参数）。
     if (typeof settings.ttsSpeed === 'number') ttsOpts.speed = settings.ttsSpeed;
     if (typeof settings.ttsTopK === 'number') ttsOpts.top_k = Math.round(settings.ttsTopK);
     if (typeof settings.ttsTopP === 'number') ttsOpts.top_p = settings.ttsTopP;

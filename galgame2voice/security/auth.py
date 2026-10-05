@@ -6,7 +6,8 @@ token supplied as `Authorization: Bearer <token>`. The token source priority is:
 
 1. Environment override `GALGAME2VOICE_CONSOLE_TOKEN`
 2. `settings.console_token` column in SQLite (auto-seeded with a random value
-   on first startup; the generated value is printed to the log)
+   on first startup; only a masked preview is logged and the full token is
+   saved to data/.console_token)
 
 The kill-switch env `GALGAME2VOICE_AUTH_DISABLED=1` bypasses auth entirely and
 exists only for the automated test suite and local development.
