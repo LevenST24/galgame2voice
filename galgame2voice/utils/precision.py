@@ -161,7 +161,14 @@ def write_sovits_yaml_config(
         logger.info("Synchronized %s with is_half=%s, device=%s", yaml_path, is_half, device)
         return yaml_path
     except Exception as e:
-        logger.warning("Failed to write config to %s: %s", yaml_path, e)
+        logger.warning(
+            "Failed to write config to %s: %s. "
+            "The engine will use its existing config. "
+            "If this is a permission error, run as administrator or check write "
+            "permissions on the GPT-SoVITS directory.",
+            yaml_path,
+            e,
+        )
         return None
 
 
