@@ -1,7 +1,12 @@
 """
 Galgame2Voice Release Packaging Script.
-Bundles the application into a clean, distributable ZIP package ready for distribution or GitHub Releases.
-Excludes local environment data, databases, caches, and sensitive files.
+Bundles the application into a distributable ZIP package ready for distribution or GitHub Releases.
+Exclusions are name/extension rules only (EXCLUDE_DIRS, EXCLUDE_EXTENSIONS, EXCLUDE_EXACT_FILES and
+the logs/, audio/, data/*.db, data/*.txt branches in should_include), so they cover `.env`, the live
+`galgame2voice.db`, caches, logs and weight blobs — this is not a secrets sweep. Anything else under
+data/ matches no rule and ships verbatim, including `data/.master_key` (the fallback credential
+encryption key), `data/.console_token` (plaintext console token) and `data/backups/` database copies
+named `*.bak_<timestamp>` or `*.zip`.
 """
 
 import os
