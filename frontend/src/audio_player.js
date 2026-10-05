@@ -317,7 +317,7 @@ export class StreamAudioController {
       const buffer = nextItem.audioBuffer;
       const startTime = this.nextStartTime;
       const duration = buffer.duration;
-      // 保护超短切片 (<= 50ms)
+      // 保护超短切片 (< 48ms：fadeDur 取 duration/4，短于 4×12ms 才低于 crossFadeMs)
       const fadeDur = Math.min(this.crossFadeMs, duration / 4);
 
       const source = this.ctx.createBufferSource();

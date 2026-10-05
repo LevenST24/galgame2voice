@@ -156,7 +156,9 @@ Tier 2 exposes the system to extreme inputs, edge values, resource constraints, 
 - `T2_LOG_04`: Log records with complex non-string arguments (custom objects, tuples, nested dicts).
 - `T2_LOG_05`: Secrets embedded inside URL query parameters and JSON payloads simultaneously.
 
-**Implemented (4 of the 5 listed)**: `test_b1_01`–`test_b1_04`. Item 5 has no Tier-2 test method.
+**Implemented (4 of the 5 listed)**: `test_b1_01`–`test_b1_04`. Item 5 has no Tier-2 test method, and item 2's
+scale is an order of magnitude smaller than specified: `test_b1_02` sanitizes a ~114KB string
+(`"Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 1000` on both sides of one embedded key), not 1MB.
 
 ### F2: Error Sanitization Boundary Cases
 - `T2_ERR_01`: Nested exception chains with recursive `__cause__` and `__context__`.
@@ -208,7 +210,9 @@ and item 5 has no test: no method simulates a full or read-only filesystem durin
 - `T6_DB_05`: Transaction rollback verification on mid-flight async cancellation.
 
 **Implemented (2 of the 5 listed)**: `test_b6_01_database_burst_concurrency_stress` (item 1, but it drives **30**
-concurrent inserts, not 50) and `test_b6_02_database_max_payload_strings` (item 3). Items 2 and 4 have no Tier-2
+concurrent inserts, not 50) and `test_b6_02_database_max_payload_strings` (item 3, but only its prompt half — it
+inserts a 4,000-character `content_chinese` against a 5-character `content_japanese`; no 1,000-char response bound
+exists, since `MessageBase` declares no `max_length` on either content field). Items 2 and 4 have no Tier-2
 test method; the nearest coverage of item 5's rollback atomicity is
 `tests/test_immediate_transaction_nesting.py::test_inner_rollback_does_not_discard_outer_changes`.
 
