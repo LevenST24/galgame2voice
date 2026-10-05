@@ -95,7 +95,10 @@ class TestLifecycleScriptsTier1:
     def test_launcher_waits_for_sovits_readiness(self):
         """Verifies run_server.py performs a bounded readiness wait after spawning GPT-SoVITS."""
         content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
-        assert "is_port_in_use(9880)" in content
+        # Readiness is probed on the resolved endpoint (host/port from the
+        # unified resolver), never on a hardcoded 9880 fallback.
+        assert "is_port_in_use(" in content
+        assert "is_port_in_use(9880)" not in content
         assert "gpt_sovits.log" in content  # engine logs must not be discarded
 
 
