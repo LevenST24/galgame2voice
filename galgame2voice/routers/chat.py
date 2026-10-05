@@ -34,7 +34,7 @@ _explicit_chat_service: ChatService | None = None
 
 
 def get_chat_service() -> ChatService:
-    """Returns singleton ChatService instance."""
+    """Returns this module's cached ChatService instance (not app-wide: the Telegram bot builds its own)."""
     global _chat_service, _explicit_chat_service
     if _explicit_chat_service is not None:
         return _explicit_chat_service
@@ -45,7 +45,7 @@ def get_chat_service() -> ChatService:
 
 
 def set_chat_service(service: ChatService | None) -> None:
-    """Overrides singleton ChatService instance (e.g. in tests)."""
+    """Overrides the instance returned by get_chat_service (e.g. in tests); the Telegram bot keeps its own."""
     global _explicit_chat_service
     _explicit_chat_service = service
 
