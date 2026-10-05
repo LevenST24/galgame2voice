@@ -70,9 +70,9 @@ Every functional domain is validated against its primary functional contracts:
 - `T1_MEM_04`: Heuristic extraction extracts user occupation/identity.
 - `T1_MEM_05`: `format_memory_prompt_block` embeds extracted facts in defensive prompt frames.
 
-### F5: Two-Tier TTS Cache Microsecond Latency & Atomic Persistence
+### F5: Two-Tier TTS Cache Sub-Millisecond Latency & Atomic Persistence
 - `T1_TTS_01`: Deterministic SHA256 key computation from text and canonical inference options.
-- `T1_TTS_02`: In-memory LRU cache hit returns audio in `< 0.05ms`.
+- `T1_TTS_02`: In-memory LRU cache hit returns audio in `< 0.5ms` (average of 100 lookups).
 - `T1_TTS_03`: Atomic file persistence prevents incomplete or corrupted disk artifacts.
 - `T1_TTS_04`: SQLite metadata indexing records audio duration, file size, and timestamps.
 - `T1_TTS_05`: Cache eviction prunes oldest entries down to 80% capacity limit when thresholds exceed.
@@ -212,7 +212,7 @@ Tier 4 simulates realistic, end-to-end user workflows and real production worklo
 - **Workflow**:
   1. 10 simultaneous virtual users start SSE streaming sessions across different session IDs.
   2. Synthesizer generates audio chunks in parallel with token streaming.
-  3. Shared GPT-SoVITS mutex synchronizes inference while memory LRU cache serves repeated dialogue phrases in `< 0.05ms`.
+  3. Shared GPT-SoVITS mutex synchronizes inference while memory LRU cache serves repeated dialogue phrases in `< 0.5ms`.
 - **Verification**: Zero deadlocks, zero dropped SSE connections, 100% response completion, total throughput stability.
 
 ### Scenario 3: Upstream Chaos & Graceful Degradation

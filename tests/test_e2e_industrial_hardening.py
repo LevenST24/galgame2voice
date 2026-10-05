@@ -305,7 +305,7 @@ class TestTier1FeatureCoverage:
 
     @pytest.mark.asyncio
     async def test_f5_02_in_memory_cache_hit_latency(self, tmp_path):
-        """Verifies in-memory LRU cache retrieval completes in ultra-low latency (<0.05ms)."""
+        """Verifies in-memory LRU cache retrieval completes in ultra-low latency (asserted as average <0.5ms)."""
         mgr = TtsCacheManager(cache_dir=tmp_path / "cache", db_path=tmp_path / "test.db")
         fake_audio = b"RIFF" + b"\x00" * 4096
         key, clean_t, p_hash = mgr.compute_cache_key("テストです")
