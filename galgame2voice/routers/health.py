@@ -24,6 +24,12 @@ from galgame2voice.config import get_settings
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
 from galgame2voice.security.auth import require_auth
+from galgame2voice.services.sovits_endpoint import (
+    DEFAULT_SOVITS_BASE_URL,
+    SovitsEndpoint,
+    parse_sovits_endpoint,
+    resolve_effective_sovits_endpoint,
+)
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.hardware import (
     detect_gpu_capability,
@@ -43,16 +49,31 @@ router = APIRouter(tags=["Health & Diagnostics"])
 
 
 async def get_effective_sovits_url() -> str:
-    """Returns the hot-reloadable GPT-SoVITS URL from DB settings, falling
-    back to the env default — the same source the runtime traffic uses."""
+    """Returns the unified effective GPT-SoVITS URL.
+
+    Thin wrapper over the unified resolver (explicit process env > SQLite >
+    .env/Settings > built-in default) — the same source the runtime traffic
+    uses. Never raises: falls back to the Settings/default layer on error.
+    """
     try:
-        async with get_db() as conn:
-            db_settings = await crud.get_settings_raw(conn)
-        if getattr(db_settings, "gpt_sovits_url", ""):
-            return db_settings.gpt_sovits_url
+        return (await resolve_effective_sovits_endpoint()).base_url
     except Exception as exc:
-        logger.debug("Failed reading effective sovits url from database settings: %s", exc)
-    return get_settings().gpt_sovits_base_url
+        logger.debug("Failed resolving effective sovits url: %s", exc)
+    try:
+        return parse_sovits_endpoint(
+            get_settings().gpt_sovits_base_url, source="dotenv"
+        ).base_url
+    except Exception:
+        return DEFAULT_SOVITS_BASE_URL
+
+
+async def _resolve_sovits_endpoint_best_effort() -> SovitsEndpoint | None:
+    """Resolves the effective endpoint, returning None (never raising) on failure."""
+    try:
+        return await resolve_effective_sovits_endpoint()
+    except Exception as exc:
+        logger.debug("Failed resolving GPT-SoVITS endpoint: %s", exc)
+        return None
 
 # Directory metrics are cached: the settings console re-requests status on demand,
 # and scanning thousands of cache files each time would freeze the event loop.
@@ -100,6 +121,9 @@ class GptSovitsTelemetry(BaseModel):
     base_url: str
     latency_ms: float | None = None
     error: str | None = None
+    # Where the probed base_url came from: "env" | "db" | "dotenv" | "default".
+    # Optional for backward compatibility with older serialized payloads.
+    source: str | None = None
 
 
 class StorageTelemetry(BaseModel):
@@ -279,7 +303,12 @@ async def legacy_status(request: Request) -> LegacyStatusResponse:
     Performs quick reachability probe to GPT-SoVITS.
     """
     settings = get_settings()
-    probe = await _probe_gpt_sovits(await get_effective_sovits_url())
+    sovits_endpoint = await _resolve_sovits_endpoint_best_effort()
+    probe = await _probe_gpt_sovits(
+        sovits_endpoint.base_url if sovits_endpoint else await get_effective_sovits_url()
+    )
+    if sovits_endpoint is not None:
+        probe.source = sovits_endpoint.source
     return LegacyStatusResponse(
         status="ok",
         app=settings.app_name,
@@ -406,13 +435,20 @@ async def system_status(request: Request) -> SystemStatusResponse:
 
     # 1-5 gathered in PARALLEL: the GPT-SoVITS probe (network-bound) overlaps
     # with storage scans, memory retrieval, and hardware telemetry (thread-bound) so total latency = max, not sum.
-    gpt_probe_task = asyncio.create_task(_probe_gpt_sovits(await get_effective_sovits_url()))
+    sovits_endpoint = await _resolve_sovits_endpoint_best_effort()
+    gpt_probe_task = asyncio.create_task(
+        _probe_gpt_sovits(
+            sovits_endpoint.base_url if sovits_endpoint else await get_effective_sovits_url()
+        )
+    )
     audio_metrics_task = asyncio.create_task(_get_dir_metrics_cached(settings.audio_dir))
     data_metrics_task = asyncio.create_task(_get_dir_metrics_cached(settings.data_dir))
     memory_task = asyncio.create_task(asyncio.to_thread(_get_process_memory_mb))
     hardware_task = asyncio.create_task(asyncio.to_thread(_collect_hardware_telemetry_sync))
 
     gpt_probe = await gpt_probe_task
+    if sovits_endpoint is not None:
+        gpt_probe.source = sovits_endpoint.source
     audio_count, audio_size_mb = await audio_metrics_task
     _, data_size_mb = await data_metrics_task
     hardware_telemetry = await hardware_task
@@ -566,7 +602,31 @@ async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -
     """
     Terminates the existing GPT-SoVITS process and restarts it with the
     latest precision configuration (FP16 / FP32).
+
+    Only a local (loopback) effective endpoint may be restarted by this host;
+    a remote endpoint returns 409 and is never touched.
     """
+    try:
+        endpoint = await resolve_effective_sovits_endpoint()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"GPT-SoVITS 地址配置无效: {exc}",
+        ) from exc
+    if not endpoint.is_local:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "REMOTE_SOVITS_NOT_MANAGED",
+                "base_url": endpoint.base_url,
+                "message": (
+                    "当前 GPT-SoVITS 地址为远端服务 ("
+                    f"{endpoint.base_url}"
+                    ")，本机不会管理（拉起/重启）远端进程；请在远端主机上自行重启引擎。"
+                ),
+            },
+        )
+
     settings = get_settings()
     sovits_dir = _resolve_sovits_directory(settings.project_root)
 
@@ -577,11 +637,32 @@ async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -
     pid_file = settings.project_root / "gptsovits.pid"
     _terminate_existing_sovits_process(pid_file)
 
-    await asyncio.sleep(1.0)
+    # Bounded wait for the old process to release the port (replaces the old
+    # fixed sleep): poll up to ~5s at 0.25s intervals, off the event loop.
+    from scripts.run_server import is_port_in_use
+
+    port_released = False
+    for _ in range(20):
+        if not await asyncio.to_thread(is_port_in_use, endpoint.port, endpoint.host):
+            port_released = True
+            break
+        await asyncio.sleep(0.25)
+    if not port_released:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "SOVITS_PORT_STILL_IN_USE",
+                "base_url": endpoint.base_url,
+                "message": (
+                    f"旧 GPT-SoVITS 进程未在 5 秒内释放端口 {endpoint.port}，"
+                    "请手动确认进程状态后再重试。"
+                ),
+            },
+        )
 
     try:
         from scripts.run_server import _spawn_sovits_process
-        proc = _spawn_sovits_process(sovits_dir, "127.0.0.1", 9880, is_half, device=device)
+        proc = _spawn_sovits_process(sovits_dir, endpoint.host, endpoint.port, is_half, device=device)
         pid_file.write_text(str(proc.pid), encoding="utf-8")
         if device == "cpu":
             prec_desc = "CPU 稳定模式"
