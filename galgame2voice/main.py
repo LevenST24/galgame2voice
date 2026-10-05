@@ -186,19 +186,22 @@ async def _init_gpt_sovits_client(settings) -> None:
     """Initializes shared GPT-SoVITS client, pre-seeds active profile, and triggers background warm-up."""
     try:
         from galgame2voice.services.voice_manager import get_voice_manager
+        from galgame2voice.services.sovits_endpoint import (
+            resolve_effective_sovits_endpoint,
+        )
 
-        sovits_url = None
-        try:
-            async with get_db(settings.db_path) as conn:
-                db_settings = await crud.get_settings_raw(conn)
-                if getattr(db_settings, "gpt_sovits_url", None):
-                    sovits_url = db_settings.gpt_sovits_url
-        except Exception as exc:
-            logger.warning("Could not read gpt_sovits_url from DB: %s", exc)
+        # Unified endpoint resolution: explicit process env > SQLite >
+        # .env/Settings > built-in default (single source of truth).
+        endpoint = await resolve_effective_sovits_endpoint()
+        logger.info(
+            "GPT-SoVITS endpoint resolved: %s (source: %s)",
+            endpoint.base_url,
+            endpoint.source,
+        )
 
         client = get_gpt_sovits_client()
-        if sovits_url and sovits_url.rstrip("/") != client.base_url:
-            await client.set_base_url(sovits_url)
+        if client.base_url.rstrip("/") != endpoint.base_url:
+            await client.set_base_url(endpoint.base_url)
 
         # Pre-seed active voice profile from DB so frontend's initial switch is instantaneous
         try:

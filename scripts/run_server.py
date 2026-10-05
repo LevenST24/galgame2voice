@@ -304,12 +304,17 @@ def get_sovits_host_port() -> tuple[str, int]:
     """
     Single source of truth for the engine address: parses GPT_SOVITS_BASE_URL
     (env or config) so launcher, backend client and Docker all agree.
+
+    Thin wrapper over the unified resolver
+    (galgame2voice.services.sovits_endpoint); kept for backward compatibility.
     """
-    from urllib.parse import urlparse
     try:
-        from galgame2voice.config import get_settings
-        parsed = urlparse(get_settings().gpt_sovits_base_url)
-        return parsed.hostname or "127.0.0.1", parsed.port or 9880
+        from galgame2voice.services.sovits_endpoint import (
+            resolve_effective_sovits_endpoint_sync,
+        )
+
+        endpoint = resolve_effective_sovits_endpoint_sync()
+        return endpoint.host, endpoint.port
     except Exception:
         return "127.0.0.1", 9880
 
@@ -841,17 +846,34 @@ def ensure_gpt_sovits_running(
     """
     Spawns the local GPT-SoVITS API daemon if it is not already running.
     Runs non-blocking parallel readiness checking in the background.
+
+    The engine address comes from the unified resolver (explicit process env >
+    SQLite > .env > built-in default). Remote endpoints are never managed by
+    this launcher: no fallback to a local 127.0.0.1:9880 process is performed.
     """
-    sovits_host, sovits_port = get_sovits_host_port()
+    try:
+        from galgame2voice.services.sovits_endpoint import (
+            resolve_effective_sovits_endpoint_sync,
+        )
+
+        endpoint = resolve_effective_sovits_endpoint_sync()
+        sovits_host, sovits_port = endpoint.host, endpoint.port
+        sovits_is_local = endpoint.is_local
+        sovits_base_url = endpoint.base_url
+    except Exception as exc:
+        print(f"      [WARN] GPT-SoVITS 地址解析失败 ({exc})，回落到默认 127.0.0.1:9880")
+        sovits_host, sovits_port = "127.0.0.1", 9880
+        sovits_is_local = True
+        sovits_base_url = "http://127.0.0.1:9880"
     print(f"[1/2] 正在检测 GPT-SoVITS 语音推理引擎 ({sovits_host}:{sovits_port})...")
-    if is_port_in_use(sovits_port, sovits_host) or (sovits_port != 9880 and is_port_in_use(9880)):
+    if is_port_in_use(sovits_port, sovits_host):
         print("      [OK] GPT-SoVITS 语音引擎已在运行")
         return
-    sovits_host = "127.0.0.1"
-    sovits_port = 9880
-
-    if is_port_in_use(sovits_port, sovits_host):
-        print(f"      [OK] GPT-SoVITS 服务已在运行中 (http://{sovits_host}:{sovits_port}/)")
+    if not sovits_is_local:
+        print(
+            f"      [WARN] 配置的远端 GPT-SoVITS ({sovits_base_url}) 不可达；"
+            "本启动器不会回退到本地 127.0.0.1:9880，请在远端主机上自行启动引擎后重试。"
+        )
         return
 
     sovits_dir = find_gpt_sovits_directory()

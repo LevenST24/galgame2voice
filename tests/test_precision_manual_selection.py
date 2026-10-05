@@ -15,6 +15,7 @@ from httpx import AsyncClient, ASGITransport
 
 from galgame2voice.main import create_app
 from galgame2voice.config import get_settings
+from galgame2voice.services.sovits_endpoint import parse_sovits_endpoint
 from galgame2voice.utils.precision import read_precision_cache, write_precision_cache
 import scripts.run_server as rs
 
@@ -120,6 +121,16 @@ class TestPrecisionAPI:
         fake_engine.mkdir()
         (tmp_path / "data" / "sovits_dir.txt").write_text(str(fake_engine), encoding="utf-8")
 
+        # Pin the effective endpoint to a local custom port so the test proves
+        # the spawned host/port come from the resolver and are NOT hardcoded 9880.
+        async def _local_custom_resolver():
+            return parse_sovits_endpoint("http://127.0.0.1:9999", source="db")
+
+        monkeypatch.setattr(
+            "galgame2voice.routers.health.resolve_effective_sovits_endpoint",
+            _local_custom_resolver,
+        )
+
         spawn_calls = []
         class FakeProc:
             pid = 9999
@@ -128,7 +139,9 @@ class TestPrecisionAPI:
         monkeypatch.setattr(
             rs,
             "_spawn_sovits_process",
-            lambda s_dir, host, port, is_half, device="cuda": spawn_calls.append((is_half, device)) or FakeProc()
+            lambda s_dir, host, port, is_half, device="cuda": spawn_calls.append(
+                (host, port, is_half, device)
+            ) or FakeProc()
         )
 
         app = create_app()
@@ -140,7 +153,7 @@ class TestPrecisionAPI:
             assert data1["is_half"] is False
             assert data1["precision"] == "FP32"
             assert "FP32" in data1["message"]
-            assert spawn_calls[-1] == (False, "cuda")
+            assert spawn_calls[-1] == ("127.0.0.1", 9999, False, "cuda")
             cache1 = read_precision_cache(tmp_path)
             assert cache1["is_half"] is False
 
@@ -151,7 +164,7 @@ class TestPrecisionAPI:
             assert data2["is_half"] is True
             assert data2["precision"] == "FP16"
             assert "FP16" in data2["message"]
-            assert spawn_calls[-1] == (True, "cuda")
+            assert spawn_calls[-1] == ("127.0.0.1", 9999, True, "cuda")
             cache2 = read_precision_cache(tmp_path)
             assert cache2["is_half"] is True
 
@@ -163,7 +176,38 @@ class TestPrecisionAPI:
             assert data3["device"] == "cpu"
             assert data3["precision"] == "CPU"
             assert "CPU" in data3["message"]
-            assert spawn_calls[-1] == (False, "cpu")
+            assert spawn_calls[-1] == ("127.0.0.1", 9999, False, "cpu")
             cache3 = read_precision_cache(tmp_path)
             assert cache3["device"] == "cpu"
             assert cache3["is_half"] is False
+
+    async def test_restart_sovits_endpoint_remote_returns_409(self, monkeypatch):
+        """A remote effective endpoint must not be managed by this host:
+        restart returns 409 REMOTE_SOVITS_NOT_MANAGED and never spawns."""
+        async def _remote_resolver():
+            return parse_sovits_endpoint("http://10.0.0.20:9880", source="db")
+
+        monkeypatch.setattr(
+            "galgame2voice.routers.health.resolve_effective_sovits_endpoint",
+            _remote_resolver,
+        )
+
+        spawn_calls = []
+        class FakeProc:
+            pid = 9999
+
+        import scripts.run_server as rs
+        def _recording_spawn(*args, **kwargs):
+            spawn_calls.append((args, kwargs))
+            return FakeProc()
+
+        monkeypatch.setattr(rs, "_spawn_sovits_process", _recording_spawn)
+
+        app = create_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/system/restart_sovits", json={"precision": "fp32"})
+            assert resp.status_code == 409
+            detail = resp.json()["detail"]
+            assert detail["code"] == "REMOTE_SOVITS_NOT_MANAGED"
+            assert detail["base_url"] == "http://10.0.0.20:9880"
+            assert spawn_calls == []
