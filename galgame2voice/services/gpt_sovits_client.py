@@ -640,8 +640,10 @@ class GptSovitsClient:
 
         Audio chunks are streamed from upstream GPT-SoVITS directly to the caller via an
         async queue as soon as they arrive over HTTP, without waiting for the full response
-        to finish buffering. The inference lock is released immediately once the upstream
-        HTTP response body is consumed, decoupling slow downstream consumers from the GPU mutex.
+        to finish buffering. The inference lock is held by the producer for the whole upstream
+        response and released once its body is consumed, so the consumer's own processing time
+        is not under the mutex — but the handoff queue is bounded (16 chunks), so a consumer
+        that stalls longer than that blocks the producer and the GPU mutex through backpressure.
         """
         cleaned_text = normalize_japanese_for_tts(text)
         if not cleaned_text:
