@@ -361,7 +361,8 @@ def _check_version_sync(project_root: Path, check_remote: bool = True) -> System
 
 
 def _create_pre_update_backup(project_root: Path, modified_files: list[str]) -> Path | None:
-    """Zips uncommitted/untracked files to data/backups before git operations to prevent any data loss."""
+    """Zips the listed modified/untracked files into data/backups before git operations; a failed backup only
+    logs a warning and returns None, and the caller proceeds with the destructive git command regardless."""
     try:
         backup_dir = project_root / "data" / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)

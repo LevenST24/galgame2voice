@@ -680,7 +680,8 @@ async def _render_menu(
     menu_coro: Any,
     answer_text: str | None = None,
 ) -> None:
-    """Executes a menu builder coroutine and safely updates the Telegram message text and markup."""
+    """Executes a menu builder coroutine and updates the Telegram message text and markup; raised errors
+    propagate to route_callback_query, which logs them and answers the query with an alert."""
     text, markup = await menu_coro
     if hasattr(ctx.query, "answer"):
         await ctx.query.answer(answer_text)
