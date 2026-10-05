@@ -321,6 +321,9 @@ class TtsCacheEntry(BaseModel):
 
 class CacheStatsResponse(BaseModel):
     total_files: int = 0
+    # Alias consumed by the dashboard (global_settings.js); kept in sync with
+    # total_files so the frontend's `total_entries` read resolves correctly.
+    total_entries: int = 0
     total_size_bytes: int = 0
     total_size_mb: float = 0.0
     total_hits: int = 0
