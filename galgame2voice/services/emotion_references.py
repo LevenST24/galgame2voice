@@ -2,7 +2,9 @@
 Dynamic Emotional Reference Audio Mapper for Galgame2Voice.
 
 Data-driven emotion resolution querying active/discovered Character Packages via CharacterManager.
-Provides seamless backward compatibility for legacy callers.
+Legacy callers are served only for read access (indexing, get, in, iteration, len, keys/values/items);
+the inherited dict mutators and comparison do not behave like the static dict they replace —
+see _DynamicEmotionReferences for the exact gaps.
 """
 
 from pathlib import Path

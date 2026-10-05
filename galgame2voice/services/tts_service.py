@@ -45,7 +45,11 @@ from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
 logger = logging.getLogger("galgame2voice.services.tts_service")
 
 
-# Backward compatibility aliases pointing to the thread-safe AudioSpecCache singleton.
+# Legacy names only — NOT shape-compatible with the two independent dicts they replaced.
+# Both bind the SAME AudioSpecCache store, keyed by (resolved_path, mtime_ns, size) with
+# AudioSpec values; _AUDIO_DURATION_CACHE used to be a separate dict mapping the caller's
+# raw path string to a float|None duration, so path-string lookups through this name miss,
+# and writing through either name mutates the shared spec cache outside its lock and LRU cap.
 _AUDIO_STAT_DURATION_CACHE = _AUDIO_SPEC_CACHE._cache
 _AUDIO_DURATION_CACHE = _AUDIO_STAT_DURATION_CACHE
 

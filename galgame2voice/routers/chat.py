@@ -1,7 +1,10 @@
 """
 Chat Router for galgame2voice.
-Provides real-time SSE streaming endpoint (/api/chat/stream) and
-backward-compatible synchronous chat endpoints (/api/chat, /ai/chat).
+Provides real-time SSE streaming endpoint (/api/chat/stream) and synchronous
+chat endpoints (/api/chat, /ai/chat). /ai/chat is only partially compatible with
+the old GET surface — it honors prompt/session_id/character_name and returns the
+legacy chinese/japanese/audioUrl keys, but drops the legacy per-request TTS query
+params and X-Api-Key/X-Base-Url/X-Model headers (see legacy_get_chat).
 """
 
 import asyncio
@@ -258,7 +261,13 @@ async def legacy_get_chat(
     preset: str | None = Query(default=None, max_length=64, description="TTS preset"),
 ) -> dict[str, Any]:
     """
-    Legacy backward-compatible GET endpoint for simple chat queries.
+    Legacy GET endpoint for simple chat queries: compatible with the old Spring-era caller
+    only for prompt/session_id/character_name plus the chinese/japanese/audioUrl response keys.
+    That caller also sent its TTS tuning as query params (textSplitMethod, speedFactor,
+    fragmentInterval, topK, topP, temperature, seed) and per-request credentials as
+    X-Api-Key/X-Base-Url/X-Model headers; none of those are declared here and no handler reads
+    them, so they are ignored and synthesis follows the server preset/profile while the LLM
+    follows the active provider.
     """
     if not prompt or not prompt.strip():
         raise HTTPException(
