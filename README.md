@@ -131,7 +131,7 @@ characters/
     ├── system_prompt.txt     # 角色专属 System Prompt（人设、口吻、好感度引导）
     ├── gpt.ckpt              # GPT 权重模型二进制文件
     ├── sovits.pth            # SoVITS 权重模型二进制文件
-    └── refs/                 # 情绪参考音频目录（3~10 秒高保真无损音频）
+    └── refs/                 # 情绪参考音频目录（3~10 秒高保真音频；随包的 .ogg 参考音频是 Ogg/Vorbis 有损编码，并非无损）
         ├── gentle.ogg
         ├── happy.ogg
         ├── angry.ogg

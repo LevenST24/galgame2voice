@@ -1,7 +1,11 @@
 """
 Japanese dialogue sentence boundary splitter for galgame2voice.
 Splits Japanese text by punctuation markers (。, ！, ？, !, ?, \n).
-Preserves punctuation with the sentence and removes empty segments.
+Keeps punctuation with the sentence it ends and removes empty segments, but is
+not content-preserving: in strict mode (is_first_chunk=False) a leading run of
+terminal punctuation with no dialogue text before it is dropped
+(split("。あ") -> ["あ"]), as is a terminal punctuation that trails the closing
+bracket already consumed by the previous match.
 """
 
 import re
@@ -127,7 +131,10 @@ def split_japanese_sentences(
 ) -> list[str]:
     """
     Splits Japanese text by punctuation markers (。, ！, ？, !, ?, \n).
-    Preserves punctuation with the sentence and removes empty segments.
+    Keeps punctuation with the sentence it ends and removes empty segments.
+    This is not content-preserving: strict mode drops a leading run of terminal
+    punctuation with no dialogue text before it (split("。あ") -> ["あ"]), while
+    agile mode keeps it (split("。あ", is_first_chunk=True) -> ["。", "あ"]).
 
     When is_first_chunk=True, allows the first sentence chunk to split on
     clause pauses (、, ，, ,) provided the segment length >= min_chars AND
