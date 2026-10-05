@@ -1,6 +1,6 @@
 """
 Health check and system diagnostic router for galgame2voice.
-Provides /api/health, /status, and /api/system/status endpoints.
+Provides /api/health, /status, /api/system/status, and /api/system/restart_sovits endpoints.
 
 All filesystem scans run in worker threads and are cached with a TTL so the
 frontend's on-demand status requests never block the event loop.

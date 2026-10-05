@@ -192,7 +192,7 @@ class TelegramBotHandlers:
             "• /model - 查看模型与接口配置\n"
             "• /nickname <称呼> - 设置角色对你的专属称呼\n"
             "• /reset - 清空当前对话历史\n"
-            "• /help - 查看完整帮助信息"
+            "• /help - 查看常用指令与用法说明"
         )
         await self._safe_send_message(update, context, reply)
         return reply

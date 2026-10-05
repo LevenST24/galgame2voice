@@ -1069,7 +1069,7 @@ def main(args: list[str] | None = None):
         sys.exit(1)
 
     if parsed.check_only:
-        print("[巡检通过] 所有前置依赖与硬件诊断均已就绪，系统运行状态正常。")
+        print("[巡检通过] 核心前置依赖与硬件诊断均已就绪，系统运行状态正常。")
         sys.exit(0)
 
     setup_windows_job_object()
