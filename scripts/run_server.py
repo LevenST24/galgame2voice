@@ -818,7 +818,7 @@ def _calibrate_precision_after_ready(
             if not is_port_in_use(port, host):
                 break
         try:
-            return _spawn_sovits_process(sovits_dir, host, port, new_is_half)
+            return _spawn_sovits_process(sovits_dir, host, port, new_is_half, device=device)
         except Exception as exc:
             print(f"      [WARN] 引擎重启失败: {exc}")
             return None
