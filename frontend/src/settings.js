@@ -224,7 +224,7 @@ export function formatUpdateStatus(data) {
       badgeClass: 'badge-pill-indigo',
       badgeText: `落后 ${data.behind_count} 个提交`,
       title: `发现新版本可用 (落后 ${data.behind_count} 个提交)`,
-      desc: `远程最新版本为 ${data.latest_version}，本地当前版本为 ${data.current_version}。点击下方“一键拉取并更新”即可自动拉取最新代码并部署产物。`,
+      desc: `远程最新版本为 ${data.latest_version}，本地当前版本为 ${data.current_version}。点击下方“一键拉取并更新”即可自动拉取最新代码（涉及 frontend/ 源码变更时会一并重新构建前端产物）。`,
       canUpdate: true,
       hasUpdate: true,
     };

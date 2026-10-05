@@ -163,8 +163,8 @@ export async function handleCheckUpdate() {
 export async function handleApplyUpdate() {
   const isLatest = currentVersionData && !currentVersionData.has_update;
   const promptText = isLatest
-    ? '当前本地版本已是最新。确定要从 GitHub 重新拉取并重构前端静态产物吗？'
-    : '确定要从 GitHub 拉取最新版本吗？\n拉取后系统将自动构建前端静态资源并同步角色包。';
+    ? '当前本地版本已是最新。确定要再次从 GitHub 拉取吗？（前端静态产物仅在本次拉取涉及 frontend/ 源码变更时才会重新构建）'
+    : '确定要从 GitHub 拉取最新版本吗？\n拉取后系统将同步角色包，并在涉及 frontend/ 源码变更时重新构建前端静态资源。';
 
   if (!confirm(promptText)) {
     return;
