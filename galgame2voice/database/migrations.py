@@ -476,7 +476,10 @@ async def _migration_v6_session_titles_and_settings(conn: aiosqlite.Connection) 
 async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
     """
     Executes SQLite schema migrations idempotently using PRAGMA user_version.
-    Guarantees that databases upgrade safely without losing any user data.
+    Upgrades are additive except the v3 user_memories dedup, which deletes the
+    older duplicate rows per (user_id, character_id, fact_key). init_db attempts a
+    restorable backup copy of an existing non-empty database beforehand (skipped on
+    failure), so recovery leans on that backup rather than on the migrations.
     """
     current_version = await get_schema_version(conn)
 
@@ -514,7 +517,10 @@ async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
 
 
 async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
-    """Create tables, indexes, apply schema version migrations, and guarantee credentials."""
+    """
+    Create tables, indexes, apply schema version migrations, and encrypt stored
+    credentials when possible (the step is skipped on error).
+    """
     conn.row_factory = aiosqlite.Row
     await run_schema_migrations(conn)
 
@@ -559,7 +565,10 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     except Exception as exc:
         logger.debug("Credentials encryption migration step skipped: %s", exc)
 
-    # Guarantee a console token exists so the API is never left unauthenticated.
+    # Best-effort: seed a console token so the API is not left unauthenticated. The
+    # block only acts when a settings row exists with a blank token, and any error is
+    # swallowed at debug level, so callers must re-read the row rather than assume a
+    # token was created.
     # The token is saved encrypted in the DB, and written to data/.console_token (0600).
     # Logs NEVER print the complete plaintext token (only masked).
     try:

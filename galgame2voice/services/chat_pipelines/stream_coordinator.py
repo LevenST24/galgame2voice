@@ -713,7 +713,11 @@ class StreamCoordinator:
         }
 
     async def _teardown(self, run: _StreamRun) -> None:
-        """Finally-block teardown: cancels scheduled generation, reaps background tasks, ensures DB persistence."""
+        """
+        Finally-block teardown: cancels scheduled generation, reaps background tasks,
+        and attempts to persist a partial assistant message when meaningful text
+        remains and no earlier write already happened.
+        """
         try:
             get_tts_scheduler().cancel_generation(run.stream_gen_id)
         except Exception as cancel_err:

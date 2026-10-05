@@ -147,7 +147,11 @@ def _build_canonical_params_dict(
 class TtsCacheManager:
     """
     Manages persistent disk & SQLite cache for synthesized TTS audio.
-    Ensures zero GPU inference latency (<50ms) for repeated voicelines and static dialogue.
+    Serves repeated voicelines and static dialogue from the in-memory and disk
+    layers without touching the GPU on a hit. A hit is not assured: get() returns
+    None after LRU/memory-byte eviction, size or entry-count pruning, or when the
+    recorded disk file was unlinked or is zero-byte, and those keys fall back to
+    full GPU synthesis.
     """
 
     def __init__(

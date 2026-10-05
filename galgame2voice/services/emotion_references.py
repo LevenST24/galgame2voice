@@ -104,7 +104,10 @@ def _load_manifest_emotion_references(
 class _DynamicEmotionReferences(dict):
     """
     Data-driven dictionary proxy that reflects the character package manifest dynamically
-    while maintaining 100% dictionary backward compatibility for legacy callers and tests.
+    while staying dict-compatible for legacy callers and tests. Not a drop-in dict:
+    subscripting an unknown emotion returns the 'gentle' entry (or {} when even that is
+    absent) instead of raising KeyError, and entries appear only once the first access
+    triggers the lazy manifest load.
     """
     def __init__(self) -> None:
         super().__init__()

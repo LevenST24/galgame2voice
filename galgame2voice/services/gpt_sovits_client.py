@@ -374,8 +374,10 @@ class GptSovitsClient:
           Step 2: GET /set_sovits_weights?weights_path=... (skipped if identical weights already loaded)
           Step 3: GET /set_refer_audio?refer_audio_path=...
 
-        If any step fails, automatically rolls back previous steps to restore
-        the prior working state. Mutex protected with asyncio.Lock.
+        If any step fails, rolls back previous steps toward the prior working state;
+        the rollback requests are best-effort (their status codes are not checked), so
+        a failing rollback leaves the engine diverged from local state.
+        Mutex protected with asyncio.Lock.
         """
         async with self.lock:
             self.is_switching = True

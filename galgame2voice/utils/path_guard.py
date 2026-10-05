@@ -1,8 +1,13 @@
 """
 Path Traversal and File Boundary Guard for galgame2voice.
-Ensures all user-provided or API-received audio paths and voice profile references
-are strictly bounded within authorized directories (audio_dir, data_dir, project_root),
-rejecting path traversal attempts, symlink escapes, UNC paths, and Windows device names.
+Provides the boundary checks that bind a path to authorized directories (audio_dir,
+data_dir, project_root) — validate_path_containment, is_path_safe, safe_resolve_audio_path
+and validate_voice_profile_paths — rejecting path traversal attempts, symlink escapes,
+UNC paths, and Windows device names.
+Containment applies only to paths a caller actually routes through those checks:
+resolve_existing_audio_path deliberately skips it (reference audio may live in external
+game voice packs on another drive) and resolve_weight_file_path returns an absolute
+weight path unchanged.
 """
 
 import os

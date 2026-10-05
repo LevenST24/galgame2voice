@@ -152,7 +152,9 @@ class MaskingFormatter(logging.Formatter):
 def sanitize_error_detail(exc_or_msg: Exception | str | None) -> str:
     """
     Sanitizes an exception or error string before returning to client or logging.
-    Guarantees no API keys, tokens, or URL query secrets are disclosed.
+    Masks secrets matching the known formats in MaskingFilter.PATTERNS; a secret in
+    an unrecognized format (a bare hex key, a non-`Bearer` Authorization scheme, an
+    unlisted query parameter name) is returned unchanged.
     """
     if exc_or_msg is None:
         return ""

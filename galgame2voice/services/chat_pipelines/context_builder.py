@@ -19,7 +19,10 @@ logger = logging.getLogger(__name__)
 def upgrade_legacy_system_prompt(prompt: str) -> str:
     """
     Upgrades legacy prompt formats that lack dynamic TTS parameters.
-    Ensures modern JSON output instructions include speed, temperature, and emotion.
+    Rewrites only prompts carrying the exact legacy JSON template (the
+    '{"chinese": ...}' line plus the '你必须严格输出如下 JSON 格式' lead-in);
+    a prompt already containing "tts":, or one phrased differently, is
+    returned unchanged without speed/temperature/emotion instructions.
     """
     if not prompt:
         return prompt

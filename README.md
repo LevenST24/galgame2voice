@@ -36,7 +36,7 @@
   - **快捷发送**：支持 `Enter`（无 Shift）及 `Ctrl+Enter` / `Cmd+Enter` 瞬时发送对话。
   - **一键打断与关闭**：按下 `Esc` 键智能关闭弹窗设置与侧边栏抽屉，在主界面可一秒平滑打断正在播放的语音与流式回复。
 - 🛡️ **工业级安全脱敏与 16GB 内存保障**：
-  - 全链路日志、异常回溯与 HTTP 响应体实施敏感信息过滤（API Key、Telegram Token、内嵌凭据 URL `user:password@` 100% 自动打码脱敏）。
+  - 全链路日志、异常回溯与 HTTP 响应体实施敏感信息过滤（按 `utils/logger.py` 的 `MaskingFilter.PATTERNS` 已登记格式打码脱敏：前缀型 API Key、Telegram Token、Bearer 头、URL 查询参数与内嵌凭据 URL `user:password@`；未登记格式的裸密钥字符串原样透传，不承诺全量拦截）。
   - 内置显存与内存水位防护，跨角色切换时触发主动垃圾回收与 PyTorch 缓存释放，16GB 内存设备稳定运行不崩溃。
 
 ---

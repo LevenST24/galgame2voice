@@ -2,8 +2,9 @@
 Health check and system diagnostic router for galgame2voice.
 Provides /api/health, /status, and /api/system/status endpoints.
 
-All filesystem scans run in worker threads and are cached with a TTL so the
-frontend's on-demand status requests never block the event loop.
+Directory scans run in worker threads and are cached with a TTL, so a status request
+never walks the audio/data trees on the event loop. Cheap inline stats remain (e.g.
+the database existence check in system_status).
 """
 
 import asyncio

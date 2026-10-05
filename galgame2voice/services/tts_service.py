@@ -60,8 +60,10 @@ async def async_get_audio_duration(path: str | Path | None) -> float | None:
     Safely inspects and measures reference audio duration asynchronously.
     Returns float duration, or None if file is missing, unreadable, or invalid.
     Uses AudioSpecCache to bypass disk inspection when audio files have not changed,
-    and delegates file inspection to asyncio.to_thread() so the main asyncio event
-    loop is never blocked.
+    and offloads the WAV byte probing on a cache miss to asyncio.to_thread(). Path
+    resolution and the is_file()/stat() checks in resolve_existing_audio_path and
+    async_probe_audio_duration_seconds still run synchronously on the caller's event
+    loop, so this does not keep the loop free of filesystem calls.
     """
     if not path:
         return None

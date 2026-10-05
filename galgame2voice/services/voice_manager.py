@@ -82,8 +82,11 @@ def _safe_invalidate_resolver(profile_id: int | None = None) -> None:
 
 class VoiceManager:
     """
-    Coordinates character voice profile management and atomic model switching with GPT-SoVITS.
-    Ensures thread-safe operations via an inference mutex and atomic SQLite persistence.
+    Coordinates character voice profile management and model switching with GPT-SoVITS.
+    Serializes switches and GPU inference with asyncio locks, which is coroutine-safety
+    within one event loop rather than thread-safety across OS threads. The active-profile
+    write is a single SQLite update whose failure is caught and logged as a warning, so
+    the engine can end up switched while the DB still records the previous profile.
 
     By default binds to the application-wide shared GptSovitsClient singleton so
     that synthesis and switching are serialized against the GPU by a single lock.
@@ -206,10 +209,12 @@ class VoiceManager:
         force: bool = False,
     ) -> bool:
         """
-        Atomically switches GPT-SoVITS weights to target voice profile.
+        Switches GPT-SoVITS weights to target voice profile.
         If target is an int ID or string ID/name, looks up profile from SQLite DB.
         On success, updates SQLite active profile if persist=True.
-        On failure, automatically rolls back weights and preserves prior state.
+        On failure, attempts to roll the weights back; the rollback is a further set of
+        engine calls that can itself fail, in which case the engine keeps partial new
+        state and only the local bookkeeping is restored.
         Serialized with self._switch_lock.
         """
         if _already_locked:
