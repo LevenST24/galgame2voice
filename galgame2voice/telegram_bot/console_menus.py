@@ -420,8 +420,8 @@ async def build_temp_menu(db_path: str | None = None) -> tuple[str, Any]:
     temps = [
         (0.3, "0.3 (稳定沉着)"),
         (0.6, "0.6 (平稳自然)"),
-        (0.8, "0.8 (标准推荐)"),
-        (1.0, "1.0 (生动活泼)"),
+        (0.8, "0.8 (柔和细腻)"),
+        (1.0, "1.0 (生动活泼 / 默认推荐)"),
         (1.2, "1.2 (高昂起伏)"),
     ]
     reply_markup = _build_single_col_options_markup(
@@ -502,8 +502,8 @@ async def build_batch_menu(db_path: str | None = None) -> tuple[str, Any]:
         "每次送入 GPU 推理的分句数量（增大可加快多分句合成，但增加显存）："
     )
     batches = [
-        (1, "📦 1 (单句推理 / 最省显存)"),
-        (2, "📦 2 (双句并行 / 均衡推荐)"),
+        (1, "📦 1 (单句推理 / 默认推荐，最省显存)"),
+        (2, "📦 2 (双句并行)"),
         (4, "📦 4 (四句并发 / 极速模式)"),
     ]
     reply_markup = _build_single_col_options_markup(

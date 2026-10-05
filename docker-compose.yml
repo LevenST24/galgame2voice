@@ -13,7 +13,9 @@ services:
       - GALGAME2VOICE_PORT=8080
       - GALGAME2VOICE_LOG_LEVEL=INFO
       - GALGAME2VOICE_AUTH_DISABLED=0
-      # 若留空，后端首次启动会自动生成随机 token 并打印到日志（见 security/auth.py）；
+      # 若留空，后端首次启动会自动生成随机 token：加密存入 SQLite，并以明文落盘
+      # data/.console_token（0600），日志只打印掩码值，完整 token 不进日志
+      # （见 database/migrations.py::_save_console_token_file）。
       # 生产部署建议通过 .env 显式设置 GALGAME2VOICE_CONSOLE_TOKEN。
       - GALGAME2VOICE_CONSOLE_TOKEN=${GALGAME2VOICE_CONSOLE_TOKEN:-}
       # If GPT-SoVITS is running on host machine:
