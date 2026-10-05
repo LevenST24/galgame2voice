@@ -19,6 +19,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from galgame2voice import __version__
 from galgame2voice.config import get_settings
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
@@ -63,7 +64,7 @@ class HealthResponse(BaseModel):
     """Lightweight health check response."""
     status: str = Field(default="ok", json_schema_extra={"example": "ok"})
     app: str = Field(default="galgame2voice", json_schema_extra={"example": "galgame2voice"})
-    version: str = Field(default="2.0.0", json_schema_extra={"example": "2.0.0"})
+    version: str = Field(default=__version__, json_schema_extra={"example": __version__})
     uptime_seconds: float = Field(..., json_schema_extra={"example": 120.5})
 
 
@@ -71,14 +72,14 @@ class LegacyStatusResponse(BaseModel):
     """Legacy endpoint compatibility response."""
     status: str = Field(default="ok", json_schema_extra={"example": "ok"})
     app: str = Field(default="galgame2voice", json_schema_extra={"example": "galgame2voice"})
-    version: str = Field(default="2.0.0", json_schema_extra={"example": "2.0.0"})
+    version: str = Field(default=__version__, json_schema_extra={"example": __version__})
     gpt_sovits: str = Field(default="reachable", json_schema_extra={"example": "reachable"})
 
 
 class AppTelemetry(BaseModel):
     """Application level telemetry information."""
     name: str = "galgame2voice"
-    version: str = "2.0.0"
+    version: str = __version__
     uptime_seconds: float
     start_time: str
     python_version: str

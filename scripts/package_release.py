@@ -5,12 +5,36 @@ Excludes local environment data, databases, caches, and sensitive files.
 """
 
 import os
+import re
 import sys
 import zipfile
 import hashlib
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def read_project_version() -> str:
+    """Single source of truth for the release version: pyproject.toml.
+
+    Falls back to a regex parse on Python < 3.11 where tomllib is unavailable.
+    """
+    pyproject = PROJECT_ROOT / "pyproject.toml"
+    try:
+        import tomllib
+
+        with open(pyproject, "rb") as f:
+            return str(tomllib.load(f)["project"]["version"])
+    except Exception:
+        pass
+    match = re.search(
+        r'^version\s*=\s*"([^"]+)"',
+        pyproject.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if match:
+        return match.group(1)
+    raise RuntimeError(f"Could not determine version from {pyproject}")
 
 # Files and directories strictly excluded from release bundles
 EXCLUDE_DIRS = {
@@ -105,7 +129,10 @@ def should_include(rel_path: Path) -> bool:
     return True
 
 
-def build_release_zip(version: str = "2.0.0") -> Path:
+def build_release_zip(version: str | None = None) -> Path:
+    """Build the distributable ZIP. Defaults to the pyproject.toml version."""
+    if not version:
+        version = read_project_version()
     static_dir = PROJECT_ROOT / "galgame2voice" / "static"
     if not (static_dir / "index.html").exists():
         print("[ERROR] galgame2voice/static/index.html is missing! Build the frontend first.")
@@ -154,7 +181,7 @@ def build_release_zip(version: str = "2.0.0") -> Path:
 
 
 if __name__ == "__main__":
-    v = "2.0.0"
+    v: str | None = None
     if len(sys.argv) > 1:
         v = sys.argv[1].lstrip("v")
     build_release_zip(v)

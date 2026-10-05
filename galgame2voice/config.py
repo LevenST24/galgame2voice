@@ -5,8 +5,11 @@ Provides type-safe environment and runtime settings via Pydantic V2.
 
 from functools import lru_cache
 from pathlib import Path
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from galgame2voice import __version__
 
 
 class Settings(BaseSettings):
@@ -19,7 +22,7 @@ class Settings(BaseSettings):
         description="Application Name",
     )
     app_version: str = Field(
-        default="2.0.0",
+        default=__version__,
         validation_alias=AliasChoices("GALGAME2VOICE_APP_VERSION", "APP_VERSION"),
         description="Application SemVer Version",
     )
