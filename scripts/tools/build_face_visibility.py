@@ -86,7 +86,7 @@ def main() -> None:
         worst = neighbours[-1] if neighbours else None
         print(
             f"  tsundere {fid}: 最大反差 -> {best['id']} ({best['delta']:.1%}) | "
-            f"最小反差 -> {worst['id']} ({worst['delta']:.1%})"
+            f"保留集内最小反差 -> {worst['id']} ({worst['delta']:.1%})"
         )
     print(f"index -> {args.index}")
 

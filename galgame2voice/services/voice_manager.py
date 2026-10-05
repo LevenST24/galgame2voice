@@ -40,7 +40,8 @@ class InsufficientMemoryError(RuntimeError):
 
 # 切换权重时新旧模型会短暂同时驻留内存（GPT约155MB + SoVITS约172MB = 约330MB，极端过渡期约660MB）；
 # 默认安全阈值：总内存的 6% 或最低 0.8GB，并设有 1.5GB 安全上限（大内存机器不会被百分比过度拦截）。
-# 16GB 设备所需空闲仅约 0.96GB，只要空闲内存大于 1GB 即可丝滑切换。
+# 16GB 设备所需空闲仅约 0.96GB；但同一预检还会查空闲显存（_check_vram_guard 要求 ≥ 0.45GB），
+# 两项都通过才会放行切换，光看内存不够。
 _MIN_FREE_MEMORY_RATIO = 0.06
 _MIN_FREE_MEMORY_FLOOR_GB = 0.8
 _MIN_FREE_MEMORY_CEILING_GB = 1.5
@@ -83,7 +84,7 @@ def _safe_invalidate_resolver(profile_id: int | None = None) -> None:
 class VoiceManager:
     """
     Coordinates character voice profile management and atomic model switching with GPT-SoVITS.
-    Ensures thread-safe operations via an inference mutex and atomic SQLite persistence.
+    Ensures coroutine-safe operations via an asyncio inference mutex and atomic SQLite persistence.
 
     By default binds to the application-wide shared GptSovitsClient singleton so
     that synthesis and switching are serialized against the GPU by a single lock.
@@ -377,7 +378,11 @@ class VoiceManager:
 
         # Memory precheck: new and old weights briefly co-reside during a switch; loading
         # with too little free memory OOM-crashes the engine. Sits here (not in the HTTP
-        # layer) so every call path — REST, Telegram, auto-bind — gets the same guard.
+        # layer) so the switch entry points — REST, Telegram, auto-bind — all get the same
+        # guard. warmup_current_profile() is the exception: it calls
+        # client.switch_voice_profile() directly and therefore loads weights with neither
+        # this RAM guard nor the VRAM guard (it runs at startup from main.py and again after
+        # every successful switch).
         self._check_switch_memory_guard(force)
 
         # 2. Execute 3-step atomic model switch with auto-rollback

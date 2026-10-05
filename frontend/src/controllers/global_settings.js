@@ -80,7 +80,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
     _dom.gBtnRefreshStatus.addEventListener('click', () => {
       fetchSystemTelemetry();
       loadGlobalConfig();
-      showToast('诊断数据已刷新', 'info');
+      showToast('正在刷新诊断数据…', 'info');
     });
   }
 
@@ -794,7 +794,7 @@ export async function saveGlobalConfig() {
       saveGlobal({ autoTranslate: _dom.gAutoTranslate.value === 'auto' });
     }
 
-    showToast('全局配置已成功保存并实时生效', 'success');
+    showToast('全局配置已成功保存，推理精度需点击【重启 SoVITS 引擎】后生效', 'success');
     loadGlobalConfig();
     fetchSystemTelemetry();
   } catch (e) {

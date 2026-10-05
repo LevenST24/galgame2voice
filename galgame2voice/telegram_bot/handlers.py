@@ -5,7 +5,8 @@ Implements:
 - Per-user task cancellation on new input (interruption handling).
 - Multi-user isolation across concurrent chat IDs.
 - Voice note download, OGG -> WAV conversion, STT transcription, and response dispatch.
-- Slash command dispatch table (/start, /reset, /voice, /help, /model, /console, /unknown).
+- Slash command dispatch table (/start, /reset, /voice, /character|/char|/switch, /model,
+  /nickname|/name, /console|/menu|/settings, /help), plus a catch-all unknown-command handler.
 """
 
 import asyncio
@@ -186,11 +187,11 @@ class TelegramBotHandlers:
             "你好！我是你的二次元AI伴侣。\n"
             "随时发送文字或语音消息与我对话吧！\n\n"
             "🎮 支持的快捷指令：\n"
-            "• /console - 打开原生交互控制台（音色/语速/模型快捷切换）\n"
-            "• /character - 切换角色与音色（支持 /character 栞那 快速切换）\n"
+            "• /console | /menu | /settings - 打开原生交互控制台（音色/语速/模型快捷切换）\n"
+            "• /character | /char | /switch - 切换角色与音色（支持 /character 栞那 快速切换）\n"
             "• /voice - 查看当前音色与语音设置\n"
             "• /model - 查看模型与接口配置\n"
-            "• /nickname <称呼> - 设置角色对你的专属称呼\n"
+            "• /nickname | /name <称呼> - 设置角色对你的专属称呼\n"
             "• /reset - 清空当前对话历史\n"
             "• /help - 查看完整帮助信息"
         )
@@ -348,18 +349,18 @@ class TelegramBotHandlers:
             try:
                 switched = await vm.switch_active_profile(profile_id)
                 if not switched:
-                    warning_note = "\n⚠️ 提示：GPT-SoVITS 语音引擎当前处于离线状态，已为您激活对话人设与好感档案。"
+                    warning_note = "\n⚠️ 提示：GPT-SoVITS 语音权重未能加载（引擎不可达，或引擎在线但拒绝了权重），已为您激活对话人设与好感档案。"
             except InsufficientMemoryError:
                 raise
             except Exception as sw_err:
                 logger.debug("VoiceManager weight switch skipped: %s", sw_err)
-                warning_note = "\n⚠️ 提示：GPT-SoVITS 语音引擎当前处于离线状态，已为您激活对话人设与好感档案。"
+                warning_note = "\n⚠️ 提示：GPT-SoVITS 语音权重未能加载（引擎不可达，或引擎在线但拒绝了权重），已为您激活对话人设与好感档案。"
 
             async with get_db(self.db_path) as conn:
                 await crud.set_active_voice_profile(conn, profile_id)
             return None, warning_note
         except InsufficientMemoryError as mem_err:
-            return f"系统内存不足，无法加载该角色模型: {mem_err}", ""
+            return f"系统内存或显存不足，无法加载该角色模型: {mem_err}", ""
         except Exception as exc:
             return f"切换异常: {sanitize_error_detail(exc)}", ""
 
@@ -400,7 +401,8 @@ class TelegramBotHandlers:
             await self._safe_send_message(update, context, reply, reply_markup=markup)
             return reply
 
-        # Perform atomic switch
+        # Perform two-step switch: engine weights are best-effort; DB active-profile
+        # activation is then committed in its own transaction (not atomic across the two)
         char_name = matched_profile.name
         err_msg, warning_note = await self._switch_character_weights(matched_profile.id)
 
@@ -504,11 +506,12 @@ class TelegramBotHandlers:
         """Handler for /help command."""
         reply = (
             "【支持的快捷指令】\n"
-            "• /console - 打开原生交互控制台（音色/语速/模型切换）\n"
-            "• /character - 切换角色与音色（支持 /character 栞那 快速切换）\n"
+            "• /start - 显示欢迎语与快捷指令列表\n"
+            "• /console | /menu | /settings - 打开原生交互控制台（音色/语速/模型切换）\n"
+            "• /character | /char | /switch - 切换角色与音色（支持 /character 栞那 快速切换）\n"
             "• /voice - 查看当前音色与语音设置\n"
             "• /model - 查看当前 LLM / STT 模型设置\n"
-            "• /nickname <称呼> - 设置角色对你的专属称呼\n"
+            "• /nickname | /name <称呼> - 设置角色对你的专属称呼\n"
             "• /reset - 清空当前对话上下文\n"
             "• /help - 查看此帮助信息"
         )
@@ -517,7 +520,10 @@ class TelegramBotHandlers:
 
     async def handle_unknown(self, update: Any, context: Any | None = None) -> str:
         """Handler for unknown commands."""
-        reply = "未知指令，支持 /console, /character, /voice, /model, /nickname, /reset, /help"
+        reply = (
+            "未知指令，支持 /start, /console, /menu, /settings, /character, /char, /switch, "
+            "/voice, /model, /nickname, /name, /reset, /help"
+        )
         await self._safe_send_message(update, context, reply)
         return reply
 

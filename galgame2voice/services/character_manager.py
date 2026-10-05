@@ -598,9 +598,10 @@ class CharacterManager:
             update_fields.append("sovits_weights_path = ?")
             params.append(sovits_weights)
 
-        # 角色包是人设提示词的唯一权威源，DB 只是运行时读的镜像：
+        # 对角色包同步出来的这些行，角色包是人设提示词的权威源，DB 只是运行时读的镜像：
         # 不一致就覆盖，否则包里的更新永远进不了聊天链路。
         # 包内为空时保留 DB 值，避免同步把设定抹掉。
+        # （自建音色没有角色包，它的人设只存在 DB 里，不走这条同步。）
         if system_prompt and system_prompt != current_sys:
             update_fields.append("system_prompt = ?")
             params.append(system_prompt)
@@ -664,8 +665,15 @@ class CharacterManager:
 
     async def sync_with_db(self, conn: aiosqlite.Connection) -> int:
         """
-        Idempotently syncs/upserts discovered character packages into SQLite voice_profiles
-        table without mutating or corrupting existing user configurations or settings.
+        Syncs/upserts discovered character packages into the SQLite voice_profiles table.
+        Converges to a fixed point: a repeat run with no package change issues no writes and
+        returns 0. It is NOT protective of direct DB edits on package-backed rows — any
+        non-empty package system_prompt overwrites the column outright, and the package also
+        owns prompt_text/prompt_lang whenever the reference audio needs healing, so edits made
+        to those columns through PUT /api/voice/profiles/{id} are reverted by the next sync.
+        (PUT /api/characters/{id}/system-prompt survives because it writes the manifest too.)
+        Columns outside that set (is_default, a non-empty description, valid weight paths) and
+        self-built profiles with no package are left alone.
         Returns the count of synced/updated profiles plus pruned ghost profiles.
         """
         self._ensure_discovered()

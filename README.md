@@ -10,33 +10,33 @@
 - 🎭 **AI Dynamic Voice（情绪感知自适应音色与韵律）**：
   - **情感感知多维映射**：基于大模型输出的情感语义，自适应识别 7 种核心情绪（温柔 `gentle`、开朗 `happy`、悲伤 `sad`、傲娇 `tsundere`、生气 `angry`、害羞 `shy`、冷静 `cool`）。
   - **动态选取参考音频**：自动从角色包 `refs/` 中选取对应情绪的高保真参考音频，配合动态语速（`speed`: 0.50~1.50）与采样温度（`temperature`: 0.60~1.20），告别千篇一律的机械声线。
-- 🧩 **角色包即插即用（Self-Contained Packages）**：
-  - 核心系统与角色资产彻底解耦。将角色包放置于 `characters/` 目录下即可被引擎自动扫描、校验并加载，完全无需手动编写代码或重启服务。
+- 🧩 **角色包自包含（Self-Contained Packages）**：
+  - 核心系统与角色资产彻底解耦。将角色包放置于 `characters/` 目录下即可被引擎自动扫描、校验并加载，无需手动编写代码；但进程内的角色缓存不会自动刷新，运行期间新增的角色包需重启服务（或执行一次「一键拉取并更新」）才会被扫描并同步进角色列表。
   - 角色包与权重文件均处于本地沙箱环境，绝不上传云端，保障个人数字资产隐私。
 - ⚡ **毫秒级双语流式推流与前瞻断句**：
   - 独创 `StreamingBilingualParser`，零阻塞并行提取大模型输出的中文心声与日文语音台词，前瞻式分句并管道化合成。
   - **双级 TTS 缓存**：L1 内存 LRU 缓存（`<0.005ms` 极速返回）+ L2 磁盘持久化 WAL 缓存，大幅降低重复对话时的 GPU 算力开销。
 - 🎛️ **推理精度自适应校准与硬件运行模式**：
   - **FP16 半精度**：显存占用直降 50%，推理速度提升 1.5x~2x，RTX 20/30/40 等主流显卡首选。
-  - **FP32 单精度**：高兼容性模式，彻底解决 GTX 16 系列（TU116/TU117）或部分显卡驱动下的静音/哑音故障。
-  - **CPU 稳定模式 (免显存占用)**：专为入门/老旧显卡（如 MX450, GTX 1050/1650 显存 ≤ 4GB）设计。依托宿主机大内存（如 16GB）进行运算，彻底杜绝显存溢出 (CUDA OOM) 与显卡驱动崩溃。
+  - **FP32 单精度**：高兼容性模式，用于消除 GTX 16 系列（TU116/TU117）及部分显卡驱动下 FP16 半精度推理溢出导致的静音/哑音。此故障以切换到 FP32 为解法前提，并非无条件根除：启动器校准流程在 FP32 下重新探针后仍可能得到纯静音，此时自身打印「FP32 探针仍为静音或未完成 —— 问题可能不在精度」（`scripts/run_server.py::calibrate_engine_precision`）；且精度已有任一显式来源（CLI/环境变量/数据库/缓存/YAML）或处于 CPU 模式时探针根本不执行，不会自动切到 FP32。
+  - **CPU 稳定模式 (免显存占用)**：专为入门/老旧显卡（如 MX450, GTX 1050/1650 显存 ≤ 4GB）设计，依托宿主机大内存（如 16GB）进行运算。显存溢出 (CUDA OOM) 与显卡驱动崩溃随之显著减少，但 CPU 化是尽力而为而非保证：设备只通过改写引擎 `tts_infer.yaml` 的 `custom.device` 下发（`utils/precision.py::write_sovits_yaml_config` 定位不到或读写失败即返回 None，`_spawn_sovits_process` 随后按原样把默认配置交给 api_v2.py），子进程环境里只导出 `is_half`、不含设备；若端口已被一个跑在 CUDA 上的引擎占用，`ensure_gpt_sovits_running` 直接返回，`--cpu` 不再施加；FP16→FP32 自动重启路径也不带 `device` 参数、回落到默认 cuda。
   - **自适应试声探针 (Auto)**：只有当精度没有任何显式来源（CLI 参数 `--fp16/--fp32/--cpu/--precision`、环境变量 `GPT_SOVITS_PRECISION`/`GPT_SOVITS_DEVICE`、数据库设置、已验证校准缓存、引擎 YAML 已声明 FP32/CPU）时才会执行：启动后就地合成试声探测包并分析峰值振幅，全静音则平滑回退至 FP32 并把结果写入 `data/precision.json`；命中已验证缓存的后续启动不再重复探针，CPU 模式亦跳过。可通过 Web 控制台仪表盘一键无缝热切换（FP16 ⇄ FP32 ⇄ CPU）。
 - 💻 **现代化单页控制台 (Unified SPA Web Console)**：
   - 基于极简高性能架构打造，首屏加载小于 50ms，彻底拔除历史多页面重定向与跳转延迟。
   - **双层设置架构**：
     - **全局设置（主界面左下角 ⚙️）**：模型提供商管理、TTS 质量预设、一键清空离线缓存、Telegram 机器人配置、系统状态诊断看板与 SoVITS 引擎热重启。
-    - **会话设置（主界面右上角 🎚️）**：为当前会话独立绑定角色音色、专属 System Prompt、生成采样参数及 AI 自适应音色开关，实现多窗口与不同角色并行对话。
+    - **会话设置（主界面右上角 🎚️）**：为当前会话独立绑定角色音色、生成采样参数及 AI 自适应音色开关，并可编辑当前绑定角色的人设 System Prompt（保存写回角色包，对该角色的所有会话生效；会话级独立 System Prompt 已废弃且不参与提示词解析），实现多窗口与不同角色并行对话。
 - ✈️ **Telegram 伴侣机器人（完全可选）**：
   - 默认彻底关闭，未启用时不启动后台轮询与网络握手，保证终端零冗余日志。
   - 开启后支持异步长轮询、多用户隔离、快捷打断、常用指令集（`/start`, `/reset`, `/voice`, `/character`, `/model`, `/nickname`, `/console`, `/settings`, `/help`）以及专用的 HTTP/SOCKS5 代理热重载。
 - 🌸 **Galgame 专有日文读音注音与舞台提示音清洗**：
   - **人名与专有名词音标修正**：针对经典作品与角色进行深层假名注音校准（如白雪乃爱 `白雪乃愛` 严谨注音为 `のあ` 而非误读，谷风天音 `天音` 读 `あまね`，矢来美羽 `やらいみう`，布良梓 `めらあずさ`，稻丛莉音 `いなむらりおん`，千岁佐奈 `ちとせさな`，义妹 `ぎまい` 等），杜绝 TTS 将人名误读为陌生生僻字音。
-  - **舞台动作拟声提示词清洗**：自动剔除大模型生成的括号舞台提示、动作拟声词（如 `(微笑)`、`（ふふっ）`、`（ドキドキ）`、`（にっこり）` 等），确保语音合成输入纯净真实。
+  - **舞台动作拟声提示词清洗**：每个送入 TTS 的文本都会先走 `normalize_japanese_for_tts`，剔除**命中内置舞台提示词表与句式**的括号提示、动作拟声词（如 `(微笑)`、`（ふふっ）`、`（ドキドキ）`、`（にっこり）`）。判定器对无法识别的括号内容默认视为台词保留（`utils/japanese_phonetics.py::is_spoken_dialogue_inside_brackets` 的兜底分支 `return True`），所以超出词表或长度阈值的长描述ト書き仍会被照读出来——语音输入纯净以命中这些词表/句式为前提，并非无条件剔除所有括号提示。
 - ⌨️ **极速交互与键盘流体验**：
   - **快捷发送**：支持 `Enter`（无 Shift）及 `Ctrl+Enter` / `Cmd+Enter` 瞬时发送对话。
   - **一键打断与关闭**：按下 `Esc` 键智能关闭弹窗设置与侧边栏抽屉，在主界面可一秒平滑打断正在播放的语音与流式回复。
 - 🛡️ **工业级安全脱敏与 16GB 内存保障**：
-  - 全链路日志、异常回溯与 HTTP 响应体实施敏感信息过滤（API Key、Telegram Token、内嵌凭据 URL `user:password@` 100% 自动打码脱敏）。
+  - 全链路日志、异常回溯与 HTTP 响应体实施敏感信息过滤：按 `utils/logger.py::MaskingFilter.PATTERNS` 的已知格式打码脱敏（`sk-`/`AIzaSy`/`hf_` 前缀密钥、`Bearer <token>`、Telegram Token、已列名的 `api_key/token/secret/password` 键值与查询参数、`user:password@` 内嵌凭据 URL）。该过滤是格式匹配式的：未命中任何格式的凭据（无标签的裸密钥值、不带 `Bearer` 字样的 `Authorization` 值如裸 JWT 或 `Basic <base64>`、未列名的查询参数如 `?subscription-key=`）会原样透出。
   - 内置显存与内存水位防护，跨角色切换时触发主动垃圾回收与 PyTorch 缓存释放，16GB 内存设备稳定运行不崩溃。
 
 ---
@@ -72,6 +72,8 @@ pip install -r requirements.txt
 python scripts/run_server.py
 ```
 
+> **Linux/macOS 一键脚本**：根目录提供 `run.sh`，会自动创建 `.venv`、安装依赖并拉起服务，等价于上述两步，且同样透传 `--fp16/--fp32/--cpu` 等参数（该脚本未设可执行位，用 `bash run.sh` 运行即可）。
+
 > **前端构建产物说明**：`galgame2voice/static/index.html` 与 `static/assets/` 为前端构建产物，仓库中保留了可直接运行的版本（克隆后无需 Node 环境即可启动控制台）；修改 `frontend/src` 后请执行 `cd frontend && npm ci && npm run deploy` 重新生成，否则界面与源码会不一致（Docker 镜像构建时会自动重新构建，无需手动操作）。
 
 常用命令行参数：
@@ -100,13 +102,13 @@ python scripts/run_server.py --help
 | 环境变量名 | 来源 | 默认值 | 类型 | 作用说明 |
 | :--- | :---: | :--- | :---: | :--- |
 | `HOST` | `Settings` | `127.0.0.1` | string | 后端 FastAPI 服务绑定的网卡监听地址 |
-| `PORT` | `Settings` | `8080` | int | 后端服务监听端口（若被占用自动探测可用端口） |
+| `PORT` | `Settings` | `8080` | int | 后端服务监听端口。注意本行**没有**自动换端口行为：`galgame2voice` 命令行入口把 `Settings.port` 直接交给 `uvicorn.run()`（`galgame2voice/main.py` 的 `run()`），容器则由 `Dockerfile` 固定 `--port 8080` 绑定，端口被占用即启动失败。「被占用后自动改探可用端口」是启动器 `scripts/run_server.py`（`find_available_port`，即上文 `--port` 说明的行为）专属功能，而它的首选端口只取自 `--port` / `GALGAME_PORT`，并不读取 `PORT` |
 | `LOG_LEVEL` | `Settings` | `INFO` | string | 日志记录级别 (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `GPT_SOVITS_BASE_URL` | `Settings` | `http://127.0.0.1:9880` | string | GPT-SoVITS 语音推理引擎的 HTTP API 地址 |
 | `GPT_SOVITS_PRECISION` | `os.environ` | 未设置 | string | 强制推理精度与模式：`fp16`/`half`/`true`/`1` 半精度，`fp32`/`float32`/`false`/`0` 单精度，`cpu` 纯 CPU；其它取值（含 `auto`）不构成覆盖，回落到 CLI 参数 > 数据库设置 > 校准缓存 > 引擎 YAML > 硬件默认 的自动判定 |
 | `GPT_SOVITS_DEVICE` | `os.environ` | 未设置 | string | 设为 `cpu` 时强制纯 CPU 推理（效果同 `GPT_SOVITS_PRECISION=cpu`）；其它取值不构成覆盖 |
-| `AUDIO_RETENTION_MINUTES`| `Settings` | `30` | int | 合成临时音频在磁盘中的最长保留分钟数 |
-| `GALGAME2VOICE_CONSOLE_TOKEN` | `Settings` | 空 | string | 设置控制台管理鉴权令牌（非空时访问设置需输入 Token） |
+| `AUDIO_RETENTION_MINUTES`| `Settings`（解析后无消费方） | `30` | int | 仅被 Pydantic Settings 读入配置对象，不影响实际清理：音频保留时长由清理循环每轮重新读取的 SQLite 设置行 `settings.audio_retention_minutes` 决定，请在 Web 控制台全局设置中修改 |
+| `GALGAME2VOICE_CONSOLE_TOKEN` | `Settings` | 空 | string | 控制台管理鉴权令牌：在开启鉴权时作为访问设置类接口所需的校验 Token（本地回环默认 `GALGAME2VOICE_AUTH_DISABLED=1` 免鉴权，容器/生产部署会强制开启鉴权） |
 | `GALGAME2VOICE_ENABLE_DOCS` | `Settings` | `false`| bool | 是否开启 `/docs` 与 `/redoc` 接口文档页面 |
 | `GALGAME2VOICE_SKIP_MEM_CHECK` | `os.environ` | 未设置 | string | 只要设为任意非空值即跳过跨角色切换的空闲内存/显存保护检查（写 `false`/`0` 也会跳过；不设该变量才会检查） |
 | `TELEGRAM_ADMIN_IDS` | `os.environ` | 未设置 | string | 追加 Telegram 管理员白名单（与控制台保存的 `telegram_admin_ids` 合并生效） |
@@ -120,7 +122,7 @@ python scripts/run_server.py --help
 
 ## 🎭 角色包规范与扩展 (Character Packages)
 
-本引擎采用**完全自包含（Self-Contained）**的角色包架构。将角色包解压至 `characters/` 目录下即可即插即用：
+本引擎采用**完全自包含（Self-Contained）**的角色包架构。将角色包解压至 `characters/` 目录下，重启服务（或在全局设置执行一次「一键拉取并更新」）后即会被引擎扫描、校验并加载：
 
 ```text
 characters/
@@ -129,7 +131,7 @@ characters/
     ├── system_prompt.txt     # 角色专属 System Prompt（人设、口吻、好感度引导）
     ├── gpt.ckpt              # GPT 权重模型二进制文件
     ├── sovits.pth            # SoVITS 权重模型二进制文件
-    └── refs/                 # 情绪参考音频目录（3~10 秒高保真无损音频）
+    └── refs/                 # 情绪参考音频目录（3~10 秒高保真音频；随包的 .ogg 参考音频是 Ogg/Vorbis 有损编码，并非无损）
         ├── gentle.ogg
         ├── happy.ogg
         ├── angry.ogg
@@ -148,21 +150,21 @@ characters/
 在主界面全局设置中开启 Telegram Bot 后，您可以通过手机或桌面客户端随时随地与角色聊天：
 
 ### 支持的指令集
-- `/start`：唤出欢迎信息与快速交互键盘菜单
-- `/reset`：清空当前 Telegram 会话的历史上下文与记忆碎片
-- `/voice [名称]`：快速查询或切换当前绑定的角色音色
+- `/start`：唤出欢迎信息与快捷指令列表
+- `/reset`：清空当前 Telegram 会话的历史上下文（仅删除会话消息，不会清除长期记忆库）
+- `/voice`：查看当前绑定的角色音色与语音生成参数（该指令不接受名称参数、也不切换音色；切换请用 `/character [名称]` 或 `/console` 内的「角色音色切换」按钮）
 - `/character [名称]`：切换当前角色与音色（如 `/character 栞那`）
-- `/settings`：查看当前语音生成采样参数与 AI 动态音色状态
+- `/settings`：打开原生交互控制台（等价于 `/console`、`/menu`），可查看并调节当前角色音色、语音生成参数（语速/温度/切分/Top-K/Top-P）与对话模型等设置
 - `/help`：获取完整的操作指令与使用提示
 
 ### 代理连通性
-若您处于需要代理访问 Telegram 的网络环境，直接在网页设置面板中填写 **Telegram 代理地址**（例如 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:10808`），点击「保存并热重载」即可立刻生效，无需重启后端服务。
+若您处于需要代理访问 Telegram 的网络环境，直接在网页设置面板中填写 **Telegram 代理地址**（例如 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:10808`），点击全局设置底部的「保存全局配置」即可立刻生效，无需重启后端服务。
 
 ---
 
 ## 🛡️ 安全、隐私与内存控制
 
-- **零敏感信息泄漏**：全自动日志与报错脱敏引擎，覆盖 Bearer Token、OpenAI/DeepSeek Key、Telegram Token 及 URL 用户身份凭据。
+- **敏感信息自动脱敏（格式匹配式）**：日志与报错脱敏引擎覆盖 Bearer Token、OpenAI/DeepSeek Key、Telegram Token 及 URL 用户身份凭据；只打码 `MaskingFilter.PATTERNS` 命中的已知格式，未命中格式的凭据不会被屏蔽（见上文说明）。
 - **16GB 主机内存防护**：在模型加载与音色切换前主动触发 `release_system_memory()`（包含 Python `gc.collect()` 与 PyTorch CUDA/MPS 显存池释放），并在切换完成后二次回收，杜绝长期运行内存缓慢膨胀。
 - **完全本地化沙箱**：对话历史、记忆数据、好感度等级均储存在本地 SQLite 数据库中，自主掌控个人隐私。
 

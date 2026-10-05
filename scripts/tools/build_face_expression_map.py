@@ -1,8 +1,9 @@
 """Parse galgame stand CG face-differential metadata into an emotion map.
 
-Reads the .sinfo dumps of ナツメa/ナツメb to recover what each numbered face
-differential (01~60) actually depicts, then decomposes every composite into its
-brow/eye/mouth parts so the portrait layer can drift inside one emotion family.
+Reads the single .sinfo dump named by --pose (default ナツメa; one pose per run)
+to recover what each numbered face differential (01~60) actually depicts, then
+decomposes every composite into its brow/eye/mouth parts so the portrait layer
+can drift inside one emotion family.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ LEXICON: dict[str, dict] = {
     "頬": {"romaji": "blush", "zh": "脸红", "emotions": {"blush": 3}},
 }
 
-# Longest-first so 笑顔1 never loses to 笑顔, and 基本表情 before 基本.
+# Longest-first so 基本表情 is tried before its own prefix 基本 (the only prefix pair here).
 _PART_RE = re.compile(
     "|".join(sorted((re.escape(k) for k in LEXICON), key=len, reverse=True))
 )
@@ -119,7 +120,7 @@ def decompose(desc: str) -> list[dict]:
 
 
 def merge(parts: list[dict]) -> tuple[dict, dict]:
-    """Collapse part weights into per-emotion strength and per-emotion part count."""
+    """Collapse part weights into per-emotion strength, plus a part-presence map keyed by romaji."""
     emotions: dict[str, int] = {}
     for part in parts:
         for key, weight in part["emotions"].items():

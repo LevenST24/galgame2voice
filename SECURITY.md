@@ -16,7 +16,7 @@
   （`galgame2voice/security/auth.py`）。容器/局域网/公网部署必须显式设置
   `GALGAME2VOICE_AUTH_DISABLED=0`（`docker-compose.yml` 已内置该设置）。
 - Token 来源优先级：环境变量 `GALGAME2VOICE_CONSOLE_TOKEN` > SQLite `settings.console_token`。
-- 首次启动时若 DB 中无 Token，会自动生成 `uuid4().hex` 并**打印到启动日志**（仅一次）。
+- 首次启动时若 DB 中无 Token，会自动生成 `uuid4().hex`：加密存入 SQLite，明文写入 `data/.console_token`（0600）；启动日志仅打印脱敏值（前后各 4 位），不会输出完整 token。
 - 比较使用 `hmac.compare_digest`（常量时间）。
 - 前端（聊天页与设置控制台）在收到 401 时会弹出输入框收集 Token 并存入 `sessionStorage`（不写
   `localStorage`、不落盘，关闭标签页即失效）后自动重试。
@@ -25,9 +25,12 @@
 ## SSRF 防护（LLM 服务商接口）
 
 - 所有用户提供的 LLM provider `api_base_url` 均经过 `security/url_guard.py` 校验：
-  - 仅允许 http/https；官方预置服务商域名强制 https；
+  - 仅允许 http/https；`url_guard.OFFICIAL_LLM_HOSTS` 内的官方域名（api.openai.com / api.deepseek.com / api.anthropic.com /
+    api.x.ai / open.bigmodel.cn / dashscope.aliyuncs.com / generativelanguage.googleapis.com）强制 https；
+    另外两个预置服务商 `api.siliconflow.cn` 与 `api.moonshot.cn` 不在该强制列表内（预设地址本身是 https，但填 http 不会被拦下）；
   - DNS 解析后拒绝环回/私网/链路本地/保留/多播网段（含云元数据 `169.254.169.254`）。
-- 连接本地模型（Ollama/vLLM 等）需在设置中显式开启 `allow_private_llm_endpoints`。
+- 连接本地模型（Ollama/vLLM 等）需显式开启 `allow_private_llm_endpoints`。Web 控制台没有该开关，
+  只能写入 SQLite 设置行：`POST /api/config`，请求体 `{"allow_private_llm_endpoints": true}`。
 - **不校验 GPT-SoVITS 地址**：其默认值 `http://127.0.0.1:9880` 本身就是合法私网端点。
 - 已知限制：采用"保存时预检"而非传输层逐跳校验，DNS rebinding 理论上仍可行（预检通过后
   域名重解析到私网）；该残余风险在认证门禁之后，且要求操作者主动配置恶意域名。
@@ -36,7 +39,8 @@
 
 - **管理员白名单**：`settings.telegram_admin_ids`（逗号分隔）或环境变量 `TELEGRAM_ADMIN_IDS`。
   配置后，全局管理类操作（切换模型/音色、修改全局推理参数、清空缓存）仅限白名单用户；
-  **白名单为空时所有人可执行**（向后兼容单机场景），启动日志会给出警告。
+  **白名单为空时 fail-closed**：所有用户（包括管理员自己）的文字与语音消息都会被拒绝，
+  管理类按钮回调同样被拒，启动日志会给出警告。
 - **群聊隔离**：群聊会话键为 `tg_{chat_id}_{user_id}`，每个成员拥有独立的对话历史、
   长期记忆、昵称与好感度；私聊保持旧键 `tg_{chat_id}` 以兼容既有历史。
 

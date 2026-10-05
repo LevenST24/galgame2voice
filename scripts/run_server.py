@@ -302,8 +302,11 @@ def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
 
 def get_sovits_host_port() -> tuple[str, int]:
     """
-    Single source of truth for the engine address: parses GPT_SOVITS_BASE_URL
-    (env or config) so launcher, backend client and Docker all agree.
+    Parses the engine address from GPT_SOVITS_BASE_URL (env or config) so the
+    launcher's "is the engine already up?" probe checks the configured address.
+    Not a project-wide single source: both spawn paths hardcode 127.0.0.1:9880
+    (here in ensure_gpt_sovits_running, and routers/health.py restart endpoint),
+    and the backend client reads gpt_sovits_base_url from settings on its own.
     """
     from urllib.parse import urlparse
     try:
@@ -580,7 +583,7 @@ def run_hardware_diagnostics() -> dict[str, Any]:
             if vram_total <= 4.1:
                 print(f"      [显存提示] 显卡物理显存为 {vram_total:.1f} GB (显存较紧凑)。")
                 print("                长时间连续多轮对话或高并发时可能存在显存溢出(OOM)风险。")
-                print("                若遇显存不足，可在控制面板或通过 `启动.bat --cpu` 启用「CPU 稳定模式」（依托大内存，彻底杜绝崩溃）。")
+                print("                若遇显存不足，可在控制面板或通过 `启动.bat --cpu`（Linux/macOS 下为 `bash run.sh --cpu`）启用「CPU 稳定模式」（依托大内存，彻底杜绝崩溃）。")
             else:
                 print(f"      [显存就绪] 显存容量: {vram_total:.1f} GB (当前空闲约 {vram_free:.1f} GB)")
 
@@ -588,9 +591,9 @@ def run_hardware_diagnostics() -> dict[str, Any]:
         if cached and cached.get("device") == "cpu":
             print("      [推理模式] 已配置为 CPU 稳定模式推理 (免显存占用，利用大内存防爆显存)。")
         elif cached and cached.get("is_half") is False:
-            print("      [精度校准] 已缓存校准结果: 此设备使用 FP32 单精度推理 (保证发声正常)。")
+            print("      [精度设置] 已读取缓存的精度记录: 此设备按 FP32 单精度推理（该记录可能来自探针校准，也可能来自控制台手动配置；后者并未经过探针验证，因此不保证发声正常）。")
         else:
-            print("      [精度校准] 引擎就绪后将自动校准 FP16/FP32 精度，无需手动配置。")
+            print("      [精度校准] 未显式指定精度、由本脚本新拉起引擎且没有任何精度来源记录（env/CLI/DB/缓存/yaml）时，就绪后才会自动校准 FP16/FP32 精度；只要命中其中任一来源就直接沿用，不再探针验证，无需手动配置。")
     else:
         print("      [硬件提示] 未检测到兼容的 NVIDIA 独立显卡或 CUDA 推理环境。")
         print("                系统将以 CPU 兼容模式运行。首次模型加载与推理耗时较长属于正常现象，建议在配置 NVIDIA 显卡的电脑上使用以获得最佳体验。")
@@ -763,7 +766,7 @@ def calibrate_engine_precision(
     """
     peak = probe_fn()
     if peak is None:
-        print("      [精度校准] 探针未完成 (超时/网络)，跳过本次校准，沿用当前精度。")
+        print("      [精度校准] 探针未完成 (缺少参考音频/超时/网络)，跳过本次校准，沿用当前精度。")
         return is_half, False
     if peak > 0:
         write_precision_cache(PROJECT_ROOT, str(sovits_dir), is_half)
@@ -896,11 +899,11 @@ def ensure_gpt_sovits_running(
         elif precision_source == "db":
             print(f"      [推理精度] 使用控制台保存的配置: {prec_str} (来源: SQLite数据库设置)")
         elif precision_source == "cache":
-            print(f"      [推理精度] 使用已验证的校准结果: {prec_str} (来源: data/precision.json)")
+            print(f"      [推理精度] 使用缓存的精度记录: {prec_str} (来源: data/precision.json，可能由探针校准写入，也可能由控制台手动配置写入，本脚本沿用该记录不再探针验证)")
         elif precision_source == "yaml":
             print(f"      [推理精度] 使用现有引擎配置文件: {prec_str} (来源: tts_infer.yaml)")
         else:
-            print("      [推理精度] 未指定固定精度，进入自动校准模式 (初始 FP16，就绪后验证发声)。")
+            print("      [推理精度] 未指定固定精度，按硬件检测选择初始精度 (CUDA 显卡为 FP16，否则 CPU FP32)；FP16 模式下引擎就绪后将自动校准。")
     try:
         proc = _spawn_sovits_process(sovits_dir, sovits_host, sovits_port, is_half, device=device)
 
@@ -1111,7 +1114,7 @@ def main(args: list[str] | None = None):
             print(f"      [OK] 浏览器将在后台探测到 /api/health 返回 200 后自动打开: http://{display_host}:{active_port}/")
         else:
             print(f"      [提示] 已开启 --no-browser，跳过自动打开浏览器。访问地址: http://{display_host}:{active_port}/")
-        print("      关闭此窗口即可退出并释放显存。")
+        print("      关闭此窗口即可退出并释放资源。")
         try:
             import uvicorn
             uvicorn.run("galgame2voice.main:app", host=bind_host, port=active_port, log_level="info")

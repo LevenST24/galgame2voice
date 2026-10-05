@@ -88,8 +88,9 @@ class HostValidationMiddleware:
             # IPv6 literal, e.g. "[::1]:8080" -> "::1"
             return host[1:].split("]", 1)[0].lower()
         if host.count(":") == 1:
-            # "host:port" -> "host"; a bare IPv6 without brackets has 2+ colons
-            # and is deliberately NOT accepted (it cannot be parsed unambiguously).
+            # "host:port" -> "host"; a bare IPv6 without brackets has 2+ colons, so it is not
+            # port-split here and falls through to the verbatim comparison below (a bracket-less
+            # "::1" therefore still matches the "::1" entry in ALLOWED_LOOPBACK_HOSTS).
             return host.split(":", 1)[0].lower()
         return host.lower()
 
@@ -177,7 +178,7 @@ async def _init_database_and_characters(settings) -> None:
         async with get_db(settings.db_path) as conn:
             synced = await char_mgr.sync_with_db(conn)
             if synced > 0:
-                logger.info("Synced %d character package(s) with voice profiles", synced)
+                logger.info("Character packages sync updated or pruned %d voice profile record(s)", synced)
     except Exception as exc:
         logger.debug("Startup character packages sync skipped: %s", exc)
 
@@ -388,9 +389,17 @@ async def lifespan(app: FastAPI):
 class AudioStaticFiles(StaticFiles):
     """
     Enhanced StaticFiles handler for audio files.
-    Applies aggressive Cache-Control headers to immutable content-addressed cache files
-    (e.g., /audio/cache/*.wav) and standard cache lifetimes to ephemeral chunks,
+    Applies an aggressive Cache-Control header to the cache files under
+    /audio/cache/*.wav and standard cache lifetimes to ephemeral chunks,
     while ensuring Accept-Ranges: bytes support.
+    These filenames are NOT content hashes: TtsCacheManager.compute_cache_key hashes the
+    normalized text plus the request's inference parameters, so the audio bytes themselves
+    never enter the name. The name is therefore stable but the bytes behind it are not: LRU
+    pruning unlinks entries, get() drops missing or zero-byte files, and the next request
+    re-synthesizes and put() rewrites the very same path. Note also that
+    StaticCacheControlMiddleware is the outermost middleware in create_app and replaces
+    Cache-Control on every /audio/ response with "private, max-age=0", so the header set here
+    only survives when this handler is used without that middleware.
     """
 
     async def get_response(self, path: str, scope: Scope) -> Response:

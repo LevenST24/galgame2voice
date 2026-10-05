@@ -20,8 +20,10 @@ from galgame2voice.security.crypto import encrypt_secret, is_encrypted_secret
 
 logger = logging.getLogger("galgame2voice.database.migrations")
 
-# Default reference audio ships inside the repo using portable relative paths.
-# Converted to absolute at the client boundary when dispatching to GPT-SoVITS.
+# Seed reference audio for the default voice profile, kept as a portable project-relative path.
+# Converted to absolute at the client boundary when dispatching to GPT-SoVITS. Audio assets are
+# NOT tracked in this repo (audio/* and *.ogg are git-ignored), so auto_heal_voice_profiles below
+# repoints profiles to an installed character-package reference when this file is missing.
 _DEFAULT_REF_AUDIO = "audio/references/natsume/gentle.ogg"
 _DEFAULT_REF_TEXT = "とりあえず、今日見たことは忘れて、わかった?"
 
@@ -52,7 +54,14 @@ async def _add_column_if_missing(
 
 
 def _save_console_token_file(token: str) -> None:
-    """Securely writes console token to data/.console_token (0600 permissions)."""
+    """Writes the plaintext console token to data/.console_token, then tries to chmod it
+    to 0600. The chmod is best-effort (an OSError there is swallowed), so on platforms or
+    filesystems where it fails the file keeps whatever mode the umask gave it. A failed
+    write is logged as a warning; whether anything is left behind depends on where it
+    fails: a failure before/at open (missing data dir, EACCES) leaves no new file, but
+    Path.write_text opens with mode "w", so once the open succeeds a later failure
+    (ENOSPC/EDQUOT surfacing at flush/close inside the with-block) leaves a zero-length or
+    partially written file, and truncates any token file that was already there."""
     try:
         from galgame2voice.config import get_settings
         token_file = get_settings().data_dir / ".console_token"
@@ -476,7 +485,9 @@ async def _migration_v6_session_titles_and_settings(conn: aiosqlite.Connection) 
 async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
     """
     Executes SQLite schema migrations idempotently using PRAGMA user_version.
-    Guarantees that databases upgrade safely without losing any user data.
+    Steps are additive (CREATE IF NOT EXISTS / ADD COLUMN), except the v3 user_memories
+    pass, which permanently deletes duplicate memory rows before adding the unique
+    index, and the v4 pass, which rewrites stored legacy system prompts.
     """
     current_version = await get_schema_version(conn)
 
@@ -514,7 +525,12 @@ async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
 
 
 async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
-    """Create tables, indexes, apply schema version migrations, and guarantee credentials."""
+    """Create tables and apply schema version migrations, then run the follow-up steps:
+    the legacy column backfills (which raise if they fail) and four individually
+    best-effort steps — the composite messages index, plaintext-credential encryption,
+    console-token minting, and voice-profile auto-heal — each wrapped in its own
+    try/except that logs at debug and continues, so a failing step is silently skipped
+    rather than guaranteed to have run."""
     conn.row_factory = aiosqlite.Row
     await run_schema_migrations(conn)
 
@@ -559,9 +575,16 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     except Exception as exc:
         logger.debug("Credentials encryption migration step skipped: %s", exc)
 
-    # Guarantee a console token exists so the API is never left unauthenticated.
-    # The token is saved encrypted in the DB, and written to data/.console_token (0600).
+    # Mint a console token when the settings row exists and its token column is blank.
+    # This is best-effort, not a guarantee: the whole block (including encrypt_secret and
+    # the file write) is wrapped in a try/except that only logs at debug, and it does
+    # nothing when the id=1 row is missing, so the row can stay blank.
+    # The token is saved encrypted in the DB, and written to data/.console_token
+    # (chmod 0600 is best-effort — see _save_console_token_file).
     # Logs NEVER print the complete plaintext token (only masked).
+    # Whether requests are actually authenticated does not follow from this row: auth is
+    # gated by Settings.auth_disabled (default True), so with auth disabled an empty or
+    # present token makes no difference.
     try:
         cursor = await conn.execute("SELECT console_token FROM settings WHERE id = 1;")
         row = await cursor.fetchone()
@@ -574,7 +597,7 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
                 (encrypted_token,),
             )
     except Exception as exc:
-        logger.debug("Could not auto-generate missing console token in initialize_database: %s", exc)
+        logger.debug("Could not auto-generate missing console token in init_schema_and_seeds: %s", exc)
 
     # Auto-heal missing or broken reference audio paths across existing voice profiles
     try:
@@ -587,10 +610,13 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
 
 async def auto_heal_voice_profiles(conn: aiosqlite.Connection, char_mgr: Any | None = None) -> int:
     """
-    Scans voice_profiles table and auto-heals any missing or invalid reference audio paths.
-    If ref_audio_path points to a non-existent file or an unresolvable path,
-    it automatically updates the path to a verified existing bundled reference audio file.
-    Returns the number of healed profiles.
+    Scans voice_profiles and repoints ref_audio_path values that are empty, point at a
+    missing file, or are absolute paths outside the project root and audio dir. An
+    existing absolute path inside the project root is normalized to project-relative
+    POSIX. The replacement is the default character package's reference when char_mgr
+    resolves one, otherwise the first existing of the known fallback files (the bundled
+    path is still written when none of them exists); profiles are left untouched when no
+    replacement path is available. Returns the number of healed profiles.
     """
     from galgame2voice.config import get_settings
     settings = get_settings()

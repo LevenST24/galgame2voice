@@ -112,7 +112,12 @@ class ChatService:
     async def _extract_memory_safe(
         self, user_id: str, profile_id: int | None, message_text: str, message_id: int
     ) -> None:
-        """Background memory fact extraction that never raises."""
+        """Background memory fact extraction: failures are logged, never propagated.
+
+        Catches Exception only, so an asyncio.CancelledError raised when shutdown's
+        drain_background_tasks() cancels a still-running extraction escapes as task
+        cancellation (the done-callback skips cancelled tasks, so it is not logged).
+        """
         try:
             await self.memory_service.process_user_message(
                 user_id=user_id,
@@ -511,7 +516,7 @@ class ChatService:
                                 conn_bg, user_id=user_id, character_id=profile_id or 1
                             )
                     except Exception as exc:
-                        logger.debug("Failed background affection update: %s", exc)
+                        logger.debug("Failed background affection record init: %s", exc)
                     await self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
 
                 self._spawn_background(_bg_affection_and_memory())

@@ -580,10 +580,10 @@ async def test_telegram_bot(req: TelegramTestRequest):
     latency = round((time.perf_counter() - t0) * 1000, 2)
     sanitized_err_msg = sanitize_error_detail(last_err)
     if isinstance(last_err, httpx.ConnectError) or "10061" in sanitized_err_msg or "refused" in sanitized_err_msg.lower():
-        hint = "连接被拒绝。请检查代理端口是否填写正确（例如 v2rayN 常用 10808，Clash 常用 7890）且代理客户端处于运行状态。"
+        hint = "连接被拒绝。若已启用代理，请检查代理端口是否填写正确（例如 v2rayN 常用 10808，Clash 常用 7890）且代理客户端处于运行状态。"
         return {
             "success": False,
-            "message": f"代理连接失败: {hint}",
+            "message": f"连接失败: {hint}",
             "latency_ms": latency,
         }
     return {

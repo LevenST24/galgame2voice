@@ -121,7 +121,7 @@ function fmtDur(d) {
 
 /**
  * 语音消息条：播放按钮 + 渐进点亮波形 + 时长
- * onToggle 收到控制器 { setPlaying, setProgress }，由播放器上报进度
+ * onToggle 收到控制器 { setPlaying, setProgress, setLoading }，由播放器上报进度
  */
 function buildVoiceBar({ dur, kind, seed, onToggle }) {
   const bar = document.createElement('div');
@@ -167,7 +167,7 @@ function buildVoiceBar({ dur, kind, seed, onToggle }) {
     bar.classList.toggle('loading', loading);
     const label = playing
       ? '点击暂停语音'
-      : (loading ? '正在合成语音，点击取消' : (progress > 0 && progress < 1 ? '点击继续播放语音' : '点击播放语音'));
+      : (loading ? '正在合成语音' : (progress > 0 && progress < 1 ? '点击继续播放语音' : '点击播放语音'));
     bar.title = label;
     bar.setAttribute('aria-label', label.replace('点击', ''));
   };

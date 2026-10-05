@@ -114,7 +114,9 @@ async def build_chat_context(
         conn, session, character_name, active_profile=active_profile
     )
 
-    # 人设提示词只有一个权威源：角色包 manifest.json（DB voice_profiles 是它的镜像）。
+    # 角色人设提示词的存储权威源是角色包 manifest.json（包同步来的 DB voice_profiles 行只是镜像，
+    # 不一致以包为准）。但运行时解析不止这一个来源，优先级见下方：请求级 system_prompt 覆盖 >
+    # voice_profiles 行（自建音色没有角色包，它的人设只存在 DB 里）> 内置默认模板。
     # 会话级 custom_system_prompt 已废弃：它让同一角色在不同会话里说不同人设，
     # 而且设置面板不再展示它，留着只会造成看不见的设定分叉。
     if system_prompt_override and system_prompt_override.strip():

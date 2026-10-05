@@ -17,7 +17,10 @@ class MaskingFilter(logging.Filter):
     bearer tokens, Telegram bot tokens, passwords, and sensitive fields.
     """
 
-    # Compiled patterns for high-performance string sanitization (linear O(N), ReDoS-safe)
+    # Compiled patterns for high-performance string sanitization. Patterns 1-12 cost O(N) per
+    # pass, but pattern 13's unbounded `(?:[a-zA-Z0-9+.-]+)://` scheme prefix restarts at every
+    # position of an alphanumeric run and backtracks through each prefix length, so sanitize() is
+    # worst-case quadratic — O(R^2) in R = the longest [a-zA-Z0-9+.-] run, not linear in N.
     PATTERNS = [
         # 1. OpenAI / generic API keys with visible prefix & suffix
         (
@@ -152,7 +155,13 @@ class MaskingFormatter(logging.Formatter):
 def sanitize_error_detail(exc_or_msg: Exception | str | None) -> str:
     """
     Sanitizes an exception or error string before returning to client or logging.
-    Guarantees no API keys, tokens, or URL query secrets are disclosed.
+    Masks only secrets matching MaskingFilter.PATTERNS (prefixed keys such as sk-/AIzaSy/hf_,
+    "Bearer <token>", telegram bot URLs, credentials embedded in a scheme://user:pass@ URL,
+    and the named api_key/token/secret/password query or key-value forms). A secret in any
+    other shape passes through unchanged: an unlabeled key value, an Authorization value
+    without the "Bearer" word (a bare JWT or "Basic <base64>"), and a query parameter outside
+    the alternation (?subscription-key=) are all disclosed as-is, so this is best-effort
+    pattern masking, not a guarantee that no key, token, or query secret survives.
     """
     if exc_or_msg is None:
         return ""

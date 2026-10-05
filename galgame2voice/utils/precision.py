@@ -53,7 +53,14 @@ def write_precision_cache(
     is_half: bool,
     device: str = DEVICE_CUDA,
 ) -> None:
-    """Persists a verified precision calibration and device bound to the engine directory."""
+    """Persists the given precision/device bound to the engine directory.
+
+    The stored entry is stamped `verified_at`, but nothing here verifies anything:
+    callers include the launcher's probe-verified calibration and plain user
+    configuration writes (routers/config.py::_sync_precision_cache,
+    routers/health.py::_apply_sovits_precision_config), which persist an
+    un-probed value under the same shape. Write failures are swallowed at debug.
+    """
     try:
         path = _cache_path(project_root)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,7 +93,12 @@ def find_sovits_yaml_path(sovits_dir: str | Path | None) -> Path | None:
 
 
 def read_sovits_yaml_device(sovits_dir: str | Path | None) -> str | None:
-    """Reads the custom.device setting ('cuda' | 'cpu') directly from tts_infer.yaml."""
+    """
+    Reads a device setting directly from tts_infer.yaml.
+    Prefers custom.device, then falls back to the first device: key anywhere in the file.
+    Returns the token exactly as written (lowercased and stripped), which is not restricted
+    to 'cuda'/'cpu'; returns None when the file or the setting is absent or unreadable.
+    """
     yaml_path = find_sovits_yaml_path(sovits_dir)
     if not yaml_path:
         return None
@@ -104,7 +116,11 @@ def read_sovits_yaml_device(sovits_dir: str | Path | None) -> str | None:
 
 
 def read_sovits_yaml_is_half(sovits_dir: str | Path | None) -> bool | None:
-    """Reads the custom.is_half setting directly from tts_infer.yaml."""
+    """
+    Reads an is_half setting directly from tts_infer.yaml.
+    Prefers custom.is_half, then falls back to the first is_half: key anywhere in the file.
+    Returns None when the file or the setting is absent or unreadable.
+    """
     yaml_path = find_sovits_yaml_path(sovits_dir)
     if not yaml_path:
         return None

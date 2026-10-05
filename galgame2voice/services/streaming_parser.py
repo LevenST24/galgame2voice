@@ -128,7 +128,10 @@ class StreamingBilingualParser:
         # (the concatenation of the confirmed completed sentences) that has
         # already been dispatched to TTS. feed_chunk/finalize re-split the full
         # accumulated Japanese text every round and compare the confirmed prefix
-        # against this offset, guaranteeing each sentence is emitted exactly once.
+        # against this offset, so a confirmed sentence is never dispatched twice.
+        # The offset is not loss-free in the other direction: because the two
+        # splitter modes also discard DIFFERENT characters, the advance can skip
+        # a character that was never emitted (see _drain_new_ja_sentences).
         # A character offset (not a sentence index) is required because the
         # splitter runs with is_first_chunk=True until the first emission and
         # False afterwards, and the two modes yield DIFFERENT boundaries for the
@@ -412,8 +415,11 @@ class StreamingBilingualParser:
         (``["こんにちは、先生、今日は…ですね。"]``). Comparing sentence *counts*
         would then report "nothing new" and silently drop the remainder of the
         already-started sentence, so the cursor is tracked as a character offset
-        over the concatenated confirmed text, which is guaranteed to be a
-        monotonically growing prefix of the accumulated Japanese text.
+        over the concatenated confirmed text. That fixes the boundary-shift case,
+        but the concatenation is not a monotonically growing prefix in every case:
+        the two splitter modes also discard different characters (strict mode drops
+        a leading terminal-punctuation run), so the offset can land late and skip
+        characters -- see the note in the body below.
         """
         confirmed_text = "".join(confirmed_sentences)
         if len(confirmed_text) <= self.emitted_japanese_len:
@@ -421,8 +427,12 @@ class StreamingBilingualParser:
 
         remainder = confirmed_text[self.emitted_japanese_len:]
         new_sentences = split_japanese_sentences(remainder, is_first_chunk=not self.first_sentence_emitted)
-        # The splitter only ever discards pure whitespace, so advancing the cursor
-        # past `confirmed_text` is lossless even when nothing is emitted here.
+        # NOT lossless: the splitter does not only discard whitespace -- strict mode also
+        # drops a leading run of terminal punctuation (。！？!?\n with no non-punctuation
+        # character before it, e.g. split("。ああ") == ["ああ"]), so the two modes discard
+        # DIFFERENT characters and `confirmed_text` is not always a growing prefix of the
+        # previous round's. The offset then lands late and the skipped characters are
+        # never emitted (japanese "。ああ" drains as "。" + "あ", losing the second あ).
         self.emitted_japanese_len = len(confirmed_text)
         if new_sentences:
             self.first_sentence_emitted = True
