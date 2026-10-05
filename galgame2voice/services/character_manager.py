@@ -682,7 +682,10 @@ class CharacterManager:
         if not valid_pkgs:
             return 0
 
-        # Deterministic default order: prioritize packages marked with is_default=True, then by name
+        # Default order: packages marked is_default=True first, then by name. This is deterministic
+        # only while the manifest names are unique; name collisions across packages are not
+        # validated, and sorted() is stable, so two packages sharing a manifest.name keep their
+        # discovery order, which comes from Path.iterdir() and is filesystem readdir order.
         def _pkg_sort_key(p: CharacterPackage) -> tuple[int, str]:
             is_def = getattr(p.manifest, "is_default", False)
             return (0 if is_def else 1, p.name)

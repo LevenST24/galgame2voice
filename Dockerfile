@@ -1,6 +1,9 @@
 # ==============================================================================
 # Galgame2Voice Production Container Image
-# Multi-stage reproducible build:
+# Multi-stage build. Only the dependency sets are locked (frontend/package-lock.json via npm ci,
+# uv.lock via uv sync --frozen); the image as a whole is NOT reproducible: both base tags
+# (node:20-alpine, python:3.11-slim) float to whatever the registry serves on the build date, and
+# the apt layer below installs unpinned ffmpeg/curl from that day's mirror snapshot.
 # Stage 1: Build modern frontend SPA artifacts via Node.js
 # Stage 2: Minimal Python 3.11 runtime with locked dependencies via uv
 # ==============================================================================
