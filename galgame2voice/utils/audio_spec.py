@@ -323,7 +323,7 @@ async def async_probe_audio_duration_seconds(
     if isinstance(path_or_bytes, (bytes, bytearray, memoryview)):
         return probe_audio_duration_seconds(path_or_bytes)
 
-    # Fast path: check in-memory stat cache first
+    # Check in-memory spec cache via file stat (sync disk I/O on event loop before cache lookup)
     try:
         p = Path(path_or_bytes)
         if not p.is_file() and (_PROJECT_ROOT / path_or_bytes).is_file():

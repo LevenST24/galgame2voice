@@ -400,7 +400,7 @@ def release_system_memory() -> None:
 def get_gpu_vram_status() -> tuple[float | None, float | None]:
     """
     Returns (total_vram_gb, free_vram_gb) of primary NVIDIA GPU if available, else (None, None).
-    Inspects nvidia-smi first (fast, zero PyTorch CUDA context overhead), falling back to PyTorch.
+    Inspects nvidia-smi first (spawns subprocess to avoid PyTorch CUDA context overhead), falling back to PyTorch.
     """
     try:
         out = subprocess.check_output(
