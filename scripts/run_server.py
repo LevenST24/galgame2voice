@@ -458,8 +458,10 @@ def get_system_memory_status() -> tuple[float | None, float | None]:
 def build_gpt_sovits_env(sovits_dir: Path, is_half: bool = False) -> dict[str, str]:
     """
     Constructs an isolated process environment for GPT-SoVITS.
-    Precision comes exclusively from the calibration store / explicit argument —
-    no GPU model name matching. env['is_half'] is enforced without mutating
+    Precision reaches this function only as the caller-resolved is_half argument — upstream
+    it may come from env > SQLite settings > calibration cache > YAML > hardware default
+    (utils/precision.py::resolve_initial_device_and_half), not just the calibration store.
+    No GPU model name matching. env['is_half'] is enforced without mutating
     third-party files on disk. Defaults to False (FP32) for universal compatibility.
     """
     env = os.environ.copy()

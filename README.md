@@ -104,7 +104,7 @@ python scripts/run_server.py --help
 | `HOST` | `Settings` | `127.0.0.1` | string | 后端 FastAPI 服务绑定的网卡监听地址 |
 | `PORT` | `Settings` | `8080` | int | 后端服务监听端口。注意本行**没有**自动换端口行为：`galgame2voice` 命令行入口把 `Settings.port` 直接交给 `uvicorn.run()`（`galgame2voice/main.py` 的 `run()`），容器则由 `Dockerfile` 固定 `--port 8080` 绑定，端口被占用即启动失败。「被占用后自动改探可用端口」是启动器 `scripts/run_server.py`（`find_available_port`，即上文 `--port` 说明的行为）专属功能，而它的首选端口只取自 `--port` / `GALGAME_PORT`，并不读取 `PORT` |
 | `LOG_LEVEL` | `Settings` | `INFO` | string | 日志记录级别 (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `GPT_SOVITS_BASE_URL` | `Settings` | `http://127.0.0.1:9880` | string | GPT-SoVITS 语音推理引擎的 HTTP API 地址 |
+| `GPT_SOVITS_BASE_URL` | `Settings` | `http://127.0.0.1:9880` | string | 引擎 HTTP API 地址的启动默认值，并非唯一来源：实际生效地址优先取控制台写入的 SQLite 行 `settings.gpt_sovits_url`（建库时即被写入 `http://127.0.0.1:9880`，非空即覆盖本变量），见 `galgame2voice/main.py::_init_gpt_sovits_client` 与 `routers/health.py::get_effective_sovits_url`；要改地址请在全局设置中修改 |
 | `GPT_SOVITS_PRECISION` | `os.environ` | 未设置 | string | 强制推理精度与模式：`fp16`/`half`/`true`/`1` 半精度，`fp32`/`float32`/`false`/`0` 单精度，`cpu` 纯 CPU；其它取值（含 `auto`）不构成覆盖，回落到 CLI 参数 > 数据库设置 > 校准缓存 > 引擎 YAML > 硬件默认 的自动判定 |
 | `GPT_SOVITS_DEVICE` | `os.environ` | 未设置 | string | 设为 `cpu` 时强制纯 CPU 推理（效果同 `GPT_SOVITS_PRECISION=cpu`）；其它取值不构成覆盖 |
 | `AUDIO_RETENTION_MINUTES`| `Settings`（解析后无消费方） | `30` | int | 仅被 Pydantic Settings 读入配置对象，不影响实际清理：音频保留时长由清理循环每轮重新读取的 SQLite 设置行 `settings.audio_retention_minutes` 决定，请在 Web 控制台全局设置中修改 |

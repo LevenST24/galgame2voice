@@ -277,7 +277,9 @@ def _write_manifest_system_prompt(manifest_path: Path, text: str) -> None:
     "/{character_id}/system-prompt",
     summary="Update Character System Prompt",
     description="Writes the persona prompt back into the character package manifest.json "
-                "(the single source of truth) and refreshes the database mirror.",
+                "(authoritative copy; a package may also keep a system_prompt.txt copy that "
+                "the loader falls back to, and this endpoint does not rewrite it) "
+                "and refreshes the database mirror.",
 )
 async def update_character_system_prompt(character_id: int, req: SystemPromptUpdate) -> dict[str, Any]:
     text = req.system_prompt.strip()

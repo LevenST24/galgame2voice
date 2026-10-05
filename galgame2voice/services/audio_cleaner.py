@@ -109,7 +109,9 @@ async def _clean_lru_cache_from_db(
     conn: aiosqlite.Connection, cache_dir: Path, cache_cutoff: float
 ) -> tuple[int, list[str]]:
     """
-    Evicts cached TTS entries based on SQLite last_accessed_at (single source of truth for LRU).
+    Evicts cached TTS entries based on SQLite last_accessed_at. That column is the LRU clock
+    whenever this DB pass runs; if it fails, _run_audio_cleanup_cycle falls back to file mtime
+    for the same window, so retention is not decided here alone.
     Deletes the underlying audio files and drops the DB records in batches.
     """
     cutoff_iso = datetime.fromtimestamp(cache_cutoff, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
