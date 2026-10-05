@@ -1,5 +1,5 @@
 # Galgame2Voice Production Dependencies
-# Compatible with Python 3.10+
+# Tested on Python 3.10 / 3.12 (CI matrix) and 3.11 (Docker base image); higher versions untested
 fastapi>=0.115.0
 uvicorn[standard]>=0.34.0
 pydantic>=2.10.0
