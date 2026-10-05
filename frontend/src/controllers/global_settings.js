@@ -339,10 +339,10 @@ export function onProviderChange() {
     if (_dom.gKeyStatusText) _dom.gKeyStatusText.textContent = `已配置密钥 (${maskedKey})`;
     if (_dom.gApiKeyTip) _dom.gApiKeyTip.textContent = '后端已持久化该提供商密钥。如需修改，请在此输入新密钥后保存生效。';
   } else if (isCustom) {
-    if (_dom.gApiKey) _dom.gApiKey.placeholder = 'sk-…（本地 Ollama / vLLM 等无鉴权服务可留空）';
+    if (_dom.gApiKey) _dom.gApiKey.placeholder = 'sk-…（必填：密钥留空会被适配器直接拒绝，本地无鉴权服务可填任意占位值，如 ollama）';
     if (_dom.gProviderKeyTag) _dom.gProviderKeyTag.className = 'provider-status-tag tag-optional';
-    if (_dom.gKeyStatusText) _dom.gKeyStatusText.textContent = '可选 (本地服务可免密)';
-    if (_dom.gApiKeyTip) _dom.gApiKeyTip.textContent = '本地服务（如 Ollama）无需填写，公网中转或鉴权服务请输入对应凭据。';
+    if (_dom.gKeyStatusText) _dom.gKeyStatusText.textContent = '必填 (本地服务也需占位密钥)';
+    if (_dom.gApiKeyTip) _dom.gApiKeyTip.textContent = '适配器要求非空密钥：chat/stream/models 与连通性测试在 api_key 为空时一律拒绝，因此本地无鉴权服务（如 Ollama）也要填入任意占位值；公网中转或鉴权服务请输入对应凭据。';
   } else {
     if (_dom.gApiKey) _dom.gApiKey.placeholder = `请输入 ${preset?.name || pid} 的有效 API Key (必填)`;
     if (_dom.gProviderKeyTag) _dom.gProviderKeyTag.className = 'provider-status-tag tag-unconfigured';

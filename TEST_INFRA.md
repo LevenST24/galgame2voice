@@ -102,7 +102,9 @@ Every functional domain is validated against its primary functional contracts:
 - `T1_TG_01`: Markdown/HTML entity escaping prevents parsing crashes on special characters.
 - `T1_TG_02`: Multi-user sessions maintain isolated memory and affection states.
 - `T1_TG_03`: Per-user task interruption cancels ongoing generation when new prompt arrives.
-- `T1_TG_04`: Dynamic proxy routing supports SOCKS5/HTTP proxies with failover.
+- `T1_TG_04`: Dynamic proxy routing supports a single configured HTTP/HTTPS/SOCKS5 proxy. There is no
+  failover: `telegram_bot/proxy.py::get_proxy_url` yields at most one URL and `bot.py` builds both
+  `HTTPXRequest` objects from it, with no alternate proxy and no automatic direct-connection retry.
 - `T1_TG_05`: Hot-reloading Telegram credentials gracefully restarts polling task.
 
 ---

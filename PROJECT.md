@@ -6,7 +6,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 - **Chat & Streaming Pipeline (`galgame2voice/services/chat_service.py`)**: `StreamingBilingualParser` for real-time Chinese token extraction and lookahead Japanese sentence segmentation; pipelined producer-consumer queue architecture with bounded buffers and coroutine lifecycle management.
 - **Two-Tier TTS Cache & Synthesis (`galgame2voice/services/tts_cache_manager.py`, `gpt_sovits_client.py`)**: Tier 1 in-memory LRU cache (`OrderedDict`) + Tier 2 atomic disk WAV cache + SQLite index; thread-safe inference lock with exponential backoff retry.
 - **Database Engine (`galgame2voice/database/`)**: SQLite WAL mode (`PRAGMA journal_mode=WAL`, `busy_timeout=5000`, `synchronous=NORMAL`) with `aiosqlite` and `BEGIN IMMEDIATE` transaction isolation.
-- **Telegram Bot (`galgame2voice/telegram_bot/`)**: Async polling bot with multi-user isolation, task interruption, safe entity formatting, and hot-reloadable configuration.
+- **Telegram Bot (`galgame2voice/telegram_bot/`)**: Async polling bot with multi-user isolation, task interruption, plain-text message dispatch (no entity layer: the package sets no `parse_mode` and builds no `MessageEntity`), and hot-reloadable configuration.
 - **Process & Lifecycle Management (`scripts/run_server.py`)**: Windows Job Object kernel binding (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) ensuring 100% VRAM, port (8080/9880), and child process reclamation on termination.
 
 ---

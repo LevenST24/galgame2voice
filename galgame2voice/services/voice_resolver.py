@@ -4,7 +4,9 @@ Voice Profile Resolver and In-Memory Resolved Context for galgame2voice.
 Provides zero-IO, in-memory caching of fully resolved voice profiles and emotion
 reference audios. Pre-validates paths, durations, and weights to eliminate
 database and filesystem latency from the TTS critical path (TTFA < 1s).
-Supports clean cache invalidation upon profile creation, update, or deletion.
+Invalidation is wired only into VoiceManager's profile switch and
+create/update/delete methods; the REST profile endpoints in routers/voice.py
+write through crud directly and stale contexts there expire via the TTL instead.
 """
 
 import logging
