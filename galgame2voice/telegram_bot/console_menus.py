@@ -48,9 +48,13 @@ def resolve_effective_user_id(update: Any) -> int:
 
 
 def check_is_admin(update: Any, admin_ids: set[int] | None = None) -> bool:
-    """Checks whether the effective user is authorized as an administrator."""
+    """Checks whether the effective user is authorized as an administrator.
+
+    Fail-closed: an empty or missing whitelist must NOT mean "everyone is
+    admin". Matches BotHandlers._is_admin semantics.
+    """
     if not admin_ids:
-        return True
+        return False
     return resolve_effective_user_id(update) in admin_ids
 
 
