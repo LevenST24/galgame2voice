@@ -373,7 +373,10 @@ export async function synthesizeAiVoice(msg, ctl) {
 
 /**
  * 切片是否还取得到：先看 Cache Storage，再探一次 HTTP。
- * 只探最早那条即可 —— audio_cleaner 按时间过期，最旧的还在就说明后面的都在。
+ * 只探最早那条是「整条消息一起过期」的启发式，不是保证：audio/ 根目录下的临时
+ * chunk wav 按 mtime 单调过期，最旧的还在确实说明这批都在；但 /audio/cache/ 里的
+ * 分句由 audio_cleaner 按 SQLite last_accessed_at 做 LRU 淘汰（另有孤儿清理），
+ * 与生成顺序无关，后续切片可能单独消失——那种情况仍靠 enqueueChunk 逐片跳过兜底。
  */
 async function firstChunkStillExists(url) {
   try {
