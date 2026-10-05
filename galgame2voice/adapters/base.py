@@ -82,7 +82,7 @@ def calculate_backoff_delay(
 
 def extract_stream_token(chunk: dict[str, Any]) -> str | None:
     """
-    Extracts delta text token from normalized OpenAI or Anthropic streaming SSE JSON chunks.
+    Extracts delta text token from raw OpenAI or Anthropic streaming SSE JSON chunks.
     Raises RuntimeError if provider returns an explicit stream error object.
     """
     if not isinstance(chunk, dict):
