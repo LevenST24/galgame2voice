@@ -1,7 +1,12 @@
 """
 Galgame2Voice Release Packaging Script.
-Bundles the application into a clean, distributable ZIP package ready for distribution or GitHub Releases.
-Excludes local environment data, databases, caches, and sensitive files.
+Bundles the application into a distributable ZIP package ready for distribution or GitHub Releases.
+Exclusions are name/extension rules only (EXCLUDE_DIRS, EXCLUDE_EXTENSIONS, EXCLUDE_EXACT_FILES and
+the logs/, audio/, data/*.db, data/*.txt branches in should_include), so they cover `.env`, the live
+`galgame2voice.db`, caches, logs and weight blobs. Secrets are explicitly excluded: `.master_key`
+(the fallback credential-encryption key) and `.console_token` (plaintext console token) are in
+EXCLUDE_EXACT_FILES wherever they appear, and the whole `data/backups/` tree (database copies,
+pre-update zips) never ships.
 """
 
 import os
@@ -75,6 +80,8 @@ EXCLUDE_EXTENSIONS = {
 
 EXCLUDE_EXACT_FILES = {
     ".env",
+    ".master_key",
+    ".console_token",
     "galgame2voice.db",
     "galgame2voice.pid",
     "gptsovits.pid",
@@ -99,6 +106,10 @@ def should_include(rel_path: Path) -> bool:
 
     # Exclude dynamic runtime files inside data/
     if len(parts) >= 2 and parts[0] == "data":
+        # Runtime backups (database copies, pre-update zips) must never ship:
+        # they contain credential ciphertext decryptable with the data-dir key.
+        if parts[1] == "backups":
+            return False
         if filename.endswith(".db") or filename.endswith(".txt"):
             return False
 
