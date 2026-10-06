@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel
 
 from galgame2voice.utils.path_guard import resolve_weight_file_path
 from galgame2voice.utils.prosody import (
@@ -114,39 +114,6 @@ _ALLOWED_TTS_KEYS = set(_TTS_NUMERIC_RANGES.keys()) | set(_TTS_STRING_MAXLEN.key
 
 # voice_profile_id 是角色音色 ID，非 GPT-SoVITS 推理参数，仅需整数边界。
 _INTERNAL_INT_KEYS = {"voice_profile_id": (1, 100000)}
-
-
-class ChatTtsOptions(BaseModel):
-    """Pydantic model validating dynamic TTS inference options parsed from chat turns."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    speed_factor: float | None = Field(default=None, ge=0.1, le=3.0)
-    speed: float | None = Field(default=None, ge=0.1, le=3.0)
-    top_k: int | None = Field(default=None, ge=1, le=100)
-    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
-    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
-    temp: float | None = Field(default=None, ge=0.0, le=2.0)
-    batch_size: int | None = Field(default=None, ge=1, le=16)
-    fragment_interval: float | None = Field(default=None, ge=0.0, le=5.0)
-    seed: int | None = Field(default=None, ge=-1, le=2**31 - 1)
-    text_lang: str | None = Field(default=None, max_length=32)
-    prompt_lang: str | None = Field(default=None, max_length=32)
-    text_language: str | None = Field(default=None, max_length=32)
-    prompt_language: str | None = Field(default=None, max_length=32)
-    refer_language: str | None = Field(default=None, max_length=32)
-    text_split_method: str | None = Field(default=None, max_length=64)
-    how_to_cut: str | None = Field(default=None, max_length=64)
-    cut_option: str | None = Field(default=None, max_length=64)
-    ref_audio_path: str | None = Field(default=None, max_length=512)
-    refer_audio_path: str | None = Field(default=None, max_length=512)
-    prompt_text: str | None = Field(default=None, max_length=500)
-    refer_text: str | None = Field(default=None, max_length=500)
-    emotion: str | None = Field(default=None, max_length=64)
-    preset: str | None = Field(default=None, max_length=64)
-    ai_adaptive_voice: bool | None = None
-    aiAdaptiveVoice: bool | None = None
-    voice_profile_id: int | None = Field(default=None, ge=1, le=100000)
 
 
 def validate_user_tts_options(options: dict[str, Any] | None = None) -> dict[str, Any]:

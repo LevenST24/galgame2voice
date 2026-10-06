@@ -66,6 +66,7 @@ class CharacterManager:
 
     @classmethod
     def reset_instance(cls) -> None:
+        """Public lifecycle helper to reset the singleton instance (used for testing and lifecycle management)."""
         cls._instance = None
 
     def discover_characters(self, characters_dir: Path | None = None) -> list[CharacterPackage]:

@@ -562,7 +562,7 @@ class VoiceManager:
     # ========================================================================
 
     async def list_profiles(self) -> list[VoiceProfileResponse]:
-        """Lists all voice profiles in database."""
+        """Public service API: Lists all voice profiles in database."""
         async with get_db(self.db_path) as conn:
             return await crud.list_voice_profiles(conn)
 
@@ -586,14 +586,14 @@ class VoiceManager:
     async def update_profile(
         self, profile_id: int, updates: VoiceProfileUpdate
     ) -> VoiceProfileResponse | None:
-        """Updates an existing voice profile in database."""
+        """Public service API: Updates an existing voice profile in database."""
         async with get_db(self.db_path) as conn:
             res = await crud.update_voice_profile(conn, profile_id, updates)
         _safe_invalidate_resolver(profile_id)
         return res
 
     async def delete_profile(self, profile_id: int) -> bool:
-        """Deletes a voice profile from database."""
+        """Public service API: Deletes a voice profile from database."""
         async with get_db(self.db_path) as conn:
             res = await crud.delete_voice_profile(conn, profile_id)
         _safe_invalidate_resolver(profile_id)

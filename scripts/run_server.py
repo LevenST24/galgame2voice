@@ -24,11 +24,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from galgame2voice.utils.precision import (
     read_precision_cache,
     write_precision_cache,
-    write_sovits_yaml_is_half,
     write_sovits_yaml_config,
-    resolve_initial_is_half,
     resolve_initial_device_and_half,
-    read_db_precision,
 )
 from galgame2voice.utils.hardware import get_gpu_vram_status
 
@@ -605,15 +602,6 @@ def run_hardware_diagnostics() -> dict[str, Any]:
 
     print("      [巡检通过] 运行环境诊断完毕。\n")
     return diag
-
-
-def check_system_memory():
-    """Checks free physical memory and prints advisory if system RAM is constrained."""
-    if sys.platform != "win32":
-        return
-    _, free_gb = get_system_ram_gb()
-    if 0 < free_gb < 1.8:
-        print(f"      [内存提示] 当前系统空闲物理内存约 {free_gb:.1f} GB。建议关闭高内存占用的后台应用以确保语音合成流畅。")
 
 
 def _spawn_sovits_process(

@@ -33,7 +33,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from galgame2voice.schemas.character_manifest import (
-    CharacterManifestV2,
     validate_character_package,
 )
 
