@@ -444,11 +444,11 @@ async def build_split_menu(db_path: str | None = None) -> tuple[str, Any]:
         "选择语音合成长句时的自动切分断句策略："
     )
     splits = [
-        ("cut5", "🌸 cut5 智能自然切分 (推荐)"),
-        ("cut1", "✂️ cut1 凑四句切分"),
-        ("cut2", "。 cut2 按句号切分"),
-        ("cut3", "， cut3 按全标点切分"),
-        ("cut4", "↵ cut4 按换行切分"),
+        ("cut5", "🌸 cut5 按标点符号切 (推荐)"),
+        ("cut1", "✂️ cut1 凑四句切"),
+        ("cut2", "✂️ cut2 凑50字切"),
+        ("cut3", "✂️ cut3 按中文句号。切"),
+        ("cut4", "✂️ cut4 按英文句号.切"),
         ("cut0", "🚫 cut0 不切分 (整段合成)"),
     ]
     reply_markup = _build_single_col_options_markup(
@@ -769,7 +769,7 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
             if profile:
                 char_name = profile.name
     except InsufficientMemoryError as mem_err:
-        err_msg = f"系统内存不足，无法加载该模型: {mem_err}"
+        err_msg = f"系统内存或显存不足，无法加载该模型: {mem_err}"
         logger.warning("Insufficient memory switching to profile %d: %s", profile_id, mem_err)
     except Exception as exc:
         err_msg = f"切换异常: {sanitize_error_detail(exc)}"
