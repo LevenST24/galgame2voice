@@ -7,7 +7,7 @@
   <title>Gal2Voice · AI 多会话对话</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
 
-  <script type="module" crossorigin src="/static/assets/index-CCX26RHb.js"></script>
+  <script type="module" crossorigin src="/static/assets/index-CRCJHX7-.js"></script>
   <link rel="stylesheet" crossorigin href="/static/assets/index-BUDVR9k3.css">
 </head>
 <body>
@@ -122,7 +122,7 @@
       <nav class="session-list" id="sessionList" aria-label="会话列表"></nav>
 
       <footer class="sidebar-foot">
-        <span class="foot-text"><span class="live-dot"></span>会话与设置仅存于本浏览器</span>
+        <span class="foot-text"><span class="live-dot"></span>会话与设置在本浏览器与本地后端之间同步</span>
         <button class="icon-btn foot-gear" id="globalSettingsBtn" title="全局设置" aria-label="全局设置">
           <svg class="icon"><use href="#i-gear"></use></svg>
         </button>
@@ -276,7 +276,7 @@
                 <div class="status-card-sub" id="gDashDeviceVal">硬件加速中</div>
               </div>
               <div class="status-card-act" style="display: flex; gap: 6px;">
-                <button type="button" class="btn-card-action" id="gBtnTogglePrecision" title="一键切换 FP16/FP32 精度并重启">
+                <button type="button" class="btn-card-action" id="gBtnTogglePrecision" title="按 FP16 → FP32 → CPU 循环切换精度并重启">
                   <svg class="icon"><use href="#i-refresh"></use></svg>
                   <span id="gBtnTogglePrecisionText">切换为 FP32 重启</span>
                 </button>
@@ -384,7 +384,7 @@
               <option value="fp32">FP32 单精度 (通用兼容，彻底防止特定显卡静音)</option>
               <option value="cpu">CPU 稳定模式 (免显存占用，利用大内存彻底杜绝爆显存/驱动崩溃)</option>
             </select>
-            <small style="color: var(--text-3); font-size: 11.5px;">修改后请保存并在「状态诊断」中点击【重启 SoVITS 引擎】生效。</small>
+            <small style="color: var(--text-3); font-size: 11.5px;">选择后会自动保存，请在「状态诊断」中点击【重启 SoVITS 引擎】生效。</small>
           </div>
           <div style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), rgba(168, 85, 247, 0.08)); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: 8px; padding: 14px 16px; margin: 14px 0;">
             <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13.5px; color: var(--primary);">
@@ -404,7 +404,7 @@
             <label>日文双语翻译行为</label>
             <select id="gAutoTranslate">
               <option value="manual">手动（点击消息底部的“翻译”按钮）</option>
-              <option value="auto">自动（新消息生成后自动展开中文翻译）</option>
+              <option value="auto">自动（新消息生成后自动展开日文配音原文）</option>
             </select>
           </div>
         </div>
@@ -513,7 +513,7 @@
           <!-- 语音输入识别 (STT) -->
           <div class="field-group-title" style="margin-top: 20px;">语音输入识别 (STT)</div>
           <div class="field">
-            <label for="gSttEngine">STT 语音识别引擎</label>
+            <label for="gSttEngine">STT 语音识别引擎（仅作全局配置保存；控制台麦克风固定使用浏览器 Web Speech API）</label>
             <select id="gSttEngine">
               <option value="browser">浏览器原生 Web Speech API (推荐，零GPU开销，即说即转)</option>
               <option value="sensevoice">本地 SenseVoice-Small (极速精准，支持情感与多语言)</option>
@@ -533,7 +533,7 @@
               <input id="gTgToken" type="password" placeholder="123456:ABC-DEF…" autocomplete="off" />
             </div>
             <div class="field">
-              <label>允许访问的 Telegram Chat ID（可选，逗号分隔，留空不限制）</label>
+              <label>允许访问的 Telegram 用户 ID（必填，逗号分隔；留空时所有用户都会被拒绝）</label>
               <input id="gTgChatId" placeholder="例如 123456789" autocomplete="off" />
             </div>
             <div class="field-row-2">
@@ -556,15 +556,15 @@
         <!-- 选项卡 5: 记忆与人设 -->
         <div class="gtab-panel hidden" id="gp-memory">
           <label class="check-line" style="font-weight: 600;">
-            <input type="checkbox" id="gMemoryEnabled" checked /> 启用长期记忆增强系统 (提取玩家关键信息并注入上下文)
+            <input type="checkbox" id="gMemoryEnabled" checked /> 长期记忆增强系统 (自动提取玩家关键信息并注入上下文；后端始终启用，此开关暂不起作用)
           </label>
           <div class="field">
-            <label>用户在对话中的称呼 / 昵称 (User Nickname)</label>
+            <label>用户在对话中的称呼 / 昵称（暂未接入后端，保存不会生效；称呼由记忆系统自动提取）</label>
             <input id="gUserNickname" placeholder="例如：夏目 / 老师 / 指挥官 / 亲爱的" autocomplete="off" />
           </div>
           <div class="field">
             <label>全局默认人设提示词 (System Prompt 模板)</label>
-            <textarea id="gDefaultSystemPrompt" rows="6" placeholder="创建新会话时的默认系统设定..."></textarea>
+            <textarea id="gDefaultSystemPrompt" rows="6" placeholder="（暂未接入后端，内容不会保存；新会话人设以角色包与内置模板为准）"></textarea>
           </div>
         </div>
 
@@ -751,7 +751,7 @@
             <option value="true">AI 动态拟真 · 自动调节语速与语气</option>
             <option value="false">固定参数模式</option>
           </select>
-          <small class="hint" style="display:block;margin-top:4px;color:var(--text-muted,#888);font-size:12px;">开启动态拟真时，AI 将根据对话语境自适应调节每句话的语速（0.70~1.35）与温度（0.60~1.20）；固定参数模式下严格遵循下方滑块数值。</small>
+          <small class="hint" style="display:block;margin-top:4px;color:var(--text-muted,#888);font-size:12px;">开启动态拟真时，AI 将根据对话语境自适应调节每句话的语速（0.50~1.50）与温度（0.60~1.20）；固定参数模式下严格遵循下方滑块数值。</small>
         </div>
         <div class="field field-row">
           <label>语速 Speed <b id="sTtsSpeedVal">1.0</b></label>
@@ -769,7 +769,7 @@
           <label>TTS 温度 <b id="sTtsTempVal">1.0</b></label>
           <input type="range" id="sTtsTemp" min="0" max="2" step="0.05" value="1" />
         </div>
-        <p class="modal-note">以上配置只属于当前会话，随请求实时生效。音色与对话模型等引擎设置在侧边栏底部「全局设置」中调整。</p>
+        <p class="modal-note">以上配置只属于当前会话，随请求实时生效。角色音色在本面板上方绑定，对话模型等引擎设置在侧边栏底部「全局设置」中调整。</p>
       </div>
       <footer class="modal-foot">
         <button class="btn ghost" id="sReset">恢复默认</button>
