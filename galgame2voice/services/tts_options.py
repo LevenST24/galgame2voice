@@ -293,11 +293,17 @@ def _extract_weight_spec(target: Any) -> VoiceProfileWeightSpec:
     loadable absolute paths whether the profile stores project-relative package
     paths or engine-relative paths."""
     if isinstance(target, dict):
-        getter = lambda k, d=None: target.get(k, d)
-        get_fallback = lambda k, fb, d="": target.get(k) or target.get(fb) or d
+        def getter(k, d=None):
+            return target.get(k, d)
+
+        def get_fallback(k, fb, d=""):
+            return target.get(k) or target.get(fb) or d
     elif hasattr(target, "gpt_weights_path"):
-        getter = lambda k, d=None: getattr(target, k, d)
-        get_fallback = lambda k, fb, d="": getattr(target, k, getattr(target, fb, d))
+        def getter(k, d=None):
+            return getattr(target, k, d)
+
+        def get_fallback(k, fb, d=""):
+            return getattr(target, k, getattr(target, fb, d))
     else:
         raise ValueError(f"Cannot extract weight spec from object of type {type(target)}")
 

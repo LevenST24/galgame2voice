@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
 from typing import AsyncGenerator, Dict, Any, List, Optional
@@ -39,6 +41,145 @@ def pytest_configure(config):
         "markers",
         "requires_character_assets: mark test as requiring installed character assets in characters/",
     )
+    for line in _CAPABILITY_MARKER_DESCRIPTIONS:
+        config.addinivalue_line("markers", line)
+
+
+# ---------------------------------------------------------------------------
+# Host capability probes
+# ---------------------------------------------------------------------------
+# A few tests genuinely need OS facilities that locked-down hosts withhold: a
+# private temp directory the process can actually write into, and subprocesses
+# with piped stdio (on Windows those need a named pipe, which some sandboxes and
+# endpoint-security products refuse to create). On such a host those tests used
+# to fail with a bare PermissionError, which reads like a product regression.
+#
+# They are marked instead, and the marker is turned into a skip with an explicit
+# reason only when the capability is really missing. Each probe performs the
+# operation it claims to test, so a host that can do the work never skips.
+
+_CAPABILITY_MARKER_DESCRIPTIONS = (
+    "requires_piped_subprocess: needs subprocesses with piped stdio (real ffmpeg / audio conversion)",
+    "requires_writable_temp_dir: needs a private temp directory the process can write into",
+    "requires_process_termination: needs permission to terminate a child process it started",
+    "wall_clock: asserts an absolute wall-clock budget, so it is skipped under coverage instrumentation",
+)
+
+_PROBE_SUBPROCESS_TIMEOUT_SECONDS = 60.0
+
+WRITABLE_TEMP_DIR_SKIP_REASON = (
+    "host does not provide a private temp directory the process can write into "
+    "(tempfile.mkdtemp() returns an unusable directory here)"
+)
+PIPED_SUBPROCESS_SKIP_REASON = (
+    "host cannot spawn subprocesses with piped stdio, which on Windows requires "
+    "a named pipe (real ffmpeg/audio-conversion paths cannot run here)"
+)
+PROCESS_TERMINATION_SKIP_REASON = (
+    "host denies terminating a process this suite started, so process-tree "
+    "cleanup cannot be exercised here"
+)
+
+
+def _probe_writable_private_temp_dir() -> bool:
+    """True when a tempfile.mkdtemp() directory can be written into."""
+    try:
+        path = tempfile.mkdtemp(prefix="g2v_cap_")
+    except OSError:
+        return False
+    try:
+        with open(os.path.join(path, "probe.txt"), "w", encoding="utf-8") as handle:
+            handle.write("ok")
+        os.makedirs(os.path.join(path, "sub"), exist_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _probe_piped_subprocess() -> bool:
+    """True when asyncio can spawn a subprocess with piped stdio."""
+    async def _run() -> bool:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                "print('ok')",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except (OSError, NotImplementedError):
+            return False
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=_PROBE_SUBPROCESS_TIMEOUT_SECONDS
+            )
+        except (OSError, asyncio.TimeoutError):
+            proc.kill()
+            return False
+        return proc.returncode == 0 and b"ok" in (stdout or b"")
+
+    try:
+        return asyncio.run(_run())
+    except Exception:
+        return False
+
+
+def _probe_process_termination() -> bool:
+    """True when the host lets us terminate a process this suite started."""
+    try:
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    except OSError:
+        return False
+    try:
+        if sys.platform == "win32":
+            result = subprocess.run(
+                ["taskkill", "/f", "/pid", str(proc.pid)],
+                capture_output=True,
+                text=True,
+            )
+            return result.returncode == 0
+        proc.terminate()
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+HOST_SUPPORTS_WRITABLE_TEMP_DIR = _probe_writable_private_temp_dir()
+HOST_SUPPORTS_PIPED_SUBPROCESS = _probe_piped_subprocess()
+HOST_SUPPORTS_PROCESS_TERMINATION = _probe_process_termination()
+
+
+def pytest_collection_modifyitems(config, items):
+    """Turns capability markers into skips when the host lacks the capability."""
+    # A wall-clock assertion and a coverage run cannot both be honest: tracing
+    # multiplies the cost of every executed line, so a budget like "average cache
+    # hit under 0.005 ms" measures the tracer, not the cache. Skipping is the
+    # only outcome that does not turn the coverage job into a false alarm.
+    coverage_active = config.getoption("cov_source", None) is not None
+    if coverage_active:
+        for item in items:
+            if "wall_clock" in item.keywords:
+                item.add_marker(pytest.mark.skip(
+                    reason="wall-clock assertion is meaningless under coverage instrumentation"
+                ))
+
+    if not HOST_SUPPORTS_PIPED_SUBPROCESS:
+        for item in items:
+            if "requires_piped_subprocess" in item.keywords:
+                item.add_marker(pytest.mark.skip(reason=PIPED_SUBPROCESS_SKIP_REASON))
+    if not HOST_SUPPORTS_WRITABLE_TEMP_DIR:
+        for item in items:
+            if "requires_writable_temp_dir" in item.keywords:
+                item.add_marker(pytest.mark.skip(reason=WRITABLE_TEMP_DIR_SKIP_REASON))
+    if not HOST_SUPPORTS_PROCESS_TERMINATION:
+        for item in items:
+            if "requires_process_termination" in item.keywords:
+                item.add_marker(pytest.mark.skip(reason=PROCESS_TERMINATION_SKIP_REASON))
 
 
 
@@ -473,6 +614,50 @@ def mock_gpt_sovits():
 def mock_llm_server():
     """Provides a fresh instance of MockLLMServer."""
     return MockLLMServer()
+
+
+@pytest.fixture(autouse=True)
+def _clear_settings_cache():
+    """Drops the lru_cached Settings around every test.
+
+    ``get_settings()`` is memoized, so a test that redirects configuration
+    through the environment (project root, data dir, DB path) would otherwise
+    leave the next test reading the previous test's resolved settings — or read
+    a stale object resolved before its own ``monkeypatch.setenv`` ran.
+    """
+    from galgame2voice.config import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def forbid_unmarked_real_ffmpeg(request, monkeypatch):
+    """Unit tests must not reach the real ffmpeg executable.
+
+    ``is_ffmpeg_available()`` is **not** the decision point the conversion path
+    uses — that is ``_run_ffmpeg_transcode`` → ``_require_ffmpeg_bin`` →
+    ``find_ffmpeg``. A test that patches ``is_ffmpeg_available()`` therefore only
+    *believes* it mocked ffmpeg: the real binary is still discovered, and the
+    test quietly depends on whether the host happens to ship ffmpeg. That is how
+    a suite goes red on a runner while passing on the developer's machine.
+
+    Fail loudly instead. Tests that genuinely exercise the toolchain declare
+    ``requires_piped_subprocess`` and are exempt.
+    """
+    if request.node.get_closest_marker("requires_piped_subprocess"):
+        return
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError(
+            "unit test reached real ffmpeg discovery through find_ffmpeg(); patch "
+            "galgame2voice.utils.audio_converter.find_ffmpeg (the real decision "
+            "point) or mark the test requires_piped_subprocess if it genuinely "
+            "runs the toolchain"
+        )
+
+    monkeypatch.setattr("galgame2voice.utils.audio_converter.find_ffmpeg", _forbidden)
 
 
 @pytest.fixture(autouse=True)

@@ -14,6 +14,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
+from galgame2voice.config import get_settings
 from galgame2voice.utils import prosody
 from galgame2voice.utils.prosody import (
     DYNAMIC_SPEED_MIN,
@@ -99,8 +100,18 @@ def test_crud_auto_heal_has_no_shutil_or_yuzusoft_strings():
 
 
 @pytest.mark.asyncio
-async def test_crud_auto_heal_objective_validation(tmp_path):
+async def test_crud_auto_heal_objective_validation(tmp_path, monkeypatch):
     """Verifies objective path validation repairs missing/unportable paths and keeps valid paths."""
+    # The "valid" profile points at the bundled reference audio, and audio/* is
+    # git-ignored, so a fresh clone has no such file. Materialise an isolated
+    # project root instead: the test then measures the healing rules rather than
+    # whether the developer happens to have installed the media assets.
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    bundled_ref = tmp_path / "audio" / "references" / "natsume" / "gentle.ogg"
+    bundled_ref.parent.mkdir(parents=True, exist_ok=True)
+    bundled_ref.write_bytes(b"OggS" + b"\x00" * 64)
+
     db_path = tmp_path / "test_heal_purified.db"
     async with aiosqlite.connect(str(db_path)) as conn:
         conn.row_factory = aiosqlite.Row
@@ -137,31 +148,43 @@ async def test_crud_auto_heal_canonicalizes_absolute_project_paths(tmp_path):
     from galgame2voice.config import get_settings
     settings = get_settings()
     abs_gentle = (settings.project_root / "audio" / "references" / "natsume" / "gentle.ogg").resolve()
+    created_dummy = False
+    if not abs_gentle.is_file():
+        abs_gentle.parent.mkdir(parents=True, exist_ok=True)
+        abs_gentle.write_bytes(b"OGG_DUMMY_AUDIO")
+        created_dummy = True
 
-    db_path = tmp_path / "test_heal_canonicalize.db"
-    async with aiosqlite.connect(str(db_path)) as conn:
-        conn.row_factory = aiosqlite.Row
-        await conn.execute("""
-            CREATE TABLE voice_profiles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                ref_audio_path TEXT NOT NULL,
-                is_default INTEGER NOT NULL DEFAULT 0,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        await conn.execute("""
-            INSERT INTO voice_profiles (id, name, ref_audio_path) VALUES
-            (1, 'Absolute In-Project Voice', ?);
-        """, (str(abs_gentle),))
-        await conn.commit()
+    try:
+        db_path = tmp_path / "test_heal_canonicalize.db"
+        async with aiosqlite.connect(str(db_path)) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("""
+                CREATE TABLE voice_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    ref_audio_path TEXT NOT NULL,
+                    is_default INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await conn.execute("""
+                INSERT INTO voice_profiles (id, name, ref_audio_path) VALUES
+                (1, 'Absolute In-Project Voice', ?);
+            """, (str(abs_gentle),))
+            await conn.commit()
 
-        healed = await crud.auto_heal_voice_profiles(conn)
-        assert healed == 1, "Absolute path in project root should be canonicalized to relative!"
+            healed = await crud.auto_heal_voice_profiles(conn)
+            assert healed == 1, "Absolute path in project root should be canonicalized to relative!"
 
-        cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE id = 1;")
-        row = await cur.fetchone()
-        assert row["ref_audio_path"] == "audio/references/natsume/gentle.ogg"
+            cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE id = 1;")
+            row = await cur.fetchone()
+            assert row["ref_audio_path"] == "audio/references/natsume/gentle.ogg"
+    finally:
+        if created_dummy and abs_gentle.exists():
+            try:
+                abs_gentle.unlink()
+            except OSError:
+                pass
 
 
 # ============================================================================

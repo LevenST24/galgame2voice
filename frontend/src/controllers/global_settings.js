@@ -4,6 +4,7 @@ import {
   saveProvider,
   activateProvider as apiActivateProvider,
   testProviderConnection,
+  getErrorMessage,
 } from '../api.js';
 import { formatProviderDiagnostic, BUILTIN_PRESETS } from '../settings.js';
 import { state, saveGlobal } from '../store.js';
@@ -842,7 +843,7 @@ async function handleRestartSovits() {
       body: JSON.stringify(payload),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    if (!res.ok) throw new Error(getErrorMessage(data, `HTTP ${res.status}`));
     showToast(data.message || 'GPT-SoVITS 重启指令已发送', 'success');
     setTimeout(() => {
       fetchSystemTelemetry();
@@ -882,7 +883,7 @@ async function handleTogglePrecision() {
       body: JSON.stringify({ precision: targetPrec }),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    if (!res.ok) throw new Error(getErrorMessage(data, `HTTP ${res.status}`));
     showToast(data.message || `已按 ${targetLabel} 重启语音引擎`, 'success');
     setTimeout(() => {
       fetchSystemTelemetry();
@@ -909,7 +910,7 @@ async function handleClearCache() {
     }
     const res = await fetch('/api/cache/clear', { method: 'POST' });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    if (!res.ok) throw new Error(getErrorMessage(data, `HTTP ${res.status}`));
     showToast(`缓存已清空：删除 ${data.deleted_files || 0} 个文件，释放 ${data.freed_mb || 0} MB`, 'success');
     fetchSystemTelemetry();
   } catch (err) {

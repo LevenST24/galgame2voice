@@ -1,6 +1,27 @@
 // 前端通用 API 交互封装：提供商管理、连通性测试、系统配置
 
 /**
+ * Unpacks error messages from structured backend responses.
+ * Prevents displaying [object Object] when detail is an object (e.g. {code, message}).
+ * @param {any} errData
+ * @param {string} fallback
+ * @returns {string}
+ */
+export function getErrorMessage(errData, fallback = '请求失败') {
+  if (!errData) return fallback;
+  const detail = errData.detail !== undefined ? errData.detail : errData.message;
+  if (typeof detail === 'string') return detail;
+  if (detail && typeof detail === 'object') {
+    if (typeof detail.message === 'string') return detail.message;
+    if (typeof detail.error === 'string') return detail.error;
+    try {
+      return JSON.stringify(detail);
+    } catch (_) {}
+  }
+  return fallback;
+}
+
+/**
  * 获取所有已配置提供商与官方预设
  * @returns {Promise<{ providers: Array, presets: Array }>}
  */
@@ -8,7 +29,7 @@ export async function fetchProviders() {
   const res = await fetch('/api/providers');
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || `HTTP ${res.status}`);
+    throw new Error(getErrorMessage(err, `HTTP ${res.status}`));
   }
   return res.json();
 }
@@ -22,7 +43,7 @@ export async function fetchProvider(providerId) {
   const res = await fetch(`/api/providers/${encodeURIComponent(providerId)}`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || `HTTP ${res.status}`);
+    throw new Error(getErrorMessage(err, `HTTP ${res.status}`));
   }
   return res.json();
 }
@@ -40,7 +61,7 @@ export async function saveProvider(payload) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.detail || `HTTP ${res.status}`);
+    throw new Error(getErrorMessage(data, `HTTP ${res.status}`));
   }
   return data;
 }
@@ -56,7 +77,7 @@ export async function activateProvider(providerId) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.detail || `HTTP ${res.status}`);
+    throw new Error(getErrorMessage(data, `HTTP ${res.status}`));
   }
   return data;
 }
@@ -75,10 +96,11 @@ export async function testProviderConnection(payload) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     // 处理 HTTP 异常状态码响应 (如 400, 422 等)
+    const errMsg = getErrorMessage(data, `HTTP ${res.status}`);
     return {
       success: false,
-      message: data.detail || `HTTP ${res.status}`,
-      error: data.detail || `HTTP ${res.status}`,
+      message: errMsg,
+      error: errMsg,
       diagnostic: data.diagnostic,
       latency_ms: 0,
     };
@@ -94,7 +116,7 @@ export async function fetchConfig() {
   const res = await fetch('/api/config');
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || `HTTP ${res.status}`);
+    throw new Error(getErrorMessage(err, `HTTP ${res.status}`));
   }
   return res.json();
 }
@@ -112,7 +134,7 @@ export async function saveConfig(payload) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.detail || `HTTP ${res.status}`);
+    throw new Error(getErrorMessage(data, `HTTP ${res.status}`));
   }
   return data;
 }
@@ -126,7 +148,7 @@ export async function fetchSystemVersion(checkRemote = true) {
   const res = await fetch(`/api/system/version?check_remote=${checkRemote ? 'true' : 'false'}`);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.detail || `HTTP ${res.status}`);
+    throw new Error(getErrorMessage(data, `HTTP ${res.status}`));
   }
   return data;
 }
@@ -139,7 +161,7 @@ export async function checkSystemUpdate() {
   const res = await fetch('/api/system/update/check');
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.detail || `HTTP ${res.status}`);
+    throw new Error(getErrorMessage(data, `HTTP ${res.status}`));
   }
   return data;
 }
@@ -157,7 +179,7 @@ export async function applySystemUpdate(payload = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.detail || data.output || `HTTP ${res.status}`);
+    throw new Error(getErrorMessage(data, data.output || `HTTP ${res.status}`));
   }
   return data;
 }

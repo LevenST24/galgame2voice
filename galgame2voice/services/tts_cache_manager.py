@@ -484,17 +484,22 @@ class TtsCacheManager:
         collected = bytearray() if should_buffer else None
 
         try:
-            with open(file_path, "rb") as f:
+            # Opening the file is a syscall too: keep it off the event loop, the
+            # same way the reads below already are.
+            file_handle = await asyncio.to_thread(open, file_path, "rb")
+            try:
                 async with self._lock:
                     self._record_hit_locked(cache_key)
 
                 while True:
-                    chunk = await asyncio.to_thread(f.read, bounded_chunk_size)
+                    chunk = await asyncio.to_thread(file_handle.read, bounded_chunk_size)
                     if not chunk:
                         break
                     if should_buffer and collected is not None:
                         collected.extend(chunk)
                     yield chunk
+            finally:
+                await asyncio.to_thread(file_handle.close)
 
             if should_buffer and collected is not None and len(collected) <= self.max_mem_bytes:
                 async with self._lock:

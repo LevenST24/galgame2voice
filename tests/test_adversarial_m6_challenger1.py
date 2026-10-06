@@ -392,6 +392,7 @@ class TestSessionManagerAdversarial:
             assert retrieved.content_chinese == original
             assert retrieved.content_japanese == original
 
+    @pytest.mark.wall_clock
     def test_token_estimation_speed_and_invariants(self, m6_temp_db):
         """Benchmark and invariant tests for estimate_tokens."""
         sm = SessionManager(m6_temp_db)
@@ -475,6 +476,7 @@ class TestSessionManagerAdversarial:
 class TestTelegramBotAdversarial:
     """Stress tests for Telegram bot interruption handling, concurrency storms, and error boundaries."""
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_rapid_fire_interruption_burst_30_messages(self, m6_temp_db):
         """
@@ -521,6 +523,7 @@ class TestTelegramBotAdversarial:
         assert len(bot_client.sent_voices) >= 1
         assert bot_client.sent_voices[-1]["chat_id"] == chat_id
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_heavy_multi_user_interruption_storm(self, m6_temp_db):
         """

@@ -192,6 +192,7 @@ class TestAdversarialAgileChunking:
         assert res_term[0] == "はい！"
         assert res_term[1] == "先生、おはようございます。"
 
+    @pytest.mark.wall_clock
     def test_chunking_huge_paragraph_no_catastrophic_backtracking(self):
         """
         Stress-tests 50,000 characters to assert zero ReDoS, stack overflow,
@@ -256,6 +257,7 @@ class TestAdversarialAgileChunking:
 class TestRapidInterruptStress:
     """Stress tests stream_chat under 50+ rapid cancellations across varying lifecycles."""
 
+    @pytest.mark.wall_clock
     @pytest.mark.asyncio
     async def test_rapid_50_interrupt_signals_during_streaming(self, temp_db_path, mock_gpt_sovits):
         """
@@ -430,6 +432,7 @@ class TestLongDialogueMemoryStress:
 class TestConcurrentCancellationStorm:
     """Stress tests concurrent cancellations firing simultaneously across multiple sessions."""
 
+    @pytest.mark.wall_clock
     @pytest.mark.asyncio
     async def test_concurrent_streams_simultaneous_cancellation(self, temp_db_path, mock_gpt_sovits):
         """Spawns 4 concurrent streams and fires cancellations simultaneously; asserts release < 100ms."""

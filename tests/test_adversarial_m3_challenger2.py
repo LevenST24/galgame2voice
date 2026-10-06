@@ -86,6 +86,7 @@ class MockGptSovitsForAdversarial:
 class TestTtsCacheHitLatencyBenchmark:
     """Rigorous empirical latency benchmark for 100 consecutive cache hits."""
 
+    @pytest.mark.wall_clock
     @pytest.mark.asyncio
     async def test_100_consecutive_cache_hits_latency(self, tmp_path):
         """

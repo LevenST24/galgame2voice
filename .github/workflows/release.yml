@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Lint (ruff)
+        run: uv run ruff check galgame2voice scripts
+
+      - name: Run test suite
+        run: uv run pytest -q -p no:cacheprovider
+        env:
+          GALGAME2VOICE_RATE_LIMIT_DISABLED: "1"
+
+      - name: Verify endpoint resolution behavioral invariant
+        run: uv run pytest -q tests/test_sovits_endpoint.py
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Rebuild frontend bundle
+        working-directory: frontend
+        run: |
+          npm install --no-audit --no-fund
+          npm run deploy
+
+      - name: Build release ZIP
+        run: uv run python scripts/package_release.py
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: galgame2voice-release
+          path: |
+            dist/*.zip
+            dist/*.sha256

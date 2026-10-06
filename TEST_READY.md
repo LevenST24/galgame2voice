@@ -1,12 +1,18 @@
 # TEST_READY: Galgame2Voice Automated E2E Test Suite
 
 ## 1. Test Suite Status Overview
-- **Suite Readiness**: **READY** (100% Syntactically Sound & Validated)
+
+> **The authoritative status of this suite is the CI run, not this document.**
+> Do not record pass rates, test counts or "green" claims here by hand: they go
+> stale silently, and a reader cannot tell a real result from a remembered one.
+> Run the suite (section 2) or read the latest CI job to learn the current state.
+
 - **Framework**: `pytest` + `pytest-asyncio` + `httpx` + `aiosqlite`
 - **Primary Test Artifact**: `tests/test_e2e_industrial_hardening.py`
-- **Total New Industrial Tests**: **61 Tests** (0 failures, 0 errors)
-- **Total Regression Suite**: **100 Test Modules (`tests/test_*.py`), 718+ Tests**
 - **Test Strategy Standard**: 4-Tier Opaque-Box Hierarchy (`TEST_INFRA.md`)
+- **Environment-dependent tests**: tests that need real media assets, subprocess
+  pipes or a writable temp directory are marked and skip with an explicit reason
+  instead of failing; see "Host Capability Markers" in `TEST_INFRA.md`.
 
 ---
 
@@ -33,16 +39,16 @@ python -m pytest tests/test_e2e_industrial_hardening.py --durations=10 -v
 
 | Req ID | Requirement Description | Test Class / Scope | Key Tests | Status |
 |---|---|---|---|:---:|
-| **R1.1** | 全局异常兜底与防崩溃机制 (Global Exception & Error Handling) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier4RealWorldApplicationScenarios` | `test_f2_01_http_error_sanitization`<br>`test_f2_02_sse_error_event_formatting`<br>`test_f2_03_telegram_test_error_sanitization`<br>`test_f2_04_provider_test_error_sanitization`<br>`test_scenario_03_upstream_network_fault_and_graceful_degradation` | **PASSED** (100%) |
-| **R1.2** | 内存防泄漏与后台生命周期管理 (Lifecycle & Resource Management) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier4RealWorldApplicationScenarios` | `test_f9_02_telegram_task_cancellation`<br>`test_b5_02_tts_cache_memory_byte_cap_eviction`<br>`test_scenario_02_high_concurrency_multi_tenant_streaming` | **PASSED** (100%) |
-| **R1.3** | 数据库连接与事务健壮性 (SQLite WAL & Burst Concurrency) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier3CrossFeatureCombinations` | `test_f6_01_database_wal_mode_enabled`<br>`test_f6_02_database_busy_timeout_setting`<br>`test_b6_01_database_burst_concurrency_stress`<br>`test_pair_02_tts_cache_and_database_wal_burst` | **PASSED** (100%) |
-| **R2.1** | API 凭据与敏感信息绝对隔离 (Zero-Leakage Key Masking) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier3CrossFeatureCombinations` | `test_f1_01_masking_openai_api_key`<br>`test_f1_02_masking_google_gemini_api_key`<br>`test_f1_03_masking_bearer_tokens`<br>`test_f1_04_masking_telegram_bot_token`<br>`test_b1_02_logging_massive_string_with_secrets`<br>`test_b1_03_logging_multiple_concatenated_secrets`<br>`test_pair_03_log_masking_and_http_error_response` | **PASSED** (100%) |
-| **R2.2** | 路径遍历与输入安全边界防护 (Path Traversal & SSRF Defense) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier3CrossFeatureCombinations` | `test_f7_01_reject_audio_path_traversal`<br>`test_f7_02_fs_browse_filter_extensions`<br>`test_f7_03_ssrf_url_guard_blocks_private_ranges`<br>`test_f7_04_ssrf_url_guard_allows_public_https`<br>`test_b7_01_path_traversal_windows_device_names`<br>`test_pair_04_path_traversal_and_tts_cache` | **PASSED** (100%) |
-| **R2.3** | Telegram 实体转义与防 Prompt 注入 (Injection Defense) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier3CrossFeatureCombinations` | `test_f4_01` ~ `test_f4_05`<br>`test_b4_01_memory_prompt_injection_delimiter_suppression`<br>`test_b4_02_memory_heuristic_redos_resistance`<br>`test_pair_01_memory_injection_and_bilingual_streaming` | **PASSED** (100%) |
-| **R3.1** | 流式 SSE 与音频分发性能 (Streaming Bilingual Pipeline) | `TestTier1FeatureCoverage`<br>`TestTier4RealWorldApplicationScenarios` | `test_f8_01_streaming_bilingual_parser_incremental`<br>`test_scenario_02_high_concurrency_multi_tenant_streaming` | **PASSED** (100%) |
-| **R3.2** | 双级 TTS 缓存微秒级响应 (TTS Memory LRU Latency < 0.05ms) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier4RealWorldApplicationScenarios` | `test_f5_01_cache_key_computation_deterministic`<br>`test_f5_02_in_memory_cache_hit_latency`<br>`test_f5_03_atomic_file_persistence`<br>`test_b5_01_tts_cache_corrupted_zero_byte_recovery`<br>`test_scenario_04_cache_saturation_and_lru_pruning_lifecycle` | **PASSED** (100%) |
-| **R3.3** | 优雅停机与进程资源释放 (Process Lifecycle & Isolation) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases` | `test_f9_02_telegram_task_cancellation`<br>`test_b6_01_database_burst_concurrency_stress` | **PASSED** (100%) |
-| **R4.1** | 全量工业级自动化回归 (Regression & Stress Pass) | All Tiers (T1 - T4) | 61 dedicated opaque-box tests passing with 0 failures, 0 errors | **PASSED** (100%) |
+| **R1.1** | 全局异常兜底与防崩溃机制 (Global Exception & Error Handling) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier4RealWorldApplicationScenarios` | `test_f2_01_http_error_sanitization`<br>`test_f2_02_sse_error_event_formatting`<br>`test_f2_03_telegram_test_error_sanitization`<br>`test_f2_04_provider_test_error_sanitization`<br>`test_scenario_03_upstream_network_fault_and_graceful_degradation` | Covered |
+| **R1.2** | 内存防泄漏与后台生命周期管理 (Lifecycle & Resource Management) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier4RealWorldApplicationScenarios` | `test_f9_02_telegram_task_cancellation`<br>`test_b5_02_tts_cache_memory_byte_cap_eviction`<br>`test_scenario_02_high_concurrency_multi_tenant_streaming` | Covered |
+| **R1.3** | 数据库连接与事务健壮性 (SQLite WAL & Burst Concurrency) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier3CrossFeatureCombinations` | `test_f6_01_database_wal_mode_enabled`<br>`test_f6_02_database_busy_timeout_setting`<br>`test_b6_01_database_burst_concurrency_stress`<br>`test_pair_02_tts_cache_and_database_wal_burst` | Covered |
+| **R2.1** | API 凭据与敏感信息绝对隔离 (Zero-Leakage Key Masking) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier3CrossFeatureCombinations` | `test_f1_01_masking_openai_api_key`<br>`test_f1_02_masking_google_gemini_api_key`<br>`test_f1_03_masking_bearer_tokens`<br>`test_f1_04_masking_telegram_bot_token`<br>`test_b1_02_logging_massive_string_with_secrets`<br>`test_b1_03_logging_multiple_concatenated_secrets`<br>`test_pair_03_log_masking_and_http_error_response` | Covered |
+| **R2.2** | 路径遍历与输入安全边界防护 (Path Traversal & SSRF Defense) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier3CrossFeatureCombinations` | `test_f7_01_reject_audio_path_traversal`<br>`test_f7_02_fs_browse_filter_extensions`<br>`test_f7_03_ssrf_url_guard_blocks_private_ranges`<br>`test_f7_04_ssrf_url_guard_allows_public_https`<br>`test_b7_01_path_traversal_windows_device_names`<br>`test_pair_04_path_traversal_and_tts_cache` | Covered |
+| **R2.3** | Telegram 实体转义与防 Prompt 注入 (Injection Defense) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier3CrossFeatureCombinations` | `test_f4_01` ~ `test_f4_05`<br>`test_b4_01_memory_prompt_injection_delimiter_suppression`<br>`test_b4_02_memory_heuristic_redos_resistance`<br>`test_pair_01_memory_injection_and_bilingual_streaming` | Covered |
+| **R3.1** | 流式 SSE 与音频分发性能 (Streaming Bilingual Pipeline) | `TestTier1FeatureCoverage`<br>`TestTier4RealWorldApplicationScenarios` | `test_f8_01_streaming_bilingual_parser_incremental`<br>`test_scenario_02_high_concurrency_multi_tenant_streaming` | Covered |
+| **R3.2** | 双级 TTS 缓存亚毫秒级响应 (TTS Memory LRU Latency < 0.5ms，100 次查询平均) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier4RealWorldApplicationScenarios` | `test_f5_01_cache_key_computation_deterministic`<br>`test_f5_02_in_memory_cache_hit_latency`<br>`test_f5_03_atomic_file_persistence`<br>`test_b5_01_tts_cache_corrupted_zero_byte_recovery`<br>`test_scenario_04_cache_saturation_and_lru_pruning_lifecycle` | Covered |
+| **R3.3** | 优雅停机与进程资源释放 (Process Lifecycle & Isolation) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases` | `test_f9_02_telegram_task_cancellation`<br>`test_b6_01_database_burst_concurrency_stress` | Covered |
+| **R4.1** | 全量工业级自动化回归 (Regression & Stress Pass) | All Tiers (T1 - T4) | `tests/test_e2e_industrial_hardening.py` (the industrial hardening suite) | Covered |
 
 ---
 
@@ -83,6 +89,18 @@ python -m pytest tests/test_e2e_industrial_hardening.py --durations=10 -v
 ---
 
 ## 5. Verification Result
-- **Test Run Output**: `61 passed in 38.02s`
-- **Failures / Errors**: `0`
-- **Status**: **ALL TESTS GREEN & READY FOR RELEASE PIPELINE**
+
+This section used to assert a recorded green run. It no longer does, because a
+hand-written result cannot be distinguished from a stale one.
+
+The requirement matrix in section 3 describes **intended coverage** — which tests
+exercise which requirement — not a recorded outcome. For the current outcome:
+
+```powershell
+python -m pytest -q -rs
+```
+
+`-rs` prints why anything was skipped. The suite is expected to report **zero
+unexplained failures**; a `FAIL` is a defect, a `skip` with a capability reason
+is this host lacking an OS facility, and a `skip` for missing assets means the
+optional character media is not installed.

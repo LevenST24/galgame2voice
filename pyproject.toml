@@ -17,7 +17,6 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Framework :: FastAPI",
     "License :: OSI Approved :: MIT License",
     "Operating System :: Microsoft :: Windows",
@@ -58,10 +57,29 @@ target-version = "py310"
 extend-exclude = ["tests"]
 
 [tool.ruff.lint]
-# Progressive adoption: hard errors only for now (syntax errors, undefined
-# names, locals used before assignment, unused locals). Widen the rule set as
-# the codebase is cleaned up.
-select = ["E9", "F821", "F823", "F841"]
+# Progressive adoption, stage 2 of the plan in TEST_INFRA.md.
+#
+# Stage 1 was "hard errors only" (syntax errors, undefined names, unused
+# locals). This stage adds the rule families whose findings are *defects*
+# rather than taste, so the gate fails on real problems without burying the
+# team in a mass reformat:
+#   F     pyflakes  - unused imports, f-strings with no placeholders
+#   B     bugbear   - zip() without strict=, mutable defaults, and friends
+#   ASYNC           - blocking calls and busy-waits inside async functions
+#   E4/E7/E9        - the import/statement/syntax errors from stage 1
+#
+# Deliberately NOT enabled yet: I (import order), UP (typing modernisation) and
+# SIM (style simplifications). They currently report ~190 findings, all
+# mechanical, and belong in a dedicated formatting-only commit so that a real
+# behavioural change is never hidden inside a reordering diff.
+select = ["E4", "E7", "E9", "F", "B", "ASYNC"]
+
+# ASYNC240 flags every pathlib.Path / os.path probe inside an async function.
+# The remaining findings are all `is_file()`, `stat()` and `abspath()` calls on
+# local files, which cost microseconds; routing them through asyncio.to_thread
+# would add a thread hop and a scheduling delay to paths that are already
+# correct. Revisit if such a probe ever moves onto a network filesystem.
+ignore = ["ASYNC240"]
 
 [tool.mypy]
 python_version = "3.10"

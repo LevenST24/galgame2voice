@@ -115,11 +115,30 @@ class VoiceManager:
         self._bg_tasks: set[asyncio.Task] = set()
 
     def _spawn_background(self, coro: Any) -> asyncio.Task:
-        """Spawns and retains a strong reference to a background task, preventing GC mid-execution."""
+        """Spawns and retains a strong reference to a background task, preventing GC mid-execution.
+
+        The done-callback also consumes the task's result. Without that, a failed
+        fire-and-forget task keeps its exception unretrieved and the interpreter
+        reports a bare "Task exception was never retrieved" whenever the task is
+        collected — long after the context that could explain it is gone.
+        """
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
-        task.add_done_callback(self._bg_tasks.discard)
+        task.add_done_callback(self._on_background_done)
         return task
+
+    def _on_background_done(self, task: asyncio.Task) -> None:
+        self._bg_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning(
+                "Background voice task failed: %s: %s",
+                type(exc).__name__,
+                exc,
+                exc_info=exc,
+            )
 
     async def aclose(self) -> None:
         """Gracefully drains and cancels pending background warmup tasks upon service shutdown."""

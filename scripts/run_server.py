@@ -21,16 +21,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from galgame2voice.utils.precision import (
+# E402: these imports must follow the sys.path bootstrap above, otherwise the
+# script cannot find the package when it is executed directly from a checkout.
+from galgame2voice.utils.precision import (  # noqa: E402
     read_precision_cache,
     write_precision_cache,
-    write_sovits_yaml_is_half,
     write_sovits_yaml_config,
-    resolve_initial_is_half,
     resolve_initial_device_and_half,
-    read_db_precision,
 )
-from galgame2voice.utils.hardware import get_gpu_vram_status
+from galgame2voice.utils.hardware import get_gpu_vram_status  # noqa: E402
 
 # Ensure runtime directories
 for d in ["logs", "data", "audio"]:
@@ -294,22 +293,43 @@ def cleanup_subprocesses():
 
 
 def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
-    """Checks if a TCP port is open and listening."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.5)
-        return s.connect_ex((host, port)) == 0
+    """Checks if a TCP port is open and listening across IPv4 and IPv6."""
+    try:
+        infos = socket.getaddrinfo(
+            host,
+            port,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+        )
+    except (socket.gaierror, OSError):
+        return False
+
+    for family, socktype, proto, _, sockaddr in infos:
+        try:
+            with socket.socket(family, socktype, proto) as s:
+                s.settimeout(0.5)
+                if s.connect_ex(sockaddr) == 0:
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 def get_sovits_host_port() -> tuple[str, int]:
     """
     Single source of truth for the engine address: parses GPT_SOVITS_BASE_URL
     (env or config) so launcher, backend client and Docker all agree.
+
+    Thin wrapper over the unified resolver
+    (galgame2voice.services.sovits_endpoint); kept for backward compatibility.
     """
-    from urllib.parse import urlparse
     try:
-        from galgame2voice.config import get_settings
-        parsed = urlparse(get_settings().gpt_sovits_base_url)
-        return parsed.hostname or "127.0.0.1", parsed.port or 9880
+        from galgame2voice.services.sovits_endpoint import (
+            resolve_effective_sovits_endpoint_sync,
+        )
+
+        endpoint = resolve_effective_sovits_endpoint_sync()
+        return endpoint.host, endpoint.port
     except Exception:
         return "127.0.0.1", 9880
 
@@ -469,6 +489,21 @@ def build_gpt_sovits_env(sovits_dir: Path, is_half: bool = False) -> dict[str, s
     env["NO_PROXY"] = "localhost, 127.0.0.1, ::1"
     env["all_proxy"] = ""
     env["ALL_PROXY"] = ""
+
+    # Ensure GPT-SoVITS uses its own self-contained TEMP directory
+    # Bypasses Windows user Temp ACL / permission constraints
+    sovits_temp = sovits_dir / "TEMP"
+    try:
+        sovits_temp.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            import ctypes
+            ctypes.windll.kernel32.SetFileAttributesW(str(sovits_temp), 0x80)
+        env["TEMP"] = str(sovits_temp)
+        env["TMP"] = str(sovits_temp)
+        env["TMPDIR"] = str(sovits_temp)
+    except Exception:
+        pass
+
     return env
 
 
@@ -818,7 +853,7 @@ def _calibrate_precision_after_ready(
             if not is_port_in_use(port, host):
                 break
         try:
-            return _spawn_sovits_process(sovits_dir, host, port, new_is_half)
+            return _spawn_sovits_process(sovits_dir, host, port, new_is_half, device=device)
         except Exception as exc:
             print(f"      [WARN] 引擎重启失败: {exc}")
             return None
@@ -841,17 +876,37 @@ def ensure_gpt_sovits_running(
     """
     Spawns the local GPT-SoVITS API daemon if it is not already running.
     Runs non-blocking parallel readiness checking in the background.
+
+    The engine address comes from the unified resolver (explicit process env >
+    SQLite > .env > built-in default). Remote endpoints are never managed by
+    this launcher: no fallback to a local 127.0.0.1:9880 process is performed.
     """
-    sovits_host, sovits_port = get_sovits_host_port()
+    try:
+        from galgame2voice.services.sovits_endpoint import (
+            resolve_effective_sovits_endpoint_sync,
+        )
+
+        endpoint = resolve_effective_sovits_endpoint_sync()
+        sovits_host, sovits_port = endpoint.host, endpoint.port
+        sovits_is_local = endpoint.is_local
+        sovits_base_url = endpoint.base_url
+    except ValueError as exc:
+        print(f"      [错误] GPT-SoVITS 配置地址无效 ({exc})，拒绝静默启动本地引擎。请检查配置。")
+        return
+    except Exception as exc:
+        print(f"      [WARN] GPT-SoVITS 地址读取异常 ({exc})，回落到默认 127.0.0.1:9880")
+        sovits_host, sovits_port = "127.0.0.1", 9880
+        sovits_is_local = True
+        sovits_base_url = "http://127.0.0.1:9880"
     print(f"[1/2] 正在检测 GPT-SoVITS 语音推理引擎 ({sovits_host}:{sovits_port})...")
-    if is_port_in_use(sovits_port, sovits_host) or (sovits_port != 9880 and is_port_in_use(9880)):
+    if is_port_in_use(sovits_port, sovits_host):
         print("      [OK] GPT-SoVITS 语音引擎已在运行")
         return
-    sovits_host = "127.0.0.1"
-    sovits_port = 9880
-
-    if is_port_in_use(sovits_port, sovits_host):
-        print(f"      [OK] GPT-SoVITS 服务已在运行中 (http://{sovits_host}:{sovits_port}/)")
+    if not sovits_is_local:
+        print(
+            f"      [WARN] 配置的远端 GPT-SoVITS ({sovits_base_url}) 不可达；"
+            "本启动器不会回退到本地 127.0.0.1:9880，请在远端主机上自行启动引擎后重试。"
+        )
         return
 
     sovits_dir = find_gpt_sovits_directory()
@@ -908,7 +963,7 @@ def ensure_gpt_sovits_running(
         print("      [..] GPT-SoVITS 正在后台加载模型 (最长 120 秒，伴侣服务先行启动)...")
 
         def _wait_for_sovits_readiness_worker():
-            for i in range(240):
+            for _ in range(240):
                 time.sleep(0.5)
                 if is_port_in_use(sovits_port, sovits_host):
                     print(f"\n      [OK] GPT-SoVITS 语音引擎已就绪 (http://{sovits_host}:{sovits_port}/)")

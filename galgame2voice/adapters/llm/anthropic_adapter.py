@@ -9,8 +9,6 @@ import logging
 import time
 from typing import Any, AsyncGenerator
 
-import httpx
-
 from galgame2voice.adapters.base import (
     BaseLLMAdapter,
     ChatMessage,
@@ -24,6 +22,7 @@ from galgame2voice.adapters.base import (
     aclose_stream_context,
 )
 from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.http_client import create_async_client
 
 logger = logging.getLogger("galgame2voice.adapters.llm.anthropic")
 
@@ -187,7 +186,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         from galgame2voice.security.url_guard import assert_llm_url_safe
         await assert_llm_url_safe(url, allow_private=allow_private)
 
-        client = httpx.AsyncClient(timeout=timeout_s)
+        client = create_async_client(timeout=timeout_s)
         try:
             for attempt in range(max_retries + 1):
                 try:
@@ -276,7 +275,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         await assert_llm_url_safe(url, allow_private=allow_private)
 
         for attempt in range(max_retries + 1):
-            client = httpx.AsyncClient(timeout=timeout_s)
+            client = create_async_client(timeout=timeout_s)
             stream_ctx = None
             try:
                 stream_ctx = client.stream("POST", url, json=payload, headers=headers)

@@ -70,6 +70,8 @@ async def get_latency_trend(
 async def get_cache_stats() -> CacheStatsResponse:
     cache_mgr = get_tts_cache_manager()
     stats = await cache_mgr.get_stats()
+    # Keep the dashboard-facing alias in sync; the frontend reads total_entries.
+    stats["total_entries"] = stats.get("total_files", 0)
     return CacheStatsResponse(**stats)
 
 

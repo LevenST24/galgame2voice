@@ -466,6 +466,7 @@ Traceback (most recent call last):
         assert filter_obj.filter(rec_tuple) is True
         assert "sk-secrettoken-99998888" not in str(rec_tuple.args)
 
+    @pytest.mark.wall_clock
     def test_redos_and_massive_payload_stress(self):
         """
         Verify MaskingFilter does not hang (ReDoS) or crash on a massive 150KB string

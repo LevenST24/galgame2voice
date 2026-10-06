@@ -603,6 +603,7 @@ class ChatService:
         frequency_penalty: float | None = None,
         presence_penalty: float | None = None,
         ai_adaptive_voice: bool | None = None,
+        voice_profile_id: int | None = None,
     ) -> AsyncGenerator[str | dict[str, Any], None]:
         """
         Asynchronously streams bilingual SSE formatted event strings.
@@ -624,6 +625,7 @@ class ChatService:
             frequency_penalty=frequency_penalty,
             presence_penalty=presence_penalty,
             ai_adaptive_voice=ai_adaptive_voice,
+            voice_profile_id=voice_profile_id,
         ):
             yield format_sse_frame(event)
 

@@ -193,6 +193,7 @@ class TestTelegramBotTier1:
         reply = await bot.handle_command(1001, "/voice")
         assert "当前音色" in reply
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_text_message_immediate_reply_and_async_voice(self, mock_llm_server, mock_gpt_sovits):
         bot = MockTelegramBot(token="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz")
@@ -208,6 +209,7 @@ class TestTelegramBotTier1:
         assert bot.sent_voices[0]["chat_id"] == 1001
         assert bot.sent_voices[0]["size"] > 44
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_voice_message_stt_pipeline(self, mock_llm_server, mock_gpt_sovits):
         bot = MockTelegramBot(token="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz")
@@ -245,6 +247,7 @@ class TestTelegramBotTier2:
         assert "语音解析失败" in bot.sent_messages[0]["text"]
         assert len(bot.sent_voices) == 0
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_concurrent_users_handling(self, mock_llm_server, mock_gpt_sovits):
         bot = MockTelegramBot(token="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz")
@@ -257,6 +260,7 @@ class TestTelegramBotTier2:
         chat_ids = {v["chat_id"] for v in bot.sent_voices}
         assert chat_ids == {1001, 1002}
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_interruption_cancels_previous_voice_job(self, mock_llm_server, mock_gpt_sovits):
         bot = MockTelegramBot(token="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz")
@@ -302,6 +306,7 @@ class TestTelegramBotTier2:
         reply = await bot.handle_command(1001, command_str)
         assert expected_keyword in reply
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_voice_caption_contains_japanese_text(self, mock_llm_server, mock_gpt_sovits):
         bot = MockTelegramBot(token="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz")
@@ -336,6 +341,7 @@ class TestTelegramBotRealModules:
         assert kwargs["proxy"] == "http://127.0.0.1:7890"
         assert kwargs["read_timeout"] == 30.0
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_audio_converter_roundtrip(self):
         sample_wav = b"RIFF\x24\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x08\x00\x00" + (b"\x00\x7f" * 100)
@@ -672,6 +678,7 @@ class TestTelegramBotRealModules:
         assert target_profile.name in r_valid
         assert "当前角色" in r_valid
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_telegram_bot_process_text_chat_dynamic_tts_and_chat_actions(self, temp_db_path):
         """Validates that process_text_chat sends typing/recording actions and forwards dynamic TTS options."""

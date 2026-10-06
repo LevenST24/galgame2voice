@@ -255,6 +255,7 @@ class TestLlmRetryEdgeCases:
 class TestTtsCacheConcurrencyAndCorruption:
     """Stress tests for concurrent cache hit latency (<1ms) and 0-byte corrupt cache self-healing."""
 
+    @pytest.mark.wall_clock
     async def test_concurrent_cache_hits_latency_under_1ms_and_no_gpu_lock(self, tmp_path):
         """Verifies 50 concurrent cache hits execute with <1ms latency without GPU lock contention."""
         db_file = tmp_path / "test_tts_cache.db"

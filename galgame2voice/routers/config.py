@@ -111,16 +111,36 @@ _PRECISION_CONFIG_MAP: dict[str, tuple[bool, str]] = {
 }
 
 
-async def _apply_sovits_url_update(new_sovits_url: str | None) -> None:
-    """Hot-applies GPT-SoVITS endpoint change to the shared client so it takes effect immediately."""
+async def _apply_sovits_url_update(new_sovits_url: str | None) -> dict[str, Any] | None:
+    """Hot-applies the *effective* GPT-SoVITS endpoint to the shared client.
+
+    Re-resolves through the unified resolver so an explicit process env var
+    still wins over the just-saved DB value. Returns the effective
+    {"base_url", "source"} on success, None when skipped or failed.
+    """
     if not new_sovits_url:
-        return
+        return None
+    try:
+        from galgame2voice.services.sovits_endpoint import (
+            resolve_effective_sovits_endpoint,
+        )
+
+        endpoint = await resolve_effective_sovits_endpoint()
+        target_url, source = endpoint.base_url, endpoint.source
+    except Exception as exc:
+        logger.warning(
+            "Could not resolve effective GPT-SoVITS endpoint; hot-applying saved value: %s",
+            exc,
+        )
+        target_url, source = str(new_sovits_url), None
     try:
         from galgame2voice.services.gpt_sovits_client import reload_gpt_sovits_client_base_url
-        await reload_gpt_sovits_client_base_url(str(new_sovits_url))
-        logger.info("GPT-SoVITS endpoint hot-applied: %s", new_sovits_url)
+        await reload_gpt_sovits_client_base_url(target_url)
+        logger.info("GPT-SoVITS endpoint hot-applied: %s (source: %s)", target_url, source)
     except Exception as exc:
-        logger.error("Failed to hot-apply GPT-SoVITS URL '%s': %s", new_sovits_url, exc)
+        logger.error("Failed to hot-apply GPT-SoVITS URL '%s': %s", target_url, exc)
+        return None
+    return {"base_url": target_url, "source": source}
 
 
 async def _reload_telegram_if_needed(sanitized_updates: dict[str, Any], updated_settings: Any) -> None:
@@ -211,12 +231,16 @@ async def update_config(payload: ConfigPayload | SettingsUpdate | dict[str, Any]
         else:
             updated_settings = await crud.get_settings(conn, mask=True)
 
-    await _apply_sovits_url_update(sanitized_updates.get("gpt_sovits_url"))
+    effective_sovits = await _apply_sovits_url_update(sanitized_updates.get("gpt_sovits_url"))
     await _reload_telegram_if_needed(sanitized_updates, updated_settings)
     _sync_precision_cache(sanitized_updates.get("inference_precision"))
 
-    return {
+    response: dict[str, Any] = {
         "status": "success",
         "updated_count": len(sanitized_updates) if sanitized_updates else len(update_data),
         "settings": updated_settings.model_dump(),
     }
+    if effective_sovits:
+        response["effective_sovits_url"] = effective_sovits["base_url"]
+        response["effective_sovits_source"] = effective_sovits["source"]
+    return response
