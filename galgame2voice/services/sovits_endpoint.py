@@ -49,19 +49,26 @@ class SovitsEndpoint:
     port: int
     scheme: str
     source: str  # "env" | "db" | "dotenv" | "default"
+    path: str = ""
 
     @property
-    def is_local(self) -> bool:
-        """True when the engine is expected to run on this host."""
+    def is_loopback(self) -> bool:
+        """True when the host is loopback (localhost / 127.0.0.1 / ::1)."""
         host = (self.host or "").strip().lower()
         if host == "localhost":
             return True
         try:
             return ipaddress.ip_address(host).is_loopback
         except ValueError:
-            # Unparsable hostnames are treated as remote: this host must not
-            # try to manage (spawn/restart) a process for them.
+            # Unparsable hostnames are treated as remote
             return False
+
+    @property
+    def is_local(self) -> bool:
+        """True when the engine is expected to be launched and managed locally.
+        Requires loopback host, plain http scheme, and root path (no TLS or subpath).
+        Remote or TLS/subpath loopback endpoints are treated as unmanaged (client-only)."""
+        return self.is_loopback and self.scheme == "http" and self.path in ("", "/")
 
 
 def parse_sovits_endpoint(value: str, *, source: str) -> SovitsEndpoint:
@@ -99,6 +106,7 @@ def parse_sovits_endpoint(value: str, *, source: str) -> SovitsEndpoint:
         port=port,
         scheme=parsed.scheme,
         source=source,
+        path=path,
     )
 
 
@@ -114,21 +122,36 @@ def get_explicit_process_env_url() -> str | None:
 def resolve_sovits_url(*, db_url: str | None, settings_url: str | None) -> SovitsEndpoint:
     """Resolves the effective endpoint from the priority chain.
 
-    env (explicit process env) > db (SQLite) > dotenv (.env/Settings) > default.
+    Priority:
+      1. Explicit process environment variables (GALGAME2VOICE_GPT_SOVITS_BASE_URL / GPT_SOVITS_BASE_URL).
+      2. Explicit user-customized DB setting (custom non-default value in SQLite).
+      3. Explicit .env / Settings configuration (custom non-default value in .env).
+      4. Database default / .env default / built-in default (http://127.0.0.1:9880).
     """
     env_url = get_explicit_process_env_url()
     if env_url:
         return parse_sovits_endpoint(env_url, source="env")
-    if db_url and db_url.strip():
-        return parse_sovits_endpoint(db_url, source="db")
-    settings_value = (settings_url or "").strip()
-    if settings_value:
-        source = (
-            "default"
-            if settings_value.rstrip("/") == DEFAULT_SOVITS_BASE_URL
-            else "dotenv"
-        )
-        return parse_sovits_endpoint(settings_value, source=source)
+
+    db_clean = (db_url or "").strip()
+    settings_clean = (settings_url or "").strip()
+
+    is_custom_db = bool(db_clean and db_clean.rstrip("/") != DEFAULT_SOVITS_BASE_URL)
+    is_custom_dotenv = bool(settings_clean and settings_clean.rstrip("/") != DEFAULT_SOVITS_BASE_URL)
+
+    # 1. Custom DB value explicitly configured by user via UI console
+    if is_custom_db:
+        return parse_sovits_endpoint(db_clean, source="db")
+
+    # 2. Custom value explicitly configured in .env / Settings
+    if is_custom_dotenv:
+        return parse_sovits_endpoint(settings_clean, source="dotenv")
+
+    # 3. Default seeded values
+    if db_clean:
+        return parse_sovits_endpoint(db_clean, source="default")
+    if settings_clean:
+        return parse_sovits_endpoint(settings_clean, source="default")
+
     return parse_sovits_endpoint(DEFAULT_SOVITS_BASE_URL, source="default")
 
 

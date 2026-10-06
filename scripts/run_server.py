@@ -293,10 +293,26 @@ def cleanup_subprocesses():
 
 
 def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
-    """Checks if a TCP port is open and listening."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.5)
-        return s.connect_ex((host, port)) == 0
+    """Checks if a TCP port is open and listening across IPv4 and IPv6."""
+    try:
+        infos = socket.getaddrinfo(
+            host,
+            port,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+        )
+    except (socket.gaierror, OSError):
+        return False
+
+    for family, socktype, proto, _, sockaddr in infos:
+        try:
+            with socket.socket(family, socktype, proto) as s:
+                s.settimeout(0.5)
+                if s.connect_ex(sockaddr) == 0:
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 def get_sovits_host_port() -> tuple[str, int]:
@@ -874,8 +890,11 @@ def ensure_gpt_sovits_running(
         sovits_host, sovits_port = endpoint.host, endpoint.port
         sovits_is_local = endpoint.is_local
         sovits_base_url = endpoint.base_url
+    except ValueError as exc:
+        print(f"      [错误] GPT-SoVITS 配置地址无效 ({exc})，拒绝静默启动本地引擎。请检查配置。")
+        return
     except Exception as exc:
-        print(f"      [WARN] GPT-SoVITS 地址解析失败 ({exc})，回落到默认 127.0.0.1:9880")
+        print(f"      [WARN] GPT-SoVITS 地址读取异常 ({exc})，回落到默认 127.0.0.1:9880")
         sovits_host, sovits_port = "127.0.0.1", 9880
         sovits_is_local = True
         sovits_base_url = "http://127.0.0.1:9880"

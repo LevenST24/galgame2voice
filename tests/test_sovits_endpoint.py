@@ -152,3 +152,38 @@ class TestResolvePrecedence:
         assert ep.base_url == "http://127.0.0.1:9880"
         assert ep.source == "default"
         assert ep.is_local is True
+
+    def test_custom_dotenv_beats_seeded_default_db(self, monkeypatch):
+        _clear_env(monkeypatch)
+        # Database was initialized with default seed http://127.0.0.1:9880,
+        # but user configured custom .env with port 9999. .env must win!
+        ep = resolve_sovits_url(
+            db_url="http://127.0.0.1:9880", settings_url="http://127.0.0.1:9999"
+        )
+        assert ep.base_url == "http://127.0.0.1:9999"
+        assert ep.source == "dotenv"
+
+    def test_custom_db_beats_custom_dotenv(self, monkeypatch):
+        _clear_env(monkeypatch)
+        ep = resolve_sovits_url(
+            db_url="http://192.168.1.100:9880", settings_url="http://127.0.0.1:9999"
+        )
+        assert ep.base_url == "http://192.168.1.100:9880"
+        assert ep.source == "db"
+
+
+class TestManagedVsClientOnly:
+    def test_http_loopback_is_managed(self):
+        ep = parse_sovits_endpoint("http://127.0.0.1:9880", source="default")
+        assert ep.is_loopback is True
+        assert ep.is_local is True
+
+    def test_https_loopback_is_client_only(self):
+        ep = parse_sovits_endpoint("https://127.0.0.1:9880", source="db")
+        assert ep.is_loopback is True
+        assert ep.is_local is False
+
+    def test_subpath_loopback_is_client_only(self):
+        ep = parse_sovits_endpoint("http://127.0.0.1:9880/subpath", source="db")
+        assert ep.is_loopback is True
+        assert ep.is_local is False

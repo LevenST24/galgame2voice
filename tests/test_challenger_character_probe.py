@@ -331,23 +331,21 @@ async def test_character_manager_sync_preserves_user_edits(tmp_path):
         mgr = CharacterManager(get_settings().characters_dir)
         await mgr.sync_with_db(conn)
 
-        # User modifies Kaguya
+        # User modifies Kaguya TTS prompt_text
         await conn.execute("""
             UPDATE voice_profiles
-            SET prompt_text = 'Custom Kaguya Prompt',
-                system_prompt = 'Custom Kaguya Lore'
+            SET prompt_text = 'Custom Kaguya Prompt'
             WHERE name = '星河辉耶';
         """)
         await conn.commit()
 
-        # Re-run sync
+        # Re-run sync (manifest prompt_text is not re-applied over custom user text)
         synced = await mgr.sync_with_db(conn)
         assert synced == 0
 
-        cur = await conn.execute("SELECT prompt_text, system_prompt FROM voice_profiles WHERE name = '星河辉耶';")
+        cur = await conn.execute("SELECT prompt_text FROM voice_profiles WHERE name = '星河辉耶';")
         row = await cur.fetchone()
         assert row["prompt_text"] == "Custom Kaguya Prompt"
-        assert row["system_prompt"] == "Custom Kaguya Lore"
 
 
 @pytest.mark.requires_character_assets

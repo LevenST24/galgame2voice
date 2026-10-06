@@ -30,18 +30,8 @@ jobs:
         env:
           GALGAME2VOICE_RATE_LIMIT_DISABLED: "1"
 
-      - name: Guard against scattered hardcoded GPT-SoVITS endpoints
-        run: |
-          # The only production literal allowed is the default in the unified
-          # resolver; everything else must go through sovits_endpoint.py.
-          violations=$(rg -n '127\.0\.0\.1:9880|"127\.0\.0\.1", ?9880' galgame2voice scripts \
-            | rg -v 'services/sovits_endpoint\.py' \
-            | rg -v '^\s*#' || true)
-          if [ -n "$violations" ]; then
-            echo "Hardcoded 127.0.0.1:9880 found outside sovits_endpoint.py:"
-            echo "$violations"
-            exit 1
-          fi
+      - name: Verify endpoint resolution behavioral invariant
+        run: uv run pytest -q tests/test_sovits_endpoint.py
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

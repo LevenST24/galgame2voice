@@ -16,7 +16,13 @@ CHAT_EMOTIONS = {"gentle", "happy", "shy", "tsundere", "cool", "sad", "angry"}
 
 
 @pytest.fixture(autouse=True)
-async def setup_test_characters():
+async def setup_test_characters(request):
+    marker = request.node.get_closest_marker("requires_character_assets")
+    if marker is not None:
+        mgr = get_character_manager()
+        pkg = mgr.get_character("四季夏目")
+        if not pkg or not (pkg.folder / "portrait" / "expressions.json").is_file():
+            pytest.skip("四季夏目 numbered differential expressions.json asset not present")
     await init_db()
     async with get_db() as db:
         mgr = get_character_manager()
