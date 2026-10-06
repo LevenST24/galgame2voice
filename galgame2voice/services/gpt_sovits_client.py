@@ -196,7 +196,12 @@ class GptSovitsClient:
                 try:
                     loop = asyncio.get_running_loop()
                     deadline = loop.time() + grace
-                    while self._inflight_requests > 0 and loop.time() < deadline:
+                    # Bounded poll on purpose. An asyncio.Event would need to be
+                    # created here (not in __init__) to avoid binding to whichever
+                    # loop built this singleton, and this client is shared across
+                    # loops in tests; a 0.25s poll for at most `grace` seconds is
+                    # cheaper than that coupling.
+                    while self._inflight_requests > 0 and loop.time() < deadline:  # noqa: ASYNC110
                         await asyncio.sleep(0.25)
                     force_closed = self._inflight_requests > 0
                 except asyncio.CancelledError:

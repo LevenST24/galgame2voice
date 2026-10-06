@@ -21,16 +21,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from galgame2voice.utils.precision import (
+# E402: these imports must follow the sys.path bootstrap above, otherwise the
+# script cannot find the package when it is executed directly from a checkout.
+from galgame2voice.utils.precision import (  # noqa: E402
     read_precision_cache,
     write_precision_cache,
-    write_sovits_yaml_is_half,
     write_sovits_yaml_config,
-    resolve_initial_is_half,
     resolve_initial_device_and_half,
-    read_db_precision,
 )
-from galgame2voice.utils.hardware import get_gpu_vram_status
+from galgame2voice.utils.hardware import get_gpu_vram_status  # noqa: E402
 
 # Ensure runtime directories
 for d in ["logs", "data", "audio"]:
@@ -908,7 +907,7 @@ def ensure_gpt_sovits_running(
         print("      [..] GPT-SoVITS 正在后台加载模型 (最长 120 秒，伴侣服务先行启动)...")
 
         def _wait_for_sovits_readiness_worker():
-            for i in range(240):
+            for _ in range(240):
                 time.sleep(0.5)
                 if is_port_in_use(sovits_port, sovits_host):
                     print(f"\n      [OK] GPT-SoVITS 语音引擎已就绪 (http://{sovits_host}:{sovits_port}/)")

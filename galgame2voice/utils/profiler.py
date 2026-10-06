@@ -177,7 +177,7 @@ class ChatTurnProfiler:
 
         lines = [
             f"\n┌── [Chat Turn #{self.turn_id} Profile Waterfall (T0~T7)] ──────────────────",
-            f"│  T0 Request Sent:        0.0ms",
+            "│  T0 Request Sent:        0.0ms",
             f"│  T1 LLM First Token / LLM TTFT: {ttft_ms:6.1f}ms  {self._format_bar(ttft_ms, max_metric)}",
             f"│  T2 First Sentence:    {sent_ms:6.1f}ms  {self._format_bar(sent_ms, max_metric)}",
             f"│  T3 TTS Dispatch:      {disp_ms:6.1f}ms  {self._format_bar(disp_ms, max_metric)}",
@@ -194,7 +194,7 @@ class ChatTurnProfiler:
             lines.append(f"│  T7 Playback Start:      {play_ms:6.1f}ms  {self._format_bar(play_ms, max_metric)}")
 
         lines.extend([
-            f"├─────────────────────────────────────────────────────────────",
+            "├─────────────────────────────────────────────────────────────",
             f"│  TTFA:                 {ttfa_ms:6.1f}ms (Target: <1000ms) -> {status}",
         ])
 

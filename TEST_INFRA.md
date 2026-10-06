@@ -255,4 +255,131 @@ python -m pytest --cov=galgame2voice --cov-report=term-missing
 ### Flakiness Mitigation Standards:
 - **Zero Fixed Sleeps**: All asynchronous wait states utilize `asyncio.Event`, `asyncio.wait_for`, or bounded polling loops.
 - **Isolated SQLite Instances**: Every test run uses isolated SQLite in-memory or temporary disk databases (`tmp_path`).
+- **Settings Cache Reset**: `tests/conftest.py` clears the `lru_cache`d `get_settings()` before and after every test. Without that, a test that redirects configuration through the environment leaves the next test reading a settings object resolved from someone else's values.
+- **Hermetic Proxy Environment**: the suite strips bracketed IPv6 entries from `no_proxy`/`NO_PROXY` at import. A malformed entry (e.g. `[::1]`) makes httpx itself unable to construct a client (`InvalidURL: Invalid port: ':1]'`); that is a *production* defect, fixed at the source in `galgame2voice/utils/http_client.py` and covered by `tests/test_http_client_resilience.py`, which sets the broken environment itself.
 - **Deterministic Time Mocking**: High-precision timers (`time.perf_counter()`, `time.monotonic()`) are used for microsecond benchmarking.
+
+### Host Capability Markers:
+
+Some tests genuinely need an OS facility or a media asset that a given host may
+not have. `tests/conftest.py` probes for the real capability at startup and
+converts the marker into a `skip` **only** when it is missing, so a capable host
+never skips anything:
+
+| Marker | Requirement | Symptom without the guard |
+| :--- | :--- | :--- |
+| `requires_piped_subprocess` | `asyncio.create_subprocess_exec(..., stdout=PIPE)` works | `PermissionError: [WinError 5]` from `asyncio/windows_utils.py` — on Windows piped stdio needs a named pipe |
+| `requires_writable_temp_dir` | a `tempfile.mkdtemp()` directory can be written into | `PermissionError` on every path under the temp directory |
+| `requires_process_termination` | the suite may terminate a process it started (`taskkill`) | `taskkill failed: ERROR: Access denied` |
+| `requires_character_assets` | `characters/` contains an installed package (git-ignored user assets) | asset-not-found failures |
+| `wall_clock` | nothing — it asserts a wall-clock budget, so it is skipped whenever `--cov` is active | `Average latency 0.0095ms exceeds target 0.005ms` on an otherwise identical machine |
+
+`wall_clock` deserves its own note: coverage tracing multiplies the cost of every
+executed line, so a budget like "average cache hit under 0.005 ms" measures the
+tracer rather than the cache. Skipping under `--cov` is the only outcome that
+does not turn the coverage job into a false alarm; without `--cov` the marker is
+inert and the benchmark runs normally.
+
+### Unit tests must not reach the real ffmpeg
+
+`tests/conftest.py` installs an autouse guard that makes ffmpeg discovery fail
+for any test that has not declared `requires_piped_subprocess`. The reason is a
+stale seam rather than a leak:
+
+```text
+test patches is_ffmpeg_available()   ->  "ffmpeg is mocked"
+conversion path actually runs        ->  _run_ffmpeg_transcode
+                                       -> _require_ffmpeg_bin
+                                       -> find_ffmpeg          <- real PATH
+```
+
+`is_ffmpeg_available()` is a public re-export kept for external callers; it is
+not the decision point. A test that patches it only *believes* it mocked ffmpeg,
+and silently depends on whether the host ships the binary — which is how a suite
+passes on a developer machine and goes red on a runner. Patch
+`galgame2voice.utils.audio_converter.find_ffmpeg` (the real seam), or mark the
+test `requires_piped_subprocess` when it genuinely runs the toolchain.
+
+### Coverage baseline (measured, not assumed)
+
+Collected with:
+
+```powershell
+python -m pytest --cov=galgame2voice --cov=scripts --cov-branch `
+  --cov-report=term --cov-report=json:.cov.json
+```
+
+| Metric | Value |
+| :--- | ---: |
+| Repo line+branch coverage | **73.9%** |
+| Statements / missed | 14886 / 3391 |
+| Branches / partially covered | 4620 / 830 |
+| Files under 70% | 20 of 115 |
+| Files 70–90% / ≥ 90% | 48 / 47 |
+
+Lowest-coverage modules worth attention (with the audit's fragile-seam module
+included): `adapters/openai_compatible.py` 0% (pure re-export shim),
+`services/tts_cache.py` 0% (pure re-export shim), `scripts/apply_character_fixes.py`
+0%, `scripts/tools/character_packager.py` 14%, `adapters/stt/openai_stt.py` 31%,
+`scripts/run_server.py` 35%, `routers/characters.py` 36%, `security/crypto.py` 39%,
+`utils/audio_converter.py` 68%.
+
+CI generates and uploads this report. There is deliberately **no
+`--cov-fail-under` gate yet**: the number above is the first real data point, and
+a gate is only meaningful once a short trend exists. The two 0% shim modules are
+now pinned by `tests/test_compat_shims.py`, so they cannot rot.
+
+### Compatibility shims are pinned, not deleted
+
+`adapters/openai_compatible.py`, `services/tts_cache.py`, `ChatResponse`,
+`ProviderTestResult`, `OpenAISTTAdapter`, `NATSUME_EMOTION_REFERENCES` and the
+private retry/cache aliases have no internal callers, but external code may
+import them. `tests/test_compat_shims.py` asserts each one still resolves to the
+canonical object, which turns "grep found no caller" into an explicit,
+reviewable list and makes a future removal a deliberate edit.
+
+Run `python -m pytest -rs` to see skip reasons. A `skip` here means "this host
+cannot run it", never "this test is known broken" — use `xfail` for the latter.
+
+### Asset-Free Tests
+
+Tests must not depend on media that version control ignores. `audio/*` and
+`characters/*` are both git-ignored, so a fresh clone has neither, and a test
+that hard-codes `audio/references/natsume/gentle.ogg` passes only on a machine
+where someone installed those assets by hand. Tests that need such a file either
+take the `requires_character_assets` marker or materialise an isolated project
+root (`GALGAME2VOICE_PROJECT_ROOT` → `tmp_path`) and create the file there.
+
+## 8. Static Analysis Gates (staged adoption)
+
+Ruff runs in CI over `galgame2voice scripts`. Widening the rule set all at once
+would either drown real findings in mechanical noise or force a reformat commit
+that hides behavioural changes, so it is staged:
+
+| Stage | `select` | Rationale |
+| :--- | :--- | :--- |
+| 1 (historical) | `E9, F821, F823, F841` | Syntax errors, undefined names, unbound/unused locals |
+| 2 (current) | `E4, E7, E9, F, B, ASYNC` | The families whose findings are defects, not taste: unused imports, f-strings with no placeholders, `zip()` without `strict=`, blocking calls and busy-waits inside async functions |
+| 3 (pending) | `+ I, UP, SIM` | Import order, typing modernisation, style simplifications — ~190 mechanical findings, worth one formatting-only commit |
+
+`ASYNC240` is ignored with a written reason in `pyproject.toml`; the remaining
+findings are microsecond-scale `Path.is_file()`/`stat()` probes on local disk,
+where `asyncio.to_thread` would cost more than it saves.
+
+One rule is suppressed at its use site rather than globally: the bounded drain
+poll in `gpt_sovits_client.py` carries `# noqa: ASYNC110` and a comment
+explaining that an `asyncio.Event` would have to be created per event loop to
+avoid binding to whichever loop built the singleton client.
+
+Stage 2 immediately paid for itself: it found four `E731` lambda assignments,
+four unused imports, six f-strings without placeholders, three `B007` unused loop
+variables, and three `zip()` calls whose silent truncation would have corrupted
+(a) the L1 face-visibility score and (b) the HMAC keystream XOR used by the
+fallback secret cipher.
+
+### Test assertions must not pin source text
+
+Assert the property, not its spelling. `test_health_polling_bounded` used to
+assert `"for i in range(240)"`, which fails the moment the loop counter is
+renamed — the bound (240 × 0.5s = 120s) is the actual invariant, so assert
+`"in range(240)"` instead.

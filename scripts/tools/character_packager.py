@@ -32,8 +32,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from galgame2voice.schemas.character_manifest import (
-    CharacterManifestV2,
+# E402: this import must follow the sys.path bootstrap above, otherwise the
+# script cannot find the package when it is executed directly from a checkout.
+from galgame2voice.schemas.character_manifest import (  # noqa: E402
     validate_character_package,
 )
 
@@ -67,10 +68,10 @@ def cmd_validate(character_dir: Path) -> int:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
         name = data.get("name", "Unknown")
         emotions_count = len(data.get("emotions", {}))
-        print(f"[OK] 角色包验证通过!")
+        print("[OK] 角色包验证通过!")
         print(f"     角色名称: {name}")
         print(f"     情感槽位: {emotions_count} 个")
-        print(f"     音频时长: 全部符合 [3.0s, 10.0s] 约束")
+        print("     音频时长: 全部符合 [3.0s, 10.0s] 约束")
         return 0
     else:
         print(f"[FAIL] 角色包验证失败，发现 {len(errors)} 处问题:", file=sys.stderr)
@@ -93,7 +94,7 @@ def cmd_pack(character_dir: Path, output_zip: Path, force: bool = False) -> int:
     print(f"[*] 正在打包到: {out_path} ...")
     file_count = 0
     with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for root, dirs, files in os.walk(char_dir):
+        for root, _dirs, files in os.walk(char_dir):
             for file in files:
                 full_path = Path(root) / file
                 rel_path = full_path.relative_to(char_dir)
@@ -129,7 +130,7 @@ def cmd_install(zip_path: Path, target_dir: Path, force: bool = False) -> int:
 
         manifest_path = tmp_path / "manifest.json"
         if not manifest_path.is_file():
-            print(f"[ERROR] 压缩包内缺少根目录 manifest.json", file=sys.stderr)
+            print("[ERROR] 压缩包内缺少根目录 manifest.json", file=sys.stderr)
             return 1
 
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -138,7 +139,7 @@ def cmd_install(zip_path: Path, target_dir: Path, force: bool = False) -> int:
         if not force:
             is_valid, errors = validate_character_package(tmp_path)
             if not is_valid:
-                print(f"[ERROR] 解压包验证失败，终止安装:", file=sys.stderr)
+                print("[ERROR] 解压包验证失败，终止安装:", file=sys.stderr)
                 for err in errors:
                     print(f"  - {err}", file=sys.stderr)
                 return 1
@@ -149,7 +150,7 @@ def cmd_install(zip_path: Path, target_dir: Path, force: bool = False) -> int:
         else:
             final_dest.mkdir(parents=True, exist_ok=True)
 
-        for root, dirs, files in os.walk(tmp_path):
+        for root, _dirs, files in os.walk(tmp_path):
             for file in files:
                 src_file = Path(root) / file
                 rel_file = src_file.relative_to(tmp_path)

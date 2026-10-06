@@ -89,6 +89,44 @@ python scripts/run_server.py --help
   --profile               启用实时延迟瀑布图分析 (T0~T7，等价于设置 GALGAME2VOICE_PROFILE=1)
 ```
 
+### 3. 环境自检 `doctor`
+
+启动前，或遇到"某个功能不工作"时，可先运行内置巡检。它逐项给出 `OK / WARN / FAIL / SKIP` 结论，并把修复建议放在对应条目的下一行：
+
+```bash
+python -m galgame2voice.main doctor            # 人工可读报告
+python -m galgame2voice.main doctor --offline  # 跳过网络探测（不探测 GPT-SoVITS）
+python -m galgame2voice.main doctor --json     # 机器可读输出，便于贴进 issue
+```
+
+输出示例：
+
+```text
+galgame2voice doctor
+
+[OK  ] Python: 3.11.15 (requires >= 3.10)
+[OK  ] Data directory: writable: .../data
+[OK  ] Database: readable, WAL enabled (10 tables): .../data/galgame2voice.db
+[OK  ] ffmpeg: /usr/bin/ffmpeg
+[OK  ] Console auth: disabled, listening on loopback 127.0.0.1:8080 (local zero-config mode)
+[WARN] Proxy environment: cannot be parsed; HTTP clients fall back to ignoring it
+       -> Check NO_PROXY/HTTP_PROXY/HTTPS_PROXY for malformed entries such as the bracketed IPv6 literal '[::1]'.
+[WARN] GPT-SoVITS: unreachable at http://127.0.0.1:9880
+       -> Start the GPT-SoVITS API server, or update GALGAME2VOICE_GPT_SOVITS_BASE_URL / the URL stored in the console.
+
+Overall: DEGRADED
+```
+
+覆盖范围：Python 版本、`data`/`audio`/`logs`/`characters` 目录可写性、SQLite 可读性与 WAL、
+ffmpeg 可执行文件、监听地址与鉴权的危险组合（非回环地址 + 免鉴权会拒绝启动）、代理环境变量是否可解析、
+角色包数量、已配置的 LLM Provider、Telegram Token 与管理员白名单、GPT-SoVITS 连通性。
+
+退出码：`0` 表示没有任何 `FAIL`（可能带 `WARN`），`1` 表示存在 `FAIL`，可直接用于部署脚本的前置校验。
+
+> 与 `python scripts/run_server.py --check-only` 的分工：`--check-only` 面向"本机能否拉起启动器"
+> （Python 运行时依赖 + 硬件诊断，必要时自动补装依赖）；`doctor` 面向"服务为什么不可用"
+> （配置、鉴权、数据库、外部服务连通性），只读诊断、不修改数据库，并可用 `--json` 采集结果。
+
 ---
 
 ## 🔧 环境变量速查表 (Environment Variables)

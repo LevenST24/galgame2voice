@@ -144,7 +144,7 @@ def _fallback_encrypt(plaintext_bytes: bytes) -> bytes:
             counter = block_idx.to_bytes(4, "big")
             block = hmac.new(key, nonce + counter, hashlib.sha256).digest()
             keystream.extend(block)
-        ct = bytes(p ^ k for p, k in zip(plaintext_bytes, keystream[:len(plaintext_bytes)]))
+        ct = bytes(p ^ k for p, k in zip(plaintext_bytes, keystream[:len(plaintext_bytes)], strict=True))
         tag = hmac.new(key, b"auth" + nonce + ct, hashlib.sha256).digest()
         return b"\x02" + nonce + tag + ct
 
@@ -175,7 +175,7 @@ def _fallback_decrypt(payload: bytes) -> bytes:
             counter = block_idx.to_bytes(4, "big")
             block = hmac.new(key, nonce + counter, hashlib.sha256).digest()
             keystream.extend(block)
-        return bytes(c ^ k for c, k in zip(ct, keystream[:len(ct)]))
+        return bytes(c ^ k for c, k in zip(ct, keystream[:len(ct)], strict=True))
     raise ValueError(f"Unknown encrypted payload version {version}")
 
 

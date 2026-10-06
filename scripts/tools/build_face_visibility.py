@@ -26,7 +26,9 @@ def head_signature(path: Path):
 
 
 def l1(a, b) -> float:
-    return sum(abs(x - y) for x, y in zip(a, b)) / (len(a) * 255.0)
+    # strict=True: the divisor below assumes equal length, so a length mismatch
+    # must raise rather than silently score only the common prefix.
+    return sum(abs(x - y) for x, y in zip(a, b, strict=True)) / (len(a) * 255.0)
 
 
 def main() -> None:
