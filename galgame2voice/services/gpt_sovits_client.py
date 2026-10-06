@@ -751,17 +751,17 @@ def get_gpt_sovits_client() -> GptSovitsClient:
     Returns the application-wide singleton GptSovitsClient.
     All services (TtsService, VoiceManager, Telegram, routers) MUST share this
     instance so the inference mutex actually serializes GPU access globally.
+
+    The singleton no longer makes endpoint decisions: it starts at the
+    built-in default, and the production startup path (main lifespan)
+    re-points it via the unified resolver
+    (galgame2voice.services.sovits_endpoint).
     """
     global _global_gpt_sovits_client
     if _global_gpt_sovits_client is None:
-        settings = None
-        try:
-            from galgame2voice.config import get_settings
-            settings = get_settings()
-        except Exception as exc:
-            logger.debug("Could not load settings for default GPT-SoVITS URL: %s", exc)
-        base_url = settings.gpt_sovits_base_url if settings else "http://127.0.0.1:9880"
-        _global_gpt_sovits_client = GptSovitsClient(base_url=base_url)
+        from galgame2voice.services.sovits_endpoint import DEFAULT_SOVITS_BASE_URL
+
+        _global_gpt_sovits_client = GptSovitsClient(base_url=DEFAULT_SOVITS_BASE_URL)
     return _global_gpt_sovits_client
 
 
