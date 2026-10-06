@@ -9,7 +9,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
   const controller = new AbortController();
   let acc = '';
   const audioUrls = [];
-  // 与 audioUrls 一一对应的分句元数据，重播时靠它驱动立绘逐句切换
+  // 分句元数据（url + 句子 + 情绪）：流式切片时与 audioUrls 同步追加，done 事件的整段音频兜底只填 audioUrls；重播时靠它逐句切换立绘
   const audioChunks = [];
   const jaSentences = [];
   let fullJapanese = '';
