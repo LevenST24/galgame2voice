@@ -2,8 +2,9 @@
 Voice Profile Resolver and In-Memory Resolved Context for galgame2voice.
 
 Provides zero-IO, in-memory caching of fully resolved voice profiles and emotion
-reference audios. Pre-validates paths, durations, and weights to eliminate
-database and filesystem latency from the TTS critical path (TTFA < 1s).
+reference audios. Pre-resolves reference audio paths, probes and range-checks
+emotion reference durations, and absolutizes weight paths (weights are not validated)
+to eliminate database and filesystem latency from the TTS critical path (TTFA < 1s).
 Supports clean cache invalidation upon profile creation, update, or deletion.
 """
 
