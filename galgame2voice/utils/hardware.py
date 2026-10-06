@@ -400,7 +400,10 @@ def release_system_memory() -> None:
 def get_gpu_vram_status() -> tuple[float | None, float | None]:
     """
     Returns (total_vram_gb, free_vram_gb) of primary NVIDIA GPU if available, else (None, None).
-    Inspects nvidia-smi first (fast, zero PyTorch CUDA context overhead), falling back to PyTorch.
+    Queries nvidia-smi first so no PyTorch CUDA context is created, falling back to PyTorch.
+    Not cheap: the nvidia-smi branch spawns a blocking subprocess (up to
+    DEFAULT_SUBPROCESS_TIMEOUT seconds) and nothing is cached, so every call stalls the
+    calling thread — cache it or run it via asyncio.to_thread before calling from the loop.
     """
     try:
         out = subprocess.check_output(

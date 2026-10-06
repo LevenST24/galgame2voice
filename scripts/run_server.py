@@ -607,7 +607,7 @@ def run_hardware_diagnostics() -> dict[str, Any]:
     if diag["has_nvidia"] or diag["cuda_available"]:
         nvidia_names = [g for g in gpu_names if any(k in g.lower() for k in ["nvidia", "geforce", "rtx", "gtx"])]
         detected_name = nvidia_names[0] if nvidia_names else (gpu_names[0] if gpu_names else "NVIDIA GPU")
-        print(f"      [硬件就绪] 检测到独立显卡: {detected_name} (已准备 CUDA 加速推理)")
+        print(f"      [硬件就绪] 检测到独立显卡: {detected_name} (按厂商名匹配识别，实际推理设备与精度以引擎校准结果为准)")
         vram_total, vram_free = get_gpu_vram_status()
         if vram_total is not None:
             diag["vram_total_gb"] = vram_total
