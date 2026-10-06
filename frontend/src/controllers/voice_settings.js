@@ -288,7 +288,7 @@ export async function populateScanOptions() {
     }
     fill(_dom.sCvGpt, scannedModels.gpt_weights || [], '（未扫描到 .ckpt 文件）');
     fill(_dom.sCvSovits, scannedModels.sovits_weights || [], '（未扫描到 .pth 文件）');
-    fill(_dom.sCvRef, scannedModels.audio_files || [], '（未扫描到音频文件，可留空音色但质量差）');
+    fill(_dom.sCvRef, scannedModels.audio_files || [], '（未扫描到音频文件）');
   } catch (e) {
     [_dom.sCvGpt, _dom.sCvSovits, _dom.sCvRef].forEach((sel) => {
       if (sel) {

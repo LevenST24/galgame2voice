@@ -108,7 +108,7 @@ export const BUILTIN_PRESETS = [
     default_base_url: 'https://generativelanguage.googleapis.com',
     default_chat_model: 'gemini-2.5-flash',
     preset_models: ['gemini-2.5-flash', 'gemini-2.5-pro'],
-    description: 'Google 官方 Gemini 原生 API (Gemini 2.5 系列)',
+    description: 'Google Gemini 官方 OpenAI 兼容接口 (Gemini 2.5 系列)',
   },
   {
     id: 'openai',

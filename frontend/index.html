@@ -275,7 +275,7 @@
                 <div class="status-card-sub" id="gDashDeviceVal">硬件加速中</div>
               </div>
               <div class="status-card-act" style="display: flex; gap: 6px;">
-                <button type="button" class="btn-card-action" id="gBtnTogglePrecision" title="一键切换 FP16/FP32 精度并重启">
+                <button type="button" class="btn-card-action" id="gBtnTogglePrecision" title="一键切换 FP16/FP32/CPU 精度并重启">
                   <svg class="icon"><use href="#i-refresh"></use></svg>
                   <span id="gBtnTogglePrecisionText">切换为 FP32 重启</span>
                 </button>
@@ -532,7 +532,7 @@
               <input id="gTgToken" type="password" placeholder="123456:ABC-DEF…" autocomplete="off" />
             </div>
             <div class="field">
-              <label>允许访问的 Telegram Chat ID（可选，逗号分隔，留空不限制）</label>
+              <label>允许访问的 Telegram Chat ID（可选，逗号分隔，留空将拒绝所有访问）</label>
               <input id="gTgChatId" placeholder="例如 123456789" autocomplete="off" />
             </div>
             <div class="field-row-2">
@@ -750,7 +750,7 @@
             <option value="true">AI 动态拟真 · 自动调节语速与语气</option>
             <option value="false">固定参数模式</option>
           </select>
-          <small class="hint" style="display:block;margin-top:4px;color:var(--text-muted,#888);font-size:12px;">开启动态拟真时，AI 将根据对话语境自适应调节每句话的语速（0.70~1.35）与温度（0.60~1.20）；固定参数模式下严格遵循下方滑块数值。</small>
+          <small class="hint" style="display:block;margin-top:4px;color:var(--text-muted,#888);font-size:12px;">开启动态拟真时，AI 将根据对话语境自适应调节每句话的语速（0.50~1.50）与温度（0.60~1.20）；固定参数模式下严格遵循下方滑块数值。</small>
         </div>
         <div class="field field-row">
           <label>语速 Speed <b id="sTtsSpeedVal">1.0</b></label>
