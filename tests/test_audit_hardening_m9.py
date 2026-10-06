@@ -163,6 +163,7 @@ class TestChatStreamingDisconnectAndPruning:
             count = (await cur.fetchone())[0]
             assert count == 0
 
+    @pytest.mark.wall_clock
     async def test_cancel_event_immediate_responsiveness(self, tmp_path):
         """Cancellation event should break the stream in <100ms without 1.0s timeout lag."""
         db_file = tmp_path / "cancel_perf.db"

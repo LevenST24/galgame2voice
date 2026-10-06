@@ -30,6 +30,7 @@ class TestProcessTreeTermination:
     """Empirically test process tree killing (/F /T /PID) on Windows."""
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows taskkill testing requires Windows OS")
+    @pytest.mark.requires_process_termination
     def test_nested_process_tree_termination(self):
         """
         Empirically test that `taskkill /f /t /pid <root_pid>` kills the entire
@@ -290,8 +291,10 @@ class TestBatchScriptHardening:
     def test_health_polling_bounded(self):
         """Verify run_server.py readiness wait uses bounded loops (no infinite spin)."""
         content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
-        assert "for i in range(240)" in content  # 120s bounded GPT-SoVITS readiness wait
-        assert "for _ in range(30)" in content   # 9s bounded browser-open wait
+        # Assert the bound, not the loop variable's name: whether the counter is
+        # called `i` or `_` says nothing about whether the wait terminates.
+        assert "in range(240)" in content  # 120s bounded GPT-SoVITS readiness wait
+        assert "in range(30)" in content   # 9s bounded browser-open wait
 
 
 # ============================================================================

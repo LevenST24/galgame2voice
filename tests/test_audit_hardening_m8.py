@@ -44,6 +44,7 @@ from telegram_test_support import TELEGRAM_TEST_ADMINS
 class TestSseStreamingBackpressureAndDisconnect:
     """Tests SSE streaming pipeline cancellation, backpressure, and disconnect handling."""
 
+    @pytest.mark.wall_clock
     @pytest.mark.asyncio
     async def test_put_with_cancel_aborts_promptly_when_cancelled(self):
         """Verify _put_with_cancel immediately returns False when queue is full and cancel_event is set."""

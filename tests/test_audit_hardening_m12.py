@@ -94,7 +94,10 @@ class TestAudioConverterHardening:
             await convert_wav_to_ogg(b"RIFFshort")
 
     async def test_convert_wav_to_ogg_corrupt_wrapped_as_value_error(self):
-        with patch("galgame2voice.utils.audio_converter.is_ffmpeg_available", return_value=True):
+        # Fake discovery too: the transcode step resolves the executable through
+        # find_ffmpeg, so patching only the executor left this test depending on a
+        # real ffmpeg install being present.
+        with patch("galgame2voice.utils.audio_converter.find_ffmpeg", return_value="/fake/ffmpeg"):
             with patch("galgame2voice.utils.audio_converter.run_ffmpeg_command", side_effect=RuntimeError("Invalid data")):
                 fake_wav = b"RIFF\x24\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00" + b"\x00" * 40
                 with pytest.raises(ValueError, match="Audio conversion failed"):
@@ -104,10 +107,11 @@ class TestAudioConverterHardening:
         mock_proc = AsyncMock()
         mock_proc.communicate.return_value = (b"", b"")
         mock_proc.returncode = 0
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await run_ffmpeg_command("ffmpeg", "-y", "-i", "input.ogg", "output.wav")
-            args, _ = mock_exec.call_args
-            assert "-nostdin" in args
+        with patch("galgame2voice.utils.audio_converter.find_ffmpeg", return_value="/fake/ffmpeg"):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+                await run_ffmpeg_command("ffmpeg", "-y", "-i", "input.ogg", "output.wav")
+                args, _ = mock_exec.call_args
+                assert "-nostdin" in args
 
     async def test_run_ffmpeg_command_timeout_kills_process_and_no_zombies(self):
         mock_proc = AsyncMock()
@@ -120,12 +124,13 @@ class TestAudioConverterHardening:
 
         mock_proc.communicate.side_effect = _hang
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            with pytest.raises(TimeoutError, match="timed out after 0.05 seconds"):
-                await run_ffmpeg_command("ffmpeg", "-i", "fake.wav", timeout=0.05)
+        with patch("galgame2voice.utils.audio_converter.find_ffmpeg", return_value="/fake/ffmpeg"):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+                with pytest.raises(TimeoutError, match="timed out after 0.05 seconds"):
+                    await run_ffmpeg_command("ffmpeg", "-i", "fake.wav", timeout=0.05)
 
-            mock_proc.kill.assert_called_once()
-            mock_proc.wait.assert_awaited_once()
+                mock_proc.kill.assert_called_once()
+                mock_proc.wait.assert_awaited_once()
 
     async def test_run_ffmpeg_command_cancellation_kills_process(self):
         mock_proc = AsyncMock()
@@ -138,12 +143,13 @@ class TestAudioConverterHardening:
 
         mock_proc.communicate.side_effect = _hang
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            task = asyncio.create_task(run_ffmpeg_command("ffmpeg", "-i", "fake.wav", timeout=30.0))
-            await asyncio.sleep(0.02)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
+        with patch("galgame2voice.utils.audio_converter.find_ffmpeg", return_value="/fake/ffmpeg"):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+                task = asyncio.create_task(run_ffmpeg_command("ffmpeg", "-i", "fake.wav", timeout=30.0))
+                await asyncio.sleep(0.02)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
 
             mock_proc.kill.assert_called_once()
             mock_proc.wait.assert_awaited_once()

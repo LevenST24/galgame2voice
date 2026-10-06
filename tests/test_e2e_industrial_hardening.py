@@ -303,6 +303,7 @@ class TestTier1FeatureCoverage:
         assert t1 == "こんにちは！"
         assert p1 == p2
 
+    @pytest.mark.wall_clock
     @pytest.mark.asyncio
     async def test_f5_02_in_memory_cache_hit_latency(self, tmp_path):
         """Verifies in-memory LRU cache retrieval completes in ultra-low latency (<0.05ms)."""

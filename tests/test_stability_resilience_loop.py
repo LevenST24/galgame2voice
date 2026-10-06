@@ -158,6 +158,10 @@ async def test_audio_converter_unlinking_under_task_cancellation(tmp_path, monke
         out_p.write_bytes(b"OggS_mock_ogg_content")
         await asyncio.sleep(0.5)
 
+    # Both halves of the seam: discovery so the transcode step is reachable, and
+    # the executor so no real ffmpeg runs. Patching only the executor would leave
+    # this test depending on a real ffmpeg install.
+    monkeypatch.setattr("galgame2voice.utils.audio_converter.find_ffmpeg", lambda *a, **k: "/fake/ffmpeg")
     monkeypatch.setattr("galgame2voice.utils.audio_converter.run_ffmpeg_command", _mock_ffmpeg)
 
     conv_task = asyncio.create_task(convert_wav_to_ogg(valid_wav_bytes))

@@ -179,8 +179,18 @@ async def test_tts_service_duration_accepts_valid_audio(tmp_path):
 # ============================================================================
 
 @pytest.mark.asyncio
-async def test_database_auto_healing_legacy_and_missing_paths(tmp_path):
+async def test_database_auto_healing_legacy_and_missing_paths(tmp_path, monkeypatch):
     """Verifies that crud.auto_heal_voice_profiles repairs broken, missing, and dev machine paths."""
+    # "Valid Profile" points at the bundled reference audio, which is git-ignored
+    # (audio/* is excluded from version control). Materialise an isolated project
+    # root so this test measures the healing rules instead of the developer's
+    # local media install.
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    bundled_ref = tmp_path / "audio" / "references" / "natsume" / "gentle.ogg"
+    bundled_ref.parent.mkdir(parents=True, exist_ok=True)
+    bundled_ref.write_bytes(b"OggS" + b"\x00" * 64)
+
     db_path = tmp_path / "test_heal.db"
     async with aiosqlite.connect(str(db_path)) as conn:
         conn.row_factory = aiosqlite.Row
@@ -281,9 +291,20 @@ async def test_tts_service_duration_fallback_missing_file(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_switch_voice_profile_resolves_relative_reference_path(monkeypatch):
+async def test_switch_voice_profile_resolves_relative_reference_path(monkeypatch, tmp_path):
     """Verifies switch_voice_profile passes resolved absolute path to GPT-SoVITS."""
     from galgame2voice.services.gpt_sovits_client import GptSovitsClient, resolve_reference_audio_path
+
+    # The relative reference below has to resolve against a project root, and the
+    # bundled media is git-ignored, so point the resolver at an isolated root that
+    # actually contains the file. Without this the test only passed on a machine
+    # where someone had installed the assets by hand.
+    from galgame2voice.utils import audio_spec
+
+    monkeypatch.setattr(audio_spec, "_PROJECT_ROOT", tmp_path)
+    reference = tmp_path / "audio" / "references" / "natsume" / "gentle.ogg"
+    reference.parent.mkdir(parents=True, exist_ok=True)
+    reference.write_bytes(b"OggS" + b"\x00" * 64)
 
     recorded_params = {}
 

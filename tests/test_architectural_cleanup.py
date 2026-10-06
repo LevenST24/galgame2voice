@@ -14,6 +14,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
+from galgame2voice.config import get_settings
 from galgame2voice.utils import prosody
 from galgame2voice.utils.prosody import (
     DYNAMIC_SPEED_MIN,
@@ -99,8 +100,18 @@ def test_crud_auto_heal_has_no_shutil_or_yuzusoft_strings():
 
 
 @pytest.mark.asyncio
-async def test_crud_auto_heal_objective_validation(tmp_path):
+async def test_crud_auto_heal_objective_validation(tmp_path, monkeypatch):
     """Verifies objective path validation repairs missing/unportable paths and keeps valid paths."""
+    # The "valid" profile points at the bundled reference audio, and audio/* is
+    # git-ignored, so a fresh clone has no such file. Materialise an isolated
+    # project root instead: the test then measures the healing rules rather than
+    # whether the developer happens to have installed the media assets.
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    bundled_ref = tmp_path / "audio" / "references" / "natsume" / "gentle.ogg"
+    bundled_ref.parent.mkdir(parents=True, exist_ok=True)
+    bundled_ref.write_bytes(b"OggS" + b"\x00" * 64)
+
     db_path = tmp_path / "test_heal_purified.db"
     async with aiosqlite.connect(str(db_path)) as conn:
         conn.row_factory = aiosqlite.Row

@@ -176,6 +176,7 @@ class TestLoggerStacktraceAndRegexBoundaries:
             else:
                 assert raw_secret not in formatted_output, f"Secret {name} leaked in formatted traceback!"
 
+    @pytest.mark.wall_clock
     def test_massive_log_payload_throughput_and_redos_safety(self):
         """
         Tests 2MB massive log string containing 10,000 lines and embedded secrets

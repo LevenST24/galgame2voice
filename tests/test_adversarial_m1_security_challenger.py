@@ -110,6 +110,7 @@ class TestMemoryPromptInjectionAdversarial:
         assert len(facts_pref) == 1
         assert len(facts_pref[0]["fact_value"]) <= 50
 
+    @pytest.mark.wall_clock
     def test_redos_catastrophic_backtracking_resistance(self, mem_service):
         """
         Stress test heuristic regexes against adversarial long strings (ReDoS defense).

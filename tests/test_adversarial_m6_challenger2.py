@@ -93,6 +93,7 @@ class MockTelegramBotClient:
 class TestMultiUserConcurrencyAndIsolation:
     """Adversarial stress testing of multi-user isolation on Telegram Bot."""
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_multi_user_concurrent_chat_isolation_under_load(self, challenge_db):
         """
@@ -166,6 +167,7 @@ class TestMultiUserConcurrencyAndIsolation:
                     assert history[1].role == "assistant"
                     assert f"回复给User_{i}" in history[1].content_chinese
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_multi_user_cancellation_isolation(self, challenge_db):
         """
@@ -267,6 +269,7 @@ class TestMultiUserConcurrencyAndIsolation:
 class TestAudioConverterAdversarial:
     """Adversarial testing of audio converter against malformed, random, and extreme inputs."""
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     @pytest.mark.parametrize("payload_size", [0, 1, 5, 11, 15, 30, 44, 100, 1024, 65536])
     async def test_convert_ogg_to_wav_random_noise_fuzzing(self, payload_size):
@@ -281,6 +284,7 @@ class TestAudioConverterAdversarial:
             await convert_ogg_to_wav(random_bytes)
         assert len(str(exc_info.value)) > 0
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_convert_ogg_to_wav_truncated_magic_headers(self):
         """
@@ -323,19 +327,21 @@ class TestAudioConverterAdversarial:
     @pytest.mark.asyncio
     async def test_missing_ffmpeg_simulation(self):
         """
-        Simulate missing ffmpeg binary (is_ffmpeg_available returns False).
+        Simulate a missing ffmpeg binary by making discovery fail.
         Missing ffmpeg must fail loudly instead of silently producing wrong audio.
         """
-        with patch("galgame2voice.utils.audio_converter.is_ffmpeg_available", return_value=False):
+        # Patch find_ffmpeg, not is_ffmpeg_available: discovery is what the
+        # conversion path actually consults (_require_ffmpeg_bin -> find_ffmpeg).
+        with patch("galgame2voice.utils.audio_converter.find_ffmpeg", return_value=None):
             # 1. convert_ogg_to_wav with missing ffmpeg -> loud failure
             valid_fake_ogg = b"OggS\x00\x02\x00\x00" + b"\x00" * 50
             with pytest.raises(RuntimeError, match="ffmpeg executable not found"):
-                await convert_ogg_to_wav(valid_fake_ogg, ffmpeg_path="non_existent_ffmpeg")
+                await convert_ogg_to_wav(valid_fake_ogg)
 
             # 2. convert_wav_to_ogg with missing ffmpeg -> loud failure
             sample_wav = b"RIFF\x24\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x08\x00\x00"
             with pytest.raises(RuntimeError, match="ffmpeg executable not found"):
-                await convert_wav_to_ogg(sample_wav, ffmpeg_path="non_existent_ffmpeg")
+                await convert_wav_to_ogg(sample_wav)
 
     @pytest.mark.asyncio
     async def test_ffmpeg_subprocess_crash_and_nonzero_exit_code(self):
@@ -343,12 +349,16 @@ class TestAudioConverterAdversarial:
         Simulate ffmpeg command returning exit code 1 or 137.
         Verifies that RuntimeError is caught and wrapped into ValueError.
         """
-        with patch("galgame2voice.utils.audio_converter.is_ffmpeg_available", return_value=True):
+        # Both halves of the seam must be faked: discovery so the transcode step
+        # is reachable, and the subprocess so no real binary is executed. Patching
+        # only the executor left the test depending on a real ffmpeg install.
+        with patch("galgame2voice.utils.audio_converter.find_ffmpeg", return_value="/fake/ffmpeg"):
             with patch("galgame2voice.utils.audio_converter.run_ffmpeg_command", side_effect=RuntimeError("ffmpeg conversion failed (code 1): Invalid data")):
                 valid_fake_ogg = b"OggS\x00\x02\x00\x00" + b"\x00" * 50
                 with pytest.raises(ValueError, match="Audio conversion failed"):
                     await convert_ogg_to_wav(valid_fake_ogg)
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_temp_file_cleanup_on_conversion_failure(self):
         """
@@ -537,6 +547,7 @@ class TestTelegramVoiceHandlerErrorRecovery:
 class TestEndToEndConcurrentVoicePipelineStress:
     """Stress testing the end-to-end voice note pipeline across multiple concurrent users."""
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_multi_user_concurrent_voice_notes_pipeline(self, challenge_db):
         """
@@ -672,6 +683,7 @@ class TestEndToEndConcurrentVoicePipelineStress:
                 history_after = await crud.get_recent_messages(conn, f"tg_{chat_id}")
                 assert len(history_after) == 0
 
+    @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
     async def test_audio_converter_large_payload_stress(self):
         """

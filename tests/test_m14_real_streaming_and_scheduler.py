@@ -398,6 +398,7 @@ async def test_tts_scheduler_priority_and_cancellation():
 # 6. Hardened Cache Key Identity (mtime_ns + size)
 # ============================================================================
 
+@pytest.mark.requires_writable_temp_dir
 def test_hardened_cache_key_identity_with_file_mtime():
     """
     Verifies that changing a reference audio's mtime or content changes its cache key,
@@ -426,6 +427,7 @@ def test_hardened_cache_key_identity_with_file_mtime():
 # 7. TtsCacheManager stream_cached Chunk Delivery
 # ============================================================================
 
+@pytest.mark.requires_writable_temp_dir
 @pytest.mark.asyncio
 async def test_tts_cache_manager_stream_cached():
     """

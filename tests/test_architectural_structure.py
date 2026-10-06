@@ -61,6 +61,7 @@ async def test_database_migrations_decoupling():
         assert "idx_sessions_updated_at" in idx_names
 
 
+@pytest.mark.requires_writable_temp_dir
 @pytest.mark.asyncio
 async def test_audio_cleaner_service_decoupling():
     """Verify services.audio_cleaner works standalone and is backward-compatible in main.py."""

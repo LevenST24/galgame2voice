@@ -25,6 +25,7 @@ from galgame2voice.services.tts_cache_manager import TtsCacheManager
 class TestTtsCacheAdversarialM2:
     """Empirical verification harness for TTS Cache latency, concurrency, and stability."""
 
+    @pytest.mark.wall_clock
     async def test_in_memory_latency_benchmark_10k(self, tmp_path):
         """
         Empirically measures in-memory get() latency across 10,000 requests.
@@ -71,6 +72,7 @@ class TestTtsCacheAdversarialM2:
         assert avg_latency_ms < 0.05, f"Average latency {avg_latency_ms:.4f}ms exceeds 0.05ms threshold"
         assert avg_latency_ms < 0.005, f"Average latency {avg_latency_ms:.4f}ms exceeds target 0.005ms"
 
+    @pytest.mark.wall_clock
     async def test_in_memory_multi_key_latency_benchmark_10k(self, tmp_path):
         """
         Empirically measures in-memory get() latency across 10,000 requests
