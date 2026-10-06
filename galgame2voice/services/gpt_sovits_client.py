@@ -472,7 +472,7 @@ class GptSovitsClient:
 
         if not ref_audio:
             raise ValueError(
-                "No reference audio provided and no active character profile configured. "
+                "No reference audio provided and no active character package configured. "
                 "Please configure an active character package or supply valid reference audio."
             )
 
