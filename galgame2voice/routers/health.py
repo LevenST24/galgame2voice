@@ -499,7 +499,7 @@ class RestartSovitsPayload(BaseModel):
     """Optional payload for restarting GPT-SoVITS subprocess with explicit precision."""
     precision: str | None = Field(
         default=None,
-        description="Optional precision override: 'fp16', 'fp32', or 'auto'. If omitted, uses current setting.",
+        description="Optional precision override: 'fp16', 'fp32', 'cpu', or 'auto'. If omitted, uses current setting.",
     )
 
 
