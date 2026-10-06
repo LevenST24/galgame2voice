@@ -6,6 +6,7 @@ Manages application lifespan, CORS, static routing, and router registration.
 import asyncio
 import logging
 import mimetypes
+import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -568,7 +569,17 @@ app = create_app()
 
 
 def run():
-    """CLI execution entrypoint."""
+    """CLI execution entrypoint.
+
+    `galgame2voice doctor [--json] [--offline]` diagnoses the local environment
+    and exits instead of serving; every other invocation starts the server.
+    """
+    argv = sys.argv[1:]
+    if argv and argv[0] == "doctor":
+        from galgame2voice.doctor import main as doctor_main
+
+        raise SystemExit(doctor_main(argv[1:]))
+
     import uvicorn
 
     settings = get_settings()
