@@ -511,7 +511,7 @@ class ChatService:
                                 conn_bg, user_id=user_id, character_id=profile_id or 1
                             )
                     except Exception as exc:
-                        logger.debug("Failed background affection update: %s", exc)
+                        logger.debug("Failed background affection record init: %s", exc)
                     await self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
 
                 self._spawn_background(_bg_affection_and_memory())

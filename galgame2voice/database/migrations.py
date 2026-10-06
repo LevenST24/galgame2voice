@@ -574,7 +574,7 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
                 (encrypted_token,),
             )
     except Exception as exc:
-        logger.debug("Could not auto-generate missing console token in initialize_database: %s", exc)
+        logger.debug("Could not auto-generate missing console token in init_schema_and_seeds: %s", exc)
 
     # Auto-heal missing or broken reference audio paths across existing voice profiles
     try:

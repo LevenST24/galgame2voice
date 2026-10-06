@@ -742,7 +742,7 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
             if _db_active is not None:
                 _active_id = getattr(_db_active, "id", None)
     except Exception as exc:
-        logger.debug("Failed getting active voice profile in handle_select_character: %s", exc)
+        logger.debug("Failed getting active voice profile in _handle_set_voice: %s", exc)
     if _active_id is not None and profile_id == _active_id:
         if hasattr(ctx.query, "answer"):
             await ctx.query.answer("已经是当前音色，无需切换")
