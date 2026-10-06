@@ -15,6 +15,8 @@ import wave
 from pathlib import Path
 from typing import Callable
 
+from galgame2voice.errors import AudioTranscodeFailed, FFmpegUnavailable
+
 logger = logging.getLogger("galgame2voice.utils.audio_converter")
 
 _cached_ffmpeg_bin: str | None = None
@@ -207,14 +209,14 @@ async def run_ffmpeg_command(*args: str, timeout: float = 30.0) -> None:
     if proc.returncode != 0:
         err_msg = stderr.decode("utf-8", errors="replace")
         logger.error("ffmpeg failed (code %d): %s", proc.returncode, err_msg)
-        raise RuntimeError(f"ffmpeg conversion failed (code {proc.returncode}): {err_msg[:200]}")
+        raise AudioTranscodeFailed(f"ffmpeg conversion failed (code {proc.returncode}): {err_msg[:200]}")
 
 
 def _require_ffmpeg_bin(ffmpeg_path: str | None = None) -> str:
-    """Discovers ffmpeg binary or raises RuntimeError with an informative message."""
+    """Discovers the ffmpeg binary or raises FFmpegUnavailable with an informative message."""
     ffmpeg_bin = find_ffmpeg(ffmpeg_path)
     if not ffmpeg_bin:
-        raise RuntimeError(
+        raise FFmpegUnavailable(
             f"ffmpeg executable not found: '{ffmpeg_path or 'ffmpeg'}'. "
             "Install ffmpeg and ensure it is on PATH, or provide ffmpeg_path."
         )
@@ -262,7 +264,11 @@ async def _run_ffmpeg_transcode(
             raise ValueError(header_error)
         return result_bytes
     except (RuntimeError, TimeoutError, ValueError) as exc:
-        raise ValueError(f"Audio conversion failed: {exc}") from exc
+        # AudioTranscodeFailed keeps ValueError as a base, so callers that catch
+        # ValueError for conversion problems keep working; the semantic type and
+        # its .code are additive. FFmpegUnavailable is raised before this block
+        # and therefore still reaches callers as a dependency error.
+        raise AudioTranscodeFailed(f"Audio conversion failed: {exc}") from exc
     finally:
         await _cleanup_temp_paths(in_path, out_path)
 

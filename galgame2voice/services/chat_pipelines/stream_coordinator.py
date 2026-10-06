@@ -36,6 +36,25 @@ _SENTINEL = object()
 _CANCEL_SENTINEL = object()
 
 
+def _consume_background_failure(task: asyncio.Task) -> None:
+    """Logs a fire-and-forget task's failure instead of deferring it to GC.
+
+    A task whose exception is never retrieved makes the interpreter print a bare
+    "Task exception was never retrieved" when it is collected, losing both the
+    context and the timing of the original failure.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning(
+            "Background streaming task failed: %s: %s",
+            type(exc).__name__,
+            exc,
+            exc_info=exc,
+        )
+
+
 class SseKeepAlive(dict):
     """W3C Server-Sent Events keep-alive comment frame (: keep-alive\n\n)."""
 
@@ -168,8 +187,9 @@ class StreamCoordinator:
         """Spawns background coroutine using callback or asyncio.create_task."""
         if self.spawn_background is not None:
             self.spawn_background(coro)
-        else:
-            asyncio.create_task(coro)
+            return
+        task = asyncio.create_task(coro)
+        task.add_done_callback(_consume_background_failure)
 
     def _concat_wav(
         self,

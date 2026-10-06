@@ -22,6 +22,7 @@ from galgame2voice.adapters.base import (
     aclose_stream_context,
 )
 from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.http_client import create_async_client
 
 logger = logging.getLogger("galgame2voice.adapters.llm.openai")
 
@@ -241,7 +242,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         from galgame2voice.security.url_guard import assert_llm_url_safe
         await assert_llm_url_safe(url, allow_private=allow_private)
 
-        client = httpx.AsyncClient(timeout=timeout_s)
+        client = create_async_client(timeout=timeout_s)
         try:
             for attempt in range(max_retries + 1):
                 try:
@@ -386,7 +387,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         await assert_llm_url_safe(url, allow_private=allow_private)
 
         for attempt in range(max_retries + 1):
-            client = httpx.AsyncClient(timeout=timeout_s)
+            client = create_async_client(timeout=timeout_s)
             stream_ctx = None
             try:
                 stream_ctx = client.stream("POST", url, json=payload, headers=headers)
@@ -540,7 +541,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             or getattr(self, "provider_id", None)
         )
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with create_async_client(timeout=10.0) as client:
             try:
                 resp = await client.get(url, headers=headers)
                 latency_ms = round((time.perf_counter() - t0) * 1000, 2)
@@ -608,7 +609,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         url = f"{self.base_url}/models"
         headers = self._get_headers()
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with create_async_client(timeout=10.0) as client:
             try:
                 resp = await client.get(url, headers=headers)
                 if resp.status_code in (401, 403):

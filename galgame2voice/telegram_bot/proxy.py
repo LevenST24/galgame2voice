@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from galgame2voice.database.models import SettingsInDB
+from galgame2voice.utils.http_client import proxy_environment_is_usable
 
 logger = logging.getLogger("galgame2voice.telegram_bot.proxy")
 
@@ -48,6 +49,18 @@ def get_telegram_request_kwargs(
     }
     if proxy_url:
         kwargs["proxy"] = proxy_url
+    elif not proxy_environment_is_usable():
+        # HTTPXRequest builds its own httpx.AsyncClient and leaves trust_env at
+        # its default, so an unparseable proxy environment entry (e.g. NO_PROXY
+        # containing "[::1]") would make the whole bot fail to construct.
+        # An explicit proxy URL skips environment parsing entirely, so this only
+        # applies to the no-proxy-configured case.
+        kwargs["httpx_kwargs"] = {"trust_env": False}
+        logger.warning(
+            "Proxy environment is unusable; Telegram HTTP client will ignore "
+            "HTTP_PROXY/HTTPS_PROXY/NO_PROXY. Check those variables for "
+            "malformed entries such as the bracketed IPv6 literal '[::1]'."
+        )
     return kwargs
 
 

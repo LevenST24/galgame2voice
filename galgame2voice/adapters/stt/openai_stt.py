@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from galgame2voice.adapters.base import BaseSTTAdapter, TestResult
+from galgame2voice.utils.http_client import create_async_client
 
 
 def _get_mime_type(filename: str) -> str:
@@ -97,7 +98,7 @@ class OpenAICompatibleSTTAdapter(BaseSTTAdapter):
 
         timeout_s = float(self.extra_config.get("timeout_s", 60.0))
 
-        async with httpx.AsyncClient(timeout=timeout_s) as client:
+        async with create_async_client(timeout=timeout_s) as client:
             try:
                 resp = await client.post(url, headers=headers, data=data_fields, files=files)
             except httpx.RequestError as exc:
@@ -136,7 +137,7 @@ class OpenAICompatibleSTTAdapter(BaseSTTAdapter):
         url = f"{self.base_url}/models"
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with create_async_client(timeout=10.0) as client:
             try:
                 resp = await client.get(url, headers=headers)
                 latency_ms = round((time.perf_counter() - t0) * 1000, 2)
