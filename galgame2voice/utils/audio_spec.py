@@ -430,10 +430,14 @@ SILENT_AUDIO_ERROR = (
     "TTS synthesis produced all-zero silent audio. This almost always means the GPU's "
     "half-precision (FP16) inference is defective (e.g. NVIDIA MX450 / GTX 16-series / TU117): "
     "the vocoder overflowed to NaN and was clamped to silence. "
-    "Fix: restart the GPT-SoVITS engine with FP32 single precision (is_half=False) — "
-    "on Windows simply re-run 启动.bat (it probes and calibrates precision automatically); "
-    "on Linux/container set the environment variable is_half=false (or GPT_SOVITS_PRECISION=fp32 "
-    "and let the launcher calibrate) before starting api_v2.py. See logs/gpt_sovits.log."
+    "Fix: restart the GPT-SoVITS engine with FP32 single precision (is_half=False). The launcher's "
+    "automatic FP16/FP32 probe runs ONLY when precision has no other source (a 启动.bat precision flag, "
+    "GPT_SOVITS_PRECISION/GPT_SOVITS_DEVICE, the console setting, or a verified data/precision.json "
+    "entry), so a plain re-run of 启动.bat keeps FP16 whenever one of those already pinned it: delete "
+    "data/precision.json (or switch precision in the web console, which rewrites it) and then re-run "
+    "启动.bat. "
+    "On Linux/container export is_half=false (or GPT_SOVITS_PRECISION=fp32, which the launcher applies "
+    "directly without probing) before starting api_v2.py. See logs/gpt_sovits.log."
 )
 
 

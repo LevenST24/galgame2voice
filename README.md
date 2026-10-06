@@ -161,7 +161,7 @@ ffmpeg 可执行文件、监听地址与鉴权的危险组合（非回环地址 
 
 ## 🎭 角色包规范与扩展 (Character Packages)
 
-本引擎采用**完全自包含（Self-Contained）**的角色包架构。将角色包解压至 `characters/` 目录下即可即插即用：
+本引擎采用**完全自包含（Self-Contained）**的角色包架构。将角色包解压至 `characters/` 目录下，后端下次启动时即自动扫描加载（服务运行中新解压的包需重启后端才会被发现，见上文核心特性说明）：
 
 ```text
 characters/
