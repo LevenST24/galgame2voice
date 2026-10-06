@@ -468,6 +468,21 @@ def build_gpt_sovits_env(sovits_dir: Path, is_half: bool = False) -> dict[str, s
     env["NO_PROXY"] = "localhost, 127.0.0.1, ::1"
     env["all_proxy"] = ""
     env["ALL_PROXY"] = ""
+
+    # Ensure GPT-SoVITS uses its own self-contained TEMP directory
+    # Bypasses Windows user Temp ACL / permission constraints
+    sovits_temp = sovits_dir / "TEMP"
+    try:
+        sovits_temp.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            import ctypes
+            ctypes.windll.kernel32.SetFileAttributesW(str(sovits_temp), 0x80)
+        env["TEMP"] = str(sovits_temp)
+        env["TMP"] = str(sovits_temp)
+        env["TMPDIR"] = str(sovits_temp)
+    except Exception:
+        pass
+
     return env
 
 
