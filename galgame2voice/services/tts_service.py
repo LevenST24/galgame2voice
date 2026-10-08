@@ -7,6 +7,7 @@ sentence streaming, and the persistent TTS cache.
 import asyncio
 import logging
 import uuid
+from contextlib import aclosing
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
@@ -292,6 +293,12 @@ class TtsService:
                 return cached[0]
 
         async def _do_gpu_synthesis() -> bytes:
+            # Several callers can miss before the first queued job finishes.
+            # Recheck after admission to the serial worker to avoid re-synthesis.
+            if cache_key:
+                cached = await self.cache_manager.get(cache_key, record_miss=False)
+                if cached is not None:
+                    return cached[0]
             logger.debug("TTS Cache MISS for key %s ('%s'), invoking GPU synthesis", cache_key[:12] if cache_key else "none", text[:20])
             audio_bytes = await self.client.synthesize(text, options=opts)
             if use_cache and audio_bytes and cache_key:
@@ -360,17 +367,18 @@ class TtsService:
 
         if use_cache:
             cache_key, clean_text, params_hash = self.cache_manager.compute_cache_key(text, options=opts)
-            cached = await self.cache_manager.get(cache_key)
+            cached = await self.cache_manager.get_file(cache_key)
             if cached is not None:
-                audio_bytes, url_path, file_size = cached
-                file_path = self.cache_manager.cache_dir / f"{cache_key}.wav"
-                logger.debug("TTS Cache HIT (file) for key %s -> %s", cache_key[:12], url_path)
-                return url_path, file_path, file_size
+                logger.debug("TTS Cache HIT (file) for key %s -> %s", cache_key[:12], cached[0])
+                return cached
 
             task_id = f"{gen_id}_{cache_key[:8]}_{uuid.uuid4().hex[:4]}" if gen_id else None
 
-            # Synthesize exactly once on miss, coordinated via scheduler + single-flight
+            # A preceding bytes/file job may populate the shared cache while queued.
             async def _do_synth_file() -> tuple[str, Path, int]:
+                cached = await self.cache_manager.get_file(cache_key, record_miss=False)
+                if cached is not None:
+                    return cached
                 audio_b = await self.client.synthesize(text, options=opts)
                 if audio_b and cache_key:
                     try:
@@ -421,11 +429,17 @@ class TtsService:
         params_hash = ""
         if use_cache:
             cache_key, clean_text, params_hash = self.cache_manager.compute_cache_key(text, options=opts)
-            cached = await self.cache_manager.get(cache_key)
-            if cached is not None:
-                async for chunk in self.cache_manager.stream_cached(cache_key, chunk_size=chunk_size):
-                    yield chunk
-                return
+            # Probe by reading the first bounded chunk, rather than loading the
+            # whole clip before streaming it. One playback records one hit.
+            async with aclosing(self.cache_manager.stream_cached(
+                cache_key, chunk_size=chunk_size, record_miss=True,
+            )) as cached_stream:
+                first_chunk = await anext(cached_stream, None)
+                if first_chunk is not None:
+                    yield first_chunk
+                    async for chunk in cached_stream:
+                        yield chunk
+                    return
 
         scheduler = get_tts_scheduler()
         priority = TtsPriority.from_options(opts)
@@ -434,17 +448,30 @@ class TtsService:
         task_id = opts.get("_task_id")
 
         collected_chunks = []
+        upstream_complete = False
         completed_normally = False
+
+        async def _stream_upstream() -> AsyncGenerator[bytes, None]:
+            nonlocal upstream_complete
+            async with aclosing(self.client.stream_tts(text, options=opts, chunk_size=chunk_size)) as upstream:
+                async for chunk in upstream:
+                    yield chunk
+            upstream_complete = True
+
         try:
-            async for chunk in scheduler.schedule_stream(
-                lambda: self.client.stream_tts(text, options=opts, chunk_size=chunk_size),
+            async with aclosing(scheduler.schedule_stream(
+                _stream_upstream,
                 priority=priority,
                 generation_id=gen_id,
                 task_id=task_id,
-            ):
-                collected_chunks.append(chunk)
-                yield chunk
-            completed_normally = True
+            )) as scheduled_stream:
+                async for chunk in scheduled_stream:
+                    if use_cache and cache_key:
+                        collected_chunks.append(chunk)
+                    yield chunk
+            # A cancelled generation ends the scheduled stream without raising;
+            # only actual upstream EOF plus a fully drained buffer is cacheable.
+            completed_normally = upstream_complete
         finally:
             if completed_normally and use_cache and collected_chunks and cache_key:
                 full_bytes = b"".join(collected_chunks)

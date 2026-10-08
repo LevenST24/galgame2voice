@@ -8,7 +8,7 @@
     "build": "vite build",
     "deploy": "vite build && node deploy.mjs",
     "preview": "vite preview",
-    "test": "node ../tests/test_m1_m2_frontend_adversarial_challenger1.js && node ../tests/test_m2_frontend_empirical.js && node ../tests/test_m7_audio_lru_challenger2.js"
+    "test": "node ../tests/test_m1_m2_frontend_adversarial_challenger1.js && node ../tests/test_m2_frontend_empirical.js && node ../tests/test_m7_audio_lru_challenger2.js && node ../tests/test_voice_first_setup.mjs && node ../tests/test_engine_directory.mjs && node ../tests/test_runtime_recovery.mjs && node ../tests/test_session_backup.mjs"
   },
   "devDependencies": {
     "vite": "^6.3.5"

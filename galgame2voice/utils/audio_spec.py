@@ -315,31 +315,16 @@ async def async_probe_audio_duration_seconds(
 ) -> float | None:
     """
     Asynchronously probes audio duration in seconds.
-    If the spec is already cached by stat (mtime_ns, size), returns immediately
-    without offloading. On cache miss, delegates file inspection to asyncio.to_thread().
+    File metadata and decoding run in a worker thread, using the shared stat
+    cache (mtime_ns, size). Byte buffers need no filesystem access.
     """
     if not path_or_bytes:
         return None
     if isinstance(path_or_bytes, (bytes, bytearray, memoryview)):
         return probe_audio_duration_seconds(path_or_bytes)
 
-    # Fast path: check in-memory stat cache first
-    try:
-        p = Path(path_or_bytes)
-        if not p.is_file() and (_PROJECT_ROOT / path_or_bytes).is_file():
-            p = _PROJECT_ROOT / path_or_bytes
-        if not p.is_file():
-            return None
-        st = p.stat()
-        key = (str(p.resolve()), st.st_mtime_ns, st.st_size)
-        with _AUDIO_SPEC_CACHE._lock:
-            if key in _AUDIO_SPEC_CACHE._cache:
-                _AUDIO_SPEC_CACHE._cache.move_to_end(key)
-                return _AUDIO_SPEC_CACHE._cache[key].duration_s
-    except OSError:
-        return None
-
-    # Offload disk I/O probe to thread pool
+    # The synchronous probe already consults the stat cache; offload both
+    # filesystem metadata and decoding so slow disks cannot stall streams.
     return await asyncio.to_thread(probe_audio_duration_seconds, path_or_bytes)
 
 

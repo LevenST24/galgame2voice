@@ -5,6 +5,7 @@ switching active character models with auto-rollback, and synthesizing audio.
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import sys
@@ -39,6 +40,8 @@ from galgame2voice.utils.path_guard import (
     contains_traversal_payload,
     is_windows_device_name,
     safe_resolve_audio_path,
+    get_authorized_roots,
+    validate_path_containment,
     to_project_relative_path,
     validate_voice_profile_paths,
 )
@@ -339,9 +342,11 @@ async def switch_voice(req: VoiceSwitchRequest) -> dict[str, Any]:
             # Sync SQLite persistence under the lock to ensure DB reflects active profile
             try:
                 async with get_db() as conn:
-                    await crud.set_active_voice_profile(conn, profile.id)
+                    if not await crud.set_active_voice_profile(conn, profile.id):
+                        raise RuntimeError("Database rejected the active voice profile update")
             except Exception as exc:
-                logger.debug("Failed syncing active voice profile to settings: %s", exc)
+                logger.error("Failed syncing active voice profile %s to settings: %s", profile.id, exc)
+                raise HTTPException(status_code=500, detail="Failed to persist active voice profile") from exc
         else:
             await switch_voice_profile_or_raise(manager, profile, force=req.force)
 
@@ -439,6 +444,10 @@ async def synthesize_speech(req: SynthesizeRequest) -> Response:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error_detail(exc)) from exc
 
 
+# Tk interpreters and their finalizers must stay on one owning thread.
+_NATIVE_PICKER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="native-picker")
+
+
 class BrowseFileRequest(BaseModel):
     """Payload specifying file picker filter criteria and initial directory."""
     file_type: str = Field(default="all", description="'gpt', 'sovits', 'audio', or 'all'")
@@ -468,6 +477,7 @@ _FS_BROWSE_EXTS: dict[str, set[str]] = {
 )
 async def open_native_file_dialog(req: BrowseFileRequest) -> dict[str, Any]:
     def _run_picker() -> str:
+        root = None
         try:
             import tkinter as tk
             from tkinter import filedialog
@@ -481,14 +491,25 @@ async def open_native_file_dialog(req: BrowseFileRequest) -> dict[str, Any]:
             title, filetypes = _NATIVE_FILE_PICKER_CONFIG.get(req.file_type, (default_title, default_filetypes))
 
             init_dir = req.initial_dir if req.initial_dir and os.path.exists(req.initial_dir) else None
-            selected = filedialog.askopenfilename(title=title, filetypes=filetypes, initialdir=init_dir)
-            root.destroy()
+            if req.file_type == "directory":
+                selected = filedialog.askdirectory(title="选择 GPT-SoVITS 引擎目录", initialdir=init_dir, mustexist=True)
+            else:
+                selected = filedialog.askopenfilename(title=title, filetypes=filetypes, initialdir=init_dir)
             return selected or ""
         except Exception as err:
             logger.warning("Native file dialog failed or unavailable: %s", err)
             return ""
+        finally:
+            if root is not None:
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
+            root = None
+            # A dialog exception can retain this frame via its traceback.
+            # Drop the interpreter reference on the owning thread immediately.
 
-    path = await asyncio.to_thread(_run_picker)
+    path = await asyncio.wrap_future(_NATIVE_PICKER_EXECUTOR.submit(_run_picker))
     return {"selected_path": path}
 
 
@@ -533,7 +554,7 @@ def _scan_dir_entries(
                             "name": entry.name,
                             "path": entry.path,
                         })
-                elif entry.is_file(follow_symlinks=False):
+                elif not entry.name.startswith(".") and entry.is_file(follow_symlinks=False):
                     ext = os.path.splitext(entry.name)[1].lower()
                     if exts is None or ext in exts:
                         files.append({
@@ -562,12 +583,27 @@ def _fs_browse_sync(path: str | None, file_type: str | None) -> dict[str, Any]:
             "error": "Invalid or unsafe directory path",
         }
 
-    drives = _get_available_drives()
-    current_path = os.path.abspath(path) if path and os.path.exists(path) else (drives[0] if drives else "/")
+    roots = get_authorized_roots()
+    drives = list(dict.fromkeys(str(root) for root in roots if root.is_dir()))
+    current_path = os.path.abspath(path) if path and os.path.exists(path) else str(get_settings().project_root)
     if os.path.isfile(current_path):
         current_path = os.path.dirname(current_path)
 
+    try:
+        current_path = str(validate_path_containment(current_path, allowed_roots=roots))
+    except (PathTraversalError, OSError, ValueError):
+        return {
+            "current_path": str(get_settings().project_root), "parent_path": None,
+            "drives": drives, "directories": [], "files": [],
+            "error": "无法访问目录：路径超出已授权的项目或 GPT-SoVITS 目录",
+        }
+
     parent_path = os.path.dirname(current_path) if current_path != os.path.dirname(current_path) else None
+    if parent_path:
+        try:
+            validate_path_containment(parent_path, allowed_roots=roots)
+        except PathTraversalError:
+            parent_path = None
     exts = _FS_BROWSE_EXTS.get(file_type)
 
     try:
@@ -608,12 +644,15 @@ def _discover_gpt_sovits_roots() -> list[str]:
     if env_dir:
         roots.append(env_dir)
 
-    # Known user installation + generic drive layouts.
-    roots.extend([
-        r"E:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604",
-        r"D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604",
-        r"C:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604",
-    ])
+    from galgame2voice.services.sovits_installation import read_sovits_directory
+    try:
+        configured = read_sovits_directory(get_settings().project_root)
+        if configured is not None:
+            roots.append(str(configured))
+    except (OSError, ValueError, UnicodeError):
+        pass
+
+    roots.append(str(get_settings().project_root / "GPT-SoVITS"))
     # Generic drive fallbacks for renamed versions.
     for drive in ("C", "D", "E", "F"):
         roots.extend(glob.glob(rf"{drive}:\GPT-SoVITS*\GPT-SoVITS*"))
@@ -676,12 +715,14 @@ def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
 )
 async def scan_discovered_models():
     now = time.monotonic()
+    generation = _scan_cache.get("generation", 0)
     cached = _scan_cache.get("result")
     if cached is not None and now - cached[0] < _SCAN_TTL_SECONDS:
         return cached[1]
 
     result = await asyncio.to_thread(_scan_models_sync)
-    _scan_cache["result"] = (now, result)
+    if _scan_cache.get("generation", 0) == generation:
+        _scan_cache["result"] = (now, result)
     return result
 
 

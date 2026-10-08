@@ -118,9 +118,13 @@ def _probe_piped_subprocess() -> bool:
             return False
         return proc.returncode == 0 and b"ok" in (stdout or b"")
 
+    probe = _run()
     try:
-        return asyncio.run(_run())
+        return asyncio.run(probe)
     except Exception:
+        # A secondary import of conftest from an async test can happen while a
+        # loop is running. asyncio.run then rejects the still-unstarted probe.
+        probe.close()
         return False
 
 
@@ -611,6 +615,29 @@ def mock_gpt_sovits():
 
 
 @pytest.fixture
+async def configured_voice(tmp_path):
+    """Supply an explicit neutral voice for tests that exercise audio output."""
+    import wave
+    from galgame2voice.database import crud
+    from galgame2voice.database.models import VoiceProfileCreate
+    from galgame2voice.database.session import get_db, init_db
+    await init_db()
+    reference = tmp_path / "test_reference.wav"
+    with wave.open(str(reference), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(b"\x00\x00" * 16000 * 4)
+    async with get_db() as conn:
+        profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
+            name="Test voice", gpt_weights_path="test.ckpt", sovits_weights_path="test.pth",
+            ref_audio_path=str(reference), prompt_text="Test reference", prompt_lang="ja",
+        ))
+        assert await crud.set_active_voice_profile(conn, profile.id)
+    return profile
+
+
+@pytest.fixture
 def mock_llm_server():
     """Provides a fresh instance of MockLLMServer."""
     return MockLLMServer()
@@ -661,13 +688,22 @@ def forbid_unmarked_real_ffmpeg(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def isolate_test_database(monkeypatch):
+def isolate_test_database(monkeypatch, tmp_path):
     """Ensures every test runs against an isolated temporary SQLite database."""
     # The test suite drives the app through raw ASGI clients without console
     # tokens; dedicated auth tests re-enable authentication themselves.
     monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "1")
-    fd, path = tempfile.mkstemp(suffix=".db", prefix="test_auto_iso_")
-    os.close(fd)
+    # Redirect credential files as well as SQLite: ignored data/ is user data.
+    test_data_dir = tmp_path / ".runtime-data"
+    test_data_dir.mkdir()
+    monkeypatch.setenv("DATA_DIR_NAME", str(test_data_dir))
+    monkeypatch.setenv("AUDIO_DIR_NAME", str(tmp_path / ".runtime-audio"))
+    monkeypatch.setenv("LOGS_DIR_NAME", str(tmp_path / ".runtime-logs"))
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    monkeypatch.setenv("TMP", str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    # Match Settings.db_path as well as the legacy DB environment override.
+    path = str(test_data_dir / "galgame2voice.db")
     conn = sqlite3.connect(path)
     conn.executescript(DATABASE_SCHEMA_SQL)
     conn.commit()
@@ -675,6 +711,8 @@ def isolate_test_database(monkeypatch):
     
     monkeypatch.setenv("GALGAME2VOICE_DB_PATH", path)
     monkeypatch.setenv("GALGAME_DB_PATH", path)
+    from galgame2voice.config import get_settings
+    get_settings.cache_clear()
     from galgame2voice.routers.chat import set_chat_service
     set_chat_service(None)
     yield path
@@ -684,6 +722,28 @@ def isolate_test_database(monkeypatch):
             os.remove(path)
         except OSError:
             pass
+
+
+@pytest.fixture(autouse=True)
+async def isolate_runtime_services(monkeypatch, isolate_test_database):
+    """Singletons must use this test's paths and release their background jobs."""
+    from galgame2voice.services import gpt_sovits_client, tts_cache_manager, tts_scheduler, voice_manager, voice_resolver
+    monkeypatch.setattr(tts_cache_manager, "_tts_cache_manager_instance", None)
+    monkeypatch.setattr(tts_scheduler, "_GLOBAL_TTS_SCHEDULER", None)
+    monkeypatch.setattr(voice_manager, "_global_voice_manager", None)
+    monkeypatch.setattr(gpt_sovits_client, "_global_gpt_sovits_client", None)
+    monkeypatch.setattr(voice_resolver, "_GLOBAL_VOICE_RESOLVER", None)
+    yield
+    scheduler = tts_scheduler._GLOBAL_TTS_SCHEDULER
+    if isinstance(scheduler, tts_scheduler.TtsScheduler):
+        await scheduler.aclose()
+    manager = voice_manager._global_voice_manager
+    if isinstance(manager, voice_manager.VoiceManager):
+        await manager.aclose()
+    cache = tts_cache_manager._tts_cache_manager_instance
+    if isinstance(cache, tts_cache_manager.TtsCacheManager):
+        await cache.aclose()
+    await gpt_sovits_client.close_gpt_sovits_client()
 
 
 @pytest.fixture(autouse=True)

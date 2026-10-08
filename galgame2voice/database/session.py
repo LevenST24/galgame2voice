@@ -4,11 +4,9 @@ Enforces WAL mode, foreign keys, and async connection management via aiosqlite.
 """
 
 import asyncio
-from datetime import datetime
 import logging
 import os
 import random
-import shutil
 import sqlite3
 import uuid
 import weakref
@@ -43,7 +41,7 @@ def get_database_path() -> str:
 async def configure_connection(conn: aiosqlite.Connection, resolved_path: str | None = None) -> None:
     """Configure SQLite pragmas for performance and data integrity."""
     conn.row_factory = aiosqlite.Row
-    key = str(os.path.abspath(resolved_path)) if resolved_path else None
+    key = await asyncio.to_thread(os.path.abspath, resolved_path) if resolved_path else None
     if key is None or key not in _wal_confirmed_paths:
         mode = (await (await conn.execute("PRAGMA journal_mode;")).fetchone())[0]
         if str(mode).lower() != "wal":
@@ -122,11 +120,15 @@ def _get_conn_imm_tx_lock(conn: aiosqlite.Connection) -> asyncio.Lock:
 async def get_db(db_path: str | Path | None = None) -> AsyncGenerator[aiosqlite.Connection, None]:
     """Async context manager yielding an active, configured aiosqlite connection."""
     resolved_path = str(db_path) if db_path is not None else get_database_path()
-    parent_dir = os.path.dirname(os.path.abspath(resolved_path))
-    if parent_dir:
-        os.makedirs(parent_dir, exist_ok=True)
+    def prepare_path() -> str:
+        absolute_path = os.path.abspath(resolved_path)
+        parent_dir = os.path.dirname(absolute_path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+        return os.path.normcase(absolute_path)
+    normalized_path = await asyncio.to_thread(prepare_path)
     async with aiosqlite.connect(resolved_path, timeout=30.0) as conn:
-        conn._db_path = os.path.normcase(os.path.abspath(resolved_path))
+        conn._db_path = normalized_path
         await configure_connection(conn, resolved_path)
         yield conn
 
@@ -260,28 +262,28 @@ async def set_schema_version(conn: aiosqlite.Connection, version: int) -> None:
     await conn.execute(f"PRAGMA user_version = {int(version)};")
 
 
+def _backup_database_sync(resolved_path: Path) -> None:
+    """Back up committed WAL contents before migration, or once per day."""
+    from contextlib import closing
+    from galgame2voice.database.backups import _open_readonly, create_database_backup
+    from galgame2voice.database.migrations import CURRENT_SCHEMA_VERSION
+
+    if not resolved_path.is_file() or resolved_path.stat().st_size == 0:
+        return
+    # An invalid database must fail startup visibly, never replace a good backup.
+    with closing(_open_readonly(resolved_path)) as reader:
+        version = int(reader.execute("PRAGMA user_version").fetchone()[0])
+    if version > CURRENT_SCHEMA_VERSION:
+        raise RuntimeError("数据库来自较新的版本，请使用对应的新版本程序，原数据已保留。")
+    create_database_backup(resolved_path, required=version < CURRENT_SCHEMA_VERSION)
+
+
 async def init_db(db_path: str | Path | None = None) -> None:
-    """Initialize database schema, tables, indexes, and seed data with concurrency guards and pre-migration backup."""
+    """Initialize schema with concurrency guards and a threaded pre-migration backup."""
     from galgame2voice.database.crud import init_schema_and_seeds
 
-    resolved_path = Path(db_path or get_database_path())
-    # Automated pre-migration restorable backup
-    if resolved_path.exists() and resolved_path.is_file() and resolved_path.stat().st_size > 0:
-        try:
-            backup_dir = resolved_path.parent / "backups"
-            backup_dir.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_file = backup_dir / f"{resolved_path.name}.bak_{ts}"
-            shutil.copy2(resolved_path, backup_file)
-            # Prune older database backups, retaining the 5 most recent
-            backups = sorted(backup_dir.glob(f"{resolved_path.name}.bak_*"), key=lambda p: p.stat().st_mtime)
-            while len(backups) > 5:
-                backups.pop(0).unlink(missing_ok=True)
-            logger.info("Created automated pre-migration database backup: %s", backup_file)
-        except Exception as exc:
-            logger.warning("Failed creating pre-migration database backup: %s", exc)
-
     async with _init_lock:
+        await asyncio.to_thread(_backup_database_sync, Path(db_path or get_database_path()))
         max_retries = 5
         for attempt in range(max_retries):
             try:

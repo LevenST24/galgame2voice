@@ -122,6 +122,17 @@ async def update_settings(conn: aiosqlite.Connection, updates: SettingsUpdate) -
     values: list[Any] = []
 
     update_dict = updates.model_dump(exclude_unset=True)
+    allowed_columns = {
+        "active_provider_id", "active_voice_profile_id", "gpt_sovits_url", "audio_output_dir",
+        "audio_retention_minutes", "audio_cleanup_interval_sec", "speed_factor", "temperature",
+        "top_k", "top_p", "seed", "batch_size", "text_split_method", "fragment_interval",
+        "telegram_enabled", "telegram_bot_token", "telegram_bot_username", "telegram_proxy_host",
+        "telegram_proxy_port", "telegram_proxy_enabled", "telegram_admin_ids", "telegram_chat_id",
+        "allow_private_llm_endpoints", "console_url", "max_history_messages", "inference_precision",
+        "stt_engine", "console_token",
+    }
+    if update_dict.keys() - allowed_columns:
+        raise ValueError("Unsupported settings update columns")
     for k, v in update_dict.items():
         if k == "telegram_bot_token":
             if v is not None and not is_masked_key(str(v)):

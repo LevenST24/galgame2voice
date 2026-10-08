@@ -139,9 +139,16 @@ jobs:
         working-directory: frontend
         run: npm ci --ignore-scripts
 
-      - name: Build frontend
+      - name: Build and deploy frontend
         working-directory: frontend
-        run: npm run build
+        run: npm run deploy
+
+      - name: Verify committed frontend artifacts
+        run: |
+          git diff --exit-code -- galgame2voice/static
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $newAssets = git ls-files --others --exclude-standard -- galgame2voice/static
+          if ($newAssets) { throw "Untracked frontend artifacts: $newAssets" }
 
   docker-build:
     runs-on: ubuntu-latest

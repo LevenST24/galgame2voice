@@ -301,7 +301,7 @@ class TestDatabaseSchemaMigrations:
             assert count >= 8
 
             cur = await conn.execute("SELECT COUNT(*) FROM voice_profiles WHERE id = 1;")
-            assert (await cur.fetchone())[0] == 1
+            assert (await cur.fetchone())[0] == 0
 
             cur = await conn.execute("SELECT COUNT(*) FROM settings WHERE id = 1;")
             assert (await cur.fetchone())[0] == 1

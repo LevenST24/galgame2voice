@@ -26,6 +26,7 @@ writable. It never modifies the database.
 """
 
 import argparse
+import asyncio
 import dataclasses
 import ipaddress
 import json
@@ -412,7 +413,7 @@ async def _load_database_state(settings: Settings) -> Tuple[Optional[bool], Opti
 
     Returns None for the first two when the database is unavailable.
     """
-    if not Path(get_database_path()).exists():
+    if not await asyncio.to_thread(Path(get_database_path()).exists):
         return None, None, ""
     try:
         from galgame2voice.database import crud

@@ -17,9 +17,15 @@ from pathlib import Path
 from typing import Any
 
 # Ensure project root is in sys.path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = (
+    Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent.parent
+)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+if __name__ == "__main__":
+    # The API's engine restart must share this launcher's process ownership.
+    sys.modules["scripts.run_server"] = sys.modules[__name__]
 
 # E402: these imports must follow the sys.path bootstrap above, otherwise the
 # script cannot find the package when it is executed directly from a checkout.
@@ -30,6 +36,8 @@ from galgame2voice.utils.precision import (  # noqa: E402
     resolve_initial_device_and_half,
 )
 from galgame2voice.utils.hardware import get_gpu_vram_status  # noqa: E402
+from galgame2voice.services.sovits_installation import find_engine_python, read_sovits_directory  # noqa: E402
+from galgame2voice.utils.windows_runtime import kernel32  # noqa: E402
 
 # Ensure runtime directories
 for d in ["logs", "data", "audio"]:
@@ -58,6 +66,8 @@ def setup_windows_job_object():
     global _WINDOWS_JOB_HANDLE
     if sys.platform != "win32":
         return None
+    if _WINDOWS_JOB_HANDLE:
+        return _WINDOWS_JOB_HANDLE
     try:
         import ctypes
         from ctypes import wintypes
@@ -98,22 +108,22 @@ def setup_windows_job_object():
                 ("PeakJobMemoryLimit", ctypes.c_size_t),
             ]
 
-        kernel32 = ctypes.windll.kernel32
-        h_job = kernel32.CreateJobObjectW(None, None)
+        api = kernel32()
+        h_job = api.CreateJobObjectW(None, None)
         if not h_job:
             return None
 
         info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 
-        res = kernel32.SetInformationJobObject(
+        res = api.SetInformationJobObject(
             h_job,
             JobObjectExtendedLimitInformation,
             ctypes.byref(info),
             ctypes.sizeof(info),
         )
         if not res:
-            kernel32.CloseHandle(h_job)
+            api.CloseHandle(h_job)
             return None
 
         _WINDOWS_JOB_HANDLE = h_job
@@ -127,10 +137,8 @@ def assign_process_to_job(proc):
     if sys.platform != "win32" or not _WINDOWS_JOB_HANDLE:
         return False
     try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
         if hasattr(proc, "_handle") and proc._handle:
-            return bool(kernel32.AssignProcessToJobObject(_WINDOWS_JOB_HANDLE, proc._handle))
+            return bool(kernel32().AssignProcessToJobObject(_WINDOWS_JOB_HANDLE, int(proc._handle)))
     except Exception:
         pass
     return False
@@ -254,40 +262,37 @@ def cleanup_subprocesses():
     Explicitly stops spawned subprocesses and cleans runtime tracking files.
     Ensures full process tree is terminated via Job Object or fallback tree kill.
     """
-    global _SPAWNED_SOVITS_PROC
-    pids_to_clean = set()
-
-    if _SPAWNED_SOVITS_PROC is not None:
+    global _SPAWNED_SOVITS_PROC, _WINDOWS_JOB_HANDLE
+    proc, _SPAWNED_SOVITS_PROC = _SPAWNED_SOVITS_PROC, None
+    # Enumerate descendants before terminating their parent. A PID file alone
+    # never establishes ownership, and an exited Popen PID may already be reused.
+    if proc is not None:
         try:
-            if hasattr(_SPAWNED_SOVITS_PROC, "pid") and _SPAWNED_SOVITS_PROC.pid:
-                pids_to_clean.add(_SPAWNED_SOVITS_PROC.pid)
-            if _SPAWNED_SOVITS_PROC.poll() is None:
-                _SPAWNED_SOVITS_PROC.terminate()
-                try:
-                    _SPAWNED_SOVITS_PROC.wait(timeout=1.5)
-                except subprocess.TimeoutExpired:
-                    _SPAWNED_SOVITS_PROC.kill()
-        except Exception:
+            if proc.poll() is None:
+                terminate_process_tree(proc.pid)
+                proc.wait(timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
             pass
-        _SPAWNED_SOVITS_PROC = None
-
-    # Check pid file in case process was started earlier or object lost
-    pid_file = PROJECT_ROOT / "gptsovits.pid"
-    if pid_file.exists():
-        try:
-            raw_pid = pid_file.read_text(encoding="utf-8").strip()
-            if raw_pid.isdigit():
-                pids_to_clean.add(int(raw_pid))
-        except Exception:
-            pass
-
-    for pid in pids_to_clean:
-        terminate_process_tree(pid)
-
+    if _WINDOWS_JOB_HANDLE:
+        kernel32().CloseHandle(_WINDOWS_JOB_HANDLE)
+        _WINDOWS_JOB_HANDLE = None
+    # Another launcher may own these files. Preserve them while it is alive.
+    owner_file = PROJECT_ROOT / "galgame2voice.pid"
+    try:
+        raw_pid = owner_file.read_text(encoding="utf-8").strip()
+        if raw_pid.isdigit() and int(raw_pid) != os.getpid():
+            import psutil
+            if psutil.pid_exists(int(raw_pid)):
+                return
+    except FileNotFoundError:
+        pass
+    except (OSError, ImportError):
+        return
     try:
         (PROJECT_ROOT / "data" / "active_port.txt").unlink(missing_ok=True)
         (PROJECT_ROOT / "galgame2voice.pid").unlink(missing_ok=True)
         (PROJECT_ROOT / "gptsovits.pid").unlink(missing_ok=True)
+        (PROJECT_ROOT / "data" / "desktop_instance.json").unlink(missing_ok=True)
     except Exception:
         pass
 
@@ -381,11 +386,8 @@ def find_gpt_sovits_directory() -> Path | None:
     cache_file = PROJECT_ROOT / "data" / "sovits_dir.txt"
     if cache_file.exists():
         try:
-            cached_path_str = cache_file.read_text(encoding="utf-8-sig").strip().strip('"\'')
-            if cached_path_str:
-                cached_path = Path(cached_path_str)
-                if not cached_path.is_absolute():
-                    cached_path = (PROJECT_ROOT / cached_path).resolve()
+            cached_path = read_sovits_directory(PROJECT_ROOT)
+            if cached_path is not None:
                 valid_cached = _check_sovits_dir(cached_path)
                 if valid_cached:
                     return valid_cached
@@ -527,7 +529,13 @@ def check_python_environment() -> bool:
         ("aiosqlite", "aiosqlite"),
         ("pydantic", "pydantic"),
         ("httpx", "httpx"),
+        ("pydantic_settings", "pydantic-settings"),
+        ("psutil", "psutil"),
+        ("telegram", "python-telegram-bot"),
+        ("cryptography", "cryptography"),
     ]
+    if getattr(sys, "frozen", False):
+        core_deps.append(("tkinter", "tkinter"))
     missing = []
     for mod_name, pkg_name in core_deps:
         try:
@@ -537,6 +545,9 @@ def check_python_environment() -> bool:
 
     if missing:
         print(f"\n[提示] 正在检查运行依赖... 发现缺少核心运行库: {', '.join(missing)}")
+        if getattr(sys, "frozen", False):
+            print("[错误] 便携包缺少运行组件。请重新解压完整的 Windows 便携包，保留 _internal 目录。")
+            return False
         req_file = PROJECT_ROOT / "requirements.txt"
         if req_file.exists():
             print(f"[提示] 正在尝试自动安装依赖: {req_file.name} ...")
@@ -659,14 +670,10 @@ def _spawn_sovits_process(
     device: str = "cuda",
 ) -> subprocess.Popen:
     """Launches the GPT-SoVITS API daemon with the given precision and device, binding to launcher lifecycle."""
-    runtime_candidates = (
-        (sovits_dir / "runtime" / "python.exe", sovits_dir / "runtime" / "python",
-         sovits_dir / "runtime" / "python" / "bin" / "python3")
-        if sys.platform == "win32"
-        else (sovits_dir / "runtime" / "python" / "bin" / "python3", sovits_dir / "runtime" / "python")
-    )
-    python_exe = next((c for c in runtime_candidates if c.is_file()), None)
+    python_exe = find_engine_python(sovits_dir)
     if python_exe is None:
+        if getattr(sys, "frozen", False):
+            raise RuntimeError("GPT-SoVITS 目录缺少 runtime/python.exe。请选择包含运行环境的完整引擎包，或连接已启动的引擎。")
         print("      [提示] 该 GPT-SoVITS 集成包缺少内置 runtime/python 解释器；")
         print("             将改用当前 Python 启动引擎，若报缺少 GPT-SoVITS 依赖，")
         print("             请下载官方完整集成包 (含 runtime 目录) 或手动安装其 requirements。")
@@ -720,9 +727,13 @@ def _spawn_sovits_process(
         log_fp.close()
     global _SPAWNED_SOVITS_PROC
     _SPAWNED_SOVITS_PROC = proc
-    assign_process_to_job(proc)
+    if sys.platform == "win32" and not _WINDOWS_JOB_HANDLE:
+        setup_windows_job_object()
+    assigned = assign_process_to_job(proc)
     (PROJECT_ROOT / "gptsovits.pid").write_text(str(proc.pid), encoding="utf-8")
-    print(f"      [OK] 已在后台启动 GPT-SoVITS (PID: {proc.pid}, {'FP16' if is_half else 'FP32'})，进程与主窗口已安全绑定联动")
+    print(f"      [OK] 已在后台启动 GPT-SoVITS (PID: {proc.pid}, {'FP16' if is_half else 'FP32'})")
+    if sys.platform == "win32" and not assigned:
+        print("      [提示] Windows 未允许绑定引擎进程；请用 Ctrl+C 正常退出以清理引擎。")
     return proc
 
 
@@ -1067,6 +1078,11 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         help="Suppress automatic browser launch on server startup",
     )
     parser.add_argument(
+        "--no-engine",
+        action="store_true",
+        help="Open the application without discovering or starting a local GPT-SoVITS process",
+    )
+    parser.add_argument(
         "--check-only",
         action="store_true",
         help="Run pre-flight environment & hardware diagnostics, print report, and exit cleanly (exit code 0 if healthy, 1 if fatal)",
@@ -1133,12 +1149,15 @@ def main(args: list[str] | None = None):
 
     try:
         # Step 1: GPT-SoVITS
-        ensure_gpt_sovits_running(
-            fp16=getattr(parsed, "fp16", False),
-            fp32=getattr(parsed, "fp32", False),
-            cpu=getattr(parsed, "cpu", False),
-            precision=getattr(parsed, "precision", None),
-        )
+        if getattr(parsed, "no_engine", False):
+            print("[1/2] 已跳过语音引擎自动启动；可在网页中完成首次配置。")
+        else:
+            ensure_gpt_sovits_running(
+                fp16=getattr(parsed, "fp16", False),
+                fp32=getattr(parsed, "fp32", False),
+                cpu=getattr(parsed, "cpu", False),
+                precision=getattr(parsed, "precision", None),
+            )
 
         # Step 2: Determine & Probe Port
         preferred_port = parsed.port
@@ -1158,6 +1177,10 @@ def main(args: list[str] | None = None):
         except Exception:
             pass
 
+        if getattr(sys, "frozen", False):
+            from scripts.desktop_instance import write_instance_address
+            write_instance_address(PROJECT_ROOT, bind_host, active_port)
+
         # Step 3: Auto Open Browser
         display_host = "127.0.0.1" if bind_host in ("0.0.0.0", "::") else bind_host
         print(f"[2/2] 正在启动 Galgame2Voice 伴侣服务 ({bind_host}:{active_port})...")
@@ -1170,7 +1193,14 @@ def main(args: list[str] | None = None):
         try:
             import uvicorn
             uvicorn.run("galgame2voice.main:app", host=bind_host, port=active_port, log_level="info")
-        except (KeyboardInterrupt, SystemExit):
+        except KeyboardInterrupt:
+            print("\n[提示] 服务已正常停止，正在释放资源...")
+        except SystemExit as exc:
+            if exc.code not in (None, 0):
+                print("\n[启动失败] 本机服务未能就绪。请确认解压目录可写，并查看 logs 中的错误日志；若提示数据库损坏，请先保留 data 文件夹，再从备份恢复。")
+                if getattr(sys, "frozen", False):
+                    print("可双击「数据恢复.bat」选择经过校验的数据库备份，恢复前会另存原文件。")
+                raise
             print("\n[提示] 服务已正常停止，正在释放资源...")
         except Exception as e:
             print(f"\n[错误] 服务运行异常: {e}")

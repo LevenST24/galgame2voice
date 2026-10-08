@@ -390,7 +390,7 @@ class TestVoiceProfileExtremeParameters:
         assert resolved["temperature"] == TTS_PRESETS["balanced"]["temperature"]
 
     @pytest.mark.asyncio
-    async def test_synthesize_endpoint_with_extreme_parameters(self):
+    async def test_synthesize_endpoint_with_extreme_parameters(self, configured_voice):
         """Verifies /api/voice/synthesize accepts and forwards extreme parameters correctly."""
         await init_db()
         app = create_app()

@@ -2,6 +2,7 @@
 import { state, saveState, getActive, DEFAULT_SESSION_SETTINGS } from '../store.js';
 import { portraitStage } from '../portrait.js';
 import { showToast } from '../ui.js';
+import { requestJson } from '../api.js';
 
 let _dom = {};
 let _callbacks = {};
@@ -11,6 +12,12 @@ let _promptBaseline = '';
 let _promptOwnerId = null;
 let activeProfileId = null;
 let scannedModels = null;
+let scanRevision = 0;
+
+export function invalidateScannedModels() {
+  scannedModels = null;
+  scanRevision += 1;
+}
 
 export function initVoiceSettings(dom, callbacks = {}) {
   _dom = dom;
@@ -142,9 +149,7 @@ export function syncRangeLabels() {
 }
 
 export async function fetchVoiceProfiles() {
-  const res = await fetch('/api/voice/profiles');
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
+  const data = await requestJson('/api/voice/profiles');
   voiceProfiles = data.profiles || [];
   activeProfileId = data.active_profile_id;
   return data;
@@ -155,21 +160,11 @@ export async function ensureSessionVoice(session, { silent = false } = {}) {
   if (!want) return;
   try {
     if (activeProfileId === null) await fetchVoiceProfiles();
-    let res = await fetch('/api/voice/switch', {
+    const data = await requestJson('/api/voice/switch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ profile_id: want }),
-    });
-    let data = await res.json().catch(() => ({}));
-    if (!res.ok && res.status === 503) {
-      res = await fetch('/api/voice/switch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile_id: want, force: true }),
-      });
-      data = await res.json().catch(() => ({}));
-    }
-    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    }, { timeoutMs: 120000 });
     activeProfileId = want;
     // 换人后若面板正开着且人设框没有未保存编辑，就跟着换成新角色的那一份
     const modalOpen = _dom.sessionModal && !_dom.sessionModal.classList.contains('hidden');
@@ -185,6 +180,18 @@ export async function ensureSessionVoice(session, { silent = false } = {}) {
     }
     if (!silent) showToast(`已切换音色：${data.profile || want}`, 'success');
   } catch (e) {
+    if (e.status === 404) {
+      try {
+        await fetchVoiceProfiles();
+        if (!voiceProfiles.some(profile => profile.id === want)
+          && session?.settings?.voiceProfileId === want) {
+          session.settings.voiceProfileId = null;
+          saveState();
+          showToast('这个会话绑定的音色已被删除，已解除失效绑定。文字聊天可继续；请在「会话设置」选择或创建新音色。', 'info');
+          return;
+        }
+      } catch { /* Keep the binding when its existence cannot be checked. */ }
+    }
     showToast(`音色切换失败: ${e.message || e}`, 'error');
   }
 }
@@ -197,7 +204,8 @@ export async function loadSessionVoiceSelect(session) {
     await fetchVoiceProfiles();
     const active = voiceProfiles.find((p) => p.id === activeProfileId);
     if (_dom.sVoiceActive) {
-      _dom.sVoiceActive.textContent = active ? `当前加载：${active.name}` : '';
+      _dom.sVoiceActive.textContent = active ? `当前加载：${active.name}`
+        : (!voiceProfiles.length ? '首次使用：请选择模型权重和参考音频，创建会话音色。' : '');
     }
     const sortedProfiles = active ? [active, ...voiceProfiles.filter((p) => p !== active)] : voiceProfiles;
     for (const p of sortedProfiles) {
@@ -213,7 +221,9 @@ export async function loadSessionVoiceSelect(session) {
     customOpt.value = '__custom__';
     customOpt.textContent = '＋ 新建自定义音色（选择 ckpt / pth / 参考音频）…';
     _dom.sVoice.appendChild(customOpt);
-    if (session?.settings?.voiceProfileId) {
+    if (!voiceProfiles.length) {
+      _dom.sVoice.value = '__custom__';
+    } else if (session?.settings?.voiceProfileId) {
       _dom.sVoice.value = String(session.settings.voiceProfileId);
     }
   } catch (e) {
@@ -282,9 +292,12 @@ export async function populateScanOptions() {
   };
   try {
     if (!scannedModels) {
+      const currentRevision = scanRevision;
       const res = await fetch('/api/voice/scan-models');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      scannedModels = await res.json();
+      const models = await res.json();
+      if (currentRevision !== scanRevision) return;
+      scannedModels = models;
     }
     fill(_dom.sCvGpt, scannedModels.gpt_weights || [], '（未扫描到 .ckpt 文件）');
     fill(_dom.sCvSovits, scannedModels.sovits_weights || [], '（未扫描到 .pth 文件）');
@@ -344,7 +357,7 @@ export async function createCustomVoice() {
       s.settings.voiceProfileId = profileId;
       saveState();
     }
-    scannedModels = null;
+    invalidateScannedModels();
     await loadSessionVoiceSelect(s);
     _dom.sVoice.value = String(profileId);
     syncCustomVoiceBox();

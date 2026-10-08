@@ -32,9 +32,14 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "psutil>=6.0.0",
     "python-telegram-bot>=21.0",
+    "cryptography>=46.0.0",
 ]
 
 [project.optional-dependencies]
+desktop = [
+    "pyinstaller>=6.16.0",
+    "imageio-ffmpeg>=0.6.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
@@ -74,12 +79,6 @@ extend-exclude = ["tests"]
 # behavioural change is never hidden inside a reordering diff.
 select = ["E4", "E7", "E9", "F", "B", "ASYNC"]
 
-# ASYNC240 flags every pathlib.Path / os.path probe inside an async function.
-# The remaining findings are all `is_file()`, `stat()` and `abspath()` calls on
-# local files, which cost microseconds; routing them through asyncio.to_thread
-# would add a thread hop and a scheduling delay to paths that are already
-# correct. Revisit if such a probe ever moves onto a network filesystem.
-ignore = ["ASYNC240"]
 
 [tool.mypy]
 python_version = "3.10"

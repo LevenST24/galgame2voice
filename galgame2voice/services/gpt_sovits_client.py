@@ -330,11 +330,7 @@ class GptSovitsClient:
         refer_language: str = "ja",
     ) -> bool:
         """Sets reference audio."""
-        p = Path(refer_audio_path)
-        if not p.is_file() and (_PROJECT_ROOT / refer_audio_path).is_file():
-            refer_audio_path = str((_PROJECT_ROOT / refer_audio_path).resolve())
-        elif p.is_file():
-            refer_audio_path = str(p.resolve())
+        refer_audio_path = await asyncio.to_thread(resolve_reference_audio_path, refer_audio_path)
 
         resp = await self._request("GET", ENDPOINT_SET_REFER_AUDIO, params={PARAM_REFER_AUDIO_PATH: refer_audio_path})
         if resp.status_code == 200:
@@ -629,10 +625,15 @@ class GptSovitsClient:
                                 await queue.put(chunk)
                 finally:
                     self._inflight_requests -= 1
-        except BaseException as exc:
+        except asyncio.CancelledError:
+            # The consumer has gone away: enqueueing an error or EOF into its
+            # full buffer would prevent cancellation from ever completing.
+            raise
+        except Exception as exc:
             await queue.put(exc)
-        finally:
-            await queue.put(sentinel)
+        # EOF is needed only while a consumer is still reading. In particular,
+        # cancellation during normal data/error enqueue must bypass this put.
+        await queue.put(sentinel)
 
     async def stream_tts(
         self,

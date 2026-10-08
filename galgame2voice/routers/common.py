@@ -51,5 +51,5 @@ async def switch_voice_profile_or_raise(manager: Any, profile: Any, force: bool 
     if not success:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to load GPT/SoVITS model weights onto backend service",
+            detail="语音模型尚未加载。请在「全局设置 → 状态诊断」启动语音引擎，再在「会话设置」重新选择模型权重和参考音频。文字聊天仍可继续使用。",
         )

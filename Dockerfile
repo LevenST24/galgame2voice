@@ -41,7 +41,9 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=utf-8 \
-    GALGAME_PORT=8080 \
+    GALGAME2VOICE_PORT=8080 \
+    GALGAME2VOICE_HOST=0.0.0.0 \
+    GALGAME2VOICE_AUTH_DISABLED=0 \
     PYTHONPATH=/app \
     PATH="/app/.venv/bin:$PATH"
 
@@ -83,6 +85,6 @@ VOLUME ["/app/data", "/app/audio", "/app/logs"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://127.0.0.1:8080/api/health || exit 1
 
-# Launch uvicorn directly in Docker container
-CMD ["uvicorn", "galgame2voice.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# The listener and startup safety check share the same Settings values.
+CMD ["python", "-m", "galgame2voice.main"]
 

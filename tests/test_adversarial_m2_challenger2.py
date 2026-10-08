@@ -254,7 +254,7 @@ class TestSSEStreamingProtocol:
     """Stress test the backend SSE stream generator and frontend parser contract."""
 
     @pytest.mark.asyncio
-    async def test_sse_stream_bilingual_events_emission(self, temp_db_path, mock_gpt_sovits, tmp_path):
+    async def test_sse_stream_bilingual_events_emission(self, temp_db_path, mock_gpt_sovits, tmp_path, configured_voice):
         """
         Test that `POST /api/chat/stream` emits:
         - `event: text` with delta_chinese / full_chinese

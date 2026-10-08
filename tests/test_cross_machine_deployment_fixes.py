@@ -44,6 +44,21 @@ def create_synthetic_wav(path: Path, duration_sec: float, sample_rate: int = 160
     return path
 
 
+@pytest.fixture
+async def fallback_voice(tmp_path):
+    """Reference fallback requires a configured voice, supplied by this test."""
+    from galgame2voice.database.models import VoiceProfileCreate
+    from galgame2voice.database.session import get_db
+    reference = create_synthetic_wav(tmp_path / "fallback_reference.wav", duration_sec=5.0)
+    async with get_db() as conn:
+        profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
+            name="Fallback test voice", gpt_weights_path="test.ckpt", sovits_weights_path="test.pth",
+            ref_audio_path=str(reference), prompt_text="Test reference", prompt_lang="ja",
+        ))
+        assert await crud.set_active_voice_profile(conn, profile.id)
+    return reference
+
+
 # ============================================================================
 # 1. UTF-8 BOM-Safe Reading
 # ============================================================================
@@ -128,7 +143,7 @@ def test_cool_emotion_mapped_to_valid_duration_audio():
 
 
 @pytest.mark.asyncio
-async def test_tts_service_duration_fallback_short_audio(tmp_path):
+async def test_tts_service_duration_fallback_short_audio(tmp_path, fallback_voice):
     """Verifies that reference audio under 3.0s automatically falls back to default reference."""
     short_wav = create_synthetic_wav(tmp_path / "short_2s.wav", duration_sec=2.0)
     dur = TtsService.get_audio_duration(short_wav)
@@ -140,11 +155,11 @@ async def test_tts_service_duration_fallback_short_audio(tmp_path):
 
     # Must fall back to default profile reference audio (not the 2.0s short_wav)
     assert populated["ref_audio_path"] != str(short_wav)
-    assert "gentle.ogg" in populated["ref_audio_path"] or "nat002_032.ogg" in populated["ref_audio_path"]
+    assert populated["ref_audio_path"] == str(fallback_voice)
 
 
 @pytest.mark.asyncio
-async def test_tts_service_duration_fallback_long_audio(tmp_path):
+async def test_tts_service_duration_fallback_long_audio(tmp_path, fallback_voice):
     """Verifies that reference audio over 10.0s automatically falls back to default reference."""
     long_wav = create_synthetic_wav(tmp_path / "long_12s.wav", duration_sec=12.0)
     dur = TtsService.get_audio_duration(long_wav)
@@ -156,7 +171,7 @@ async def test_tts_service_duration_fallback_long_audio(tmp_path):
 
     # Must fall back to default profile reference audio (not the 12.0s long_wav)
     assert populated["ref_audio_path"] != str(long_wav)
-    assert "gentle.ogg" in populated["ref_audio_path"] or "nat002_032.ogg" in populated["ref_audio_path"]
+    assert populated["ref_audio_path"] == str(fallback_voice)
 
 
 @pytest.mark.asyncio
@@ -275,7 +290,7 @@ def test_preflight_python_and_deps_check():
 
 
 @pytest.mark.asyncio
-async def test_tts_service_duration_fallback_missing_file(tmp_path):
+async def test_tts_service_duration_fallback_missing_file(tmp_path, fallback_voice):
     """Verifies that non-existent reference audio automatically falls back to default reference."""
     missing_file = tmp_path / "absolutely_missing_reference.wav"
     dur = TtsService.get_audio_duration(missing_file)
@@ -287,7 +302,7 @@ async def test_tts_service_duration_fallback_missing_file(tmp_path):
 
     # Must fall back to default profile reference audio
     assert populated["ref_audio_path"] != str(missing_file)
-    assert "gentle.ogg" in populated["ref_audio_path"] or "nat002_032.ogg" in populated["ref_audio_path"]
+    assert populated["ref_audio_path"] == str(fallback_voice)
 
 
 @pytest.mark.asyncio
@@ -337,8 +352,8 @@ async def test_switch_voice_profile_resolves_relative_reference_path(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_init_schema_and_seeds_seeds_portable_path(tmp_path):
-    """Verifies that init_db syncs portable relative reference path from character packages."""
+async def test_init_schema_and_seeds_leaves_voice_setup_to_user(tmp_path):
+    """A clean installation does not create a machine-specific voice profile."""
     from galgame2voice.database.session import init_db
     db_path = tmp_path / "fresh_seed.db"
     await init_db(db_path)
@@ -346,10 +361,7 @@ async def test_init_schema_and_seeds_seeds_portable_path(tmp_path):
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE id = 1;")
         row = await cur.fetchone()
-        assert row is not None
-        ref_path = row["ref_audio_path"]
-        assert "yuzusoft" not in ref_path
-        assert not Path(ref_path).is_absolute()
+        assert row is None
 
 
 @pytest.mark.asyncio
@@ -358,6 +370,11 @@ async def test_auto_heal_arbitrary_drive_letters(tmp_path):
     from galgame2voice.database.session import init_db
     db_path = tmp_path / "drive_letters.db"
     await init_db(db_path)
+    from galgame2voice.database.models import VoiceProfileCreate
+    async with aiosqlite.connect(str(db_path)) as conn:
+        await crud.create_voice_profile(conn, VoiceProfileCreate(
+            name="Portable test voice", gpt_weights_path="test.ckpt", sovits_weights_path="test.pth",
+        ))
     async with aiosqlite.connect(str(db_path)) as conn:
         conn.row_factory = aiosqlite.Row
         # Inject machine-specific drive letters from foreign machines

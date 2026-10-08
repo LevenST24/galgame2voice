@@ -5,6 +5,7 @@ from runtime CRUD operations.
 """
 
 import logging
+import asyncio
 import os
 import sqlite3
 import uuid
@@ -16,12 +17,11 @@ from galgame2voice.database.session import (
     get_schema_version,
     set_schema_version,
 )
-from galgame2voice.security.crypto import encrypt_secret, is_encrypted_secret
+from galgame2voice.security.crypto import MasterKeyError, encrypt_secret, upgrade_secret_encryption
 
 logger = logging.getLogger("galgame2voice.database.migrations")
 
-# Default reference audio ships inside the repo using portable relative paths.
-# Converted to absolute at the client boundary when dispatching to GPT-SoVITS.
+# Compatibility exports for existing integrations; not used to seed new databases.
 _DEFAULT_REF_AUDIO = "audio/references/natsume/gentle.ogg"
 _DEFAULT_REF_TEXT = "とりあえず、今日見たことは忘れて、わかった?"
 
@@ -78,7 +78,7 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
         CREATE TABLE IF NOT EXISTS settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             active_provider_id TEXT NOT NULL DEFAULT 'deepseek',
-            active_voice_profile_id INTEGER DEFAULT 1,
+            active_voice_profile_id INTEGER DEFAULT NULL,
             gpt_sovits_url TEXT NOT NULL DEFAULT 'http://127.0.0.1:9880',
             audio_output_dir TEXT NOT NULL DEFAULT 'audio',
             audio_retention_minutes INTEGER NOT NULL DEFAULT 30,
@@ -92,7 +92,7 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
             text_split_method TEXT NOT NULL DEFAULT 'cut1',
             fragment_interval REAL NOT NULL DEFAULT 0.3,
             telegram_bot_token TEXT NOT NULL DEFAULT '',
-            telegram_bot_username TEXT NOT NULL DEFAULT 'natsume_siki_bot',
+            telegram_bot_username TEXT NOT NULL DEFAULT 'galgame2voice_bot',
             telegram_proxy_host TEXT NOT NULL DEFAULT '127.0.0.1',
             telegram_proxy_port INTEGER NOT NULL DEFAULT 10809,
             telegram_proxy_enabled INTEGER NOT NULL DEFAULT 0,
@@ -260,53 +260,7 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_session ON token_usage_metrics(session_id);")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_token_usage_provider_tokens ON token_usage_metrics(provider_id, total_tokens);")
 
-    # Seed Voice Profile 1
-    cursor = await conn.execute("SELECT COUNT(*) FROM voice_profiles;")
-    count_row = await cursor.fetchone()
-    count = count_row[0] if count_row else 0
-    if count == 0:
-        natsume_prompt = """你现在扮演游戏《星光咖啡馆与死神之蝶》（喫茶ステラと死神の蝶）中的角色「四季夏目」（四季ナツメ），以她的身份和口吻与玩家对话，始终不要跳出角色。
-
-【角色设定】
-四季夏目是在校大学生（大三，语言学），在星光咖啡馆兼职，是男主角昂晴的同班同学。她在学校里人气很高，多次拒绝别人的表白，因此被称为「无情的发卡姬」；因为她的日文名ナツメ曾被机翻成「大枣」，所以大家也亲切地叫她「枣子姐」。
-夏目不擅长摆出开朗的笑容，表情常常有些生硬，是个特立独行的「高岭之花」。
-她从小体弱多病、经常住院，因此认为自己住院让父母放弃了开咖啡厅的梦想，把经营好星光咖啡馆当作自己最重要的事情，甚至表示在有必要时选择退学。
-口味上，她不喜欢苦味的食物（比如咖啡、青椒），喝咖啡要加很多糖和咖啡伴侣；喜欢去安静的正统酒吧小酌，爱喝较甜的低度数鸡尾酒。喝醉之后性格会变得稍微外向，喜欢开玩笑撩人，事后回想起来会感到羞耻。
-穿女仆装是她的个人爱好。
-
-【背景补充】
-夏目曾因体弱多病而离群，原本的身体在一场车祸中离世，是昂晴引发的「回溯」改变了历史，让她得以继续活下去。在昂晴的陪伴下，她逐渐学会自然的笑容、融洽的关系和乐观的心态，并最终接纳了从自己身上失散的灵魂碎片，与昂晴走向幸福的未来。
-
-【说话风格】
-表面高冷、表情生硬、不善直白表达，但内心温柔、重感情，对亲近的人会流露出占有欲和嫉妒心；喝醉时会变得外向、爱开玩笑撩人。语气礼貌得体，符合大学生口吻，可带语气词（如です、ます、ね、よ等）。
-
-重要：你必须严格输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad|angry），不要输出任何多余文字、不要加代码块标记：
-{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}
-
-要求：
-1. tts 包含 speed 语速、temp 生成温度、emotion 情绪，在开头根据每句话的情境动态微调。
-2. chinese 是给中文玩家看的内容；japanese 是同样含义的日文，口语自然、适合配音。
-3. japanese 必须符合四季夏目的角色口吻。
-4. 字段都不能为空。
-5. 始终以四季夏目的身份回复，不要解释设定、不要跳出角色。"""
-        await conn.execute("""
-            INSERT OR IGNORE INTO voice_profiles (
-                id, name, description, gpt_weights_path, sovits_weights_path,
-                ref_audio_path, prompt_text, prompt_lang, text_lang, system_prompt, is_default
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        """, (
-            1,
-            "四季夏目 (Shiki Natsume)",
-            "《星光咖啡馆与死神之蝶》高冷毒舌但内心温柔的咖啡厅兼职店员",
-            "GPT_weights_v2ProPlus/siki2-e50.ckpt",
-            "SoVITS_weights_v2ProPlus/siki_e20_s10280.pth",
-            _DEFAULT_REF_AUDIO,
-            _DEFAULT_REF_TEXT,
-            "ja",
-            "ja",
-            natsume_prompt,
-            1
-        ))
+    # New installations start without a voice; users import/create one.
 
     # Seed Providers
     cursor = await conn.execute("SELECT COUNT(*) FROM providers;")
@@ -346,11 +300,11 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
                 telegram_bot_username, telegram_proxy_host, telegram_proxy_port,
                 telegram_proxy_enabled, telegram_enabled, console_token, console_url, max_history_messages
             ) VALUES (
-                1, 'deepseek', 1, 'http://127.0.0.1:9880',
+                1, 'deepseek', NULL, 'http://127.0.0.1:9880',
                 'audio', 30, 600,
                 1.0, 1.0, 15, 1.0, -1, 1,
                 'cut1', 0.3, '',
-                'natsume_siki_bot', '127.0.0.1', 10809,
+                'galgame2voice_bot', '127.0.0.1', 10809,
                 0, 0, ?, '', 10
             );
         """, (encrypted_token,))
@@ -544,20 +498,27 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
         p_rows = await cursor.fetchall()
         for p_row in p_rows:
             p_id, p_key = p_row["id"], p_row["api_key"]
-            if p_key and not is_encrypted_secret(p_key):
-                await conn.execute("UPDATE providers SET api_key = ? WHERE id = ?;", (encrypt_secret(p_key), p_id))
+            if p_key:
+                upgraded = upgrade_secret_encryption(p_key)
+                if upgraded != p_key:
+                    await conn.execute("UPDATE providers SET api_key = ? WHERE id = ?;", (upgraded, p_id))
 
         cursor = await conn.execute("SELECT telegram_bot_token, console_token FROM settings WHERE id = 1;")
         s_row = await cursor.fetchone()
         if s_row:
             tg_token = s_row["telegram_bot_token"]
             c_token = s_row["console_token"]
-            if tg_token and not is_encrypted_secret(tg_token):
-                await conn.execute("UPDATE settings SET telegram_bot_token = ? WHERE id = 1;", (encrypt_secret(tg_token),))
-            if c_token and not is_encrypted_secret(c_token):
-                await conn.execute("UPDATE settings SET console_token = ? WHERE id = 1;", (encrypt_secret(c_token),))
-    except Exception as exc:
-        logger.debug("Credentials encryption migration step skipped: %s", exc)
+            if tg_token:
+                upgraded = upgrade_secret_encryption(tg_token)
+                if upgraded != tg_token:
+                    await conn.execute("UPDATE settings SET telegram_bot_token = ? WHERE id = 1;", (upgraded,))
+            if c_token:
+                upgraded = upgrade_secret_encryption(c_token)
+                if upgraded != c_token:
+                    await conn.execute("UPDATE settings SET console_token = ? WHERE id = 1;", (upgraded,))
+    except Exception:
+        logger.error("Credentials encryption migration failed; startup aborted", exc_info=True)
+        raise
 
     # Guarantee a console token exists so the API is never left unauthenticated.
     # The token is saved encrypted in the DB, and written to data/.console_token (0600).
@@ -573,6 +534,8 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
                 "UPDATE settings SET console_token = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1;",
                 (encrypted_token,),
             )
+    except MasterKeyError:
+        raise
     except Exception as exc:
         logger.debug("Could not auto-generate missing console token in init_schema_and_seeds: %s", exc)
 
@@ -643,8 +606,8 @@ async def auto_heal_voice_profiles(conn: aiosqlite.Connection, char_mgr: Any | N
                 root_resolved = project_root.resolve()
                 audio_dir_resolved = settings.audio_dir.resolve()
                 if p.is_absolute():
-                    if p.is_file():
-                        resolved = p.resolve()
+                    if await asyncio.to_thread(p.is_file):
+                        resolved = await asyncio.to_thread(p.resolve)
                         if resolved.is_relative_to(root_resolved):
                             rel_posix = resolved.relative_to(root_resolved).as_posix()
                             if rel_posix != ref_path:

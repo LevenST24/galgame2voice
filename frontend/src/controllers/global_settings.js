@@ -5,11 +5,15 @@ import {
   activateProvider as apiActivateProvider,
   testProviderConnection,
   getErrorMessage,
+  requestJson,
 } from '../api.js';
 import { formatProviderDiagnostic, BUILTIN_PRESETS } from '../settings.js';
 import { state, saveGlobal } from '../store.js';
 import { showToast } from '../ui.js';
 import { clearMemAudioCache } from '../cache.js';
+import { initEngineDirectory } from './engine_directory.js';
+import { waitForEngine } from './engine_recovery.js';
+import { saveConfirmedConfig } from './config_recovery.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -18,6 +22,15 @@ let _callbacks = {};
 let cachedProviders = [];
 let cachedPresets = [];
 let currentActiveProvider = null;
+let engineDirectory = null;
+let configDirty = false;
+let configRevision = 0;
+let configLoad = 0;
+let restarting = false;
+const CONFIG_FIELDS = ['gParamSovitsUrl', 'gPrecision', 'gParamSliceMethod', 'gParamSpeed', 'gParamTopK',
+  'gParamTopP', 'gParamTemp', 'gParamFragmentInterval', 'gAudioRetention', 'gSttEngine', 'gTgEnabled',
+  'gTgToken', 'gTgChatId', 'gTgProxyHost', 'gTgProxyPort', 'gTgProxyEnabled', 'gMemoryEnabled',
+  'gUserNickname', 'gDefaultSystemPrompt'];
 
 export function getCurrentActiveProvider() {
   return currentActiveProvider;
@@ -26,6 +39,16 @@ export function getCurrentActiveProvider() {
 export function initGlobalSettings(dom, callbacks = {}) {
   _dom = dom;
   _callbacks = callbacks;
+  configDirty = false;
+  configRevision = 0;
+  configLoad = 0;
+  CONFIG_FIELDS.forEach((field) => {
+    for (const event of ['input', 'change']) dom[field]?.addEventListener(event, () => {
+      configDirty = true;
+      configRevision += 1;
+    });
+  });
+  engineDirectory = initEngineDirectory(dom, showToast, () => _callbacks.onSovitsDirectorySaved?.());
 
   // 选项卡切换
   if (_dom.gTabs) {
@@ -100,7 +123,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
     _dom.gPrecision.addEventListener('change', async () => {
       const val = _dom.gPrecision.value;
       try {
-        await fetch('/api/config', {
+        await requestJson('/api/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ inference_precision: val }),
@@ -114,7 +137,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
         showToast(`已保存推理设置: ${labelMap[val] || val}。请点击【重启 SoVITS 引擎】应用。`, 'info');
         fetchSystemTelemetry();
       } catch (err) {
-        console.warn('Auto-save precision failed:', err);
+        showToast(`推理设置尚未保存：${err.message}。当前选择已保留。`, 'error');
       }
     });
   }
@@ -144,6 +167,8 @@ export function initGlobalSettings(dom, callbacks = {}) {
   if (_dom.gResetBtn) {
     _dom.gResetBtn.addEventListener('click', () => {
       if (!confirm('确定要将全局参数恢复为推荐默认值吗？')) return;
+      configDirty = true;
+      configRevision += 1;
       if (_dom.gParamSpeed) {
         _dom.gParamSpeed.value = '1.0';
         _dom.gParamSpeedVal.textContent = '1.0';
@@ -194,9 +219,10 @@ export function openGlobalSettings() {
 }
 
 export async function loadProviders() {
+  const previousOptions = _dom.gProvider?.innerHTML;
   if (_dom.gProvider) _dom.gProvider.innerHTML = '<option value="">加载模型列表…</option>';
   try {
-    const data = await fetchProviders().catch(() => null);
+    const data = await fetchProviders();
     cachedProviders = data && data.providers ? data.providers : [];
     cachedPresets = data && data.presets && data.presets.length ? data.presets : BUILTIN_PRESETS;
 
@@ -267,6 +293,11 @@ export async function loadProviders() {
     onProviderChange();
   } catch (e) {
     console.error('Failed to load providers:', e);
+    if (cachedProviders.length || _dom.gApiKey?.value || _dom.gBaseUrl?.value) {
+      if (_dom.gProvider) _dom.gProvider.innerHTML = previousOptions;
+      showToast(`列表暂时无法刷新，当前输入已保留：${e.message}`, 'error');
+      return;
+    }
     if (_dom.gProvider) {
       _dom.gProvider.innerHTML = '';
       BUILTIN_PRESETS.forEach((p) => {
@@ -567,11 +598,11 @@ export async function handleActivateProvider() {
 export async function fetchSystemTelemetry() {
   try {
     const [statusRes, cacheRes] = await Promise.all([
-      fetch('/api/system/status').catch(() => null),
-      fetch('/api/cache/stats').catch(() => null),
+      requestJson('/api/system/status', {}, { timeoutMs: 15000 }).catch(() => null),
+      requestJson('/api/cache/stats', {}, { timeoutMs: 15000 }).catch(() => null),
     ]);
-    if (statusRes && statusRes.ok) {
-      const data = await statusRes.json();
+    if (statusRes) {
+      const data = statusRes;
       // 1. GPT-SoVITS
       if (data.gpt_sovits && _dom.gDashSovitsStatus) {
         const isOnline = data.gpt_sovits.status === 'reachable';
@@ -647,8 +678,12 @@ export async function fetchSystemTelemetry() {
         _dom.gDashUptimeVal.textContent = `PID: ${data.app.pid || '-'} · 运行: ${h}h ${m}m ${s}s`;
       }
     }
-    if (cacheRes && cacheRes.ok && _dom.gDashCacheVal) {
-      const cData = await cacheRes.json();
+    if (!statusRes && _dom.gDashSovitsStatus) {
+      _dom.gDashSovitsStatus.textContent = '无法刷新状态，请保留启动窗口；若已关闭，请重新双击启动。';
+      if (_dom.gDashSovitsBadge) _dom.gDashSovitsBadge.textContent = '待检查';
+    }
+    if (cacheRes && _dom.gDashCacheVal) {
+      const cData = cacheRes;
       _dom.gDashCacheVal.textContent = `${cData.total_entries || 0} 个文件 · ${(cData.total_size_mb || 0).toFixed(1)} MB`;
     }
   } catch (e) {
@@ -665,12 +700,15 @@ export function updateTelegramFieldsVisibility() {
 }
 
 export async function loadGlobalConfig() {
+  engineDirectory?.load();
+  const revision = configRevision;
+  const load = ++configLoad;
   try {
     const fetchVoice = _callbacks.fetchVoiceProfiles
       ? _callbacks.fetchVoiceProfiles().catch(() => null)
       : Promise.resolve(null);
-    const [cfgRes] = await Promise.all([fetch('/api/config'), fetchVoice]);
-    const cfg = await cfgRes.json();
+    const [cfg] = await Promise.all([requestJson('/api/config'), fetchVoice]);
+    if (load !== configLoad) return;
     const s = cfg.settings || {};
     const provider = cfg.active_provider;
     const voiceProfiles = _callbacks.getVoiceProfiles ? _callbacks.getVoiceProfiles() : [];
@@ -700,6 +738,7 @@ export async function loadGlobalConfig() {
       diagVoice.title = voiceStr;
     }
     if (diagVoiceDot) diagVoiceDot.className = `diag-dot ${activeVoice ? 'ok' : ''}`;
+    if (configDirty || revision !== configRevision) return;
 
     // 语音与推理参数
     if (_dom.gParamSovitsUrl) _dom.gParamSovitsUrl.value = s.gpt_sovits_url || 'http://127.0.0.1:9880';
@@ -749,13 +788,14 @@ export async function loadGlobalConfig() {
     if (_dom.gUserNickname) _dom.gUserNickname.value = s.user_nickname || '';
     if (_dom.gDefaultSystemPrompt) _dom.gDefaultSystemPrompt.value = s.system_prompt || '';
   } catch (e) {
-    if (_dom.gStatus) _dom.gStatus.textContent = '状态加载失败（后端未启动？）';
+    if (_dom.gStatus) _dom.gStatus.textContent = e.message;
   }
 }
 
 export async function saveGlobalConfig() {
   if (_dom.gTgSave) _dom.gTgSave.disabled = true;
   try {
+    const savedRevision = configRevision;
     const payload = {
       gpt_sovits_url: _dom.gParamSovitsUrl ? _dom.gParamSovitsUrl.value.trim() || 'http://127.0.0.1:9880' : undefined,
       inference_precision: _dom.gPrecision ? _dom.gPrecision.value : undefined,
@@ -780,13 +820,8 @@ export async function saveGlobalConfig() {
     const token = _dom.gTgToken ? _dom.gTgToken.value.trim() : '';
     if (token) payload.telegram_bot_token = token;
 
-    const res = await fetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    await saveConfirmedConfig(payload);
+    if (savedRevision === configRevision) configDirty = false;
 
     if (_dom.gPreset) {
       saveGlobal({ ttsPreset: _dom.gPreset.value });
@@ -795,7 +830,7 @@ export async function saveGlobalConfig() {
       saveGlobal({ autoTranslate: _dom.gAutoTranslate.value === 'auto' });
     }
 
-    showToast('全局配置已成功保存并实时生效', 'success');
+    showToast(configDirty ? '之前的配置已保存；当前修改尚未保存。' : '全局配置已保存', 'success');
     loadGlobalConfig();
     fetchSystemTelemetry();
   } catch (e) {
@@ -829,72 +864,55 @@ export async function testTelegram() {
   }
 }
 
-async function handleRestartSovits() {
-  _dom.gBtnRestartSovits.disabled = true;
-  _dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>正在热重启...</span>';
+export async function handleRestartSovits(precision) {
+  if (restarting) return;
+  restarting = true;
+  if (_dom.gBtnRestartSovits) {
+    _dom.gBtnRestartSovits.disabled = true;
+    _dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>正在准备引擎…</span>';
+  }
+  if (_dom.gBtnTogglePrecision) _dom.gBtnTogglePrecision.disabled = true;
   try {
     const payload = {};
-    if (_dom.gPrecision && _dom.gPrecision.value) {
-      payload.precision = _dom.gPrecision.value;
-    }
-    const res = await fetch('/api/system/restart_sovits', {
+    const selected = typeof precision === 'string' ? precision : _dom.gPrecision?.value;
+    if (selected) payload.precision = selected;
+    const data = await requestJson('/api/system/restart_sovits', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(getErrorMessage(data, `HTTP ${res.status}`));
-    showToast(data.message || 'GPT-SoVITS 重启指令已发送', 'success');
-    setTimeout(() => {
-      fetchSystemTelemetry();
+    if (_dom.gPrecision && selected) _dom.gPrecision.value = selected;
+    showToast(data.message || '引擎开始加载，请稍候。', 'info');
+    const result = await waitForEngine({ onProgress: (status) => {
+      if (_dom.gDashSovitsStatus) _dom.gDashSovitsStatus.textContent = status.message;
+      if (_dom.gBtnRestartSovits) _dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>正在加载模型…</span>';
+    } });
+    showToast(result.message, result.ready ? 'success' : 'info');
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    restarting = false;
+    if (_dom.gBtnRestartSovits) {
       _dom.gBtnRestartSovits.disabled = false;
       _dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>重启 SoVITS 引擎</span>';
-    }, 2500);
-  } catch (err) {
-    showToast(`重启失败: ${err.message}`, 'error');
-    _dom.gBtnRestartSovits.disabled = false;
-    _dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>重启 SoVITS 引擎</span>';
+    }
+    if (_dom.gBtnTogglePrecision) _dom.gBtnTogglePrecision.disabled = false;
+    fetchSystemTelemetry();
   }
 }
 
 async function handleTogglePrecision() {
   const badgeText = _dom.gDashPrecisionBadge ? _dom.gDashPrecisionBadge.textContent.trim().toUpperCase() : 'FP16';
   let targetPrec = 'fp16';
-  let targetLabel = 'FP16 半精度';
   if (badgeText === 'FP16') {
     targetPrec = 'fp32';
-    targetLabel = 'FP32 单精度';
   } else if (badgeText === 'FP32') {
     targetPrec = 'cpu';
-    targetLabel = 'CPU 模式 (免显存)';
   } else {
     targetPrec = 'fp16';
-    targetLabel = 'FP16 半精度';
   }
 
-  _dom.gBtnTogglePrecision.disabled = true;
-  if (_dom.gBtnRestartSovits) _dom.gBtnRestartSovits.disabled = true;
-  if (_dom.gBtnTogglePrecisionText) _dom.gBtnTogglePrecisionText.textContent = `正在切换为 ${targetPrec.toUpperCase()}...`;
-  try {
-    if (_dom.gPrecision) _dom.gPrecision.value = targetPrec;
-    const res = await fetch('/api/system/restart_sovits', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ precision: targetPrec }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(getErrorMessage(data, `HTTP ${res.status}`));
-    showToast(data.message || `已按 ${targetLabel} 重启语音引擎`, 'success');
-    setTimeout(() => {
-      fetchSystemTelemetry();
-      _dom.gBtnTogglePrecision.disabled = false;
-      if (_dom.gBtnRestartSovits) _dom.gBtnRestartSovits.disabled = false;
-    }, 2500);
-  } catch (err) {
-    showToast(`切换精度重启失败: ${err.message}`, 'error');
-    _dom.gBtnTogglePrecision.disabled = false;
-    if (_dom.gBtnRestartSovits) _dom.gBtnRestartSovits.disabled = false;
-  }
+  await handleRestartSovits(targetPrec);
 }
 
 async function handleClearCache() {

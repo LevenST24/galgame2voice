@@ -123,8 +123,11 @@ class TestSystemVersionCheck:
                 assert len(data["commits_log"]) == 2
                 assert "feat(update)" in data["commits_log"][0]
 
-    def test_check_version_sync_not_a_git_repo(self, tmp_path):
+    def test_check_version_sync_not_a_git_repo(self, tmp_path, monkeypatch):
         """Verifies _check_version_sync returns graceful unknown payload for non-git directories."""
+        # --basetemp may place this directory inside the development repository.
+        # Stop Git's parent search so the fixture actually models a non-repo.
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
         res = _check_version_sync(tmp_path, check_remote=True)
         assert res.current_version == "unknown"
         assert res.latest_version == "unknown"

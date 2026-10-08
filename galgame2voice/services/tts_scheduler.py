@@ -69,18 +69,19 @@ async def _safe_put_chunk(
 
     put_task = asyncio.create_task(queue.put(item))
     stop_task = asyncio.create_task(stop_event.wait())
-    done, pending = await asyncio.wait(
-        [put_task, stop_task],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    for p in pending:
-        p.cancel()
-        try:
-            await p
-        except asyncio.CancelledError:
-            # Suppress CancelledError when draining cancelled helper tasks
-            pass
-    return put_task in done and not stop_event.is_set()
+    try:
+        done, _ = await asyncio.wait(
+            [put_task, stop_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        return put_task in done and not stop_event.is_set()
+    finally:
+        # Cancellation of the producer must also reap both helper tasks.
+        # Otherwise a put() can retain an audio chunk indefinitely after abort.
+        for helper in (put_task, stop_task):
+            if not helper.done():
+                helper.cancel()
+        await asyncio.gather(put_task, stop_task, return_exceptions=True)
 
 
 class TtsPriority(IntEnum):
@@ -161,6 +162,9 @@ class SingleFlightCoordinator:
         except BaseException as exc:
             if not fut.done():
                 fut.set_exception(exc)
+                # The leader re-raises directly; followers still receive this
+                # exception when awaiting the future, even after retrieval.
+                fut.exception()
             raise
         finally:
             async with lock:
@@ -184,6 +188,7 @@ class ScheduledTtsTask:
     stream_queue: asyncio.Queue | None = field(compare=False, default=None)
     stop_event: asyncio.Event | None = field(compare=False, default=None)
     stream_cancelled_counted: bool = field(compare=False, default=False)
+    execution_task: asyncio.Task | None = field(compare=False, default=None)
 
 
 class TtsScheduler:
@@ -314,7 +319,11 @@ class TtsScheduler:
             future=fut,
         )
         await self._enqueue_task(task)
-        return await fut
+        try:
+            return await fut
+        except asyncio.CancelledError:
+            self._cancel_scheduled_task(task)
+            raise
 
     def _mark_stream_cancelled(self, task: ScheduledTtsTask) -> None:
         """Atomically marks a streaming task cancelled and increments telemetry."""
@@ -349,6 +358,9 @@ class TtsScheduler:
         tid = task_id or f"stream_{uuid.uuid4().hex[:12]}"
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
+        # Stream errors reach the caller through the chunk queue, rather than
+        # by awaiting this completion future.
+        fut.add_done_callback(lambda done: None if done.cancelled() else done.exception())
         buffer_queue: asyncio.Queue = asyncio.Queue(maxsize=32)
         stop_event = asyncio.Event()
 
@@ -423,15 +435,16 @@ class TtsScheduler:
         finally:
             stop_event.set()
             if not is_normal_eof:
-                task.cancelled = True
-                self._mark_stream_cancelled(task)
-                if not fut.done():
-                    fut.cancel()
+                self._cancel_scheduled_task(task)
 
     def _cancel_scheduled_task(self, task: ScheduledTtsTask) -> None:
         """Internal helper to mark a task cancelled, cancel its future, and signal streams."""
+        if task.cancelled:
+            return
         task.cancelled = True
         task.future.cancel()
+        if task.execution_task is not None and not task.execution_task.done():
+            task.execution_task.cancel()
         if getattr(task, "is_stream", False):
             if task.stop_event:
                 task.stop_event.set()
@@ -445,7 +458,7 @@ class TtsScheduler:
                 self._cancelled_streams += 1
 
     def cancel_generation(self, generation_id: str) -> int:
-        """Cancels all queued, unexecuted tasks associated with generation_id."""
+        """Cancels queued and executing tasks associated with generation_id."""
         if not generation_id:
             return 0
         cancelled_count = 0
@@ -498,13 +511,21 @@ class TtsScheduler:
             self._last_queue_wait_time = wait_time
 
             try:
-                result = await task.coro_fn()
+                # Isolate job cancellation from the long-lived dispatch loop.
+                # A stalled upstream can then be interrupted immediately.
+                task.execution_task = asyncio.create_task(task.coro_fn())
+                result = await asyncio.shield(task.execution_task)
                 if not task.future.done():
                     task.future.set_result(result)
             except (asyncio.CancelledError, GeneratorExit):
                 if not task.future.done():
                     task.future.cancel()
-                raise
+                if not self._running or not task.execution_task.cancelled():
+                    # The dispatcher itself is shutting down. Shield prevented
+                    # cancellation propagation, so explicitly drain its job.
+                    self._cancel_scheduled_task(task)
+                    await asyncio.gather(task.execution_task, return_exceptions=True)
+                    raise
             except Exception as exc:
                 if not task.future.done():
                     task.future.set_exception(exc)
@@ -520,14 +541,26 @@ class TtsScheduler:
                 self._tasks_by_gen.pop(task.generation_id, None)
 
     async def aclose(self) -> None:
-        """Shuts down scheduler and worker task."""
+        """Cancels all jobs, wakes stream readers, and drains the worker and queue."""
         self._running = False
+        for task in list(self._tasks_by_id.values()):
+            self._cancel_scheduled_task(task)
         if self._worker_task is not None and not self._worker_task.done():
             self._worker_task.cancel()
             try:
                 await self._worker_task
             except asyncio.CancelledError:
                 pass
+        if self._queue is not None:
+            while True:
+                try:
+                    task = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                self._cleanup_task_tracking(task)
+                self._queue.task_done()
+        self._tasks_by_id.clear()
+        self._tasks_by_gen.clear()
 
 
 _GLOBAL_TTS_SCHEDULER: TtsScheduler | None = None

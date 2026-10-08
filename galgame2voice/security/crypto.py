@@ -1,7 +1,7 @@
 """
 Security-hardened at-rest encryption and decryption for sensitive credentials.
-Supports native Windows DPAPI (tied to OS user account) with seamless cross-platform
-AES-GCM / PBKDF2 fallback and transparent legacy plaintext migration.
+Supports native Windows DPAPI (tied to OS user account), cross-platform AES-GCM,
+and read-only decoding of legacy credentials for migration.
 """
 
 import base64
@@ -9,9 +9,12 @@ import hashlib
 import hmac
 import logging
 import os
+import secrets
 import sys
-from pathlib import Path
+import tempfile
 from typing import Optional
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 logger = logging.getLogger("galgame2voice.security.crypto")
 
@@ -19,7 +22,11 @@ _DPAPI_PREFIX = "dpapi:"
 _ENC_PREFIX = "enc:"
 
 
-def _get_fallback_key() -> bytes:
+class MasterKeyError(RuntimeError):
+    """The persistent credential key could not be loaded or safely stored."""
+
+
+def _get_fallback_key(*, create: bool = True) -> bytes:
     """
     Derives or loads a 256-bit symmetric encryption key for non-DPAPI environments.
     Priority:
@@ -30,33 +37,37 @@ def _get_fallback_key() -> bytes:
     if env_key and env_key.strip():
         return hashlib.sha256(env_key.strip().encode("utf-8")).digest()
 
+    from galgame2voice.config import get_settings
+    key_path = get_settings().data_dir / ".master_key"
     try:
-        from galgame2voice.config import get_settings
-        key_path = get_settings().data_dir / ".master_key"
-    except Exception:
-        key_path = Path("data/.master_key")
-
-    try:
-        if key_path.exists():
-            key_bytes = key_path.read_bytes()
-            if len(key_bytes) == 32:
-                return key_bytes
-    except Exception as exc:
-        logger.debug("Failed reading master keyfile: %s", exc)
-
-    # Generate new random 32-byte key and store with restricted permissions
-    import secrets
-    new_key = secrets.token_bytes(32)
-    try:
-        key_path.parent.mkdir(parents=True, exist_ok=True)
-        key_path.write_bytes(new_key)
+        key_bytes = key_path.read_bytes()
+    except FileNotFoundError:
+        if not create:
+            raise MasterKeyError(f"Master key is missing at {key_path}; restore it before decrypting credentials") from None
+        new_key = secrets.token_bytes(32)
         try:
-            os.chmod(key_path, 0o600)
-        except Exception:
-            pass
-    except Exception as exc:
-        logger.debug("Failed persisting master keyfile: %s", exc)
-    return new_key
+            key_path.parent.mkdir(parents=True, exist_ok=True)
+            # Publish only a complete key without replacing a concurrent one.
+            fd, temporary_key = tempfile.mkstemp(prefix=".master_key.", dir=key_path.parent)
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(new_key)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                try:
+                    os.link(temporary_key, key_path)
+                except FileExistsError:
+                    return _get_fallback_key(create=False)
+                return new_key
+            finally:
+                os.unlink(temporary_key)
+        except OSError as exc:
+            raise MasterKeyError(f"Cannot persist master key at {key_path}; encryption aborted") from exc
+    except OSError as exc:
+        raise MasterKeyError(f"Cannot read master key at {key_path}") from exc
+    if len(key_bytes) != 32:
+        raise MasterKeyError(f"Invalid master key at {key_path}: expected 32 bytes; restore the original key")
+    return key_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -120,33 +131,13 @@ def _dpapi_unprotect(ciphertext_bytes: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Cross-Platform Fallback (AES-GCM via cryptography or HMAC-SHA256 authenticated stream)
+# Cross-Platform AES-GCM (legacy v2 decoding is only for migration)
 # ---------------------------------------------------------------------------
 def _fallback_encrypt(plaintext_bytes: bytes) -> bytes:
-    """Authenticated encryption via cryptography AES-GCM or HMAC-SHA256 authenticated stream."""
+    """Always creates AES-GCM ciphertext; a missing dependency fails at import."""
     key = _get_fallback_key()
-    try:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        aesgcm = AESGCM(key)
-        import secrets
-        nonce = secrets.token_bytes(12)
-        ct = aesgcm.encrypt(nonce, plaintext_bytes, None)
-        return b"\x01" + nonce + ct
-    except ImportError:
-        # Standard library HMAC-SHA256 CTR-like authenticated stream
-        import secrets
-        nonce = secrets.token_bytes(16)
-        # Keystream generation using HMAC-SHA256 in counter mode
-        keystream = bytearray()
-        block_idx = 0
-        while len(keystream) < len(plaintext_bytes):
-            block_idx += 1
-            counter = block_idx.to_bytes(4, "big")
-            block = hmac.new(key, nonce + counter, hashlib.sha256).digest()
-            keystream.extend(block)
-        ct = bytes(p ^ k for p, k in zip(plaintext_bytes, keystream[:len(plaintext_bytes)], strict=True))
-        tag = hmac.new(key, b"auth" + nonce + ct, hashlib.sha256).digest()
-        return b"\x02" + nonce + tag + ct
+    nonce = secrets.token_bytes(12)
+    return b"\x01" + nonce + AESGCM(key).encrypt(nonce, plaintext_bytes, None)
 
 
 def _fallback_decrypt(payload: bytes) -> bytes:
@@ -154,14 +145,16 @@ def _fallback_decrypt(payload: bytes) -> bytes:
     if not payload:
         return b""
     version = payload[0]
-    key = _get_fallback_key()
+    key = _get_fallback_key(create=False)
     if version == 1:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         nonce = payload[1:13]
         ct = payload[13:]
         aesgcm = AESGCM(key)
         return aesgcm.decrypt(nonce, ct, None)
     elif version == 2:
+        # Read-only compatibility: never emit this format for new writes.
+        if len(payload) < 49:
+            raise ValueError("Truncated legacy encrypted credential")
         nonce = payload[1:17]
         tag = payload[17:49]
         ct = payload[49:]
@@ -177,6 +170,20 @@ def _fallback_decrypt(payload: bytes) -> bytes:
             keystream.extend(block)
         return bytes(c ^ k for c, k in zip(ct, keystream[:len(ct)], strict=True))
     raise ValueError(f"Unknown encrypted payload version {version}")
+
+
+def upgrade_secret_encryption(value: str) -> str:
+    """Migrates plaintext/v2 to the current cipher, preserving other formats.
+
+    Decode directly so an integrity/key failure cannot overwrite a stored secret
+    with the public decrypt helper's empty-string error result.
+    """
+    if value.startswith(_ENC_PREFIX):
+        payload = base64.b64decode(value[len(_ENC_PREFIX):], validate=True)
+        if payload and payload[0] == 2:
+            return encrypt_secret(_fallback_decrypt(payload).decode("utf-8"))
+        return value
+    return value if is_encrypted_secret(value) else encrypt_secret(value)
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +235,8 @@ def decrypt_secret(value: Optional[str]) -> Optional[str]:
         try:
             cipher = base64.b64decode(text[len(_ENC_PREFIX):])
             return _fallback_decrypt(cipher).decode("utf-8")
+        except MasterKeyError:
+            raise
         except Exception as exc:
             logger.error("Failed to decrypt encrypted secret: %s", exc)
             return ""

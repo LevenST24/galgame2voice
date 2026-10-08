@@ -390,14 +390,12 @@ class TestConfigStoreCrud:
                 # Check Settings
                 settings = await get_settings(conn)
                 assert settings.active_provider_id in ("gemini", "deepseek", "openai")
-                assert settings.active_voice_profile_id == 1
+                assert settings.active_voice_profile_id is None
                 assert len(settings.console_token) > 10
 
                 # Check Voice Profiles
                 profiles = await list_voice_profiles(conn)
-                assert len(profiles) >= 1
-                assert "四季夏目" in profiles[0].name
-                assert profiles[0].is_default is True
+                assert profiles == []
 
                 # Check Providers
                 providers = await list_providers(conn)
@@ -507,7 +505,7 @@ class TestConfigStoreCrud:
                     text_lang="ja",
                     system_prompt="You are Test Girl"
                 ))
-                assert created.id > 1
+                assert created.id == 1  # First user-created voice in a fresh DB.
                 assert created.name == "Test Girl"
 
                 # Switch active

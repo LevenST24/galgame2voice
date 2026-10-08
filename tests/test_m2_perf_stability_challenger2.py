@@ -349,11 +349,14 @@ class TestProcessTerminationAndPortReleaseWindows:
             )
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object test requires Windows OS")
-    def test_windows_job_object_assignment_and_cleanup(self):
+    def test_windows_job_object_assignment_and_cleanup(self, tmp_path, monkeypatch):
         """
         Verify that Windows Job Object handle is created with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         child processes can be assigned to it, and cleanup_subprocesses unlinks PID files.
         """
+        from scripts import run_server
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "data").mkdir()
         h_job = setup_windows_job_object()
         assert h_job is not None, "Failed to create Windows Job Object"
 
@@ -367,9 +370,9 @@ class TestProcessTerminationAndPortReleaseWindows:
             child.wait(timeout=3.0)
 
         # Verify cleanup_subprocesses removes pid files
-        pid_file = PROJECT_ROOT / "galgame2voice.pid"
-        port_file = PROJECT_ROOT / "data" / "active_port.txt"
-        pid_file.write_text("99999", encoding="utf-8")
+        pid_file = tmp_path / "galgame2voice.pid"
+        port_file = tmp_path / "data" / "active_port.txt"
+        pid_file.write_text(str(os.getpid()), encoding="utf-8")
         port_file.write_text("8080", encoding="utf-8")
 
         cleanup_subprocesses()

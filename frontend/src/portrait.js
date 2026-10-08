@@ -80,7 +80,8 @@ export class PortraitStageController {
 
     if (!this.stageEl || !this.appEl) return;
 
-    const savedVisible = localStorage.getItem('g2v_portrait_visible');
+    let savedVisible = null;
+    try { savedVisible = localStorage.getItem('g2v_portrait_visible'); } catch { /* browser storage may be disabled */ }
     if (savedVisible !== null) {
       this.isVisible = savedVisible === 'true';
     } else {
@@ -235,7 +236,7 @@ export class PortraitStageController {
 
   setVisibility(visible) {
     this.isVisible = Boolean(visible);
-    localStorage.setItem('g2v_portrait_visible', String(this.isVisible));
+    try { localStorage.setItem('g2v_portrait_visible', String(this.isVisible)); } catch { /* visibility still works */ }
     this.applyVisibility();
   }
 

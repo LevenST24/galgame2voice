@@ -4,7 +4,7 @@ Test suite for startup performance and latency optimizations.
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
@@ -89,31 +89,71 @@ async def test_voice_manager_switch_profile_forwards_force():
 
 
 @pytest.mark.asyncio
-async def test_lifespan_preseeds_active_voice_profile(isolate_test_database):
-    await init_db(isolate_test_database)
+async def test_lifespan_preseeds_active_voice_profile(tmp_path, monkeypatch, mock_gpt_sovits):
+    from galgame2voice.config import get_settings
+    from galgame2voice.database import crud
+    from galgame2voice.main import lifespan
+    from galgame2voice.services import gpt_sovits_client, voice_manager
+    from galgame2voice.services.character_manager import CharacterManager
 
-    with patch("galgame2voice.config.get_settings") as mock_settings:
-        settings_inst = MagicMock()
-        settings_inst.db_path = Path(isolate_test_database)
-        settings_inst.data_dir = Path(isolate_test_database).parent
-        settings_inst.audio_dir = Path(isolate_test_database).parent / "audio"
-        settings_inst.logs_dir = Path(isolate_test_database).parent / "logs"
-        settings_inst.log_level = "INFO"
-        settings_inst.log_to_file = False
-        settings_inst.app_name = "galgame2voice"
-        settings_inst.app_version = "2.0.0"
-        settings_inst.host = "127.0.0.1"
-        settings_inst.port = 8080
-        settings_inst.audio_cleanup_interval_seconds = 3600
-        mock_settings.return_value = settings_inst
+    # Use real Settings so every imported getter resolves the same isolated root.
+    # Patching config.get_settings alone leaves main.get_settings pointing at the
+    # original getter and can make this test migrate the user's real database.
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("GALGAME2VOICE_LOG_TO_FILE", "0")
+    monkeypatch.setenv("GALGAME2VOICE_HOST", "127.0.0.1")
+    monkeypatch.setenv("GALGAME2VOICE_GPT_SOVITS_BASE_URL", "http://127.0.0.1:9880")
+    get_settings.cache_clear()
+    settings = get_settings()
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(settings.db_path))
+    monkeypatch.setenv("GALGAME_DB_PATH", str(settings.db_path))
+    monkeypatch.setattr(CharacterManager, "_instance", None)
+    await init_db(settings.db_path)
+    from galgame2voice.database.models import VoiceProfileCreate
+    async with get_db(settings.db_path) as conn:
+        await crud.create_voice_profile(conn, VoiceProfileCreate(
+            name="Startup test voice", gpt_weights_path="test.ckpt",
+            sovits_weights_path="test.pth", is_default=True,
+        ))
 
-        from galgame2voice.main import lifespan
-        app = create_app()
-        async with lifespan(app):
-            from galgame2voice.services.voice_manager import get_voice_manager
-            from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client
-            vm = get_voice_manager()
-            client = get_gpt_sovits_client()
-            assert vm.active_profile is not None
-            assert client.current_gpt_weights == vm.active_profile.gpt_weights_path
-            assert client.current_sovits_weights == vm.active_profile.sovits_weights_path
+    client = GptSovitsClient(server=mock_gpt_sovits)
+    vm = VoiceManager(gpt_sovits_client_or_server=client, db_path=str(settings.db_path))
+    monkeypatch.setattr(gpt_sovits_client, "_global_gpt_sovits_client", client)
+    monkeypatch.setattr(voice_manager, "_global_voice_manager", vm)
+    monkeypatch.setattr(vm, "warmup_current_profile", AsyncMock())
+    async with get_db(settings.db_path) as conn:
+        expected_profile = await crud.get_active_voice_profile(conn)
+    assert expected_profile is not None, "test database must contain a seeded voice"
+
+    async with lifespan(create_app()):
+        assert vm.active_profile is not None
+        assert vm.active_profile.id == expected_profile.id
+        assert client.current_gpt_weights == expected_profile.gpt_weights_path
+        assert client.current_sovits_weights == expected_profile.sovits_weights_path
+
+
+async def test_lifespan_drains_resources_when_serving_context_raises(monkeypatch):
+    import galgame2voice.main as main_module
+
+    monkeypatch.setattr(main_module, "_init_logging_and_safety", MagicMock())
+    monkeypatch.setattr(main_module, "_init_directories", MagicMock())
+    monkeypatch.setattr(main_module, "_init_database_and_characters", AsyncMock())
+    monkeypatch.setattr(main_module, "_init_gpt_sovits_client", AsyncMock())
+    monkeypatch.setattr(main_module, "_start_telegram_bg", lambda settings: None)
+    async def cleanup_loop(**kwargs):
+        await asyncio.Event().wait()
+    monkeypatch.setattr(main_module, "_audio_cleanup_loop", cleanup_loop)
+
+    cleanup_tasks = []
+    async def shutdown(settings, cleanup_task, telegram_task):
+        cleanup_tasks.append(cleanup_task)
+        cleanup_task.cancel()
+        await asyncio.gather(cleanup_task, return_exceptions=True)
+    shutdown_mock = AsyncMock(side_effect=shutdown)
+    monkeypatch.setattr(main_module, "_shutdown_services", shutdown_mock)
+
+    with pytest.raises(RuntimeError, match="serving context failed"):
+        async with main_module.lifespan(MagicMock()):
+            raise RuntimeError("serving context failed")
+    shutdown_mock.assert_awaited_once()
+    assert cleanup_tasks[0].done()

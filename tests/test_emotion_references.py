@@ -114,7 +114,13 @@ def test_resolve_emotion_reference_all_eight_characters_independent():
 
 @pytest.mark.requires_character_assets
 @pytest.mark.asyncio
-async def test_tts_service_populates_emotion_reference():
+async def test_tts_service_populates_emotion_reference(configured_voice):
+    # This test explicitly exercises the installed character's emotion package.
+    from galgame2voice.database import crud
+    from galgame2voice.database.models import VoiceProfileUpdate
+    from galgame2voice.database.session import get_db
+    async with get_db() as conn:
+        await crud.update_voice_profile(conn, configured_voice.id, VoiceProfileUpdate(name="四季夏目"))
     tts = TtsService()
     from galgame2voice.services.voice_manager import get_voice_manager
     vm = get_voice_manager()

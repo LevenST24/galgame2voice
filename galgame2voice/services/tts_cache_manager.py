@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import time
 import uuid
 from collections import OrderedDict
@@ -21,11 +22,17 @@ from galgame2voice.database.session import get_db, get_database_path
 from galgame2voice.services.gpt_sovits_client import (
     normalize_japanese_for_tts,
 )
+from galgame2voice.services.tts_options import resolve_tts_options
 from galgame2voice.utils.async_tasks import drain_background_tasks
 
 logger = logging.getLogger("galgame2voice.services.tts_cache_manager")
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# v1 keys omitted some effective parameters, so even a default-parameter entry
+# could contain audio generated using a different speed/preset. Keep the old
+# files playable from history, but do not reuse them for new synthesis requests.
+_CACHE_KEY_VERSION = 2
 
 # Sentinel for "the previous cache row could not be read", which is distinct from
 # None ("no previous row exists" = this write is an INSERT).
@@ -46,7 +53,7 @@ def _extract_voice_profile_cache_fields(
     voice_profile: Any | None,
 ) -> dict[str, Any]:
     """Extracts voice profile parameters from opts or fallback voice_profile object."""
-    voice_profile_id = 1
+    voice_profile_id = opts.get("voice_profile_id") or _get_prof_val(voice_profile, "id", 1)
     gpt_weights = opts.get("gpt_weights_path", "")
     sovits_weights = opts.get("sovits_weights_path", "")
     ref_audio = opts.get("ref_audio_path") or opts.get("refer_audio_path", "")
@@ -55,7 +62,6 @@ def _extract_voice_profile_cache_fields(
     text_lang = opts.get("text_lang") or opts.get("text_language", "ja")
 
     if voice_profile is not None:
-        voice_profile_id = _get_prof_val(voice_profile, "id", voice_profile_id)
         if not gpt_weights:
             gpt_weights = _get_prof_val(voice_profile, "gpt_weights_path", "")
         if not sovits_weights:
@@ -102,25 +108,28 @@ def _build_canonical_params_dict(
     clean_text: str,
 ) -> dict[str, Any]:
     """Builds canonical parameter dictionary for cache key hashing."""
-    speed = float(opts.get("speed_factor", 1.0))
+    # Apply the same alias precedence, preset defaults and numeric bounds as
+    # the engine payload; raw options otherwise collide on speed/temp/preset.
+    resolved = resolve_tts_options(opts)
+    speed = resolved["speed_factor"]
     speed_str = f"{speed:.3f}"
-    temperature = float(opts.get("temperature", 1.0))
+    temperature = resolved["temperature"]
     temp_str = f"{temperature:.3f}"
-    top_k = int(opts.get("top_k", 15))
-    top_p = float(opts.get("top_p", 1.0))
+    top_k = resolved["top_k"]
+    top_p = resolved["top_p"]
     top_p_str = f"{top_p:.3f}"
-    seed = int(opts.get("seed", -1))
-    batch_size = int(opts.get("batch_size", 1))
+    seed = resolved["seed"]
+    batch_size = resolved["batch_size"]
     user_split = (
         opts.get("text_split_method")
         or opts.get("cut_option")
         or opts.get("how_to_cut")
     )
     if user_split:
-        text_split_method = str(user_split).lower()
+        text_split_method = resolved["text_split_method"].lower()
     else:
         text_split_method = "cut0" if len(clean_text.strip()) <= 80 else "cut2"
-    fragment_interval = float(opts.get("fragment_interval", 0.3))
+    fragment_interval = resolved["fragment_interval"]
     frag_str = f"{fragment_interval:.3f}"
 
     ref_audio_norm = _normalize_ref_audio(prof_fields["ref_audio"])
@@ -199,11 +208,14 @@ class TtsCacheManager:
 
     def _mem_cache_store(self, cache_key: str, audio_bytes: bytes) -> None:
         self._mem_cache_discard(cache_key)
+        # A single large clip must not exceed the budget or evict every small
+        # hot entry. It remains available from the persistent disk tier.
+        if len(audio_bytes) > self.max_mem_bytes or self.max_mem_entries <= 0:
+            return
         self._mem_cache[cache_key] = audio_bytes
         self._mem_bytes_total += len(audio_bytes)
         self._mem_cache.move_to_end(cache_key)
-        # Byte-based cap with entry-count fallback; newest entry always retained.
-        while len(self._mem_cache) > 1 and (
+        while self._mem_cache and (
             len(self._mem_cache) > self.max_mem_entries
             or self._mem_bytes_total > self.max_mem_bytes
         ):
@@ -344,10 +356,11 @@ class TtsCacheManager:
         self._throttle_touch(cache_key)
         self._ensure_flusher_running()
 
-    def _record_miss_discard_locked(self, cache_key: str) -> None:
+    def _record_miss_discard_locked(self, cache_key: str, *, record_miss: bool = True) -> None:
         """Evicts cache key from in-memory cache and records a cache miss. Must be called under self._lock."""
         self._mem_cache_discard(cache_key)
-        self._misses += 1
+        if record_miss:
+            self._misses += 1
 
     def compute_cache_key(
         self,
@@ -370,6 +383,7 @@ class TtsCacheManager:
         params_hash = hashlib.sha256(params_json.encode("utf-8")).hexdigest()
 
         canonical_payload = {
+            "cache_key_version": _CACHE_KEY_VERSION,
             "clean_text": clean_text,
             "params": params_dict,
         }
@@ -378,11 +392,36 @@ class TtsCacheManager:
 
         return cache_key, clean_text, params_hash
 
-    async def get(self, cache_key: str) -> tuple[bytes, str, int] | None:
+    async def get_file(
+        self, cache_key: str, *, record_miss: bool = True,
+    ) -> tuple[str, Path, int] | None:
+        """Returns validated file metadata without reading or retaining audio bytes."""
+        if get_settings().privacy_mode:
+            return None
+
+        file_path = self.cache_dir / f"{cache_key}.wav"
+        try:
+            file_stat = file_path.stat()
+            valid = stat.S_ISREG(file_stat.st_mode) and file_stat.st_size > 0
+        except OSError:
+            valid = False
+        if not valid:
+            async with self._lock:
+                self._record_miss_discard_locked(cache_key, record_miss=record_miss)
+            return None
+
+        async with self._lock:
+            if cache_key in self._mem_cache:
+                self._mem_cache.move_to_end(cache_key)
+            self._record_hit_locked(cache_key)
+        return f"/audio/cache/{cache_key}.wav", file_path, file_stat.st_size
+
+    async def get(self, cache_key: str, *, record_miss: bool = True) -> tuple[bytes, str, int] | None:
         """
         Retrieves cached audio bytes and URL for the given cache key.
         Checks high-speed in-memory LRU cache first (<0.005ms), falling back to disk (<15ms).
         Returns (audio_bytes, url_path, file_size) if hit, None if miss.
+        Internal rechecks of an already recorded miss use record_miss=False.
         """
         try:
             if get_settings().privacy_mode:
@@ -406,20 +445,20 @@ class TtsCacheManager:
         # Verify disk file presence and non-zero size to detect manual unlinking or corruption
         if not file_path.exists():
             async with self._lock:
-                self._record_miss_discard_locked(cache_key)
+                self._record_miss_discard_locked(cache_key, record_miss=record_miss)
             return None
 
         try:
             file_size = file_path.stat().st_size
         except OSError:
             async with self._lock:
-                self._record_miss_discard_locked(cache_key)
+                self._record_miss_discard_locked(cache_key, record_miss=record_miss)
             return None
 
         if file_size == 0:
             # Corrupted 0-byte file on disk -> evict from memory cache and delete
             async with self._lock:
-                self._record_miss_discard_locked(cache_key)
+                self._record_miss_discard_locked(cache_key, record_miss=record_miss)
             try:
                 file_path.unlink(missing_ok=True)
             except OSError:
@@ -436,13 +475,16 @@ class TtsCacheManager:
         except Exception as e:
             logger.warning("Failed to read cache file %s: %s", file_path, e)
             async with self._lock:
-                self._misses += 1
+                if record_miss:
+                    self._misses += 1
             return None
 
     async def stream_cached(
         self,
         cache_key: str,
         chunk_size: int = 4096,
+        *,
+        record_miss: bool = False,
     ) -> AsyncGenerator[bytes, None]:
         """
         Streams cached audio chunks directly from in-memory cache or disk cache.
@@ -470,42 +512,54 @@ class TtsCacheManager:
             return
 
         file_path = self.cache_dir / f"{cache_key}.wav"
-        if not file_path.is_file():
-            return
-
         try:
-            sz = file_path.stat().st_size
-            if sz == 0:
-                return
+            file_stat = file_path.stat()
+            sz = file_stat.st_size
+            valid = stat.S_ISREG(file_stat.st_mode) and sz > 0
         except OSError:
+            valid = False
+        if not valid:
+            async with self._lock:
+                self._record_miss_discard_locked(cache_key, record_miss=record_miss)
             return
 
         should_buffer = (sz <= self.max_mem_bytes)
         collected = bytearray() if should_buffer else None
 
+        hit_recorded = False
         try:
             # Opening the file is a syscall too: keep it off the event loop, the
             # same way the reads below already are.
             file_handle = await asyncio.to_thread(open, file_path, "rb")
             try:
-                async with self._lock:
-                    self._record_hit_locked(cache_key)
-
                 while True:
                     chunk = await asyncio.to_thread(file_handle.read, bounded_chunk_size)
                     if not chunk:
                         break
+                    if not hit_recorded:
+                        async with self._lock:
+                            self._record_hit_locked(cache_key)
+                        hit_recorded = True
                     if should_buffer and collected is not None:
-                        collected.extend(chunk)
+                        if len(collected) + len(chunk) <= self.max_mem_bytes:
+                            collected.extend(chunk)
+                        else:
+                            # A file may grow between stat and read. Drop its
+                            # optional RAM copy while continuing bounded reads.
+                            collected = None
                     yield chunk
             finally:
                 await asyncio.to_thread(file_handle.close)
 
-            if should_buffer and collected is not None and len(collected) <= self.max_mem_bytes:
+            if hit_recorded and collected is not None:
                 async with self._lock:
                     self._mem_cache_store(cache_key, bytes(collected))
         except Exception as exc:
             logger.warning("stream_cached failed for %s: %s", file_path, exc)
+        finally:
+            if not hit_recorded:
+                async with self._lock:
+                    self._record_miss_discard_locked(cache_key, record_miss=record_miss)
 
     @staticmethod
     def _write_audio_file_sync(file_path: Path, audio_bytes: bytes) -> None:
@@ -624,18 +678,17 @@ class TtsCacheManager:
         # _STATS_UNKNOWN distinguishes "query failed, INSERT/UPDATE unknown"
         # from prev_file_size=None which unambiguously means "no previous row"
         # (i.e. this write inserts a new cache entry).
-        prev_file_size: int | None = _STATS_UNKNOWN
-        try:
-            async with get_db(self.db_path) as _conn:
-                _prev = await crud.get_tts_cache_entry(_conn, cache_key)
-                # The query succeeded, so its result is authoritative:
-                # None means "no previous row exists" => this write is an INSERT.
-                prev_file_size = _prev.file_size if _prev is not None else None
-        except Exception as exc:
-            logger.debug("Could not read previous cache entry for %s: %r", cache_key, exc)
-            prev_file_size = _STATS_UNKNOWN  # stats fallback handled below
-
         async with self._write_lock:
+            # Read the old size after admission: a preceding writer may have
+            # overwritten this key while we were waiting for the write lock.
+            prev_file_size: int | None = _STATS_UNKNOWN
+            try:
+                async with get_db(self.db_path) as _conn:
+                    _prev = await crud.get_tts_cache_entry(_conn, cache_key)
+                    prev_file_size = _prev.file_size if _prev is not None else None
+            except Exception as exc:
+                logger.debug("Could not read previous cache entry for %s: %r", cache_key, exc)
+
             try:
                 await asyncio.to_thread(self._write_audio_file_sync, file_path, audio_bytes)
                 file_size = len(audio_bytes)
@@ -695,8 +748,6 @@ class TtsCacheManager:
     @staticmethod
     async def _try_unlink_cache_file(file_p: Path) -> bool:
         """Attempts to delete cache file from disk, returning False if locked or failing."""
-        if not file_p.exists():
-            return True
         try:
             await asyncio.to_thread(file_p.unlink, missing_ok=True)
             return True

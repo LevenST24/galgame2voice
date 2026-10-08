@@ -1,11 +1,12 @@
 // 对接 Galgame2Voice 本地后端的流式聊天客户端
 // SSE 事件：text（增量中文）→ audio_chunk（逐句 GPT-SoVITS 音频 URL）→ done / error
+import { getErrorMessage, connectionMessage } from './request.js';
 
 /**
  * 流式请求本地后端
  * @returns {() => void} cancel
  */
-export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAudio, onEnd }) {
+export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAudio, onEnd, idleTimeoutMs = 120000 }) {
   const controller = new AbortController();
   let acc = '';
   const audioUrls = [];
@@ -15,6 +16,30 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
   let fullJapanese = '';
   let doneMeta = null;
   let settled = false;
+  let reader = null;
+  let timedOut = false;
+  let audioError = null;
+  const withDeadline = async (operation) => {
+    let timer;
+    let abort;
+    const cancelled = new Promise((_, reject) => {
+      abort = () => reject(new DOMException('操作已取消', 'AbortError'));
+      if (controller.signal.aborted) abort();
+      else controller.signal.addEventListener('abort', abort, { once: true });
+    });
+    try {
+      return await Promise.race([operation, cancelled, new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(new Error('回复等待超时，已保留收到的内容。请检查网络或模型服务，稍后重新发送上一条消息。'));
+          controller.abort();
+        }, idleTimeoutMs);
+      })]);
+    } finally {
+      clearTimeout(timer);
+      controller.signal.removeEventListener('abort', abort);
+    }
+  };
 
   const finish = (cancelled, error) => {
     if (settled) return;
@@ -25,6 +50,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
     onEnd(acc, {
       cancelled: Boolean(cancelled),
       error: error || null,
+      audioError,
       japanese: fullJapanese || jaSentences.join(''),
       audioUrls: [...audioUrls],
       chunks: audioChunks.map((c) => ({ ...c })),
@@ -64,17 +90,18 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
 
   (async () => {
     try {
-      const res = await fetch('/api/chat/stream', {
+      const res = await withDeadline(fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
         signal: controller.signal,
-      });
+      }));
+      if (settled) return;
       if (!res.ok) {
         let msg = `请求失败 (${res.status})`;
         try {
           const data = await res.json();
-          if (data && data.detail) msg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+          msg = getErrorMessage(data, `HTTP ${res.status}`);
         } catch {
           /* 忽略非 JSON 错误体 */
         }
@@ -85,12 +112,12 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
         finish(false, '当前环境不支持流式响应');
         return;
       }
-      const reader = res.body.getReader();
+      reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
       let eventName = 'message';
-      while (true) {
-        const { done, value } = await reader.read();
+      while (!settled) {
+        const { done, value } = await withDeadline(reader.read());
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
@@ -132,9 +159,10 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
               }
             }
           } else if (eventName === 'audio_chunk_error') {
+            audioError ||= getErrorMessage(json, '本轮角色语音暂不可用，文字回复已保留。请在「全局设置 → 状态诊断」启动引擎，或切换 CPU 稳定模式后重试。');
             console.warn('[streamChat] audio chunk error:', json.error, json.sentence);
           } else if (eventName === 'error') {
-            finish(false, json.error || '服务流式处理出错');
+            finish(false, getErrorMessage(json, '对话暂时未完成，请检查「全局设置」中的模型地址、密钥与模型名称，再重新发送消息。'));
             return;
           } else if (eventName === 'done') {
             doneMeta = json;
@@ -166,15 +194,20 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
           }
         }
       }
-      finish(false, null);
+      finish(false, '回复连接提前结束，已保留收到的内容。请检查服务与网络，稍后重新发送上一条消息。');
     } catch (err) {
-      if (err && err.name === 'AbortError') {
+      if (err && err.name === 'AbortError' && !timedOut) {
         finish(true, null);
         return;
       }
-      finish(false, err instanceof Error ? err.message : '网络异常');
+      finish(false, connectionMessage(err));
+    } finally {
+      if (reader) {
+        try { await reader.cancel(); } catch { /* Already closed by abort. */ }
+        try { reader.releaseLock(); } catch { /* Pending native cancellation. */ }
+      }
     }
   })();
 
-  return () => controller.abort();
+  return () => { controller.abort(); finish(true, null); };
 }

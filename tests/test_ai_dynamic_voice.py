@@ -257,6 +257,7 @@ class TestTtsServiceSanitization:
 # 4. ChatService End-to-End Pipeline Tests
 # ============================================================================
 
+@pytest.mark.usefixtures("configured_voice")
 class TestChatServiceDynamicVoiceIntegration:
     """Verifies ChatService stream_chat and chat_sync pipelines with dynamic voice settings."""
 
@@ -493,7 +494,7 @@ class TestChatRouterDynamicVoiceAPI:
             assert "0.5~1.5" in sys_msg
 
     @pytest.mark.asyncio
-    async def test_voice_synthesize_api_accepts_ai_adaptive_voice(self, temp_db_path, mock_gpt_sovits, tmp_path):
+    async def test_voice_synthesize_api_accepts_ai_adaptive_voice(self, temp_db_path, mock_gpt_sovits, tmp_path, configured_voice):
         """Verifies /api/voice/synthesize accepts ai_adaptive_voice in request body."""
         from galgame2voice.services.voice_manager import get_voice_manager
         vm = get_voice_manager()
@@ -509,10 +510,8 @@ class TestChatRouterDynamicVoiceAPI:
                     "speed": 1.2,
                     "ai_adaptive_voice": True,
                 })
-                assert resp.status_code == 200
+                assert resp.status_code == 200, resp.text
                 assert resp.headers["content-type"] == "audio/wav"
         finally:
             vm.client.server = None
             vm.tts_service.client.server = None
-
-

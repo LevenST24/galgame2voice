@@ -470,6 +470,7 @@ class TestPathTraversalAndFileSystemSecurity:
 
     def test_browse_file_api_handles_arbitrary_inputs(self, app_client):
         """Tests /api/voice/browse-file with invalid file types and non-existent initial_dir."""
+        pytest.importorskip("tkinter")
         client, db_path = app_client
 
         payload = {

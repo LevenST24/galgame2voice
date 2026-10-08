@@ -8,16 +8,16 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Literal
 import uuid
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.gpt_sovits_client import validate_user_tts_options
 from galgame2voice.database import crud
-from galgame2voice.database.session import get_db, get_database_path
+from galgame2voice.database.session import get_db, get_database_path, immediate_transaction
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.sse import format_sse_frame
 
@@ -314,6 +314,57 @@ class SessionUpsertRequest(BaseModel):
     voice_profile_id: int | None = Field(default=None, description="Bound voice profile ID")
     custom_system_prompt: str | None = Field(default=None, max_length=PROMPT_MAX_LENGTH, description="Custom persona system prompt")
     settings: dict[str, Any] | None = Field(default=None, description="Session-specific generation & voice parameters")
+
+
+class ImportedMessage(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    content: str = Field(max_length=100000)
+    japanese: str = Field(default="", max_length=100000)
+
+
+class ImportedSession(BaseModel):
+    id: str = Field(min_length=1, max_length=SESSION_ID_MAX_LENGTH, pattern=r"^s_import_[a-zA-Z0-9_]+$")
+    title: str = Field(max_length=200)
+    messages: list[ImportedMessage] = Field(max_length=10000)
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChatImportRequest(BaseModel):
+    sessions: list[ImportedSession] = Field(min_length=1, max_length=10000)
+
+    @model_validator(mode="after")
+    def bounded_unique_sessions(self):
+        ids = [session.id for session in self.sessions]
+        count = sum(len(session.messages) for session in self.sessions)
+        size = sum(len(message.content) + len(message.japanese) for session in self.sessions for message in session.messages)
+        if len(set(ids)) != len(ids) or count > 50000 or size > 10_000_000:
+            raise ValueError("备份编号重复或数据过大，请拆分后导入，当前记录未修改。")
+        return self
+
+
+@router.post("/api/chat/import", summary="Import chat history into new sessions atomically")
+async def import_chat_sessions(req: ChatImportRequest) -> dict[str, Any]:
+    """Restore model context as well as browser display, without overwriting IDs."""
+    async with get_db() as conn, immediate_transaction(conn):
+        for session in req.sessions:
+            existing = await (await conn.execute("SELECT id FROM sessions WHERE id = ?", (session.id,))).fetchone()
+            if existing:
+                raise HTTPException(409, "导入的会话已存在，原记录未修改。请刷新查看后再决定是否导入另一份副本。")
+            # Profile IDs are installation-specific; a restored session must
+            # choose its voice explicitly rather than binding a different person.
+            settings = {**session.settings, "voiceProfileId": None}
+            system_prompt = settings.get("systemPrompt")
+            if system_prompt is not None and not isinstance(system_prompt, str):
+                raise HTTPException(422, "人设提示词应为文字，当前记录未修改。")
+            await conn.execute(
+                "INSERT INTO sessions (id, channel, title, settings_json, custom_system_prompt) VALUES (?, 'web', ?, ?, ?)",
+                (session.id, session.title, json.dumps(settings, ensure_ascii=False), system_prompt),
+            )
+            await conn.executemany(
+                "INSERT INTO messages (session_id, role, content_chinese, content_japanese) VALUES (?, ?, ?, ?)",
+                [(session.id, message.role, message.content, message.japanese) for message in session.messages],
+            )
+    return {"status": "ok", "count": len(req.sessions)}
 
 
 @router.get("/api/chat/sessions", summary="List all chat sessions with metadata")

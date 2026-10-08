@@ -332,6 +332,15 @@ async def _shutdown_services(settings, cleanup_task: asyncio.Task, tg_startup_ta
     except Exception as exc:
         logger.debug("Error stopping Telegram Bot: %s", exc)
 
+    # Cancel synthesis before closing its HTTP pool or draining cache writers.
+    try:
+        from galgame2voice.services import tts_scheduler as scheduler_mod
+        scheduler = scheduler_mod._GLOBAL_TTS_SCHEDULER
+        if scheduler is not None:
+            await scheduler.aclose()
+    except Exception as exc:
+        logger.debug("Error closing TTS scheduler: %s", exc)
+
     # Release the shared GPT-SoVITS connection pool.
     try:
         await close_gpt_sovits_client()
@@ -383,10 +392,11 @@ async def lifespan(app: FastAPI):
         settings.port,
     )
 
-    yield  # Application serving requests
-
-    # --- SHUTDOWN PHASE ---
-    await _shutdown_services(settings, cleanup_task, tg_startup_task)
+    try:
+        yield  # Application serving requests
+    finally:
+        # Release workers and connections even when the serving context raises.
+        await _shutdown_services(settings, cleanup_task, tg_startup_task)
 
 
 class AudioStaticFiles(StaticFiles):

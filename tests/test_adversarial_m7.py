@@ -71,12 +71,22 @@ from tests.conftest import MockGptSovitsServer, MockLLMServer, DATABASE_SCHEMA_S
 # ============================================================================
 
 @pytest.fixture
-async def m7_db_path():
+async def m7_db_path(configured_voice):
     """Creates a temporary sqlite database file initialized with the full schema and seed data."""
     fd, path = tempfile.mkstemp(suffix=".db", prefix="test_m7_adv_")
     os.close(fd)
 
     await init_db(path)
+    async with aiosqlite.connect(path) as conn:
+        profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
+            name=configured_voice.name,
+            gpt_weights_path=configured_voice.gpt_weights_path,
+            sovits_weights_path=configured_voice.sovits_weights_path,
+            ref_audio_path=configured_voice.ref_audio_path,
+            prompt_text=configured_voice.prompt_text,
+            prompt_lang=configured_voice.prompt_lang,
+        ))
+        assert await crud.set_active_voice_profile(conn, profile.id)
 
     yield path
 

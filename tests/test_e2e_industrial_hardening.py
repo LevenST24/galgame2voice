@@ -465,8 +465,11 @@ class TestTier1FeatureCoverage:
             resp = await client.get("/audio/../config.py")
             assert resp.status_code in (404, 400, 403)
 
-    def test_f7_02_fs_browse_filter_extensions(self, tmp_path):
+    def test_f7_02_fs_browse_filter_extensions(self, tmp_path, monkeypatch):
         """Verifies _fs_browse_sync filters files strictly by whitelisted extensions."""
+        monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+        from galgame2voice.config import get_settings
+        get_settings.cache_clear()
         (tmp_path / "model.ckpt").write_text("dummy")
         (tmp_path / "weights.pth").write_text("dummy")
         (tmp_path / "audio.wav").write_text("dummy")

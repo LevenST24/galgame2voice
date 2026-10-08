@@ -323,7 +323,7 @@ def test_process_tree_termination_and_cleanup(tmp_path, monkeypatch):
 
     # 3. Test cleanup_subprocesses removes files and kills pid
     (tmp_path / "data" / "active_port.txt").write_text("8080", encoding="utf-8")
-    (tmp_path / "galgame2voice.pid").write_text("1001", encoding="utf-8")
+    (tmp_path / "galgame2voice.pid").write_text(str(run_server.os.getpid()), encoding="utf-8")
     (tmp_path / "gptsovits.pid").write_text("54321", encoding="utf-8")
 
     run_server.cleanup_subprocesses()

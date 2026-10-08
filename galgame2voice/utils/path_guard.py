@@ -114,12 +114,15 @@ def get_authorized_roots(
             roots.append(Path(env_sovits).resolve())
 
         sovits_txt = settings.data_dir / "sovits_dir.txt"
+        if not sovits_txt.is_file():
+            sovits_txt = settings.project_root / "data" / "sovits_dir.txt"
         if sovits_txt.is_file():
             try:
-                target_dir = sovits_txt.read_text(encoding="utf-8-sig").strip()
-                if target_dir and Path(target_dir).is_dir():
-                    roots.append(Path(target_dir).resolve())
-            except (OSError, UnicodeDecodeError):
+                from galgame2voice.services.sovits_installation import read_sovits_directory
+                target_dir = read_sovits_directory(settings.project_root, sovits_txt)
+                if target_dir is not None and target_dir.is_dir():
+                    roots.append(target_dir)
+            except (OSError, UnicodeError, ValueError):
                 pass
 
         # GPT-SoVITS installs discovered relative to the project (portable across machines)

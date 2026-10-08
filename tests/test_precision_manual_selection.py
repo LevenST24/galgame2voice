@@ -111,7 +111,7 @@ class TestPrecisionAPI:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/api/system/restart_sovits")
             assert resp.status_code == 400
-            assert "data/sovits_dir.txt" in resp.json()["detail"]
+            assert "选择文件夹" in resp.json()["detail"]
 
     async def test_restart_sovits_endpoint_with_explicit_precision(self, tmp_path, monkeypatch):
         settings = get_settings()
@@ -119,6 +119,9 @@ class TestPrecisionAPI:
         (tmp_path / "data").mkdir(parents=True, exist_ok=True)
         fake_engine = tmp_path / "dummy_sovits"
         fake_engine.mkdir()
+        (fake_engine / "api_v2.py").write_text("# test engine marker\n")
+        monkeypatch.setattr(rs, "_SPAWNED_SOVITS_PROC", None)
+        monkeypatch.setattr(rs, "is_port_in_use", lambda *args: False)
         (tmp_path / "data" / "sovits_dir.txt").write_text(str(fake_engine), encoding="utf-8")
 
         # Pin the effective endpoint to a local custom port so the test proves
@@ -135,7 +138,9 @@ class TestPrecisionAPI:
         class FakeProc:
             pid = 9999
 
-        import scripts.run_server as rs
+            def poll(self):
+                return None
+
         monkeypatch.setattr(
             rs,
             "_spawn_sovits_process",

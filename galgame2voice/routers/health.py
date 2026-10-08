@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 import time
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,10 +21,17 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from galgame2voice import __version__
+from galgame2voice.services.engine_recovery import engine_failure_message
+from galgame2voice.services.sovits_installation import find_engine_python
 from galgame2voice.config import get_settings
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
 from galgame2voice.security.auth import require_auth
+from galgame2voice.services.sovits_installation import (
+    inspect_sovits_directory,
+    read_sovits_directory,
+    save_sovits_directory,
+)
 from galgame2voice.services.sovits_endpoint import (
     DEFAULT_SOVITS_BASE_URL,
     SovitsEndpoint,
@@ -346,8 +354,7 @@ def _collect_hardware_telemetry_sync() -> HardwareTelemetry:
     total_ram, avail_ram = get_system_memory_status()
     gpu_avail, gpu_name = _get_gpu_telemetry_cached()
     project_root = get_settings().project_root
-    sovits_dir_file = project_root / "data" / "sovits_dir.txt"
-    sovits_dir = Path(sovits_dir_file.read_text(encoding="utf-8-sig").strip()) if sovits_dir_file.exists() else project_root
+    sovits_dir = read_sovits_directory(project_root) or project_root
 
     device, is_half, _ = resolve_initial_device_and_half(project_root, sovits_dir)
     if device == "cpu":
@@ -529,38 +536,43 @@ async def _apply_sovits_precision_config(
     if req_prec in precision_map:
         device, is_half, target_setting = precision_map[req_prec]
         source = "request"
-        write_precision_cache(project_root, str(sovits_dir), is_half=is_half, device=device)
+        await asyncio.to_thread(write_precision_cache, project_root, str(sovits_dir), is_half=is_half, device=device)
         await _update_inference_precision_setting(target_setting)
     elif req_prec == "auto":
         cache_file = project_root / "data" / "precision.json"
-        cache_file.unlink(missing_ok=True)
+        await asyncio.to_thread(cache_file.unlink, missing_ok=True)
         await _update_inference_precision_setting("auto")
-        device, is_half, source = resolve_initial_device_and_half(project_root, sovits_dir)
+        device, is_half, source = await asyncio.to_thread(resolve_initial_device_and_half, project_root, sovits_dir)
     else:
-        device, is_half, source = resolve_initial_device_and_half(project_root, sovits_dir)
+        device, is_half, source = await asyncio.to_thread(resolve_initial_device_and_half, project_root, sovits_dir)
 
-    write_sovits_yaml_config(sovits_dir, is_half=is_half, device=device)
+    await asyncio.to_thread(write_sovits_yaml_config, sovits_dir, is_half=is_half, device=device)
     return device, is_half, source
 
 
-def _terminate_process_by_pid(pid: int, timeout: float = 3.0) -> None:
+class SovitsDirectoryPayload(BaseModel):
+    directory: str = Field(min_length=1, max_length=4096)
+
+
+@router.get("/api/system/sovits-directory", dependencies=[Depends(require_auth)])
+async def get_sovits_directory_endpoint() -> dict:
+    return await asyncio.to_thread(inspect_sovits_directory, get_settings().project_root)
+
+
+@router.put("/api/system/sovits-directory", dependencies=[Depends(require_auth)])
+async def save_sovits_directory_endpoint(payload: SovitsDirectoryPayload) -> dict:
     try:
-        import psutil
-        if psutil.pid_exists(pid):
-            p = psutil.Process(pid)
-            for child in p.children(recursive=True):
-                try:
-                    child.kill()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-                except Exception as child_err:
-                    logger.debug("Failed killing child process: %s", child_err)
-            p.kill()
-            p.wait(timeout=timeout)
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        pass
-    except Exception as exc:
-        logger.debug("Error terminating process %d: %s", pid, exc)
+        result = await asyncio.to_thread(save_sovits_directory, get_settings().project_root, payload.directory)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        logger.warning("Failed saving engine directory: %s", exc)
+        raise HTTPException(status_code=500, detail="无法保存引擎目录，请确认程序目录有写入权限。") from exc
+    from galgame2voice.routers.voice import _scan_cache
+    generation = _scan_cache.get("generation", 0) + 1
+    _scan_cache.clear()
+    _scan_cache["generation"] = generation
+    return result
 
 
 def _resolve_sovits_directory(project_root: Path) -> Path:
@@ -569,28 +581,43 @@ def _resolve_sovits_directory(project_root: Path) -> Path:
     if not sovits_dir_file.exists():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="GPT-SoVITS 目录路径未记录 (data/sovits_dir.txt 不存在)，无法自动重启",
+            detail="尚未选择语音引擎目录。请在「全局设置 → 语音与推理」点击「选择文件夹」，选择完整解压的引擎包并保存。",
         )
-    sovits_dir = Path(sovits_dir_file.read_text(encoding="utf-8-sig").strip())
-    if not sovits_dir.exists():
+    try:
+        sovits_dir = read_sovits_directory(project_root)
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise HTTPException(status_code=400, detail="引擎目录配置无法读取。请在「语音与推理」重新选择文件夹并保存。") from exc
+    if sovits_dir is None or not sovits_dir.is_dir():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"GPT-SoVITS 目录不存在: {sovits_dir}",
+            detail="保存的引擎目录已移动或删除。请在「语音与推理」重新选择实际存在的引擎文件夹并保存。",
         )
     return sovits_dir
 
 
-def _terminate_existing_sovits_process(pid_file: Path) -> None:
-    """Reads PID from pid_file and terminates existing process if running."""
-    if not pid_file.exists():
-        return
-    old_pid = None
+_engine_restart_lock = threading.Lock()
+
+
+@router.get("/api/system/engine-status", dependencies=[Depends(require_auth)])
+async def engine_status_endpoint() -> dict[str, Any]:
     try:
-        old_pid = int(pid_file.read_text(encoding="utf-8").strip())
-    except (ValueError, OSError):
-        pass
-    if old_pid:
-        _terminate_process_by_pid(old_pid)
+        endpoint = await resolve_effective_sovits_endpoint()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="语音引擎服务地址无效。请在「语音与推理」检查并保存服务地址。") from exc
+    if _engine_restart_lock.locked():
+        return {"state": "starting", "ready": False, "message": "引擎正在重启，请等待当前操作完成。"}
+    from scripts import run_server
+    proc = run_server._SPAWNED_SOVITS_PROC
+    telemetry = await _probe_gpt_sovits(endpoint.base_url)
+    if telemetry.status == "reachable":
+        return {"state": "ready", "ready": True, "message": "语音引擎已就绪。可在会话设置中选择音色。"}
+    if endpoint.is_local and proc is not None and proc.poll() is not None:
+        message = await asyncio.to_thread(engine_failure_message, get_settings().project_root / "logs" / "gpt_sovits.log")
+        return {"state": "failed", "ready": False, "message": message}
+    if endpoint.is_local and proc is not None:
+        return {"state": "starting", "ready": False, "message": "引擎正在加载模型，请稍候；文字聊天可继续使用。"}
+    return {"state": "unavailable", "ready": False,
+            "message": "语音引擎尚未就绪。请在「语音与推理」选择引擎目录后启动，或检查已配置的远端引擎地址。文字聊天可继续使用。"}
 
 
 @router.post(
@@ -627,15 +654,46 @@ async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -
             },
         )
 
-    settings = get_settings()
-    sovits_dir = _resolve_sovits_directory(settings.project_root)
+    if not _engine_restart_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="语音引擎正在启动或重启，请等待当前操作完成，勿重复点击。")
+    task = asyncio.create_task(_restart_local_engine(endpoint, payload))
 
-    # Determine precision and device target
+    def release(completed):
+        _engine_restart_lock.release()
+        if not completed.cancelled():
+            completed.exception()  # A disconnected browser must not leave an unobserved failure.
+
+    task.add_done_callback(release)
+    # Disconnecting a browser must not interrupt process ownership halfway through.
+    try:
+        return await asyncio.shield(task)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Engine restart preparation failed")
+        raise HTTPException(status_code=500, detail="无法准备语音引擎。请确认程序和引擎目录可写，在「语音与推理」重新选择完整引擎包后再试。") from exc
+
+
+async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovitsPayload | None) -> dict[str, Any]:
+    settings = get_settings()
+    sovits_dir = await asyncio.to_thread(_resolve_sovits_directory, settings.project_root)
+    if not await asyncio.to_thread((sovits_dir / "api_v2.py").is_file):
+        raise HTTPException(status_code=400, detail="所选文件夹缺少 api_v2.py。请完整解压引擎包，在「语音与推理」重新选择引擎文件夹。")
+    if getattr(sys, "frozen", False) and await asyncio.to_thread(find_engine_python, sovits_dir) is None:
+        raise HTTPException(status_code=400, detail="所选引擎缺少自己的运行环境。请使用包含 runtime 的完整集成包，重新选择文件夹后启动。")
+
+    from scripts import run_server
+    owned = run_server._SPAWNED_SOVITS_PROC
+    live_owned = owned is not None and owned.poll() is None
+    if not live_owned and await asyncio.to_thread(run_server.is_port_in_use, endpoint.port, endpoint.host):
+        raise HTTPException(status_code=409, detail="语音引擎已在其他窗口运行，可直接使用。若需重启，请先关闭该引擎窗口，再点击「重启引擎」。")
+    # Determine precision and device target only after validation and ownership checks.
     req_prec = str(payload.precision).strip().lower() if (payload and payload.precision) else None
     device, is_half, source = await _apply_sovits_precision_config(settings.project_root, sovits_dir, req_prec)
 
-    pid_file = settings.project_root / "gptsovits.pid"
-    _terminate_existing_sovits_process(pid_file)
+    if live_owned:
+        await asyncio.to_thread(run_server.terminate_process_tree, owned.pid)
+        await asyncio.to_thread(owned.wait, timeout=3)
 
     # Bounded wait for the old process to release the port (replaces the old
     # fixed sleep): poll up to ~5s at 0.25s intervals, off the event loop.
@@ -655,15 +713,18 @@ async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -
                 "base_url": endpoint.base_url,
                 "message": (
                     f"旧 GPT-SoVITS 进程未在 5 秒内释放端口 {endpoint.port}，"
-                    "请手动确认进程状态后再重试。"
+                    "请等待片刻再试；若引擎在其他窗口运行，请先关闭该窗口。"
                 ),
             },
         )
 
     try:
         from scripts.run_server import _spawn_sovits_process
-        proc = _spawn_sovits_process(sovits_dir, endpoint.host, endpoint.port, is_half, device=device)
-        pid_file.write_text(str(proc.pid), encoding="utf-8")
+        proc = await asyncio.to_thread(_spawn_sovits_process, sovits_dir, endpoint.host, endpoint.port, is_half, device=device)
+        await asyncio.sleep(0.1)
+        if proc.poll() is not None:
+            message = await asyncio.to_thread(engine_failure_message, settings.project_root / "logs" / "gpt_sovits.log")
+            raise HTTPException(status_code=502, detail=message)
         if device == "cpu":
             prec_desc = "CPU 稳定模式"
             prec_val = "CPU"
@@ -671,16 +732,20 @@ async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -
             prec_desc = "FP16 半精度" if is_half else "FP32 单精度"
             prec_val = "FP16" if is_half else "FP32"
         return {
-            "status": "ok",
-            "message": f"GPT-SoVITS 语音引擎已按 {prec_desc} 成功重启 (PID: {proc.pid})",
+            "status": "starting",
+            "ready": False,
+            "message": f"语音引擎已按 {prec_desc} 开始加载，请稍候；就绪前仍可进行文字聊天。",
             "is_half": is_half,
             "device": device,
             "precision": prec_val,
             "pid": proc.pid,
             "source": source,
         }
+    except HTTPException:
+        raise
     except Exception as exc:
+        logger.exception("Engine restart failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"重启 GPT-SoVITS 失败: {exc}",
+            detail="语音引擎启动未完成。请确认引擎已完整解压且目录可写，在「语音与推理」重新选择文件夹后再试。详细原因已记录在程序日志。",
         ) from exc

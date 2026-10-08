@@ -4,6 +4,82 @@ All notable changes to galgame2voice are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Verified SQLite snapshots including committed WAL data, daily startup backups,
+  and a portable database recovery launcher that preserves original files.
+- Chat backup export and atomic history import, with protection for corrupt,
+  unavailable, full, or concurrently modified browser storage.
+- Actionable runtime recovery guidance, bounded settings requests, and engine
+  readiness polling that distinguishes model loading from startup failure.
+- Repeated portable launches reuse the running installation and its actual port.
+- Local GPT-SoVITS directory selection and persistence in the settings console;
+  sibling engine paths survive relocation and feed model scans and restarts.
+- Portable startup exceptions leave a diagnostic log in `logs/launcher_error.log`.
+- Windows x64 portable packaging with a frozen interpreter, locked application
+  dependencies, frontend, FFmpeg and included third-party license files. The
+  release workflow builds and tests the extracted ZIP with a restricted PATH.
+- Portable user data stays beside the executable, outside `_internal`.
+  Frozen launchers never run themselves as pip or as an engine's Python.
+- `--no-engine` opens the application without managing a local voice engine.
+
+### Fixed
+- Interrupted chat streams preserve partial replies and report incomplete
+  responses; cancellation releases readers and does not resend generation.
+- Voice switching respects memory protection instead of automatically forcing
+  a second attempt after a 503; failed saves and refreshes preserve input.
+- Engine restarts only stop owned processes, serialize operations through browser
+  disconnects, and validate the installation before changing configuration.
+- Windows job APIs preserve 64-bit handles; shutdown closes the job and only
+  terminates processes owned by the launcher, without trusting stale PID files.
+- Native file pickers serialize Tk creation and cleanup on their owning thread.
+- Saving an engine directory invalidates model discovery without allowing an
+  older in-flight scan to repopulate the cache; pending settings reads preserve edits.
+- Credential encryption now declares a locked `cryptography` dependency and
+  emits only AES-GCM/DPAPI ciphertext. Legacy stream ciphertext is read only for
+  migration; unreadable, damaged or unpersisted master keys fail explicitly.
+- Docker uses the Settings-based entry point with authentication enabled by
+  default, so its listener and network-exposure check agree.
+- Fresh databases start without machine-specific voice profiles. Session voice
+  settings guide first-time setup, while existing profiles are retained.
+- Dynamic CRUD updates validate explicit SQL column allowlists. Directory
+  browsing stays within authorized roots, and active-profile persistence errors
+  reach callers instead of reporting a successful switch.
+- Tests isolate credential, database, audio, log and temporary files and reset
+  runtime singletons. Audio tests configure their own neutral voices; native-picker
+  tests skip when tkinter is unavailable. CI compares deployed frontend artifacts
+  with tracked files; blocking file operations are offloaded and ASYNC240 is enabled.
+- TTS cancellation now stops stalled synthesis jobs without stopping the priority
+  worker, and reaps enqueue helper tasks when audio buffers are full.
+- Scheduler shutdown cancels queued jobs, wakes stream consumers, and drains the
+  queue before the shared GPT-SoVITS HTTP pool closes.
+- Cancelled upstream streams no longer block while writing errors or EOF into an
+  abandoned full buffer; service streams close their nested generators explicitly.
+- Interrupted audio is excluded from the persistent cache. Single-flight and
+  stream errors still reach callers without deferred unhandled-future reports.
+- Queued bytes/file synthesis requests recheck the shared cache before inference;
+  a regression burst of 16 identical requests now invokes the mock engine once
+  instead of 16 times, including mixed bytes/file callers.
+- Cache keys resolve speed/temperature aliases and quality presets using the
+  engine's option parser, and include explicitly requested voice profile IDs.
+  Versioned keys prevent reusing ambiguous older entries while retaining their
+  audio files for conversation-history playback.
+- Streams with caching disabled no longer retain every received audio chunk.
+- Lifespan cleanup also runs when the serving context raises. Startup tests use
+  isolated settings and mocked voice clients, and batch entry-point tests execute
+  a stub launcher to check paths and arguments containing spaces and `!`.
+- Non-repository version tests bound Git's parent-directory search, allowing
+  temporary test directories located inside a development checkout.
+- Cached file responses now read only file metadata; cached streaming starts
+  with a bounded chunk rather than loading the whole clip and records one hit
+  per playback. Closing the service stream immediately closes its disk reader.
+- Audio clips exceeding the RAM budget remain on disk without displacing small
+  hot entries. Disk streams also stop buffering if a file grows past the budget.
+- File cache lookups detect deleted or empty files even with a warm RAM entry.
+  Concurrent overwrites read previous sizes after write admission, keeping disk
+  capacity counters consistent and avoiding premature pruning.
+
 ## [2.0.0] - 2026-10-06
 
 First tagged release. The single source of truth for the version is

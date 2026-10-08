@@ -19,6 +19,7 @@ import zipfile
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
+from galgame2voice import __version__
 from galgame2voice.config import get_settings
 from galgame2voice.utils.hardware import release_system_memory
 from galgame2voice.utils.logger import sanitize_error_detail
@@ -314,6 +315,11 @@ def _check_version_sync(project_root: Path, check_remote: bool = True) -> System
     Synchronous git inspection logic resolving local HEAD, commit metadata,
     and remote upstream status.
     """
+    if getattr(sys, "frozen", False):
+        return SystemVersionResponse(
+            current_version=__version__, latest_version=__version__, current_branch="portable",
+            error="Windows 便携版请下载新版完整发布包更新，步骤见使用说明.md。",
+        )
     local_info = _inspect_local_git_repo(project_root)
     if not local_info:
         return SystemVersionResponse(
@@ -403,6 +409,9 @@ def _make_update_failure_response(
 
 def _verify_update_preflight(project_root: Path) -> tuple[str | None, SystemUpdateResponse | None]:
     """Checks git repo validity, allowed remote source, and detached HEAD state."""
+    if getattr(sys, "frozen", False):
+        message = "Windows 便携版请关闭程序后解压新版发布包，再迁移 data、audio、characters；详见使用说明.md。"
+        return None, _make_update_failure_response(message, version=__version__, error=message)
     rc, out, _ = _run_git_cmd(["rev-parse", "--is-inside-work-tree"], cwd=project_root, timeout=5.0)
     if rc != 0 or out != "true":
         msg = "更新失败: 当前项目目录不是有效 Git 仓库。"

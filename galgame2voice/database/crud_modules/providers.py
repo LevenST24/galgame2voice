@@ -19,6 +19,10 @@ from galgame2voice.security.crypto import decrypt_secret, encrypt_secret
 
 logger = logging.getLogger("galgame2voice.database.crud_modules.providers")
 
+_UPDATE_COLUMNS = frozenset({
+    "name", "api_base_url", "api_key", "chat_model", "stt_model", "is_active", "custom_headers",
+})
+
 __all__ = [
     "mask_api_key",
     "is_masked_key",
@@ -181,6 +185,8 @@ async def update_provider(conn: aiosqlite.Connection, provider_id: str, updates:
     fields = []
     values: list[Any] = []
     up_dict = updates.model_dump(exclude_unset=True)
+    if up_dict.keys() - _UPDATE_COLUMNS:
+        raise ValueError("Unsupported provider update columns")
 
     for k, v in up_dict.items():
         if v is None:

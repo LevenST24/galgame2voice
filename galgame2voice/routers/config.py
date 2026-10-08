@@ -169,8 +169,9 @@ def _sync_precision_cache(new_precision: str | None) -> None:
         from galgame2voice.utils.precision import write_precision_cache, write_sovits_yaml_config
         from galgame2voice.config import get_settings
         app_settings = get_settings()
-        sovits_dir_file = app_settings.project_root / "data" / "sovits_dir.txt"
-        sovits_dir_str = sovits_dir_file.read_text(encoding="utf-8-sig").strip() if sovits_dir_file.exists() else ""
+        from galgame2voice.services.sovits_installation import read_sovits_directory
+        directory = read_sovits_directory(app_settings.project_root)
+        sovits_dir_str = str(directory) if directory is not None else ""
         prec_lower = str(new_precision).lower()
         if prec_lower in _PRECISION_CONFIG_MAP:
             is_half, device = _PRECISION_CONFIG_MAP[prec_lower]

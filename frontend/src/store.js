@@ -1,6 +1,26 @@
 // 会话状态管理 + localStorage 持久化（含会话级设置与全局设置）
+import { normalizeSnapshot, portableSnapshot } from './session_data.js';
 const STORAGE_KEY = 'gal2voice.chat.v1';
+const BACKUP_KEY = `${STORAGE_KEY}.backup`;
 const LEGACY_KEYS = ['inkwell.chat.v2', 'inkwell.chat.v1'];
+const listeners = new Set();
+let damagedRaw = null;
+let lastStoredRaw = null;
+let skipBackupOnce = false;
+let storageStatus = { ok: true, message: '' };
+
+export function getStorageStatus() { return { ...storageStatus, damaged: damagedRaw !== null }; }
+export function onStorageStatus(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+function reportStorage(ok, message = '') {
+  if (storageStatus.ok === ok && storageStatus.message === message) return;
+  storageStatus = { ok, message };
+  for (const listener of listeners) {
+    try { listener(getStorageStatus()); } catch (error) { console.warn('更新保存状态提示失败', error); }
+  }
+}
+
+export function getDamagedSessionData() { return damagedRaw; }
+const snapshot = () => ({ sessions: state.sessions, activeId: state.activeId, global: state.global });
 
 export const DEFAULT_SESSION_SETTINGS = {
   systemPrompt: '',
@@ -40,13 +60,37 @@ export function uid(prefix = 'id') {
 const now = () => Date.now();
 
 export function saveState() {
+  if (damagedRaw !== null) {
+    reportStorage(false, '原会话记录无法读取，已保留原内容。请在「全局设置 → 系统与更新」导出原始记录，再恢复本地保存。');
+    return false;
+  }
   try {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ sessions: state.sessions, activeId: state.activeId, global: state.global })
-    );
+    const previous = localStorage.getItem(STORAGE_KEY);
+    if (previous !== lastStoredRaw) {
+      reportStorage(false, '另一网页已修改聊天记录。为避免覆盖，当前网页暂停保存；请先导出当前聊天备份，再刷新后导入需要保留的记录。');
+      return false;
+    }
+    const next = JSON.stringify(snapshot());
+    try { localStorage.setItem(STORAGE_KEY, next); }
+    catch (error) {
+      if (error.name !== 'QuotaExceededError') throw error;
+      // Evict only our optional fallback snapshot, never the primary record.
+      localStorage.removeItem(BACKUP_KEY);
+      localStorage.setItem(STORAGE_KEY, next);
+    }
+    lastStoredRaw = next;
+    // A fallback snapshot is best effort; lack of quota must not fail the main
+    // write or remove any existing user records.
+    if (previous && previous !== next && !skipBackupOnce) {
+      try { localStorage.setItem(BACKUP_KEY, previous); } catch { /* keep the previous backup */ }
+    }
+    skipBackupOnce = false;
+    reportStorage(true);
+    return true;
   } catch (e) {
     console.warn('保存会话失败', e);
+    reportStorage(false, '浏览器未能保存聊天记录。请先在「全局设置 → 系统与更新」导出聊天备份，再检查浏览器存储权限或清理不需要的会话；关闭网页前请完成备份。');
+    return false;
   }
 }
 
@@ -70,13 +114,24 @@ export function makeStarterSession() {
 }
 
 export function loadState() {
+  state.sessions = [];
+  state.activeId = null;
+  state.global = { ...DEFAULT_GLOBAL };
+  damagedRaw = null;
+  lastStoredRaw = null;
+  skipBackupOnce = false;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY) || LEGACY_KEYS.map((k) => localStorage.getItem(k)).find(Boolean);
-    if (raw) {
-      const data = JSON.parse(raw);
-      if (Array.isArray(data.sessions)) state.sessions = data.sessions.map(ensureSettings);
-      if (data.activeId) state.activeId = data.activeId;
-      if (data.global) state.global = { ...DEFAULT_GLOBAL, ...data.global };
+    lastStoredRaw = localStorage.getItem(STORAGE_KEY);
+    for (const key of [STORAGE_KEY, BACKUP_KEY, ...LEGACY_KEYS]) {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      try {
+        const data = normalizeSnapshot(JSON.parse(raw), DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL);
+        Object.assign(state, data);
+        break;
+      } catch {
+        if (key === STORAGE_KEY) damagedRaw = raw;
+      }
     }
   } catch (e) {
     console.warn('读取本地会话失败', e);
@@ -86,6 +141,48 @@ export function loadState() {
     state.activeId = state.sessions[0]?.id ?? null;
   }
   saveState();
+}
+
+export function exportSessionData() {
+  return JSON.stringify({ format: 'galgame2voice.chat', version: 1, exportedAt: new Date().toISOString(),
+    ...portableSnapshot(normalizeSnapshot(snapshot(), DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL)) }, null, 2);
+}
+
+export function prepareSessionImport(raw) {
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { throw new Error('无法读取 JSON，请选择之前导出的聊天备份文件。'); }
+  if (parsed?.format !== 'galgame2voice.chat' || parsed.version !== 1) {
+    throw new Error('备份格式或版本不受支持，请选择 Galgame2Voice 导出的聊天备份。');
+  }
+  const incoming = portableSnapshot(normalizeSnapshot(parsed, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL));
+  if (incoming.sessions.length === 0) throw new Error('备份中没有聊天会话，当前记录未修改。');
+  if (incoming.sessions.length > 10000) throw new Error('单份备份超过 10000 个会话，请先导出较小的备份再导入。');
+  // New IDs protect both browser and server records from replacement.
+  for (const session of incoming.sessions) {
+    session.id = uid('s_import');
+    session.settings.voiceProfileId = null;
+  }
+  return incoming;
+}
+
+export function applySessionImport(incoming) {
+  state.sessions.unshift(...incoming.sessions);
+  state.activeId = incoming.sessions[0].id;
+  const saved = saveState();
+  return { count: incoming.sessions.length, saved };
+}
+
+export function resumeLocalSaving() {
+  if (damagedRaw !== null) {
+    try {
+      localStorage.setItem(`${STORAGE_KEY}.damaged.${Date.now()}`, damagedRaw);
+    } catch {
+      throw new Error('无法另存原始记录。请先导出原始记录，并检查浏览器存储权限和可用空间。');
+    }
+    skipBackupOnce = true;
+    damagedRaw = null;
+  }
+  return saveState();
 }
 
 export function createSession(title = '新对话') {

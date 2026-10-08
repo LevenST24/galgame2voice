@@ -19,6 +19,7 @@ import { streamAudioController } from './audio_player.js';
 import { portraitStage } from './portrait.js';
 import { renderSessionList, renderMessages, createMessageEl, createTypingEl, showToast } from './ui.js';
 import { initAuthInterceptor } from './auth.js';
+import { initSessionBackup } from './controllers/session_backup.js';
 
 // Initialize console token authentication interceptor
 initAuthInterceptor();
@@ -32,6 +33,7 @@ import {
   ensureSessionVoice,
   getVoiceProfiles,
   getActiveProfileId,
+  invalidateScannedModels,
 } from './controllers/voice_settings.js';
 import {
   initGlobalSettings,
@@ -169,6 +171,10 @@ const dom = {
   gBtnClearCache: $('gBtnClearCache'),
   gBtnRefreshStatus: $('gBtnRefreshStatus'),
   gParamSovitsUrl: $('gParamSovitsUrl'),
+  gSovitsDirectory: $('gSovitsDirectory'),
+  gSovitsDirectoryStatus: $('gSovitsDirectoryStatus'),
+  gBrowseSovitsDirectory: $('gBrowseSovitsDirectory'),
+  gSaveSovitsDirectory: $('gSaveSovitsDirectory'),
   gParamSliceMethod: $('gParamSliceMethod'),
   gParamFragmentInterval: $('gParamFragmentInterval'),
   gParamSpeed: $('gParamSpeed'),
@@ -589,6 +595,8 @@ function sendMessage(rawText, voiceMeta) {
     saveState();
     busy = false;
     updateComposer();
+    if (error) showToast(error, 'error');
+    else if (meta.audioError && !cancelled) showToast(meta.audioError, 'info');
     renderSidebar();
     renderHeader();
     if (!cancelled) maybeScroll();
@@ -831,6 +839,7 @@ initVoiceSettings(dom, {
   renderHeader,
 });
 initGlobalSettings(dom, {
+  onSovitsDirectorySaved: invalidateScannedModels,
   openModal,
   closeModal,
   loadSystemVersionInfo,
@@ -856,6 +865,12 @@ if (dom.globalSettingsBtn) {
 
 /* ---------- 启动同步与渲染 ---------- */
 loadState();
+initSessionBackup({ isBusy: () => busy, onImport: () => {
+  ++_syncSessionsGen;
+  interruptAll();
+  fullRender(false);
+  ensureSessionVoice(getActive(), { silent: true });
+} });
 fullRender(true);
 autoGrow();
 updateComposer();

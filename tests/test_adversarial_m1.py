@@ -44,11 +44,15 @@ from galgame2voice.utils.logger import MaskingFilter
 
 
 @pytest.fixture
-async def adversarial_db():
+async def adversarial_db(tmp_path):
     """Yields a clean initialized temporary SQLite database path."""
-    fd, path = tempfile.mkstemp(suffix=".db", prefix="adv_m1_test_")
-    os.close(fd)
+    path = str(tmp_path / "adversarial.db")
     await init_db(path)
+    async with get_db(path) as conn:
+        await create_voice_profile(conn, VoiceProfileCreate(
+            name="Test voice", gpt_weights_path="test.ckpt", sovits_weights_path="test.pth",
+            is_default=True,
+        ))
     yield path
     if os.path.exists(path):
         try:
@@ -170,7 +174,7 @@ class TestConcurrencyAndStress:
 
             async with get_db(path) as conn:
                 profiles = await list_voice_profiles(conn)
-                assert len(profiles) == 1
+                assert profiles == []  # First install awaits user voice setup.
                 providers = await list_providers(conn)
                 assert len(providers) == 8
         finally:

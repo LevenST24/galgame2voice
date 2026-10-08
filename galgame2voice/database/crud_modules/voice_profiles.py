@@ -17,6 +17,11 @@ from galgame2voice.database.session import immediate_transaction
 
 logger = logging.getLogger("galgame2voice.database.crud_modules.voice_profiles")
 
+_UPDATE_COLUMNS = frozenset({
+    "name", "description", "gpt_weights_path", "sovits_weights_path", "ref_audio_path",
+    "prompt_text", "prompt_lang", "text_lang", "system_prompt", "is_default",
+})
+
 __all__ = [
     "list_voice_profiles",
     "get_voice_profile",
@@ -129,6 +134,8 @@ async def update_voice_profile(conn: aiosqlite.Connection, profile_id: int, upda
     fields = []
     values: list[Any] = []
     up_dict = updates.model_dump(exclude_unset=True)
+    if up_dict.keys() - _UPDATE_COLUMNS:
+        raise ValueError("Unsupported voice profile update columns")
 
     for k, v in up_dict.items():
         if k == "is_default":

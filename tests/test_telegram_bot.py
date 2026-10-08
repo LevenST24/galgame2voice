@@ -437,6 +437,14 @@ class TestTelegramBotRealModules:
     @pytest.mark.asyncio
     async def test_telegram_bot_inline_keyboard_console_and_callbacks(self, temp_db_path):
         """Validates that the native inline keyboard console and all callback sub-menus work seamlessly."""
+        from galgame2voice.database.models import VoiceProfileCreate
+        from galgame2voice.database.session import get_db
+        from galgame2voice.database import crud
+        async with get_db(temp_db_path) as conn:
+            await crud.create_voice_profile(conn, VoiceProfileCreate(
+                name="Telegram test voice", gpt_weights_path="test.ckpt", sovits_weights_path="test.pth",
+                is_default=True,
+            ))
         handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=temp_db_path)
         client = MockBotClient()
 
@@ -621,6 +629,14 @@ class TestTelegramBotRealModules:
     @pytest.mark.asyncio
     async def test_telegram_bot_character_command_and_quick_switch(self, temp_db_path):
         """Validates /character, /char, /switch command handling, direct switching, and 2-column menu layout."""
+        from galgame2voice.database.models import VoiceProfileCreate
+        from galgame2voice.database.session import get_db
+        from galgame2voice.database import crud
+        async with get_db(temp_db_path) as conn:
+            await crud.create_voice_profile(conn, VoiceProfileCreate(
+                name="Telegram test voice", gpt_weights_path="test.ckpt", sovits_weights_path="test.pth",
+                is_default=True,
+            ))
         handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=temp_db_path)
         client = MockBotClient()
 

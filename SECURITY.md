@@ -51,11 +51,21 @@
 ## 数据与凭据
 
 - **API Key、Telegram Token、控制台 Token 在写入 SQLite（`data/galgame2voice.db`）前已加密**：
-  Windows 使用 DPAPI（`dpapi:` 前缀），其他平台回退到 AES-GCM / HMAC 认证的加密流（`enc:` 前缀），
+  Windows 使用 DPAPI（`dpapi:` 前缀），其他平台使用 `cryptography` 的 AES-GCM（`enc:` 前缀），
   密钥来自 `GALGAME2VOICE_SECRET_KEY`（或 `GALGAME2VOICE_MASTER_KEY`）环境变量，缺省时使用
   `data/.master_key`（0600 权限）。读写分别经 `security/crypto.py` 的 `encrypt_secret()` /
   `decrypt_secret()`，在 `database/crud_modules/settings_cache.py`、`providers.py` 落库前调用，
-  历史明文记录由 `database/migrations.py` 自动改写。仍需依赖文件系统权限保护密钥文件与 DB。
+  历史明文和旧版自写流加密记录由 `database/migrations.py` 自动迁移。旧格式仅保留只读解码，
+  不再用于新加密；`cryptography` 缺失会报错。主密钥无法持久化、损坏或解密时缺失会明确报错，
+  不会覆盖原密钥或返回未保存的新密钥。恢复密钥应使用原始备份，不能重新生成。
+- **Linux/Docker 默认密钥文件和数据库位于同一个数据卷**：取得整个卷的攻击者也能取得密钥并
+  解密凭据。这主要防止直接打开数据库时误看到明文，不提供对数据卷失窃的保护。
+  如需将密钥与数据库分离，请用独立的 secret 注入上述密钥环境变量，并使用足够随机的密钥。
+  备份应妥善保护数据库和原密钥；Windows DPAPI 数据还依赖原 Windows 用户上下文。
+- Docker 默认启用鉴权并通过 `python -m galgame2voice.main` 启动；真实监听地址和启动安全检查
+  都读取 `Settings.host`。将其设为非回环地址且关闭鉴权时，服务拒绝启动。
+- 文件浏览 API 仅列出项目、数据、音频和已配置/发现的 GPT-SoVITS 目录，拒绝解析后的越界路径。
+  外部模型目录需通过 `GPT_SOVITS_DIR` 或 `data/sovits_dir.txt` 声明。
 - 所有 API 响应对密钥做脱敏（`sk-****xxxx` 形式）；自定义认证头同样脱敏，
   且前端回传的脱敏值不会被写回覆盖真实值。
 - 用户生成的音频文件以 `private, max-age=0` 缓存策略返回，不进共享代理缓存。

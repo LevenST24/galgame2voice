@@ -6,6 +6,7 @@ PID file lifecycle, and the launcher's GPT-SoVITS discovery contract.
 """
 
 import os
+import json
 import re
 import sys
 import subprocess
@@ -68,12 +69,32 @@ class TestLifecycleScriptsTier1:
         assert "uvicorn" in content
         assert "galgame2voice.main:app" in content or "main:app" in content
 
-    def test_start_script_checks_python(self):
-        """Verifies start script validates Python presence (.venv then PATH)."""
-        content = (PROJECT_ROOT / "启动.bat").read_text(encoding="utf-8", errors="ignore")
-        assert "python" in content.lower()
-        assert "errorlevel" in content.lower()
-        assert ".venv" in content
+    @pytest.mark.skipif(sys.platform != "win32", reason="executes the Windows batch entry point")
+    @pytest.mark.requires_piped_subprocess
+    def test_start_script_delegates_python_and_preserves_arguments(self, tmp_path):
+        """Runs the real wrapper against a stub launcher, never the actual server."""
+        root = tmp_path / "launch ! folder"
+        (root / "scripts").mkdir(parents=True)
+        start_script = root / "启动.bat"
+        start_script.write_bytes((PROJECT_ROOT / "启动.bat").read_bytes())
+        (root / "scripts" / "run_server.py").write_text(
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "Path('launch.json').write_text(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd()}), encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        env = dict(os.environ)
+        env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+        args = ["--fp32", "--gpt-sovits-dir", "voice! with spaces"]
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", "call", str(start_script), *args],
+            cwd=tmp_path, env=env, capture_output=True, timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        assert result.returncode == 0, result.stderr
+        recorded = json.loads((root / "launch.json").read_text(encoding="utf-8"))
+        assert recorded["argv"] == args
+        assert Path(recorded["cwd"]) == root
 
     def test_launcher_job_object_process_tree_binding(self):
         """Verifies run_server.py implements Windows Job Object process tree linkage."""
@@ -110,7 +131,7 @@ class TestLifecycleScriptsTier2:
     """Tier 2: Windows path handling, quotes, setlocal/endlocal balance, port collision checks."""
 
     def test_scripts_balanced_setlocal_endlocal(self):
-        """Verifies setlocal is initialized and endlocal is called before exit points."""
+        """Verifies any environment mutations are scoped and local scopes terminate."""
         test_scripts = [
             PROJECT_ROOT / "启动.bat",
         ]
@@ -118,8 +139,10 @@ class TestLifecycleScriptsTier2:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
             setlocal_count = sum(1 for line in lines if line.strip().lower().startswith("setlocal"))
             endlocal_count = sum(1 for line in lines if "endlocal" in line.strip().lower())
-            assert setlocal_count >= 1, f"Missing setlocal in {path.name}"
             assert endlocal_count >= setlocal_count, f"Missing endlocal before exit in {path.name}"
+            changes_environment = any(re.match(r"set\s+(?:/[ap]\s+)?", line.strip(), re.I) for line in lines)
+            if changes_environment:
+                assert setlocal_count >= 1, f"Unscoped environment assignment in {path.name}"
 
     def test_start_script_quoted_paths_for_spaces(self):
         """Verifies path references (%~dp0) are safely enclosed in quotes."""

@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "v[0-9]*"
@@ -41,7 +42,7 @@ jobs:
       - name: Rebuild frontend bundle
         working-directory: frontend
         run: |
-          npm install --no-audit --no-fund
+          npm ci --ignore-scripts
           npm run deploy
 
       - name: Build release ZIP
@@ -54,3 +55,34 @@ jobs:
           path: |
             dist/*.zip
             dist/*.sha256
+
+  build-windows-portable:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: "3.12"
+      - name: Install locked portable-build dependencies
+        run: uv sync --frozen --extra desktop --no-dev
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci --ignore-scripts
+          npm run deploy
+      - name: Build Windows portable ZIP
+        run: uv run --frozen --extra desktop --no-dev python scripts/build_windows_portable.py
+      - name: Test the extracted portable application
+        run: |
+          $archive = Get-ChildItem -LiteralPath dist -Filter '*-windows-x64.zip' | Select-Object -First 1
+          uv run --frozen --extra desktop --no-dev python scripts/smoke_windows_portable.py $archive.FullName
+      - name: Upload Windows portable package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: galgame2voice-windows-x64
+          path: |
+            dist/*-windows-x64.zip
+            dist/*-windows-x64.zip.sha256

@@ -7,7 +7,7 @@
   <title>Gal2Voice · AI 多会话对话</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
 
-  <script type="module" crossorigin src="/static/assets/index-CRCJHX7-.js"></script>
+  <script type="module" crossorigin src="/static/assets/index-C0nCiS97.js"></script>
   <link rel="stylesheet" crossorigin href="/static/assets/index-BUDVR9k3.css">
 </head>
 <body>
@@ -377,6 +377,15 @@
             <input id="gParamSovitsUrl" placeholder="http://127.0.0.1:9880" autocomplete="off" />
           </div>
           <div class="field">
+            <label for="gSovitsDirectory">本机 GPT-SoVITS 引擎文件夹</label>
+            <div class="input-action-row">
+              <input id="gSovitsDirectory" placeholder="选择已解压、包含 api_v2.py 的文件夹" autocomplete="off" spellcheck="false" />
+              <button type="button" class="btn-input-action" id="gBrowseSovitsDirectory">选择文件夹</button>
+              <button type="button" class="btn-input-action" id="gSaveSovitsDirectory">保存目录</button>
+            </div>
+            <small id="gSovitsDirectoryStatus" aria-live="polite">连接远端引擎时无需设置本机目录。</small>
+          </div>
+          <div class="field">
             <label>GPT-SoVITS 推理精度与计算设备</label>
             <select id="gPrecision">
               <option value="auto">自动判定 (Auto - 根据硬件与试声自动选择)</option>
@@ -570,6 +579,18 @@
 
         <!-- 选项卡 6: 系统版本与更新 -->
         <div class="gtab-panel hidden" id="gp-update">
+          <div class="field">
+            <label>聊天记录备份与恢复</label>
+            <p id="gChatStorageStatus" role="status">正在检查聊天记录保存状态…</p>
+            <div class="btn-row">
+              <button type="button" class="btn ghost" id="gExportChats">导出聊天备份</button>
+              <button type="button" class="btn ghost" id="gImportChats">导入聊天备份</button>
+              <button type="button" class="btn ghost" id="gResumeChatSaving">恢复本地保存</button>
+              <button type="button" class="btn ghost" id="gExportDamagedChats" hidden>导出原始记录</button>
+              <input type="file" id="gImportChatFile" accept=".json,application/json" hidden>
+            </div>
+            <small>备份包含文字记录和会话设置。导入会新增会话并保留现有记录；音频、角色包和服务密钥请随程序数据目录另行备份。</small>
+          </div>
           <div class="update-panel-container">
             <div class="update-header-card">
               <div class="update-card-title-row">

@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from galgame2voice.database.models import UserMemoryResponse
 from galgame2voice.routers.chat import sse_event_formatter
@@ -414,9 +414,9 @@ class TestDatabaseTelemetryPathNormalization:
         assert not rel_db_path.startswith("/Users/")
         assert "\\" not in rel_db_path  # Must be normalized POSIX forward slashes
 
-    def test_live_system_status_endpoint_returns_normalized_path(self):
+    async def test_live_system_status_endpoint_returns_normalized_path(self):
         """
-        Empirically invoke GET /api/system/status with TestClient and verify
+        Empirically invoke GET /api/system/status with an ASGI client and verify
         that response['database']['path'] is strictly relative.
         """
         app = FastAPI()
@@ -424,8 +424,8 @@ class TestDatabaseTelemetryPathNormalization:
 
         # Bypass auth for status test
         with patch("galgame2voice.routers.health.require_auth", return_value="admin"):
-            client = TestClient(app)
-            response = client.get("/api/system/status", headers={"X-Auth-Token": "test_token"})
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get("/api/system/status", headers={"X-Auth-Token": "test_token"})
 
             assert response.status_code == 200, f"Health endpoint returned status {response.status_code}: {response.text}"
             data = response.json()
@@ -435,7 +435,9 @@ class TestDatabaseTelemetryPathNormalization:
             path_val = db_info["path"]
 
             # Assert path is relative POSIX
-            assert path_val == "data/galgame2voice.db" or path_val.startswith("data/")
+            from galgame2voice.config import get_settings
+            settings = get_settings()
+            assert path_val == settings.db_path.relative_to(settings.project_root).as_posix()
             assert "C:" not in path_val
             assert "Users" not in path_val
             assert "\\" not in path_val

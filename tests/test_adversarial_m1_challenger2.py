@@ -11,6 +11,7 @@ Empirically tests and challenges:
 """
 
 import os
+import re
 import sys
 import time
 import socket
@@ -272,12 +273,13 @@ class TestBatchScriptHardening:
             content = script.read_text(encoding="utf-8", errors="ignore")
             assert 'cd /d "%~dp0"' in content or 'pushd "%~dp0.."' in content
 
-    def test_delayed_expansion_isolated(self):
-        """Verify delayed expansion is properly scoped with setlocal enabledelayedexpansion."""
+    def test_environment_assignments_are_isolated(self):
+        """A thin delegating wrapper needs local scopes only if it mutates variables."""
         for script in [PROJECT_ROOT / "启动.bat"]:
             content = script.read_text(encoding="utf-8", errors="ignore")
-            assert "setlocal enabledelayedexpansion" in content.lower()
-            assert "endlocal" in content.lower()
+            if re.search(r"^\s*set\s+(?:/[ap]\s+)?", content, re.I | re.M):
+                assert "setlocal" in content.lower()
+                assert "endlocal" in content.lower()
 
     def test_gpt_sovits_discovery_locations(self):
         """Verify run_server.py probes env overrides; machine-specific paths must be gone."""
@@ -305,17 +307,20 @@ class TestEndToEndBatchShutdown:
     """Empirically test launcher shutdown and cleanup logic."""
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Requires Windows OS")
-    def test_launcher_cleanup_subprocesses(self, tmp_path):
+    def test_launcher_cleanup_subprocesses(self, tmp_path, monkeypatch):
         """
         Verify launcher cleanup_subprocesses removes pid files and handles mock processes.
         """
         from scripts.run_server import cleanup_subprocesses
+        from scripts import run_server
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "data").mkdir()
 
-        pid_file = PROJECT_ROOT / "galgame2voice.pid"
-        port_file = PROJECT_ROOT / "data" / "active_port.txt"
-        sovits_pid = PROJECT_ROOT / "gptsovits.pid"
+        pid_file = tmp_path / "galgame2voice.pid"
+        port_file = tmp_path / "data" / "active_port.txt"
+        sovits_pid = tmp_path / "gptsovits.pid"
 
-        pid_file.write_text("12345", encoding="utf-8")
+        pid_file.write_text(str(os.getpid()), encoding="utf-8")
         sovits_pid.write_text("54321", encoding="utf-8")
         port_file.write_text("8080", encoding="utf-8")
 

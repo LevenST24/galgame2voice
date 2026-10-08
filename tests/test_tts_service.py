@@ -97,11 +97,12 @@ async def test_async_get_audio_duration(tmp_path):
     dur2 = await TtsService.async_get_audio_duration(wav_path)
     assert dur2 == dur
 
-    # Fast cache hit
-    with patch("asyncio.to_thread") as mock_thread:
+    # Cached metadata remains off the event loop, and decoding is reused.
+    real_to_thread = asyncio.to_thread
+    with patch("asyncio.to_thread", wraps=real_to_thread) as mock_thread:
         dur3 = await async_get_audio_duration(wav_path)
         assert dur3 == dur
-        mock_thread.assert_not_called()
+        mock_thread.assert_awaited_once()
 
     # Invalid cases
     assert await async_get_audio_duration(None) is None

@@ -175,7 +175,7 @@ class TestChatServiceM4:
     """Tests ChatService streaming and synchronous pipelines."""
 
     @pytest.mark.asyncio
-    async def test_chat_service_stream_chat(self, temp_db_path, mock_gpt_sovits, tmp_path):
+    async def test_chat_service_stream_chat(self, temp_db_path, mock_gpt_sovits, tmp_path, configured_voice):
         audio_dir = tmp_path / "audio_test"
         audio_dir.mkdir()
 

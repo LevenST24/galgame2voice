@@ -10,6 +10,7 @@ from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from galgame2voice import __version__
+from galgame2voice.runtime_paths import get_install_root
 
 
 class Settings(BaseSettings):
@@ -103,7 +104,7 @@ class Settings(BaseSettings):
     # Project Root & Directory Paths
     # Project root defaults to the parent directory of the inner package
     project_root: Path = Field(
-        default_factory=lambda: Path(__file__).resolve().parent.parent,
+        default_factory=get_install_root,
         validation_alias=AliasChoices("GALGAME2VOICE_PROJECT_ROOT", "PROJECT_ROOT"),
     )
     data_dir_name: str = "data"

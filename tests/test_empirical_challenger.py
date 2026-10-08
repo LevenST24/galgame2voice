@@ -212,30 +212,36 @@ class TestCorsSecurityAndHeaders:
 class TestLifecycleAdversarialAndPid:
     """Adversarial stress-testing of Windows batch script logic, PID recovery, and port conflicts."""
 
-    def test_stale_pid_recovery_in_launcher(self):
+    def test_stale_pid_recovery_in_launcher(self, tmp_path, monkeypatch):
         """Verify launcher cleanup_subprocesses gracefully handles non-existent stale PID without hanging."""
         from scripts.run_server import cleanup_subprocesses
+        from scripts import run_server
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        pid_file = tmp_path / "galgame2voice.pid"
 
         # Write stale dead PID
-        PID_FILE.write_text("99999999\n", encoding="utf-8")
-        assert PID_FILE.exists()
+        pid_file.write_text("99999999\n", encoding="utf-8")
+        assert pid_file.exists()
 
         cleanup_subprocesses()
-        assert not PID_FILE.exists()
+        assert not pid_file.exists()
 
-    def test_corrupt_pid_file_handling(self):
+    def test_corrupt_pid_file_handling(self, tmp_path, monkeypatch):
         """Verify launcher handles corrupted PID files (alphanumeric garbage, empty)."""
         from scripts.run_server import cleanup_subprocesses
+        from scripts import run_server
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        pid_file = tmp_path / "galgame2voice.pid"
 
         # Case 1: Text garbage
-        PID_FILE.write_text("INVALID_PID_GARBAGE\n", encoding="utf-8")
+        pid_file.write_text("INVALID_PID_GARBAGE\n", encoding="utf-8")
         cleanup_subprocesses()
-        assert not PID_FILE.exists()
+        assert not pid_file.exists()
 
         # Case 2: Empty PID file
-        PID_FILE.write_text("", encoding="utf-8")
+        pid_file.write_text("", encoding="utf-8")
         cleanup_subprocesses()
-        assert not PID_FILE.exists()
+        assert not pid_file.exists()
 
     def test_port_collision_detection_logic(self):
         """Verify that when a port is actively occupied, port scanning identifies the collision."""

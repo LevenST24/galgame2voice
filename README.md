@@ -7,6 +7,9 @@
 
 ## 🌟 核心特性 (v2.0 Highlights)
 
+全新安装不预置特定游戏角色。打开会话设置，按首次引导选择模型权重和参考音频创建音色；
+也可将合法取得的角色包放入 `characters/` 导入。已有数据库中的角色会保留。
+
 - 🎭 **AI Dynamic Voice（情绪感知自适应音色与韵律）**：
   - **情感感知多维映射**：基于大模型输出的情感语义，自适应识别 7 种核心情绪（温柔 `gentle`、开心 `happy`、感伤 `sad`、傲娇 `tsundere`、生气 `angry`、害羞 `shy`、冷静 `cool`）。
   - **动态选取参考音频**：自动从角色包 `refs/` 中选取对应情绪的高保真参考音频，配合动态语速（`speed`: 0.50~1.50）与采样温度（`temperature`: 0.60~1.20），告别千篇一律的机械声线。
@@ -42,6 +45,15 @@
 ---
 
 ## 🚀 快速开始 (Quickstart)
+
+### Windows 普通用户：下载便携包
+
+选择发布产物 `galgame2voice-v<版本>-windows-x64.zip`，**全部解压后双击 `启动.bat` 或 `Galgame2Voice.exe`**。
+便携包包含 Python、应用依赖、FFmpeg 和网页，无需先装 Python、Node.js 或 Docker。
+保留 `_internal` 文件夹；首次使用在网页配置自己的模型服务和音色。
+GPT-SoVITS 引擎与角色权重需另行准备，发布包不包含个人密钥或游戏角色。
+详细步骤见 [Windows 便携版使用说明](docs/WINDOWS_PORTABLE.md)。
+普通的 `galgame2voice-v<版本>.zip` 是源码包，仍需下面的 Python 环境；不要将两个包混淆。
 
 ### 1. 环境准备
 - **操作系统**：Windows 10/11 64 位 或 Linux。CI 回归环境为 `windows-latest` 与 `ubuntu-latest`；
