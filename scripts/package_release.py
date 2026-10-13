@@ -80,6 +80,16 @@ EXCLUDE_EXTENSIONS = {
     ".bin",
     ".safetensors",
     ".onnx",
+    ".pt",
+    ".gguf",
+    ".zip",
+    ".7z",
+    ".rar",
+    ".tar",
+    ".gz",
+    ".tgz",
+    ".xz",
+    ".sha256",
 }
 
 EXCLUDE_EXACT_FILES = {
@@ -100,6 +110,8 @@ def should_include(rel_path: Path) -> bool:
             return False
     filename = parts[-1]
     if filename in EXCLUDE_DIRS or filename in EXCLUDE_EXACT_FILES:
+        return False
+    if any(p.startswith(("pytest-of-", "g2v_cap_")) for p in parts):
         return False
     if any(filename.endswith(ext) for ext in EXCLUDE_EXTENSIONS):
         return False

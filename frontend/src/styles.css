@@ -794,9 +794,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 }
 .check-line input { accent-color: var(--brand); width: 15px; height: 15px; }
 
-/* 音色选择 + 删除按钮同行 */
-.voice-select-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: stretch; }
-.voice-select-row select { height: 42px; }
+/* 音色选择 + 扫描/删除按钮同行 */
+.voice-select-row { display: flex; gap: 8px; align-items: stretch; }
+.voice-select-row select { height: 42px; flex: 1; min-width: 0; }
 .btn.danger { color: var(--danger); border: 1px solid #f3c1c1; background: var(--danger-soft); white-space: nowrap; }
 .btn.danger:hover { background: #f9dcdc; }
 

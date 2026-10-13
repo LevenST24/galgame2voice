@@ -3,6 +3,7 @@ Character Management REST API Router for galgame2voice (/api/characters).
 Provides unified character profile query, active character switching, and affection integration.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -137,6 +138,39 @@ async def list_characters(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to list characters: {safe_err}",
             ) from exc
+
+
+@router.post(
+    "/rescan",
+    summary="Rescan Character Packages",
+    description="Re-discovers character packages in characters/ and synchronizes them with SQLite voice_profiles without restarting the server.",
+)
+async def rescan_character_packages() -> dict[str, Any]:
+    try:
+        char_mgr = get_character_manager()
+        discovered = await asyncio.to_thread(char_mgr.discover_characters)
+        async with get_db() as conn:
+            synced = await char_mgr.sync_with_db(conn)
+            profiles = await crud.list_voice_profiles(conn)
+            active = await crud.get_active_voice_profile(conn)
+        from galgame2voice.routers.voice import _scan_cache
+        generation = _scan_cache.get("generation", 0) + 1
+        _scan_cache.clear()
+        _scan_cache["generation"] = generation
+        return {
+            "status": "ok",
+            "discovered_count": len(discovered),
+            "synced_count": synced,
+            "total_profiles": len(profiles),
+            "active_profile_id": active.id if active else (profiles[0].id if profiles else None),
+            "characters": [p.name for p in discovered],
+        }
+    except Exception as exc:
+        safe_err = sanitize_error_detail(exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"扫描角色包失败: {safe_err}",
+        ) from exc
 
 
 @router.get(

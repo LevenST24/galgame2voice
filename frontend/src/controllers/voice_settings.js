@@ -31,6 +31,9 @@ export function initVoiceSettings(dom, callbacks = {}) {
     _dom.sVoice.addEventListener('change', syncCustomVoiceBox);
     _dom.sVoice.addEventListener('change', syncSystemPromptToSelectedVoice);
   }
+  if (_dom.sVoiceRescan) {
+    _dom.sVoiceRescan.addEventListener('click', handleRescanCharacters);
+  }
   if (_dom.sVoiceDelete) {
     _dom.sVoiceDelete.addEventListener('click', deleteVoiceProfile);
   }
@@ -193,6 +196,7 @@ export async function ensureSessionVoice(session, { silent = false } = {}) {
         || (_dom.sSystem.value || '').trim() === _promptBaseline.trim();
       if (clean) applyProfilePromptToField(want);
     }
+    if (_callbacks.renderHeader) _callbacks.renderHeader();
     if (!silent) showToast(`已切换音色：${data.profile || want}`, 'success');
   } catch (e) {
     if (!isCurrent()) return;
@@ -252,6 +256,14 @@ export async function loadSessionVoiceSelect(session) {
     } else if (session?.settings?.voiceProfileId) {
       _dom.sVoice.value = String(session.settings.voiceProfileId);
     }
+    const selVal = _dom.sVoice.value;
+    const isDirty = _dom.sSystem && (_dom.sSystem.value || '').trim() && (_dom.sSystem.value || '').trim() !== _promptBaseline.trim();
+    if (!isDirty) {
+      applyProfilePromptToField(
+        selVal && selVal !== '__custom__' ? Number(selVal) : null,
+        { isCustomNew: selVal === '__custom__' }
+      );
+    }
   } catch (e) {
     if (!isCurrent()) return;
     _dom.sVoice.innerHTML = '<option value="">加载失败（后端未启动？）</option>';
@@ -267,28 +279,35 @@ export async function loadSessionVoiceSelect(session) {
 function syncSystemPromptToSelectedVoice() {
   if (!_dom.sSystem || !_dom.sVoice) return;
   const raw = _dom.sVoice.value;
-  const id = raw && raw !== '__custom__' ? Number(raw) : null;
-  if (id === _promptOwnerId) return;
+  const isCustomNew = raw === '__custom__';
+  const id = raw && !isCustomNew ? Number(raw) : null;
+  if (id === _promptOwnerId && !isCustomNew) return;
   const current = (_dom.sSystem.value || '').trim();
-  if (current && current !== _promptBaseline.trim()
+  if (_promptOwnerId !== null && current && current !== _promptBaseline.trim()
       && !window.confirm('人设提示词有未保存的修改，切换角色会覆盖它。仍要切换吗？')) {
     _dom.sVoice.value = _promptOwnerId === null ? '' : String(_promptOwnerId);
+    syncCustomVoiceBox();
     return;
   }
-  applyProfilePromptToField(id);
+  applyProfilePromptToField(id, { isCustomNew });
 }
 
 /** 把指定角色的人设提示词填进人设框，并记录基线（不改动角色数据本身）。 */
-function applyProfilePromptToField(profileId) {
+function applyProfilePromptToField(profileId, { isCustomNew = false } = {}) {
   const prof = voiceProfiles.find((p) => p.id === profileId);
   const text = (prof && prof.system_prompt) || '';
   _promptBaseline = text;
   _promptOwnerId = profileId ?? null;
   if (_dom.sSystem) {
-    _dom.sSystem.value = text;
+    if (!isCustomNew) {
+      _dom.sSystem.value = text;
+    }
+    _dom.sSystem.disabled = !prof && !isCustomNew;
     _dom.sSystem.placeholder = prof
       ? `编辑「${prof.name}」的人设提示词，保存后写回角色包并对该角色的所有会话生效…`
-      : '当前会话未绑定角色，绑定后即可编辑该角色的人设提示词…';
+      : (isCustomNew
+        ? '可选：在此填写新建自定义音色的人设提示词，创建时将自动保存…'
+        : '当前会话未绑定角色，请先在下方选择角色音色后再编辑人设提示词…');
   }
 }
 
@@ -362,6 +381,7 @@ export async function createCustomVoice() {
   }
   _dom.sCvCreate.disabled = true;
   try {
+    const customSystemPrompt = (_dom.sSystem?.value || '').trim();
     const payload = {
       name,
       gpt_weights_path: gptPath,
@@ -370,6 +390,7 @@ export async function createCustomVoice() {
       prompt_text: promptText,
       prompt_lang: _dom.sCvLang.value,
       text_lang: _dom.sCvLang.value,
+      system_prompt: customSystemPrompt,
     };
     const data = await requestJson('/api/voice/profiles', {
       method: 'POST',
@@ -400,6 +421,25 @@ export async function createCustomVoice() {
     showToast(`音色创建失败: ${e.message || e}`, 'error');
   } finally {
     _dom.sCvCreate.disabled = false;
+  }
+}
+
+export async function handleRescanCharacters() {
+  if (_dom.sVoiceRescan?.disabled) return;
+  if (_dom.sVoiceRescan) _dom.sVoiceRescan.disabled = true;
+  try {
+    const res = await requestJson('/api/characters/rescan', { method: 'POST' }, { timeoutMs: 30000 });
+    invalidateScannedModels();
+    await loadSessionVoiceSelect(getActive());
+    if (_dom.sVoice?.value === '__custom__') {
+      await populateScanOptions();
+    }
+    const count = res?.discovered_count ?? 0;
+    showToast(count > 0 ? `已扫描并同步 ${count} 个角色包` : '已完成扫描（未发现新的角色包文件夹）', 'success');
+  } catch (e) {
+    showToast(`扫描角色包失败: ${e.message || e}`, 'error');
+  } finally {
+    if (_dom.sVoiceRescan) _dom.sVoiceRescan.disabled = false;
   }
 }
 

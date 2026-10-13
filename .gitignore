@@ -76,6 +76,8 @@ tmp_check/
 # Testing, Coverage & Build/Test Outputs
 .local/
 _scratch/
+pytest-of-*/
+g2v_cap_*/
 .mypy_cache/
 .pytest_basetemp/
 .pytest_cache/

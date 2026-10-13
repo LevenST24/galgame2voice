@@ -176,3 +176,20 @@ async def test_session_history_cursor_pagination(tmp_path, monkeypatch):
         assert d3["has_more"] is False
         assert [m["content_chinese"] for m in d3["messages"]] == [f"第 {i} 条消息" for i in range(1, 6)]
 
+
+@pytest.mark.asyncio
+async def test_characters_rescan_endpoint(tmp_path, monkeypatch):
+    test_db = tmp_path / "test_rescan.db"
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(test_db))
+    await init_db(test_db)
+
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/characters/rescan")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert "discovered_count" in data
+        assert "total_profiles" in data
+
+

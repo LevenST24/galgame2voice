@@ -7,13 +7,18 @@ All notable changes to galgame2voice are documented here. The format follows
 ## [2.1.0] - 2026-10-14
 
 ### Added
+- Hot-reload character package discovery endpoint (`POST /api/characters/rescan`)
+  and a "扫描" button in session voice settings, allowing newly extracted
+  character packages in `characters/` to be discovered and bound immediately
+  without restarting the server.
 - Cursor-based session history pagination (`GET /api/chat/history?before_id=...`
   with `has_more` and `oldest_id`), and an in-chat "↑ 查看更早的聊天记录" action
   that prepends older messages while preserving scroll position.
 - Actionable recovery buttons on error/info toasts (one-click navigation to
   LLM model configuration, voice engine status, session voice settings, and
   chat backup settings), plus first-install setup chips in empty chat sessions
-  and clickable header/diagnostic status badges.
+  and clickable header/diagnostic status badges that also show the session's
+  bound character name.
 - Full chat export (`GET /api/chat/export`) that reads one database snapshot and
   includes sessions and messages outside the sidebar/history limits. Browser-only
   text is retained separately when it differs; repeated messages remain distinct.
@@ -50,6 +55,13 @@ All notable changes to galgame2voice are documented here. The format follows
   Docker contexts and model discovery. Added `使用说明.md` folder guide.
 
 ### Fixed
+- Release packaging (`scripts/package_release.py`) now excludes archive files
+  (`.zip`, `.7z`, `.rar`, `.tar`, `.gz`, `.xz`) and additional weight formats
+  (`.pt`, `.gguf`) so user-downloaded character archives in `characters/` never
+  bloat source release bundles.
+- Session persona editor is disabled when no character is bound (except during
+  new custom voice creation, where the typed persona is automatically saved with
+  the new profile), preventing accidental unsaved edits.
 - Session lists paginate beyond the first 50 entries. Saves for one session run
   in order; deletion waits for them and removes local records only after confirmation.
 - Deleting or clearing chats leaves shared audio to the normal retention worker,

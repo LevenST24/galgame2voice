@@ -84,6 +84,7 @@ const dom = {
   sSystem: $('sSystem'),
   sVoice: $('sVoice'),
   sVoiceActive: $('sVoiceActive'),
+  sVoiceRescan: $('sVoiceRescan'),
   sVoiceDelete: $('sVoiceDelete'),
   sCustomVoiceBox: $('sCustomVoiceBox'),
   sCvName: $('sCvName'),
@@ -246,18 +247,25 @@ function closeDrawer() {
 /* ---------- 渲染与状态栏 ---------- */
 function updateBadge() {
   const activeProvider = getCurrentActiveProvider();
+  const s = getActive();
+  const profiles = getVoiceProfiles();
+  const boundProfile = s?.settings?.voiceProfileId
+    ? profiles.find((p) => p.id === s.settings.voiceProfileId)
+    : null;
   if (dom.badgeDot) dom.badgeDot.className = `badge-dot ${activeProvider ? 'dot-custom' : 'dot-mock'}`;
   if (dom.badge) {
     const label = dom.badge.querySelector('.badge-label') || dom.badge.lastChild;
     if (label) {
+      let modelText = '未配置对话模型';
       if (activeProvider && (activeProvider.name || activeProvider.chat_model)) {
         const pName = activeProvider.name || '活跃模型';
         const mName = activeProvider.chat_model || '';
-        label.textContent = mName ? `${pName} · ${mName}` : pName;
-      } else {
-        label.textContent = '未配置对话模型';
+        modelText = mName ? `${pName} · ${mName}` : pName;
       }
-      dom.badge.title = activeProvider ? `当前对话模型：${label.textContent}` : '请在全局设置 → 对话模型中配置模型';
+      label.textContent = boundProfile?.name ? `${modelText} · 🎙️ ${boundProfile.name}` : modelText;
+      dom.badge.title = activeProvider
+        ? `当前模型：${modelText}${boundProfile?.name ? ` | 当前角色：${boundProfile.name}` : ''}（点击配置模型）`
+        : '点击在「全局设置 → 对话模型」中配置模型';
     }
   }
 }

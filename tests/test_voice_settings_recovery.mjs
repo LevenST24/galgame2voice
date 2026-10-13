@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { state, loadState, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
-import { initVoiceSettings, createCustomVoice, loadSessionVoiceSelect } from '../frontend/src/controllers/voice_settings.js';
+import { initVoiceSettings, createCustomVoice, loadSessionVoiceSelect, handleRescanCharacters } from '../frontend/src/controllers/voice_settings.js';
 import { persistSession } from '../frontend/src/session_api.js';
 import { openSessionSettings } from '../frontend/src/controllers/voice_settings.js';
 import { portraitStage } from '../frontend/src/portrait.js';
@@ -119,6 +119,31 @@ try {
     assert.equal(closed, 0);
     assert.equal(dom.sSystem.value, 'Unsaved edited prompt');
     assert.equal(dom.sSave.disabled, false); passed++;
+  }
+  {
+    const { first, dom } = setup();
+    dom.sVoiceRescan = element();
+    initVoiceSettings(dom);
+    let rescanCalls = 0;
+    globalThis.fetch = async url => {
+      if (url === '/api/characters/rescan') {
+        rescanCalls++;
+        return response({ status: 'ok', discovered_count: 2 });
+      }
+      if (url.endsWith('/profiles')) {
+        return response({ profiles: [{ id: 5, name: 'RescannedChar', system_prompt: 'Hello' }], active_profile_id: 5 });
+      }
+      return response({});
+    };
+    await handleRescanCharacters();
+    assert.equal(rescanCalls, 1);
+    assert.equal(dom.sVoiceRescan.disabled, false);
+    assert.equal(dom.sSystem.disabled, true); // first session has no bound voiceProfileId yet
+    first.settings.voiceProfileId = 5;
+    await loadSessionVoiceSelect(first);
+    assert.equal(dom.sSystem.disabled, false);
+    assert.equal(dom.sSystem.value, 'Hello');
+    passed++;
   }
 } finally { globalThis.setTimeout = originalTimeout; }
 console.log(`Voice settings recovery: ${passed} scenarios passed`);
