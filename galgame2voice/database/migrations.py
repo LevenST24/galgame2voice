@@ -10,7 +10,7 @@ import os
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 import aiosqlite
 
 from galgame2voice.database.session import (
@@ -27,7 +27,62 @@ _DEFAULT_REF_TEXT = "とりあえず、今日見たことは忘れて、わか�
 
 # ==================== Schema Versioning & Migrations ====================
 
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
+
+# Version 7 was already used by local installations before the upstream sync.
+# Keep its schema and migration semantics; never lower an installed user_version.
+_USER_MEMORIES_TABLE_BODY = """(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL DEFAULT 'default_user',
+    character_id INTEGER DEFAULT 1,
+    category TEXT NOT NULL DEFAULT 'preference',
+    fact_key TEXT NOT NULL,
+    fact_value TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 1.0,
+    source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    recall_count INTEGER NOT NULL DEFAULT 0,
+    last_recalled_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)"""
+
+_CHARACTER_AFFECTION_TABLE_BODY = """(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL DEFAULT 'default_user',
+    character_id INTEGER NOT NULL DEFAULT 1,
+    affection_score INTEGER NOT NULL DEFAULT 0,
+    affection_level INTEGER NOT NULL DEFAULT 1,
+    current_emotion TEXT NOT NULL DEFAULT 'normal',
+    interaction_count INTEGER NOT NULL DEFAULT 0,
+    daily_points_earned INTEGER NOT NULL DEFAULT 0,
+    last_interaction_date TEXT NOT NULL DEFAULT '',
+    unlocked_dialogues TEXT NOT NULL DEFAULT '[]',
+    custom_nickname TEXT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, character_id)
+)"""
+
+
+class _LegacyCascadeRebuild(NamedTuple):
+    table: str
+    columns: tuple[str, ...]
+    table_body: str
+
+
+_LEGACY_CASCADE_REBUILDS = (
+    _LegacyCascadeRebuild("user_memories", (
+        "id", "user_id", "character_id", "category", "fact_key", "fact_value",
+        "confidence", "source_message_id", "recall_count", "last_recalled_at",
+        "created_at", "updated_at",
+    ), _USER_MEMORIES_TABLE_BODY),
+    _LegacyCascadeRebuild("character_affection", (
+        "id", "user_id", "character_id", "affection_score", "affection_level",
+        "current_emotion", "interaction_count", "daily_points_earned",
+        "last_interaction_date", "unlocked_dialogues", "custom_nickname",
+        "created_at", "updated_at",
+    ), _CHARACTER_AFFECTION_TABLE_BODY),
+)
 
 
 async def _get_table_columns(conn: aiosqlite.Connection, table_name: str) -> set[str]:
@@ -179,43 +234,11 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_role_session ON messages(session_id, role);")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session_id_desc ON messages(session_id, id DESC);")
 
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS user_memories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL DEFAULT 'default_user',
-            character_id INTEGER DEFAULT 1,
-            category TEXT NOT NULL DEFAULT 'preference',
-            fact_key TEXT NOT NULL,
-            fact_value TEXT NOT NULL,
-            confidence REAL NOT NULL DEFAULT 1.0,
-            source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
-            recall_count INTEGER NOT NULL DEFAULT 0,
-            last_recalled_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
+    await conn.execute(f"CREATE TABLE IF NOT EXISTS user_memories {_USER_MEMORIES_TABLE_BODY};")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memories_user_cat ON user_memories(user_id, category);")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memories_char_key ON user_memories(character_id, fact_key);")
 
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS character_affection (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL DEFAULT 'default_user',
-            character_id INTEGER NOT NULL DEFAULT 1,
-            affection_score INTEGER NOT NULL DEFAULT 0,
-            affection_level INTEGER NOT NULL DEFAULT 1,
-            current_emotion TEXT NOT NULL DEFAULT 'normal',
-            interaction_count INTEGER NOT NULL DEFAULT 0,
-            daily_points_earned INTEGER NOT NULL DEFAULT 0,
-            last_interaction_date TEXT NOT NULL DEFAULT '',
-            unlocked_dialogues TEXT NOT NULL DEFAULT '[]',
-            custom_nickname TEXT DEFAULT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(user_id, character_id)
-        );
-    """)
+    await conn.execute(f"CREATE TABLE IF NOT EXISTS character_affection {_CHARACTER_AFFECTION_TABLE_BODY};")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_affection_user_char ON character_affection(user_id, character_id);")
 
     await conn.execute("""
@@ -427,12 +450,71 @@ async def _migration_v6_session_titles_and_settings(conn: aiosqlite.Connection) 
         logger.debug("idx_messages_session_id_desc index creation skipped: %s", exc)
 
 
+async def _migration_v7_legacy_character_fk_rebuild(conn: aiosqlite.Connection) -> None:
+    """Retain memories and affection when a voice profile is deleted.
+
+    Version 7 previously allowed a failed rebuild to be deferred. Inspect the FK
+    even on v7 databases, but only rebuild tables that still carry the legacy FK.
+    Both tables change in one transaction; errors roll back rather than silently
+    marking an incomplete migration as applied.
+    """
+    pending = []
+    for spec in _LEGACY_CASCADE_REBUILDS:
+        fks = await (await conn.execute(f"PRAGMA foreign_key_list({spec.table})")).fetchall()
+        if not any(row[2] == "voice_profiles" and row[3] == "character_id"
+                   and str(row[6]).upper() == "CASCADE" for row in fks):
+            continue
+        columns = {row[1] for row in await (await conn.execute(f"PRAGMA table_info({spec.table})")).fetchall()}
+        if columns != set(spec.columns):
+            raise RuntimeError(f"数据库表 {spec.table} 的结构无法安全迁移，原数据已保留，请使用匹配的程序版本。")
+        definitions = await (await conn.execute(
+            "SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') "
+            "AND sql IS NOT NULL ORDER BY type,name", (spec.table,),
+        )).fetchall()
+        counter = await (await conn.execute("SELECT seq FROM sqlite_sequence WHERE name=?", (spec.table,))).fetchone()
+        pending.append((spec, [row[0] for row in definitions], int(counter[0]) if counter else 0))
+    if not pending:
+        return
+
+    # SQLite ignores foreign_keys changes inside an open transaction.
+    await conn.commit()
+    foreign_keys = (await (await conn.execute("PRAGMA foreign_keys")).fetchone())[0]
+    await conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        await conn.execute("BEGIN IMMEDIATE")
+        for spec, definitions, counter in pending:
+            temporary = f"{spec.table}__fk_rebuild"
+            columns = ", ".join(spec.columns)
+            await conn.execute(f"CREATE TABLE {temporary} {spec.table_body}")
+            await conn.execute(f"INSERT INTO {temporary} ({columns}) SELECT {columns} FROM {spec.table}")
+            await conn.execute(f"DROP TABLE {spec.table}")
+            await conn.execute(f"ALTER TABLE {temporary} RENAME TO {spec.table}")
+            for definition in definitions:
+                await conn.execute(definition)
+            await conn.execute(
+                "UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name=?", (counter, spec.table),
+            )
+        await conn.commit()
+    except BaseException:
+        await conn.rollback()
+        raise
+    finally:
+        await conn.execute(f"PRAGMA foreign_keys={int(foreign_keys)}")
+    logger.info("Rebuilt legacy character foreign keys in %s; existing records retained",
+                ", ".join(spec.table for spec, _, _ in pending))
+
+
 async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
     """
     Executes SQLite schema migrations idempotently using PRAGMA user_version.
     Guarantees that databases upgrade safely without losing any user data.
     """
     current_version = await get_schema_version(conn)
+    if current_version > CURRENT_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"数据库来自较新的版本（数据库版本 {current_version}，当前程序最高支持 {CURRENT_SCHEMA_VERSION}），"
+            "请使用对应的新版本程序，原数据已保留。"
+        )
 
     if current_version < 1:
         await _migration_v1_base_schema(conn)
@@ -463,6 +545,11 @@ async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
         await _migration_v6_session_titles_and_settings(conn)
         current_version = 6
         await set_schema_version(conn, 6)
+
+    await _migration_v7_legacy_character_fk_rebuild(conn)
+    if current_version < 7:
+        current_version = 7
+        await set_schema_version(conn, 7)
 
     return current_version
 

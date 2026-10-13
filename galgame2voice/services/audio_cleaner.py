@@ -37,6 +37,7 @@ def _cache_scan_and_clean(
     cache_dir: Path,
     cutoff: float,
     active_cache_keys: set[str] | None = None,
+    protected_audio_names: set[str] | None = None,
 ) -> tuple[int, list[str]]:
     """
     Removes cached audio files.
@@ -56,6 +57,8 @@ def _cache_scan_and_clean(
 
     for f in cache_dir.iterdir():
         if not f.is_file() or f.suffix.lower() not in _CACHE_AUDIO_EXTENSIONS:
+            continue
+        if f.name.lower() in (protected_audio_names or ()):
             continue
         try:
             if active_cache_keys is not None:
@@ -99,14 +102,16 @@ def _scan_and_clean(
                     logger.debug("Failed to remove audio file %s: %s", f, e)
     # TTS 分句缓存按天级保留期清理，防止磁盘无限增长并同步清理数据库记录
     cache_cleaned, unlinked_keys = _cache_scan_and_clean(
-        audio_dir / "cache", cache_cutoff, active_cache_keys=active_cache_keys
+        audio_dir / "cache", cache_cutoff, active_cache_keys=active_cache_keys,
+        protected_audio_names=protected_audio_names,
     )
     cleaned += cache_cleaned
     return cleaned, unlinked_keys
 
 
 async def _clean_lru_cache_from_db(
-    conn: aiosqlite.Connection, cache_dir: Path, cache_cutoff: float
+    conn: aiosqlite.Connection, cache_dir: Path, cache_cutoff: float,
+    protected_audio_names: set[str] | None = None,
 ) -> tuple[int, list[str]]:
     """
     Evicts cached TTS entries based on SQLite last_accessed_at (single source of truth for LRU).
@@ -122,19 +127,7 @@ async def _clean_lru_cache_from_db(
         (cutoff_iso, cutoff_iso),
     )
     rows = await cur.fetchall()
-    unlinked_keys: list[str] = []
-    for r in rows:
-        key = r[0]
-        raw_path = r[1]
-        f = Path(raw_path) if raw_path else (cache_dir / f"{key}.wav")
-        if not f.is_absolute():
-            f = cache_dir / f.name
-        try:
-            if f.exists():
-                f.unlink(missing_ok=True)
-        except Exception as e:
-            logger.debug("Failed to unlink LRU expired file %s: %s", f, e)
-        unlinked_keys.append(key)
+    unlinked_keys = await asyncio.to_thread(_unlink_expired_cache_files, cache_dir, rows, protected_audio_names)
 
     if unlinked_keys:
         async with immediate_transaction(conn):
@@ -148,19 +141,36 @@ async def _clean_lru_cache_from_db(
     return len(unlinked_keys), unlinked_keys
 
 
-async def _fetch_protected_audio_names(conn: aiosqlite.Connection | None) -> set[str]:
+def _unlink_expired_cache_files(cache_dir: Path, rows: list, protected_audio_names: set[str] | None = None) -> list[str]:
+    """Run disk work off the event loop and retain failed entries for the next cycle."""
+    unlinked_keys: list[str] = []
+    cache_root = cache_dir.resolve()
+    for r in rows:
+        key = r[0]
+        raw_path = r[1]
+        f = Path(raw_path) if raw_path else (cache_dir / f"{key}.wav")
+        if not f.is_absolute():
+            f = cache_dir / f.name
+        if f.name.lower() in (protected_audio_names or ()):
+            continue
+        try:
+            f.resolve().relative_to(cache_root)
+            f.unlink(missing_ok=True)
+        except (OSError, ValueError) as e:
+            logger.warning("Preserved cache entry %s: cannot safely remove %s: %s", key, f, e)
+            continue
+        unlinked_keys.append(key)
+    return unlinked_keys
+
+
+async def _fetch_protected_audio_names(conn: aiosqlite.Connection) -> set[str]:
     """Queries voice_profiles to protect active reference audio files from cleanup."""
     protected: set[str] = set()
-    if conn is None:
-        return protected
-    try:
-        cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles;")
-        rows = await cur.fetchall()
-        for r in rows:
-            if r and r[0]:
-                protected.add(Path(r[0]).name.lower())
-    except Exception as prof_err:
-        logger.debug("Failed querying protected voice profile audio names: %s", prof_err)
+    cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles;")
+    rows = await cur.fetchall()
+    for r in rows:
+        if r and r[0]:
+            protected.add(Path(r[0]).name.lower())
     return protected
 
 
@@ -191,24 +201,24 @@ async def _run_audio_cleanup_cycle(audio_dir: Path) -> None:
             db_settings = await crud.get_settings_raw(conn)
             protected_audio_names = await _fetch_protected_audio_names(conn)
 
-            # LRU Eviction: SQLite last_accessed_at is the sole authority for 7-day retention
+            # Read all protection metadata before performing any deletion. A failed
+            # query must never demote registered references or hot clips to orphans.
+            cur = await conn.execute("SELECT cache_key FROM tts_cache_entries;")
+            rows = await cur.fetchall()
+            active_cache_keys = {r[0] for r in rows if r and r[0]}
             now = time.time()
             cache_cutoff = now - (CACHE_RETENTION_DAYS * 86400)
             try:
                 db_evicted_count, _ = await _clean_lru_cache_from_db(
-                    conn, audio_dir / "cache", cache_cutoff
+                    conn, audio_dir / "cache", cache_cutoff, protected_audio_names
                 )
-                # Fetch active keys to protect valid cache files from orphan cleanup
-                cur = await conn.execute("SELECT cache_key FROM tts_cache_entries;")
-                rows = await cur.fetchall()
-                active_cache_keys = {r[0] for r in rows if r and r[0]}
             except Exception as lru_err:
-                logger.debug("Database LRU cache eviction failed/skipped: %s", lru_err)
+                logger.warning("Deferred LRU cache eviction until the next cycle: %s", lru_err)
 
         retention_minutes = int(getattr(db_settings, "audio_retention_minutes", 30) or 30)
     except Exception as exc:
-        logger.debug("Falling back to default audio retention: %s", exc)
-        retention_minutes = 30
+        logger.warning("Skipped audio cleanup because protection metadata is unavailable; will retry: %s", exc)
+        return
 
     now = time.time()
     cutoff = now - (retention_minutes * 60)

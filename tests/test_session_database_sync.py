@@ -7,6 +7,37 @@ from galgame2voice.database.models import MessageCreate
 
 
 @pytest.mark.asyncio
+async def test_session_explicit_null_unbinds_voice_and_empty_settings_clear(tmp_path, monkeypatch):
+    from galgame2voice.database.models import VoiceProfileCreate
+    db = tmp_path / "session_binding.db"
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
+    await init_db(db)
+    async with get_db(db) as conn:
+        profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
+            name="User voice", gpt_weights_path="voice.ckpt", sovits_weights_path="voice.pth",
+        ))
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+        bound = await client.post("/api/chat/sessions", json={
+            "id": "s_binding", "voice_profile_id": profile.id, "settings": {"voiceProfileId": profile.id},
+        })
+        assert bound.status_code == 200
+        # A title-only edit must retain a binding; explicit null must clear it.
+        renamed = await client.post("/api/chat/sessions", json={"id": "s_binding", "title": "Renamed"})
+        assert renamed.json()["session"]["voice_profile_id"] == profile.id
+        unbound = await client.post("/api/chat/sessions", json={
+            "id": "s_binding", "voice_profile_id": None, "settings": {},
+        })
+        assert unbound.status_code == 200
+        assert unbound.json()["session"]["voice_profile_id"] is None
+        overview = (await client.get("/api/chat/sessions")).json()["sessions"]
+        session = next(item for item in overview if item["id"] == "s_binding")
+        assert session["voice_profile_id"] is None
+        assert session["settings"] == {}
+        fresh = await client.post("/api/chat/sessions", json={"id": "s_unbound", "voice_profile_id": None})
+        assert fresh.json()["session"]["voice_profile_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_session_overview_and_history_sync(tmp_path, monkeypatch):
     test_db = tmp_path / "test_sessions.db"
     monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(test_db))
@@ -94,3 +125,54 @@ async def test_session_overview_and_history_sync(tmp_path, monkeypatch):
         # Verify messages also cleared
         h_del = await client.get("/api/chat/history?session_id=s_test_1")
         assert h_del.json()["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_session_history_cursor_pagination(tmp_path, monkeypatch):
+    test_db = tmp_path / "test_history_pagination.db"
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(test_db))
+    await init_db(test_db)
+
+    app = create_app()
+
+    async with get_db(test_db) as conn:
+        await crud.upsert_session(conn, session_id="s_long_chat", title="长对话分页测试")
+        for idx in range(1, 26):
+            await crud.add_message(
+                conn,
+                MessageCreate(
+                    session_id="s_long_chat",
+                    role="user" if idx % 2 == 1 else "assistant",
+                    content_chinese=f"第 {idx} 条消息",
+                    content_japanese=f"メッセージ {idx}",
+                ),
+            )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Page 1: latest 10 messages (16..25)
+        p1 = await client.get("/api/chat/history?session_id=s_long_chat&limit=10")
+        assert p1.status_code == 200
+        d1 = p1.json()
+        assert d1["count"] == 10
+        assert d1["has_more"] is True
+        assert [m["content_chinese"] for m in d1["messages"]] == [f"第 {i} 条消息" for i in range(16, 26)]
+        oldest_1 = d1["oldest_id"]
+        assert oldest_1 == d1["messages"][0]["id"]
+
+        # Page 2: older 10 messages before oldest_1 (6..15)
+        p2 = await client.get(f"/api/chat/history?session_id=s_long_chat&limit=10&before_id={oldest_1}")
+        assert p2.status_code == 200
+        d2 = p2.json()
+        assert d2["count"] == 10
+        assert d2["has_more"] is True
+        assert [m["content_chinese"] for m in d2["messages"]] == [f"第 {i} 条消息" for i in range(6, 16)]
+        oldest_2 = d2["oldest_id"]
+
+        # Page 3: remaining 5 messages before oldest_2 (1..5)
+        p3 = await client.get(f"/api/chat/history?session_id=s_long_chat&limit=10&before_id={oldest_2}")
+        assert p3.status_code == 200
+        d3 = p3.json()
+        assert d3["count"] == 5
+        assert d3["has_more"] is False
+        assert [m["content_chinese"] for m in d3["messages"]] == [f"第 {i} 条消息" for i in range(1, 6)]
+

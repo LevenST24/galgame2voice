@@ -401,11 +401,8 @@ class TestDatabaseTelemetryPathNormalization:
         2. If outside project_root, safely falls back to f"{data_dir_name}/{db_path.name}"
         3. Never leaks full host machine drive letters or user home directory.
         """
-        data_dir_name = "data"
-        try:
-            rel_db_path = simulated_db_path.relative_to(simulated_project_root).as_posix()
-        except Exception:
-            rel_db_path = f"{data_dir_name}/{simulated_db_path.name}"
+        from galgame2voice.routers.health import _resolve_rel_db_path
+        rel_db_path = _resolve_rel_db_path(simulated_db_path, simulated_project_root, "data")
 
         assert rel_db_path == expected_relative_path
         assert not rel_db_path.startswith("C:")
@@ -413,6 +410,13 @@ class TestDatabaseTelemetryPathNormalization:
         assert not rel_db_path.startswith("/home/")
         assert not rel_db_path.startswith("/Users/")
         assert "\\" not in rel_db_path  # Must be normalized POSIX forward slashes
+
+    @pytest.mark.parametrize("configured_folder", ["absolute", "../private"])
+    def test_external_data_directory_never_leaks_its_location(self, tmp_path, configured_folder):
+        from galgame2voice.routers.health import _resolve_rel_db_path
+        external = tmp_path / "private" / "history.db"
+        folder = str(external.parent) if configured_folder == "absolute" else configured_folder
+        assert _resolve_rel_db_path(external, tmp_path / "app", folder) == "data/history.db"
 
     async def test_live_system_status_endpoint_returns_normalized_path(self):
         """
@@ -437,7 +441,13 @@ class TestDatabaseTelemetryPathNormalization:
             # Assert path is relative POSIX
             from galgame2voice.config import get_settings
             settings = get_settings()
-            assert path_val == settings.db_path.relative_to(settings.project_root).as_posix()
+            # The isolation fixture deliberately keeps the DB outside the repo.
+            # The endpoint must conceal that absolute temp path using its fallback.
+            if settings.db_path.is_relative_to(settings.project_root):
+                expected = settings.db_path.relative_to(settings.project_root).as_posix()
+            else:
+                expected = f"data/{settings.db_path.name}"
+            assert path_val == expected
             assert "C:" not in path_val
             assert "Users" not in path_val
             assert "\\" not in path_val

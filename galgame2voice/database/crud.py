@@ -100,6 +100,7 @@ from galgame2voice.database.migrations import (
     _migration_v4_prompts_and_self_healing,
     _migration_v5_precision_and_column_integrity,
     _migration_v6_session_titles_and_settings,
+    _migration_v7_legacy_character_fk_rebuild,
     auto_heal_voice_profiles,
     init_schema_and_seeds,
     run_schema_migrations,
@@ -121,6 +122,7 @@ __all__ = [
     "_migration_v4_prompts_and_self_healing",
     "_migration_v5_precision_and_column_integrity",
     "_migration_v6_session_titles_and_settings",
+    "_migration_v7_legacy_character_fk_rebuild",
     "_DEFAULT_REF_AUDIO",
     "_DEFAULT_REF_TEXT",
     # Providers
