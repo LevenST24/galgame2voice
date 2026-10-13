@@ -100,9 +100,10 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
       if (!res.ok) {
         let msg = `请求失败 (${res.status})`;
         try {
-          const data = await res.json();
+          const data = await withDeadline(res.json());
           msg = getErrorMessage(data, `HTTP ${res.status}`);
-        } catch {
+        } catch (error) {
+          if (timedOut || controller.signal.aborted) throw error;
           /* 忽略非 JSON 错误体 */
         }
         finish(false, msg);
@@ -159,7 +160,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
               }
             }
           } else if (eventName === 'audio_chunk_error') {
-            audioError ||= getErrorMessage(json, '本轮角色语音暂不可用，文字回复已保留。请在「全局设置 → 状态诊断」启动引擎，或切换 CPU 稳定模式后重试。');
+            audioError ||= getErrorMessage(json, '本轮角色语音暂不可用，文字回复已保留。请在「全局设置 → 运行状态」启动引擎，或切换 CPU 稳定模式后重试。');
             console.warn('[streamChat] audio chunk error:', json.error, json.sentence);
           } else if (eventName === 'error') {
             finish(false, getErrorMessage(json, '对话暂时未完成，请检查「全局设置」中的模型地址、密钥与模型名称，再重新发送消息。'));
@@ -170,8 +171,10 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
               fullJapanese = json.japanese;
             }
             if (Array.isArray(json.chunks) && json.chunks.length > audioUrls.length) {
-              for (const c of json.chunks) {
-                if (c && c.audio_url && !audioUrls.includes(c.audio_url)) {
+              // The final list is ordered. Repeated sentences share cache URLs
+              // but still occupy separate positions in the reply.
+              for (const c of json.chunks.slice(audioUrls.length)) {
+                if (c && c.audio_url) {
                   audioUrls.push(c.audio_url);
                   audioChunks.push({
                     url: c.audio_url,

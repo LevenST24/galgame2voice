@@ -61,7 +61,7 @@ const now = () => Date.now();
 
 export function saveState() {
   if (damagedRaw !== null) {
-    reportStorage(false, '原会话记录无法读取，已保留原内容。请在「全局设置 → 系统与更新」导出原始记录，再恢复本地保存。');
+    reportStorage(false, '原会话记录无法读取，已保留原内容。请在「全局设置 → 备份与更新」导出原始记录，再恢复本地保存。');
     return false;
   }
   try {
@@ -89,7 +89,7 @@ export function saveState() {
     return true;
   } catch (e) {
     console.warn('保存会话失败', e);
-    reportStorage(false, '浏览器未能保存聊天记录。请先在「全局设置 → 系统与更新」导出聊天备份，再检查浏览器存储权限或清理不需要的会话；关闭网页前请完成备份。');
+    reportStorage(false, '浏览器未能保存聊天记录。请先在「全局设置 → 备份与更新」导出聊天备份，再检查浏览器存储权限或清理不需要的会话；关闭网页前请完成备份。');
     return false;
   }
 }

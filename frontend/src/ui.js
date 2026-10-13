@@ -33,27 +33,49 @@ export function timeLabel(ts) {
   return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
 }
 
-export function showToast(message, type = 'info') {
+export function showToast(message, type = 'info', options = null) {
   const root = document.getElementById('toastRoot');
   if (!root) return;
+  const action = options && typeof options === 'object' && typeof options.onAction === 'function'
+    ? { label: options.actionLabel || '前往处理', onAction: options.onAction }
+    : null;
   // 同文案 toast 去重：已存在则只重置消失计时，避免堆叠闪烁
-  const existing = [...root.querySelectorAll('.toast')].find((t) => t.textContent === message && !t.classList.contains('leaving'));
+  const existing = [...root.querySelectorAll('.toast')].find((t) => t.dataset.msg === message && !t.classList.contains('leaving'));
+  const duration = action ? 10000 : (type === 'error' ? 8000 : Math.min(7000, Math.max(3200, message.length * 80)));
   if (existing) {
     clearTimeout(existing._timer);
     existing._timer = setTimeout(() => {
       existing.classList.add('leaving');
       setTimeout(() => existing.remove(), 260);
-    }, 2600);
+    }, duration);
     return;
   }
   const el = document.createElement('div');
-  el.className = `toast toast-${type}`;
-  el.textContent = message;
+  el.className = `toast toast-${type}${action ? ' toast-with-action' : ''}`;
+  el.dataset.msg = message;
+  if (action) {
+    const span = document.createElement('span');
+    span.className = 'toast-text';
+    span.textContent = message;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'toast-action-btn';
+    btn.textContent = action.label;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      clearTimeout(el._timer);
+      el.remove();
+      action.onAction();
+    });
+    el.append(span, btn);
+  } else {
+    el.textContent = message;
+  }
   root.appendChild(el);
   el._timer = setTimeout(() => {
     el.classList.add('leaving');
     setTimeout(() => el.remove(), 260);
-  }, 2600);
+  }, duration);
 }
 
 export function renderSessionList(container, { sessions, activeId, onSelect, onDelete }) {
@@ -84,11 +106,12 @@ export function renderSessionList(container, { sessions, activeId, onSelect, onD
         <svg class="icon"><use href="#i-trash"></use></svg>
       </button>`;
     item.querySelector('.si-title').textContent = s.title;
+    item.querySelector('.si-title').title = s.title;
     item.querySelector('.si-preview').textContent = preview;
 
     item.addEventListener('click', () => onSelect(s.id));
     item.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(s.id); }
+      if (e.target === item && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSelect(s.id); }
     });
     item.querySelector('.si-del').addEventListener('click', (e) => {
       e.stopPropagation();
@@ -153,7 +176,8 @@ function buildVoiceBar({ dur, kind, seed, onToggle }) {
 
   const durEl = document.createElement('span');
   durEl.className = 'vb-dur';
-  durEl.textContent = fmtDur(dur);
+  durEl.textContent = `${kind === 'ai' ? '≈' : ''}${fmtDur(dur)}`;
+  if (kind === 'ai') durEl.title = '预计语音时长';
 
   bar.append(btn, waves, durEl);
 
@@ -172,25 +196,27 @@ function buildVoiceBar({ dur, kind, seed, onToggle }) {
     bar.setAttribute('aria-label', label.replace('点击', ''));
   };
 
+  const control = {
+    setPlaying: (v) => {
+      playing = Boolean(v);
+      paint();
+    },
+    setProgress: (p) => {
+      progress = Math.min(1, Math.max(0, p || 0));
+      paint();
+    },
+    setLoading: (v) => {
+      loading = Boolean(v);
+      paint();
+    },
+  };
+  bar.voiceControl = control;
   const triggerToggle = (e) => {
     if (e) {
       e.preventDefault();
       e.stopPropagation();
     }
-    onToggle({
-      setPlaying: (v) => {
-        playing = Boolean(v);
-        paint();
-      },
-      setProgress: (p) => {
-        progress = Math.min(1, Math.max(0, p || 0));
-        paint();
-      },
-      setLoading: (v) => {
-        loading = Boolean(v);
-        paint();
-      },
-    });
+    onToggle(control);
   };
 
   bar.addEventListener('click', triggerToggle);
@@ -338,7 +364,7 @@ export function createMessageEl(msg, { streaming = false, onPlayVoice, onResolve
   }
   el.appendChild(bubble);
 
-  return { el, contentEl: content };
+  return { el, contentEl: content, voiceCtl: bubble.querySelector('.voice-bar')?.voiceControl || null };
 }
 
 export function createTypingEl() {
@@ -352,27 +378,60 @@ export function createTypingEl() {
   return el;
 }
 
-function buildEmptyState() {
+function buildEmptyState({ onOpenModels, onOpenVoice } = {}) {
   const empty = document.createElement('div');
   empty.className = 'empty animate-in';
   empty.innerHTML = `
     <span class="animate-quill"><svg class="icon"><use href="#i-quill"></use></svg></span>
-    <p class="empty-kicker">Gal2Voice · Session Ready</p>
+    <p class="empty-kicker">Gal2Voice · 与声音相伴</p>
     <h2 class="empty-title">今天想聊点<em>什么</em>？</h2>
-    <p class="empty-sub">这是一个全新的会话，拥有独立的上下文与人设配置。<br />在下方输入框发送消息，或点击麦克风开始畅聊。</p>`;
+    <p class="empty-sub">从一句问候开始吧。<br />在会话设置中选择角色，开启属于你们的聊天。</p>`;
+  if (typeof onOpenModels === 'function' || typeof onOpenVoice === 'function') {
+    const actions = document.createElement('div');
+    actions.className = 'chips empty-quick-actions';
+    if (typeof onOpenModels === 'function') {
+      const mBtn = document.createElement('button');
+      mBtn.type = 'button';
+      mBtn.className = 'chip';
+      mBtn.textContent = '1. 配置对话模型';
+      mBtn.addEventListener('click', onOpenModels);
+      actions.appendChild(mBtn);
+    }
+    if (typeof onOpenVoice === 'function') {
+      const vBtn = document.createElement('button');
+      vBtn.type = 'button';
+      vBtn.className = 'chip';
+      vBtn.textContent = '2. 选择或创建角色音色';
+      vBtn.addEventListener('click', onOpenVoice);
+      actions.appendChild(vBtn);
+    }
+    empty.appendChild(actions);
+  }
   return empty;
 }
 
-export function renderMessages(container, session, { animate = false, onPick, onPlayVoice, onResolveJapanese, autoTranslate = false } = {}) {
+export function renderMessages(container, session, { animate = false, onPick, onPlayVoice, onResolveJapanese, onLoadOlder, onOpenModels, onOpenVoice, autoTranslate = false } = {}) {
   container.innerHTML = '';
   const inner = document.createElement('div');
   inner.className = 'messages-inner';
 
   if (!session || !session.messages.length) {
     inner.classList.add('is-empty');
-    inner.appendChild(buildEmptyState(onPick));
+    inner.appendChild(buildEmptyState({ onPick, onOpenModels, onOpenVoice }));
   } else {
     const frag = document.createDocumentFragment();
+    if (session.hasMoreHistory && typeof onLoadOlder === 'function') {
+      const moreWrap = document.createElement('div');
+      moreWrap.className = 'history-more-wrap';
+      const moreBtn = document.createElement('button');
+      moreBtn.type = 'button';
+      moreBtn.className = 'btn ghost history-more-btn';
+      moreBtn.disabled = Boolean(session.loadingOlder);
+      moreBtn.textContent = session.loadingOlder ? '正在加载更早的聊天记录…' : '↑ 查看更早的聊天记录';
+      moreBtn.addEventListener('click', () => onLoadOlder(session));
+      moreWrap.appendChild(moreBtn);
+      frag.appendChild(moreWrap);
+    }
     session.messages.forEach((m, idx) => {
       const { el } = createMessageEl(m, { onPlayVoice, onResolveJapanese, autoTranslate });
       if (animate) {

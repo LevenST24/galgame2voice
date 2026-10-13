@@ -13,7 +13,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 for (const [data, fallback, expected] of [
   [{ detail: { code: 'BUSY', message: '引擎正在启动，请等待' } }, 'HTTP 409', '引擎正在启动'],
   [{ detail: [{ loc: ['body', 'temperature'], msg: 'invalid' }] }, 'HTTP 422', '配置不完整'],
-  [{ detail: 'sqlite3.OperationalError' }, 'HTTP 500', '状态诊断'],
+  [{ detail: 'sqlite3.OperationalError' }, 'HTTP 500', '运行状态'],
 ]) {
   assert.ok(getErrorMessage(data, fallback).includes(expected)); passed++;
 }
@@ -226,5 +226,25 @@ const cfg = (speed) => ({ status: 'ok', settings: { speed_factor: speed } });
   complete(response({ status: 'starting' })); await pending;
   assert.equal(dom.gBtnRestartSovits.disabled, false);
   assert.equal(dom.gBtnTogglePrecision.disabled, false); passed++;
+}
+{
+  const dom = { gStatus: element() };
+  dom.gStatus.textContent = 'diagnostic chips stay mounted';
+  const error = element(); const backend = element(); const classes = new Set(['hidden']);
+  error.classList = { add: name => classes.add(name), remove: name => classes.delete(name) };
+  const previousLookup = document.getElementById;
+  document.getElementById = id => ({gConfigError:error, gDiagBackend:backend}[id] || null);
+  try {
+    initGlobalSettings(dom);
+    globalThis.fetch = async () => response({detail:'QA configuration unavailable'}, 503);
+    await loadGlobalConfig();
+    assert.equal(dom.gStatus.textContent, 'diagnostic chips stay mounted');
+    assert.equal(classes.has('hidden'), false);
+    assert.ok(error.textContent.length > 0);
+    globalThis.fetch = async () => response(cfg(1));
+    await loadGlobalConfig();
+    assert.equal(classes.has('hidden'), true); assert.equal(error.textContent, '');
+    assert.equal(backend.textContent, '运行正常'); passed++;
+  } finally { document.getElementById = previousLookup; }
 }
 console.log(`Runtime recovery: ${passed} scenarios passed`);

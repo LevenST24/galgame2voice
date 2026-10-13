@@ -121,9 +121,9 @@
       <nav class="session-list" id="sessionList" aria-label="会话列表"></nav>
 
       <footer class="sidebar-foot">
-        <span class="foot-text"><span class="live-dot"></span>会话与设置在本浏览器与本地后端之间同步</span>
-        <button class="icon-btn foot-gear" id="globalSettingsBtn" title="全局设置" aria-label="全局设置">
-          <svg class="icon"><use href="#i-gear"></use></svg>
+        <span class="foot-text">聊天记录保存在本机</span>
+        <button class="foot-settings" id="globalSettingsBtn" title="全局设置" aria-label="全局设置">
+          <svg class="icon"><use href="#i-gear"></use></svg><span>全局设置</span>
         </button>
       </footer>
     </aside>
@@ -137,6 +137,7 @@
         </button>
         <div class="chat-head-text">
           <h1 id="chatTitle">新对话</h1>
+          <span class="model-badge" id="modelBadge"><span class="badge-dot" id="badgeDot"></span><span class="badge-label">正在读取模型配置</span></span>
         </div>
         <button class="icon-btn head-settings" id="sessionSettingsBtn" title="会话设置（人设 / 参数）" aria-label="会话设置">
           <svg class="icon"><use href="#i-sliders"></use></svg>
@@ -147,14 +148,13 @@
         <button class="icon-btn head-portrait active" id="portraitToggleBtn" title="立绘演出舞台" aria-label="立绘演出舞台" aria-pressed="true">
           <svg class="icon"><use href="#i-portrait"></use></svg>
         </button>
-        <span class="model-badge" id="modelBadge"><span class="badge-dot" id="badgeDot"></span><span class="badge-label">本地引擎</span></span>
       </header>
 
       <div class="messages" id="messages"></div>
 
       <div class="composer-wrap">
         <form class="composer" id="composer">
-          <textarea id="input" rows="1" placeholder="说点什么，或点麦克风用语音输入…" aria-label="消息输入框"></textarea>
+          <textarea id="input" rows="1" placeholder="想说点什么？" aria-label="消息输入框"></textarea>
           <div class="composer-actions">
             <button type="button" class="mic-btn" id="micBtn" title="语音输入" aria-label="语音输入" aria-pressed="false">
               <svg class="icon"><use href="#i-mic"></use></svg>
@@ -167,10 +167,11 @@
             </button>
           </div>
         </form>
-        <p class="composer-hint">Enter 发送 · Shift + Enter 换行 · 麦克风语音输入 · 喇叭朗读回复</p>
+        <p class="composer-hint">Enter 发送 · Shift + Enter 换行</p>
       </div>
     </main>
 
+    <div class="stage-backdrop" id="stageBackdrop" aria-hidden="true"></div>
     <aside class="character-stage" id="characterStage" aria-label="角色立绘舞台">
       <header class="stage-header">
         <div class="stage-char-info">
@@ -191,39 +192,40 @@
 
       <div class="stage-viewport" id="stageViewport">
         <div class="stage-glow"></div>
-        <img id="portraitImgA" class="portrait-sprite is-visible" alt="立绘图层A" src="" />
-        <img id="portraitImgB" class="portrait-sprite is-hidden" alt="立绘图层B" src="" />
+        <p class="stage-empty-state" id="stageEmptyState" role="status">正在加载角色立绘…</p>
+        <img id="portraitImgA" class="portrait-sprite is-hidden" alt="角色立绘" />
+        <img id="portraitImgB" class="portrait-sprite is-hidden" alt="角色立绘" />
       </div>
 
       <div class="stage-dialogue-card" id="stageDialogueCard">
-        <div class="stage-dialogue-name" id="stageDialogueName">四季夏目</div>
-        <div class="stage-dialogue-text" id="stageDialogueText">「とりあえず、今日見たことは忘れて、わかった？」</div>
+        <div class="stage-dialogue-name" id="stageDialogueName">当前角色</div>
+        <div class="stage-dialogue-text" id="stageDialogueText">与角色聊天后，这里会显示台词。</div>
       </div>
     </aside>
   </div>
 
-  <!-- 全局控制与系统配置中心（系统诊断 / 语音推理 / 大模型与STT / Telegram / 记忆与人设） -->
+  <!-- 全局设置中心（系统诊断 / 语音推理 / 大模型与STT / Telegram / 记忆与人设） -->
   <div class="overlay hidden" id="globalModal">
-    <div class="modal modal-lg" role="dialog" aria-modal="true" aria-label="全局控制与系统配置">
+    <div class="modal modal-lg" role="dialog" aria-modal="true" aria-label="全局设置">
       <header class="modal-head">
         <div>
-          <h2>全局控制与系统配置</h2>
-          <span class="modal-sub">实时诊断、推理精度、服务配置与跨会话引擎控制</span>
+          <h2>全局设置</h2>
+          <span class="modal-sub">管理模型、语音服务与聊天备份</span>
         </div>
         <button class="icon-btn" data-close aria-label="关闭"><svg class="icon"><use href="#i-x"></use></svg></button>
       </header>
       <div class="modal-tabs" id="gTabs">
         <button type="button" class="modal-tab-btn active" data-gtab="dashboard">
           <svg class="icon"><use href="#i-activity"></use></svg>
-          <span>状态诊断</span>
+          <span>运行状态</span>
         </button>
         <button type="button" class="modal-tab-btn" data-gtab="inference">
           <svg class="icon"><use href="#i-sliders"></use></svg>
-          <span>语音与推理</span>
+          <span>语音服务</span>
         </button>
         <button type="button" class="modal-tab-btn" data-gtab="models">
           <svg class="icon"><use href="#i-sparkles"></use></svg>
-          <span>模型与识别</span>
+          <span>对话模型</span>
         </button>
         <button type="button" class="modal-tab-btn" data-gtab="telegram">
           <svg class="icon"><use href="#i-send"></use></svg>
@@ -231,16 +233,17 @@
         </button>
         <button type="button" class="modal-tab-btn" data-gtab="memory">
           <svg class="icon"><use href="#i-quill"></use></svg>
-          <span>记忆与人设</span>
+          <span>角色与记忆</span>
         </button>
         <button type="button" class="modal-tab-btn" data-gtab="update">
           <svg class="icon"><use href="#i-refresh"></use></svg>
-          <span>系统与更新</span>
+          <span>备份与更新</span>
         </button>
       </div>
       <div class="modal-body">
         <!-- 选项卡 1: 系统状态看板 -->
         <div class="gtab-panel" id="gp-dashboard">
+          <div class="settings-intro"><h3>运行状态</h3><p>查看服务是否就绪。语音引擎离线时，可先检查语音服务中的引擎目录和地址。</p></div>
           <div class="status-cards-grid">
             <div class="status-card-box">
               <div class="status-card-head">
@@ -254,10 +257,14 @@
                 <div class="status-card-main" id="gDashSovitsStatus">正在连接...</div>
                 <div class="status-card-sub" id="gDashSovitsUrl">http://127.0.0.1:9880</div>
               </div>
-              <div class="status-card-act">
+              <div class="status-card-act" style="display: flex; gap: 6px;">
                 <button type="button" class="btn-card-action" id="gBtnRestartSovits">
                   <svg class="icon"><use href="#i-play"></use></svg>
                   <span>重启 SoVITS 引擎</span>
+                </button>
+                <button type="button" class="btn-card-action" id="gBtnGoSovitsSetup" title="配置引擎文件夹或地址">
+                  <svg class="icon"><use href="#i-sliders"></use></svg>
+                  <span>配置引擎</span>
                 </button>
               </div>
             </div>
@@ -281,7 +288,7 @@
                 </button>
                 <button type="button" class="btn-card-action" id="gBtnGoPrecision" title="调整详细参数">
                   <svg class="icon"><use href="#i-sliders"></use></svg>
-                  <span>配置 →</span>
+                  <span>详细设置</span>
                 </button>
               </div>
             </div>
@@ -338,7 +345,7 @@
               <div class="status-card-act">
                 <button type="button" class="btn-card-action" id="gBtnGoUpdateTab" title="查看更新详情与一键拉取">
                   <svg class="icon"><use href="#i-refresh"></use></svg>
-                  <span>检查更新 →</span>
+                  <span>查看更新</span>
                 </button>
               </div>
             </div>
@@ -351,12 +358,12 @@
                 <span class="diag-chip-label">网关:</span>
                 <span class="diag-chip-val" id="gDiagBackend">运行正常</span>
               </div>
-              <div class="diag-chip">
+              <div class="diag-chip" id="gDiagModelChip" title="点击配置对话模型">
                 <span class="diag-dot ok" id="gDiagModelDot"></span>
                 <span class="diag-chip-label">模型:</span>
                 <span class="diag-chip-val" id="gDiagModel">未配置</span>
               </div>
-              <div class="diag-chip">
+              <div class="diag-chip" id="gDiagVoiceChip" title="点击打开会话音色设置">
                 <span class="diag-dot" id="gDiagVoiceDot"></span>
                 <span class="diag-chip-label">音色:</span>
                 <span class="diag-chip-val" id="gDiagVoice">未加载</span>
@@ -364,15 +371,17 @@
             </div>
             <button type="button" class="btn-diag-refresh" id="gBtnRefreshStatus">
               <svg class="icon"><use href="#i-activity"></use></svg>
-              <span>刷新遥测</span>
+              <span>刷新状态</span>
             </button>
           </div>
+          <p class="settings-error hidden" id="gConfigError" role="status"></p>
         </div>
 
         <!-- 选项卡 2: 语音与推理参数 -->
         <div class="gtab-panel hidden" id="gp-inference">
+          <div class="settings-intro"><h3>语音服务</h3><p>连接 GPT-SoVITS，设置运行方式和音频保留时间。</p></div>
           <div class="field">
-            <label>GPT-SoVITS 服务地址 (base_url)</label>
+            <label>语音服务地址</label>
             <input id="gParamSovitsUrl" placeholder="http://127.0.0.1:9880" autocomplete="off" />
           </div>
           <div class="field">
@@ -385,31 +394,26 @@
             <small id="gSovitsDirectoryStatus" aria-live="polite">连接远端引擎时无需设置本机目录。</small>
           </div>
           <div class="field">
-            <label>GPT-SoVITS 推理精度与计算设备</label>
+            <label>计算方式</label>
             <select id="gPrecision">
-              <option value="auto">自动判定 (Auto - 根据硬件与试声自动选择)</option>
-              <option value="fp16">FP16 半精度 (推荐，显存占用降低 50%，推理加速)</option>
-              <option value="fp32">FP32 单精度 (通用兼容，彻底防止特定显卡静音)</option>
-              <option value="cpu">CPU 稳定模式 (免显存占用，利用大内存彻底杜绝爆显存/驱动崩溃)</option>
+              <option value="auto">自动选择（推荐）</option>
+              <option value="fp16">FP16 半精度 · 较低显存占用</option>
+              <option value="fp32">FP32 单精度 · 兼容模式</option>
+              <option value="cpu">CPU 模式 · 无需显卡，速度较慢</option>
             </select>
-            <small style="color: var(--text-3); font-size: 11.5px;">选择后会自动保存，请在「状态诊断」中点击【重启 SoVITS 引擎】生效。</small>
+            <small>选择后自动保存。在「运行状态」中重启语音引擎后生效。</small>
           </div>
-          <div style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), rgba(168, 85, 247, 0.08)); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: 8px; padding: 14px 16px; margin: 14px 0;">
-            <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13.5px; color: var(--primary);">
-              <span>✨</span>
-              <span>AI 动态语速与情感韵律全自动生成</span>
-            </div>
-            <div style="font-size: 12px; color: var(--text-2); margin-top: 6px; line-height: 1.6;">
-              语速（Speed）、断句切分节奏、语气情感（喜怒哀乐/傲娇等）均已由大模型结合当前会话上下文、台词意图与角色设定全自动动态生成并注入语音引擎，无需在此处手动调整固定的语速与切分滑块。
-            </div>
+          <div class="settings-note">
+            <strong>语速与语气跟随当前会话</strong>
+            <p>在「会话设置」中选择自动调节或固定参数。角色和音色也在那里绑定，每段聊天可以使用不同的角色。</p>
           </div>
 
           <div class="field">
-            <label>音频缓存保留时长 (分钟，超时自动清空)</label>
+            <label>音频缓存保留时间（分钟）</label>
             <input id="gAudioRetention" type="number" min="1" max="10080" step="1" value="30" />
           </div>
           <div class="field">
-            <label>日文双语翻译行为</label>
+            <label>日文原文显示</label>
             <select id="gAutoTranslate">
               <option value="manual">手动（点击消息底部的“翻译”按钮）</option>
               <option value="auto">自动（新消息生成后自动展开日文配音原文）</option>
@@ -419,10 +423,11 @@
 
         <!-- 选项卡 3: 模型与识别配置 -->
         <div class="gtab-panel hidden" id="gp-models">
+          <div class="settings-intro"><h3>对话模型</h3><p>填入模型服务的信息，测试连接后点击「保存并启用此模型」。</p></div>
           <!-- 1. 提供商选择与生效状态指示 -->
           <div class="field">
             <label for="gProvider">
-              <span>对话模型提供商 (LLM Provider)<b id="gProviderActive" style="display:none;"></b></span>
+              <span>模型服务<b id="gProviderActive" style="display:none;"></b></span>
               <span id="gProviderActiveBadge" class="badge-status-pill badge-pill-gray">未激活</span>
             </label>
             <select id="gProvider"></select>
@@ -448,7 +453,7 @@
             <!-- API Key 配置项（全提供商通用） -->
             <div class="field" id="gApiKeyField">
               <label for="gApiKey">
-                <span>API Key (接口凭证密钥)</span>
+                <span>API 密钥</span>
                 <span id="gApiKeyHint" class="field-hint"></span>
               </label>
               <div class="input-action-row">
@@ -464,7 +469,7 @@
             <!-- Base URL 配置项（全提供商通用，支持中转反代与一键恢复默认） -->
             <div class="field" id="gBaseUrlField">
               <label for="gBaseUrl">
-                <span>API Base URL (接口端点地址)</span>
+                <span>接口地址</span>
                 <button type="button" class="btn-text-link" id="gBtnResetBaseUrl" title="恢复官方默认端点">
                   恢复官方默认
                 </button>
@@ -475,7 +480,7 @@
 
             <!-- 对话模型选择项（预设下拉 + 自定义输入结合） -->
             <div class="field" id="gChatModelField">
-              <label for="gChatModelSelect">对话模型名称 (Chat Model)</label>
+              <label for="gChatModelSelect">模型名称</label>
               <div class="model-select-group">
                 <select id="gChatModelSelect">
                   <option value="">-- 选择预设推荐模型 --</option>
@@ -518,22 +523,24 @@
             <input id="gCustomModel" style="display:none;" />
           </div>
 
-          <!-- 语音输入识别 (STT) -->
-          <div class="field-group-title" style="margin-top: 20px;">语音输入识别 (STT)</div>
+          <!-- 语音输入 -->
+          <div class="field-group-title" style="margin-top: 20px;">语音输入</div>
           <div class="field">
-            <label for="gSttEngine">STT 语音识别引擎（仅作全局配置保存；控制台麦克风固定使用浏览器 Web Speech API）</label>
+            <label for="gSttEngine">语音识别引擎</label>
             <select id="gSttEngine">
-              <option value="browser">浏览器原生 Web Speech API (推荐，零GPU开销，即说即转)</option>
-              <option value="sensevoice">本地 SenseVoice-Small (极速精准，支持情感与多语言)</option>
-              <option value="whisper">OpenAI Whisper (多语言离线识别)</option>
+              <option value="browser">浏览器语音识别</option>
+              <option value="sensevoice">本地 SenseVoice</option>
+              <option value="whisper">本地 Whisper</option>
             </select>
+            <small>控制台麦克风使用浏览器语音识别；此设置仅用于其他语音识别入口。</small>
           </div>
         </div>
 
         <!-- 选项卡 4: Telegram 机器人 -->
         <div class="gtab-panel hidden" id="gp-telegram">
+          <div class="settings-intro"><h3>Telegram</h3><p>通过机器人与角色聊天。关闭后不会运行后台轮询。</p></div>
           <label class="check-line" style="font-weight: 600; font-size: 13.5px; margin-bottom: 12px; padding: 6px 8px; background: var(--bg-hover); border-radius: 6px; cursor: pointer;">
-            <input type="checkbox" id="gTgEnabled" /> 启用 Telegram 机器人（未启用时完全不启动后台轮询与网络请求）
+            <input type="checkbox" id="gTgEnabled" /> 启用 Telegram 机器人
           </label>
           <div id="gTgFieldsGroup" style="opacity: 0.45; pointer-events: none; transition: opacity 0.2s ease;">
             <div class="field">
@@ -541,7 +548,7 @@
               <input id="gTgToken" type="password" placeholder="123456:ABC-DEF…" autocomplete="off" />
             </div>
             <div class="field">
-              <label>允许访问的 Telegram 用户 ID（必填，逗号分隔；留空时所有用户都会被拒绝）</label>
+              <label>允许访问的用户 ID（必填，多个 ID 用逗号分隔）</label>
               <input id="gTgChatId" placeholder="例如 123456789" autocomplete="off" />
             </div>
             <div class="field-row-2">
@@ -563,32 +570,27 @@
 
         <!-- 选项卡 5: 记忆与人设 -->
         <div class="gtab-panel hidden" id="gp-memory">
-          <label class="check-line" style="font-weight: 600;">
-            <input type="checkbox" id="gMemoryEnabled" checked /> 长期记忆增强系统 (自动提取玩家关键信息并注入上下文；后端始终启用，此开关暂不起作用)
-          </label>
-          <div class="field">
-            <label>用户在对话中的称呼 / 昵称（暂未接入后端，保存不会生效；称呼由记忆系统自动提取）</label>
-            <input id="gUserNickname" placeholder="例如：夏目 / 老师 / 指挥官 / 亲爱的" autocomplete="off" />
-          </div>
-          <div class="field">
-            <label>全局默认人设提示词 (System Prompt 模板)</label>
-            <textarea id="gDefaultSystemPrompt" rows="6" placeholder="（暂未接入后端，内容不会保存；新会话人设以角色包与内置模板为准）"></textarea>
-          </div>
+          <div class="settings-intro"><h3>角色与记忆</h3><p>角色人设和音色在当前会话中设置。</p></div>
+          <div class="settings-note"><strong>长期记忆已由系统管理</strong><p>系统会从对话中提取称呼等信息。当前版本暂不支持在这里手动修改全局昵称、记忆开关或默认人设。</p></div>
+          <button type="button" class="btn ghost" id="gOpenSessionSettings"><svg class="icon"><use href="#i-sliders"></use></svg>打开当前会话设置</button>
+          <div hidden><input id="gMemoryEnabled" type="checkbox" disabled checked><input id="gUserNickname" disabled><textarea id="gDefaultSystemPrompt" disabled></textarea></div>
         </div>
 
         <!-- 选项卡 6: 系统版本与更新 -->
         <div class="gtab-panel hidden" id="gp-update">
+          <div class="settings-intro"><h3>备份与更新</h3><p>聊天备份会保留文字与会话设置。更新前建议先导出一份。</p></div>
           <div class="field">
             <label>聊天记录备份与恢复</label>
             <p id="gChatStorageStatus" role="status">正在检查聊天记录保存状态…</p>
             <div class="btn-row">
-              <button type="button" class="btn ghost" id="gExportChats">导出聊天备份</button>
+              <button type="button" class="btn ghost" id="gExportChats">导出完整聊天备份</button>
               <button type="button" class="btn ghost" id="gImportChats">导入聊天备份</button>
+              <button type="button" class="btn ghost" id="gExportLocalChats">仅导出浏览器记录</button>
               <button type="button" class="btn ghost" id="gResumeChatSaving">恢复本地保存</button>
               <button type="button" class="btn ghost" id="gExportDamagedChats" hidden>导出原始记录</button>
               <input type="file" id="gImportChatFile" accept=".json,application/json" hidden>
             </div>
-            <small>备份包含文字记录和会话设置。导入会新增会话并保留现有记录；音频、角色包和服务密钥请随程序数据目录另行备份。</small>
+            <small>完整备份包含数据库中的全部文字与会话设置，以及当前浏览器尚未同步的文字。服务无法连接时可单独导出浏览器记录。导入会新增会话并保留现有记录；音频、角色包和服务密钥请随程序数据目录另行备份。</small>
           </div>
           <div class="update-panel-container">
             <div class="update-header-card">
@@ -597,7 +599,7 @@
                   <span class="update-icon-badge"><svg class="icon"><use href="#i-git-branch"></use></svg></span>
                   <div>
                     <h3 class="update-title-text">系统版本与 GitHub 更新</h3>
-                    <p class="update-subtitle-text">从 GitHub 官方仓库一键拉取最新代码并热重载前端静态产物</p>
+                    <p class="update-subtitle-text">查看当前版本、检查更新，并备份聊天记录。</p>
                   </div>
                 </div>
                 <span id="gRemoteStatusTag" class="badge-status-pill badge-pill-gray">待检查</span>
@@ -605,11 +607,11 @@
 
               <div class="update-meta-grid">
                 <div class="update-meta-item">
-                  <span class="update-meta-label">当前版本 (Commit)</span>
+                  <span class="update-meta-label">当前版本</span>
                   <span class="update-meta-val font-mono" id="gCurrentCommit">-</span>
                 </div>
                 <div class="update-meta-item">
-                  <span class="update-meta-label">当前分支 (Branch)</span>
+                  <span class="update-meta-label">当前分支</span>
                   <span class="update-meta-val font-mono" id="gCurrentBranch">main</span>
                 </div>
                 <div class="update-meta-item">
@@ -617,7 +619,7 @@
                   <span class="update-meta-val" id="gCurrentDate">-</span>
                 </div>
                 <div class="update-meta-item">
-                  <span class="update-meta-label">远程仓库 (Remote)</span>
+                  <span class="update-meta-label">更新来源</span>
                   <span class="update-meta-val font-mono" id="gRemoteUrl" title="GitHub 仓库地址">-</span>
                 </div>
               </div>
@@ -689,11 +691,11 @@
       </header>
       <div class="modal-body">
         <div class="field">
-          <label>角色人设提示词 <b class="muted">（属于当前角色，保存写回角色包）</b></label>
+          <label>角色人设</label>
           <textarea id="sSystem" rows="5" placeholder="编辑当前角色的人设与指令，保存后写回角色包并对该角色所有会话生效…"></textarea>
         </div>
         <div class="field">
-          <label>角色音色（GPT / SoVITS 模型）<b id="sVoiceActive"></b></label>
+          <label>角色音色<b id="sVoiceActive"></b></label>
           <div class="voice-select-row">
             <select id="sVoice"></select>
             <button type="button" class="btn ghost danger" id="sVoiceDelete">删除</button>
@@ -735,7 +737,8 @@
             </div>
           </div>
         </div>
-        <p class="modal-note">绑定后，切换到该会话会自动加载对应模型权重——每个会话可以和不同的角色聊天。切换权重需要几秒且占用内存，频繁切换可能触发内存不足。</p>
+        <p class="modal-note">每个会话可以绑定不同的角色。切换音色时需要加载模型，请稍等几秒。人设修改会保存到角色包，对该角色的所有会话生效。</p>
+        <details class="settings-advanced"><summary>对话高级参数</summary><div class="settings-fields">
         <div class="field-group-title">采样参数</div>
         <div class="field field-row">
           <label>温度 Temperature <b id="sTempVal">0.7</b></label>
@@ -764,14 +767,16 @@
             <input type="range" id="sCtx" min="2" max="40" step="2" value="20" />
           </div>
         </div>
+        </div></details>
+        <details class="settings-advanced"><summary>语音高级参数</summary><div class="settings-fields">
         <div class="field-group-title">语音推理参数（覆盖全局质量预设，仅当前会话）</div>
         <div class="field">
           <label>语音参数调节模式</label>
           <select id="sAiAdaptiveVoice">
-            <option value="true">AI 动态拟真 · 自动调节语速与语气</option>
+            <option value="true">自动调节语速与语气</option>
             <option value="false">固定参数模式</option>
           </select>
-          <small class="hint" style="display:block;margin-top:4px;color:var(--text-muted,#888);font-size:12px;">开启动态拟真时，AI 将根据对话语境自适应调节每句话的语速（0.50~1.50）与温度（0.60~1.20）；固定参数模式下严格遵循下方滑块数值。</small>
+          <small class="hint" style="display:block;margin-top:4px;color:var(--text-muted,#888);font-size:12px;">自动模式跟随对话内容调整语速与语气；固定模式使用下方参数。</small>
         </div>
         <div class="field field-row">
           <label>语速 Speed <b id="sTtsSpeedVal">1.0</b></label>
@@ -789,7 +794,8 @@
           <label>TTS 温度 <b id="sTtsTempVal">1.0</b></label>
           <input type="range" id="sTtsTemp" min="0" max="2" step="0.05" value="1" />
         </div>
-        <p class="modal-note">以上配置只属于当前会话，随请求实时生效。角色音色在本面板上方绑定，对话模型等引擎设置在侧边栏底部「全局设置」中调整。</p>
+        </div></details>
+        <p class="modal-note">高级参数只对当前会话生效。角色人设会写回角色包；对话模型在「全局设置」中配置。</p>
       </div>
       <footer class="modal-foot">
         <button class="btn ghost" id="sReset">恢复默认</button>
@@ -802,7 +808,7 @@
 
   <!-- 控制台访问令牌授权对话框 -->
   <div class="modal-backdrop" id="tokenModal" hidden>
-    <div class="modal" role="dialog" aria-labelledby="tokenModalTitle" style="max-width: 440px;">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="tokenModalTitle" style="max-width: 440px;">
       <header class="modal-head">
         <h3 id="tokenModalTitle">控制台访问鉴权</h3>
         <button class="icon-btn" data-close aria-label="关闭">✕</button>
@@ -827,7 +833,7 @@
     </div>
   </div>
 
-  <div class="toast-root" id="toastRoot"></div>
+  <div class="toast-root" id="toastRoot" aria-live="polite" aria-atomic="false"></div>
 
   <script type="module" src="/src/main.js"></script>
 </body>

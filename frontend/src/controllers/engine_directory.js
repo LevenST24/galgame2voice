@@ -76,7 +76,7 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}) {
         setStatus('之前选择的目录已保存；当前修改尚未保存。');
       }
       onSaved();
-      notify('引擎目录已保存。可在「状态诊断」中启动或重启引擎。', 'success');
+      notify('引擎目录已保存。可在「运行状态」中启动或重启引擎。', 'success');
     } catch (error) {
       setStatus(`保存失败：${error.message}`);
       notify(`保存目录失败：${error.message}`, 'error');

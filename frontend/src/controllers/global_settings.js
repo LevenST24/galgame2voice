@@ -14,6 +14,7 @@ import { clearMemAudioCache } from '../cache.js';
 import { initEngineDirectory } from './engine_directory.js';
 import { waitForEngine } from './engine_recovery.js';
 import { saveConfirmedConfig } from './config_recovery.js';
+import { initSettingsTabs } from '../settings_ui.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -51,20 +52,11 @@ export function initGlobalSettings(dom, callbacks = {}) {
   engineDirectory = initEngineDirectory(dom, showToast, () => _callbacks.onSovitsDirectorySaved?.());
 
   // 选项卡切换
-  if (_dom.gTabs) {
-    _dom.gTabs.querySelectorAll('.modal-tab-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        _dom.gTabs.querySelectorAll('.modal-tab-btn').forEach((b) => b.classList.remove('active'));
-        btn.classList.add('active');
-        const targetTab = btn.getAttribute('data-gtab');
-        _dom.globalModal.querySelectorAll('.gtab-panel').forEach((p) => p.classList.add('hidden'));
-        const targetPanel = $(`gp-${targetTab}`);
-        if (targetPanel) targetPanel.classList.remove('hidden');
-        const modalBody = _dom.globalModal ? _dom.globalModal.querySelector('.modal-body') : null;
-        if (modalBody) modalBody.scrollTop = 0;
-      });
-    });
-  }
+  initSettingsTabs(_dom.gTabs);
+  $('gOpenSessionSettings')?.addEventListener('click', () => {
+    _callbacks.closeModal?.(_dom.globalModal);
+    _callbacks.onOpenSessionSettings?.();
+  });
 
   // 推理参数滑块数值联动
   if (_dom.gParamSpeed) {
@@ -143,11 +135,35 @@ export function initGlobalSettings(dom, callbacks = {}) {
   }
 
   // 跳转至语音与推理设置
+  const goToInferenceTab = () => {
+    const tabBtn = _dom.gTabs ? _dom.gTabs.querySelector('[data-gtab="inference"]') : null;
+    if (tabBtn) tabBtn.click();
+  };
   const btnGoPrecision = $('gBtnGoPrecision');
   if (btnGoPrecision) {
-    btnGoPrecision.addEventListener('click', () => {
-      const tabBtn = _dom.gTabs ? _dom.gTabs.querySelector('[data-gtab="inference"]') : null;
+    btnGoPrecision.addEventListener('click', goToInferenceTab);
+  }
+  const btnGoSovitsSetup = $('gBtnGoSovitsSetup');
+  if (btnGoSovitsSetup) {
+    btnGoSovitsSetup.addEventListener('click', () => {
+      goToInferenceTab();
+      _dom.gSovitsDirectory?.focus?.();
+    });
+  }
+  const diagModelChip = $('gDiagModelChip');
+  if (diagModelChip) {
+    diagModelChip.style.cursor = 'pointer';
+    diagModelChip.addEventListener('click', () => {
+      const tabBtn = _dom.gTabs ? _dom.gTabs.querySelector('[data-gtab="models"]') : null;
       if (tabBtn) tabBtn.click();
+    });
+  }
+  const diagVoiceChip = $('gDiagVoiceChip');
+  if (diagVoiceChip) {
+    diagVoiceChip.style.cursor = 'pointer';
+    diagVoiceChip.addEventListener('click', () => {
+      _callbacks.closeModal?.(_dom.globalModal);
+      _callbacks.onOpenSessionSettings?.();
     });
   }
 
@@ -202,8 +218,12 @@ export function initGlobalSettings(dom, callbacks = {}) {
   }
 }
 
-export function openGlobalSettings() {
+export function openGlobalSettings(tabName = null) {
   if (_callbacks.openModal) _callbacks.openModal(_dom.globalModal);
+  if (typeof tabName === 'string' && tabName && _dom.gTabs) {
+    const tabBtn = _dom.gTabs.querySelector(`[data-gtab="${tabName}"]`);
+    if (tabBtn) tabBtn.click();
+  }
   loadProviders();
   loadGlobalConfig();
   fetchSystemTelemetry();
@@ -608,7 +628,7 @@ export async function fetchSystemTelemetry() {
         const isOnline = data.gpt_sovits.status === 'reachable';
         _dom.gDashSovitsBadge.className = `badge-status-pill ${isOnline ? 'badge-pill-green' : 'badge-pill-red'}`;
         _dom.gDashSovitsBadge.textContent = isOnline ? '在线' : '离线';
-        _dom.gDashSovitsStatus.textContent = isOnline ? `运行正常 (${data.gpt_sovits.latency_ms || 0}ms)` : '服务未响应';
+        _dom.gDashSovitsStatus.textContent = isOnline ? `运行正常 (${data.gpt_sovits.latency_ms || 0}ms)` : '服务未响应（可点下方配置或重启）';
         _dom.gDashSovitsUrl.textContent = data.gpt_sovits.base_url || 'http://127.0.0.1:9880';
       }
       // 2. Precision & GPU
@@ -630,11 +650,11 @@ export async function fetchSystemTelemetry() {
         }
         if (_dom.gDashPrecisionVal) {
           if (isCpu) {
-            _dom.gDashPrecisionVal.textContent = '🛡️ CPU 稳定模式';
+            _dom.gDashPrecisionVal.textContent = 'CPU 模式';
           } else if (isFp16) {
-            _dom.gDashPrecisionVal.textContent = '⚡ FP16 半精度';
+            _dom.gDashPrecisionVal.textContent = 'FP16 半精度';
           } else {
-            _dom.gDashPrecisionVal.textContent = '🛡️ FP32 单精度';
+            _dom.gDashPrecisionVal.textContent = 'FP32 单精度';
           }
         }
         if (_dom.gBtnTogglePrecisionText) {
@@ -696,6 +716,7 @@ export function updateTelegramFieldsVisibility() {
   if (_dom.gTgFieldsGroup) {
     _dom.gTgFieldsGroup.style.opacity = enabled ? '1' : '0.45';
     _dom.gTgFieldsGroup.style.pointerEvents = enabled ? 'auto' : 'none';
+    _dom.gTgFieldsGroup.inert = !enabled;
   }
 }
 
@@ -709,6 +730,8 @@ export async function loadGlobalConfig() {
       : Promise.resolve(null);
     const [cfg] = await Promise.all([requestJson('/api/config'), fetchVoice]);
     if (load !== configLoad) return;
+    const configError = $('gConfigError');
+    if (configError) { configError.textContent = ''; configError.classList.add('hidden'); }
     const s = cfg.settings || {};
     const provider = cfg.active_provider;
     const voiceProfiles = _callbacks.getVoiceProfiles ? _callbacks.getVoiceProfiles() : [];
@@ -788,7 +811,9 @@ export async function loadGlobalConfig() {
     if (_dom.gUserNickname) _dom.gUserNickname.value = s.user_nickname || '';
     if (_dom.gDefaultSystemPrompt) _dom.gDefaultSystemPrompt.value = s.system_prompt || '';
   } catch (e) {
-    if (_dom.gStatus) _dom.gStatus.textContent = e.message;
+    if (load !== configLoad) return;
+    const configError = $('gConfigError');
+    if (configError) { configError.textContent = e.message; configError.classList.remove('hidden'); }
   }
 }
 
@@ -841,6 +866,7 @@ export async function saveGlobalConfig() {
 }
 
 export async function testTelegram() {
+  if (_dom.gTgTest?.disabled) return;
   if (_dom.gTgTest) _dom.gTgTest.disabled = true;
   try {
     const payload = {
@@ -850,12 +876,11 @@ export async function testTelegram() {
     };
     const token = _dom.gTgToken ? _dom.gTgToken.value.trim() : '';
     if (token) payload.token = token;
-    const res = await fetch('/api/telegram/test', {
+    const data = await requestJson('/api/telegram/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    });
-    const data = await res.json().catch(() => ({}));
+    }, { timeoutMs: 60000 });
     showToast(data.message || (data.success ? '连接成功' : '连接失败'), data.success ? 'success' : 'error');
   } catch (e) {
     showToast(`测试失败: ${e.message || e}`, 'error');
@@ -889,7 +914,15 @@ export async function handleRestartSovits(precision) {
     } });
     showToast(result.message, result.ready ? 'success' : 'info');
   } catch (err) {
-    showToast(err.message, 'error');
+    const needDir = /引擎目录|选择文件夹|api_v2\.py|运行环境/i.test(err.message || '');
+    showToast(err.message, 'error', needDir ? {
+      actionLabel: '选择引擎文件夹',
+      onAction: () => {
+        const tabBtn = _dom.gTabs ? _dom.gTabs.querySelector('[data-gtab="inference"]') : null;
+        if (tabBtn) tabBtn.click();
+        _dom.gSovitsDirectory?.focus?.();
+      },
+    } : null);
   } finally {
     restarting = false;
     if (_dom.gBtnRestartSovits) {
@@ -916,6 +949,7 @@ async function handleTogglePrecision() {
 }
 
 async function handleClearCache() {
+  if (_dom.gBtnClearCache.disabled) return;
   if (!confirm('确定要清空全部 TTS 离线音频缓存吗？清空后新请求将重新合成。')) return;
   _dom.gBtnClearCache.disabled = true;
   try {
@@ -926,9 +960,7 @@ async function handleClearCache() {
     if ('caches' in window) {
       await caches.delete('gal2voice-audio-v1').catch(() => {});
     }
-    const res = await fetch('/api/cache/clear', { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(getErrorMessage(data, `HTTP ${res.status}`));
+    const data = await requestJson('/api/cache/clear', { method: 'POST' });
     showToast(`缓存已清空：删除 ${data.deleted_files || 0} 个文件，释放 ${data.freed_mb || 0} MB`, 'success');
     fetchSystemTelemetry();
   } catch (err) {

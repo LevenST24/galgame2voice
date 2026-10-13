@@ -5,7 +5,7 @@ export function statusMessage(status) {
   if (status === 404) return '此配置或功能已不存在，请刷新列表后重新选择。';
   if (status === 422 || status === 400) return '配置不完整或数值超出范围，请检查填写内容后重新保存。';
   if (status === 429) return '请求过于频繁，请稍候再试。';
-  return '此次操作未完成，请稍后重试；若仍失败，请打开「状态诊断」检查服务。';
+  return '此次操作未完成，请稍后重试；若仍失败，请打开「运行状态」检查服务。';
 }
 
 export function getErrorMessage(data, fallback = '请求失败') {
@@ -40,7 +40,7 @@ export async function requestJson(url, options = {}, { timeoutMs = 30000 } = {})
     if (external?.aborted) cancel();
     else external?.addEventListener('abort', cancel, { once: true });
     if (timeoutMs > 0) timer = setTimeout(() => {
-      const error = new Error('等待服务响应超时。请打开「状态诊断」检查；保存结果可能尚未确认，请刷新配置后再决定是否重试。');
+      const error = new Error('等待服务响应超时。请打开「运行状态」检查；保存结果可能尚未确认，请刷新配置后再决定是否重试。');
       error.code = 'REQUEST_TIMEOUT';
       reject(error);
       controller.abort();

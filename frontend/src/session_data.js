@@ -3,6 +3,14 @@ const record = (value) => value && typeof value === 'object' && !Array.isArray(v
 const validId = (value) => typeof value === 'string' && value.length > 0 && value.length <= 200;
 const timestamp = (value) => Number.isFinite(value) && value >= 0 ? value : Date.now();
 
+// SQLite CURRENT_TIMESTAMP is UTC even though it has no explicit zone suffix.
+export function serverTimestamp(value, fallback = Date.now()) {
+  if (typeof value !== 'string' || !value) return fallback;
+  const iso = value.replace(' ', 'T');
+  const parsed = Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : `${iso}Z`);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function pickSettings(value, defaults) {
   const result = { ...defaults };
   if (!record(value)) return result;
