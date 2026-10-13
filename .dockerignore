@@ -1,6 +1,10 @@
 .git/
 .github/
 .agents/
+.local/
+_scratch/
+.mypy_cache/
+.pytest_basetemp/
 .venv/
 venv/
 .env

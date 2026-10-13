@@ -18,7 +18,7 @@ async def test_database_migrations_decoupling():
     import galgame2voice.database as db_pkg
 
     # Direct symbols
-    assert migrations.CURRENT_SCHEMA_VERSION == 6
+    assert migrations.CURRENT_SCHEMA_VERSION == 7
     assert callable(migrations.run_schema_migrations)
     assert callable(migrations.init_schema_and_seeds)
     assert callable(migrations.auto_heal_voice_profiles)
@@ -43,7 +43,7 @@ async def test_database_migrations_decoupling():
         # Check version
         ver = await conn.execute("PRAGMA user_version;")
         row = await ver.fetchone()
-        assert row[0] == 6
+        assert row[0] == migrations.CURRENT_SCHEMA_VERSION
 
         # Check settings table
         cur = await conn.execute("SELECT active_provider_id, console_token, inference_precision FROM settings WHERE id = 1;")

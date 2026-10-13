@@ -43,6 +43,10 @@ def read_project_version() -> str:
 
 # Files and directories strictly excluded from release bundles
 EXCLUDE_DIRS = {
+    ".local",
+    "_scratch",
+    ".mypy_cache",
+    ".pytest_basetemp",
     ".git",
     ".github",
     ".venv",

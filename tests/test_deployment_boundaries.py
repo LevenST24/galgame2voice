@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+import zipfile
 
 import pytest
 
@@ -131,3 +132,35 @@ async def test_already_active_voice_reports_persistence_failure(tmp_path, monkey
         await voice.switch_voice(voice.VoiceSwitchRequest(profile_id=profile.id))
     assert result.value.status_code == 500
     assert result.value.detail == "Failed to persist active voice profile"
+
+
+def test_source_release_never_copies_private_workspace_archives(tmp_path, monkeypatch):
+    from scripts import package_release
+    (tmp_path / "README.md").write_text("public guide")
+    static = tmp_path / "galgame2voice" / "static"
+    static.mkdir(parents=True)
+    (static / "index.html").write_text("<html>public application</html>")
+    private = tmp_path / ".local" / "archive" / "previous-run"
+    private.mkdir(parents=True)
+    (private / "chat-export.json").write_text('{"private":"conversation"}')
+    (private / "old-package.zip").write_bytes(b"private backup")
+    monkeypatch.setattr(package_release, "PROJECT_ROOT", tmp_path)
+    archive = package_release.build_release_zip("2.0.0")
+    with zipfile.ZipFile(archive) as package:
+        names = package.namelist()
+        assert "galgame2voice-v2.0.0/README.md" in names
+        assert not any(".local" in Path(name).parts for name in names)
+
+
+def test_model_discovery_ignores_archived_test_models_and_audio(tmp_path, monkeypatch):
+    from galgame2voice.routers import voice
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    monkeypatch.setattr(voice, "_discover_gpt_sovits_roots", lambda: [])
+    for directory in (tmp_path / ".local" / "archive", tmp_path / "characters" / "Demo"):
+        directory.mkdir(parents=True)
+        (directory / "model.ckpt").write_bytes(b"model")
+        (directory / "gentle.wav").write_bytes(b"audio")
+    result = voice._scan_models_sync()
+    assert [item["path"] for item in result["gpt_weights"]] == [str(tmp_path / "characters" / "Demo" / "model.ckpt")]
+    assert [item["path"] for item in result["audio_files"]] == [str(tmp_path / "characters" / "Demo" / "gentle.wav")]

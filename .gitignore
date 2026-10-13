@@ -74,6 +74,10 @@ tmp_check/
 *.ogg
 
 # Testing, Coverage & Build/Test Outputs
+.local/
+_scratch/
+.mypy_cache/
+.pytest_basetemp/
 .pytest_cache/
 .ruff_cache/
 .coverage

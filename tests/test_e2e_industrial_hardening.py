@@ -173,7 +173,8 @@ class TestTier1FeatureCoverage:
             data = resp.json()
             assert data["status"] == "ok"
             assert "uptime_seconds" in data
-            assert data["version"] == "2.0.0"
+            from galgame2voice import __version__
+            assert data["version"] == __version__
 
     @pytest.mark.asyncio
     async def test_f3_02_legacy_status_endpoint(self):
