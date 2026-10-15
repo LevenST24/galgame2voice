@@ -1,233 +1,332 @@
-# Galgame2Voice 🎮🎙️
+<div align="center">
 
-> **工业级 Galgame 角色本地 AI 对话与实时语音流式交互引擎 (v2.0)**  
-> 按 HTTP API 对接 GPT-SoVITS V2 Pro Plus 整合包（仓库 CI 不运行真实语音引擎，其它暴露同一 API 的引擎版本通常可用但未经验证），提供情绪感知自适应音色、现代化单页控制台 (SPA)、多会话隔离、双语流式推流、硬件精度自适应校准及 Telegram 伴侣机器人。
+# Galgame2Voice
 
----
+**用中文聊天，听 Galgame 角色用日语原声回答。**
 
-## 🌟 核心特性 (v2.0 Highlights)
+[![CI](https://github.com/LevenST24/galgame2voice/actions/workflows/ci.yml/badge.svg)](https://github.com/LevenST24/galgame2voice/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-3776ab)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-informational)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-全新安装不预置特定游戏角色。打开会话设置，按首次引导选择模型权重和参考音频创建音色；
-也可将合法取得的角色包放入 `characters/` 导入。已有数据库中的角色会保留。
+</div>
 
-- 🎭 **AI Dynamic Voice（情绪感知自适应音色与韵律）**：
-  - **情感感知多维映射**：基于大模型输出的情感语义，自适应识别 7 种核心情绪（温柔 `gentle`、开心 `happy`、感伤 `sad`、傲娇 `tsundere`、生气 `angry`、害羞 `shy`、冷静 `cool`）。
-  - **动态选取参考音频**：自动从角色包 `refs/` 中选取对应情绪的高保真参考音频，配合动态语速（`speed`: 0.50~1.50）与采样温度（`temperature`: 0.60~1.20），告别千篇一律的机械声线。
-- 🧩 **角色包即插即用（Self-Contained Packages）**：
-  - 核心系统与角色资产彻底解耦。将角色包放置于 `characters/` 目录下即可被引擎自动扫描、校验并加载，完全无需手动编写代码或重启服务。
-  - 角色包与权重文件均处于本地沙箱环境，绝不上传云端，保障个人数字资产隐私。
-- ⚡ **毫秒级双语流式推流与前瞻断句**：
-  - 独创 `StreamingBilingualParser`，零阻塞并行提取大模型输出的中文心声与日文语音台词，前瞻式分句并管道化合成。
-  - **双级 TTS 缓存**：L1 内存 LRU 缓存（亚毫秒命中，回归测试断言 100 次查询平均 `<0.5ms`）+ L2 磁盘持久化 WAL 缓存，大幅降低重复对话时的 GPU 算力开销。
-- 🎛️ **推理精度自适应校准与硬件运行模式**：
-  - **FP16 半精度**：显存占用约减半、推理通常更快，是 RTX 20/30/40 等主流显卡的首选（具体收益依显卡型号与驱动而定，本项目未在实机上度量）。
-  - **FP32 单精度**：高兼容性模式，用于处置 GTX 16 系列（TU116/TU117）或部分显卡驱动下出现的静音/哑音故障（回退由启动自检探针判定，未在实机上逐一验证）。
-  - **CPU 稳定模式 (免显存占用)**：面向入门/老旧显卡（如 MX450, GTX 1050/1650 显存 ≤ 4GB）。依托宿主机大内存（如 16GB）进行运算，规避显存溢出 (CUDA OOM) 与显卡驱动崩溃。
-  - **自适应试声探针 (Auto)**：只有当精度没有任何显式来源（CLI 参数 `--fp16/--fp32/--cpu/--precision`、环境变量 `GPT_SOVITS_PRECISION`/`GPT_SOVITS_DEVICE`、数据库设置、已验证校准缓存、引擎 YAML 已声明 FP32/CPU）时才会执行：启动后就地合成试声探测包并分析峰值振幅，全静音则平滑回退至 FP32 并把结果写入 `data/precision.json`；命中已验证缓存的后续启动不再重复探针，CPU 模式亦跳过。可通过 Web 控制台仪表盘一键无缝热切换（FP16 ⇄ FP32 ⇄ CPU）。
-- 💻 **现代化单页控制台 (Unified SPA Web Console)**：
-  - 基于极简高性能架构打造，首屏不加载任何外部阻塞资源（回归测试断言构建产物 `galgame2voice/static/index.html` 不含 Google Fonts 外链），彻底拔除历史多页面重定向与跳转延迟。
-  - **双层设置架构**：
-    - **全局设置（主界面左下角 ⚙️）**：模型提供商管理、TTS 质量预设、一键清空离线缓存、Telegram 机器人配置、系统状态诊断看板与 SoVITS 引擎热重启。
-    - **会话设置（主界面右上角 🎚️）**：为当前会话独立绑定角色音色、专属 System Prompt、生成采样参数及 AI 自适应音色开关，实现多窗口与不同角色并行对话。
-- ✈️ **Telegram 伴侣机器人（完全可选）**：
-  - 默认彻底关闭，未启用时不启动后台轮询与网络握手，保证终端零冗余日志。
-  - 开启后支持异步长轮询、多用户隔离、快捷打断、常用指令集（`/start`, `/reset`, `/voice`, `/character`, `/model`, `/nickname`, `/console`, `/settings`, `/help`）以及专用的 HTTP/SOCKS5 代理热重载。
-- 🌸 **Galgame 专有日文读音注音与舞台提示音清洗**：
-  - **人名与专有名词音标修正**：针对经典作品与角色进行深层假名注音校准（如白雪乃爱 `白雪乃愛` 严谨注音为 `のあ` 而非误读，谷风天音 `天音` 读 `あまね`，矢来美羽 `やらいみう`，布良梓 `めらあずさ`，稻丛莉音 `いなむらりおん`，千岁佐奈 `ちとせさな`，义妹 `ぎまい` 等），杜绝 TTS 将人名误读为陌生生僻字音。
-  - **舞台动作拟声提示词清洗**：自动剔除大模型生成的括号舞台提示、动作拟声词（如 `(微笑)`、`（ふふっ）`、`（ドキドキ）`、`（にっこり）` 等），确保语音合成输入纯净真实。
-- ⌨️ **极速交互与键盘流体验**：
-  - **快捷发送**：支持 `Enter`（无 Shift）及 `Ctrl+Enter` / `Cmd+Enter` 瞬时发送对话。
-  - **一键打断与关闭**：按下 `Esc` 键智能关闭弹窗设置与侧边栏抽屉，在主界面可一秒平滑打断正在播放的语音与流式回复。
-- 🛡️ **工业级安全脱敏与 16GB 内存保障**：
-  - 全链路日志、异常回溯与 HTTP 响应体实施敏感信息过滤（API Key、Telegram Token、内嵌凭据 URL `user:password@` 100% 自动打码脱敏）。
-  - 内置显存与内存水位防护，跨角色切换时触发主动垃圾回收与 PyTorch 缓存释放，降低 16GB 内存设备长期运行的内存膨胀风险。
+Galgame2Voice 是一个运行在你自己电脑上的角色对话程序。对话由你配置的大模型生成，每条回复同时包含**中文字幕**和**日语台词**：中文立即显示，日语逐句交给你自己的 [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 引擎合成，边生成边播放；角色的情绪决定用哪段参考音频说话，也决定立绘换成什么表情。
 
----
+程序本身**不附带任何游戏角色、模型权重或 API Key**，你需要准备：
 
-## 🚀 快速开始 (Quickstart)
+- **对话模型**：云端 API（DeepSeek、Gemini、OpenAI 等），或本机运行的 Ollama / LM Studio；
+- **角色语音（可选）**：GPT-SoVITS 引擎，以及你有权使用的角色模型（GPT `.ckpt`、SoVITS `.pth`）和参考音频。
 
-### Windows 普通用户：下载便携包
+没有 GPT-SoVITS 也能使用，只是只有文字、没有语音。
 
-选择发布产物 `galgame2voice-v<版本>-windows-x64.zip`，**全部解压后双击 `启动.bat` 或 `Galgame2Voice.exe`**。
-便携包包含 Python、应用依赖、FFmpeg 和网页，无需先装 Python、Node.js 或 Docker。
-保留 `_internal` 文件夹；首次使用在网页配置自己的模型服务和音色。
-GPT-SoVITS 引擎与角色权重需另行准备，发布包不包含个人密钥或游戏角色。
-详细步骤见 [Windows 便携版使用说明](docs/WINDOWS_PORTABLE.md)。
-普通的 `galgame2voice-v<版本>.zip` 是源码包，仍需下面的 Python 环境；不要将两个包混淆。
+## 目录
 
-本地文件夹的启动入口和目录用途见 [使用说明](使用说明.md)；文档导航见 [docs/README.md](docs/README.md)。
-项目架构、测试规范和测试命令集中在 `docs/development/`。开发缓存与本机临时归档集中在 `.local/`，不会进入发布包。
+- [功能](#功能)
+- [工作原理](#工作原理)
+- [快速开始](#快速开始)
+- [第一次使用](#第一次使用)
+- [角色包](#角色包)
+- [命令行与配置](#命令行与配置)
+- [常见问题](#常见问题)
+- [数据与隐私](#数据与隐私)
+- [开发](#开发)
+- [许可证](#许可证)
 
-### 1. 环境准备
-- **操作系统**：Windows 10/11 64 位 或 Linux。CI 回归环境为 `windows-latest` 与 `ubuntu-latest`；
-  Ubuntu 20.04 等更早的发行版版本、以及 `run.sh` 名义上适用的 macOS，均未纳入自动化测试。
-- **Python**：3.10 ~ 3.12（CI 在 3.10 与 3.12 上回归，Docker 镜像使用 3.11；更高版本未测试）
-- **显卡配置**：推荐 NVIDIA 独立显卡（GTX 1060 以上，显存 4GB+）；亦支持 CPU 兼容模式。显卡性能未实测。
-- **语音引擎**：GPT-SoVITS V2 Pro Plus 官方整合包（按 HTTP API 对接，CI 不运行真实引擎）。
+## 功能
 
-### 2. 运行项目
+**对话**
 
-#### 方式一：Windows 一键快速启动（推荐）
-直接双击运行项目根目录下的批处理脚本：
-```cmd
-启动.bat
-```
-如需显式指定推理硬件或精度启动：
-```cmd
-启动.bat --fp16          # 强制开启 FP16 半精度加速
-启动.bat --fp32          # 强制使用 FP32 单精度兼容模式
-启动.bat --cpu           # 强制使用纯 CPU 稳定模式 (免显存占用)
+- 多会话：每个会话单独绑定角色和采样参数（人设跟随角色），切换回来时记录原样保留。
+- 内置 10 个模型服务预设：OpenAI、Anthropic Claude、Google Gemini、DeepSeek、xAI Grok、智谱 GLM、通义千问、Moonshot Kimi、SiliconFlow，以及任意 OpenAI 兼容接口（Ollama、LM Studio、vLLM、中转网关）。
+- 流式输出，字幕随生成实时显示；回复失败时在消息下方说明原因，可一键重新发送或直接打开模型设置。
+- 长期记忆与好感度：自动记住你的称呼等信息；好感度随对话变化，并影响立绘的脸红差分。
+
+**语音**
+
+- 日语台词按句合成、排队播放，第一句合成好就开口，不必等整段回复结束。
+- 7 种情绪（温柔、开心、害羞、傲娇、冷静、感伤、生气）：按情绪选择角色包中的参考音频；开启「自动调节语速与语气」时，按模型给出的情绪和参数调整每句的语速与温度。
+- 推理精度可选 FP16 / FP32 / CPU。自动模式下，启动器拉起引擎后先试合成一句，检测到静音会自动改用 FP32 并记住结果。
+- 合成结果有内存和磁盘两级缓存，重复的台词不会重新推理。
+- 内置部分 Galgame 角色名的日语读音修正，并自动去掉「（微笑）」这类括号舞台提示。
+- 语音输入使用浏览器自带的语音识别（Chrome、Edge 等），同时保留录音可回放。
+
+**角色与立绘**
+
+- 把角色包放进 `characters/`，在会话设置里点「扫描」即可使用，无需重启。
+- 没有角色包时，可直接选择引擎目录里的模型权重和参考音频新建音色。
+- 可选的立绘舞台：随每句台词的情绪切换表情，支持多套服装。
+
+**数据与部署**
+
+- 聊天记录保存在本机 SQLite 和浏览器中，可导出完整聊天备份并导入。
+- 数据库每天自动生成校验过的快照；便携版附带恢复工具 `数据恢复.bat`。
+- Windows 便携版自带 Python 和 FFmpeg，解压即用；也支持源码运行和 Docker。
+- 可选的 Telegram 机器人：在手机上和同一个角色聊天，并收到语音消息。
+
+## 工作原理
+
+```mermaid
+flowchart LR
+    B["浏览器网页"] -- "输入（文字或语音）" --> S["Galgame2Voice<br/>FastAPI + SQLite"]
+    S -- "人设 + 记忆 + 历史" --> L["对话模型<br/>云端 API / 本机 Ollama 等"]
+    L -- "流式 JSON：中文、日文、情绪" --> S
+    S -- "逐句日文 + 情绪参考音频" --> G["GPT-SoVITS<br/>api_v2"]
+    G -- "WAV 音频" --> S
+    S -- "SSE：字幕 + 音频片段 + 情绪" --> B
 ```
 
-#### 方式二：命令行启动
+模型被要求按固定的 JSON 格式回复：`chinese` 是给你看的中文，`japanese` 是用来配音的日语，`tts` 里是情绪、语速和温度。服务端边接收边解析：中文立即推送到网页，日语每凑够一句就送去合成，情绪决定参考音频和立绘表情。角色人设里没写这个格式时，程序会自动补上。
+
+## 快速开始
+
+### 方式一：Windows 便携版（推荐）
+
+适合不想安装 Python 的用户。便携包文件名为 `galgame2voice-v<版本>-windows-x64.zip`，自带运行环境和 FFmpeg。
+
+1. 右键「全部解压」到有写入权限的位置（例如「文档」）。不要放进 Program Files，也不要在压缩软件里直接运行。
+2. 双击 `启动.bat`（或 `Galgame2Voice.exe`），服务就绪后浏览器会自动打开。
+3. 按[第一次使用](#第一次使用)配置模型和语音。
+
+更新、备份、数据恢复和启动故障排查见 [Windows 便携版使用说明](docs/WINDOWS_PORTABLE.md)。便携包由 Release 工作流在推送 `v*` 标签时构建，也可以[自己构建](#构建-windows-便携版)。
+
+> 不带 `windows-x64` 的 `galgame2voice-v<版本>.zip` 是源码包，需要按方式二准备 Python 环境。
+
+### 方式二：从源码运行
+
+需要 Python 3.10–3.12（CI 在 3.10 和 3.12 上测试），建议在虚拟环境中安装。只有修改网页时才需要 Node.js；只有 Telegram 语音消息需要系统中有 `ffmpeg`。
+
 ```bash
-# 1. 安装核心运行依赖
+git clone https://github.com/LevenST24/galgame2voice.git
+cd galgame2voice
 pip install -r requirements.txt
-
-# 2. 启动服务（自动探测硬件与 GPT-SoVITS 引擎）
 python scripts/run_server.py
 ```
 
-> **Linux/macOS 一键脚本**：根目录提供 `run.sh`，会自动创建 `.venv`、安装依赖并拉起服务，等价于上述两步，且同样透传 `--fp16/--fp32/--cpu` 等参数（该脚本未设可执行位，用 `bash run.sh` 运行即可）。
+- Windows 也可以直接双击 `启动.bat`（使用本机 Python，缺少依赖时会尝试自动安装）。
+- Linux 可运行 `bash run.sh`，它会创建 `.venv`、安装依赖并启动。
+- 使用 [uv](https://docs.astral.sh/uv/) 时：`uv sync --frozen`，然后 `uv run python scripts/run_server.py`。
 
-> **前端构建产物说明**：`galgame2voice/static/index.html` 与 `static/assets/` 为前端构建产物，仓库中保留了可直接运行的版本（克隆后无需 Node 环境即可启动控制台）；修改 `frontend/src` 后请执行 `cd frontend && npm ci && npm run deploy` 重新生成，否则界面与源码会不一致（Docker 镜像构建时会自动重新构建，无需手动操作）。
+仓库里已包含构建好的网页（`galgame2voice/static/`），克隆后无需 Node.js 即可打开界面。
 
-常用命令行参数：
-```bash
-python scripts/run_server.py --help
-  --host HOST             绑定监听地址 (默认: 127.0.0.1)
-  --port PORT             监听端口 (默认: 8080，被占用时依次探测 8081/8082/8085/8088/8888/18080/28080)
-  --fp16                  启用 FP16 半精度推理 (显存省半，推理快)
-  --fp32                  强制 FP32 单精度 (杜绝哑音静音)
-  --cpu                   强制纯 CPU 稳定模式 (零显存占用，利用主机大内存)
-  --precision {fp16,fp32,cpu,auto}
-                          显式指定推理精度/运行模式
-  --no-browser            启动后不自动唤起默认浏览器
-  --check-only            仅执行环境依赖与硬件巡检，不启动常驻服务
-  --profile               启用实时延迟瀑布图分析 (T0~T7，等价于设置 GALGAME2VOICE_PROFILE=1)
-```
-
-### 3. 环境自检 `doctor`
-
-启动前，或遇到"某个功能不工作"时，可先运行内置巡检。它逐项给出 `OK / WARN / FAIL / SKIP` 结论，并把修复建议放在对应条目的下一行：
+### 方式三：Docker
 
 ```bash
-python -m galgame2voice.main doctor            # 人工可读报告
-python -m galgame2voice.main doctor --offline  # 跳过网络探测（不探测 GPT-SoVITS）
-python -m galgame2voice.main doctor --json     # 机器可读输出，便于贴进 issue
+docker compose up -d --build
 ```
 
-输出示例：
+然后打开 <http://127.0.0.1:8080>。容器默认开启访问令牌：首次启动会生成令牌并写入 `./data/.console_token`，也可以通过环境变量 `GALGAME2VOICE_CONSOLE_TOKEN` 指定。
 
-```text
-galgame2voice doctor
+- GPT-SoVITS 运行在宿主机时，在 `docker-compose.yml` 中取消注释 `GPT_SOVITS_BASE_URL=http://host.docker.internal:9880`。
+- `docker-compose.yml` 默认只挂载 `data`、`audio`、`logs`。要使用角色包，请自行添加 `./characters:/app/characters`。
 
-[OK  ] Python: 3.11.15 (requires >= 3.10)
-[OK  ] Data directory: writable: .../data
-[OK  ] Database: readable, WAL enabled (10 tables): .../data/galgame2voice.db
-[OK  ] ffmpeg: /usr/bin/ffmpeg
-[OK  ] Console auth: disabled, listening on loopback 127.0.0.1:8080 (local zero-config mode)
-[WARN] Proxy environment: cannot be parsed; HTTP clients fall back to ignoring it
-       -> Check NO_PROXY/HTTP_PROXY/HTTPS_PROXY for malformed entries such as the bracketed IPv6 literal '[::1]'.
-[WARN] GPT-SoVITS: unreachable at http://127.0.0.1:9880
-       -> Start the GPT-SoVITS API server, or update GALGAME2VOICE_GPT_SOVITS_BASE_URL / the URL stored in the console.
+## 第一次使用
 
-Overall: DEGRADED
-```
+打开网页后，左下角是**全局设置**，右上角的滑杆图标是**会话设置**。
 
-覆盖范围：Python 版本、`data`/`audio`/`logs`/`characters` 目录可写性、SQLite 可读性与 WAL、
-ffmpeg 可执行文件、监听地址与鉴权的危险组合（非回环地址 + 免鉴权会拒绝启动）、代理环境变量是否可解析、
-角色包数量、已配置的 LLM Provider、Telegram Token 与管理员白名单、GPT-SoVITS 连通性。
+1. **配置对话模型**：全局设置 →「对话模型」，选择服务，填写 API Key 和模型名称，点「测试连通性」，成功后点「保存并启用此模型」。
+   - 本机或局域网模型（Ollama、LM Studio、vLLM）：选择「自定义 / 本地模型」，填写接口地址（Ollama 一般是 `http://127.0.0.1:11434/v1`，LM Studio 一般是 `http://127.0.0.1:1234/v1`），并开启「允许私网 LLM 端点」。这个开关默认关闭，只用于你信任的地址。
+2. **接入 GPT-SoVITS**（需要语音时）：全局设置 →「语音服务」，点「选择文件夹」，选中包含 `api_v2.py` 的 GPT-SoVITS 目录，再点「保存目录」，然后在「运行状态」中启动引擎。如果引擎已经在别处运行，填写它的服务地址即可（默认 `http://127.0.0.1:9880`）。
+   - Windows 建议使用 [GPT-SoVITS 官方整合包](https://github.com/RVC-Boss/GPT-SoVITS#windows)（自带运行环境）。本项目通过 HTTP API 对接，按 V2 Pro Plus 整合包开发；CI 不运行真实引擎，其它版本只要提供同样的 API 通常也能使用。
+3. **选择角色**：会话设置 →「角色音色」，选择扫描到的角色包；或者选「＋ 新建自定义音色」，挑选 GPT 权重（`.ckpt`）、SoVITS 权重（`.pth`）和参考音频，点「创建并绑定」。最后点「保存」。
+4. **开始聊天**：顶栏的喇叭按钮开关自动朗读，人形按钮开关立绘舞台。`Enter` 发送，`Shift + Enter` 换行，`Esc` 打断正在播放的语音和回复。
 
-退出码：`0` 表示没有任何 `FAIL`（可能带 `WARN`），`1` 表示存在 `FAIL`，可直接用于部署脚本的前置校验。
+### Telegram 机器人（可选）
 
-> 与 `python scripts/run_server.py --check-only` 的分工：`--check-only` 面向"本机能否拉起启动器"
-> （Python 运行时依赖 + 硬件诊断，必要时自动补装依赖）；`doctor` 面向"服务为什么不可用"
-> （配置、鉴权、数据库、外部服务连通性），只读诊断、不修改数据库，并可用 `--json` 采集结果。
+默认关闭。在全局设置 →「Telegram」中填写 Bot Token；需要代理时一并填写代理地址（如 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:10808`），保存后立即生效，无需重启。
 
----
+常用指令：`/character 名称` 切换角色，`/voice` 查看当前音色和参数，`/settings` 打开交互式设置面板，`/reset` 清空当前会话上下文（不删除长期记忆），`/help` 查看全部指令。
 
-## 🔧 环境变量速查表 (Environment Variables)
+## 角色包
 
-系统支持通过环境变量进行无缝配置。只有在下表「来源」列标为 `Settings` 的项才同时支持根目录 `.env`
-文件（`.env` 只被 Pydantic Settings 读入配置对象，不会注入进程环境）；标为 `os.environ` 的项必须由
-启动进程前导出真实环境变量，写进 `.env` 不生效：
-
-| 环境变量名 | 来源 | 默认值 | 类型 | 作用说明 |
-| :--- | :---: | :--- | :---: | :--- |
-| `HOST` | `Settings` | `127.0.0.1` | string | 后端 FastAPI 服务绑定的网卡监听地址 |
-| `PORT` | `Settings` | `8080` | int | 后端服务监听端口（若被占用自动探测可用端口） |
-| `LOG_LEVEL` | `Settings` | `INFO` | string | 日志记录级别 (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `GPT_SOVITS_BASE_URL` | `Settings` | `http://127.0.0.1:9880` | string | GPT-SoVITS 语音推理引擎的 HTTP API 地址 |
-| `GPT_SOVITS_PRECISION` | `os.environ` | 未设置 | string | 强制推理精度与模式：`fp16`/`half`/`true`/`1` 半精度，`fp32`/`float32`/`false`/`0` 单精度，`cpu` 纯 CPU；其它取值（含 `auto`）不构成覆盖，回落到 CLI 参数 > 数据库设置 > 校准缓存 > 引擎 YAML > 硬件默认 的自动判定 |
-| `GPT_SOVITS_DEVICE` | `os.environ` | 未设置 | string | 设为 `cpu` 时强制纯 CPU 推理（效果同 `GPT_SOVITS_PRECISION=cpu`）；其它取值不构成覆盖 |
-| `AUDIO_RETENTION_MINUTES`| `Settings` | `30` | int | 合成临时音频在磁盘中的最长保留分钟数 |
-| `GALGAME2VOICE_CONSOLE_TOKEN` | `Settings` | 空 | string | 控制台管理鉴权令牌：在开启鉴权时作为访问设置类接口所需的校验 Token（本地回环默认 `GALGAME2VOICE_AUTH_DISABLED=1` 免鉴权，容器/生产部署会强制开启鉴权） |
-| `GALGAME2VOICE_ENABLE_DOCS` | `Settings` | `false`| bool | 是否开启 `/docs` 与 `/redoc` 接口文档页面 |
-| `GALGAME2VOICE_SKIP_MEM_CHECK` | `os.environ` | 未设置 | string | 只要设为任意非空值即跳过跨角色切换的空闲内存/显存保护检查（写 `false`/`0` 也会跳过；不设该变量才会检查） |
-| `TELEGRAM_ADMIN_IDS` | `os.environ` | 未设置 | string | 追加 Telegram 管理员白名单（与控制台保存的 `telegram_admin_ids` 合并生效） |
-| `TELEGRAM_DROP_PENDING_UPDATES` | `os.environ` | 未设置 | string | 启动时丢弃 Telegram 积压的未处理更新（`1`/`true`/`yes` 生效） |
-
-> **Telegram 配置来源**：机器人开关、Bot Token 与代理地址一律读自控制台写入 SQLite 的设置，
-> `TELEGRAM_ENABLED` / `TELEGRAM_TOKEN` / `TELEGRAM_PROXY` 环境变量没有任何消费方；
-> 直接从环境读取的 Telegram 变量只有 `TELEGRAM_ADMIN_IDS` 与 `TELEGRAM_DROP_PENDING_UPDATES`。
-
----
-
-## 🎭 角色包规范与扩展 (Character Packages)
-
-本引擎采用**完全自包含（Self-Contained）**的角色包架构。将角色包解压至 `characters/` 目录下，后端下次启动时即自动扫描加载（服务运行中新解压的包需重启后端才会被发现，见上文核心特性说明）：
+一个角色包就是 `characters/` 下的一个文件夹：
 
 ```text
 characters/
-└── 角色名/
-    ├── manifest.json         # 角色配置清单（ID、名称、情绪映射、默认音色参数等）
-    ├── system_prompt.txt     # 角色专属 System Prompt（人设、口吻、好感度引导）
-    ├── gpt.ckpt              # GPT 权重模型二进制文件
-    ├── sovits.pth            # SoVITS 权重模型二进制文件
-    └── refs/                 # 情绪参考音频目录（3~10 秒高保真无损音频）
-        ├── gentle.ogg
-        ├── happy.ogg
-        ├── angry.ogg
-        ├── sad.ogg
-        ├── shy.ogg
-        ├── tsundere.ogg
-        └── cool.ogg
+└── 爱丽丝/
+    ├── manifest.json        # 角色清单（必需）
+    ├── system_prompt.txt    # 人设（可选；manifest 中 system_prompt 为空时读取）
+    ├── gpt.ckpt             # GPT 权重
+    ├── sovits.pth           # SoVITS 权重
+    ├── refs/                # 各情绪的参考音频
+    │   ├── gentle.ogg
+    │   ├── happy.ogg
+    │   └── …
+    └── portrait/            # 立绘（可选）
 ```
 
-> **资产隔离说明**：所有模型权重与角色目录均已被 `.gitignore` 严格隔离，不会意外提交至代码仓库。
+`manifest.json` 示例（路径都相对于角色包目录）：
 
-立绘属于可选资产。在“会话设置”选择角色后，立绘模式会显示该角色包中的图片；语音引擎未启动时也可显示。
-立绘放在 `characters/角色名/portrait/`：优先读取 `expressions.json`（表情编号差分），也兼容旧版 `manifest.json`（按情绪命名的 PNG 等图片），图片按服装子目录存放。程序不会改写已有角色包。
-只有模型和参考音频的包不会自动产生立绘。没有图片时，界面会提示安装包含立绘的完整角色包；连接或图片加载失败时，可检查服务、补齐素材后关闭并重新打开立绘模式重试。
+```json
+{
+  "id": "alice",
+  "name": "爱丽丝",
+  "aliases": ["Alice"],
+  "system_prompt": "你是爱丽丝……（身份、性格、口吻、对玩家的称呼）",
+  "gpt_weights": "gpt.ckpt",
+  "sovits_weights": "sovits.pth",
+  "default_emotion": "gentle",
+  "default_voice_params": { "speed": 1.0, "temperature": 0.8 },
+  "emotions": {
+    "gentle": { "audio": "refs/gentle.ogg", "text": "参考音频里说的日语原文。", "lang": "ja" },
+    "happy": { "audio": "refs/happy.ogg", "text": "……", "lang": "ja" }
+  }
+}
+```
 
----
+- 情绪名使用 `gentle`、`happy`、`shy`、`tsundere`、`cool`、`sad`、`angry`。至少需要一种，建议七种都提供。
+- 每段参考音频必须是 **3–10 秒**，`text` 要与音频内容一致；不同情绪不能使用同一段音频（按内容校验）。
+- 人设可以只写角色设定。是否包含中日双语 JSON 输出格式都可以，缺少时程序会自动补上。
+- 放入新角色包后，在会话设置中点「扫描」即可，无需重启。不合格的包会被跳过，原因记录在日志里。
+- 网页中修改的人设会写回角色包的 `manifest.json`。
 
-## ✈️ Telegram 伴侣机器人指南
+**立绘**：在 `portrait/` 下为每套服装建一个文件夹，放入 PNG、WebP 或 JPG 图片，再写一个索引。最简单的写法是按情绪命名的 `portrait/manifest.json`：
 
-在主界面全局设置中开启 Telegram Bot 后，您可以通过手机或桌面客户端随时随地与角色聊天：
+```json
+{
+  "costumes": [{ "id": "uniform", "name": "制服" }],
+  "sprites": {
+    "uniform": {
+      "gentle": { "file": "gentle.png" },
+      "happy": { "file": "happy.png" }
+    }
+  }
+}
+```
 
-### 支持的指令集
-- `/start`：唤出欢迎信息与快捷指令列表
-- `/reset`：清空当前 Telegram 会话的历史上下文（仅删除会话消息，不会清除长期记忆库）
-- `/voice`：查看当前绑定的角色音色与语音生成参数（该指令不接受名称参数、也不切换音色；切换请用 `/character [名称]` 或 `/console` 内的「角色音色切换」按钮）
-- `/character [名称]`：切换当前角色与音色（如 `/character 栞那`）
-- `/settings`：打开原生交互控制台（等价于 `/console`、`/menu`），可查看并调节当前角色音色、语音生成参数（语速/温度/切分/Top-K/Top-P）与对话模型等设置
-- `/help`：获取完整的操作指令与使用提示
+表情名可以用情绪名，也认 `normal`、`smile`、`blush`、`pout` 等常见别名；缺少的情绪会退回默认表情。需要按编号组合的表情差分时改用 `portrait/expressions.json`，制作方法见[立绘坐标与导出](docs/development/PORTRAIT_EXPORT.md)。
 
-### 代理连通性
-若您处于需要代理访问 Telegram 的网络环境，直接在网页设置面板中填写 **Telegram 代理地址**（例如 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:10808`），点击「保存并热重载」即可立刻生效，无需重启后端服务。
+角色模型、参考音频和立绘都已被 `.gitignore` 排除，不会进入仓库或发布包。
 
----
+## 命令行与配置
 
-## 🛡️ 安全、隐私与内存控制
+### 启动参数
 
-- **零敏感信息泄漏**：全自动日志与报错脱敏引擎，覆盖 Bearer Token、OpenAI/DeepSeek Key、Telegram Token 及 URL 用户身份凭据。
-- **16GB 主机内存防护**：在模型加载与音色切换前主动触发 `release_system_memory()`（包含 Python `gc.collect()` 与 PyTorch CUDA/MPS 显存池释放，其中 MPS 分支仅在 Apple 芯片环境生效、本项目 CI 未覆盖），并在切换完成后二次回收，缓解长期运行内存缓慢膨胀。
-- **完全本地化沙箱**：对话历史、记忆数据、好感度等级均储存在本地 SQLite 数据库中，自主掌控个人隐私。
+`python scripts/run_server.py`、`启动.bat` 和便携版的 `Galgame2Voice.exe` 接受相同的参数：
 
----
+| 参数 | 作用 |
+| :--- | :--- |
+| `--port PORT` | 监听端口，默认 `8080`；被占用时依次尝试 8081、8082、8085、8088、8888、18080、28080 |
+| `--host HOST` | 监听地址，默认 `127.0.0.1`。改为其他地址时必须设置 `GALGAME2VOICE_AUTH_DISABLED=0` 启用访问令牌，否则程序拒绝启动 |
+| `--fp16` / `--fp32` / `--cpu` | 指定推理精度，等同于 `--precision fp16\|fp32\|cpu`；`--precision auto` 为自动 |
+| `--no-engine` | 不查找也不启动本机 GPT-SoVITS（引擎在别处运行时使用） |
+| `--no-browser` | 启动后不自动打开浏览器 |
+| `--check-only` | 只检查 Python 依赖和硬件，然后退出 |
+| `--profile` | 打印每轮对话的延迟分解（首字、首句、合成、首个音频） |
 
-## 📄 开源许可证
+### 环境自检
 
-本项目采用 [MIT License](LICENSE) 开源。Windows 便携包随附应用许可证及第三方组件的许可证说明。
+服务不正常时，先运行内置巡检。它会逐项给出 `OK / WARN / FAIL / SKIP`，并附上修复建议：
+
+```bash
+python -m galgame2voice.main doctor            # 人工可读报告
+python -m galgame2voice.main doctor --offline  # 跳过对 GPT-SoVITS 的连通性探测
+python -m galgame2voice.main doctor --json     # 机器可读，方便贴进 issue
+```
+
+检查内容包括 Python 版本、数据目录与数据库、ffmpeg、监听地址与鉴权组合、代理环境变量、角色包数量、已配置的模型服务、Telegram 设置和 GPT-SoVITS 连通性。没有 `FAIL` 时退出码为 0，否则为 1。
+
+### 环境变量
+
+大多数设置在网页里完成。下表中「`.env`」列打勾的变量也可以写进项目根目录的 `.env`（参考 [`.env.example`](.env.example)），其余变量必须在启动前设为系统环境变量。带 `GALGAME2VOICE_` 前缀的变量也接受去掉前缀的写法（如 `GPT_SOVITS_BASE_URL`）。
+
+| 变量 | `.env` | 默认值 | 说明 |
+| :--- | :---: | :--- | :--- |
+| `GALGAME2VOICE_GPT_SOVITS_BASE_URL` | ✓ | `http://127.0.0.1:9880` | GPT-SoVITS 地址。优先级：系统环境变量 > 网页中保存的地址 > `.env` |
+| `GPT_SOVITS_DIR` | | | 查找本机引擎时的候选目录；网页中保存的引擎目录优先 |
+| `GPT_SOVITS_PRECISION` | | | 强制推理精度：`fp16`、`fp32` 或 `cpu` |
+| `GPT_SOVITS_DEVICE` | | | 设为 `cpu` 时等同于 `GPT_SOVITS_PRECISION=cpu` |
+| `GALGAME2VOICE_HOST` / `GALGAME2VOICE_PORT` | ✓ | `127.0.0.1` / `8080` | 直接运行 `python -m galgame2voice.main` 或 Docker 时的监听地址；启动脚本请用 `--host` / `--port` |
+| `GALGAME2VOICE_AUTH_DISABLED` | ✓ | `1` | 设为 `0` 启用访问令牌。本机默认免令牌，Docker 默认开启 |
+| `GALGAME2VOICE_CONSOLE_TOKEN` | ✓ | 自动生成 | 访问令牌；留空时首次启动生成并写入 `data/.console_token` |
+| `GALGAME2VOICE_AUDIO_RETENTION_MINUTES` | ✓ | `30` | 临时合成音频的保留时间（分钟） |
+| `GALGAME2VOICE_PRIVACY_MODE` | ✓ | `false` | 关闭语音缓存：合成结果不写入也不复用磁盘缓存 |
+| `GALGAME2VOICE_LOG_LEVEL` | ✓ | `INFO` | 日志级别 |
+| `GALGAME2VOICE_ENABLE_DOCS` | ✓ | `false` | 开放 `/docs` 接口文档 |
+| `GALGAME2VOICE_SKIP_MEM_CHECK` | | | 设为任意非空值即跳过切换角色前的内存检查（写 `0` 也会跳过） |
+| `TELEGRAM_ADMIN_IDS` | | | 追加 Telegram 管理员 ID，与网页中的设置合并 |
+| `TELEGRAM_DROP_PENDING_UPDATES` | | | 设为 `1` / `true` / `yes` 时，启动时丢弃积压的消息 |
+
+Telegram 的开关、Bot Token 和代理只在网页中设置；`TELEGRAM_ENABLED` 等同名环境变量不会生效。
+
+## 常见问题
+
+### 有文字但没有声音
+
+检查顶栏喇叭（自动朗读）是否打开、会话设置里是否选择了角色音色，并在全局设置 →「运行状态」确认 GPT-SoVITS 正在运行。浏览器拦截自动播放时，点一下消息旁的播放按钮即可。
+
+### 声音是静音或杂音
+
+部分显卡在 FP16 下会输出静音。在「运行状态」中把精度切换为 FP32 并重启引擎，或用 `--fp32` 启动；显存不足时可用 `--cpu`。
+
+### 角色读出来的是中文，或读音明显不对
+
+说明模型没有按中日双语 JSON 格式回复，日语台词为空时会改用中文去合成。人设缺少格式说明时程序已会自动补上；如果仍然出现，请换一个更能遵循指令的模型。
+
+### 本机的 Ollama / LM Studio 连不上
+
+在「对话模型」中开启「允许私网 LLM 端点」，提示保存成功后再测试。这类地址默认被拦截，以防止网页被用来访问内网服务。
+
+### 新建音色时找不到模型文件
+
+先在「语音服务」中保存引擎目录。`.ckpt` 在扫描范围内的任何位置都能找到；`.pth` 需要放在路径中含有 `sovits` 或 `weight`（不分大小写）的文件夹里，GPT-SoVITS 默认的 `SoVITS_weights*` 目录即可。每类最多列出 50 个文件。
+
+### 切换角色时提示内存不足
+
+加载新模型前，程序会检查空闲内存，避免引擎崩溃。关闭其他程序后重试；确认内存够用时，可设置 `GALGAME2VOICE_SKIP_MEM_CHECK=1` 跳过检查。
+
+### 网页要求输入访问令牌
+
+说明已启用访问令牌（Docker 或局域网访问时）。令牌保存在 `data/.console_token`。
+
+### 还是解决不了
+
+运行 `python -m galgame2voice.main doctor`（便携版运行 `Galgame2Voice.exe --check-only`），并查看 `logs/` 中的日志。提问时可以附上日志，但不要附带 `data` 目录、数据库或聊天备份，里面有你的聊天记录和凭据。
+
+## 数据与隐私
+
+- 默认只监听本机 `127.0.0.1`，局域网中的其他设备无法访问。
+- 聊天内容（连同人设和相关记忆）会发送给你配置的对话模型服务；语音由本机的 GPT-SoVITS 合成，不经过第三方。
+- 所有数据都在安装目录：`data/`（数据库、设置、加密的凭据、自动快照）、`audio/`（录音和合成语音）、`characters/`（角色包）、`logs/`（日志）。备份时保留这几个目录。
+- API Key 等凭据加密保存：Windows 使用 DPAPI，绑定当前系统用户；其他平台使用 AES-GCM 和 `data/.master_key`。换电脑或换 Windows 用户后需要重新填写。
+- 网页里的会话也保存在浏览器本地。更换浏览器或端口前，请在全局设置 →「备份与更新」导出完整聊天备份，再到新网页导入。
+
+安全设计与漏洞报告方式见 [SECURITY.md](SECURITY.md)。
+
+## 开发
+
+```text
+galgame2voice/   后端（FastAPI）：routers/ 接口，services/ 对话、语音与角色，database/ SQLite
+frontend/        网页（原生 JavaScript + Vite），构建后部署到 galgame2voice/static/
+scripts/         启动器、便携版打包与校验、数据库恢复
+tests/           pytest 后端测试与 Node 前端测试
+docs/            使用说明；开发文档在 docs/development/
+```
+
+```bash
+uv sync --frozen --extra dev                 # 安装开发依赖
+uv run pytest -q                             # 后端测试
+uv run ruff check galgame2voice scripts      # 代码检查
+npm --prefix frontend ci                     # 安装前端依赖
+npm --prefix frontend test                   # 前端测试
+npm --prefix frontend run deploy             # 构建网页并更新 galgame2voice/static/
+```
+
+修改 `frontend/src` 后必须运行 `npm run deploy`，并把 `galgame2voice/static/` 的变化一起提交；不要手动复制 `frontend/dist`，否则会残留旧的构建文件。CI 会重新构建并检查提交的网页文件是否一致。
+
+### 构建 Windows 便携版
+
+```powershell
+uv sync --frozen --extra desktop
+uv run --frozen --extra desktop python scripts/build_windows_portable.py
+```
+
+产物在 `dist/` 中。发布前的校验、冒烟测试和浏览器验收见[发布验收清单](docs/development/RELEASE_ACCEPTANCE.md)。
+
+更多开发资料：[架构与接口](docs/development/PROJECT.md) · [测试规范](docs/development/TEST_INFRA.md) · [更新记录](CHANGELOG.md)
+
+## 许可证
+
+本项目以 [MIT License](LICENSE) 发布。Windows 便携包附带的 FFmpeg 按其自身许可证分发，见 [docs/licenses](docs/licenses/)。
+
+角色模型、参考音频和立绘属于各自的权利人，本项目不提供这些素材。请只使用你有权使用的内容。
