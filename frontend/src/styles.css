@@ -322,6 +322,27 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 }
 .msg-content strong { font-weight: 600; }
 .msg.user .msg-content strong { color: #fff; }
+.msg.user.has-failure { flex-wrap: wrap; row-gap: 6px; }
+.msg-failure {
+  flex-basis: 100%;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  font-size: 12px; line-height: 1.6;
+  color: var(--danger);
+}
+.msg-failure-text { margin: 0; max-width: min(100%, 560px); text-align: right; overflow-wrap: anywhere; }
+.msg-failure-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.msg-failure-btn {
+  flex: none;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px; font-weight: 600;
+  color: var(--brand-ink);
+  background: var(--brand-soft);
+  border: 1px solid var(--brand-line);
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s, color 0.14s;
+}
+.msg-failure-btn:hover { color: #fff; background: var(--brand); border-color: var(--brand); }
 
 /* ---- 语音消息条 ---- */
 .voice-bar {
@@ -817,7 +838,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 /* ============ Toast ============ */
 .toast-root {
-  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+  /* 停在输入区上方（高度由 keepToastsAboveComposer 同步），避免遮住输入框。 */
+  position: fixed; left: 50%; bottom: calc(var(--composer-clearance, 112px) + 12px); transform: translateX(-50%);
   z-index: 80; display: flex; flex-direction: column; gap: 8px; align-items: center;
   pointer-events: none;
   width: min(480px, calc(100vw - 32px));
@@ -834,7 +856,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   max-width: 100%;
   line-height: 1.65;
   overflow-wrap: anywhere;
-  pointer-events: auto;
+  /* 只有操作按钮可点，文字区域的点击穿透到下方页面。 */
+  pointer-events: none;
 }
 .toast-with-action {
   display: flex;
@@ -844,6 +867,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 }
 .toast-text { flex: 1; min-width: 0; }
 .toast-action-btn {
+  pointer-events: auto;
   flex: none;
   padding: 4px 10px;
   border-radius: 7px;

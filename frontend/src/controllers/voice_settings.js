@@ -11,8 +11,11 @@ let voiceProfiles = [];
 // 面板里人设框的初始值与对应角色，用于换角色时判断"有未保存的编辑"
 let _promptBaseline = '';
 let _promptOwnerId = null;
+let _promptSelection = '';
+let editorRevision = 0;
 let activeProfileId = null;
 let scannedModels = null;
+let pendingScan = null;
 let scanRevision = 0;
 let sessionVoiceRevision = 0;
 let voiceSelectRevision = 0;
@@ -20,16 +23,18 @@ let profilesRevision = 0;
 
 export function invalidateScannedModels() {
   scannedModels = null;
+  pendingScan = null;
   scanRevision += 1;
 }
 
 export function initVoiceSettings(dom, callbacks = {}) {
   _dom = dom;
   _callbacks = callbacks;
+  editorRevision += 1;
 
   if (_dom.sVoice) {
-    _dom.sVoice.addEventListener('change', syncCustomVoiceBox);
     _dom.sVoice.addEventListener('change', syncSystemPromptToSelectedVoice);
+    _dom.sVoice.addEventListener('change', syncCustomVoiceBox);
   }
   if (_dom.sVoiceRescan) {
     _dom.sVoiceRescan.addEventListener('click', handleRescanCharacters);
@@ -60,7 +65,6 @@ export function initVoiceSettings(dom, callbacks = {}) {
   if (_dom.sReset) {
     _dom.sReset.addEventListener('click', () => {
       // 人设提示词属于角色包、不属于会话参数，重置只恢复推理参数，不抹人设
-      _dom.sVoice.value = '';
       _dom.sTemp.value = DEFAULT_SESSION_SETTINGS.temperature;
       _dom.sTopP.value = DEFAULT_SESSION_SETTINGS.topP;
       _dom.sFreq.value = DEFAULT_SESSION_SETTINGS.freqPenalty;
@@ -100,13 +104,14 @@ export function getVoiceProfiles() {
 export async function openSessionSettings() {
   const s = getActive();
   if (!s) return;
+  const revision = ++editorRevision;
   if (_dom.smTitle) _dom.smTitle.textContent = `· ${s.title}`;
   if (_dom.sSystem) {
     // 人设提示词是角色级数据，权威源在角色包；这里只展示当前绑定角色的那一份
     if (!voiceProfiles.length) {
       try { await fetchVoiceProfiles(); } catch (_) { /* 下面按空值处理 */ }
     }
-    if (getActive() !== s) return;
+    if (getActive() !== s || revision !== editorRevision) return;
     const prof = voiceProfiles.find((p) => p.id === s.settings?.voiceProfileId);
     applyProfilePromptToField(prof ? prof.id : null);
   }
@@ -192,9 +197,8 @@ export async function ensureSessionVoice(session, { silent = false } = {}) {
     // 换人后若面板正开着且人设框没有未保存编辑，就跟着换成新角色的那一份
     const modalOpen = _dom.sessionModal && !_dom.sessionModal.classList.contains('hidden');
     if (modalOpen && _dom.sSystem) {
-      const clean = !(_dom.sSystem.value || '').trim()
-        || (_dom.sSystem.value || '').trim() === _promptBaseline.trim();
-      if (clean) applyProfilePromptToField(want);
+      const clean = (_dom.sSystem.value || '').trim() === _promptBaseline.trim();
+      if (clean && String(_dom.sVoice?.value) === String(want)) applyProfilePromptToField(want);
     }
     if (_callbacks.renderHeader) _callbacks.renderHeader();
     if (!silent) showToast(`已切换音色：${data.profile || want}`, 'success');
@@ -225,16 +229,22 @@ export async function ensureSessionVoice(session, { silent = false } = {}) {
   }
 }
 
-export async function loadSessionVoiceSelect(session) {
+export async function loadSessionVoiceSelect(session, { preserveDraft = false } = {}) {
   if (!_dom.sVoice) return;
   const revision = ++voiceSelectRevision;
-  const isCurrent = () => revision === voiceSelectRevision
+  const editor = editorRevision;
+  const promptAtStart = _dom.sSystem?.value;
+  const ownerAtStart = _promptOwnerId;
+  const isCurrent = () => revision === voiceSelectRevision && editor === editorRevision
     && (!session?.id || getActive() === session);
-  _dom.sVoice.innerHTML = '<option value="">跟随后端当前音色</option>';
-  if (_dom.sVoiceActive) _dom.sVoiceActive.textContent = '';
   try {
     await fetchVoiceProfiles();
     if (!isCurrent()) return;
+    // Read the latest selection after the request: the user may keep editing
+    // while a rescan is running. Refresh options without changing its owner.
+    const keepDraft = preserveDraft || _dom.sSystem?.value !== promptAtStart || _promptOwnerId !== ownerAtStart;
+    const draftSelection = keepDraft ? String(_dom.sVoice.value || '') : null;
+    _dom.sVoice.innerHTML = '<option value="">跟随后端当前音色</option>';
     const active = voiceProfiles.find((p) => p.id === activeProfileId);
     if (_dom.sVoiceActive) {
       _dom.sVoiceActive.textContent = active ? `当前加载：${active.name}`
@@ -251,22 +261,42 @@ export async function loadSessionVoiceSelect(session) {
     customOpt.value = '__custom__';
     customOpt.textContent = '＋ 新建自定义音色（选择 ckpt / pth / 参考音频）…';
     _dom.sVoice.appendChild(customOpt);
-    if (!voiceProfiles.length) {
+    if (keepDraft) {
+      if (draftSelection && draftSelection !== '__custom__'
+          && !voiceProfiles.some(p => String(p.id) === draftSelection)) {
+        const missingOpt = document.createElement('option');
+        missingOpt.value = draftSelection;
+        missingOpt.textContent = '原角色已不可用（人设草稿已保留，请重新选择角色）';
+        missingOpt.disabled = true;
+        _dom.sVoice.appendChild(missingOpt);
+      }
+      _dom.sVoice.value = draftSelection;
+    } else if (!voiceProfiles.length) {
       _dom.sVoice.value = '__custom__';
     } else if (session?.settings?.voiceProfileId) {
       _dom.sVoice.value = String(session.settings.voiceProfileId);
     }
     const selVal = _dom.sVoice.value;
-    const isDirty = _dom.sSystem && (_dom.sSystem.value || '').trim() && (_dom.sSystem.value || '').trim() !== _promptBaseline.trim();
-    if (!isDirty) {
+    const selectedId = selVal && selVal !== '__custom__' ? Number(selVal) : null;
+    const cleanOwnedProfile = selectedId && _promptOwnerId === selectedId
+      && (_dom.sSystem?.value || '').trim() === _promptBaseline.trim()
+      && voiceProfiles.some(p => p.id === selectedId);
+    // A clean editor follows package updates; only an unsaved edit must retain
+    // its old text. Otherwise Save could undo a newly scanned package prompt.
+    if (!keepDraft || cleanOwnedProfile) {
       applyProfilePromptToField(
-        selVal && selVal !== '__custom__' ? Number(selVal) : null,
+        selectedId,
         { isCustomNew: selVal === '__custom__' }
       );
     }
   } catch (e) {
     if (!isCurrent()) return;
-    _dom.sVoice.innerHTML = '<option value="">加载失败（后端未启动？）</option>';
+    if (!preserveDraft) {
+      _dom.sVoice.innerHTML = '<option value="">加载失败（后端未启动？）</option>';
+    } else {
+      // Let the rescan report a failed refresh rather than claiming success.
+      throw e;
+    }
   }
   syncCustomVoiceBox();
 }
@@ -281,12 +311,11 @@ function syncSystemPromptToSelectedVoice() {
   const raw = _dom.sVoice.value;
   const isCustomNew = raw === '__custom__';
   const id = raw && !isCustomNew ? Number(raw) : null;
-  if (id === _promptOwnerId && !isCustomNew) return;
+  if (raw === _promptSelection) return;
   const current = (_dom.sSystem.value || '').trim();
-  if (_promptOwnerId !== null && current && current !== _promptBaseline.trim()
+  if (current !== _promptBaseline.trim()
       && !window.confirm('人设提示词有未保存的修改，切换角色会覆盖它。仍要切换吗？')) {
-    _dom.sVoice.value = _promptOwnerId === null ? '' : String(_promptOwnerId);
-    syncCustomVoiceBox();
+    _dom.sVoice.value = _promptSelection;
     return;
   }
   applyProfilePromptToField(id, { isCustomNew });
@@ -298,10 +327,9 @@ function applyProfilePromptToField(profileId, { isCustomNew = false } = {}) {
   const text = (prof && prof.system_prompt) || '';
   _promptBaseline = text;
   _promptOwnerId = profileId ?? null;
+  _promptSelection = isCustomNew ? '__custom__' : profileId == null ? '' : String(profileId);
   if (_dom.sSystem) {
-    if (!isCustomNew) {
-      _dom.sSystem.value = text;
-    }
+    _dom.sSystem.value = text;
     _dom.sSystem.disabled = !prof && !isCustomNew;
     _dom.sSystem.placeholder = prof
       ? `编辑「${prof.name}」的人设提示词，保存后写回角色包并对该角色的所有会话生效…`
@@ -319,36 +347,51 @@ export function syncCustomVoiceBox() {
 }
 
 export async function populateScanOptions() {
+  if (pendingScan) return pendingScan;
+  const revision = scanRevision;
+  const dom = _dom;
+  const pending = refreshScanOptions(revision, dom);
+  pendingScan = pending;
+  try { await pending; }
+  finally { if (pendingScan === pending) pendingScan = null; }
+}
+
+async function refreshScanOptions(revision, dom) {
+  const isCurrent = () => revision === scanRevision && dom === _dom;
   const fill = (sel, list, emptyHint) => {
     if (!sel) return;
+    const previous = sel.value;
+    const stillAvailable = list.some(file => file.path === previous);
+    const needsChoice = !stillAvailable && (previous || (sel.options || sel.children).length > 0);
     sel.innerHTML = '';
-    if (list.length) {
-      list.forEach((f) => {
-        const opt = document.createElement('option');
-        opt.value = f.path;
-        opt.textContent = f.name;
-        sel.appendChild(opt);
-      });
-    } else {
+    if (!list.length || needsChoice) {
       const opt = document.createElement('option');
       opt.value = '';
-      opt.textContent = emptyHint;
+      opt.textContent = previous && !stillAvailable ? '（原选文件未扫描到，请重新选择）'
+        : list.length ? '（请选择模型或参考音频文件）' : emptyHint;
       sel.appendChild(opt);
     }
+    for (const file of list) {
+      const opt = document.createElement('option');
+      opt.value = file.path;
+      opt.textContent = file.name;
+      sel.appendChild(opt);
+    }
+    sel.value = stillAvailable ? previous : needsChoice ? '' : list[0]?.path || '';
   };
   try {
     if (!scannedModels) {
-      const currentRevision = scanRevision;
       const models = await requestJson('/api/voice/scan-models', {}, { timeoutMs: 60000 });
-      if (currentRevision !== scanRevision) return;
+      if (!isCurrent()) return;
       scannedModels = models;
     }
-    fill(_dom.sCvGpt, scannedModels.gpt_weights || [], '（未扫描到 .ckpt 文件；请先在「全局设置 → 语音服务」选择引擎目录）');
-    fill(_dom.sCvSovits, scannedModels.sovits_weights || [], '（未扫描到 .pth 文件；请先在「全局设置 → 语音服务」选择引擎目录）');
-    fill(_dom.sCvRef, scannedModels.audio_files || [], '（未扫描到音频文件；参考音频为必选项，无法创建自定义音色）');
+    fill(dom.sCvGpt, scannedModels.gpt_weights || [], '（未扫描到 .ckpt 文件；请先在「全局设置 → 语音服务」选择引擎目录）');
+    fill(dom.sCvSovits, scannedModels.sovits_weights || [], '（未扫描到 .pth 文件；请先在「全局设置 → 语音服务」选择引擎目录）');
+    fill(dom.sCvRef, scannedModels.audio_files || [], '（未扫描到音频文件；参考音频为必选项，无法创建自定义音色）');
   } catch (e) {
-    [_dom.sCvGpt, _dom.sCvSovits, _dom.sCvRef].forEach((sel) => {
-      if (sel) {
+    if (!isCurrent()) return;
+    [dom.sCvGpt, dom.sCvSovits, dom.sCvRef].forEach((sel) => {
+      if (sel && !(sel.options || sel.children).length) {
         sel.innerHTML = '';
         const opt = document.createElement('option');
         opt.value = '';
@@ -356,6 +399,7 @@ export async function populateScanOptions() {
         sel.appendChild(opt);
       }
     });
+    showToast(`模型扫描失败，已有选择已保留；可点击音色旁的「扫描」重试：${e.message || e}`, 'error');
   }
 }
 
@@ -430,7 +474,7 @@ export async function handleRescanCharacters() {
   try {
     const res = await requestJson('/api/characters/rescan', { method: 'POST' }, { timeoutMs: 30000 });
     invalidateScannedModels();
-    await loadSessionVoiceSelect(getActive());
+    await loadSessionVoiceSelect(getActive(), { preserveDraft: true });
     if (_dom.sVoice?.value === '__custom__') {
       await populateScanOptions();
     }
@@ -480,17 +524,35 @@ export async function deleteVoiceProfile() {
   }
 }
 
+const EDITOR_FIELDS = [
+  'sVoice', 'sSystem', 'sTemp', 'sTopP', 'sMaxTokens', 'sFreq', 'sPres', 'sCtx',
+  'sAiAdaptiveVoice', 'sTtsSpeed', 'sTtsTopK', 'sTtsTopP', 'sTtsTemp',
+  'sCvName', 'sCvGpt', 'sCvSovits', 'sCvRef', 'sCvPromptText', 'sCvLang',
+];
+const editorSnapshot = () => JSON.stringify(EDITOR_FIELDS.map(key => _dom[key]?.value));
+
 async function handleSaveSessionSettings() {
   if (_dom.sSave?.disabled) return;
   const s = getActive();
   if (!s) return;
+  const editor = editorRevision;
+  const submitted = editorSnapshot();
+  const sameEditor = () => getActive() === s && editor === editorRevision;
   if (_dom.sSave) _dom.sSave.disabled = true;
   try {
+    if (_dom.sVoice.value === '__custom__') {
+      showToast('请先点击「创建并绑定」完成新音色的创建，再保存会话参数。填写的内容已保留。', 'info');
+      return;
+    }
     _callbacks.invalidateSessionSync?.();
     const maxTokens = Math.round(Number(_dom.sMaxTokens.value)) || DEFAULT_SESSION_SETTINGS.maxTokens;
     const profileId = _dom.sVoice.value && _dom.sVoice.value !== '__custom__'
       ? Number(_dom.sVoice.value)
       : null;
+    if (profileId && (_promptOwnerId !== profileId || !voiceProfiles.some(p => p.id === profileId))) {
+      showToast('人设草稿与当前角色不一致，已保留编辑内容。请重新选择对应角色后再保存。', 'error');
+      return;
+    }
     s.settings = {
       voiceProfileId: profileId,
       temperature: Number(_dom.sTemp.value),
@@ -509,7 +571,7 @@ async function handleSaveSessionSettings() {
     saveState();
 
     // 人设提示词属于角色、不属于会话：写回角色包 manifest.json，DB 镜像由后端刷新
-    const { note: promptNote, confirmed: promptConfirmed } = await saveCharacterPrompt(profileId);
+    const { note: promptNote, confirmed: promptConfirmed } = await saveCharacterPrompt(profileId, editor);
 
     let syncNote = '';
     try {
@@ -519,20 +581,21 @@ async function handleSaveSessionSettings() {
       syncNote = `；本机服务尚未确认保存：${err.message}`;
     }
 
-    if (getActive() === s && promptConfirmed && !syncNote && _callbacks.closeModal) {
+    if (sameEditor() && editorSnapshot() === submitted && promptConfirmed && !syncNote && _callbacks.closeModal) {
       _callbacks.closeModal(_dom.sessionModal);
     }
     if (_callbacks.renderSidebar) _callbacks.renderSidebar();
     if (_callbacks.renderHeader) _callbacks.renderHeader();
     if (getActive() === s) await ensureSessionVoice(s);
-    showToast(`会话「${s.title}」参数已更新${promptNote}${syncNote}`, promptNote || syncNote ? 'info' : 'success');
+    const draftNote = sameEditor() && editorSnapshot() !== submitted ? '；保存期间新增的修改已保留在面板中，请再次保存' : '';
+    showToast(`会话「${s.title}」参数已更新${promptNote}${syncNote}${draftNote}`, promptNote || syncNote || draftNote ? 'info' : 'success');
   } finally {
     if (_dom.sSave) _dom.sSave.disabled = false;
   }
 }
 
 /** 写回角色包；失败时保留面板中的编辑内容，供用户检查和重试。 */
-async function saveCharacterPrompt(profileId) {
+async function saveCharacterPrompt(profileId, editor) {
   const result = (note = '', confirmed = true) => ({ note, confirmed });
   if (!_dom.sSystem) return result();
   if (!profileId) {
@@ -541,6 +604,7 @@ async function saveCharacterPrompt(profileId) {
   }
   const prof = voiceProfiles.find((p) => p.id === profileId);
   const text = (_dom.sSystem.value || '').trim();
+  if (_promptOwnerId !== profileId) return result('；人设草稿属于另一个角色，未写入角色包', false);
   if (!prof) return result('；找不到对应角色包，人设改动未保存', false);
   if (!text) return result('；人设提示词不能为空，未改动角色包', false);
   if (text === (prof.system_prompt || '').trim()) return result();
@@ -551,8 +615,11 @@ async function saveCharacterPrompt(profileId) {
       body: JSON.stringify({ system_prompt: text }),
     });
     prof.system_prompt = text;
-    // 写回成功后基线跟着更新，否则下次换角色会被误判为"有未保存的编辑"
-    if (_promptOwnerId === profileId && (_dom.sSystem.value || '').trim() === text) {
+    // Rescanning may have replaced the profile objects while this request was pending.
+    const currentProfile = voiceProfiles.find(p => p.id === profileId);
+    if (currentProfile) currentProfile.system_prompt = text;
+    // Compare later edits with what was actually saved, including reverting to the old text.
+    if (editor === editorRevision && _promptOwnerId === profileId) {
       _promptBaseline = text;
     }
     return result(`；已写回角色包「${prof.name}」`);

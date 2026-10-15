@@ -24,10 +24,9 @@ from galgame2voice.services.gpt_sovits_client import (
 )
 from galgame2voice.services.tts_options import resolve_tts_options
 from galgame2voice.utils.async_tasks import drain_background_tasks
+from galgame2voice.utils.audio_spec import project_file
 
 logger = logging.getLogger("galgame2voice.services.tts_cache_manager")
-
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # v1 keys omitted some effective parameters, so even a default-parameter entry
 # could contain audio generated using a different speed/preset. Keep the old
@@ -91,8 +90,8 @@ def _normalize_ref_audio(ref_audio: str) -> str:
     if not ref_audio:
         return ""
     p = Path(ref_audio)
-    if not p.is_file() and (_PROJECT_ROOT / ref_audio).is_file():
-        p = _PROJECT_ROOT / ref_audio
+    if not p.is_file():
+        p = project_file(ref_audio) or p
     if p.is_file():
         try:
             st = p.stat()

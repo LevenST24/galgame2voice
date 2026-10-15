@@ -410,26 +410,30 @@ class TestMultiTurnSseStreamingStress:
         tts_service = TtsService(client=voice_manager.client)
         chat_service = ChatService(tts_service=tts_service, db_path=m7_db_path)
 
-        async def run_cancelled_client(client_id: int):
-            cancel_event = asyncio.Event()
+        def cancellation_adapter(*args, **kwargs):
             tokens = [
                 '{"chinese": "正在开始...", ',
                 '"japanese": "始まりました。長い文です。' + '続く。' * 20 + '"}'
             ]
-            adapter = CustomMockLLMAdapter(provider_config={}, custom_tokens=tokens)
-            with patch("galgame2voice.services.chat_service.get_llm_adapter", return_value=adapter):
-                received = 0
-                async for event in chat_service.stream_chat(
-                    prompt=f"Abort prompt {client_id}",
-                    session_id=f"abort_session_{client_id}",
-                    cancel_event=cancel_event,
-                ):
-                    received += 1
-                    if received >= 1:
-                        cancel_event.set()  # Simulate client disconnect after 1st event
+            return CustomMockLLMAdapter(provider_config={}, custom_tokens=tokens)
 
-        tasks = [run_cancelled_client(i) for i in range(10)]
-        await asyncio.gather(*tasks)
+        async def run_cancelled_client(client_id: int):
+            cancel_event = asyncio.Event()
+            received = 0
+            async for event in chat_service.stream_chat(
+                prompt=f"Abort prompt {client_id}",
+                session_id=f"abort_session_{client_id}",
+                cancel_event=cancel_event,
+            ):
+                received += 1
+                if received >= 1:
+                    cancel_event.set()  # Simulate client disconnect after 1st event
+
+        # Concurrent context managers patching the same global restore each
+        # other's mocks out of order. Patch once around the concurrent work.
+        with patch("galgame2voice.services.chat_service.get_llm_adapter", side_effect=cancellation_adapter):
+            tasks = [run_cancelled_client(i) for i in range(10)]
+            await asyncio.gather(*tasks)
 
         # After cancellations, verify a normal request succeeds immediately on the same db
         normal_adapter = CustomMockLLMAdapter(provider_config={}, custom_tokens=[

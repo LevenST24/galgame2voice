@@ -189,7 +189,14 @@ def classify_emotion(
         if clean in VALID_EMOTIONS:
             return clean
 
-    # Check for leading bracketed emotion tags in chinese or japanese
+    return detect_emotion_cue(chinese, japanese) or "gentle"
+
+
+def detect_emotion_cue(chinese: str = "", japanese: str = "") -> str | None:
+    """
+    Returns the emotion the text itself signals (bracketed tag, then keyword scan),
+    or None when it carries no cue, so callers can fall back to a message-level emotion.
+    """
     emo_ch, _ = extract_bracketed_emotion(chinese or "")
     if emo_ch:
         return emo_ch
@@ -199,11 +206,8 @@ def classify_emotion(
         return emo_ja
 
     combined = f"{chinese or ''} {japanese or ''}".strip()
-    if not combined:
-        return "gentle"
-
     for emo, keywords in EMOTION_KEYWORDS.items():
         if any(kw in combined for kw in keywords):
             return emo
 
-    return "gentle"
+    return None

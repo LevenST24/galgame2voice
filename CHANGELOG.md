@@ -4,6 +4,49 @@ All notable changes to galgame2voice are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- "允许私网 LLM 端点" switch in chat model settings for Ollama, LM Studio and LAN
+  models. It saves on change; testing or enabling a model waits for the save.
+  Model lists and connection tests now apply the same private-network rule as chat.
+- A reply that never starts leaves a note under the user's message with the reason,
+  a "重新发送" button that retries the same message in place (no duplicate bubble,
+  recordings kept) and, for model problems, a shortcut to the model settings.
+- Chat errors carry a stable `error_code` and readable Chinese guidance: a missing
+  API key names the provider, and a blocked private endpoint points to the switch
+  above instead of being reported as a DNS failure. Connection tests explain a
+  missing key the same way.
+- The header badge says "未填写 API Key" when the active cloud provider has no key,
+  and "正在读取模型配置…" until the model list loads instead of briefly claiming that
+  no model is configured.
+- `scripts/verify_windows_portable.py` checks the release ZIP's checksum, required
+  files, empty user folders, excluded secrets and models, and that its web files
+  match the deployed and built frontend.
+
+### Changed
+- Persona prompts without the bilingual reply format (new custom voices, edited or
+  third-party packages) get the standard JSON format appended, so replies keep a
+  Japanese line for the voice instead of having Chinese text read aloud.
+- Toasts stay above the message input as it grows, and only their action button
+  takes clicks, so retyping after an error no longer opens settings by accident.
+- Portable builds explain updating by extracting a new package instead of offering
+  a git update.
+
+### Fixed
+- Voiced sentences without their own emotion cue now show the reply's declared
+  emotion on the portrait instead of always falling back to "gentle".
+- Turning automatic voice playback off is saved immediately; a reload no longer
+  turns it back on.
+- Project-relative reference audio resolves against the install root, so a
+  relocated data root or a launch from another working directory still sends an
+  absolute path to GPT-SoVITS.
+- Character rescans run one at a time; lookups keep the last complete catalog during
+  a scan, and a failed scan leaves it intact. Rescanning keeps an unsaved persona
+  draft and the selected model files.
+- Loading older history waits for the current reply, and sending waits for the older
+  history to finish loading.
+
 ## [2.1.0] - 2026-10-14
 
 ### Added

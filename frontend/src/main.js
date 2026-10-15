@@ -17,7 +17,10 @@ import { voiceSupported, recorderSupported, audioStore } from './voice.js';
 import { fetchAndCacheAudio, putCachedAudioBlob } from './cache.js';
 import { streamAudioController } from './audio_player.js';
 import { portraitStage } from './portrait.js';
-import { renderSessionList, renderMessages, createMessageEl, createTypingEl, showToast } from './ui.js';
+import {
+  renderSessionList, renderMessages, createMessageEl, createTypingEl, showToast,
+  keepToastsAboveComposer, needsModelSettings,
+} from './ui.js';
 import { initAuthInterceptor } from './auth.js';
 import { initSessionBackup } from './controllers/session_backup.js';
 import { requestJson } from './api.js';
@@ -45,6 +48,7 @@ import {
   openGlobalSettings,
   loadProviders,
   getCurrentActiveProvider,
+  haveProvidersLoaded,
 } from './controllers/global_settings.js';
 import {
   initAudioPlayerUi,
@@ -120,6 +124,8 @@ const dom = {
   gProvider: $('gProvider'),
   gProviderActive: $('gProviderActive'),
   gProviderActiveBadge: $('gProviderActiveBadge'),
+  gAllowPrivateEndpoints: $('gAllowPrivateEndpoints'),
+  gPrivateEndpointsStatus: $('gPrivateEndpointsStatus'),
   gProviderCard: $('gProviderCard'),
   gProviderDescBanner: $('gProviderDescBanner'),
   gProviderDesc: $('gProviderDesc'),
@@ -252,20 +258,25 @@ function updateBadge() {
   const boundProfile = s?.settings?.voiceProfileId
     ? profiles.find((p) => p.id === s.settings.voiceProfileId)
     : null;
-  if (dom.badgeDot) dom.badgeDot.className = `badge-dot ${activeProvider ? 'dot-custom' : 'dot-mock'}`;
+  // Cloud providers cannot answer without a key; say so before the first message fails.
+  const missingKey = Boolean(activeProvider) && activeProvider.id !== 'custom'
+    && !String(activeProvider.api_key || '').trim();
+  if (dom.badgeDot) dom.badgeDot.className = `badge-dot ${activeProvider && !missingKey ? 'dot-custom' : 'dot-mock'}`;
   if (dom.badge) {
     const label = dom.badge.querySelector('.badge-label') || dom.badge.lastChild;
     if (label) {
-      let modelText = '未配置对话模型';
+      let modelText = haveProvidersLoaded() ? '未配置对话模型' : '正在读取模型配置…';
       if (activeProvider && (activeProvider.name || activeProvider.chat_model)) {
         const pName = activeProvider.name || '活跃模型';
         const mName = activeProvider.chat_model || '';
-        modelText = mName ? `${pName} · ${mName}` : pName;
+        modelText = missingKey ? `${pName} · 未填写 API Key` : mName ? `${pName} · ${mName}` : pName;
       }
       label.textContent = boundProfile?.name ? `${modelText} · 🎙️ ${boundProfile.name}` : modelText;
-      dom.badge.title = activeProvider
-        ? `当前模型：${modelText}${boundProfile?.name ? ` | 当前角色：${boundProfile.name}` : ''}（点击配置模型）`
-        : '点击在「全局设置 → 对话模型」中配置模型';
+      dom.badge.title = !activeProvider
+        ? '点击在「全局设置 → 对话模型」中配置模型'
+        : missingKey
+          ? `「${activeProvider.name || activeProvider.id}」尚未填写 API Key，发送消息前请点击这里配置`
+          : `当前模型：${modelText}${boundProfile?.name ? ` | 当前角色：${boundProfile.name}` : ''}（点击配置模型）`;
     }
   }
 }
@@ -330,8 +341,10 @@ function fullRender(animate = false, { scrollToBottom = true } = {}) {
       onPlayVoice: playVoice,
       onResolveJapanese: resolveJapanese,
       onLoadOlder: loadOlderSessionHistory,
+      historyBlocked: busy,
       onOpenModels: () => openGlobalSettings('models'),
       onOpenVoice: openSessionSettings,
+      onRetry: retryFailedMessage,
       autoTranslate: Boolean(state.global.autoTranslate),
     });
     if (scrollToBottom) {
@@ -343,10 +356,18 @@ function fullRender(animate = false, { scrollToBottom = true } = {}) {
 
 function updateComposer() {
   if (dom.sendBtn && dom.input) {
-    dom.sendBtn.disabled = busy || isSessionDeleting(state.activeId) || !dom.input.value.trim();
+    dom.sendBtn.disabled = busy || Boolean(getActive()?.loadingOlder)
+      || isSessionDeleting(state.activeId) || !dom.input.value.trim();
   }
   if (dom.stopBtn) {
     dom.stopBtn.classList.toggle('hidden', !busy);
+  }
+  const moreBtn = dom.messages?.querySelector('.history-more-btn');
+  if (moreBtn) {
+    const loading = Boolean(getActive()?.loadingOlder);
+    moreBtn.disabled = busy || loading;
+    moreBtn.textContent = loading ? '正在加载更早的聊天记录…'
+      : busy ? '回复完成后可查看更早的聊天记录' : '↑ 查看更早的聊天记录';
   }
 }
 
@@ -380,7 +401,7 @@ function interruptAll() {
   stopCurrentVoice();
 }
 
-function sendMessage(rawText, voiceMeta) {
+function sendMessage(rawText, voiceMeta, { retryOf = null } = {}) {
   clearMicTimers();
   const text = (typeof rawText === 'string' ? rawText : dom.input.value).trim();
   if (!text || busy) return;
@@ -390,6 +411,10 @@ function sendMessage(rawText, voiceMeta) {
   }
   const session = getActive();
   if (!session) return;
+  if (session.loadingOlder) {
+    showToast('正在加载更早的聊天记录，完成后即可发送。', 'info');
+    return;
+  }
   if (isSessionDeleting(session.id)) {
     showToast('正在删除这个对话，请稍候或切换到其他对话。', 'info');
     return;
@@ -397,30 +422,38 @@ function sendMessage(rawText, voiceMeta) {
   const originId = session.id;
   ++_syncSessionsGen;
 
-  const prevTitle = session.title;
-  const userMsg = addMessage('user', text);
-  if (session.title !== prevTitle) {
-    persistSession(session).catch(() => {});
-  }
-  if (voiceMeta && userMsg) {
-    audioStore.set(userMsg.id, { url: voiceMeta.url, dur: voiceMeta.dur });
-    userMsg.dur = voiceMeta.dur;
-    if (voiceMeta.blob) {
-      const voiceKey = `user_${userMsg.id}`;
-      putCachedAudioBlob(voiceKey, voiceMeta.blob);
-      userMsg.voiceKey = voiceKey;
-      saveState();
+  let userMsg = retryOf;
+  if (userMsg) {
+    // Resending keeps the message, its position and any recording; only the note goes.
+    delete userMsg.failed;
+    saveState();
+    fullRender(false);
+  } else {
+    const prevTitle = session.title;
+    userMsg = addMessage('user', text);
+    if (session.title !== prevTitle) {
+      persistSession(session).catch(() => {});
     }
-  }
-  dom.input.value = '';
-  autoGrow();
+    if (voiceMeta && userMsg) {
+      audioStore.set(userMsg.id, { url: voiceMeta.url, dur: voiceMeta.dur });
+      userMsg.dur = voiceMeta.dur;
+      if (voiceMeta.blob) {
+        const voiceKey = `user_${userMsg.id}`;
+        putCachedAudioBlob(voiceKey, voiceMeta.blob);
+        userMsg.voiceKey = voiceKey;
+        saveState();
+      }
+    }
+    dom.input.value = '';
+    autoGrow();
 
-  if (!listInner || !listInner.isConnected) fullRender(false);
-  const { el: userEl } = createMessageEl(userMsg, { onPlayVoice: playVoice });
-  userEl.classList.add('animate-in');
-  listInner.classList.remove('is-empty');
-  if (listInner.querySelector('.empty')) listInner.innerHTML = '';
-  listInner.appendChild(userEl);
+    if (!listInner || !listInner.isConnected) fullRender(false);
+    const { el: userEl } = createMessageEl(userMsg, { onPlayVoice: playVoice });
+    userEl.classList.add('animate-in');
+    listInner.classList.remove('is-empty');
+    if (listInner.querySelector('.empty')) listInner.innerHTML = '';
+    listInner.appendChild(userEl);
+  }
   scrollBottom(true);
 
   renderSidebar();
@@ -548,7 +581,7 @@ function sendMessage(rawText, voiceMeta) {
   };
 
   const onEnd = (finalText, meta = {}) => {
-    const { cancelled = false, error = null, audioUrls = [] } = meta;
+    const { cancelled = false, error = null, errorCode = null, audioUrls = [] } = meta;
     typing.remove();
     cancelStream = null;
     let stored = null;
@@ -601,12 +634,15 @@ function sendMessage(rawText, voiceMeta) {
       origin.messages.push(msgPayload);
       origin.updatedAt = Date.now();
     }
+    // No reply text arrived: note the reason under the message so it outlives the toast.
+    const failedInline = Boolean(error && !stored && origin?.messages.includes(userMsg));
+    if (failedInline) userMsg.failed = { error, code: errorCode };
     saveState();
     busy = false;
+    if (failedInline && originId === state.activeId) fullRender(false);
     updateComposer();
-    if (error) {
-      const needModelConfig = /模型|密钥|Key|Provider|401|403|未配置/i.test(error);
-      showToast(error, 'error', needModelConfig ? {
+    if (error && !(failedInline && originId === state.activeId)) {
+      showToast(error, 'error', needsModelSettings(error, errorCode) ? {
         actionLabel: '配置对话模型',
         onAction: () => openGlobalSettings('models'),
       } : null);
@@ -690,6 +726,17 @@ function sendMessage(rawText, voiceMeta) {
   });
 }
 
+/** 重新发送最后一条未收到回复的消息：原消息保留在原处，只重新请求回复。 */
+function retryFailedMessage(msg) {
+  const session = getActive();
+  if (!session || !msg?.failed || session.messages[session.messages.length - 1] !== msg) return;
+  if (busy) {
+    showToast('当前回复完成后即可重新发送。', 'info');
+    return;
+  }
+  sendMessage(msg.content, null, { retryOf: msg });
+}
+
 /* ---------- 会话操作 ---------- */
 function mapBackendMessage(bm) {
   return {
@@ -726,6 +773,10 @@ async function loadSessionHistory(session) {
 
 async function loadOlderSessionHistory(session) {
   if (!session || session.loadingOlder) return;
+  if (busy) {
+    showToast('回复完成后即可查看更早的聊天记录。', 'info');
+    return;
+  }
   const beforeId = Number.isInteger(session.oldestMessageId)
     ? session.oldestMessageId
     : earliestServerMessageId(session.messages);
@@ -735,6 +786,7 @@ async function loadOlderSessionHistory(session) {
     return;
   }
   session.loadingOlder = true;
+  updateComposer();
   if (getActive() === session) fullRender(false, { scrollToBottom: false });
   const prevScrollHeight = dom.messages ? dom.messages.scrollHeight : 0;
   const prevScrollTop = dom.messages ? dom.messages.scrollTop : 0;
@@ -757,6 +809,7 @@ async function loadOlderSessionHistory(session) {
     showToast(`加载更早消息失败：${e.message}`, 'error');
   } finally {
     session.loadingOlder = false;
+    updateComposer();
     if (getActive() === session) {
       fullRender(false, { scrollToBottom: false });
       if (dom.messages) {
@@ -865,6 +918,7 @@ if (dom.composer) {
     e.preventDefault();
     sendMessage();
   });
+  keepToastsAboveComposer(dom.composer.closest('.composer-wrap'));
 }
 if (dom.input) {
   dom.input.addEventListener('input', () => {

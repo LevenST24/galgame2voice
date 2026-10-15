@@ -275,6 +275,13 @@ class TestResult(BaseModel):
 ProviderTestResult = TestResult
 
 
+class MissingApiKeyError(ValueError):
+    """Raised before any request when a provider that requires an API key has none configured."""
+
+    def __init__(self) -> None:
+        super().__init__("Authentication error: API key is not configured")
+
+
 class BaseLLMAdapter(ABC):
     """
     Abstract Base Class for Large Language Model Adapters.

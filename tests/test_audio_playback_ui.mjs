@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test, beforeEach, afterEach } from 'node:test';
 import { playAiVoice, playUserVoice, playSingleAudio, synthesizeAiVoice, stopCurrentVoice, getCurrentVoice, initAudioPlayerUi } from '../frontend/src/controllers/audio_player_ui.js';
 import { streamAudioController } from '../frontend/src/audio_player.js';
-import { state } from '../frontend/src/store.js';
+import { state, loadState } from '../frontend/src/store.js';
 import { clearMemAudioCache } from '../frontend/src/cache.js';
 import { portraitStage } from '../frontend/src/portrait.js';
 
@@ -82,6 +82,23 @@ test('cancelled user-recording cache reads cannot steal playback', async () => {
   const pending = playUserVoice({ id: 'recording', role: 'user', voiceKey: 'user_recording' }, control());
   await tick(); stopCurrentVoice(); gate.resolve({ match: async () => new Response(blob()) }); await pending;
   assert.equal(plays, 0);
+});
+test('the auto-play toggle is saved immediately so a reload keeps the choice', () => {
+  const saved = new Map();
+  globalThis.localStorage = { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) };
+  let click;
+  const button = {
+    addEventListener: (type, fn) => { if (type === 'click') click = fn; },
+    classList: { toggle() {} }, setAttribute() {}, title: '',
+  };
+  loadState(); // start from this test's storage, as a freshly opened page would
+  initAudioPlayerUi({ voiceModeBtn: button }, {});
+  state.global.voiceMode = true;
+  click();
+  const stored = JSON.parse(saved.get('gal2voice.chat.v1'));
+  assert.equal(stored.global.voiceMode, false);
+  click();
+  assert.equal(JSON.parse(saved.get('gal2voice.chat.v1')).global.voiceMode, true);
 });
 test('a rejected browser play releases ownership so the next click can retry', async () => {
   const ctl = control();

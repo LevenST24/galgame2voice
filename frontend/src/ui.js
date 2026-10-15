@@ -78,6 +78,16 @@ export function showToast(message, type = 'info', options = null) {
   }, duration);
 }
 
+/** Toast 停在输入区上方：输入框随内容长高时同步避让，不遮挡输入框也不拦截点击。 */
+export function keepToastsAboveComposer(composerArea) {
+  if (!composerArea || typeof ResizeObserver !== 'function') return;
+  const apply = () => document.documentElement.style.setProperty(
+    '--composer-clearance', `${Math.ceil(composerArea.getBoundingClientRect().height)}px`,
+  );
+  new ResizeObserver(apply).observe(composerArea);
+  apply();
+}
+
 export function renderSessionList(container, { sessions, activeId, onSelect, onDelete }) {
   container.innerHTML = '';
   const frag = document.createDocumentFragment();
@@ -230,7 +240,40 @@ function buildVoiceBar({ dur, kind, seed, onToggle }) {
   return bar;
 }
 
-export function createMessageEl(msg, { streaming = false, onPlayVoice, onResolveJapanese, autoTranslate = false } = {}) {
+/** 失败是否需要去「对话模型」处理：后端给出错误码时按码判断，频率超限只需稍后重试。 */
+export function needsModelSettings(error, code = null) {
+  if (code) return !/RATE_LIMIT$/.test(code);
+  return /模型|密钥|Key|Provider|401|403|未配置/i.test(error || '');
+}
+
+/** 未收到回复的用户消息：把原因留在消息下方，Toast 消失后仍能看到并重新发送。 */
+function buildFailureNote(msg, { onRetry, onOpenModels } = {}) {
+  const note = document.createElement('div');
+  note.className = 'msg-failure';
+  note.setAttribute('role', 'status');
+  const text = document.createElement('p');
+  text.className = 'msg-failure-text';
+  text.textContent = `未收到回复：${msg.failed.error}`;
+  note.appendChild(text);
+  const actions = document.createElement('div');
+  actions.className = 'msg-failure-actions';
+  const addAction = (label, onClick) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'msg-failure-btn';
+    btn.textContent = label;
+    btn.addEventListener('click', onClick);
+    actions.appendChild(btn);
+  };
+  if (typeof onRetry === 'function') addAction('重新发送', () => onRetry(msg));
+  if (typeof onOpenModels === 'function' && needsModelSettings(msg.failed.error, msg.failed.code)) {
+    addAction('配置对话模型', () => onOpenModels());
+  }
+  if (actions.children.length) note.appendChild(actions);
+  return note;
+}
+
+export function createMessageEl(msg, { streaming = false, onPlayVoice, onResolveJapanese, autoTranslate = false, onRetry, onOpenModels } = {}) {
   const el = document.createElement('article');
   el.className = `msg ${msg.role}`;
 
@@ -363,6 +406,10 @@ export function createMessageEl(msg, { streaming = false, onPlayVoice, onResolve
     }
   }
   el.appendChild(bubble);
+  if (msg.role === 'user' && typeof msg.failed?.error === 'string') {
+    el.classList.add('has-failure');
+    el.appendChild(buildFailureNote(msg, { onRetry, onOpenModels }));
+  }
 
   return { el, contentEl: content, voiceCtl: bubble.querySelector('.voice-bar')?.voiceControl || null };
 }
@@ -410,7 +457,7 @@ function buildEmptyState({ onOpenModels, onOpenVoice } = {}) {
   return empty;
 }
 
-export function renderMessages(container, session, { animate = false, onPick, onPlayVoice, onResolveJapanese, onLoadOlder, onOpenModels, onOpenVoice, autoTranslate = false } = {}) {
+export function renderMessages(container, session, { animate = false, onPick, onPlayVoice, onResolveJapanese, onLoadOlder, onOpenModels, onOpenVoice, onRetry, autoTranslate = false, historyBlocked = false } = {}) {
   container.innerHTML = '';
   const inner = document.createElement('div');
   inner.className = 'messages-inner';
@@ -426,14 +473,20 @@ export function renderMessages(container, session, { animate = false, onPick, on
       const moreBtn = document.createElement('button');
       moreBtn.type = 'button';
       moreBtn.className = 'btn ghost history-more-btn';
-      moreBtn.disabled = Boolean(session.loadingOlder);
-      moreBtn.textContent = session.loadingOlder ? '正在加载更早的聊天记录…' : '↑ 查看更早的聊天记录';
+      moreBtn.disabled = historyBlocked || Boolean(session.loadingOlder);
+      moreBtn.textContent = session.loadingOlder ? '正在加载更早的聊天记录…'
+        : historyBlocked ? '回复完成后可查看更早的聊天记录' : '↑ 查看更早的聊天记录';
       moreBtn.addEventListener('click', () => onLoadOlder(session));
       moreWrap.appendChild(moreBtn);
       frag.appendChild(moreWrap);
     }
+    const lastIdx = session.messages.length - 1;
     session.messages.forEach((m, idx) => {
-      const { el } = createMessageEl(m, { onPlayVoice, onResolveJapanese, autoTranslate });
+      // Only the latest message can be resent; older failures stay as a record.
+      const { el } = createMessageEl(m, {
+        onPlayVoice, onResolveJapanese, autoTranslate, onOpenModels,
+        onRetry: idx === lastIdx ? onRetry : undefined,
+      });
       if (animate) {
         el.classList.add('animate-in');
         el.style.setProperty('--i', Math.min(idx, 10));

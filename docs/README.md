@@ -23,6 +23,7 @@ npm run deploy
 - [项目架构与接口](development/PROJECT.md)。
 - [测试规范](development/TEST_INFRA.md)。
 - [测试运行说明](development/TEST_READY.md)。
+- [Windows 发布验收](development/RELEASE_ACCEPTANCE.md)。
 - [立绘坐标与导出](development/PORTRAIT_EXPORT.md)。
 
 根目录保留 Python、Git、Docker 和启动脚本的标准配置位置，避免改变启动、安装及 CI 的行为。

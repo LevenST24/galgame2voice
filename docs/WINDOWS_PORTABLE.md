@@ -8,6 +8,7 @@
 2. 将完整目录放到有写入权限的位置，例如“文档”；不要只复制 exe，也不要放到 Program Files。
 3. 双击 `启动.bat` 或 `Galgame2Voice.exe`。浏览器会在服务就绪后自动打开。
 4. 在全局设置中填写自己使用的对话模型服务地址、API Key 和模型名称。
+   使用 Ollama、LM Studio 或局域网模型时，先在“对话模型”中开启“允许私网 LLM 端点”，等待连接范围保存成功，再测试并启用模型。此选项默认关闭；只填写你信任的服务地址。
 5. 如需角色语音，先准备包含运行环境的 GPT-SoVITS 完整引擎包与自己有权使用的模型。
    引擎下载入口见 [GPT-SoVITS 官方 Windows 安装说明](https://github.com/RVC-Boss/GPT-SoVITS#windows)，选择包含运行环境的集成包。
    在“全局设置 → 语音服务”中点击“选择文件夹”，选择包含 `api_v2.py` 的引擎目录，再点击“保存目录”。随后在“运行状态”中启动或重启引擎，无需编辑配置文件。
@@ -79,6 +80,7 @@ Windows 凭据使用 DPAPI，换 Windows 用户或另一台电脑时，原加密
 ```powershell
 uv sync --frozen --extra desktop
 uv run --frozen --extra desktop python scripts/build_windows_portable.py
+uv run --frozen --extra desktop python scripts/verify_windows_portable.py dist/galgame2voice-v2.1.0-windows-x64.zip
 uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/galgame2voice-v2.1.0-windows-x64.zip
 ```
 

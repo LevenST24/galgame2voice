@@ -114,7 +114,8 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 - `POST /api/providers/{id}/activate`: Sets `is_active = 1` for provider and deactivates others.
 
 ### Error Diagnostics Contract
-- `galgame2voice/utils/error_diagnostics.py`: `format_provider_error(provider_id: str, status_code: int, raw_error: str) -> dict`: Translates HTTP 400 (xAI invalid key, Gemini invalid key), 401 (unauthorized), 403 (region restriction / permission), 404 (model not found), 429 (rate/quota limit), timeouts, and connection errors into user-friendly Chinese recommendations. Eliminates raw tracebacks and secret leakage.
+- `galgame2voice/utils/error_diagnostics.py`: `format_provider_error(provider_id: str, status_code: int, raw_error: str, api_key_configured: bool | None = None) -> dict`: Translates HTTP 400 (xAI invalid key, Gemini invalid key), 401 (unauthorized), 403 (region restriction / permission), 404 (model not found), 429 (rate/quota limit), timeouts, and connection errors into user-friendly Chinese recommendations. Eliminates raw tracebacks and secret leakage.
+- `chat_error_payload(exc, provider_id, api_key_configured) -> dict`: the SSE `error` event data for a failed reply: `{"error": "<中文原因>：<下一步>", "error_code": ..., "status_code": ...}`. Configuration problems are diagnosed before provider-specific ones: `API_KEY_MISSING` (no key, or an authentication failure while no key is configured) and `PRIVATE_ENDPOINT_BLOCKED` (the URL guard refused a loopback/LAN address). The console uses `error_code` to offer the model settings; only `*RATE_LIMIT` codes omit that shortcut.
 
 ### Settings Schema Contract
 - `SettingsBase`, `SettingsUpdate`, `SettingsResponse`: Contain `stt_engine: Optional[str] = "browser"` and `telegram_chat_id: Optional[str] = None` (aliased to `telegram_admin_ids`).

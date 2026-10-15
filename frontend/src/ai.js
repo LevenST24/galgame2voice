@@ -19,6 +19,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
   let reader = null;
   let timedOut = false;
   let audioError = null;
+  let errorCode = null;
   const withDeadline = async (operation) => {
     let timer;
     let abort;
@@ -50,6 +51,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
     onEnd(acc, {
       cancelled: Boolean(cancelled),
       error: error || null,
+      errorCode: error ? errorCode : null,
       audioError,
       japanese: fullJapanese || jaSentences.join(''),
       audioUrls: [...audioUrls],
@@ -163,6 +165,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             audioError ||= getErrorMessage(json, '本轮角色语音暂不可用，文字回复已保留。请在「全局设置 → 运行状态」启动引擎，或切换 CPU 稳定模式后重试。');
             console.warn('[streamChat] audio chunk error:', json.error, json.sentence);
           } else if (eventName === 'error') {
+            errorCode = typeof json.error_code === 'string' ? json.error_code : null;
             finish(false, getErrorMessage(json, '对话暂时未完成，请检查「全局设置」中的模型地址、密钥与模型名称，再重新发送消息。'));
             return;
           } else if (eventName === 'done') {

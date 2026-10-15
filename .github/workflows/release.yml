@@ -78,6 +78,8 @@ jobs:
       - name: Test the extracted portable application
         run: |
           $archive = Get-ChildItem -LiteralPath dist -Filter '*-windows-x64.zip' | Select-Object -First 1
+          uv run --frozen --extra desktop --no-dev python scripts/verify_windows_portable.py $archive.FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           uv run --frozen --extra desktop --no-dev python scripts/smoke_windows_portable.py $archive.FullName
       - name: Upload Windows portable package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

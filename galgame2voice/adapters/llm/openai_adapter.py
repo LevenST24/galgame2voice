@@ -13,6 +13,7 @@ from galgame2voice.adapters.base import (
     BaseLLMAdapter,
     ChatMessage,
     LLMResponse,
+    MissingApiKeyError,
     TestResult,
     TRANSIENT_STATUS_CODES,
     TRANSIENT_NETWORK_EXCEPTIONS,
@@ -121,7 +122,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
     def _validate_credentials(self) -> None:
         """Validates that an API key is present."""
         if not self.api_key:
-            raise ValueError("Authentication error: Invalid API key")
+            raise MissingApiKeyError()
 
     @property
     def _is_gemini(self) -> bool:
@@ -534,6 +535,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         t0 = time.perf_counter()
         test_model = self._resolve_test_model(model)
         url = f"{self.base_url}/models"
+        from galgame2voice.security.url_guard import assert_llm_url_safe
+        await assert_llm_url_safe(url, allow_private=bool(self.extra_config.get("allow_private", False)))
         headers = self._get_headers()
         provider_id = (
             self.extra_config.get("provider_id")
@@ -607,6 +610,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             return [m["id"] for m in data.get("data", []) if "id" in m]
 
         url = f"{self.base_url}/models"
+        from galgame2voice.security.url_guard import assert_llm_url_safe
+        await assert_llm_url_safe(url, allow_private=bool(self.extra_config.get("allow_private", False)))
         headers = self._get_headers()
 
         async with create_async_client(timeout=10.0) as client:

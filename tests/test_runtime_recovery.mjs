@@ -4,7 +4,9 @@ import { streamChat } from '../frontend/src/ai.js';
 import { waitForEngine } from '../frontend/src/controllers/engine_recovery.js';
 import { saveConfirmedConfig } from '../frontend/src/controllers/config_recovery.js';
 import { ensureSessionVoice, initVoiceSettings } from '../frontend/src/controllers/voice_settings.js';
-import { initGlobalSettings, loadGlobalConfig, saveGlobalConfig, handleRestartSovits } from '../frontend/src/controllers/global_settings.js';
+import { initGlobalSettings, loadGlobalConfig, saveGlobalConfig, handleRestartSovits, savePrivateEndpointPreference, handleProviderTest, handleActivateProvider } from '../frontend/src/controllers/global_settings.js';
+import { renderSystemVersionUI, initUpdateManager, handleCheckUpdate, handleApplyUpdate } from '../frontend/src/controllers/update_manager.js';
+import { formatUpdateStatus } from '../frontend/src/settings.js';
 
 let passed = 0;
 const response = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
@@ -246,5 +248,102 @@ const cfg = (speed) => ({ status: 'ok', settings: { speed_factor: speed } });
     assert.equal(classes.has('hidden'), true); assert.equal(error.textContent, '');
     assert.equal(backend.textContent, '运行正常'); passed++;
   } finally { document.getElementById = previousLookup; }
+}
+function endpointDom() {
+  return { gAllowPrivateEndpoints: element(), gPrivateEndpointsStatus: element(),
+    gProvider: element('custom'), gProviderTest: element(), gProviderActivate: element() };
+}
+{
+  const dom = endpointDom(); initGlobalSettings(dom);
+  const methods = [];
+  globalThis.fetch = async (_url, options) => { methods.push(options.method || 'GET'); return response({ settings: {} }); };
+  await loadGlobalConfig();
+  assert.equal(dom.gAllowPrivateEndpoints.checked, false);
+  assert.deepEqual(methods, ['GET'], 'opening settings must not enable private endpoints'); passed++;
+}
+for (const allowed of [true, false]) {
+  const dom = endpointDom(); initGlobalSettings(dom);
+  globalThis.fetch = async () => response({ settings: { allow_private_llm_endpoints: !allowed } });
+  await loadGlobalConfig();
+  assert.equal(dom.gAllowPrivateEndpoints.checked, !allowed);
+  const writes = [];
+  globalThis.fetch = async (url, options) => { writes.push({ url, body: JSON.parse(options.body) }); return response({}); };
+  dom.gAllowPrivateEndpoints.checked = allowed;
+  dom.gAllowPrivateEndpoints.change('change'); await tick();
+  assert.deepEqual(writes, [{ url: '/api/config', body: { allow_private_llm_endpoints: allowed } }]);
+  assert.equal(dom.gAllowPrivateEndpoints.checked, allowed);
+  assert.equal(dom.gAllowPrivateEndpoints.disabled, false);
+  assert.match(dom.gPrivateEndpointsStatus.textContent, /已保存/); passed++;
+}
+{
+  const dom = endpointDom(); initGlobalSettings(dom);
+  globalThis.fetch = async () => response({ settings: { allow_private_llm_endpoints: true } });
+  await loadGlobalConfig();
+  globalThis.fetch = async () => response({ detail: '验收：配置目录不可写' }, 400);
+  dom.gAllowPrivateEndpoints.checked = false;
+  await savePrivateEndpointPreference();
+  assert.equal(dom.gAllowPrivateEndpoints.checked, true, 'a rejected save must restore the confirmed setting');
+  assert.equal(dom.gAllowPrivateEndpoints.disabled, false);
+  assert.match(dom.gPrivateEndpointsStatus.textContent, /尚未确认保存/); passed++;
+}
+{
+  const dom = endpointDom(); initGlobalSettings(dom);
+  let complete;
+  globalThis.fetch = () => new Promise(resolve => { complete = resolve; });
+  const loading = loadGlobalConfig();
+  globalThis.fetch = async () => response({});
+  dom.gAllowPrivateEndpoints.checked = true;
+  await savePrivateEndpointPreference();
+  complete(response({ settings: { allow_private_llm_endpoints: false } })); await loading;
+  assert.equal(dom.gAllowPrivateEndpoints.checked, true, 'an older config response must not undo the saved choice'); passed++;
+}
+{
+  const dom = endpointDom(); initGlobalSettings(dom);
+  let complete, writes = 0;
+  globalThis.fetch = () => { writes++; return new Promise(resolve => { complete = resolve; }); };
+  dom.gAllowPrivateEndpoints.checked = true;
+  const pending = savePrivateEndpointPreference();
+  assert.equal(dom.gAllowPrivateEndpoints.disabled, true);
+  await savePrivateEndpointPreference(); await handleProviderTest(); await handleActivateProvider();
+  assert.equal(writes, 1, 'test and activation must wait for the connection scope to be confirmed');
+  complete(response({})); await pending;
+  assert.equal(dom.gAllowPrivateEndpoints.disabled, false); passed++;
+}
+{
+  const dom = endpointDom(); initGlobalSettings(dom);
+  const methods = [];
+  globalThis.fetch = async (_url, options) => {
+    methods.push(options.method || 'GET');
+    if (options.method === 'POST') throw new TypeError('Lost acknowledgement');
+    return response({ settings: { allow_private_llm_endpoints: true } });
+  };
+  dom.gAllowPrivateEndpoints.checked = true;
+  await savePrivateEndpointPreference();
+  assert.equal(dom.gAllowPrivateEndpoints.checked, true);
+  assert.match(dom.gPrivateEndpointsStatus.textContent, /已保存/);
+  assert.deepEqual(methods, ['POST', 'GET']); passed++;
+}
+{
+  const dom = Object.fromEntries(['gDashVersionCommit', 'gDashVersionBranch', 'gDashVersionBadge',
+    'gRemoteStatusTag', 'gBtnApplyUpdate', 'gBtnApplyUpdateText', 'gBtnCheckUpdate', 'gBtnCheckUpdateText',
+    'gUpdateNoticeBox', 'gUpdateNoticeTitle', 'gUpdateNoticeDesc', 'gUpdateNoticeIcon'].map(name => {
+    const el = element(); el.classList = { add() {}, remove() {} }; return [name, el];
+  }));
+  initUpdateManager(dom);
+  const portable = { current_version: '2.1.0', current_branch: 'portable', has_update: false,
+    error: 'Windows 便携版请下载新版完整发布包更新' };
+  assert.equal(formatUpdateStatus(portable).canUpdate, false);
+  renderSystemVersionUI(portable);
+  assert.equal(dom.gBtnApplyUpdate.disabled, true);
+  assert.equal(dom.gRemoteStatusTag.textContent, 'Windows 便携版');
+  assert.equal(dom.gDashVersionBadge.textContent, '便携版');
+  assert.match(dom.gUpdateNoticeDesc.textContent, /data、audio、characters/); passed++;
+  let requests = 0;
+  globalThis.fetch = async () => { requests++; throw new Error('portable must not invoke Git updates'); };
+  await handleCheckUpdate(); await handleApplyUpdate();
+  assert.equal(requests, 0); passed++;
+  renderSystemVersionUI({ current_branch: 'main', current_version: 'abc', has_update: true, behind_count: 2 });
+  assert.equal(dom.gBtnApplyUpdate.disabled, false);
+  assert.match(dom.gBtnApplyUpdateText.textContent, /2 个新提交/); passed++;
 }
 console.log(`Runtime recovery: ${passed} scenarios passed`);

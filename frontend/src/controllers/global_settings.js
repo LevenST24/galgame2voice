@@ -23,11 +23,15 @@ let _callbacks = {};
 let cachedProviders = [];
 let cachedPresets = [];
 let currentActiveProvider = null;
+let providersLoaded = false;
 let engineDirectory = null;
 let configDirty = false;
 let configRevision = 0;
 let configLoad = 0;
 let restarting = false;
+let privateEndpointRevision = 0;
+let privateEndpointSaved = false;
+let privateEndpointSaving = false;
 const CONFIG_FIELDS = ['gParamSovitsUrl', 'gPrecision', 'gParamSliceMethod', 'gParamSpeed', 'gParamTopK',
   'gParamTopP', 'gParamTemp', 'gParamFragmentInterval', 'gAudioRetention', 'gSttEngine', 'gTgEnabled',
   'gTgToken', 'gTgChatId', 'gTgProxyHost', 'gTgProxyPort', 'gTgProxyEnabled', 'gMemoryEnabled',
@@ -37,12 +41,21 @@ export function getCurrentActiveProvider() {
   return currentActiveProvider;
 }
 
+/** 模型列表是否已读取过（成功或失败）；之前没有活跃模型不代表「未配置」。 */
+export function haveProvidersLoaded() {
+  return providersLoaded;
+}
+
 export function initGlobalSettings(dom, callbacks = {}) {
   _dom = dom;
   _callbacks = callbacks;
   configDirty = false;
   configRevision = 0;
   configLoad = 0;
+  privateEndpointRevision += 1;
+  privateEndpointSaved = false;
+  privateEndpointSaving = false;
+  dom.gAllowPrivateEndpoints?.addEventListener('change', savePrivateEndpointPreference);
   CONFIG_FIELDS.forEach((field) => {
     for (const event of ['input', 'change']) dom[field]?.addEventListener(event, () => {
       configDirty = true;
@@ -248,6 +261,7 @@ export async function loadProviders() {
 
     const active = cachedProviders.find((p) => p.is_active);
     currentActiveProvider = active || null;
+    providersLoaded = true;
     if (_callbacks.updateBadge) _callbacks.updateBadge();
 
     const presetOrder = ['gemini', 'openai', 'anthropic', 'deepseek', 'xai', 'siliconflow', 'glm', 'qwen', 'custom'];
@@ -313,6 +327,10 @@ export async function loadProviders() {
     onProviderChange();
   } catch (e) {
     console.error('Failed to load providers:', e);
+    if (!providersLoaded) {
+      providersLoaded = true;
+      if (_callbacks.updateBadge) _callbacks.updateBadge();
+    }
     if (cachedProviders.length || _dom.gApiKey?.value || _dom.gBaseUrl?.value) {
       if (_dom.gProvider) _dom.gProvider.innerHTML = previousOptions;
       showToast(`列表暂时无法刷新，当前输入已保留：${e.message}`, 'error');
@@ -483,8 +501,43 @@ export function onChatModelSelectChange() {
   }
 }
 
+export async function savePrivateEndpointPreference() {
+  if (!_dom.gAllowPrivateEndpoints || privateEndpointSaving) return;
+  const revision = ++privateEndpointRevision;
+  const dom = _dom;
+  const allowed = dom.gAllowPrivateEndpoints.checked;
+  privateEndpointSaving = true;
+  dom.gAllowPrivateEndpoints.disabled = true;
+  if (dom.gPrivateEndpointsStatus) dom.gPrivateEndpointsStatus.textContent = '正在保存连接范围…';
+  try {
+    await saveConfirmedConfig({ allow_private_llm_endpoints: allowed });
+    if (revision !== privateEndpointRevision) return;
+    privateEndpointSaved = allowed;
+    if (dom.gPrivateEndpointsStatus) dom.gPrivateEndpointsStatus.textContent = allowed
+      ? '已保存：允许连接你填写的本机或局域网模型地址。仅填写你信任的服务地址。'
+      : '已保存：仅允许公网模型地址。本机或局域网模型需要先开启此选项。';
+  } catch (error) {
+    if (revision !== privateEndpointRevision) return;
+    dom.gAllowPrivateEndpoints.checked = privateEndpointSaved;
+    if (dom.gPrivateEndpointsStatus) dom.gPrivateEndpointsStatus.textContent = `连接范围尚未确认保存，已恢复上次确认的选择。请重试：${error.message}`;
+    showToast(`连接范围保存失败：${error.message}`, 'error');
+  } finally {
+    if (revision === privateEndpointRevision) {
+      privateEndpointSaving = false;
+      dom.gAllowPrivateEndpoints.disabled = false;
+    }
+  }
+}
+
+function connectionPreferencePending() {
+  if (!privateEndpointSaving) return false;
+  showToast('正在保存模型连接范围，请完成后再测试或启用模型。', 'info');
+  return true;
+}
+
 export async function handleProviderTest() {
   if (!_dom.gProviderTest || !_dom.gProvider) return;
+  if (connectionPreferencePending()) return;
   _dom.gProviderTest.disabled = true;
   const origHtml = _dom.gProviderTest.innerHTML;
   _dom.gProviderTest.innerHTML =
@@ -551,6 +604,7 @@ export async function handleProviderTest() {
 
 export async function handleActivateProvider() {
   if (!_dom.gProviderActivate || !_dom.gProvider) return;
+  if (connectionPreferencePending()) return;
   _dom.gProviderActivate.disabled = true;
   const origHtml = _dom.gProviderActivate.innerHTML;
   _dom.gProviderActivate.innerHTML =
@@ -724,6 +778,7 @@ export async function loadGlobalConfig() {
   engineDirectory?.load();
   const revision = configRevision;
   const load = ++configLoad;
+  const privateRevision = privateEndpointRevision;
   try {
     const fetchVoice = _callbacks.fetchVoiceProfiles
       ? _callbacks.fetchVoiceProfiles().catch(() => null)
@@ -733,6 +788,13 @@ export async function loadGlobalConfig() {
     const configError = $('gConfigError');
     if (configError) { configError.textContent = ''; configError.classList.add('hidden'); }
     const s = cfg.settings || {};
+    if (privateRevision === privateEndpointRevision && !privateEndpointSaving) {
+      privateEndpointSaved = Boolean(s.allow_private_llm_endpoints);
+      if (_dom.gAllowPrivateEndpoints) _dom.gAllowPrivateEndpoints.checked = privateEndpointSaved;
+      if (_dom.gPrivateEndpointsStatus) _dom.gPrivateEndpointsStatus.textContent = privateEndpointSaved
+        ? '已允许本机或局域网模型。更改后自动保存；仅填写你信任的服务地址。'
+        : '使用 Ollama、LM Studio 或局域网模型时开启；更改后自动保存。仅填写你信任的服务地址。';
+    }
     const provider = cfg.active_provider;
     const voiceProfiles = _callbacks.getVoiceProfiles ? _callbacks.getVoiceProfiles() : [];
     const activeProfileId = _callbacks.getActiveProfileId ? _callbacks.getActiveProfileId() : null;

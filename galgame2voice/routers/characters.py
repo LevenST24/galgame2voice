@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 import aiosqlite
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -145,18 +145,24 @@ async def list_characters(
     summary="Rescan Character Packages",
     description="Re-discovers character packages in characters/ and synchronizes them with SQLite voice_profiles without restarting the server.",
 )
-async def rescan_character_packages() -> dict[str, Any]:
+async def rescan_character_packages(request: Request) -> dict[str, Any]:
     try:
-        char_mgr = get_character_manager()
-        discovered = await asyncio.to_thread(char_mgr.discover_characters)
-        async with get_db() as conn:
-            synced = await char_mgr.sync_with_db(conn)
-            profiles = await crud.list_voice_profiles(conn)
-            active = await crud.get_active_voice_profile(conn)
-        from galgame2voice.routers.voice import _scan_cache
-        generation = _scan_cache.get("generation", 0) + 1
-        _scan_cache.clear()
-        _scan_cache["generation"] = generation
+        # Keep scan, DB synchronization and cache invalidation in request order.
+        # Store the lock on the app so tests/apps with separate loops do not share it.
+        lock = getattr(request.app.state, "character_rescan_lock", None)
+        if lock is None:
+            lock = request.app.state.character_rescan_lock = asyncio.Lock()
+        async with lock:
+            char_mgr = get_character_manager()
+            discovered = await asyncio.to_thread(char_mgr.discover_characters)
+            async with get_db() as conn:
+                synced = await char_mgr.sync_with_db(conn)
+                profiles = await crud.list_voice_profiles(conn)
+                active = await crud.get_active_voice_profile(conn)
+            from galgame2voice.routers.voice import _scan_cache
+            generation = _scan_cache.get("generation", 0) + 1
+            _scan_cache.clear()
+            _scan_cache["generation"] = generation
         return {
             "status": "ok",
             "discovered_count": len(discovered),

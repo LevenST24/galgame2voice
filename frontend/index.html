@@ -477,6 +477,10 @@
               <input id="gBaseUrl" placeholder="https://api.openai.com/v1" autocomplete="off" spellcheck="false" />
               <small class="field-tip" id="gBaseUrlTip">支持本地反代、Cloudflare Workers 中转或私有网关。</small>
             </div>
+            <div class="field">
+              <label class="check-line"><input type="checkbox" id="gAllowPrivateEndpoints" aria-describedby="gPrivateEndpointsStatus" /> 允许私网 LLM 端点（本机 / 局域网模型）</label>
+              <small id="gPrivateEndpointsStatus" role="status">使用 Ollama、LM Studio 或局域网模型时开启；更改后自动保存。仅填写你信任的服务地址。</small>
+            </div>
 
             <!-- 对话模型选择项（预设下拉 + 自定义输入结合） -->
             <div class="field" id="gChatModelField">
@@ -598,7 +602,7 @@
                 <div class="update-title-group">
                   <span class="update-icon-badge"><svg class="icon"><use href="#i-git-branch"></use></svg></span>
                   <div>
-                    <h3 class="update-title-text">系统版本与 GitHub 更新</h3>
+                    <h3 class="update-title-text">程序版本与更新</h3>
                     <p class="update-subtitle-text">查看当前版本、检查更新，并备份聊天记录。</p>
                   </div>
                 </div>
@@ -611,11 +615,11 @@
                   <span class="update-meta-val font-mono" id="gCurrentCommit">-</span>
                 </div>
                 <div class="update-meta-item">
-                  <span class="update-meta-label">当前分支</span>
+                  <span class="update-meta-label">安装方式 / 分支</span>
                   <span class="update-meta-val font-mono" id="gCurrentBranch">main</span>
                 </div>
                 <div class="update-meta-item">
-                  <span class="update-meta-label">最后提交时间</span>
+                  <span class="update-meta-label">版本时间</span>
                   <span class="update-meta-val" id="gCurrentDate">-</span>
                 </div>
                 <div class="update-meta-item">
@@ -625,7 +629,7 @@
               </div>
 
               <div class="update-commit-msg-box" id="gCurrentCommitMsg">
-                <span class="commit-msg-label">提交说明:</span>
+                <span class="commit-msg-label">版本说明:</span>
                 <span class="commit-msg-text" id="gCurrentMsgText">-</span>
               </div>
             </div>

@@ -101,6 +101,8 @@ export function initAudioPlayerUi(dom, callbacks = {}) {
   if (_dom.voiceModeBtn) {
     _dom.voiceModeBtn.addEventListener('click', () => {
       state.global.voiceMode = !state.global.voiceMode;
+      // Save now: otherwise a reload restores the previous choice and replies start speaking again.
+      saveState();
       updateVoiceModeUI();
     });
   }

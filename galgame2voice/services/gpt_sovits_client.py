@@ -33,6 +33,7 @@ from galgame2voice.utils.audio_spec import (
     is_silent_audio,
     probe_audio_duration_seconds,
     probe_audio_spec,
+    project_file,
     resolve_reference_audio_path,
     validate_reference_audio,
     wav_is_silent,
@@ -68,8 +69,6 @@ from galgame2voice.utils.japanese_phonetics import (
 )
 
 logger = logging.getLogger("galgame2voice.services.gpt_sovits_client")
-
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 # Backward-compatibility alias
@@ -455,8 +454,9 @@ class GptSovitsClient:
         p = Path(ref_audio)
         if p.is_file():
             return str(_safe_resolve_path(p))
-        if (_PROJECT_ROOT / ref_audio).is_file():
-            return str(_safe_resolve_path(_PROJECT_ROOT / ref_audio))
+        found = project_file(ref_audio)
+        if found is not None:
+            return str(_safe_resolve_path(found))
         return ref_audio
 
     def _build_tts_payload(self, text: str, options: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -56,16 +56,21 @@ export async function loadSystemVersionInfo(checkRemote = false) {
 
 export function renderSystemVersionUI(data) {
   if (!data) return;
+  currentVersionData = data;
+  const portable = data.current_branch === 'portable';
 
   // 1. Dashboard 概览卡片更新
   if (_dom.gDashVersionCommit) {
-    _dom.gDashVersionCommit.textContent = `Commit: ${data.current_version || '-'}`;
+    _dom.gDashVersionCommit.textContent = `${portable ? '版本' : 'Commit'}: ${data.current_version || '-'}`;
   }
   if (_dom.gDashVersionBranch) {
-    _dom.gDashVersionBranch.textContent = `分支: ${data.current_branch || 'main'}`;
+    _dom.gDashVersionBranch.textContent = portable ? 'Windows 便携版' : `分支: ${data.current_branch || 'main'}`;
   }
   if (_dom.gDashVersionBadge) {
-    if (data.has_update) {
+    if (portable) {
+      _dom.gDashVersionBadge.className = 'badge-status-pill badge-pill-gray';
+      _dom.gDashVersionBadge.textContent = '便携版';
+    } else if (data.has_update) {
       _dom.gDashVersionBadge.className = 'badge-status-pill badge-pill-indigo';
       _dom.gDashVersionBadge.textContent = `有更新 (${data.behind_count})`;
     } else {
@@ -94,13 +99,13 @@ export function renderSystemVersionUI(data) {
 
   // 更新提示框
   if (_dom.gUpdateNoticeBox) {
-    if (data.has_update || data.error || (data.commits_log && data.commits_log.length > 0)) {
+    if (portable || data.has_update || data.error || (data.commits_log && data.commits_log.length > 0)) {
       _dom.gUpdateNoticeBox.classList.remove('hidden');
     }
     if (_dom.gUpdateNoticeTitle) _dom.gUpdateNoticeTitle.textContent = statusInfo.title;
     if (_dom.gUpdateNoticeDesc) _dom.gUpdateNoticeDesc.textContent = statusInfo.desc;
     if (_dom.gUpdateNoticeIcon) {
-      _dom.gUpdateNoticeIcon.textContent = data.has_update ? '🚀' : (data.error ? '⚠️' : '✅');
+      _dom.gUpdateNoticeIcon.textContent = portable ? '📦' : data.has_update ? '🚀' : (data.error ? '⚠️' : '✅');
     }
   }
 
@@ -117,6 +122,7 @@ export function renderSystemVersionUI(data) {
 
   // 一键更新按钮显示逻辑
   if (_dom.gBtnApplyUpdate) {
+    _dom.gBtnApplyUpdate.disabled = !statusInfo.canUpdate;
     _dom.gBtnApplyUpdate.classList.remove('hidden');
     if (statusInfo.hasUpdate) {
       _dom.gBtnApplyUpdate.className = 'btn primary';
@@ -126,14 +132,20 @@ export function renderSystemVersionUI(data) {
     } else {
       _dom.gBtnApplyUpdate.className = 'btn secondary';
       if (_dom.gBtnApplyUpdateText) {
-        _dom.gBtnApplyUpdateText.textContent = '一键拉取并更新';
+        _dom.gBtnApplyUpdateText.textContent = portable ? '通过新版便携包更新' : '一键拉取并更新';
       }
     }
   }
+  if (_dom.gBtnCheckUpdateText) _dom.gBtnCheckUpdateText.textContent = portable ? '查看更新说明' : '检查更新';
 }
 
 export async function handleCheckUpdate() {
   if (!_dom.gBtnCheckUpdate) return;
+  if (currentVersionData?.current_branch === 'portable') {
+    renderSystemVersionUI(currentVersionData);
+    showToast(formatUpdateStatus(currentVersionData).desc, 'info');
+    return;
+  }
   _dom.gBtnCheckUpdate.disabled = true;
   const originalText = _dom.gBtnCheckUpdateText ? _dom.gBtnCheckUpdateText.textContent : '检查更新';
   if (_dom.gBtnCheckUpdateText) _dom.gBtnCheckUpdateText.textContent = '正在检查远程...';
@@ -161,6 +173,10 @@ export async function handleCheckUpdate() {
 }
 
 export async function handleApplyUpdate() {
+  if (currentVersionData?.current_branch === 'portable') {
+    showToast(formatUpdateStatus(currentVersionData).desc, 'info');
+    return;
+  }
   const isLatest = currentVersionData && !currentVersionData.has_update;
   const promptText = isLatest
     ? '当前本地版本已是最新。确定要从 GitHub 重新拉取吗？（前端文件无变更时将跳过静态产物构建）'
