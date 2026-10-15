@@ -32,6 +32,7 @@ def format_provider_error(
     provider_id: str | None = None,
     status_code: int | None = None,
     raw_error: str | None = None,
+    api_key_configured: bool | None = None,
 ) -> dict[str, Any]:
     """
     Translates HTTP status code and raw error from a provider into structured
@@ -42,8 +43,66 @@ def format_provider_error(
         provider_id=provider_id,
         status_code=status_code,
         raw_body=raw_error,
+        api_key_configured=api_key_configured,
     )
     return diag.to_dict()
+
+
+def chat_error_payload(
+    exc: Exception | str | None,
+    provider_id: str | None = None,
+    api_key_configured: bool | None = None,
+) -> dict[str, Any]:
+    """
+    SSE `error` payload for a reply the model could not produce: one readable Chinese
+    sentence with the next step, plus a stable `error_code` the console uses to offer
+    the matching settings page.
+    """
+    diag = diagnose_llm_error(exc, provider_id=provider_id, api_key_configured=api_key_configured)
+    return {
+        "error": f"{diag.message}：{diag.guidance}",
+        "error_code": diag.error_code,
+        "status_code": diag.status_code,
+    }
+
+
+def _provider_display_name(provider_id: str | None) -> str:
+    """Preset display name for a provider id, or an empty string when unknown."""
+    if not provider_id:
+        return ""
+    try:
+        from galgame2voice.adapters.registry import get_provider_preset
+
+        preset = get_provider_preset(str(provider_id))
+    except Exception:
+        return ""
+    return str((preset or {}).get("name") or "")
+
+
+def _diagnose_local_configuration(
+    raw_lower: str,
+    sanitized_raw: str,
+    provider_id: str | None,
+    api_key_configured: bool | None,
+) -> DiagnosticResult | None:
+    """Failures caused by this console's own settings rather than by the provider."""
+    if "ssrf/dns-rebinding" in raw_lower or "允许私网 llm 端点" in raw_lower:
+        return DiagnosticResult(
+            error_code="PRIVATE_ENDPOINT_BLOCKED",
+            message="模型地址指向本机或局域网，当前未允许连接",
+            guidance="如果这是你信任的本地模型（如 Ollama、LM Studio），请在「全局设置 → 对话模型」开启「允许私网 LLM 端点」后重试；否则请改用服务商提供的公网地址。",
+            raw_error=sanitized_raw,
+        )
+    auth_failure = any(kw in raw_lower for kw in ("authentication", "unauthorized", "api key", "401"))
+    if "api key is not configured" in raw_lower or (api_key_configured is False and auth_failure):
+        name = _provider_display_name(provider_id)
+        return DiagnosticResult(
+            error_code="API_KEY_MISSING",
+            message=f"尚未填写{f'「{name}」的' if name else ''} API Key",
+            guidance="请打开「全局设置 → 对话模型」填写密钥后重试；使用 Ollama、LM Studio 等本地模型时，请选择「自定义 / 本地模型」。",
+            raw_error=sanitized_raw,
+        )
+    return None
 
 
 def _extract_status_code(status_code: int | None, raw_lower: str) -> int | None:
@@ -374,10 +433,12 @@ def diagnose_llm_error(
     provider_id: str | None = None,
     status_code: int | None = None,
     raw_body: str | None = None,
+    api_key_configured: bool | None = None,
 ) -> DiagnosticResult:
     """
     Inspects exceptions, status codes, and provider context to produce
     a comprehensive DiagnosticResult with actionable Chinese guidance.
+    `api_key_configured=False` turns authentication failures into a missing-key hint.
     """
     p_id = (provider_id or "").strip().lower()
 
@@ -396,7 +457,8 @@ def diagnose_llm_error(
     status_code = _extract_status_code(status_code, raw_lower)
 
     return (
-        _diagnose_transport_fault(exc_type, raw_lower, status_code, sanitized_raw)
+        _diagnose_local_configuration(raw_lower, sanitized_raw, p_id, api_key_configured)
+        or _diagnose_transport_fault(exc_type, raw_lower, status_code, sanitized_raw)
         or _diagnose_model_not_found(raw_lower, status_code, sanitized_raw)
         or _diagnose_provider_specific(p_id, raw_lower, status_code, sanitized_raw)
         or _diagnose_generic_http(raw_lower, status_code, sanitized_raw)

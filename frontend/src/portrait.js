@@ -1,8 +1,10 @@
 /**
  * 角色立绘舞台演出控制器 (Galgame Character Portrait Stage System)
- * 立绘完全由角色包内的表情编号差分体系（portrait/expressions.json）驱动：
+ * 使用后端统一的立绘数据，兼容 portrait/expressions.json 和旧版 manifest.json：
  * 交叉淡入淡出、逐句同情绪微漂移、好感度解锁红脸差分、服装差分切换、发声静态光晕。
  */
+
+import { requestJson } from './request.js';
 
 // 对话管线会请求的情绪 → 中文标签
 export const EMOTION_LABELS = {
@@ -42,6 +44,7 @@ export class PortraitStageController {
 
     this.activeSlot = 'A';
     this.isVisible = true;
+    this.mobileOpen = false;
     this.isSpeaking = false;
     this.preloaded = new Set();
 
@@ -59,9 +62,13 @@ export class PortraitStageController {
     this.currentCharacter = '';
     this.profileId = null;
     this.lastPaint = null;
+    this.emptyStateEl = null;
+    this.characterRevision = 0;
+    this.paintRevision = 0;
+    this.characterRequest = null;
   }
 
-  init() {
+  init({ profileId = null } = {}) {
     this.appEl = document.querySelector('.app');
     this.stageEl = document.getElementById('characterStage');
     this.toggleBtn = document.getElementById('portraitToggleBtn');
@@ -72,6 +79,7 @@ export class PortraitStageController {
     this.charNameEl = document.getElementById('stageCharacterName');
     this.emotionLabelEl = document.getElementById('stageEmotionLabel');
     this.viewportEl = document.getElementById('stageViewport');
+    this.emptyStateEl = document.getElementById('stageEmptyState');
     this.imgA = document.getElementById('portraitImgA');
     this.imgB = document.getElementById('portraitImgB');
     this.dialogueCardEl = document.getElementById('stageDialogueCard');
@@ -89,21 +97,34 @@ export class PortraitStageController {
     }
     this.applyVisibility();
 
+    window.addEventListener('resize', () => {
+      if (!this.isMobile()) this.mobileOpen = false;
+      this.applyVisibility();
+    });
+
     this.bindEvents();
-    this.initDefaultCharacter();
+    if (profileId) this.setCharacter('', profileId);
+    else this.initDefaultCharacter();
   }
 
   async initDefaultCharacter() {
+    const revision = this.characterRevision;
     try {
-      const res = await fetch('/api/characters');
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await requestJson('/api/characters', {}, { timeoutMs: 15000 });
+      if (revision !== this.characterRevision) return;
       const chars = data.characters || [];
       const active = chars.find((c) => c.is_active) || chars.find((c) => c.is_default) || chars[0];
       if (active && active.name) {
         await this.setCharacter(active.name, active.id);
+      } else {
+        await this.setCharacter('', null);
       }
-    } catch (_) { /* 忽略，等用户切换角色时再加载 */ }
+    } catch (_) {
+      if (revision === this.characterRevision) {
+        this.applyPayload(null);
+        this.setPortraitStatus('暂时无法加载角色列表，请检查本机服务后重新打开立绘模式。');
+      }
+    }
   }
 
   bindEvents() {
@@ -121,29 +142,35 @@ export class PortraitStageController {
         this.setCostume(next);
       });
     }
+    document.getElementById('stageBackdrop')?.addEventListener('click', () => this.dismissMobile());
   }
 
-  async loadPortrait(profileId) {
+  async loadPortrait(profileId, signal) {
     if (!profileId) return null;
-    try {
-      const res = await fetch(`/api/characters/${encodeURIComponent(profileId)}/portrait`);
-      if (!res.ok) return null;
-      const data = await res.json();
-      return data && data.enabled ? data : null;
-    } catch (_) {
-      return null;
-    }
+    const data = await requestJson(`/api/characters/${encodeURIComponent(profileId)}/portrait`,
+      { signal }, { timeoutMs: 15000 });
+    return data && data.enabled ? data : null;
   }
 
   applyPayload(data) {
+    this.paintRevision += 1;
     this.enabled = Boolean(data);
     if (!data) {
       this.costumes = [];
       this.sprites = {};
+      this.faces = {};
+      this.expressionSets = {};
+      this.currentCostume = null;
+      this.activeFace = null;
+      this.recentFaces = [];
+      this.lastPaint = null;
       this.renderCostumeBar();
       // 该角色包没有立绘差分：收掉两张图，舞台只留名字与台词卡
       for (const img of [this.imgA, this.imgB]) {
         if (img) {
+          img.onload = null;
+          img.onerror = null;
+          img.removeAttribute('src');
           img.classList.remove('is-visible');
           img.classList.add('is-hidden');
         }
@@ -165,6 +192,7 @@ export class PortraitStageController {
 
   renderCostumeBar() {
     if (!this.costumeBarEl) return;
+    this.costumeBarEl.hidden = this.costumes.length < 2;
     this.costumeBarEl.innerHTML = '';
     for (const c of this.costumes) {
       const btn = document.createElement('button');
@@ -191,24 +219,57 @@ export class PortraitStageController {
   }
 
   async setCharacter(charName, profileId = null) {
-    if (!charName) return;
-    this.currentCharacter = charName;
-    if (profileId) this.profileId = profileId;
-    this.applyPayload(await this.loadPortrait(this.profileId));
-    if (this.charNameEl) this.charNameEl.textContent = charName;
-    if (this.dialogueNameEl) this.dialogueNameEl.textContent = charName;
-    await this.refreshAffection();
-    this.preloadKeySprites();
+    const revision = ++this.characterRevision;
+    this.characterRequest?.abort();
+    const controller = new AbortController();
+    this.characterRequest = controller;
+    this.profileId = profileId || null;
+    this.currentCharacter = charName || (this.profileId ? '当前角色' : '未绑定角色');
+    this.affectionLevel = 1;
+    this.currentEmotion = 'gentle';
+    this.setSpeaking(false);
+    this.applyPayload(null);
+    if (this.charNameEl) this.charNameEl.textContent = this.currentCharacter;
+    if (this.dialogueNameEl) this.dialogueNameEl.textContent = this.currentCharacter;
+    if (this.emotionLabelEl) this.emotionLabelEl.textContent = '';
+    if (this.dialogueTextEl) this.dialogueTextEl.textContent = '与角色聊天后，这里会显示台词。';
+    this.setPortraitStatus(this.profileId ? '正在加载角色立绘…' : '请在「会话设置」选择角色；有立绘的角色包会在这里显示。');
+    if (!this.profileId) return;
+
+    let data;
+    try {
+      data = await this.loadPortrait(this.profileId, controller.signal);
+    } catch (error) {
+      if (revision === this.characterRevision && error.name !== 'AbortError') {
+        this.setPortraitStatus('立绘暂时无法加载，请检查本机服务后重新打开立绘模式。');
+      }
+      return;
+    }
+    if (revision !== this.characterRevision) return;
+    this.applyPayload(data);
+    if (data?.character_name && !charName) {
+      this.currentCharacter = data.character_name;
+      if (this.charNameEl) this.charNameEl.textContent = this.currentCharacter;
+      if (this.dialogueNameEl) this.dialogueNameEl.textContent = this.currentCharacter;
+    }
+    if (!data) {
+      this.setPortraitStatus('这个角色暂时没有可用立绘。可继续聊天，或安装包含立绘的完整角色包。');
+      return;
+    }
     this.setEmotion(this.currentEmotion);
+    this.preloadKeySprites();
+    await this.refreshAffection();
   }
 
   /** 好感度阶段决定红脸差分是否可用，切换角色与每轮回复结束时刷新。 */
   async refreshAffection() {
     if (!this.profileId) return;
+    const profileId = this.profileId;
+    const revision = this.characterRevision;
     try {
-      const res = await fetch(`/api/affection?character_id=${encodeURIComponent(this.profileId)}`);
-      if (res.ok) {
-        const data = await res.json();
+      const data = await requestJson(`/api/affection?character_id=${encodeURIComponent(profileId)}`,
+        { signal: this.characterRequest?.signal }, { timeoutMs: 15000 });
+      if (revision === this.characterRevision && profileId === this.profileId) {
         this.affectionLevel = Number(data.affection_level) || 1;
       }
     } catch (_) { /* 保持上一次的好感度阶段 */ }
@@ -231,20 +292,45 @@ export class PortraitStageController {
   }
 
   toggleVisibility() {
-    this.setVisibility(!this.isVisible);
+    this.setVisibility(!(this.isMobile() ? this.mobileOpen : this.isVisible));
+  }
+
+  isMobile() {
+    return typeof window !== 'undefined' && window.innerWidth <= 820;
+  }
+
+  dismissMobile() {
+    if (!this.isMobile() || !this.mobileOpen) return false;
+    this.setVisibility(false);
+    return true;
   }
 
   setVisibility(visible) {
-    this.isVisible = Boolean(visible);
-    try { localStorage.setItem('g2v_portrait_visible', String(this.isVisible)); } catch { /* visibility still works */ }
+    if (this.isMobile()) this.mobileOpen = Boolean(visible);
+    else {
+      this.isVisible = Boolean(visible);
+      try { localStorage.setItem('g2v_portrait_visible', String(this.isVisible)); } catch { /* visibility still works */ }
+    }
     this.applyVisibility();
+    if (this.isMobile()) (visible ? this.collapseBtn : this.toggleBtn)?.focus?.({ preventScroll: true });
+    if (visible && !this.enabled) {
+      if (this.profileId) this.setCharacter(this.currentCharacter, this.profileId);
+      else this.initDefaultCharacter();
+    }
   }
 
   applyVisibility() {
     if (!this.appEl) return;
-    if (this.isVisible) {
+    const mobile = this.isMobile();
+    const visible = mobile ? this.mobileOpen : this.isVisible;
+    if (this.stageEl) this.stageEl.inert = !visible;
+    const chat = this.appEl.querySelector?.('.chat');
+    const sidebar = this.appEl.querySelector?.('.sidebar');
+    if (chat) chat.inert = mobile && visible;
+    if (sidebar) sidebar.inert = mobile && (visible || !sidebar.classList.contains('open'));
+    if (visible) {
       this.appEl.classList.remove('stage-collapsed');
-      this.appEl.classList.add('stage-mobile-open');
+      this.appEl.classList.toggle('stage-mobile-open', mobile);
       if (this.toggleBtn) {
         this.toggleBtn.classList.add('active');
         this.toggleBtn.setAttribute('aria-pressed', 'true');
@@ -264,7 +350,10 @@ export class PortraitStageController {
     this.currentCostume = costumeId;
     this.renderCostumeBar();
     // 换服装后当前表情编号仍然有效，直接按同一张脸重绘
-    this.paint(this.faceUrl(this.activeFace) || this.firstFaceFor(this.currentEmotion));
+    if (!this.faceUrl(this.activeFace)) this.activeFace = null;
+    this.recentFaces = [];
+    if (this.activeFace) this.paint(this.faceUrl(this.blushTier(this.activeFace)) || this.faceUrl(this.activeFace));
+    else this.setEmotion(this.currentEmotion);
   }
 
   faceUrl(faceId) {
@@ -272,15 +361,20 @@ export class PortraitStageController {
     const costume = this.sprites[this.currentCostume];
     const sprite = costume && costume[faceId];
     if (sprite) return sprite.file;
-    for (const faces of Object.values(this.sprites)) {
-      if (faces && faces[faceId]) return faces[faceId].file;
-    }
     return '';
   }
 
   firstFaceFor(emotion) {
-    const pool = this.expressionSets[emotion] || this.expressionSets.gentle || [];
-    return pool.length ? pool[0].id : null;
+    return this.facePool(emotion)[0]?.id || null;
+  }
+
+  facePool(emotion) {
+    const available = pool => (Array.isArray(pool) ? pool : []).filter(entry => entry && this.faceUrl(entry.id));
+    const requested = available(this.expressionSets[emotion]);
+    if (requested.length) return requested;
+    const gentle = available(this.expressionSets.gentle);
+    if (gentle.length) return gentle;
+    return Object.keys(this.sprites[this.currentCostume] || {}).map(id => ({ id, strength: 0 }));
   }
 
   /**
@@ -288,7 +382,7 @@ export class PortraitStageController {
    * 那张，所以连续说话只有细微变化，而不是整张脸跳来跳去。
    */
   pickFace(emotion) {
-    const pool = this.expressionSets[emotion] || this.expressionSets.gentle || [];
+    const pool = this.facePool(emotion);
     if (!pool.length) return null;
     const current = this.faces[this.activeFace];
     if (!current || !pool.some((e) => e.id === this.activeFace)) {
@@ -303,8 +397,10 @@ export class PortraitStageController {
         if (!cand || entry.id === this.activeFace) continue;
         if (skipRecent && recent.has(entry.id)) continue;
         // 共享部件越多，两张脸的差别越小
-        const shared = cand.parts.filter((p) => current.parts.some((q) => q.romaji === p.romaji)).length;
-        const s = shared * 10 + entry.strength;
+        const parts = Array.isArray(cand.parts) ? cand.parts : [];
+        const currentParts = Array.isArray(current.parts) ? current.parts : [];
+        const shared = parts.filter(p => p && currentParts.some(q => q && q.romaji === p.romaji)).length;
+        const s = shared * 10 + (Number(entry.strength) || 0);
         if (s > score) {
           score = s;
           pick = entry.id;
@@ -321,7 +417,7 @@ export class PortraitStageController {
     const face = this.faces[faceId];
     if (!face || !face.blush) return faceId;
     const shyish = ['shy', 'tsundere', 'angry'].includes(this.currentEmotion);
-    return this.affectionLevel >= (shyish ? 2 : 3) ? face.blush : faceId;
+    return this.affectionLevel >= (shyish ? 2 : 3) && this.faceUrl(face.blush) ? face.blush : faceId;
   }
 
   /**
@@ -330,8 +426,9 @@ export class PortraitStageController {
    * @param {string} [quoteText] 该句台词，用于底部台词卡
    */
   setEmotion(rawEmotion, quoteText = '') {
-    const emKey = (rawEmotion || this.currentEmotion || 'gentle').toLowerCase().trim();
+    const emKey = String(rawEmotion || this.currentEmotion || 'gentle').toLowerCase().trim();
     this.currentEmotion = KNOWN_EMOTION_KEYS.has(emKey) ? emKey : 'gentle';
+    this.updateDialogue(quoteText);
     if (!this.enabled) return;
 
     const faceId = this.pickFace(this.currentEmotion);
@@ -347,10 +444,6 @@ export class PortraitStageController {
       // 徽章定宽会截断，完整部件描述放 title 里悬停可看
       this.emotionLabelEl.title = face.jp ? `${badge}\n${face.jp}` : badge;
     }
-    if (this.dialogueTextEl && quoteText && quoteText.trim()) {
-      this.dialogueTextEl.textContent = `「${quoteText.trim().replace(/^[「『"“\s]+|[」』"”\s]+$/g, '')}」`;
-    }
-
     this.paint(this.faceUrl(this.blushTier(faceId)));
   }
 
@@ -361,27 +454,34 @@ export class PortraitStageController {
 
     const frontImg = this.activeSlot === 'A' ? this.imgA : this.imgB;
     const backImg = this.activeSlot === 'A' ? this.imgB : this.imgA;
+    const revision = ++this.paintRevision;
 
     // 前台已是该立绘则无需重播动画
-    if (frontImg.src && frontImg.src.endsWith(targetSrc) && frontImg.classList.contains('is-visible')) {
+    if (frontImg.getAttribute('src') === targetSrc && frontImg.classList.contains('is-visible')) {
       return;
     }
 
     let swapped = false;
     const triggerSwap = () => {
-      if (swapped) return;
+      if (swapped || revision !== this.paintRevision) return;
       swapped = true;
       backImg.classList.remove('is-hidden');
       backImg.classList.add('is-visible');
       frontImg.classList.remove('is-visible');
       frontImg.classList.add('is-hidden');
-      this.activeSlot = this.activeSlot === 'A' ? 'B' : 'A';
+      this.activeSlot = backImg === this.imgA ? 'A' : 'B';
+      this.setPortraitStatus('');
     };
 
     backImg.onload = triggerSwap;
     backImg.onerror = () => {
-      const fallback = this.faceUrl(this.activeFace);
-      if (fallback && fallback !== targetSrc) backImg.src = fallback;
+      if (revision !== this.paintRevision) return;
+      const fallback = this.faceUrl(this.firstFaceFor('gentle'));
+      if (fallback && backImg.getAttribute('src') !== fallback) backImg.src = fallback;
+      else {
+        this.applyPayload(null);
+        this.setPortraitStatus('立绘图片未能加载，请检查角色包是否完整，再重新打开立绘模式。');
+      }
     };
     backImg.src = targetSrc;
     if (backImg.complete && backImg.naturalWidth > 0) triggerSwap();
@@ -392,9 +492,16 @@ export class PortraitStageController {
    * @param {string} text 台词内容
    */
   updateDialogue(text) {
-    if (this.dialogueTextEl && text && text.trim()) {
+    if (this.dialogueTextEl && typeof text === 'string' && text.trim()) {
       const clean = text.trim().replace(/^[「『"“\s]+|[」』"”\s]+$/g, '');
       this.dialogueTextEl.textContent = `「${clean}」`;
+    }
+  }
+
+  setPortraitStatus(message) {
+    if (this.emptyStateEl) {
+      this.emptyStateEl.textContent = message;
+      this.emptyStateEl.hidden = !message;
     }
   }
 

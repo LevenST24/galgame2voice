@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "galgame2voice"
-version = "2.0.0"
+version = "2.1.0"
 description = "Local FastAPI server for galgame character AI chat and real-time TTS voice streaming, using an external GPT-SoVITS engine over HTTP"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -57,12 +57,13 @@ where = ["."]
 include = ["galgame2voice*"]
 
 [tool.ruff]
+cache-dir = ".local/cache/ruff"
 line-length = 120
 target-version = "py310"
 extend-exclude = ["tests"]
 
 [tool.ruff.lint]
-# Progressive adoption, stage 2 of the plan in TEST_INFRA.md.
+# Progressive adoption, stage 2 of the plan in docs/development/TEST_INFRA.md.
 #
 # Stage 1 was "hard errors only" (syntax errors, undefined names, unused
 # locals). This stage adds the rule families whose findings are *defects*
@@ -81,6 +82,7 @@ select = ["E4", "E7", "E9", "F", "B", "ASYNC"]
 
 
 [tool.mypy]
+cache_dir = ".local/cache/mypy"
 python_version = "3.10"
 ignore_missing_imports = true
 check_untyped_defs = false

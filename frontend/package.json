@@ -1,14 +1,14 @@
 {
   "name": "gal2voice-web",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port 3015 --host 0.0.0.0 --strictPort",
     "build": "vite build",
     "deploy": "vite build && node deploy.mjs",
     "preview": "vite preview",
-    "test": "node ../tests/test_m1_m2_frontend_adversarial_challenger1.js && node ../tests/test_m2_frontend_empirical.js && node ../tests/test_m7_audio_lru_challenger2.js && node ../tests/test_voice_first_setup.mjs && node ../tests/test_engine_directory.mjs && node ../tests/test_runtime_recovery.mjs && node ../tests/test_session_backup.mjs"
+    "test": "node ../tests/test_m1_m2_frontend_adversarial_challenger1.js && node ../tests/test_m2_frontend_empirical.js && node ../tests/test_m7_audio_lru_challenger2.js && node ../tests/test_voice_first_setup.mjs && node ../tests/test_engine_directory.mjs && node ../tests/test_runtime_recovery.mjs && node ../tests/test_session_backup.mjs && node ../tests/test_portrait_stage.mjs && node ../tests/test_voice_settings_recovery.mjs && node ../tests/test_stream_audio_recovery.mjs && node ../tests/test_audio_playback_ui.mjs && node ../tests/test_settings_ui.mjs && node ../tests/test_session_persistence.mjs && node ../tests/test_chat_history_ui.mjs && node ../tests/test_failure_note_ui.mjs && node ../tests/test_model_badge.mjs"
   },
   "devDependencies": {
     "vite": "^6.3.5"

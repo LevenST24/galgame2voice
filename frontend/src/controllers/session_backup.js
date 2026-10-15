@@ -1,5 +1,6 @@
 import { requestJson } from '../api.js';
 import { showToast } from '../ui.js';
+import { exportCompleteChatBackup } from '../chat_backup.js';
 import { exportSessionData, prepareSessionImport, applySessionImport, getStorageStatus,
   onStorageStatus, getDamagedSessionData, resumeLocalSaving } from '../store.js';
 
@@ -12,7 +13,7 @@ function download(content, name) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function initSessionBackup({ onImport, isBusy = () => false } = {}) {
+export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => false } = {}) {
   const $ = id => document.getElementById(id);
   const status = $('gChatStorageStatus');
   const original = $('gExportDamagedChats');
@@ -20,14 +21,34 @@ export function initSessionBackup({ onImport, isBusy = () => false } = {}) {
   const updateStatus = value => {
     if (status) status.textContent = value.ok ? '聊天记录已保存在当前浏览器。建议在更新或换浏览器前导出备份。' : value.message;
     if (original) original.hidden = !value.damaged;
-    if (!value.ok) showToast(value.message, 'error');
+    if (!value.ok) showToast(value.message, 'error', onOpenBackupTab ? {
+      actionLabel: '打开备份设置',
+      onAction: () => onOpenBackupTab(),
+    } : null);
   };
   onStorageStatus(updateStatus);
   updateStatus(getStorageStatus());
-  $('gExportChats')?.addEventListener('click', () => {
+  const exportButton = $('gExportChats');
+  exportButton?.addEventListener('click', async () => {
+    if (exportButton.disabled) return;
+    exportButton.disabled = true;
+    exportButton.textContent = '正在读取完整记录…';
     try {
-      download(exportSessionData(), `galgame2voice-chat-${date()}.json`);
-      showToast(isBusy() ? '已导出聊天备份。请在当前回复结束后再导出一次，以包含完整回复。' : '已导出聊天备份', 'success');
+      const result = await exportCompleteChatBackup();
+      download(result.content, `galgame2voice-chat-${date()}.json`);
+      const note = result.browserCopies ? ' 尚未同步的文字另存为「浏览器副本」。' : '';
+      showToast(`已导出 ${result.count} 个会话。${note}${isBusy() ? '请在当前回复结束后再导出一次，以包含完整回复。' : ''}`, 'success');
+    } catch (error) {
+      showToast(`完整备份未导出：${error.message} 可先用「仅导出浏览器记录」保留当前网页内容。`, 'error');
+    } finally {
+      exportButton.disabled = false;
+      exportButton.textContent = '导出完整聊天备份';
+    }
+  });
+  $('gExportLocalChats')?.addEventListener('click', () => {
+    try {
+      download(exportSessionData(), `galgame2voice-browser-only-${date()}.json`);
+      showToast('已导出浏览器记录；数据库中尚未加载的历史未包含。服务恢复后请再导出完整备份。', 'info');
     } catch (error) { showToast(error.message, 'error'); }
   });
   original?.addEventListener('click', () => {
@@ -55,14 +76,18 @@ export function initSessionBackup({ onImport, isBusy = () => false } = {}) {
       const incoming = prepareSessionImport(await file.text());
       if (isBusy()) throw new Error('当前回复正在生成，请停止或等待完成后再导入。');
       const payload = { sessions: incoming.sessions.map(session => ({ id: session.id, title: session.title,
-        settings: session.settings, messages: session.messages.map(message => ({ role: message.role,
-          content: message.content, japanese: message.japanese || '' })) })) };
+        settings: session.settings, created_at: session.createdAt, updated_at: session.updatedAt,
+        messages: session.messages.map(message => ({ role: message.role,
+          content: message.content, japanese: message.japanese || '', ts: message.ts })) })) };
       await requestJson('/api/chat/import', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload) }, { timeoutMs: 60000 });
       const result = applySessionImport(incoming);
       onImport?.();
       showToast(`已导入 ${result.count} 个会话，原有会话保留。请在会话设置中重新选择音色。`, 'success');
-      if (!result.saved) showToast('记录已存入本机数据库；浏览器保存失败，请保留备份并检查存储权限。', 'info');
+      if (!result.saved) showToast('记录已存入本机数据库；浏览器保存失败，请保留备份并检查存储权限。', 'info', onOpenBackupTab ? {
+        actionLabel: '打开备份设置',
+        onAction: () => onOpenBackupTab(),
+      } : null);
     } catch (error) { showToast(error.message, 'error'); }
     finally { button.disabled = false; }
   });

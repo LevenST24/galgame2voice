@@ -210,17 +210,19 @@ class ChatService:
         Loads the configured or requested LLM adapter, target chat model, and resolved provider ID from DB.
         """
         async def _fetch(active_conn: aiosqlite.Connection) -> tuple[BaseLLMAdapter, str, str]:
+            settings = await crud.get_settings_raw(active_conn)
+            allow_private = bool(getattr(settings, "allow_private_llm_endpoints", False))
             if provider_id:
                 provider = await crud.get_provider_raw(active_conn, provider_id)
             else:
                 provider = await crud.get_active_provider_raw(active_conn)
 
             if provider:
-                adapter = get_llm_adapter(provider)
+                adapter = get_llm_adapter(provider, allow_private=allow_private)
                 chat_model = provider.chat_model or "gpt-4o-mini"
                 return adapter, chat_model, provider.id
 
-            adapter = get_llm_adapter("openai")
+            adapter = get_llm_adapter("openai", allow_private=allow_private)
             return adapter, "gpt-4o-mini", "openai"
 
         if conn is not None:

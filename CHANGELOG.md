@@ -7,10 +7,73 @@ All notable changes to galgame2voice are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- "允许私网 LLM 端点" switch in chat model settings for Ollama, LM Studio and LAN
+  models. It saves on change; testing or enabling a model waits for the save.
+  Model lists and connection tests now apply the same private-network rule as chat.
+- A reply that never starts leaves a note under the user's message with the reason,
+  a "重新发送" button that retries the same message in place (no duplicate bubble,
+  recordings kept) and, for model problems, a shortcut to the model settings.
+- Chat errors carry a stable `error_code` and readable Chinese guidance: a missing
+  API key names the provider, and a blocked private endpoint points to the switch
+  above instead of being reported as a DNS failure. Connection tests explain a
+  missing key the same way.
+- The header badge says "未填写 API Key" when the active cloud provider has no key,
+  and "正在读取模型配置…" until the model list loads instead of briefly claiming that
+  no model is configured.
+- `scripts/verify_windows_portable.py` checks the release ZIP's checksum, required
+  files, empty user folders, excluded secrets and models, and that its web files
+  match the deployed and built frontend.
+
+### Changed
+- Persona prompts without the bilingual reply format (new custom voices, edited or
+  third-party packages) get the standard JSON format appended, so replies keep a
+  Japanese line for the voice instead of having Chinese text read aloud.
+- Toasts stay above the message input as it grows, and only their action button
+  takes clicks, so retyping after an error no longer opens settings by accident.
+- Portable builds explain updating by extracting a new package instead of offering
+  a git update.
+
+### Fixed
+- Voiced sentences without their own emotion cue now show the reply's declared
+  emotion on the portrait instead of always falling back to "gentle".
+- Turning automatic voice playback off is saved immediately; a reload no longer
+  turns it back on.
+- Project-relative reference audio resolves against the install root, so a
+  relocated data root or a launch from another working directory still sends an
+  absolute path to GPT-SoVITS.
+- Character rescans run one at a time; lookups keep the last complete catalog during
+  a scan, and a failed scan leaves it intact. Rescanning keeps an unsaved persona
+  draft and the selected model files.
+- Loading older history waits for the current reply, and sending waits for the older
+  history to finish loading.
+
+## [2.1.0] - 2026-10-14
+
+### Added
+- Hot-reload character package discovery endpoint (`POST /api/characters/rescan`)
+  and a "扫描" button in session voice settings, allowing newly extracted
+  character packages in `characters/` to be discovered and bound immediately
+  without restarting the server.
+- Cursor-based session history pagination (`GET /api/chat/history?before_id=...`
+  with `has_more` and `oldest_id`), and an in-chat "↑ 查看更早的聊天记录" action
+  that prepends older messages while preserving scroll position.
+- Actionable recovery buttons on error/info toasts (one-click navigation to
+  LLM model configuration, voice engine status, session voice settings, and
+  chat backup settings), plus first-install setup chips in empty chat sessions
+  and clickable header/diagnostic status badges that also show the session's
+  bound character name.
+- Full chat export (`GET /api/chat/export`) that reads one database snapshot and
+  includes sessions and messages outside the sidebar/history limits. Browser-only
+  text is retained separately when it differs; repeated messages remain distinct.
+  Offline export is clearly labeled.
+- Atomic chat import (`POST /api/chat/import`) preserving original session and
+  message timestamps; oversized backups fail explicitly instead of truncating.
+- Portrait layer exporter (`scripts/tools/compose_portrait_layers.py`) that
+  preserves original per-layer coordinates and ordering in one shared costume
+  frame, validates source resolution, and records source hashes.
 - Verified SQLite snapshots including committed WAL data, daily startup backups,
-  and a portable database recovery launcher that preserves original files.
-- Chat backup export and atomic history import, with protection for corrupt,
-  unavailable, full, or concurrently modified browser storage.
+  and a portable database recovery launcher (`--restore-database` / `数据恢复.bat`)
+  that preserves original files.
 - Actionable runtime recovery guidance, bounded settings requests, and engine
   readiness polling that distinguishes model loading from startup failure.
 - Repeated portable launches reuse the running installation and its actual port.
@@ -18,13 +81,80 @@ All notable changes to galgame2voice are documented here. The format follows
   sibling engine paths survive relocation and feed model scans and restarts.
 - Portable startup exceptions leave a diagnostic log in `logs/launcher_error.log`.
 - Windows x64 portable packaging with a frozen interpreter, locked application
-  dependencies, frontend, FFmpeg and included third-party license files. The
-  release workflow builds and tests the extracted ZIP with a restricted PATH.
-- Portable user data stays beside the executable, outside `_internal`.
-  Frozen launchers never run themselves as pip or as an engine's Python.
+  dependencies, frontend, FFmpeg and included third-party license files.
 - `--no-engine` opens the application without managing a local voice engine.
 
+### Changed
+- Chat titles and model names use separate lines; message spacing, contrast,
+  controls and portrait panels remain readable in narrow windows.
+- Global settings use category navigation and concise descriptions. Session
+  settings keep character controls visible and group advanced tuning in details.
+- Dialogs preserve focus, support keyboard navigation and handle nested token
+  prompts. Closed drawers and portraits are excluded from keyboard navigation.
+- Portrait image URLs include file revisions so re-exported images invalidate
+  browser and preload caches even when their names are unchanged.
+- Developer documentation is grouped under `docs/development/`; local caches and
+  archived scratch files stay under `.local/`, excluded from source releases,
+  Docker contexts and model discovery. Added `使用说明.md` folder guide.
+
 ### Fixed
+- Release packaging (`scripts/package_release.py`) now excludes archive files
+  (`.zip`, `.7z`, `.rar`, `.tar`, `.gz`, `.xz`) and additional weight formats
+  (`.pt`, `.gguf`) so user-downloaded character archives in `characters/` never
+  bloat source release bundles.
+- Session persona editor is disabled when no character is bound (except during
+  new custom voice creation, where the typed persona is automatically saved with
+  the new profile), preventing accidental unsaved edits.
+- Session lists paginate beyond the first 50 entries. Saves for one session run
+  in order; deletion waits for them and removes local records only after confirmation.
+- Deleting or clearing chats leaves shared audio to the normal retention worker,
+  protecting other conversations, reference files, and audio during transaction rollback.
+- External data directories no longer leak absolute host paths in system status.
+  History timestamps interpret SQLite dates as UTC, and failed history loads can be retried.
+- Streaming text renders each increment immediately. The final message takes
+  over live playback controls without restarting completed speech, losing
+  pause state, or advancing portrait dialogue ahead of paused audio.
+- Audio downloads, body reads, decoding and cache access have bounded waits.
+  Failed chunks release the queue, surface a recoverable message and allow later
+  speech to continue. Playback itself fills the cache without a duplicate fetch.
+- Repeated sentences sharing a cache URL retain their separate playback slots.
+  Pausing stays effective as new chunks arrive, and portrait cues use the audio
+  clock rather than wall-clock timers. Blocked autoplay offers a click to resume.
+- Late cache reads, translations and synthesis results cannot steal playback
+  from a newer click or session. Clicking a loading message again cancels it;
+  temporary connection failures preserve its audio references instead of
+  triggering unnecessary synthesis. Only confirmed missing audio is regenerated.
+- Configuration errors no longer replace diagnostic widgets. Refreshing after
+  a failed request restores the status display and preserves unsaved fields.
+- Explicitly clearing a session voice binding now removes the SQLite binding;
+  omitted bindings retain their existing value, and empty settings can be saved.
+- Voice creation binds to its originating session, stale selector responses cannot
+  replace a newer session's options, and the active voice remains selectable.
+- Voice, persona, Telegram, cache and session requests have deadlines without
+  automatic write retries. Failed persona saves preserve the open editor and its
+  text; failed session saves no longer claim confirmed persistence.
+- Audio cleanup defers when reference or cache protection metadata is unavailable,
+  preserves cache entries whose files cannot be safely removed, and moves expired
+  cache disk operations off the event loop. Registered reference samples inside
+  the cache also remain protected. Cleanup resumes after recovery.
+- Late history loads cannot replace newly typed messages or revive a deleted
+  session, and session switching renders immediately while history loads.
+- Developer documentation is grouped under `docs/development`; local caches and
+  archived scratch files stay under `.local`, excluded from source releases,
+  Docker contexts and model discovery. A short Chinese folder guide identifies
+  the launch entry point, user data and development files.
+- Restored schema version 7 compatibility after an upstream sync dropped the
+  legacy foreign-key migration. Existing databases keep their version and data;
+  older character cascades are rebuilt transactionally without losing indexes,
+  triggers or sequence counters, and unknown future schemas remain blocked.
+- Portraits support existing emotion-named PNG packs as well as numbered
+  differential indexes, without rewriting installed character assets.
+- The portrait stage follows the current session even when voice switching
+  fails or the engine is offline. Stale metadata, images and stream completions
+  cannot replace the newly selected character; costume fallbacks stay in the
+  selected outfit, and unavailable portraits offer explicit recovery guidance.
+- Dialogue cards receive reply text instead of message objects. Frontend HTML
+  uses LF consistently so Windows builds match the committed web artifacts.
 - Interrupted chat streams preserve partial replies and report incomplete
   responses; cancellation releases readers and does not resend generation.
 - Voice switching respects memory protection instead of automatically forcing

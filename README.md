@@ -55,6 +55,9 @@ GPT-SoVITS 引擎与角色权重需另行准备，发布包不包含个人密钥
 详细步骤见 [Windows 便携版使用说明](docs/WINDOWS_PORTABLE.md)。
 普通的 `galgame2voice-v<版本>.zip` 是源码包，仍需下面的 Python 环境；不要将两个包混淆。
 
+本地文件夹的启动入口和目录用途见 [使用说明](使用说明.md)；文档导航见 [docs/README.md](docs/README.md)。
+项目架构、测试规范和测试命令集中在 `docs/development/`。开发缓存与本机临时归档集中在 `.local/`，不会进入发布包。
+
 ### 1. 环境准备
 - **操作系统**：Windows 10/11 64 位 或 Linux。CI 回归环境为 `windows-latest` 与 `ubuntu-latest`；
   Ubuntu 20.04 等更早的发行版版本、以及 `run.sh` 名义上适用的 macOS，均未纳入自动化测试。
@@ -194,6 +197,10 @@ characters/
 
 > **资产隔离说明**：所有模型权重与角色目录均已被 `.gitignore` 严格隔离，不会意外提交至代码仓库。
 
+立绘属于可选资产。在“会话设置”选择角色后，立绘模式会显示该角色包中的图片；语音引擎未启动时也可显示。
+立绘放在 `characters/角色名/portrait/`：优先读取 `expressions.json`（表情编号差分），也兼容旧版 `manifest.json`（按情绪命名的 PNG 等图片），图片按服装子目录存放。程序不会改写已有角色包。
+只有模型和参考音频的包不会自动产生立绘。没有图片时，界面会提示安装包含立绘的完整角色包；连接或图片加载失败时，可检查服务、补齐素材后关闭并重新打开立绘模式重试。
+
 ---
 
 ## ✈️ Telegram 伴侣机器人指南
@@ -223,4 +230,4 @@ characters/
 
 ## 📄 开源许可证
 
-本项目采用 MIT License 开源（许可证声明见 `pyproject.toml` 的 `license` 字段；仓库当前未附带独立的 `LICENSE` 文件）。
+本项目采用 [MIT License](LICENSE) 开源。Windows 便携包随附应用许可证及第三方组件的许可证说明。

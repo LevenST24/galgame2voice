@@ -233,11 +233,12 @@ def test_audio_spec_cache_invalidation_on_file_change():
 # ============================================================================
 
 @pytest.mark.asyncio
-async def test_voice_profile_resolver_caching_and_invalidation():
+async def test_voice_profile_resolver_caching_and_invalidation(tmp_path):
     """
     Verifies VoiceProfileResolver caches resolved context in RAM and invalidates on demand.
     """
     resolver = VoiceProfileResolver(ttl_seconds=60.0)
+    db_path = str(tmp_path / "resolver.db")
 
     # Mock DB profile
     mock_profile = MagicMock()
@@ -251,20 +252,20 @@ async def test_voice_profile_resolver_caching_and_invalidation():
     with patch("galgame2voice.database.crud.get_voice_profile", new_callable=AsyncMock) as mock_get_db:
         mock_get_db.return_value = mock_profile
 
-        ctx1 = await resolver.resolve_context("test.db", profile_id=42)
+        ctx1 = await resolver.resolve_context(db_path, profile_id=42)
         assert ctx1 is not None
         assert ctx1.profile_id == 42
         assert ctx1.name == "四季夏目"
         assert mock_get_db.call_count == 1
 
         # Second call should hit in-memory cache without hitting DB
-        ctx2 = await resolver.resolve_context("test.db", profile_id=42)
+        ctx2 = await resolver.resolve_context(db_path, profile_id=42)
         assert ctx2 is ctx1
         assert mock_get_db.call_count == 1
 
         # Invalidate specific profile ID
         resolver.invalidate(profile_id=42)
-        ctx3 = await resolver.resolve_context("test.db", profile_id=42)
+        ctx3 = await resolver.resolve_context(db_path, profile_id=42)
         assert ctx3 is not None
         assert mock_get_db.call_count == 2
 

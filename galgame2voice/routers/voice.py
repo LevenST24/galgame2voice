@@ -684,7 +684,10 @@ def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
         try:
             for root, dirs, filenames in os.walk(root_dir):
                 # Skip venvs, repos and caches — huge and irrelevant.
-                dirs[:] = [d for d in dirs if d not in (".git", "node_modules", ".venv", "venv", "__pycache__", "runtime", ".pytest_cache")]
+                dirs[:] = [d for d in dirs if d not in (
+                    ".git", ".local", "_scratch", "node_modules", ".venv", "venv",
+                    "__pycache__", "runtime", ".pytest_cache", ".pytest_basetemp", ".mypy_cache", ".ruff_cache",
+                )]
                 for fname in filenames:
                     ext = os.path.splitext(fname)[1].lower()
                     full_path = os.path.join(root, fname)

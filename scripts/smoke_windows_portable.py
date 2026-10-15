@@ -19,7 +19,7 @@ import wave
 import zipfile
 
 
-def smoke_test(archive: Path, scratch: Path) -> None:
+def smoke_test(archive: Path, scratch: Path, *, skip_browser: bool = False) -> None:
     scratch.mkdir(parents=True, exist_ok=True)
     with archive.open("rb") as handle:
         digest = hashlib.sha256()
@@ -147,7 +147,7 @@ def smoke_test(archive: Path, scratch: Path) -> None:
                     Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Microsoft/Edge/Application/msedge.exe",
                 ]
                 browser = next((candidate for candidate in browser_candidates if candidate.is_file()), None)
-                if browser:
+                if browser and not skip_browser:
                     # The host may already isolate child processes. This browser
                     # only visits our temporary loopback fixture with fake data.
                     rendered = subprocess.run([
@@ -162,6 +162,8 @@ def smoke_test(archive: Path, scratch: Path) -> None:
                         print(f"Browser exit status: {rendered.returncode}; diagnostics saved in {scratch}")
                         raise RuntimeError("The real browser did not initialize the portable chat interface")
                     print("Portable browser initialization passed with an isolated headless profile.")
+                else:
+                    print("Separate browser smoke skipped; HTML and JavaScript HTTP checks still run.")
                 with opener.open(base_url + "/api/system/engine-status", timeout=10) as response:
                     initial_engine = json.load(response)
                     if initial_engine["ready"] or initial_engine["state"] != "unavailable":
@@ -231,6 +233,8 @@ def smoke_test(archive: Path, scratch: Path) -> None:
                 with opener.open(request, timeout=5) as response:
                     response.read()
                 with closing(sqlite3.connect(install / "data" / "galgame2voice.db")) as connection:
+                    if connection.execute("PRAGMA user_version").fetchone()[0] != 7:
+                        raise RuntimeError("Portable schema version must support existing version 7 installs")
                     value = connection.execute("SELECT api_key FROM providers WHERE id = 'deepseek'").fetchone()[0]
                     if not value.startswith(("dpapi:", "enc:")):
                         raise RuntimeError("Portable credentials were not encrypted")
@@ -243,7 +247,7 @@ def smoke_test(archive: Path, scratch: Path) -> None:
                     base_url + "/api/chat/import", method="POST",
                     data=json.dumps({"sessions": [{"id": "s_import_portable_smoke", "title": "Imported chat",
                         "settings": {"voiceProfileId": 999}, "messages": [
-                            {"role": "user", "content": "Retained history after import"}]}]}).encode(),
+                            {"role": "user", "content": "Retained history after import", "ts": 1709341323456}]}]}).encode(),
                     headers={"Content-Type": "application/json", "Origin": base_url},
                 )
                 with opener.open(import_request, timeout=10) as response:
@@ -252,6 +256,13 @@ def smoke_test(archive: Path, scratch: Path) -> None:
                 with opener.open(base_url + "/api/chat/history?session_id=s_import_portable_smoke", timeout=5) as response:
                     if json.load(response)["messages"][0]["content_chinese"] != "Retained history after import":
                         raise RuntimeError("Portable chat import did not restore model context")
+                with opener.open(base_url + "/api/chat/export", timeout=10) as response:
+                    backup = json.load(response)
+                    restored = next(s for s in backup["sessions"] if s["id"] == "s_import_portable_smoke")
+                    if restored["messages"][0]["ts"] != 1709341323456:
+                        raise RuntimeError("Portable chat backup did not preserve the imported timestamp")
+                    if "portable-test-credential" in json.dumps(backup):
+                        raise RuntimeError("Portable chat backup included a provider credential")
             except Exception:
                 log.flush()
                 print((root / "launch.log").read_text(encoding="utf-8", errors="replace"))
@@ -383,6 +394,7 @@ def smoke_test(archive: Path, scratch: Path) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", type=Path)
-    parser.add_argument("--scratch", type=Path, default=Path("temp_test/portable-smoke"))
+    parser.add_argument("--scratch", type=Path, default=Path(".local/portable-smoke"))
+    parser.add_argument("--skip-browser", action="store_true", help="Use when browser interaction is verified separately")
     arguments = parser.parse_args()
-    smoke_test(arguments.archive.resolve(), arguments.scratch.resolve())
+    smoke_test(arguments.archive.resolve(), arguments.scratch.resolve(), skip_browser=arguments.skip_browser)

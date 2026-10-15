@@ -332,9 +332,11 @@ def test_package_release_includes_character_assets(tmp_path):
     assert pr.should_include(Path("characters/四季夏目/refs/gentle.ogg")) is True
     assert pr.should_include(Path("characters/四季夏目/refs/cool.ogg")) is True
 
-    # Large binary weights must be excluded
+    # Large binary weights and user archives must be excluded
     assert pr.should_include(Path("characters/四季夏目/huge_weights.ckpt")) is False
     assert pr.should_include(Path("characters/四季夏目/huge_weights.pth")) is False
+    assert pr.should_include(Path("characters/四季夏目.zip")) is False
+    assert pr.should_include(Path("characters/栞那.7z")) is False
 
 
 # ============================================================================

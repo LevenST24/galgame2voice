@@ -194,7 +194,8 @@ async def test_crud_auto_heal_canonicalizes_absolute_project_paths(tmp_path):
 @pytest.mark.asyncio
 async def test_audio_cleanup_preserves_reference_audios(tmp_path, monkeypatch):
     """Verifies background cleanup removes ephemeral files but NEVER deletes *.ogg or reference files."""
-    from galgame2voice.main import _audio_cleanup_loop
+    from galgame2voice.database.session import get_db, init_db
+    from galgame2voice.services.audio_cleaner import _run_audio_cleanup_cycle
 
     audio_dir = tmp_path / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -220,28 +221,16 @@ async def test_audio_cleanup_preserves_reference_audios(tmp_path, monkeypatch):
     for p in (ref_root, ref_nested, chunk_file, full_file):
         os.utime(str(p), (old_time, old_time))
 
-    # Mock DB settings to retention 30 minutes
-    class MockSettings:
-        audio_retention_minutes = 30
-
+    db = tmp_path / "cleaner.db"
+    await init_db(db)
     from contextlib import asynccontextmanager
     @asynccontextmanager
     async def mock_get_db():
-        yield None
+        async with get_db(db) as conn:
+            yield conn
 
     monkeypatch.setattr("galgame2voice.main.get_db", mock_get_db)
-    async def mock_get_settings_raw(conn):
-        return MockSettings()
-    monkeypatch.setattr("galgame2voice.database.crud.get_settings_raw", mock_get_settings_raw)
-
-    # Run one iteration of _audio_cleanup_loop
-    task = asyncio.create_task(_audio_cleanup_loop(audio_dir, interval_seconds=0))
-    await asyncio.sleep(0.05)
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    await _run_audio_cleanup_cycle(audio_dir)
 
     # Ephemeral synthesized files must be unlinked
     assert not chunk_file.exists(), "Ephemeral chunk_*.wav must be cleaned up!"
@@ -255,7 +244,10 @@ async def test_audio_cleanup_preserves_reference_audios(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_audio_cleanup_preserves_registered_wav_references(tmp_path, monkeypatch):
     """Verifies that custom .wav reference files registered in voice_profiles are protected from cleanup."""
-    from galgame2voice.main import _audio_cleanup_loop
+    from galgame2voice.database import crud
+    from galgame2voice.database.models import VoiceProfileCreate
+    from galgame2voice.database.session import get_db, init_db
+    from galgame2voice.services.audio_cleaner import _run_audio_cleanup_cycle
 
     audio_dir = tmp_path / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -273,34 +265,21 @@ async def test_audio_cleanup_preserves_registered_wav_references(tmp_path, monke
     os.utime(str(custom_ref_wav), (old_time, old_time))
     os.utime(str(ephemeral_wav), (old_time, old_time))
 
-    # Mock DB connection that returns the custom ref in voice_profiles
-    class MockConn:
-        async def execute(self, query):
-            class MockCursor:
-                async def fetchall(self):
-                    return [("audio/custom_character_voice.wav",)]
-            return MockCursor()
-
-    class MockSettings:
-        audio_retention_minutes = 30
-
+    db = tmp_path / "registered-reference.db"
+    await init_db(db)
+    async with get_db(db) as conn:
+        await crud.create_voice_profile(conn, VoiceProfileCreate(
+            name="Reference voice", gpt_weights_path="voice.ckpt", sovits_weights_path="voice.pth",
+            ref_audio_path=str(custom_ref_wav),
+        ))
     from contextlib import asynccontextmanager
     @asynccontextmanager
     async def mock_get_db():
-        yield MockConn()
+        async with get_db(db) as conn:
+            yield conn
 
     monkeypatch.setattr("galgame2voice.main.get_db", mock_get_db)
-    async def mock_get_settings_raw(conn):
-        return MockSettings()
-    monkeypatch.setattr("galgame2voice.database.crud.get_settings_raw", mock_get_settings_raw)
-
-    task = asyncio.create_task(_audio_cleanup_loop(audio_dir, interval_seconds=0))
-    await asyncio.sleep(0.05)
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    await _run_audio_cleanup_cycle(audio_dir)
 
     # Registered reference wav MUST be preserved
     assert custom_ref_wav.exists(), "Registered custom_character_voice.wav must NOT be unlinked by cleanup!"

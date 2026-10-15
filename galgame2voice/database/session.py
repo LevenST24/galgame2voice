@@ -274,7 +274,10 @@ def _backup_database_sync(resolved_path: Path) -> None:
     with closing(_open_readonly(resolved_path)) as reader:
         version = int(reader.execute("PRAGMA user_version").fetchone()[0])
     if version > CURRENT_SCHEMA_VERSION:
-        raise RuntimeError("数据库来自较新的版本，请使用对应的新版本程序，原数据已保留。")
+        raise RuntimeError(
+            f"数据库来自较新的版本（数据库版本 {version}，当前程序最高支持 {CURRENT_SCHEMA_VERSION}），"
+            "请使用对应的新版本程序，原数据已保留。"
+        )
     create_database_backup(resolved_path, required=version < CURRENT_SCHEMA_VERSION)
 
 

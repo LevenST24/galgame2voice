@@ -88,6 +88,64 @@ class TestSsrfGuard:
         assert resp.status_code == 400
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["sync", "stream", "models"])
+async def test_saved_private_permission_reaches_real_chat_adapter_and_can_be_revoked(
+    client, isolate_test_database, monkeypatch, mode,
+):
+    from galgame2voice.adapters.base import ChatMessage
+    from galgame2voice.adapters.llm import openai_adapter
+    from galgame2voice.services.chat_service import ChatService
+
+    assert (await client.post("/api/config", json={"allow_private_llm_endpoints": True})).status_code == 200
+    configured = await client.post("/api/providers", json={
+        "id": "custom", "name": "Local acceptance model", "api_base_url": "http://127.0.0.1:11434/v1",
+        "chat_model": "local-fixture", "is_active": True,
+    })
+    assert configured.status_code == 200
+    outbound = []
+
+    def upstream(request):
+        outbound.append(request)
+        if mode == "models":
+            return httpx.Response(200, json={"data": [{"id": "local reply"}]})
+        if mode == "stream":
+            data = 'data: {"choices":[{"delta":{"content":"local reply"}}]}\n\ndata: [DONE]\n\n'
+            return httpx.Response(200, text=data, headers={"Content-Type": "text/event-stream"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "local reply"}}]})
+
+    monkeypatch.setattr(openai_adapter, "create_async_client", lambda **kwargs: httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream),
+    ))
+    service = ChatService(db_path=isolate_test_database)
+    messages = [ChatMessage(role="user", content="Local model acceptance")]
+
+    async def complete(adapter, model):
+        if mode == "models":
+            return (await adapter.list_models())[0]
+        if mode == "stream":
+            return "".join([chunk async for chunk in adapter.stream_chat(messages, model=model)])
+        return (await adapter.chat(messages, model=model)).content
+
+    try:
+        adapter, model, _ = await service.get_active_llm_adapter(provider_id="custom")
+        assert await complete(adapter, model) == "local reply"
+        assert len(outbound) == 1
+
+        # Reuse the service, just as the web/Telegram chat paths do after a setting change.
+        revoked = await client.post("/api/config", json={"allow_private_llm_endpoints": False})
+        assert revoked.status_code == 200
+        adapter, model, _ = await service.get_active_llm_adapter(provider_id="custom")
+        with pytest.raises(PermissionError, match="阻止"):
+            await complete(adapter, model)
+        assert len(outbound) == 1, "revoking permission must block the next outbound request"
+        listing = await client.get("/api/providers/custom/models")
+        assert listing.status_code == 400
+        assert len(outbound) == 1
+    finally:
+        await service.aclose()
+
+
 class TestCredentialMasking:
     @pytest.mark.asyncio
     async def test_active_provider_masks_custom_headers(self, client, isolate_test_database):

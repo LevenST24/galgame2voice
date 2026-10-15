@@ -15,6 +15,25 @@ from galgame2voice.database import crud
 
 logger = logging.getLogger(__name__)
 
+# The streaming parser and the Japanese voice rely on this reply shape. Personas typed by
+# hand (a new custom voice, an edited or third-party package prompt) rarely repeat it,
+# and without it the model answers in plain Chinese that the voice then reads aloud.
+BILINGUAL_OUTPUT_CONTRACT = (
+    "【输出格式】请始终只输出如下 JSON，不要包含 Markdown 标记或多余文字。"
+    "在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5, temp 温度: 0.60~1.20, "
+    "emotion 情绪: gentle|shy|happy|tsundere|cool|sad|angry）；japanese 是与 chinese 意思一致、"
+    "适合配音朗读的口语化日语：\n"
+    '{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, '
+    '"chinese": "给玩家看的中文内容", "japanese": "对应的口语化日语音频台词"}'
+)
+
+
+def ensure_bilingual_output_format(prompt: str) -> str:
+    """Appends the bilingual JSON reply contract when a persona prompt does not define one."""
+    if not prompt or ('"chinese"' in prompt and '"japanese"' in prompt):
+        return prompt
+    return f"{prompt.rstrip()}\n\n{BILINGUAL_OUTPUT_CONTRACT}"
+
 
 def upgrade_legacy_system_prompt(prompt: str) -> str:
     """
@@ -126,7 +145,7 @@ async def build_chat_context(
             else session_manager.DEFAULT_SYSTEM_TEMPLATE
         )
 
-    system_prompt = upgrade_legacy_system_prompt(system_prompt)
+    system_prompt = ensure_bilingual_output_format(upgrade_legacy_system_prompt(system_prompt))
     char_name = character_name or (active_profile.name if active_profile else "Character")
 
     settings_raw = await crud.get_settings_raw(conn)

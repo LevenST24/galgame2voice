@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,9 @@ class CharacterManager:
 
         self._packages: dict[str, CharacterPackage] = {}
         self._name_index: dict[str, str] = {}  # Normalized name/alias -> id
+        self._discovered = False
+        self._discovery_lock = threading.RLock()
+        self._catalog_lock = threading.Lock()
 
     @classmethod
     def get_instance(cls, characters_dir: Path | None = None) -> CharacterManager:
@@ -73,13 +77,19 @@ class CharacterManager:
         Discovers all character packages in the specified directory.
         Validates manifests and verifies reference audio files.
         """
+        # Serialize writers, but keep readers on the last complete catalog while
+        # file and audio validation run. A failed scan leaves it intact.
+        with self._discovery_lock:
+            return self._discover_characters(characters_dir)
+
+    def _discover_characters(self, characters_dir: Path | None) -> list[CharacterPackage]:
         target_dir = Path(characters_dir).resolve() if characters_dir else self.characters_dir
-        self.characters_dir = target_dir
-        self._packages.clear()
-        self._name_index.clear()
+        packages: dict[str, CharacterPackage] = {}
+        name_index: dict[str, str] = {}
 
         if not target_dir.exists() or not target_dir.is_dir():
             logger.debug("Characters directory does not exist: %s", target_dir)
+            self._publish_catalog(target_dir, packages, name_index)
             return []
 
         discovered: list[CharacterPackage] = []
@@ -93,8 +103,8 @@ class CharacterManager:
                 continue
 
             pkg = self._load_and_validate_package(item, manifest_path)
-            self._packages[pkg.id] = pkg
-            self._register_aliases(pkg)
+            packages[pkg.id] = pkg
+            self._register_aliases(pkg, name_index)
             if pkg.is_valid:
                 discovered.append(pkg)
             else:
@@ -112,8 +122,21 @@ class CharacterManager:
                     p.name
                 )
             )
-            self._name_index["default"] = discovered_sorted[0].id
+            name_index["default"] = discovered_sorted[0].id
+        self._publish_catalog(target_dir, packages, name_index)
         return discovered
+
+    def _publish_catalog(
+        self,
+        characters_dir: Path,
+        packages: dict[str, CharacterPackage],
+        name_index: dict[str, str],
+    ) -> None:
+        with self._catalog_lock:
+            self.characters_dir = characters_dir
+            self._packages = packages
+            self._name_index = name_index
+            self._discovered = True
 
     def _load_and_validate_package(self, folder: Path, manifest_path: Path) -> CharacterPackage:
         """Loads and thoroughly validates a single character package folder."""
@@ -251,59 +274,64 @@ class CharacterManager:
 
     def _ensure_discovered(self) -> None:
         """Ensures character packages have been discovered at least once."""
-        if not self._packages:
-            self.discover_characters()
+        if not self._discovered:
+            with self._discovery_lock:
+                if not self._discovered:
+                    self.discover_characters()
 
-    def _register_aliases(self, pkg: CharacterPackage) -> None:
+    @staticmethod
+    def _register_aliases(pkg: CharacterPackage, name_index: dict[str, str]) -> None:
         """Registers alias keys for quick lookup by ID, name, or keywords."""
         pid = pkg.id
-        self._name_index[pid.lower()] = pid
-        self._name_index[pkg.name.lower()] = pid
+        name_index[pid.lower()] = pid
+        name_index[pkg.name.lower()] = pid
 
         # Specific alias indexing for known character strings
         for token in [pkg.name, pkg.id]:
             cleaned = "".join(token.lower().replace("(", "").replace(")", "").replace("-", "").split())
-            self._name_index[cleaned] = pid
+            name_index[cleaned] = pid
 
         # Register manifest-defined aliases if present
         manifest_aliases = getattr(pkg.manifest, "aliases", None) or []
         for alias in manifest_aliases:
             if alias:
-                self._name_index[alias.lower()] = pid
-                self._name_index["".join(alias.lower().split())] = pid
+                name_index[alias.lower()] = pid
+                name_index["".join(alias.lower().split())] = pid
 
     def get_character(self, id_or_name: str) -> CharacterPackage | None:
         """Looks up a character package by ID or name/alias."""
         if not id_or_name or not id_or_name.strip():
             return None
         self._ensure_discovered()
+        with self._catalog_lock:
+            packages, name_index = self._packages, self._name_index
         cleaned = id_or_name.strip().lower()
         cleaned_spaceless = "".join(cleaned.split())
 
         # Direct ID match
-        if id_or_name in self._packages:
-            return self._packages[id_or_name]
+        if id_or_name in packages:
+            return packages[id_or_name]
 
         # Alias index match
-        if cleaned in self._name_index:
-            pkg_id = self._name_index[cleaned]
-            return self._packages.get(pkg_id)
+        if cleaned in name_index:
+            pkg_id = name_index[cleaned]
+            return packages.get(pkg_id)
 
-        if cleaned_spaceless in self._name_index:
-            pkg_id = self._name_index[cleaned_spaceless]
-            return self._packages.get(pkg_id)
+        if cleaned_spaceless in name_index:
+            pkg_id = name_index[cleaned_spaceless]
+            return packages.get(pkg_id)
 
         # Check stripping parenthetical suffixes e.g. "四季夏目 (Shiki Natsume)" -> "四季夏目"
         if "(" in cleaned:
             base_cleaned = cleaned.split("(")[0].strip()
-            if base_cleaned in self._name_index:
-                return self._packages.get(self._name_index[base_cleaned])
+            if base_cleaned in name_index:
+                return packages.get(name_index[base_cleaned])
             inside_paren = cleaned.split("(", 1)[1].rstrip(")").strip()
-            if inside_paren in self._name_index:
-                return self._packages.get(self._name_index[inside_paren])
+            if inside_paren in name_index:
+                return packages.get(name_index[inside_paren])
 
         # Fuzzy substring match
-        for pkg in self._packages.values():
+        for pkg in packages.values():
             pkg_id_lower = pkg.id.lower()
             pkg_name_lower = pkg.name.lower()
             pkg_name_spaceless = "".join(pkg_name_lower.split())
@@ -324,9 +352,11 @@ class CharacterManager:
     def get_available_characters(self) -> list[CharacterPackage]:
         """Returns all valid, discovered character packages."""
         self._ensure_discovered()
+        with self._catalog_lock:
+            packages = self._packages
         seen = set()
         result = []
-        for pkg in self._packages.values():
+        for pkg in packages.values():
             if pkg.is_valid and pkg.id not in seen:
                 seen.add(pkg.id)
                 result.append(pkg)

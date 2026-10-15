@@ -17,11 +17,19 @@ import { voiceSupported, recorderSupported, audioStore } from './voice.js';
 import { fetchAndCacheAudio, putCachedAudioBlob } from './cache.js';
 import { streamAudioController } from './audio_player.js';
 import { portraitStage } from './portrait.js';
-import { renderSessionList, renderMessages, createMessageEl, createTypingEl, showToast } from './ui.js';
+import {
+  renderSessionList, renderMessages, createMessageEl, createTypingEl, showToast,
+  keepToastsAboveComposer, needsModelSettings,
+} from './ui.js';
 import { initAuthInterceptor } from './auth.js';
 import { initSessionBackup } from './controllers/session_backup.js';
+import { requestJson } from './api.js';
+import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSessions, fetchSessionHistoryPage, earliestServerMessageId } from './session_api.js';
+import { serverTimestamp } from './session_data.js';
+import { openModal, closeModal, hasOpenModal, initSettingsUi } from './settings_ui.js';
 
 // Initialize console token authentication interceptor
+initSettingsUi();
 initAuthInterceptor();
 
 // Modular controllers
@@ -40,6 +48,7 @@ import {
   openGlobalSettings,
   loadProviders,
   getCurrentActiveProvider,
+  haveProvidersLoaded,
 } from './controllers/global_settings.js';
 import {
   initAudioPlayerUi,
@@ -79,6 +88,7 @@ const dom = {
   sSystem: $('sSystem'),
   sVoice: $('sVoice'),
   sVoiceActive: $('sVoiceActive'),
+  sVoiceRescan: $('sVoiceRescan'),
   sVoiceDelete: $('sVoiceDelete'),
   sCustomVoiceBox: $('sCustomVoiceBox'),
   sCvName: $('sCvName'),
@@ -114,6 +124,8 @@ const dom = {
   gProvider: $('gProvider'),
   gProviderActive: $('gProviderActive'),
   gProviderActiveBadge: $('gProviderActiveBadge'),
+  gAllowPrivateEndpoints: $('gAllowPrivateEndpoints'),
+  gPrivateEndpointsStatus: $('gPrivateEndpointsStatus'),
   gProviderCard: $('gProviderCard'),
   gProviderDescBanner: $('gProviderDescBanner'),
   gProviderDesc: $('gProviderDesc'),
@@ -227,45 +239,44 @@ let busy = false;
 let cancelStream = null;
 let nearBottom = true;
 
-/* ---------- 模态框通用操作 ---------- */
-function openModal(el) {
-  if (!el) return;
-  el.classList.remove('hidden');
-  const m = el.querySelector('.modal');
-  if (m) m.scrollTop = 0;
-  const b = el.querySelector('.modal-body');
-  if (b) b.scrollTop = 0;
-}
-
-function closeModal(el) {
-  if (el) el.classList.add('hidden');
-}
-
 /* ---------- 抽屉操作 ---------- */
 function openDrawer() {
-  if (dom.sidebar) dom.sidebar.classList.add('open');
+  if (dom.sidebar) { dom.sidebar.inert = false; dom.sidebar.classList.add('open'); }
   if (dom.backdrop) dom.backdrop.classList.add('show');
 }
 
 function closeDrawer() {
-  if (dom.sidebar) dom.sidebar.classList.remove('open');
+  if (dom.sidebar) { dom.sidebar.classList.remove('open'); dom.sidebar.inert = window.innerWidth <= 820; }
   if (dom.backdrop) dom.backdrop.classList.remove('show');
 }
 
 /* ---------- 渲染与状态栏 ---------- */
 function updateBadge() {
-  if (dom.badgeDot) dom.badgeDot.className = 'badge-dot dot-meoo';
+  const activeProvider = getCurrentActiveProvider();
+  const s = getActive();
+  const profiles = getVoiceProfiles();
+  const boundProfile = s?.settings?.voiceProfileId
+    ? profiles.find((p) => p.id === s.settings.voiceProfileId)
+    : null;
+  // Cloud providers cannot answer without a key; say so before the first message fails.
+  const missingKey = Boolean(activeProvider) && activeProvider.id !== 'custom'
+    && !String(activeProvider.api_key || '').trim();
+  if (dom.badgeDot) dom.badgeDot.className = `badge-dot ${activeProvider && !missingKey ? 'dot-custom' : 'dot-mock'}`;
   if (dom.badge) {
     const label = dom.badge.querySelector('.badge-label') || dom.badge.lastChild;
     if (label) {
-      const activeProvider = getCurrentActiveProvider();
+      let modelText = haveProvidersLoaded() ? '未配置对话模型' : '正在读取模型配置…';
       if (activeProvider && (activeProvider.name || activeProvider.chat_model)) {
         const pName = activeProvider.name || '活跃模型';
         const mName = activeProvider.chat_model || '';
-        label.textContent = mName ? `${pName} · ${mName}` : pName;
-      } else {
-        label.textContent = '本地引擎 · GPT-SoVITS';
+        modelText = missingKey ? `${pName} · 未填写 API Key` : mName ? `${pName} · ${mName}` : pName;
       }
+      label.textContent = boundProfile?.name ? `${modelText} · 🎙️ ${boundProfile.name}` : modelText;
+      dom.badge.title = !activeProvider
+        ? '点击在「全局设置 → 对话模型」中配置模型'
+        : missingKey
+          ? `「${activeProvider.name || activeProvider.id}」尚未填写 API Key，发送消息前请点击这里配置`
+          : `当前模型：${modelText}${boundProfile?.name ? ` | 当前角色：${boundProfile.name}` : ''}（点击配置模型）`;
     }
   }
 }
@@ -288,6 +299,7 @@ function renderHeader() {
   const s = getActive();
   if (dom.chatTitle) {
     dom.chatTitle.textContent = s ? s.title : '新对话';
+    dom.chatTitle.title = dom.chatTitle.textContent;
   }
   if (s && dom.sessionSettingsBtn) {
     const st = s.settings;
@@ -300,16 +312,14 @@ function renderHeader() {
 async function resolveJapanese(msg) {
   if (msg.japanese) return msg.japanese;
   try {
-    const res = await fetch('/api/chat/japanese', {
+    const data = await requestJson('/api/chat/japanese', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         text: msg.content,
         session_id: state.activeId,
       }),
-    });
-    if (!res.ok) return '';
-    const data = await res.json();
+    }, { timeoutMs: 60000 });
     if (data && data.japanese) {
       msg.japanese = data.japanese;
       saveState();
@@ -321,7 +331,7 @@ async function resolveJapanese(msg) {
   return '';
 }
 
-function fullRender(animate = false) {
+function fullRender(animate = false, { scrollToBottom = true } = {}) {
   renderSidebar();
   renderHeader();
   if (dom.messages) {
@@ -330,19 +340,34 @@ function fullRender(animate = false) {
       onPick: sendMessage,
       onPlayVoice: playVoice,
       onResolveJapanese: resolveJapanese,
+      onLoadOlder: loadOlderSessionHistory,
+      historyBlocked: busy,
+      onOpenModels: () => openGlobalSettings('models'),
+      onOpenVoice: openSessionSettings,
+      onRetry: retryFailedMessage,
       autoTranslate: Boolean(state.global.autoTranslate),
     });
-    dom.messages.scrollTop = dom.messages.scrollHeight;
+    if (scrollToBottom) {
+      dom.messages.scrollTop = dom.messages.scrollHeight;
+      nearBottom = true;
+    }
   }
-  nearBottom = true;
 }
 
 function updateComposer() {
   if (dom.sendBtn && dom.input) {
-    dom.sendBtn.disabled = busy || !dom.input.value.trim();
+    dom.sendBtn.disabled = busy || Boolean(getActive()?.loadingOlder)
+      || isSessionDeleting(state.activeId) || !dom.input.value.trim();
   }
   if (dom.stopBtn) {
     dom.stopBtn.classList.toggle('hidden', !busy);
+  }
+  const moreBtn = dom.messages?.querySelector('.history-more-btn');
+  if (moreBtn) {
+    const loading = Boolean(getActive()?.loadingOlder);
+    moreBtn.disabled = busy || loading;
+    moreBtn.textContent = loading ? '正在加载更早的聊天记录…'
+      : busy ? '回复完成后可查看更早的聊天记录' : '↑ 查看更早的聊天记录';
   }
 }
 
@@ -376,7 +401,7 @@ function interruptAll() {
   stopCurrentVoice();
 }
 
-function sendMessage(rawText, voiceMeta) {
+function sendMessage(rawText, voiceMeta, { retryOf = null } = {}) {
   clearMicTimers();
   const text = (typeof rawText === 'string' ? rawText : dom.input.value).trim();
   if (!text || busy) return;
@@ -386,41 +411,49 @@ function sendMessage(rawText, voiceMeta) {
   }
   const session = getActive();
   if (!session) return;
+  if (session.loadingOlder) {
+    showToast('正在加载更早的聊天记录，完成后即可发送。', 'info');
+    return;
+  }
+  if (isSessionDeleting(session.id)) {
+    showToast('正在删除这个对话，请稍候或切换到其他对话。', 'info');
+    return;
+  }
   const originId = session.id;
+  ++_syncSessionsGen;
 
-  const prevTitle = session.title;
-  const userMsg = addMessage('user', text);
-  if (session.title !== prevTitle) {
-    fetch('/api/chat/sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: session.id,
-        title: session.title,
-        voice_profile_id: session.settings?.voiceProfileId,
-        settings: session.settings,
-      }),
-    }).catch(() => {});
-  }
-  if (voiceMeta && userMsg) {
-    audioStore.set(userMsg.id, { url: voiceMeta.url, dur: voiceMeta.dur });
-    userMsg.dur = voiceMeta.dur;
-    if (voiceMeta.blob) {
-      const voiceKey = `user_${userMsg.id}`;
-      putCachedAudioBlob(voiceKey, voiceMeta.blob);
-      userMsg.voiceKey = voiceKey;
-      saveState();
+  let userMsg = retryOf;
+  if (userMsg) {
+    // Resending keeps the message, its position and any recording; only the note goes.
+    delete userMsg.failed;
+    saveState();
+    fullRender(false);
+  } else {
+    const prevTitle = session.title;
+    userMsg = addMessage('user', text);
+    if (session.title !== prevTitle) {
+      persistSession(session).catch(() => {});
     }
-  }
-  dom.input.value = '';
-  autoGrow();
+    if (voiceMeta && userMsg) {
+      audioStore.set(userMsg.id, { url: voiceMeta.url, dur: voiceMeta.dur });
+      userMsg.dur = voiceMeta.dur;
+      if (voiceMeta.blob) {
+        const voiceKey = `user_${userMsg.id}`;
+        putCachedAudioBlob(voiceKey, voiceMeta.blob);
+        userMsg.voiceKey = voiceKey;
+        saveState();
+      }
+    }
+    dom.input.value = '';
+    autoGrow();
 
-  if (!listInner || !listInner.isConnected) fullRender(false);
-  const { el: userEl } = createMessageEl(userMsg, { onPlayVoice: playVoice });
-  userEl.classList.add('animate-in');
-  listInner.classList.remove('is-empty');
-  if (listInner.querySelector('.empty')) listInner.innerHTML = '';
-  listInner.appendChild(userEl);
+    if (!listInner || !listInner.isConnected) fullRender(false);
+    const { el: userEl } = createMessageEl(userMsg, { onPlayVoice: playVoice });
+    userEl.classList.add('animate-in');
+    listInner.classList.remove('is-empty');
+    if (listInner.querySelector('.empty')) listInner.innerHTML = '';
+    listInner.appendChild(userEl);
+  }
   scrollBottom(true);
 
   renderSidebar();
@@ -523,7 +556,7 @@ function sendMessage(rawText, voiceMeta) {
     return streamBarCtl;
   };
 
-  const onChunk = (chunk, full) => {
+  const onChunk = (full) => {
     typing.remove();
     lastFull = full;
     if (!streamEl) {
@@ -533,7 +566,7 @@ function sendMessage(rawText, voiceMeta) {
         content: full,
         ts: Date.now(),
       };
-      const built = createMessageEl(pendingMsg, { onPlayVoice: playVoice });
+      const built = createMessageEl(pendingMsg, { streaming: true });
       streamEl = built.el;
       streamContentEl = built.contentEl;
       streamEl.classList.add('animate-in', 'streaming');
@@ -548,11 +581,12 @@ function sendMessage(rawText, voiceMeta) {
   };
 
   const onEnd = (finalText, meta = {}) => {
-    const { cancelled = false, error = null, audioUrls = [] } = meta;
+    const { cancelled = false, error = null, errorCode = null, audioUrls = [] } = meta;
     typing.remove();
     cancelStream = null;
     let stored = null;
     const textToSave = (finalText || lastFull || '').trim();
+    if (streamAudioController.currentMsgId === streamMsgId) streamAudioController.finishInput();
 
     const msgPayload = {
       id: uid('m'),
@@ -570,17 +604,25 @@ function sendMessage(rawText, voiceMeta) {
       if (textToSave) {
         streamEl.classList.remove('streaming');
         stored = msgPayload;
-        const { el: finalEl } = createMessageEl(stored, {
+        const { el: finalEl, voiceCtl } = createMessageEl(stored, {
           onPlayVoice: playVoice,
           onResolveJapanese: resolveJapanese,
           autoTranslate: Boolean(state.global.autoTranslate),
         });
         streamEl.replaceWith(finalEl);
         streamEl = finalEl;
-        if (hasStartedStreamAudio && streamBarCtl) {
-          const newBar = finalEl.querySelector('.voice-bar');
-          if (newBar) {
-            newBar.classList.add('playing');
+        if (hasStartedStreamAudio && streamAudioController.currentMsgId === streamMsgId) {
+          streamAudioController.attachControl(voiceCtl, stored.id);
+          if (streamAudioController.isPlaying) {
+            setCurrentVoice({
+              msgId: stored.id,
+              get paused() { return streamAudioController.paused; },
+              pause() { streamAudioController.pause(); },
+              resume() { streamAudioController.resume(); },
+              stop() { streamAudioController.interrupt(40); },
+              setPlaying: voiceCtl?.setPlaying,
+              setProgress: voiceCtl?.setProgress,
+            });
           }
         }
       } else {
@@ -592,29 +634,44 @@ function sendMessage(rawText, voiceMeta) {
       origin.messages.push(msgPayload);
       origin.updatedAt = Date.now();
     }
+    // No reply text arrived: note the reason under the message so it outlives the toast.
+    const failedInline = Boolean(error && !stored && origin?.messages.includes(userMsg));
+    if (failedInline) userMsg.failed = { error, code: errorCode };
     saveState();
     busy = false;
+    if (failedInline && originId === state.activeId) fullRender(false);
     updateComposer();
-    if (error) showToast(error, 'error');
-    else if (meta.audioError && !cancelled) showToast(meta.audioError, 'info');
+    if (error && !(failedInline && originId === state.activeId)) {
+      showToast(error, 'error', needsModelSettings(error, errorCode) ? {
+        actionLabel: '配置对话模型',
+        onAction: () => openGlobalSettings('models'),
+      } : null);
+    } else if (meta.audioError && !cancelled) {
+      showToast(meta.audioError, 'info', {
+        actionLabel: '检查运行状态',
+        onAction: () => openGlobalSettings('dashboard'),
+      });
+    }
     renderSidebar();
     renderHeader();
     if (!cancelled) maybeScroll();
-    if (stored && !error && !cancelled) {
+    if (stored && !error && !cancelled && originId === state.activeId && !streamAudioController.isPlaying) {
+      const quote = stored.japanese || stored.content;
+      portraitStage.updateDialogue(quote);
       if (meta.emotion) {
         try {
-          portraitStage.setEmotion(meta.emotion, stored);
+          portraitStage.setEmotion(meta.emotion, quote);
         } catch (_) {}
       } else {
         try {
-          portraitStage.handleMessageEmotion(stored);
+          portraitStage.handleMessageEmotion(stored.content);
         } catch (_) {}
       }
-      // 本轮好感度可能已变化，红脸差分的解锁门槛跟着更新
-      portraitStage.refreshAffection();
     }
+    // Refresh unlocks even if dialogue is still following paused/live audio.
+    if (stored && !error && !cancelled && originId === state.activeId) portraitStage.refreshAffection();
     if (stored && !error && !cancelled && state.global.voiceMode && originId === state.activeId) {
-      if (!streamAudioController.isPlaying) {
+      if (!hasStartedStreamAudio && !streamAudioController.isPlaying) {
         const bar = streamEl && (streamEl.querySelector('.voice-bar') || streamEl.querySelector('.vb-play'));
         if (bar) bar.click();
       }
@@ -628,14 +685,14 @@ function sendMessage(rawText, voiceMeta) {
     preset: state.global.ttsPreset || '',
     onChunk,
     onAudio: (url, idx, sentence, meta = {}) => {
-      if (url && typeof url === 'string' && url.startsWith('/audio/')) {
+      if ((!state.global.voiceMode || originId !== state.activeId) && url && typeof url === 'string' && url.startsWith('/audio/')) {
         fetchAndCacheAudio(url).catch(() => {});
       }
       if (state.global.voiceMode && originId === state.activeId && url) {
         if (idx === 0 || !hasStartedStreamAudio) {
           hasStartedStreamAudio = true;
           const ctl = ensureStreamVoiceBar();
-          streamAudioController.startSession(streamMsgId, ctl);
+          streamAudioController.startSession(streamMsgId, ctl, { streaming: true });
           setCurrentVoice({
             msgId: streamMsgId,
             get paused() {
@@ -669,51 +726,141 @@ function sendMessage(rawText, voiceMeta) {
   });
 }
 
+/** 重新发送最后一条未收到回复的消息：原消息保留在原处，只重新请求回复。 */
+function retryFailedMessage(msg) {
+  const session = getActive();
+  if (!session || !msg?.failed || session.messages[session.messages.length - 1] !== msg) return;
+  if (busy) {
+    showToast('当前回复完成后即可重新发送。', 'info');
+    return;
+  }
+  sendMessage(msg.content, null, { retryOf: msg });
+}
+
 /* ---------- 会话操作 ---------- */
+function mapBackendMessage(bm) {
+  return {
+    id: `m_${bm.id}`,
+    role: bm.role,
+    content: bm.content_chinese,
+    japanese: bm.content_japanese || '',
+    audioUrls: bm.audio_url ? [bm.audio_url] : [],
+    ts: serverTimestamp(bm.created_at),
+  };
+}
+
 async function loadSessionHistory(session) {
   if (!session || (session.messages && session.messages.length > 0)) return;
   try {
-    const res = await fetch(`/api/chat/history?session_id=${encodeURIComponent(session.id)}&limit=100`);
-    if (!res.ok) return;
-    const data = await res.json();
+    const data = await fetchSessionHistoryPage(session.id, { limit: 100 });
+    // A reply typed while history was loading, or a deleted session, wins over the old response.
+    if (getSession(session.id) !== session || session.messages?.length) return;
     if (Array.isArray(data.messages) && data.messages.length > 0) {
-      session.messages = data.messages.map((bm) => ({
-        id: `m_${bm.id}`,
-        role: bm.role,
-        content: bm.content_chinese,
-        japanese: bm.content_japanese || '',
-        audioUrls: bm.audio_url ? [bm.audio_url] : [],
-        ts: bm.created_at ? new Date(bm.created_at).getTime() : Date.now(),
-      }));
+      session.messages = data.messages.map(mapBackendMessage);
+      session.hasMoreHistory = Boolean(data.has_more);
+      session.oldestMessageId = Number.isInteger(data.oldest_id) ? data.oldest_id : earliestServerMessageId(session.messages);
       autoTitle(session);
       saveState();
+    } else {
+      session.hasMoreHistory = false;
+      session.oldestMessageId = null;
     }
   } catch (e) {
     console.debug('Failed to load session history:', e);
+    showToast(`历史记录暂时无法读取：${e.message} 恢复连接后点击当前对话可重试。`, 'error');
+  }
+}
+
+async function loadOlderSessionHistory(session) {
+  if (!session || session.loadingOlder) return;
+  if (busy) {
+    showToast('回复完成后即可查看更早的聊天记录。', 'info');
+    return;
+  }
+  const beforeId = Number.isInteger(session.oldestMessageId)
+    ? session.oldestMessageId
+    : earliestServerMessageId(session.messages);
+  if (!beforeId || beforeId <= 1) {
+    session.hasMoreHistory = false;
+    if (getActive() === session) fullRender(false, { scrollToBottom: false });
+    return;
+  }
+  session.loadingOlder = true;
+  updateComposer();
+  if (getActive() === session) fullRender(false, { scrollToBottom: false });
+  const prevScrollHeight = dom.messages ? dom.messages.scrollHeight : 0;
+  const prevScrollTop = dom.messages ? dom.messages.scrollTop : 0;
+  try {
+    const data = await fetchSessionHistoryPage(session.id, { limit: 100, beforeId });
+    if (getSession(session.id) !== session) return;
+    const incoming = Array.isArray(data.messages) ? data.messages.map(mapBackendMessage) : [];
+    const existingIds = new Set((session.messages || []).map((m) => m.id));
+    const uniqueOlder = incoming.filter((m) => !existingIds.has(m.id));
+    if (uniqueOlder.length > 0) {
+      session.messages = [...uniqueOlder, ...(session.messages || [])];
+    }
+    session.hasMoreHistory = Boolean(data.has_more);
+    session.oldestMessageId = Number.isInteger(data.oldest_id)
+      ? data.oldest_id
+      : earliestServerMessageId(session.messages);
+    autoTitle(session);
+    saveState();
+  } catch (e) {
+    showToast(`加载更早消息失败：${e.message}`, 'error');
+  } finally {
+    session.loadingOlder = false;
+    updateComposer();
+    if (getActive() === session) {
+      fullRender(false, { scrollToBottom: false });
+      if (dom.messages) {
+        const delta = dom.messages.scrollHeight - prevScrollHeight;
+        dom.messages.scrollTop = Math.max(0, prevScrollTop + delta);
+      }
+    }
   }
 }
 
 async function switchSession(id) {
   closeDrawer();
-  if (id === state.activeId) return;
+  if (id === state.activeId) {
+    const current = getActive();
+    if (current && !current.messages?.length) {
+      await loadSessionHistory(current);
+      if (getActive() === current) fullRender(false);
+    }
+    return;
+  }
   interruptAll();
   state.activeId = id;
   revokeAllCachedAudioUrls();
   const s = getActive();
-  if (s && (!s.messages || s.messages.length === 0)) {
-    await loadSessionHistory(s);
-  }
   saveState();
   fullRender(true);
-  ensureSessionVoice(getActive());
+  ensureSessionVoice(s);
+  if (s && (!s.messages || s.messages.length === 0)) {
+    await loadSessionHistory(s);
+    if (getActive() !== s) return;
+    fullRender(false);
+  }
   if (dom.input) dom.input.focus();
 }
 
-function handleDelete(id) {
+async function handleDelete(id) {
+  if (isSessionDeleting(id)) return;
+  ++_syncSessionsGen;
   if (id === state.activeId || busy) {
     interruptAll();
   } else {
     stopCurrentVoice();
+  }
+  try {
+    const removal = deletePersistedSession(id);
+    updateComposer();
+    await removal;
+  } catch (error) {
+    showToast(`尚未确认删除，对话保留在列表中。${error.message} 可以稍后重试。`, 'error');
+    updateComposer();
+    return;
   }
   const sess = getSession(id);
   if (sess) {
@@ -724,14 +871,13 @@ function handleDelete(id) {
     }
   }
   deleteSession(id);
-  fetch(`/api/chat/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
-  fetch(`/api/chat/history?session_id=${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
   fullRender(true);
   ensureSessionVoice(getActive());
   showToast('对话已删除');
 }
 
 function newChat() {
+  ++_syncSessionsGen;
   interruptAll();
   closeDrawer();
   revokeAllCachedAudioUrls();
@@ -758,16 +904,7 @@ function newChat() {
   fullRender(true);
   ensureSessionVoice(s);
   if (dom.input) dom.input.focus();
-  fetch('/api/chat/sessions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      id: s.id,
-      title: s.title,
-      voice_profile_id: s?.settings?.voiceProfileId,
-      settings: s.settings,
-    }),
-  }).catch(() => {});
+  persistSession(s).catch(() => {});
 }
 
 /* ---------- 核心事件绑定 ---------- */
@@ -781,11 +918,12 @@ if (dom.composer) {
     e.preventDefault();
     sendMessage();
   });
+  keepToastsAboveComposer(dom.composer.closest('.composer-wrap'));
 }
 if (dom.input) {
   dom.input.addEventListener('input', () => {
     autoGrow();
-    if (!busy && dom.sendBtn) dom.sendBtn.disabled = !dom.input.value.trim();
+    updateComposer();
   });
   dom.input.addEventListener('keydown', (e) => {
     if ((e.key === 'Enter' && !e.shiftKey && !e.isComposing) || ((e.ctrlKey || e.metaKey) && e.key === 'Enter')) {
@@ -808,24 +946,19 @@ if (dom.messages) {
 }
 
 document.addEventListener('keydown', (e) => {
+  if (hasOpenModal()) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault();
     newChat();
   }
   if (e.key === 'Escape') {
-    const isModalOpen =
-      (dom.globalModal && dom.globalModal.classList.contains('active')) ||
-      (dom.sessionModal && dom.sessionModal.classList.contains('active'));
-    closeModal(dom.globalModal);
-    closeModal(dom.sessionModal);
+    if (portraitStage.dismissMobile()) return;
     closeDrawer();
-    if (!isModalOpen) {
-      if (typeof streamAudioController !== 'undefined' && streamAudioController.isPlaying) {
-        streamAudioController.interrupt(40);
-      }
-      if (busy) {
-        interruptAll();
-      }
+    if (typeof streamAudioController !== 'undefined' && streamAudioController.isPlaying) {
+      streamAudioController.interrupt(40);
+    }
+    if (busy) {
+      interruptAll();
     }
   }
 });
@@ -837,8 +970,12 @@ initVoiceSettings(dom, {
   closeModal,
   renderSidebar,
   renderHeader,
+  onOpenSessionSettings: openSessionSettings,
+  onOpenEngineStatus: () => openGlobalSettings('dashboard'),
+  invalidateSessionSync: () => { ++_syncSessionsGen; },
 });
 initGlobalSettings(dom, {
+  onOpenSessionSettings: openSessionSettings,
   onSovitsDirectorySaved: invalidateScannedModels,
   openModal,
   closeModal,
@@ -854,23 +991,32 @@ initAudioPlayerUi(dom, {
   autoGrow,
   isBusy: () => busy,
   resolveJapanese,
+  onOpenEngineStatus: () => openGlobalSettings('dashboard'),
 });
 
 if (dom.sessionSettingsBtn) {
   dom.sessionSettingsBtn.addEventListener('click', openSessionSettings);
 }
 if (dom.globalSettingsBtn) {
-  dom.globalSettingsBtn.addEventListener('click', openGlobalSettings);
+  dom.globalSettingsBtn.addEventListener('click', () => openGlobalSettings());
+}
+if (dom.badge) {
+  dom.badge.style.cursor = 'pointer';
+  dom.badge.addEventListener('click', () => openGlobalSettings('models'));
 }
 
 /* ---------- 启动同步与渲染 ---------- */
 loadState();
-initSessionBackup({ isBusy: () => busy, onImport: () => {
-  ++_syncSessionsGen;
-  interruptAll();
-  fullRender(false);
-  ensureSessionVoice(getActive(), { silent: true });
-} });
+initSessionBackup({
+  isBusy: () => busy,
+  onOpenBackupTab: () => openGlobalSettings('update'),
+  onImport: () => {
+    ++_syncSessionsGen;
+    interruptAll();
+    fullRender(false);
+    ensureSessionVoice(getActive(), { silent: true });
+  },
+});
 fullRender(true);
 autoGrow();
 updateComposer();
@@ -885,11 +1031,8 @@ async function syncSessionsFromBackend() {
   const gen = ++_syncSessionsGen;
   const isStale = () => gen !== _syncSessionsGen;
   try {
-    const res = await fetch('/api/chat/sessions?limit=50');
-    if (!res.ok) return;
-    const data = await res.json();
+    const backendSessions = await fetchAllSessions();
     if (isStale()) return;
-    const backendSessions = data.sessions || [];
     if (backendSessions.length > 0) {
       const existingMap = new Map(state.sessions.map((s) => [s.id, s]));
       const merged = [];
@@ -897,9 +1040,16 @@ async function syncSessionsFromBackend() {
         let local = existingMap.get(bs.id);
         if (local) {
           if (bs.title && (local.title === '新对话' || !local.title)) local.title = bs.title;
-          local.updatedAt = bs.updated_at ? new Date(bs.updated_at).getTime() : local.updatedAt;
+          local.updatedAt = serverTimestamp(bs.updated_at, local.updatedAt);
           if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
           if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = { ...local.settings, ...bs.settings };
+          if (typeof bs.message_count === 'number' && local.messages && local.messages.length > 0 && bs.message_count > local.messages.length) {
+            const oldest = earliestServerMessageId(local.messages);
+            if (oldest && oldest > 1) {
+              local.hasMoreHistory = true;
+              local.oldestMessageId = oldest;
+            }
+          }
           // 人设提示词是角色级数据，会话里残留的旧副本一律丢弃
           delete local.settings.systemPrompt;
           delete local.settings.promptProfileId;
@@ -909,8 +1059,8 @@ async function syncSessionsFromBackend() {
           merged.push({
             id: bs.id,
             title: bs.title || '新对话',
-            createdAt: bs.created_at ? new Date(bs.created_at).getTime() : Date.now(),
-            updatedAt: bs.updated_at ? new Date(bs.updated_at).getTime() : Date.now(),
+            createdAt: serverTimestamp(bs.created_at),
+            updatedAt: serverTimestamp(bs.updated_at),
             messages: [],
             settings: {
               ...DEFAULT_SESSION_SETTINGS,
@@ -932,16 +1082,7 @@ async function syncSessionsFromBackend() {
       }
     } else if (state.sessions.length === 0) {
       const s = createSession('新对话');
-      fetch('/api/chat/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: s.id,
-          title: s.title,
-          voice_profile_id: s.settings?.voiceProfileId,
-          settings: s.settings,
-        }),
-      }).catch(() => {});
+      persistSession(s).catch(() => {});
     }
     const curActive = getActive();
     if (curActive && (!curActive.messages || curActive.messages.length === 0)) {
@@ -966,7 +1107,7 @@ if (urlParams.get('settings') === '1' || window.location.hash === '#settings') {
 }
 
 try {
-  portraitStage.init();
+  portraitStage.init({ profileId: getActive()?.settings?.voiceProfileId });
 } catch (e) {
   console.warn('Failed to initialize portrait stage:', e);
 }

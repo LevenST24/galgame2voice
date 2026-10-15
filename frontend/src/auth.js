@@ -68,13 +68,12 @@ export function promptConsoleToken(reason = '') {
 
   _pendingAuthPromise = new Promise((resolve) => {
     input.value = getConsoleToken();
-    modal.hidden = false;
-    modal.classList.add('active');
+    openModal(modal, { focus: input });
 
     const cleanup = () => {
-      modal.hidden = true;
-      modal.classList.remove('active');
+      closeModal(modal);
       saveBtn.removeEventListener('click', onSave);
+      input.removeEventListener('keydown', onKeydown);
       modal.querySelectorAll('[data-close]').forEach((btn) => {
         btn.removeEventListener('click', onCancel);
       });
@@ -98,7 +97,7 @@ export function promptConsoleToken(reason = '') {
       btn.addEventListener('click', onCancel);
     });
 
-    input.addEventListener('keydown', (e) => {
+    const onKeydown = (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
         onSave();
@@ -106,9 +105,8 @@ export function promptConsoleToken(reason = '') {
         e.preventDefault();
         onCancel();
       }
-    }, { once: true });
-
-    setTimeout(() => input.focus(), 50);
+    };
+    input.addEventListener('keydown', onKeydown);
   });
 
   return _pendingAuthPromise;
@@ -164,3 +162,4 @@ export function initAuthInterceptor() {
     return res;
   };
 }
+import { openModal, closeModal } from './settings_ui.js';

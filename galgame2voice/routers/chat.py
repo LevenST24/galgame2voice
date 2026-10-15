@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from galgame2voice.services.chat_service import ChatService
+from galgame2voice.services.chat_backup import export_chat_backup, import_timestamp
 from galgame2voice.services.gpt_sovits_client import validate_user_tts_options
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path, immediate_transaction
@@ -320,6 +321,7 @@ class ImportedMessage(BaseModel):
     role: Literal["user", "assistant", "system"]
     content: str = Field(max_length=100000)
     japanese: str = Field(default="", max_length=100000)
+    ts: int | None = Field(default=None, ge=0, le=253402300799000)
 
 
 class ImportedSession(BaseModel):
@@ -327,6 +329,8 @@ class ImportedSession(BaseModel):
     title: str = Field(max_length=200)
     messages: list[ImportedMessage] = Field(max_length=10000)
     settings: dict[str, Any] = Field(default_factory=dict)
+    created_at: int | None = Field(default=None, ge=0, le=253402300799000)
+    updated_at: int | None = Field(default=None, ge=0, le=253402300799000)
 
 
 class ChatImportRequest(BaseModel):
@@ -357,24 +361,36 @@ async def import_chat_sessions(req: ChatImportRequest) -> dict[str, Any]:
             if system_prompt is not None and not isinstance(system_prompt, str):
                 raise HTTPException(422, "人设提示词应为文字，当前记录未修改。")
             await conn.execute(
-                "INSERT INTO sessions (id, channel, title, settings_json, custom_system_prompt) VALUES (?, 'web', ?, ?, ?)",
-                (session.id, session.title, json.dumps(settings, ensure_ascii=False), system_prompt),
+                "INSERT INTO sessions (id, channel, title, settings_json, custom_system_prompt, created_at, updated_at) "
+                "VALUES (?, 'web', ?, ?, ?, ?, ?)",
+                (session.id, session.title, json.dumps(settings, ensure_ascii=False), system_prompt,
+                 import_timestamp(session.created_at), import_timestamp(session.updated_at)),
             )
             await conn.executemany(
-                "INSERT INTO messages (session_id, role, content_chinese, content_japanese) VALUES (?, ?, ?, ?)",
-                [(session.id, message.role, message.content, message.japanese) for message in session.messages],
+                "INSERT INTO messages (session_id, role, content_chinese, content_japanese, created_at) VALUES (?, ?, ?, ?, ?)",
+                [(session.id, message.role, message.content, message.japanese, import_timestamp(message.ts)) for message in session.messages],
             )
     return {"status": "ok", "count": len(req.sessions)}
 
 
+@router.get("/api/chat/export", summary="Export complete portable chat history")
+async def export_chat_sessions() -> dict[str, Any]:
+    return await export_chat_backup()
+
+
 @router.get("/api/chat/sessions", summary="List all chat sessions with metadata")
-async def list_chat_sessions(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
+async def list_chat_sessions(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
     """
     Returns list of all conversation sessions from SQLite database in reverse-chronological order,
     including inferred human-readable title, message count, and last message preview.
     """
     async with get_db() as conn:
-        sessions = await crud.list_sessions_overview(conn, limit=limit)
+        sessions = await crud.list_sessions_overview(conn, limit=limit + 1, offset=offset)
+        has_more = len(sessions) > limit
+        sessions = sessions[:limit]
         results = []
         for s in sessions:
             settings_dict = {}
@@ -396,6 +412,7 @@ async def list_chat_sessions(limit: int = Query(default=50, ge=1, le=200)) -> di
             })
         return {
             "count": len(results),
+            "has_more": has_more,
             "sessions": results,
         }
 
@@ -420,7 +437,7 @@ async def upsert_chat_session(req: SessionUpsertRequest) -> dict[str, Any]:
     if not sess_id:
         sess_id = f"s_{int(time.time()):x}_{uuid.uuid4().hex[:6]}"
 
-    settings_str = json.dumps(req.settings, ensure_ascii=False) if req.settings else None
+    settings_str = json.dumps(req.settings, ensure_ascii=False) if req.settings is not None else None
     async with get_db() as conn:
         session_obj = await crud.upsert_session(
             conn=conn,
@@ -429,6 +446,7 @@ async def upsert_chat_session(req: SessionUpsertRequest) -> dict[str, Any]:
             voice_profile_id=req.voice_profile_id,
             custom_system_prompt=req.custom_system_prompt,
             settings_json=settings_str,
+            update_voice_binding="voice_profile_id" in req.model_fields_set,
         )
         return {
             "status": "ok",
@@ -455,16 +473,25 @@ async def delete_chat_session_by_id(session_id: str) -> dict[str, Any]:
 async def get_chat_history(
     session_id: str = Query(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Conversation session ID"),
     limit: int = Query(default=100, ge=1, le=500, description="Max message count to return"),
+    before_id: int | None = Query(default=None, ge=1, description="Return messages older than this message ID"),
 ) -> dict[str, Any]:
     """
     Returns chronological list of previous messages in the session for UI restoration.
+    Supports cursor pagination via before_id to browse arbitrarily long conversation history.
     """
     clean_session_id = (session_id or "").strip() or "default"
     async with get_db() as conn:
-        messages = await crud.get_recent_messages(conn, session_id=clean_session_id, limit=limit)
+        fetched = await crud.get_recent_messages(
+            conn, session_id=clean_session_id, limit=limit + 1, before_id=before_id
+        )
+        has_more = len(fetched) > limit
+        messages = fetched[-limit:] if has_more else fetched
+        oldest_id = messages[0].id if messages else None
         return {
             "session_id": clean_session_id,
             "count": len(messages),
+            "has_more": has_more,
+            "oldest_id": oldest_id,
             "messages": [m.model_dump() for m in messages],
         }
 

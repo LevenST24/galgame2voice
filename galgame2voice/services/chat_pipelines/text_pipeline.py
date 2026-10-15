@@ -74,6 +74,10 @@ class TextSegmentationPipeline:
             sentence_text=sentence_text,
         )
 
+    def current_emotion(self) -> str:
+        """Message-level emotion so far: the model's declared emotion, else the text's cues."""
+        return self.parser.get_emotion()
+
     @property
     def emotion_extracted(self) -> str | None:
         return self.parser.emotion_extracted

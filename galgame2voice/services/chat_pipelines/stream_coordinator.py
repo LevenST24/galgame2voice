@@ -17,11 +17,12 @@ from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate
 from galgame2voice.database.session import get_db, immediate_transaction
 from galgame2voice.services.affection_service import AffectionService
-from galgame2voice.services.emotion_classifier import classify_emotion
+from galgame2voice.services.emotion_classifier import classify_emotion, detect_emotion_cue
 from galgame2voice.services.metrics_collector import MetricsCollector
 from galgame2voice.services.tts_scheduler import get_tts_scheduler
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.audio_concat import concat_wav_files
+from galgame2voice.utils.error_diagnostics import chat_error_payload
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.profiler import ChatTurnProfiler
 
@@ -353,11 +354,13 @@ class StreamCoordinator:
                                 "index": chunk_index,
                                 "audio_url": chunk_data["audio_url"],
                                 "sentence": sentence,
-                                # 立绘按这句话的语境切换。TTS 韵律仍用整条消息的
-                                # 统一情绪（见 chunk_opts），逐句分类只影响画面，
-                                # 不动声音 —— 音频在此之前已经合成完毕。
-                                "emotion": classify_emotion(sentence, "", None)
-                                    or chunk_opts.get("emotion"),
+                                # 立绘按这句话的语境切换；句子本身没有情绪线索时沿用整条
+                                # 消息的情绪（模型声明的优先），而不是一律退回 gentle。
+                                # TTS 韵律仍用整条消息的统一情绪（见 chunk_opts），逐句
+                                # 分类只影响画面，不动声音 —— 音频在此之前已经合成完毕。
+                                "emotion": detect_emotion_cue(sentence)
+                                    or chunk_opts.get("emotion")
+                                    or text_pipe.current_emotion(),
                             },
                         }, cancel_event)
                     chunk_index += 1
@@ -430,12 +433,14 @@ class StreamCoordinator:
                     run.final_result["japanese"] = p_ja
             except Exception as finalize_err:
                 logger.debug("Non-critical: error finalizing text_pipe on LLM error: %s", finalize_err)
-            safe_err = sanitize_error_detail(exc)
-            await self._put_with_cancel(
-                event_queue,
-                {"event": "error", "data": {"error": safe_err or "LLM generation failed"}},
-                cancel_event,
+            # Provider and connection failures reach the user as a Chinese next step
+            # (missing key, private endpoint, quota...) instead of the raw upstream text.
+            payload = chat_error_payload(
+                exc,
+                provider_id=self.actual_provider_id,
+                api_key_configured=bool(str(getattr(self.adapter, "api_key", "") or "").strip()),
             )
+            await self._put_with_cancel(event_queue, {"event": "error", "data": payload}, cancel_event)
         finally:
             await self._put_with_cancel(tts_queue, None, cancel_event)
             await self._put_with_cancel(event_queue, _SENTINEL, cancel_event)

@@ -47,15 +47,16 @@ async def _allow_private_endpoints() -> bool:
     return bool(getattr(settings, "allow_private_llm_endpoints", False))
 
 
-async def _enforce_llm_url_guard(base_url: str | None) -> None:
+async def _enforce_llm_url_guard(base_url: str | None) -> bool:
     """Rejects LLM provider base URLs that resolve to loopback/private ranges
     unless the operator explicitly enabled private endpoints."""
     if not base_url:
-        return
+        return False
     allow_private = await _allow_private_endpoints()
     ok, reason = await asyncio.to_thread(url_guard.validate_llm_base_url, base_url, allow_private)
     if not ok:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
+    return allow_private
 
 
 class ProviderTestRequest(BaseModel):
@@ -359,11 +360,13 @@ async def get_provider_models(provider_id: str):
                 )
             return {"provider_id": clean_id, "models": preset["preset_models"]}
 
+        allow_private = await _enforce_llm_url_guard(stored.api_base_url)
         adapter = get_llm_adapter(
             provider_id_or_config=stored,
             api_key=stored.api_key,
             base_url=stored.api_base_url,
             custom_headers=stored.custom_headers,
+            allow_private=allow_private,
         )
 
         try:
@@ -432,7 +435,7 @@ async def test_provider(req: ProviderTestRequest):
 
     # SSRF guard: the effective base_url (explicit or stored) must pass the
     # private-network check before any credentials are attached to the request.
-    await _enforce_llm_url_guard(base_url)
+    allow_private = await _enforce_llm_url_guard(base_url)
 
     # Instantiate adapter via factory
     adapter = get_llm_adapter(
@@ -440,6 +443,7 @@ async def test_provider(req: ProviderTestRequest):
         api_key=api_key,
         base_url=base_url,
         custom_headers=custom_headers,
+        allow_private=allow_private,
     )
 
     try:
@@ -449,6 +453,7 @@ async def test_provider(req: ProviderTestRequest):
                 provider_id=provider_id,
                 status_code=getattr(result, "status_code", None),
                 raw_error=result.error or result.message,
+                api_key_configured=bool(str(getattr(adapter, "api_key", "") or "").strip()),
             )
             return ProviderTestResponse(
                 success=False,

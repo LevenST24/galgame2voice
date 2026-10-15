@@ -396,7 +396,12 @@ def _resolve_rel_db_path(db_path: Path, project_root: Path, data_dir_name: str) 
     try:
         return db_path.relative_to(project_root).as_posix()
     except Exception:
-        return f"{data_dir_name}/{db_path.name}"
+        folder = Path(data_dir_name)
+        # DATA_DIR_NAME may itself be an absolute external directory. Returning
+        # it here would expose the host path in otherwise normalized telemetry.
+        if folder.is_absolute() or ".." in folder.parts:
+            folder = Path("data")
+        return f"{folder.as_posix()}/{db_path.name}"
 
 
 async def _collect_telegram_telemetry(db_path: Path) -> TelegramTelemetry:

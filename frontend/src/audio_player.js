@@ -10,7 +10,8 @@
  * 6. 与 CacheStorage / memory blob 缓存无缝衔接，极速秒开。
  */
 
-import { getCachedAudioBlob } from './cache.js';
+import { loadAudioBlob } from './cache.js';
+import { withAudioDeadline } from './audio_request.js';
 
 export class StreamAudioController {
   constructor(options = {}) {
@@ -28,12 +29,17 @@ export class StreamAudioController {
     this.nextStartTime = 0;
     this.isPlaying = false;
     this.isPaused = false;
+    this.isStreaming = false;
     this.currentSessionId = 0;
     this.currentMsgId = null;
     this.abortController = null;
     this._currentCtl = null;
     this._progressTimer = null;
     this._scheduleRetryTimer = null;
+    this._seenChunkIndexes = new Set();
+    this._reportedError = false;
+    this._speaking = false;
+    this._lastProgress = 0;
 
     this.underrunCount = 0;
     this.chunksPlayed = 0;
@@ -79,7 +85,7 @@ export class StreamAudioController {
       this.masterGain.gain.setValueAtTime(1.0, this.ctx.currentTime);
       this.masterGain.connect(this.ctx.destination);
     }
-    if (this.ctx.state === 'suspended') {
+    if (this.ctx.state === 'suspended' && !this.isPaused) {
       this.ctx.resume().catch(() => {});
     }
     return this.ctx;
@@ -97,6 +103,7 @@ export class StreamAudioController {
    */
   pause() {
     this.isPaused = true;
+    this._setSpeaking(false);
     if (this.ctx && this.ctx.state === 'running') {
       this.ctx.suspend().catch(() => {});
     }
@@ -110,13 +117,17 @@ export class StreamAudioController {
    */
   resume() {
     this.isPaused = false;
+    const sessionId = this.currentSessionId;
     if (this.ctx && this.ctx.state === 'suspended') {
-      this.ctx.resume().then(() => {
+      withAudioDeadline(() => this.ctx.resume(), { signal: this.abortController?.signal, timeoutMs: 1500 }).then(() => {
+        if (sessionId !== this.currentSessionId || this.isPaused) return;
         if (this._currentCtl && this._currentCtl.setPlaying) {
           this._currentCtl.setPlaying(true);
         }
         this._scheduleNext();
-      }).catch(() => {});
+      }).catch(() => {
+        if (sessionId === this.currentSessionId && !this.isPaused) this._playbackBlocked();
+      });
     } else {
       if (this._currentCtl && this._currentCtl.setPlaying) {
         this._currentCtl.setPlaying(true);
@@ -136,6 +147,7 @@ export class StreamAudioController {
     if (ctl && ctl.setPlaying) {
       ctl.setPlaying(this.isPlaying && !this.paused);
     }
+    ctl?.setProgress?.(this._lastProgress);
   }
 
   /**
@@ -143,7 +155,7 @@ export class StreamAudioController {
    * @param {string} msgId
    * @param {Object} [ctl]
    */
-  startSession(msgId, ctl = null) {
+  startSession(msgId, ctl = null, { streaming = false } = {}) {
     this.currentSessionId += 1; // 使旧 interrupt 的延迟回调失效，避免打断新会话开头
     this.interrupt(0);
     this.ensureContext();
@@ -158,8 +170,10 @@ export class StreamAudioController {
     this._currentCtl = ctl;
     this.isPaused = false;
     this.isPlaying = true;
+    this.isStreaming = streaming;
     this.nextStartTime = 0;
     this.consecutiveSmoothChunks = 0;
+    this._lastProgress = 0;
     if (this.underrunCount === 0) {
       this.currentBufferLeadSec = this.minBufferLeadSec;
     }
@@ -194,36 +208,22 @@ export class StreamAudioController {
       totalExpected: totalExpected || (index + 1),
     };
 
-    // 重复去重：同一会话已排队或正在播放的切片跳过
-    if (
-      this.queue.some((q) => q.sessionId === sessionId && q.url === url) ||
-      this.activeSources.some((s) => s.item && s.item.sessionId === sessionId && s.item.url === url)
-    ) {
-      return;
-    }
+    // Two identical sentences can legitimately share a cached URL.
+    // Deduplicate events by their position, including already finished chunks.
+    if (this._seenChunkIndexes.has(index)) return;
+    this._seenChunkIndexes.add(index);
 
     this.queue.push(item);
 
     try {
-      let arrayBuffer;
-      if (blob) {
-        arrayBuffer = await blob.arrayBuffer();
-      } else {
-        // 先检查本地 CacheStorage，有则直接复用
-        const cachedBlob = await getCachedAudioBlob(url);
-        if (cachedBlob && cachedBlob.size > 0) {
-          arrayBuffer = await cachedBlob.arrayBuffer();
-        } else {
-          const signal = this.abortController ? this.abortController.signal : undefined;
-          const res = await fetch(url, { signal });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          arrayBuffer = await res.arrayBuffer();
-        }
-      }
-
-      if (sessionId !== this.currentSessionId) return; // 会话已中断
-
-      const audioBuffer = await this.ctx.decodeAudioData(arrayBuffer);
+      const ctx = this.ctx;
+      const audioBuffer = await withAudioDeadline(async signal => {
+        if (!ctx) throw new Error('当前浏览器无法播放语音，请使用新版 Chrome 或 Edge。');
+        const audioBlob = blob || await loadAudioBlob(url, { signal, timeoutMs: this.fetchTimeoutMs });
+        const arrayBuffer = await audioBlob.arrayBuffer();
+        if (signal.aborted) throw new DOMException('播放已取消', 'AbortError');
+        return ctx.decodeAudioData(arrayBuffer);
+      }, { signal: this.abortController?.signal, timeoutMs: this.fetchTimeoutMs });
       if (sessionId !== this.currentSessionId) return;
 
       item.audioBuffer = audioBuffer;
@@ -236,6 +236,7 @@ export class StreamAudioController {
       // 容错降级：移出失败切片，排期后续就绪切片，避免死锁
       const idx = this.queue.indexOf(item);
       if (idx !== -1) this.queue.splice(idx, 1);
+      this._reportError(err);
       this._scheduleNext();
       this._maybeQueueEmpty();
     }
@@ -262,6 +263,7 @@ export class StreamAudioController {
         index: i,
         sentence: meta.sentence || '',
         emotion: meta.emotion || '',
+        blob: meta.blob || null,
         ctl,
         totalExpected: total,
       });
@@ -274,14 +276,19 @@ export class StreamAudioController {
   _scheduleNext() {
     if (!this.ctx) return;
     if (this.isPaused) return;
+    if (!this.queue.length) return;
 
     if (this.ctx.state !== 'running') {
-      this.ctx.resume().catch(() => {});
-      if (this._scheduleRetryTimer) clearTimeout(this._scheduleRetryTimer);
-      this._scheduleRetryTimer = setTimeout(() => {
-        this._scheduleRetryTimer = null;
-        this._scheduleNext();
-      }, 100);
+      // Autoplay can remain blocked until a gesture: show a paused/retry state
+      // instead of polling resume() indefinitely in the background.
+      const sessionId = this.currentSessionId;
+      withAudioDeadline(() => this.ctx.resume(), { signal: this.abortController?.signal, timeoutMs: 1500 }).then(() => {
+        if (sessionId !== this.currentSessionId || this.isPaused) return;
+        if (this.ctx?.state === 'running') this._scheduleNext();
+        else this._playbackBlocked();
+      }).catch(() => {
+        if (sessionId === this.currentSessionId) this._playbackBlocked();
+      });
       return;
     }
 
@@ -341,7 +348,7 @@ export class StreamAudioController {
         this.currentBufferLeadSec = Math.max(this.minBufferLeadSec, this.currentBufferLeadSec - 0.005);
         this.consecutiveSmoothChunks = 0;
       }
-      const entry = { source, chunkGain, item: nextItem, startTime, duration };
+      const entry = { source, chunkGain, item: nextItem, startTime, duration, notified: false };
       this.activeSources.push(entry);
 
       this.isPlaying = true;
@@ -352,17 +359,7 @@ export class StreamAudioController {
       // 采样级无缝步进：下一切片起始时刻精确衔接当前切片尾部减去交叉渐变量
       this.nextStartTime = startTime + duration - (fadeDur / 2);
 
-      const delayMs = Math.max(0, (startTime - now) * 1000);
-      setTimeout(() => {
-        if (nextItem.sessionId === this.currentSessionId && this.isPlaying) {
-          if (this.onChunkStart) this.onChunkStart(nextItem);
-          // 计算并上报估算进度
-          if (this._currentCtl && this._currentCtl.setProgress && nextItem.totalExpected > 0) {
-            const frac = nextItem.index / nextItem.totalExpected;
-            this._currentCtl.setProgress(Math.min(1, frac));
-          }
-        }
-      }, delayMs);
+      this._startProgressTimer();
 
       source.onended = () => {
         this.activeSources = this.activeSources.filter((s) => s.source !== source);
@@ -373,8 +370,8 @@ export class StreamAudioController {
 
         if (nextItem.sessionId === this.currentSessionId) {
           if (this.onChunkEnd) this.onChunkEnd(nextItem);
+          this._maybeQueueEmpty();
         }
-        this._maybeQueueEmpty();
       };
     }
   }
@@ -383,10 +380,15 @@ export class StreamAudioController {
    * 检查队列与活动源是否全部结束
    */
   _maybeQueueEmpty() {
+    if (!this.activeSources.length) this._setSpeaking(false);
     if (this.activeSources.length === 0 && this.queue.length === 0) {
+      clearInterval(this._progressTimer);
+      this._progressTimer = null;
+      if (this.isStreaming) return;
       this.isPlaying = false;
       this.isPaused = false;
       this.nextStartTime = 0;
+      this._lastProgress = 1;
       if (this._currentCtl) {
         if (this._currentCtl.setPlaying) this._currentCtl.setPlaying(false);
         if (this._currentCtl.setProgress) this._currentCtl.setProgress(1);
@@ -403,6 +405,7 @@ export class StreamAudioController {
   interrupt(fadeMs = 40) {
     this.currentSessionId += 1;
     this.currentMsgId = null;
+    this.isStreaming = false;
 
     if (this.abortController) {
       try {
@@ -411,6 +414,11 @@ export class StreamAudioController {
     }
     this.abortController = new AbortController();
     this.queue = [];
+    this._seenChunkIndexes.clear();
+    this._reportedError = false;
+    clearInterval(this._progressTimer);
+    this._progressTimer = null;
+    this._setSpeaking(false);
 
     if (this._scheduleRetryTimer) {
       clearTimeout(this._scheduleRetryTimer);
@@ -489,6 +497,54 @@ export class StreamAudioController {
       this._currentCtl.setPlaying(false);
     }
     this._currentCtl = null;
+  }
+
+  finishInput() {
+    this.isStreaming = false;
+    this._maybeQueueEmpty();
+  }
+
+  _reportError(error) {
+    if (this._reportedError) return;
+    this._reportedError = true;
+    this.onError?.(error);
+  }
+
+  _playbackBlocked() {
+    this.pause();
+    this._reportError(new Error('浏览器暂停了语音播放，请点击消息旁的播放按钮继续。'));
+  }
+
+  _setSpeaking(value) {
+    if (value === this._speaking) return;
+    this._speaking = value;
+    this.onStatusChange?.(value);
+  }
+
+  _startProgressTimer() {
+    if (this._progressTimer) return;
+    this._progressTimer = setInterval(() => {
+      // Audio time stops on pause. Wall-clock timers would advance portraits
+      // and dialogue while the corresponding sentence was still inaudible.
+      if (!this.ctx || this.isPaused || this.ctx.state !== 'running') return;
+      const now = this.ctx.currentTime;
+      const audible = this.activeSources.filter(entry =>
+        entry.item.sessionId === this.currentSessionId && entry.startTime <= now &&
+        now < entry.startTime + entry.duration);
+      this._setSpeaking(audible.length > 0);
+      for (const entry of audible) {
+        if (!entry.notified) {
+          entry.notified = true;
+          this.onChunkStart?.(entry.item);
+        }
+        const { item, startTime, duration } = entry;
+        if (item.totalExpected > 0) {
+          const fraction = (item.index + Math.min(1, (now - startTime) / duration)) / item.totalExpected;
+          this._lastProgress = Math.min(1, fraction);
+          this._currentCtl?.setProgress?.(this._lastProgress);
+        }
+      }
+    }, 40);
   }
 
   /**

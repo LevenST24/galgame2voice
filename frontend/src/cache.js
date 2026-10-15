@@ -4,6 +4,8 @@
  * so historical audio can be replayed instantly across browser reloads & restarts.
  */
 
+import { withAudioDeadline } from './audio_request.js';
+
 const AUDIO_CACHE_NAME = 'gal2voice-audio-v1';
 const MAX_MEM_AUDIO_ENTRIES = 50;
 
@@ -48,17 +50,21 @@ export async function getCachedAudioBlob(key) {
     memAudioMap.set(key, blob);
     return blob;
   }
-  if (!('caches' in window)) return null;
+  if (typeof window === 'undefined' || !('caches' in window)) return null;
 
   try {
-    const cache = await caches.open(AUDIO_CACHE_NAME);
-    const req = toCacheRequest(key);
-    const res = await cache.match(req);
-    if (res && res.ok) {
-      const blob = await res.blob();
-      storeInMemAudioMap(key, blob);
-      return blob;
-    }
+    return await withAudioDeadline(async signal => {
+      const cache = await caches.open(AUDIO_CACHE_NAME);
+      if (signal.aborted) return null;
+      const res = await cache.match(toCacheRequest(key));
+      if (res && res.ok) {
+        const blob = await res.blob();
+        if (signal.aborted) return null;
+        storeInMemAudioMap(key, blob);
+        return blob;
+      }
+      return null;
+    }, { timeoutMs: 1500 });
   } catch (e) {
     console.debug('Failed to get cached audio blob:', e);
   }
@@ -73,19 +79,22 @@ export async function getCachedAudioBlob(key) {
 export async function putCachedAudioBlob(key, blob) {
   if (!key || !blob) return;
   storeInMemAudioMap(key, blob);
-  if (!('caches' in window)) return;
+  if (typeof window === 'undefined' || !('caches' in window)) return;
 
   try {
-    const cache = await caches.open(AUDIO_CACHE_NAME);
-    const req = toCacheRequest(key);
-    const res = new Response(blob, {
-      headers: {
-        'Content-Type': blob.type || 'audio/wav',
-        'Content-Length': String(blob.size),
-        'X-Cached-At': String(Date.now()),
-      },
-    });
-    await cache.put(req, res);
+    await withAudioDeadline(async signal => {
+      const cache = await caches.open(AUDIO_CACHE_NAME);
+      if (signal.aborted) return;
+      const req = toCacheRequest(key);
+      const res = new Response(blob, {
+        headers: {
+          'Content-Type': blob.type || 'audio/wav',
+          'Content-Length': String(blob.size),
+          'X-Cached-At': String(Date.now()),
+        },
+      });
+      await cache.put(req, res);
+    }, { timeoutMs: 1500 });
   } catch (e) {
     console.debug('Failed to put audio blob into cache:', e);
   }
@@ -96,19 +105,30 @@ export async function putCachedAudioBlob(key, blob) {
  * @param {string} url - Audio URL (e.g. /audio/cache/xxx.wav)
  * @returns {Promise<Blob|null>}
  */
-export async function fetchAndCacheAudio(url) {
-  if (!url) return null;
-  const cached = await getCachedAudioBlob(url);
-  if (cached) return cached;
-
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const blob = await res.blob();
-    if (blob && blob.size > 0) {
-      await putCachedAudioBlob(url, blob);
-      return blob;
+export async function loadAudioBlob(url, options = {}) {
+  return withAudioDeadline(async signal => {
+    const cached = await getCachedAudioBlob(url);
+    if (signal.aborted) throw new DOMException('播放已取消', 'AbortError');
+    if (cached?.size) return cached;
+    const res = await fetch(url, { signal });
+    if (!res.ok) {
+      const error = new Error(`音频读取失败 (HTTP ${res.status})`);
+      error.status = res.status;
+      throw error;
     }
+    const blob = await res.blob();
+    if (signal.aborted) throw new DOMException('播放已取消', 'AbortError');
+    if (!blob?.size) throw new Error('音频文件为空，请重新生成语音。');
+    // Memory is populated immediately; a slow disk cache must not delay playback.
+    void putCachedAudioBlob(url, blob);
+    return blob;
+  }, options);
+}
+
+export async function fetchAndCacheAudio(url, options = {}) {
+  if (!url) return null;
+  try {
+    return await loadAudioBlob(url, options);
   } catch (e) {
     console.debug('Failed to fetch and cache audio:', url, e);
   }

@@ -32,6 +32,30 @@ from typing import Any
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+
+def project_file(path: str | Path) -> Path | None:
+    """
+    Existing file for a project-relative path. The configured install root (beside the
+    portable exe, or GALGAME2VOICE_PROJECT_ROOT) comes first, then the source tree, so a
+    frozen build or a relocated data root does not depend on the working directory.
+    """
+    roots: list[Path] = []
+    try:
+        from galgame2voice.config import get_settings
+
+        roots.append(Path(get_settings().project_root))
+    except Exception:
+        pass
+    roots.append(_PROJECT_ROOT)
+    for root in roots:
+        try:
+            candidate = root / path
+            if candidate.is_file():
+                return candidate
+        except (OSError, TypeError, ValueError):
+            continue
+    return None
+
 REFERENCE_AUDIO_MIN_SECONDS: float = 3.0
 REFERENCE_AUDIO_MAX_SECONDS: float = 10.0
 WAV_HEADER_BYTES: int = 44
@@ -212,8 +236,8 @@ class AudioSpecCache:
             return _probe_from_bytes(bytes(path))
         try:
             p = Path(path)
-            if not p.is_file() and (_PROJECT_ROOT / path).is_file():
-                p = _PROJECT_ROOT / path
+            if not p.is_file():
+                p = project_file(path) or p
             if not p.is_file():
                 return None
             st = p.stat()
@@ -358,10 +382,10 @@ def validate_reference_audio(
 
     p = Path(path_or_bytes)
     if not p.is_file():
-        if (_PROJECT_ROOT / path_or_bytes).is_file():
-            p = (_PROJECT_ROOT / path_or_bytes).resolve()
-        else:
+        found = project_file(path_or_bytes)
+        if found is None:
             return False, f"reference audio file not found: {ref_audio_str}"
+        p = found.resolve()
 
     duration = probe_audio_duration_seconds(str(p))
     if duration is None:
@@ -380,11 +404,10 @@ def resolve_reference_audio_path(path: str) -> str:
     if not path:
         return ""
     p = Path(path)
-    if not p.is_file() and (_PROJECT_ROOT / path).is_file():
-        return str((_PROJECT_ROOT / path).resolve())
-    elif p.is_file():
+    if p.is_file():
         return str(p.resolve())
-    return path
+    found = project_file(path)
+    return str(found.resolve()) if found else path
 
 
 def extract_wav_duration(audio: bytes) -> float | None:

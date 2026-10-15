@@ -208,6 +208,15 @@ export function formatUpdateStatus(data) {
     };
   }
 
+  if (data.current_branch === 'portable') {
+    return {
+      badgeClass: 'badge-pill-gray', badgeText: 'Windows 便携版',
+      title: '通过新版便携包更新',
+      desc: '关闭程序，将新版完整发布包解压到新目录，再复制旧目录的 data、audio、characters；如有个人 .env 也应复制。详细步骤见程序文件夹中的「使用说明.md」。',
+      canUpdate: false, hasUpdate: false,
+    };
+  }
+
   if (data.error) {
     return {
       badgeClass: 'badge-pill-yellow',

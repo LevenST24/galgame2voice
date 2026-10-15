@@ -3,13 +3,15 @@ Character Management REST API Router for galgame2voice (/api/characters).
 Provides unified character profile query, active character switching, and affection integration.
 """
 
+import asyncio
 import json
 import logging
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 import aiosqlite
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -17,6 +19,7 @@ from galgame2voice.database import crud
 from galgame2voice.database.session import get_db
 from galgame2voice.routers.common import switch_voice_profile_or_raise, validate_user_id
 from galgame2voice.services.character_manager import get_character_manager
+from galgame2voice.services.portrait_manifest import load_portrait_manifest
 from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.utils.logger import sanitize_error_detail
 
@@ -36,7 +39,7 @@ async def _get_voice_profile_or_404(conn: aiosqlite.Connection, character_id: in
     return prof
 
 
-def _rewrite_sprite_urls(data: dict[str, Any], character_id: int) -> None:
+def _rewrite_sprite_urls(data: dict[str, Any], character_id: int, root: Path) -> None:
     """把立绘清单里 sprites 的 file 路径改写为后端文件接口 URL（自包含读取）。"""
     sprites = data.get("sprites") or {}
     if not isinstance(sprites, dict):
@@ -47,11 +50,20 @@ def _rewrite_sprite_urls(data: dict[str, Any], character_id: int) -> None:
         for _face_key, sprite in faces.items():
             if isinstance(sprite, dict) and "file" in sprite:
                 file_name = str(sprite["file"]).rsplit("/", 1)[-1]
-                sprite["file"] = f"/api/characters/{character_id}/portrait/file/{costume_id}/{file_name}"
+                sprite["file"] = (
+                    f"/api/characters/{character_id}/portrait/file/{quote(costume_id, safe='')}/{quote(file_name, safe='')}"
+                )
+                try:
+                    info = (root / costume_id / file_name).stat()
+                except OSError:
+                    continue
+                # Re-exporting a PNG keeps its filename, but must invalidate both
+                # the browser cache and the portrait controller's preload URLs.
+                sprite["file"] += f"?v={info.st_mtime_ns:x}-{info.st_size:x}"
 
 
 def _resolve_character_portrait(char_name: str, character_id: int | None = None) -> dict[str, Any] | None:
-    """立绘完全由角色包内的 portrait/expressions.json 驱动（表情编号差分体系）。"""
+    """Read numbered differentials and compatible legacy emotion portraits."""
     if not char_name:
         return None
     mgr = get_character_manager()
@@ -59,35 +71,17 @@ def _resolve_character_portrait(char_name: str, character_id: int | None = None)
     if pkg is None:
         return None
 
-    path = pkg.folder / "portrait" / "expressions.json"
-    if not path.is_file():
-        return None
-    try:
-        expr = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        logger.warning("Malformed portrait index: %s", path)
-        return None
-
-    costumes = expr.get("costumes") or {}
-    if not costumes:
+    portrait = load_portrait_manifest(pkg.folder / "portrait")
+    if portrait is None:
         return None
 
     data: dict[str, Any] = {
-        "enabled": True,
+        **portrait,
         "character_id": pkg.manifest.id,
         "character_name": pkg.manifest.name,
-        "pose": expr.get("pose", ""),
-        "default_costume": expr.get("default_costume") or next(iter(costumes)),
-        "costumes": [
-            {"id": cid, "name": c.get("name", cid), "icon": c.get("icon", "🎎")}
-            for cid, c in costumes.items()
-        ],
-        "faces": expr.get("faces") or {},
-        "expression_sets": expr.get("expression_sets") or {},
-        "sprites": {cid: (c.get("sprites") or {}) for cid, c in costumes.items()},
     }
     if character_id is not None:
-        _rewrite_sprite_urls(data, character_id)
+        _rewrite_sprite_urls(data, character_id, pkg.folder / "portrait")
     return data
 
 
@@ -144,6 +138,45 @@ async def list_characters(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to list characters: {safe_err}",
             ) from exc
+
+
+@router.post(
+    "/rescan",
+    summary="Rescan Character Packages",
+    description="Re-discovers character packages in characters/ and synchronizes them with SQLite voice_profiles without restarting the server.",
+)
+async def rescan_character_packages(request: Request) -> dict[str, Any]:
+    try:
+        # Keep scan, DB synchronization and cache invalidation in request order.
+        # Store the lock on the app so tests/apps with separate loops do not share it.
+        lock = getattr(request.app.state, "character_rescan_lock", None)
+        if lock is None:
+            lock = request.app.state.character_rescan_lock = asyncio.Lock()
+        async with lock:
+            char_mgr = get_character_manager()
+            discovered = await asyncio.to_thread(char_mgr.discover_characters)
+            async with get_db() as conn:
+                synced = await char_mgr.sync_with_db(conn)
+                profiles = await crud.list_voice_profiles(conn)
+                active = await crud.get_active_voice_profile(conn)
+            from galgame2voice.routers.voice import _scan_cache
+            generation = _scan_cache.get("generation", 0) + 1
+            _scan_cache.clear()
+            _scan_cache["generation"] = generation
+        return {
+            "status": "ok",
+            "discovered_count": len(discovered),
+            "synced_count": synced,
+            "total_profiles": len(profiles),
+            "active_profile_id": active.id if active else (profiles[0].id if profiles else None),
+            "characters": [p.name for p in discovered],
+        }
+    except Exception as exc:
+        safe_err = sanitize_error_detail(exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"扫描角色包失败: {safe_err}",
+        ) from exc
 
 
 @router.get(
