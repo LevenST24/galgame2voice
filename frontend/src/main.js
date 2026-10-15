@@ -197,7 +197,6 @@ const dom = {
   gParamTopPVal: $('gParamTopPVal'),
   gParamTemp: $('gParamTemp'),
   gParamTempVal: $('gParamTempVal'),
-  gSttEngine: $('gSttEngine'),
   gTgChatId: $('gTgChatId'),
   gMemoryEnabled: $('gMemoryEnabled'),
   gUserNickname: $('gUserNickname'),

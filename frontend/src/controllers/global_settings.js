@@ -33,7 +33,7 @@ let privateEndpointRevision = 0;
 let privateEndpointSaved = false;
 let privateEndpointSaving = false;
 const CONFIG_FIELDS = ['gParamSovitsUrl', 'gPrecision', 'gParamSliceMethod', 'gParamSpeed', 'gParamTopK',
-  'gParamTopP', 'gParamTemp', 'gParamFragmentInterval', 'gAudioRetention', 'gSttEngine', 'gTgEnabled',
+  'gParamTopP', 'gParamTemp', 'gParamFragmentInterval', 'gAudioRetention', 'gTgEnabled',
   'gTgToken', 'gTgChatId', 'gTgProxyHost', 'gTgProxyPort', 'gTgProxyEnabled', 'gMemoryEnabled',
   'gUserNickname', 'gDefaultSystemPrompt'];
 
@@ -852,7 +852,6 @@ export async function loadGlobalConfig() {
     if (_dom.gDashRetentionVal) _dom.gDashRetentionVal.textContent = `保留时长: ${s.audio_retention_minutes || 30} 分钟`;
 
     // STT 与 Telegram
-    if (_dom.gSttEngine) _dom.gSttEngine.value = s.stt_engine || 'browser';
     if (_dom.gTgEnabled) {
       _dom.gTgEnabled.checked = Boolean(s.telegram_enabled);
       updateTelegramFieldsVisibility();
@@ -893,7 +892,6 @@ export async function saveGlobalConfig() {
       temperature: _dom.gParamTemp ? Number(_dom.gParamTemp.value) : undefined,
       fragment_interval: _dom.gParamFragmentInterval ? Number(_dom.gParamFragmentInterval.value) || 0.3 : undefined,
       audio_retention_minutes: _dom.gAudioRetention ? Math.max(1, Number(_dom.gAudioRetention.value) || 30) : 30,
-      stt_engine: _dom.gSttEngine ? _dom.gSttEngine.value : undefined,
       telegram_enabled: _dom.gTgEnabled ? _dom.gTgEnabled.checked : false,
       telegram_chat_id: _dom.gTgChatId ? _dom.gTgChatId.value.trim() || undefined : undefined,
       telegram_admin_ids: _dom.gTgChatId ? _dom.gTgChatId.value.trim() || undefined : undefined,
