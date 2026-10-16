@@ -1,8 +1,10 @@
 """
 Regression tests for Telegram bot fixes: whitelist enforcement for every command
-and button, persona switching with /character, and per-member nickname keys.
+and button, persona switching with /character, and per-member nickname and voice
+task keys in group chats.
 """
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -14,6 +16,7 @@ from galgame2voice.database.session import get_db
 from galgame2voice.telegram_bot import TelegramBotHandlers
 
 ADMIN_ID = 4242
+OTHER_ADMIN_ID = 5353
 STRANGER_ID = 9999
 GROUP_CHAT_ID = -1001234567
 
@@ -62,6 +65,17 @@ class SilentTts:
     """TTS stand-in that returns no audio, so no ffmpeg conversion is attempted."""
 
     async def synthesize(self, text, options=None):
+        return b""
+
+
+class BlockingTts:
+    """TTS stand-in whose synthesis waits until released, keeping voice tasks pending."""
+
+    def __init__(self):
+        self.release = asyncio.Event()
+
+    async def synthesize(self, text, options=None):
+        await self.release.wait()
         return b""
 
 
@@ -259,3 +273,57 @@ class TestNicknameKey:
         # The affection menu and chat turns read the same per-member key.
         text, _ = await handlers.build_affection_menu(GROUP_CHAT_ID, ADMIN_ID)
         assert "小夏" in text
+
+
+async def settle(task: asyncio.Task) -> None:
+    """Lets a cancelled task finish unwinding; the voice worker swallows CancelledError."""
+    await asyncio.wait([task], timeout=2.0)
+
+
+class TestPerMemberVoiceTasks:
+    @pytest.mark.asyncio
+    async def test_group_members_only_cancel_their_own_voice_note(self, temp_db_path):
+        handlers = TelegramBotHandlers(admin_ids=[ADMIN_ID, OTHER_ADMIN_ID], db_path=temp_db_path)
+        handlers.chat_service.get_active_llm_adapter = AsyncMock(
+            return_value=(CapturingAdapter(), "mock-model", "mock")
+        )
+        tts = BlockingTts()
+        handlers.tts_service = tts
+        bot = RecordingBot()
+        context = make_context(bot)
+
+        try:
+            task_a = await handlers.process_text_chat(GROUP_CHAT_ID, "我是成员A", bot, user_id=ADMIN_ID)
+            task_b = await handlers.process_text_chat(GROUP_CHAT_ID, "我是成员B", bot, user_id=OTHER_ADMIN_ID)
+            await asyncio.sleep(0.05)
+            assert not task_a.done(), "member B's message cancelled member A's voice note"
+
+            # B clears B's own context with the command and with the console button.
+            await handlers.handle_reset(make_update(GROUP_CHAT_ID, OTHER_ADMIN_ID, "/reset"), context)
+            await settle(task_b)
+            assert task_b.done()
+            await handlers.handle_callback_query(
+                make_callback_update("action_reset", GROUP_CHAT_ID, OTHER_ADMIN_ID), context
+            )
+            await asyncio.sleep(0.05)
+            assert not task_a.done(), "member B's reset cancelled member A's voice note"
+
+            # A's own reset still cancels A's pending voice note.
+            await handlers.handle_reset(make_update(GROUP_CHAT_ID, ADMIN_ID, "/reset"), context)
+            await settle(task_a)
+            assert task_a.done()
+            assert bot.sent_voices == []
+        finally:
+            tts.release.set()
+
+    @pytest.mark.asyncio
+    async def test_cancel_user_task_accepts_a_bare_task_key(self):
+        handlers = TelegramBotHandlers(admin_ids=[ADMIN_ID])
+        task = asyncio.create_task(asyncio.sleep(10))
+        handlers.user_tasks[777] = task
+
+        handlers.cancel_user_task(777)
+
+        assert 777 not in handlers.user_tasks
+        await settle(task)
+        assert task.cancelled()

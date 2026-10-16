@@ -86,8 +86,9 @@ class TelegramBotHandlers:
         self.db_path = db_path
         self.chat_service = chat_service or ChatService(db_path=db_path)
         self.tts_service = tts_service or TtsService()
-        # User voice synthesis background tasks mapped by chat_id
-        self.user_tasks: dict[int, asyncio.Task] = {}
+        # Pending voice synthesis tasks keyed like sessions (resolve_session_key), so in a
+        # group each member only ever cancels their own voice note.
+        self.user_tasks: dict[str, asyncio.Task] = {}
         # Telegram user IDs allowed to use the bot; empty set = fail-closed (nobody authorized)
         self.admin_ids: set = set(admin_ids or [])
 
@@ -120,12 +121,17 @@ class TelegramBotHandlers:
     _effective_user_id = staticmethod(resolve_effective_user_id)
     _session_key = staticmethod(resolve_session_key)
 
-    def cancel_user_task(self, chat_id: int) -> None:
-        """Cancels active background voice task for given chat_id if running."""
-        task = self.user_tasks.pop(chat_id, None)
+    def cancel_user_task(self, chat_id: Any, user_id: int = 0) -> None:
+        """Cancels the pending voice task of one chat member (keyed like their session).
+
+        Without a user_id, a value that is already a user_tasks key (as older callers
+        passed) is cancelled as is.
+        """
+        key = chat_id if not user_id and chat_id in self.user_tasks else resolve_session_key(chat_id, user_id)
+        task = self.user_tasks.pop(key, None)
         if task and not task.done():
             task.cancel()
-            logger.info("Cancelled ongoing voice synthesis task for chat_id=%d", chat_id)
+            logger.info("Cancelled ongoing voice synthesis task for session %s", key)
 
     async def build_main_console(self, chat_id: int, user_id: int = 0) -> tuple[str, Any]:
         """Constructs the rich text and inline keyboard for the Telegram Interactive Console."""
@@ -279,8 +285,9 @@ class TelegramBotHandlers:
     async def handle_reset(self, update: Any, context: Any | None = None) -> str:
         """Handler for /reset command."""
         chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
-        session_id = resolve_session_key(chat_id, resolve_effective_user_id(update))
-        self.cancel_user_task(chat_id)
+        user_id = resolve_effective_user_id(update)
+        session_id = resolve_session_key(chat_id, user_id)
+        self.cancel_user_task(chat_id, user_id)
 
         try:
             async with get_db(self.db_path) as conn:
@@ -568,6 +575,7 @@ class TelegramBotHandlers:
         bot: Any,
         japanese: str,
         dynamic_tts: dict[str, Any] | None,
+        task_key: str | None = None,
     ) -> asyncio.Task:
         """Schedules background voice synthesis and tracks task in user_tasks with auto-cleanup."""
         async def background_voice_worker() -> None:
@@ -594,12 +602,13 @@ class TelegramBotHandlers:
             except Exception as exc:
                 logger.error("Voice synthesis failed for chat_id=%d: %s", chat_id, exc)
 
+        key = task_key or resolve_session_key(chat_id)
         task = asyncio.create_task(background_voice_worker())
-        self.user_tasks[chat_id] = task
+        self.user_tasks[key] = task
 
-        def _cleanup_task(t: asyncio.Task, cid: int = chat_id) -> None:
-            if self.user_tasks.get(cid) is t:
-                self.user_tasks.pop(cid, None)
+        def _cleanup_task(t: asyncio.Task, k: str = key) -> None:
+            if self.user_tasks.get(k) is t:
+                self.user_tasks.pop(k, None)
 
         task.add_done_callback(_cleanup_task)
         return task
@@ -680,10 +689,9 @@ class TelegramBotHandlers:
         Returns the spawned background voice asyncio.Task.
         """
         effective_user_id = user_id or chat_id
-        # 1. Cancel previous pending voice task for this user if active
-        self.cancel_user_task(chat_id)
-
         session_id = resolve_session_key(chat_id, effective_user_id)
+        # 1. Cancel this member's previous pending voice task, never another member's
+        self.cancel_user_task(chat_id, effective_user_id)
 
         try:
             # 2. Query ChatService / LLM Adapter for bilingual response
@@ -722,7 +730,7 @@ class TelegramBotHandlers:
             )
 
             # 5. Schedule background voice synthesis task
-            return self._spawn_background_voice_task(chat_id, bot, japanese, dynamic_tts)
+            return self._spawn_background_voice_task(chat_id, bot, japanese, dynamic_tts, task_key=session_id)
 
         except Exception as exc:
             logger.error("Error generating LLM reply for chat_id=%d: %s", chat_id, exc, exc_info=True)

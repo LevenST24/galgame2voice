@@ -676,7 +676,7 @@ class _CallbackContext:
     user_id: int
     db_path: str | None
     session_key_fn: Callable[[int, int], str]
-    cancel_task: Callable[[int], None]
+    cancel_task: Callable[[int, int], None]
 
 
 async def _render_menu(
@@ -1048,7 +1048,8 @@ async def _handle_affection_menu(ctx: _CallbackContext) -> None:
 
 async def _handle_reset_session(ctx: _CallbackContext) -> None:
     session_id = ctx.session_key_fn(ctx.chat_id, ctx.user_id)
-    ctx.cancel_task(ctx.chat_id)
+    # Only the member who pressed the button loses their pending voice note.
+    ctx.cancel_task(ctx.chat_id, ctx.user_id)
     try:
         async with get_db(ctx.db_path) as conn:
             await crud.clear_session_messages(conn, session_id)
@@ -1173,9 +1174,9 @@ async def route_callback_query(
         else (getattr(handlers, "db_path", None) if handlers else None)
     )
 
-    def cancel_task(cid: int) -> None:
+    def cancel_task(cid: int, uid: int = 0) -> None:
         if handlers and hasattr(handlers, "cancel_user_task"):
-            handlers.cancel_user_task(cid)
+            handlers.cancel_user_task(cid, uid)
 
     def session_key_fn(cid: int, uid: int) -> str:
         if handlers and hasattr(handlers, "_session_key"):
