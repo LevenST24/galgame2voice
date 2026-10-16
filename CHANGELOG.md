@@ -79,11 +79,29 @@ All notable changes to galgame2voice are documented here. The format follows
   Saving session settings or deleting another voice no longer reloads the
   portrait, which reset its costume and last line.
 - Clicking the "聊天记录备份与恢复" heading no longer opens the import file picker.
+- After `/character`, Telegram replies use the new character's persona, memories
+  and affection instead of those of the character the chat started with.
+- In Telegram groups, `/nickname` is saved for the member who sent it, and one
+  member's message, `/reset` or clear button no longer cancels another member's
+  pending voice note.
+- Telegram voice notes sent while the active provider has no speech recognition
+  get a clear reply instead of a generic error, and a configured speech
+  recognition model is used.
+- Restarting the Telegram bot while it is still starting (for example by saving
+  settings right after launch) no longer leaves a second bot polling.
+- One slow model reply no longer holds up the Telegram bot for every other chat;
+  each member's messages are still answered in order.
 
 ### Removed
 - The speech recognition engine selector (本地 SenseVoice / Whisper) in global
   settings. Those engines were never connected; voice input always used the
   browser's speech recognition.
+
+### Security
+- The Telegram bot applies its admin whitelist to every command and button, not
+  only to chat messages. Before, anyone who found the bot could switch the active
+  character (also for the web UI) and view the model settings and spending.
+  Rejected users are told their Telegram user ID so the owner can whitelist it.
 
 ## [2.1.0] - 2026-10-14
 
