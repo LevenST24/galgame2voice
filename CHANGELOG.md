@@ -50,6 +50,11 @@ All notable changes to galgame2voice are documented here. The format follows
   mounts `./characters`; the app also starts when that folder cannot be created.
   The build context now contains only what the image copies, so character models
   and user data are no longer uploaded on every `docker build`.
+- `doctor` probes GPT-SoVITS at `/control`, like the app's own health check. It
+  no longer reports a running api_v2 server as unreachable.
+- The one-click update no longer runs a local frontend build when the update
+  already includes the built frontend. Installs without Node.js no longer see a
+  build failure after a successful update.
 
 ### Removed
 - The speech recognition engine selector (本地 SenseVoice / Whisper) in global

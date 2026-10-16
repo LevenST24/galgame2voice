@@ -384,7 +384,9 @@ async def check_gpt_sovits(base_url: str, *, offline: bool = False) -> List[Chec
     try:
         async with create_async_client(trust_env=False, timeout=_SOVITS_PROBE_TIMEOUT_SECONDS) as client:
             try:
-                response = await client.get(f"{target}/")
+                # Same probe as the app's health check: api_v2 has no route at "/" (404)
+                # and answers 400 on /control without a command.
+                response = await client.get(f"{target}/control")
             except httpx.HTTPError:
                 response = None
     except Exception:  # pragma: no cover - defensive
@@ -396,7 +398,8 @@ async def check_gpt_sovits(base_url: str, *, offline: bool = False) -> List[Chec
         Check(
             "GPT-SoVITS",
             WARN,
-            f"unreachable at {target}",
+            f"unreachable at {target}" if response is None
+            else f"{target}/control answered HTTP {response.status_code}, not a GPT-SoVITS API server",
             "Start the GPT-SoVITS API server, or update GALGAME2VOICE_GPT_SOVITS_BASE_URL / the "
             "URL stored in the console.",
         )
