@@ -1,9 +1,10 @@
 """
 Regression tests for Telegram bot fixes: whitelist enforcement for every command
-and button.
+and button, and persona switching with /character.
 """
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -57,6 +58,24 @@ class FakeQuery:
         self.edited_text = text
 
 
+class SilentTts:
+    """TTS stand-in that returns no audio, so no ffmpeg conversion is attempted."""
+
+    async def synthesize(self, text, options=None):
+        return b""
+
+
+class CapturingAdapter:
+    """LLM adapter stand-in that records the prompt of every call."""
+
+    def __init__(self):
+        self.calls: list[list] = []
+
+    async def chat(self, messages, model=None, **kwargs):
+        self.calls.append(messages)
+        return SimpleNamespace(content='{"chinese": "好的", "japanese": "はい"}')
+
+
 def make_update(chat_id, user_id, text=None, voice=None):
     return SimpleNamespace(
         effective_chat=SimpleNamespace(id=chat_id),
@@ -91,6 +110,14 @@ async def create_profile(conn, name, system_prompt=""):
         prompt_lang="ja",
         text_lang="ja",
     ))
+
+
+def system_prompt_of(messages) -> str:
+    for msg in messages:
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+        if role == "system":
+            return msg.get("content") if isinstance(msg, dict) else msg.content
+    return ""
 
 
 COMMAND_CASES = [
@@ -181,3 +208,30 @@ class TestCallbackAuthorization:
         await handlers.handle_callback_query(update, make_context())
 
         assert update.callback_query.edited_text
+
+
+class TestCharacterSwitchPersona:
+    @pytest.mark.asyncio
+    async def test_chat_turn_follows_switched_character(self, temp_db_path):
+        async with get_db(temp_db_path) as conn:
+            alpha = await create_profile(conn, "角色甲", system_prompt="你是角色甲。PERSONA_ALPHA")
+            beta = await create_profile(conn, "角色乙", system_prompt="你是角色乙。PERSONA_BETA")
+            await crud.set_active_voice_profile(conn, alpha.id)
+
+        handlers = TelegramBotHandlers(admin_ids=[ADMIN_ID], db_path=temp_db_path)
+        adapter = CapturingAdapter()
+        handlers.chat_service.get_active_llm_adapter = AsyncMock(return_value=(adapter, "mock-model", "mock"))
+        handlers.tts_service = SilentTts()
+        bot = RecordingBot()
+
+        await (await handlers.process_text_chat(ADMIN_ID, "第一句", bot, user_id=ADMIN_ID))
+        # The session row now remembers alpha; /character switches the global profile.
+        async with get_db(temp_db_path) as conn:
+            await crud.set_active_voice_profile(conn, beta.id)
+        await (await handlers.process_text_chat(ADMIN_ID, "第二句", bot, user_id=ADMIN_ID))
+
+        assert len(adapter.calls) == 2
+        assert "PERSONA_ALPHA" in system_prompt_of(adapter.calls[0])
+        switched = system_prompt_of(adapter.calls[1])
+        assert "PERSONA_BETA" in switched
+        assert "PERSONA_ALPHA" not in switched

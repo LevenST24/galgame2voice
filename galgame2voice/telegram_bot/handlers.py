@@ -633,7 +633,10 @@ class TelegramBotHandlers:
                 logger.debug("Telegram non-critical memory extraction exception: %s", mem_err)
 
             adapter, model_name, _provider_id = await self.chat_service.get_active_llm_adapter(conn=conn)
-            messages = await self.chat_service.prepare_messages(conn, session_id, text)
+            # Pass the globally active profile explicitly: otherwise the context builder falls back
+            # to the session row's voice_profile_id, which is fixed at the chat's first message,
+            # so /character would switch the voice but keep the old persona and memories.
+            messages = await self.chat_service.prepare_messages(conn, session_id, text, active_profile=profile)
             return adapter, model_name, profile_id, messages
 
     async def _persist_assistant_chat_turn(

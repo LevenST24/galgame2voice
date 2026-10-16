@@ -721,7 +721,7 @@ class TestTelegramBotRealModules:
             async def get_active_llm_adapter(self, conn=None):
                 return MockLLMAdapter(), "gpt-4o", "mock_prov"
 
-            async def prepare_messages(self, conn, session_id, text):
+            async def prepare_messages(self, conn, session_id, text, **kwargs):
                 return [{"role": "user", "content": text}]
 
         captured_tts_opts = {}
