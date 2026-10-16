@@ -118,7 +118,7 @@ docker compose up -d --build
 然后打开 <http://127.0.0.1:8080>。容器默认开启访问令牌：首次启动会生成令牌并写入 `./data/.console_token`，也可以通过环境变量 `GALGAME2VOICE_CONSOLE_TOKEN` 指定。
 
 - GPT-SoVITS 运行在宿主机时，在 `docker-compose.yml` 中取消注释 `GPT_SOVITS_BASE_URL=http://host.docker.internal:9880`。
-- `docker-compose.yml` 默认只挂载 `data`、`audio`、`logs`。要使用角色包，请自行添加 `./characters:/app/characters`。
+- `docker-compose.yml` 会把当前目录下的 `data`、`audio`、`logs`、`characters` 挂载进容器，角色包直接放进宿主机的 `./characters` 即可。容器以 UID 1000 运行，宿主机用户 ID 不同时，请按 `Dockerfile` 中的说明重新构建。
 
 ## 第一次使用
 

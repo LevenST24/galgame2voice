@@ -46,6 +46,62 @@ All notable changes to galgame2voice are documented here. The format follows
   draft and the selected model files.
 - Loading older history waits for the current reply, and sending waits for the older
   history to finish loading.
+- The Docker image creates the characters folder for its non-root user and compose
+  mounts `./characters`; the app also starts when that folder cannot be created.
+  The build context now contains only what the image copies, so character models
+  and user data are no longer uploaded on every `docker build`.
+- `doctor` probes GPT-SoVITS at `/control`, like the app's own health check. It
+  no longer reports a running api_v2 server as unreachable.
+- The one-click update no longer runs a local frontend build when the update
+  already includes the built frontend. Installs without Node.js no longer see a
+  build failure after a successful update.
+- Long-term memory no longer mistakes everyday phrases such as "我叫了个外卖",
+  "别叫我笨蛋" or "明天叫我起床" for the player's name. Before, the character
+  started calling the player by that phrase, and the web UI cannot correct it.
+- A new "我喜欢…" or "我讨厌…" about the same thing replaces the opposite memory
+  instead of keeping both. The player's name and occupation are still recalled
+  after more than 200 newer memories, and memory recency is computed in UTC.
+- The relationship stage sent to the model now changes at the same scores as the
+  level (20 and 80), so Lv.5 no longer comes with the third stage's guidance.
+  Level-ups are judged from the score alone.
+- The memory API answers 422 instead of 500 for a value that is empty after
+  sanitizing, and no longer ignores such a value on update.
+- Global settings can no longer be saved before they have loaded, and editing a
+  field while they load no longer leaves the others at their defaults. Either
+  case used to overwrite the saved settings, turning the Telegram bot off and
+  resetting the engine address and precision. Restarting the engine before the
+  settings load keeps its saved precision.
+- When the voice list fails to load, saving session settings keeps the session's
+  character instead of unbinding it. Deleting a voice, or finding a session's
+  voice deleted, also clears the binding on the server, so it no longer returns
+  after a reload.
+- Characters created without a persona can save their session settings again.
+  Saving session settings or deleting another voice no longer reloads the
+  portrait, which reset its costume and last line.
+- Clicking the "聊天记录备份与恢复" heading no longer opens the import file picker.
+- After `/character`, Telegram replies use the new character's persona, memories
+  and affection instead of those of the character the chat started with.
+- In Telegram groups, `/nickname` is saved for the member who sent it, and one
+  member's message, `/reset` or clear button no longer cancels another member's
+  pending voice note.
+- Telegram voice notes sent while the active provider has no speech recognition
+  get a clear reply instead of a generic error, and a configured speech
+  recognition model is used.
+- Restarting the Telegram bot while it is still starting (for example by saving
+  settings right after launch) no longer leaves a second bot polling.
+- One slow model reply no longer holds up the Telegram bot for every other chat;
+  each member's messages are still answered in order.
+
+### Removed
+- The speech recognition engine selector (本地 SenseVoice / Whisper) in global
+  settings. Those engines were never connected; voice input always used the
+  browser's speech recognition.
+
+### Security
+- The Telegram bot applies its admin whitelist to every command and button, not
+  only to chat messages. Before, anyone who found the bot could switch the active
+  character (also for the web UI) and view the model settings and spending.
+  Rejected users are told their Telegram user ID so the owner can whitelist it.
 
 ## [2.1.0] - 2026-10-14
 

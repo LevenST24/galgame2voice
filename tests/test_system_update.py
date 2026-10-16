@@ -388,6 +388,39 @@ class TestSystemUpdateApply:
                 assert data["restart_required"] is False
                 assert mock_rebuild.called
 
+    def test_apply_update_uses_pulled_frontend_bundle_without_npm(self, tmp_path):
+        """A pull that already ships the rebuilt bundle needs no local npm build, so no Node.js either."""
+        calls = []
+
+        def fake_git(args, cwd, timeout=30.0, env_overrides=None):
+            if args[:2] == ["remote", "get-url"]:
+                return 0, "https://github.com/LevenST24/galgame2voice.git", ""
+            calls.append(args[0])
+            if args[:2] == ["rev-parse", "--is-inside-work-tree"]:
+                return 0, "true", ""
+            if args[:2] == ["rev-parse", "--short"]:
+                return 0, "2222222" if "pull" in calls else "1111111", ""
+            if args[:2] == ["rev-parse", "--abbrev-ref"]:
+                return 0, "main", ""
+            if args[:2] == ["rev-parse", "HEAD"]:
+                return 0, ("2" if "pull" in calls else "1") * 40, ""
+            if args[0] == "pull":
+                return 0, "Fast-forward", ""
+            if args[0] == "diff":
+                return 0, "frontend/src/ui.js\ngalgame2voice/static/index.html\ngalgame2voice/static/assets/index-AbC123.js", ""
+            return 0, "", ""
+
+        with patch("galgame2voice.routers.system._run_git_cmd", side_effect=fake_git), \
+             patch("galgame2voice.routers.system._rebuild_frontend_sync", return_value=(False, "未找到 npm 程序")) as mock_rebuild:
+            result, changed = _apply_update_sync(tmp_path)
+
+        assert result.success is True
+        assert "frontend/src/ui.js" in changed
+        assert not mock_rebuild.called
+        assert result.rebuilt_frontend is False
+        assert "无需本地构建" in result.output
+        assert "构建失败" not in result.output
+
     @pytest.mark.asyncio
     async def test_apply_update_auto_restores_static_artifacts(self, test_app):
         """Verifies that changes solely in galgame2voice/static/ are auto-reverted so deploy artifacts do not block updates."""

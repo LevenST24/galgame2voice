@@ -48,7 +48,8 @@ export function initSettingsUi() {
   // Associate existing form labels without changing the controller's stable element IDs.
   document.querySelectorAll('.field').forEach(field => {
     const label = field.querySelector(':scope > label');
-    const control = field.querySelector('input:not([type="hidden"]), select, textarea');
+    // Hidden and file inputs are helpers: linking a heading to one makes clicking it open a file picker.
+    const control = field.querySelector('input:not([type="hidden"]):not([type="file"]):not([hidden]), select, textarea');
     if (label && control?.id && !label.hasAttribute('for')) label.htmlFor = control.id;
   });
   document.addEventListener('keydown', event => {

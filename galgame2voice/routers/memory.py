@@ -64,7 +64,9 @@ def _validate_and_sanitize_memory_create(mem: UserMemoryCreate) -> UserMemoryCre
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="fact_key cannot be empty",
         )
-    if not mem.fact_value or not mem.fact_value.strip():
+    # Checked after sanitizing: a value made only of delimiters ("[]", "<>") sanitizes to nothing.
+    clean_val = MemoryService.sanitize_fact_value(mem.fact_value or "", max_len=500)
+    if not clean_val:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="fact_value cannot be empty",
@@ -72,7 +74,6 @@ def _validate_and_sanitize_memory_create(mem: UserMemoryCreate) -> UserMemoryCre
 
     # Sanitize and truncate extreme inputs to prevent injection & storage bloat
     clean_key = mem.fact_key.strip()[:100]
-    clean_val = MemoryService.sanitize_fact_value(mem.fact_value.strip(), max_len=500)
     clean_cat = mem.category.strip()[:64] if mem.category else "preference"
 
     return mem.model_copy(update={
@@ -90,17 +91,20 @@ def _sanitize_memory_update(updates: UserMemoryUpdate) -> UserMemoryUpdate:
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="fact_key cannot be empty",
         )
-    if updates.fact_value is not None and not updates.fact_value.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="fact_value cannot be empty",
-        )
+    clean_val = None
+    if updates.fact_value is not None:
+        clean_val = MemoryService.sanitize_fact_value(updates.fact_value, max_len=500)
+        if not clean_val:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="fact_value cannot be empty",
+            )
 
     clean_updates_dict = {}
     if updates.fact_key is not None:
         clean_updates_dict["fact_key"] = updates.fact_key.strip()[:100]
-    if updates.fact_value is not None:
-        clean_updates_dict["fact_value"] = MemoryService.sanitize_fact_value(updates.fact_value.strip(), max_len=500)
+    if clean_val is not None:
+        clean_updates_dict["fact_value"] = clean_val
     if updates.category is not None:
         clean_updates_dict["category"] = updates.category.strip()[:64]
     if updates.confidence is not None:

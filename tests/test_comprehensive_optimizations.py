@@ -243,7 +243,7 @@ class TestAffectionStagePromptInjection:
             memories=None,
             affection_info={"score": 10, "level": 1, "level_name": "初识/生疏", "emotion": "normal"}
         )
-        assert "阶段一（0-20分【初识相识】）" in block
+        assert "阶段一（0-19分【初识相识】）" in block
         assert "初识/生疏" in block
 
     def test_stage_3_guidance_high_score(self):
@@ -253,7 +253,7 @@ class TestAffectionStagePromptInjection:
             memories=None,
             affection_info={"score": 65, "level": 4, "level_name": "亲密/依赖", "emotion": "shy"}
         )
-        assert "阶段三（51-80分【心动共鸣】）" in block
+        assert "阶段三（50-79分【心动共鸣】）" in block
         assert "亲密/依赖" in block
 
     def test_stage_4_guidance_max_score(self):
@@ -263,7 +263,7 @@ class TestAffectionStagePromptInjection:
             memories=None,
             affection_info={"score": 95, "level": 5, "level_name": "恋慕/誓约", "emotion": "gentle"}
         )
-        assert "阶段四（81-100分【恋慕誓约】）" in block
+        assert "阶段四（80-100分【恋慕誓约】）" in block
 
 
 class TestStreamingQuotedSentencesImmediateEmission:

@@ -358,6 +358,28 @@ async def test_sovits_probe_accepts_a_reachable_server(monkeypatch):
     assert "reachable" in check.detail
 
 
+async def test_sovits_probe_recognizes_an_api_v2_server(monkeypatch):
+    class _ApiV2(_FakeClient):
+        # api_v2.py has no route at "/"; /control without a command answers 400.
+        async def get(self, url):
+            return _FakeResponse(400 if url.endswith("/control") else 404)
+
+    monkeypatch.setattr(doctor, "create_async_client", lambda **kwargs: _ApiV2())
+
+    (check,) = await doctor.check_gpt_sovits("http://127.0.0.1:9880/")
+
+    assert check.status == doctor.OK
+
+
+async def test_sovits_probe_names_the_status_of_an_unrelated_server(monkeypatch):
+    monkeypatch.setattr(doctor, "create_async_client", lambda **kwargs: _FakeClient(status_code=404))
+
+    (check,) = await doctor.check_gpt_sovits("http://127.0.0.1:9880")
+
+    assert check.status == doctor.WARN
+    assert "HTTP 404" in check.detail
+
+
 async def test_sovits_probe_warns_when_unreachable(monkeypatch):
     import httpx
 

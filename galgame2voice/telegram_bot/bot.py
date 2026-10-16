@@ -59,9 +59,11 @@ def _register_handlers(app: Any, handlers: Any, error_handler: Any | None = None
     # Register callback query handler for inline keyboard buttons
     app.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
 
-    # Register message handlers
-    app.add_handler(MessageHandler(filters.VOICE, handlers.handle_voice_message))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_text_message))
+    # Register message handlers. Chat turns wait on the LLM, so they run non-blocking: one slow
+    # reply must not hold up every other user's updates. The handlers serialize turns per
+    # session themselves, so one member's messages are still answered in order.
+    app.add_handler(MessageHandler(filters.VOICE, handlers.handle_voice_message, block=False))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_text_message, block=False))
     app.add_handler(MessageHandler(filters.COMMAND, handlers.handle_unknown))
 
     # Register global error handler for Telegram network drops and exceptions
@@ -79,17 +81,34 @@ class TelegramBotManager:
         self.app: Any | None = None
         self.handlers = TelegramBotHandlers(db_path=db_path)
         self.is_running: bool = False
+        # True while start() is building and connecting an Application.
+        self.is_starting: bool = False
         self._polling_task: asyncio.Task | None = None
+        # Serializes start()/stop(). Saving Telegram settings restarts the bot, possibly while the
+        # boot-time auto-start is still connecting; without the lock both would build an
+        # Application and the first one would keep polling with nothing left to stop it.
+        self._lifecycle_lock = asyncio.Lock()
 
     async def start(self) -> bool:
         """
         Loads configuration from SQLite and starts Telegram Bot long-polling.
         Returns True if started successfully, False if disabled or unconfigured.
         """
-        if self.is_running:
-            logger.warning("Telegram Bot is already running.")
-            return True
+        async with self._lifecycle_lock:
+            if self.is_running:
+                logger.warning("Telegram Bot is already running.")
+                return True
+            # Never build a second Application next to one a cancelled start() left behind.
+            leftover, self.app = self.app, None
+            await self._shutdown_application(leftover)
+            self.is_starting = True
+            try:
+                return await self._start_locked()
+            finally:
+                self.is_starting = False
 
+    async def _start_locked(self) -> bool:
+        """Builds, initializes and starts polling; the caller holds the lifecycle lock."""
         async with get_db(self.db_path) as conn:
             settings = await crud.get_settings_raw(conn)
 
@@ -153,12 +172,36 @@ class TelegramBotManager:
         except Exception as exc:
             logger.error("Telegram Bot initialization failed: %s", exc)
             self.is_running = False
-            try:
-                if self.app and hasattr(self.app, "shutdown"):
-                    await self.app.shutdown()
-            except Exception as shutdown_err:
-                logger.debug("Non-critical: error shutting down bot application on init failure: %s", shutdown_err)
+            # start() may have succeeded before start_polling failed; shut that down properly.
+            app, self.app = self.app, None
+            await self._shutdown_application(app)
             return False
+
+    @staticmethod
+    async def _shutdown_application(app: Any | None) -> None:
+        """Stops the updater and the application, then shuts down.
+
+        python-telegram-bot refuses to shut down an Application (or Updater) that is still
+        running, which used to leave a half-started bot polling in the background.
+        """
+        if app is None:
+            return
+        updater = getattr(app, "updater", None)
+        try:
+            if updater is not None and getattr(updater, "running", False):
+                await updater.stop()
+        except Exception as exc:
+            logger.warning("Error stopping Telegram updater: %s", exc)
+        try:
+            if getattr(app, "running", False):
+                await app.stop()
+        except Exception as exc:
+            logger.warning("Error stopping Telegram application: %s", exc)
+        try:
+            if hasattr(app, "shutdown"):
+                await app.shutdown()
+        except Exception as exc:
+            logger.warning("Error shutting down Telegram application: %s", exc)
 
     async def _on_telegram_error(self, update: object, context: Any) -> None:
         """Centralized error boundary for python-telegram-bot exceptions and network drops."""
@@ -173,36 +216,32 @@ class TelegramBotManager:
             logger.warning("Telegram Bot error event [%s]: %s", err_type, safe_msg)
 
     async def stop(self) -> None:
-        """Gracefully stops Telegram Bot polling and application."""
-        if not self.is_running:
-            return
+        """Gracefully stops Telegram Bot polling and application.
 
-        logger.info("Stopping Telegram Bot service...")
-        self.is_running = False
-        # Cancel all active voice tasks and wait for clean exit
-        active_tasks = [t for t in self.handlers.user_tasks.values() if not t.done()]
-        for chat_id in list(self.handlers.user_tasks.keys()):
-            self.handlers.cancel_user_task(chat_id)
-        if active_tasks:
-            try:
-                await asyncio.gather(*active_tasks, return_exceptions=True)
-            except asyncio.CancelledError:
-                pass
-            except Exception as wait_err:
-                logger.debug("Error awaiting active user tasks during bot stop: %s", wait_err)
+        Waits for an in-flight start() first, so a restart can never leave it polling.
+        """
+        async with self._lifecycle_lock:
+            # An Application can remain without is_running when start() was cancelled mid-way.
+            if not self.is_running and self.app is None:
+                return
 
-        try:
-            if self.app:
-                if hasattr(self.app, "updater") and self.app.updater and getattr(self.app.updater, "running", False):
-                    await self.app.updater.stop()
-                if getattr(self.app, "running", False):
-                    await self.app.stop()
-                if hasattr(self.app, "shutdown"):
-                    await self.app.shutdown()
-        except Exception as exc:
-            logger.warning("Error stopping Telegram Bot application: %s", exc)
+            logger.info("Stopping Telegram Bot service...")
+            self.is_running = False
+            # Cancel all active voice tasks and wait for clean exit
+            active_tasks = [t for t in self.handlers.user_tasks.values() if not t.done()]
+            for task_key in list(self.handlers.user_tasks.keys()):
+                self.handlers.cancel_user_task(task_key)
+            if active_tasks:
+                try:
+                    await asyncio.gather(*active_tasks, return_exceptions=True)
+                except asyncio.CancelledError:
+                    pass
+                except Exception as wait_err:
+                    logger.debug("Error awaiting active user tasks during bot stop: %s", wait_err)
 
-        logger.info("Telegram Bot service stopped.")
+            app, self.app = self.app, None
+            await self._shutdown_application(app)
+            logger.info("Telegram Bot service stopped.")
 
     async def test_token(self, token: str, proxy_url: str | None = None) -> dict[str, Any]:
         """Tests validity of a Telegram bot token via getMe API."""

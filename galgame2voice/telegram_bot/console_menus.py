@@ -30,9 +30,9 @@ from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.telegram_bot.console_menus")
 
-# Callback data that mutates global state and therefore requires admin privileges.
-# Via handlers the whitelist is fail-closed (empty = nobody); only the handlers-less
-# path treats an empty whitelist as open access (single-user setups).
+# Callback data that mutates global state. route_callback_query now requires a
+# whitelisted user for every callback (fail-closed: empty whitelist = nobody);
+# these sets only classify the mutating ones.
 ADMIN_CALLBACK_PREFIXES: tuple[str, ...] = (
     "set_voice_", "set_char_", "set_speed_", "set_temp_", "set_split_", "set_topk_",
     "set_topp_", "set_batch_", "set_interval_", "set_history_", "set_model_",
@@ -676,7 +676,7 @@ class _CallbackContext:
     user_id: int
     db_path: str | None
     session_key_fn: Callable[[int, int], str]
-    cancel_task: Callable[[int], None]
+    cancel_task: Callable[[int, int], None]
 
 
 async def _render_menu(
@@ -1048,7 +1048,8 @@ async def _handle_affection_menu(ctx: _CallbackContext) -> None:
 
 async def _handle_reset_session(ctx: _CallbackContext) -> None:
     session_id = ctx.session_key_fn(ctx.chat_id, ctx.user_id)
-    ctx.cancel_task(ctx.chat_id)
+    # Only the member who pressed the button loses their pending voice note.
+    ctx.cancel_task(ctx.chat_id, ctx.user_id)
     try:
         async with get_db(ctx.db_path) as conn:
             await crud.clear_session_messages(conn, session_id)
@@ -1157,13 +1158,15 @@ async def route_callback_query(
     if not query:
         return
 
-    if (data in ADMIN_CALLBACK_ACTIONS or data.startswith(ADMIN_CALLBACK_PREFIXES)) and not is_admin:
-        logger.warning("Denied admin callback '%s' from user_id=%s in chat_id=%s", data, user_id, chat_id)
+    # Every button needs a whitelisted user, not only the mutating ones: the menus
+    # themselves expose provider, base URL, model and spend figures.
+    if not is_admin:
+        logger.warning("Denied callback '%s' from unauthorized user_id=%s in chat_id=%s", data, user_id, chat_id)
         if hasattr(query, "answer"):
             try:
-                await query.answer("⛔ 此操作需要管理员权限！", show_alert=True)
+                await query.answer("⛔ 没有权限", show_alert=True)
             except Exception as ans_err:
-                logger.debug("Failed answering admin callback query: %s", ans_err)
+                logger.debug("Failed answering unauthorized callback query: %s", ans_err)
         return
 
     actual_db_path = (
@@ -1171,9 +1174,9 @@ async def route_callback_query(
         else (getattr(handlers, "db_path", None) if handlers else None)
     )
 
-    def cancel_task(cid: int) -> None:
+    def cancel_task(cid: int, uid: int = 0) -> None:
         if handlers and hasattr(handlers, "cancel_user_task"):
-            handlers.cancel_user_task(cid)
+            handlers.cancel_user_task(cid, uid)
 
     def session_key_fn(cid: int, uid: int) -> str:
         if handlers and hasattr(handlers, "_session_key"):

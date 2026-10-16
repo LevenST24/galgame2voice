@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { state, loadState, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
-import { initVoiceSettings, createCustomVoice, loadSessionVoiceSelect, handleRescanCharacters, populateScanOptions, invalidateScannedModels } from '../frontend/src/controllers/voice_settings.js';
+import { initVoiceSettings, createCustomVoice, loadSessionVoiceSelect, handleRescanCharacters, populateScanOptions, invalidateScannedModels, ensureSessionVoice } from '../frontend/src/controllers/voice_settings.js';
 import { persistSession } from '../frontend/src/session_api.js';
 import { openSessionSettings } from '../frontend/src/controllers/voice_settings.js';
 import { portraitStage } from '../frontend/src/portrait.js';
@@ -399,5 +399,68 @@ const models = {
   await populateScanOptions();
   complete(response({ detail: 'older scan failed' }, 503)); await Promise.all([first, second]);
   assert.equal(dom.sCvGpt.value, 'a.ckpt', 'a stale error must not clear newer scan results'); passed++;
+}
+{
+  // The voice list failed to load: saving other settings must keep the character binding.
+  const { first, dom } = setup();
+  first.settings.voiceProfileId = 1;
+  const saves = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') throw new TypeError('Failed to fetch');
+    if (url === '/api/chat/sessions') saves.push(JSON.parse(options.body));
+    return response({});
+  };
+  await loadSessionVoiceSelect(first);
+  dom.sTemp.value = '0.9';
+  await dom.sSave.click();
+  assert.equal(first.settings.voiceProfileId, 1);
+  assert.equal(first.settings.temperature, 0.9);
+  assert.equal(saves.at(-1).voice_profile_id, 1); passed++;
+}
+{
+  // Deleting a voice also clears the server copies, or the next sync binds it again.
+  const { first, second, dom } = setup();
+  dom.sVoiceDelete = element();
+  initVoiceSettings(dom);
+  first.settings.voiceProfileId = 5; second.settings.voiceProfileId = 5;
+  const saves = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') return response({ profiles: [{ id: 5, name: 'Old' }, { id: 6, name: 'Other' }], active_profile_id: 6 });
+    if (url === '/api/chat/sessions') saves.push(JSON.parse(options.body));
+    return response({});
+  };
+  await loadSessionVoiceSelect(first);
+  dom.sVoice.value = '5';
+  await dom.sVoiceDelete.click(); await tick();
+  assert.deepEqual(saves.map(s => [s.id, s.voice_profile_id]).sort(), [['first', null], ['second', null]]); passed++;
+}
+{
+  // A binding found dead (404) is cleared on the server too.
+  const { first } = setup();
+  first.settings.voiceProfileId = 9;
+  const saves = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') return response({ profiles: [{ id: 1, name: 'A' }], active_profile_id: 1 });
+    if (url === '/api/voice/switch') return response({ detail: 'Profile not found' }, 404);
+    if (url === '/api/chat/sessions') saves.push(JSON.parse(options.body));
+    return response({});
+  };
+  await ensureSessionVoice(first, { silent: true }); await tick();
+  assert.equal(first.settings.voiceProfileId, null);
+  assert.deepEqual(saves.map(s => [s.id, s.voice_profile_id]), [['first', null]]); passed++;
+}
+{
+  // A character created without a persona still saves its session settings cleanly.
+  let closed = 0;
+  const { first, dom } = setup({ closeModal() { closed++; } });
+  first.settings.voiceProfileId = 4;
+  dom.sessionModal = element();
+  globalThis.fetch = async url => url === '/api/voice/profiles'
+    ? response({ profiles: [{ id: 4, name: 'No persona', system_prompt: '' }], active_profile_id: 4 }) : response({});
+  await loadSessionVoiceSelect(first);
+  dom.sTopP.value = '0.8';
+  await dom.sSave.click();
+  assert.equal(first.settings.topP, 0.8);
+  assert.equal(closed, 1); passed++;
 }
 console.log(`Voice settings recovery: ${passed} scenarios passed`);

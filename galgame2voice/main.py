@@ -147,7 +147,12 @@ def _init_directories(settings) -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.audio_dir.mkdir(parents=True, exist_ok=True)
     settings.logs_dir.mkdir(parents=True, exist_ok=True)
-    settings.characters_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        settings.characters_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # Character packages are optional. A read-only install (such as the non-root
+        # container without a characters volume) must still start and serve chat.
+        logger.warning("Characters directory unavailable, character packages disabled: %s", exc)
     logger.info(
         "Verified directories: data=%s, audio=%s, logs=%s, characters=%s",
         settings.data_dir,
