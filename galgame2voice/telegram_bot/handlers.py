@@ -28,7 +28,7 @@ from galgame2voice.database.models import MessageCreate, CharacterAffectionUpdat
 from galgame2voice.services.chat_service import ChatService, StreamingBilingualParser
 from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.services.tts_service import TtsService
-from galgame2voice.adapters.registry import get_stt_adapter
+from galgame2voice.adapters.registry import PROVIDER_PRESETS, SpeechRecognitionUnsupportedError, get_stt_adapter
 from galgame2voice.utils.audio_converter import convert_ogg_to_wav, convert_wav_to_ogg
 from galgame2voice.utils.japanese_phonetics import strip_stage_directions
 from galgame2voice.utils.logger import sanitize_error_detail
@@ -56,6 +56,15 @@ from galgame2voice.telegram_bot.console_menus import (
 logger = logging.getLogger("galgame2voice.telegram_bot.handlers")
 
 CommandCallback = Callable[..., Awaitable[str]]
+
+_STT_PROVIDER_EXAMPLES = "、".join(
+    preset["name"] for provider_id, preset in PROVIDER_PRESETS.items()
+    if preset.get("stt_adapter_class") and provider_id != "custom"
+)
+STT_UNSUPPORTED_REPLY = (
+    "当前模型提供商不支持语音识别，请直接发送文字消息，"
+    f"或在控制台切换到支持语音识别的提供商（如 {_STT_PROVIDER_EXAMPLES}）后再发送语音。"
+)
 
 
 def _authorized_command(label: str) -> Callable[[CommandCallback], CommandCallback]:
@@ -798,10 +807,17 @@ class TelegramBotHandlers:
             # 2. Convert OGG to 16kHz mono WAV
             wav_bytes = await convert_ogg_to_wav(bytes(ogg_bytes))
 
-            # 3. Transcribe via active STT adapter
+            # 3. Transcribe via active STT adapter (with the provider's configured stt_model)
             async with get_db(self.db_path) as conn:
                 active_prov = await crud.get_active_provider_raw(conn)
-                stt_adapter = get_stt_adapter(active_prov) if active_prov else get_stt_adapter("openai")
+            try:
+                if active_prov is None:
+                    raise SpeechRecognitionUnsupportedError("No active model provider")
+                stt_adapter = get_stt_adapter(active_prov)
+            except SpeechRecognitionUnsupportedError as unsupported:
+                logger.info("Voice note from chat_id=%d not transcribed: %s", chat_id, unsupported)
+                await update.message.reply_text(STT_UNSUPPORTED_REPLY)
+                return None
 
             transcribed_text = await stt_adapter.transcribe(wav_bytes, filename="voice.wav")
             if not transcribed_text or not transcribed_text.strip():

@@ -1,7 +1,7 @@
 """
 Regression tests for Telegram bot fixes: whitelist enforcement for every command
-and button, persona switching with /character, and per-member nickname and voice
-task keys in group chats.
+and button, persona switching with /character, per-member nickname and voice
+task keys in group chats, and speech recognition provider support.
 """
 
 import asyncio
@@ -10,8 +10,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import galgame2voice.telegram_bot.handlers as handlers_module
+from galgame2voice.adapters.registry import PROVIDER_PRESETS, SpeechRecognitionUnsupportedError, get_stt_adapter
 from galgame2voice.database import crud
-from galgame2voice.database.models import VoiceProfileCreate
+from galgame2voice.database.models import ProviderCreate, ProviderInDB, ProviderUpdate, VoiceProfileCreate
 from galgame2voice.database.session import get_db
 from galgame2voice.telegram_bot import TelegramBotHandlers
 
@@ -327,3 +329,100 @@ class TestPerMemberVoiceTasks:
         assert 777 not in handlers.user_tasks
         await settle(task)
         assert task.cancelled()
+
+
+FAKE_WAV = (
+    b"RIFF\x24\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00"
+    b"\x10\x00data\x00\x08\x00\x00" + b"\x00" * 200
+)
+
+
+class VoiceBot(RecordingBot):
+    """Serves a fake OGG file for every voice note."""
+
+    async def get_file(self, file_id):
+        return SimpleNamespace(download_as_bytearray=AsyncMock(return_value=bytearray(b"OggS fake voice")))
+
+
+def make_voice_update(chat_id, user_id):
+    return make_update(chat_id, user_id, voice=SimpleNamespace(file_id="voice-1", file_size=2048))
+
+
+async def activate_provider(conn, provider_id, stt_model=""):
+    await crud.get_settings_raw(conn)
+    if await crud.get_provider_raw(conn, provider_id) is None:
+        await crud.create_provider(conn, ProviderCreate(
+            id=provider_id,
+            name=provider_id,
+            api_base_url=PROVIDER_PRESETS[provider_id]["default_base_url"],
+            chat_model="chat-model",
+        ))
+    await crud.update_provider(conn, provider_id, ProviderUpdate(stt_model=stt_model))
+    await crud.set_active_provider(conn, provider_id)
+
+
+class TestVoiceNoteSpeechRecognition:
+    @pytest.fixture(autouse=True)
+    def fake_audio_conversion(self, monkeypatch):
+        monkeypatch.setattr(handlers_module, "convert_ogg_to_wav", AsyncMock(return_value=FAKE_WAV))
+
+    @pytest.mark.asyncio
+    async def test_provider_without_speech_recognition_gets_a_clear_reply(self, temp_db_path):
+        async with get_db(temp_db_path) as conn:
+            await activate_provider(conn, "deepseek")
+        handlers = TelegramBotHandlers(admin_ids=[ADMIN_ID], db_path=temp_db_path)
+        handlers.process_text_chat = AsyncMock()
+        update = make_voice_update(ADMIN_ID, ADMIN_ID)
+
+        result = await handlers.handle_voice_message(update, make_context(VoiceBot()))
+
+        assert result is None
+        assert len(update.message.replies) == 1
+        assert "不支持语音识别" in update.message.replies[0]
+        handlers.process_text_chat.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_configured_stt_model_is_used_for_transcription(self, temp_db_path, monkeypatch):
+        from galgame2voice.adapters.stt.openai_stt import OpenAICompatibleSTTAdapter
+
+        used_models = []
+
+        async def fake_transcribe(self, audio_bytes, filename="audio.wav", language=None, **kwargs):
+            used_models.append(kwargs.get("model") or self.default_model)
+            return "你好"
+
+        monkeypatch.setattr(OpenAICompatibleSTTAdapter, "transcribe", fake_transcribe)
+        async with get_db(temp_db_path) as conn:
+            await activate_provider(conn, "custom", stt_model="whisper-large-v3")
+        handlers = TelegramBotHandlers(admin_ids=[ADMIN_ID], db_path=temp_db_path)
+        handlers.process_text_chat = AsyncMock(return_value=None)
+
+        await handlers.handle_voice_message(make_voice_update(ADMIN_ID, ADMIN_ID), make_context(VoiceBot()))
+
+        assert used_models == ["whisper-large-v3"]
+        handlers.process_text_chat.assert_awaited_once()
+        assert handlers.process_text_chat.await_args.args[1] == "你好"
+
+
+class TestSpeechRecognitionFactory:
+    def test_chat_only_preset_is_rejected(self):
+        deepseek = ProviderInDB(
+            id="deepseek", name="DeepSeek", api_base_url="https://api.deepseek.com", chat_model="deepseek-chat"
+        )
+
+        with pytest.raises(SpeechRecognitionUnsupportedError):
+            get_stt_adapter(deepseek)
+
+    def test_configured_stt_model_becomes_the_default_model(self):
+        qwen = ProviderInDB(
+            id="qwen", name="Qwen", api_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            chat_model="qwen-max", stt_model="qwen-audio-asr-latest",
+        )
+        # A chat-only preset is usable once the operator configures an STT model for it.
+        glm = ProviderInDB(
+            id="glm", name="GLM", api_base_url="https://open.bigmodel.cn/api/paas/v4",
+            chat_model="glm-4-plus", stt_model="glm-asr",
+        )
+
+        assert get_stt_adapter(qwen).default_model == "qwen-audio-asr-latest"
+        assert get_stt_adapter(glm).default_model == "glm-asr"
