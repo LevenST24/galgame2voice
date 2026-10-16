@@ -1,6 +1,6 @@
 """
 Regression tests for Telegram bot fixes: whitelist enforcement for every command
-and button, and persona switching with /character.
+and button, persona switching with /character, and per-member nickname keys.
 """
 
 from types import SimpleNamespace
@@ -235,3 +235,27 @@ class TestCharacterSwitchPersona:
         switched = system_prompt_of(adapter.calls[1])
         assert "PERSONA_BETA" in switched
         assert "PERSONA_ALPHA" not in switched
+
+
+class TestNicknameKey:
+    @pytest.mark.asyncio
+    async def test_group_nickname_is_saved_for_the_sender(self, temp_db_path):
+        async with get_db(temp_db_path) as conn:
+            profile = await create_profile(conn, "角色甲")
+            await crud.set_active_voice_profile(conn, profile.id)
+        handlers = TelegramBotHandlers(admin_ids=[ADMIN_ID], db_path=temp_db_path)
+
+        reply = await handlers.handle_nickname(make_update(GROUP_CHAT_ID, ADMIN_ID, "/nickname 小夏"), make_context())
+        assert "小夏" in reply
+
+        async with get_db(temp_db_path) as conn:
+            member = await crud.get_or_create_character_affection(conn, user_id=str(ADMIN_ID), character_id=profile.id)
+            whole_chat = await crud.get_or_create_character_affection(
+                conn, user_id=str(GROUP_CHAT_ID), character_id=profile.id
+            )
+        assert member.custom_nickname == "小夏"
+        assert whole_chat.custom_nickname != "小夏"
+
+        # The affection menu and chat turns read the same per-member key.
+        text, _ = await handlers.build_affection_menu(GROUP_CHAT_ID, ADMIN_ID)
+        assert "小夏" in text

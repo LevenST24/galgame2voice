@@ -227,6 +227,9 @@ class TelegramBotHandlers:
     async def handle_nickname(self, update: Any, context: Any | None = None) -> str:
         """Handler for /nickname command to customize user nickname for character affection."""
         chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
+        # Key by the sender like chat turns and the affection menu do; in a group the
+        # chat id is shared by every member.
+        affection_user_key = str(resolve_effective_user_id(update) or chat_id)
         raw_text = ""
         if hasattr(update, "message") and update.message and update.message.text:
             raw_text = update.message.text.strip()
@@ -255,17 +258,17 @@ class TelegramBotHandlers:
                             profile_name = profile.name.split("(")[0].strip()
                         # Ensure affection row exists
                         await crud.get_or_create_character_affection(
-                            conn, user_id=str(chat_id), character_id=profile_id
+                            conn, user_id=affection_user_key, character_id=profile_id
                         )
                         await crud.update_character_affection(
                             conn,
-                            user_id=str(chat_id),
+                            user_id=affection_user_key,
                             character_id=profile_id,
                             updates=CharacterAffectionUpdate(custom_nickname=new_nick),
                         )
                     reply = f"🌸 称呼已成功更新为「{new_nick}」！\n{profile_name}在接下来的对话中就会这样称呼你啦~"
                 except Exception as exc:
-                    logger.error("Failed to update nickname for user %s: %s", chat_id, exc)
+                    logger.error("Failed to update nickname for user %s: %s", affection_user_key, exc)
                     safe_err = sanitize_error_detail(exc)
                     reply = f"❌ 更新称呼失败: {safe_err}" if safe_err else "❌ 更新称呼失败，请稍后重试！"
 
