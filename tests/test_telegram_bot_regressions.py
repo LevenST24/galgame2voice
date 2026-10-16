@@ -591,3 +591,81 @@ class TestBotManagerLifecycle:
         assert len(apps) == 1
         assert not apps[0].active
         assert apps[0].shut_down
+
+
+class ConcurrencyProbe:
+    """Stands in for process_text_chat and records how chat turns overlap."""
+
+    def __init__(self):
+        self.active: dict[int, int] = {}
+        self.peak: dict[int, int] = {}
+        self.running = 0
+        self.peak_running = 0
+        self.order: list[str] = []
+
+    async def process_text_chat(self, chat_id, text, bot, user_id=0):
+        self.active[user_id] = self.active.get(user_id, 0) + 1
+        self.peak[user_id] = max(self.peak.get(user_id, 0), self.active[user_id])
+        self.running += 1
+        self.peak_running = max(self.peak_running, self.running)
+        await asyncio.sleep(0.05)  # a slow LLM reply
+        self.order.append(text)
+        self.running -= 1
+        self.active[user_id] -= 1
+        return None
+
+
+class TestConcurrentChatTurns:
+    def test_chat_message_handlers_do_not_block_the_update_queue(self):
+        from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler
+
+        registered = []
+        app = SimpleNamespace(add_handler=registered.append, add_error_handler=lambda callback: None)
+
+        bot_module._register_handlers(app, TelegramBotHandlers(admin_ids=[ADMIN_ID]), None)
+
+        message_handlers = {h.callback.__name__: h for h in registered if isinstance(h, MessageHandler)}
+        assert message_handlers["handle_text_message"].block is False
+        assert message_handlers["handle_voice_message"].block is False
+        # Commands and buttons stay sequential.
+        assert all(h.block is not False for h in registered if isinstance(h, (CommandHandler, CallbackQueryHandler)))
+
+    @pytest.mark.asyncio
+    async def test_one_members_turns_run_in_order_while_others_overlap(self):
+        handlers = TelegramBotHandlers(admin_ids=[ADMIN_ID, OTHER_ADMIN_ID])
+        probe = ConcurrencyProbe()
+        handlers.process_text_chat = probe.process_text_chat
+        context = make_context()
+
+        await asyncio.wait_for(asyncio.gather(
+            handlers.handle_text_message(make_update(GROUP_CHAT_ID, ADMIN_ID, "A1"), context),
+            handlers.handle_text_message(make_update(GROUP_CHAT_ID, ADMIN_ID, "A2"), context),
+            handlers.handle_text_message(make_update(GROUP_CHAT_ID, OTHER_ADMIN_ID, "B1"), context),
+        ), timeout=5.0)
+
+        assert probe.peak[ADMIN_ID] == 1
+        assert probe.order.index("A1") < probe.order.index("A2")
+        assert probe.peak_running == 2
+
+    @pytest.mark.asyncio
+    async def test_text_after_a_voice_note_waits_for_its_transcription(self, temp_db_path, monkeypatch):
+        class SlowStt:
+            async def transcribe(self, audio_bytes, filename="audio.wav", **kwargs):
+                await asyncio.sleep(0.05)
+                return "语音内容"
+
+        monkeypatch.setattr(handlers_module, "convert_ogg_to_wav", AsyncMock(return_value=FAKE_WAV))
+        monkeypatch.setattr(handlers_module, "get_stt_adapter", lambda provider, **kwargs: SlowStt())
+        async with get_db(temp_db_path) as conn:
+            await activate_provider(conn, "openai")
+        handlers = TelegramBotHandlers(admin_ids=[ADMIN_ID], db_path=temp_db_path)
+        probe = ConcurrencyProbe()
+        handlers.process_text_chat = probe.process_text_chat
+        context = make_context(VoiceBot())
+
+        await asyncio.wait_for(asyncio.gather(
+            handlers.handle_voice_message(make_voice_update(ADMIN_ID, ADMIN_ID), context),
+            handlers.handle_text_message(make_update(ADMIN_ID, ADMIN_ID, "随后的文字"), context),
+        ), timeout=5.0)
+
+        assert probe.order == ["语音内容", "随后的文字"]

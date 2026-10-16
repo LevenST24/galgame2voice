@@ -13,6 +13,7 @@ import functools
 from io import BytesIO
 import logging
 from typing import Any, Awaitable, Callable
+import weakref
 
 try:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -98,6 +99,9 @@ class TelegramBotHandlers:
         # Pending voice synthesis tasks keyed like sessions (resolve_session_key), so in a
         # group each member only ever cancels their own voice note.
         self.user_tasks: dict[str, asyncio.Task] = {}
+        # One lock per session key. Chat messages are handled non-blocking (see bot.py), so
+        # this keeps one session's turns sequential and in arrival order.
+        self._session_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
         # Telegram user IDs allowed to use the bot; empty set = fail-closed (nobody authorized)
         self.admin_ids: set = set(admin_ids or [])
 
@@ -129,6 +133,14 @@ class TelegramBotHandlers:
     # Backward compatibility aliases for external callers / tests
     _effective_user_id = staticmethod(resolve_effective_user_id)
     _session_key = staticmethod(resolve_session_key)
+
+    def _session_lock(self, session_key: str) -> asyncio.Lock:
+        """Returns the lock serializing chat turns of one session (dropped once unused)."""
+        lock = self._session_locks.get(session_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_locks[session_key] = lock
+        return lock
 
     def cancel_user_task(self, chat_id: Any, user_id: int = 0) -> None:
         """Cancels the pending voice task of one chat member (keyed like their session).
@@ -767,7 +779,9 @@ class TelegramBotHandlers:
         text = update.message.text.strip()
         if text.startswith("/"):
             return None
-        return await self.process_text_chat(chat_id, text, context.bot, user_id=resolve_effective_user_id(update))
+        user_id = resolve_effective_user_id(update)
+        async with self._session_lock(resolve_session_key(chat_id, user_id)):
+            return await self.process_text_chat(chat_id, text, context.bot, user_id=user_id)
 
     @staticmethod
     async def _download_tg_file_bytes(tg_file: Any) -> bytes:
@@ -799,6 +813,12 @@ class TelegramBotHandlers:
             )
             return None
 
+        # Held across transcription too, so a text sent right after a voice note waits for it.
+        async with self._session_lock(resolve_session_key(chat_id, resolve_effective_user_id(update))):
+            return await self._process_voice_note(update, context, chat_id, voice)
+
+    async def _process_voice_note(self, update: Any, context: Any, chat_id: int, voice: Any) -> asyncio.Task | None:
+        """Downloads, converts and transcribes a voice note, then runs it as a chat turn."""
         try:
             # 1. Download voice file bytes
             tg_file = await context.bot.get_file(voice.file_id)

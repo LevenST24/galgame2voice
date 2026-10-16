@@ -59,9 +59,11 @@ def _register_handlers(app: Any, handlers: Any, error_handler: Any | None = None
     # Register callback query handler for inline keyboard buttons
     app.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
 
-    # Register message handlers
-    app.add_handler(MessageHandler(filters.VOICE, handlers.handle_voice_message))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_text_message))
+    # Register message handlers. Chat turns wait on the LLM, so they run non-blocking: one slow
+    # reply must not hold up every other user's updates. The handlers serialize turns per
+    # session themselves, so one member's messages are still answered in order.
+    app.add_handler(MessageHandler(filters.VOICE, handlers.handle_voice_message, block=False))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_text_message, block=False))
     app.add_handler(MessageHandler(filters.COMMAND, handlers.handle_unknown))
 
     # Register global error handler for Telegram network drops and exceptions
