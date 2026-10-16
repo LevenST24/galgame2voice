@@ -456,6 +456,9 @@ class TestTelegramBotParameterAndSecurityGating:
         mock_update = MagicMock()
         mock_update.message = mock_message
         mock_update.effective_chat.id = test_chat_id
+        # A private chat: the sender is the chat, and must be whitelisted.
+        mock_update.effective_user.id = test_chat_id
+        handlers.admin_ids.add(test_chat_id)
 
         reply = await handlers.handle_nickname(mock_update)
         assert custom_name in reply
