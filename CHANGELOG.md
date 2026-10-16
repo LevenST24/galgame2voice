@@ -46,6 +46,15 @@ All notable changes to galgame2voice are documented here. The format follows
   draft and the selected model files.
 - Loading older history waits for the current reply, and sending waits for the older
   history to finish loading.
+- The Docker image creates the characters folder for its non-root user and compose
+  mounts `./characters`; the app also starts when that folder cannot be created.
+  The build context now contains only what the image copies, so character models
+  and user data are no longer uploaded on every `docker build`.
+
+### Removed
+- The speech recognition engine selector (本地 SenseVoice / Whisper) in global
+  settings. Those engines were never connected; voice input always used the
+  browser's speech recognition.
 
 ## [2.1.0] - 2026-10-14
 
