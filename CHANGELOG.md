@@ -55,6 +55,17 @@ All notable changes to galgame2voice are documented here. The format follows
 - The one-click update no longer runs a local frontend build when the update
   already includes the built frontend. Installs without Node.js no longer see a
   build failure after a successful update.
+- Long-term memory no longer mistakes everyday phrases such as "我叫了个外卖",
+  "别叫我笨蛋" or "明天叫我起床" for the player's name. Before, the character
+  started calling the player by that phrase, and the web UI cannot correct it.
+- A new "我喜欢…" or "我讨厌…" about the same thing replaces the opposite memory
+  instead of keeping both. The player's name and occupation are still recalled
+  after more than 200 newer memories, and memory recency is computed in UTC.
+- The relationship stage sent to the model now changes at the same scores as the
+  level (20 and 80), so Lv.5 no longer comes with the third stage's guidance.
+  Level-ups are judged from the score alone.
+- The memory API answers 422 instead of 500 for a value that is empty after
+  sanitizing, and no longer ignores such a value on update.
 
 ### Removed
 - The speech recognition engine selector (本地 SenseVoice / Whisper) in global

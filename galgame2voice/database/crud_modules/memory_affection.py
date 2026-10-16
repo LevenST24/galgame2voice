@@ -143,6 +143,20 @@ async def delete_memory(conn: aiosqlite.Connection, memory_id: int) -> bool:
     return cursor.rowcount > 0
 
 
+async def delete_memory_by_key(
+    conn: aiosqlite.Connection,
+    user_id: str,
+    character_id: int,
+    fact_key: str,
+) -> bool:
+    async with immediate_transaction(conn):
+        cursor = await conn.execute(
+            "DELETE FROM user_memories WHERE user_id = ? AND character_id = ? AND fact_key = ?;",
+            (user_id, character_id, fact_key),
+        )
+    return cursor.rowcount > 0
+
+
 async def clear_memories(
     conn: aiosqlite.Connection,
     user_id: str = "default_user",
@@ -361,7 +375,9 @@ async def update_character_affection(
         level, _ = calculate_affection_level(score)
         fields.append("affection_level = ?")
         values.append(level)
-        up_dict.pop("affection_level", None)
+    # The level always follows the score (reads recompute it). Writing a level on its
+    # own would leave a stale column that increment_affection used to compare against.
+    up_dict.pop("affection_level", None)
 
     for k, v in up_dict.items():
         if k == "affection_score":
@@ -472,7 +488,7 @@ async def increment_affection(
         )
         row = await cursor.fetchone()
         old_score = row[0] if row else current.affection_score
-        old_level = row[1] if row else current.affection_level
+        old_level, _ = calculate_affection_level(old_score)
         daily_before = (row[2] if row and row[3] == today else 0)
 
         daily_remaining = max(0, daily_limit - daily_before)
