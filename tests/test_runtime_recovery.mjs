@@ -203,12 +203,64 @@ const cfg = (speed) => ({ status: 'ok', settings: { speed_factor: speed } });
   let complete;
   globalThis.fetch = async (_url, options) => options.method === 'POST'
     ? new Promise(resolve => { complete = resolve; }) : response(cfg(1.8));
+  await loadGlobalConfig();
   const pending = saveGlobalConfig();
   dom.gParamSpeed.value = '1.9'; dom.gParamSpeed.change();
   complete(response({ status: 'ok' })); await pending;
   await loadGlobalConfig();
   assert.equal(dom.gParamSpeed.value, '1.9');
   assert.equal(dom.gTgSave.disabled, false); passed++;
+}
+{
+  // The config never loaded (backend restarting): saving would overwrite every setting with
+  // the form's defaults, stopping Telegram and resetting the engine URL and precision.
+  const dom = { gParamSpeed: element('1'), gTgEnabled: element(), gTgSave: element() };
+  initGlobalSettings(dom);
+  const posts = [];
+  globalThis.fetch = async (_url, options = {}) => {
+    if (options.method === 'POST') { posts.push(JSON.parse(options.body)); return response({ status: 'ok' }); }
+    return response({ detail: '后端正在重启' }, 503);
+  };
+  await loadGlobalConfig();
+  dom.gParamSpeed.value = '1.2'; dom.gParamSpeed.change();
+  await saveGlobalConfig();
+  assert.deepEqual(posts, []); passed++;
+}
+{
+  // An edit made while the first load is in flight keeps the server's values in every other field.
+  const dom = { gParamSpeed: element('1'), gTgEnabled: element(), gParamSovitsUrl: element(''), gTgSave: element() };
+  initGlobalSettings(dom);
+  let complete;
+  globalThis.fetch = () => new Promise(resolve => { complete = resolve; });
+  const pending = loadGlobalConfig();
+  dom.gParamSpeed.value = '1.3'; dom.gParamSpeed.change();
+  complete(response({ status: 'ok', settings: { speed_factor: 1, telegram_enabled: true, gpt_sovits_url: 'http://10.0.0.5:9880' } }));
+  await pending;
+  assert.equal(dom.gParamSpeed.value, '1.3');
+  assert.equal(dom.gTgEnabled.checked, true);
+  assert.equal(dom.gParamSovitsUrl.value, 'http://10.0.0.5:9880');
+  const posts = [];
+  globalThis.fetch = async (_url, options = {}) => {
+    if (options.method === 'POST') posts.push(JSON.parse(options.body));
+    return response({ status: 'ok', settings: {} });
+  };
+  await saveGlobalConfig();
+  assert.equal(posts[0].speed_factor, 1.3);
+  assert.equal(posts[0].telegram_enabled, true);
+  assert.equal(posts[0].gpt_sovits_url, 'http://10.0.0.5:9880'); passed++;
+}
+{
+  // Restarting before the config loaded must not send the dropdown's default precision.
+  const dom = { gBtnRestartSovits: element(), gBtnTogglePrecision: element(), gPrecision: element('auto') };
+  initGlobalSettings(dom);
+  const bodies = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url.endsWith('restart_sovits')) { bodies.push(JSON.parse(options.body)); return response({ status: 'starting' }); }
+    if (url.endsWith('engine-status')) return response({ state: 'failed', ready: false, message: '请重新选择引擎目录' });
+    return response({});
+  };
+  await handleRestartSovits();
+  assert.deepEqual(bodies, [{}]); passed++;
 }
 {
   const dom = { gBtnRestartSovits: element(), gBtnTogglePrecision: element(), gPrecision: element('cpu') };

@@ -66,6 +66,19 @@ All notable changes to galgame2voice are documented here. The format follows
   Level-ups are judged from the score alone.
 - The memory API answers 422 instead of 500 for a value that is empty after
   sanitizing, and no longer ignores such a value on update.
+- Global settings can no longer be saved before they have loaded, and editing a
+  field while they load no longer leaves the others at their defaults. Either
+  case used to overwrite the saved settings, turning the Telegram bot off and
+  resetting the engine address and precision. Restarting the engine before the
+  settings load keeps its saved precision.
+- When the voice list fails to load, saving session settings keeps the session's
+  character instead of unbinding it. Deleting a voice, or finding a session's
+  voice deleted, also clears the binding on the server, so it no longer returns
+  after a reload.
+- Characters created without a persona can save their session settings again.
+  Saving session settings or deleting another voice no longer reloads the
+  portrait, which reset its costume and last line.
+- Clicking the "聊天记录备份与恢复" heading no longer opens the import file picker.
 
 ### Removed
 - The speech recognition engine selector (本地 SenseVoice / Whisper) in global
