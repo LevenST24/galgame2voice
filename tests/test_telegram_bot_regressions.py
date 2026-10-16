@@ -1,7 +1,8 @@
 """
 Regression tests for Telegram bot fixes: whitelist enforcement for every command
 and button, persona switching with /character, per-member nickname and voice
-task keys in group chats, and speech recognition provider support.
+task keys in group chats, speech recognition provider support, and start/stop
+serialization of the bot manager.
 """
 
 import asyncio
@@ -10,12 +11,19 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import galgame2voice.telegram_bot.bot as bot_module
 import galgame2voice.telegram_bot.handlers as handlers_module
 from galgame2voice.adapters.registry import PROVIDER_PRESETS, SpeechRecognitionUnsupportedError, get_stt_adapter
 from galgame2voice.database import crud
-from galgame2voice.database.models import ProviderCreate, ProviderInDB, ProviderUpdate, VoiceProfileCreate
+from galgame2voice.database.models import (
+    ProviderCreate,
+    ProviderInDB,
+    ProviderUpdate,
+    SettingsUpdate,
+    VoiceProfileCreate,
+)
 from galgame2voice.database.session import get_db
-from galgame2voice.telegram_bot import TelegramBotHandlers
+from galgame2voice.telegram_bot import TelegramBotHandlers, TelegramBotManager
 
 ADMIN_ID = 4242
 OTHER_ADMIN_ID = 5353
@@ -426,3 +434,160 @@ class TestSpeechRecognitionFactory:
 
         assert get_stt_adapter(qwen).default_model == "qwen-audio-asr-latest"
         assert get_stt_adapter(glm).default_model == "glm-asr"
+
+
+class FakeUpdater:
+    """Mirrors the python-telegram-bot Updater guards; polling waits for the network gate."""
+
+    def __init__(self, gate: asyncio.Event, fail_polling: bool = False):
+        self.running = False
+        self.gate = gate
+        self.fail_polling = fail_polling
+
+    async def start_polling(self, drop_pending_updates=False):
+        await self.gate.wait()
+        if self.fail_polling:
+            raise RuntimeError("Conflict: terminated by other getUpdates request")
+        self.running = True
+
+    async def stop(self):
+        if not self.running:
+            raise RuntimeError("This Updater is not running!")
+        self.running = False
+
+
+class FakeApplication:
+    """Mirrors the python-telegram-bot Application lifecycle guards."""
+
+    def __init__(self, gate: asyncio.Event, fail_polling: bool = False):
+        self.running = False
+        self.shut_down = False
+        self.updater = FakeUpdater(gate, fail_polling)
+
+    def add_handler(self, handler, group=0):
+        pass
+
+    def add_error_handler(self, callback):
+        pass
+
+    async def initialize(self):
+        pass
+
+    async def start(self):
+        self.running = True
+
+    async def stop(self):
+        if not self.running:
+            raise RuntimeError("This Application is not running!")
+        self.running = False
+
+    async def shutdown(self):
+        if self.running or self.updater.running:
+            raise RuntimeError("This Application is still running!")
+        self.shut_down = True
+
+    @property
+    def active(self) -> bool:
+        return self.running or self.updater.running
+
+
+class FakeApplicationBuilder:
+    def __init__(self, apps: list, gate: asyncio.Event, fail_polling: bool = False):
+        self.apps = apps
+        self.gate = gate
+        self.fail_polling = fail_polling
+
+    def token(self, token):
+        return self
+
+    def request(self, request):
+        return self
+
+    def get_updates_request(self, request):
+        return self
+
+    def build(self):
+        app = FakeApplication(self.gate, self.fail_polling)
+        self.apps.append(app)
+        return app
+
+
+async def wait_until(predicate, timeout: float = 2.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        assert loop.time() < deadline, "condition not reached in time"
+        await asyncio.sleep(0.005)
+
+
+class TestBotManagerLifecycle:
+    @pytest.fixture
+    async def manager_with_fake_telegram(self, temp_db_path, monkeypatch):
+        async with get_db(temp_db_path) as conn:
+            await crud.update_settings(conn, SettingsUpdate(
+                telegram_enabled=True,
+                telegram_bot_token="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz",
+                telegram_admin_ids=str(ADMIN_ID),
+            ))
+        apps: list[FakeApplication] = []
+        gate = asyncio.Event()
+        options = {"fail_polling": False}
+        monkeypatch.setattr(
+            bot_module, "ApplicationBuilder", lambda: FakeApplicationBuilder(apps, gate, options["fail_polling"])
+        )
+        # No real HTTP clients: the tests are about the lifecycle, and building them is slow.
+        monkeypatch.setattr(bot_module, "get_telegram_request_kwargs", lambda proxy_url=None: {})
+        monkeypatch.setattr(bot_module, "HTTPXRequest", lambda **kwargs: SimpleNamespace(**kwargs))
+        manager = TelegramBotManager(db_path=temp_db_path)
+        yield manager, apps, gate, options
+        gate.set()
+        await manager.stop()
+
+    @pytest.mark.asyncio
+    async def test_restart_during_boot_start_leaves_one_polling_instance(self, manager_with_fake_telegram):
+        manager, apps, gate, _ = manager_with_fake_telegram
+
+        async def save_settings_restart():
+            # What routers/config.py does when Telegram settings are saved.
+            await manager.stop()
+            return await manager.start()
+
+        boot = asyncio.create_task(manager.start())
+        await wait_until(lambda: len(apps) == 1)  # boot auto-start is still connecting
+        restart = asyncio.create_task(save_settings_restart())
+        await asyncio.sleep(0.05)
+        gate.set()
+        results = await asyncio.wait_for(asyncio.gather(boot, restart), timeout=5.0)
+
+        assert results == [True, True]
+        assert [app for app in apps if app.active] == [manager.app]
+        assert all(app.shut_down for app in apps if app is not manager.app)
+
+    @pytest.mark.asyncio
+    async def test_stop_during_start_does_not_leave_the_bot_polling(self, manager_with_fake_telegram):
+        manager, apps, gate, _ = manager_with_fake_telegram
+
+        boot = asyncio.create_task(manager.start())
+        await wait_until(lambda: bool(apps) and apps[0].running)  # started, polling not yet up
+        stopper = asyncio.create_task(manager.stop())
+        await asyncio.sleep(0.05)
+        gate.set()
+        await asyncio.wait_for(asyncio.gather(boot, stopper), timeout=5.0)
+
+        assert manager.is_running is False
+        assert not apps[0].active
+        assert apps[0].shut_down
+
+    @pytest.mark.asyncio
+    async def test_failed_polling_start_shuts_the_started_application_down(self, manager_with_fake_telegram):
+        manager, apps, gate, options = manager_with_fake_telegram
+        options["fail_polling"] = True
+        gate.set()
+
+        started = await manager.start()
+
+        assert started is False
+        assert manager.is_running is False
+        assert len(apps) == 1
+        assert not apps[0].active
+        assert apps[0].shut_down
