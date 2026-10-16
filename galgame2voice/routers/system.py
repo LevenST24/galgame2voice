@@ -518,7 +518,13 @@ def _execute_update_pull_and_build(
         output_lines.append(f"共变更 {len(changed_files)} 个文件。")
 
     frontend_changed = any(f.startswith("frontend/") for f in changed_files)
-    should_rebuild = frontend_changed or force_rebuild_frontend
+    # The deployed bundle is tracked in git. When the pull already brings a rebuilt
+    # bundle, building again locally needs Node.js and would only dirty the tree.
+    bundle_pulled = any(
+        f == "galgame2voice/static/index.html" or f.startswith("galgame2voice/static/assets/")
+        for f in changed_files
+    )
+    should_rebuild = force_rebuild_frontend or (frontend_changed and not bundle_pulled)
 
     rebuilt_frontend = False
     if should_rebuild:
@@ -529,6 +535,8 @@ def _execute_update_pull_and_build(
             output_lines.append(f"前端静态产物编译并部署成功。\n{build_out}")
         else:
             output_lines.append(f"前端静态产物构建失败 (建议手动排查):\n{build_out}")
+    elif frontend_changed:
+        output_lines.append("\n[前端状态] 更新已包含构建好的前端静态产物，无需本地构建。")
     else:
         output_lines.append("\n[前端状态] 前端资源无变更，跳过前端重新构建。")
 
