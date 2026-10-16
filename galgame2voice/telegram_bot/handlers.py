@@ -9,9 +9,10 @@ Implements:
 """
 
 import asyncio
+import functools
 from io import BytesIO
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 try:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -54,6 +55,20 @@ from galgame2voice.telegram_bot.console_menus import (
 
 logger = logging.getLogger("galgame2voice.telegram_bot.handlers")
 
+CommandCallback = Callable[..., Awaitable[str]]
+
+
+def _authorized_command(label: str) -> Callable[[CommandCallback], CommandCallback]:
+    """Runs a slash command only for whitelisted users (the fail-closed policy chat messages use)."""
+    def decorator(func: CommandCallback) -> CommandCallback:
+        @functools.wraps(func)
+        async def wrapper(self: "TelegramBotHandlers", update: Any, context: Any | None = None) -> str:
+            if not await self._check_admin_authorized(update, context, label):
+                return self._unauthorized_reply(resolve_effective_user_id(update))
+            return await func(self, update, context)
+        return wrapper
+    return decorator
+
 
 class TelegramBotHandlers:
     """
@@ -82,12 +97,22 @@ class TelegramBotHandlers:
             return False
         return resolve_effective_user_id(update) in self.admin_ids
 
+    @staticmethod
+    def _unauthorized_reply(user_id: int) -> str:
+        """Rejection text; it names the sender's own ID so the owner can whitelist it."""
+        if not user_id:
+            return "抱歉，你没有使用本机器人的权限。"
+        return (
+            f"抱歉，你没有使用本机器人的权限。你的 Telegram 用户 ID：{user_id}，"
+            "请在控制台的 Telegram 管理员白名单中添加后重试。"
+        )
+
     async def _check_admin_authorized(self, update: Any, context: Any, message_type: str = "message") -> bool:
         """Verifies if user is authorized. If not, logs warning, notifies user, and returns False."""
         if not self._is_admin(update):
             uid = resolve_effective_user_id(update)
             logger.warning("Rejected %s from unauthorized Telegram user_id=%d", message_type, uid)
-            await self._safe_send_message(update, context, "抱歉，你没有使用本机器人的权限。")
+            await self._safe_send_message(update, context, self._unauthorized_reply(uid))
             return False
         return True
 
@@ -180,6 +205,7 @@ class TelegramBotHandlers:
             logger.warning("Failed sending Telegram message: %s", exc)
         return False
 
+    @_authorized_command("/start command")
     async def handle_start(self, update: Any, context: Any | None = None) -> str:
         """Handler for /start command."""
         reply = (
@@ -197,6 +223,7 @@ class TelegramBotHandlers:
         await self._safe_send_message(update, context, reply)
         return reply
 
+    @_authorized_command("/nickname command")
     async def handle_nickname(self, update: Any, context: Any | None = None) -> str:
         """Handler for /nickname command to customize user nickname for character affection."""
         chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
@@ -245,6 +272,7 @@ class TelegramBotHandlers:
         await self._safe_send_message(update, context, reply)
         return reply
 
+    @_authorized_command("/reset command")
     async def handle_reset(self, update: Any, context: Any | None = None) -> str:
         """Handler for /reset command."""
         chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
@@ -262,6 +290,7 @@ class TelegramBotHandlers:
         await self._safe_send_message(update, context, reply)
         return reply
 
+    @_authorized_command("/voice command")
     async def handle_voice(self, update: Any, context: Any | None = None) -> str:
         """Handler for /voice command."""
         profile = None
@@ -363,6 +392,7 @@ class TelegramBotHandlers:
         except Exception as exc:
             return f"切换异常: {sanitize_error_detail(exc)}", ""
 
+    @_authorized_command("/character command")
     async def handle_character(self, update: Any, context: Any | None = None) -> str:
         """
         Handler for /character, /char, /switch command.
@@ -468,6 +498,7 @@ class TelegramBotHandlers:
             f"💬 现在就可以直接发送文字或语音与 {clean_name} 对话啦！{warning_note}"
         )
 
+    @_authorized_command("/model command")
     async def handle_model(self, update: Any, context: Any | None = None) -> str:
         """Handler for /model command."""
         provider = None
@@ -493,6 +524,7 @@ class TelegramBotHandlers:
         await self._safe_send_message(update, context, reply)
         return reply
 
+    @_authorized_command("/console command")
     async def handle_console(self, update: Any, context: Any | None = None) -> str:
         """Handler for /console, /menu, /settings command rendering native Inline Keyboard Console."""
         chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
@@ -500,6 +532,7 @@ class TelegramBotHandlers:
         await self._safe_send_message(update, context, text, reply_markup=markup)
         return text
 
+    @_authorized_command("/help command")
     async def handle_help(self, update: Any, context: Any | None = None) -> str:
         """Handler for /help command."""
         reply = (
@@ -516,6 +549,7 @@ class TelegramBotHandlers:
         await self._safe_send_message(update, context, reply)
         return reply
 
+    @_authorized_command("unknown command")
     async def handle_unknown(self, update: Any, context: Any | None = None) -> str:
         """Handler for unknown commands."""
         reply = (
