@@ -32,6 +32,9 @@ All notable changes to galgame2voice are documented here. The format follows
   takes clicks, so retyping after an error no longer opens settings by accident.
 - Portable builds explain updating by extracting a new package instead of offering
   a git update.
+- The Docker image starts through `scripts/run_container.py`, which turns console
+  authentication on unless `GALGAME2VOICE_AUTH_DISABLED` is set. The default moved
+  out of the image's `ENV`, where its name failed Docker's build checks.
 
 ### Fixed
 - Voiced sentences without their own emotion cue now show the reply's declared
@@ -91,6 +94,21 @@ All notable changes to galgame2voice are documented here. The format follows
   settings right after launch) no longer leaves a second bot polling.
 - One slow model reply no longer holds up the Telegram bot for every other chat;
   each member's messages are still answered in order.
+- A reply that does not follow the JSON format is shown, saved and voiced in full;
+  before, only its first 16 or so characters remained. A short preamble before the
+  JSON ("好的～") no longer puts raw JSON in the chat bubble instead of the reply,
+  and the "日文" label no longer shows up at the end of a labeled reply.
+- The chat bubble and its local history end with the reply as the server saved it.
+- Stopping a reply, or a provider error during one, saves the partial reply once
+  instead of twice; the copy was repeated in the next turn's context. Pressing Stop
+  or closing the tab while a reply streams now keeps the partial reply, and removes
+  a message that got no reply, instead of losing both with the cancelled request.
+- An empty reply no longer earns affection. It withdraws the player's message, so
+  sending the message again counted twice. The non-streaming chat API now awards
+  affection only after the reply is saved.
+- A reply with an empty "chinese" field is no longer shown, saved and voiced as
+  raw JSON in the non-streaming API and Telegram; Telegram reports it as a failed
+  reply.
 
 ### Removed
 - The speech recognition engine selector (本地 SenseVoice / Whisper) in global
