@@ -735,6 +735,9 @@ class TelegramBotHandlers:
             chinese, japanese, parser = StreamingBilingualParser.parse_full_text(raw_text)
 
             display_chinese = strip_stage_directions(chinese).strip() or chinese
+            if not display_chinese.strip():
+                # Nothing to send, save or voice; report it like any failed reply.
+                raise ValueError("模型这次没有返回内容")
             dynamic_tts = parser.get_dynamic_tts_options(sentence_text=japanese)
 
             # 3. Send text reply immediately

@@ -615,13 +615,15 @@ class StreamingBilingualParser:
     def parse_full_text(cls, raw_text: str) -> tuple[str, str, "StreamingBilingualParser"]:
         """
         Parses non-streaming bilingual completion text into (chinese, japanese, parser).
-        Guarantees fallback to raw_text if extracted fields are empty.
+        A reply without a Chinese line shows its Japanese one; an empty reply stays empty.
         """
         parser = cls()
         parser.feed_chunk(raw_text)
         chinese, japanese, _ = parser.finalize()
-        if not chinese:
-            chinese = raw_text
+        if not chinese.strip():
+            # Plain text already lands in `chinese`; what is left here is JSON with an
+            # empty "chinese" field, whose raw text must not be shown or voiced.
+            chinese = japanese if japanese.strip() else ""
         if not japanese:
             japanese = chinese
         return chinese, japanese, parser

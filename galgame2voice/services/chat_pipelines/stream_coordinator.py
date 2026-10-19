@@ -727,7 +727,12 @@ class StreamCoordinator:
         )
 
         clean_chunks = self._clean_audio_chunks(audio_chunks)
-        affection_res, final_emotion = await self._update_turn_affection(full_chinese, final_emotion)
+        if has_meaningful_content:
+            affection_res, final_emotion = await self._update_turn_affection(full_chinese, final_emotion)
+        else:
+            # The empty reply withdrew the user's message, so the turn earns nothing and
+            # sending it again cannot count twice.
+            affection_res = self._affection_fallback(final_emotion)
         final_tts_params = self._build_final_tts_params(parser, self.ai_adaptive_voice)
 
         # Emit final done event

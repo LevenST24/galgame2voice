@@ -713,20 +713,6 @@ class ChatService:
 
             final_emotion = classify_emotion(chinese, japanese, parser.emotion_extracted)
 
-            # Affection update
-            try:
-                affection_res = await self.affection_service.handle_turn_affection(
-                    user_id=user_id,
-                    character_id=profile_id,
-                    user_text=prompt,
-                    assistant_text=chinese,
-                    explicit_emotion=final_emotion,
-                )
-                final_emotion = affection_res.get("emotion", final_emotion)
-            except Exception as aff_err:
-                logger.warning("Affection update in chat_sync failed: %s", aff_err)
-                affection_res = self._affection_fallback(final_emotion)
-
             # Synthesize full audio
             audio_url, tts_first_chunk_ms, tts_cached_chunks, tts_generated_chunks = await self._synthesize_sync_audio(
                 japanese=japanese,
@@ -754,18 +740,36 @@ class ChatService:
                 tts_generated_chunks=tts_generated_chunks,
             )
 
-            # Save assistant message to DB
-            async with get_db(self.db_path) as conn:
-                async with immediate_transaction(conn):
-                    await crud.add_message(conn, MessageCreate(
-                        session_id=session_id,
-                        role="assistant",
-                        content_chinese=chinese,
-                        content_japanese=japanese,
-                        audio_url=audio_url,
-                        latency_ms=latency_ms,
-                    ))
-                persisted_assistant = True
+            # Save assistant message to DB; an empty reply withdraws the user's message instead
+            if chinese.strip() or japanese.strip():
+                async with get_db(self.db_path) as conn:
+                    async with immediate_transaction(conn):
+                        await crud.add_message(conn, MessageCreate(
+                            session_id=session_id,
+                            role="assistant",
+                            content_chinese=chinese,
+                            content_japanese=japanese,
+                            audio_url=audio_url,
+                            latency_ms=latency_ms,
+                        ))
+                    persisted_assistant = True
+
+            # Only a saved turn earns affection: a withdrawn one can be sent again.
+            if persisted_assistant:
+                try:
+                    affection_res = await self.affection_service.handle_turn_affection(
+                        user_id=user_id,
+                        character_id=profile_id,
+                        user_text=prompt,
+                        assistant_text=chinese,
+                        explicit_emotion=final_emotion,
+                    )
+                    final_emotion = affection_res.get("emotion", final_emotion)
+                except Exception as aff_err:
+                    logger.warning("Affection update in chat_sync failed: %s", aff_err)
+                    affection_res = self._affection_fallback(final_emotion)
+            else:
+                affection_res = self._affection_fallback(final_emotion)
 
             return self._format_sync_response(
                 session_id=session_id,

@@ -669,3 +669,29 @@ class TestConcurrentChatTurns:
         ), timeout=5.0)
 
         assert probe.order == ["语音内容", "随后的文字"]
+class TestEmptyReply:
+    @pytest.mark.asyncio
+    async def test_empty_json_reply_is_reported_not_sent_as_raw_json(self, temp_db_path):
+        class EmptyAdapter:
+            async def chat(self, messages, model=None, **kwargs):
+                return SimpleNamespace(content='{"chinese": "", "japanese": ""}')
+
+        handlers = TelegramBotHandlers(admin_ids=[ADMIN_ID], db_path=temp_db_path)
+        handlers.chat_service.get_active_llm_adapter = AsyncMock(return_value=(EmptyAdapter(), "mock-model", "mock"))
+        handlers.tts_service = SilentTts()
+        bot = RecordingBot()
+
+        await (await handlers.process_text_chat(ADMIN_ID, "在吗", bot, user_id=ADMIN_ID))
+
+        texts = [message["text"] for message in bot.sent_messages]
+        assert len(texts) == 1
+        assert "没有返回内容" in texts[0]
+        assert '"chinese"' not in texts[0]
+        assert bot.sent_voices == []
+        async with get_db(temp_db_path) as conn:
+            rows = await (await conn.execute("SELECT role FROM messages")).fetchall()
+            points = await (await conn.execute(
+                "SELECT COALESCE(SUM(affection_score), 0) FROM character_affection"
+            )).fetchone()
+        assert [row[0] for row in rows] == ["user"]
+        assert points[0] == 0
