@@ -6,10 +6,16 @@ differentials (portrait/expressions.json), so these tests cover manifest
 resolution, the emotion pools that drive per-sentence drift, and sprite serving.
 """
 
+from types import SimpleNamespace
+
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from galgame2voice.main import app
+from galgame2voice.database import crud
+from galgame2voice.database.models import VoiceProfileCreate
 from galgame2voice.database.session import init_db, get_db
+from galgame2voice.routers import characters as characters_router
 from galgame2voice.services.character_manager import get_character_manager
 
 CHAT_EMOTIONS = {"gentle", "happy", "shy", "tsundere", "cool", "sad", "angry"}
@@ -127,10 +133,35 @@ async def test_face_and_blush_sprites_are_served():
 
 
 @pytest.mark.asyncio
-async def test_sprite_path_traversal_is_rejected():
+async def test_sprite_path_traversal_is_rejected(tmp_path, monkeypatch):
+    """Sprite requests stay inside the package's portrait folder (no installed package needed)."""
+    package = tmp_path / "演示角色"
+    (package / "portrait" / "casual").mkdir(parents=True)
+    (package / "portrait" / "casual" / "gentle.png").write_bytes(b"sprite")
+    (package / "portrait" / "expressions.json").write_text("{}", encoding="utf-8")
+    (package / "secret.txt").write_text("package secret", encoding="utf-8")
+    found = SimpleNamespace(folder=package, manifest=SimpleNamespace(id="demo", name="演示角色"))
+    monkeypatch.setattr(characters_router, "get_character_manager", lambda: SimpleNamespace(
+        get_character=lambda name: found if name == "演示角色" else None,
+    ))
+    async with get_db() as conn:
+        await crud.get_settings_raw(conn)
+        profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
+            name="演示角色", gpt_weights_path="demo.ckpt", sovits_weights_path="demo.pth",
+            ref_audio_path="demo.wav", prompt_text="テスト", prompt_lang="ja", text_lang="ja",
+        ))
+
     async with await _client() as client:
-        char_id = await _natsume_id(client)
-        res = await client.get(
-            f"/api/characters/{char_id}/portrait/file/..%2F/expressions.json"
-        )
-        assert res.status_code in (400, 404)
+        base = f"/api/characters/{profile.id}/portrait/file"
+        served = await client.get(f"{base}/casual/gentle.png")
+        assert served.status_code == 200 and served.content == b"sprite"
+        for path in ("..%2F/expressions.json", "casual/..%2F..%2Fsecret.txt", "..%5C..%5Csecret.txt/x"):
+            res = await client.get(f"{base}/{path}")
+            assert res.status_code in (400, 404), path
+            assert b"package secret" not in res.content
+
+    # The handler itself, whatever the URL normalisation in front of it.
+    for costume, file_name in (("..", "secret.txt"), ("casual", ".."), ("casual", "../../secret.txt"), ("casual", r"..\..\secret.txt")):
+        with pytest.raises(HTTPException) as rejected:
+            await characters_router.get_character_portrait_file(profile.id, costume, file_name)
+        assert rejected.value.status_code in (400, 404)

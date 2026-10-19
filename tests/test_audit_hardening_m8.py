@@ -311,4 +311,5 @@ class TestMemoryLeakPrevention:
 
         handlers.cancel_user_task(888)
         assert 888 not in handlers.user_tasks
-        assert task.cancelling() or task.cancelled()
+        with pytest.raises(asyncio.CancelledError):
+            await task

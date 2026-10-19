@@ -558,7 +558,8 @@ class TestTier1FeatureCoverage:
         handlers.user_tasks[111] = task
 
         handlers.cancel_user_task(111)
-        assert task.cancelling() or task.cancelled()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 # ============================================================================
