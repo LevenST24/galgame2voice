@@ -2,8 +2,13 @@
 
 import fnmatch
 import logging
+import os
 from pathlib import Path
 import re
+import runpy
+import sys
+
+import pytest
 
 from galgame2voice.config import get_settings
 
@@ -80,3 +85,38 @@ def test_startup_continues_without_a_writable_characters_folder(tmp_path, monkey
     assert not settings.characters_dir.exists()
     assert "character packages disabled" in caplog.text
     assert CharacterManager(settings.characters_dir).discover_characters() == []
+
+
+# BuildKit's SecretsUsedInArgOrEnv rule, which fails `docker build --check` in CI.
+_SECRET_NAME = re.compile(r"(?i)(?:_|^)(?:apikey|auth|credential|credentials|key|password|pword|passwd|secret|token)(?:_|$)")
+
+
+def test_dockerfile_env_and_arg_names_pass_the_secrets_check():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8").replace("\\\n", " ")
+    names = []
+    for match in re.finditer(r"^(?:ENV|ARG)\s+(.+)$", dockerfile, flags=re.MULTILINE):
+        names.extend(token.split("=", 1)[0] for token in match.group(1).split() if "=" in token)
+    assert "APP_UID" in names and "GALGAME2VOICE_HOST" in names
+    assert [name for name in names if _SECRET_NAME.search(name)] == []
+    assert 'CMD ["python", "scripts/run_container.py"]' in dockerfile
+
+
+@pytest.mark.parametrize(("configured", "expected"), [(None, "0"), ("0", "0"), ("1", "1")])
+def test_container_entrypoint_turns_auth_on_before_the_app_loads(monkeypatch, configured, expected):
+    if configured is None:
+        monkeypatch.delenv("GALGAME2VOICE_AUTH_DISABLED", raising=False)
+    else:
+        monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", configured)
+    seen = []
+
+    class FakeMain:
+        """Importing the real module builds Settings, so record the variable at import."""
+
+        @property
+        def run(self):
+            seen.append(os.environ.get("GALGAME2VOICE_AUTH_DISABLED"))
+            return lambda: seen.append("run")
+
+    monkeypatch.setitem(sys.modules, "galgame2voice.main", FakeMain())
+    runpy.run_path(str(ROOT / "scripts" / "run_container.py"), run_name="__main__")
+    assert seen == [expected, "run"]

@@ -43,7 +43,6 @@ ENV UV_COMPILE_BYTECODE=1 \
     PYTHONIOENCODING=utf-8 \
     GALGAME2VOICE_PORT=8080 \
     GALGAME2VOICE_HOST=0.0.0.0 \
-    GALGAME2VOICE_AUTH_DISABLED=0 \
     PYTHONPATH=/app \
     PATH="/app/.venv/bin:$PATH"
 
@@ -85,6 +84,8 @@ VOLUME ["/app/data", "/app/audio", "/app/logs", "/app/characters"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://127.0.0.1:8080/api/health || exit 1
 
-# The listener and startup safety check share the same Settings values.
-CMD ["python", "-m", "galgame2voice.main"]
+# The entrypoint turns authentication on before Settings load (an AUTH variable in
+# ENV trips `docker build --check`); the listener and startup safety check still
+# share the same Settings values.
+CMD ["python", "scripts/run_container.py"]
 
