@@ -50,6 +50,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
     // 日文原文/情绪/音频列表整批静默丢失，cancelled 恒为真导致收尾逻辑不执行。
     onEnd(acc, {
       cancelled: Boolean(cancelled),
+      truncated: Boolean(doneMeta && doneMeta.truncated),
       error: error || null,
       errorCode: error ? errorCode : null,
       audioError,
@@ -59,6 +60,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
       emotion: (doneMeta && doneMeta.emotion) || null,
       affection: (doneMeta && doneMeta.affection) || null,
       ttsParams: (doneMeta && doneMeta.tts_params) || null,
+      lines: (doneMeta && Array.isArray(doneMeta.lines)) ? doneMeta.lines : null,
     });
   };
 
@@ -155,13 +157,20 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             }
             if (json.audio_url) {
               audioUrls.push(json.audio_url);
-              audioChunks.push({
+              const chunkObj = {
                 url: json.audio_url,
                 sentence: json.sentence || '',
                 emotion: json.emotion || '',
-              });
+              };
+              if (typeof json.line === 'number') chunkObj.line = json.line;
+              if (typeof json.index === 'number') chunkObj.index = json.index;
+              audioChunks.push(chunkObj);
               if (typeof onAudio === 'function') {
-                onAudio(json.audio_url, audioUrls.length - 1, json.sentence || '', { emotion: json.emotion || '' });
+                onAudio(json.audio_url, audioUrls.length - 1, json.sentence || '', {
+                  emotion: json.emotion || '',
+                  line: json.line,
+                  chunkIndex: json.index,
+                });
               }
             }
           } else if (eventName === 'audio_chunk_error') {
@@ -183,11 +192,14 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
               for (const c of json.chunks.slice(audioUrls.length)) {
                 if (c && c.audio_url) {
                   audioUrls.push(c.audio_url);
-                  audioChunks.push({
+                  const chunkObj = {
                     url: c.audio_url,
                     sentence: c.sentence || '',
                     emotion: c.emotion || '',
-                  });
+                  };
+                  if (typeof c.line === 'number') chunkObj.line = c.line;
+                  if (typeof c.index === 'number') chunkObj.index = c.index;
+                  audioChunks.push(chunkObj);
                 }
               }
             } else if (audioUrls.length === 0) {

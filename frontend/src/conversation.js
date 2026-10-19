@@ -1,11 +1,25 @@
-// 会话逻辑不依赖 DOM；聊天气泡和后续 ADV 舞台订阅同一组事件。
+/**
+ * 会话逻辑不依赖 DOM；聊天气泡和后续 ADV 舞台订阅同一组事件。
+ *
+ * 控制器事件 (Controller Events):
+ * - turnstart: ({ userMessage, assistantMessage, originId, retryOf })
+ * - text: ({ delta, text })
+ * - line: ({ messageId, line }) — 新单句台词到达，line 为 { index, zh, ja, emotion, act, audio: { status, chunks } }
+ * - line_audio: ({ messageId, line, status, chunks }) — 某句台词的音频结果权威状态与切片
+ * - audio_chunk: (chunk) — 逐句音频切片事件
+ * - done: ({ message, error, kind, originId, failedInline, meta, hasStartedStreamAudio })
+ * - cancelled: ({ message, error, kind, originId, failedInline, meta, hasStartedStreamAudio })
+ * - error: ({ message, error, kind, originId, failedInline, meta, hasStartedStreamAudio })
+ */
 import { streamChat } from './ai.js';
+import { normalizeLines } from './session_data.js';
 
 export function createConversation({
   state, getActive, getSession, addMessage, uid, saveState, persistSession,
   isSessionDeleting, audioStore, putCachedAudioBlob, fetchAndCacheAudio,
   audioPlayer, getCurrentVoice, stopCurrentVoice, setCurrentVoice,
   clearMicTimers, beforeSend, onBlocked, getAudioControl,
+  getAudioMode = () => 'sequential',
   fetch: fetchRequest = (...args) => globalThis.fetch(...args),
 }) {
   const listeners = new Map();
@@ -75,7 +89,15 @@ export function createConversation({
       }
     }
     const assistantMessage = { id: uid('m_stream'), role: 'assistant', content: '', ts: Date.now() };
-    const current = { originId, streamMsgId: assistantMessage.id, hasStartedStreamAudio: false };
+    const current = {
+      originId,
+      streamMsgId: assistantMessage.id,
+      hasStartedStreamAudio: false,
+      bufferedChunksByLine: new Map(),
+      linesByLineIndex: new Map(),
+      hasReceivedLineEvents: false,
+      settled: false,
+    };
     turn = current;
     busy = true;
     let lastFull = '';
@@ -91,8 +113,80 @@ export function createConversation({
         assistantMessage.content = full;
         emit('text', { delta, text: full });
       },
-      onEvent: (type, payload) => emit(type, payload),
+      onEvent: (type, payload) => {
+        if (turn !== current || current.settled) return;
+        if (type === 'line') {
+          if (!Number.isInteger(payload?.index) || payload.index < 0) return;
+          current.hasReceivedLineEvents = true;
+          if (!assistantMessage.lines) assistantMessage.lines = [];
+          const earlyChunks = current.bufferedChunksByLine.get(payload.index) || [];
+          const lineRecord = {
+            index: payload.index,
+            zh: typeof payload.zh === 'string' ? payload.zh : '',
+            ja: typeof payload.ja === 'string' ? payload.ja : '',
+            emotion: typeof payload.emotion === 'string' ? payload.emotion : '',
+            act: (payload.act && typeof payload.act === 'object' && !Array.isArray(payload.act)) ? { ...payload.act } : {},
+            audio: {
+              status: 'pending',
+              chunks: [...earlyChunks],
+            },
+          };
+          current.linesByLineIndex.set(payload.index, lineRecord);
+          const existingIdx = assistantMessage.lines.findIndex((l) => l.index === payload.index);
+          if (existingIdx !== -1) {
+            assistantMessage.lines[existingIdx] = lineRecord;
+          } else {
+            assistantMessage.lines.push(lineRecord);
+            assistantMessage.lines.sort((a, b) => a.index - b.index);
+          }
+          emit('line', { messageId: assistantMessage.id, line: lineRecord });
+        } else if (type === 'line_audio') {
+          const lineRecord = current.linesByLineIndex.get(payload.line);
+          const chunks = Array.isArray(payload.chunks) ? payload.chunks : (lineRecord?.audio?.chunks || []);
+          if (lineRecord) {
+            lineRecord.audio = { status: payload.status, chunks };
+          }
+          emit('line_audio', {
+            messageId: assistantMessage.id,
+            line: payload.line,
+            status: payload.status,
+            chunks,
+          });
+        } else if (type === 'audio_chunk') {
+          if (payload && typeof payload.line === 'number') {
+            const lineRecord = current.linesByLineIndex.get(payload.line);
+            const chunkObj = {
+              index: payload.index,
+              line: payload.line,
+              audio_url: payload.audio_url,
+              sentence: payload.sentence || '',
+              emotion: payload.emotion || '',
+            };
+            if (lineRecord) {
+              if (!lineRecord.audio.chunks.some((c) => c.index === payload.index)) {
+                lineRecord.audio.chunks.push(chunkObj);
+              }
+            } else {
+              if (!current.bufferedChunksByLine.has(payload.line)) {
+                current.bufferedChunksByLine.set(payload.line, []);
+              }
+              current.bufferedChunksByLine.get(payload.line).push(chunkObj);
+            }
+          }
+          emit('audio_chunk', payload);
+        } else {
+          emit(type, payload);
+        }
+      },
       onAudio: (url, idx, sentence, meta = {}) => {
+        if (turn !== current || current.settled) return;
+        const mode = typeof getAudioMode === 'function' ? getAudioMode() : 'sequential';
+        if (mode === 'lines') {
+          if (url && typeof url === 'string' && url.startsWith('/audio/')) {
+            fetchAndCacheAudio(url).catch(() => {});
+          }
+          return;
+        }
         if ((!state.global.voiceMode || originId !== state.activeId) && url && typeof url === 'string' && url.startsWith('/audio/')) {
           fetchAndCacheAudio(url).catch(() => {});
         }
@@ -133,6 +227,21 @@ export function createConversation({
         japanese: meta.japanese || '', audioUrls, audioChunks: meta.chunks || [],
         ts: Date.now(), ttsParams: meta.ttsParams || null,
       };
+
+      if (Array.isArray(meta.lines)) {
+        message.lines = normalizeLines(meta.lines);
+        assistantMessage.lines = message.lines;
+      } else if (current.hasReceivedLineEvents && assistantMessage.lines) {
+        message.lines = assistantMessage.lines;
+      }
+
+      // The turn is over, so no line_audio can still arrive.
+      for (const lines of [message.lines, assistantMessage.lines]) {
+        for (const line of lines || []) {
+          if (line.audio && line.audio.status === 'pending') line.audio.status = 'failed';
+        }
+      }
+
       // Keep only reply text delivered by the stream, including final corrections.
       const stored = Boolean(lastFull && textToSave);
       const origin = getSession(originId);

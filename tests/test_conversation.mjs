@@ -83,14 +83,14 @@ test('normal turn emits in order, sends the same payload, and saves before unloc
 test('unknown server event types pass through unchanged and listeners unsubscribe', async () => {
   const app = setup();
   const received = [];
-  const off = app.conversation.on('line', payload => received.push(payload));
+  const off = app.conversation.on('custom_event', payload => received.push(payload));
   app.conversation.send('下一句');
   const request = app.stream.requests[0];
-  const line = { id: 4, speaker: 'alice', text: '下一句', metadata: { pause: 0.5 } };
-  await request.event('line', line);
+  const custom = { id: 4, speaker: 'alice', text: '下一句', metadata: { pause: 0.5 } };
+  await request.event('custom_event', custom);
   off();
-  await request.event('line', { id: 5 });
-  assert.deepEqual(received, [line]);
+  await request.event('custom_event', { id: 5 });
+  assert.deepEqual(received, [custom]);
   await request.onEnd('');
 });
 

@@ -26,6 +26,41 @@ function pickSettings(value, defaults) {
   return result;
 }
 
+export function normalizeLines(lines) {
+  if (!Array.isArray(lines)) return undefined;
+  const result = [];
+  // Stored and final lines are settled: audio still 'pending' never arrived.
+  const KNOWN_STATUSES = new Set(['ready', 'skipped', 'failed']);
+  for (const item of lines) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    if (!Number.isInteger(item.index) || item.index < 0) continue;
+    if (typeof item.zh !== 'string') continue;
+    if (typeof item.ja !== 'string') continue;
+    if (typeof item.emotion !== 'string') continue;
+    if (!item.act || typeof item.act !== 'object' || Array.isArray(item.act)) continue;
+
+    let audio = { status: 'skipped', chunks: [] };
+    if (item.audio && typeof item.audio === 'object' && !Array.isArray(item.audio)) {
+      const raw = item.audio.status;
+      const status = raw === 'pending' ? 'failed' : KNOWN_STATUSES.has(raw) ? raw : 'skipped';
+      const chunks = Array.isArray(item.audio.chunks)
+        ? item.audio.chunks.filter(c => c && typeof c === 'object' && !Array.isArray(c)).map(c => ({ ...c }))
+        : [];
+      audio = { status, chunks };
+    }
+
+    result.push({
+      index: item.index,
+      zh: item.zh,
+      ja: item.ja,
+      emotion: item.emotion,
+      act: { ...item.act },
+      audio,
+    });
+  }
+  return result;
+}
+
 export function normalizeSnapshot(data, sessionDefaults, globalDefaults) {
   if (!record(data) || !Array.isArray(data.sessions)) throw new Error('文件中没有有效的聊天记录。');
   const ids = new Set();
@@ -43,7 +78,13 @@ export function normalizeSnapshot(data, sessionDefaults, globalDefaults) {
       }
       messageIds.add(message.id);
       // JSON is inert data. Preserve voice metadata for existing local playback.
-      return { ...message, ts: timestamp(message.ts) };
+      const normalizedMsg = { ...message, ts: timestamp(message.ts) };
+      if (Array.isArray(message.lines)) {
+        normalizedMsg.lines = normalizeLines(message.lines);
+      } else {
+        delete normalizedMsg.lines;
+      }
+      return normalizedMsg;
     });
     return {
       id: session.id, title: session.title, messages,
@@ -67,6 +108,16 @@ export function portableSnapshot(snapshot) {
       const result = { id: message.id, role: message.role, content: message.content, ts: message.ts };
       if (typeof message.japanese === 'string') result.japanese = message.japanese;
       if (message.noVoice) result.noVoice = true;
+      if (Array.isArray(message.lines)) {
+        result.lines = message.lines.map(line => ({
+          index: line.index,
+          zh: line.zh,
+          ja: line.ja,
+          emotion: line.emotion,
+          act: { ...(line.act || {}) },
+          audio: { status: 'skipped', chunks: [] },
+        }));
+      }
       return result;
     }) })),
   };
