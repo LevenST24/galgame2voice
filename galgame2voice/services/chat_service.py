@@ -22,6 +22,7 @@ import time
 from typing import Any, AsyncGenerator
 
 import aiosqlite
+from anyio import CancelScope
 
 from galgame2voice.adapters.base import ChatMessage, BaseLLMAdapter
 from galgame2voice.adapters.registry import get_llm_adapter
@@ -586,7 +587,9 @@ class ChatService:
             }
         finally:
             if coordinator is None and user_msg is not None:
-                await self._prune_orphaned_user_message(getattr(user_msg, "id", None))
+                # The request scope may be cancelled; the prune still has to land.
+                with CancelScope(shield=True):
+                    await self._prune_orphaned_user_message(getattr(user_msg, "id", None))
 
 
     async def stream_chat_events(

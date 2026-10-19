@@ -12,6 +12,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Callable
+from anyio import CancelScope
 
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate
@@ -106,6 +107,7 @@ class _StreamRun:
         self.producer_task: asyncio.Task | None = None
         self.worker_task: asyncio.Task | None = None
         self.cancel_monitor: asyncio.Task | None = None
+        self.cancel_requested: set[asyncio.Task] = set()
 
         self.final_result: dict[str, Any] = {}
         self.audio_chunks: list[dict[str, Any]] = []
@@ -253,9 +255,7 @@ class StreamCoordinator:
             get_tts_scheduler().cancel_generation(run.stream_gen_id)
         except Exception as cancel_err:
             logger.debug("Non-critical: error cancelling generation in _watch_cancel: %s", cancel_err)
-        for t in (run.producer_task, run.worker_task):
-            if t is not None and not t.done():
-                t.cancel()
+        self._request_pipeline_stop(run)
         try:
             run.tts_queue.put_nowait(None)
         except (asyncio.QueueFull, Exception):
@@ -264,6 +264,14 @@ class StreamCoordinator:
             run.event_queue.put_nowait(_CANCEL_SENTINEL)
         except (asyncio.QueueFull, Exception):
             pass
+
+    @staticmethod
+    def _request_pipeline_stop(run: _StreamRun) -> None:
+        """Request cancellation once, so a later stop cannot interrupt finally cleanup."""
+        for task in (run.producer_task, run.worker_task):
+            if task is not None and not task.done() and task not in run.cancel_requested:
+                run.cancel_requested.add(task)
+                task.cancel()
 
     async def _put_with_cancel(
         self,
@@ -469,9 +477,15 @@ class StreamCoordinator:
                 if cancel_wait_task:
                     wait_set.add(cancel_wait_task)
 
-                done, pending = await asyncio.wait(wait_set, timeout=0.5, return_when=asyncio.FIRST_COMPLETED)
-                for t in pending:
-                    t.cancel()
+                try:
+                    done, _ = await asyncio.wait(wait_set, timeout=0.5, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    # A disconnected consumer can cancel us while waiting. Neither
+                    # queue.get nor Event.wait may outlive the stream in that case.
+                    for waiter in wait_set:
+                        if not waiter.done():
+                            waiter.cancel()
+                    await asyncio.gather(*wait_set, return_exceptions=True)
 
                 if cancel_event and cancel_event.is_set():
                     break
@@ -507,7 +521,7 @@ class StreamCoordinator:
         partial_ja: str | None,
         t_start: float,
     ) -> None:
-        """Persists partial assistant response to the database in background."""
+        """Persist the interrupted turn once, before its stream teardown finishes."""
         try:
             async with get_db(self.db_path) as conn:
                 await crud.add_message(conn, MessageCreate(
@@ -518,6 +532,7 @@ class StreamCoordinator:
                     audio_url="",
                     latency_ms=int((time.perf_counter() - t_start) * 1000),
                 ))
+            self.persisted_assistant = True
         except Exception as persist_err:
             logger.warning("Failed to persist partial assistant message: %s", persist_err)
 
@@ -545,18 +560,15 @@ class StreamCoordinator:
             is_cancelled,
             self.session_id,
         )
-        # Reap producer/worker before persisting so TTS synthesis stops
-        # promptly and no task writes concurrently.
-        for task in (run.producer_task, run.worker_task):
-            if task is not None and not task.done():
-                task.cancel()
+        # Request stop immediately; teardown reaps both tasks before persistence.
+        self._request_pipeline_stop(run)
 
         # Persist the partial reply the user already saw so the turn is
         # not silently dropped from history (the user message was saved).
         partial_ch = run.final_result.get("chinese") or run.parser.chinese_extracted
         partial_ja = run.final_result.get("japanese") or run.parser.japanese_extracted
-        if _has_meaningful_text(partial_ch, partial_ja):
-            self._spawn_bg(self._persist_partial_message(partial_ch, partial_ja, run.t_start))
+        # Teardown owns persistence after producer/worker cleanup. Scheduling a
+        # second writer here races teardown and inserts the same reply twice.
 
         if is_cancelled:
             # Explicit truncated done so the client can distinguish
@@ -739,6 +751,13 @@ class StreamCoordinator:
 
     async def _teardown(self, run: _StreamRun) -> None:
         """Finally-block teardown: cancels scheduled generation, reaps background tasks, ensures DB persistence."""
+        # A disconnected request's AnyIO scope cancels every unshielded cleanup
+        # await, including history writes. This scope contains no yielded events.
+        with CancelScope(shield=True):
+            await self._finish_teardown(run)
+
+    async def _finish_teardown(self, run: _StreamRun) -> None:
+        """Release owned pipeline tasks and settle this turn's database state."""
         try:
             get_tts_scheduler().cancel_generation(run.stream_gen_id)
         except Exception as cancel_err:
@@ -754,20 +773,12 @@ class StreamCoordinator:
         # Reap producer/worker no matter how we exited (normal end, error,
         # client disconnect, or cancellation). This prevents orphan tasks
         # from holding the TTS inference lock forever.
-        for task in (run.producer_task, run.worker_task):
-            if task is not None and not task.done():
-                task.cancel()
+        self._request_pipeline_stop(run)
         for task in (run.producer_task, run.worker_task):
             if task is None:
                 continue
             try:
-                if run.cancel_event and run.cancel_event.is_set():
-                    if not task.done():
-                        task.cancel()
-                    else:
-                        await task
-                else:
-                    await task
+                await task
             except asyncio.CancelledError:
                 pass
             except Exception as task_exc:
@@ -779,20 +790,7 @@ class StreamCoordinator:
             partial_ch = run.final_result.get("chinese") or run.parser.chinese_extracted
             partial_ja = run.final_result.get("japanese") or run.parser.japanese_extracted
             if _has_meaningful_text(partial_ch, partial_ja):
-                try:
-                    async with get_db(self.db_path) as conn:
-                        async with immediate_transaction(conn):
-                            await crud.add_message(conn, MessageCreate(
-                                session_id=self.session_id,
-                                role="assistant",
-                                content_chinese=partial_ch,
-                                content_japanese=partial_ja,
-                                audio_url="",
-                                latency_ms=int((time.perf_counter() - run.t_start) * 1000),
-                            ))
-                        self.persisted_assistant = True
-                except Exception as persist_err:
-                    logger.warning("Failed to persist partial assistant message in finally: %s", persist_err)
+                await self._persist_partial_message(partial_ch, partial_ja, run.t_start)
             else:
                 await self._prune_orphaned_user_message()
 

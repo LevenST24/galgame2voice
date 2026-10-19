@@ -67,9 +67,6 @@ class LlmStreamPipeline:
         finally:
             if stream_gen is not None and hasattr(stream_gen, "aclose"):
                 try:
-                    if self.cancel_event and self.cancel_event.is_set():
-                        asyncio.create_task(stream_gen.aclose())
-                    else:
-                        await asyncio.wait_for(stream_gen.aclose(), timeout=0.05)
+                    await asyncio.wait_for(stream_gen.aclose(), timeout=0.05)
                 except (asyncio.TimeoutError, Exception) as exc:
                     logger.debug("Silently ignored stream generator close error: %s", exc)

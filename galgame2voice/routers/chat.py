@@ -10,6 +10,7 @@ import logging
 import time
 from typing import Any, AsyncGenerator, Literal
 import uuid
+from anyio import CancelScope
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
@@ -80,6 +81,21 @@ class ChatRequest(BaseModel):
 # Streaming SSE Endpoint
 # ============================================================================
 
+class ChatStreamingResponse(StreamingResponse):
+    """Own the SSE iterator even when ASGI send fails after a yielded chunk."""
+
+    async def stream_response(self, send: Any) -> None:
+        try:
+            await super().stream_response(send)
+        finally:
+            # ASGI 2.4 reports disconnect through send(); older servers cancel
+            # the request scope. Both paths must close the yielded SSE iterator.
+            with CancelScope(shield=True):
+                close = getattr(self.body_iterator, "aclose", None)
+                if close is not None:
+                    await close()
+
+
 async def sse_event_formatter(
     event_generator: AsyncGenerator[dict[str, Any] | str, None],
     cancel_event: asyncio.Event | None = None,
@@ -103,12 +119,21 @@ async def sse_event_formatter(
     finally:
         if cancel_event:
             cancel_event.set()
-        if cleanup_task and not cleanup_task.done():
-            cleanup_task.cancel()
-            try:
-                await cleanup_task
-            except (asyncio.CancelledError, Exception):
-                pass
+        # async-for does not close a generator when the consumer breaks out.
+        # Close it explicitly so pipeline locks and history are settled now.
+        try:
+            close = getattr(event_generator, "aclose", None)
+            if close is not None:
+                await close()
+        except Exception as exc:
+            logger.warning("Failed to close SSE source: %s", sanitize_error_detail(exc))
+        finally:
+            if cleanup_task and not cleanup_task.done():
+                cleanup_task.cancel()
+                try:
+                    await cleanup_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
 
 def _validate_chat_request(req: ChatRequest) -> None:
@@ -191,7 +216,7 @@ async def chat_stream_endpoint(req: ChatRequest, request: Request) -> StreamingR
         ai_adaptive_voice=req.ai_adaptive_voice,
     )
 
-    return StreamingResponse(
+    return ChatStreamingResponse(
         sse_event_formatter(event_gen, cancel_event=cancel_event, cleanup_task=disconnect_task),
         media_type="text/event-stream",
         headers={
