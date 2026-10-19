@@ -6,7 +6,7 @@ import { getErrorMessage, connectionMessage } from './request.js';
  * 流式请求本地后端
  * @returns {() => void} cancel
  */
-export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAudio, onEnd, idleTimeoutMs = 120000 }) {
+export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAudio, onEnd, onEvent, fetch: fetchRequest = globalThis.fetch, idleTimeoutMs = 120000 }) {
   const controller = new AbortController();
   let acc = '';
   const audioUrls = [];
@@ -92,7 +92,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
 
   (async () => {
     try {
-      const res = await withDeadline(fetch('/api/chat/stream', {
+      const res = await withDeadline(fetchRequest('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -126,6 +126,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
         for (const line of lines) {
+          if (settled) return;
           const trimmed = line.trim();
           if (!trimmed) continue;
           if (trimmed.startsWith('event: ')) {
@@ -144,9 +145,11 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             const delta = json.delta_chinese || '';
             if (delta) {
               acc += delta;
-              onChunk(acc);
+              onChunk(acc, delta);
             }
           } else if (eventName === 'audio_chunk') {
+            onEvent?.(eventName, json);
+            if (settled) return;
             if (json.sentence) {
               jaSentences.push(json.sentence);
             }
@@ -162,6 +165,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
               }
             }
           } else if (eventName === 'audio_chunk_error') {
+            onEvent?.(eventName, json);
             audioError ||= getErrorMessage(json, '本轮角色语音暂不可用，文字回复已保留。请在「全局设置 → 运行状态」启动引擎，或切换 CPU 稳定模式后重试。');
             console.warn('[streamChat] audio chunk error:', json.error, json.sentence);
           } else if (eventName === 'error') {
@@ -194,10 +198,12 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             // 以服务器保存的终稿为准：流式阶段的开场白或解析残片不能留在气泡和本地记录里。
             if (typeof json.chinese === 'string' && json.chinese && json.chinese !== acc) {
               acc = json.chinese;
-              onChunk(acc);
+              onChunk(acc, '');
             }
             finish(false, null);
             return;
+          } else {
+            onEvent?.(eventName, json);
           }
         }
       }

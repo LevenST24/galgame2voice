@@ -1,23 +1,16 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import vm from 'node:vm';
-
-// Run the real header-badge renderer from main.js against a minimal DOM.
-const main = readFileSync(new URL('../frontend/src/main.js', import.meta.url), 'utf8');
-const start = main.indexOf('function updateBadge(');
-const source = main.slice(start, main.indexOf('\n}', start) + 2);
+import { updateBadge } from '../frontend/src/model_badge.js';
 
 function render(provider, { profile = null, loaded = true } = {}) {
   const label = { textContent: '' };
   const dom = { badgeDot: { className: '' }, badge: { title: '', querySelector: () => label } };
-  const context = vm.createContext({
-    dom,
+  const callbacks = {
     getCurrentActiveProvider: () => provider,
     haveProvidersLoaded: () => loaded,
     getActive: () => ({ settings: { voiceProfileId: profile ? 7 : null } }),
     getVoiceProfiles: () => (profile ? [{ id: 7, name: profile }] : []),
-  });
-  vm.runInContext(`${source}\nupdateBadge();`, context);
+  };
+  updateBadge(dom, callbacks);
   return { text: label.textContent, title: dom.badge.title, dot: dom.badgeDot.className };
 }
 
