@@ -5,6 +5,7 @@ import json
 
 from fastapi import HTTPException
 
+from galgame2voice.database.models import decode_lines
 from galgame2voice.database.session import get_db
 
 MAX_SESSIONS = 10000
@@ -64,21 +65,37 @@ async def export_chat_backup() -> dict:
                 }
             count = size = 0
             async with conn.execute(
-                "SELECT m.id, m.session_id, m.role, m.content_chinese, m.content_japanese, m.created_at "
+                "SELECT m.id, m.session_id, m.role, m.content_chinese, m.content_japanese, m.created_at, m.lines_json "
                 "FROM messages m JOIN sessions s ON s.id = m.session_id ORDER BY m.id LIMIT ?", (MAX_MESSAGES + 1,)
             ) as cursor:
                 async for row in cursor:
                     count += 1
                     content, japanese = row["content_chinese"] or "", row["content_japanese"] or ""
-                    size += len(content) + len(japanese)
+                    size += len(content) + len(japanese) + len(row["lines_json"] or "")
                     if count > MAX_MESSAGES or size > MAX_TEXT:
                         raise _too_large()
                     messages = sessions[row["session_id"]]["messages"]
                     if len(messages) >= 10000:
                         raise _too_large()
+                    raw_lines = decode_lines(row["lines_json"])
+                    if raw_lines is not None:
+                        lines = [
+                            {
+                                "index": line["index"],
+                                "zh": line["zh"],
+                                "ja": line["ja"],
+                                "emotion": line["emotion"],
+                                "act": line["act"],
+                                "audio": {"status": "skipped", "chunks": []},
+                            }
+                            for line in raw_lines
+                        ]
+                    else:
+                        lines = None
                     messages.append({
                         "id": f"m_{row['id']}", "role": row["role"], "content": content,
                         "japanese": japanese, "ts": _timestamp(row["created_at"]),
+                        "lines": lines,
                     })
             return {
                 "format": "galgame2voice.chat", "version": 1,

@@ -59,6 +59,7 @@ from galgame2voice.services.chat_pipelines import (
     SseKeepAlive,
 )
 from galgame2voice.services.chat_pipelines.context_builder import build_chat_context
+from galgame2voice.services.chat_pipelines.line_builder import build_lines
 from galgame2voice.utils.audio_concat import concat_wav_files
 
 logger = logging.getLogger("galgame2voice.services.chat_service")
@@ -179,6 +180,7 @@ class ChatService:
         latency_ms: int,
         parser: Any,
         adaptive_enabled: bool,
+        lines: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Formats standard response dictionary for chat_sync."""
         final_tts_params = {
@@ -192,6 +194,7 @@ class ChatService:
             "session_id": session_id,
             "chinese": chinese,
             "japanese": japanese,
+            "lines": lines,
             "emotion": emotion,
             "affection": affection_res,
             "metrics": metric_record,
@@ -712,6 +715,7 @@ class ChatService:
             chinese, japanese, parser = StreamingBilingualParser.parse_full_text(raw_text)
 
             final_emotion = classify_emotion(chinese, japanese, parser.emotion_extracted)
+            lines = build_lines(chinese, japanese, final_emotion, with_audio=True)
 
             # Synthesize full audio
             audio_url, tts_first_chunk_ms, tts_cached_chunks, tts_generated_chunks = await self._synthesize_sync_audio(
@@ -749,6 +753,7 @@ class ChatService:
                             role="assistant",
                             content_chinese=chinese,
                             content_japanese=japanese,
+                            lines=lines,
                             audio_url=audio_url,
                             latency_ms=latency_ms,
                         ))
@@ -782,6 +787,7 @@ class ChatService:
                 latency_ms=latency_ms,
                 parser=parser,
                 adaptive_enabled=adaptive_enabled,
+                lines=lines,
             )
         finally:
             if not persisted_assistant and user_msg is not None:

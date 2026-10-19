@@ -557,6 +557,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content_japanese TEXT NOT NULL DEFAULT '',
     audio_url TEXT NOT NULL DEFAULT '',
     latency_ms INTEGER NOT NULL DEFAULT 0,
+    lines_json TEXT DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);

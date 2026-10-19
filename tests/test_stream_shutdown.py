@@ -169,6 +169,7 @@ async def test_teardown_reaps_cancelled_tasks_and_preserves_their_finally(monkey
     run = SimpleNamespace(
         stream_gen_id="test", producer_task=task, worker_task=None,
         cancel_monitor=None, cancel_event=cancel, cancel_requested=set(),
+        shutdown_event=asyncio.Event(),
         tts_queue=asyncio.Queue(), event_queue=asyncio.Queue(),
         profiler=SimpleNamespace(print_waterfall=lambda: None),
     )

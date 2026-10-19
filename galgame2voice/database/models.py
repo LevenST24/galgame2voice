@@ -3,8 +3,9 @@ Pydantic data models and schemas for SQLite entities in galgame2voice.
 Includes DB representations, Create/Update DTOs, and Safe Response models.
 """
 
-from typing import Any
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+import json
+from typing import Any, Literal
+from pydantic import BaseModel, Field, ConfigDict, ValidationError, model_validator
 
 
 # ==================== Settings Models ====================
@@ -266,6 +267,58 @@ class SessionResponse(SessionInDB):
 
 # ==================== Message Models ====================
 
+class ReplyLineAct(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    face: str = ""
+    pose: str = ""
+    motion: Literal["nod", "bounce", "startle", "sigh", "fidget", "head-shake", "lean-in", "step-back"] | None = None
+    blush: bool = False
+    fx: Literal["sweat", "anger", "heart", "sparkle", "question", "exclamation"] | None = None
+
+
+class ReplyLineChunk(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    index: int = Field(ge=0)
+    line: int = Field(ge=0)
+    audio_url: str
+    sentence: str
+
+
+class ReplyLineAudio(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    status: Literal["ready", "skipped", "failed"]
+    chunks: list[ReplyLineChunk]
+
+
+class ReplyLineRecord(BaseModel):
+    """Shared complete record shape for persistence, history and backup export."""
+
+    model_config = ConfigDict(strict=True)
+
+    index: int = Field(ge=0)
+    zh: str = Field(max_length=10000)
+    ja: str = Field(max_length=10000)
+    emotion: str = Field(max_length=32)
+    act: ReplyLineAct
+    audio: ReplyLineAudio
+
+
+def decode_lines(raw: Any) -> list[dict[str, Any]] | None:
+    """Validate the complete array, falling back to legacy text on malformed data."""
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(parsed, list):
+            return None
+        return [ReplyLineRecord.model_validate(item).model_dump(exclude_unset=True) for item in parsed]
+    except (ValueError, TypeError, ValidationError):
+        return None
+
+
 class MessageBase(BaseModel):
     session_id: str
     role: str
@@ -273,6 +326,17 @@ class MessageBase(BaseModel):
     content_japanese: str = ""
     audio_url: str = ""
     latency_ms: int = 0
+    lines: list[dict[str, Any]] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_lines(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "lines" not in data and "lines_json" in data:
+                data = {**data, "lines": decode_lines(data.get("lines_json"))}
+            elif "lines" in data:
+                data = {**data, "lines": decode_lines(data["lines"])}
+        return data
 
 
 class MessageCreate(MessageBase):

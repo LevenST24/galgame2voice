@@ -27,6 +27,7 @@ from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate, CharacterAffectionUpdate
 from galgame2voice.services.chat_service import ChatService, StreamingBilingualParser
+from galgame2voice.services.chat_pipelines.line_builder import build_lines
 from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.adapters.registry import PROVIDER_PRESETS, SpeechRecognitionUnsupportedError, get_stt_adapter
@@ -688,6 +689,7 @@ class TelegramBotHandlers:
                 role="assistant",
                 content_chinese=display_chinese,
                 content_japanese=japanese,
+                lines=build_lines(display_chinese, japanese, with_audio=True),
                 audio_url="",
                 latency_ms=0,
             ))

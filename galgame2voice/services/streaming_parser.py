@@ -40,6 +40,7 @@ CLAUSE_PUNCT_WITH_CLOSING = re.compile(r'[、，,][」』"\'”’\)）\]】]*$'
 TRAILING_PUNCT_AND_CLOSING = re.compile(r'[、，,\s…\.〜~ー\-」』"\'”’\)）\]】]+$')
 
 _RE_CHINESE_FIELD = re.compile(r'"chinese"\s*:\s*"((?:[^"\\]|\\.)*)')
+_RE_CHINESE_CLOSED = re.compile(r'"chinese"\s*:\s*"(?:[^"\\]|\\.)*"')
 _RE_CHINESE_FALLBACK = re.compile(r'(?:中文|Chinese)[:：]\s*(.*?)(?:(?:日文|Japanese)[:：]|$)', flags=re.DOTALL | re.IGNORECASE)
 _RE_JAPANESE_FIELD = re.compile(r'"japanese"\s*:\s*"((?:[^"\\]|\\.)*)')
 _RE_JAPANESE_CLOSED = re.compile(r'"japanese"\s*:\s*"(?:[^"\\]|\\.)*"')
@@ -153,15 +154,9 @@ class StreamingBilingualParser:
         self.japanese_extracted: str = ""
         self.emotion_extracted: str = ""
         self.emitted_chinese_len: int = 0
-        # Monotone CHARACTER cursor over the normalized confirmed Japanese text
-        # (the concatenation of the confirmed completed sentences) that has
-        # already been dispatched to TTS. feed_chunk/finalize re-split the full
-        # accumulated Japanese text every round and compare the confirmed prefix
-        # against this offset, guaranteeing each sentence is emitted exactly once.
-        # A character offset (not a sentence index) is required because the
-        # splitter runs with is_first_chunk=True until the first emission and
-        # False afterwards, and the two modes yield DIFFERENT boundaries for the
-        # same text (see _drain_new_ja_sentences).
+        # Character cursor in the original extracted Japanese text, including
+        # whitespace/newline offsets. It also survives the first-comma splitter
+        # switching back to strict sentence mode after its first emission.
         self.emitted_japanese_len: int = 0
         self.first_sentence_emitted: bool = False
         self.is_plain_text_fallback: bool = False
@@ -243,6 +238,21 @@ class StreamingBilingualParser:
     def get_emotion(self) -> str:
         """Returns the classified emotion for current extracted content."""
         return classify_emotion(self.chinese_extracted, self.japanese_extracted, self.emotion_extracted)
+
+    @property
+    def chinese_complete(self) -> bool:
+        """Whether the legacy JSON Chinese string has closed (even before EOF)."""
+        clean = self.clean_markdown_delimiters(self.buffer)
+        if bool(_RE_CHINESE_CLOSED.search(clean)):
+            return True
+        if bool(re.search(r'(?:中文|Chinese)[:：].*?(?:日文|Japanese)[:：]', clean, flags=re.DOTALL | re.IGNORECASE)):
+            return True
+        return False
+
+    @property
+    def japanese_complete(self) -> bool:
+        """Whether the legacy JSON Japanese string has closed (even before EOF)."""
+        return bool(_RE_JAPANESE_CLOSED.search(self.clean_markdown_delimiters(self.buffer)))
 
     def get_dynamic_tts_options(
         self,
@@ -455,36 +465,31 @@ class StreamingBilingualParser:
         is_first = not self.first_sentence_emitted
         all_sentences = split_japanese_sentences(current_ja, is_first_chunk=is_first)
         # If the sentence source is not yet closed, the trailing sentence might still be growing
-        if not is_closed:
+        if not is_closed and not current_ja.rstrip(" \t\r").endswith("\n"):
             all_sentences = _trim_unclosed_sentence(all_sentences, is_first)
         return self._drain_new_ja_sentences(all_sentences)
 
     def _drain_new_ja_sentences(self, confirmed_sentences: list[str]) -> list[str]:
-        """
-        Advances the monotone character cursor over the confirmed-completed
-        Japanese prefix and returns only the newly confirmed sentences.
+        """Drain original sentence spans without joining away newline boundaries.
 
-        Why a character cursor instead of a sentence-index cursor: the splitter
-        is invoked with ``is_first_chunk=True`` until the first sentence has been
-        emitted and with ``is_first_chunk=False`` afterwards, and those two modes
-        produce DIFFERENT boundaries for the very same text -- agile mode may cut
-        on a clause comma (``["こんにちは、", "先生、今日は…ですね。"]``) while the
-        strict mode merges them back into a single sentence
-        (``["こんにちは、先生、今日は…ですね。"]``). Comparing sentence *counts*
-        would then report "nothing new" and silently drop the remainder of the
-        already-started sentence, so the cursor is tracked as a character offset
-        over the concatenated confirmed text, which is guaranteed to be a
-        monotonically growing prefix of the accumulated Japanese text.
+        Strict splitting can merge the already-emitted first comma chunk back
+        into its sentence. Trim that span at the original character cursor,
+        keeping every later confirmed sentence as a separate chunk.
         """
-        confirmed_text = "".join(confirmed_sentences)
-        if len(confirmed_text) <= self.emitted_japanese_len:
-            return []
-
-        remainder = confirmed_text[self.emitted_japanese_len:]
-        new_sentences = split_japanese_sentences(remainder, is_first_chunk=not self.first_sentence_emitted)
-        # The splitter only ever discards pure whitespace, so advancing the cursor
-        # past `confirmed_text` is lossless even when nothing is emitted here.
-        self.emitted_japanese_len = len(confirmed_text)
+        new_sentences = []
+        search_from = 0
+        for sentence in confirmed_sentences:
+            start = self.japanese_extracted.find(sentence, search_from)
+            if start < 0:
+                raise ValueError("Confirmed Japanese sentence has no source offset")
+            end = start + len(sentence)
+            search_from = end
+            if end <= self.emitted_japanese_len:
+                continue
+            remainder = self.japanese_extracted[max(start, self.emitted_japanese_len):end].strip()
+            if remainder:
+                new_sentences.append(remainder)
+            self.emitted_japanese_len = end
         if new_sentences:
             self.first_sentence_emitted = True
         return new_sentences

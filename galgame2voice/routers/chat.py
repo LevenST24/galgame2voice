@@ -13,7 +13,7 @@ import uuid
 from anyio import CancelScope
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.chat_backup import export_chat_backup, import_timestamp
@@ -342,10 +342,40 @@ class SessionUpsertRequest(BaseModel):
     settings: dict[str, Any] | None = Field(default=None, description="Session-specific generation & voice parameters")
 
 
+ALLOWED_ACT_KEYS = frozenset({"face", "pose", "motion", "blush", "fx"})
+
+
+class ImportedLine(BaseModel):
+    index: int = Field(ge=0)
+    zh: str = Field(default="", max_length=10000)
+    ja: str = Field(default="", max_length=10000)
+    emotion: str = Field(default="gentle", max_length=32)
+    act: dict[str, Any] = Field(default_factory=dict)
+    audio: dict[str, Any] | None = None
+
+    @field_validator("act", mode="before")
+    @classmethod
+    def filter_act_keys(cls, v: Any) -> dict[str, Any]:
+        if not isinstance(v, dict):
+            return {}
+        return {k: val for k, val in v.items() if k in ALLOWED_ACT_KEYS}
+
+    def to_persisted_dict(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "zh": self.zh,
+            "ja": self.ja,
+            "emotion": self.emotion,
+            "act": self.act,
+            "audio": {"status": "skipped", "chunks": []},
+        }
+
+
 class ImportedMessage(BaseModel):
     role: Literal["user", "assistant", "system"]
     content: str = Field(max_length=100000)
     japanese: str = Field(default="", max_length=100000)
+    lines: list[ImportedLine] | None = Field(default=None, max_length=2000)
     ts: int | None = Field(default=None, ge=0, le=253402300799000)
 
 
@@ -365,7 +395,11 @@ class ChatImportRequest(BaseModel):
     def bounded_unique_sessions(self):
         ids = [session.id for session in self.sessions]
         count = sum(len(session.messages) for session in self.sessions)
-        size = sum(len(message.content) + len(message.japanese) for session in self.sessions for message in session.messages)
+        size = sum(
+            len(message.content) + len(message.japanese)
+            + (len(json.dumps([line.to_persisted_dict() for line in message.lines], ensure_ascii=False)) if message.lines is not None else 0)
+            for session in self.sessions for message in session.messages
+        )
         if len(set(ids)) != len(ids) or count > 50000 or size > 10_000_000:
             raise ValueError("备份编号重复或数据过大，请拆分后导入，当前记录未修改。")
         return self
@@ -392,8 +426,10 @@ async def import_chat_sessions(req: ChatImportRequest) -> dict[str, Any]:
                  import_timestamp(session.created_at), import_timestamp(session.updated_at)),
             )
             await conn.executemany(
-                "INSERT INTO messages (session_id, role, content_chinese, content_japanese, created_at) VALUES (?, ?, ?, ?, ?)",
-                [(session.id, message.role, message.content, message.japanese, import_timestamp(message.ts)) for message in session.messages],
+                "INSERT INTO messages (session_id, role, content_chinese, content_japanese, created_at, lines_json) VALUES (?, ?, ?, ?, ?, ?)",
+                [(session.id, message.role, message.content, message.japanese, import_timestamp(message.ts),
+                  json.dumps([line.to_persisted_dict() for line in message.lines], ensure_ascii=False) if message.lines is not None else None)
+                 for message in session.messages],
             )
     return {"status": "ok", "count": len(req.sessions)}
 
