@@ -61,6 +61,8 @@ export class PortraitStageController {
     this.affectionLevel = 1;
     this.currentCharacter = '';
     this.profileId = null;
+    // Set once a character's portrait data has loaded, so a failed load is retried.
+    this.loadedProfileId = null;
     this.lastPaint = null;
     this.emptyStateEl = null;
     this.characterRevision = 0;
@@ -218,12 +220,18 @@ export class PortraitStageController {
     }
   }
 
+  /** True when this character's portrait is already on stage; reloading it would only reset it. */
+  showsCharacter(profileId) {
+    return Boolean(profileId) && this.loadedProfileId === profileId;
+  }
+
   async setCharacter(charName, profileId = null) {
     const revision = ++this.characterRevision;
     this.characterRequest?.abort();
     const controller = new AbortController();
     this.characterRequest = controller;
     this.profileId = profileId || null;
+    this.loadedProfileId = null;
     this.currentCharacter = charName || (this.profileId ? '当前角色' : '未绑定角色');
     this.affectionLevel = 1;
     this.currentEmotion = 'gentle';
@@ -256,6 +264,7 @@ export class PortraitStageController {
       this.setPortraitStatus('这个角色暂时没有可用立绘。可继续聊天，或安装包含立绘的完整角色包。');
       return;
     }
+    this.loadedProfileId = this.profileId;
     this.setEmotion(this.currentEmotion);
     this.preloadKeySprites();
     await this.refreshAffection();

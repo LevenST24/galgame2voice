@@ -28,6 +28,13 @@ let engineDirectory = null;
 let configDirty = false;
 let configRevision = 0;
 let configLoad = 0;
+// The form starts with HTML defaults. Saving it before the server's values arrived
+// would overwrite the real settings (and stop a running Telegram bot), so saving waits
+// for one successful load, and a load fills every field the user has not edited.
+let configLoaded = false;
+const dirtyConfigFields = new Set();
+const RESET_CONFIG_FIELDS = ['gParamSpeed', 'gParamTopK', 'gParamTopP', 'gParamTemp', 'gParamSliceMethod',
+  'gPrecision', 'gAudioRetention'];
 let restarting = false;
 let privateEndpointRevision = 0;
 let privateEndpointSaved = false;
@@ -52,6 +59,8 @@ export function initGlobalSettings(dom, callbacks = {}) {
   configDirty = false;
   configRevision = 0;
   configLoad = 0;
+  configLoaded = false;
+  dirtyConfigFields.clear();
   privateEndpointRevision += 1;
   privateEndpointSaved = false;
   privateEndpointSaving = false;
@@ -60,6 +69,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
     for (const event of ['input', 'change']) dom[field]?.addEventListener(event, () => {
       configDirty = true;
       configRevision += 1;
+      dirtyConfigFields.add(field);
     });
   });
   engineDirectory = initEngineDirectory(dom, showToast, () => _callbacks.onSovitsDirectorySaved?.());
@@ -198,6 +208,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
       if (!confirm('确定要将全局参数恢复为推荐默认值吗？')) return;
       configDirty = true;
       configRevision += 1;
+      RESET_CONFIG_FIELDS.forEach((field) => dirtyConfigFields.add(field));
       if (_dom.gParamSpeed) {
         _dom.gParamSpeed.value = '1.0';
         _dom.gParamSpeedVal.textContent = '1.0';
@@ -776,7 +787,6 @@ export function updateTelegramFieldsVisibility() {
 
 export async function loadGlobalConfig() {
   engineDirectory?.load();
-  const revision = configRevision;
   const load = ++configLoad;
   const privateRevision = privateEndpointRevision;
   try {
@@ -823,54 +833,58 @@ export async function loadGlobalConfig() {
       diagVoice.title = voiceStr;
     }
     if (diagVoiceDot) diagVoiceDot.className = `diag-dot ${activeVoice ? 'ok' : ''}`;
-    if (configDirty || revision !== configRevision) return;
+    // Fill every field the user has not edited; edited fields keep their pending values.
+    const fill = (field, apply) => {
+      if (_dom[field] && !dirtyConfigFields.has(field)) apply(_dom[field]);
+    };
 
     // 语音与推理参数
-    if (_dom.gParamSovitsUrl) _dom.gParamSovitsUrl.value = s.gpt_sovits_url || 'http://127.0.0.1:9880';
-    if (_dom.gPrecision) _dom.gPrecision.value = s.inference_precision || 'auto';
-    if (_dom.gParamSliceMethod) _dom.gParamSliceMethod.value = s.text_split_method || 'cut5';
-    if (_dom.gParamSpeed) {
-      _dom.gParamSpeed.value = s.speed_factor !== undefined ? s.speed_factor : 1.0;
-      if (_dom.gParamSpeedVal) _dom.gParamSpeedVal.textContent = _dom.gParamSpeed.value;
-    }
-    if (_dom.gParamTopK) {
-      _dom.gParamTopK.value = s.top_k || 15;
-      if (_dom.gParamTopKVal) _dom.gParamTopKVal.textContent = _dom.gParamTopK.value;
-    }
-    if (_dom.gParamTopP) {
-      _dom.gParamTopP.value = s.top_p !== undefined ? s.top_p : 1.0;
-      if (_dom.gParamTopPVal) _dom.gParamTopPVal.textContent = _dom.gParamTopP.value;
-    }
-    if (_dom.gParamTemp) {
-      _dom.gParamTemp.value = s.temperature !== undefined ? s.temperature : 1.0;
-      if (_dom.gParamTempVal) _dom.gParamTempVal.textContent = _dom.gParamTemp.value;
-    }
-    if (_dom.gParamFragmentInterval) {
-      _dom.gParamFragmentInterval.value = s.fragment_interval !== undefined ? s.fragment_interval : 0.3;
-    }
-    if (_dom.gAudioRetention) _dom.gAudioRetention.value = s.audio_retention_minutes || 30;
+    fill('gParamSovitsUrl', (el) => { el.value = s.gpt_sovits_url || 'http://127.0.0.1:9880'; });
+    fill('gPrecision', (el) => { el.value = s.inference_precision || 'auto'; });
+    fill('gParamSliceMethod', (el) => { el.value = s.text_split_method || 'cut5'; });
+    fill('gParamSpeed', (el) => {
+      el.value = s.speed_factor !== undefined ? s.speed_factor : 1.0;
+      if (_dom.gParamSpeedVal) _dom.gParamSpeedVal.textContent = el.value;
+    });
+    fill('gParamTopK', (el) => {
+      el.value = s.top_k || 15;
+      if (_dom.gParamTopKVal) _dom.gParamTopKVal.textContent = el.value;
+    });
+    fill('gParamTopP', (el) => {
+      el.value = s.top_p !== undefined ? s.top_p : 1.0;
+      if (_dom.gParamTopPVal) _dom.gParamTopPVal.textContent = el.value;
+    });
+    fill('gParamTemp', (el) => {
+      el.value = s.temperature !== undefined ? s.temperature : 1.0;
+      if (_dom.gParamTempVal) _dom.gParamTempVal.textContent = el.value;
+    });
+    fill('gParamFragmentInterval', (el) => {
+      el.value = s.fragment_interval !== undefined ? s.fragment_interval : 0.3;
+    });
+    fill('gAudioRetention', (el) => { el.value = s.audio_retention_minutes || 30; });
     if (_dom.gDashRetentionVal) _dom.gDashRetentionVal.textContent = `保留时长: ${s.audio_retention_minutes || 30} 分钟`;
 
-    // STT 与 Telegram
-    if (_dom.gTgEnabled) {
-      _dom.gTgEnabled.checked = Boolean(s.telegram_enabled);
+    // Telegram
+    fill('gTgEnabled', (el) => {
+      el.checked = Boolean(s.telegram_enabled);
       updateTelegramFieldsVisibility();
-    }
+    });
     const token = s.telegram_bot_token || '';
     const masked = token.includes('****');
-    if (_dom.gTgToken) {
-      _dom.gTgToken.value = '';
-      _dom.gTgToken.placeholder = masked ? '已保存（输入新 Token 可覆盖）' : '未配置，如 123456:ABC-DEF…';
-    }
-    if (_dom.gTgChatId) _dom.gTgChatId.value = s.telegram_chat_id || s.telegram_admin_ids || '';
-    if (_dom.gTgProxyHost) _dom.gTgProxyHost.value = s.telegram_proxy_host || '';
-    if (_dom.gTgProxyPort) _dom.gTgProxyPort.value = s.telegram_proxy_port || '';
-    if (_dom.gTgProxyEnabled) _dom.gTgProxyEnabled.checked = Boolean(s.telegram_proxy_enabled);
+    fill('gTgToken', (el) => {
+      el.value = '';
+      el.placeholder = masked ? '已保存（输入新 Token 可覆盖）' : '未配置，如 123456:ABC-DEF…';
+    });
+    fill('gTgChatId', (el) => { el.value = s.telegram_chat_id || s.telegram_admin_ids || ''; });
+    fill('gTgProxyHost', (el) => { el.value = s.telegram_proxy_host || ''; });
+    fill('gTgProxyPort', (el) => { el.value = s.telegram_proxy_port || ''; });
+    fill('gTgProxyEnabled', (el) => { el.checked = Boolean(s.telegram_proxy_enabled); });
 
     // 记忆与人设
-    if (_dom.gMemoryEnabled) _dom.gMemoryEnabled.checked = s.memory_enabled !== false;
-    if (_dom.gUserNickname) _dom.gUserNickname.value = s.user_nickname || '';
-    if (_dom.gDefaultSystemPrompt) _dom.gDefaultSystemPrompt.value = s.system_prompt || '';
+    fill('gMemoryEnabled', (el) => { el.checked = s.memory_enabled !== false; });
+    fill('gUserNickname', (el) => { el.value = s.user_nickname || ''; });
+    fill('gDefaultSystemPrompt', (el) => { el.value = s.system_prompt || ''; });
+    configLoaded = true;
   } catch (e) {
     if (load !== configLoad) return;
     const configError = $('gConfigError');
@@ -879,6 +893,11 @@ export async function loadGlobalConfig() {
 }
 
 export async function saveGlobalConfig() {
+  if (!configLoaded) {
+    showToast('还没有读取到当前配置，保存会用默认值覆盖已有设置。正在重新读取，请稍后再保存。', 'error');
+    loadGlobalConfig();
+    return;
+  }
   if (_dom.gTgSave) _dom.gTgSave.disabled = true;
   try {
     const savedRevision = configRevision;
@@ -906,7 +925,10 @@ export async function saveGlobalConfig() {
     if (token) payload.telegram_bot_token = token;
 
     await saveConfirmedConfig(payload);
-    if (savedRevision === configRevision) configDirty = false;
+    if (savedRevision === configRevision) {
+      configDirty = false;
+      dirtyConfigFields.clear();
+    }
 
     if (_dom.gPreset) {
       saveGlobal({ ttsPreset: _dom.gPreset.value });
@@ -959,7 +981,8 @@ export async function handleRestartSovits(precision) {
   if (_dom.gBtnTogglePrecision) _dom.gBtnTogglePrecision.disabled = true;
   try {
     const payload = {};
-    const selected = typeof precision === 'string' ? precision : _dom.gPrecision?.value;
+    // Before the config loads, the dropdown shows its default; the engine keeps its saved precision.
+    const selected = typeof precision === 'string' ? precision : (configLoaded ? _dom.gPrecision?.value : '');
     if (selected) payload.precision = selected;
     const data = await requestJson('/api/system/restart_sovits', {
       method: 'POST',

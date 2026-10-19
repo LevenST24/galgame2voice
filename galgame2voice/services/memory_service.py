@@ -7,7 +7,7 @@ dynamic relevance scoring, anchor retrieval, and prompt injection.
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from pathlib import Path
 import aiosqlite
@@ -24,21 +24,56 @@ _RE_CONTROL_AND_BIDI = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202
 _RE_DELIMITERS_TAGS = re.compile(r"[\r\n\t\[\]【】`'\"<>{}]")
 _RE_WHITESPACE_COLLAPSE = re.compile(r"\s+")
 _RE_KEY_SUFFIX_CHARS = re.compile(r"[^\w\u4e00-\u9fff]")
+_RE_KEY_PREFIX = re.compile(r"^(?:dislike_|like_|promise_)")
+_RE_CLAUSE_BREAK = re.compile(r"[\s,，。！!？?~、；;：:]")
 
+# "我叫" and "叫我" also start everyday phrases (我叫了个外卖, 我叫你别闹, 别叫我笨蛋,
+# 明天叫我起床). A negation or question just before the trigger, or a capture that opens
+# with a particle, pronoun or verb, is not a name.
+_NICKNAME_NEGATIONS = ("别", "不", "没", "谁", "什么", "啥", "干嘛", "怎么")
+_NICKNAME_NON_NAME_STARTS = (
+    "了", "过", "着", "你", "您", "他", "她", "它", "们", "大家", "的", "是", "不", "没", "一声", "一下",
+    "起", "去", "来", "回", "吃", "喝", "做", "干", "帮", "给", "买", "拿", "看", "听", "睡",
+    "什么", "啥", "谁", "怎么",
+)
+
+# Anchor facts (name, occupation) stay in the prompt however many newer facts exist.
+_ANCHOR_CATEGORIES = ("nickname", "identity")
+_RECALL_WINDOW = 200
+
+# Upper bounds are exclusive. Stages switch at 20 and 80 like the levels do
+# (calculate_affection_level), so Lv.5 never comes with the third stage.
 _STAGE_GUIDANCE_TIERS: tuple[tuple[int, str], ...] = (
-    (20, "阶段一（0-20分【初识相识】）：保持适度礼貌与客套距离感，略带拘谨，展现初次相识的克制，不可过早过度亲昵或轻易表白"),
-    (50, "阶段二（21-50分【日常相伴】）：熟悉的朋友与同伴关系，日常轻松互动，可互相调侃与关照，保持好友边界"),
-    (80, "阶段三（51-80分【心动共鸣】）：深厚信赖与心动萌芽，偶现害羞脸红或傲娇依赖，展现明显羁绊，情感自然递进"),
-    (100, "阶段四（81-100分【恋慕誓约】）：专属誓约与深度依恋，由衷袒露爱意与心意相通，解锁最亲密的专属互动"),
+    (20, "阶段一（0-19分【初识相识】）：保持适度礼貌与客套距离感，略带拘谨，展现初次相识的克制，不可过早过度亲昵或轻易表白"),
+    (50, "阶段二（20-49分【日常相伴】）：熟悉的朋友与同伴关系，日常轻松互动，可互相调侃与关照，保持好友边界"),
+    (80, "阶段三（50-79分【心动共鸣】）：深厚信赖与心动萌芽，偶现害羞脸红或傲娇依赖，展现明显羁绊，情感自然递进"),
+    (101, "阶段四（80-100分【恋慕誓约】）：专属誓约与深度依恋，由衷袒露爱意与心意相通，解锁最亲密的专属互动"),
 )
 
 
 def _resolve_stage_guidance(score: int) -> str:
     """Returns stage guidance string for progressive intimacy score [0, 100]."""
     for threshold, guidance in _STAGE_GUIDANCE_TIERS:
-        if score <= threshold:
+        if score < threshold:
             return guidance
     return _STAGE_GUIDANCE_TIERS[-1][1]
+
+
+def _is_plausible_nickname(text: str, start: int, value: str) -> bool:
+    """Tells a name ("我叫昂晴", "叫我昂晴就好") apart from phrases that share the trigger."""
+    clause = _RE_CLAUSE_BREAK.split(text[:start])[-1]
+    if any(word in clause[-4:] for word in _NICKNAME_NEGATIONS):
+        return False
+    return not value.startswith(_NICKNAME_NON_NAME_STARTS)
+
+
+def _opposite_preference_key(fact_key: str) -> str | None:
+    """like_猫 <-> dislike_猫: the newer statement replaces the one it contradicts."""
+    if fact_key.startswith("dislike_"):
+        return "like_" + fact_key[len("dislike_"):]
+    if fact_key.startswith("like_"):
+        return "dislike_" + fact_key[len("like_"):]
+    return None
 
 
 class MemoryService:
@@ -53,7 +88,7 @@ class MemoryService:
         {
             "category": "nickname",
             "key": "player_name",
-            "regex": re.compile(r'(?:我叫|你可以叫我|我的名字是|叫我)\s*([^\s,，。！!？?~]+?)(?:(?:就好|吧|啊|呀)?(?:[。，！!？?~\s]|$))', re.IGNORECASE),
+            "regex": re.compile(r'(?:我叫(?:做|作)?|你可以叫我|我的名字是|叫我)\s*([^\s,，。！!？?~]+?)(?:(?:就好|吧|啊|呀)?(?:[。，！!？?~\s]|$))', re.IGNORECASE),
             "confidence": 1.0,
         },
         # 2. Preferences (Likes)
@@ -131,34 +166,43 @@ class MemoryService:
         cleaned = text[:4000].strip()
 
         for pat in self.EXTRACTION_PATTERNS:
-            match = pat["regex"].search(cleaned)
-            if match:
-                raw_val = match.group(1).strip()
-                if not raw_val:
-                    continue
-
-                max_len = 20 if pat["category"] in ("nickname", "identity") else 50
-                sanitized_val = self.sanitize_fact_value(raw_val, max_len=max_len)
-                if not sanitized_val:
-                    continue
-
-                if "key" in pat:
-                    key = pat["key"]
-                else:
-                    # Sanitize key name: alphanumeric and CJK only, <= 10 chars
-                    sanitized_key_suffix = _RE_KEY_SUFFIX_CHARS.sub("", sanitized_val)[:10]
-                    if not sanitized_key_suffix:
-                        sanitized_key_suffix = "item"
-                    key = f"{pat.get('key_prefix', 'fact_')}{sanitized_key_suffix}"
-
-                facts.append({
-                    "category": pat["category"],
-                    "fact_key": key,
-                    "fact_value": sanitized_val,
-                    "confidence": pat["confidence"],
-                })
+            # The first usable match wins: "别叫我笨蛋，我叫昂晴" still learns 昂晴.
+            for match in pat["regex"].finditer(cleaned):
+                fact = self._fact_from_match(pat, cleaned, match)
+                if fact:
+                    facts.append(fact)
+                    break
 
         return facts
+
+    def _fact_from_match(self, pat: dict[str, Any], text: str, match: re.Match) -> dict[str, Any] | None:
+        """Builds one sanitized fact from a pattern match, or None when the match is unusable."""
+        raw_val = match.group(1).strip()
+        if not raw_val:
+            return None
+
+        max_len = 20 if pat["category"] in ("nickname", "identity") else 50
+        sanitized_val = self.sanitize_fact_value(raw_val, max_len=max_len)
+        if not sanitized_val:
+            return None
+        if pat["category"] == "nickname" and not _is_plausible_nickname(text, match.start(), sanitized_val):
+            return None
+
+        if "key" in pat:
+            key = pat["key"]
+        else:
+            # Sanitize key name: alphanumeric and CJK only, <= 10 chars
+            sanitized_key_suffix = _RE_KEY_SUFFIX_CHARS.sub("", sanitized_val)[:10]
+            if not sanitized_key_suffix:
+                sanitized_key_suffix = "item"
+            key = f"{pat.get('key_prefix', 'fact_')}{sanitized_key_suffix}"
+
+        return {
+            "category": pat["category"],
+            "fact_key": key,
+            "fact_value": sanitized_val,
+            "confidence": pat["confidence"],
+        }
 
     async def process_user_message(
         self,
@@ -199,6 +243,9 @@ class MemoryService:
                 )
                 saved = await crud.upsert_memory(db_conn, mem_create)
                 saved_list.append(saved)
+                opposite_key = _opposite_preference_key(item["fact_key"])
+                if opposite_key:
+                    await crud.delete_memory_by_key(db_conn, u_id, char_id, opposite_key)
 
                 # If nickname learned, update character affection custom_nickname
                 if item["fact_key"] == "player_name" and char_id:
@@ -241,7 +288,7 @@ class MemoryService:
         char_score = len(overlap_chars) / len(fact_chars)
 
         # Keyword key match (must be non-empty after prefix stripping to avoid empty string matching everything)
-        key_stem = fact_key.replace("like_", "").replace("dislike_", "").replace("promise_", "").strip().lower()
+        key_stem = _RE_KEY_PREFIX.sub("", fact_key).strip().lower()
         if key_stem and key_stem in p_lower:
             char_score = max(char_score, 0.8)
 
@@ -274,15 +321,28 @@ class MemoryService:
             char_id = 1
         safe_prompt = ((prompt or "") if isinstance(prompt, str) else "")[:4000]
 
-        if conn is not None:
-            all_memories = await crud.list_memories(
-                conn, user_id=u_id, character_id=char_id, limit=200
+        async def _load(db_conn: aiosqlite.Connection) -> list[UserMemoryResponse]:
+            memories = await crud.list_memories(
+                db_conn, user_id=u_id, character_id=char_id, limit=_RECALL_WINDOW
             )
+            if len(memories) < _RECALL_WINDOW:
+                return memories
+            # Older anchors fall outside the newest rows; load them explicitly.
+            loaded_ids = {m.id for m in memories}
+            for category in _ANCHOR_CATEGORIES:
+                for m in await crud.list_memories(
+                    db_conn, user_id=u_id, character_id=char_id, category=category, limit=5
+                ):
+                    if m.id not in loaded_ids:
+                        memories.append(m)
+                        loaded_ids.add(m.id)
+            return memories
+
+        if conn is not None:
+            all_memories = await _load(conn)
         else:
             async with get_db(self.db_path) as local_conn:
-                all_memories = await crud.list_memories(
-                    local_conn, user_id=u_id, character_id=char_id, limit=200
-                )
+                all_memories = await _load(local_conn)
 
         if not all_memories:
             return []
@@ -333,6 +393,9 @@ class MemoryService:
             if m.updated_at:
                 try:
                     dt = datetime.fromisoformat(m.updated_at.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        # SQLite CURRENT_TIMESTAMP is UTC; a naive value would be read as local time.
+                        dt = dt.replace(tzinfo=timezone.utc)
                     diff_hours = max(0.0, (now_ts - dt.timestamp()) / 3600.0)
                     recency = 1.0 / (1.0 + diff_hours / 24.0)
                 except Exception:
@@ -413,7 +476,7 @@ class MemoryService:
         raw_nickname = affection_info.get("nickname")
         nickname = self.sanitize_fact_value(str(raw_nickname), max_len=20) if raw_nickname else None
 
-        # Progressive affection stage guidance (4-stage model: 0-20, 21-50, 51-80, 81-100)
+        # Progressive affection stage guidance (4-stage model: 0-19, 20-49, 50-79, 80-100)
         score_val = affection_info.get("score")
         if score_val is None:
             try:

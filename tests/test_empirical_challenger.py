@@ -243,6 +243,8 @@ class TestLifecycleAdversarialAndPid:
         cleanup_subprocesses()
         assert not pid_file.exists()
 
+    # Exercises the Windows `netstat -ano` output format (LISTENING + PID column), not app code.
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows netstat output format")
     def test_port_collision_detection_logic(self):
         """Verify that when a port is actively occupied, port scanning identifies the collision."""
         # Find an open port and bind a temporary server socket to occupy it

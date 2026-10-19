@@ -23,6 +23,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --extra dev
 
+      - name: Install system dependencies
+        # Same as CI's test-linux job: the audio tests need a real ffmpeg.
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Lint (ruff)
         run: uv run ruff check galgame2voice scripts
 

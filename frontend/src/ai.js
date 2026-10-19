@@ -191,7 +191,8 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
                 audioUrls.push(json.audio_url || json.total_audio_url);
               }
             }
-            if (!acc && json.chinese) {
+            // 以服务器保存的终稿为准：流式阶段的开场白或解析残片不能留在气泡和本地记录里。
+            if (typeof json.chinese === 'string' && json.chinese && json.chinese !== acc) {
               acc = json.chinese;
               onChunk(acc);
             }

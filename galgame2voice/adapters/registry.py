@@ -280,6 +280,10 @@ def get_llm_adapter(
     return OpenAICompatibleLLMAdapter(api_key=key, base_url=target_url, **kwargs)
 
 
+class SpeechRecognitionUnsupportedError(Exception):
+    """Raised when a provider has no speech recognition endpoint to call."""
+
+
 def get_stt_adapter(
     provider_id_or_config: str | dict[str, Any] | Any,
     api_key: str | None = None,
@@ -288,14 +292,26 @@ def get_stt_adapter(
 ) -> BaseSTTAdapter:
     """
     Factory function instantiating appropriate STT adapter based on provider ID or config.
+
+    A provider config's stt_model becomes the adapter's default model. Built-in presets
+    without speech recognition raise SpeechRecognitionUnsupportedError unless an STT
+    model is configured for them: an OpenAI-style whisper-1 request against their chat
+    endpoint can only fail.
     """
     provider_id, key, url = _resolve_provider_request(provider_id_or_config, api_key, base_url, kwargs)
+    if not isinstance(provider_id_or_config, str):
+        stt_model = str(_get_config_attr(provider_id_or_config, "stt_model", "") or "").strip()
+        if stt_model:
+            kwargs.setdefault("default_model", stt_model)
 
     preset = PROVIDER_PRESETS.get(provider_id)
     if preset and preset.get("stt_adapter_class"):
         adapter_cls = preset["stt_adapter_class"]
         target_url = url or preset["default_base_url"]
         return adapter_cls(api_key=key, base_url=target_url, **kwargs)
+
+    if preset and not kwargs.get("default_model"):
+        raise SpeechRecognitionUnsupportedError(f"Provider '{provider_id}' does not offer speech recognition")
 
     target_url = url or "https://api.openai.com/v1"
     return OpenAICompatibleSTTAdapter(api_key=key, base_url=target_url, **kwargs)

@@ -23,6 +23,7 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
 ]
 dependencies = [
+    "anyio>=4.0.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
     "pydantic>=2.10.0",
@@ -41,6 +42,8 @@ desktop = [
     "imageio-ffmpeg>=0.6.0",
 ]
 dev = [
+    # Bundles an ffmpeg binary for the audio tests on runners without one (windows-latest).
+    "imageio-ffmpeg>=0.6.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "pytest-mock>=3.14.0",

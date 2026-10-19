@@ -254,6 +254,43 @@ test('continuous multi-character and multi-emotion marathon switches cleanly wit
   }
 });
 
+test('saving the same session keeps its portrait, line and costume; switching sessions reloads', async () => {
+  Object.assign(portraitStage, stage());
+  initVoiceSettings({});
+  const session = { id: 'same', settings: { voiceProfileId: 2 } };
+  state.sessions = [session]; state.activeId = session.id;
+  let portraitLoads = 0;
+  globalThis.fetch = async url => {
+    if (url.endsWith('/profiles')) return response({ profiles: [{ id: 2, name: 'Session' }], active_profile_id: 2 });
+    if (url.endsWith('/switch')) return response({ profile: 'Session' });
+    if (url.includes('/portrait')) { portraitLoads++; return response(payload('Session')); }
+    return response({ affection_level: 1 });
+  };
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setTimeout(resolve, 0)); };
+  await ensureSessionVoice(session); await settle();
+  assert.equal(portraitStage.showsCharacter(2), true);
+  portraitStage.dialogueTextEl.textContent = '「最后一句」';
+
+  await ensureSessionVoice(session, { keepPortrait: true }); await settle();
+  assert.equal(portraitLoads, 1);
+  assert.equal(portraitStage.dialogueTextEl.textContent, '「最后一句」');
+
+  await ensureSessionVoice(session); await settle();
+  assert.equal(portraitLoads, 2);
+  assert.notEqual(portraitStage.dialogueTextEl.textContent, '「最后一句」');
+});
+
+test('a failed portrait load is not treated as on stage', async () => {
+  const controller = stage();
+  globalThis.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  await controller.setCharacter('Session', 2);
+  assert.equal(controller.showsCharacter(2), false);
+  globalThis.fetch = async url => response(url.includes('/portrait') ? payload('Session') : {});
+  await controller.setCharacter('Session', 2);
+  assert.equal(controller.showsCharacter(2), true);
+  assert.equal(controller.showsCharacter(3), false);
+});
+
 for (const { name, run } of tests) {
   try { await run(); passed++; console.log(`PASS: ${name}`); }
   catch (error) { console.error(`FAIL: ${name}`, error); process.exitCode = 1; }

@@ -47,6 +47,10 @@ _RE_JAPANESE_FALLBACK = re.compile(r'(?:日文|Japanese)[:：]\s*(.*)$', flags=r
 _RE_JSON_BLOCK = re.compile(r'\{.*\}', flags=re.DOTALL)
 _RE_BRACKETED_JAPANESE = re.compile(r'【([^】]+)】')
 _RE_BRACKETED_JAPANESE_STRIP = re.compile(r'【[^】]+】')
+# A JSON object opening after a preamble ("好的～" + {"tts": ...), or a brace still waiting for its key.
+_RE_JSON_OBJECT_START = re.compile(r'\{\s*(?:["\']|$)')
+_JAPANESE_FALLBACK_LABELS = ("日文:", "日文：", "japanese:", "japanese：")
+_PLAIN_TEXT_MIN_CHARS = 15
 
 _RE_MD_CODE_BLOCK = re.compile(r'```(?:json)?\s*', flags=re.IGNORECASE)
 _RE_MD_LEADING_BACKTICK = re.compile(r'^`\s*', flags=re.MULTILINE)
@@ -110,6 +114,31 @@ def _normalize_valid_emotion(val: Any) -> str | None:
     return norm if norm in VALID_EMOTIONS else None
 
 
+def _trim_partial_japanese_label(text: str) -> str:
+    """Holds back a tail that may still grow into the 日文：/Japanese: label."""
+    lowered = text.lower()
+    for size in range(min(len(lowered), 8), 0, -1):
+        if any(label.startswith(lowered[-size:]) for label in _JAPANESE_FALLBACK_LABELS):
+            return text[:-size]
+    return text
+
+
+def _visible_fallback_chinese(text: str) -> str:
+    """
+    The part of a non-JSON reply that finalize() keeps as Chinese, so far.
+    A JSON object after a preamble is left to the JSON path, 【日文】 blocks
+    become the voice line, and an unclosed 【 may still turn into one.
+    """
+    json_start = _RE_JSON_OBJECT_START.search(text)
+    if json_start:
+        text = text[:json_start.start()]
+    text = _RE_BRACKETED_JAPANESE_STRIP.sub('', text)
+    unclosed = text.find('【')
+    if unclosed != -1:
+        text = text[:unclosed]
+    return text.strip()
+
+
 class StreamingBilingualParser:
     """
     Incremental state machine for parsing streaming LLM output tokens into
@@ -136,6 +165,10 @@ class StreamingBilingualParser:
         self.emitted_japanese_len: int = 0
         self.first_sentence_emitted: bool = False
         self.is_plain_text_fallback: bool = False
+        # Streaming a reply with neither JSON fields nor 中文：/日文： labels.
+        self._unlabeled_text_mode: bool = False
+        # Put between a streamed preamble and the reply that follows it.
+        self._chinese_separator: str = ""
         self.tts_speed: float | None = None
         self.tts_temperature: float | None = None
         self.tts_top_k: int | None = None
@@ -148,10 +181,26 @@ class StreamingBilingualParser:
         """Updates extracted Chinese buffer and returns new incremental delta text."""
         new_delta = ""
         if len(current_ch) > self.emitted_chinese_len:
-            new_delta = current_ch[self.emitted_chinese_len:]
+            new_delta = self._chinese_separator + current_ch[self.emitted_chinese_len:]
+            self._chinese_separator = ""
             self.emitted_chinese_len = len(current_ch)
         self.chinese_extracted = current_ch
         return new_delta
+
+    def _leave_unlabeled_text_mode(self) -> None:
+        """
+        Text streamed before the JSON fields or 中文： label turned out to be a
+        preamble ("好的，以下是回复："). The real reply restarts the cursor, so it
+        is shown in full after the preamble instead of from the preamble's length.
+        """
+        if not self._unlabeled_text_mode:
+            return
+        self._unlabeled_text_mode = False
+        self.is_plain_text_fallback = False
+        if self.emitted_chinese_len:
+            self._chinese_separator = "\n"
+        self.emitted_chinese_len = 0
+        self.chinese_extracted = ""
 
     def _set_lead_emotion(self, emo: str) -> None:
         """Sets lead extracted emotion and defaults TTS emotion parameter if unset."""
@@ -338,6 +387,7 @@ class StreamingBilingualParser:
         # 1. Incremental Chinese Extraction
         ch_match = _RE_CHINESE_FIELD.search(sanitized)
         if ch_match:
+            self._leave_unlabeled_text_mode()
             raw_ch = ch_match.group(1)
             current_ch = self._unescape_json_string(raw_ch)
             new_chinese_delta = self._advance_chinese(current_ch)
@@ -345,14 +395,25 @@ class StreamingBilingualParser:
             # Fallback check: If the stream contains structured Chinese: / 中文:
             ch_fallback = _RE_CHINESE_FALLBACK.search(sanitized)
             if ch_fallback:
+                self._leave_unlabeled_text_mode()
                 self.is_plain_text_fallback = True
-                current_ch = ch_fallback.group(1).strip()
+                current_ch = ch_fallback.group(1)
+                if ch_fallback.end() == ch_fallback.end(1):
+                    # No 日文： label yet, and its first characters must not be shown as Chinese.
+                    current_ch = _trim_partial_japanese_label(current_ch)
+                current_ch = _visible_fallback_chinese(current_ch)
                 if current_ch and current_ch != self.chinese_extracted:
                     new_chinese_delta = self._advance_chinese(current_ch)
-            elif not self.chinese_extracted and len(sanitized) > 15 and not sanitized.lstrip().startswith(("{", "```")):
-                self.is_plain_text_fallback = True
-                current_ch = sanitized.strip()
-                new_chinese_delta = self._advance_chinese(current_ch)
+            elif not sanitized.lstrip().startswith(("{", "```")):
+                # Plain text keeps streaming once detected; only the first
+                # characters wait, in case JSON or a 中文： label follows.
+                current_ch = _visible_fallback_chinese(sanitized)
+                if self._unlabeled_text_mode or (
+                    not self.chinese_extracted and len(current_ch) > _PLAIN_TEXT_MIN_CHARS
+                ):
+                    self._unlabeled_text_mode = True
+                    self.is_plain_text_fallback = True
+                    new_chinese_delta = self._advance_chinese(current_ch)
 
         if not self.emotion_extracted:
             lead_emo = None
@@ -448,8 +509,11 @@ class StreamingBilingualParser:
 
     def _apply_parsed_json_dict(self, parsed: dict[str, Any]) -> None:
         """Applies parsed JSON fields to extracted Chinese, Japanese, and TTS parameters."""
-        self.chinese_extracted = parsed.get("chinese", self.chinese_extracted)
-        self.japanese_extracted = parsed.get("japanese", self.japanese_extracted)
+        # "chinese": null must not replace the streamed text with None.
+        if isinstance(parsed.get("chinese"), str):
+            self.chinese_extracted = parsed["chinese"]
+        if isinstance(parsed.get("japanese"), str):
+            self.japanese_extracted = parsed["japanese"]
         if "emotion" in parsed:
             norm_e = _normalize_valid_emotion(parsed["emotion"])
             if norm_e:
@@ -490,7 +554,8 @@ class StreamingBilingualParser:
             self.chinese_extracted = ch_fallback.group(1).strip()
         if ja_fallback:
             self.japanese_extracted = ja_fallback.group(1).strip()
-        if not self.chinese_extracted:
+        if not self.chinese_extracted or self._unlabeled_text_mode:
+            # Streaming plain text stops at a brace or an open 【; the reply is the whole buffer.
             self.chinese_extracted = sanitized
 
         if self.chinese_extracted and "【" in self.chinese_extracted and "】" in self.chinese_extracted:
@@ -550,13 +615,15 @@ class StreamingBilingualParser:
     def parse_full_text(cls, raw_text: str) -> tuple[str, str, "StreamingBilingualParser"]:
         """
         Parses non-streaming bilingual completion text into (chinese, japanese, parser).
-        Guarantees fallback to raw_text if extracted fields are empty.
+        A reply without a Chinese line shows its Japanese one; an empty reply stays empty.
         """
         parser = cls()
         parser.feed_chunk(raw_text)
         chinese, japanese, _ = parser.finalize()
-        if not chinese:
-            chinese = raw_text
+        if not chinese.strip():
+            # Plain text already lands in `chinese`; what is left here is JSON with an
+            # empty "chinese" field, whose raw text must not be shown or voiced.
+            chinese = japanese if japanese.strip() else ""
         if not japanese:
             japanese = chinese
         return chinese, japanese, parser

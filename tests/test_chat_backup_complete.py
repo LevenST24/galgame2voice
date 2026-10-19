@@ -82,7 +82,7 @@ async def test_removing_chat_preserves_shared_cache_reference_and_outside_files(
     paths = [audio / "cache" / "shared.wav", audio / "references" / "voice.wav", outside / "keep.wav"]
     for path in paths:
         path.write_bytes(b"keep this sound")
-    monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(audio_dir=audio))
+    monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(audio_dir=audio, data_dir=tmp_path / "data"))
     await init_db(db)
     async with get_db(db) as conn:
         for url in ("/audio/cache/shared.wav", "/audio/references/voice.wav", "/audio/../audio-other/keep.wav"):
@@ -96,7 +96,7 @@ async def test_removing_chat_preserves_shared_cache_reference_and_outside_files(
 @pytest.mark.asyncio
 async def test_failed_delete_keeps_both_history_and_audio(tmp_path, monkeypatch):
     from galgame2voice import config
-    monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(audio_dir=tmp_path))
+    monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(audio_dir=tmp_path, data_dir=tmp_path / "data"))
     audio = tmp_path / "reply.wav"
     audio.write_bytes(b"original")
     db = tmp_path / "failed.db"

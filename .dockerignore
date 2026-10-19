@@ -1,29 +1,20 @@
-.git/
-.github/
-.agents/
-.local/
-_scratch/
-.mypy_cache/
-.pytest_basetemp/
-.venv/
-venv/
-.env
-.env.*
+# Allowlist: send only what the Dockerfile copies. Everything else stays local,
+# above all characters/ (model weights can be several GB), data/, audio/, logs/,
+# .env files, local builds and caches. Add a path here when the Dockerfile
+# starts copying it.
+*
+!frontend/
+!galgame2voice/
+!scripts/
+!pyproject.toml
+!uv.lock
 !.env.example
-tests/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-.ruff_cache/
+
+# Excluded again inside the allowed folders
 frontend/node_modules/
 frontend/dist/
-data/*.db
-data/*.txt
-logs/
-audio/
-*.pid
-*.db
-temp_cache_mem/
-dist/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/

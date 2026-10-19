@@ -19,6 +19,9 @@ let pendingScan = null;
 let scanRevision = 0;
 let sessionVoiceRevision = 0;
 let voiceSelectRevision = 0;
+// Value of the only option left when the voice list fails to load. It is not a choice:
+// saving keeps the session's binding instead of treating it as "no character".
+const VOICE_LIST_UNAVAILABLE = '__unavailable__';
 let profilesRevision = 0;
 
 export function invalidateScannedModels() {
@@ -171,15 +174,19 @@ export async function fetchVoiceProfiles() {
   return data;
 }
 
-export async function ensureSessionVoice(session, { silent = false } = {}) {
+export async function ensureSessionVoice(session, { silent = false, keepPortrait = false } = {}) {
   const revision = ++sessionVoiceRevision;
   const want = session?.settings?.voiceProfileId;
   const isCurrent = () => revision === sessionVoiceRevision
     && (!session?.id || getActive()?.id === session.id)
     && session?.settings?.voiceProfileId === want;
   // Portraits belong to the displayed session and do not require a running TTS engine.
+  // keepPortrait: the same session is re-checked (settings saved, another voice deleted);
+  // reloading a portrait already on stage would reset its costume, last line and expression.
   const profile = voiceProfiles.find(p => p.id === want);
-  portraitStage.setCharacter(profile?.name || '', want).catch(() => {});
+  if (!(keepPortrait && want && portraitStage.showsCharacter(want))) {
+    portraitStage.setCharacter(profile?.name || '', want).catch(() => {});
+  }
   if (!want) {
     if (session) await portraitStage.initDefaultCharacter();
     return;
@@ -213,6 +220,8 @@ export async function ensureSessionVoice(session, { silent = false } = {}) {
           session.settings.voiceProfileId = null;
           _callbacks.invalidateSessionSync?.();
           saveState();
+          // The server copy still names the deleted voice; the next sync would restore it.
+          if (state.sessions.includes(session)) persistSession(session).catch(() => {});
           portraitStage.setCharacter('', null).catch(() => {});
           showToast('这个会话绑定的音色已被删除，已解除失效绑定。文字聊天可继续；请在「会话设置」选择或创建新音色。', 'info', _callbacks.onOpenSessionSettings ? {
             actionLabel: '选择音色',
@@ -243,7 +252,9 @@ export async function loadSessionVoiceSelect(session, { preserveDraft = false } 
     // Read the latest selection after the request: the user may keep editing
     // while a rescan is running. Refresh options without changing its owner.
     const keepDraft = preserveDraft || _dom.sSystem?.value !== promptAtStart || _promptOwnerId !== ownerAtStart;
-    const draftSelection = keepDraft ? String(_dom.sVoice.value || '') : null;
+    let draftSelection = keepDraft ? String(_dom.sVoice.value || '') : null;
+    // A placeholder left by an earlier failed load is not a user choice.
+    if (draftSelection === VOICE_LIST_UNAVAILABLE) draftSelection = String(session?.settings?.voiceProfileId || '');
     _dom.sVoice.innerHTML = '<option value="">跟随后端当前音色</option>';
     const active = voiceProfiles.find((p) => p.id === activeProfileId);
     if (_dom.sVoiceActive) {
@@ -292,7 +303,8 @@ export async function loadSessionVoiceSelect(session, { preserveDraft = false } 
   } catch (e) {
     if (!isCurrent()) return;
     if (!preserveDraft) {
-      _dom.sVoice.innerHTML = '<option value="">加载失败（后端未启动？）</option>';
+      _dom.sVoice.innerHTML = `<option value="${VOICE_LIST_UNAVAILABLE}">加载失败（后端未启动？）</option>`;
+      _dom.sVoice.value = VOICE_LIST_UNAVAILABLE;
     } else {
       // Let the rescan report a failed refresh rather than claiming success.
       throw e;
@@ -503,20 +515,17 @@ export async function deleteVoiceProfile() {
   _dom.sVoiceDelete.disabled = true;
   try {
     await requestJson(`/api/voice/profiles/${id}`, { method: 'DELETE' });
-    let cleared = 0;
-    for (const sess of state.sessions) {
-      if (sess.settings?.voiceProfileId === id) {
-        sess.settings.voiceProfileId = null;
-        cleared += 1;
-      }
-    }
-    if (cleared) {
+    const cleared = state.sessions.filter(sess => sess.settings?.voiceProfileId === id);
+    for (const sess of cleared) sess.settings.voiceProfileId = null;
+    if (cleared.length) {
       _callbacks.invalidateSessionSync?.();
       saveState();
+      // The server copies still name the deleted voice; the next sync would restore them.
+      for (const sess of cleared) persistSession(sess).catch(() => {});
     }
     await loadSessionVoiceSelect(getActive());
-    ensureSessionVoice(getActive(), { silent: true });
-    showToast(`音色「${p ? p.name : id}」已删除${cleared ? `，并解除了 ${cleared} 个会话的绑定` : ''}`, 'success');
+    ensureSessionVoice(getActive(), { silent: true, keepPortrait: true });
+    showToast(`音色「${p ? p.name : id}」已删除${cleared.length ? `，并解除了 ${cleared.length} 个会话的绑定` : ''}`, 'success');
   } catch (e) {
     showToast(`删除失败: ${e.message || e}`, 'error');
   } finally {
@@ -546,10 +555,13 @@ async function handleSaveSessionSettings() {
     }
     _callbacks.invalidateSessionSync?.();
     const maxTokens = Math.round(Number(_dom.sMaxTokens.value)) || DEFAULT_SESSION_SETTINGS.maxTokens;
-    const profileId = _dom.sVoice.value && _dom.sVoice.value !== '__custom__'
+    const voiceListUnavailable = _dom.sVoice.value === VOICE_LIST_UNAVAILABLE;
+    let profileId = _dom.sVoice.value && _dom.sVoice.value !== '__custom__'
       ? Number(_dom.sVoice.value)
       : null;
-    if (profileId && (_promptOwnerId !== profileId || !voiceProfiles.some(p => p.id === profileId))) {
+    if (voiceListUnavailable) profileId = s.settings?.voiceProfileId ?? null;
+    if (!voiceListUnavailable && profileId
+        && (_promptOwnerId !== profileId || !voiceProfiles.some(p => p.id === profileId))) {
       showToast('人设草稿与当前角色不一致，已保留编辑内容。请重新选择对应角色后再保存。', 'error');
       return;
     }
@@ -571,7 +583,9 @@ async function handleSaveSessionSettings() {
     saveState();
 
     // 人设提示词属于角色、不属于会话：写回角色包 manifest.json，DB 镜像由后端刷新
-    const { note: promptNote, confirmed: promptConfirmed } = await saveCharacterPrompt(profileId, editor);
+    const { note: promptNote, confirmed: promptConfirmed } = voiceListUnavailable
+      ? { note: '；角色列表未能加载，角色绑定与人设保持不变', confirmed: false }
+      : await saveCharacterPrompt(profileId, editor);
 
     let syncNote = '';
     try {
@@ -586,7 +600,7 @@ async function handleSaveSessionSettings() {
     }
     if (_callbacks.renderSidebar) _callbacks.renderSidebar();
     if (_callbacks.renderHeader) _callbacks.renderHeader();
-    if (getActive() === s) await ensureSessionVoice(s);
+    if (getActive() === s) await ensureSessionVoice(s, { keepPortrait: true });
     const draftNote = sameEditor() && editorSnapshot() !== submitted ? '；保存期间新增的修改已保留在面板中，请再次保存' : '';
     showToast(`会话「${s.title}」参数已更新${promptNote}${syncNote}${draftNote}`, promptNote || syncNote || draftNote ? 'info' : 'success');
   } finally {
@@ -606,8 +620,9 @@ async function saveCharacterPrompt(profileId, editor) {
   const text = (_dom.sSystem.value || '').trim();
   if (_promptOwnerId !== profileId) return result('；人设草稿属于另一个角色，未写入角色包', false);
   if (!prof) return result('；找不到对应角色包，人设改动未保存', false);
-  if (!text) return result('；人设提示词不能为空，未改动角色包', false);
+  // Unchanged first: a character created without a persona must still save its session.
   if (text === (prof.system_prompt || '').trim()) return result();
+  if (!text) return result('；人设提示词不能为空，未改动角色包', false);
   try {
     await requestJson(`/api/characters/${profileId}/system-prompt`, {
       method: 'PUT',

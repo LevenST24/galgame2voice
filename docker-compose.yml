@@ -23,5 +23,7 @@ services:
       - ./data:/app/data
       - ./audio:/app/audio
       - ./logs:/app/logs
+      # Character packages (models, reference audio, portraits); persona edits are written back here.
+      - ./characters:/app/characters
     extra_hosts:
       - "host.docker.internal:host-gateway"
