@@ -25,6 +25,12 @@ All notable changes to galgame2voice are documented here. The format follows
   match the deployed and built frontend.
 
 ### Changed
+- Sending a message goes through `frontend/src/conversation.js`, a DOM-free
+  controller that emits turn, text, audio, done, error and cancelled events. The
+  chat view subscribes to it now and the coming visual-novel stage will reuse it;
+  nothing visible changes. `main.js` starts through an injectable `initApp()`, and
+  the history and model-badge tests import the real modules instead of slicing
+  source text.
 - Persona prompts without the bilingual reply format (new custom voices, edited or
   third-party packages) get the standard JSON format appended, so replies keep a
   Japanese line for the voice instead of having Chinese text read aloud.
