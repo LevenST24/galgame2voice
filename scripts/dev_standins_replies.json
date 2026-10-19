@@ -1,0 +1,46 @@
+{
+  "old": [
+    {"tts": {"speed": 1.0, "temp": 0.9, "emotion": "happy"}, "chinese": "你来啦！今天也一起散步吧。", "japanese": "来てくれたんだ！今日も一緒に散歩しよう。"},
+    {"tts": {"speed": 0.95, "temp": 0.85, "emotion": "gentle"}, "chinese": "累了就休息一下吧。\n我去给你泡杯茶。", "japanese": "疲れたら、少し休もう。\nお茶を入れてくるね。"},
+    {"tts": {"speed": 1.05, "temp": 0.95, "emotion": "shy"}, "chinese": "才没有特意等你呢。\n……\n不过，能一起回家也不错。", "japanese": "別に、待ってたわけじゃないから。\n……\nでも、一緒に帰れるのは嬉しいかな。"},
+    {"tts": {"speed": 1.1, "temp": 1.0, "emotion": "surprised"}, "chinese": "咦，下雨了？\n我只带了一把伞。\n你站近一点吧。\n小心别淋湿了。", "japanese": "えっ、雨？\n傘、一本しか持ってないよ。\nもう少し近くに来て。\n濡れないように気をつけてね。"},
+    {"tts": {"speed": 0.9, "temp": 0.8, "emotion": "sad"}, "chinese": "今天好安静。\n花也快谢了呢。\n……\n不过明年还会开的。\n到时候再一起来吧。", "japanese": "今日は静かだね。\n花も、もうすぐ散っちゃうね。\n……\nでも、来年もきっと咲くよ。\nその時はまた一緒に来よう。"},
+    {"tts": {"speed": 1.05, "temp": 0.9, "emotion": "angry"}, "chinese": "又忘记吃午饭了？\n真拿你没办法，便当分你一半。", "japanese": "またお昼、食べ忘れたの？\nしょうがないなあ、お弁当を半分あげる。"}
+  ],
+  "lines": [
+    {"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "lines": [
+      {"zh": "还好啦，下午人比较少。", "ja": "まあね、午後はわりと空いてるの。", "emotion": "gentle", "act": {"face": "smile", "pose": "b", "motion": "nod", "blush": false, "fx": null}}
+    ]},
+    {"tts": {"speed": 1.1, "temp": 0.95, "emotion": "happy"}, "lines": [
+      {"zh": "快看，第一颗星星出来了！", "ja": "見て、一番星が出てる！", "emotion": "happy", "act": {"face": "smile"}},
+      {"zh": "明天也会是好天气吧。", "ja": "明日も晴れるといいね。", "emotion": "gentle"}
+    ]},
+    {"tts": {"speed": 0.95, "temp": 0.85, "emotion": "shy"}, "lines": [
+      {"zh": "这个，是给你的。", "ja": "これ、あなたに。", "emotion": "shy", "act": {"blush": true}},
+      {"zh": "……", "ja": "……", "emotion": "shy"},
+      {"zh": "打开看看嘛。", "ja": "開けてみてよ。", "emotion": "happy", "act": {}}
+    ]},
+    {"tts": {"speed": 1.05, "temp": 1.0, "emotion": "surprised"}, "lines": [
+      {"zh": "你真的做出来了？", "ja": "本当に作れたの？", "emotion": "surprised"},
+      {"zh": "这蛋糕看起来好好吃。", "ja": "このケーキ、すごくおいしそう。", "emotion": "happy"},
+      {"zh": "我可以尝一口吗？", "ja": "一口食べてもいい？", "emotion": "gentle", "act": {"motion": "nod"}},
+      {"zh": "嗯，甜度刚刚好！", "ja": "うん、甘さもちょうどいい！", "emotion": "happy"}
+    ]},
+    {"tts": {"speed": 0.9, "temp": 0.8, "emotion": "sad"}, "lines": [
+      {"zh": "电车已经开走了。", "ja": "電車、行っちゃったね。", "emotion": "sad"},
+      {"zh": "……", "ja": "……", "emotion": "sad", "act": {"fx": null}},
+      {"zh": "下一班还要等一会儿。", "ja": "次までは、少し時間があるね。", "emotion": "gentle"},
+      {"zh": "去买热可可吧。", "ja": "温かいココアでも買おうか。", "emotion": "gentle", "act": {"face": "smile", "blush": false}},
+      {"zh": "我请客。", "ja": "私がおごるよ。", "emotion": "happy"}
+    ]},
+    {"tts": {"speed": 1.0, "temp": 0.9, "emotion": "angry"}, "lines": [
+      {"zh": "下次迟到要先发消息呀。", "ja": "今度遅れる時は、先に連絡してよね。", "emotion": "angry", "act": {"pose": "b"}},
+      {"zh": "我可是会担心的。", "ja": "心配するんだから。", "emotion": "shy", "act": {"blush": true}}
+    ]}
+  ],
+  "broken": {
+    "preamble": "当然可以，这是我的回答：\n",
+    "trailing_text": "\n希望你喜欢这个回答！",
+    "unknown_act": {"face": "unmapped_face", "pose": "unmapped_pose", "motion": "unmapped_motion", "blush": "maybe", "fx": "unmapped_effect"}
+  }
+}
