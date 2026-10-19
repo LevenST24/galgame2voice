@@ -152,6 +152,17 @@ test('final stream metadata retains repeated sentence URLs in order', async () =
   assert.deepEqual(result.audioUrls, ['/repeat.wav', '/repeat.wav']);
   assert.equal(result.chunks.length, 2);
 });
+test('the saved reply replaces streamed text the server did not keep', async () => {
+  const events = 'event: text\ndata: {"delta_chinese":"好的，我会按照格式回复：\\n"}\n\n'
+    + 'event: text\ndata: {"delta_chinese":"你好呀"}\n\n'
+    + 'event: done\ndata: {"chinese":"你好呀","chunks":[]}\n\n';
+  globalThis.fetch = async () => new Response(events);
+  const shown = [];
+  const text = await new Promise(resolve => streamChat({ prompt: 'test', onChunk: full => shown.push(full),
+    onEnd: finalText => resolve(finalText) }));
+  assert.equal(text, '你好呀');
+  assert.equal(shown.at(-1), '你好呀');
+});
 
 test('continuous multi-character session switching during long chunk streams isolates queues and adaptive buffer lead', async () => {
   const startedChunks = [];
