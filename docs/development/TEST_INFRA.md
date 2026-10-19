@@ -341,6 +341,57 @@ reviewable list and makes a future removal a deliberate edit.
 Run `python -m pytest -rs` to see skip reasons. A `skip` here means "this host
 cannot run it", never "this test is known broken" — use `xfail` for the latter.
 
+### Local LLM and TTS stand-ins (no GPU or paid API)
+
+From the repository root, start both loopback-only HTTP servers in one terminal:
+
+```powershell
+.\.venv\Scripts\python scripts/dev_standins.py --seed 42
+```
+
+The OpenAI-compatible endpoint is `http://127.0.0.1:18080/v1`, model `standin`.
+In app settings, enable `allow_private_llm_endpoints`, configure the `openai`
+provider with `api_base_url` set to that URL, `chat_model=standin`, and dummy
+`api_key=standin`, then select it (`active_provider_id=openai`). These LLM
+settings live in SQLite; there are no LLM environment overrides. Via the API,
+use `POST /api/config` with `{"allow_private_llm_endpoints":true}`, then
+`POST /api/providers` with `{"id":"openai","api_base_url":"http://127.0.0.1:18080/v1",
+"chat_model":"standin","api_key":"standin"}`, then `POST /api/config` with
+`{"active_provider_id":"openai"}`. Supply the console token if authentication
+is enabled. Use a disposable development app database when changing providers.
+
+Start the app in a second terminal (the TTS process environment overrides the
+stored `gpt_sovits_url`):
+
+```powershell
+$env:GALGAME2VOICE_GPT_SOVITS_BASE_URL='http://127.0.0.1:19880'
+.\.venv\Scripts\python -m galgame2voice.main
+```
+
+Keep an active character/voice profile and valid reference audio configured:
+the app still validates those locally. The stand-in accepts the app's GET
+weight/reference setters, health/control probes, and GET/POST `/tts` without
+loading files. Its 32 kHz mono PCM WAV is quiet tone/noise with syllable bursts
+and punctuation pauses for playback/lip-sync testing, not intelligible speech.
+
+`--llm-format old` (default) emits today's bilingual JSON; `lines` emits the
+upcoming per-line schema; `mixed` alternates them. `broken` cycles through a
+JSON fence, preamble, mid-string truncation, cut-off `lines` array, unknown
+actions, missing emotions, and trailing prose. The current app may not support
+the upcoming format yet. Edit `scripts/dev_standins_replies.json` to change the
+six replies per format or provisional action examples; replies cycle in file
+order. Both streaming SSE and non-streaming completions are available, along
+with `/v1/models` (`?stream=true` also supports SSE model records).
+
+Tune `--first-token-ms 800`, `--tokens-per-sec 35` (approximate characters/sec,
+1–4 characters per chunk), `--tts-latency-factor 0.3`, and `--tts-base-ms 150`.
+`--tts-fail-rate 0.25` injects synthesis HTTP 500s; `--tts-offline` returns 503
+for all TTS endpoints. `--seed` repeats chunking, waveforms, and failure choices
+for the same request order. Ports are configurable with `--llm-port` and
+`--tts-port`; Ctrl+C gracefully stops both listeners in the same process.
+Run `python -m pytest -q tests/test_dev_standins.py` for fast in-process checks
+with injected delays and no real sleeping.
+
 ### Asset-Free Tests
 
 Tests must not depend on media that version control ignores. `audio/*` and

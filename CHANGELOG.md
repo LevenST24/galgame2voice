@@ -7,6 +7,10 @@ All notable changes to galgame2voice are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `scripts/dev_standins.py` starts a fake LLM and a fake GPT-SoVITS server (old,
+  per-line and deliberately broken reply formats; WAVs with a speech-like envelope)
+  so the chat, voice and playback pipeline runs without a GPU or a paid model.
+- `docs/design/adv-ui.md`, the design spec for the coming visual-novel interface.
 - "允许私网 LLM 端点" switch in chat model settings for Ollama, LM Studio and LAN
   models. It saves on change; testing or enabling a model waits for the save.
   Model lists and connection tests now apply the same private-network rule as chat.

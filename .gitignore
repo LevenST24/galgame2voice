@@ -128,5 +128,6 @@ characters/*
 *.gguf
 *.tjs
 scripts/*.json
+!scripts/dev_standins_replies.json
 scripts/*.txt
 
