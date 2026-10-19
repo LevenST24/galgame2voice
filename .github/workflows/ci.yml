@@ -35,6 +35,17 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --extra dev
 
+      # windows-latest ships no ffmpeg, so voice-note conversion tests failed here.
+      # Use the binary bundled with the locked imageio-ffmpeg; find_ffmpeg() reads FFMPEG_PATH.
+      - name: Use the locked FFmpeg for audio tests
+        shell: pwsh
+        run: |
+          $ffmpeg = uv run --frozen --extra dev python -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $ffmpeg -version | Select-Object -First 1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "FFMPEG_PATH=$ffmpeg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Lint (ruff)
         run: uv run ruff check galgame2voice scripts
         if: matrix.python-version == '3.12'

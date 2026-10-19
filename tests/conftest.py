@@ -37,6 +37,10 @@ os.environ.setdefault("GALGAME2VOICE_HOST_HEADER_VALIDATION_DISABLED", "1")
 
 
 def pytest_configure(config):
+    # pytest.ini sets --basetemp under .local/cache, and pytest creates only the last
+    # folder of it. A fresh checkout (every CI run) has no .local/cache yet.
+    if config.option.basetemp:
+        Path(config.option.basetemp).absolute().parent.mkdir(parents=True, exist_ok=True)
     config.addinivalue_line(
         "markers",
         "requires_character_assets: mark test as requiring installed character assets in characters/",

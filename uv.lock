@@ -527,6 +527,7 @@ desktop = [
     { name = "pyinstaller" },
 ]
 dev = [
+    { name = "imageio-ffmpeg" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -543,6 +544,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "imageio-ffmpeg", marker = "extra == 'desktop'", specifier = ">=0.6.0" },
+    { name = "imageio-ffmpeg", marker = "extra == 'dev'", specifier = ">=0.6.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11.0" },
     { name = "psutil", specifier = ">=6.0.0" },
     { name = "pydantic", specifier = ">=2.10.0" },
