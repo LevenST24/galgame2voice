@@ -28,6 +28,23 @@ class DiagnosticResult:
         }
 
 
+EMPTY_REPLY_STOPPED_ON_LENGTH = (
+    "模型把生成长度用完了，却没有写出回复，通常是思考占满了额度。"
+    "可以在模型设置里把“思考强度”调低，或在会话设置里调大“最大生成长度”。"
+)
+EMPTY_REPLY_DEFAULT = "模型这次没有返回任何内容，可以重新发送或换个模型试试。"
+
+
+class EmptyReplyError(ValueError):
+    """Raised when the LLM finishes generating without producing visible reply text."""
+
+    def __init__(self, message: str | None = None, *, stopped_on_length: bool = False):
+        if not message:
+            message = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
+        super().__init__(message)
+        self.stopped_on_length = stopped_on_length
+
+
 def format_provider_error(
     provider_id: str | None = None,
     status_code: int | None = None,
@@ -58,6 +75,13 @@ def chat_error_payload(
     sentence with the next step, plus a stable `error_code` the console uses to offer
     the matching settings page.
     """
+    if isinstance(exc, EmptyReplyError):
+        return {
+            "error": str(exc),
+            "error_code": "empty_reply",
+            "kind": "empty_reply",
+            "status_code": 200,
+        }
     diag = diagnose_llm_error(exc, provider_id=provider_id, api_key_configured=api_key_configured)
     return {
         "error": f"{diag.message}：{diag.guidance}",
@@ -111,6 +135,31 @@ def _extract_status_code(status_code: int | None, raw_lower: str) -> int | None:
     for code in (401, 403, 429, 404, 400, 408, 502, 503, 504):
         if f"({code})" in raw_lower or f" {code} " in raw_lower or f"http {code}" in raw_lower or f"status {code}" in raw_lower:
             return code
+    return None
+
+
+def _diagnose_unsupported_parameter(
+    raw_lower: str,
+    status_code: int | None,
+    sanitized_raw: str,
+) -> DiagnosticResult | None:
+    """Parameter or feature incompatibilities such as reasoning_effort or thinkingConfig."""
+    if status_code != 400:
+        return None
+    is_reasoning_parameter = any(kw in raw_lower for kw in (
+        "reasoning_effort", "thinking level", "thinkingconfig", "thinking_config",
+    ))
+    is_rejected = any(kw in raw_lower for kw in (
+        "not supported", "unsupported", "invalid", "unknown", "unrecognized", "not allowed", "not permitted",
+    ))
+    if is_reasoning_parameter and is_rejected:
+        return DiagnosticResult(
+            error_code="PARAMETER_NOT_SUPPORTED",
+            message="模型参数不受支持 (400 Bad Request)",
+            guidance=f"提供商或所选模型不支持当前参数（如思考强度 reasoning_effort）。请尝试将「思考强度」设为默认或调整模型配置。原始信息: {sanitized_raw[:160]}",
+            status_code=400,
+            raw_error=sanitized_raw,
+        )
     return None
 
 
@@ -458,6 +507,7 @@ def diagnose_llm_error(
 
     return (
         _diagnose_local_configuration(raw_lower, sanitized_raw, p_id, api_key_configured)
+        or _diagnose_unsupported_parameter(raw_lower, status_code, sanitized_raw)
         or _diagnose_transport_fault(exc_type, raw_lower, status_code, sanitized_raw)
         or _diagnose_model_not_found(raw_lower, status_code, sanitized_raw)
         or _diagnose_provider_specific(p_id, raw_lower, status_code, sanitized_raw)

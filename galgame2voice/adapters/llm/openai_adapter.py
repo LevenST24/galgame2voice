@@ -82,7 +82,13 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
     ):
         super().__init__(api_key=api_key, base_url=base_url, **kwargs)
         self.mock_server = client_override
+        self.last_finish_reason: str | None = None
         self.default_model = default_model or kwargs.get("chat_model") or kwargs.get("model")
+
+    def _record_finish_reason(self, chunk: dict[str, Any]) -> None:
+        choices = chunk.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict) and choices[0].get("finish_reason"):
+            self.last_finish_reason = choices[0]["finish_reason"]
 
     def _resolve_test_model(self, model: str | None = None) -> str:
         """Resolves the test model: arg, then configured default, then provider preset/domain map, then gpt-4o-mini."""
@@ -157,9 +163,13 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         }
         if stream:
             payload["stream"] = True
+        reasoning_effort = (extra or {}).get("reasoning_effort", self.reasoning_effort)
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
         if extra:
             for k, v in self._filter_payload_kwargs(extra).items():
-                payload[k] = v
+                if k != "reasoning_effort":
+                    payload[k] = v
         return payload
 
     async def _chat_mock(
@@ -174,12 +184,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         """Executes non-streaming completion against test mock server with retry logic."""
         for attempt in range(max_retries + 1):
             resp = await self.mock_server.handle_chat_completion(
-                {
-                    "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in messages],
-                    "model": model,
-                    "temperature": temperature,
-                    **kwargs,
-                },
+                self._build_payload(messages, model, temperature=temperature, extra=kwargs),
                 headers={"authorization": f"Bearer {self.api_key}"},
             )
             if resp.status_code in (401, 403):
@@ -200,8 +205,9 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             if resp.status_code != 200:
                 raise RuntimeError(f"API returned status {resp.status_code}: {resp.json() if hasattr(resp, 'json') else resp.text}")
             data = resp.json()
+            self._record_finish_reason(data)
             return LLMResponse(
-                content=data["choices"][0]["message"]["content"],
+                content=data["choices"][0]["message"]["content"] or "",
                 usage=data.get("usage"),
             )
         raise RuntimeError("Max retries exceeded without a response")
@@ -216,6 +222,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         """
         Performs a non-streaming chat completion request with exponential backoff retries.
         """
+        self.last_finish_reason = None
         self._validate_credentials()
 
         max_retries = int(kwargs.get("max_retries", self.extra_config.get("max_retries", 3)))
@@ -281,7 +288,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
                 try:
                     data = resp.json()
-                    content = data["choices"][0]["message"]["content"]
+                    self._record_finish_reason(data)
+                    content = data["choices"][0]["message"]["content"] or ""
                     usage = data.get("usage")
                     return LLMResponse(content=content, usage=usage)
                 except Exception as exc:
@@ -302,13 +310,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         """Executes streaming completion against test mock server with retry logic."""
         for attempt in range(max_retries + 1):
             resp = await self.mock_server.handle_chat_completion(
-                {
-                    "messages": [m.model_dump() if hasattr(m, "model_dump") else m for m in messages],
-                    "model": model,
-                    "temperature": temperature,
-                    "stream": True,
-                    **kwargs,
-                },
+                self._build_payload(messages, model, temperature=temperature, stream=True, extra=kwargs),
                 headers={"authorization": f"Bearer {self.api_key}"},
             )
             if resp.status_code in (401, 403):
@@ -325,7 +327,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             if resp.status_code != 200:
                 raise RuntimeError(f"API returned status {resp.status_code}: {resp.text}")
 
-            async for token in parse_sse_lines(_mock_lines_iter(resp.text)):
+            async for token in parse_sse_lines(_mock_lines_iter(resp.text), self._record_finish_reason):
                 yield token
             return
 
@@ -339,12 +341,13 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         """
         Asynchronously streams text tokens via Server-Sent Events (SSE) with retries.
         """
+        self.last_finish_reason = None
         client = kwargs.get("client_override")
         if client is not None:
             # Client provided by caller (e.g. test mock); execute directly without retry loop
             resp = await client.post(
                 f"{self.base_url}/chat/completions",
-                json=self._build_payload(messages, model, temperature=temperature, stream=True),
+                json=self._build_payload(messages, model, temperature=temperature, stream=True, extra=kwargs),
                 headers={"Authorization": f"Bearer {self.api_key}"},
             )
             if resp.status_code in TRANSIENT_STATUS_CODES:
@@ -354,7 +357,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             if resp.status_code != 200:
                 raise RuntimeError(f"API returned status {resp.status_code}: {resp.text}")
 
-            async for token in parse_sse_lines(_mock_lines_iter(resp.text)):
+            async for token in parse_sse_lines(_mock_lines_iter(resp.text), self._record_finish_reason):
                 yield token
             return
         self._validate_credentials()
@@ -442,7 +445,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
 
             yielded_any = False
             try:
-                async for token in parse_sse_lines(response.aiter_lines()):
+                async for token in parse_sse_lines(response.aiter_lines(), self._record_finish_reason):
                     yielded_any = True
                     yield token
                 return
@@ -485,7 +488,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         chat_url = f"{self.base_url}/chat/completions"
         chat_resp = await client.post(
             chat_url,
-            json={"model": test_model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1},
+            json={"model": test_model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1,
+                  **({"reasoning_effort": self.reasoning_effort} if self.reasoning_effort is not None else {})},
             headers=headers,
         )
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)

@@ -481,7 +481,12 @@ export function onProviderChange() {
     }
   }
 
-  // 6. 诊断输出框重置
+  // 6. 思考强度设置
+  if (_dom.gReasoningEffort) {
+    _dom.gReasoningEffort.value = stored ? (stored.reasoning_effort || '') : (preset?.default_reasoning_effort || '');
+  }
+
+  // 7. 诊断输出框重置
   if (_dom.gProviderTestResult) {
     _dom.gProviderTestResult.className = 'test-result-box hidden';
     if (_dom.gTestResultBody) _dom.gTestResultBody.textContent = '';
@@ -559,11 +564,13 @@ export async function handleProviderTest() {
     const baseUrl = _dom.gBaseUrl ? _dom.gBaseUrl.value.trim() : '';
     const chatModel = _dom.gChatModel ? _dom.gChatModel.value.trim() : '';
     const apiKey = _dom.gApiKey ? _dom.gApiKey.value.trim() : '';
+    const reasoningEffort = _dom.gReasoningEffort ? _dom.gReasoningEffort.value : null;
 
     const payload = {
       id: pid,
       api_base_url: baseUrl,
       chat_model: chatModel,
+      reasoning_effort: reasoningEffort || null,
     };
     if (apiKey && !apiKey.includes('****')) {
       payload.api_key = apiKey;
@@ -629,6 +636,7 @@ export async function handleActivateProvider() {
     const baseUrl = _dom.gBaseUrl ? _dom.gBaseUrl.value.trim() : '';
     const chatModel = _dom.gChatModel ? _dom.gChatModel.value.trim() : '';
     const apiKey = _dom.gApiKey ? _dom.gApiKey.value.trim() : '';
+    const reasoningEffort = _dom.gReasoningEffort ? _dom.gReasoningEffort.value : null;
     const customName = _dom.gCustomName ? _dom.gCustomName.value.trim() : '';
 
     if (!baseUrl) {
@@ -655,6 +663,7 @@ export async function handleActivateProvider() {
       name: isCustom ? customName || '自定义模型' : preset?.name || stored?.name || pid,
       api_base_url: baseUrl,
       chat_model: chatModel,
+      reasoning_effort: reasoningEffort || null,
       is_active: true,
     };
     if (apiKey && !apiKey.includes('****')) {

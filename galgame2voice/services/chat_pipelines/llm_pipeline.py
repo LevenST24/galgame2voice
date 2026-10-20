@@ -29,6 +29,7 @@ class LlmStreamPipeline:
         max_tokens: int | None = None,
         frequency_penalty: float | None = None,
         presence_penalty: float | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         self.adapter = adapter
         self.messages = messages
@@ -39,6 +40,7 @@ class LlmStreamPipeline:
         self.max_tokens = max_tokens
         self.frequency_penalty = frequency_penalty
         self.presence_penalty = presence_penalty
+        self.reasoning_effort = reasoning_effort
 
     async def stream_tokens(self) -> AsyncGenerator[str, None]:
         """
@@ -56,6 +58,8 @@ class LlmStreamPipeline:
             stream_kwargs["frequency_penalty"] = self.frequency_penalty
         if self.presence_penalty is not None:
             stream_kwargs["presence_penalty"] = self.presence_penalty
+        if self.reasoning_effort is not None:
+            stream_kwargs["reasoning_effort"] = self.reasoning_effort
 
         stream_gen = None
         try:

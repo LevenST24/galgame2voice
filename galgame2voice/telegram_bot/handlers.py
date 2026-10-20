@@ -34,6 +34,7 @@ from galgame2voice.adapters.registry import PROVIDER_PRESETS, SpeechRecognitionU
 from galgame2voice.utils.audio_converter import convert_ogg_to_wav, convert_wav_to_ogg
 from galgame2voice.utils.japanese_phonetics import strip_stage_directions
 from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.error_diagnostics import EMPTY_REPLY_DEFAULT, EMPTY_REPLY_STOPPED_ON_LENGTH
 from galgame2voice.telegram_bot.console_menus import (
     ADMIN_CALLBACK_ACTIONS,
     ADMIN_CALLBACK_PREFIXES,
@@ -734,17 +735,25 @@ class TelegramBotHandlers:
                 except Exception as action_err:
                     logger.debug("Failed sending typing chat action for chat_id=%d: %s", chat_id, action_err)
 
-            llm_response = await adapter.chat(messages, model=model_name)
+            chat_kwargs = {"model": model_name}
+            if getattr(adapter, "reasoning_effort", None) is not None:
+                chat_kwargs["reasoning_effort"] = adapter.reasoning_effort
+            llm_response = await adapter.chat(messages, **chat_kwargs)
             raw_text = llm_response.content
 
             chinese, japanese, parser = StreamingBilingualParser.parse_full_text(raw_text)
 
-            if parser.line_scanner.format == "lines" and not chinese.strip():
+            if not chinese.strip():
                 chinese = japanese
             display_chinese = strip_stage_directions(chinese).strip() or chinese
             if not display_chinese.strip():
                 # Nothing to send, save or voice; report it like any failed reply.
-                raise ValueError("模型这次没有返回内容")
+                stopped_on_length = bool(
+                    getattr(parser, "lines_truncated", False)
+                    or getattr(adapter, "last_finish_reason", None) in ("length", "MAX_TOKENS", "max_tokens")
+                )
+                msg = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
+                raise ValueError(msg)
             dynamic_tts = parser.get_dynamic_tts_options(sentence_text=japanese)
 
             # 3. Send text reply immediately

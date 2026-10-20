@@ -103,7 +103,7 @@ export function mountAdv(dom, deps) {
       sprite.suspend();
       textbox.showError({ message: String(error?.message || error || '回复失败'), actions: [
         ...(controller.canRetry(failedUser) ? [{ label: '重新发送', run: () => controller.retry(failedUser) }] : []),
-        { label: '去设置', run: () => deps.onSettings?.() },
+        { label: '去设置', run: () => (error?.code === 'empty_reply' ? (deps.onModelSettings || deps.onSettings) : deps.onSettings)?.() },
       ] });
     },
   };
@@ -363,7 +363,7 @@ export function mountAdv(dom, deps) {
     if (event.originId !== sessionId || deps.getSession()?.id !== sessionId) return;
     if (drawer?.kind === 'log') deps.renderHistory?.();
     if (!turnId) { textbox.enterInput({ canSend: !controller.busy }); syncControls(); return; }
-    player.settle(turnId, kind === 'done' ? { ok: true } : { kind, error: { message: event.error } });
+    player.settle(turnId, kind === 'done' ? { ok: true } : { kind, error: { message: event.error, code: event.code || event.kind } });
     syncControls();
   }));
   disposers.push(player.on('state', syncControls));

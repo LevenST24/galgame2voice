@@ -497,6 +497,19 @@
               <small class="field-tip">可直接在预设列表中点选，亦可自由键入最新的或微调版模型 ID。</small>
             </div>
 
+            <!-- 思考强度选择项 -->
+            <div class="field" id="gReasoningEffortField">
+              <label for="gReasoningEffort">思考强度</label>
+              <select id="gReasoningEffort">
+                <option value="">默认（由模型决定）</option>
+                <option value="none">关闭</option>
+                <option value="low">低</option>
+                <option value="medium">中</option>
+                <option value="high">高</option>
+              </select>
+              <small class="field-tip">会思考的模型（如 Gemini 3）建议选“低”：第一句更快，也不会因为思考用完生成长度而没有回复。</small>
+            </div>
+
             <!-- 连通性测试诊断输出条（测试结果与中文排错指引） -->
             <div id="gProviderTestResult" class="test-result-box hidden">
               <div class="test-result-head">

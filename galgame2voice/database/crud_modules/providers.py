@@ -20,7 +20,7 @@ from galgame2voice.security.crypto import decrypt_secret, encrypt_secret
 logger = logging.getLogger("galgame2voice.database.crud_modules.providers")
 
 _UPDATE_COLUMNS = frozenset({
-    "name", "api_base_url", "api_key", "chat_model", "stt_model", "is_active", "custom_headers",
+    "name", "api_base_url", "api_key", "chat_model", "stt_model", "is_active", "custom_headers", "reasoning_effort",
 })
 
 __all__ = [
@@ -161,12 +161,13 @@ async def create_provider(conn: aiosqlite.Connection, provider: ProviderCreate) 
     enc_key = encrypt_secret(provider.api_key) if provider.api_key else ""
     async with immediate_transaction(conn):
         await conn.execute("""
-            INSERT OR IGNORE INTO providers (id, name, api_base_url, api_key, chat_model, stt_model, is_active, custom_headers)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            INSERT OR IGNORE INTO providers (id, name, api_base_url, api_key, chat_model, stt_model, is_active, custom_headers, reasoning_effort)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         """, (
             provider.id, provider.name, provider.api_base_url,
             enc_key, provider.chat_model, provider.stt_model,
-            1 if provider.is_active else 0, headers_str
+            1 if provider.is_active else 0, headers_str,
+            provider.reasoning_effort
         ))
         if provider.is_active:
             await set_active_provider(conn, provider.id)
@@ -189,6 +190,10 @@ async def update_provider(conn: aiosqlite.Connection, provider_id: str, updates:
         raise ValueError("Unsupported provider update columns")
 
     for k, v in up_dict.items():
+        if k == "reasoning_effort":
+            fields.append("reasoning_effort = ?")
+            values.append(v)
+            continue
         if v is None:
             continue
         if k == "api_key":

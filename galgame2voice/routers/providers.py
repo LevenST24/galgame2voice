@@ -10,7 +10,7 @@ import json
 import logging
 import sqlite3
 import time
-from typing import Any
+from typing import Any, Literal
 
 import aiosqlite
 import httpx
@@ -69,6 +69,7 @@ class ProviderTestRequest(BaseModel):
     model: str | None = None
     chat_model: str | None = None
     custom_headers: dict[str, Any] | None = None
+    reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
 
 
 class ProviderTestResponse(BaseModel):
@@ -117,6 +118,7 @@ async def list_providers():
                     "api_key": "",
                     "is_active": False,
                     "custom_headers": {},
+                    "reasoning_effort": pr.get("default_reasoning_effort"),
                 })
         return {
             "providers": all_providers,
@@ -157,6 +159,7 @@ async def get_provider(provider_id: str):
                         "api_key": "",
                         "is_active": False,
                         "custom_headers": {},
+                        "reasoning_effort": preset.get("default_reasoning_effort"),
                     }
                 }
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")
@@ -187,6 +190,8 @@ async def _update_existing_provider(
         update_kwargs["is_active"] = provider_data["is_active"]
     if "custom_headers" in provider_data and provider_data["custom_headers"] is not None:
         update_kwargs["custom_headers"] = provider_data["custom_headers"]
+    if "reasoning_effort" in provider_data:
+        update_kwargs["reasoning_effort"] = provider_data["reasoning_effort"]
 
     try:
         updates = ProviderUpdate(**update_kwargs)
@@ -227,6 +232,9 @@ async def _create_new_provider(
     if is_masked_key(api_key):
         api_key = ""
     custom_headers = provider_data.get("custom_headers") or {}
+    reasoning_effort = provider_data.get("reasoning_effort")
+    if "reasoning_effort" not in provider_data and preset:
+        reasoning_effort = preset.get("default_reasoning_effort")
 
     try:
         new_provider = ProviderCreate(
@@ -238,6 +246,7 @@ async def _create_new_provider(
             stt_model=stt_model,
             is_active=is_active,
             custom_headers=custom_headers,
+            reasoning_effort=reasoning_effort,
         )
         created = await crud.create_provider(conn, new_provider)
         return {"status": "created", "provider": created.model_dump()}
@@ -325,6 +334,7 @@ async def activate_provider(provider_id: str):
                     chat_model=preset["default_chat_model"],
                     stt_model=preset["default_stt_model"],
                     is_active=True,
+                    reasoning_effort=preset.get("default_reasoning_effort"),
                 )
                 try:
                     await crud.create_provider(conn, new_provider)
@@ -429,6 +439,12 @@ async def test_provider(req: ProviderTestRequest):
     base_url = req.base_url or req.api_base_url
     model = req.model or req.chat_model
     custom_headers = req.custom_headers or {}
+    reasoning_effort = req.reasoning_effort
+    if "reasoning_effort" not in req.model_fields_set:
+        async with get_db() as conn:
+            stored = await crud.get_provider_raw(conn, provider_id)
+            if stored:
+                reasoning_effort = stored.reasoning_effort
 
     api_key, base_url = await _resolve_provider_test_credentials(provider_id, api_key, base_url)
     model, base_url = _resolve_provider_preset_defaults(provider_id, model, base_url)
@@ -444,6 +460,7 @@ async def test_provider(req: ProviderTestRequest):
         base_url=base_url,
         custom_headers=custom_headers,
         allow_private=allow_private,
+        reasoning_effort=reasoning_effort,
     )
 
     try:

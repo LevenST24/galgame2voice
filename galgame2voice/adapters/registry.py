@@ -32,6 +32,7 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "default_chat_model": "gemini-2.5-flash",
         "default_stt_model": "",
+        "default_reasoning_effort": "low",
         "adapter_class": GeminiLLMAdapter,
         "stt_adapter_class": None,
         "preset_models": [
@@ -197,6 +198,7 @@ def _format_preset_dict(p: dict[str, Any]) -> dict[str, Any]:
         "default_stt_model": p["default_stt_model"],
         "preset_models": p["preset_models"],
         "description": p["description"],
+        **({"default_reasoning_effort": p["default_reasoning_effort"]} if "default_reasoning_effort" in p else {}),
     }
 
 
@@ -265,6 +267,10 @@ def get_llm_adapter(
     """
     provider_id, key, url = _resolve_provider_request(provider_id_or_config, api_key, base_url, kwargs)
     kwargs.setdefault("provider_id", provider_id)
+    if not isinstance(provider_id_or_config, str):
+        reasoning_effort = _get_config_attr(provider_id_or_config, "reasoning_effort")
+        if reasoning_effort is not None:
+            kwargs.setdefault("reasoning_effort", reasoning_effort)
 
     preset = PROVIDER_PRESETS.get(provider_id)
     if preset and "default_model" not in kwargs:

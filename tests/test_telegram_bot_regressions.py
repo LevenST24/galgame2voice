@@ -685,7 +685,7 @@ class TestEmptyReply:
 
         texts = [message["text"] for message in bot.sent_messages]
         assert len(texts) == 1
-        assert "没有返回内容" in texts[0]
+        assert "模型这次没有返回任何内容，可以重新发送或换个模型试试。" in texts[0]
         assert '"chinese"' not in texts[0]
         assert bot.sent_voices == []
         async with get_db(temp_db_path) as conn:
