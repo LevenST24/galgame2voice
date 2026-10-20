@@ -14,7 +14,7 @@ MAX_TEXT = 10_000_000
 SESSION_SETTINGS = frozenset({
     "systemPrompt", "voiceProfileId", "temperature", "topP", "maxTokens",
     "freqPenalty", "presPenalty", "maxContext", "aiAdaptiveVoice", "ttsSpeed",
-    "ttsTopK", "ttsTopP", "ttsTemperature",
+    "ttsTopK", "ttsTopP", "ttsTemperature", "advReplyFormat",
 })
 
 
