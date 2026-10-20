@@ -21,6 +21,12 @@ def render_lines_contract(menu: dict | None) -> str:
     if isinstance(menu, dict) and isinstance(menu.get("faces"), list):
         faces = [label for label in menu["faces"] if isinstance(label, str) and label]
     act_example = '"act": {"face": "表情标签"}' if faces else '"act": {}'
+    poses = menu.get("poses", []) if isinstance(menu, dict) else []
+    allow_pose = len(poses) >= 2
+    if allow_pose:
+        example = {"face": "表情标签"} if faces else {}
+        example["pose"] = poses[0]
+        act_example = '"act": ' + json.dumps(example, ensure_ascii=False)
 
     parts = [
         "【输出格式】请始终只输出如下 JSON，不要包含 Markdown 标记或多余文字：",
@@ -28,8 +34,13 @@ def render_lines_contract(menu: dict | None) -> str:
         f'{{"zh": "给玩家看的中文台词", "ja": "意思相同的口语化日语台词", '
         f'"emotion": "gentle", {act_example}}}]}}',
         f"每行只写一句适合配音朗读的话，zh 与 ja 意思一致；emotion 必填，只能是 {emotions}。",
-        "act 可省略；不要输出 index、audio、outfit 或 pose。",
+        ("act 可省略；不要输出 index、audio 或 outfit。" if allow_pose else
+         "act 可省略；不要输出 index、audio、outfit 或 pose。"),
     ]
+    if allow_pose:
+        names = menu.get("pose_names", {})
+        choices = "、".join(f"{pid}（{names.get(pid, pid)}）" for pid in poses)
+        parts.append(f"pose 可省略，只能取：{choices}；省略时保持当前姿势。")
     if faces:
         parts.append("face 通常每行都给出，只能取：" + "、".join(faces) + "。")
     parts.append("motion 很少使用，大多数行不写；允许值：" + "、".join(MOTIONS) + "。")

@@ -55,6 +55,34 @@ HEAD_OLD_CONTRACT_ADDITION = (
 
 
 class TestRenderLinesContract:
+    @pytest.mark.parametrize("faces", [["微笑", "生气"], []])
+    def test_multiple_poses_are_optional_named_choices(self, faces):
+        text = render_lines_contract({**MENU, "faces": faces, "poses": ["a", "b"],
+                                      "pose_names": {"a": "站姿1", "b": "站姿2"}})
+        example = json.loads(text.splitlines()[1])
+        assert example["lines"][0]["act"]["pose"] == "a"
+        assert "pose 可省略" in text
+        assert "只能取：a（站姿1）、b（站姿2）" in text
+        assert "省略时保持当前姿势" in text
+        assert "不要输出 index、audio 或 outfit。" in text
+        assert "outfit 或 pose" not in text
+
+    @pytest.mark.parametrize("poses", [[], ["a"]])
+    def test_fewer_than_two_poses_keep_exact_contract(self, poses):
+        expected = (
+            "【输出格式】请始终只输出如下 JSON，不要包含 Markdown 标记或多余文字：\n"
+            '{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "lines": ['
+            '{"zh": "给玩家看的中文台词", "ja": "意思相同的口语化日语台词", '
+            '"emotion": "gentle", "act": {"face": "表情标签"}}]}\n'
+            f"每行只写一句适合配音朗读的话，zh 与 ja 意思一致；emotion 必填，只能是 {'|'.join(EMOTIONS)}。\n"
+            "act 可省略；不要输出 index、audio、outfit 或 pose。\n"
+            "face 通常每行都给出，只能取：微笑、生气。\n"
+            f"motion 很少使用，大多数行不写；允许值：{'、'.join(MOTIONS)}。\n"
+            f"fx 很少使用，大多数行不写；允许值：{'、'.join(FX)}。\n"
+            "blush 仅在需要时设为 true，省略或 false 表示不添加。"
+        )
+        assert render_lines_contract({**MENU, "poses": poses, "pose_names": {"a": "站姿1"}}) == expected
+
     def test_contract_lists_the_menu_choices(self):
         text = render_lines_contract(MENU)
 

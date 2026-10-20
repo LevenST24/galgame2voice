@@ -232,6 +232,27 @@ test('an interrupted previous voice promise cannot clear the next line VOICE ind
   assert.equal(h.app.stage.stage.querySelector('.adv-voice-display').classList.contains('is-hidden'), true);
 });
 
+test('an interrupted previous voice cannot stop the next line lip sync; the setting stops it at once', async t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 0 } });
+  let samples = 0;
+  h.audio.getRms = () => { samples++; return 0.05; };
+  const sampled = () => { const before = samples; h.clock.tick(200); return samples > before; };
+  h.start(); h.line(); h.line(1); h.audioEvent();
+  h.audioEvent(1); h.app.action('advance'); await microtasks();
+  assert.equal(h.audio.played.length, 2);
+  assert.equal(sampled(), true, 'the late end of line 0 leaves line 1 sampling');
+  h.sessions[0].settings.advLipSync = false; h.subscriptions()[0]();
+  assert.equal(sampled(), false, 'turning lip sync off stops sampling at once');
+  h.sessions[0].settings.advLipSync = true; h.subscriptions()[0]();
+  assert.equal(sampled(), true);
+  h.motion(true);
+  assert.equal(sampled(), false, 'reduced motion stops sampling at once');
+  h.motion(false);
+  assert.equal(sampled(), true, 'and it resumes when reduced motion turns off');
+  h.endVoice('ended'); await microtasks();
+  assert.equal(sampled(), false, 'the end of the line stops sampling');
+});
+
 test('live art refresh retains decoded art through replacement failure without a retry loop', async t => {
   let requests = 0;
   const h = setup(t, { loadPortrait: async () => portrait(++requests === 1 ? '/old.png?exp=10000' : '/replacement.png') });

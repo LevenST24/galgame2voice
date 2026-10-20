@@ -40,6 +40,22 @@ let passed = 0;
 const tests = [];
 function test(name, run) { tests.push({ name, run }); }
 
+test('loadPortrait uses legacy whole images from a v3 pack', async () => {
+  const controller = stage();
+  const legacy = payload('Legacy');
+  globalThis.fetch = async () => response({ enabled: true, version: 3, sprites: {},
+    layers: { body: {} }, legacy });
+  const loaded = await controller.loadPortrait(1);
+  assert.deepEqual(loaded, legacy);
+  controller.applyPayload(loaded);
+  assert.equal(controller.faceUrl('gentle'), '/Legacy/gentle.png');
+});
+
+test('loadPortrait returns null for v3 without a legacy pack', async () => {
+  globalThis.fetch = async () => response({ enabled: true, version: 3, sprites: {}, layers: {} });
+  assert.equal(await stage().loadPortrait(1), null);
+});
+
 test('a desktop portrait preference does not cover the chat when the window becomes narrow', () => {
   const controller = stage();
   controller.appEl = new Element(); controller.stageEl = new Element(); controller.toggleBtn = new Element();

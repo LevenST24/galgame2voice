@@ -13,7 +13,7 @@ P3_SETTINGS = {
     "advEnabled": True, "advPlayerName": "旅行者", "advPrimaryLanguage": "ja",
     "advSubtitleLanguage": "zh", "advWindowOpacity": 0, "advTextIntervalMs": 100,
     "advInterruptVoice": False, "advAutoBaseMs": 6000, "advAutoPerCharMs": 200,
-    "advAutoMode": "normal", "advOutfit": "uniform_2",
+    "advAutoMode": "normal", "advOutfit": "uniform_2", "advBlink": True, "advLipSync": True,
 }
 
 INVALID_P3 = [
@@ -26,6 +26,7 @@ INVALID_P3 = [
     ("advPlayerName", 17), ("advPlayerName", "人" * 401),
     ("advPlayerName", "\ufeff"),
     ("advPlayerName", "👩🏽‍💻" * 101), ("advOutfit", "../other"), ("advOutfit", None),
+    ("advBlink", "false"), ("advBlink", 1), ("advLipSync", "true"), ("advLipSync", 0),
 ]
 
 

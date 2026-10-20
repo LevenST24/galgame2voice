@@ -595,70 +595,71 @@ Pose/outfit support is not a Cartesian product; validate actual recipes.
 Scope remains the five planned Tenshi heroines plus Natsume; the extra heroine
 found by recon does not expand P5 asset delivery automatically.
 
-### 6.2 v3 manifest outline
+### 6.2 v3 manifest schema (`portrait/layers.json`)
 
-The following is a proposed application schema, not the game's extraction format.
-Identifiers and numbers are synthetic calibration examples; no asset is bundled.
+The layered portrait pack contract between the asset exporter and the app.
+All paths are relative to the character's `portrait/` folder. Coordinate values are integers.
 
 ```json
 {
   "version": 3,
   "defaultOutfit": "uniform",
   "defaultPose": "a",
-  "poses": {
-    "a": {
-      "canvas": {"width": 1920, "height": 2880},
-      "stage": {"scale": 0.8, "offset": {"x": 340, "y": -260}},
-      "faceRect": {"x": 680, "y": 340, "width": 560, "height": 504},
-      "headAnchor": {"x": 960, "y": 360},
-      "outfits": {
-        "uniform": {
-          "body": ["body-a"], "defaultFace": "neutral",
-          "faces": {
-            "neutral": {"layers": ["face-neutral", "hair-a"], "tags": ["neutral"], "emotion": "gentle", "eyesClosed": false},
-            "smile": {"layers": ["face-smile", "hair-a"], "tags": ["smile"], "emotion": "happy", "eyesClosed": false}
-          },
-          "blush": {"layers": ["cheek-a"]},
-          "fxLayers": {"sweat": ["sweat-a"]}
-        }
+  "canvases": {"A": {"width": 1875, "height": 2656}},
+  "outfits": {"uniform": {"name": "校服", "icon": "🎒"}},
+  "poses": {"a": {"name": "站姿1", "canvas": "A"}},
+  "faces": {
+    "01": {"label": "平常", "jp": "1通常１", "emotion": "gentle", "weights": {"gentle": 3}}
+  },
+  "looks": {
+    "a/uniform": {
+      "pose": "a", "outfit": "uniform",
+      "crop": {"left": 540, "top": 865, "width": 792, "height": 1623},
+      "faceRect": {"x": 175, "y": 0, "width": 362, "height": 325},
+      "headAnchor": {"x": 356, "y": 2},
+      "body": ["A/1278", "A/1301"],
+      "blush": ["A/1490"],
+      "fx": {"sweat": ["A/1600"]},
+      "defaultFace": "01",
+      "faces": {
+        "01": {"layers": ["A/1511", "A/1402"], "eyesClosed": false,
+               "blink": {"half": "16", "closed": "14"},
+               "mouth": {"closed": "01", "open": "02"}},
+        "02": {"layers": ["A/1512", "A/1402"], "eyesClosed": false},
+        "14": {"layers": ["A/1531", "A/1402"], "eyesClosed": true},
+        "16": {"layers": ["A/1533", "A/1402"], "eyesClosed": false}
       }
     }
   },
   "layers": {
-    "body-a": {"file": "layers/body-a.webp", "rect": {"x": 400, "y": 200, "width": 1100, "height": 2500}, "z": 0, "opacity": 1},
-    "face-neutral": {"file": "layers/face-neutral.webp", "rect": {"x": 800, "y": 400, "width": 300, "height": 220}, "z": 10, "opacity": 1},
-    "face-smile": {"file": "layers/face-smile.webp", "rect": {"x": 800, "y": 400, "width": 300, "height": 220}, "z": 10, "opacity": 1},
-    "hair-a": {"file": "layers/hair-a.webp", "rect": {"x": 790, "y": 380, "width": 330, "height": 200}, "z": 20, "opacity": 1},
-    "cheek-a": {"file": "layers/cheek-a.webp", "rect": {"x": 810, "y": 470, "width": 280, "height": 160}, "z": 30, "opacity": 1},
-    "sweat-a": {"file": "layers/sweat-a.webp", "rect": {"x": 1090, "y": 400, "width": 40, "height": 80}, "z": 35, "opacity": 1}
+    "A/1278": {"canvas": "A", "file": "layers/A/1278.webp",
+               "rect": {"x": 600, "y": 900, "width": 700, "height": 1500},
+               "z": 0, "opacity": 1}
   }
 }
 ```
 
-Each pose owns its source canvas; each layer rect uses that canvas's coordinates.
-`stage.scale` converts source pixels to logical `u`; `offset` positions canvas origin.
-`faceRect` and `headAnchor` use source pixels, before stage scale and offset.
-Fit `faceRect` into the 450×404 output crop; source rects may differ by pose.
-Outfit-specific calibration may override pose `stage`, `faceRect`, and `headAnchor`.
-Record any crop origin during export and adjust all metadata consistently.
-Draw only selected recipe layers, ordered by z, then transient original SVG fx.
-Front hair belongs above the merged face and may depend on outfit and expression.
-Use either a compatible source sweat layer or original SVG for one mark, never both.
-Blush false removes only added overlays; inherent painted redness remains.
-Unsupported blend modes must be baked during export or rejected with a diagnostic.
-
-Optional face members: `blink:{half?:faceId,closed:faceId}` and
-`mouth:{closed:faceId,half:faceId,open:faceId}` reference compatible partner faces
-within that outfit/pose. Export only visually reviewed partnerships.
-Every partner must preserve head alignment, brows, intended emotion, and hair recipe.
-Do not label an unrelated half-closed expression as an automatic blink frame.
-When a needed partner is missing, keep the base face and disable that animation.
-If both animations exist, the manifest must include `combinedFrames` mapping
-`eyePhase:mouthPhase` keys to reviewed face IDs; otherwise blink takes precedence.
-Validate finite positive dimensions, bounded rectangles, valid references, unique
-IDs, safe relative paths, and valid default combinations before activating v3.
-Do not infer half-resolution coordinates from suffixes; recon found a mix exception.
-Existing export tooling's common-canvas, layer-dimension, and hash checks still apply.
+- **`canvases`:** source canvases. A pose draws on exactly one canvas, and a layer belongs to exactly one canvas. A look may only reference layers on its pose's canvas.
+- **`outfits`:** display data for every outfit id used by any look: a Chinese `name`, and an optional one-emoji `icon`.
+- **`poses`:** pose ids are short ASCII strings (`a`, `a2`, `b`). `name` is a short Chinese display name.
+- **`faces`:** shared metadata for every face id used by any look: `label` (Chinese act tag), `emotion` (one of the 7 primary emotions), `weights` (primary 3, secondaries 1-2), and `jp`.
+- **`looks`:** keyed by `"<pose>/<outfit>"`. Pose and outfit support is not a Cartesian product.
+  - **`crop`:** the drawing box in canvas pixels. The renderer treats the box like a v2 sprite of `crop.width × crop.height`. A layer is drawn at `rect.x - crop.left`, `rect.y - crop.top`.
+  - **`faceRect`, `headAnchor`, and optional `stage`:** relative to the crop, exactly as in v2. Stage placement and the 450×404 face window reuse the v2 code paths unchanged.
+  - **`body`:** the dress and pose layers.
+  - **`blush`:** optional overlay for `blush: true`. A face may override it with its own `blush` array, or turn it off with `"blush": []`.
+  - **`fx`:** optional source effect layers keyed by the P2b fx names. Drawn instead of the SVG mark when present.
+  - **`faces`:** face recipes. Blush layers are listed separately and never in face `layers`. `eyesClosed` must be true for faces whose eyes are closed.
+- **Draw order:** collect `body` + current face `layers` + active blush layers + active fx layers, then draw in ascending `z`. Equal `z` keeps list order. `opacity` is 0–1 with normal alpha blending.
+- **Partners:** optional `blink:{half?, closed}` and `mouth:{closed, half?, open}` referencing compatible face IDs in the same look.
+  - Blink and mouth frames keep the blush of the face they animate (its override, otherwise the look's blush).
+  - Only faces with `eyesClosed: false` may have `blink`; the `closed` partner must have `eyesClosed: true`.
+  - `combinedFrames: {"<eye>:<mouth>": faceId}` maps reviewed combinations during overlapping blink and speech. Without an entry, the blink frame wins over the mouth frame.
+  - Missing partners disable that animation for the face.
+- **Paths:** canvas ids match `^[A-Za-z0-9_-]{1,32}$`. Each layer's `file` is exactly `layers/<canvas>/<name>`, using that layer's own `canvas`, with `<name>` matching `^[A-Za-z0-9._-]+\.(webp|png)$` and no `..`. Resolved files stay inside `portrait/layers/<canvas>/`.
+- **Layer routes:** `GET /api/media/portrait/{character_id}/layers/{canvas}/{file_name}` serves signed, expiring media URLs; `GET /api/characters/{character_id}/portrait/layers/{canvas}/{file_name}` is the console-token fallback. Both use fixed segments and enforce the same path and canvas boundaries.
+- **Validation & Precedence:** finite positive dimensions, bounded rectangles, valid references, unique IDs, and the layer path rule above. A valid `layers.json` (v3) takes precedence over `expressions.json` (v2) and `manifest.json` (v1); an invalid `layers.json` logs the reason and falls back to v2/v1.
+- **Chat compatibility:** a v3 payload carries a normalized `legacy` payload for the chat UI when valid `expressions.json` (v2), or otherwise `manifest.json` (v1), is available. Its whole-image sprite URLs are signed like existing sprites. Without either, `legacy` is absent; v3 top-level `sprites` remains `{}` and ADV consumes the layered data.
 
 ### 6.3 Motion, blink, and lip sync
 
@@ -683,21 +684,53 @@ Cancellation restores the wrapper's base transform; never accumulate relative of
 Apply acting when a line activates, not when it arrives over the network.
 SKIP, hidden tab, reduced motion, and player input suppress decorative motion.
 
-Blink at a random interval uniformly sampled between 2 and 6 seconds, only with
-reviewed partners and an open-eye base; half/closed/half takes 60/90/60ms.
-Cancel pending blink timers on pose/character changes and tab suspension.
-Preserve the resolved base face separately from transient partner-frame selection.
+**Layered rendering (`frontend/src/adv/sprite.js`):**
+A v3 line commits one frame set per A/B buffer. The buffers for layers are `<div>`
+boxes of the look's `crop` size, created when a layered pack first draws, placed
+with the whole-image framing code, and clipped like a whole image.
+- The frame set holds the body, one group per face the line's face can show (itself,
+  its blink, mouth and combined frames), the blush, and source fx layers.
+- Blush belongs to the line's face (its override, else the look's), so blink and
+  mouth frames keep it.
+- Every layer is decoded (`img.decode()`) before the swap, twice: once for the stage
+  and once for the face window. The decoded images become the layer elements.
+- Layers get the rank of their `z` as z-index and are appended in list order, so
+  equal `z` keeps list order in every group. `isolation: isolate` keeps them inside.
+- Blink and mouth frames only toggle which group is visible, in the stage and the
+  face window together. They never create, remove or reload an element.
+- A stale or failed decode never paints; the previous complete frame stays.
+- Preloading decodes the frame sets of the look's next two faces that the current
+  frame set does not already hold, in the whole-image queue and budget.
+- Source fx layers replace the SVG mark for that fx, never both, and follow the same
+  acting gate. They stay for the line instead of expiring after 1200ms.
 
-P5 routes `chunkGain → masterGain → AnalyserNode → destination` in the active
-`frontend/src/audio_player.js` path, with no duplicate direct destination connection.
-The current module has an analyser slot but connects masterGain directly;
-the preserved static legacy player is not proof the active module exposes analysis.
-Sample time-domain RMS at up to 30Hz with `fftSize=256`, smoothing `0.6`.
-Initial thresholds: RMS `<0.012` closed, `<0.045` half, otherwise open; calibrate
-with stand-in envelopes and real voice. Use `40ms` hysteresis to avoid chatter.
-Only animate while the matching speaker's voice owns playback and partners exist.
-On pause/end/interrupt/mute return to the base/closed partner and stop polling.
-Do not claim phoneme accuracy: this is amplitude-driven mouth approximation.
+**Blink scheduler:**
+Runs per mounted sprite view for faces with `eyesClosed: false` and a `blink` partner, when `advBlink` is on and reduced motion is off.
+- Waits a random interval uniformly sampled between 2 and 6 seconds.
+- Sequence: `half` (60ms) → `closed` (90ms) → `half` (60ms) → base face. Without `half`, shows `closed` (90ms) → base face.
+- Timers cancel immediately on face, pose, look, or character change, hidden tab, unmount, `advBlink` off, or reduced motion on.
+  A new line opens the eyes of the old frame as soon as it starts decoding.
+- The stage keeps blinking during player input, while the face window is hidden.
+- The resolved base face remains separate from the transient frame, so line and state transitions always resolve against the base.
+
+**Lip sync:**
+Routes `chunkGain → masterGain → AnalyserNode → destination` in `frontend/src/audio_player.js`, eliminating duplicate destination connections.
+The analyser uses `fftSize=256` and smoothing `0.6`, exposing time-domain RMS.
+- Sampled at ≤30Hz in the ADV, active only while a character line's voice is playing (per-line playback and stage F9 replay; user recordings and LOG replay never drive the mouth).
+- Levels: RMS `<0.012` is closed, `<0.045` is half, otherwise open, with 40ms hysteresis. When `half` is missing, `open` is used for the half level.
+- While speaking, the closed level shows the `mouth.closed` partner.
+- Applies only to faces with a `mouth` partner when `advLipSync` is on and reduced motion is off.
+  The sampler keeps running through faces without one, because a line's voice can
+  start before its face commits.
+- Blink overlap: uses `combinedFrames` when matched; otherwise the blink frame wins.
+- `startLipSync` returns a token; the end of an older line cannot stop a newer one.
+  An interrupt or skip stops whichever line is playing.
+- On end, interrupt, or skip, it returns to the base face and stops polling. A paused
+  player reads as silent, because a suspended context keeps its last analyser buffer.
+  With voice off no line plays, so the mouth never moves.
+- `setAnimationOptions({ advBlink, advLipSync })` applies setting changes, previews
+  and reverts at once. Turning one off, reduced motion, or a hidden tab shows the
+  base face; turning it back on resumes.
 
 ## 7. Assets and copyright
 
