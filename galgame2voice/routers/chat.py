@@ -59,6 +59,7 @@ def set_chat_service(service: ChatService | None) -> None:
 class ChatRequest(BaseModel):
     """Request payload for initiating streaming or synchronous chat generation."""
 
+    reply_format: Literal["old", "lines"] = "old"
     prompt: str = Field(..., min_length=1, max_length=PROMPT_MAX_LENGTH, description="User prompt text")
     session_id: str = Field(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Conversation session identifier")
     stream: bool | None = Field(default=True, description="Whether client requested streaming")
@@ -214,6 +215,7 @@ async def chat_stream_endpoint(req: ChatRequest, request: Request) -> StreamingR
         frequency_penalty=req.frequency_penalty,
         presence_penalty=req.presence_penalty,
         ai_adaptive_voice=req.ai_adaptive_voice,
+        reply_format=req.reply_format,
     )
 
     return ChatStreamingResponse(
@@ -257,6 +259,7 @@ async def chat_sync_endpoint(req: ChatRequest) -> dict[str, Any]:
             frequency_penalty=req.frequency_penalty,
             presence_penalty=req.presence_penalty,
             ai_adaptive_voice=req.ai_adaptive_voice,
+            reply_format=req.reply_format,
         )
     except HTTPException:
         raise

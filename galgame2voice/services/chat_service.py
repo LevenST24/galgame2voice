@@ -150,6 +150,7 @@ class ChatService:
         max_context: int | None = None,
         active_prof: Any | None = None,
         session: Any | None = None,
+        reply_format: str = "old",
     ) -> tuple[BaseLLMAdapter, str, str, list[ChatMessage]]:
         """Resolves active LLM adapter, model name, provider ID, and prepared chat messages."""
         res = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
@@ -165,6 +166,7 @@ class ChatService:
             max_history_override=max_context,
             active_profile=active_prof,
             session=session,
+            reply_format=reply_format,
         )
         return adapter, model_name, actual_provider_id, messages
 
@@ -257,6 +259,7 @@ class ChatService:
         max_history_override: int | None = None,
         active_profile: Any | None = None,
         session: Any | None = None,
+        reply_format: str = "old",
     ) -> list[ChatMessage]:
         """
         Constructs system prompt and conversation history messages for LLM using SessionManager.
@@ -273,6 +276,7 @@ class ChatService:
             max_history_override=max_history_override,
             active_profile=active_profile,
             session=session,
+            reply_format=reply_format,
         )
 
     async def prepare_messages(
@@ -285,6 +289,7 @@ class ChatService:
         max_history_override: int | None = None,
         active_profile: Any | None = None,
         session: Any | None = None,
+        reply_format: str = "old",
     ) -> list[ChatMessage]:
         """Public interface for preparing chat messages.
 
@@ -297,6 +302,7 @@ class ChatService:
             max_history_override=max_history_override,
             active_profile=active_profile,
             session=session,
+            reply_format=reply_format,
         )
 
     def _concat_wav_files(
@@ -473,6 +479,7 @@ class ChatService:
         presence_penalty: float | None = None,
         ai_adaptive_voice: bool | None = None,
         voice_profile_id: int | None = None,
+        reply_format: str = "old",
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         Asynchronously streams bilingual SSE events:
@@ -537,6 +544,7 @@ class ChatService:
                     max_context=max_context,
                     active_prof=active_prof,
                     session=sess_obj,
+                    reply_format=reply_format,
                 )
 
             coordinator = StreamCoordinator(
@@ -565,6 +573,7 @@ class ChatService:
                 frequency_penalty=frequency_penalty,
                 presence_penalty=presence_penalty,
                 t_start=t_start,
+                reply_format=reply_format,
             )
 
             stream_iter = coordinator.stream()
@@ -612,6 +621,7 @@ class ChatService:
         presence_penalty: float | None = None,
         ai_adaptive_voice: bool | None = None,
         voice_profile_id: int | None = None,
+        reply_format: str = "old",
     ) -> AsyncGenerator[str | dict[str, Any], None]:
         """
         Asynchronously streams bilingual SSE formatted event strings.
@@ -634,6 +644,7 @@ class ChatService:
             presence_penalty=presence_penalty,
             ai_adaptive_voice=ai_adaptive_voice,
             voice_profile_id=voice_profile_id,
+            reply_format=reply_format,
         ):
             yield format_sse_frame(event)
 
@@ -653,6 +664,7 @@ class ChatService:
         presence_penalty: float | None = None,
         ai_adaptive_voice: bool | None = None,
         voice_profile_id: int | None = None,
+        reply_format: str = "old",
     ) -> dict[str, Any]:
         """
         Synchronous non-streaming bilingual completion and TTS synthesis.
@@ -698,6 +710,7 @@ class ChatService:
                     max_context=max_context,
                     active_prof=active_prof,
                     session=sess_obj,
+                    reply_format=reply_format,
                 )
 
             raw_text, ttft_ms = await self._execute_sync_llm(
@@ -715,7 +728,8 @@ class ChatService:
             chinese, japanese, parser = StreamingBilingualParser.parse_full_text(raw_text)
 
             final_emotion = classify_emotion(chinese, japanese, parser.emotion_extracted)
-            lines = build_lines(chinese, japanese, final_emotion, with_audio=True)
+            lines = (parser.normalized_lines(with_audio=True) if parser.line_scanner.format == "lines"
+                     else build_lines(chinese, japanese, final_emotion, with_audio=True))
 
             # Synthesize full audio
             audio_url, tts_first_chunk_ms, tts_cached_chunks, tts_generated_chunks = await self._synthesize_sync_audio(
