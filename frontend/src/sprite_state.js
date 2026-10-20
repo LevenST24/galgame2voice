@@ -231,6 +231,7 @@ function pickFaceV3(model, look, emotion, activeFace, recentFaces = []) {
   const available = pool => (Array.isArray(pool) ? pool : []).filter(entry => entry && entry.id && lookFaces[entry.id]);
   let pool = available(model.expressionSets?.[emotion]);
   if (!pool.length) pool = available(model.expressionSets?.gentle);
+  if (!pool.length && lookFaces[look.defaultFace]) return look.defaultFace;
   if (!pool.length) pool = Object.keys(lookFaces).map(id => ({ id, strength: 0 }));
   if (!pool.length) return null;
 

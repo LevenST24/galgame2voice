@@ -58,6 +58,93 @@ def write_legacy_pack(root, *, version=2):
     (root / filename).write_text(json.dumps(data), encoding="utf-8")
 
 
+def test_r12_empty_emotion_pools_match_v2(tmp_path):
+    root, data = make_valid_v3(tmp_path)
+    write_legacy_pack(root)
+    v2_path = root / "expressions.json"
+    v2_data = json.loads(v2_path.read_text(encoding="utf-8"))
+    for emotion in ("thinking", "sad"):
+        v2_data["expression_sets"][emotion] = []
+    v2_path.write_text(json.dumps(v2_data), encoding="utf-8")
+    v2 = load_portrait_manifest(root)
+    v3 = _normalize_v3(root, data)
+    for emotion in ("thinking", "sad"):
+        assert v3["expression_sets"][emotion] == v2["expression_sets"][emotion] == []
+    # Only gentle gets a default when there are no matching candidates.
+    for face in data["faces"].values():
+        face["emotion"] = "happy"
+        face["weights"] = {"happy": 3}
+    assert _normalize_v3(root, data)["expression_sets"]["gentle"] == [{"id": "01", "strength": 1}]
+
+
+R12_BAD_REFERENCES = [
+    ("poses", "a", "canvas"), ("faces", "01", "emotion"),
+    ("layers", "A/1278", "canvas"), ("looks", "a/uniform", "pose"),
+    ("looks", "a/uniform", "outfit"), ("looks", "a/uniform", "defaultFace"),
+    ("looks", "a/uniform", "body", 0), ("looks", "a/uniform", "blush", 0),
+    ("looks", "a/uniform", "fx", "sweat", 0),
+    ("looks", "a/uniform", "faces", "01", "layers", 0),
+    ("looks", "a/uniform", "faces", "01", "blink", "closed"),
+    ("looks", "a/uniform", "faces", "01", "blink", "half"),
+    ("looks", "a/uniform", "faces", "01", "mouth", "closed"),
+    ("looks", "a/uniform", "faces", "01", "mouth", "open"),
+    ("looks", "a/uniform", "faces", "01", "mouth", "half"),
+    ("looks", "a/uniform", "faces", "01", "combinedFrames", "closed:open"),
+]
+R12_BAD_VALUES = [(path, value) for path in R12_BAD_REFERENCES for value in ([], {}, None, True)]
+R12_BAD_VALUES += [
+    (("looks", "a/uniform", "faces", "14"), value) for value in ([], None, True)
+]
+R12_BAD_VALUES += [
+    (path, value)
+    for path in (("faces", "01", "weights", "gentle"),
+                 ("looks", "a/uniform", "stage", "offset", "x"),
+                 ("looks", "a/uniform", "stage", "offset", "y"))
+    for value in (float("nan"), float("inf"), -float("inf"), True, "1", [], {})
+]
+
+
+@pytest.mark.parametrize("legacy_version", [1, 2])
+@pytest.mark.parametrize("path,value", R12_BAD_VALUES)
+def test_r12_malformed_v3_falls_back_cleanly(tmp_path, path, value, legacy_version):
+    root, data = make_valid_v3(tmp_path)
+    data["looks"]["a/uniform"]["stage"] = {"scale": 1, "offset": {"x": 0, "y": 0}}
+    target = data
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    valid, reason = _validate_v3(root, data)
+    assert valid is False and reason
+    write_legacy_pack(root, version=legacy_version)
+    expected = load_portrait_manifest(root)
+    (root / "layers.json").write_text(json.dumps(data), encoding="utf-8")
+    assert load_portrait_manifest(root) == expected
+
+
+@pytest.mark.parametrize("face_override", [False, True])
+@pytest.mark.parametrize("act,current_pose,expected", [
+    ({"pose": "b", "blush": True}, None, {"pose": "b", "blush": True}),
+    ({"blush": True}, "b", {"blush": True}),
+    ({"pose": "invalid", "blush": True}, "b", {"blush": True}),
+    ({"pose": "a", "blush": True}, "b", {"pose": "a"}),
+    ({"blush": True}, None, {}),
+    ({"blush": False}, "a", {"blush": False}),
+])
+def test_r12_blush_uses_effective_pose(tmp_path, face_override, act, current_pose, expected):
+    root, data = make_valid_v3(tmp_path)
+    data["looks"]["a/uniform"].pop("blush")
+    blushing_look = data["looks"]["b/uniform"]
+    if face_override:
+        blushing_look["faces"]["20"]["blush"] = ["A/1490"]
+    else:
+        blushing_look["blush"] = ["A/1490"]
+    menu = build_acting_menu(_normalize_v3(root, data), "uniform")
+    assert menu["blush"] is True
+    assert sanitize_act(act, menu, line_index=0, character="R12", current_pose=current_pose) == expected
+    # Blush layers in another outfit never enable this one.
+    assert build_acting_menu(_normalize_v3(root, data), "casual")["blush"] is False
+
+
 @pytest.mark.parametrize("file", ["layers/B/1278.webp", "1278.webp", "layers/A/sub/1278.png", "layers/A/bad name.png", "layers/A/1278.PNG"])
 def test_v3_layer_file_must_match_canvas_and_filename(tmp_path, file):
     root, data = make_valid_v3(tmp_path)

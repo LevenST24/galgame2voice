@@ -166,6 +166,30 @@ function createV3TestPayload() {
 // 1. v3 Normalize and Resolution
 // ---------------------------------------------------------------------------
 
+test('R12 no matching pools uses the look default face before insertion order', () => {
+  const raw = createV3TestPayload();
+  const look = raw.looks['pose2/uniform'];
+  look.faces = { plain: { layers: ['face_plain'] }, ...look.faces };
+  const model = normalizePortrait(raw);
+  for (const emotion of ['sad', 'thinking', 'happy']) {
+    const result = resolveSpriteState(model, null, { emotion, act: { pose: 'pose2' } });
+    assert.equal(result.state.face, 'u2_smile');
+  }
+  look.defaultFace = 'missing';
+  const fallback = normalizePortrait(raw);
+  assert.equal(resolveSpriteState(fallback, null, { emotion: 'sad', act: { pose: 'pose2' } }).state.face, 'plain');
+});
+
+test('R12 empty pools retain thinking and use gentle for other emotions', () => {
+  const raw = createV3TestPayload();
+  raw.expression_sets.thinking = [];
+  raw.expression_sets.sad = [];
+  const model = normalizePortrait(raw);
+  const previous = resolveSpriteState(model, null, { act: { face: 'plain' } });
+  assert.equal(resolveSpriteState(model, previous, { emotion: 'thinking' }).state.face, 'plain');
+  assert.equal(resolveSpriteState(model, previous, { emotion: 'sad' }).state.face, 'smile');
+});
+
 test('v3 normalizePortrait preserves layered structures and adds version 3 metadata', () => {
   const raw = createV3TestPayload();
   const model = normalizePortrait(raw);

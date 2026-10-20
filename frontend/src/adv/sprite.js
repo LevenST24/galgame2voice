@@ -396,6 +396,7 @@ export function createSpriteView({
   }
 
   function invalidate() {
+    cancelBlink();
     revision++;
     if (pending) pending.finish({ stale: true });
     preloads.cancelPending();
@@ -762,6 +763,7 @@ export function createSpriteView({
   }
 
   function commitLayers(plan, images, { stageStyle, faceStyle, anchor }, state, options, rev) {
+    cancelBlink();
     const buffers = ensureLayerBuffers();
     const back = activeSlot === 'A' ? 'B' : 'A';
     const stageBack = buffers.stage[back];
@@ -781,7 +783,7 @@ export function createSpriteView({
     activeSlot = back;
     frame = { plan, stage, face, shown: plan.base };
     lastCommitted = { state, lookKey: plan.lookKey, costume: plan.look, revision: rev };
-    blinkPhase = null;
+    pending = null;
     // Show the current mouth level on the new face and schedule its blink.
     refreshAnimation();
     startActing(state, options, anchor, plan.fxName);
@@ -829,7 +831,7 @@ export function createSpriteView({
   function blinkAllowed() {
     const entry = frame?.plan.look.faces[frame.plan.base];
     return Boolean(entry && entry.eyesClosed !== true && entry.blink?.closed &&
-      enabledAnimations.blink && !reducedMotion && !documentObj.hidden && !destroyed);
+      !pending && enabledAnimations.blink && !reducedMotion && !documentObj.hidden && !destroyed);
   }
 
   function cancelBlink() {

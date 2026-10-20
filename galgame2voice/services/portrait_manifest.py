@@ -328,7 +328,7 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
         if not isinstance(name, str) or not name:
             return False, f"pose '{pid}' must have a non-empty string 'name'"
         p_canvas = p.get("canvas")
-        if p_canvas not in data["canvases"]:
+        if not isinstance(p_canvas, str) or p_canvas not in data["canvases"]:
             return False, f"pose '{pid}' references unknown canvas '{p_canvas}'"
 
     # 4. Faces
@@ -339,14 +339,14 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
         if not isinstance(label, str) or not label:
             return False, f"face '{fid}' must have a non-empty string 'label'"
         emotion = f.get("emotion")
-        if emotion not in VALID_EMOTIONS:
+        if not isinstance(emotion, str) or emotion not in VALID_EMOTIONS:
             return False, f"face '{fid}' has invalid emotion '{emotion}'"
         if "weights" in f:
             weights = f["weights"]
             if not isinstance(weights, dict):
                 return False, f"face '{fid}' weights must be an object"
             for w_emo, w_val in weights.items():
-                if w_emo not in VALID_EMOTIONS or not isinstance(w_val, (int, float)) or isinstance(w_val, bool):
+                if w_emo not in VALID_EMOTIONS or not _is_finite_number(w_val):
                     return False, f"face '{fid}' weights entry '{w_emo}' is invalid"
 
     # 5. Layers
@@ -354,7 +354,7 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
         if not isinstance(layer, dict):
             return False, f"layer '{lid}' must be an object"
         l_canvas = layer.get("canvas")
-        if l_canvas not in data["canvases"]:
+        if not isinstance(l_canvas, str) or l_canvas not in data["canvases"]:
             return False, f"layer '{lid}' references unknown canvas '{l_canvas}'"
         cw = data["canvases"][l_canvas]["width"]
         ch = data["canvases"][l_canvas]["height"]
@@ -398,7 +398,7 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
     used_poses = set()
 
     def _check_layer(lid: Any, context_name: str, look_key: str, l_canvas: str) -> str | None:
-        if lid not in data["layers"]:
+        if not isinstance(lid, str) or lid not in data["layers"]:
             return f"look '{look_key}' {context_name} references unknown layer '{lid}'"
         if data["layers"][lid]["canvas"] != l_canvas:
             return (
@@ -412,9 +412,9 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
             return False, f"look '{look_key}' must be an object"
         l_pose = look.get("pose")
         l_outfit = look.get("outfit")
-        if l_pose not in data["poses"]:
+        if not isinstance(l_pose, str) or l_pose not in data["poses"]:
             return False, f"look '{look_key}' references unknown pose '{l_pose}'"
-        if l_outfit not in data["outfits"]:
+        if not isinstance(l_outfit, str) or l_outfit not in data["outfits"]:
             return False, f"look '{look_key}' references unknown outfit '{l_outfit}'"
         if look_key != f"{l_pose}/{l_outfit}":
             return False, f"look key '{look_key}' does not match pose/outfit '{l_pose}/{l_outfit}'"
@@ -461,7 +461,7 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
             if not isinstance(scale, (int, float)) or isinstance(scale, bool) or scale <= 0 or not math.isfinite(scale):
                 return False, f"look '{look_key}' stage scale must be a positive number"
             offset = stage.get("offset")
-            if not isinstance(offset, dict) or not isinstance(offset.get("x"), (int, float)) or not isinstance(offset.get("y"), (int, float)):
+            if not isinstance(offset, dict) or not _is_finite_number(offset.get("x")) or not _is_finite_number(offset.get("y")):
                 return False, f"look '{look_key}' stage offset must have finite x and y"
 
         body = look.get("body")
@@ -498,7 +498,7 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
             return False, f"look '{look_key}' faces must be a non-empty object"
 
         default_face = look.get("defaultFace")
-        if default_face not in look_faces:
+        if not isinstance(default_face, str) or default_face not in look_faces:
             return False, f"look '{look_key}' defaultFace '{default_face}' not in look faces"
 
         for l_fid, l_fentry in look_faces.items():
@@ -534,13 +534,13 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
                 if "closed" not in blink:
                     return False, f"look '{look_key}' face '{l_fid}' blink missing 'closed'"
                 closed_id = blink["closed"]
-                if closed_id not in look_faces:
+                if not isinstance(closed_id, str) or closed_id not in look_faces:
                     return False, f"look '{look_key}' face '{l_fid}' blink closed partner '{closed_id}' not in look faces"
-                if look_faces[closed_id].get("eyesClosed") is not True:
+                if not isinstance(look_faces[closed_id], dict) or look_faces[closed_id].get("eyesClosed") is not True:
                     return False, f"look '{look_key}' face '{l_fid}' blink closed partner '{closed_id}' must have eyesClosed: true"
                 if "half" in blink:
                     half_id = blink["half"]
-                    if half_id not in look_faces:
+                    if not isinstance(half_id, str) or half_id not in look_faces:
                         return False, f"look '{look_key}' face '{l_fid}' blink half partner '{half_id}' not in look faces"
 
             if "mouth" in l_fentry:
@@ -551,13 +551,13 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
                     return False, f"look '{look_key}' face '{l_fid}' mouth must have 'closed' and 'open'"
                 m_closed = mouth["closed"]
                 m_open = mouth["open"]
-                if m_closed not in look_faces:
+                if not isinstance(m_closed, str) or m_closed not in look_faces:
                     return False, f"look '{look_key}' face '{l_fid}' mouth closed partner '{m_closed}' not in look faces"
-                if m_open not in look_faces:
+                if not isinstance(m_open, str) or m_open not in look_faces:
                     return False, f"look '{look_key}' face '{l_fid}' mouth open partner '{m_open}' not in look faces"
                 if "half" in mouth:
                     m_half = mouth["half"]
-                    if m_half not in look_faces:
+                    if not isinstance(m_half, str) or m_half not in look_faces:
                         return False, f"look '{look_key}' face '{l_fid}' mouth half partner '{m_half}' not in look faces"
 
             if "combinedFrames" in l_fentry:
@@ -571,7 +571,7 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
                     eye_part, mouth_part = parts
                     if eye_part not in ("half", "closed") or mouth_part not in ("half", "open"):
                         return False, f"look '{look_key}' face '{l_fid}' combinedFrames key '{ck}' has invalid phases"
-                    if cv not in look_faces:
+                    if not isinstance(cv, str) or cv not in look_faces:
                         return False, f"look '{look_key}' face '{l_fid}' combinedFrames target '{cv}' not in look faces"
 
     # 7. Cross-checks
@@ -643,7 +643,7 @@ def _normalize_v3(root: Path, data: dict[str, Any]) -> dict[str, Any]:
             elif f_meta.get("primary") == emotion or f_meta.get("primary") in aliases:
                 candidates.append((fid, 3 if f_meta.get("primary") == emotion else 1))
         candidates.sort(key=lambda item: item[1], reverse=True)
-        if not candidates:
+        if not candidates and emotion == "gentle":
             candidates = [(default_face_id, 1)]
         pools[emotion] = [{"id": cid, "strength": strength} for cid, strength in candidates]
 

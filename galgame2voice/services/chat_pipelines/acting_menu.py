@@ -109,23 +109,14 @@ def build_acting_menu(portrait: dict | None, outfit: str | None = None) -> dict 
                 face_ids[label] = []
             face_ids[label].append(face_id)
 
-        look_blush = default_look.get("blush") or []
-        blush = False
-        for f_entry in look_faces_dict.values():
-            if not isinstance(f_entry, dict):
-                continue
-            f_blush = f_entry.get("blush")
-            if f_blush is not None:
-                if len(f_blush) > 0:
-                    blush = True
-                    break
-            elif len(look_blush) > 0:
-                blush = True
-                break
-
         look_faces: dict[str, list[str]] = {}
+        look_blush: dict[str, bool] = {}
         for pid in poses:
             l_look = looks_meta.get(f"{pid}/{resolved_outfit}") or {}
+            look_blush[pid] = any(
+                bool(entry.get("blush", l_look.get("blush")))
+                for entry in l_look.get("faces", {}).values() if isinstance(entry, dict)
+            )
             l_labels: list[str] = []
             for fid in l_look.get("faces", {}):
                 meta = faces_meta.get(fid)
@@ -145,11 +136,12 @@ def build_acting_menu(portrait: dict | None, outfit: str | None = None) -> dict 
             "face_ids": face_ids,
             "poses": poses,
             "pose_names": {pid: poses_meta[pid]["name"] for pid in poses},
-            "blush": blush,
+            "blush": any(look_blush.values()),
             "motions": list(MOTIONS),
             "fx": list(FX),
             "default_pose": default_look_pose,
             "look_faces": look_faces,
+            "look_blush": look_blush,
         }
 
     resolved_outfit, costume_sprites = _costume_sprites(portrait, outfit)
@@ -259,6 +251,9 @@ def sanitize_act(
             effective_pose = menu["default_pose"]
         elif allowed_poses:
             effective_pose = allowed_poses[0]
+
+    if isinstance(menu, dict) and isinstance(menu.get("look_blush"), dict):
+        blush_available = bool(menu["look_blush"].get(effective_pose))
 
     # 2. Determine allowed faces for the effective look
     if isinstance(menu, dict) and "look_faces" in menu and effective_pose in menu["look_faces"]:

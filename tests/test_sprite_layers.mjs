@@ -272,6 +272,57 @@ test('a blink without a half frame shows closed for 90 ms and keeps the face blu
   assert.equal(h.view.getVisibleFace(), 'shy');
 });
 
+for (const refresh of ['options', 'visibility']) {
+  test(`R12 blink waits for decode and commit after ${refresh} refresh`, async () => {
+    const h = setup();
+    await h.commit(v3('smile'));
+    h.clock.tick(2000); // Interrupt a blink already in progress.
+    h.mode.decode = 'manual';
+    const next = h.view.apply(v3('shy'));
+    await microtasks();
+    const update = () => refresh === 'options'
+      ? h.view.setAnimationOptions({ advBlink: true })
+      : h.doc.dispatchEvent({ type: 'visibilitychange' });
+    update();
+    assert.equal(h.clock.timers.size, 0, 'no blink timer during decode');
+    assert.equal(h.view.getVisibleFace(), 'smile');
+    h.clock.tick(6000);
+    assert.equal(h.view.getLastCommitted().state.face, 'smile');
+    h.decodes.forEach(entry => entry.resolve());
+    await microtasks();
+    update(); // Decode is complete, but the RAF has not committed it.
+    assert.equal(h.clock.timers.size, 0, 'no blink timer before RAF commit');
+    assert.equal(h.view.getVisibleFace(), 'smile');
+    h.flush();
+    assert.equal((await next).stale, false);
+    assert.equal(h.view.getVisibleFace(), 'shy', 'new frame starts open');
+    assert.equal(h.clock.timers.size, 1, 'exactly one new-frame timer');
+    update(); update();
+    assert.equal(h.clock.timers.size, 1, 'repeated refresh cannot duplicate timers');
+    h.clock.tick(1999);
+    assert.equal(h.view.getVisibleFace(), 'shy');
+    h.clock.tick(1);
+    assert.equal(h.view.getVisibleFace(), 'shy_closed');
+    h.clock.tick(90);
+    assert.equal(h.view.getVisibleFace(), 'shy', 'new blink uses its own steps');
+    assert.equal(h.clock.timers.size, 1);
+    h.view.destroy();
+    assert.equal(h.clock.timers.size, 0);
+  });
+}
+
+test('R12 model invalidation cancels an active blink', async () => {
+  const h = setup();
+  await h.commit(v3('smile'));
+  h.clock.tick(2000);
+  h.view.setModel(h.model, { preserveCurrent: true });
+  assert.equal(h.clock.timers.size, 0);
+  assert.equal(h.view.getVisibleFace(), 'smile');
+  h.clock.tick(210);
+  assert.equal(h.view.getVisibleFace(), 'smile');
+  h.view.destroy();
+});
+
 test('eyes-closed faces and faces without a blink partner never blink', async () => {
   for (const face of ['sleepy', 'plain']) {
     const h = setup();
