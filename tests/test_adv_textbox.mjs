@@ -151,6 +151,7 @@ function createFakeClock() {
 }
 
 const { createTextbox } = await import('../frontend/src/adv/textbox.js');
+const { splitGraphemes } = await import('../frontend/src/adv/graphemes.js');
 
 test('textbox: progressive reveal with fake clock, completeReveal shows everything immediately', () => {
   const clock = createFakeClock();
@@ -443,6 +444,45 @@ test('textbox: paginate computes max page count for bilingual lines and respects
   const subEl = container.querySelector('.adv-subtitle-text');
   assert.equal(primaryEl.textContent, '「你好！」');
   assert.equal(subEl.textContent, '「こんにちは！」');
+});
+
+test('textbox: prepareInput clears previous error message and hides errorWrapEl', () => {
+  const container = new FakeElement();
+  const tb = createTextbox(container, {
+    getSettings: () => ({ playerName: '勇者' }),
+  });
+
+  tb.showError({ message: '网络错误，请稍后重试' });
+  const errorWrapEl = container.querySelector('.adv-error-wrap');
+  const errorMsgEl = container.querySelector('.adv-error-message');
+  assert.equal(errorWrapEl.classList.contains('is-hidden'), false);
+  assert.equal(errorMsgEl.textContent, '网络错误，请稍后重试');
+
+  tb.prepareInput({ canSend: true });
+  assert.equal(errorWrapEl.classList.contains('is-hidden'), true);
+  assert.equal(errorMsgEl.textContent, '');
+});
+
+test('graphemes: splitGraphemes splits correctly and caches Intl.Segmenter instance', () => {
+  const clusters = splitGraphemes('你好世界👨‍👩‍👧‍👦！');
+  assert.ok(clusters.length > 0);
+  assert.equal(clusters.join(''), '你好世界👨‍👩‍👧‍👦！');
+
+  const clusters2 = splitGraphemes('第二句台词');
+  assert.equal(clusters2.join(''), '第二句台词');
+
+  const NativeSegmenter = Intl.Segmenter;
+  let created = 0;
+  Intl.Segmenter = class extends NativeSegmenter {
+    constructor(...args) { super(...args); created++; }
+  };
+  try {
+    splitGraphemes('第三句');
+    splitGraphemes('第四句');
+  } finally {
+    Intl.Segmenter = NativeSegmenter;
+  }
+  assert.equal(created, 0);
 });
 
 test('textbox: long Japanese line pagination strictly confines every page within single-line bounds without clipping or wrapping', () => {

@@ -35,6 +35,14 @@ BILINGUAL_OUTPUT_CONTRACT = (
 )
 
 
+class BuiltContext(list):
+    """Message history list carrying the resolved turn acting menu."""
+
+    def __init__(self, messages: list[ChatMessage] | None = None, menu: dict | None = None):
+        super().__init__(messages or [])
+        self.menu: dict | None = menu
+
+
 def ensure_bilingual_output_format(prompt: str) -> str:
     """Appends the bilingual JSON reply contract when a persona prompt does not define one."""
     if not prompt or ('"chinese"' in prompt and '"japanese"' in prompt):
@@ -82,7 +90,7 @@ async def _resolve_context_voice_profile(
     return active_profile
 
 
-def _build_acting_menu(character_name: str | None) -> dict | None:
+def _build_acting_menu(character_name: str | None, outfit: str | None = None) -> dict | None:
     """Builds the acting menu from the active character's portrait pack, if any."""
     if not character_name:
         return None
@@ -94,7 +102,7 @@ def _build_acting_menu(character_name: str | None) -> dict | None:
     except Exception as exc:
         logger.warning("Failed to build acting menu for %s: %s", character_name, exc)
         return None
-    return build_acting_menu(portrait)
+    return build_acting_menu(portrait, outfit)
 
 
 async def _build_memory_prompt_block(
@@ -141,7 +149,8 @@ async def build_chat_context(
     active_profile: Any | None = None,
     session: Any | None = None,
     reply_format: str = "old",
-) -> list[ChatMessage]:
+    outfit: str | None = None,
+) -> BuiltContext:
     """
     Builds the complete message history and prompt context for LLM execution:
     1. Resolves session and character voice profile.
@@ -170,8 +179,8 @@ async def build_chat_context(
 
     char_name = character_name or (active_profile.name if active_profile else "Character")
 
+    menu = _build_acting_menu(char_name, outfit)
     if reply_format == "lines":
-        menu = _build_acting_menu(char_name)
         system_prompt = strip_old_format_block(system_prompt)
         contract = render_lines_contract(menu)
         system_prompt = f"{system_prompt.rstrip()}\n\n{contract}" if system_prompt.strip() else contract
@@ -192,7 +201,7 @@ async def build_chat_context(
         conn=conn,
     )
 
-    return await session_manager.build_chat_messages(
+    raw_messages = await session_manager.build_chat_messages(
         session_id=session_id,
         user_prompt=user_prompt,
         character_name=char_name,
@@ -202,3 +211,4 @@ async def build_chat_context(
         conn=conn,
         reply_format=reply_format,
     )
+    return BuiltContext(raw_messages, menu=menu)

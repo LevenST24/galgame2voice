@@ -23,7 +23,8 @@ except ImportError:
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
 
-from galgame2voice.database.session import get_db
+from galgame2voice.database.session import get_db, immediate_transaction
+from galgame2voice.services.chat_pipelines.acting_menu import sanitize_act
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate, CharacterAffectionUpdate
 from galgame2voice.services.chat_service import ChatService, StreamingBilingualParser
@@ -637,16 +638,32 @@ class TelegramBotHandlers:
         task.add_done_callback(_cleanup_task)
         return task
 
+    async def _prune_orphaned_user_message(self, user_msg_id: int | None, context_label: str = "telegram") -> None:
+        """Prunes orphaned user message when downstream processing fails before assistant reply persistence."""
+        if not user_msg_id:
+            return
+        try:
+            async with get_db(self.db_path) as conn:
+                async with immediate_transaction(conn):
+                    await crud.delete_message(conn, user_msg_id)
+        except Exception as prune_err:
+            logger.warning(
+                "Failed to prune orphaned user message %s%s: %s",
+                user_msg_id,
+                f" in {context_label}" if context_label else "",
+                prune_err,
+            )
+
     async def _setup_user_chat_turn(
         self,
         session_id: str,
         effective_user_id: int,
         text: str,
-    ) -> tuple[Any, str, int, list[Any]]:
+    ) -> tuple[Any, str, int, list[Any], int, str]:
         """Prepares session, persists user message, extracts memory facts, and retrieves LLM adapter & messages."""
         async with get_db(self.db_path) as conn:
             await crud.get_or_create_session(conn, session_id, channel="telegram", user_id=str(effective_user_id))
-            await crud.add_message(conn, MessageCreate(
+            user_msg = await crud.add_message(conn, MessageCreate(
                 session_id=session_id,
                 role="user",
                 content_chinese=text,
@@ -657,6 +674,7 @@ class TelegramBotHandlers:
             # Extract and persist facts into long-term memory
             profile = await crud.get_active_voice_profile(conn)
             profile_id = profile.id if profile else 1
+            char_name = profile.name if profile else "Character"
             try:
                 if hasattr(self.chat_service, "memory_service"):
                     await self.chat_service.memory_service.process_user_message(
@@ -668,14 +686,18 @@ class TelegramBotHandlers:
             except Exception as mem_err:
                 logger.debug("Telegram non-critical memory extraction exception: %s", mem_err)
 
-            adapter, model_name, _provider_id = await self.chat_service.get_active_llm_adapter(conn=conn)
-            # Pass the globally active profile explicitly: otherwise the context builder falls back
-            # to the session row's voice_profile_id, which is fixed at the chat's first message,
-            # so /character would switch the voice but keep the old persona and memories.
-            messages = await self.chat_service.prepare_messages(
-                conn, session_id, text, active_profile=profile, reply_format="old",
-            )
-            return adapter, model_name, profile_id, messages
+            try:
+                adapter, model_name, _provider_id = await self.chat_service.get_active_llm_adapter(conn=conn)
+                # Pass the globally active profile explicitly: otherwise the context builder falls back
+                # to the session row's voice_profile_id, which is fixed at the chat's first message,
+                # so /character would switch the voice but keep the old persona and memories.
+                messages = await self.chat_service.prepare_messages(
+                    conn, session_id, text, active_profile=profile, reply_format="old",
+                )
+                return adapter, model_name, profile_id, messages, user_msg.id, char_name
+            except Exception:
+                await self._prune_orphaned_user_message(user_msg.id, context_label="_setup_user_chat_turn")
+                raise
 
     async def _persist_assistant_chat_turn(
         self,
@@ -721,9 +743,10 @@ class TelegramBotHandlers:
         # 1. Cancel this member's previous pending voice task, never another member's
         self.cancel_user_task(chat_id, effective_user_id)
 
+        user_msg_id: int | None = None
         try:
             # 2. Query ChatService / LLM Adapter for bilingual response
-            adapter, model_name, profile_id, messages = await self._setup_user_chat_turn(
+            adapter, model_name, profile_id, messages, user_msg_id, char_name = await self._setup_user_chat_turn(
                 session_id=session_id,
                 effective_user_id=effective_user_id,
                 text=text,
@@ -762,6 +785,21 @@ class TelegramBotHandlers:
             await bot.send_message(chat_id=chat_id, text=display_chinese)
 
             # 4. Immediately persist assistant message to DB & process affection progression
+            lines = (
+                parser.normalized_lines(with_audio=True)
+                if parser.line_scanner.format == "lines"
+                else build_lines(display_chinese, japanese, with_audio=True)
+            )
+            acting_menu = getattr(messages, "menu", None)
+            if lines:
+                for line in lines:
+                    line["act"] = sanitize_act(
+                        line.get("act"),
+                        acting_menu,
+                        line_index=line.get("index", 0),
+                        character=char_name,
+                    )
+
             await self._persist_assistant_chat_turn(
                 session_id=session_id,
                 effective_user_id=effective_user_id,
@@ -769,13 +807,15 @@ class TelegramBotHandlers:
                 user_text=text,
                 display_chinese=display_chinese,
                 japanese=japanese,
-                lines=parser.normalized_lines(with_audio=True) if parser.line_scanner.format == "lines" else None,
+                lines=lines,
             )
 
             # 5. Schedule background voice synthesis task
             return self._spawn_background_voice_task(chat_id, bot, japanese, dynamic_tts, task_key=session_id)
 
         except Exception as exc:
+            if user_msg_id is not None:
+                await self._prune_orphaned_user_message(user_msg_id, context_label="process_text_chat")
             logger.error("Error generating LLM reply for chat_id=%d: %s", chat_id, exc, exc_info=True)
             safe_err = sanitize_error_detail(exc)
             err_detail = f": {safe_err}" if safe_err else ""

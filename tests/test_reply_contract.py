@@ -273,6 +273,17 @@ class TestLinesModeWiring:
         assert context_builder._build_acting_menu("测试角色") == build_acting_menu(portrait)
         assert context_builder._build_acting_menu("不存在的角色") is None
 
+    def test_helper_builds_the_menu_for_the_selected_outfit(self, monkeypatch):
+        package = SimpleNamespace(folder=Path("synthetic-pack"))
+        manager = SimpleNamespace(get_character=lambda name: package)
+        outfits = []
+        monkeypatch.setattr(context_builder, "get_character_manager", lambda: manager)
+        monkeypatch.setattr(context_builder, "load_portrait_manifest", lambda folder: {})
+        monkeypatch.setattr(context_builder, "build_acting_menu", lambda portrait, outfit=None: outfits.append(outfit) or MENU)
+
+        assert context_builder._build_acting_menu("测试角色", "casual") == MENU
+        assert outfits == ["casual"]
+
     @pytest.mark.asyncio
     async def test_build_chat_context_lines_mode_replaces_the_old_block(self, temp_db_path, monkeypatch):
         sm = SessionManager(temp_db_path)
@@ -283,7 +294,8 @@ class TestLinesModeWiring:
         )
         profile = SimpleNamespace(id=1, name="测试角色", system_prompt=prompt)
         session = SimpleNamespace(user_id="user-1")
-        monkeypatch.setattr(context_builder, "_build_acting_menu", lambda name: MENU)
+        outfits = []
+        monkeypatch.setattr(context_builder, "_build_acting_menu", lambda name, outfit=None: outfits.append(outfit) or MENU)
 
         async with get_db(temp_db_path) as conn:
             messages = await build_chat_context(
@@ -295,8 +307,11 @@ class TestLinesModeWiring:
                 active_profile=profile,
                 session=session,
                 reply_format="lines",
+                outfit="casual",
             )
 
+        assert outfits == ["casual"]
+        assert messages.menu == MENU
         system = messages[0].content
         assert system.startswith("你是合成测试角色")
         assert "重要：你必须严格输出如下 JSON 格式" not in system
@@ -308,7 +323,7 @@ class TestLinesModeWiring:
     async def test_build_chat_context_lines_mode_without_a_menu(self, temp_db_path, monkeypatch):
         sm = SessionManager(temp_db_path)
         session = SimpleNamespace(user_id="user-1", voice_profile_id=None)
-        monkeypatch.setattr(context_builder, "_build_acting_menu", lambda name: None)
+        monkeypatch.setattr(context_builder, "_build_acting_menu", lambda name, outfit=None: None)
 
         async with get_db(temp_db_path) as conn:
             messages = await build_chat_context(

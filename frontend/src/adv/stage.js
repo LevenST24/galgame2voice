@@ -56,8 +56,11 @@ export function createStage(root, { onLetterboxClick } = {}) {
   stage.setAttribute('tabindex', '-1');
 
   function handleStagePointerDown(e) {
+    if (e.target?.closest?.('.adv-layer-overlay')) {
+      return;
+    }
     const tag = e.target?.tagName?.toUpperCase?.();
-    if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'BUTTON') {
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'BUTTON' && tag !== 'SELECT') {
       stage.focus?.();
     }
   }

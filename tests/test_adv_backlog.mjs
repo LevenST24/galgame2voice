@@ -816,20 +816,23 @@ test('LOG audio events match both message and line, without mutating history', t
   assert.equal(h.active().messages[1].lines[0].audio.status, 'pending');
 });
 
-test('LOG replay failure remains disabled after reconciliation and failed status rejects chunks', async t => {
+test('LOG replay failure: empty chunks remain disabled while existing chunks are playable', async t => {
   const h = setupApp(t);
   h.active().messages = [{ id: 'a', role: 'assistant', ts: h.getWallTime(), lines: [
-    { index: 0, zh: '失败', audio: { status: 'failed', chunks: [{ audio_url: '/bad.wav' }] } },
-    { index: 1, zh: '可播放', audio: { status: 'ready', chunks: [{ audio_url: '/ok.wav' }] } },
+    { index: 0, zh: '无音频失败', audio: { status: 'failed', chunks: [] } },
+    { index: 1, zh: '部分音频失败', audio: { status: 'failed', chunks: [{ audio_url: '/bad.wav' }] } },
+    { index: 2, zh: '可播放', audio: { status: 'ready', chunks: [{ audio_url: '/ok.wav' }] } },
   ] }];
   h.app.action('log');
   let buttons = h.app.backlog.element.querySelectorAll('.adv-log-replay-btn');
   assert.equal(buttons[0].disabled, true);
-  buttons[1].click(); h.endVoice('failed'); await microtasks();
+  assert.equal(buttons[1].disabled, false);
+  assert.equal(buttons[2].disabled, false);
+  buttons[2].click(); h.endVoice('failed'); await microtasks();
   h.app.backlog.renderAll();
   buttons = h.app.backlog.element.querySelectorAll('.adv-log-replay-btn');
-  assert.equal(buttons[1].disabled, true);
-  assert.equal(buttons[1].getAttribute('aria-label'), '语音已过期或不可用');
+  assert.equal(buttons[2].disabled, true);
+  assert.equal(buttons[2].getAttribute('aria-label'), '语音已过期或不可用');
 });
 
 test('LOG repeated replay ignores the interrupted promise and clears prior playing indicator', async t => {

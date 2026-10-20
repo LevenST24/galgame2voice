@@ -837,8 +837,16 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     persistSession(s).catch(() => {});
   }
 
+  function handleInputKeydown(e) {
+    if (e.isComposing || e.keyCode === 229) return;
+    if ((e.key === 'Enter' && !e.shiftKey) || ((e.ctrlKey || e.metaKey) && e.key === 'Enter')) {
+      e.preventDefault();
+      sendMessage();
+    }
+  }
+
   const app = { sendMessage, retryFailedMessage, loadOlderSessionHistory, fullRender, updateComposer, conversation,
-    switchSession, syncAdv, get adv() { return advApp; } };
+    switchSession, syncAdv, handleInputKeydown, get adv() { return advApp; } };
   if (!initialize) return app;
 
   /* ---------- 核心事件绑定 ---------- */
@@ -859,12 +867,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       autoGrow();
       updateComposer();
     });
-    dom.input.addEventListener('keydown', (e) => {
-      if ((e.key === 'Enter' && !e.shiftKey && !e.isComposing) || ((e.ctrlKey || e.metaKey) && e.key === 'Enter')) {
-        e.preventDefault();
-        sendMessage();
-      }
-    });
+    dom.input.addEventListener('keydown', handleInputKeydown);
   }
   if (dom.stopBtn) dom.stopBtn.addEventListener('click', interruptAll);
 

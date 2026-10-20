@@ -311,9 +311,30 @@ export function mountAdv(dom, deps) {
       case 'toggle_auto':
       case 'auto': if (!['input', 'error', 'suspended'].includes(player.state)) player.setAuto(!player.auto); break;
       case 'toggle_skip':
-      case 'skip': if (!['input', 'error', 'suspended'].includes(player.state)) player.setSkip(!player.skip); sprite.suspend(); break;
-      case 'skip-hold-start': temporarySkip = !player.skip; if (temporarySkip) player.setSkip(true); sprite.suspend(); break;
-      case 'skip-hold-end': if (temporarySkip) player.setSkip(false); temporarySkip = false; break;
+      case 'skip':
+        if (!['input', 'error', 'suspended'].includes(player.state)) {
+          const next = !player.skip;
+          player.setSkip(next);
+          if (next) sprite.suspend();
+          else restoreSprite();
+        }
+        break;
+      case 'skip-hold-start':
+        if (!['input', 'error', 'suspended'].includes(player.state)) {
+          temporarySkip = !player.skip;
+          if (temporarySkip) {
+            player.setSkip(true);
+            sprite.suspend();
+          }
+        }
+        break;
+      case 'skip-hold-end':
+        if (temporarySkip) {
+          player.setSkip(false);
+          temporarySkip = false;
+          restoreSprite();
+        }
+        break;
       case 'toggle_hide':
       case 'hide':
         if (player.hidden) unhide();
@@ -356,6 +377,7 @@ export function mountAdv(dom, deps) {
   function unhide() {
     player.resume('hidden');
     player.unhide();
+    restoreSprite();
   }
   const shortcuts = createShortcuts(stage.stage, {
     getContext: () => ({ stage: stage.stage, hidden: player.hidden,
@@ -541,7 +563,10 @@ export function mountAdv(dom, deps) {
   if (deps.subscribe) disposers.push(deps.subscribe(update));
   listen(deps.viewport || globalThis.window, 'resize', () => {
     if (!currentLine || !['revealing', 'waiting_advance', 'waiting_audio'].includes(player.state)) return;
-    player.repaginate(); textbox.reflow({ pageIndex: player.page });
+    const wasRevealing = player.state === 'revealing';
+    player.repaginate();
+    textbox.reflow({ pageIndex: player.page });
+    if (wasRevealing) player.advance();
   });
   update();
   return {

@@ -105,7 +105,7 @@ export function createBacklog(container, deps = {}) {
   function updateReplayButtonState(btn, line, msg, statusSpan) {
     const chunks = line?.audio?.chunks || [];
     const status = line?.audio?.status;
-    const hasPlayableChunks = Array.isArray(chunks) && chunks.length > 0 && status === 'ready';
+    const hasPlayableChunks = Array.isArray(chunks) && chunks.length > 0 && (status === 'ready' || status === 'failed');
     const voiceOn = isVoiceEnabled();
     const now = getNow();
     const msgTs = msg?.ts ?? now;

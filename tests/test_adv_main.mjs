@@ -149,6 +149,39 @@ test('LOG opened during a real stream contains the final saved reply after done'
   assert.ok(overlay.querySelectorAll('.adv-log-primary').some(node => node.textContent === 'partial final'));
 });
 
+test('main input keydown ignores Enter during IME composition (keyCode 229 / isComposing)', async t => {
+  const h = setup(t);
+  let defaultPrevented = false;
+
+  // During IME composition (isComposing = true)
+  h.dom.input.value = 'ceshi';
+  h.app.handleInputKeydown({
+    key: 'Enter',
+    isComposing: true,
+    preventDefault: () => { defaultPrevented = true; },
+  });
+  assert.equal(h.stream.requests.length, 0);
+  assert.equal(defaultPrevented, false);
+
+  // IME commit with keyCode 229
+  h.app.handleInputKeydown({
+    key: 'Enter',
+    keyCode: 229,
+    preventDefault: () => { defaultPrevented = true; },
+  });
+  assert.equal(h.stream.requests.length, 0);
+  assert.equal(defaultPrevented, false);
+
+  // Normal Enter sends
+  h.app.handleInputKeydown({
+    key: 'Enter',
+    preventDefault: () => { defaultPrevented = true; },
+  });
+  await tick();
+  assert.equal(h.stream.requests.length, 1);
+  assert.equal(defaultPrevented, true);
+});
+
 for (const blocked of ['loading', 'deleting']) test(`real controller ${blocked} rejection preserves draft and disables ADV sending`, t => {
   const h = setup(t);
   if (blocked === 'loading') h.getActive().loadingOlder = true;

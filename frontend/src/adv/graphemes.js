@@ -10,10 +10,13 @@
  * @param {{ useSegmenter?: boolean }} [options]
  * @returns {string[]}
  */
+let cachedSegmenter = null;
+
 export function splitGraphemes(text, { useSegmenter = true } = {}) {
   if (!text) return [];
   if (useSegmenter && typeof Intl !== 'undefined' && Intl.Segmenter) {
-    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    if (!cachedSegmenter) cachedSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    const segmenter = cachedSegmenter;
     return Array.from(segmenter.segment(text), s => s.segment);
   }
   return [...text];
