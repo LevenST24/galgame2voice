@@ -12,6 +12,13 @@ import aiosqlite
 
 from galgame2voice.adapters.base import ChatMessage
 from galgame2voice.database import crud
+from galgame2voice.services.chat_pipelines.acting_menu import build_acting_menu
+from galgame2voice.services.chat_pipelines.reply_contract import (
+    render_lines_contract,
+    strip_old_format_block,
+)
+from galgame2voice.services.character_manager import get_character_manager
+from galgame2voice.services.portrait_manifest import load_portrait_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +82,21 @@ async def _resolve_context_voice_profile(
     return active_profile
 
 
+def _build_acting_menu(character_name: str | None) -> dict | None:
+    """Builds the acting menu from the active character's portrait pack, if any."""
+    if not character_name:
+        return None
+    try:
+        package = get_character_manager().get_character(character_name)
+        if package is None:
+            return None
+        portrait = load_portrait_manifest(package.folder / "portrait")
+    except Exception as exc:
+        logger.warning("Failed to build acting menu for %s: %s", character_name, exc)
+        return None
+    return build_acting_menu(portrait)
+
+
 async def _build_memory_prompt_block(
     memory_service: Any,
     user_id: str,
@@ -118,6 +140,7 @@ async def build_chat_context(
     max_history_override: int | None = None,
     active_profile: Any | None = None,
     session: Any | None = None,
+    reply_format: str = "old",
 ) -> list[ChatMessage]:
     """
     Builds the complete message history and prompt context for LLM execution:
@@ -145,8 +168,15 @@ async def build_chat_context(
             else session_manager.DEFAULT_SYSTEM_TEMPLATE
         )
 
-    system_prompt = ensure_bilingual_output_format(upgrade_legacy_system_prompt(system_prompt))
     char_name = character_name or (active_profile.name if active_profile else "Character")
+
+    if reply_format == "lines":
+        menu = _build_acting_menu(char_name)
+        system_prompt = strip_old_format_block(system_prompt)
+        contract = render_lines_contract(menu)
+        system_prompt = f"{system_prompt.rstrip()}\n\n{contract}" if system_prompt.strip() else contract
+    else:
+        system_prompt = ensure_bilingual_output_format(upgrade_legacy_system_prompt(system_prompt))
 
     settings_raw = await crud.get_settings_raw(conn)
     max_history = max_history_override or settings_raw.max_history_messages
@@ -170,4 +200,5 @@ async def build_chat_context(
         max_messages=max_history,
         memory_prompt_block=memory_block,
         conn=conn,
+        reply_format=reply_format,
     )
