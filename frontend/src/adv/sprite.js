@@ -506,6 +506,7 @@ export function createSpriteView({
   return {
     setModel, apply, clear, suspend, destroy,
     preload: urls => preloads.add(urls),
+    getModel: () => model,
     getRevision: () => revision,
     getActiveSlot: () => activeSlot,
     getLastCommitted: () => lastCommitted,

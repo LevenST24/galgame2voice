@@ -1,7 +1,7 @@
 import { validAdvSetting, pickSettings } from '../session_data.js';
 
 // Same field/label structure as the existing session panel. Values are inert text.
-const fields = {
+export const ADV_FIELDS = {
   advEnabled: ['启用 ADV 预览', ['false', 'true']],
   advPlayerName: ['玩家名字'],
   advPrimaryLanguage: ['主要语言', ['zh', 'ja']],
@@ -14,7 +14,43 @@ const fields = {
   advAutoMode: ['AUTO 模式', ['voice-priority', 'normal']],
   advOutfit: ['服装 ID（留空使用角色默认）'],
 };
-const labels = { true: '开启', false: '关闭', zh: '中文', ja: '日文', none: '无', 'voice-priority': '语音优先', normal: '通常' };
+export const ADV_LABELS = { true: '开启', false: '关闭', zh: '中文', ja: '日文', none: '无', 'voice-priority': '语音优先', normal: '通常' };
+
+const fields = ADV_FIELDS;
+const labels = ADV_LABELS;
+
+export function validateAdvField(key, raw, defaults) {
+  const meta = ADV_FIELDS[key];
+  const label = meta ? meta[0] : key;
+  if (typeof defaults?.[key] === 'boolean') {
+    if (typeof raw === 'boolean') return { valid: true, value: raw };
+    const str = String(raw ?? '');
+    if (!['true', 'false'].includes(str)) {
+      return { valid: false, error: `ADV 设置无效：${label}` };
+    }
+    return { valid: true, value: str === 'true' };
+  }
+  if (typeof defaults?.[key] === 'number') {
+    const str = String(raw ?? '').trim();
+    const num = str ? Number(str) : NaN;
+    if (!Number.isFinite(num) || !validAdvSetting(key, num)) {
+      return { valid: false, error: `ADV 设置无效：${label}` };
+    }
+    return { valid: true, value: num };
+  }
+  const str = String(raw ?? '');
+  if (!validAdvSetting(key, str)) {
+    return { valid: false, error: `ADV 设置无效：${label}` };
+  }
+  return { valid: true, value: str };
+}
+
+export function validateAdvLanguages(primary, subtitle) {
+  if (primary && subtitle && primary === subtitle) {
+    return '主要语言和字幕语言需要不同。';
+  }
+  return null;
+}
 
 export function createAdvSettings(container, defaults) {
   if (!container) return { load() {}, read: () => ({}), snapshot: () => '' };
@@ -73,15 +109,12 @@ export function createAdvSettings(container, defaults) {
     const result = {};
     for (const key of Object.keys(fields)) {
       const raw = controls[key].value;
-      if (typeof defaults[key] === 'boolean' && !['true', 'false'].includes(raw)) {
-        throw new Error(`ADV 设置无效：${fields[key][0]}`);
-      }
-      const value = typeof defaults[key] === 'boolean' ? raw === 'true'
-        : typeof defaults[key] === 'number' ? (raw.trim() ? Number(raw) : NaN) : raw;
-      if (!validAdvSetting(key, value)) throw new Error(`ADV 设置无效：${fields[key][0]}`);
-      result[key] = value;
+      const parsed = validateAdvField(key, raw, defaults);
+      if (!parsed.valid) throw new Error(parsed.error);
+      result[key] = parsed.value;
     }
-    if (result.advPrimaryLanguage === result.advSubtitleLanguage) throw new Error('主要语言和字幕语言需要不同。');
+    const langError = validateAdvLanguages(result.advPrimaryLanguage, result.advSubtitleLanguage);
+    if (langError) throw new Error(langError);
     return result;
   }
   load(defaults);

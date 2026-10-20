@@ -277,7 +277,7 @@ test('mic, model and configuration controls are reachable without advancing the 
   assert.equal(h.app.player.currentIndex, 0); assert.equal(h.app.player.state, 'waiting_advance');
   h.app.textbox.micButton.click(); assert.equal(h.calls.mic, 1); assert.equal(h.app.player.state, 'input');
   h.app.stage.stage.querySelector('.adv-qm-status').click(); assert.equal(h.calls.models, 1);
-  h.app.stage.stage.querySelector('.adv-qm-btn-config').click(); assert.equal(h.calls.settings, 1);
+  h.app.stage.stage.querySelector('.adv-qm-btn-config').click(); assert.equal(h.app.configPanel.isOpen, true);
 });
 
 test('closing overlays restores the same stage/crop revision without replaying or announcing', async t => {
@@ -380,7 +380,7 @@ for (const key of ['Enter', ' ']) test(`focused settings button retains native $
   assert.equal(h.app.player.currentIndex, 0);
   // Model the browser default action, which only runs for unprevented keydowns.
   if (!event.defaultPrevented) button.click();
-  assert.equal(h.calls.settings, 1);
+  assert.equal(h.app.configPanel.isOpen, true);
 });
 
 test('rejected send keeps draft; accepted send clears it', t => {
@@ -389,4 +389,37 @@ test('rejected send keeps draft; accepted send clears it', t => {
   input.dispatchEvent({ type: 'keydown', key: 'Enter' }); assert.equal(input.value, '保留草稿');
   h.controller.send = () => true;
   input.dispatchEvent({ type: 'keydown', key: 'Enter' }); assert.equal(input.value, '');
+});
+
+test('player in input mode: quick-menu settings lands focus inside panel on first control, outside elements cannot steal focus', t => {
+  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
+  // Player is in input mode with textarea focused
+  assert.equal(h.app.player.state, 'input');
+  assert.equal(h.doc.activeElement, h.app.textbox.inputElement);
+
+  const button = h.app.stage.stage.querySelector('.adv-qm-btn-config');
+  button.click();
+
+  assert.equal(h.app.configPanel.isOpen, true);
+  assert.equal(h.app.configPanel.element.contains(h.doc.activeElement), true);
+  assert.notEqual(h.doc.activeElement, h.app.textbox.inputElement);
+  assert.equal(h.doc.activeElement, h.app.configPanel.controls.advWindowOpacity);
+
+  // While panel is open nothing outside it may take focus
+  h.app.textbox.inputElement.focus();
+  assert.notEqual(h.doc.activeElement, h.app.textbox.inputElement);
+  assert.equal(h.app.configPanel.element.contains(h.doc.activeElement), true);
+
+  h.app.textbox.enterInput();
+  assert.notEqual(h.doc.activeElement, h.app.textbox.inputElement);
+  assert.equal(h.app.configPanel.element.contains(h.doc.activeElement), true);
+
+  h.app.update();
+  assert.notEqual(h.doc.activeElement, h.app.textbox.inputElement);
+  assert.equal(h.app.configPanel.element.contains(h.doc.activeElement), true);
+
+  // Closing restores focus to the input element
+  h.app.configPanel.close({ revert: true });
+  assert.equal(h.app.configPanel.isOpen, false);
+  assert.equal(h.doc.activeElement, h.app.textbox.inputElement);
 });

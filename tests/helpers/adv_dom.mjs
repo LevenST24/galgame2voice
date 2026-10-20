@@ -56,7 +56,14 @@ export class Element {
     return !event.defaultPrevented;
   }
   click() { if (!this.disabled) this.dispatchEvent({ type: 'click', button: 0 }); }
-  focus() { this.ownerDocument.activeElement = this; }
+  focus() {
+    let cur = this;
+    while (cur) {
+      if (cur.inert || (cur.getAttribute?.('inert') ?? null) !== null) return;
+      cur = cur.parentNode;
+    }
+    this.ownerDocument.activeElement = this;
+  }
   matches(selector) {
     return selector.split(',').some(part => {
       part = part.trim();
