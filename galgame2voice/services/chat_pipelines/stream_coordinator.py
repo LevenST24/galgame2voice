@@ -846,6 +846,7 @@ class StreamCoordinator:
                     "chinese": partial_ch or "",
                     "japanese": partial_ja or "",
                     "lines": snapshot_lines,
+                    "reply_format": run.parser.line_scanner.format,
                 },
             }
 
@@ -1021,6 +1022,7 @@ class StreamCoordinator:
                 "chinese": full_chinese,
                 "japanese": full_japanese,
                 "lines": final_lines,
+                "reply_format": parser.line_scanner.format,
                 "emotion": final_emotion,
                 "affection": affection_res,
                 "metrics": metric_record,

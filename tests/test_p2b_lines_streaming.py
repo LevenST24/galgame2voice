@@ -120,6 +120,7 @@ async def test_first_line_and_audio_before_provider_eof(coordinator_factory, rep
         events.extend([e async for e in stream])
         assert_lifecycle(events)
         assert events[-1]["data"]["chinese"] == ZH
+        assert events[-1]["data"]["reply_format"] == "lines"
     finally:
         release.set()
         await stream.aclose()
@@ -377,3 +378,14 @@ def test_lines_tts_defaults_clamps_and_user_overrides():
     raw = json.dumps({"tts": {"speed": 999, "temp": -999}, "lines": LINES})
     _, _, parser = StreamingBilingualParser.parse_full_text(raw)
     assert parser.tts_speed < 999 and parser.tts_temperature > -999
+
+
+@pytest.mark.asyncio
+async def test_done_reports_a_legacy_reply_format(coordinator_factory):
+    async def tokens(*args, **kwargs):
+        yield '{"tts":{"emotion":"gentle"},"chinese":"你好。","japanese":"こんにちは。"}'
+
+    coordinator, _, _ = coordinator_factory(tokens=tokens)
+    events = [e async for e in coordinator]
+    assert events[-1]["event"] == "done"
+    assert events[-1]["data"]["reply_format"] == "legacy"
