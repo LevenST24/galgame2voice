@@ -20,3 +20,163 @@ body.adv-active .toast-root { bottom: calc((100dvh - 1080 * var(--u)) / 2 + 300 
 .adv-drawer .sidebar-close { display: grid; }
 .adv-settings-preview { padding: 16px; color: white; white-space: pre-line; border-radius: 8px; }
 .adv-settings-preview::before { content: '◯'; float: left; font-size: 40px; margin-right: 14px; }
+
+/* Dedicated ADV LOG Overlay */
+.adv-log-overlay {
+  position: absolute;
+  inset: calc(40 * var(--u)) calc(60 * var(--u));
+  background: rgba(5, 13, 26, 0.94);
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  border-radius: calc(14 * var(--u));
+  box-shadow: 0 calc(8 * var(--u)) calc(40 * var(--u)) rgba(0, 0, 0, 0.9);
+  display: flex;
+  flex-direction: column;
+  z-index: 60;
+  color: #e2e8f0;
+  font-family: inherit;
+  pointer-events: auto;
+  user-select: text;
+}
+.adv-log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: calc(14 * var(--u)) calc(24 * var(--u));
+  border-bottom: 1px solid rgba(125, 211, 252, 0.2);
+  flex-shrink: 0;
+}
+.adv-log-title {
+  font-size: calc(22 * var(--u));
+  font-weight: 700;
+  color: #7dd3fc;
+  letter-spacing: calc(1 * var(--u));
+}
+.adv-log-close-btn {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f1f5f9;
+  border: 1px solid rgba(125, 211, 252, 0.3);
+  border-radius: calc(6 * var(--u));
+  padding: calc(6 * var(--u)) calc(16 * var(--u));
+  font-size: calc(22 * var(--u));
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.adv-log-close-btn:hover {
+  background: rgba(56, 189, 248, 0.25);
+}
+.adv-log-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
+  padding: calc(16 * var(--u)) calc(24 * var(--u));
+  display: flex;
+  flex-direction: column;
+  gap: calc(16 * var(--u));
+}
+.adv-log-more-btn {
+  align-self: center;
+  background: rgba(30, 41, 59, 0.8);
+  color: #94a3b8;
+  border: 1px solid rgba(125, 211, 252, 0.25);
+  border-radius: calc(6 * var(--u));
+  padding: calc(8 * var(--u)) calc(20 * var(--u));
+  font-size: calc(22 * var(--u));
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-bottom: calc(8 * var(--u));
+}
+.adv-log-more-btn:hover:not(:disabled) {
+  color: #38bdf8;
+  border-color: #38bdf8;
+}
+.adv-log-more-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.adv-log-entry {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  gap: calc(4 * var(--u));
+  padding: calc(10 * var(--u)) calc(14 * var(--u));
+  border-radius: calc(8 * var(--u));
+  background: rgba(15, 23, 42, 0.5);
+  border-left: calc(4 * var(--u)) solid rgba(125, 211, 252, 0.4);
+}
+.adv-log-entry.is-user {
+  border-left-color: rgba(168, 85, 247, 0.6);
+  background: rgba(88, 28, 135, 0.15);
+}
+.adv-log-entry-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(10 * var(--u));
+}
+.adv-log-speaker {
+  font-size: calc(24 * var(--u));
+  font-weight: 700;
+  color: #ffe27a;
+}
+.adv-log-entry.is-user .adv-log-speaker {
+  color: #c084fc;
+}
+.adv-log-entry-controls {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--u));
+}
+.adv-log-primary {
+  font-size: calc(28 * var(--u));
+  line-height: calc(40 * var(--u));
+  white-space: pre-wrap;
+  color: #f8fafc;
+  word-break: break-word;
+}
+.adv-log-subtitle {
+  font-size: calc(24 * var(--u));
+  line-height: calc(36 * var(--u));
+  white-space: pre-wrap;
+  color: #94a3b8;
+  word-break: break-word;
+}
+.adv-log-replay-btn, .adv-log-user-recording-btn {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: calc(4 * var(--u));
+  padding: calc(4 * var(--u)) calc(10 * var(--u));
+  font-size: calc(22 * var(--u));
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4 * var(--u));
+  transition: all 0.15s ease;
+}
+.adv-log-replay-btn:hover:not(:disabled), .adv-log-user-recording-btn:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.3);
+  color: #ffffff;
+}
+.adv-log-replay-btn:disabled, .adv-log-user-recording-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  border-color: rgba(148, 163, 184, 0.2);
+  color: #64748b;
+  background: transparent;
+}
+.adv-log-replay-btn.is-playing, .adv-log-user-recording-btn.is-playing {
+  background: rgba(254, 226, 122, 0.25);
+  color: #ffe27a;
+  border-color: #ffe27a;
+}
+.adv-log-failure {
+  font-size: calc(22 * var(--u));
+  color: #f87171;
+  margin-top: calc(4 * var(--u));
+}
+.adv-log-audio-status {
+  font-size: calc(20 * var(--u));
+  color: #f87171;
+}

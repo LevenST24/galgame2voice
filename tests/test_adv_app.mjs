@@ -191,9 +191,9 @@ test('stale sprite decode after character/session switch cannot repaint stage or
 test('unmount cancels timers, rAF, image loads, subscriptions and every owned listener/node', async t => {
   const h = setup(t, { art: true }); await microtasks(); h.start(); h.line(); h.audioEvent();
   const nodes = [h.app.stage.shell, ...h.app.stage.shell.querySelectorAll('div, button, textarea, nav')];
-  h.app.action('log'); assert.equal(h.dom.messages.parentNode.className, 'adv-drawer adv-drawer-log');
+  h.app.action('sessions'); assert.equal(h.dom.sidebar.parentNode.className, 'adv-drawer adv-drawer-sessions');
   h.app.unmount(); h.app.unmount(); h.loads.forEach(load => load.resolve()); await microtasks(); h.flush();
-  assert.equal(h.dom.root.children.length, 0); assert.equal(h.dom.messages.parentNode, h.doc.body);
+  assert.equal(h.dom.root.children.length, 0); assert.equal(h.dom.sidebar.parentNode, h.doc.body);
   assert.equal(h.clock.timers.size, 0); assert.equal(h.frames.size, 0); assert.equal(h.mediaListeners.size, 0);
   assert.ok([...h.listeners.values()].every(set => set.size === 0)); assert.deepEqual(h.subscriptions(), [null, null]);
   assert.ok(nodes.every(node => [...node.listeners.values()].every(set => set.size === 0)));
@@ -212,7 +212,7 @@ test('voice off uses typewriter and count-based AUTO with no audio terminal or a
 test('drawers and settings suspend playback, restore draft/focus, and recovery delegates retry', t => {
   const h = setup(t); h.start(); h.line(); h.audioEvent(); h.app.action('input');
   const input = h.app.textbox.inputElement; input.value = '保留'; input.dispatchEvent({ type: 'input' });
-  h.app.action('log'); assert.equal(h.calls.history, 1); assert.equal(h.app.player.state, 'suspended');
+  h.app.action('log'); assert.equal(h.app.player.state, 'suspended');
   h.app.stage.stage.dispatchEvent({ type: 'keydown', key: 'Escape' }); assert.equal(h.app.textbox.draft, '保留');
   assert.equal(h.doc.activeElement, input); h.app.action('sessions');
   assert.equal(h.dom.sidebar.parentNode.className, 'adv-drawer adv-drawer-sessions'); h.app.action('close_overlay');
