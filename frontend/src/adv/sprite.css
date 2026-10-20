@@ -31,6 +31,22 @@
   opacity: 0;
 }
 
+/* Layered (v3) buffers: a crop-sized box of placed layer images, clipped like
+   a whole image. isolation keeps the layers' z-index inside the box. */
+.adv-layer-buffer {
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.adv-sprite-layer {
+  position: absolute;
+  display: block;
+  max-width: none;
+  max-height: none;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* Reduced motion bypass */
 .adv-reduced-motion .adv-sprite-buffer,
 .adv-reduced-motion .adv-face-buffer,

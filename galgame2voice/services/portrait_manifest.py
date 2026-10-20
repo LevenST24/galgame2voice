@@ -3,10 +3,14 @@
 import json
 import logging
 import math
+import re
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+CANVAS_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
+LAYER_FILE_NAME_RE = re.compile(r"[A-Za-z0-9._-]+\.(webp|png)")
 
 EMOTION_FACES = {
     "gentle": ("gentle", "normal"), "happy": ("happy", "smile", "wink"),
@@ -18,6 +22,14 @@ EMOTION_FACES = {
 
 def _is_finite_number(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _is_positive_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
+def _is_nonnegative_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
 
 
 def _read_image_size(path: Path) -> tuple[int, int] | None:
@@ -257,8 +269,423 @@ def _normalize(root: Path, data: dict[str, Any], *, legacy: bool) -> dict[str, A
             "costumes": metadata, "sprites": sprites, "faces": faces, "expression_sets": pools}
 
 
+VALID_EMOTIONS = frozenset({
+    "gentle", "normal", "happy", "shy", "blush", "surprised",
+    "tsundere", "cool", "sleepy", "sad", "thinking", "angry",
+})
+
+
+def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
+    if not isinstance(data, dict):
+        return False, "layers.json must be a JSON object"
+
+    version = data.get("version")
+    if version != 3 or isinstance(version, bool):
+        return False, f"version must be 3, got {version!r}"
+
+    for container_key in ("canvases", "outfits", "poses", "faces", "looks", "layers"):
+        val = data.get(container_key)
+        if not isinstance(val, dict) or not val:
+            return False, f"'{container_key}' must be a non-empty object"
+
+    default_outfit = data.get("defaultOutfit")
+    default_pose = data.get("defaultPose")
+    if not isinstance(default_outfit, str) or not default_outfit:
+        return False, "'defaultOutfit' must be a non-empty string"
+    if not isinstance(default_pose, str) or not default_pose:
+        return False, "'defaultPose' must be a non-empty string"
+
+    if default_outfit not in data["outfits"]:
+        return False, f"defaultOutfit '{default_outfit}' not found in outfits"
+    if default_pose not in data["poses"]:
+        return False, f"defaultPose '{default_pose}' not found in poses"
+
+    # 1. Canvases
+    for cid, c in data["canvases"].items():
+        if not isinstance(cid, str) or not CANVAS_ID_RE.fullmatch(cid):
+            return False, f"canvas '{cid}' must match ^[A-Za-z0-9_-]{{1,32}}$"
+        if not isinstance(c, dict):
+            return False, f"canvas '{cid}' must be an object"
+        w, h = c.get("width"), c.get("height")
+        if not _is_positive_int(w) or not _is_positive_int(h):
+            return False, f"canvas '{cid}' width and height must be positive integers"
+
+    # 2. Outfits
+    for oid, o in data["outfits"].items():
+        if not isinstance(o, dict):
+            return False, f"outfit '{oid}' must be an object"
+        name = o.get("name")
+        if not isinstance(name, str) or not name:
+            return False, f"outfit '{oid}' must have a non-empty string 'name'"
+        if "icon" in o and not isinstance(o["icon"], str):
+            return False, f"outfit '{oid}' icon must be a string"
+
+    # 3. Poses
+    for pid, p in data["poses"].items():
+        if not isinstance(p, dict):
+            return False, f"pose '{pid}' must be an object"
+        name = p.get("name")
+        if not isinstance(name, str) or not name:
+            return False, f"pose '{pid}' must have a non-empty string 'name'"
+        p_canvas = p.get("canvas")
+        if not isinstance(p_canvas, str) or p_canvas not in data["canvases"]:
+            return False, f"pose '{pid}' references unknown canvas '{p_canvas}'"
+
+    # 4. Faces
+    for fid, f in data["faces"].items():
+        if not isinstance(f, dict):
+            return False, f"face '{fid}' must be an object"
+        label = f.get("label")
+        if not isinstance(label, str) or not label:
+            return False, f"face '{fid}' must have a non-empty string 'label'"
+        emotion = f.get("emotion")
+        if not isinstance(emotion, str) or emotion not in VALID_EMOTIONS:
+            return False, f"face '{fid}' has invalid emotion '{emotion}'"
+        if "weights" in f:
+            weights = f["weights"]
+            if not isinstance(weights, dict):
+                return False, f"face '{fid}' weights must be an object"
+            for w_emo, w_val in weights.items():
+                if w_emo not in VALID_EMOTIONS or not _is_finite_number(w_val):
+                    return False, f"face '{fid}' weights entry '{w_emo}' is invalid"
+
+    # 5. Layers
+    for lid, layer in data["layers"].items():
+        if not isinstance(layer, dict):
+            return False, f"layer '{lid}' must be an object"
+        l_canvas = layer.get("canvas")
+        if not isinstance(l_canvas, str) or l_canvas not in data["canvases"]:
+            return False, f"layer '{lid}' references unknown canvas '{l_canvas}'"
+        cw = data["canvases"][l_canvas]["width"]
+        ch = data["canvases"][l_canvas]["height"]
+
+        rect = layer.get("rect")
+        if not isinstance(rect, dict):
+            return False, f"layer '{lid}' rect must be an object"
+        rx, ry, rw, rh = rect.get("x"), rect.get("y"), rect.get("width"), rect.get("height")
+        if not (_is_nonnegative_int(rx) and _is_nonnegative_int(ry) and _is_positive_int(rw) and _is_positive_int(rh)):
+            return False, f"layer '{lid}' rect coordinates and dimensions must be positive integers"
+        if rx + rw > cw or ry + rh > ch:
+            return False, f"layer '{lid}' rect lies outside canvas '{l_canvas}'"
+
+        z = layer.get("z")
+        if not isinstance(z, int) or isinstance(z, bool):
+            return False, f"layer '{lid}' z must be an integer"
+        op = layer.get("opacity")
+        if not isinstance(op, (int, float)) or isinstance(op, bool) or not (0 <= op <= 1) or not math.isfinite(op):
+            return False, f"layer '{lid}' opacity must be a number between 0 and 1"
+
+        file_path = layer.get("file")
+        if not isinstance(file_path, str) or not file_path:
+            return False, f"layer '{lid}' file must be a non-empty string"
+        if "\\" in file_path or file_path.startswith("/") or ":" in file_path or ".." in file_path.split("/"):
+            return False, f"layer '{lid}' file '{file_path}' is not a safe relative path"
+        if not (file_path.lower().endswith(".webp") or file_path.lower().endswith(".png")):
+            return False, f"layer '{lid}' file '{file_path}' must end in .webp or .png"
+        name = file_path.rsplit("/", 1)[-1]
+        if (file_path != f"layers/{l_canvas}/{name}"
+                or not LAYER_FILE_NAME_RE.fullmatch(name) or ".." in name):
+            return False, f"layer '{lid}' file must match layers/{l_canvas}/<name>.webp or .png"
+        try:
+            resolved_file = (root / file_path).resolve()
+            if not resolved_file.is_relative_to(root.resolve() / "layers" / l_canvas):
+                return False, f"layer '{lid}' file '{file_path}' escapes layer canvas folder"
+        except (ValueError, OSError):
+            return False, f"layer '{lid}' file '{file_path}' path resolution failed"
+
+    # 6. Looks
+    used_outfits = set()
+    used_poses = set()
+
+    def _check_layer(lid: Any, context_name: str, look_key: str, l_canvas: str) -> str | None:
+        if not isinstance(lid, str) or lid not in data["layers"]:
+            return f"look '{look_key}' {context_name} references unknown layer '{lid}'"
+        if data["layers"][lid]["canvas"] != l_canvas:
+            return (
+                f"look '{look_key}' {context_name} layer '{lid}' canvas "
+                f"'{data['layers'][lid]['canvas']}' does not match pose canvas '{l_canvas}'"
+            )
+        return None
+
+    for look_key, look in data["looks"].items():
+        if not isinstance(look, dict):
+            return False, f"look '{look_key}' must be an object"
+        l_pose = look.get("pose")
+        l_outfit = look.get("outfit")
+        if not isinstance(l_pose, str) or l_pose not in data["poses"]:
+            return False, f"look '{look_key}' references unknown pose '{l_pose}'"
+        if not isinstance(l_outfit, str) or l_outfit not in data["outfits"]:
+            return False, f"look '{look_key}' references unknown outfit '{l_outfit}'"
+        if look_key != f"{l_pose}/{l_outfit}":
+            return False, f"look key '{look_key}' does not match pose/outfit '{l_pose}/{l_outfit}'"
+
+        used_outfits.add(l_outfit)
+        used_poses.add(l_pose)
+
+        l_canvas = data["poses"][l_pose]["canvas"]
+        cw = data["canvases"][l_canvas]["width"]
+        ch = data["canvases"][l_canvas]["height"]
+
+        crop = look.get("crop")
+        if not isinstance(crop, dict):
+            return False, f"look '{look_key}' crop must be an object"
+        cl, ct, cw_crop, ch_crop = crop.get("left"), crop.get("top"), crop.get("width"), crop.get("height")
+        if not (_is_nonnegative_int(cl) and _is_nonnegative_int(ct) and _is_positive_int(cw_crop) and _is_positive_int(ch_crop)):
+            return False, f"look '{look_key}' crop coordinates and dimensions must be positive integers"
+        if cl + cw_crop > cw or ct + ch_crop > ch:
+            return False, f"look '{look_key}' crop lies outside canvas '{l_canvas}'"
+
+        face_rect = look.get("faceRect")
+        if not isinstance(face_rect, dict):
+            return False, f"look '{look_key}' faceRect must be an object"
+        fx, fy, fw, fh = face_rect.get("x"), face_rect.get("y"), face_rect.get("width"), face_rect.get("height")
+        if not (_is_nonnegative_int(fx) and _is_nonnegative_int(fy) and _is_positive_int(fw) and _is_positive_int(fh)):
+            return False, f"look '{look_key}' faceRect coordinates and dimensions must be positive integers"
+        if fx + fw > cw_crop or fy + fh > ch_crop:
+            return False, f"look '{look_key}' faceRect lies outside crop"
+
+        head_anchor = look.get("headAnchor")
+        if not isinstance(head_anchor, dict):
+            return False, f"look '{look_key}' headAnchor must be an object"
+        hx, hy = head_anchor.get("x"), head_anchor.get("y")
+        if not (_is_nonnegative_int(hx) and _is_nonnegative_int(hy)):
+            return False, f"look '{look_key}' headAnchor coordinates must be non-negative integers"
+        if hx > cw_crop or hy > ch_crop:
+            return False, f"look '{look_key}' headAnchor lies outside crop"
+
+        if "stage" in look:
+            stage = look["stage"]
+            if not isinstance(stage, dict):
+                return False, f"look '{look_key}' stage must be an object"
+            scale = stage.get("scale")
+            if not isinstance(scale, (int, float)) or isinstance(scale, bool) or scale <= 0 or not math.isfinite(scale):
+                return False, f"look '{look_key}' stage scale must be a positive number"
+            offset = stage.get("offset")
+            if not isinstance(offset, dict) or not _is_finite_number(offset.get("x")) or not _is_finite_number(offset.get("y")):
+                return False, f"look '{look_key}' stage offset must have finite x and y"
+
+        body = look.get("body")
+        if not isinstance(body, list) or not body:
+            return False, f"look '{look_key}' body must be a non-empty list of layer ids"
+        for lid in body:
+            err = _check_layer(lid, "body", look_key, l_canvas)
+            if err:
+                return False, err
+
+        if "blush" in look:
+            blush = look["blush"]
+            if not isinstance(blush, list):
+                return False, f"look '{look_key}' blush must be a list"
+            for lid in blush:
+                err = _check_layer(lid, "blush", look_key, l_canvas)
+                if err:
+                    return False, err
+
+        if "fx" in look:
+            fx_dict = look["fx"]
+            if not isinstance(fx_dict, dict):
+                return False, f"look '{look_key}' fx must be an object"
+            for fx_name, fx_layers in fx_dict.items():
+                if not isinstance(fx_layers, list):
+                    return False, f"look '{look_key}' fx '{fx_name}' must be a list"
+                for lid in fx_layers:
+                    err = _check_layer(lid, f"fx '{fx_name}'", look_key, l_canvas)
+                    if err:
+                        return False, err
+
+        look_faces = look.get("faces")
+        if not isinstance(look_faces, dict) or not look_faces:
+            return False, f"look '{look_key}' faces must be a non-empty object"
+
+        default_face = look.get("defaultFace")
+        if not isinstance(default_face, str) or default_face not in look_faces:
+            return False, f"look '{look_key}' defaultFace '{default_face}' not in look faces"
+
+        for l_fid, l_fentry in look_faces.items():
+            if not isinstance(l_fentry, dict):
+                return False, f"look '{look_key}' face '{l_fid}' must be an object"
+            if l_fid not in data["faces"]:
+                return False, f"look '{look_key}' face '{l_fid}' not found in top-level faces"
+            f_layers = l_fentry.get("layers")
+            if not isinstance(f_layers, list) or not f_layers:
+                return False, f"look '{look_key}' face '{l_fid}' layers must be a non-empty list"
+            for lid in f_layers:
+                err = _check_layer(lid, f"face '{l_fid}'", look_key, l_canvas)
+                if err:
+                    return False, err
+            eyes_closed = l_fentry.get("eyesClosed")
+            if not isinstance(eyes_closed, bool):
+                return False, f"look '{look_key}' face '{l_fid}' eyesClosed must be a boolean"
+            if "blush" in l_fentry:
+                f_blush = l_fentry["blush"]
+                if not isinstance(f_blush, list):
+                    return False, f"look '{look_key}' face '{l_fid}' blush must be a list"
+                for lid in f_blush:
+                    err = _check_layer(lid, f"face '{l_fid}' blush", look_key, l_canvas)
+                    if err:
+                        return False, err
+
+            if "blink" in l_fentry:
+                blink = l_fentry["blink"]
+                if not isinstance(blink, dict):
+                    return False, f"look '{look_key}' face '{l_fid}' blink must be an object"
+                if eyes_closed is not False:
+                    return False, f"look '{look_key}' face '{l_fid}' has blink but eyesClosed is true"
+                if "closed" not in blink:
+                    return False, f"look '{look_key}' face '{l_fid}' blink missing 'closed'"
+                closed_id = blink["closed"]
+                if not isinstance(closed_id, str) or closed_id not in look_faces:
+                    return False, f"look '{look_key}' face '{l_fid}' blink closed partner '{closed_id}' not in look faces"
+                if not isinstance(look_faces[closed_id], dict) or look_faces[closed_id].get("eyesClosed") is not True:
+                    return False, f"look '{look_key}' face '{l_fid}' blink closed partner '{closed_id}' must have eyesClosed: true"
+                if "half" in blink:
+                    half_id = blink["half"]
+                    if not isinstance(half_id, str) or half_id not in look_faces:
+                        return False, f"look '{look_key}' face '{l_fid}' blink half partner '{half_id}' not in look faces"
+
+            if "mouth" in l_fentry:
+                mouth = l_fentry["mouth"]
+                if not isinstance(mouth, dict):
+                    return False, f"look '{look_key}' face '{l_fid}' mouth must be an object"
+                if "closed" not in mouth or "open" not in mouth:
+                    return False, f"look '{look_key}' face '{l_fid}' mouth must have 'closed' and 'open'"
+                m_closed = mouth["closed"]
+                m_open = mouth["open"]
+                if not isinstance(m_closed, str) or m_closed not in look_faces:
+                    return False, f"look '{look_key}' face '{l_fid}' mouth closed partner '{m_closed}' not in look faces"
+                if not isinstance(m_open, str) or m_open not in look_faces:
+                    return False, f"look '{look_key}' face '{l_fid}' mouth open partner '{m_open}' not in look faces"
+                if "half" in mouth:
+                    m_half = mouth["half"]
+                    if not isinstance(m_half, str) or m_half not in look_faces:
+                        return False, f"look '{look_key}' face '{l_fid}' mouth half partner '{m_half}' not in look faces"
+
+            if "combinedFrames" in l_fentry:
+                combined = l_fentry["combinedFrames"]
+                if not isinstance(combined, dict):
+                    return False, f"look '{look_key}' face '{l_fid}' combinedFrames must be an object"
+                for ck, cv in combined.items():
+                    parts = ck.split(":")
+                    if len(parts) != 2:
+                        return False, f"look '{look_key}' face '{l_fid}' combinedFrames key '{ck}' malformed"
+                    eye_part, mouth_part = parts
+                    if eye_part not in ("half", "closed") or mouth_part not in ("half", "open"):
+                        return False, f"look '{look_key}' face '{l_fid}' combinedFrames key '{ck}' has invalid phases"
+                    if not isinstance(cv, str) or cv not in look_faces:
+                        return False, f"look '{look_key}' face '{l_fid}' combinedFrames target '{cv}' not in look faces"
+
+    # 7. Cross-checks
+    default_look_key = f"{default_pose}/{default_outfit}"
+    if default_look_key not in data["looks"]:
+        return False, f"default look '{default_look_key}' does not exist in looks"
+
+    for oid in data["outfits"]:
+        if oid not in used_outfits:
+            return False, f"outfit '{oid}' is not used by any look"
+
+    for pid in data["poses"]:
+        if pid not in used_poses:
+            return False, f"pose '{pid}' is not used by any look"
+
+    return True, ""
+
+
+def _normalize_v3(root: Path, data: dict[str, Any]) -> dict[str, Any]:
+    default_outfit = data["defaultOutfit"]
+    default_pose = data["defaultPose"]
+
+    metadata = []
+    for oid, outfit in data["outfits"].items():
+        look_key = f"{default_pose}/{oid}"
+        if look_key not in data["looks"]:
+            look_key = next((k for k, lk in data["looks"].items() if lk.get("outfit") == oid), None)
+        default_look = data["looks"][look_key] if look_key else None
+
+        costume_meta: dict[str, Any] = {
+            "id": oid,
+            "name": outfit.get("name") or oid,
+            "icon": outfit.get("icon") or "🎒",
+        }
+        if default_look:
+            costume_meta["crop"] = default_look["crop"]
+            costume_meta["faceRect"] = default_look["faceRect"]
+            costume_meta["headAnchor"] = default_look["headAnchor"]
+            if "stage" in default_look:
+                costume_meta["stage"] = default_look["stage"]
+        metadata.append(costume_meta)
+
+    faces = {}
+    for fid, f in data["faces"].items():
+        emotion = f.get("emotion", "gentle")
+        weights = f.get("weights")
+        if not isinstance(weights, dict):
+            weights = {emotion: 3}
+        faces[fid] = {
+            "label": f.get("label", fid),
+            "primary": emotion,
+            "emotion": emotion,
+            "weights": weights,
+            "jp": f.get("jp", ""),
+            "parts": [],
+            "blush": None,
+        }
+
+    pools = {}
+    default_look = data["looks"].get(f"{default_pose}/{default_outfit}")
+    default_face_id = default_look.get("defaultFace") if default_look else next(iter(faces))
+
+    for emotion, aliases in EMOTION_FACES.items():
+        candidates = []
+        for fid, f_meta in faces.items():
+            f_weights = f_meta.get("weights", {})
+            if emotion in f_weights:
+                candidates.append((fid, f_weights[emotion]))
+            elif f_meta.get("primary") == emotion or f_meta.get("primary") in aliases:
+                candidates.append((fid, 3 if f_meta.get("primary") == emotion else 1))
+        candidates.sort(key=lambda item: item[1], reverse=True)
+        if not candidates and emotion == "gentle":
+            candidates = [(default_face_id, 1)]
+        pools[emotion] = [{"id": cid, "strength": strength} for cid, strength in candidates]
+
+    return {
+        "version": 3,
+        "enabled": True,
+        "default_costume": default_outfit,
+        "defaultOutfit": default_outfit,
+        "default_pose": default_pose,
+        "defaultPose": default_pose,
+        "costumes": metadata,
+        "outfits": data["outfits"],
+        "canvases": data["canvases"],
+        "poses": data["poses"],
+        "faces": faces,
+        "expression_sets": pools,
+        "looks": data["looks"],
+        "layers": data["layers"],
+        "sprites": {},
+    }
+
+
 def load_portrait_manifest(root: Path) -> dict[str, Any] | None:
-    """Prefer numbered differentials, then support installed emotion-PNG packs."""
+    """Prefer layered portrait packs (v3), then numbered differentials (v2), then legacy packs (v1)."""
+    raw_v3 = _read_object(root / "layers.json")
+    if raw_v3 is not None:
+        valid, reason = _validate_v3(root, raw_v3)
+        if valid:
+            payload = _normalize_v3(root, raw_v3)
+            if payload is not None:
+                legacy = _load_whole_image_manifest(root)
+                if legacy is not None:
+                    payload["legacy"] = legacy
+                return payload
+        else:
+            logger.warning("Invalid layers.json in %s: %s", root, reason)
+
+    return _load_whole_image_manifest(root)
+
+
+def _load_whole_image_manifest(root: Path) -> dict[str, Any] | None:
+    """Load the whole-image payload for fallback and the legacy chat UI."""
     for filename, legacy in (("expressions.json", False), ("manifest.json", True)):
         raw = _read_object(root / filename)
         if raw is not None:

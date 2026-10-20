@@ -77,6 +77,22 @@ export function normalizePortrait(payload) {
   if (!payload || !payload.enabled) return null;
 
   let rawCostumes = payload.costumes;
+  if (!rawCostumes && payload.version === 3 && payload.outfits) {
+    const defaultPose = payload.defaultPose || payload.default_pose || 'default';
+    rawCostumes = Object.entries(payload.outfits).map(([oid, outfit]) => {
+      const lookKey = `${defaultPose}/${oid}`;
+      const defaultLook = payload.looks?.[lookKey] || Object.values(payload.looks || {}).find(l => l.outfit === oid);
+      return {
+        id: oid,
+        name: outfit?.name || oid,
+        icon: outfit?.icon || '👗',
+        crop: defaultLook?.crop,
+        faceRect: defaultLook?.faceRect,
+        headAnchor: defaultLook?.headAnchor,
+        stage: defaultLook?.stage,
+      };
+    });
+  }
   if (!rawCostumes) return null;
   if (typeof rawCostumes === 'object' && !Array.isArray(rawCostumes)) {
     rawCostumes = Object.entries(rawCostumes).map(([id, c]) => ({ ...(c || {}), id: c?.id || id }));
@@ -112,9 +128,28 @@ export function normalizePortrait(payload) {
   const faces = payload.faces && typeof payload.faces === 'object' ? payload.faces : {};
   const expressionSets = payload.expressionSets || payload.expression_sets || {};
 
-  let defaultCostume = payload.defaultCostume || payload.default_costume;
+  let defaultCostume = payload.defaultCostume || payload.default_costume || payload.defaultOutfit;
   if (!defaultCostume || !costumes.some(c => c.id === defaultCostume)) {
     defaultCostume = costumes[0].id;
+  }
+
+  if (payload.version === 3) {
+    const defaultPose = payload.defaultPose || payload.default_pose || Object.keys(payload.poses || {})[0] || 'default';
+    return {
+      version: 3,
+      isV3: true,
+      costumes,
+      outfits: payload.outfits || {},
+      canvases: payload.canvases || {},
+      poses: payload.poses || {},
+      faces,
+      looks: payload.looks || {},
+      layers: payload.layers || {},
+      expressionSets,
+      sprites,
+      defaultCostume,
+      defaultPose,
+    };
   }
 
   return {
@@ -174,6 +209,59 @@ export function pickFace(model, costume, emotion, activeFace, recentFaces = []) 
   return ranked(true) || ranked(false) || pool[0].id;
 }
 
+// Several faces of a look may share a label, as the server's `face_ids` allow.
+// Take the one the line's emotion pool ranks highest, else the first.
+function faceForLabel(model, lookFaces, label, emotion) {
+  const ids = Object.keys(lookFaces).filter(fid => model.faces?.[fid]?.label === label);
+  if (ids.length < 2) return ids[0] || null;
+  let best = null;
+  let strength = -Infinity;
+  for (const entry of Array.isArray(model.expressionSets?.[emotion]) ? model.expressionSets[emotion] : []) {
+    const value = Number(entry?.strength) || 0;
+    if (entry && ids.includes(entry.id) && value > strength) {
+      best = entry.id;
+      strength = value;
+    }
+  }
+  return best || ids[0];
+}
+
+function pickFaceV3(model, look, emotion, activeFace, recentFaces = []) {
+  const lookFaces = look?.faces || {};
+  const available = pool => (Array.isArray(pool) ? pool : []).filter(entry => entry && entry.id && lookFaces[entry.id]);
+  let pool = available(model.expressionSets?.[emotion]);
+  if (!pool.length) pool = available(model.expressionSets?.gentle);
+  if (!pool.length && lookFaces[look.defaultFace]) return look.defaultFace;
+  if (!pool.length) pool = Object.keys(lookFaces).map(id => ({ id, strength: 0 }));
+  if (!pool.length) return null;
+
+  const faces = model.faces || {};
+  const current = faces[activeFace];
+  if (!current || !pool.some(e => e.id === activeFace)) {
+    return pool[0].id;
+  }
+  const recent = new Set(recentFaces || []);
+  const ranked = (skipRecent) => {
+    let pick = null;
+    let score = -Infinity;
+    for (const entry of pool) {
+      const cand = faces[entry.id];
+      if (!cand || entry.id === activeFace) continue;
+      if (skipRecent && recent.has(entry.id)) continue;
+      const parts = Array.isArray(cand.parts) ? cand.parts : [];
+      const currentParts = Array.isArray(current.parts) ? current.parts : [];
+      const shared = parts.filter(p => p && currentParts.some(q => q && q.romaji === p.romaji)).length;
+      const s = shared * 10 + (Number(entry.strength) || 0);
+      if (s > score) {
+        score = s;
+        pick = entry.id;
+      }
+    }
+    return pick;
+  };
+  return ranked(true) || ranked(false) || pool[0].id;
+}
+
 export function blushTier(model, costume, emotion, affectionLevel, faceId) {
   if (!model || !faceId) return faceId;
   const face = model.faces?.[faceId];
@@ -202,6 +290,64 @@ export function inferEmotion(text, metaEmotion = null) {
   return null;
 }
 
+function resolveOutfitPose(model, costume, requestedPose, stickyPose) {
+  if (requestedPose && model.looks && model.looks[`${requestedPose}/${costume}`]) {
+    return requestedPose;
+  }
+  if (stickyPose && model.looks && model.looks[`${stickyPose}/${costume}`]) {
+    return stickyPose;
+  }
+  if (model.defaultPose && model.looks && model.looks[`${model.defaultPose}/${costume}`]) {
+    return model.defaultPose;
+  }
+  const firstLook = Object.values(model.looks || {}).find(l => l && l.outfit === costume);
+  if (firstLook && firstLook.pose) {
+    return firstLook.pose;
+  }
+  return model.defaultPose || 'default';
+}
+
+/**
+ * Resolves look layers in ascending z order for a given face and blush/fx state.
+ */
+export function resolveLookLayers(model, lookKey, faceId, isBlushing = false, fx = null) {
+  const look = model.looks?.[lookKey];
+  if (!look) return [];
+  const faceEntry = look.faces?.[faceId] || (look.defaultFace ? look.faces?.[look.defaultFace] : null);
+  const body = Array.isArray(look.body) ? look.body : [];
+  const faceLayers = faceEntry && Array.isArray(faceEntry.layers) ? faceEntry.layers : [];
+  let blushLayers = [];
+  if (isBlushing) {
+    if (faceEntry && Array.isArray(faceEntry.blush)) {
+      blushLayers = faceEntry.blush;
+    } else if (Array.isArray(look.blush)) {
+      blushLayers = look.blush;
+    }
+  }
+  let fxLayers = [];
+  if (fx && look.fx && Array.isArray(look.fx[fx])) {
+    fxLayers = look.fx[fx];
+  }
+  const collected = [...body, ...faceLayers, ...blushLayers, ...fxLayers];
+  return collected
+    .map((lid, idx) => {
+      const def = model.layers?.[lid];
+      if (!def) return null;
+      return {
+        id: lid,
+        canvas: def.canvas,
+        file: def.file,
+        rect: def.rect,
+        z: def.z ?? 0,
+        opacity: def.opacity ?? 1,
+        _order: idx,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (a.z - b.z) || (a._order - b._order))
+    .map(({ _order, ...rest }) => rest);
+}
+
 /**
  * Resolves next sprite state given current model, previous state, intent and context.
  *
@@ -223,6 +369,106 @@ export function resolveSpriteState(model, prev, intent, ctx = {}) {
   const emotion = intent?.emotion || 'gentle';
   const act = intent?.act || {};
 
+  // -------------------------------------------------------------
+  // Version 3 Layered Resolution
+  // -------------------------------------------------------------
+  if (model.isV3 || model.version === 3) {
+    const pose = resolveOutfitPose(model, costume, act.pose, prevState?.pose);
+    const lookKey = `${pose}/${costume}`;
+    const look = model.looks?.[lookKey];
+    if (!look) return null;
+
+    const lookFaces = look.faces || {};
+    const defaultFace = look.defaultFace || Object.keys(lookFaces)[0] || '01';
+
+    let baseFace = null;
+    if (act.face) {
+      if (lookFaces[act.face]) {
+        baseFace = act.face;
+      } else {
+        const match = faceForLabel(model, lookFaces, act.face, emotion);
+        if (match) {
+          baseFace = match;
+        } else {
+          baseFace = defaultFace;
+        }
+      }
+    }
+
+    if (!baseFace) {
+      if (costumeChanged) {
+        if (prevState?.face && lookFaces[prevState.face]) {
+          baseFace = prevState.face;
+        } else {
+          baseFace = pickFaceV3(model, look, emotion, null, []) || defaultFace;
+        }
+      } else if (emotion === 'thinking') {
+        const thinkingPool = (model.expressionSets?.thinking || []).filter(e => e && e.id && lookFaces[e.id]);
+        if (thinkingPool.length === 0 && prevState?.face && lookFaces[prevState.face]) {
+          baseFace = prevState.face;
+        } else {
+          baseFace = pickFaceV3(model, look, emotion, prevState?.face, recentFaces) || defaultFace;
+        }
+      } else {
+        baseFace = pickFaceV3(model, look, emotion, prevState?.face, recentFaces) || defaultFace;
+      }
+    }
+
+    if (!baseFace) baseFace = defaultFace;
+
+    let nextRecentFaces = recentFaces;
+    if (prevState?.face && !costumeChanged && prevState.face !== baseFace) {
+      nextRecentFaces = [...recentFaces, prevState.face].slice(-3);
+    }
+
+    const faceEntry = lookFaces[baseFace];
+    let blushLayers = null;
+    if (faceEntry && Array.isArray(faceEntry.blush)) {
+      blushLayers = faceEntry.blush;
+    } else if (Array.isArray(look.blush)) {
+      blushLayers = look.blush;
+    }
+    const hasBlush = Boolean(blushLayers && blushLayers.length > 0);
+
+    let isBlushing = false;
+    if (act.blush === true) {
+      isBlushing = hasBlush;
+    } else if (act.blush === false) {
+      isBlushing = false;
+    } else {
+      const shyish = ['shy', 'tsundere', 'angry'].includes(emotion);
+      const threshold = shyish ? 2 : 3;
+      isBlushing = ((ctx.affectionLevel ?? 1) >= threshold && hasBlush);
+    }
+
+    const fx = act.fx || null;
+    const activeLayers = resolveLookLayers(model, lookKey, baseFace, isBlushing, fx);
+
+    return {
+      state: {
+        outfit: costume,
+        pose,
+        face: baseFace,
+        blush: isBlushing,
+        fx,
+      },
+      isV3: true,
+      lookKey,
+      look,
+      crop: look.crop,
+      faceRect: look.faceRect,
+      headAnchor: look.headAnchor,
+      stage: look.stage || null,
+      faceEntry,
+      activeLayers,
+      faceUrl: activeLayers[0]?.file || '',
+      recentFaces: nextRecentFaces,
+    };
+  }
+
+  // -------------------------------------------------------------
+  // Version 1 / 2 Whole-Image Resolution
+  // -------------------------------------------------------------
   let baseFace = null;
 
   // 1. act.face explicitly specified

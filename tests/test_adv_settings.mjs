@@ -8,10 +8,10 @@ import { fakeDocument } from './helpers/adv_dom.mjs';
 
 const expected = { advEnabled: false, advPlayerName: 'Player', advPrimaryLanguage: 'zh', advSubtitleLanguage: 'ja',
   advWindowOpacity: 75, advTextIntervalMs: 30, advInterruptVoice: true, advAutoBaseMs: 1500,
-  advAutoPerCharMs: 45, advAutoMode: 'voice-priority', advOutfit: '' };
+  advAutoPerCharMs: 45, advAutoMode: 'voice-priority', advOutfit: '', advBlink: true, advLipSync: true };
 const custom = { advEnabled: true, advPlayerName: '旅行者', advPrimaryLanguage: 'ja', advSubtitleLanguage: 'zh',
   advWindowOpacity: 50, advTextIntervalMs: 0, advInterruptVoice: false, advAutoBaseMs: 6000,
-  advAutoPerCharMs: 200, advAutoMode: 'normal', advOutfit: '制服_2' };
+  advAutoPerCharMs: 200, advAutoMode: 'normal', advOutfit: '制服_2', advBlink: true, advLipSync: true };
 
 test('all eleven P3 keys have exact store defaults and pickSettings preserves every valid value', () => {
   for (const [key, value] of Object.entries(expected)) assert.equal(defaults[key], value, key);

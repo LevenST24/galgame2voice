@@ -25,7 +25,11 @@ from galgame2voice.security.media_urls import (
     verify_media_url_signature,
 )
 from galgame2voice.services.character_manager import get_character_manager
-from galgame2voice.services.portrait_manifest import load_portrait_manifest
+from galgame2voice.services.portrait_manifest import (
+    CANVAS_ID_RE,
+    LAYER_FILE_NAME_RE,
+    load_portrait_manifest,
+)
 from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.utils.logger import sanitize_error_detail
 
@@ -47,7 +51,7 @@ async def _get_voice_profile_or_404(conn: aiosqlite.Connection, character_id: in
 
 
 def _rewrite_sprite_urls(data: dict[str, Any], character_id: int, root: Path) -> None:
-    """把立绘清单里 sprites 的 file 路径改写为签名媒体 URL（密钥不可用时回退为旧版文件接口 URL）。"""
+    """把立绘清单里 sprites 和 v3 layers 的 file 路径改写为签名媒体 URL（密钥不可用时回退为旧版文件接口 URL）。"""
     sprites = data.get("sprites") or {}
     if not isinstance(sprites, dict):
         return
@@ -79,6 +83,40 @@ def _rewrite_sprite_urls(data: dict[str, Any], character_id: int, root: Path) ->
                         f"{quote(costume_id, safe='')}/{quote(file_name, safe='')}"
                     )
                     sprite["file"] = sign_media_url(media_path, v=v)
+
+    legacy = data.get("legacy")
+    if isinstance(legacy, dict):
+        _rewrite_sprite_urls(legacy, character_id, root)
+
+    layers = data.get("layers") or {}
+    if isinstance(layers, dict):
+        signing_key = get_media_signing_key()
+        for layer in layers.values():
+            if not isinstance(layer, dict) or "file" not in layer:
+                continue
+            raw_file = layer["file"]
+            canvas = layer["canvas"]
+            file_name = raw_file.rsplit("/", 1)[-1]
+            v = None
+            try:
+                info = (root / raw_file).stat()
+                v = f"{info.st_mtime_ns:x}-{info.st_size:x}"
+            except OSError:
+                pass
+            if signing_key is None:
+                url = (
+                    f"/api/characters/{character_id}/portrait/layers/"
+                    f"{quote(canvas, safe='')}/{quote(file_name, safe='')}"
+                )
+                if v:
+                    url += f"?v={v}"
+                layer["file"] = url
+            else:
+                media_path = (
+                    f"/api/media/portrait/{character_id}/layers/"
+                    f"{quote(canvas, safe='')}/{quote(file_name, safe='')}"
+                )
+                layer["file"] = sign_media_url(media_path, v=v)
 
 
 def _resolve_character_portrait(char_name: str, character_id: int | None = None) -> dict[str, Any] | None:
@@ -384,6 +422,76 @@ async def get_media_portrait(
     # 4. Cache-Control header: private, max-age capped at one day (86400s)
     now = time.time()
     seconds_until_exp = max(0, int(exp_int - now))
+    max_age = min(seconds_until_exp, 86400)
+    return FileResponse(str(file_path), headers={"Cache-Control": f"private, max-age={max_age}"})
+
+
+def _validate_layer_segments(request: Request, canvas: str, file_name: str) -> tuple[str, str]:
+    """Reject encoded separators and traversal before interpreting either segment."""
+    raw_path = request.scope.get("raw_path", b"").decode("latin-1", errors="ignore").lower()
+    if any(encoded in raw_path for encoded in ("%2e%2e", "%2f", "%5c")):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid sprite path")
+
+    for segments in ((canvas, file_name), (unquote(canvas), unquote(file_name))):
+        for segment in segments:
+            if (not segment or ".." in segment
+                    or any(char in segment for char in ("/", "\\", ":", "\0"))
+                    or segment in (".", "..") or Path(segment).is_absolute()):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid sprite path")
+        if not CANVAS_ID_RE.fullmatch(segments[0]) or not LAYER_FILE_NAME_RE.fullmatch(segments[1]):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid layer path")
+    return unquote(canvas), unquote(file_name)
+
+
+async def _resolve_layer_file(character_id: int, canvas: str, file_name: str) -> Path:
+    if character_id < 1:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Character not found")
+    async with get_db() as conn:
+        prof = await _get_voice_profile_or_404(conn, character_id)
+    pkg = get_character_manager().get_character(prof.name)
+    if pkg is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Character package not found")
+
+    # Keep the expected canvas directory literal so symlinks cannot switch canvases.
+    canvas_root = (pkg.folder / "portrait").resolve() / "layers" / canvas
+    file_path = (canvas_root / file_name).resolve()
+    if not file_path.is_relative_to(canvas_root) or not file_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sprite image not found")
+    return file_path
+
+
+@router.get("/{character_id}/portrait/layers/{canvas}/{file_name}")
+async def get_character_portrait_layer(
+    request: Request, character_id: int, canvas: str, file_name: str,
+) -> FileResponse:
+    canvas, file_name = _validate_layer_segments(request, canvas, file_name)
+    return FileResponse(str(await _resolve_layer_file(character_id, canvas, file_name)))
+
+
+@media_router.get("/portrait/{character_id}/layers/{canvas}/{file_name}")
+async def get_media_portrait_layer(
+    request: Request,
+    character_id: int,
+    canvas: str,
+    file_name: str,
+    v: str = Query(default=""),
+    exp: str | None = Query(default=None),
+    sig: str | None = Query(default=None),
+) -> FileResponse:
+    canvas, file_name = _validate_layer_segments(request, canvas, file_name)
+    if not sig or exp is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    try:
+        exp_int = int(exp)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from None
+
+    decoded_path = f"/api/media/portrait/{character_id}/layers/{canvas}/{file_name}"
+    if not verify_media_url_signature(decoded_path, exp_int, v, sig):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+    file_path = await _resolve_layer_file(character_id, canvas, file_name)
+    seconds_until_exp = max(0, int(exp_int - time.time()))
     max_age = min(seconds_until_exp, 86400)
     return FileResponse(str(file_path), headers={"Cache-Control": f"private, max-age={max_age}"})
 

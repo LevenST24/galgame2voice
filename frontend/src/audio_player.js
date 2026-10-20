@@ -84,7 +84,22 @@ export class StreamAudioController {
       this.masterGain = this.ctx.createGain();
       this.masterGainNode = this.masterGain;
       this.masterGain.gain.setValueAtTime(1.0, this.ctx.currentTime);
-      this.masterGain.connect(this.ctx.destination);
+      this.analyser = null;
+      if (typeof this.ctx.createAnalyser === 'function') {
+        try {
+          const analyser = this.ctx.createAnalyser();
+          analyser.fftSize = 256;
+          analyser.smoothingTimeConstant = 0.6;
+          this.masterGain.connect(analyser);
+          analyser.connect(this.ctx.destination);
+          this.analyser = analyser;
+        } catch (_) {
+          this.analyser = null;
+          this.masterGain.connect(this.ctx.destination);
+        }
+      } else {
+        this.masterGain.connect(this.ctx.destination);
+      }
     }
     if (this.ctx.state === 'suspended' && !this.isPaused) {
       this.ctx.resume().catch(() => {});
@@ -97,6 +112,31 @@ export class StreamAudioController {
    */
   get paused() {
     return this.isPaused || (this.ctx && this.ctx.state === 'suspended');
+  }
+
+  /**
+   * 返回当前时域振幅均方根 (RMS)，用于驱动口型同步 (Lip Sync)。
+   * 采样缓冲区复用，口型轮询每秒最多 30 次，不必每次分配。
+   * @returns {number}
+   */
+  getRms() {
+    const analyser = this.analyser;
+    if (!analyser) return 0;
+    const size = analyser.fftSize || 256;
+    if (this._rmsBuffer?.length !== size) this._rmsBuffer = new Float32Array(size);
+    const buffer = this._rmsBuffer;
+    if (typeof analyser.getFloatTimeDomainData === 'function') {
+      analyser.getFloatTimeDomainData(buffer);
+    } else if (typeof analyser.getByteTimeDomainData === 'function') {
+      if (this._rmsBytes?.length !== size) this._rmsBytes = new Uint8Array(size);
+      analyser.getByteTimeDomainData(this._rmsBytes);
+      for (let i = 0; i < size; i++) buffer[i] = (this._rmsBytes[i] - 128) / 128;
+    } else {
+      return 0;
+    }
+    let sum = 0;
+    for (let i = 0; i < size; i++) sum += buffer[i] * buffer[i];
+    return Math.sqrt(sum / size);
   }
 
   /**
@@ -790,6 +830,7 @@ export class StreamAudioController {
       } catch (_) {}
       this.ctx = null;
       this.masterGain = null;
+      this.analyser = null;
     }
   }
 }

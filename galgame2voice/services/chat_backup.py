@@ -19,7 +19,7 @@ SESSION_SETTINGS = frozenset({
     "ttsTopK", "ttsTopP", "ttsTemperature", "advReplyFormat",
     "advEnabled", "advPlayerName", "advPrimaryLanguage", "advSubtitleLanguage",
     "advWindowOpacity", "advTextIntervalMs", "advInterruptVoice", "advAutoBaseMs",
-    "advAutoPerCharMs", "advAutoMode", "advOutfit",
+    "advAutoPerCharMs", "advAutoMode", "advOutfit", "advBlink", "advLipSync",
 })
 
 _ADV_ENUMS = {
@@ -35,7 +35,7 @@ _JS_WHITESPACE = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2
 
 
 def _valid_adv_setting(key: str, value) -> bool:
-    if key in {"advEnabled", "advInterruptVoice"}:
+    if key in {"advEnabled", "advInterruptVoice", "advBlink", "advLipSync"}:
         return type(value) is bool
     if key in _ADV_ENUMS:
         return isinstance(value, str) and value in _ADV_ENUMS[key]

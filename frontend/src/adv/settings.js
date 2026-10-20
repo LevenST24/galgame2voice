@@ -13,6 +13,8 @@ export const ADV_FIELDS = {
   advAutoPerCharMs: ['AUTO 每字等待（毫秒）', 0, 200],
   advAutoMode: ['AUTO 模式', ['voice-priority', 'normal']],
   advOutfit: ['服装 ID（留空使用角色默认）'],
+  advBlink: ['眨眼动画', ['true', 'false']],
+  advLipSync: ['口型同步', ['true', 'false']],
 };
 export const ADV_LABELS = { true: '开启', false: '关闭', zh: '中文', ja: '日文', none: '无', 'voice-priority': '语音优先', normal: '通常' };
 

@@ -59,6 +59,20 @@ MENU = {
 
 
 class TestBuildActingMenu:
+    @pytest.mark.parametrize("version", [1, 2])
+    def test_legacy_menu_shape_is_unchanged(self, version):
+        portrait = portrait_payload()
+        portrait["version"] = version
+        assert build_acting_menu(portrait) == {
+            "outfit": "uniform",
+            "faces": ["微笑", "生气"],
+            "face_ids": {"微笑": ["smile", "smile_alt"], "生气": ["angry"]},
+            "poses": [],
+            "blush": True,
+            "motions": list(MOTIONS),
+            "fx": list(FX),
+        }
+
     def test_labels_are_unique_ordered_and_skip_blush_targets(self):
         menu = build_acting_menu(portrait_payload())
 

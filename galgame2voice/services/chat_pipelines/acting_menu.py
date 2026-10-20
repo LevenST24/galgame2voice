@@ -1,20 +1,41 @@
 """Acting menu for the P2b reply format and per-line act sanitization.
 
-The menu advertises only choices a whole-image portrait pack can actually render,
+The menu advertises only choices a whole-image or layered portrait pack can actually render,
 so the model is never asked for a face, pose or blush overlay that does not exist.
 """
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
+from galgame2voice.database import crud
+from galgame2voice.database.session import get_db
 from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS
 
 logger = logging.getLogger(__name__)
 
 FACE_LIMIT = 40
 ACT_FIELDS = ("face", "pose", "motion", "blush", "fx")
+
+
+async def get_recent_pose(db_path: str | Path, session_id: str) -> str | None:
+    """Find the last assistant pose in at most 20 recent session messages."""
+    # Each get_db(":memory:") connection is a new database with no stored history.
+    if str(db_path) == ":memory:":
+        return None
+    async with get_db(db_path) as conn:
+        messages = await crud.get_recent_messages(conn, session_id, limit=20)
+    for message in reversed(messages):
+        if message.role != "assistant" or not message.lines:
+            continue
+        for line in reversed(message.lines):
+            act = line.get("act")
+            pose = act.get("pose") if isinstance(act, dict) else None
+            if isinstance(pose, str) and pose:
+                return pose
+    return None
 
 
 def _costume_sprites(portrait: dict[str, Any], outfit: str | None) -> tuple[str | None, dict[str, Any]]:
@@ -43,6 +64,86 @@ def build_acting_menu(portrait: dict | None, outfit: str | None = None) -> dict 
     if portrait is None:
         return None
 
+    if portrait.get("version") == 3:
+        outfits = portrait.get("outfits") or {}
+        default_costume = portrait.get("default_costume") or portrait.get("defaultOutfit")
+        if isinstance(outfit, str) and outfit in outfits:
+            resolved_outfit = outfit
+        elif isinstance(default_costume, str) and default_costume in outfits:
+            resolved_outfit = default_costume
+        elif outfits:
+            resolved_outfit = next(iter(outfits))
+        else:
+            resolved_outfit = (outfit if isinstance(outfit, str) else None)
+
+        poses_meta = portrait.get("poses") or {}
+        looks_meta = portrait.get("looks") or {}
+        poses = [pid for pid in poses_meta if f"{pid}/{resolved_outfit}" in looks_meta]
+
+        default_pose = portrait.get("default_pose") or portrait.get("defaultPose")
+        if default_pose in poses:
+            default_look_pose = default_pose
+        elif poses:
+            default_look_pose = poses[0]
+        else:
+            default_look_pose = None
+
+        if default_look_pose is not None:
+            default_look = looks_meta.get(f"{default_look_pose}/{resolved_outfit}") or {}
+        else:
+            default_look = {}
+
+        faces_meta = portrait.get("faces") or {}
+        look_faces_dict = default_look.get("faces") or {}
+        labels: list[str] = []
+        face_ids: dict[str, list[str]] = {}
+        for face_id in look_faces_dict:
+            meta = faces_meta.get(face_id)
+            label = meta.get("label") if isinstance(meta, dict) else face_id
+            if not isinstance(label, str) or not label:
+                label = str(face_id)
+            if label not in face_ids:
+                if len(labels) >= FACE_LIMIT:
+                    continue
+                labels.append(label)
+                face_ids[label] = []
+            face_ids[label].append(face_id)
+
+        look_faces: dict[str, list[str]] = {}
+        look_blush: dict[str, bool] = {}
+        for pid in poses:
+            l_look = looks_meta.get(f"{pid}/{resolved_outfit}") or {}
+            look_blush[pid] = any(
+                bool(entry.get("blush", l_look.get("blush")))
+                for entry in l_look.get("faces", {}).values() if isinstance(entry, dict)
+            )
+            l_labels: list[str] = []
+            for fid in l_look.get("faces", {}):
+                meta = faces_meta.get(fid)
+                lbl = meta.get("label") if isinstance(meta, dict) else fid
+                if not isinstance(lbl, str) or not lbl:
+                    lbl = str(fid)
+                if lbl not in l_labels:
+                    l_labels.append(lbl)
+            look_faces[pid] = l_labels
+
+        labels = [label for label in labels
+                  if all(label in pose_labels for pose_labels in look_faces.values())]
+
+        return {
+            "outfit": resolved_outfit,
+            "faces": labels,
+            "face_ids": face_ids,
+            "poses": poses,
+            "pose_names": {pid: poses_meta[pid]["name"] for pid in poses},
+            "blush": any(look_blush.values()),
+            "motions": list(MOTIONS),
+            "fx": list(FX),
+            "default_pose": default_look_pose,
+            "look_faces": look_faces,
+            "look_blush": look_blush,
+        }
+
     resolved_outfit, costume_sprites = _costume_sprites(portrait, outfit)
     if not isinstance(costume_sprites, dict):
         costume_sprites = {}
@@ -56,8 +157,8 @@ def build_acting_menu(portrait: dict | None, outfit: str | None = None) -> dict 
         if isinstance(meta, dict) and isinstance(meta.get("blush"), str) and meta["blush"]
     }
 
-    labels: list[str] = []
-    face_ids: dict[str, list[str]] = {}
+    labels = []
+    face_ids = {}
     for face_id in costume_sprites:
         if face_id in blush_targets:
             continue
@@ -105,7 +206,14 @@ def _log_drop(character: str, line_index: int, field: str, value: Any, reason: s
     )
 
 
-def sanitize_act(act: Any, menu: dict | None, *, line_index: int, character: str) -> dict:
+def sanitize_act(
+    act: Any,
+    menu: dict | None,
+    *,
+    line_index: int,
+    character: str,
+    current_pose: str | None = None,
+) -> dict:
     """Drops invalid act fields individually, keeping every valid member of the line."""
     if not isinstance(act, dict):
         logger.info(
@@ -123,28 +231,54 @@ def sanitize_act(act: Any, menu: dict | None, *, line_index: int, character: str
     blush_available = bool(menu.get("blush")) if isinstance(menu, dict) else False
 
     clean: dict[str, Any] = {}
-    for field, value in act.items():
-        if field not in ACT_FIELDS:
-            _log_drop(character, line_index, str(field), value, "unsupported act key")
-            continue
 
-        if field == "face":
-            if menu is None:
-                _log_drop(character, line_index, field, value, "no acting menu")
-            elif not isinstance(value, str):
-                _log_drop(character, line_index, field, value, "face must be a string")
-            elif value not in allowed_faces:
-                _log_drop(character, line_index, field, value, "face not in menu")
-            else:
-                clean["face"] = value
-        elif field == "pose":
-            if menu is None:
-                _log_drop(character, line_index, field, value, "no acting menu")
-            elif value not in allowed_poses:
-                _log_drop(character, line_index, field, value, "pose not in menu")
-            else:
-                clean["pose"] = value
-        elif field == "motion":
+    # 1. Validate pose first
+    effective_pose = None
+    if "pose" in act:
+        val = act["pose"]
+        if menu is None:
+            _log_drop(character, line_index, "pose", val, "no acting menu")
+        elif not isinstance(val, str) or val not in allowed_poses:
+            _log_drop(character, line_index, "pose", val, "pose not in menu")
+        else:
+            clean["pose"] = val
+            effective_pose = val
+
+    if effective_pose is None:
+        if current_pose and current_pose in allowed_poses:
+            effective_pose = current_pose
+        elif isinstance(menu, dict) and menu.get("default_pose") in allowed_poses:
+            effective_pose = menu["default_pose"]
+        elif allowed_poses:
+            effective_pose = allowed_poses[0]
+
+    if isinstance(menu, dict) and isinstance(menu.get("look_blush"), dict):
+        blush_available = bool(menu["look_blush"].get(effective_pose))
+
+    # 2. Determine allowed faces for the effective look
+    if isinstance(menu, dict) and "look_faces" in menu and effective_pose in menu["look_faces"]:
+        look_allowed_faces = menu["look_faces"][effective_pose]
+    else:
+        look_allowed_faces = allowed_faces
+
+    # 3. Validate face against effective look
+    if "face" in act:
+        val = act["face"]
+        if menu is None:
+            _log_drop(character, line_index, "face", val, "no acting menu")
+        elif not isinstance(val, str):
+            _log_drop(character, line_index, "face", val, "face must be a string")
+        elif val not in look_allowed_faces:
+            _log_drop(character, line_index, "face", val, "face not in menu")
+        else:
+            clean["face"] = val
+
+    # 4. Validate motion, blush, fx
+    for field in ("motion", "blush", "fx"):
+        if field not in act:
+            continue
+        value = act[field]
+        if field == "motion":
             if value is None or value in MOTIONS:
                 clean["motion"] = value
             else:
@@ -156,13 +290,18 @@ def sanitize_act(act: Any, menu: dict | None, *, line_index: int, character: str
                 _log_drop(character, line_index, field, value, "blush not available")
             else:
                 clean["blush"] = value
-        else:  # fx
+        elif field == "fx":
             if value is None or value in FX:
                 clean["fx"] = value
             else:
                 _log_drop(character, line_index, field, value, "fx not allowed")
 
+    # 5. Log unsupported act keys
+    for field, value in act.items():
+        if field not in ACT_FIELDS:
+            _log_drop(character, line_index, str(field), value, "unsupported act key")
+
     return clean
 
 
-__all__ = ["build_acting_menu", "sanitize_act"]
+__all__ = ["build_acting_menu", "get_recent_pose", "sanitize_act"]

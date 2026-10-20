@@ -63,7 +63,7 @@ from galgame2voice.services.chat_pipelines import (
     StreamCoordinator,
     SseKeepAlive,
 )
-from galgame2voice.services.chat_pipelines.acting_menu import sanitize_act
+from galgame2voice.services.chat_pipelines.acting_menu import get_recent_pose, sanitize_act
 from galgame2voice.services.chat_pipelines.context_builder import build_chat_context
 from galgame2voice.services.chat_pipelines.line_builder import build_lines
 from galgame2voice.utils.audio_concat import concat_wav_files
@@ -743,6 +743,7 @@ class ChatService:
                     reply_format=reply_format,
                 )
 
+            current_pose = await get_recent_pose(self.db_path, session_id)
             raw_text, ttft_ms = await self._execute_sync_llm(
                 reasoning_effort=reasoning_effort if reasoning_effort is not None else configured_reasoning_effort(adapter),
                 adapter=adapter,
@@ -785,7 +786,10 @@ class ChatService:
                         menu=menu,
                         line_index=line.get("index", 0),
                         character=char_label,
+                        current_pose=current_pose,
                     )
+                    if "pose" in line["act"]:
+                        current_pose = line["act"]["pose"]
 
             # Synthesize full audio
             audio_url, tts_first_chunk_ms, tts_cached_chunks, tts_generated_chunks = await self._synthesize_sync_audio(

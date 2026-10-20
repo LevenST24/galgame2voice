@@ -27,6 +27,8 @@ export const CONFIG_PANEL_FIELDS = [
   'advAutoMode',
   'advInterruptVoice',
   'advOutfit',
+  'advBlink',
+  'advLipSync',
 ];
 
 const SAMPLE_TEXT = '这是一段用于测试文字显示速度的示例文本。';
@@ -230,6 +232,32 @@ export function createConfigPanel(container, {
 
   const rowOutfit = makeRow('advOutfit', '服装', '选择角色服装', outfitSelect, { valSuffix: undefined });
   groupDisplay.appendChild(rowOutfit);
+
+  // advBlink
+  const blinkSelect = doc.createElement('select');
+  blinkSelect.id = 'cfg-advBlink';
+  blinkSelect.className = 'adv-config-select';
+  for (const [v, text] of [['true', '开启'], ['false', '关闭']]) {
+    const opt = doc.createElement('option');
+    opt.value = v; opt.textContent = text;
+    blinkSelect.appendChild(opt);
+  }
+  controls.advBlink = blinkSelect;
+  const rowBlink = makeRow('advBlink', '眨眼动画', '开启后角色立绘展示自然眨眼', blinkSelect, { valSuffix: undefined });
+  groupDisplay.appendChild(rowBlink);
+
+  // advLipSync
+  const lipSyncSelect = doc.createElement('select');
+  lipSyncSelect.id = 'cfg-advLipSync';
+  lipSyncSelect.className = 'adv-config-select';
+  for (const [v, text] of [['true', '开启'], ['false', '关闭']]) {
+    const opt = doc.createElement('option');
+    opt.value = v; opt.textContent = text;
+    lipSyncSelect.appendChild(opt);
+  }
+  controls.advLipSync = lipSyncSelect;
+  const rowLipSync = makeRow('advLipSync', '口型同步', '开启后角色立绘随语音开合口型', lipSyncSelect, { valSuffix: undefined });
+  groupDisplay.appendChild(rowLipSync);
 
   body.appendChild(groupDisplay);
 
@@ -575,6 +603,13 @@ export function createConfigPanel(container, {
   listen(controls.advOutfit, 'change', handleOutfitChange);
   listen(controls.advOutfit, 'input', handleOutfitChange);
 
+  for (const key of ['advBlink', 'advLipSync']) {
+    listen(controls[key], 'change', () => {
+      const parsed = validateAdvField(key, controls[key].value, DEFAULT_SESSION_SETTINGS);
+      if (parsed.valid) onPreview?.({ [key]: parsed.value });
+    });
+  }
+
   listen(controls.advPrimaryLanguage, 'change', () => {
     clearFieldError('advLanguages');
     if (controls.advPrimaryLanguage.value === controls.advSubtitleLanguage.value) {
@@ -675,6 +710,8 @@ export function createConfigPanel(container, {
     controls.advAutoPerCharMs.value = String(values.advAutoPerCharMs);
     controls.advAutoMode.value = String(values.advAutoMode);
     controls.advInterruptVoice.value = String(values.advInterruptVoice);
+    controls.advBlink.value = String(values.advBlink);
+    controls.advLipSync.value = String(values.advLipSync);
     // Populate advOutfit options from current costumes
     const costumes = typeof getCostumes === 'function' ? (getCostumes() || []) : [];
     controls.advOutfit.innerHTML = '';

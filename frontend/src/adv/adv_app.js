@@ -72,7 +72,7 @@ export function mountAdv(dom, deps) {
   const sprite = createSpriteView({
     spriteLayer: stage.sprite, fxLayer: stage.fx, faceSlot: textbox.faceSlot,
     documentObj: doc, ImageClass: deps.ImageClass || globalThis.Image,
-    now: () => clock.now(), clock, raf, cancelRaf,
+    now: () => clock.now(), clock, raf, cancelRaf, random: deps.random,
     onStatus: () => {
       if (destroyed) return;
       status.hidden = false; status.textContent = '立绘暂时无法显示，点击重试';
@@ -85,13 +85,16 @@ export function mountAdv(dom, deps) {
       const key = turnId;
       const sequence = ++voiceSequence;
       textbox.setVoice({ active: true });
+      const lipSync = sprite.startLipSync({ audioPlayer: audio, characterVoice: true });
       let result;
       try { result = await audio.playLine(index, chunks, { msgId: key }); }
       catch { result = 'failed'; }
       if (!destroyed && key === turnId && sequence === voiceSequence) textbox.setVoice({ active: false });
+      // A later line may own the mouth by now; this line's token cannot stop it.
+      sprite.stopLipSync(lipSync);
       return result;
     },
-    stop(options) { ++voiceSequence; audio.stopLine(destroyed ? { fadeMs: 0 } : options); textbox.setVoice({ active: false }); },
+    stop(options) { ++voiceSequence; audio.stopLine(destroyed ? { fadeMs: 0 } : options); textbox.setVoice({ active: false }); sprite.stopLipSync(); },
   };
   const render = {
     ...textbox,
@@ -147,6 +150,7 @@ export function mountAdv(dom, deps) {
       if (patch.advOutfit !== undefined && model) {
         paint(currentLine, { costume: patch.advOutfit || model.defaultCostume });
       }
+      if (patch.advBlink !== undefined || patch.advLipSync !== undefined) sprite.setAnimationOptions(patch);
       if (patch.advPrimaryLanguage !== undefined || patch.advSubtitleLanguage !== undefined) {
         if (currentLine && player.state !== 'input' && player.state !== 'error') {
           player.repaginate();
@@ -163,6 +167,7 @@ export function mountAdv(dom, deps) {
       if (model) {
         paint(currentLine, { costume: baselineSettings?.advOutfit || model.defaultCostume });
       }
+      sprite.setAnimationOptions(animationOptions(baselineSettings || settings));
       if (currentLine && player.state !== 'input' && player.state !== 'error') {
         player.repaginate();
         textbox.reflow({ pageIndex: player.page });
@@ -204,6 +209,9 @@ export function mountAdv(dom, deps) {
     if (!resolved || !currentLine || ['input', 'error', 'idle'].includes(player.state)) return;
     // Resume the already resolved face. Overlay and OS changes never act again.
     sprite.apply({ ...resolved, state: { ...resolved.state, fx: null } }, { reducedMotion, skipping: player.skip });
+  }
+  function animationOptions(values) {
+    return { advBlink: values.advBlink !== false, advLipSync: values.advLipSync !== false };
   }
   function syncControls() {
     textbox.setCanSend(!controller.busy);
@@ -396,6 +404,8 @@ export function mountAdv(dom, deps) {
   const motionChange = event => {
     reducedMotion = Boolean(event.matches);
     player.setSettings({ reducedMotion });
+    // Blink and lip sync stop or resume at once, in either direction.
+    sprite.setAnimationOptions({ reducedMotion });
     if (reducedMotion) {
       sprite.suspend();
       restoreSprite();
@@ -435,11 +445,20 @@ export function mountAdv(dom, deps) {
         if (resolved) sprite.apply(resolved, { reducedMotion, skipping: true });
       } else if (model) paint();
       // Signed image URLs are transient; renew once, a minute before expiry.
-      const expiries = Object.values(model?.sprites || {}).flatMap(faces => Object.values(faces))
-        .map(item => { try { return Number(new URL(item.file, 'http://local').searchParams.get('exp')); } catch { return 0; } })
-        .filter(exp => exp > 0);
-      if (expiries.length) {
-        const delay = Math.max(1000, Math.min(...expiries) * 1000 - (deps.wallNow?.() ?? Date.now()) - 60000);
+      const spriteFiles = Object.values(model?.sprites || {}).flatMap(faces =>
+        faces && typeof faces === 'object' ? Object.values(faces) : []
+      );
+      const layerFiles = Object.values(model?.layers || {});
+      const minExpiry = [...spriteFiles, ...layerFiles].reduce((min, item) => {
+        try {
+          const exp = Number(new URL(item?.file, 'http://local').searchParams.get('exp'));
+          return exp > 0 ? (min ? Math.min(min, exp) : exp) : min;
+        } catch {
+          return min;
+        }
+      }, 0);
+      if (minExpiry > 0) {
+        const delay = Math.max(1000, minExpiry * 1000 - (deps.wallNow?.() ?? Date.now()) - 60000);
         refreshTimer = clock.setTimeout(() => { refreshTimer = null; loadPortrait(true); }, delay);
       }
     } catch (error) {
@@ -465,6 +484,7 @@ export function mountAdv(dom, deps) {
     }
     sessionId = session?.id; characterKey = character?.id; outfit = settings.advOutfit;
     player.setSettings(playerSettings());
+    sprite.setAnimationOptions(animationOptions(settings));
     if (changedCharacter) {
       if (!switched) {
         controller.stop();

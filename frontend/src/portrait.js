@@ -146,7 +146,9 @@ export class PortraitStageController {
     if (!profileId) return null;
     const data = await requestJson(`/api/characters/${encodeURIComponent(profileId)}/portrait`,
       { signal }, { timeoutMs: 15000 });
-    return data && data.enabled ? data : null;
+    if (!data?.enabled) return null;
+    // The chat stage draws whole images; ADV consumes the layered v3 payload.
+    return data.version === 3 ? (data.legacy || null) : data;
   }
 
   applyPayload(data) {
