@@ -1,6 +1,13 @@
 // Shared keyboard and focus handling for settings and the nested access-token dialog.
 const dialogs = [];
 let installed = false;
+const modalListeners = new Set();
+export function onModalChange(listener) { modalListeners.add(listener); return () => modalListeners.delete(listener); }
+function notifyModals() {
+  const root = document.getElementById?.('advRoot');
+  if (root) root.inert = Boolean(top());
+  for (const listener of modalListeners) listener(Boolean(top()));
+}
 const top = () => dialogs.at(-1);
 const focusable = (el) => [...el.querySelectorAll('button, input, select, textarea, summary, a[href], [tabindex]')]
   .filter(node => !node.disabled && node.tabIndex >= 0 && !node.closest('[hidden], .hidden, [inert]') && node.getClientRects().length);
@@ -18,6 +25,7 @@ export function openModal(el, { focus = null } = {}) {
   el.inert = false;
   el.classList.remove('hidden');
   el.classList.add('active');
+  notifyModals();
   const modal = el.querySelector('.modal');
   const body = el.querySelector('.modal-body');
   if (body) body.scrollTop = 0;
@@ -37,7 +45,8 @@ export function closeModal(el) {
   el.inert = false;
   if (top()) top().el.inert = false;
   const app = document.querySelector('.app');
-  if (app) app.inert = Boolean(top());
+  if (app) app.inert = Boolean(top()) || Boolean(document.body?.classList.contains('adv-active'));
+  notifyModals();
   if (previousFocus?.isConnected && !previousFocus.closest('[inert], [hidden], .hidden')) previousFocus.focus({ preventScroll: true });
   else if (top()) top().el.querySelector('.modal')?.focus({ preventScroll: true });
 }

@@ -13,6 +13,7 @@ import {
   DEFAULT_SESSION_SETTINGS,
 } from './store.js';
 import { createConversation } from './conversation.js';
+import { mountAdv } from './adv/adv_app.js';
 import { updateBadge as renderModelBadge } from './model_badge.js';
 import { voiceSupported, recorderSupported, audioStore } from './voice.js';
 import { fetchAndCacheAudio, putCachedAudioBlob } from './cache.js';
@@ -26,8 +27,8 @@ import { initAuthInterceptor } from './auth.js';
 import { initSessionBackup } from './controllers/session_backup.js';
 import { requestJson } from './api.js';
 import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSessions, fetchSessionHistoryPage, earliestServerMessageId } from './session_api.js';
-import { serverTimestamp, normalizeLines } from './session_data.js';
-import { openModal, closeModal, hasOpenModal, initSettingsUi } from './settings_ui.js';
+import { serverTimestamp, normalizeLines, pickSettings } from './session_data.js';
+import { openModal, closeModal, hasOpenModal, initSettingsUi, onModalChange } from './settings_ui.js';
 
 // Modular controllers
 import { initUpdateManager, loadSystemVersionInfo } from './controllers/update_manager.js';
@@ -56,6 +57,8 @@ import {
   getCurrentVoice,
   setCurrentVoice,
   clearMicTimers,
+  toggleMic,
+  cancelMic,
 } from './controllers/audio_player_ui.js';
 
 const appDependencies = {
@@ -272,6 +275,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   let nearBottom = true;
   let _syncSessionsGen = 0;
   let getStreamAudioControl = () => null;
+  let advApp = null;
+  let syncingAdv = false;
   const conversation = createConversation({
     state, getActive, getSession, addMessage, uid, saveState, persistSession,
     isSessionDeleting, audioStore, putCachedAudioBlob, fetchAndCacheAudio,
@@ -279,7 +284,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     clearMicTimers, beforeSend: () => { ++_syncSessionsGen; },
     onBlocked: (message) => showToast(message, 'info'),
     getAudioControl: () => getStreamAudioControl(),
-    getAudioMode: callbacks.getAudioMode || (() => 'sequential'),
+    getAudioMode: callbacks.getAudioMode || (() => getActive()?.settings?.advEnabled ? 'lines' : 'sequential'),
     fetch: callbacks.fetch || ((...args) => globalThis.fetch(...args)),
   });
 
@@ -297,6 +302,56 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   /* ---------- 渲染与状态栏 ---------- */
   function updateBadge() {
     renderModelBadge(dom, { getCurrentActiveProvider, getActive, getVoiceProfiles, haveProvidersLoaded });
+    syncAdv();
+  }
+
+  function syncAdv() {
+    const root = dom.advRoot || (!injectedDom && $('advRoot'));
+    if (!root || syncingAdv) return;
+    syncingAdv = true;
+    try {
+      const enabled = Boolean(getActive()?.settings?.advEnabled);
+      if (enabled !== Boolean(advApp) && conversation.busy) interruptAll();
+      const layout = document.querySelector('.app');
+      if (layout) layout.inert = enabled || hasOpenModal();
+      if (!enabled) {
+        advApp?.unmount(); advApp = null; root.hidden = true;
+        document.body.classList.remove('adv-active');
+        return;
+      }
+      root.hidden = false; document.body.classList.add('adv-active');
+      if (advApp) { advApp.update(); return; }
+      advApp = mountAdv({ ...dom, root }, {
+        controller: conversation, audio: streamAudioController, getSession: getActive,
+        voiceEnabled: () => state.global.voiceMode,
+        getCharacter: () => {
+          const id = getActive()?.settings?.voiceProfileId || getActiveProfileId();
+          return { id, name: getVoiceProfiles().find(profile => profile.id === id)?.name || '角色' };
+        },
+        getModelStatus: () => {
+          const provider = getCurrentActiveProvider();
+          return { label: dom.badge?.textContent || provider?.name || '未配置模型',
+            state: conversation.busy ? 'busy' : provider ? 'ok' : 'error' };
+        },
+        loadPortrait: (id, { signal }) => requestJson(`/api/characters/${encodeURIComponent(id)}/portrait`, { signal }),
+        saveSettings: patch => {
+          const session = getActive();
+          session.settings = pickSettings({ ...session.settings, ...patch }, DEFAULT_SESSION_SETTINGS);
+          saveState(); persistSession(session).catch(() => {});
+        },
+        toggleVoice: () => dom.voiceModeBtn?.click(),
+        stopOtherVoice: stopCurrentVoice,
+        onMic: () => toggleMic(),
+        cancelMic,
+        onSettings: openSessionSettings,
+        onModelSettings: () => openGlobalSettings('models'),
+        onNewSession: newChat,
+        renderHistory: () => fullRender(false, { scrollToBottom: false }),
+        subscribeOverlay: onModalChange,
+        closeOverlay: () => document.querySelector('.overlay.active [data-close]')?.click(),
+      });
+      if (hasOpenModal()) root.inert = true;
+    } finally { syncingAdv = false; }
   }
 
   function renderSidebar() {
@@ -539,7 +594,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         streamContentEl = built.contentEl;
         streamEl.classList.add('animate-in', 'streaming');
         listInner.appendChild(streamEl);
-        if (state.global.voiceMode && originId === state.activeId) {
+        if (!advApp && state.global.voiceMode && originId === state.activeId) {
           ensureStreamVoiceBar();
         }
       } else {
@@ -582,7 +637,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       renderSidebar();
       renderHeader();
       if (!cancelled) maybeScroll();
-      if (stored && !error && !cancelled && originId === state.activeId && !streamAudioController.isPlaying) {
+      if (!advApp && stored && !error && !cancelled && originId === state.activeId && !streamAudioController.isPlaying) {
         const quote = stored.japanese || stored.content;
         portraitStage.updateDialogue(quote);
         if (meta.emotion) {
@@ -597,7 +652,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       }
       // Refresh unlocks even if dialogue is still following paused/live audio.
       if (stored && !error && !cancelled && originId === state.activeId) portraitStage.refreshAffection();
-      if (stored && !error && !cancelled && state.global.voiceMode && originId === state.activeId) {
+      if (!advApp && stored && !error && !cancelled && state.global.voiceMode && originId === state.activeId) {
         if (!hasStartedStreamAudio && !streamAudioController.isPlaying) {
           const bar = streamEl && (streamEl.querySelector('.voice-bar') || streamEl.querySelector('.vb-play'));
           if (bar) bar.click();
@@ -778,7 +833,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     persistSession(s).catch(() => {});
   }
 
-  const app = { sendMessage, retryFailedMessage, loadOlderSessionHistory, fullRender, updateComposer, conversation };
+  const app = { sendMessage, retryFailedMessage, loadOlderSessionHistory, fullRender, updateComposer, conversation,
+    switchSession, syncAdv, get adv() { return advApp; } };
   if (!initialize) return app;
 
   /* ---------- 核心事件绑定 ---------- */
@@ -820,7 +876,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   }
 
   document.addEventListener('keydown', (e) => {
-    if (hasOpenModal()) return;
+    if (hasOpenModal() || advApp) return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
       e.preventDefault();
       newChat();
@@ -861,12 +917,16 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     revokeAllCachedAudioUrls,
   });
   initAudioPlayerUi(dom, {
+    getInput: () => advApp?.textbox.inputElement || dom.input,
+    getMicButton: () => advApp?.textbox.micButton || dom.micBtn,
     sendMessage,
     autoGrow,
     isBusy: () => conversation.busy,
     resolveJapanese,
     onOpenEngineStatus: () => openGlobalSettings('dashboard'),
   });
+
+  dom.voiceModeBtn?.addEventListener('click', () => advApp?.update());
 
   if (dom.sessionSettingsBtn) {
     dom.sessionSettingsBtn.addEventListener('click', openSessionSettings);
@@ -915,7 +975,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
             if (bs.title && (local.title === '新对话' || !local.title)) local.title = bs.title;
             local.updatedAt = serverTimestamp(bs.updated_at, local.updatedAt);
             if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
-            if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = { ...local.settings, ...bs.settings };
+            if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = pickSettings({ ...local.settings, ...bs.settings }, DEFAULT_SESSION_SETTINGS);
             if (typeof bs.message_count === 'number' && local.messages && local.messages.length > 0 && bs.message_count > local.messages.length) {
               const oldest = earliestServerMessageId(local.messages);
               if (oldest && oldest > 1) {
@@ -935,12 +995,12 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
               createdAt: serverTimestamp(bs.created_at),
               updatedAt: serverTimestamp(bs.updated_at),
               messages: [],
-              settings: {
+              settings: pickSettings({
                 ...DEFAULT_SESSION_SETTINGS,
                 ...(bs.settings || {}),
                 voiceProfileId: bs.voice_profile_id || null,
                 systemPrompt: '',
-              },
+              }, DEFAULT_SESSION_SETTINGS),
             });
           }
         }
@@ -980,7 +1040,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   }
 
   try {
-    portraitStage.init({ profileId: getActive()?.settings?.voiceProfileId });
+    portraitStage.init({ profileId: getActive()?.settings?.voiceProfileId, deferLoad: Boolean(advApp) });
   } catch (e) {
     console.warn('Failed to initialize portrait stage:', e);
   }

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,122 @@ EMOTION_FACES = {
     "cool": ("cool", "normal"), "sad": ("sad",), "angry": ("angry", "pout"),
     "surprised": ("surprised",), "thinking": ("thinking",),
 }
+
+
+def _is_finite_number(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _read_image_size(path: Path) -> tuple[int, int] | None:
+    """Reads width and height from PNG, WebP, or JPEG image headers without external dependencies."""
+    if not path.is_file():
+        return None
+    try:
+        with path.open("rb") as f:
+            head = f.read(32)
+            if len(head) < 16:
+                return None
+            if head.startswith(b"\x89PNG\r\n\x1a\n") and len(head) >= 24:
+                w = int.from_bytes(head[16:20], "big")
+                h = int.from_bytes(head[20:24], "big")
+                return (w, h) if w > 0 and h > 0 else None
+            if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+                chunk = head[12:16]
+                if chunk == b"VP8 ":
+                    f.seek(26)
+                    buf = f.read(4)
+                    if len(buf) == 4:
+                        w = (int.from_bytes(buf[0:2], "little")) & 0x3FFF
+                        h = (int.from_bytes(buf[2:4], "little")) & 0x3FFF
+                        return (w, h) if w > 0 and h > 0 else None
+                elif chunk == b"VP8L":
+                    f.seek(21)
+                    buf = f.read(4)
+                    if len(buf) == 4:
+                        w = 1 + (((buf[1] & 0x3F) << 8) | buf[0])
+                        h = 1 + (((buf[3] & 0x0F) << 10) | (buf[2] << 2) | ((buf[1] & 0xC0) >> 6))
+                        return (w, h) if w > 0 and h > 0 else None
+                elif chunk == b"VP8X":
+                    f.seek(24)
+                    buf = f.read(6)
+                    if len(buf) == 6:
+                        w = 1 + int.from_bytes(buf[0:3], "little")
+                        h = 1 + int.from_bytes(buf[3:6], "little")
+                        return (w, h) if w > 0 and h > 0 else None
+            if head.startswith(b"\xff\xd8"):
+                f.seek(2)
+                while True:
+                    m = f.read(2)
+                    if len(m) < 2 or m[0] != 0xFF:
+                        break
+                    marker = m[1]
+                    if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                        f.read(3)
+                        h = int.from_bytes(f.read(2), "big")
+                        w = int.from_bytes(f.read(2), "big")
+                        return (w, h) if w > 0 and h > 0 else None
+                    elif marker in (0xD9, 0xDA):
+                        break
+                    else:
+                        lb = f.read(2)
+                        if len(lb) < 2:
+                            break
+                        length = int.from_bytes(lb, "big")
+                        if length < 2:
+                            break
+                        f.seek(length - 2, 1)
+    except Exception as exc:
+        logger.debug("Failed reading image dimensions from %s: %s", path, exc)
+    return None
+
+
+def _get_costume_sprite_size(root: Path, costume_id: str, available: dict[str, Any]) -> tuple[int, int] | None:
+    for sp in available.values():
+        if isinstance(sp, dict):
+            w = sp.get("width")
+            h = sp.get("height")
+            if _is_finite_number(w) and _is_finite_number(h) and w > 0 and h > 0:
+                return int(w), int(h)
+    for sp in available.values():
+        if isinstance(sp, dict) and "file" in sp:
+            path = root / costume_id / str(sp["file"])
+            size = _read_image_size(path)
+            if size is not None:
+                return size
+    return None
+
+
+def _validate_face_rect(rect: Any, sprite_size: tuple[int, int] | None) -> dict[str, Any] | None:
+    if not isinstance(rect, dict):
+        return None
+    x, y, w, h = rect.get("x"), rect.get("y"), rect.get("width"), rect.get("height")
+    if not (_is_finite_number(x) and _is_finite_number(y) and _is_finite_number(w) and _is_finite_number(h)):
+        return None
+    if w <= 0 or h <= 0 or x < 0 or y < 0:
+        return None
+    if sprite_size is not None:
+        sw, sh = sprite_size
+        if x + w > sw or y + h > sh:
+            return None
+    return {"x": x, "y": y, "width": w, "height": h}
+
+
+def _validate_head_anchor(anchor: Any) -> dict[str, Any] | None:
+    if not isinstance(anchor, dict):
+        return None
+    x, y = anchor.get("x"), anchor.get("y")
+    if not (_is_finite_number(x) and _is_finite_number(y)):
+        return None
+    return {"x": x, "y": y}
+
+
+def _validate_crop(crop: Any) -> dict[str, Any] | None:
+    if not isinstance(crop, dict):
+        return None
+    left, top, w, h = crop.get("left"), crop.get("top"), crop.get("width"), crop.get("height")
+    if not (_is_finite_number(left) and _is_finite_number(top) and _is_finite_number(w) and _is_finite_number(h)):
+        return None
+    return {"left": left, "top": top, "width": w, "height": h}
 
 
 def _read_object(path: Path) -> dict[str, Any] | None:
@@ -72,7 +189,39 @@ def _normalize(root: Path, data: dict[str, Any], *, legacy: bool) -> dict[str, A
         if not available:
             continue
         sprites[cid] = available
-        metadata.append({"id": cid, "name": costume.get("name") or cid, "icon": costume.get("icon") or "🎎"})
+
+        costume_meta: dict[str, Any] = {
+            "id": cid,
+            "name": costume.get("name") or cid,
+            "icon": costume.get("icon") or "🎎",
+        }
+        if not legacy:
+            sprite_size = _get_costume_sprite_size(root, cid, available)
+            raw_face_rect = costume.get("faceRect") if "faceRect" in costume else data.get("faceRect")
+            if raw_face_rect is not None:
+                valid_face_rect = _validate_face_rect(raw_face_rect, sprite_size)
+                if valid_face_rect is not None:
+                    costume_meta["faceRect"] = valid_face_rect
+                else:
+                    logger.debug("Dropping invalid faceRect for costume %s: %r", cid, raw_face_rect)
+
+            raw_head_anchor = costume.get("headAnchor") if "headAnchor" in costume else data.get("headAnchor")
+            if raw_head_anchor is not None:
+                valid_head_anchor = _validate_head_anchor(raw_head_anchor)
+                if valid_head_anchor is not None:
+                    costume_meta["headAnchor"] = valid_head_anchor
+                else:
+                    logger.debug("Dropping invalid headAnchor for costume %s: %r", cid, raw_head_anchor)
+
+            raw_crop = costume.get("crop") if "crop" in costume else data.get("crop")
+            if raw_crop is not None:
+                valid_crop = _validate_crop(raw_crop)
+                if valid_crop is not None:
+                    costume_meta["crop"] = valid_crop
+                else:
+                    logger.debug("Dropping invalid crop for costume %s: %r", cid, raw_crop)
+
+        metadata.append(costume_meta)
     if not sprites:
         return None
 

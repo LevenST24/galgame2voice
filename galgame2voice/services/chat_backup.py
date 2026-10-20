@@ -2,6 +2,8 @@
 
 from datetime import datetime, timezone
 import json
+import math
+import unicodedata
 
 from fastapi import HTTPException
 
@@ -15,7 +17,47 @@ SESSION_SETTINGS = frozenset({
     "systemPrompt", "voiceProfileId", "temperature", "topP", "maxTokens",
     "freqPenalty", "presPenalty", "maxContext", "aiAdaptiveVoice", "ttsSpeed",
     "ttsTopK", "ttsTopP", "ttsTemperature",
+    "advEnabled", "advPlayerName", "advPrimaryLanguage", "advSubtitleLanguage",
+    "advWindowOpacity", "advTextIntervalMs", "advInterruptVoice", "advAutoBaseMs",
+    "advAutoPerCharMs", "advAutoMode", "advOutfit",
 })
+
+_ADV_ENUMS = {
+    "advPrimaryLanguage": {"zh", "ja"}, "advSubtitleLanguage": {"zh", "ja", "none"},
+    "advAutoMode": {"normal", "voice-priority"},
+}
+_ADV_RANGES = {"advWindowOpacity": 100, "advTextIntervalMs": 100, "advAutoBaseMs": 6000, "advAutoPerCharMs": 200}
+# ECMAScript trim (pickSettings), which differs from Python str.strip for BOM/NEL.
+# The browser enforces the 40-grapheme player-name limit with Intl.Segmenter.
+# The server only bounds the length, so it never drops a name the browser accepts.
+_PLAYER_NAME_MAX_CODEPOINTS = 400
+_JS_WHITESPACE = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+
+
+def _valid_adv_setting(key: str, value) -> bool:
+    if key in {"advEnabled", "advInterruptVoice"}:
+        return type(value) is bool
+    if key in _ADV_ENUMS:
+        return isinstance(value, str) and value in _ADV_ENUMS[key]
+    if key in _ADV_RANGES:
+        # JSON numbers have one type in JS: 75.0 is an integer there, true is not.
+        return type(value) in {int, float} and 0 <= value <= _ADV_RANGES[key] and math.isfinite(value) and int(value) == value
+    if key == "advPlayerName":
+        return isinstance(value, str) and bool(value.strip(_JS_WHITESPACE)) and len(value) <= _PLAYER_NAME_MAX_CODEPOINTS
+    if key == "advOutfit":
+        return isinstance(value, str) and len(value) <= 200 and all(
+            char in "_-" or unicodedata.category(char)[0] in "LN" for char in value
+        )
+    return True
+
+
+def validate_adv_settings(settings: dict) -> dict:
+    """Drop invalid P3 values, preserving every unrelated key for the caller."""
+    result = {key: value for key, value in settings.items() if _valid_adv_setting(key, value)}
+    primary = result.get("advPrimaryLanguage", "zh")
+    if result.get("advSubtitleLanguage", "ja") == primary:
+        result.pop("advSubtitleLanguage", None)
+    return result
 
 
 def _timestamp(value: str | None) -> int:
@@ -55,6 +97,7 @@ async def export_chat_backup() -> dict:
                 except (TypeError, ValueError):
                     settings = {}
                 settings = {key: value for key, value in settings.items() if key in SESSION_SETTINGS} if isinstance(settings, dict) else {}
+                settings = validate_adv_settings(settings)
                 settings["voiceProfileId"] = row["voice_profile_id"]
                 if row["custom_system_prompt"]:
                     settings["systemPrompt"] = row["custom_system_prompt"]

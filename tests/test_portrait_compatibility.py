@@ -44,8 +44,10 @@ def test_existing_emotion_png_package_is_available(portrait_package):
     assert data["enabled"] is True
     assert data["default_costume"] == "casual"
     url = urlsplit(data["sprites"]["casual"]["gentle"]["file"])
-    assert url.path == "/api/characters/7/portrait/file/casual/gentle.png"
-    assert url.query.startswith("v=")
+    assert url.path == "/api/media/portrait/7/casual/gentle.png"
+    assert "v=" in url.query
+    assert "exp=" in url.query
+    assert "sig=" in url.query
     assert data["expression_sets"]["happy"][0]["id"] == "happy"
     assert isinstance(data["faces"]["happy"]["parts"], list)
 

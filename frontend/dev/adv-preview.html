@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ADV Stage Component Preview & Harness</title>
+  <link rel="stylesheet" href="../src/adv/adv.css">
+  <style>
+    /* Dev Harness Layout & Controls */
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      background: #000000;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+
+    /* Dev overlay toolbar */
+    .dev-toolbar {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      z-index: 9999;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      background: rgba(10, 16, 32, 0.9);
+      border: 1px solid rgba(125, 211, 252, 0.4);
+      border-radius: 8px;
+      padding: 8px 12px;
+      color: #e2e8f0;
+      font-size: 13px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+    }
+
+    .dev-toolbar button {
+      background: rgba(30, 58, 110, 0.85);
+      border: 1px solid rgba(125, 211, 252, 0.4);
+      color: #ffffff;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .dev-toolbar button:hover {
+      background: rgba(56, 189, 248, 0.35);
+      border-color: #38bdf8;
+    }
+
+    .dev-toolbar button.active {
+      background: #38bdf8;
+      color: #030e26;
+      font-weight: 700;
+    }
+
+    .dev-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 8px;
+      background: rgba(4, 15, 38, 0.8);
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      font-family: monospace;
+      color: #7dd3fc;
+    }
+
+    .dev-badge-val {
+      color: #f8fafc;
+      font-weight: bold;
+    }
+
+    /* Original SVG Placeholder Silhouette */
+    .placeholder-silhouette {
+      width: 100%;
+      height: 100%;
+      display: block;
+      filter: drop-shadow(0 0 calc(20 * var(--u)) rgba(56, 189, 248, 0.3));
+    }
+  </style>
+</head>
+<body>
+  <!-- Dev-only Toolbar -->
+  <aside class="dev-toolbar" aria-label="开发调试工具栏">
+    <div class="dev-badge">State: <span id="dev-state" class="dev-badge-val">idle</span></div>
+    <div class="dev-badge">Line: <span id="dev-line" class="dev-badge-val">-</span></div>
+    <div class="dev-badge">Page: <span id="dev-page" class="dev-badge-val">-</span></div>
+
+    <button id="dev-btn-restart" type="button">重启剧本</button>
+    <button id="dev-btn-advance" type="button">推进 (Space/Enter)</button>
+    <button id="dev-btn-auto" type="button">AUTO (A)</button>
+    <button id="dev-btn-skip" type="button">SKIP (F)</button>
+    <button id="dev-btn-hide" type="button">隐藏窗口 (H/右键)</button>
+    <button id="dev-btn-swap" type="button">语言互换 (X)</button>
+    <button id="dev-btn-motion" type="button">减弱动态: 关</button>
+    <button id="dev-btn-toggle-toolbar" type="button" title="最小化工具栏">折叠</button>
+  </aside>
+
+  <!-- ADV Stage Shell Mount Point -->
+  <div id="adv-root"></div>
+
+  <!-- Harness Entry -->
+  <script type="module" src="./adv-preview.js"></script>
+</body>
+</html>

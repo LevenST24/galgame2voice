@@ -311,9 +311,30 @@ export class StreamAudioController {
       abortController,
       lineGain,
       settled: false,
-      resolve(outcome) {
+      resolve(outcome, { fadeMs = 0 } = {}) {
         if (lineState.settled) return;
         lineState.settled = true;
+        abortController.abort();
+        const sources = lineState.activeSources.splice(0);
+        lineState.queue = [];
+        const cleanup = () => {
+          for (const { source, chunkGain } of sources) {
+            source.onended = null;
+            try { source.stop(); } catch (_) {}
+            try { source.disconnect(); } catch (_) {}
+            try { chunkGain.disconnect(); } catch (_) {}
+          }
+          try { lineGain.disconnect(); } catch (_) {}
+        };
+        if (fadeMs > 0 && sources.length) {
+          const now = ctx.currentTime;
+          try {
+            lineGain.gain.cancelScheduledValues(now);
+            lineGain.gain.setValueAtTime(lineGain.gain.value, now);
+            lineGain.gain.linearRampToValueAtTime(0.0001, now + fadeMs / 1000);
+          } catch (_) {}
+          setTimeout(cleanup, fadeMs + 10);
+        } else cleanup();
         if (self._linePlayState === lineState) {
           self._linePlayState = null;
         }
@@ -411,7 +432,7 @@ export class StreamAudioController {
       checkCompletion();
     }
 
-    for (const item of lineState.queue) {
+    for (const item of [...lineState.queue]) {
       if (!item.url && !item.blob) {
         item.status = 'failed';
         scheduleLineNext();
@@ -451,47 +472,10 @@ export class StreamAudioController {
     const state = this._linePlayState;
     if (!state || state.settled) return;
 
-    try { state.abortController.abort(); } catch (_) {}
-
     if (this.ctx) {
       this.nextStartTime = this.ctx.currentTime;
     }
-
-    const sourcesToStop = [...state.activeSources];
-    state.activeSources = [];
-    state.queue = [];
-
-    const lineGain = state.lineGain;
-    if (this.ctx && lineGain && fadeMs > 0) {
-      const now = this.ctx.currentTime;
-      const fadeSec = fadeMs / 1000;
-      try {
-        lineGain.gain.cancelScheduledValues(now);
-        lineGain.gain.setValueAtTime(lineGain.gain.value, now);
-        lineGain.gain.linearRampToValueAtTime(0.0001, now + fadeSec);
-      } catch (_) {}
-      setTimeout(() => {
-        sourcesToStop.forEach(({ source, chunkGain }) => {
-          try {
-            source.stop();
-            source.disconnect();
-            chunkGain.disconnect();
-          } catch (_) {}
-        });
-        try { lineGain.disconnect(); } catch (_) {}
-      }, fadeMs + 10);
-    } else {
-      sourcesToStop.forEach(({ source, chunkGain }) => {
-        try {
-          source.stop();
-          source.disconnect();
-          chunkGain.disconnect();
-        } catch (_) {}
-      });
-      try { lineGain?.disconnect(); } catch (_) {}
-    }
-
-    state.resolve('interrupted');
+    state.resolve('interrupted', { fadeMs });
   }
 
   /**

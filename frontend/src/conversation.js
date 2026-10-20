@@ -34,6 +34,10 @@ export function createConversation({
     listeners.get(type).add(fn);
     return () => listeners.get(type)?.delete(fn);
   };
+  const isBusy = () => {
+    const session = getActive();
+    return busy || Boolean(session?.loadingOlder || (session && isSessionDeleting(session.id)));
+  };
 
   function attachVoiceControl(voiceCtl, message) {
     if (!turn?.hasStartedStreamAudio || audioPlayer.currentMsgId !== turn.streamMsgId) return;
@@ -54,17 +58,17 @@ export function createConversation({
   function send(rawText = '', voiceMeta, { retryOf = null } = {}) {
     clearMicTimers?.();
     const text = rawText.trim();
-    if (!text || busy) return;
+    if (!text || busy) return false;
     if (audioPlayer.isPlaying || getCurrentVoice()) stopCurrentVoice();
     const session = getActive();
-    if (!session) return;
+    if (!session) return false;
     if (session.loadingOlder) {
       onBlocked?.('正在加载更早的聊天记录，完成后即可发送。');
-      return;
+      return false;
     }
     if (isSessionDeleting(session.id)) {
       onBlocked?.('正在删除这个对话，请稍候或切换到其他对话。');
-      return;
+      return false;
     }
     const originId = session.id;
     beforeSend?.();
@@ -104,7 +108,7 @@ export function createConversation({
     cancelStream = () => finish('', { cancelled: true });
     emit('turnstart', { userMessage, assistantMessage, originId, retryOf });
     // A listener may stop the turn before the request starts.
-    if (!busy || turn !== current) return;
+    if (!busy || turn !== current) return true;
     const cancel = streamChat({
       prompt: text, sessionId: session.id, settings: session.settings,
       preset: state.global.ttsPreset || '', fetch: fetchRequest,
@@ -214,6 +218,7 @@ export function createConversation({
       onEnd: (finalText, meta = {}) => finish(finalText, meta),
     });
     if (busy && turn === current) cancelStream = cancel;
+    return true;
 
     function finish(finalText, meta = {}) {
       if (current.settled) return;
@@ -243,7 +248,12 @@ export function createConversation({
       }
 
       // Keep only reply text delivered by the stream, including final corrections.
-      const stored = Boolean(lastFull && textToSave);
+      const meaningfulLines = message.lines?.some(line => line.zh.trim() || line.ja.trim());
+      if (meaningfulLines) {
+        if (!message.content) message.content = message.lines.map(line => line.zh).join('');
+        if (!message.japanese) message.japanese = message.lines.map(line => line.ja).join('');
+      }
+      const stored = Boolean((lastFull && textToSave) || meaningfulLines);
       const origin = getSession(originId);
       if (origin && stored) {
         origin.messages.push(message);
@@ -268,15 +278,20 @@ export function createConversation({
     }
   }
 
-  function retry(message) {
+  function canRetry(message) {
     const session = getActive();
-    if (!session || !message?.failed || session.messages[session.messages.length - 1] !== message) return;
-    if (busy) {
-      onBlocked?.('当前回复完成后即可重新发送。');
-      return;
-    }
-    send(message.content, null, { retryOf: message });
+    return Boolean(session && message?.failed && session.messages.at(-1) === message && !isBusy());
   }
 
-  return { on, send, stop, retry, attachVoiceControl, get busy() { return busy; } };
+  function retry(message) {
+    if (!canRetry(message)) {
+      if (isBusy() && message?.failed && getActive()?.messages.at(-1) === message) {
+        onBlocked?.('当前回复完成后即可重新发送。');
+      }
+      return false;
+    }
+    return send(message.content, null, { retryOf: message });
+  }
+
+  return { on, send, stop, retry, canRetry, attachVoiceControl, get busy() { return isBusy(); } };
 }
