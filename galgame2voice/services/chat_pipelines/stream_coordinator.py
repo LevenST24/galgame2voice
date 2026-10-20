@@ -34,6 +34,7 @@ from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.profiler import ChatTurnProfiler
 from galgame2voice.utils.text_splitter import split_japanese_sentences
 
+from .acting_menu import sanitize_act
 from .line_builder import LineAligner
 from .llm_pipeline import LlmStreamPipeline
 from .text_pipeline import TextSegmentationPipeline
@@ -180,6 +181,8 @@ class StreamCoordinator:
         t_start: float | None = None,
         reply_format: str = "old",
         reasoning_effort: str | None = None,
+        character_name: str | None = None,
+        acting_menu: dict | None = None,
     ) -> None:
         self.adapter = adapter
         self.reply_format = reply_format
@@ -212,6 +215,12 @@ class StreamCoordinator:
             self.reasoning_effort = configured_reasoning_effort(self.adapter)
 
         self.persisted_assistant: bool = False
+        self.acting_menu = acting_menu if acting_menu is not None else getattr(messages, "menu", None)
+        self.character_name = (
+            character_name
+            or getattr(self.active_prof, "name", None)
+            or "Character"
+        )
 
     def _spawn_bg(self, coro: Any) -> None:
         """Spawns background coroutine using callback or asyncio.create_task."""
@@ -524,6 +533,13 @@ class StreamCoordinator:
             run.next_line_audio_index += 1
 
     async def _publish_line(self, run: _StreamRun, line: dict[str, Any]) -> None:
+        if "act" in line:
+            line["act"] = sanitize_act(
+                line["act"],
+                self.acting_menu,
+                line_index=line.get("index", 0),
+                character=self.character_name,
+            )
         run.lines.append(line)
         await self._put_with_cancel(
             run.event_queue, {"event": "line", "data": line}, run.cancel_event, run.shutdown_event,

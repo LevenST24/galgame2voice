@@ -467,6 +467,20 @@ test('Persistence: stored pending audio becomes failed', () => {
   assert.equal(line.audio.status, 'failed');
 });
 
+test('Persistence: normalizeLines defaults missing or non-object act to empty object instead of dropping line', () => {
+  const lines = normalizeLines([
+    { index: 0, zh: '无act字段', ja: 'ja', emotion: 'gentle' },
+    { index: 1, zh: 'act为字符串', ja: 'ja', emotion: 'gentle', act: 'bad' },
+    { index: 2, zh: 'act为null', ja: 'ja', emotion: 'gentle', act: null },
+    { index: 3, zh: '正常act', ja: 'ja', emotion: 'gentle', act: { face: 'smile' } },
+  ]);
+  assert.equal(lines.length, 4);
+  assert.deepEqual(lines[0].act, {});
+  assert.deepEqual(lines[1].act, {});
+  assert.deepEqual(lines[2].act, {});
+  assert.deepEqual(lines[3].act, { face: 'smile' });
+});
+
 test('Persistence: normalizeSnapshot validates lines and drops invalid entries', () => {
   const rawData = {
     sessions: [
@@ -503,11 +517,13 @@ test('Persistence: normalizeSnapshot validates lines and drops invalid entries',
 
   const normalized = normalizeSnapshot(rawData, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL);
   const validMsg = normalized.sessions[0].messages[0];
-  assert.equal(validMsg.lines.length, 2);
+  assert.equal(validMsg.lines.length, 3);
   assert.equal(validMsg.lines[0].index, 0);
   assert.equal(validMsg.lines[0].audio.status, 'ready');
-  assert.equal(validMsg.lines[1].index, 3);
-  assert.equal(validMsg.lines[1].audio.status, 'skipped'); // normalized unknown status
+  assert.equal(validMsg.lines[1].index, 2);
+  assert.deepEqual(validMsg.lines[1].act, {});
+  assert.equal(validMsg.lines[2].index, 3);
+  assert.equal(validMsg.lines[2].audio.status, 'skipped'); // normalized unknown status
 
   const noLinesMsg = normalized.sessions[0].messages[1];
   assert.equal(noLinesMsg.lines, undefined);

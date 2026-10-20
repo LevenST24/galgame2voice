@@ -62,7 +62,9 @@ export function normalizeLines(lines) {
     if (typeof item.zh !== 'string') continue;
     if (typeof item.ja !== 'string') continue;
     if (typeof item.emotion !== 'string') continue;
-    if (!item.act || typeof item.act !== 'object' || Array.isArray(item.act)) continue;
+    const act = (item.act && typeof item.act === 'object' && !Array.isArray(item.act))
+      ? { ...item.act }
+      : {};
 
     let audio = { status: 'skipped', chunks: [] };
     if (item.audio && typeof item.audio === 'object' && !Array.isArray(item.audio)) {
@@ -79,7 +81,7 @@ export function normalizeLines(lines) {
       zh: item.zh,
       ja: item.ja,
       emotion: item.emotion,
-      act: { ...item.act },
+      act,
       audio,
     });
   }

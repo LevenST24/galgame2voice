@@ -146,7 +146,7 @@ const backup = sessions => ({ format: 'galgame2voice.chat', version: 1, sessions
   };
   const sessions = [
     { id: 's_old', settings: { advReplyFormat: 'old' } },
-    { id: 's_lines', settings: { advReplyFormat: 'lines' } },
+    { id: 's_lines', settings: { advReplyFormat: 'lines', advOutfit: 'casual' } },
   ];
   let active = sessions[0];
   const turn = () => new Promise((resolve) => streamChat({
@@ -156,8 +156,8 @@ const backup = sessions => ({ format: 'galgame2voice.chat', version: 1, sessions
   await turn();
   active = sessions[1];
   await turn();
-  assert.deepEqual(bodies.map(body => [body.session_id, body.reply_format]), [
-    ['s_old', 'old'], ['s_lines', 'lines'],
+  assert.deepEqual(bodies.map(body => [body.session_id, body.reply_format, body.outfit]), [
+    ['s_old', 'old', undefined], ['s_lines', 'lines', 'casual'],
   ]); passed++;
 }
 console.log(`Session persistence and complete backups: ${passed} scenarios passed`);

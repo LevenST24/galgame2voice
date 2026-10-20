@@ -80,6 +80,9 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
     if (settings.advReplyFormat === 'old' || settings.advReplyFormat === 'lines') {
       body.reply_format = settings.advReplyFormat;
     }
+    if (typeof settings.advOutfit === 'string' && settings.advOutfit) {
+      body.outfit = settings.advOutfit;
+    }
     const ttsOpts = {};
     // voice_profile_id 走 ChatRequest 顶层字段；塞进 tts_options 会被后端
     // ChatTtsOptions(extra="forbid") 的白名单判为非法参数并返回 422。

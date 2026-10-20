@@ -632,6 +632,27 @@ test('focus confinement: player in input mode, quick-menu settings lands focus o
   assert.equal(h.doc.activeElement, h.app.textbox.inputElement);
 });
 
+test('clicking model settings or session settings closes panel so focus is not stolen back', t => {
+  const h = setup(t, { voice: false });
+  h.app.stage.stage.querySelector('.adv-qm-btn-config').click();
+  assert.equal(h.app.configPanel.isOpen, true);
+
+  const modelBtn = h.app.configPanel.element.querySelector('#cfg-btn-models');
+  assert.ok(modelBtn, 'Model settings button must exist');
+  modelBtn.click();
+  assert.equal(h.app.configPanel.isOpen, false, 'Panel must close when model settings clicked');
+  assert.equal(h.calls.models, 1);
+
+  h.app.stage.stage.querySelector('.adv-qm-btn-config').click();
+  assert.equal(h.app.configPanel.isOpen, true);
+
+  const sessionBtn = h.app.configPanel.element.querySelector('#cfg-btn-session');
+  assert.ok(sessionBtn, 'Session settings button must exist');
+  sessionBtn.click();
+  assert.equal(h.app.configPanel.isOpen, false, 'Panel must close when session settings clicked');
+  assert.equal(h.calls.settings, 1);
+});
+
 test('focus lands in the panel when the element chain reaches a document node, as in a browser', t => {
   const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
   // A real body's parent is the Document, which has no getAttribute.

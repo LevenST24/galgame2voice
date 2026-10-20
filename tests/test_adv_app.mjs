@@ -391,6 +391,75 @@ test('rejected send keeps draft; accepted send clears it', t => {
   input.dispatchEvent({ type: 'keydown', key: 'Enter' }); assert.equal(input.value, '');
 });
 
+test('unhide restores sprite face to current line', async t => {
+  const h = setup(t, { art: true, settings: { advTextIntervalMs: 0 } });
+  await microtasks(); h.start(); h.line(0, { act: { face: 'smile' } }); h.audioEvent();
+  h.loads.forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.equal(h.app.sprite.getLastCommitted().state.face, 'smile');
+  const faceShown = () => h.app.textbox.faceSlot.children.some(el => el.classList.contains('is-visible'));
+  h.app.action('hide');
+  assert.equal(h.app.player.hidden, true);
+  assert.equal(faceShown(), false);
+  h.app.action('unhide');
+  h.loads.forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.equal(h.app.player.hidden, false);
+  assert.equal(h.app.sprite.getLastCommitted().state.face, 'smile');
+  assert.equal(faceShown(), true);
+});
+
+test('skip is guarded against input and error states; skip-hold-end restores sprite', async t => {
+  const h = setup(t, { art: true, settings: { advTextIntervalMs: 0 } });
+  await microtasks(); h.start(); h.line(); h.done('error');
+  assert.equal(h.app.player.state, 'error');
+  h.app.action('skip');
+  assert.equal(h.app.player.skip, false);
+  h.app.action('skip-hold-start');
+  assert.equal(h.app.player.skip, false);
+
+  h.start('turn_normal'); h.line(0, { act: { face: 'smile' } }); h.audioEvent();
+  h.loads.forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.equal(h.app.sprite.getLastCommitted().state.face, 'smile');
+
+  const faceShown = () => h.app.textbox.faceSlot.children.some(el => el.classList.contains('is-visible'));
+  h.app.action('skip-hold-start');
+  assert.equal(h.app.player.skip, true);
+  assert.equal(faceShown(), false);
+  h.app.action('skip-hold-end');
+  assert.equal(h.app.player.skip, false);
+  h.loads.forEach(load => load.resolve()); await microtasks(); h.flush();
+  assert.equal(h.app.sprite.getLastCommitted().state.face, 'smile');
+  assert.equal(faceShown(), true);
+});
+
+test('resize during revealing leaves waiting_advance and next advance steps line', t => {
+  const h = setup(t, { settings: { advTextIntervalMs: 100 } });
+  h.start(); h.line(0); h.audioEvent(0);
+  assert.equal(h.app.player.state, 'revealing');
+  h.viewport.dispatchEvent({ type: 'resize' });
+  assert.equal(h.app.player.state, 'waiting_advance');
+  assert.equal(h.app.player.currentIndex, 0);
+  h.done();
+  h.app.action('advance');
+  assert.equal(h.app.player.state, 'input');
+});
+
+test('stage pointerdown ignores overlay elements and select controls without focusing stage', t => {
+  const h = setup(t, { voice: false });
+  const select = h.doc.createElement('select');
+  h.app.stage.stage.appendChild(select);
+
+  h.app.textbox.inputElement.focus();
+  assert.equal(h.doc.activeElement, h.app.textbox.inputElement);
+
+  h.app.stage.stage.dispatchEvent({ type: 'pointerdown', target: select });
+  assert.notEqual(h.doc.activeElement, h.app.stage.stage);
+
+  const overlayChild = h.doc.createElement('div');
+  h.app.stage.overlay.appendChild(overlayChild);
+  h.app.stage.stage.dispatchEvent({ type: 'pointerdown', target: overlayChild });
+  assert.notEqual(h.doc.activeElement, h.app.stage.stage);
+});
+
 test('player in input mode: quick-menu settings lands focus inside panel on first control, outside elements cannot steal focus', t => {
   const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
   // Player is in input mode with textarea focused

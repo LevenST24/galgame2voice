@@ -693,5 +693,6 @@ class TestEmptyReply:
             points = await (await conn.execute(
                 "SELECT COALESCE(SUM(affection_score), 0) FROM character_affection"
             )).fetchone()
-        assert [row[0] for row in rows] == ["user"]
+        # The failed turn leaves no orphaned user message behind.
+        assert [row[0] for row in rows] == []
         assert points[0] == 0

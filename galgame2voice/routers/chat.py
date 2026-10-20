@@ -77,6 +77,19 @@ class ChatRequest(BaseModel):
     frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0, description="Per-request frequency penalty override")
     presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0, description="Per-request presence penalty override")
     ai_adaptive_voice: bool | None = Field(default=True, description="Whether AI-driven dynamic voice inference is enabled")
+    outfit: str | None = Field(default=None, description="Active character outfit override")
+
+    @field_validator("outfit", mode="before")
+    @classmethod
+    def _validate_outfit(cls, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        val = value.strip()
+        if not val or len(val) > 64:
+            return None
+        if "/" in val or "\\" in val or ".." in val:
+            return None
+        return val
 
 
 # ============================================================================
@@ -217,6 +230,7 @@ async def chat_stream_endpoint(req: ChatRequest, request: Request) -> StreamingR
         presence_penalty=req.presence_penalty,
         ai_adaptive_voice=req.ai_adaptive_voice,
         reply_format=req.reply_format,
+        outfit=req.outfit,
     )
 
     return ChatStreamingResponse(
@@ -261,6 +275,7 @@ async def chat_sync_endpoint(req: ChatRequest) -> dict[str, Any]:
             presence_penalty=req.presence_penalty,
             ai_adaptive_voice=req.ai_adaptive_voice,
             reply_format=req.reply_format,
+            outfit=req.outfit,
         )
     except HTTPException:
         raise
