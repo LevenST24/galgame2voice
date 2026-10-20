@@ -5,10 +5,10 @@ export class Element {
     this.tagName = tag.toUpperCase(); this.ownerDocument = doc;
     this.children = []; this.parentNode = null; this.attributes = {}; this.dataset = {};
     this.listeners = new Map(); this.value = ''; this.disabled = false; this.hidden = false; this.inert = false;
-    this.tabIndex = ['BUTTON', 'TEXTAREA', 'INPUT', 'SELECT'].includes(this.tagName) ? 0 : -1;
+    this.defaultTabIndex = ['BUTTON', 'TEXTAREA', 'INPUT', 'SELECT'].includes(this.tagName) ? 0 : -1;
     this.style = { setProperty(k, v) { this[k] = v; } };
     this.naturalWidth = 800; this.naturalHeight = 1600; this.src = '';
-    this.clientWidth = 1100; this.clientHeight = 100; this.scrollHeight = 10;
+    this.clientWidth = 1100; this.clientHeight = 100; this.scrollHeight = 10; this.scrollTop = 0;
     this.textWrites = [];
     const classes = new Set();
     this.classList = { add: (...ns) => ns.forEach(n => classes.add(n)),
@@ -24,7 +24,11 @@ export class Element {
   get nextSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) + 1] || null; }
   get isConnected() { return this === this.ownerDocument?.body || Boolean(this.parentNode?.isConnected); }
   setAttribute(k, v) { this.attributes[k] = String(v); }
-  getAttribute(k) { return this.attributes[k] ?? null; }
+  getAttribute(k) {
+    return this.attributes[k] ?? null;
+  }
+  get tabIndex() { return this.attributes.tabindex === undefined ? this.defaultTabIndex : Number(this.attributes.tabindex); }
+  set tabIndex(value) { this.setAttribute('tabindex', value); }
   removeAttribute(k) { delete this.attributes[k]; if (k === 'src') this.src = ''; }
   appendChild(child) { child.remove(); this.children.push(child); child.parentNode = this; return child; }
   insertBefore(child, next) {
@@ -33,6 +37,7 @@ export class Element {
     child.parentNode = this; return child;
   }
   removeChild(child) { const index = this.children.indexOf(child); if (index >= 0) this.children.splice(index, 1); child.parentNode = null; return child; }
+  replaceChildren(...children) { for (const child of [...this.children]) this.removeChild(child); children.forEach(child => this.appendChild(child)); }
   remove() { this.parentNode?.removeChild(this); }
   replaceWith(node) {
     const parent = this.parentNode;
@@ -51,23 +56,37 @@ export class Element {
     return !event.defaultPrevented;
   }
   click() { if (!this.disabled) this.dispatchEvent({ type: 'click', button: 0 }); }
-  focus() { this.ownerDocument.activeElement = this; }
+  focus() {
+    let cur = this;
+    while (cur) {
+      if (cur.inert || (cur.getAttribute?.('inert') ?? null) !== null) return;
+      cur = cur.parentNode;
+    }
+    this.ownerDocument.activeElement = this;
+  }
   matches(selector) {
     return selector.split(',').some(part => {
       part = part.trim();
-      if (part.startsWith('.')) return this.classList.contains(part.slice(1));
+      if (part.startsWith('.')) { const classes = part.split('.').filter(Boolean); return classes.every(cls => this.classList.contains(cls)); }
       if (part.startsWith('#')) return this.id === part.slice(1);
-      if (part === '[tabindex]') return this.attributes.tabindex !== undefined;
+      if (part === '[tabindex]') return (this.getAttribute?.('tabindex') ?? null) !== null;
       const tagAttr = part.match(/^(\w+)\[([^\]]+)\]$/);
-      if (tagAttr) return this.tagName === tagAttr[1].toUpperCase() && this.getAttribute(tagAttr[2]) !== null;
+      if (tagAttr) return this.tagName === tagAttr[1].toUpperCase() && (this.getAttribute?.(tagAttr[2]) ?? null) !== null;
       const presence = part.match(/^\[([^\]=]+)\]$/);
-      if (presence) return this.getAttribute(presence[1]) !== null;
+      if (presence) return (this.getAttribute?.(presence[1]) ?? null) !== null;
       const attr = part.match(/^\[([^=]+)="([^"]+)"\]$/);
-      if (attr) return this.getAttribute(attr[1]) === attr[2];
+      if (attr) return (this.getAttribute?.(attr[1]) ?? null) === attr[2];
       return this.tagName === part.toUpperCase();
     });
   }
-  closest(selector) { return this.matches(selector) ? this : this.parentNode?.closest(selector) || null; }
+  closest(selector) {
+    let cur = this;
+    while (cur && cur.nodeType !== 9) {
+      if (typeof cur.matches === 'function' && cur.matches(selector)) return cur;
+      cur = cur.parentNode;
+    }
+    return null;
+  }
   querySelectorAll(selector) { return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]); }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
   getAnimations() { return []; }
@@ -75,8 +94,12 @@ export class Element {
   scrollTo() {}
 }
 export function fakeDocument() {
-  const doc = { hidden: false, createElement: tag => new Element(tag, doc) };
-  doc.body = doc.createElement('body'); doc.activeElement = doc.body;
+  const doc = { nodeType: 9, hidden: false, listeners: new Map(),
+    addEventListener: Element.prototype.addEventListener,
+    removeEventListener: Element.prototype.removeEventListener,
+    dispatchEvent: Element.prototype.dispatchEvent,
+    createElement: tag => new Element(tag, doc) };
+  doc.body = doc.createElement('body'); doc.activeElement = doc.body; doc.body.parentNode = doc;
   doc.querySelector = s => doc.body.querySelector(s);
   doc.getElementById = id => doc.body.querySelector(`#${id}`);
   return doc;

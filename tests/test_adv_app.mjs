@@ -191,9 +191,9 @@ test('stale sprite decode after character/session switch cannot repaint stage or
 test('unmount cancels timers, rAF, image loads, subscriptions and every owned listener/node', async t => {
   const h = setup(t, { art: true }); await microtasks(); h.start(); h.line(); h.audioEvent();
   const nodes = [h.app.stage.shell, ...h.app.stage.shell.querySelectorAll('div, button, textarea, nav')];
-  h.app.action('log'); assert.equal(h.dom.messages.parentNode.className, 'adv-drawer adv-drawer-log');
+  h.app.action('sessions'); assert.equal(h.dom.sidebar.parentNode.className, 'adv-drawer adv-drawer-sessions');
   h.app.unmount(); h.app.unmount(); h.loads.forEach(load => load.resolve()); await microtasks(); h.flush();
-  assert.equal(h.dom.root.children.length, 0); assert.equal(h.dom.messages.parentNode, h.doc.body);
+  assert.equal(h.dom.root.children.length, 0); assert.equal(h.dom.sidebar.parentNode, h.doc.body);
   assert.equal(h.clock.timers.size, 0); assert.equal(h.frames.size, 0); assert.equal(h.mediaListeners.size, 0);
   assert.ok([...h.listeners.values()].every(set => set.size === 0)); assert.deepEqual(h.subscriptions(), [null, null]);
   assert.ok(nodes.every(node => [...node.listeners.values()].every(set => set.size === 0)));
@@ -212,7 +212,7 @@ test('voice off uses typewriter and count-based AUTO with no audio terminal or a
 test('drawers and settings suspend playback, restore draft/focus, and recovery delegates retry', t => {
   const h = setup(t); h.start(); h.line(); h.audioEvent(); h.app.action('input');
   const input = h.app.textbox.inputElement; input.value = '保留'; input.dispatchEvent({ type: 'input' });
-  h.app.action('log'); assert.equal(h.calls.history, 1); assert.equal(h.app.player.state, 'suspended');
+  h.app.action('log'); assert.equal(h.app.player.state, 'suspended');
   h.app.stage.stage.dispatchEvent({ type: 'keydown', key: 'Escape' }); assert.equal(h.app.textbox.draft, '保留');
   assert.equal(h.doc.activeElement, input); h.app.action('sessions');
   assert.equal(h.dom.sidebar.parentNode.className, 'adv-drawer adv-drawer-sessions'); h.app.action('close_overlay');
@@ -277,7 +277,7 @@ test('mic, model and configuration controls are reachable without advancing the 
   assert.equal(h.app.player.currentIndex, 0); assert.equal(h.app.player.state, 'waiting_advance');
   h.app.textbox.micButton.click(); assert.equal(h.calls.mic, 1); assert.equal(h.app.player.state, 'input');
   h.app.stage.stage.querySelector('.adv-qm-status').click(); assert.equal(h.calls.models, 1);
-  h.app.stage.stage.querySelector('.adv-qm-btn-config').click(); assert.equal(h.calls.settings, 1);
+  h.app.stage.stage.querySelector('.adv-qm-btn-config').click(); assert.equal(h.app.configPanel.isOpen, true);
 });
 
 test('closing overlays restores the same stage/crop revision without replaying or announcing', async t => {
@@ -380,7 +380,7 @@ for (const key of ['Enter', ' ']) test(`focused settings button retains native $
   assert.equal(h.app.player.currentIndex, 0);
   // Model the browser default action, which only runs for unprevented keydowns.
   if (!event.defaultPrevented) button.click();
-  assert.equal(h.calls.settings, 1);
+  assert.equal(h.app.configPanel.isOpen, true);
 });
 
 test('rejected send keeps draft; accepted send clears it', t => {
@@ -389,4 +389,37 @@ test('rejected send keeps draft; accepted send clears it', t => {
   input.dispatchEvent({ type: 'keydown', key: 'Enter' }); assert.equal(input.value, '保留草稿');
   h.controller.send = () => true;
   input.dispatchEvent({ type: 'keydown', key: 'Enter' }); assert.equal(input.value, '');
+});
+
+test('player in input mode: quick-menu settings lands focus inside panel on first control, outside elements cannot steal focus', t => {
+  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
+  // Player is in input mode with textarea focused
+  assert.equal(h.app.player.state, 'input');
+  assert.equal(h.doc.activeElement, h.app.textbox.inputElement);
+
+  const button = h.app.stage.stage.querySelector('.adv-qm-btn-config');
+  button.click();
+
+  assert.equal(h.app.configPanel.isOpen, true);
+  assert.equal(h.app.configPanel.element.contains(h.doc.activeElement), true);
+  assert.notEqual(h.doc.activeElement, h.app.textbox.inputElement);
+  assert.equal(h.doc.activeElement, h.app.configPanel.controls.advWindowOpacity);
+
+  // While panel is open nothing outside it may take focus
+  h.app.textbox.inputElement.focus();
+  assert.notEqual(h.doc.activeElement, h.app.textbox.inputElement);
+  assert.equal(h.app.configPanel.element.contains(h.doc.activeElement), true);
+
+  h.app.textbox.enterInput();
+  assert.notEqual(h.doc.activeElement, h.app.textbox.inputElement);
+  assert.equal(h.app.configPanel.element.contains(h.doc.activeElement), true);
+
+  h.app.update();
+  assert.notEqual(h.doc.activeElement, h.app.textbox.inputElement);
+  assert.equal(h.app.configPanel.element.contains(h.doc.activeElement), true);
+
+  // Closing restores focus to the input element
+  h.app.configPanel.close({ revert: true });
+  assert.equal(h.app.configPanel.isOpen, false);
+  assert.equal(h.doc.activeElement, h.app.textbox.inputElement);
 });

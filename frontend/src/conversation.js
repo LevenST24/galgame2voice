@@ -223,7 +223,8 @@ export function createConversation({
     function finish(finalText, meta = {}) {
       if (current.settled) return;
       current.settled = true;
-      const { cancelled = false, error = null, errorCode = null, audioUrls = [] } = meta;
+      const { cancelled = false, audioUrls = [] } = meta;
+      let { error = null, errorCode = null } = meta;
       cancelStream = null;
       const textToSave = (finalText || lastFull || '').trim();
       if (audioPlayer.currentMsgId === current.streamMsgId) audioPlayer.finishInput();
@@ -254,6 +255,10 @@ export function createConversation({
         if (!message.japanese) message.japanese = message.lines.map(line => line.ja).join('');
       }
       const stored = Boolean((lastFull && textToSave) || meaningfulLines);
+      if (!cancelled && !error && !textToSave && !message.japanese.trim() && !meaningfulLines) {
+        error = '模型这次没有返回任何内容';
+        errorCode = 'empty_reply';
+      }
       const origin = getSession(originId);
       if (origin && stored) {
         origin.messages.push(message);

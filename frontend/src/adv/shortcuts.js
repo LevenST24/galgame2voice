@@ -178,7 +178,7 @@ export function decide(event, context = {}) {
   if (event.type === 'wheel') {
     if (event.deltaY < 0) {
       // Scrolled up
-      if (inInput || overlayOpen) {
+      if (context.inInput || overlayOpen) {
         return null;
       }
       return 'log';

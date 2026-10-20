@@ -556,6 +556,10 @@ export function createLinePlayer({
       }
     } else {
       changeState(restoreTo || 'idle');
+      if (restoreTo === 'input') {
+        render?.enterInput?.({ canSend: turnSettled });
+        emit('input', { canSend: turnSettled });
+      }
     }
   }
 
@@ -714,8 +718,13 @@ export function createLinePlayer({
     if (result.ok === true) {
       turnSettled = true;
       if (isPlayerEditing) {
-        render?.enterInput?.({ canSend: true });
-        emit('input', { canSend: true });
+        if (pauseReasons.size) {
+          suspendedFrom = 'input';
+          changeState('suspended');
+        } else {
+          render?.enterInput?.({ canSend: true });
+          emit('input', { canSend: true });
+        }
         return;
       }
       if (state === 'waiting_line') {
@@ -754,12 +763,20 @@ export function createLinePlayer({
       render?.thinking?.(false);
 
       if (result.kind === 'error') {
-        changeState('error');
+        if (pauseReasons.size) {
+          suspendedFrom = 'error';
+          changeState('suspended');
+        } else changeState('error');
         render?.showError?.(result.error);
       } else if (result.kind === 'cancelled') {
-        changeState('input');
-        render?.enterInput?.({ canSend: true });
-        emit('input', { canSend: true });
+        if (pauseReasons.size) {
+          suspendedFrom = 'input';
+          changeState('suspended');
+        } else {
+          changeState('input');
+          render?.enterInput?.({ canSend: true });
+          emit('input', { canSend: true });
+        }
       }
     }
   }
