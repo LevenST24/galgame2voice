@@ -128,6 +128,10 @@ test('shortcuts decide: wheel up opens LOG outside input and overlay', () => {
   assert.equal(decide({ type: 'wheel', deltaY: 100 }, { inInput: false, overlayOpen: false }), null);
 });
 
+test('shortcuts decide: click returns null when overlayOpen', () => {
+  assert.equal(decide({ type: 'click', button: 0 }, { inInput: false, hidden: false, overlayOpen: true }), null);
+});
+
 test('shortcuts decide: advance via Enter, Space, and left click', () => {
   const ctx = { inInput: false, hidden: false };
 
@@ -291,6 +295,29 @@ test('shortcuts DOM: createShortcuts DOM attachment and preventDefault execution
     preventDefault: () => {},
   });
   assert.equal(handled.length, 2, 'No more actions after destroy');
+});
+
+test('shortcuts DOM: click returns null and never advances when overlayOpen is true', () => {
+  const shell = new FakeDOMElement('div', 'adv-shell');
+  const stage = new FakeDOMElement('div', 'adv-stage');
+  const stageBg = new FakeDOMElement('div', 'adv-layer-bg');
+  shell.appendChild(stage);
+  stage.appendChild(stageBg);
+
+  const actions = [];
+  const shortcuts = createShortcuts(shell, {
+    getContext: () => ({ inInput: false, stageFocused: true, overlayOpen: true }),
+    onAction: (act) => actions.push(act),
+  });
+
+  stageBg.dispatchEvent({
+    type: 'click',
+    button: 0,
+    target: stageBg,
+    preventDefault: () => {},
+  });
+  assert.equal(actions.length, 0, 'Click on stage when overlayOpen must not advance');
+  shortcuts.destroy();
 });
 
 test('shortcuts DOM: clicks on letterbox, quick menu, and editor never advance; exactly one advance per stage click', () => {

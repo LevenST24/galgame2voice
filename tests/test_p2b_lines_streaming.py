@@ -13,6 +13,7 @@ from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.routers.chat import ChatRequest
 from galgame2voice.services import chat_service as service_module
+from galgame2voice.services.chat_pipelines.context_builder import BuiltContext
 from galgame2voice.services.chat_pipelines.text_pipeline import TextSegmentationPipeline
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
@@ -27,6 +28,13 @@ LINES = [
 ]
 ZH = "".join(line["zh"] for line in LINES)
 JA = "".join(line["ja"] for line in LINES)
+MENU = {"faces": ["smile"], "poses": ["a"], "blush": False}
+# An unknown face, a pose and blush the pack lacks, beside a valid motion and face.
+DIRTY_LINES = [
+    {"zh": "你好。", "ja": "こんにちは。", "emotion": "shy",
+     "act": {"face": "unknown", "pose": "b", "blush": True, "motion": "nod"}},
+    {"zh": "再见。", "ja": "さようなら。", "emotion": "cool", "act": {"face": "smile"}},
+]
 
 
 def reply(lines=LINES, *, ascii=False):
@@ -293,20 +301,25 @@ async def test_bounded_queues_preserve_chunk_then_terminal_order(coordinator_fac
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["sync", "stream"])
 @pytest.mark.parametrize("reply_format", ["old", "lines"])
-async def test_service_forwards_format_and_persists_aggregate(tmp_path, monkeypatch, mode, reply_format):
+@pytest.mark.parametrize(("lines", "acts"), [
+    (LINES, [line["act"] for line in LINES]),
+    (DIRTY_LINES, [{"motion": "nod"}, {"face": "smile"}]),
+], ids=["valid", "dirty"])
+async def test_service_forwards_format_and_persists_aggregate(tmp_path, monkeypatch, mode, reply_format, lines, acts):
     database = tmp_path / "service.db"
     await init_db(database)
 
     async def tokens(*args, **kwargs):
-        yield reply()
+        yield reply(lines)
 
     tts = SimpleNamespace(audio_dir=tmp_path, synthesize_to_file=AsyncMock(return_value=("/audio/test.wav", tmp_path / "test.wav", {})))
     service = ChatService(db_path=database, tts_service=tts)
     service._get_active_llm_adapter = AsyncMock(return_value=(
-        SimpleNamespace(chat=AsyncMock(return_value=SimpleNamespace(content=reply())), stream_chat=tokens), "test", "custom",
+        SimpleNamespace(chat=AsyncMock(return_value=SimpleNamespace(content=reply(lines))), stream_chat=tokens), "test", "custom",
     ))
     service._extract_memory_safe = AsyncMock()
-    context = AsyncMock(return_value=[])
+    # The turn's acting menu travels with the built context.
+    context = AsyncMock(return_value=BuiltContext([], menu=MENU))
     monkeypatch.setattr(service_module, "build_chat_context", context)
     coordinators = []
     original = service_module.StreamCoordinator
@@ -320,14 +333,17 @@ async def test_service_forwards_format_and_persists_aggregate(tmp_path, monkeypa
         if mode == "sync":
             result = await service.chat_sync("问题", session_id="service", reply_format=reply_format)
         else:
-            result = (await _collect(service.stream_chat("问题", session_id="service", reply_format=reply_format)))[-1]["data"]
+            events = await _collect(service.stream_chat("问题", session_id="service", reply_format=reply_format))
+            result = events[-1]["data"]
             assert coordinators[0]["reply_format"] == reply_format
+            assert [event["data"]["act"] for event in events if event["event"] == "line"] == acts
         assert context.call_args.kwargs["reply_format"] == reply_format
-        assert (result["chinese"], result["japanese"]) == (ZH, JA)
-        assert [x["act"] for x in result["lines"]] == [x["act"] for x in LINES]
+        zh, ja = "".join(line["zh"] for line in lines), "".join(line["ja"] for line in lines)
+        assert (result["chinese"], result["japanese"]) == (zh, ja)
+        assert [x["act"] for x in result["lines"]] == acts
         async with get_db(database) as conn:
             saved = (await crud.get_recent_messages(conn, "service"))[-1]
-        assert (saved.content_chinese, saved.content_japanese, saved.lines) == (ZH, JA, result["lines"])
+        assert (saved.content_chinese, saved.content_japanese, saved.lines) == (zh, ja, result["lines"])
     finally:
         await service.aclose()
 

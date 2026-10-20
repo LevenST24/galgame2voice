@@ -561,7 +561,6 @@ export function createTextbox(container, opts = {}) {
     inputWrapEl.classList.remove('is-hidden');
     glyph(false);
 
-
     try {
       textareaEl.focus();
     } catch {
@@ -572,11 +571,17 @@ export function createTextbox(container, opts = {}) {
   // Opening the editor alone does not discard unread lines. Only its first edit
   // invokes player_edit; the application can therefore preserve IME drafts.
   function prepareInput({ canSend = false } = {}) {
+    clearError();
     setCanSend(canSend);
     speechViewEl.classList.add('is-hidden');
+    errorWrapEl.classList.add('is-hidden');
     inputWrapEl.classList.remove('is-hidden');
     setSpeaker({ name: '', mode: 'player' });
-    textareaEl.focus();
+    try {
+      textareaEl.focus();
+    } catch {
+      // Ignore if focus is unavailable in headless / test environment
+    }
   }
 
   function logOnly(line) {

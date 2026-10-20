@@ -63,6 +63,7 @@ from galgame2voice.services.chat_pipelines import (
     StreamCoordinator,
     SseKeepAlive,
 )
+from galgame2voice.services.chat_pipelines.acting_menu import sanitize_act
 from galgame2voice.services.chat_pipelines.context_builder import build_chat_context
 from galgame2voice.services.chat_pipelines.line_builder import build_lines
 from galgame2voice.utils.audio_concat import concat_wav_files
@@ -156,6 +157,7 @@ class ChatService:
         active_prof: Any | None = None,
         session: Any | None = None,
         reply_format: str = "old",
+        outfit: str | None = None,
     ) -> tuple[BaseLLMAdapter, str, str, list[ChatMessage]]:
         """Resolves active LLM adapter, model name, provider ID, and prepared chat messages."""
         res = await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
@@ -171,6 +173,7 @@ class ChatService:
             max_history_override=max_context,
             active_profile=active_prof,
             session=session,
+            outfit=outfit,
             reply_format=reply_format,
         )
         return adapter, model_name, actual_provider_id, messages
@@ -265,6 +268,7 @@ class ChatService:
         active_profile: Any | None = None,
         session: Any | None = None,
         reply_format: str = "old",
+        outfit: str | None = None,
     ) -> list[ChatMessage]:
         """
         Constructs system prompt and conversation history messages for LLM using SessionManager.
@@ -281,6 +285,7 @@ class ChatService:
             max_history_override=max_history_override,
             active_profile=active_profile,
             session=session,
+            outfit=outfit,
             reply_format=reply_format,
         )
 
@@ -295,6 +300,7 @@ class ChatService:
         active_profile: Any | None = None,
         session: Any | None = None,
         reply_format: str = "old",
+        outfit: str | None = None,
     ) -> list[ChatMessage]:
         """Public interface for preparing chat messages.
 
@@ -307,6 +313,7 @@ class ChatService:
             max_history_override=max_history_override,
             active_profile=active_profile,
             session=session,
+            outfit=outfit,
             reply_format=reply_format,
         )
 
@@ -491,6 +498,7 @@ class ChatService:
         ai_adaptive_voice: bool | None = None,
         voice_profile_id: int | None = None,
         reply_format: str = "old",
+        outfit: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         Asynchronously streams bilingual SSE events:
@@ -555,6 +563,7 @@ class ChatService:
                     max_context=max_context,
                     active_prof=active_prof,
                     session=sess_obj,
+                    outfit=outfit,
                     reply_format=reply_format,
                 )
 
@@ -586,6 +595,8 @@ class ChatService:
                 t_start=t_start,
                 reasoning_effort=reasoning_effort if reasoning_effort is not None else configured_reasoning_effort(adapter),
                 reply_format=reply_format,
+                character_name=character_name or (active_prof.name if active_prof else None),
+                acting_menu=getattr(messages, "menu", None),
             )
 
             stream_iter = coordinator.stream()
@@ -635,6 +646,7 @@ class ChatService:
         ai_adaptive_voice: bool | None = None,
         voice_profile_id: int | None = None,
         reply_format: str = "old",
+        outfit: str | None = None,
     ) -> AsyncGenerator[str | dict[str, Any], None]:
         """
         Asynchronously streams bilingual SSE formatted event strings.
@@ -658,6 +670,7 @@ class ChatService:
             reasoning_effort=reasoning_effort,
             ai_adaptive_voice=ai_adaptive_voice,
             voice_profile_id=voice_profile_id,
+            outfit=outfit,
             reply_format=reply_format,
         ):
             yield format_sse_frame(event)
@@ -680,6 +693,7 @@ class ChatService:
         ai_adaptive_voice: bool | None = None,
         voice_profile_id: int | None = None,
         reply_format: str = "old",
+        outfit: str | None = None,
     ) -> dict[str, Any]:
         """
         Synchronous non-streaming bilingual completion and TTS synthesis.
@@ -725,6 +739,7 @@ class ChatService:
                     max_context=max_context,
                     active_prof=active_prof,
                     session=sess_obj,
+                    outfit=outfit,
                     reply_format=reply_format,
                 )
 
@@ -759,6 +774,18 @@ class ChatService:
             final_emotion = classify_emotion(chinese, japanese, parser.emotion_extracted)
             lines = (parser.normalized_lines(with_audio=True) if parser.line_scanner.format == "lines"
                      else build_lines(chinese, japanese, final_emotion, with_audio=True))
+
+            # Sanitize each line's act against acting_menu
+            menu = getattr(messages, "menu", None)
+            char_label = character_name or (active_prof.name if active_prof else None) or "Character"
+            if lines:
+                for line in lines:
+                    line["act"] = sanitize_act(
+                        line.get("act"),
+                        menu=menu,
+                        line_index=line.get("index", 0),
+                        character=char_label,
+                    )
 
             # Synthesize full audio
             audio_url, tts_first_chunk_ms, tts_cached_chunks, tts_generated_chunks = await self._synthesize_sync_audio(
