@@ -16,13 +16,14 @@ import asyncio
 import json
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 import pytest
 
+from galgame2voice.adapters.base import configured_reasoning_effort
 from galgame2voice.adapters.llm.gemini_adapter import GeminiLLMAdapter
 from galgame2voice.adapters.llm.anthropic_adapter import AnthropicAdapter
 from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
@@ -801,3 +802,12 @@ async def test_nonstream_adapter_and_connectivity_probe_forward_effort(effort):
     payload = client.post.call_args.kwargs["json"]
     assert payload.get("reasoning_effort") == effort
     assert ("reasoning_effort" in payload) == (effort is not None)
+
+
+def test_configured_reasoning_effort_forwards_only_known_levels():
+    """Mocks and unknown values must never reach a request as reasoning_effort."""
+    assert configured_reasoning_effort(MagicMock()) is None
+    assert configured_reasoning_effort(SimpleNamespace(reasoning_effort="minimal")) is None
+    assert configured_reasoning_effort(SimpleNamespace()) is None
+    for level in ("none", "low", "medium", "high"):
+        assert configured_reasoning_effort(SimpleNamespace(reasoning_effort=level)) == level

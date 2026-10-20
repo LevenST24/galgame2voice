@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Callable
 from anyio import CancelScope
 
+from galgame2voice.adapters.base import configured_reasoning_effort
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate
 from galgame2voice.database.session import get_db, immediate_transaction
@@ -208,7 +209,7 @@ class StreamCoordinator:
         self.t_start = t_start if t_start is not None else time.perf_counter()
         self.reasoning_effort = reasoning_effort
         if self.reasoning_effort is None:
-            self.reasoning_effort = getattr(self.adapter, "reasoning_effort", None)
+            self.reasoning_effort = configured_reasoning_effort(self.adapter)
 
         self.persisted_assistant: bool = False
 

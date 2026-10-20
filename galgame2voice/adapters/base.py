@@ -284,6 +284,15 @@ class MissingApiKeyError(ValueError):
         super().__init__("Authentication error: API key is not configured")
 
 
+REASONING_EFFORT_LEVELS = frozenset({"none", "low", "medium", "high"})
+
+
+def configured_reasoning_effort(adapter: object) -> str | None:
+    """Returns the adapter's reasoning effort when it is a known level, else None."""
+    value = getattr(adapter, "reasoning_effort", None)
+    return value if isinstance(value, str) and value in REASONING_EFFORT_LEVELS else None
+
+
 class BaseLLMAdapter(ABC):
     """
     Abstract Base Class for Large Language Model Adapters.

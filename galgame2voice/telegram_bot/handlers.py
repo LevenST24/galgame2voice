@@ -30,6 +30,7 @@ from galgame2voice.services.chat_service import ChatService, StreamingBilingualP
 from galgame2voice.services.chat_pipelines.line_builder import build_lines
 from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.services.tts_service import TtsService
+from galgame2voice.adapters.base import configured_reasoning_effort
 from galgame2voice.adapters.registry import PROVIDER_PRESETS, SpeechRecognitionUnsupportedError, get_stt_adapter
 from galgame2voice.utils.audio_converter import convert_ogg_to_wav, convert_wav_to_ogg
 from galgame2voice.utils.japanese_phonetics import strip_stage_directions
@@ -736,8 +737,9 @@ class TelegramBotHandlers:
                     logger.debug("Failed sending typing chat action for chat_id=%d: %s", chat_id, action_err)
 
             chat_kwargs = {"model": model_name}
-            if getattr(adapter, "reasoning_effort", None) is not None:
-                chat_kwargs["reasoning_effort"] = adapter.reasoning_effort
+            effort = configured_reasoning_effort(adapter)
+            if effort is not None:
+                chat_kwargs["reasoning_effort"] = effort
             llm_response = await adapter.chat(messages, **chat_kwargs)
             raw_text = llm_response.content
 
