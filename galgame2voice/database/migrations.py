@@ -551,6 +551,8 @@ async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
         current_version = 7
         await set_schema_version(conn, 7)
 
+    # Additive reply metadata: keep user_version compatible with older builds.
+    await _add_column_if_missing(conn, "messages", "lines_json", "TEXT DEFAULT NULL")
     return current_version
 
 

@@ -2,6 +2,7 @@
 Session and message CRUD operations for SQLite persistence in galgame2voice.
 """
 
+import json
 import logging
 import re
 import sqlite3
@@ -252,12 +253,13 @@ async def add_message(conn: aiosqlite.Connection, msg: MessageCreate) -> Message
     await get_or_create_session(conn, msg.session_id)
     async with immediate_transaction(conn):
         cursor = await conn.execute("""
-            INSERT INTO messages (session_id, role, content_chinese, content_japanese, audio_url, latency_ms)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (session_id, role, content_chinese, content_japanese, audio_url, latency_ms, lines_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             RETURNING *;
         """, (
             msg.session_id, msg.role, msg.content_chinese,
-            msg.content_japanese, msg.audio_url, msg.latency_ms
+            msg.content_japanese, msg.audio_url, msg.latency_ms,
+            json.dumps(msg.lines, ensure_ascii=False) if msg.lines is not None else None,
         ))
         row = await cursor.fetchone()
         if not row and cursor.lastrowid:

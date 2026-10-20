@@ -40,6 +40,7 @@ export class StreamAudioController {
     this._reportedError = false;
     this._speaking = false;
     this._lastProgress = 0;
+    this._linePlayState = null;
 
     this.underrunCount = 0;
     this.chunksPlayed = 0;
@@ -271,6 +272,229 @@ export class StreamAudioController {
   }
 
   /**
+   * 按单句台词播放切片列表
+   * @param {number} lineIndex
+   * @param {Array<string|Object>} chunks
+   * @param {Object} [options]
+   * @param {string} [options.msgId]
+   * @returns {Promise<'ended'|'interrupted'|'failed'>}
+   */
+  async playLine(lineIndex, chunks, { msgId = null } = {}) {
+    if (this._linePlayState) {
+      this.stopLine({ fadeMs: 0 });
+    }
+
+    if (!Array.isArray(chunks) || chunks.length === 0) {
+      return 'failed';
+    }
+
+    const ctx = this.ensureContext();
+    if (!ctx) return 'failed';
+    if (ctx.state === 'suspended' && !this.isPaused) {
+      ctx.resume().catch(() => {});
+    }
+
+    const abortController = new AbortController();
+    const lineGain = ctx.createGain();
+    lineGain.gain.setValueAtTime(1.0, ctx.currentTime);
+    lineGain.connect(this.masterGain);
+
+    let lineResolve;
+    const linePromise = new Promise((resolve) => {
+      lineResolve = resolve;
+    });
+
+    const self = this;
+    const lineState = {
+      lineIndex,
+      msgId,
+      abortController,
+      lineGain,
+      settled: false,
+      resolve(outcome) {
+        if (lineState.settled) return;
+        lineState.settled = true;
+        if (self._linePlayState === lineState) {
+          self._linePlayState = null;
+        }
+        lineResolve(outcome);
+      },
+      queue: [],
+      activeSources: [],
+      playedCount: 0,
+      totalChunks: chunks.length,
+    };
+    this._linePlayState = lineState;
+
+    for (let i = 0; i < chunks.length; i++) {
+      const c = chunks[i];
+      const url = typeof c === 'string' ? c : (c?.audio_url || c?.url || '');
+      const sentence = typeof c === 'object' ? (c?.sentence || '') : '';
+      const emotion = typeof c === 'object' ? (c?.emotion || '') : '';
+      const blob = typeof c === 'object' ? (c?.blob || null) : null;
+      lineState.queue.push({
+        index: i,
+        url,
+        sentence,
+        emotion,
+        blob,
+        status: 'fetching',
+        audioBuffer: null,
+      });
+    }
+
+    function checkCompletion() {
+      if (lineState.settled) return;
+      if (lineState.queue.length === 0 && lineState.activeSources.length === 0) {
+        if (lineState.playedCount > 0) {
+          lineState.resolve('ended');
+        } else {
+          lineState.resolve('failed');
+        }
+      }
+    }
+
+    function scheduleLineNext() {
+      if (lineState.settled) return;
+
+      const now = ctx.currentTime;
+      if (self.nextStartTime < now) {
+        self.nextStartTime = now + self.currentBufferLeadSec;
+      }
+
+      while (lineState.queue.length > 0) {
+        const head = lineState.queue[0];
+        if (head.status === 'fetching') {
+          break;
+        }
+        lineState.queue.shift();
+        if (head.status === 'failed' || !head.audioBuffer) {
+          continue;
+        }
+
+        const buffer = head.audioBuffer;
+        const startTime = self.nextStartTime;
+        const duration = buffer.duration || 0;
+        const fadeDur = Math.min(self.crossFadeMs, duration / 4);
+
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+
+        const chunkGain = ctx.createGain();
+        chunkGain.gain.setValueAtTime(0.0001, startTime);
+        chunkGain.gain.linearRampToValueAtTime(1.0, startTime + fadeDur);
+
+        const fadeOutStart = Math.max(startTime + fadeDur, startTime + duration - fadeDur);
+        chunkGain.gain.setValueAtTime(1.0, fadeOutStart);
+        chunkGain.gain.linearRampToValueAtTime(0.0001, startTime + duration);
+
+        source.connect(chunkGain);
+        chunkGain.connect(lineGain);
+
+        source.start(startTime);
+        self.nextStartTime = startTime + duration - (fadeDur / 2);
+
+        const entry = { source, chunkGain, startTime, duration };
+        lineState.activeSources.push(entry);
+        lineState.playedCount++;
+
+        source.onended = () => {
+          lineState.activeSources = lineState.activeSources.filter((s) => s !== entry);
+          try {
+            source.disconnect();
+            chunkGain.disconnect();
+          } catch (_) {}
+          checkCompletion();
+        };
+      }
+
+      checkCompletion();
+    }
+
+    for (const item of lineState.queue) {
+      if (!item.url && !item.blob) {
+        item.status = 'failed';
+        scheduleLineNext();
+        continue;
+      }
+      (async () => {
+        try {
+          const audioBuffer = await withAudioDeadline(async (signal) => {
+            if (!ctx) throw new Error('Web Audio not supported');
+            const audioBlob = item.blob || await loadAudioBlob(item.url, { signal, timeoutMs: self.fetchTimeoutMs });
+            const arrayBuffer = await audioBlob.arrayBuffer();
+            if (signal.aborted) throw new DOMException('播放已取消', 'AbortError');
+            return ctx.decodeAudioData(arrayBuffer);
+          }, { signal: abortController.signal, timeoutMs: self.fetchTimeoutMs });
+
+          if (lineState.settled) return;
+          item.audioBuffer = audioBuffer;
+          item.status = 'ready';
+          scheduleLineNext();
+        } catch (err) {
+          if (lineState.settled) return;
+          item.status = 'failed';
+          scheduleLineNext();
+        }
+      })();
+    }
+
+    return linePromise;
+  }
+
+  /**
+   * 停止当前句的播放
+   * @param {Object} [options]
+   * @param {number} [options.fadeMs=40]
+   */
+  stopLine({ fadeMs = 40 } = {}) {
+    const state = this._linePlayState;
+    if (!state || state.settled) return;
+
+    try { state.abortController.abort(); } catch (_) {}
+
+    if (this.ctx) {
+      this.nextStartTime = this.ctx.currentTime;
+    }
+
+    const sourcesToStop = [...state.activeSources];
+    state.activeSources = [];
+    state.queue = [];
+
+    const lineGain = state.lineGain;
+    if (this.ctx && lineGain && fadeMs > 0) {
+      const now = this.ctx.currentTime;
+      const fadeSec = fadeMs / 1000;
+      try {
+        lineGain.gain.cancelScheduledValues(now);
+        lineGain.gain.setValueAtTime(lineGain.gain.value, now);
+        lineGain.gain.linearRampToValueAtTime(0.0001, now + fadeSec);
+      } catch (_) {}
+      setTimeout(() => {
+        sourcesToStop.forEach(({ source, chunkGain }) => {
+          try {
+            source.stop();
+            source.disconnect();
+            chunkGain.disconnect();
+          } catch (_) {}
+        });
+        try { lineGain.disconnect(); } catch (_) {}
+      }, fadeMs + 10);
+    } else {
+      sourcesToStop.forEach(({ source, chunkGain }) => {
+        try {
+          source.stop();
+          source.disconnect();
+          chunkGain.disconnect();
+        } catch (_) {}
+      });
+      try { lineGain?.disconnect(); } catch (_) {}
+    }
+
+    state.resolve('interrupted');
+  }
+
+  /**
    * 调度器：在 Web Audio 时间线上精确排期已就绪切片
    */
   _scheduleNext() {
@@ -403,6 +627,9 @@ export class StreamAudioController {
    * @param {number} fadeMs 渐出毫秒数，默认 40ms
    */
   interrupt(fadeMs = 40) {
+    if (this._linePlayState) {
+      this.stopLine({ fadeMs });
+    }
     this.currentSessionId += 1;
     this.currentMsgId = null;
     this.isStreaming = false;

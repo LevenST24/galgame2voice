@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field
 
 from galgame2voice.adapters.base import ChatMessage
 from galgame2voice.database.session import get_database_path, get_db
+from galgame2voice.database.models import decode_lines
 from galgame2voice.services.metrics_collector import MetricsCollector
+from galgame2voice.services.chat_pipelines.line_builder import build_lines
 
 
 class SessionTurn(BaseModel):
@@ -22,6 +24,7 @@ class SessionTurn(BaseModel):
     raw_content: str | None = None
     audio_url: str = Field(default="")
     latency_ms: int = Field(default=0)
+    lines: list[dict] | None = None
 
 
 def _render_system_template(tpl: str, character_name: str) -> str:
@@ -83,6 +86,8 @@ class SessionManager:
         self.db_path = str(db_path) if db_path is not None else get_database_path()
         self.system_template = default_system_template or self.DEFAULT_SYSTEM_TEMPLATE
         self._table_name: str | None = None
+        self._session_messages_has_lines: bool | None = None
+        self._messages_has_lines: bool | None = None
 
     def estimate_tokens(self, text: str) -> int:
         """
@@ -102,18 +107,32 @@ class SessionManager:
         audio_url: str = "",
         latency_ms: int = 0,
         emotion: str = "gentle",
+        lines: list[dict] | None = None,
     ) -> SessionTurn:
         """Persists a new conversation turn to SQLite."""
+        if role == "assistant" and lines is None:
+            lines = build_lines(chinese, japanese, emotion, with_audio=True)
         async with get_db(self.db_path) as db:
             # Check table existence: session_messages vs messages
             cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
             has_session_messages = await cur.fetchone()
 
             if has_session_messages:
-                await db.execute("""
-                    INSERT INTO session_messages (session_id, role, content_chinese, content_japanese, raw_content)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (session_id, role, chinese, japanese, raw or chinese))
+                if self._session_messages_has_lines is None:
+                    cols = await (await db.execute("PRAGMA table_info(session_messages);")).fetchall()
+                    self._session_messages_has_lines = any(c[1] == "lines_json" for c in cols)
+
+                if self._session_messages_has_lines:
+                    await db.execute("""
+                        INSERT INTO session_messages (session_id, role, content_chinese, content_japanese, raw_content, lines_json)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (session_id, role, chinese, japanese, raw or chinese,
+                          json.dumps(lines, ensure_ascii=False) if lines is not None else None))
+                else:
+                    await db.execute("""
+                        INSERT INTO session_messages (session_id, role, content_chinese, content_japanese, raw_content)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (session_id, role, chinese, japanese, raw or chinese))
             else:
                 # Check if sessions table exists to satisfy foreign keys
                 cur_sess = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions';")
@@ -123,11 +142,21 @@ class SessionManager:
                         VALUES (?, 'web', '')
                     """, (session_id,))
 
-                # Use messages table from production schema
-                await db.execute("""
-                    INSERT INTO messages (session_id, role, content_chinese, content_japanese, audio_url, latency_ms)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (session_id, role, chinese, japanese, audio_url, latency_ms))
+                if self._messages_has_lines is None:
+                    cols = await (await db.execute("PRAGMA table_info(messages);")).fetchall()
+                    self._messages_has_lines = any(c[1] == "lines_json" for c in cols)
+
+                if self._messages_has_lines:
+                    await db.execute("""
+                        INSERT INTO messages (session_id, role, content_chinese, content_japanese, audio_url, latency_ms, lines_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (session_id, role, chinese, japanese, audio_url, latency_ms,
+                          json.dumps(lines, ensure_ascii=False) if lines is not None else None))
+                else:
+                    await db.execute("""
+                        INSERT INTO messages (session_id, role, content_chinese, content_japanese, audio_url, latency_ms)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (session_id, role, chinese, japanese, audio_url, latency_ms))
             await db.commit()
 
         return SessionTurn(
@@ -138,6 +167,7 @@ class SessionManager:
             raw_content=raw,
             audio_url=audio_url,
             latency_ms=latency_ms,
+            lines=lines,
         )
 
     async def get_history(
@@ -157,18 +187,33 @@ class SessionManager:
         async with get_db(self.db_path) as db:
             return await self._get_history_on_conn(db, session_id, max_messages, max_tokens)
 
-    @staticmethod
-    def _history_query_for_table(table: str) -> str:
+    def _history_query_for_table(self, table: str) -> str:
         if table == "session_messages":
+            if self._session_messages_has_lines:
+                return """
+                    SELECT role, content_chinese, content_japanese, raw_content, lines_json
+                    FROM session_messages
+                    WHERE session_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                """
             return """
-                SELECT role, content_chinese, content_japanese, raw_content
+                SELECT role, content_chinese, content_japanese, raw_content, NULL as lines_json
                 FROM session_messages
                 WHERE session_id = ?
                 ORDER BY id DESC
                 LIMIT ?
             """
+        if self._messages_has_lines:
+            return """
+                SELECT role, content_chinese, content_japanese, '' as raw_content, audio_url, latency_ms, lines_json
+                FROM messages
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+            """
         return """
-            SELECT role, content_chinese, content_japanese, '' as raw_content, audio_url, latency_ms
+            SELECT role, content_chinese, content_japanese, '' as raw_content, audio_url, latency_ms, NULL as lines_json
             FROM messages
             WHERE session_id = ?
             ORDER BY id DESC
@@ -186,6 +231,12 @@ class SessionManager:
                 if not await cur_msg.fetchone():
                     return None
                 self._table_name = "messages"
+        if self._table_name == "session_messages" and self._session_messages_has_lines is None:
+            cols = await (await db.execute("PRAGMA table_info(session_messages);")).fetchall()
+            self._session_messages_has_lines = any(c[1] == "lines_json" for c in cols)
+        elif self._table_name == "messages" and self._messages_has_lines is None:
+            cols = await (await db.execute("PRAGMA table_info(messages);")).fetchall()
+            self._messages_has_lines = any(c[1] == "lines_json" for c in cols)
         return self._table_name
 
     async def _get_history_on_conn(
@@ -207,6 +258,8 @@ class SessionManager:
         except aiosqlite.OperationalError:
             # If the database was dynamically re-initialized, invalidate cache and retry once
             self._table_name = None
+            self._session_messages_has_lines = None
+            self._messages_has_lines = None
             if not await self._detect_table_name(db):
                 return []
             q = self._history_query_for_table(self._table_name)
@@ -214,7 +267,10 @@ class SessionManager:
                 rows = await cursor.fetchall()
 
         # Restore chronological order
-        turns = [SessionTurn(**dict(r)) for r in reversed(rows)]
+        turns = [SessionTurn(
+            **dict(r),
+            lines=decode_lines(r["lines_json"]) if "lines_json" in r.keys() and r["lines_json"] is not None else None,
+        ) for r in reversed(rows)]
 
         # Token limit sliding window: pop oldest turns if total tokens exceed max_tokens
         total_tokens = sum(

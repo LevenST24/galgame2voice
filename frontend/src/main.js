@@ -26,7 +26,7 @@ import { initAuthInterceptor } from './auth.js';
 import { initSessionBackup } from './controllers/session_backup.js';
 import { requestJson } from './api.js';
 import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSessions, fetchSessionHistoryPage, earliestServerMessageId } from './session_api.js';
-import { serverTimestamp } from './session_data.js';
+import { serverTimestamp, normalizeLines } from './session_data.js';
 import { openModal, closeModal, hasOpenModal, initSettingsUi } from './settings_ui.js';
 
 // Modular controllers
@@ -66,6 +66,21 @@ const appDependencies = {
   showToast, autoTitle, fetchSessionHistoryPage, earliestServerMessageId, portraitStage,
   getCurrentActiveProvider, getVoiceProfiles, haveProvidersLoaded,
 };
+
+export function mapBackendMessage(bm) {
+  const msg = {
+    id: `m_${bm.id}`,
+    role: bm.role,
+    content: bm.content_chinese,
+    japanese: bm.content_japanese || '',
+    audioUrls: bm.audio_url ? [bm.audio_url] : [],
+    ts: serverTimestamp(bm.created_at),
+  };
+  if (Array.isArray(bm.lines)) {
+    msg.lines = normalizeLines(bm.lines);
+  }
+  return msg;
+}
 
 // 可注入存储、流和渲染器，测试无需启动鉴权或麦克风。
 export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = {}) {
@@ -264,6 +279,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     clearMicTimers, beforeSend: () => { ++_syncSessionsGen; },
     onBlocked: (message) => showToast(message, 'info'),
     getAudioControl: () => getStreamAudioControl(),
+    getAudioMode: callbacks.getAudioMode || (() => 'sequential'),
     fetch: callbacks.fetch || ((...args) => globalThis.fetch(...args)),
   });
 
@@ -604,17 +620,6 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   });
 
   /* ---------- 会话操作 ---------- */
-  function mapBackendMessage(bm) {
-    return {
-      id: `m_${bm.id}`,
-      role: bm.role,
-      content: bm.content_chinese,
-      japanese: bm.content_japanese || '',
-      audioUrls: bm.audio_url ? [bm.audio_url] : [],
-      ts: serverTimestamp(bm.created_at),
-    };
-  }
-
   async function loadSessionHistory(session) {
     if (!session || (session.messages && session.messages.length > 0)) return;
     try {
