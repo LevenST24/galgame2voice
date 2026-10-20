@@ -14,6 +14,7 @@ from galgame2voice.adapters.base import LLMResponse
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.services.chat_service import ChatService
+from galgame2voice.utils.error_diagnostics import EMPTY_REPLY_DEFAULT, EmptyReplyError, chat_error_payload
 
 # Base turn (+1) plus a compliment (+2) when the turn counts.
 PROMPT = "你今天真可爱"
@@ -65,9 +66,11 @@ async def test_streamed_reply_earns_affection(tmp_path):
 async def test_streamed_empty_reply_earns_no_affection(tmp_path):
     database = tmp_path / "chat.db"
     await init_db(database)
-    events = await _stream_turn(_service(database, EMPTY_REPLY))
-    done = [event for event in events if event["event"] == "done"]
-    assert done and done[0]["data"]["affection"]["points_earned"] == 0
+    service = _service(database, EMPTY_REPLY)
+    service.affection_service.handle_turn_affection = AsyncMock()
+    events = await _stream_turn(service)
+    assert events == [{"event": "error", "data": chat_error_payload(EmptyReplyError())}]
+    service.affection_service.handle_turn_affection.assert_not_awaited()
     assert await _state(database) == ((0, 0), [])
 
 
@@ -84,8 +87,15 @@ async def test_sync_reply_earns_affection(tmp_path):
 async def test_sync_empty_reply_is_withdrawn_without_affection(tmp_path):
     database = tmp_path / "chat.db"
     await init_db(database)
-    result = await _service(database, EMPTY_REPLY).chat_sync(PROMPT, session_id="affection")
-    assert result["affection"]["points_earned"] == 0
+    service = _service(database, EMPTY_REPLY)
+    service.affection_service.handle_turn_affection = AsyncMock()
+    try:
+        with pytest.raises(EmptyReplyError) as caught:
+            await service.chat_sync(PROMPT, session_id="affection")
+        assert str(caught.value) == EMPTY_REPLY_DEFAULT
+        service.affection_service.handle_turn_affection.assert_not_awaited()
+    finally:
+        await service.aclose()
     assert await _state(database) == ((0, 0), [])
 
 

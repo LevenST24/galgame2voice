@@ -22,6 +22,7 @@ from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path, immediate_transaction
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.sse import format_sse_frame
+from galgame2voice.utils.error_diagnostics import EmptyReplyError
 
 logger = logging.getLogger("galgame2voice.routers.chat")
 
@@ -263,6 +264,11 @@ async def chat_sync_endpoint(req: ChatRequest) -> dict[str, Any]:
         )
     except HTTPException:
         raise
+    except EmptyReplyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"error": str(exc), "error_code": "empty_reply", "kind": "empty_reply", "message": str(exc)},
+        ) from exc
     except Exception as exc:
         logger.error(
             "Error in synchronous chat completion (session_id=%s, character=%s, provider=%s): %s",
@@ -308,6 +314,11 @@ async def legacy_get_chat(
         )
     except HTTPException:
         raise
+    except EmptyReplyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"error": str(exc), "error_code": "empty_reply", "kind": "empty_reply", "message": str(exc)},
+        ) from exc
     except Exception as exc:
         logger.error(
             "Error in legacy GET chat completion (session_id=%s, character=%s): %s",

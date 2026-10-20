@@ -267,7 +267,8 @@ function buildFailureNote(msg, { onRetry, onOpenModels } = {}) {
   };
   if (typeof onRetry === 'function') addAction('重新发送', () => onRetry(msg));
   if (typeof onOpenModels === 'function' && needsModelSettings(msg.failed.error, msg.failed.code)) {
-    addAction('配置对话模型', () => onOpenModels());
+    const label = msg.failed?.code === 'empty_reply' ? '去设置' : '配置对话模型';
+    addAction(label, () => onOpenModels());
   }
   if (actions.children.length) note.appendChild(actions);
   return note;

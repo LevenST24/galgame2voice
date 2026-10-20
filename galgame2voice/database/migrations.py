@@ -172,6 +172,7 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
             stt_model TEXT NOT NULL DEFAULT '',
             is_active INTEGER NOT NULL DEFAULT 0,
             custom_headers TEXT NOT NULL DEFAULT '{}',
+            reasoning_effort TEXT DEFAULT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -553,6 +554,7 @@ async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
 
     # Additive reply metadata: keep user_version compatible with older builds.
     await _add_column_if_missing(conn, "messages", "lines_json", "TEXT DEFAULT NULL")
+    await _add_column_if_missing(conn, "providers", "reasoning_effort", "TEXT DEFAULT NULL")
     return current_version
 
 

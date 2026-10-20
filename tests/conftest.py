@@ -507,6 +507,7 @@ CREATE TABLE IF NOT EXISTS providers (
     is_active INTEGER NOT NULL DEFAULT 0,
     custom_headers TEXT NOT NULL DEFAULT '{}',
     extra_config TEXT NOT NULL DEFAULT '{}',
+    reasoning_effort TEXT DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

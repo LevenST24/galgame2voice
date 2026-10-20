@@ -14,10 +14,14 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
   const msg = String(rawMessage || '');
   const lower = (msg + ' ' + (backendDiagnostic || '')).toLowerCase();
 
+  const isParamError = /400/.test(lower) && /reasoning_effort|thinking level|thinking_?config/.test(lower) && /not supported|unsupported|invalid|unknown|unrecognized|not allowed|not permitted/.test(lower);
+
   // 若后端已有结构化诊断，优先结合提供商特色进行润色
   if (backendDiagnostic && backendDiagnostic.trim()) {
     let title = '连通性诊断提示';
-    if (lower.includes('401') || lower.includes('key') || lower.includes('auth')) {
+    if (isParamError) {
+      title = '模型参数不受支持 (HTTP 400)';
+    } else if (lower.includes('401') || lower.includes('key') || lower.includes('auth')) {
       title = 'API Key 凭据鉴权未通过';
     } else if (lower.includes('429') || lower.includes('quota') || lower.includes('rate')) {
       title = '请求受限或额度不足 (429)';
@@ -33,8 +37,12 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
   let title = '连通性测试未通过';
   let guidance = msg || '连接失败，请检查网络或参数配置。';
 
+  if (isParamError) {
+    title = '模型参数不受支持 (HTTP 400)';
+    guidance = `请求参数与所选模型不兼容（如思考强度 reasoning_effort）。请尝试将「思考强度」设为默认或调整模型配置。原始信息: ${msg}`;
+  }
   // 1. 401 密钥鉴权失败
-  if (
+  else if (
     lower.includes('401') ||
     lower.includes('invalid api key') ||
     lower.includes('authentication failed') ||
@@ -108,6 +116,7 @@ export const BUILTIN_PRESETS = [
     default_base_url: 'https://generativelanguage.googleapis.com',
     default_chat_model: 'gemini-2.5-flash',
     preset_models: ['gemini-2.5-flash', 'gemini-2.5-pro'],
+    default_reasoning_effort: 'low',
     description: 'Google 官方 Gemini 原生 API (Gemini 2.5 系列)',
   },
   {

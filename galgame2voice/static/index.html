@@ -7,7 +7,7 @@
   <title>Gal2Voice · AI 多会话对话</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
 
-  <script type="module" crossorigin src="/static/assets/index-Ytl6tAyI.js"></script>
+  <script type="module" crossorigin src="/static/assets/index-CPSpz0Ed.js"></script>
   <link rel="stylesheet" crossorigin href="/static/assets/index-f8TwiDJJ.css">
 </head>
 <body>
@@ -493,6 +493,19 @@
                 <input id="gChatModel" placeholder="或手动输入任意模型名称，如 grok-3 / deepseek-chat" autocomplete="off" />
               </div>
               <small class="field-tip">可直接在预设列表中点选，亦可自由键入最新的或微调版模型 ID。</small>
+            </div>
+
+            <!-- 思考强度选择项 -->
+            <div class="field" id="gReasoningEffortField">
+              <label for="gReasoningEffort">思考强度</label>
+              <select id="gReasoningEffort">
+                <option value="">默认（由模型决定）</option>
+                <option value="none">关闭</option>
+                <option value="low">低</option>
+                <option value="medium">中</option>
+                <option value="high">高</option>
+              </select>
+              <small class="field-tip">会思考的模型（如 Gemini 3）建议选“低”：第一句更快，也不会因为思考用完生成长度而没有回复。</small>
             </div>
 
             <!-- 连通性测试诊断输出条（测试结果与中文排错指引） -->

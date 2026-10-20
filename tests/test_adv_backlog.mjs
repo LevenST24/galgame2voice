@@ -749,9 +749,10 @@ test('Part 3 #2: empty done with no lines and no text shows error with Retry and
   assert.equal(h.controller.retried.length, 1);
   assert.equal(h.controller.retried[0], userMsg);
 
-  // Verify settings button delegates to onSettings
+  // An empty reply is usually fixed in the model settings (思考强度), so 去设置 opens them.
   actionBtns[1].click();
-  assert.equal(h.calls.settings, 1);
+  assert.equal(h.calls.models, 1);
+  assert.equal(h.calls.settings, 0);
 });
 
 test('DOM models absent attributes and bubbling through Document', () => {

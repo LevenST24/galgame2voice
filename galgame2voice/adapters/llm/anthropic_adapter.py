@@ -135,10 +135,15 @@ class AnthropicAdapter(BaseLLMAdapter):
         }
         if system_content:
             payload["system"] = system_content
+        reasoning_effort = kwargs.get("reasoning_effort", self.reasoning_effort)
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
 
         # Anthropic API 不支持这些 OpenAI 风格参数，透传会导致 400
         _UNSUPPORTED = ("frequency_penalty", "presence_penalty", "top_k")
         for k, v in kwargs.items():
+            if k == "reasoning_effort":
+                continue
             if k not in ("client_override", "custom_headers", "timeout_s", "max_retries", "base_delay") and k not in _UNSUPPORTED:
                 payload[k] = v
 

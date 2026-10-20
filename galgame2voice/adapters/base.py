@@ -9,7 +9,7 @@ import email.utils
 import json
 import logging
 import random
-from typing import AsyncIterator, Any
+from typing import AsyncIterator, Any, Callable
 import httpx
 from pydantic import BaseModel, Field
 
@@ -121,10 +121,12 @@ def extract_stream_token(chunk: dict[str, Any]) -> str | None:
     return None
 
 
-def _parse_and_extract_token(text: str) -> tuple[bool, str | None]:
+def _parse_and_extract_token(text: str, on_chunk: Callable[[dict[str, Any]], None] | None = None) -> tuple[bool, str | None]:
     """Attempts to decode JSON and extract token. Returns (is_valid_json, token)."""
     try:
         chunk = json.loads(text)
+        if on_chunk and isinstance(chunk, dict):
+            on_chunk(chunk)
         return True, extract_stream_token(chunk)
     except (json.JSONDecodeError, TypeError):
         return False, None
@@ -141,7 +143,7 @@ def _extract_sse_data(line: str, has_buffer: bool) -> str | None:
     return None
 
 
-def _flush_sse_data_buffer(data_buffer: list[str]) -> tuple[str | None, bool]:
+def _flush_sse_data_buffer(data_buffer: list[str], on_chunk: Callable[[dict[str, Any]], None] | None = None) -> tuple[str | None, bool]:
     """Flushes data buffer into a combined payload. Returns (token, is_done)."""
     if not data_buffer:
         return None, False
@@ -151,13 +153,13 @@ def _flush_sse_data_buffer(data_buffer: list[str]) -> tuple[str | None, bool]:
         return None, True
     if not combined_data:
         return None, False
-    is_json, token = _parse_and_extract_token(combined_data)
+    is_json, token = _parse_and_extract_token(combined_data, on_chunk)
     if is_json and token:
         return token, False
     return None, False
 
 
-async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
+async def parse_sse_lines(lines_iter: AsyncIterator[str], on_chunk: Callable[[dict[str, Any]], None] | None = None) -> AsyncIterator[str]:
     """
     Asynchronously parses Server-Sent Events (SSE) lines into text tokens.
     Guarantees resilience against:
@@ -175,7 +177,7 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
 
         if not stripped:
             # Blank line: event boundary per SSE standard
-            token, is_done = _flush_sse_data_buffer(data_buffer)
+            token, is_done = _flush_sse_data_buffer(data_buffer, on_chunk)
             if is_done:
                 break
             if token:
@@ -195,7 +197,7 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
             if data_buffer:
                 # 1. Try joining with accumulated buffer
                 joined = "\n".join(data_buffer + [data_str])
-                is_json, token = _parse_and_extract_token(joined)
+                is_json, token = _parse_and_extract_token(joined, on_chunk)
                 if is_json:
                     if token:
                         yield token
@@ -204,7 +206,7 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
 
                 # 2. Joined parse failed: check if data_str alone is a valid standalone chunk.
                 # If so, the prior buffer was corrupted/unfinishable: discard it and process data_str.
-                is_json, token = _parse_and_extract_token(data_str)
+                is_json, token = _parse_and_extract_token(data_str, on_chunk)
                 if is_json:
                     data_buffer.clear()
                     if token:
@@ -215,7 +217,7 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
                 data_buffer.append(data_str)
             else:
                 # Buffer is empty: try eager single-line parse (supports streams without blank delimiters)
-                is_json, token = _parse_and_extract_token(data_str)
+                is_json, token = _parse_and_extract_token(data_str, on_chunk)
                 if is_json:
                     if token:
                         yield token
@@ -223,7 +225,7 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str]) -> AsyncIterator[str]:
                     data_buffer.append(data_str)
 
     # Flush any trailing buffer
-    token, _ = _flush_sse_data_buffer(data_buffer)
+    token, _ = _flush_sse_data_buffer(data_buffer, on_chunk)
     if token:
         yield token
 
@@ -282,6 +284,15 @@ class MissingApiKeyError(ValueError):
         super().__init__("Authentication error: API key is not configured")
 
 
+REASONING_EFFORT_LEVELS = frozenset({"none", "low", "medium", "high"})
+
+
+def configured_reasoning_effort(adapter: object) -> str | None:
+    """Returns the adapter's reasoning effort when it is a known level, else None."""
+    value = getattr(adapter, "reasoning_effort", None)
+    return value if isinstance(value, str) and value in REASONING_EFFORT_LEVELS else None
+
+
 class BaseLLMAdapter(ABC):
     """
     Abstract Base Class for Large Language Model Adapters.
@@ -298,6 +309,7 @@ class BaseLLMAdapter(ABC):
         self.api_key = str(api_key).strip() if api_key else ""
         self.base_url = str(base_url).rstrip("/") if base_url else ""
         self.extra_config: dict[str, Any] = kwargs
+        self.reasoning_effort: str | None = kwargs.get("reasoning_effort")
 
     @abstractmethod
     async def chat(

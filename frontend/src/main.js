@@ -182,6 +182,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     gBtnResetBaseUrl: $('gBtnResetBaseUrl'),
     gChatModelSelect: $('gChatModelSelect'),
     gChatModel: $('gChatModel'),
+    gReasoningEffort: $('gReasoningEffort'),
     gProviderTestResult: $('gProviderTestResult'),
     gTestResultTitle: $('gTestResultTitle'),
     gTestResultLatency: $('gTestResultLatency'),

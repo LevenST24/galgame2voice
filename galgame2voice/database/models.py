@@ -112,6 +112,7 @@ class ProviderBase(BaseModel):
     stt_model: str = ""
     is_active: bool = False
     custom_headers: dict[str, Any] = Field(default_factory=dict)
+    reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
 
 
 class ProviderCreate(ProviderBase):
@@ -126,6 +127,7 @@ class ProviderUpdate(BaseModel):
     stt_model: str | None = None
     is_active: bool | None = None
     custom_headers: dict[str, Any] | None = None
+    reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
 
 
 class ProviderInDB(ProviderBase):

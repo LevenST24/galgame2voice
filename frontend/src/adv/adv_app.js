@@ -106,7 +106,7 @@ export function mountAdv(dom, deps) {
       sprite.suspend();
       textbox.showError({ message: String(error?.message || error || '回复失败'), actions: [
         ...(controller.canRetry(failedUser) ? [{ label: '重新发送', run: () => controller.retry(failedUser) }] : []),
-        { label: '去设置', run: () => deps.onSettings?.() },
+        { label: '去设置', run: () => (error?.code === 'empty_reply' ? (deps.onModelSettings || deps.onSettings) : deps.onSettings)?.() },
       ] });
     },
   };
@@ -510,11 +510,11 @@ export function mountAdv(dom, deps) {
       if (failedUser && !failedUser.failed) {
         failedUser.failed = { error: '模型这次没有返回任何内容', code: 'empty_reply' };
       }
-      player.settle(turnId, { kind: 'error', error: { message: '模型这次没有返回任何内容' } });
+      player.settle(turnId, { kind: 'error', error: { message: '模型这次没有返回任何内容', code: 'empty_reply' } });
       syncControls();
       return;
     }
-    player.settle(turnId, kind === 'done' ? { ok: true } : { kind, error: { message: event.error } });
+    player.settle(turnId, kind === 'done' ? { ok: true } : { kind, error: { message: event.error, code: event.code || event.kind } });
     syncControls();
   }));
   disposers.push(player.on('state', syncControls));

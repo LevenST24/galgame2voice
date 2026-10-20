@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Callable
 from anyio import CancelScope
 
+from galgame2voice.adapters.base import configured_reasoning_effort
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate
 from galgame2voice.database.session import get_db, immediate_transaction
@@ -23,7 +24,12 @@ from galgame2voice.services.metrics_collector import MetricsCollector
 from galgame2voice.services.tts_scheduler import get_tts_scheduler
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.audio_concat import concat_wav_files
-from galgame2voice.utils.error_diagnostics import chat_error_payload
+from galgame2voice.utils.error_diagnostics import (
+    EMPTY_REPLY_DEFAULT,
+    EMPTY_REPLY_STOPPED_ON_LENGTH,
+    EmptyReplyError,
+    chat_error_payload,
+)
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.profiler import ChatTurnProfiler
 from galgame2voice.utils.text_splitter import split_japanese_sentences
@@ -173,6 +179,7 @@ class StreamCoordinator:
         presence_penalty: float | None = None,
         t_start: float | None = None,
         reply_format: str = "old",
+        reasoning_effort: str | None = None,
     ) -> None:
         self.adapter = adapter
         self.reply_format = reply_format
@@ -200,6 +207,9 @@ class StreamCoordinator:
         self.frequency_penalty = frequency_penalty
         self.presence_penalty = presence_penalty
         self.t_start = t_start if t_start is not None else time.perf_counter()
+        self.reasoning_effort = reasoning_effort
+        if self.reasoning_effort is None:
+            self.reasoning_effort = configured_reasoning_effort(self.adapter)
 
         self.persisted_assistant: bool = False
 
@@ -245,6 +255,7 @@ class StreamCoordinator:
             max_tokens=self.max_tokens,
             frequency_penalty=self.frequency_penalty,
             presence_penalty=self.presence_penalty,
+            reasoning_effort=self.reasoning_effort,
         )
         return _StreamRun(
             t_start=self.t_start,
@@ -972,6 +983,28 @@ class StreamCoordinator:
         full_japanese = run.final_result.get("japanese") or parser.japanese_extracted
         final_emotion = classify_emotion(full_chinese, full_japanese, parser.emotion_extracted)
 
+        final_lines = self._snapshot_lines_with_audio(run, mark_unfinished_failed=False)
+        run.persisted_lines = final_lines
+
+        has_meaningful_content = (
+            _has_meaningful_text(full_chinese, full_japanese)
+            or bool(final_lines)
+        )
+
+        if not has_meaningful_content and not bool(cancel_event and cancel_event.is_set()):
+            stopped_on_length = bool(
+                getattr(parser, "lines_truncated", False)
+                or getattr(self.adapter, "last_finish_reason", None) in ("length", "MAX_TOKENS", "max_tokens")
+            )
+            text = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
+            await self._prune_orphaned_user_message()
+            run.error_seen = True
+            yield {
+                "event": "error",
+                "data": chat_error_payload(EmptyReplyError(text, stopped_on_length=stopped_on_length)),
+            }
+            return
+
         # Concatenate chunks into a master WAV in a worker thread.
         total_audio_url = await self._concat_audio_chunks(audio_chunks)
 
@@ -993,9 +1026,6 @@ class StreamCoordinator:
             tts_cached_chunks=run.tts_cached_chunks,
             tts_generated_chunks=run.tts_generated_chunks,
         )
-
-        final_lines = self._snapshot_lines_with_audio(run, mark_unfinished_failed=False)
-        run.persisted_lines = final_lines
 
         has_meaningful_content = await self._persist_turn_message(
             full_chinese=full_chinese,

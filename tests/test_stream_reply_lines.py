@@ -118,8 +118,17 @@ async def test_line_events_and_tts_status(coordinator_factory, mode):
     ("", "", []),
 ])
 async def test_nonvocal_and_trailing_lines(coordinator_factory, zh, ja, statuses):
-    coordinator, _, _ = coordinator_factory(zh=zh, ja=ja)
+    coordinator, tts, database = coordinator_factory(zh=zh, ja=ja)
     events = [event async for event in coordinator]
+    if not zh and not ja:
+        assert events == [{"event": "error", "data": {
+            "error": "模型这次没有返回任何内容，可以重新发送或换个模型试试。",
+            "error_code": "empty_reply", "kind": "empty_reply", "status_code": 200,
+        }}]
+        tts.synthesize_to_file.assert_not_awaited()
+        async with get_db(database) as conn:
+            assert await crud.get_recent_messages(conn, "lines") == []
+        return
     lines, audio = assert_lifecycle(events)
     assert [item["status"] for item in audio] == statuses
 

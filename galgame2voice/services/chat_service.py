@@ -24,7 +24,7 @@ from typing import Any, AsyncGenerator
 import aiosqlite
 from anyio import CancelScope
 
-from galgame2voice.adapters.base import ChatMessage, BaseLLMAdapter
+from galgame2voice.adapters.base import ChatMessage, BaseLLMAdapter, configured_reasoning_effort
 from galgame2voice.adapters.registry import get_llm_adapter
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate
@@ -38,6 +38,11 @@ from galgame2voice.utils.async_tasks import drain_background_tasks
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.sse import format_sse_frame
 from galgame2voice.utils.text_splitter import split_japanese_sentences
+from galgame2voice.utils.error_diagnostics import (
+    EMPTY_REPLY_DEFAULT,
+    EMPTY_REPLY_STOPPED_ON_LENGTH,
+    EmptyReplyError,
+)
 
 from galgame2voice.services.emotion_classifier import (
     EMOTION_KEYWORDS,
@@ -398,6 +403,7 @@ class ChatService:
         max_tokens: int | None = None,
         frequency_penalty: float | None = None,
         presence_penalty: float | None = None,
+        reasoning_effort: str | None = None,
     ) -> tuple[str, float]:
         """Invokes LLM chat non-streaming and returns (completion_text, ttft_ms)."""
         t_llm_start = time.perf_counter()
@@ -412,6 +418,10 @@ class ChatService:
             chat_kwargs["frequency_penalty"] = frequency_penalty
         if presence_penalty is not None:
             chat_kwargs["presence_penalty"] = presence_penalty
+        if reasoning_effort is None:
+            reasoning_effort = configured_reasoning_effort(adapter)
+        if reasoning_effort is not None:
+            chat_kwargs["reasoning_effort"] = reasoning_effort
         llm_response = await adapter.chat(messages, **chat_kwargs)
         ttft_ms = (time.perf_counter() - t_llm_start) * 1000.0
         return llm_response.content, ttft_ms
@@ -477,6 +487,7 @@ class ChatService:
         max_tokens: int | None = None,
         frequency_penalty: float | None = None,
         presence_penalty: float | None = None,
+        reasoning_effort: str | None = None,
         ai_adaptive_voice: bool | None = None,
         voice_profile_id: int | None = None,
         reply_format: str = "old",
@@ -573,6 +584,7 @@ class ChatService:
                 frequency_penalty=frequency_penalty,
                 presence_penalty=presence_penalty,
                 t_start=t_start,
+                reasoning_effort=reasoning_effort if reasoning_effort is not None else configured_reasoning_effort(adapter),
                 reply_format=reply_format,
             )
 
@@ -619,6 +631,7 @@ class ChatService:
         max_tokens: int | None = None,
         frequency_penalty: float | None = None,
         presence_penalty: float | None = None,
+        reasoning_effort: str | None = None,
         ai_adaptive_voice: bool | None = None,
         voice_profile_id: int | None = None,
         reply_format: str = "old",
@@ -642,6 +655,7 @@ class ChatService:
             max_tokens=max_tokens,
             frequency_penalty=frequency_penalty,
             presence_penalty=presence_penalty,
+            reasoning_effort=reasoning_effort,
             ai_adaptive_voice=ai_adaptive_voice,
             voice_profile_id=voice_profile_id,
             reply_format=reply_format,
@@ -662,6 +676,7 @@ class ChatService:
         max_tokens: int | None = None,
         frequency_penalty: float | None = None,
         presence_penalty: float | None = None,
+        reasoning_effort: str | None = None,
         ai_adaptive_voice: bool | None = None,
         voice_profile_id: int | None = None,
         reply_format: str = "old",
@@ -714,6 +729,7 @@ class ChatService:
                 )
 
             raw_text, ttft_ms = await self._execute_sync_llm(
+                reasoning_effort=reasoning_effort if reasoning_effort is not None else configured_reasoning_effort(adapter),
                 adapter=adapter,
                 messages=messages,
                 model_name=model_name,
@@ -726,6 +742,19 @@ class ChatService:
 
             # Parse bilingual response
             chinese, japanese, parser = StreamingBilingualParser.parse_full_text(raw_text)
+
+            has_content = bool(
+                chinese.strip()
+                or japanese.strip()
+                or (parser.line_scanner.format == "lines" and bool(parser.line_scanner.lines))
+            )
+            if not has_content:
+                stopped_on_length = bool(
+                    getattr(parser, "lines_truncated", False)
+                    or getattr(adapter, "last_finish_reason", None) in ("length", "MAX_TOKENS", "max_tokens")
+                )
+                msg = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
+                raise EmptyReplyError(msg, stopped_on_length=stopped_on_length)
 
             final_emotion = classify_emotion(chinese, japanese, parser.emotion_extracted)
             lines = (parser.normalized_lines(with_audio=True) if parser.line_scanner.format == "lines"
@@ -858,7 +887,11 @@ class ChatService:
                     f"中文台词：{clean_text}"
                 )
                 chat_msg = ChatMessage(role="user", content=translation_prompt)
-                resp = await adapter.chat([chat_msg], model=model_name, temperature=0.3)
+                chat_kwargs = {"model": model_name, "temperature": 0.3}
+                effort = configured_reasoning_effort(adapter)
+                if effort is not None:
+                    chat_kwargs["reasoning_effort"] = effort
+                resp = await adapter.chat([chat_msg], **chat_kwargs)
                 raw_ja = resp.content if hasattr(resp, "content") else str(resp)
                 return raw_ja.strip().strip('"\'`「」『』')
             except Exception as exc:
