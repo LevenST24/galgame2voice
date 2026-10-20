@@ -149,6 +149,13 @@ class StreamingBilingualParser:
     """
 
     def __init__(self):
+        # Import after class initialization to avoid the pipeline package's
+        # public exports importing this parser while it is still being defined.
+        from galgame2voice.services.chat_pipelines.line_scanner import LineScanner
+
+        self.line_scanner = LineScanner()
+        self._lines_started = False
+        self.lines_truncated = False
         self.buffer: str = ""
         self.chinese_extracted: str = ""
         self.japanese_extracted: str = ""
@@ -311,18 +318,19 @@ class StreamingBilingualParser:
         if "fragment_interval" not in opts:
             opts["fragment_interval"] = adaptive_calc["fragment_interval"]
 
-        # Explicit LLM tts parameters override
-        if self.tts_speed is not None:
+        # Lines-mode TTS fields are reply defaults; pinned user options win.
+        user_options = (base_options or {}) if self.line_scanner.format == "lines" else {}
+        if self.tts_speed is not None and not {"speed", "speed_factor"}.intersection(user_options):
             opts["speed"] = self.tts_speed
             opts["speed_factor"] = self.tts_speed
-        if self.tts_temperature is not None:
+        if self.tts_temperature is not None and not {"temperature", "temp"}.intersection(user_options):
             opts["temperature"] = self.tts_temperature
             opts["temp"] = self.tts_temperature
-        if self.tts_top_k is not None:
+        if self.tts_top_k is not None and "top_k" not in user_options:
             opts["top_k"] = self.tts_top_k
-        if self.tts_top_p is not None:
+        if self.tts_top_p is not None and "top_p" not in user_options:
             opts["top_p"] = self.tts_top_p
-        if self.tts_fragment_interval is not None:
+        if self.tts_fragment_interval is not None and "fragment_interval" not in user_options:
             opts["fragment_interval"] = self.tts_fragment_interval
         if emo:
             opts["emotion"] = emo
@@ -386,6 +394,20 @@ class StreamingBilingualParser:
             return "", []
 
         self.buffer += chunk
+        completed_lines = self.line_scanner.feed(chunk)
+        if self.line_scanner.format == "lines":
+            if not self._lines_started:
+                self._lines_started = True
+                self.chinese_extracted = ""
+                self.japanese_extracted = ""
+                self.is_plain_text_fallback = False
+            delta = "".join(line.zh for line in completed_lines)
+            self.chinese_extracted += delta
+            self.japanese_extracted += "".join(line.ja for line in completed_lines)
+            if self.line_scanner.tts is not None:
+                self._apply_parsed_json_dict({"tts": self.line_scanner.tts})
+            self.emitted_chinese_len = len(self.chinese_extracted)
+            return delta, []
         sanitized = self.clean_markdown_delimiters(self.buffer)
 
         new_chinese_delta = ""
@@ -595,6 +617,17 @@ class StreamingBilingualParser:
         Returns:
             (full_chinese, full_japanese, remaining_unemitted_sentences)
         """
+        scanned = self.line_scanner.finish()
+        if scanned.format == "lines":
+            from galgame2voice.services.chat_pipelines.line_scanner import aggregate
+
+            self.lines_truncated = scanned.truncated
+            self.chinese_extracted, self.japanese_extracted = aggregate(scanned.lines)
+            if scanned.tts is not None:
+                self._apply_parsed_json_dict({"tts": scanned.tts})
+            self.emotion_extracted = self.get_emotion()
+            return self.chinese_extracted, self.japanese_extracted, []
+
         sanitized = self.clean_markdown_delimiters(self.buffer).strip()
 
         parsed = self._parse_json_payload(sanitized)
@@ -616,6 +649,21 @@ class StreamingBilingualParser:
 
         return self.chinese_extracted, self.japanese_extracted, remaining_sentences
 
+    def normalized_lines(self, *, with_audio: bool = False, start_index: int = 0) -> list[dict[str, Any]]:
+        """Snapshot validated lines with server indexes and per-line emotion fallback."""
+        result = []
+        for index in range(start_index, len(self.line_scanner.lines)):
+            line = self.line_scanner.lines[index]
+            emotion = line.emotion or classify_emotion(line.zh, line.ja) or "gentle"
+            record = {
+                "index": index, "zh": line.zh, "ja": line.ja,
+                "emotion": emotion, "act": dict(line.act),
+            }
+            if with_audio:
+                record["audio"] = {"status": "skipped", "chunks": []}
+            result.append(record)
+        return result
+
     @classmethod
     def parse_full_text(cls, raw_text: str) -> tuple[str, str, "StreamingBilingualParser"]:
         """
@@ -625,6 +673,8 @@ class StreamingBilingualParser:
         parser = cls()
         parser.feed_chunk(raw_text)
         chinese, japanese, _ = parser.finalize()
+        if parser.line_scanner.format == "lines":
+            return chinese, japanese, parser
         if not chinese.strip():
             # Plain text already lands in `chinese`; what is left here is JSON with an
             # empty "chinese" field, whose raw text must not be shown or voiced.

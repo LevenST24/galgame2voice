@@ -16,7 +16,7 @@ MAX_TEXT = 10_000_000
 SESSION_SETTINGS = frozenset({
     "systemPrompt", "voiceProfileId", "temperature", "topP", "maxTokens",
     "freqPenalty", "presPenalty", "maxContext", "aiAdaptiveVoice", "ttsSpeed",
-    "ttsTopK", "ttsTopP", "ttsTemperature",
+    "ttsTopK", "ttsTopP", "ttsTemperature", "advReplyFormat",
     "advEnabled", "advPlayerName", "advPrimaryLanguage", "advSubtitleLanguage",
     "advWindowOpacity", "advTextIntervalMs", "advInterruptVoice", "advAutoBaseMs",
     "advAutoPerCharMs", "advAutoMode", "advOutfit",
@@ -24,7 +24,7 @@ SESSION_SETTINGS = frozenset({
 
 _ADV_ENUMS = {
     "advPrimaryLanguage": {"zh", "ja"}, "advSubtitleLanguage": {"zh", "ja", "none"},
-    "advAutoMode": {"normal", "voice-priority"},
+    "advAutoMode": {"normal", "voice-priority"}, "advReplyFormat": {"old", "lines"},
 }
 _ADV_RANGES = {"advWindowOpacity": 100, "advTextIntervalMs": 100, "advAutoBaseMs": 6000, "advAutoPerCharMs": 200}
 # ECMAScript trim (pickSettings), which differs from Python str.strip for BOM/NEL.

@@ -31,7 +31,7 @@ function setup(callbacks = {}) {
   const dom = Object.fromEntries(Object.entries({ sCvName: 'New voice', sCvGpt: 'voice.ckpt',
     sCvSovits: 'voice.pth', sCvRef: 'ref.wav', sCvPromptText: 'こんにちは', sCvLang: 'ja',
     sCvCreate: '', sVoice: '', sVoiceRescan: '', sSave: '', sReset: '', sSystem: '', sTemp: '.7', sTopP: '1', sMaxTokens: '1024',
-    sFreq: '0', sPres: '0', sCtx: '20', sAiAdaptiveVoice: 'true', sTtsSpeed: '1',
+    sFreq: '0', sPres: '0', sCtx: '20', sAiAdaptiveVoice: 'true', sAdvReplyFormat: 'old', sTtsSpeed: '1',
     sTtsTopK: '15', sTtsTopP: '1', sTtsTemp: '1' }).map(([name, value]) => [name, element(value)]));
   initVoiceSettings(dom, callbacks);
   return { first, second, dom };
@@ -318,9 +318,11 @@ for (const edit of [
   globalThis.fetch = profileResponses([], profiles);
   await loadSessionVoiceSelect(first); await editB(dom);
   dom.sTemp.value = '1.5';
+  dom.sAdvReplyFormat.value = 'lines';
   await dom.sReset.click();
   assert.equal(dom.sVoice.value, '2', 'resetting inference parameters must preserve the role');
   assert.equal(dom.sSystem.value, 'Only for B');
+  assert.equal(dom.sAdvReplyFormat.value, DEFAULT_SESSION_SETTINGS.advReplyFormat);
   assert.equal(Number(dom.sTemp.value), DEFAULT_SESSION_SETTINGS.temperature); passed++;
 }
 for (const draft of ['', 'Custom persona draft']) {
@@ -462,5 +464,26 @@ const models = {
   await dom.sSave.click();
   assert.equal(first.settings.topP, 0.8);
   assert.equal(closed, 1); passed++;
+}
+{
+  const { first, dom } = setup();
+  first.settings.voiceProfileId = 1;
+  first.settings.advReplyFormat = 'lines';
+  const saves = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') return response({ profiles: [{ id: 1, name: 'A', system_prompt: '' }], active_profile_id: 1 });
+    if (url === '/api/chat/sessions') saves.push(JSON.parse(options.body));
+    return response({});
+  };
+  await loadSessionVoiceSelect(first);
+  await openSessionSettings();
+  assert.equal(dom.sAdvReplyFormat.value, 'lines');
+  dom.sAdvReplyFormat.value = 'old';
+  await dom.sSave.click();
+  assert.equal(first.settings.advReplyFormat, 'old');
+  assert.equal(saves.at(-1).settings.advReplyFormat, 'old');
+  first.settings.advReplyFormat = 'bogus';
+  await openSessionSettings();
+  assert.equal(dom.sAdvReplyFormat.value, 'old'); passed++;
 }
 console.log(`Voice settings recovery: ${passed} scenarios passed`);

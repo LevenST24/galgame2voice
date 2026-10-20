@@ -78,6 +78,7 @@ export function initVoiceSettings(dom, callbacks = {}) {
       _dom.sMaxTokens.value = DEFAULT_SESSION_SETTINGS.maxTokens;
       _dom.sCtx.value = DEFAULT_SESSION_SETTINGS.maxContext;
       _dom.sAiAdaptiveVoice.value = String(DEFAULT_SESSION_SETTINGS.aiAdaptiveVoice !== false);
+      _dom.sAdvReplyFormat.value = DEFAULT_SESSION_SETTINGS.advReplyFormat;
       _dom.sTtsSpeed.value = DEFAULT_SESSION_SETTINGS.ttsSpeed;
       _dom.sTtsTopK.value = DEFAULT_SESSION_SETTINGS.ttsTopK;
       _dom.sTtsTopP.value = DEFAULT_SESSION_SETTINGS.ttsTopP;
@@ -129,6 +130,7 @@ export async function openSessionSettings() {
   if (_dom.sMaxTokens) _dom.sMaxTokens.value = s.settings.maxTokens;
   if (_dom.sCtx) _dom.sCtx.value = s.settings.maxContext;
   if (_dom.sAiAdaptiveVoice) _dom.sAiAdaptiveVoice.value = String(s.settings.aiAdaptiveVoice !== false);
+  if (_dom.sAdvReplyFormat) _dom.sAdvReplyFormat.value = s.settings.advReplyFormat === 'lines' ? 'lines' : 'old';
   if (_dom.sTtsSpeed) _dom.sTtsSpeed.value = s.settings.ttsSpeed;
   if (_dom.sTtsTopK) _dom.sTtsTopK.value = s.settings.ttsTopK;
   if (_dom.sTtsTopP) _dom.sTtsTopP.value = s.settings.ttsTopP;
@@ -547,7 +549,7 @@ export async function deleteVoiceProfile() {
 
 const EDITOR_FIELDS = [
   'sVoice', 'sSystem', 'sTemp', 'sTopP', 'sMaxTokens', 'sFreq', 'sPres', 'sCtx',
-  'sAiAdaptiveVoice', 'sTtsSpeed', 'sTtsTopK', 'sTtsTopP', 'sTtsTemp',
+  'sAiAdaptiveVoice', 'sAdvReplyFormat', 'sTtsSpeed', 'sTtsTopK', 'sTtsTopP', 'sTtsTemp',
   'sCvName', 'sCvGpt', 'sCvSovits', 'sCvRef', 'sCvPromptText', 'sCvLang',
 ];
 const editorSnapshot = () => JSON.stringify([EDITOR_FIELDS.map(key => _dom[key]?.value), advSettings.snapshot()]);
@@ -591,6 +593,7 @@ async function handleSaveSessionSettings() {
       presPenalty: Number(_dom.sPres.value),
       maxContext: Number(_dom.sCtx.value),
       aiAdaptiveVoice: _dom.sAiAdaptiveVoice.value === 'true',
+      advReplyFormat: _dom.sAdvReplyFormat.value === 'lines' ? 'lines' : 'old',
       ttsSpeed: Number(_dom.sTtsSpeed.value),
       ttsTopK: Math.round(Number(_dom.sTtsTopK.value)),
       ttsTopP: Number(_dom.sTtsTopP.value),

@@ -18,7 +18,7 @@ P3_SETTINGS = {
 
 INVALID_P3 = [
     ("advEnabled", "false"), ("advInterruptVoice", 1),
-    ("advPrimaryLanguage", "en"), ("advSubtitleLanguage", "en"), ("advAutoMode", "fast"),
+    ("advPrimaryLanguage", "en"), ("advSubtitleLanguage", "en"), ("advAutoMode", "fast"), ("advReplyFormat", "new"),
     ("advWindowOpacity", -1), ("advWindowOpacity", 101), ("advWindowOpacity", True),
     ("advTextIntervalMs", 1.5), ("advTextIntervalMs", 101),
     ("advAutoBaseMs", 6001), ("advAutoBaseMs", -1), ("advAutoPerCharMs", 201),

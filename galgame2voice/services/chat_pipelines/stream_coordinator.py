@@ -172,8 +172,10 @@ class StreamCoordinator:
         frequency_penalty: float | None = None,
         presence_penalty: float | None = None,
         t_start: float | None = None,
+        reply_format: str = "old",
     ) -> None:
         self.adapter = adapter
+        self.reply_format = reply_format
         self.messages = messages
         self.model_name = model_name
         self.actual_provider_id = actual_provider_id
@@ -333,7 +335,11 @@ class StreamCoordinator:
                 try:
                     if item is None:
                         break
-                    sentence, s_idx = item
+                    line_item = item if isinstance(item, dict) else None
+                    if line_item is not None:
+                        sentence = line_item["ja"]
+                    else:
+                        sentence, s_idx = item
                     self._attribute_chunk(run, chunk_index)
 
                     if not tts_pipe.is_vocal_sentence(sentence):
@@ -351,6 +357,8 @@ class StreamCoordinator:
                         adaptive_enabled=bool(self.ai_adaptive_voice),
                         sentence_text=sentence,
                     )
+                    if line_item is not None:
+                        chunk_opts["emotion"] = line_item["emotion"]
                     chunk_opts = tts_pipe.prepare_chunk_options(
                         chunk_opts,
                         self.active_prof,
@@ -372,6 +380,7 @@ class StreamCoordinator:
                                 "index": chunk_index,
                                 "sentence": sentence,
                                 "error": err_str,
+                                **({"line": L} if line_item is not None else {}),
                             },
                         }, cancel_event, run.shutdown_event)
                     elif chunk_data:
@@ -382,7 +391,9 @@ class StreamCoordinator:
                         else:
                             run.tts_generated_chunks += 1
                         run.audio_chunks.append(chunk_data)
-                        emotion = detect_emotion_cue(sentence) or chunk_opts.get("emotion") or text_pipe.current_emotion()
+                        emotion = line_item["emotion"] if line_item is not None else (
+                            detect_emotion_cue(sentence) or chunk_opts.get("emotion") or text_pipe.current_emotion()
+                        )
                         if L is not None:
                             chunk_data["line"] = L
                         payload: dict[str, Any] = {
@@ -532,6 +543,9 @@ class StreamCoordinator:
         raise ValueError("TTS chunk offset lies outside Japanese sentences")
 
     async def _check_freeze_lines(self, run: _StreamRun, *, final: bool = False) -> None:
+        if run.parser.line_scanner.format == "lines":
+            await self._queue_lines(run)
+            return
         if not run.aligner.has_chinese and (run.parser.chinese_complete or final):
             run.aligner.set_chinese(run.parser.chinese_extracted)
             for c_idx in run.chunk_results:
@@ -556,8 +570,31 @@ class StreamCoordinator:
 
         await self._try_emit_line_audio(run)
 
+    async def _queue_lines(self, run: _StreamRun) -> None:
+        """Publish completed lines before queueing one synthesis job per line."""
+        for line in run.parser.normalized_lines(start_index=len(run.lines)):
+            index = line["index"]
+            state = self._line_audio_state(run, index)
+            # Reserve before publishing: the worker may finish a previous line
+            # while the producer is waiting for event-queue space.
+            state["pending"] = 1
+            state["sealed"] = True
+            c_idx = run.chunk_counter
+            run.chunk_counter += 1
+            run.chunk_line_map[c_idx] = index
+            run.chunk_results[c_idx] = {"settled": False, "chunk": None, "error": None}
+            await self._publish_line(run, line)
+            run.profiler.record_first_sentence()
+            if not await self._put_with_cancel(run.tts_queue, {
+                "line": index, "ja": line["ja"], "emotion": line["emotion"],
+            }, run.cancel_event, run.shutdown_event):
+                return
+
     async def _queue_sentences(self, run: _StreamRun, chunks: list[str], *, final: bool = False) -> None:
         """Attribute sentence chunks with real offsets and feed TTS and line aligner."""
+        if run.parser.line_scanner.format == "lines":
+            await self._queue_lines(run)
+            return
         japanese_text = run.parser.japanese_extracted
         for chunk in chunks:
             if not chunk:
@@ -809,6 +846,7 @@ class StreamCoordinator:
                     "chinese": partial_ch or "",
                     "japanese": partial_ja or "",
                     "lines": snapshot_lines,
+                    "reply_format": run.parser.line_scanner.format,
                 },
             }
 
@@ -849,10 +887,15 @@ class StreamCoordinator:
             return audio_chunks[0]["audio_url"]
 
     @staticmethod
-    def _clean_audio_chunks(audio_chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _clean_audio_chunks(
+        audio_chunks: list[dict[str, Any]], *, include_line: bool = False,
+    ) -> list[dict[str, Any]]:
         """Cleans local_path from audio_chunks before emitting to frontend."""
         return [
-            {"index": c.get("index", i), "audio_url": c.get("audio_url", ""), "sentence": c.get("sentence", "")}
+            {
+                "index": c.get("index", i), "audio_url": c.get("audio_url", ""), "sentence": c.get("sentence", ""),
+                **({"line": c["line"]} if include_line and "line" in c else {}),
+            }
             for i, c in enumerate(audio_chunks)
         ]
 
@@ -962,7 +1005,7 @@ class StreamCoordinator:
             lines=final_lines,
         )
 
-        clean_chunks = self._clean_audio_chunks(audio_chunks)
+        clean_chunks = self._clean_audio_chunks(audio_chunks, include_line=parser.line_scanner.format == "lines")
         if has_meaningful_content:
             affection_res, final_emotion = await self._update_turn_affection(full_chinese, final_emotion)
         else:
@@ -975,10 +1018,11 @@ class StreamCoordinator:
         yield {
             "event": "done",
             "data": {
-                "truncated": bool((cancel_event and cancel_event.is_set()) or not has_meaningful_content),
+                "truncated": bool((cancel_event and cancel_event.is_set()) or not has_meaningful_content or parser.lines_truncated),
                 "chinese": full_chinese,
                 "japanese": full_japanese,
                 "lines": final_lines,
+                "reply_format": parser.line_scanner.format,
                 "emotion": final_emotion,
                 "affection": affection_res,
                 "metrics": metric_record,

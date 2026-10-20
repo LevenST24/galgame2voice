@@ -148,6 +148,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     sCtx: $('sCtx'),
     sCtxVal: $('sCtxVal'),
     sAiAdaptiveVoice: $('sAiAdaptiveVoice'),
+    sAdvReplyFormat: $('sAdvReplyFormat'),
     sTtsSpeed: $('sTtsSpeed'),
     sTtsSpeedVal: $('sTtsSpeedVal'),
     sTtsTopK: $('sTtsTopK'),

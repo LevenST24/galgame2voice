@@ -670,7 +670,9 @@ class TelegramBotHandlers:
             # Pass the globally active profile explicitly: otherwise the context builder falls back
             # to the session row's voice_profile_id, which is fixed at the chat's first message,
             # so /character would switch the voice but keep the old persona and memories.
-            messages = await self.chat_service.prepare_messages(conn, session_id, text, active_profile=profile)
+            messages = await self.chat_service.prepare_messages(
+                conn, session_id, text, active_profile=profile, reply_format="old",
+            )
             return adapter, model_name, profile_id, messages
 
     async def _persist_assistant_chat_turn(
@@ -681,6 +683,7 @@ class TelegramBotHandlers:
         user_text: str,
         display_chinese: str,
         japanese: str,
+        lines: list[dict[str, Any]] | None = None,
     ) -> None:
         """Persists assistant reply to DB and triggers affection progression."""
         async with get_db(self.db_path) as conn:
@@ -689,7 +692,7 @@ class TelegramBotHandlers:
                 role="assistant",
                 content_chinese=display_chinese,
                 content_japanese=japanese,
-                lines=build_lines(display_chinese, japanese, with_audio=True),
+                lines=lines if lines is not None else build_lines(display_chinese, japanese, with_audio=True),
                 audio_url="",
                 latency_ms=0,
             ))
@@ -736,6 +739,8 @@ class TelegramBotHandlers:
 
             chinese, japanese, parser = StreamingBilingualParser.parse_full_text(raw_text)
 
+            if parser.line_scanner.format == "lines" and not chinese.strip():
+                chinese = japanese
             display_chinese = strip_stage_directions(chinese).strip() or chinese
             if not display_chinese.strip():
                 # Nothing to send, save or voice; report it like any failed reply.
@@ -753,6 +758,7 @@ class TelegramBotHandlers:
                 user_text=text,
                 display_chinese=display_chinese,
                 japanese=japanese,
+                lines=parser.normalized_lines(with_audio=True) if parser.line_scanner.format == "lines" else None,
             )
 
             # 5. Schedule background voice synthesis task

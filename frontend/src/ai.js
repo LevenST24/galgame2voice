@@ -77,6 +77,9 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
     if (typeof settings.maxTokens === 'number') body.max_tokens = Math.round(settings.maxTokens);
     if (typeof settings.freqPenalty === 'number') body.frequency_penalty = settings.freqPenalty;
     if (typeof settings.presPenalty === 'number') body.presence_penalty = settings.presPenalty;
+    if (settings.advReplyFormat === 'old' || settings.advReplyFormat === 'lines') {
+      body.reply_format = settings.advReplyFormat;
+    }
     const ttsOpts = {};
     // voice_profile_id 走 ChatRequest 顶层字段；塞进 tts_options 会被后端
     // ChatTtsOptions(extra="forbid") 的白名单判为非法参数并返回 422。

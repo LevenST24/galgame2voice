@@ -33,7 +33,7 @@ export function pickSettings(value, defaults) {
 
 const advEnums = {
   advPrimaryLanguage: ['zh', 'ja'], advSubtitleLanguage: ['zh', 'ja', 'none'],
-  advAutoMode: ['normal', 'voice-priority'],
+  advAutoMode: ['normal', 'voice-priority'], advReplyFormat: ['old', 'lines'],
 };
 const advRanges = { advWindowOpacity: 100, advTextIntervalMs: 100, advAutoBaseMs: 6000, advAutoPerCharMs: 200 };
 export function validAdvSetting(key, value) {

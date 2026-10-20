@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSessions, fetchSessionHistoryPage, earliestServerMessageId } from '../frontend/src/session_api.js';
 import { mergeChatBackup, exportCompleteChatBackup } from '../frontend/src/chat_backup.js';
 import { serverTimestamp } from '../frontend/src/session_data.js';
+import { streamChat } from '../frontend/src/ai.js';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const response = data => ({ ok: true, json: async () => data });
@@ -136,5 +137,27 @@ const backup = sessions => ({ format: 'galgame2voice.chat', version: 1, sessions
   assert.match(calls[0], /session_id=s_long/);
   assert.match(calls[0], /before_id=15/);
   passed++;
+}
+{
+  const bodies = [];
+  globalThis.fetch = async (_url, options) => {
+    bodies.push(JSON.parse(options.body));
+    return new Response('event: done\ndata: {"chinese":"收到"}\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
+  };
+  const sessions = [
+    { id: 's_old', settings: { advReplyFormat: 'old' } },
+    { id: 's_lines', settings: { advReplyFormat: 'lines' } },
+  ];
+  let active = sessions[0];
+  const turn = () => new Promise((resolve) => streamChat({
+    prompt: '你好', sessionId: active.id, settings: active.settings,
+    onChunk() {}, onEnd: () => resolve(), fetch: globalThis.fetch,
+  }));
+  await turn();
+  active = sessions[1];
+  await turn();
+  assert.deepEqual(bodies.map(body => [body.session_id, body.reply_format]), [
+    ['s_old', 'old'], ['s_lines', 'lines'],
+  ]); passed++;
 }
 console.log(`Session persistence and complete backups: ${passed} scenarios passed`);

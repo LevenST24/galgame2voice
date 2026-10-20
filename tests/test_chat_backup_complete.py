@@ -70,6 +70,34 @@ async def test_oversize_backup_fails_explicitly_instead_of_truncating(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_reply_format_setting_survives_export_and_import(tmp_path, monkeypatch):
+    from galgame2voice.services.chat_backup import SESSION_SETTINGS
+
+    assert "advReplyFormat" in SESSION_SETTINGS
+    db = tmp_path / "reply-format.db"
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
+    await init_db(db)
+    async with get_db(db) as conn, immediate_transaction(conn):
+        await conn.execute(
+            "INSERT INTO sessions(id, title, settings_json) VALUES (?, ?, ?)",
+            ("s_format", "逐句", json.dumps({"advReplyFormat": "lines", "temperature": 0.8, "apiKey": "secret"})),
+        )
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+        backup = (await client.get("/api/chat/export")).json()
+        session = next(s for s in backup["sessions"] if s["id"] == "s_format")
+        assert session["settings"]["advReplyFormat"] == "lines"
+        assert "apiKey" not in session["settings"]
+        restored = await client.post("/api/chat/import", json={"sessions": [{
+            **session, "id": "s_import_format",
+            "created_at": session["createdAt"], "updated_at": session["updatedAt"],
+        }]})
+        assert restored.status_code == 200, restored.text
+        again = (await client.get("/api/chat/export")).json()
+        copy = next(s for s in again["sessions"] if s["id"] == "s_import_format")
+        assert copy["settings"]["advReplyFormat"] == "lines"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["delete_session", "clear_session_messages"])
 async def test_removing_chat_preserves_shared_cache_reference_and_outside_files(tmp_path, monkeypatch, operation):
     from galgame2voice import config
