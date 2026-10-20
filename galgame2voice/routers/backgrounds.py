@@ -15,6 +15,8 @@ from galgame2voice.services.background_manifest import (
 
 router = APIRouter(prefix="/api/backgrounds", tags=["backgrounds"])
 media_router = APIRouter(prefix="/api/media/background", tags=["media"])
+# Explicit types: Windows hosts may not map these suffixes, and browsers need image/*.
+MEDIA_TYPES = {".webp": "image/webp", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".avif": "image/avif"}
 
 
 @router.get("")
@@ -67,4 +69,5 @@ def get_media_background(
         raise HTTPException(404, "Background not found") from None
 
     max_age = min(86400, max(0, int(int(exp) - time.time())))
-    return FileResponse(path, headers={"Cache-Control": f"private, max-age={max_age}"})
+    return FileResponse(path, media_type=MEDIA_TYPES.get(path.suffix.lower()),
+                        headers={"Cache-Control": f"private, max-age={max_age}"})
