@@ -18,6 +18,8 @@ function pickSettings(value, defaults) {
     const candidate = value[key];
     if (key === 'voiceProfileId') {
       if (candidate === null || (Number.isInteger(candidate) && candidate > 0)) result[key] = candidate;
+    } else if (key === 'advReplyFormat') {
+      if (candidate === 'old' || candidate === 'lines') result[key] = candidate;
     } else if (typeof candidate === typeof defaults[key] &&
                (typeof candidate !== 'number' || Number.isFinite(candidate))) {
       result[key] = candidate;

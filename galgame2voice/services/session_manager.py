@@ -12,6 +12,7 @@ from galgame2voice.database.session import get_database_path, get_db
 from galgame2voice.database.models import decode_lines
 from galgame2voice.services.metrics_collector import MetricsCollector
 from galgame2voice.services.chat_pipelines.line_builder import build_lines
+from galgame2voice.services.chat_pipelines.reply_contract import format_lines_turn
 
 
 class SessionTurn(BaseModel):
@@ -309,10 +310,12 @@ class SessionManager:
         new_user_prompt: str | None = None,
         system_template: str | None = None,
         memory_prompt_block: str | None = None,
+        reply_format: str = "old",
     ) -> list[dict[str, str]]:
         """
         Constructs system prompt and formatted OpenAI-compatible message list.
         User messages are formatted as plain text; assistant messages as bilingual JSON.
+        In lines mode assistant turns replay per-line JSON instead.
         Appends new_user_prompt unless it duplicates the immediately preceding message.
         Injects optional long-term memory & affection context block into system prompt.
         """
@@ -327,6 +330,14 @@ class SessionManager:
         for turn in history:
             if turn.role == "user":
                 content = turn.content_chinese or turn.raw_content or ""
+            elif reply_format == "lines":
+                content = format_lines_turn(
+                    turn.lines,
+                    chinese=turn.content_chinese,
+                    japanese=turn.content_japanese,
+                    emotion=turn.emotion,
+                    tts=None,
+                )
             else:
                 content = _format_assistant_turn(turn)
             messages.append({"role": turn.role, "content": content})
@@ -349,6 +360,7 @@ class SessionManager:
         max_tokens: int = 8000,
         memory_prompt_block: str | None = None,
         conn: aiosqlite.Connection | None = None,
+        reply_format: str = "old",
     ) -> list[ChatMessage]:
         """High-level helper returning List[ChatMessage] for BaseLLMAdapter."""
         history = await self.get_history(
@@ -360,6 +372,7 @@ class SessionManager:
             new_user_prompt=user_prompt,
             system_template=custom_system_prompt,
             memory_prompt_block=memory_prompt_block,
+            reply_format=reply_format,
         )
         return [ChatMessage(role=m["role"], content=m["content"]) for m in dict_msgs]
 
