@@ -6,7 +6,7 @@ import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
 function setup({ voiceMode = false } = {}) {
   const session = { id: 's', title: '新对话', settings: { temperature: 0.7, voiceProfileId: 3 }, messages: [] };
   const state = { activeId: 's', global: { voiceMode, ttsPreset: 'balanced' } };
-  const stream = fakeChatStream();
+  const stream = fakeChatStream(); let deleting = false;
   const saves = [], persisted = [], cached = [], recordings = [], blocked = [], audio = [];
   let sequence = 0, currentVoice = null, control = null;
   const audioPlayer = {
@@ -26,7 +26,7 @@ function setup({ voiceMode = false } = {}) {
       const message = { id: `m_${++sequence}`, role, content, ts: Date.now() };
       session.messages.push(message); session.title = content; saveState(); return message;
     },
-    persistSession: async s => persisted.push(s.id), isSessionDeleting: () => false,
+    persistSession: async s => persisted.push(s.id), isSessionDeleting: () => deleting,
     audioStore: new Map(), putCachedAudioBlob: (...args) => recordings.push(args),
     fetchAndCacheAudio: async url => cached.push(url), audioPlayer,
     getCurrentVoice: () => currentVoice, setCurrentVoice: voice => { currentVoice = voice; },
@@ -35,8 +35,35 @@ function setup({ voiceMode = false } = {}) {
     fetch: stream.fetch,
   });
   return { conversation, session, state, stream, saves, persisted, cached, recordings, blocked, audio, audioPlayer,
-    get voice() { return currentVoice; }, set control(value) { control = value; } };
+    get voice() { return currentVoice; }, set control(value) { control = value; }, setDeleting: value => { deleting = value; } };
 }
+
+test('send explicitly reports acceptance and busy includes loading/deleting', () => {
+  const h = setup();
+  assert.equal(h.conversation.send(' '), false);
+  h.session.loadingOlder = true; assert.equal(h.conversation.busy, true); assert.equal(h.conversation.send('问题'), false);
+  h.session.loadingOlder = false; h.setDeleting(true);
+  assert.equal(h.conversation.busy, true); assert.equal(h.conversation.send('问题'), false);
+  h.setDeleting(false); assert.equal(h.conversation.busy, false);
+  assert.equal(h.conversation.send('问题'), true); assert.equal(h.conversation.send('忙碌'), false);
+  h.conversation.stop();
+});
+
+test('canRetry is pure and matches retry eligibility, including partial failure', async () => {
+  const h = setup(); h.conversation.send('问题');
+  await h.stream.requests[0].onEnd('', { error: '离线' });
+  const user = h.session.messages[0], before = structuredClone(user);
+  assert.equal(h.conversation.canRetry(user), true); assert.deepEqual(user, before);
+  assert.equal(h.stream.requests.length, 1);
+  h.session.loadingOlder = true; assert.equal(h.conversation.canRetry(user), false); h.conversation.retry(user);
+  h.session.loadingOlder = false; h.setDeleting(true); assert.equal(h.conversation.canRetry(user), false); h.conversation.retry(user);
+  h.setDeleting(false); assert.equal(h.stream.requests.length, 1);
+  h.conversation.retry(user); assert.equal(h.stream.requests.length, 2); assert.equal(h.conversation.canRetry(user), false);
+  await h.stream.requests[1].event('line', { index: 0, zh: '部分', ja: '', emotion: '', act: {} });
+  await h.stream.requests[1].onEnd('', { error: '中断' });
+  assert.equal(h.conversation.canRetry(user), false); h.conversation.retry(user);
+  assert.equal(h.stream.requests.length, 2); assert.equal(h.session.messages.length, 2);
+});
 
 test('normal turn emits in order, sends the same payload, and saves before unlocking', async () => {
   const app = setup();

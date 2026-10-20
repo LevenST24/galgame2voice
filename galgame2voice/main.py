@@ -520,6 +520,7 @@ def create_app() -> FastAPI:
     # /api/health and /status unauthenticated)
     auth_deps = [Depends(require_auth)]
     app.include_router(health.router)
+    app.include_router(characters.media_router)
     app.include_router(config.router, dependencies=auth_deps)
     app.include_router(voice.router, dependencies=auth_deps)
     app.include_router(characters.router, dependencies=auth_deps)

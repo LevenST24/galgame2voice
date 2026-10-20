@@ -27,6 +27,8 @@ import { showToast } from '../ui.js';
 
 let _dom = {};
 let _callbacks = {};
+const inputDom = () => _callbacks.getInput?.() || _dom.input;
+const micDom = () => _callbacks.getMicButton?.() || _dom.micBtn;
 
 let currentVoice = null; // { msgId, paused, pause, resume, setPlaying, setProgress, stop }
 let voiceRevision = 0;
@@ -38,6 +40,16 @@ let micSecs = 0;
 let micBase = '';
 let pendingVoice = { text: null, audio: null, dur: 0, blob: null };
 let micFinalizeTimers = [];
+let micRevision = 0;
+
+export function cancelMic() {
+  ++micRevision;
+  clearInterval(micTimer); micTimer = null;
+  clearMicTimers();
+  if (pendingVoice.audio) { try { URL.revokeObjectURL(pendingVoice.audio); } catch {} }
+  pendingVoice = { text: null, audio: null, dur: 0, blob: null };
+  stopListening(); updateMicUI(false);
+}
 
 export function getCurrentVoice() {
   return currentVoice;
@@ -558,9 +570,9 @@ export function updateVoiceModeUI() {
 }
 
 export function updateMicUI(listening) {
-  if (_dom.micBtn) {
-    _dom.micBtn.classList.toggle('listening', Boolean(listening));
-    _dom.micBtn.setAttribute('aria-pressed', listening ? 'true' : 'false');
+  if (micDom()) {
+    micDom().classList.toggle('listening', Boolean(listening));
+    micDom().setAttribute('aria-pressed', listening ? 'true' : 'false');
   }
 }
 
@@ -589,7 +601,7 @@ export function stopMic() {
   micTimer = null;
   clearMicTimers();
   updateMicUI(false);
-  if (_dom.input) _dom.input.placeholder = '说点什么，或点麦克风用语音输入…';
+  if (inputDom()) inputDom().placeholder = '说点什么，或点麦克风用语音输入…';
   stopListening();
   micFinalizeTimers.push(
     setTimeout(() => {
@@ -610,21 +622,25 @@ export function toggleMic() {
     return;
   }
   if (_callbacks.isBusy && _callbacks.isBusy()) return;
+  const revision = ++micRevision;
   const handle = startListening({
     onInterim: (t) => {
-      if (_dom.input) {
-        _dom.input.value = `${micBase}${micBase ? ' ' : ''}${t}`;
+      if (revision !== micRevision) return;
+      if (inputDom()) {
+        inputDom().value = `${micBase}${micBase ? ' ' : ''}${t}`;
       }
       if (_callbacks.autoGrow) _callbacks.autoGrow();
     },
     onText: (finalText) => {
+      if (revision !== micRevision) return;
       pendingVoice.text = `${micBase ? micBase + ' ' : ''}${finalText}`.trim();
-      if (_dom.input) {
-        _dom.input.value = pendingVoice.text;
+      if (inputDom()) {
+        inputDom().value = pendingVoice.text;
       }
       if (_callbacks.autoGrow) _callbacks.autoGrow();
     },
     onRecorded: (blob, dur) => {
+      if (revision !== micRevision) return;
       if (pendingVoice.audio) {
         try {
           URL.revokeObjectURL(pendingVoice.audio);
@@ -635,6 +651,7 @@ export function toggleMic() {
       pendingVoice.blob = blob;
     },
     onError: (msg) => {
+      if (revision !== micRevision) return;
       showToast(msg, 'error');
     },
   });
@@ -642,17 +659,17 @@ export function toggleMic() {
     showToast(handle.reason, 'error');
     return;
   }
-  micBase = _dom.input ? _dom.input.value : '';
+  micBase = inputDom() ? inputDom().value : '';
   pendingVoice = { text: null, audio: null, dur: 0, blob: null };
   micSecs = 0;
   updateMicUI(true);
   micTimer = setInterval(() => {
     micSecs += 1;
-    if (_dom.input) {
-      _dom.input.placeholder = `正在聆听… ${micSecs}s（再次点击麦克风结束）`;
+    if (inputDom()) {
+      inputDom().placeholder = `正在聆听… ${micSecs}s（再次点击麦克风结束）`;
     }
   }, 1000);
-  if (_dom.input) _dom.input.placeholder = '正在聆听…（再次点击麦克风结束）';
+  if (inputDom()) inputDom().placeholder = '正在聆听…（再次点击麦克风结束）';
   if (!recorderSupported() && !voiceSupported()) {
     showToast('当前浏览器不支持语音输入，建议使用 Chrome / Edge', 'error');
   }

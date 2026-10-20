@@ -5,24 +5,18 @@
  */
 
 import { requestJson } from './request.js';
+import {
+  EMOTION_LABELS,
+  KNOWN_EMOTION_KEYS,
+  normalizePortrait,
+  faceUrl,
+  facePool,
+  pickFace,
+  blushTier,
+  inferEmotion,
+} from './sprite_state.js';
 
-// 对话管线会请求的情绪 → 中文标签
-export const EMOTION_LABELS = {
-  gentle: '温柔', happy: '开心', shy: '害羞', tsundere: '傲娇',
-  cool: '冷静', sad: '感伤', angry: '生气', surprised: '惊讶', thinking: '沉思',
-};
-
-export const KNOWN_EMOTION_KEYS = new Set(Object.keys(EMOTION_LABELS));
-
-// 无情绪标签时的兜底推断（如后端未开启自适应音色则情绪为空）
-const KEYWORD_EMOTIONS = [
-  ['shy', /害羞|脸红|别看我|恥ずかしい|バカ/i],
-  ['angry', /生气|火大|信じられない|何様/i],
-  ['tsundere', /哼|才没有|真是的|別に|今さら/i],
-  ['happy', /高兴|开心|太好了|谢谢|ふふ|ありがとう|嬉しい/i],
-  ['sad', /寂寞|难过|孤独|寂しい/i],
-  ['cool', /无聊|随便|敷衍|勝手に/i],
-];
+export { EMOTION_LABELS, KNOWN_EMOTION_KEYS };
 
 export class PortraitStageController {
   constructor() {
@@ -70,7 +64,7 @@ export class PortraitStageController {
     this.characterRequest = null;
   }
 
-  init({ profileId = null } = {}) {
+  init({ profileId = null, deferLoad = false } = {}) {
     this.appEl = document.querySelector('.app');
     this.stageEl = document.getElementById('characterStage');
     this.toggleBtn = document.getElementById('portraitToggleBtn');
@@ -105,6 +99,7 @@ export class PortraitStageController {
     });
 
     this.bindEvents();
+    if (deferLoad) return;
     if (profileId) this.setCharacter('', profileId);
     else this.initDefaultCharacter();
   }
@@ -179,17 +174,30 @@ export class PortraitStageController {
       }
       return;
     }
-    this.costumes = (data.costumes || []).filter((c) => c && c.id);
-    this.sprites = data.sprites || {};
-    this.faces = data.faces || {};
-    this.expressionSets = data.expression_sets || {};
-    this.currentCostume = this.costumes.some((c) => c.id === data.default_costume)
-      ? data.default_costume
-      : (this.costumes[0] || {}).id || null;
+    const model = normalizePortrait(data);
+    if (!model) {
+      this.applyPayload(null);
+      return;
+    }
+    this.costumes = model.costumes;
+    this.sprites = model.sprites;
+    this.faces = model.faces;
+    this.expressionSets = model.expressionSets;
+    this.currentCostume = model.defaultCostume;
     this.activeFace = null;
     this.recentFaces = [];
     this.currentEmotion = 'gentle';
     this.renderCostumeBar();
+  }
+
+  _asModel() {
+    return {
+      costumes: this.costumes,
+      sprites: this.sprites,
+      faces: this.faces,
+      expressionSets: this.expressionSets,
+      defaultCostume: this.currentCostume,
+    };
   }
 
   renderCostumeBar() {
@@ -366,11 +374,7 @@ export class PortraitStageController {
   }
 
   faceUrl(faceId) {
-    if (!faceId) return '';
-    const costume = this.sprites[this.currentCostume];
-    const sprite = costume && costume[faceId];
-    if (sprite) return sprite.file;
-    return '';
+    return faceUrl(this._asModel(), this.currentCostume, faceId);
   }
 
   firstFaceFor(emotion) {
@@ -378,55 +382,15 @@ export class PortraitStageController {
   }
 
   facePool(emotion) {
-    const available = pool => (Array.isArray(pool) ? pool : []).filter(entry => entry && this.faceUrl(entry.id));
-    const requested = available(this.expressionSets[emotion]);
-    if (requested.length) return requested;
-    const gentle = available(this.expressionSets.gentle);
-    if (gentle.length) return gentle;
-    return Object.keys(this.sprites[this.currentCostume] || {}).map(id => ({ id, strength: 0 }));
+    return facePool(this._asModel(), this.currentCostume, emotion);
   }
 
-  /**
-   * 在同一情绪的候选里挑一张脸：情绪不变时优先选与当前脸共享眉/眼/嘴部件最多的
-   * 那张，所以连续说话只有细微变化，而不是整张脸跳来跳去。
-   */
   pickFace(emotion) {
-    const pool = this.facePool(emotion);
-    if (!pool.length) return null;
-    const current = this.faces[this.activeFace];
-    if (!current || !pool.some((e) => e.id === this.activeFace)) {
-      return pool[0].id;
-    }
-    const recent = new Set(this.recentFaces);
-    const ranked = (skipRecent) => {
-      let pick = null;
-      let score = -Infinity;
-      for (const entry of pool) {
-        const cand = this.faces[entry.id];
-        if (!cand || entry.id === this.activeFace) continue;
-        if (skipRecent && recent.has(entry.id)) continue;
-        // 共享部件越多，两张脸的差别越小
-        const parts = Array.isArray(cand.parts) ? cand.parts : [];
-        const currentParts = Array.isArray(current.parts) ? current.parts : [];
-        const shared = parts.filter(p => p && currentParts.some(q => q && q.romaji === p.romaji)).length;
-        const s = shared * 10 + (Number(entry.strength) || 0);
-        if (s > score) {
-          score = s;
-          pick = entry.id;
-        }
-      }
-      return pick;
-    };
-    // 最近上屏过的脸先排除，否则会在两张最相似的脸之间来回抖动
-    return ranked(true) || ranked(false) || pool[0].id;
+    return pickFace(this._asModel(), this.currentCostume, emotion, this.activeFace, this.recentFaces);
   }
 
-  /** 红脸差分按好感度阶段解锁，害羞系情绪更早脸红。 */
   blushTier(faceId) {
-    const face = this.faces[faceId];
-    if (!face || !face.blush) return faceId;
-    const shyish = ['shy', 'tsundere', 'angry'].includes(this.currentEmotion);
-    return this.affectionLevel >= (shyish ? 2 : 3) && this.faceUrl(face.blush) ? face.blush : faceId;
+    return blushTier(this._asModel(), this.currentCostume, this.currentEmotion, this.affectionLevel, faceId);
   }
 
   /**
@@ -522,25 +486,10 @@ export class PortraitStageController {
     }
   }
 
-  /**
-   * 从消息文本或元数据推断情绪并驱动立绘（后端已给情绪时优先用它）
-   */
   handleMessageEmotion(text, metaEmotion = null) {
-    if (metaEmotion && KNOWN_EMOTION_KEYS.has(String(metaEmotion).toLowerCase())) {
-      this.setEmotion(metaEmotion);
-      return;
-    }
-    if (!text) return;
-    const tag = String(text).match(/\[([a-zA-Z_\-]+)\]/);
-    if (tag && KNOWN_EMOTION_KEYS.has(tag[1].toLowerCase())) {
-      this.setEmotion(tag[1]);
-      return;
-    }
-    for (const [emotion, pattern] of KEYWORD_EMOTIONS) {
-      if (pattern.test(text)) {
-        this.setEmotion(emotion);
-        return;
-      }
+    const emotion = inferEmotion(text, metaEmotion);
+    if (emotion) {
+      this.setEmotion(emotion);
     }
   }
 }

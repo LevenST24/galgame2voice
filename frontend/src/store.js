@@ -37,6 +37,17 @@ export const DEFAULT_SESSION_SETTINGS = {
   ttsTopK: 15,
   ttsTopP: 1.0,
   ttsTemperature: 1.0,
+  advEnabled: false,
+  advPlayerName: 'Player',
+  advPrimaryLanguage: 'zh',
+  advSubtitleLanguage: 'ja',
+  advWindowOpacity: 75,
+  advTextIntervalMs: 30,
+  advInterruptVoice: true,
+  advAutoBaseMs: 1500,
+  advAutoPerCharMs: 45,
+  advAutoMode: 'voice-priority',
+  advOutfit: '',
 };
 
 export const DEFAULT_GLOBAL = {

@@ -260,8 +260,9 @@ class FakeAudioContext {
         cancelScheduledValues() {},
         linearRampToValueAtTime(v) { this.value = v; },
       },
-      connect() {},
-      disconnect() {},
+      connections: new Set(), disconnects: 0,
+      connect(target) { this.connections.add(target); },
+      disconnect() { this.connections.clear(); this.disconnects++; },
     };
     this.createdGains.push(gainNode);
     return gainNode;
@@ -286,6 +287,24 @@ class FakeAudioContext {
 }
 
 const blob = () => new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/wav' });
+
+test('AudioPlayer: every terminal path disconnects its line gain exactly once', async () => {
+  globalThis.window = { AudioContext: FakeAudioContext };
+  const player = new StreamAudioController();
+  for (const outcome of ['ended', 'stop', 'fade', 'decode', 'fetch']) {
+    globalThis.fetch = async () => { if (outcome === 'fetch') throw new Error('fetch failure'); return new Response(blob()); };
+    player.ensureContext().decodeAudioData = async () => { if (outcome === 'decode') throw new Error('decode failure'); return { duration: 1 }; };
+    const promise = player.playLine(0, [{ audio_url: `/audio/cleanup-${outcome}.wav` }]);
+    const gain = player.ctx.createdGains.at(-1); await tick(10);
+    if (outcome === 'ended') player.ctx.createdSources.at(-1).finish();
+    if (outcome === 'stop' || outcome === 'fade') player.stopLine({ fadeMs: outcome === 'fade' ? 1 : 0 });
+    assert.equal(await promise, ['stop', 'fade'].includes(outcome) ? 'interrupted' : ['decode', 'fetch'].includes(outcome) ? 'failed' : 'ended');
+    if (outcome === 'fade') await new Promise(resolve => setTimeout(resolve, 30));
+    player.stopLine({ fadeMs: 0 });
+    assert.equal(gain.connections.size, 0, outcome); assert.equal(gain.disconnects, 1, outcome);
+  }
+  await player.close();
+});
 
 test('AudioPlayer: playLine ended on completion of all chunks', async () => {
   globalThis.window = { AudioContext: FakeAudioContext };

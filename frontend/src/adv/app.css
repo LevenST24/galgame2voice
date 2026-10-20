@@ -1,0 +1,22 @@
+#advRoot { position: fixed; inset: 0; z-index: 45; }
+#advRoot[hidden] { display: none; }
+body.adv-active .app { visibility: hidden; }
+body.adv-active .toast-root { bottom: calc((100dvh - 1080 * var(--u)) / 2 + 300 * var(--u)); }
+.adv-app-tools { position: absolute; top: calc(28 * var(--u)); left: calc(32 * var(--u)); z-index: 50; display: flex; gap: calc(12 * var(--u)); }
+.adv-app-tools[hidden] { display: none; }
+.adv-app-tools button, .adv-art-status, .adv-drawer > button {
+  color: #fff; background: #273450; border: 1px solid #a5b4fc; border-radius: 6px;
+  padding: 8px 14px; cursor: pointer; font: inherit;
+}
+.adv-art-status { position: absolute; top: 16%; left: 36%; z-index: 50; }
+.adv-art-status[hidden] { display: none; }
+.adv-drawer { pointer-events: auto; position: absolute; inset: 4% 6%; padding: 16px;
+  display: flex; flex-direction: column; gap: 8px; background: var(--bg, #f7f5fc); color: var(--text, #252334);
+  border-radius: 14px; box-shadow: 0 8px 60px #0009; overflow: auto; user-select: text; }
+.adv-drawer > button { align-self: flex-end; flex: none; }
+.adv-drawer .messages { visibility: visible; flex: 1; min-height: 0; overflow-y: auto; }
+.adv-drawer .sidebar { visibility: visible; position: static; transform: none; width: 100%; height: auto;
+  flex: 1; min-height: 0; overflow-y: auto; border: 0; }
+.adv-drawer .sidebar-close { display: grid; }
+.adv-settings-preview { padding: 16px; color: white; white-space: pre-line; border-radius: 8px; }
+.adv-settings-preview::before { content: '◯'; float: left; font-size: 40px; margin-right: 14px; }

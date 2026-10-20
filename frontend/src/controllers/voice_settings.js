@@ -4,9 +4,11 @@ import { portraitStage } from '../portrait.js';
 import { showToast } from '../ui.js';
 import { requestJson } from '../api.js';
 import { persistSession } from '../session_api.js';
+import { createAdvSettings } from '../adv/settings.js';
 
 let _dom = {};
 let _callbacks = {};
+let advSettings = { load() {}, read: () => ({}), snapshot: () => '' };
 let voiceProfiles = [];
 // 面板里人设框的初始值与对应角色，用于换角色时判断"有未保存的编辑"
 let _promptBaseline = '';
@@ -33,6 +35,7 @@ export function invalidateScannedModels() {
 export function initVoiceSettings(dom, callbacks = {}) {
   _dom = dom;
   _callbacks = callbacks;
+  advSettings = createAdvSettings(_dom.sessionModal?.querySelector('.modal-body'), DEFAULT_SESSION_SETTINGS);
   editorRevision += 1;
 
   if (_dom.sVoice) {
@@ -80,6 +83,7 @@ export function initVoiceSettings(dom, callbacks = {}) {
       _dom.sTtsTopK.value = DEFAULT_SESSION_SETTINGS.ttsTopK;
       _dom.sTtsTopP.value = DEFAULT_SESSION_SETTINGS.ttsTopP;
       _dom.sTtsTemp.value = DEFAULT_SESSION_SETTINGS.ttsTemperature;
+      advSettings.load(DEFAULT_SESSION_SETTINGS);
       syncRangeLabels();
     });
   }
@@ -131,6 +135,7 @@ export async function openSessionSettings() {
   if (_dom.sTtsTopK) _dom.sTtsTopK.value = s.settings.ttsTopK;
   if (_dom.sTtsTopP) _dom.sTtsTopP.value = s.settings.ttsTopP;
   if (_dom.sTtsTemp) _dom.sTtsTemp.value = s.settings.ttsTemperature;
+  advSettings.load(s.settings);
   syncRangeLabels();
   loadSessionVoiceSelect(s);
   if (_callbacks.openModal) _callbacks.openModal(_dom.sessionModal);
@@ -186,11 +191,18 @@ export async function ensureSessionVoice(session, { silent = false, keepPortrait
   // keepPortrait: the same session is re-checked (settings saved, another voice deleted);
   // reloading a portrait already on stage would reset its costume, last line and expression.
   const profile = voiceProfiles.find(p => p.id === want);
-  if (!(keepPortrait && want && portraitStage.showsCharacter(want))) {
+  if (session?.settings?.advEnabled && activeProfileId === null) {
+    try {
+      await fetchVoiceProfiles();
+      if (!isCurrent()) return;
+      _callbacks.renderHeader?.();
+    } catch { /* Text mode and the bound portrait remain available offline. */ }
+  }
+  if (!session?.settings?.advEnabled && !(keepPortrait && want && portraitStage.showsCharacter(want))) {
     portraitStage.setCharacter(profile?.name || '', want).catch(() => {});
   }
   if (!want) {
-    if (session) await portraitStage.initDefaultCharacter();
+    if (session && !session.settings?.advEnabled) await portraitStage.initDefaultCharacter();
     return;
   }
   try {
@@ -540,7 +552,7 @@ const EDITOR_FIELDS = [
   'sAiAdaptiveVoice', 'sAdvReplyFormat', 'sTtsSpeed', 'sTtsTopK', 'sTtsTopP', 'sTtsTemp',
   'sCvName', 'sCvGpt', 'sCvSovits', 'sCvRef', 'sCvPromptText', 'sCvLang',
 ];
-const editorSnapshot = () => JSON.stringify(EDITOR_FIELDS.map(key => _dom[key]?.value));
+const editorSnapshot = () => JSON.stringify([EDITOR_FIELDS.map(key => _dom[key]?.value), advSettings.snapshot()]);
 
 async function handleSaveSessionSettings() {
   if (_dom.sSave?.disabled) return;
@@ -551,6 +563,9 @@ async function handleSaveSessionSettings() {
   const sameEditor = () => getActive() === s && editor === editorRevision;
   if (_dom.sSave) _dom.sSave.disabled = true;
   try {
+    let advValues;
+    try { advValues = advSettings.read(); }
+    catch (error) { showToast(error.message, 'error'); return; }
     if (_dom.sVoice.value === '__custom__') {
       showToast('请先点击「创建并绑定」完成新音色的创建，再保存会话参数。填写的内容已保留。', 'info');
       return;
@@ -568,6 +583,8 @@ async function handleSaveSessionSettings() {
       return;
     }
     s.settings = {
+      ...s.settings,
+      ...advValues,
       voiceProfileId: profileId,
       temperature: Number(_dom.sTemp.value),
       topP: Number(_dom.sTopP.value),

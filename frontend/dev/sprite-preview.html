@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ADV Sprite Renderer Preview Harness</title>
+  <link rel="stylesheet" href="../src/adv/sprite.css">
+  <style>
+    :root {
+      --u: min(calc(100vw / 1920), calc(100dvh / 1080));
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: #0f1117;
+      display: grid;
+      place-items: center;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #e2e8f0;
+    }
+
+    /* 1920x1080 logical canvas */
+    .adv-stage {
+      position: relative;
+      width: calc(1920 * var(--u));
+      height: calc(1080 * var(--u));
+      overflow: hidden;
+      background: #1e2230;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7);
+    }
+
+    /* Layer 10: Plain background / reference grid */
+    .adv-stage-bg {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+      z-index: 10;
+    }
+
+    .adv-stage-grid {
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+      background-size: calc(100 * var(--u)) calc(100 * var(--u));
+      pointer-events: none;
+    }
+
+    /* Reference lines for head (70u), eyes (260u), shoulders (470u), center (1100u) */
+    .adv-ref-line {
+      position: absolute;
+      pointer-events: none;
+      z-index: 15;
+      font-size: calc(12 * var(--u));
+      color: rgba(255, 255, 255, 0.35);
+      padding: 2px 6px;
+    }
+
+    .adv-ref-head {
+      top: calc(70 * var(--u));
+      left: 0;
+      right: 0;
+      border-top: 1px dashed rgba(56, 189, 248, 0.4);
+    }
+
+    .adv-ref-eyes {
+      top: calc(260 * var(--u));
+      left: 0;
+      right: 0;
+      border-top: 1px dashed rgba(52, 211, 153, 0.4);
+    }
+
+    .adv-ref-shoulders {
+      top: calc(470 * var(--u));
+      left: 0;
+      right: 0;
+      border-top: 1px dashed rgba(251, 191, 36, 0.4);
+    }
+
+    .adv-ref-center {
+      left: calc(1100 * var(--u));
+      top: 0;
+      bottom: 0;
+      border-left: 1px dashed rgba(244, 114, 182, 0.4);
+    }
+
+    /* Layer 20: Sprite */
+    .adv-sprite-layer {
+      position: absolute;
+      inset: 0;
+      z-index: 20;
+    }
+
+    /* Layer 30: FX */
+    .adv-fx-layer {
+      position: absolute;
+      inset: 0;
+      z-index: 30;
+      pointer-events: none;
+    }
+
+    /* Layer 40: Dark message band (y=696-1080) */
+    .adv-msg-band {
+      position: absolute;
+      left: 0;
+      top: calc(696 * var(--u));
+      width: calc(1920 * var(--u));
+      height: calc(384 * var(--u));
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.85) 0%, rgba(2, 6, 23, 0.98) 100%);
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      z-index: 40;
+      pointer-events: none;
+    }
+
+    /* Face slot: x=0, y=696, w=450, h=404 */
+    .adv-face-slot {
+      position: absolute;
+      left: 0;
+      top: calc(696 * var(--u));
+      width: calc(450 * var(--u));
+      height: calc(404 * var(--u));
+      overflow: hidden;
+      z-index: 45;
+      border-right: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(0, 0, 0, 0.2);
+    }
+
+    .adv-textbox-sample {
+      position: absolute;
+      left: calc(480 * var(--u));
+      top: calc(730 * var(--u));
+      right: calc(60 * var(--u));
+      z-index: 46;
+      pointer-events: none;
+    }
+
+    .adv-speaker-name {
+      font-size: calc(26 * var(--u));
+      font-weight: bold;
+      color: #93c5fd;
+      margin-bottom: calc(12 * var(--u));
+    }
+
+    .adv-dialogue-text {
+      font-size: calc(30 * var(--u));
+      line-height: 1.5;
+      color: #ffffff;
+      text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8);
+    }
+
+    /* Controls Panel */
+    .adv-controls {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      width: 340px;
+      max-height: calc(100vh - 32px);
+      overflow-y: auto;
+      background: rgba(15, 23, 42, 0.92);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      padding: 16px;
+      font-size: 13px;
+      z-index: 100;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+
+    .adv-controls h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      color: #38bdf8;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .adv-control-row {
+      margin-bottom: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .adv-control-row label {
+      font-weight: 500;
+      color: #94a3b8;
+    }
+
+    .adv-control-row select,
+    .adv-control-row input[type="text"] {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #f1f5f9;
+      padding: 6px 10px;
+      border-radius: 6px;
+      outline: none;
+      font-size: 13px;
+    }
+
+    .adv-control-row select:focus,
+    .adv-control-row input[type="text"]:focus {
+      border-color: #38bdf8;
+    }
+
+    .adv-checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      cursor: pointer;
+    }
+
+    .adv-btn-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .adv-btn {
+      background: #0284c7;
+      color: #fff;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: background 0.15s;
+    }
+
+    .adv-btn:hover {
+      background: #0369a1;
+    }
+
+    .adv-btn-secondary {
+      background: #334155;
+    }
+
+    .adv-btn-secondary:hover {
+      background: #475569;
+    }
+
+    .adv-status-tag {
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      margin-top: 8px;
+      background: #1e293b;
+      color: #94a3b8;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div class="adv-stage" id="advStage">
+    <!-- Layer 10: Background -->
+    <div class="adv-stage-bg"></div>
+    <div class="adv-stage-grid"></div>
+
+    <!-- Framing reference markers -->
+    <div class="adv-ref-line adv-ref-head">headTopY = 70u</div>
+    <div class="adv-ref-line adv-ref-eyes">eyes ≈ 260u</div>
+    <div class="adv-ref-line adv-ref-shoulders">shoulders ≈ 470u</div>
+    <div class="adv-ref-line adv-ref-center">centerX = 1100u</div>
+
+    <!-- Layer 20: Sprite -->
+    <div class="adv-sprite-layer" id="advSpriteLayer"></div>
+
+    <!-- Layer 30: FX -->
+    <div class="adv-fx-layer" id="advFxLayer"></div>
+
+    <!-- Layer 40: Dark Message Band -->
+    <div class="adv-msg-band"></div>
+
+    <!-- 450x404u Face Slot -->
+    <div class="adv-face-slot" id="advFaceSlot"></div>
+
+    <!-- Sample dialogue overlay -->
+    <div class="adv-textbox-sample">
+      <div class="adv-speaker-name" id="advSpeakerName">白雪乃爱</div>
+      <div class="adv-dialogue-text" id="advDialogueText">「今天的天气真好呢，要不要一起出去走走？」</div>
+    </div>
+  </div>
+
+  <!-- Interactive Control Panel -->
+  <aside class="adv-controls">
+    <h2>
+      <span>立绘控制台 (Harness)</span>
+      <span style="font-size: 11px; color: #64748b;">P3 Prototype</span>
+    </h2>
+
+    <div class="adv-control-row">
+      <label for="packSelect">角色包 (Pack):</label>
+      <select id="packSelect">
+        <option value="default">默认占位剪影 (Synthetic Silhouette)</option>
+        <option value="real">真实立绘 (白雪乃爱 18766端口)</option>
+        <option value="legacy">旧版全图 351×1080 (Legacy Fallback)</option>
+      </select>
+    </div>
+
+    <div class="adv-control-row">
+      <label for="costumeSelect">服装 (Costume):</label>
+      <select id="costumeSelect"></select>
+    </div>
+
+    <div class="adv-control-row">
+      <label for="emotionSelect">情绪 (Emotion):</label>
+      <select id="emotionSelect">
+        <option value="gentle">温柔 (gentle)</option>
+        <option value="happy">开心 (happy)</option>
+        <option value="shy">害羞 (shy)</option>
+        <option value="tsundere">傲娇 (tsundere)</option>
+        <option value="cool">冷静 (cool)</option>
+        <option value="sad">感伤 (sad)</option>
+        <option value="angry">生气 (angry)</option>
+        <option value="surprised">惊讶 (surprised)</option>
+        <option value="thinking">沉思 (thinking)</option>
+      </select>
+    </div>
+
+    <div class="adv-control-row">
+      <label for="faceSelect">表情编号 (Face ID):</label>
+      <select id="faceSelect"></select>
+    </div>
+
+    <div class="adv-control-row">
+      <label for="blushSelect">脸红 (Blush):</label>
+      <select id="blushSelect">
+        <option value="auto">自动 (按好感度规则)</option>
+        <option value="true">开启 (act.blush: true)</option>
+        <option value="false">关闭 (act.blush: false)</option>
+      </select>
+    </div>
+
+    <div class="adv-control-row">
+      <label for="motionSelect">动作演出 (Motion):</label>
+      <select id="motionSelect">
+        <option value="">无 (none)</option>
+        <option value="nod">点头 (nod)</option>
+        <option value="bounce">轻跳/笑 (bounce)</option>
+        <option value="startle">一惊 (startle)</option>
+        <option value="sigh">叹气 (sigh)</option>
+        <option value="fidget">局促 (fidget)</option>
+        <option value="head-shake">摇头 (head-shake)</option>
+        <option value="lean-in">探身向前 (lean-in)</option>
+        <option value="step-back">后退 (step-back)</option>
+      </select>
+    </div>
+
+    <div class="adv-control-row">
+      <label for="fxSelect">特效符号 (FX):</label>
+      <select id="fxSelect">
+        <option value="">无 (none)</option>
+        <option value="sweat">汗 (sweat)</option>
+        <option value="anger">青筋 (anger)</option>
+        <option value="heart">爱心 (heart)</option>
+        <option value="sparkle">闪亮 (sparkle)</option>
+        <option value="question">问号 (question)</option>
+        <option value="exclamation">感叹号 (exclamation)</option>
+      </select>
+    </div>
+
+    <label class="adv-checkbox-row">
+      <input type="checkbox" id="reducedMotionCheck">
+      <span>减弱动效 (prefers-reduced-motion)</span>
+    </label>
+
+    <label class="adv-checkbox-row">
+      <input type="checkbox" id="skippingCheck">
+      <span>快进模式 (Skipping)</span>
+    </label>
+
+    <label class="adv-checkbox-row">
+      <input type="checkbox" id="playerTurnCheck">
+      <span>玩家回合 / 旁白 (隐藏特写头像)</span>
+    </label>
+
+    <div class="adv-btn-row">
+      <button type="button" class="adv-btn" id="applyBtn">应用演出 (Apply)</button>
+      <button type="button" class="adv-btn adv-btn-secondary" id="clearBtn">清除 (Clear)</button>
+    </div>
+
+    <div class="adv-status-tag" id="statusBox">就绪</div>
+  </aside>
+
+  <script type="module" src="./sprite-preview.js"></script>
+</body>
+</html>

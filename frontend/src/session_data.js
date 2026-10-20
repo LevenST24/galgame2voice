@@ -11,21 +11,44 @@ export function serverTimestamp(value, fallback = Date.now()) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function pickSettings(value, defaults) {
+export function pickSettings(value, defaults) {
   const result = { ...defaults };
   if (!record(value)) return result;
   for (const key of Object.keys(defaults)) {
     const candidate = value[key];
-    if (key === 'voiceProfileId') {
+    if (key.startsWith('adv')) {
+      if (validAdvSetting(key, candidate)) result[key] = candidate;
+    } else if (key === 'voiceProfileId') {
       if (candidate === null || (Number.isInteger(candidate) && candidate > 0)) result[key] = candidate;
-    } else if (key === 'advReplyFormat') {
-      if (candidate === 'old' || candidate === 'lines') result[key] = candidate;
     } else if (typeof candidate === typeof defaults[key] &&
                (typeof candidate !== 'number' || Number.isFinite(candidate))) {
       result[key] = candidate;
     }
   }
+  if (result.advPrimaryLanguage === result.advSubtitleLanguage) {
+    result.advSubtitleLanguage = result.advPrimaryLanguage === 'zh' ? 'ja' : 'zh';
+  }
   return result;
+}
+
+const advEnums = {
+  advPrimaryLanguage: ['zh', 'ja'], advSubtitleLanguage: ['zh', 'ja', 'none'],
+  advAutoMode: ['normal', 'voice-priority'], advReplyFormat: ['old', 'lines'],
+};
+const advRanges = { advWindowOpacity: 100, advTextIntervalMs: 100, advAutoBaseMs: 6000, advAutoPerCharMs: 200 };
+export function validAdvSetting(key, value) {
+  if (key === 'advEnabled' || key === 'advInterruptVoice') return typeof value === 'boolean';
+  if (advEnums[key]) return advEnums[key].includes(value);
+  if (key in advRanges) return Number.isInteger(value) && value >= 0 && value <= advRanges[key];
+  if (key === 'advPlayerName') {
+    if (typeof value !== 'string' || !value.trim()) return false;
+    const count = typeof Intl.Segmenter === 'function'
+      ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value)].length : [...value].length;
+    return count <= 40;
+  }
+  // Outfit IDs are manifest keys, never paths. Missing installed IDs remain portable.
+  if (key === 'advOutfit') return typeof value === 'string' && (value === '' || /^[\p{L}\p{N}_-]{1,200}$/u.test(value));
+  return false;
 }
 
 export function normalizeLines(lines) {

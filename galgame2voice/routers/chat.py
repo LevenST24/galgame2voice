@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from galgame2voice.services.chat_service import ChatService
-from galgame2voice.services.chat_backup import export_chat_backup, import_timestamp
+from galgame2voice.services.chat_backup import export_chat_backup, import_timestamp, validate_adv_settings
 from galgame2voice.services.gpt_sovits_client import validate_user_tts_options
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path, immediate_transaction
@@ -389,6 +389,11 @@ class ImportedSession(BaseModel):
     settings: dict[str, Any] = Field(default_factory=dict)
     created_at: int | None = Field(default=None, ge=0, le=253402300799000)
     updated_at: int | None = Field(default=None, ge=0, le=253402300799000)
+
+    @field_validator("settings")
+    @classmethod
+    def validate_settings(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return validate_adv_settings(value)
 
 
 class ChatImportRequest(BaseModel):
