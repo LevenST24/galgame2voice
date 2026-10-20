@@ -133,6 +133,32 @@ export function createTextbox(container, opts = {}) {
   textareaEl.rows = 2;
   textareaEl.placeholder = '请输入你的回答（Enter 发送，Shift+Enter 换行）...';
 
+  function isOverlayBlocked() {
+    let cur = rootEl;
+    while (cur) {
+      if (cur.inert || cur.getAttribute?.('inert') !== null) return true;
+      cur = cur.parentNode;
+    }
+    if (container) {
+      let curC = container;
+      while (curC) {
+        if (curC.inert || curC.getAttribute?.('inert') !== null) return true;
+        curC = curC.parentNode;
+      }
+    }
+    return Boolean(opts.isOverlayOpen?.());
+  }
+
+  const origTextareaFocus = textareaEl.focus;
+  if (typeof origTextareaFocus === 'function') {
+    textareaEl.focus = function (...args) {
+      if (isOverlayBlocked()) {
+        return;
+      }
+      return origTextareaFocus.apply(this, args);
+    };
+  }
+
   const playerControlsEl = document.createElement('div');
   playerControlsEl.className = 'adv-player-controls';
 
@@ -361,6 +387,10 @@ export function createTextbox(container, opts = {}) {
     justComposed = false;
   });
 
+  listen(textareaEl, 'focus', () => {
+    if (isOverlayBlocked()) textareaEl.blur?.();
+  });
+
   listen(textareaEl, 'input', () => {
     opts.onAction?.('player_edit');
   });
@@ -531,6 +561,7 @@ export function createTextbox(container, opts = {}) {
     inputWrapEl.classList.remove('is-hidden');
     glyph(false);
 
+
     try {
       textareaEl.focus();
     } catch {
@@ -645,6 +676,7 @@ export function createTextbox(container, opts = {}) {
     clearError();
     clearTypewriter();
     glyph(false);
+
     errorMessageEl.textContent = message;
     errorActionsEl.innerHTML = '';
 

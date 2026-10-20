@@ -4,6 +4,7 @@ import { createQuickMenu } from './quick_menu.js';
 import { createShortcuts } from './shortcuts.js';
 import { createLinePlayer } from './line_player.js';
 import { createSpriteView } from './sprite.js';
+import { createConfigPanel } from './config_panel.js';
 import { normalizePortrait, resolveSpriteState } from '../sprite_state.js';
 import { DEFAULT_SESSION_SETTINGS } from '../store.js';
 import { pickSettings } from '../session_data.js';
@@ -49,6 +50,7 @@ export function mountAdv(dom, deps) {
   settings = pickSettings(deps.getSession()?.settings, DEFAULT_SESSION_SETTINGS);
   const textbox = createTextbox(stage.textbox, {
     clock, matchMedia: () => ({ matches: false }), getSettings: playerSettings,
+    isOverlayOpen: () => Boolean(drawer || externalOverlay || configPanel?.isOpen),
     onAdvance: () => player.advance(),
     onSend: text => !controller.busy && controller.send(text),
     onMic: () => {
@@ -119,9 +121,79 @@ export function mountAdv(dom, deps) {
     button.setAttribute('aria-label', label); button.dataset.action = name;
     listen(button, 'click', () => action(name)); tools.appendChild(button);
   }
+
+  const configPanel = createConfigPanel(stage.overlay, {
+    getSession: () => deps.getSession?.(),
+    getCharacter: () => deps.getCharacter?.(),
+    getCostumes: () => model?.costumes || sprite.getModel?.()?.costumes || deps.getCostumes?.() || [],
+    saveSettings: patch => {
+      deps.saveSettings?.(patch);
+      update();
+    },
+    voiceEnabled: () => Boolean(deps.voiceEnabled?.()),
+    toggleVoice: () => {
+      deps.toggleVoice?.();
+      update();
+    },
+    onModelSettings: () => deps.onModelSettings?.(),
+    onSessionSettings: () => (deps.onSessionSettings || deps.onSettings)?.(),
+    onPreview: patch => {
+      if (patch.advWindowOpacity !== undefined) {
+        const band = stage.textbox.querySelector('.adv-band');
+        if (band) band.style.setProperty('--adv-window-opacity', String(patch.advWindowOpacity));
+        stage.stage.style.setProperty('--adv-window-opacity', String(patch.advWindowOpacity));
+      }
+      if (patch.advOutfit !== undefined && model) {
+        paint(currentLine, { costume: patch.advOutfit || model.defaultCostume });
+      }
+      if (patch.advPrimaryLanguage !== undefined || patch.advSubtitleLanguage !== undefined) {
+        if (currentLine && player.state !== 'input' && player.state !== 'error') {
+          player.repaginate();
+          textbox.reflow({ pageIndex: player.page });
+        }
+      }
+    },
+    onRevert: baselineSettings => {
+      if (baselineSettings?.advWindowOpacity !== undefined) {
+        const band = stage.textbox.querySelector('.adv-band');
+        if (band) band.style.setProperty('--adv-window-opacity', String(baselineSettings.advWindowOpacity));
+        stage.stage.style.setProperty('--adv-window-opacity', String(baselineSettings.advWindowOpacity));
+      }
+      if (model) {
+        paint(currentLine, { costume: baselineSettings?.advOutfit || model.defaultCostume });
+      }
+      if (currentLine && player.state !== 'input' && player.state !== 'error') {
+        player.repaginate();
+        textbox.reflow({ pageIndex: player.page });
+      }
+    },
+    onOpen: () => {
+      player.suspend('dialog');
+      sprite.suspend();
+      textbox.completeReveal();
+      textbox.glyph(false);
+      stage.textbox.inert = true;
+      stage.quickmenu.inert = true;
+      tools.inert = true;
+      syncControls();
+    },
+    onClose: () => {
+      stage.textbox.inert = false;
+      stage.quickmenu.inert = false;
+      tools.inert = false;
+      player.resume('dialog');
+      if (!drawer && !externalOverlay) restoreSprite();
+      syncControls();
+    },
+    clock,
+    matchMedia,
+    documentObj: doc,
+  });
+
   function paint(line = currentLine || { emotion: 'gentle', act: {} }, options = {}) {
     if (!line || !model) return;
-    resolved = resolveSpriteState(model, resolved, line, { costume: settings.advOutfit || model.defaultCostume });
+    const costume = options.costume !== undefined ? options.costume : (settings.advOutfit || model.defaultCostume);
+    resolved = resolveSpriteState(model, resolved, line, { costume });
     if (resolved) sprite.apply(resolved, {
       ...options, reducedMotion, skipping: player.skip,
       motion: line.act?.motion || null,
@@ -135,13 +207,17 @@ export function mountAdv(dom, deps) {
   function syncControls() {
     textbox.setCanSend(!controller.busy);
     const input = player.state === 'input' || player.state === 'error';
-    for (const name of ['auto', 'skip', 'replay_voice', 'hide']) quickMenu.setEnabled(name, !input && !drawer && !externalOverlay);
+    const overlayActive = Boolean(drawer || externalOverlay || configPanel?.isOpen);
+    for (const name of ['auto', 'skip', 'replay_voice', 'hide']) quickMenu.setEnabled(name, !input && !overlayActive);
     quickMenu.setToggle('auto', player.auto); quickMenu.setToggle('skip', player.skip);
     quickMenu.setHidden(player.hidden); textbox.setHidden(player.hidden);
     tools.hidden = player.hidden;
     stage.stage.classList.toggle('is-window-hidden', player.hidden);
     stage.stage.classList.toggle('reduced-motion', reducedMotion);
     quickMenu.setModelStatus(deps.getModelStatus?.() || { label: '对话模型', state: controller.busy ? 'busy' : 'ok' });
+    if (configPanel?.isOpen && !configPanel.element.contains(doc.activeElement)) {
+      configPanel.focusFirstControl?.();
+    }
   }
   function restore(node) {
     const position = moved.get(node);
@@ -156,12 +232,13 @@ export function mountAdv(dom, deps) {
     restore(node); drawer.element.remove(); drawer = null;
     stage.textbox.inert = false; stage.quickmenu.inert = false; tools.inert = false;
     player.resume('overlay');
-    if (!externalOverlay) restoreSprite();
+    if (!externalOverlay && !configPanel?.isOpen) restoreSprite();
     if (savedFocus?.isConnected) savedFocus.focus();
     syncControls();
   }
   function openDrawer(kind) {
     closeDrawer();
+    if (configPanel?.isOpen) configPanel.close({ revert: true });
     const node = kind === 'sessions' ? dom.sidebar : dom.messages;
     if (!node?.parentNode) return;
     savedFocus = doc.activeElement;
@@ -197,9 +274,15 @@ export function mountAdv(dom, deps) {
       case 'unhide': unhide(); break;
       case 'log': openDrawer('log'); break;
       case 'sessions': openDrawer('sessions'); break;
-      case 'close_overlay': if (drawer) closeDrawer(); else deps.closeOverlay?.(); break;
+      case 'close_overlay':
+        if (configPanel?.isOpen) configPanel.close({ revert: true });
+        else if (drawer) closeDrawer();
+        else deps.closeOverlay?.();
+        break;
       case 'settings':
-      case 'config': deps.onSettings?.(); break;
+      case 'config':
+        configPanel.open();
+        break;
       case 'model_status': deps.onModelSettings?.(); break;
       case 'swap_languages': textbox.swapLanguages(); break;
       case 'new_session': deps.onNewSession?.(); break;
@@ -226,7 +309,7 @@ export function mountAdv(dom, deps) {
   }
   const shortcuts = createShortcuts(stage.stage, {
     getContext: () => ({ stage: stage.stage, hidden: player.hidden,
-      overlayOpen: Boolean(drawer || externalOverlay), subtitleNone: settings.advSubtitleLanguage === 'none',
+      overlayOpen: Boolean(drawer || externalOverlay || configPanel?.isOpen), subtitleNone: settings.advSubtitleLanguage === 'none',
       playerInput: player.state === 'input',
       composing: textbox.composing }),
     onAction: action,
@@ -260,7 +343,7 @@ export function mountAdv(dom, deps) {
   function setOverlay(open) {
     externalOverlay = open;
     if (open) { player.suspend('dialog'); sprite.suspend(); textbox.completeReveal(); textbox.glyph(false); }
-    else { player.resume('dialog'); if (!drawer) restoreSprite(); }
+    else { player.resume('dialog'); if (!drawer && !configPanel?.isOpen) restoreSprite(); }
     syncControls();
   }
   if (deps.subscribeOverlay) disposers.push(deps.subscribeOverlay(setOverlay));
@@ -312,6 +395,7 @@ export function mountAdv(dom, deps) {
     settings = nextSettings;
     if (switched) {
       if (sessionId !== undefined) drafts.set(sessionId, textbox.draft);
+      if (configPanel?.isOpen) configPanel.close({ revert: true });
       closeDrawer(); resetInput(); turnId = null; currentLine = null; failedUser = null;
       textbox.setDraft(drafts.get(session?.id) || '');
     }
@@ -332,7 +416,7 @@ export function mountAdv(dom, deps) {
     }
     textbox.refreshSettings();
     if (drawer) player.suspend('overlay');
-    if (externalOverlay) player.suspend('dialog');
+    if (externalOverlay || configPanel?.isOpen) player.suspend('dialog');
     syncControls();
   }
   function resetInput() {
@@ -350,7 +434,7 @@ export function mountAdv(dom, deps) {
     textbox.setSpeaker({ name: deps.getCharacter?.()?.name || '角色', mode: 'character' });
     player.startTurn(turnId); syncControls();
     if (drawer) player.suspend('overlay');
-    if (externalOverlay) player.suspend('dialog');
+    if (externalOverlay || configPanel?.isOpen) player.suspend('dialog');
   }));
   disposers.push(controller.on('text', () => { /* Legacy streaming text remains in controller/history. */ }));
   disposers.push(controller.on('line', event => {
@@ -374,12 +458,15 @@ export function mountAdv(dom, deps) {
   });
   update();
   return {
-    update, player, textbox, sprite, stage, action,
+    update, player, textbox, sprite, stage, action, configPanel,
+    isConfigOpen: () => Boolean(configPanel?.isOpen),
     unmount() {
       if (destroyed) return;
       // Stop callbacks before resetting renderers or restoring borrowed nodes.
       for (const off of disposers.splice(0)) off?.();
-      closeDrawer(); destroyed = true; ++portraitRevision;
+      closeDrawer();
+      configPanel.destroy();
+      destroyed = true; ++portraitRevision;
       portraitRequest?.abort();
       deps.cancelMic?.();
       if (refreshTimer !== null) clock.clearTimeout(refreshTimer);
