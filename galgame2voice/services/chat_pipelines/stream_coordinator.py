@@ -34,7 +34,7 @@ from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.profiler import ChatTurnProfiler
 from galgame2voice.utils.text_splitter import split_japanese_sentences
 
-from .acting_menu import sanitize_act
+from .acting_menu import get_recent_pose, sanitize_act
 from .line_builder import LineAligner
 from .llm_pipeline import LlmStreamPipeline
 from .text_pipeline import TextSegmentationPipeline
@@ -123,6 +123,7 @@ class _StreamRun:
         self.audio_chunks: list[dict[str, Any]] = []
         self.aligner: LineAligner = LineAligner()
         self.lines: list[dict[str, Any]] = []
+        self.current_pose: str | None = None
         self.announced_lines: list[dict[str, Any]] = []
         self.line_audio_states: dict[int, dict[str, Any]] = {}
         self.line_audio_lock = asyncio.Lock()
@@ -539,7 +540,10 @@ class StreamCoordinator:
                 self.acting_menu,
                 line_index=line.get("index", 0),
                 character=self.character_name,
+                current_pose=run.current_pose,
             )
+            if "pose" in line["act"]:
+                run.current_pose = line["act"]["pose"]
         run.lines.append(line)
         await self._put_with_cancel(
             run.event_queue, {"event": "line", "data": line}, run.cancel_event, run.shutdown_event,
@@ -1147,6 +1151,7 @@ class StreamCoordinator:
         run = self._init_stream_run()
 
         try:
+            run.current_pose = await get_recent_pose(self.db_path, self.session_id)
             self._start_subtasks(run)
 
             async for event in self._pump_events(run):

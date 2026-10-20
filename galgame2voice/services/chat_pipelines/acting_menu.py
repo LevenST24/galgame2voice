@@ -7,14 +7,35 @@ so the model is never asked for a face, pose or blush overlay that does not exis
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
+from galgame2voice.database import crud
+from galgame2voice.database.session import get_db
 from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS
 
 logger = logging.getLogger(__name__)
 
 FACE_LIMIT = 40
 ACT_FIELDS = ("face", "pose", "motion", "blush", "fx")
+
+
+async def get_recent_pose(db_path: str | Path, session_id: str) -> str | None:
+    """Find the last assistant pose in at most 20 recent session messages."""
+    # Each get_db(":memory:") connection is a new database with no stored history.
+    if str(db_path) == ":memory:":
+        return None
+    async with get_db(db_path) as conn:
+        messages = await crud.get_recent_messages(conn, session_id, limit=20)
+    for message in reversed(messages):
+        if message.role != "assistant" or not message.lines:
+            continue
+        for line in reversed(message.lines):
+            act = line.get("act")
+            pose = act.get("pose") if isinstance(act, dict) else None
+            if isinstance(pose, str) and pose:
+                return pose
+    return None
 
 
 def _costume_sprites(portrait: dict[str, Any], outfit: str | None) -> tuple[str | None, dict[str, Any]]:
@@ -288,4 +309,4 @@ def sanitize_act(
     return clean
 
 
-__all__ = ["build_acting_menu", "sanitize_act"]
+__all__ = ["build_acting_menu", "get_recent_pose", "sanitize_act"]

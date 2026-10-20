@@ -24,7 +24,7 @@ except ImportError:
     InlineKeyboardMarkup = Any
 
 from galgame2voice.database.session import get_db, immediate_transaction
-from galgame2voice.services.chat_pipelines.acting_menu import sanitize_act
+from galgame2voice.services.chat_pipelines.acting_menu import get_recent_pose, sanitize_act
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate, CharacterAffectionUpdate
 from galgame2voice.services.chat_service import ChatService, StreamingBilingualParser
@@ -752,6 +752,8 @@ class TelegramBotHandlers:
                 text=text,
             )
 
+            current_pose = await get_recent_pose(self.db_path, session_id)
+
             # Send typing chat action so Telegram shows "typing..." in status bar
             if bot and hasattr(bot, "send_chat_action"):
                 try:
@@ -798,7 +800,10 @@ class TelegramBotHandlers:
                         acting_menu,
                         line_index=line.get("index", 0),
                         character=char_name,
+                        current_pose=current_pose,
                     )
+                    if "pose" in line["act"]:
+                        current_pose = line["act"]["pose"]
 
             await self._persist_assistant_chat_turn(
                 session_id=session_id,
