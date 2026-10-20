@@ -6,6 +6,36 @@ import { DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
 import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
 
+for (const terminal of ['done', 'error', 'cancelled']) test(`LOG opened mid-stream includes existing lines through ${terminal}`, async t => {
+  const h = setup(t); h.app.sendMessage('问题');
+  const request = h.stream.requests[0];
+  await request.event('line', { index: 0, zh: '<img src=x onerror=alert(1)>', ja: '台詞' });
+  await request.event('line_audio', { line: 0, status: 'skipped', chunks: [] });
+  h.app.adv.action('log');
+  const log = h.app.adv.backlog, text = '<img src=x onerror=alert(1)>';
+  assert.equal(log.element.querySelectorAll('.adv-log-primary').some(e => e.textContent === text), true);
+  assert.equal(log.element.querySelectorAll('img').length, 0);
+  if (terminal === 'cancelled') h.app.conversation.stop();
+  else await request.onEnd(text, terminal === 'error' ? { error: '断开' } : {});
+  assert.equal(h.app.adv.backlog, log);
+  assert.equal(log.element.querySelectorAll('.adv-log-primary').filter(e => e.textContent === text).length, 1);
+  assert.equal(log.element.ownerDocument.activeElement, log.closeButton);
+});
+
+test('real empty done offers retry while LOG stays open and reconciles the failed user', async t => {
+  const h = setup(t); h.app.sendMessage('空回复'); h.app.adv.action('log');
+  await h.stream.requests[0].onEnd('');
+  const log = h.app.adv.backlog;
+  assert.equal(log.element.querySelector('.adv-log-failure')?.textContent, '未收到回复：模型这次没有返回任何内容');
+  assert.equal(log.element.ownerDocument.activeElement, log.closeButton);
+  h.app.adv.action('close_overlay');
+  assert.equal(h.app.adv.player.state, 'error');
+  const buttons = h.app.adv.stage.stage.querySelectorAll('.adv-error-btn');
+  assert.equal(buttons.length, 2); buttons[0].click();
+  assert.equal(h.stream.requests.length, 2);
+  h.app.conversation.stop();
+});
+
 function setup(t) {
   const doc = fakeDocument(); globalThis.document = doc;
   globalThis.window = { innerWidth: 1280 };
@@ -114,7 +144,9 @@ test('LOG opened during a real stream contains the final saved reply after done'
   h.app.adv.action('log'); await request.onChunk('partial final'); await request.onEnd('partial final');
   assert.equal(h.getActive().messages.at(-1).content, 'partial final');
   assert.ok(h.dom.messages.querySelectorAll('div').some(node => node.textContent === 'partial final'));
-  assert.equal(h.dom.messages.parentNode.className, 'adv-drawer adv-drawer-log');
+  const overlay = h.app.adv.stage.stage.querySelector('.adv-log-overlay');
+  assert.ok(overlay, 'LOG overlay should be open');
+  assert.ok(overlay.querySelectorAll('.adv-log-primary').some(node => node.textContent === 'partial final'));
 });
 
 for (const blocked of ['loading', 'deleting']) test(`real controller ${blocked} rejection preserves draft and disables ADV sending`, t => {

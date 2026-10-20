@@ -349,6 +349,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         onModelSettings: () => openGlobalSettings('models'),
         onNewSession: newChat,
         renderHistory: () => fullRender(false, { scrollToBottom: false }),
+        loadOlderHistory: session => loadOlderSessionHistory(session),
+        playUserVoice: (msg, ctl) => playVoice(msg, ctl),
         subscribeOverlay: onModalChange,
         closeOverlay: () => document.querySelector('.overlay.active [data-close]')?.click(),
       });
