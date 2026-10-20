@@ -12,6 +12,8 @@ function setup(t) {
     stop() { this.onend?.(); }
   }
   globalThis.window = { SpeechRecognition };
+  // Node 20 has no global navigator; one without mediaDevices keeps the recorder off on every version.
+  Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true, writable: true });
   const oldInput = document.createElement('textarea'), input = document.createElement('textarea');
   const mic = document.createElement('button'); input.value = '原稿';
   initAudioPlayerUi({ input: oldInput }, {
