@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from galgame2voice.database.models import decode_lines
 from galgame2voice.database.session import get_db
+from galgame2voice.services.background_manifest import BACKGROUND_ID_RE
 
 MAX_SESSIONS = 10000
 MAX_MESSAGES = 50000
@@ -20,11 +21,13 @@ SESSION_SETTINGS = frozenset({
     "advEnabled", "advPlayerName", "advPrimaryLanguage", "advSubtitleLanguage",
     "advWindowOpacity", "advTextIntervalMs", "advInterruptVoice", "advAutoBaseMs",
     "advAutoPerCharMs", "advAutoMode", "advOutfit", "advBlink", "advLipSync",
+    "advBackground", "advBgTime",
 })
 
 _ADV_ENUMS = {
     "advPrimaryLanguage": {"zh", "ja"}, "advSubtitleLanguage": {"zh", "ja", "none"},
     "advAutoMode": {"normal", "voice-priority"}, "advReplyFormat": {"old", "lines"},
+    "advBgTime": {"auto", "day", "evening", "night"},
 }
 _ADV_RANGES = {"advWindowOpacity": 100, "advTextIntervalMs": 100, "advAutoBaseMs": 6000, "advAutoPerCharMs": 200}
 # ECMAScript trim (pickSettings), which differs from Python str.strip for BOM/NEL.
@@ -48,6 +51,8 @@ def _valid_adv_setting(key: str, value) -> bool:
         return isinstance(value, str) and len(value) <= 200 and all(
             char in "_-" or unicodedata.category(char)[0] in "LN" for char in value
         )
+    if key == "advBackground":
+        return isinstance(value, str) and (value == "" or BACKGROUND_ID_RE.fullmatch(value) is not None)
     return True
 
 

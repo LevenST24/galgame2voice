@@ -119,6 +119,9 @@ desktop.ini
 # Character packages & model weights (user assets, distributed separately)
 characters/*
 !characters/.gitkeep
+
+# Local background library (user assets)
+/backgrounds/
 *.pth
 *.pt
 *.ckpt

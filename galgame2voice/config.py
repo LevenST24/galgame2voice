@@ -111,6 +111,7 @@ class Settings(BaseSettings):
     audio_dir_name: str = "audio"
     logs_dir_name: str = "logs"
     characters_dir_name: str = "characters"
+    backgrounds_dir_name: str = "backgrounds"
     static_dir_name: str = "galgame2voice/static"
 
     # GPT-SoVITS Integration
@@ -209,6 +210,11 @@ class Settings(BaseSettings):
     def characters_dir(self) -> Path:
         """Resolved absolute path to characters directory."""
         return self.project_root / self.characters_dir_name
+
+    @property
+    def backgrounds_dir(self) -> Path:
+        """Resolved absolute path to the local background library."""
+        return self.project_root / self.backgrounds_dir_name
 
 
 @lru_cache()

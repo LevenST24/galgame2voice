@@ -12,6 +12,19 @@ const expected = { advEnabled: false, advPlayerName: 'Player', advPrimaryLanguag
 const custom = { advEnabled: true, advPlayerName: '旅行者', advPrimaryLanguage: 'ja', advSubtitleLanguage: 'zh',
   advWindowOpacity: 50, advTextIntervalMs: 0, advInterruptVoice: false, advAutoBaseMs: 6000,
   advAutoPerCharMs: 200, advAutoMode: 'normal', advOutfit: '制服_2', advBlink: true, advLipSync: true };
+const backgroundSettings = { advBackground: 'cafe', advBgTime: 'evening' };
+
+test('background defaults and portable ID/time validation', () => {
+  assert.equal(defaults.advBackground, '');
+  assert.equal(defaults.advBgTime, 'auto');
+  for (const advBackground of ['', 'A_-09', 'a'.repeat(64)]) {
+    for (const advBgTime of ['auto', 'day', 'evening', 'night']) {
+      const picked = pickSettings({ advBackground, advBgTime }, defaults);
+      assert.equal(picked.advBackground, advBackground);
+      assert.equal(picked.advBgTime, advBgTime);
+    }
+  }
+});
 
 test('all eleven P3 keys have exact store defaults and pickSettings preserves every valid value', () => {
   for (const [key, value] of Object.entries(expected)) assert.equal(defaults[key], value, key);
@@ -27,11 +40,14 @@ const invalid = {
   advWindowOpacity: [-1, 101, 1.5, Infinity, '75'], advTextIntervalMs: [-1, 101, 0.5, NaN, '30'],
   advAutoBaseMs: [-1, 6001, 1.1, Infinity, null], advAutoPerCharMs: [-1, 201, 0.5, NaN],
   advAutoMode: ['fast', '', null, 2], advOutfit: ['../private', '/absolute', 'a/b', 'a\\b', {}, null],
+  advBackground: ['../cafe', 'cafe/day', 'cafe\\day', '咖啡店', 'a'.repeat(65), 'cafe\n', {}, null, 1],
+  advBgTime: ['dawn', '', 'DAY', null, 1],
 };
 for (const [key, values] of Object.entries(invalid)) test(`${key}: invalid values fall back at the snapshot boundary`, () => {
   for (const value of values) {
     const result = normalizeSnapshot({ sessions: [{ id: 's', title: 'test', messages: [], settings: { [key]: value } }] }, defaults, DEFAULT_GLOBAL);
-    assert.equal(result.sessions[0].settings[key], defaults[key], `${key}=${String(value)}`);
+    const fallback = key === 'advBackground' ? '' : key === 'advBgTime' ? 'auto' : defaults[key];
+    assert.equal(result.sessions[0].settings[key], fallback, `${key}=${String(value)}`);
   }
 });
 
@@ -49,14 +65,18 @@ test('language collision, none subtitle, numeric endpoints and forty grapheme na
 test('store reload, browser backup/import and switching keep each session settings isolated', () => {
   const data = new Map(); globalThis.localStorage = { getItem: key => data.get(key) ?? null,
     setItem: (key, value) => data.set(key, value), removeItem: key => data.delete(key) };
-  loadState(); const first = getActive(); Object.assign(first.settings, custom); saveState();
+  const settings = { ...custom, ...backgroundSettings };
+  loadState(); const first = getActive(); Object.assign(first.settings, settings); saveState();
   const second = createSession('default'); assert.equal(getActive(), second);
   assert.equal(second.settings.advEnabled, false); state.activeId = first.id; saveState();
-  loadState(); for (const [key, value] of Object.entries(custom)) assert.equal(getActive().settings[key], value, key);
+  loadState(); for (const [key, value] of Object.entries(settings)) assert.equal(getActive().settings[key], value, key);
   state.activeId = second.id; assert.equal(getActive().settings.advPlayerName, 'Player');
+  assert.equal(getActive().settings.advBackground, ''); assert.equal(getActive().settings.advBgTime, 'auto');
   const incoming = prepareSessionImport(exportSessionData()); applySessionImport(incoming);
   const restored = state.sessions.find(session => session.id.startsWith('s_import_') && session.title === first.title);
-  for (const [key, value] of Object.entries(custom)) assert.equal(restored.settings[key], value, key);
+  for (const [key, value] of Object.entries(settings)) assert.equal(restored.settings[key], value, key);
+  state.activeId = restored.id; assert.equal(getActive().settings.advBackground, 'cafe');
+  state.activeId = second.id; assert.equal(getActive().settings.advBgTime, 'auto');
   assert.equal(restored.settings.voiceProfileId, null);
 });
 

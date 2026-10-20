@@ -48,6 +48,8 @@ export const DEFAULT_SESSION_SETTINGS = {
   advAutoPerCharMs: 45,
   advAutoMode: 'voice-priority',
   advOutfit: '',
+  advBackground: '',
+  advBgTime: 'auto',
   advBlink: true,
   advLipSync: true,
 };
