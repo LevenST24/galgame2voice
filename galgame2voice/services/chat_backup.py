@@ -52,7 +52,13 @@ def _valid_adv_setting(key: str, value) -> bool:
             char in "_-" or unicodedata.category(char)[0] in "LN" for char in value
         )
     if key == "advBackground":
-        return isinstance(value, str) and (value == "" or BACKGROUND_ID_RE.fullmatch(value) is not None)
+        # "" (follow the character's work), "none" (plain sky) or a global "<work>/<id>" key.
+        if not isinstance(value, str):
+            return False
+        if value in ("", "none"):
+            return True
+        parts = value.split("/")
+        return len(parts) == 2 and all(BACKGROUND_ID_RE.fullmatch(part) for part in parts)
     return True
 
 

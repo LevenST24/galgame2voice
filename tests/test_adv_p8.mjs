@@ -195,13 +195,13 @@ test('P8 background variant preload once', async () => {
   const layer = doc.createElement('div');
   const view = createBackgroundView({ layer, ImageClass: Image,
     setTimer: (fn, ms) => clock.setTimeout(fn, ms), clearTimer: id => clock.clearTimeout(id) });
-  const list = [{ id: 'cafe', variants: { day: '/day', evening: '/evening', night: '/night' } }];
-  view.setSelection({ id: 'cafe', time: 'day' }); view.setList(list); await microtasks();
+  const list = [{ key: 'w/cafe', variants: { day: '/day', evening: '/evening', night: '/night' } }];
+  view.setSelection({ id: 'w/cafe', time: 'day' }); view.setList(list); await microtasks();
   const preloads = () => images.filter(image => image.parentNode !== layer);
   assert.deepEqual(preloads().map(image => image.src).sort(), ['/day', '/evening', '/night']);
   assert.ok(decoded.includes('/night'), 'unshown variant is decoded');
-  view.setSelection({ id: 'cafe', time: 'night' }); await microtasks();
-  view.setSelection({ id: '', time: 'day' }); view.setSelection({ id: 'cafe', time: 'evening' });
+  view.setSelection({ id: 'w/cafe', time: 'night' }); await microtasks();
+  view.setSelection({ id: '', time: 'day' }); view.setSelection({ id: 'w/cafe', time: 'evening' });
   view.setList(list); await microtasks();
   assert.equal(preloads().length, 3);
   const retained = preloads(); view.destroy(); assert.ok(retained.every(image => image.src === ''));
@@ -214,11 +214,11 @@ test('P8 background preload keeps only the chosen background', async () => {
   const view = createBackgroundView({ layer, ImageClass: Image,
     setTimer: (fn, ms) => clock.setTimeout(fn, ms), clearTimer: id => clock.clearTimeout(id) });
   const variants = id => ({ day: `/${id}/day`, evening: `/${id}/evening`, night: `/${id}/night` });
-  view.setList([{ id: 'cafe', variants: variants('cafe') }, { id: 'park', variants: variants('park') }]);
-  view.setSelection({ id: 'cafe', time: 'day' }); await microtasks();
+  view.setList([{ key: 'w/cafe', variants: variants('cafe') }, { key: 'w/park', variants: variants('park') }]);
+  view.setSelection({ id: 'w/cafe', time: 'day' }); await microtasks();
   const cafe = images.filter(image => image.parentNode !== layer && image.src.startsWith('/cafe/'));
   assert.equal(cafe.length, 3);
-  view.setSelection({ id: 'park', time: 'day' }); await microtasks();
+  view.setSelection({ id: 'w/park', time: 'day' }); await microtasks();
   assert.ok(cafe.every(image => image.src === ''), 'switching backgrounds releases the old preloads');
   const live = images.filter(image => image.parentNode !== layer && image.src);
   assert.deepEqual(live.map(image => image.src).sort(), ['/park/day', '/park/evening', '/park/night']);
@@ -226,14 +226,14 @@ test('P8 background preload keeps only the chosen background', async () => {
 });
 
 test('P8 title thumbnails resolve a stored background to its image URL', () => {
-  const list = [{ id: 'cafe', variants: { day: '/cafe/day', night: '/cafe/night' } }];
+  const list = [{ key: 'w/cafe', variants: { day: '/cafe/day', night: '/cafe/night' } }];
   const noon = new Date(2026, 9, 21, 12), late = new Date(2026, 9, 21, 23);
-  assert.equal(selectionUrl(list, { id: 'cafe', time: 'auto' }, noon), '/cafe/day');
-  assert.equal(selectionUrl(list, { id: 'cafe', time: 'auto' }, late), '/cafe/night');
-  assert.equal(selectionUrl(list, { id: 'cafe', time: 'night' }, noon), '/cafe/night');
+  assert.equal(selectionUrl(list, { id: 'w/cafe', time: 'auto' }, noon), '/cafe/day');
+  assert.equal(selectionUrl(list, { id: 'w/cafe', time: 'auto' }, late), '/cafe/night');
+  assert.equal(selectionUrl(list, { id: 'w/cafe', time: 'night' }, noon), '/cafe/night');
   assert.equal(selectionUrl(list, { id: 'gone', time: 'day' }, noon), '');
   assert.equal(selectionUrl(list, { id: '', time: 'day' }, noon), '');
-  assert.equal(selectionUrl(null, { id: 'cafe', time: 'day' }, noon), '');
+  assert.equal(selectionUrl(null, { id: 'w/cafe', time: 'day' }, noon), '');
 });
 
 for (const reduced of [false, true]) test(`P8 title ${reduced ? 'reduced-motion bypass' : 'fade 300ms'}`, async () => {

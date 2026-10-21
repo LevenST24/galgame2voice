@@ -35,10 +35,27 @@ export function resolveVariant(background, time) {
   return null;
 }
 
-// The image a thumbnail of a stored selection shows: its chosen time, or the clock's for auto.
+// Stored advBackground values: '' follows the character's work, 'none' is the plain sky,
+// anything else is a global "<work>/<id>" key.
+export const BG_AUTO = '';
+export const BG_NONE = 'none';
+
+// The key the stage shows for a stored value; '' (the sky) when nothing fits.
+export function effectiveBackgroundKey(stored, { list, works, work } = {}) {
+  if (stored === BG_NONE) return '';
+  // Bare ids saved before per-work packs fall back to auto, like an empty value.
+  if (typeof stored === 'string' && stored.includes('/')) return stored;
+  if (!work) return '';
+  const items = Array.isArray(list) ? list : [];
+  const declared = (Array.isArray(works) ? works : []).find(entry => entry?.id === work)?.default;
+  if (typeof declared === 'string' && items.some(item => item?.key === declared)) return declared;
+  return items.find(item => item?.work === work && typeof item.key === 'string')?.key || '';
+}
+
+// The image a thumbnail of a background key shows: its chosen time, or the clock's for auto.
 export function selectionUrl(list, value, now = new Date()) {
   const { id, time } = normalizeBackgroundSelection(value);
-  const found = id && Array.isArray(list) ? list.find(item => item?.id === id) : null;
+  const found = id && Array.isArray(list) ? list.find(item => item?.key === id) : null;
   return resolveVariant(found, time === 'auto' ? timeOfDay(now) : time)?.url || '';
 }
 
@@ -215,7 +232,7 @@ export function createBackgroundView({
     setList(list) {
       const next = new Map();
       for (const item of Array.isArray(list) ? list : []) {
-        if (item && typeof item.id === 'string' && item.id) next.set(item.id, item);
+        if (item && typeof item.key === 'string' && item.key) next.set(item.key, item);
       }
       backgrounds = next;
       render();

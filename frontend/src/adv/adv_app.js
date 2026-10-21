@@ -7,7 +7,7 @@ import { createLinePlayer } from './line_player.js';
 import { createSpriteView } from './sprite.js';
 import { createBacklog } from './backlog.js';
 import { createConfigPanel } from './config_panel.js';
-import { createBackgroundView, normalizeBackgroundSelection, selectionUrl } from './background.js';
+import { createBackgroundView, effectiveBackgroundKey, normalizeBackgroundSelection, selectionUrl } from './background.js';
 import { createBgPanel } from './bg_panel.js';
 import { normalizePortrait, resolveSpriteState } from '../sprite_state.js';
 import { DEFAULT_SESSION_SETTINGS } from '../store.js';
@@ -213,23 +213,30 @@ export function mountAdv(dom, deps) {
   });
 
   let backgrounds = [];
+  let works = [];
   let appliedBackground = null;
   const storedBackground = () => normalizeBackgroundSelection({
     id: settings.advBackground, time: settings.advBgTime,
   });
+  // What the stage shows for a stored choice: auto follows the current character's work.
+  const backgroundKey = (stored, work = deps.getCharacter?.()?.work || null) =>
+    effectiveBackgroundKey(stored, { list: backgrounds, works, work });
+  const shownBackground = selection => ({ ...selection, id: backgroundKey(selection.id) });
   function syncBackground() {
-    const next = storedBackground();
+    const next = shownBackground(storedBackground());
     if (appliedBackground?.id === next.id && appliedBackground?.time === next.time) return;
     appliedBackground = next;
     background.setSelection(next);
   }
   const bgPanel = createBgPanel(stage.overlay, {
     getList: () => backgrounds,
+    getWorks: () => works,
+    getWork: () => deps.getCharacter?.()?.work || null,
     getSelection: storedBackground,
     saveSettings: patch => deps.saveSettings?.(patch),
     onPreview: selection => {
-      appliedBackground = selection;
-      background.setSelection(selection);
+      appliedBackground = shownBackground(selection);
+      background.setSelection(appliedBackground);
     },
     onOpen: () => {
       player.suspend('dialog');
@@ -262,15 +269,21 @@ export function mountAdv(dom, deps) {
   }
   async function loadBackgrounds() {
     let list = [];
+    let workList = [];
     try {
       const data = await (deps.fetchBackgrounds || (() => requestJson('/api/backgrounds')))();
       list = Array.isArray(data?.backgrounds) ? data.backgrounds : [];
+      workList = Array.isArray(data?.works) ? data.works : [];
     } catch {
       list = [];
+      workList = [];
     }
     if (destroyed) return;
     backgrounds = list;
+    works = workList;
     background.setList(list);
+    // Auto resolves against the list, so re-check once it arrives.
+    if (settings) syncBackground();
   }
 
   function paint(line = currentLine || { emotion: 'gentle', act: {} }, options = {}) {
@@ -695,7 +708,7 @@ export function mountAdv(dom, deps) {
   update();
   return {
     update, player, textbox, sprite, stage, action, configPanel, background, bgPanel, closeDrawer,
-    backgroundUrl: (id, time) => selectionUrl(backgrounds, { id, time }),
+    backgroundUrl: (id, time, work) => selectionUrl(backgrounds, { id: backgroundKey(id ?? '', work || null), time }),
     isConfigOpen: () => Boolean(configPanel?.isOpen),
     get backlog() { return backlog; },
     unmount() {

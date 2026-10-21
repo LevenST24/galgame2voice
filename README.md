@@ -38,7 +38,15 @@ Galgame2Voice 是一个运行在你自己电脑上的角色对话程序。对话
 
 应用以 ADV 舞台作为唯一界面，回复按句显示并播放语音。点击舞台、Enter 或 Space 推进（先显示完整台词，再进入下一句）；右键隐藏文本框，点击恢复；滚轮向上打开 LOG，按住 Ctrl 临时快进，Esc 关闭当前面板、恢复文本框或停止生成。输入框内保留文字编辑操作，Enter 发送，Shift+Enter 换行。快捷菜单提供 AUTO、SKIP、LOG、VOICE 重播、HIDE、CONFIG 设置和背景选择；左上角可切换会话、进入输入、切换语音及停止生成。
 
-本地素材需自行准备：v3 分层立绘包（`layers.json` 及其引用的图片）放在 `characters/<name>/portrait/`；背景图片放在 `backgrounds/<work>/`，并在 `backgrounds/manifest.json` 中登记白天／黄昏／夜晚的相对路径。这些素材仅供本地使用，**不要提交到 Git**；程序不附带游戏图片。选择背景后会预加载其时间差分，下一句已排队时也会预加载其表情图层。
+本地素材需自行准备：v3 分层立绘包（`layers.json` 及其引用的图片）放在 `characters/<name>/portrait/`。背景按作品分包，每个作品一个目录 `backgrounds/<work>/`，目录里的 `manifest.json` 写明作品 id（`work`，与目录名相同）、显示名、可选的默认背景 `default`，以及每个背景白天／傍晚／夜晚图片的相对路径：
+
+```json
+{"version": 1, "work": "cafe_stella", "name": "喫茶ステラ", "default": "cafe_hall",
+ "backgrounds": [{"id": "cafe_hall", "name": "店内",
+   "variants": {"day": "cafe_hall/day.webp", "night": "cafe_hall/night.webp"}}]}
+```
+
+角色包的 `manifest.json` 填上同一个 `work`，背景选“自动”时就显示该作品的默认背景（没写 `default` 时用第一个）；选“无（天空）”只显示渐变天空。背景面板默认只列本作品的背景，点“显示其他作品”可看到全部。这些素材仅供本地使用，**不要提交到 Git**；程序不附带游戏图片。选择背景后会预加载其时间差分，下一句已排队时也会预加载其表情图层。
 
 手机竖屏自动使用 1080×1920 画布：立绘居中显示上半身、底部显示大字文本框，快捷菜单常驻一行；LOG、设置、背景与存档面板可滚动。点按推进，长按舞台相当于右键隐藏；旋转手机会实时切换横竖布局。界面为刘海与底部手势区保留安全边距，并遵循系统的减弱动态效果设置。
 

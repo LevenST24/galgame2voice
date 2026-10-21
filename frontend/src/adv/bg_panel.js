@@ -7,15 +7,19 @@
  * carries aria-pressed="true".
  */
 
-import { normalizeBackgroundSelection, resolveVariant, timeOfDay } from './background.js';
+import { BG_AUTO, BG_NONE, effectiveBackgroundKey, normalizeBackgroundSelection, resolveVariant, timeOfDay } from './background.js';
 
 const TIMES = [['auto', '自动'], ['day', '白天'], ['evening', '傍晚'], ['night', '夜晚']];
-const SKY_ID = '';
+const SKY_ID = BG_NONE;
 const SKY_NAME = '无（天空）';
+const AUTO_ID = BG_AUTO;
+const AUTO_NAME = '自动（本作）';
 
 export function createBgPanel(container, {
   getList = () => [],
-  getSelection = () => ({ id: SKY_ID, time: 'auto' }),
+  getWorks = () => [],
+  getWork = () => null,
+  getSelection = () => ({ id: AUTO_ID, time: 'auto' }),
   saveSettings = () => {},
   onPreview = () => {},
   onOpen,
@@ -33,7 +37,8 @@ export function createBgPanel(container, {
 
   let isOpen = false;
   let savedFocus = null;
-  let selection = { id: SKY_ID, time: 'auto' };
+  let showAllWorks = false;
+  let selection = { id: AUTO_ID, time: 'auto' };
   const tiles = [];
 
   const overlay = doc.createElement('div');
@@ -109,14 +114,29 @@ export function createBgPanel(container, {
 
   const gridSection = doc.createElement('section');
   gridSection.className = 'adv-bg-section';
+  const gridHead = doc.createElement('div');
+  gridHead.className = 'adv-bg-section-head';
   const gridTitle = doc.createElement('h3');
   gridTitle.className = 'adv-bg-section-title';
   gridTitle.textContent = '选择背景';
+  const showOthersButton = doc.createElement('button');
+  showOthersButton.type = 'button';
+  showOthersButton.className = 'adv-bg-show-others';
+  showOthersButton.textContent = '显示其他作品';
+  showOthersButton.setAttribute('aria-pressed', 'false');
+  listen(showOthersButton, 'click', () => {
+    showAllWorks = !showAllWorks;
+    showOthersButton.setAttribute('aria-pressed', String(showAllWorks));
+    buildTiles();
+    refresh();
+  });
+  gridHead.appendChild(gridTitle);
+  gridHead.appendChild(showOthersButton);
   const grid = doc.createElement('div');
   grid.className = 'adv-bg-grid';
   grid.setAttribute('role', 'group');
   grid.setAttribute('aria-label', '背景列表');
-  gridSection.appendChild(gridTitle);
+  gridSection.appendChild(gridHead);
   gridSection.appendChild(grid);
   body.appendChild(gridSection);
 
@@ -125,35 +145,77 @@ export function createBgPanel(container, {
   hint.textContent = '点击立即生效并保存到当前会话；按 Esc 关闭。';
   body.appendChild(hint);
 
+  function addTile(item) {
+    const tile = doc.createElement('button');
+    tile.type = 'button';
+    tile.className = 'adv-bg-tile';
+    tile.dataset.background = item.key;
+    tile.setAttribute('aria-pressed', 'false');
+    let thumb;
+    if (item.sky || item.auto) {
+      thumb = doc.createElement('span');
+      thumb.className = 'adv-bg-swatch';
+    } else {
+      thumb = doc.createElement('img');
+      thumb.className = 'adv-bg-thumb';
+      thumb.setAttribute('alt', '');
+    }
+    const name = doc.createElement('span');
+    name.className = 'adv-bg-name';
+    name.textContent = String(item.name || item.key);
+    if (item.auto) tile.title = '跟随当前角色所属作品的默认背景';
+    tile.appendChild(thumb);
+    tile.appendChild(name);
+    tile.onclick = () => apply({ id: item.key, time: selection.time });
+    grid.appendChild(tile);
+    tiles.push({ tile, thumb, item });
+  }
+
+  function groupLabel(work) {
+    const known = (Array.isArray(getWorks()) ? getWorks() : []).find(w => w && w.id === work);
+    return String((known && known.name) || work);
+  }
+
   function buildTiles() {
     tiles.length = 0;
     grid.replaceChildren();
-    const items = [{ id: SKY_ID, name: SKY_NAME, sky: true },
-      ...(Array.isArray(getList()) ? getList() : [])];
-    for (const item of items) {
-      if (!item || typeof item.id !== 'string') continue;
-      const tile = doc.createElement('button');
-      tile.type = 'button';
-      tile.className = 'adv-bg-tile';
-      tile.dataset.background = item.id;
-      tile.setAttribute('aria-pressed', 'false');
-      let thumb = null;
-      if (item.sky) {
-        thumb = doc.createElement('span');
-        thumb.className = 'adv-bg-swatch';
-      } else {
-        thumb = doc.createElement('img');
-        thumb.className = 'adv-bg-thumb';
-        thumb.setAttribute('alt', '');
+    const items = (Array.isArray(getList()) ? getList() : [])
+      .filter(item => item && typeof item.key === 'string' && item.key);
+    const activeWork = getWork ? getWork() : null;
+    const own = activeWork ? items.filter(item => item.work === activeWork) : [];
+    // A work without a pack yet lists everything rather than an empty grid.
+    const grouped = showAllWorks || own.length === 0;
+    const visible = grouped ? items : own;
+    showOthersButton.hidden = own.length === 0 || own.length === items.length;
+    const worksInOrder = (Array.isArray(getWorks()) ? getWorks() : [])
+      .map(w => (w && typeof w.id === 'string' ? w.id : '')).filter(Boolean);
+    const groupKeys = [];
+    const byWork = new Map();
+    for (const item of visible) {
+      const work = item.work || '';
+      if (!byWork.has(work)) { byWork.set(work, []); groupKeys.push(work); }
+      byWork.get(work).push(item);
+    }
+    groupKeys.sort((a, b) => {
+      const ia = worksInOrder.indexOf(a), ib = worksInOrder.indexOf(b);
+      if (ia === ib) return a < b ? -1 : a > b ? 1 : 0;
+      if (ia < 0) return 1;
+      if (ib < 0) return -1;
+      return ia - ib;
+    });
+
+    addTile({ key: AUTO_ID, name: AUTO_NAME, auto: true });
+    addTile({ key: SKY_ID, name: SKY_NAME, sky: true });
+    if (grouped && groupKeys.length > 1) {
+      for (const work of groupKeys) {
+        const heading = doc.createElement('h4');
+        heading.className = 'adv-bg-group-title';
+        heading.textContent = groupLabel(work);
+        grid.appendChild(heading);
+        for (const item of byWork.get(work)) addTile(item);
       }
-      const name = doc.createElement('span');
-      name.className = 'adv-bg-name';
-      name.textContent = String(item.name || item.id);
-      tile.appendChild(thumb);
-      tile.appendChild(name);
-      tile.onclick = () => apply({ id: item.id, time: selection.time });
-      grid.appendChild(tile);
-      tiles.push({ tile, thumb, item });
+    } else {
+      for (const item of visible) addTile(item);
     }
   }
 
@@ -165,9 +227,19 @@ export function createBgPanel(container, {
       button.classList.toggle('is-selected', on);
     }
     for (const entry of tiles) {
-      const on = entry.item.id === selection.id;
+      const on = entry.item.key === selection.id;
       entry.tile.setAttribute('aria-pressed', String(on));
       entry.tile.classList.toggle('is-selected', on);
+      if (entry.item.auto) {
+        // Show what auto resolves to for the current character; the sky when nothing does.
+        const key = effectiveBackgroundKey(AUTO_ID, { list: getList(), works: getWorks(), work: getWork?.() || null });
+        const target = key ? (Array.isArray(getList()) ? getList() : []).find(item => item?.key === key) : null;
+        const shown = target ? resolveVariant(target, effective) : null;
+        entry.thumb.dataset.time = effective;
+        entry.thumb.style.backgroundImage = shown ? `url("${shown.url}")` : '';
+        entry.thumb.classList.toggle('has-image', Boolean(shown));
+        continue;
+      }
       if (entry.item.sky) {
         entry.thumb.dataset.time = effective;
         continue;
@@ -206,7 +278,7 @@ export function createBgPanel(container, {
   });
 
   function focusFirstControl() {
-    const selected = tiles.find(entry => entry.item.id === selection.id)?.tile;
+    const selected = tiles.find(entry => entry.item.key === selection.id)?.tile;
     (selected || tiles[0]?.tile || closeButton).focus?.();
   }
 
@@ -215,6 +287,11 @@ export function createBgPanel(container, {
     isOpen = true;
     savedFocus = doc.activeElement;
     selection = normalizeBackgroundSelection(getSelection?.());
+    // A background from another work stays visible: open with every work listed.
+    const activeWork = getWork?.() || null;
+    showAllWorks = Boolean(activeWork && selection.id !== AUTO_ID && selection.id !== SKY_ID &&
+      !selection.id.startsWith(`${activeWork}/`));
+    showOthersButton.setAttribute('aria-pressed', String(showAllWorks));
     buildTiles();
     refresh();
     overlay.hidden = false;

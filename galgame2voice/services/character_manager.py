@@ -21,6 +21,7 @@ from galgame2voice.schemas.character_manifest import (
     CharacterManifest,
     EmotionConfig,
     VoiceParamsConfig,
+    clean_character_work,
 )
 from galgame2voice.utils.audio_spec import (
     REFERENCE_AUDIO_MIN_SECONDS,
@@ -753,6 +754,16 @@ def get_character_manager(characters_dir: Path | None = None) -> CharacterManage
     return CharacterManager.get_instance(characters_dir)
 
 
+def get_character_work(char_name: str) -> str | None:
+    """The background work a character package declares; None when absent or invalid."""
+    if not char_name:
+        return None
+    pkg = get_character_manager().get_character(char_name)
+    if pkg is None or not pkg.is_valid:
+        return None
+    return clean_character_work(getattr(pkg.manifest, "work", None))
+
+
 __all__ = [
     "CharacterManager",
     "CharacterManifest",
@@ -761,5 +772,6 @@ __all__ = [
     "VoiceParamsConfig",
     "_AUDIO_PROBE_CACHE",
     "get_character_manager",
+    "get_character_work",
 ]
 

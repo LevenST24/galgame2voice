@@ -49,7 +49,13 @@ export function validAdvSetting(key, value) {
   }
   // Outfit IDs are manifest keys, never paths. Missing installed IDs remain portable.
   if (key === 'advOutfit') return typeof value === 'string' && (value === '' || /^[\p{L}\p{N}_-]{1,200}$/u.test(value));
-  if (key === 'advBackground') return typeof value === 'string' && value.length <= 64 && !/[^A-Za-z0-9_-]/.test(value);
+  // advBackground is "" (follow the character's work), "none" (plain sky) or a global "<work>/<id>" key.
+  if (key === 'advBackground') {
+    if (typeof value !== 'string') return false;
+    if (value === '' || value === 'none') return true;
+    const parts = value.split('/');
+    return parts.length === 2 && parts.every(part => /^[A-Za-z0-9_-]{1,64}$/.test(part));
+  }
   return false;
 }
 
