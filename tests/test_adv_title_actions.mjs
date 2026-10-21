@@ -8,9 +8,9 @@ import { initApp, advActions } from '../frontend/src/main.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
 import { tick } from './helpers/chat_stream.mjs';
 
-function actions(sessions) {
+function actions(sessions, getBackgroundUrl) {
   const calls = [];
-  const api = createTitleActions({ getSessions: () => sessions, getProfiles: () => [{ id: 7, name: '角色甲' }],
+  const api = createTitleActions({ getSessions: () => sessions, getProfiles: () => [{ id: 7, name: '角色甲' }], getBackgroundUrl,
     startNew: () => calls.push('new'), loadSession: id => calls.push(id),
     openCharacters: () => calls.push('characters'), openSettings: () => calls.push('settings') });
   return { api, calls };
@@ -23,15 +23,31 @@ test('listSessions returns all six fields newest first, with bound character, la
       messages: [{ content: '完整回复', lines: [{ zh: '第一句' }, { zh: '', ja: '最後の台詞' }] }] },
     { id: 'unloaded', title: '未加载历史', updatedAt: 20, settings: { voiceProfileId: 999 }, messages: [], lastLine: '后端摘要' },
   ];
-  const { api } = actions(sessions);
+  const { api } = actions(sessions, (id, time) => `/signed/${id}/${time ?? 'auto'}.webp`);
   assert.deepEqual(api.listSessions(), [
-    { id: 'new', title: '新会话', characterName: '角色甲', lastLine: '最後の台詞', updatedAt: 30, background: 'cafe' },
+    { id: 'new', title: '新会话', characterName: '角色甲', lastLine: '最後の台詞', updatedAt: 30, background: '/signed/cafe/auto.webp' },
     { id: 'unloaded', title: '未加载历史', characterName: '', lastLine: '后端摘要', updatedAt: 20, background: '' },
     { id: 'old', title: '旧会话', characterName: '', lastLine: '旧消息', updatedAt: 10, background: '' },
   ]);
   assert.deepEqual(sessions.map(s => s.id), ['old', 'new', 'unloaded']);
   api.listSessions()[0].title = 'changed'; assert.equal(sessions[1].title, '新会话');
   sessions[0].updatedAt = 40; assert.equal(api.listSessions()[0].id, 'old');
+});
+
+test('a stored background id never reaches the thumbnail as an image URL', () => {
+  const sessions = [{ id: 'a', settings: { advBackground: 'cafe_hall', advBgTime: 'night' } }];
+  assert.equal(actions(sessions).api.listSessions()[0].background, '', 'no resolver yet: no thumbnail');
+  assert.equal(actions(sessions, () => '').api.listSessions()[0].background, '', 'unknown background: no thumbnail');
+  const seen = [];
+  const url = actions(sessions, (...args) => { seen.push(args); return '/api/media/background/cafe_hall/night?sig=x'; })
+    .api.listSessions()[0].background;
+  assert.equal(url, '/api/media/background/cafe_hall/night?sig=x');
+  assert.deepEqual(seen, [['cafe_hall', 'night']]);
+  let loaded = false;
+  const late = actions(sessions, () => (loaded ? '/api/media/background/cafe_hall/night?sig=y' : '')).api.listSessions()[0];
+  assert.equal(late.background, '', 'before the background list arrives');
+  loaded = true;
+  assert.equal(late.background, '/api/media/background/cafe_hall/night?sig=y', 'resolved again when the slot renders');
 });
 
 test('empty summaries have predictable fields and same timestamps preserve store order', () => {

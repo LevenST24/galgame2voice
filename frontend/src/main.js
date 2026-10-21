@@ -549,6 +549,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     getSessions: () => state.sessions, getProfiles: getVoiceProfiles,
     startNew: newChat, loadSession: switchSession,
     openCharacters: openSessionSettings, openSettings: () => openGlobalSettings(),
+    getBackgroundUrl: (id, time) => advApp?.backgroundUrl(id, time) || '',
   });
   Object.assign(advActions, actions);
   const app = { sendMessage, retryFailedMessage, loadOlderSessionHistory, fullRender, updateControls, conversation,

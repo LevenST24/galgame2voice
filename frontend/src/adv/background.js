@@ -35,6 +35,13 @@ export function resolveVariant(background, time) {
   return null;
 }
 
+// The image a thumbnail of a stored selection shows: its chosen time, or the clock's for auto.
+export function selectionUrl(list, value, now = new Date()) {
+  const { id, time } = normalizeBackgroundSelection(value);
+  const found = id && Array.isArray(list) ? list.find(item => item?.id === id) : null;
+  return resolveVariant(found, time === 'auto' ? timeOfDay(now) : time)?.url || '';
+}
+
 function validTime(time) {
   return BG_TIME_CHOICES.includes(time) ? time : 'auto';
 }
@@ -89,6 +96,28 @@ export function createBackgroundView({
   let request = 0;
   let timer = null;
   let destroyed = false;
+  const preloaded = new Map();
+  let preloadedFor = null;
+
+  function preloadVariants() {
+    const variants = backgrounds.get(selection.id)?.variants;
+    if (!variants) return;
+    // Hold decoded variants for the chosen background only, so browsing the panel
+    // does not pin every full-size image in memory.
+    if (preloadedFor !== selection.id) {
+      for (const image of preloaded.values()) release(image);
+      preloaded.clear();
+      preloadedFor = selection.id;
+    }
+    for (const url of Object.values(variants)) {
+      if (typeof url !== 'string' || !url || preloaded.has(url)) continue;
+      const image = typeof ImageClass === 'function' ? new ImageClass() : doc.createElement('img');
+      preloaded.set(url, image);
+      image.src = url;
+      // Warm the HTTP and decode caches; failure must not interrupt playback.
+      try { image.decode?.().catch(() => {}); } catch { /* unsupported decode */ }
+    }
+  }
 
   const reducedMotion = () => Boolean(matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
 
@@ -159,6 +188,7 @@ export function createBackgroundView({
 
   function render() {
     if (destroyed) return;
+    preloadVariants();
     sky.dataset.time = part();
     const found = target();
     if (!found) {
@@ -208,6 +238,8 @@ export function createBackgroundView({
         image.remove?.();
       }
       sky.remove?.();
+      for (const image of preloaded.values()) release(image);
+      preloaded.clear();
     },
   };
 }

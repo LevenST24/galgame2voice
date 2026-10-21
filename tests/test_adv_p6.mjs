@@ -30,6 +30,9 @@ function imageFactory(doc, loads) {
   return class Image extends Element {
     constructor() { super('img', doc); }
     decode() {
+      // These P6 assertions count display-buffer requests. P8's detached
+      // variant preloads are checked independently in test_adv_p8.mjs.
+      if (!this.classList.contains('adv-bg-image')) return Promise.resolve();
       const load = { image: this, url: this.src, settled: false };
       load.promise = new Promise((resolve, reject) => { load.resolve = resolve; load.reject = reject; });
       loads.push(load);
