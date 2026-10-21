@@ -2,7 +2,8 @@
 export const advActions = {};
 
 /** Title-screen API. Read current state on every call; never expose mutable sessions. */
-export function createTitleActions({ getSessions, getProfiles, startNew, loadSession, openCharacters, openSettings }) {
+export function createTitleActions({ getSessions, getProfiles, startNew, loadSession, openCharacters, openSettings,
+  getBackgroundUrl = () => '' }) {
   function listSessions() {
     const profiles = getProfiles();
     return [...getSessions()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
@@ -15,7 +16,12 @@ export function createTitleActions({ getSessions, getProfiles, startNew, loadSes
           characterName: profiles.find(profile => profile.id === session.settings?.voiceProfileId)?.name || '',
           lastLine: line?.zh || line?.ja || last?.content || last?.japanese || session.lastLine || '',
           updatedAt: session.updatedAt || 0,
-          background: session.settings?.advBackground || '',
+          // A thumbnail needs the image URL of the stored background, not its id. It resolves when a
+          // slot renders, because the background list can arrive after the title screen opened.
+          get background() {
+            const { advBackground, advBgTime } = session.settings || {};
+            return advBackground ? getBackgroundUrl(advBackground, advBgTime) || '' : '';
+          },
         };
       });
   }

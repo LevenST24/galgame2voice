@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createStage } from '../frontend/src/adv/stage.js';
-import { createBackgroundView } from '../frontend/src/adv/background.js';
+import { createBackgroundView, selectionUrl } from '../frontend/src/adv/background.js';
 import { createSpriteTransition } from '../frontend/src/adv/transitions.js';
 import { createShortcuts } from '../frontend/src/adv/shortcuts.js';
 import { createTextbox } from '../frontend/src/adv/textbox.js';
@@ -223,6 +223,17 @@ test('P8 background preload keeps only the chosen background', async () => {
   const live = images.filter(image => image.parentNode !== layer && image.src);
   assert.deepEqual(live.map(image => image.src).sort(), ['/park/day', '/park/evening', '/park/night']);
   view.destroy();
+});
+
+test('P8 title thumbnails resolve a stored background to its image URL', () => {
+  const list = [{ id: 'cafe', variants: { day: '/cafe/day', night: '/cafe/night' } }];
+  const noon = new Date(2026, 9, 21, 12), late = new Date(2026, 9, 21, 23);
+  assert.equal(selectionUrl(list, { id: 'cafe', time: 'auto' }, noon), '/cafe/day');
+  assert.equal(selectionUrl(list, { id: 'cafe', time: 'auto' }, late), '/cafe/night');
+  assert.equal(selectionUrl(list, { id: 'cafe', time: 'night' }, noon), '/cafe/night');
+  assert.equal(selectionUrl(list, { id: 'gone', time: 'day' }, noon), '');
+  assert.equal(selectionUrl(list, { id: '', time: 'day' }, noon), '');
+  assert.equal(selectionUrl(null, { id: 'cafe', time: 'day' }, noon), '');
 });
 
 for (const reduced of [false, true]) test(`P8 title ${reduced ? 'reduced-motion bypass' : 'fade 300ms'}`, async () => {

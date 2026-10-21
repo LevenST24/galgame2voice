@@ -7,7 +7,7 @@ import { createLinePlayer } from './line_player.js';
 import { createSpriteView } from './sprite.js';
 import { createBacklog } from './backlog.js';
 import { createConfigPanel } from './config_panel.js';
-import { createBackgroundView, normalizeBackgroundSelection } from './background.js';
+import { createBackgroundView, normalizeBackgroundSelection, selectionUrl } from './background.js';
 import { createBgPanel } from './bg_panel.js';
 import { normalizePortrait, resolveSpriteState } from '../sprite_state.js';
 import { DEFAULT_SESSION_SETTINGS } from '../store.js';
@@ -695,6 +695,7 @@ export function mountAdv(dom, deps) {
   update();
   return {
     update, player, textbox, sprite, stage, action, configPanel, background, bgPanel, closeDrawer,
+    backgroundUrl: (id, time) => selectionUrl(backgrounds, { id, time }),
     isConfigOpen: () => Boolean(configPanel?.isOpen),
     get backlog() { return backlog; },
     unmount() {

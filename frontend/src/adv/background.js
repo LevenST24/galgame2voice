@@ -35,6 +35,13 @@ export function resolveVariant(background, time) {
   return null;
 }
 
+// The image a thumbnail of a stored selection shows: its chosen time, or the clock's for auto.
+export function selectionUrl(list, value, now = new Date()) {
+  const { id, time } = normalizeBackgroundSelection(value);
+  const found = id && Array.isArray(list) ? list.find(item => item?.id === id) : null;
+  return resolveVariant(found, time === 'auto' ? timeOfDay(now) : time)?.url || '';
+}
+
 function validTime(time) {
   return BG_TIME_CHOICES.includes(time) ? time : 'auto';
 }
