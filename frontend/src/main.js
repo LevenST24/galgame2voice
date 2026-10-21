@@ -293,7 +293,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         voiceEnabled: () => state.global.voiceMode,
         getCharacter: () => {
           const id = getActive()?.settings?.voiceProfileId || getActiveProfileId();
-          return { id, name: getVoiceProfiles().find(profile => profile.id === id)?.name || '角色' };
+          const profile = getVoiceProfiles().find(p => p.id === id);
+          return { id, name: profile?.name || '角色', work: profile?.work ?? null };
         },
         getModelStatus: () => {
           const model = getModelStatus({ getCurrentActiveProvider, getActive, getVoiceProfiles, haveProvidersLoaded });
@@ -549,7 +550,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     getSessions: () => state.sessions, getProfiles: getVoiceProfiles,
     startNew: newChat, loadSession: switchSession,
     openCharacters: openSessionSettings, openSettings: () => openGlobalSettings(),
-    getBackgroundUrl: (id, time) => advApp?.backgroundUrl(id, time) || '',
+    getBackgroundUrl: (id, time, work) => advApp?.backgroundUrl(id, time, work) || '',
   });
   Object.assign(advActions, actions);
   const app = { sendMessage, retryFailedMessage, loadOlderSessionHistory, fullRender, updateControls, conversation,

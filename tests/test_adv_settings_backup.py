@@ -14,7 +14,7 @@ P3_SETTINGS = {
     "advSubtitleLanguage": "zh", "advWindowOpacity": 0, "advTextIntervalMs": 100,
     "advInterruptVoice": False, "advAutoBaseMs": 6000, "advAutoPerCharMs": 200,
     "advAutoMode": "normal", "advOutfit": "uniform_2", "advBlink": True, "advLipSync": True,
-    "advBackground": "cafe", "advBgTime": "evening",
+    "advBackground": "cafe/stella", "advBgTime": "evening",
 }
 
 
@@ -55,17 +55,27 @@ INVALID_P3 = [
     ("advBlink", "false"), ("advBlink", 1), ("advLipSync", "true"), ("advLipSync", 0),
     ("advBackground", "../cafe"), ("advBackground", "a" * 65), ("advBackground", "咖啡店"),
     ("advBackground", "cafe\n"), ("advBackground", None), ("advBackground", 1),
+    ("advBackground", "cafe"), ("advBackground", "cafe/stella/day"), ("advBackground", "cafe//stella"),
+    ("advBackground", "/stella"), ("advBackground", "cafe/"), ("advBackground", "cafe/" + "a" * 65),
     ("advBgTime", "dawn"), ("advBgTime", ""), ("advBgTime", None), ("advBgTime", 1),
 ]
 
 
-@pytest.mark.parametrize("background", ["", "A_-09", "a" * 64])
+@pytest.mark.parametrize("background", ["", "cafe/stella", "A_-09/a", "a" * 64 + "/" + "b" * 64])
 @pytest.mark.parametrize("time", ["auto", "day", "evening", "night"])
-def test_background_settings_accept_portable_ids_and_all_times(background, time):
+def test_background_settings_accept_global_keys_and_all_times(background, time):
     settings = {"advBackground": background, "advBgTime": time}
     assert set(settings) <= SESSION_SETTINGS
     session = ImportedSession(id="s_import_background", title="background", messages=[], settings=settings)
     assert session.settings == settings
+
+
+@pytest.mark.parametrize("background", ["cafe", "cafe/stella/day", "cafe//stella", "/stella", "cafe/", "../stella", "咖啡店/stella"])
+def test_background_settings_reject_keys_that_are_not_one_work_slash_id(background):
+    session = ImportedSession(id="s_import_badkey", title="badkey", messages=[],
+                              settings={"advBackground": background, "advBgTime": "day"})
+    assert "advBackground" not in session.settings
+    assert session.settings["advBgTime"] == "day"
 
 
 @pytest.mark.parametrize("key,value", INVALID_P3)

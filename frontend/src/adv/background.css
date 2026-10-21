@@ -164,6 +164,54 @@
   margin-bottom: calc(8 * var(--u));
 }
 
+.adv-bg-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(10 * var(--u));
+}
+
+.adv-bg-section-head .adv-bg-section-title {
+  margin-bottom: 0;
+}
+
+.adv-bg-show-others {
+  padding: calc(5 * var(--u)) calc(14 * var(--u));
+  font: inherit;
+  font-size: calc(14 * var(--u));
+  color: #a5b4fc;
+  background: rgba(4, 15, 38, 0.85);
+  border: calc(1.5 * var(--u)) solid rgba(165, 180, 252, 0.5);
+  border-radius: calc(999 * var(--u));
+  cursor: pointer;
+}
+
+.adv-bg-show-others:hover {
+  color: #ffffff;
+  border-color: #a5b4fc;
+}
+
+.adv-bg-show-others[aria-pressed="true"] {
+  color: #0b1120;
+  background: #a5b4fc;
+  border-color: #a5b4fc;
+  font-weight: 700;
+}
+
+.adv-bg-show-others:focus-visible {
+  outline: calc(2 * var(--u)) solid #38bdf8;
+  outline-offset: calc(2 * var(--u));
+}
+
+.adv-bg-group-title {
+  grid-column: 1 / -1;
+  margin: calc(4 * var(--u)) 0 calc(-6 * var(--u));
+  font-size: calc(14 * var(--u));
+  font-weight: 600;
+  letter-spacing: calc(0.5 * var(--u));
+  color: #94a3b8;
+}
+
 .adv-bg-times {
   display: flex;
   flex-wrap: wrap;
@@ -263,6 +311,12 @@
 
 .adv-bg-swatch[data-time="night"] {
   background: linear-gradient(to bottom, #050a1e 0%, #22315f 100%);
+}
+
+/* The auto tile previews the background it resolves to. */
+.adv-bg-swatch.has-image {
+  background-size: cover;
+  background-position: center;
 }
 
 .adv-bg-name {

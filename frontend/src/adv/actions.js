@@ -19,8 +19,9 @@ export function createTitleActions({ getSessions, getProfiles, startNew, loadSes
           // A thumbnail needs the image URL of the stored background, not its id. It resolves when a
           // slot renders, because the background list can arrive after the title screen opened.
           get background() {
-            const { advBackground, advBgTime } = session.settings || {};
-            return advBackground ? getBackgroundUrl(advBackground, advBgTime) || '' : '';
+            const { advBackground = '', advBgTime, voiceProfileId } = session.settings || {};
+            const work = profiles.find(profile => profile.id === voiceProfileId)?.work || null;
+            return getBackgroundUrl(advBackground, advBgTime, work) || '';
           },
         };
       });

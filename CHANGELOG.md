@@ -13,6 +13,9 @@ All notable changes to galgame2voice are documented here. The format follows
   ADV is now the only UI, with a live-rotating phone portrait layout, touch
   controls, sprite/title fades that respect reduced motion, and background and
   queued-face preloading. Portrait and background assets stay local only.
+- Background packs per work (`backgrounds/<work>/manifest.json`). A character
+  package can name its `work`; the background picker lists that work first, and
+  its default "自动" shows the work's default background.
 - `scripts/dev_standins.py` starts a fake LLM and a fake GPT-SoVITS server (old,
   per-line and deliberately broken reply formats; WAVs with a speech-like envelope)
   so the chat, voice and playback pipeline runs without a GPU or a paid model.
