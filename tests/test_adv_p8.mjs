@@ -207,6 +207,24 @@ test('P8 background variant preload once', async () => {
   const retained = preloads(); view.destroy(); assert.ok(retained.every(image => image.src === ''));
 });
 
+test('P8 background preload keeps only the chosen background', async () => {
+  const doc = documentFixture(), clock = fakeClock(), images = [];
+  class Image extends Element { constructor() { super('img', doc); images.push(this); } decode() { return Promise.resolve(); } }
+  const layer = doc.createElement('div');
+  const view = createBackgroundView({ layer, ImageClass: Image,
+    setTimer: (fn, ms) => clock.setTimeout(fn, ms), clearTimer: id => clock.clearTimeout(id) });
+  const variants = id => ({ day: `/${id}/day`, evening: `/${id}/evening`, night: `/${id}/night` });
+  view.setList([{ id: 'cafe', variants: variants('cafe') }, { id: 'park', variants: variants('park') }]);
+  view.setSelection({ id: 'cafe', time: 'day' }); await microtasks();
+  const cafe = images.filter(image => image.parentNode !== layer && image.src.startsWith('/cafe/'));
+  assert.equal(cafe.length, 3);
+  view.setSelection({ id: 'park', time: 'day' }); await microtasks();
+  assert.ok(cafe.every(image => image.src === ''), 'switching backgrounds releases the old preloads');
+  const live = images.filter(image => image.parentNode !== layer && image.src);
+  assert.deepEqual(live.map(image => image.src).sort(), ['/park/day', '/park/evening', '/park/night']);
+  view.destroy();
+});
+
 for (const reduced of [false, true]) test(`P8 title ${reduced ? 'reduced-motion bypass' : 'fade 300ms'}`, async () => {
   const doc = documentFixture(), clock = fakeClock(), calls = [], mql = media(reduced);
   const overlay = doc.createElement('div'); overlay.className = 'adv-layer-overlay'; doc.body.appendChild(overlay);
