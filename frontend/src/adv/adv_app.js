@@ -6,9 +6,12 @@ import { createLinePlayer } from './line_player.js';
 import { createSpriteView } from './sprite.js';
 import { createBacklog } from './backlog.js';
 import { createConfigPanel } from './config_panel.js';
+import { createBackgroundView, normalizeBackgroundSelection } from './background.js';
+import { createBgPanel } from './bg_panel.js';
 import { normalizePortrait, resolveSpriteState } from '../sprite_state.js';
 import { DEFAULT_SESSION_SETTINGS } from '../store.js';
 import { pickSettings } from '../session_data.js';
+import { requestJson } from '../request.js';
 
 /** Mount one disposable renderer. Controller remains the sole history writer.
  * dom: { root, sidebar?, messages?, input?, micBtn?, voiceModeBtn? }
@@ -41,6 +44,11 @@ export function mountAdv(dom, deps) {
   const matchMedia = deps.matchMedia || (query => globalThis.matchMedia?.(query));
   const mql = matchMedia('(prefers-reduced-motion: reduce)');
   let reducedMotion = Boolean(mql?.matches);
+  // The day part is wall-clock time, so the view keeps its own 60 s re-check
+  // outside the player's timer set instead of the injected clock.
+  const background = createBackgroundView({
+    layer: stage.background, matchMedia, ImageClass: deps.ImageClass || globalThis.Image,
+  });
   const playerSettings = () => ({
     primary: settings.advPrimaryLanguage, subtitle: settings.advSubtitleLanguage,
     playerName: settings.advPlayerName, advWindowOpacity: settings.advWindowOpacity,
@@ -51,7 +59,7 @@ export function mountAdv(dom, deps) {
   settings = pickSettings(deps.getSession()?.settings, DEFAULT_SESSION_SETTINGS);
   const textbox = createTextbox(stage.textbox, {
     clock, matchMedia: () => ({ matches: false }), getSettings: playerSettings,
-    isOverlayOpen: () => Boolean(drawer || backlog || externalOverlay || configPanel?.isOpen),
+    isOverlayOpen: () => Boolean(drawer || backlog || externalOverlay || configPanel?.isOpen || bgPanel?.isOpen),
     onAdvance: () => player.advance(),
     onSend: text => !controller.busy && controller.send(text),
     onMic: () => {
@@ -196,6 +204,67 @@ export function mountAdv(dom, deps) {
     documentObj: doc,
   });
 
+  let backgrounds = [];
+  let appliedBackground = null;
+  const storedBackground = () => normalizeBackgroundSelection({
+    id: settings.advBackground, time: settings.advBgTime,
+  });
+  function syncBackground() {
+    const next = storedBackground();
+    if (appliedBackground?.id === next.id && appliedBackground?.time === next.time) return;
+    appliedBackground = next;
+    background.setSelection(next);
+  }
+  const bgPanel = createBgPanel(stage.overlay, {
+    getList: () => backgrounds,
+    getSelection: storedBackground,
+    saveSettings: patch => deps.saveSettings?.(patch),
+    onPreview: selection => {
+      appliedBackground = selection;
+      background.setSelection(selection);
+    },
+    onOpen: () => {
+      player.suspend('dialog');
+      sprite.suspend();
+      textbox.completeReveal();
+      textbox.glyph(false);
+      stage.textbox.inert = true;
+      stage.quickmenu.inert = true;
+      tools.inert = true;
+      syncControls();
+    },
+    onClose: () => {
+      stage.textbox.inert = false;
+      stage.quickmenu.inert = false;
+      tools.inert = false;
+      player.resume('dialog');
+      if (!drawer && !backlog && !externalOverlay && !configPanel?.isOpen) restoreSprite();
+      syncControls();
+    },
+    documentObj: doc,
+  });
+  function openBgPanel() {
+    closeDrawer();
+    closeLog();
+    if (configPanel?.isOpen) configPanel.close({ revert: true });
+    bgPanel.open();
+  }
+  function closeBgPanel() {
+    if (bgPanel?.isOpen) bgPanel.close();
+  }
+  async function loadBackgrounds() {
+    let list = [];
+    try {
+      const data = await (deps.fetchBackgrounds || (() => requestJson('/api/backgrounds')))();
+      list = Array.isArray(data?.backgrounds) ? data.backgrounds : [];
+    } catch {
+      list = [];
+    }
+    if (destroyed) return;
+    backgrounds = list;
+    background.setList(list);
+  }
+
   function paint(line = currentLine || { emotion: 'gentle', act: {} }, options = {}) {
     if (!line || !model) return;
     const costume = options.costume !== undefined ? options.costume : (settings.advOutfit || model.defaultCostume);
@@ -216,7 +285,7 @@ export function mountAdv(dom, deps) {
   function syncControls() {
     textbox.setCanSend(!controller.busy);
     const input = player.state === 'input' || player.state === 'error';
-    const overlayActive = Boolean(drawer || backlog || externalOverlay || configPanel?.isOpen);
+    const overlayActive = Boolean(drawer || backlog || externalOverlay || configPanel?.isOpen || bgPanel?.isOpen);
     for (const name of ['auto', 'skip', 'replay_voice', 'hide']) quickMenu.setEnabled(name, !input && !overlayActive);
     quickMenu.setToggle('auto', player.auto); quickMenu.setToggle('skip', player.skip);
     quickMenu.setHidden(player.hidden); textbox.setHidden(player.hidden);
@@ -246,6 +315,7 @@ export function mountAdv(dom, deps) {
     syncControls();
   }
   function openDrawer(kind) {
+    closeBgPanel();
     closeDrawer();
     closeLog();
     if (configPanel?.isOpen) configPanel.close({ revert: true });
@@ -276,6 +346,7 @@ export function mountAdv(dom, deps) {
     syncControls();
   }
   function openLog() {
+    closeBgPanel();
     closeDrawer();
     closeLog();
     if (configPanel?.isOpen) configPanel.close({ revert: true });
@@ -342,15 +413,18 @@ export function mountAdv(dom, deps) {
         break;
       case 'unhide': unhide(); break;
       case 'log': openLog(); break;
+      case 'background': openBgPanel(); break;
       case 'sessions': openDrawer('sessions'); break;
       case 'close_overlay':
         if (backlog) closeLog();
         else if (configPanel?.isOpen) configPanel.close({ revert: true });
+        else if (bgPanel?.isOpen) bgPanel.close();
         else if (drawer) closeDrawer();
         else deps.closeOverlay?.();
         break;
       case 'settings':
       case 'config':
+        closeBgPanel();
         closeLog();
         configPanel.open();
         break;
@@ -381,7 +455,8 @@ export function mountAdv(dom, deps) {
   }
   const shortcuts = createShortcuts(stage.stage, {
     getContext: () => ({ stage: stage.stage, hidden: player.hidden,
-      overlayOpen: Boolean(drawer || backlog || externalOverlay || configPanel?.isOpen), subtitleNone: settings.advSubtitleLanguage === 'none',
+      overlayOpen: Boolean(drawer || backlog || externalOverlay || configPanel?.isOpen || bgPanel?.isOpen),
+      subtitleNone: settings.advSubtitleLanguage === 'none',
       playerInput: player.state === 'input',
       composing: textbox.composing }),
     onAction: action,
@@ -479,12 +554,14 @@ export function mountAdv(dom, deps) {
     if (switched) {
       if (sessionId !== undefined) drafts.set(sessionId, textbox.draft);
       if (configPanel?.isOpen) configPanel.close({ revert: true });
+      closeBgPanel();
       closeDrawer(); closeLog(); resetInput(); turnId = null; currentLine = null; failedUser = null;
       textbox.setDraft(drafts.get(session?.id) || '');
     }
     sessionId = session?.id; characterKey = character?.id; outfit = settings.advOutfit;
     player.setSettings(playerSettings());
     sprite.setAnimationOptions(animationOptions(settings));
+    syncBackground();
     if (changedCharacter) {
       if (!switched) {
         controller.stop();
@@ -568,9 +645,10 @@ export function mountAdv(dom, deps) {
     textbox.reflow({ pageIndex: player.page });
     if (wasRevealing) player.advance();
   });
+  loadBackgrounds();
   update();
   return {
-    update, player, textbox, sprite, stage, action, configPanel,
+    update, player, textbox, sprite, stage, action, configPanel, background, bgPanel,
     isConfigOpen: () => Boolean(configPanel?.isOpen),
     get backlog() { return backlog; },
     unmount() {
@@ -580,6 +658,8 @@ export function mountAdv(dom, deps) {
       closeLog();
       closeDrawer();
       configPanel.destroy();
+      bgPanel.destroy();
+      background.destroy();
       destroyed = true; ++portraitRevision;
       portraitRequest?.abort();
       deps.cancelMic?.();

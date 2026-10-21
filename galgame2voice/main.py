@@ -23,7 +23,7 @@ from starlette.types import Receive, Scope, Send
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
-from galgame2voice.routers import chat, config, health, voice, memory, affection, characters, metrics, system
+from galgame2voice.routers import chat, config, health, voice, memory, affection, characters, metrics, system, backgrounds
 from galgame2voice.security.auth import require_auth
 from galgame2voice.security.rate_limit import RateLimitMiddleware
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
@@ -521,9 +521,11 @@ def create_app() -> FastAPI:
     auth_deps = [Depends(require_auth)]
     app.include_router(health.router)
     app.include_router(characters.media_router)
+    app.include_router(backgrounds.media_router)
     app.include_router(config.router, dependencies=auth_deps)
     app.include_router(voice.router, dependencies=auth_deps)
     app.include_router(characters.router, dependencies=auth_deps)
+    app.include_router(backgrounds.router, dependencies=auth_deps)
     app.include_router(chat.router, dependencies=auth_deps)
     app.include_router(memory.router, dependencies=auth_deps)
     app.include_router(affection.router, dependencies=auth_deps)

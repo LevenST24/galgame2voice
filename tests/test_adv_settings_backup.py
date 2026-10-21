@@ -14,6 +14,7 @@ P3_SETTINGS = {
     "advSubtitleLanguage": "zh", "advWindowOpacity": 0, "advTextIntervalMs": 100,
     "advInterruptVoice": False, "advAutoBaseMs": 6000, "advAutoPerCharMs": 200,
     "advAutoMode": "normal", "advOutfit": "uniform_2", "advBlink": True, "advLipSync": True,
+    "advBackground": "cafe", "advBgTime": "evening",
 }
 
 INVALID_P3 = [
@@ -27,7 +28,19 @@ INVALID_P3 = [
     ("advPlayerName", "\ufeff"),
     ("advPlayerName", "👩🏽‍💻" * 101), ("advOutfit", "../other"), ("advOutfit", None),
     ("advBlink", "false"), ("advBlink", 1), ("advLipSync", "true"), ("advLipSync", 0),
+    ("advBackground", "../cafe"), ("advBackground", "a" * 65), ("advBackground", "咖啡店"),
+    ("advBackground", "cafe\n"), ("advBackground", None), ("advBackground", 1),
+    ("advBgTime", "dawn"), ("advBgTime", ""), ("advBgTime", None), ("advBgTime", 1),
 ]
+
+
+@pytest.mark.parametrize("background", ["", "A_-09", "a" * 64])
+@pytest.mark.parametrize("time", ["auto", "day", "evening", "night"])
+def test_background_settings_accept_portable_ids_and_all_times(background, time):
+    settings = {"advBackground": background, "advBgTime": time}
+    assert set(settings) <= SESSION_SETTINGS
+    session = ImportedSession(id="s_import_background", title="background", messages=[], settings=settings)
+    assert session.settings == settings
 
 
 @pytest.mark.parametrize("key,value", INVALID_P3)

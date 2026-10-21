@@ -10,6 +10,9 @@
 !uv.lock
 !.env.example
 
+# Local background library (user assets)
+/backgrounds/
+
 # Excluded again inside the allowed folders
 frontend/node_modules/
 frontend/dist/
