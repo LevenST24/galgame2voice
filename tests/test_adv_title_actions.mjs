@@ -44,7 +44,7 @@ test('title actions delegate; continue uses newest or creates a first session; h
   const sessions = [{ id: 'old', updatedAt: 1 }, { id: 'latest', updatedAt: 2 }];
   const { api, calls } = actions(sessions);
   assert.deepEqual(Object.keys(api).sort(), ['continueLatest', 'listSessions', 'loadSession', 'openCharacters', 'openSettings', 'startNew']);
-  assert.equal(showTitle(api), undefined); assert.deepEqual(calls, []);
+  assert.equal(showTitle(api, { documentObj: { querySelector: () => null } }), null); assert.deepEqual(calls, []);
   api.startNew(); api.continueLatest(); api.loadSession('old'); api.openCharacters(); api.openSettings();
   assert.deepEqual(calls, ['new', 'latest', 'old', 'characters', 'settings']);
   sessions.length = 0; api.continueLatest(); assert.equal(calls.at(-1), 'new');
@@ -94,4 +94,20 @@ test('startup calls showTitle once after authentication completes, with the publ
   await tick(); assert.equal(titles, 0); assert.ok(finishAuth); assert.ok(app.adv);
   finishAuth(); await app.ready;
   assert.equal(titles, 1); assert.deepEqual(events, ['401', 'prompt', 'authenticated', 'title']);
+});
+
+test('showTitle mounts the title screen on the stage overlay and opens it', () => {
+  const doc = fakeDocument();
+  const overlay = doc.createElement('div');
+  doc.body.appendChild(overlay);
+  doc.querySelector = selector => (selector === '.adv-layer-overlay' ? overlay : null);
+  const { api, calls } = actions([]);
+  const screen = showTitle(api, { documentObj: doc });
+  assert.ok(screen && screen.isOpen);
+  assert.ok(overlay.children.length > 0);
+  assert.deepEqual(calls, []);
+  const again = showTitle(api, { documentObj: doc });
+  assert.notEqual(again, screen);
+  assert.equal(screen.isOpen, false);
+  again.destroy();
 });
