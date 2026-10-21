@@ -1,4 +1,5 @@
 import { createStage } from './stage.js';
+import { createSpriteTransition } from './transitions.js';
 import { createTextbox } from './textbox.js';
 import { createQuickMenu } from './quick_menu.js';
 import { createShortcuts } from './shortcuts.js';
@@ -27,10 +28,12 @@ export function mountAdv(dom, deps) {
   };
   const raf = deps.raf || (fn => requestAnimationFrame(fn));
   const cancelRaf = deps.cancelRaf || (id => cancelAnimationFrame(id));
-  const stage = createStage(dom.root);
+  const stage = createStage(dom.root, { matchMedia: deps.matchMedia });
   const disposers = [];
   let destroyed = false, sessionId, characterKey, outfit, turnId = null;
   let settings, model = null, resolved = null, currentLine = null, failedUser = null, liveMessage = null;
+  let turnLines = [];
+  let pendingOutfit = null;
   let portraitRevision = 0, portraitRequest = null, refreshTimer = null, refreshAttempted = false;
   let drawer = null, backlog = null, externalOverlay = false, savedFocus = null, temporarySkip = false;
   let voiceSequence = 0;
@@ -45,6 +48,7 @@ export function mountAdv(dom, deps) {
   const matchMedia = deps.matchMedia || (query => globalThis.matchMedia?.(query));
   const mql = matchMedia('(prefers-reduced-motion: reduce)');
   let reducedMotion = Boolean(mql?.matches);
+  const spriteTransition = createSpriteTransition(stage.sprite, { reducedMotion: () => reducedMotion });
   // The day part is wall-clock time, so the view keeps its own 60 s re-check
   // outside the player's timer set instead of the injected clock.
   const background = createBackgroundView({
@@ -111,7 +115,8 @@ export function mountAdv(dom, deps) {
       currentLine = line;
       textbox.setSpeaker({ name: deps.getCharacter?.()?.name || '角色', mode: 'character' });
       textbox.activate(line, options);
-      paint(line, options);
+      paint(line, options)?.then(() => { if (!destroyed) preloadNextLine(); });
+      preloadNextLine();
     },
     enterInput(options) { textbox.enterInput(options); sprite.suspend(); },
     showError(error) {
@@ -271,11 +276,29 @@ export function mountAdv(dom, deps) {
   function paint(line = currentLine || { emotion: 'gentle', act: {} }, options = {}) {
     if (!line || !model) return;
     const costume = options.costume !== undefined ? options.costume : (settings.advOutfit || model.defaultCostume);
-    resolved = resolveSpriteState(model, resolved, line, { costume });
-    if (resolved) sprite.apply(resolved, {
-      ...options, reducedMotion, skipping: player.skip,
-      motion: line.act?.motion || null,
-    });
+    const next = resolveSpriteState(model, resolved, line, { costume });
+    if (pendingOutfit && pendingOutfit !== next?.state.outfit) {
+      spriteTransition.abort(); pendingOutfit = null;
+    }
+    const changed = resolved && next && resolved.state.outfit !== next.state.outfit;
+    const apply = () => {
+      pendingOutfit = null;
+      resolved = next;
+      if (resolved) return sprite.apply(resolved, {
+        ...options, reducedMotion, skipping: player.skip,
+        motion: line.act?.motion || null,
+      });
+    };
+    if (changed) { pendingOutfit = next.state.outfit; return spriteTransition.change(apply); }
+    return apply();
+  }
+  function preloadNextLine() {
+    if (!model || !currentLine) return;
+    const next = turnLines.filter(line => line.index > currentLine.index)
+      .sort((a, b) => a.index - b.index)[0];
+    if (!next) return;
+    const preview = resolveSpriteState(model, resolved, next, { costume: settings.advOutfit || model.defaultCostume });
+    sprite.preloadState(preview);
   }
   function restoreSprite() {
     if (!resolved || !currentLine || ['input', 'error', 'idle'].includes(player.state)) return;
@@ -461,6 +484,7 @@ export function mountAdv(dom, deps) {
     restoreSprite();
   }
   const shortcuts = createShortcuts(stage.stage, {
+    clock,
     getContext: () => ({ stage: stage.stage, hidden: player.hidden,
       overlayOpen: Boolean(drawer || backlog || externalOverlay || configPanel?.isOpen || bgPanel?.isOpen),
       subtitleNone: settings.advSubtitleLanguage === 'none',
@@ -485,6 +509,7 @@ export function mountAdv(dom, deps) {
   listen(status, 'click', event => { event.stopPropagation(); refreshAttempted = false; loadPortrait(true); });
   const motionChange = event => {
     reducedMotion = Boolean(event.matches);
+    if (reducedMotion) spriteTransition.cancel();
     player.setSettings({ reducedMotion });
     // Blink and lip sync stop or resume at once, in either direction.
     sprite.setAnimationOptions({ reducedMotion });
@@ -512,6 +537,7 @@ export function mountAdv(dom, deps) {
       model = null; sprite.setModel(null); status.hidden = false; status.textContent = '此角色暂无立绘'; return;
     }
     try {
+      let painted;
       const payload = await deps.loadPortrait(character.id, { signal: portraitRequest.signal, refresh });
       if (destroyed || revision !== portraitRevision) return;
       const nextModel = normalizePortrait(payload);
@@ -525,7 +551,10 @@ export function mountAdv(dom, deps) {
           face: previous.state.face, blush: previous.state.blush, fx: null,
         } }, { costume: previous.state.outfit });
         if (resolved) sprite.apply(resolved, { reducedMotion, skipping: true });
-      } else if (model) paint();
+      } else if (model) {
+        painted = paint();
+        preloadNextLine();
+      }
       // Signed image URLs are transient; renew once, a minute before expiry.
       const spriteFiles = Object.values(model?.sprites || {}).flatMap(faces =>
         faces && typeof faces === 'object' ? Object.values(faces) : []
@@ -543,6 +572,7 @@ export function mountAdv(dom, deps) {
         const delay = Math.max(1000, minExpiry * 1000 - (deps.wallNow?.() ?? Date.now()) - 60000);
         refreshTimer = clock.setTimeout(() => { refreshTimer = null; loadPortrait(true); }, delay);
       }
+      await painted;
     } catch (error) {
       if (destroyed || revision !== portraitRevision || error.name === 'AbortError') return;
       status.hidden = false; status.textContent = '立绘暂时无法加载，点击重试';
@@ -553,6 +583,7 @@ export function mountAdv(dom, deps) {
     const session = deps.getSession();
     const nextSettings = pickSettings(session?.settings, DEFAULT_SESSION_SETTINGS);
     const switched = sessionId !== session?.id;
+    const mounted = sessionId !== undefined;
     const character = deps.getCharacter?.();
     const changedCharacter = switched || characterKey !== character?.id;
     const changedOutfit = outfit !== nextSettings.advOutfit;
@@ -570,12 +601,17 @@ export function mountAdv(dom, deps) {
     sprite.setAnimationOptions(animationOptions(settings));
     syncBackground();
     if (changedCharacter) {
+      pendingOutfit = null;
       if (!switched) {
         controller.stop();
         resetInput(); turnId = null; currentLine = null;
       }
-      model = null; resolved = null; sprite.setModel(null); refreshAttempted = false;
-      loadPortrait();
+      const swap = () => {
+        model = null; resolved = null; sprite.setModel(null); refreshAttempted = false;
+        return loadPortrait();
+      };
+      if (mounted) spriteTransition.change(swap);
+      else swap();
     } else if (changedOutfit) paint();
     if (changedLanguage && currentLine && player.state !== 'input' && player.state !== 'error') {
       // Reflow presentation only; no activate/live announcement/acting/voice replay.
@@ -595,6 +631,7 @@ export function mountAdv(dom, deps) {
   function resetInput() {
     deps.cancelMic?.();
     liveMessage = null;
+    turnLines = [];
     player.reset();
     const idle = Symbol('session input');
     player.startTurn(idle); player.settle(idle, { ok: true });
@@ -604,6 +641,7 @@ export function mountAdv(dom, deps) {
     update();
     if (event.originId !== sessionId) return;
     liveMessage = { ...event.assistantMessage, lines: [...event.assistantMessage.lines || []] };
+    turnLines = liveMessage.lines;
     failedUser = event.userMessage; turnId = event.assistantMessage.id; currentLine = null;
     textbox.setDraft(''); textbox.clearError();
     textbox.setSpeaker({ name: deps.getCharacter?.()?.name || '角色', mode: 'character' });
@@ -620,6 +658,7 @@ export function mountAdv(dom, deps) {
         else liveMessage.lines[index] = event.line;
       }
       player.pushLine(turnId, event.line);
+      preloadNextLine();
     }
   }));
   disposers.push(controller.on('line_audio', event => {
@@ -667,6 +706,7 @@ export function mountAdv(dom, deps) {
       configPanel.destroy();
       bgPanel.destroy();
       background.destroy();
+      spriteTransition.destroy();
       destroyed = true; ++portraitRevision;
       portraitRequest?.abort();
       deps.cancelMic?.();

@@ -89,6 +89,19 @@ export function createBackgroundView({
   let request = 0;
   let timer = null;
   let destroyed = false;
+  const preloaded = new Map();
+
+  function preloadVariants() {
+    const variants = backgrounds.get(selection.id)?.variants || {};
+    for (const url of Object.values(variants)) {
+      if (typeof url !== 'string' || !url || preloaded.has(url)) continue;
+      const image = typeof ImageClass === 'function' ? new ImageClass() : doc.createElement('img');
+      preloaded.set(url, image);
+      image.src = url;
+      // Warm the HTTP and decode caches; failure must not interrupt playback.
+      try { image.decode?.().catch(() => {}); } catch { /* unsupported decode */ }
+    }
+  }
 
   const reducedMotion = () => Boolean(matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
 
@@ -159,6 +172,7 @@ export function createBackgroundView({
 
   function render() {
     if (destroyed) return;
+    preloadVariants();
     sky.dataset.time = part();
     const found = target();
     if (!found) {
@@ -208,6 +222,8 @@ export function createBackgroundView({
         image.remove?.();
       }
       sky.remove?.();
+      for (const image of preloaded.values()) release(image);
+      preloaded.clear();
     },
   };
 }

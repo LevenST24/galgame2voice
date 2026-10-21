@@ -7,6 +7,12 @@ All notable changes to galgame2voice are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- ADV interface (P0–P8): line-by-line playback with voice, acting tags,
+  layered sprites with blink and lip sync, LOG history and voice replay,
+  settings, backgrounds by time of day, and a title screen with session loading.
+  ADV is now the only UI, with a live-rotating phone portrait layout, touch
+  controls, sprite/title fades that respect reduced motion, and background and
+  queued-face preloading. Portrait and background assets stay local only.
 - `scripts/dev_standins.py` starts a fake LLM and a fake GPT-SoVITS server (old,
   per-line and deliberately broken reply formats; WAVs with a speech-like envelope)
   so the chat, voice and playback pipeline runs without a GPU or a paid model.

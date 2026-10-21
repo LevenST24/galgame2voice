@@ -228,8 +228,45 @@ export function decide(event, context = {}) {
  * @param {(action: string, event: Event) => void} options.onAction
  * @returns {object} { destroy }
  */
-export function createShortcuts(target, { getContext, onAction } = {}) {
+export function createShortcuts(target, { getContext, onAction,
+  clock = { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: id => clearTimeout(id) },
+} = {}) {
+  let hold = null, origin = null, consumed = false;
+  const heldClicks = new WeakSet();
+  function cancelHold() {
+    if (hold !== null) clock.clearTimeout(hold);
+    hold = null; origin = null;
+  }
+  function pointerDown(event) {
+    cancelHold(); consumed = false;
+    if (event.pointerType !== 'touch' || event.isPrimary === false || isInteractive(event.target) ||
+        event.target?.closest?.('.adv-layer-overlay')) return;
+    origin = { x: event.clientX, y: event.clientY };
+    hold = clock.setTimeout(() => {
+      hold = null; origin = null;
+      const context = getContext?.() || {};
+      const action = decide({ type: 'contextmenu', target: event.target }, context);
+      if (action) { consumed = true; onAction?.(action, event); }
+    }, 500);
+  }
+  function pointerMove(event) {
+    if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 10) cancelHold();
+  }
+  function suppressHoldClick(event) {
+    if (consumed && (event.type === 'click' || event.type === 'contextmenu')) {
+      heldClicks.add(event);
+      event.preventDefault(); event.stopPropagation();
+      if (event.type === 'click') consumed = false;
+      return true;
+    }
+    return false;
+  }
   function handleEvent(event) {
+    if (heldClicks.has(event)) return;
+    if (suppressHoldClick(event)) return;
+    const touchContextMenu = event.type === 'contextmenu' && hold !== null;
+    if (touchContextMenu) cancelHold();
+    if (event.type === 'blur') { cancelHold(); consumed = false; }
     const baseContext = getContext?.() || {};
     const targetEl = event.target;
 
@@ -256,6 +293,7 @@ export function createShortcuts(target, { getContext, onAction } = {}) {
 
     const action = decide(event, context);
     if (action) {
+      if (touchContextMenu) consumed = true;
       if (typeof event.preventDefault === 'function') {
         event.preventDefault();
       }
@@ -264,6 +302,12 @@ export function createShortcuts(target, { getContext, onAction } = {}) {
   }
 
   const events = ['keydown', 'keyup', 'contextmenu', 'wheel', 'click', 'blur'];
+  // Consume the synthetic tap before a textbox child can advance it.
+  const captureHoldClick = event => { suppressHoldClick(event); };
+  target.addEventListener('click', captureHoldClick, true);
+  const pointers = { pointerdown: pointerDown, pointermove: pointerMove,
+    pointerup: cancelHold, pointercancel: cancelHold };
+  for (const [name, handler] of Object.entries(pointers)) target.addEventListener(name, handler);
   for (const name of events) {
     target.addEventListener(name, handleEvent, name === 'wheel' ? { passive: false } : undefined);
   }
@@ -276,6 +320,9 @@ export function createShortcuts(target, { getContext, onAction } = {}) {
   }
 
   function destroy() {
+    cancelHold();
+    target.removeEventListener('click', captureHoldClick, true);
+    for (const [name, handler] of Object.entries(pointers)) target.removeEventListener(name, handler);
     for (const name of events) {
       target.removeEventListener(name, handleEvent);
     }

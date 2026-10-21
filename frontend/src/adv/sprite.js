@@ -955,6 +955,19 @@ export function createSpriteView({
     setModel, apply, clear, suspend, destroy,
     startLipSync, stopLipSync, setAnimationOptions,
     preload: urls => preloads.add(urls),
+    preloadState(input) {
+      if (!input || !model) return;
+      if (!input.isV3) return preloads.add(input.faceUrl ? [input.faceUrl] : []);
+      const plan = planLayers(model, input.lookKey, input.state);
+      if (!plan) return;
+      // Keep the queue's six-entry budget for distinct facial frames first.
+      const urls = new Map();
+      const items = [...plan.items].sort((a, b) => Number(b.group !== null) - Number(a.group !== null));
+      for (const item of items) if (!urls.has(item.file)) urls.set(item.file, {
+        url: item.file, width: item.rect?.width, height: item.rect?.height,
+      });
+      return preloads.add([...urls.values()]);
+    },
     getModel: () => model,
     getRevision: () => revision,
     getActiveSlot: () => activeSlot,
