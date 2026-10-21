@@ -1,12 +1,14 @@
-/* Portrait-only overrides. Landscape geometry stays in the original sheets. */
+/* Portrait-only overrides. Landscape geometry stays in the original sheets.
+   The stage fills the screen; --u keeps a 1080x1920 safe area inside it, and every
+   portrait element hangs off the top, the bottom or the horizontal centre. */
 .adv-stage.is-portrait {
   --u: min(calc(100vw / 1080), calc(100dvh / 1920));
   --phone-left: max(calc(32 * var(--u)), env(safe-area-inset-left, 0px));
   --phone-right: max(calc(32 * var(--u)), env(safe-area-inset-right, 0px));
   --phone-bottom: max(calc(28 * var(--u)), env(safe-area-inset-bottom, 0px));
   --phone-top: max(calc(28 * var(--u)), env(safe-area-inset-top, 0px));
-  width: calc(1080 * var(--u));
-  height: calc(1920 * var(--u));
+  width: 100vw;
+  height: 100dvh;
   font-size: max(14px, calc(40 * var(--u)));
   touch-action: manipulation;
   -webkit-touch-callout: none;
@@ -14,7 +16,9 @@
 .adv-stage.is-portrait .adv-sprite-motion,
 .adv-stage.is-portrait .adv-layer-fx {
   inset: auto;
-  left: calc(-420 * var(--u));
+  /* Bring the sprite's landscape x (--sprite-cx, set by sprite.js) to the middle of the screen:
+     the wrapper scales around left + 960u, so left + 960u + 1.7 * (cx - 960)u = 50%. */
+  left: calc(50% - (960 + 1.7 * (var(--sprite-cx, 960) - 960)) * var(--u));
   top: calc(180 * var(--u));
   width: calc(1920 * var(--u));
   height: calc(1080 * var(--u));

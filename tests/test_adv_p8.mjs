@@ -56,9 +56,10 @@ test('P8 landscape class and portrait units', () => {
   const width = Number(units[1]), height = Number(units[2]);
   assert.deepEqual([width, height], [1080, 1920]);
   const u = Math.min(390 / width, 844 / height);
-  assert.equal(u * 1080, 390); assert.ok(Math.abs(u * 1920 - 693.333333) < 0.001);
-  assert.match(rule, /width: calc\(1080 \* var\(--u\)\)/);
-  assert.match(rule, /height: calc\(1920 \* var\(--u\)\)/);
+  assert.equal(u * 1080, 390, 'a 390x844 phone is width-bound');
+  assert.ok(u * 1920 <= 844, 'the 1080x1920 safe area fits on the phone');
+  assert.match(rule, /width: 100vw;/, 'the portrait stage fills the screen instead of letterboxing');
+  assert.match(rule, /height: 100dvh;/);
   assert.match(adv, /--u: min\(calc\(100vw \/ 1920\), calc\(100dvh \/ 1080\)\)/);
 });
 
@@ -78,14 +79,14 @@ test('P8 portrait wrapped pagination', () => {
   box.destroy(); stage.destroy();
 });
 
-function appFixture(t, reduced = false) {
+function appFixture(t, reduced = false, costumeA = {}) {
   const doc = documentFixture(), clock = fakeClock(), events = new Map();
   const portraitMedia = media(false), motionMedia = media(reduced);
   let character = { id: 1, name: 'Synthetic' };
   const session = { id: 'p8', settings: { ...DEFAULT_SESSION_SETTINGS }, messages: [] };
   class Image extends Element { constructor() { super('img', doc); this.complete = true; } decode() { return Promise.resolve(); } }
   const pack = id => ({ enabled: true, defaultCostume: 'a',
-    costumes: ['a', 'b'].map(id => ({ id })),
+    costumes: ['a', 'b'].map(id => ({ id, ...(id === 'a' ? costumeA : {}) })),
     faces: { smile: { primary: 'gentle' }, shy: { primary: 'shy' } },
     expressionSets: { gentle: [{ id: 'smile' }], shy: [{ id: 'shy' }] },
     sprites: Object.fromEntries(['a', 'b'].map(outfit => [outfit,
@@ -105,6 +106,30 @@ function appFixture(t, reduced = false) {
   return { app, clock, animations, flush, session, events, portraitMedia, motionMedia,
     character(id) { character = { id, name: 'Synthetic' }; app.update(); } };
 }
+
+test('P8 portrait sprite offset follows --sprite-cx', () => {
+  const css = readFileSync(new URL('../frontend/src/adv/portrait.css', import.meta.url), 'utf8');
+  const rule = css.match(/\.adv-stage\.is-portrait \.adv-layer-fx\s*\{([^}]+)\}/)[1];
+  const left = rule.match(/left: calc\(50% - \((\d+) \+ ([\d.]+) \* \(var\(--sprite-cx, 960\) - 960\)\) \* var\(--u\)\)/);
+  assert.ok(left, 'portrait left is computed from --sprite-cx');
+  const scale = Number(rule.match(/scale: ([\d.]+);/)[1]);
+  assert.equal(Number(left[1]), 960, 'the wrapper scales around left + 960u, which lands on 50%');
+  assert.equal(Number(left[2]), scale, 'the offset grows with the wrapper scale');
+});
+
+test('P8 sprite publishes its landscape centre for the portrait layout', async t => {
+  const h = appFixture(t); await h.flush();
+  // Legacy framing of 800x1600 art: 540u wide from x=830, so the body centre is x=1100.
+  assert.equal(h.app.stage.sprite.style['--sprite-cx'], '1100');
+  assert.equal(h.app.stage.fx.style['--sprite-cx'], '1100');
+});
+
+test('P8 stage-override sprites centre on the head anchor', async t => {
+  const h = appFixture(t, false, { stage: { scale: 0.5, offset: { x: 600, y: 0 } }, headAnchor: { x: 300, y: 100 } });
+  await h.flush();
+  assert.equal(h.app.stage.sprite.style['--sprite-cx'], '750');
+  assert.equal(h.app.stage.fx.style['--sprite-cx'], '750');
+});
 
 test('P8 app orientation wiring', async t => {
   const h = appFixture(t); await h.flush();
