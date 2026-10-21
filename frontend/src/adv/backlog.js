@@ -6,7 +6,7 @@
  * - Assistant lines with speaker, primary text, and subtitle (honoring advSubtitleLanguage)
  * - Legacy assistant messages with whole text
  * - User messages with advPlayerName and recording playback
- * - Failed user messages with inline failure reason (no action buttons in LOG)
+ * - Failed user messages with inline reason, retry/settings and recording playback
  * - Per-line voice replay with exclusive playback and 7-day expiration checks
  * - Paging via loadOlderSessionHistory with scroll position preservation
  * - Live turn updates via controller subscriptions (turnstart, line, line_audio, done, error, cancelled)
@@ -254,6 +254,27 @@ export function createBacklog(container, deps = {}) {
 
     header.appendChild(speakerEl);
 
+    if (deps.playLegacyVoice) {
+      const button = doc.createElement('button');
+      button.type = 'button'; button.className = 'adv-log-replay-btn'; button.textContent = '语音';
+      button.disabled = !isVoiceEnabled() || getNow() - (msg.ts ?? getNow()) > SEVEN_DAYS_MS;
+      button.setAttribute('aria-label', button.disabled ? '语音已关闭或过期' : '播放语音');
+      button.onclick = event => {
+        event.stopPropagation();
+        if (destroyed || button.disabled) return;
+        stopReplay();
+        const sequence = replaySequence;
+        activeReplayButton = button;
+        deps.playLegacyVoice(msg, {
+          setPlaying: playing => {
+            if (!destroyed && sequence === replaySequence) button.classList.toggle('is-playing', Boolean(playing));
+          },
+          setProgress() {}, setLoading() {},
+        });
+      };
+      header.appendChild(button);
+    }
+
     const textWrap = doc.createElement('div');
     textWrap.className = 'adv-log-text-wrap';
 
@@ -292,7 +313,7 @@ export function createBacklog(container, deps = {}) {
     header.appendChild(speakerEl);
 
     const hasRecording = Boolean(msg.recording || msg.dur || msg.voiceKey || msg.audioUrl);
-    if (hasRecording && !msg.failed) {
+    if (hasRecording) {
       const recBtn = doc.createElement('button');
       recBtn.type = 'button';
       recBtn.className = 'adv-log-user-recording-btn';
@@ -330,6 +351,16 @@ export function createBacklog(container, deps = {}) {
         : (msg.failed.error || '发送失败');
       failEl.textContent = `未收到回复：${failReason}`;
       textWrap.appendChild(failEl);
+      const addAction = (label, run) => {
+        const button = doc.createElement('button'); button.type = 'button';
+        button.className = 'adv-error-btn'; button.textContent = label;
+        button.onclick = event => { event.stopPropagation(); run(); };
+        textWrap.appendChild(button);
+      };
+      if (deps.controller?.canRetry?.(msg)) addAction('重新发送', () => {
+        deps.onClose?.(); deps.controller.retry(msg);
+      });
+      if (deps.onSettings) addAction('去设置', () => { deps.onClose?.(); deps.onSettings(); });
     }
 
     entryEl.appendChild(header);
@@ -359,6 +390,9 @@ export function createBacklog(container, deps = {}) {
 
     if (session?.hasMoreHistory) {
       moreBtn.hidden = false;
+      moreBtn.disabled = Boolean(session.loadingOlder || loadingOlder || deps.controller?.busy);
+      moreBtn.textContent = session.loadingOlder || loadingOlder ? '正在加载更早的记录…'
+        : deps.controller?.busy ? '回复完成后可查看更早的记录' : '加载更早的记录';
       listEl.appendChild(moreBtn);
     } else {
       moreBtn.hidden = true;

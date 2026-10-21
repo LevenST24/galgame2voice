@@ -29,7 +29,7 @@ const app = new Node();
 let handler;
 globalThis.document = {
   activeElement: null,
-  querySelector: s => s === '.app' ? app : null,
+  getElementById: id => id === 'advRoot' ? app : null,
   querySelectorAll: () => [],
   addEventListener: (_event, callback) => { handler = callback; },
 };

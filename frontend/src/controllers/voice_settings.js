@@ -1,6 +1,5 @@
 // Voice Settings & Session Profile Controller
 import { state, saveState, getActive, DEFAULT_SESSION_SETTINGS } from '../store.js';
-import { portraitStage } from '../portrait.js';
 import { showToast } from '../ui.js';
 import { requestJson } from '../api.js';
 import { persistSession } from '../session_api.js';
@@ -181,30 +180,20 @@ export async function fetchVoiceProfiles() {
   return data;
 }
 
-export async function ensureSessionVoice(session, { silent = false, keepPortrait = false } = {}) {
+export async function ensureSessionVoice(session, { silent = false } = {}) {
   const revision = ++sessionVoiceRevision;
   const want = session?.settings?.voiceProfileId;
   const isCurrent = () => revision === sessionVoiceRevision
     && (!session?.id || getActive()?.id === session.id)
     && session?.settings?.voiceProfileId === want;
-  // Portraits belong to the displayed session and do not require a running TTS engine.
-  // keepPortrait: the same session is re-checked (settings saved, another voice deleted);
-  // reloading a portrait already on stage would reset its costume, last line and expression.
-  const profile = voiceProfiles.find(p => p.id === want);
-  if (session?.settings?.advEnabled && activeProfileId === null) {
+  if (activeProfileId === null) {
     try {
       await fetchVoiceProfiles();
       if (!isCurrent()) return;
       _callbacks.renderHeader?.();
-    } catch { /* Text mode and the bound portrait remain available offline. */ }
+    } catch { /* Text and ADV art remain available without the voice service. */ }
   }
-  if (!session?.settings?.advEnabled && !(keepPortrait && want && portraitStage.showsCharacter(want))) {
-    portraitStage.setCharacter(profile?.name || '', want).catch(() => {});
-  }
-  if (!want) {
-    if (session && !session.settings?.advEnabled) await portraitStage.initDefaultCharacter();
-    return;
-  }
+  if (!want) return;
   try {
     if (activeProfileId === null) await fetchVoiceProfiles();
     if (!isCurrent()) return;
@@ -236,7 +225,7 @@ export async function ensureSessionVoice(session, { silent = false, keepPortrait
           saveState();
           // The server copy still names the deleted voice; the next sync would restore it.
           if (state.sessions.includes(session)) persistSession(session).catch(() => {});
-          portraitStage.setCharacter('', null).catch(() => {});
+          _callbacks.renderHeader?.();
           showToast('这个会话绑定的音色已被删除，已解除失效绑定。文字聊天可继续；请在「会话设置」选择或创建新音色。', 'info', _callbacks.onOpenSessionSettings ? {
             actionLabel: '选择音色',
             onAction: () => _callbacks.onOpenSessionSettings(),
@@ -538,7 +527,7 @@ export async function deleteVoiceProfile() {
       for (const sess of cleared) persistSession(sess).catch(() => {});
     }
     await loadSessionVoiceSelect(getActive());
-    ensureSessionVoice(getActive(), { silent: true, keepPortrait: true });
+    ensureSessionVoice(getActive(), { silent: true });
     showToast(`音色「${p ? p.name : id}」已删除${cleared.length ? `，并解除了 ${cleared.length} 个会话的绑定` : ''}`, 'success');
   } catch (e) {
     showToast(`删除失败: ${e.message || e}`, 'error');
@@ -620,7 +609,7 @@ async function handleSaveSessionSettings() {
     }
     if (_callbacks.renderSidebar) _callbacks.renderSidebar();
     if (_callbacks.renderHeader) _callbacks.renderHeader();
-    if (getActive() === s) await ensureSessionVoice(s, { keepPortrait: true });
+          if (getActive() === s) await ensureSessionVoice(s);
     const draftNote = sameEditor() && editorSnapshot() !== submitted ? '；保存期间新增的修改已保留在面板中，请再次保存' : '';
     showToast(`会话「${s.title}」参数已更新${promptNote}${syncNote}${draftNote}`, promptNote || syncNote || draftNote ? 'info' : 'success');
   } finally {

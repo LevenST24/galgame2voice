@@ -227,40 +227,16 @@ test('retry resends only the last failed message, keeping its position and recor
   assert.equal(app.stream.requests.length, 2);
 });
 
-test('continuous audio starts once, follows controls and attaches to the final message', async () => {
+test('audio arrival only caches; ADV owns output, including early chunks', async () => {
   const app = setup({ voiceMode: true });
-  const control = { setPlaying() {}, setProgress() {} };
-  app.control = control;
-  app.conversation.on('done', ({ message }) => app.conversation.attachVoiceControl(control, message));
-  app.conversation.send('语音');
-  const request = app.stream.requests[0];
-  await request.onChunk('说话');
-  await request.event('audio_chunk', { audio_url: '/audio/one.wav', sentence: '一', emotion: 'happy' });
-  await request.event('audio_chunk', { audio_url: '/audio/two.wav', sentence: '二' });
-  app.voice.pause(); assert.equal(app.audioPlayer.paused, true);
-  app.voice.resume(); assert.equal(app.audioPlayer.paused, false);
-  await request.onEnd('说话');
-  assert.deepEqual(app.audio.map(([type]) => type), ['start', 'chunk', 'chunk', 'finish', 'attach']);
-  assert.equal(app.audio[0][2], control);
-  assert.deepEqual(app.audio[1][1], { url: '/audio/one.wav', index: 0, sentence: '一', ctl: control, emotion: 'happy' });
-  assert.equal(app.audio[2][1].index, 1);
-  assert.equal(app.voice.msgId, app.session.messages.at(-1).id);
-  assert.deepEqual(app.cached, []);
-});
-
-test('audio arriving before text can use the control created for later chunks', async () => {
-  const app = setup({ voiceMode: true });
-  app.conversation.send('先收到音频');
-  const request = app.stream.requests[0];
+  app.conversation.send('语音'); const request = app.stream.requests[0];
   await request.event('audio_chunk', { audio_url: '/audio/early.wav' });
-  assert.equal(app.audio[0][2], null);
-  const control = { setPlaying() {}, setProgress() {} };
-  app.control = control;
-  await request.onChunk('后来收到文字');
+  await request.onChunk('回复');
   await request.event('audio_chunk', { audio_url: '/audio/later.wav' });
-  assert.equal(app.audio[2][1].ctl, control);
-  assert.equal(app.audio.filter(([type]) => type === 'start').length, 1);
-  await request.onEnd('后来收到文字');
+  await request.onEnd('回复');
+  assert.deepEqual(app.audio, []);
+  assert.deepEqual(app.cached, ['/audio/early.wav', '/audio/later.wav']);
+  assert.equal(app.session.messages.at(-1).content, '回复');
 });
 
 test('the final server correction replaces display text and saved history', async () => {

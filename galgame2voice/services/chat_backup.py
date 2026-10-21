@@ -18,7 +18,7 @@ SESSION_SETTINGS = frozenset({
     "systemPrompt", "voiceProfileId", "temperature", "topP", "maxTokens",
     "freqPenalty", "presPenalty", "maxContext", "aiAdaptiveVoice", "ttsSpeed",
     "ttsTopK", "ttsTopP", "ttsTemperature", "advReplyFormat",
-    "advEnabled", "advPlayerName", "advPrimaryLanguage", "advSubtitleLanguage",
+    "advPlayerName", "advPrimaryLanguage", "advSubtitleLanguage",
     "advWindowOpacity", "advTextIntervalMs", "advInterruptVoice", "advAutoBaseMs",
     "advAutoPerCharMs", "advAutoMode", "advOutfit", "advBlink", "advLipSync",
     "advBackground", "advBgTime",
@@ -38,7 +38,7 @@ _JS_WHITESPACE = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2
 
 
 def _valid_adv_setting(key: str, value) -> bool:
-    if key in {"advEnabled", "advInterruptVoice", "advBlink", "advLipSync"}:
+    if key in {"advInterruptVoice", "advBlink", "advLipSync"}:
         return type(value) is bool
     if key in _ADV_ENUMS:
         return isinstance(value, str) and value in _ADV_ENUMS[key]
@@ -58,7 +58,7 @@ def _valid_adv_setting(key: str, value) -> bool:
 
 def validate_adv_settings(settings: dict) -> dict:
     """Drop invalid P3 values, preserving every unrelated key for the caller."""
-    result = {key: value for key, value in settings.items() if _valid_adv_setting(key, value)}
+    result = {key: value for key, value in settings.items() if key != "advEnabled" and _valid_adv_setting(key, value)}
     primary = result.get("advPrimaryLanguage", "zh")
     if result.get("advSubtitleLanguage", "ja") == primary:
         result.pop("advSubtitleLanguage", None)

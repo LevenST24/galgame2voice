@@ -130,7 +130,6 @@ function setup(t, options = {}) {
     onModelSettings: () => { calls.models++; },
     onNewSession: () => { calls.newSession++; },
     onMic: () => { calls.mic++; },
-    renderHistory: () => { calls.history++; },
     subscribeOverlay: fn => { overlayChange = fn; return () => { overlayChange = null; }; },
     subscribe: fn => { subscription = fn; return () => { subscription = null; }; },
   });

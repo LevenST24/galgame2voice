@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 // Import before installing a document: don't auto-boot authentication or devices.
-import { initApp } from '../frontend/src/main.js';
-import { DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
-import { fakeDocument } from './helpers/adv_dom.mjs';
-import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
+import { setup } from './helpers/adv_main.mjs';
+import { tick } from './helpers/chat_stream.mjs';
+import { state as storedState, getActive as storedActive, getSession as storedSession, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
+import { initVoiceSettings, ensureSessionVoice, getVoiceProfiles } from '../frontend/src/controllers/voice_settings.js';
 
 for (const terminal of ['done', 'error', 'cancelled']) test(`LOG opened mid-stream includes existing lines through ${terminal}`, async t => {
   const h = setup(t); h.app.sendMessage('问题');
@@ -36,57 +36,17 @@ test('real empty done offers retry while LOG stays open and reconciles the faile
   h.app.conversation.stop();
 });
 
-function setup(t) {
-  const doc = fakeDocument(); globalThis.document = doc;
-  globalThis.window = { innerWidth: 1280 };
-  globalThis.localStorage = { getItem: () => null, setItem() {} };
-  globalThis.fetch = async () => new Response(JSON.stringify({ characters: [] }), { headers: { 'Content-Type': 'application/json' } });
-  const sessions = [0, 1].map(n => ({ id: `s_${n}`, title: `Session ${n}`, messages: [],
-    settings: { ...DEFAULT_SESSION_SETTINGS, advEnabled: n === 0, advTextIntervalMs: n === 0 ? 0 : 100 } }));
-  const state = { sessions, activeId: sessions[0].id, global: { voiceMode: true } };
-  const getActive = () => sessions.find(s => s.id === state.activeId);
-  const dom = Object.fromEntries(['messages', 'input', 'sendBtn', 'stopBtn', 'advRoot'].map(key => [key, doc.createElement('div')]));
-  for (const node of Object.values(dom)) doc.body.appendChild(node);
-  const layout = doc.createElement('div'); layout.className = 'app'; doc.body.appendChild(layout);
-  const audio = { isPlaying: false, played: [], sequential: [], currentMsgId: null,
-    playLine(index, chunks) { this.played.push({ index, chunks }); return Promise.resolve('ended'); },
-    stopLine() {}, startSession(...args) { this.sequential.push(args); }, enqueueChunk() {},
-  };
-  const noop = () => {};
-  const stream = fakeChatStream(); let sequence = 0, deleting = false;
-  const app = initApp({ initialize: false, dom, state, getActive,
-    getSession: id => sessions.find(s => s.id === id), isSessionDeleting: () => deleting,
-    getCurrentActiveProvider: () => null, getVoiceProfiles: () => [], haveProvidersLoaded: () => true,
-    saveState: noop, autoTitle: noop, persistSession: async () => {}, clearMicTimers: noop,
-    getCurrentVoice: () => null, stopCurrentVoice: noop, setCurrentVoice: noop,
-    uid: () => `m_${++sequence}`, fetch: stream.fetch, showToast: noop, fetchAndCacheAudio: async () => {},
-    streamAudioController: audio,
-    portraitStage: { updateDialogue: noop, setEmotion: noop, handleMessageEmotion: noop, refreshAffection: noop },
-    addMessage(role, content) { const msg = { id: `m_${++sequence}`, role, content }; getActive().messages.push(msg); return msg; },
-    renderMessages(root, session) {
-      root.innerHTML = ''; const inner = doc.createElement('div'); root.appendChild(inner);
-      for (const message of session.messages) { const el = doc.createElement('div'); el.textContent = message.content; inner.appendChild(el); }
-      return inner;
-    },
-    createMessageEl(msg) { const el = doc.createElement('div'); el.textContent = msg.content; return { el, contentEl: el }; },
-    createTypingEl: () => doc.createElement('div'),
-  });
-  app.fullRender(); t.after(() => { app.conversation.stop(); if (app.adv) { getActive().settings.advEnabled = false; app.syncAdv(); } });
-  return { app, sessions, dom, state, audio, stream, getActive, layout, setDeleting: value => { deleting = value; } };
-}
-
-test('main mounts only opted-in sessions; toggling, session switch and re-mount restore the right settings', async t => {
-  const h = setup(t); assert.ok(h.app.adv); assert.equal(h.layout.inert, true);
+test('stored advEnabled false opens in ADV and all session switches reuse the stage', async t => {
+  const h = setup(t);
   const original = h.app.adv;
+  assert.ok(original);
   h.sessions[0].settings.advEnabled = false; h.app.fullRender();
-  assert.equal(h.app.adv, null); assert.equal(h.dom.advRoot.children.length, 0); assert.equal(h.layout.inert, false);
-  h.sessions[0].settings.advEnabled = true; h.app.fullRender(); assert.notEqual(h.app.adv, original);
-  await h.app.switchSession('s_1'); assert.equal(h.app.adv, null);
-  h.sessions[1].settings.advEnabled = true; h.app.fullRender();
+  assert.equal(h.app.adv, original);
+  await h.app.switchSession('s_1');
+  assert.equal(h.app.adv, original);
   assert.equal(h.app.adv.player.settings.revealMsPerGrapheme, 100);
-  await h.app.switchSession('s_0'); assert.equal(h.app.adv.player.settings.revealMsPerGrapheme, 0);
-  h.app.adv.unmount(); h.sessions[0].settings.advEnabled = false; h.app.syncAdv();
-  h.sessions[0].settings.advEnabled = true; h.app.syncAdv(); assert.equal(h.app.adv.player.state, 'input');
+  await h.app.switchSession('s_0');
+  assert.equal(h.app.adv.player.settings.revealMsPerGrapheme, 0);
 });
 
 test('real conversation events use per-line audio and keep skipped lines in history', async t => {
@@ -108,11 +68,13 @@ test('real conversation events use per-line audio and keep skipped lines in hist
   assert.equal(h.audio.played.length, 1);
 });
 
-test('changing renderer during a live turn cancels generation and preserves delivered history', async t => {
+test('legacy disabled setting cannot cancel a live turn or unmount the only renderer', async t => {
   const h = setup(t); h.app.sendMessage('问题'); await tick();
   await h.stream.requests[0].event('line', { index: 0, zh: '已收到。', ja: '', emotion: 'gentle', act: {} });
+  const stage = h.app.adv;
   h.sessions[0].settings.advEnabled = false; h.app.fullRender();
-  assert.equal(h.app.conversation.busy, false); assert.equal(h.app.adv, null);
+  assert.equal(h.app.conversation.busy, true); assert.equal(h.app.adv, stage);
+  h.app.conversation.stop();
   assert.equal(h.getActive().messages.at(-1).lines[0].zh, '已收到。');
 });
 
@@ -143,43 +105,19 @@ test('LOG opened during a real stream contains the final saved reply after done'
   const request = h.stream.requests[0]; await request.onChunk('partial');
   h.app.adv.action('log'); await request.onChunk('partial final'); await request.onEnd('partial final');
   assert.equal(h.getActive().messages.at(-1).content, 'partial final');
-  assert.ok(h.dom.messages.querySelectorAll('div').some(node => node.textContent === 'partial final'));
   const overlay = h.app.adv.stage.stage.querySelector('.adv-log-overlay');
   assert.ok(overlay, 'LOG overlay should be open');
   assert.ok(overlay.querySelectorAll('.adv-log-primary').some(node => node.textContent === 'partial final'));
 });
 
-test('main input keydown ignores Enter during IME composition (keyCode 229 / isComposing)', async t => {
-  const h = setup(t);
-  let defaultPrevented = false;
-
-  // During IME composition (isComposing = true)
-  h.dom.input.value = 'ceshi';
-  h.app.handleInputKeydown({
-    key: 'Enter',
-    isComposing: true,
-    preventDefault: () => { defaultPrevented = true; },
-  });
+test('ADV input keeps IME Enter native and sends normal Enter', async t => {
+  const h = setup(t), input = h.app.adv.textbox.inputElement;
+  input.value = '测试';
+  input.dispatchEvent({ type: 'keydown', key: 'Enter', isComposing: true });
+  input.dispatchEvent({ type: 'keydown', key: 'Enter', keyCode: 229 });
   assert.equal(h.stream.requests.length, 0);
-  assert.equal(defaultPrevented, false);
-
-  // IME commit with keyCode 229
-  h.app.handleInputKeydown({
-    key: 'Enter',
-    keyCode: 229,
-    preventDefault: () => { defaultPrevented = true; },
-  });
-  assert.equal(h.stream.requests.length, 0);
-  assert.equal(defaultPrevented, false);
-
-  // Normal Enter sends
-  h.app.handleInputKeydown({
-    key: 'Enter',
-    preventDefault: () => { defaultPrevented = true; },
-  });
-  await tick();
-  assert.equal(h.stream.requests.length, 1);
-  assert.equal(defaultPrevented, true);
+  input.dispatchEvent({ type: 'keydown', key: 'Enter' });
+  await tick(); assert.equal(h.stream.requests.length, 1);
 });
 
 for (const blocked of ['loading', 'deleting']) test(`real controller ${blocked} rejection preserves draft and disables ADV sending`, t => {
@@ -190,4 +128,33 @@ for (const blocked of ['loading', 'deleting']) test(`real controller ${blocked} 
   input.dispatchEvent({ type: 'keydown', key: 'Enter' });
   assert.equal(h.stream.requests.length, 0); assert.equal(input.value, '保留');
   assert.equal(h.app.adv.stage.stage.querySelector('.adv-player-send-btn').disabled, true);
+});
+
+test('offline voice engine cannot block ADV art or let an old engine completion select a different character', async t => {
+  storedState.sessions = [2, 3].map(id => ({ id: `art_${id}`, title: '角色', messages: [],
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: id } }));
+  storedState.activeId = 'art_2';
+  let finishSwitch;
+  const portrait = id => ({ enabled: true, defaultCostume: `outfit_${id}`, costumes: [{ id: `outfit_${id}` }],
+    sprites: { [`outfit_${id}`]: { smile: { file: `/art_${id}.png`, width: 100, height: 200 } } },
+    faces: { smile: { primary: 'gentle' } }, expressionSets: { gentle: [{ id: 'smile' }] } });
+  const h = setup(t, { callbacks: { state: storedState, getActive: storedActive, getSession: storedSession, getVoiceProfiles },
+    fetch: async (url, options = {}) => {
+      if (url === '/api/voice/profiles') return Response.json({ profiles: [{ id: 2, name: '甲' }, { id: 3, name: '乙' }], active_profile_id: null });
+      if (url === '/api/voice/switch') {
+        if (JSON.parse(options.body).profile_id === 2) return new Promise(resolve => { finishSwitch = resolve; });
+        return Response.json({ detail: '引擎离线' }, { status: 503 });
+      }
+      const id = /\/characters\/(\d+)\/portrait/.exec(url)?.[1];
+      return Response.json(id ? portrait(id) : { backgrounds: [] });
+    } });
+  initVoiceSettings({});
+  const pending = ensureSessionVoice(storedActive()); await tick();
+  assert.equal(h.app.adv.sprite.getModel().defaultCostume, 'outfit_2');
+  await h.app.switchSession('art_3'); await tick();
+  assert.equal(storedActive().settings.voiceProfileId, 3);
+  assert.equal(h.app.adv.sprite.getModel().defaultCostume, 'outfit_3');
+  finishSwitch(Response.json({ profile: '甲' })); await pending; await tick();
+  assert.equal(h.app.adv.sprite.getModel().defaultCostume, 'outfit_3');
+  assert.equal(storedActive().settings.voiceProfileId, 3);
 });

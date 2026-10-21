@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PortraitStageController } from '../frontend/src/portrait.js';
 import { createSpriteView } from '../frontend/src/adv/sprite.js';
 import { normalizePortrait, createActingGate, inferEmotion } from '../frontend/src/sprite_state.js';
 
@@ -244,11 +243,7 @@ test('calibration accepts only finite number fields', () => {
 
 test('legacy emotion precedence ignores whitespace metadata', () => {
   assert.equal(inferEmotion('[angry] text', ' happy '), 'angry');
-  const wrapper = new PortraitStageController();
-  wrapper.handleMessageEmotion('[angry] text', ' happy ');
-  assert.equal(wrapper.currentEmotion, 'angry');
-  wrapper.handleMessageEmotion('[angry] text', 'HAPPY');
-  assert.equal(wrapper.currentEmotion, 'happy');
+  assert.equal(inferEmotion('[angry] text', 'HAPPY'), 'happy');
 });
 
 

@@ -38,7 +38,7 @@ const advEnums = {
 };
 const advRanges = { advWindowOpacity: 100, advTextIntervalMs: 100, advAutoBaseMs: 6000, advAutoPerCharMs: 200 };
 export function validAdvSetting(key, value) {
-  if (key === 'advEnabled' || key === 'advInterruptVoice' || key === 'advBlink' || key === 'advLipSync') return typeof value === 'boolean';
+  if (key === 'advInterruptVoice' || key === 'advBlink' || key === 'advLipSync') return typeof value === 'boolean';
   if (advEnums[key]) return advEnums[key].includes(value);
   if (key in advRanges) return Number.isInteger(value) && value >= 0 && value <= advRanges[key];
   if (key === 'advPlayerName') {

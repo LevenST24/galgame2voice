@@ -1,36 +1,34 @@
 import assert from 'node:assert/strict';
-import { updateBadge } from '../frontend/src/model_badge.js';
+import { getModelStatus } from '../frontend/src/model_badge.js';
 
 function render(provider, { profile = null, loaded = true } = {}) {
-  const label = { textContent: '' };
-  const dom = { badgeDot: { className: '' }, badge: { title: '', querySelector: () => label } };
   const callbacks = {
     getCurrentActiveProvider: () => provider,
     haveProvidersLoaded: () => loaded,
     getActive: () => ({ settings: { voiceProfileId: profile ? 7 : null } }),
     getVoiceProfiles: () => (profile ? [{ id: 7, name: profile }] : []),
   };
-  updateBadge(dom, callbacks);
-  return { text: label.textContent, title: dom.badge.title, dot: dom.badgeDot.className };
+  const status = getModelStatus(callbacks);
+  return { text: status.label, title: status.title, state: status.state };
 }
 
 let passed = 0;
 {
   const ready = render({ id: 'gemini', name: 'Google Gemini', chat_model: 'gemini-x', api_key: '****abcd' });
   assert.equal(ready.text, 'Google Gemini · gemini-x');
-  assert.match(ready.dot, /dot-custom/); passed++;
+  assert.equal(ready.state, 'ok'); passed++;
 }
 {
   const missing = render({ id: 'deepseek', name: 'DeepSeek', chat_model: 'deepseek-chat', api_key: '' }, { profile: '爱丽丝' });
   assert.equal(missing.text, 'DeepSeek · 未填写 API Key · 🎙️ 爱丽丝');
   assert.match(missing.title, /尚未填写 API Key/);
-  assert.match(missing.dot, /dot-mock/); passed++;
+  assert.equal(missing.state, 'error'); passed++;
 }
 {
   // Local OpenAI-compatible services (Ollama, LM Studio) work without a key.
   const local = render({ id: 'custom', name: '本地模型', chat_model: 'qwen3', api_key: '' });
   assert.equal(local.text, '本地模型 · qwen3');
-  assert.match(local.dot, /dot-custom/); passed++;
+  assert.equal(local.state, 'ok'); passed++;
 }
 {
   const none = render(null);

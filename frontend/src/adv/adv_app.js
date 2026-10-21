@@ -12,9 +12,10 @@ import { normalizePortrait, resolveSpriteState } from '../sprite_state.js';
 import { DEFAULT_SESSION_SETTINGS } from '../store.js';
 import { pickSettings } from '../session_data.js';
 import { requestJson } from '../request.js';
+export { advActions } from './actions.js';
 
 /** Mount one disposable renderer. Controller remains the sole history writer.
- * dom: { root, sidebar?, messages?, input?, micBtn?, voiceModeBtn? }
+ * dom: { root, sidebar? }
  * deps: { controller, audio, getSession, voiceEnabled, loadPortrait, getCharacter,
  *   clock?, raf?, cancelRaf?, matchMedia?, subscribe?, subscribeOverlay?, ...actions }
  */
@@ -126,11 +127,13 @@ export function mountAdv(dom, deps) {
   textbox.setPlayer(player);
   const quickMenu = createQuickMenu(stage.quickmenu, { onAction: action });
   const tools = doc.createElement('div'); tools.className = 'adv-app-tools';
+  let voiceModeButton;
   stage.stage.appendChild(tools);
   listen(tools, 'click', event => event.stopPropagation());
   for (const [label, name] of [['会话', 'sessions'], ['输入', 'input'], ['语音开关', 'voice_mode'], ['停止', 'stop']]) {
     const button = doc.createElement('button'); button.type = 'button'; button.textContent = label;
     button.setAttribute('aria-label', label); button.dataset.action = name;
+    if (name === 'voice_mode') voiceModeButton = button;
     listen(button, 'click', () => action(name)); tools.appendChild(button);
   }
 
@@ -288,6 +291,8 @@ export function mountAdv(dom, deps) {
     const overlayActive = Boolean(drawer || backlog || externalOverlay || configPanel?.isOpen || bgPanel?.isOpen);
     for (const name of ['auto', 'skip', 'replay_voice', 'hide']) quickMenu.setEnabled(name, !input && !overlayActive);
     quickMenu.setToggle('auto', player.auto); quickMenu.setToggle('skip', player.skip);
+    voiceModeButton.setAttribute('aria-pressed', String(Boolean(deps.voiceEnabled?.())));
+    voiceModeButton.title = deps.voiceEnabled?.() ? '关闭自动播放语音回复' : '自动播放语音回复';
     quickMenu.setHidden(player.hidden); textbox.setHidden(player.hidden);
     tools.hidden = player.hidden;
     stage.stage.classList.toggle('is-window-hidden', player.hidden);
@@ -319,13 +324,13 @@ export function mountAdv(dom, deps) {
     closeDrawer();
     closeLog();
     if (configPanel?.isOpen) configPanel.close({ revert: true });
-    const node = kind === 'sessions' ? dom.sidebar : dom.messages;
+    const node = dom.sidebar;
     if (!node?.parentNode) return;
     savedFocus = doc.activeElement;
     player.suspend('overlay'); deps.stopOtherVoice?.(); sprite.suspend(); textbox.completeReveal(); textbox.glyph(false);
     const element = doc.createElement('div'); element.className = `adv-drawer adv-drawer-${kind}`;
     element.setAttribute('role', 'dialog'); element.setAttribute('aria-modal', 'true');
-    element.setAttribute('aria-label', kind === 'log' ? 'LOG 聊天历史' : '会话列表');
+    element.setAttribute('aria-label', '会话列表');
     const close = doc.createElement('button'); close.type = 'button'; close.textContent = '关闭';
     // Drawer nodes are disposed on close; don't retain their handlers in the app.
     close.onclick = closeDrawer;
@@ -369,7 +374,9 @@ export function mountAdv(dom, deps) {
       loadOlderHistory: session => (deps.loadOlderHistory || deps.loadOlderSessionHistory)?.(session),
       playUserVoice: (msg, ctl) => (deps.playUserVoice || deps.playVoice)?.(msg, ctl),
       stopOtherVoice: () => deps.stopOtherVoice?.(),
+      playLegacyVoice: (msg, ctl) => deps.playLegacyVoice?.(msg, ctl),
       wallNow: () => deps.wallNow?.() ?? Date.now(),
+      onSettings: () => (deps.onModelSettings || deps.onSettings)?.(),
       onClose: closeLog,
     });
     stage.textbox.inert = true; stage.quickmenu.inert = true; tools.inert = true;
@@ -648,7 +655,7 @@ export function mountAdv(dom, deps) {
   loadBackgrounds();
   update();
   return {
-    update, player, textbox, sprite, stage, action, configPanel, background, bgPanel,
+    update, player, textbox, sprite, stage, action, configPanel, background, bgPanel, closeDrawer,
     isConfigOpen: () => Boolean(configPanel?.isOpen),
     get backlog() { return backlog; },
     unmount() {

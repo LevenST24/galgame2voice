@@ -380,30 +380,26 @@ class TestFrontendDOMStructure:
 
     def test_index_html_contains_all_galgame_and_capsule_elements(self):
         """Verify index.html contains all required IDs and dual-mode stage elements."""
-        html_path = PROJECT_ROOT / "galgame2voice" / "static" / "index.html"
+        html_path = PROJECT_ROOT / "frontend" / "index.html"
         assert html_path.exists()
         content = html_path.read_text(encoding="utf-8")
 
-        # 1. Gal2Voice 新版 UI 骨架
+        assert 'id="advRoot"' in content
+        assert 'id="messages"' not in content
+        # 1. Session drawer and dialogs
         assert 'id="sidebar"' in content
         assert 'id="sessionList"' in content
-        assert 'id="messages"' in content
-        assert 'id="composer"' in content
 
         # 2. 会话与全局设置入口
-        assert 'id="sessionSettingsBtn"' in content
         assert 'id="globalSettingsBtn"' in content
         assert 'id="sessionModal"' in content
         assert 'id="globalModal"' in content
 
         # 3. 语音能力控件
-        assert 'id="micBtn"' in content
-        assert 'id="voiceModeBtn"' in content
         assert 'id="sVoice"' in content
         assert 'id="sVoiceDelete"' in content
 
         # 4. 状态与提示
-        assert 'id="modelBadge"' in content
         assert 'id="toastRoot"' in content
 
     def test_css_contains_glassmorphism_aura_and_equalizer_animations(self):

@@ -9,6 +9,27 @@ import { DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
 import { fakeDocument, fakeClock, Element, microtasks } from './helpers/adv_dom.mjs';
 import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
 
+test('LOG replays legacy assistant audio and failed player recordings through the shared playback service', t => {
+  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+  const calls = [], now = Date.now();
+  const session = { id: 'legacy', messages: [
+    { id: 'a', role: 'assistant', content: '旧格式中文', japanese: '日本語', ts: now, audioUrls: ['/audio/cache/old.wav'] },
+    { id: 'u', role: 'user', content: '失败录音', dur: 3, voiceKey: 'recording', failed: { error: '离线' } },
+  ] };
+  let voice = true;
+  const log = createBacklog(root, { getSession: () => session, getSettings: () => DEFAULT_SESSION_SETTINGS,
+    getCharacter: () => ({ name: '角色' }), voiceEnabled: () => voice, wallNow: () => now,
+    stopOtherVoice: () => calls.push('stop'), audio: { stopLine() {} },
+    playLegacyVoice: msg => calls.push(msg.id), playUserVoice: msg => calls.push(msg.id),
+  });
+  t.after(() => log.destroy());
+  log.element.querySelector('.adv-log-replay-btn').click(); assert.equal(calls.at(-1), 'a');
+  log.element.querySelector('.adv-log-user-recording-btn').click(); assert.equal(calls.at(-1), 'u');
+  voice = false; log.renderAll(); assert.equal(log.element.querySelector('.adv-log-replay-btn').disabled, true);
+  voice = true; session.messages[0].ts = now - 8 * 24 * 60 * 60 * 1000;
+  log.renderAll(); assert.equal(log.element.querySelector('.adv-log-replay-btn').disabled, true);
+});
+
 function setupApp(t, options = {}) {
   const doc = fakeDocument();
   globalThis.document = doc;
@@ -282,7 +303,7 @@ test('LOG: entries for lines, legacy and user messages, and subtitle settings', 
   const failureEl = entries[5].querySelector('.adv-log-failure');
   assert.ok(failureEl, 'Failed user message should show failure reason');
   assert.ok(failureEl.textContent.includes('连接超时'));
-  assert.equal(entries[5].querySelectorAll('.adv-log-entry-controls button, .adv-error-btn').length, 0, 'No action buttons inside LOG');
+  assert.equal(entries[5].querySelectorAll('.adv-error-btn').length, 2, 'Latest failure offers retry and settings');
 
   h.app.action('close_overlay');
 });
@@ -411,6 +432,7 @@ test('LOG: disabled states (no audio, voice off, older than 7 days, failed load)
   // Case 4: voice off disables all replay buttons
   h.app.action('close_overlay');
   h.app.action('voice_mode'); // toggle voice mode off
+  assert.equal(h.app.stage.stage.querySelector('.adv-app-tools').children.find(button => button.dataset.action === 'voice_mode').getAttribute('aria-pressed'), 'false');
   h.app.action('log');
   entries = h.app.stage.stage.querySelectorAll('.adv-log-entry.is-assistant');
   const btnVoiceOff = entries[2].querySelector('.adv-log-replay-btn');
@@ -420,6 +442,7 @@ test('LOG: disabled states (no audio, voice off, older than 7 days, failed load)
   // Case 5: chunk failed load disables button and shows text
   h.app.action('close_overlay');
   h.app.action('voice_mode'); // toggle voice mode back on
+  assert.equal(h.app.stage.stage.querySelector('.adv-app-tools').children.find(button => button.dataset.action === 'voice_mode').getAttribute('aria-pressed'), 'true');
   h.app.action('log');
   entries = h.app.stage.stage.querySelectorAll('.adv-log-entry.is-assistant');
   const btnFailing = entries[2].querySelector('.adv-log-replay-btn');
@@ -641,7 +664,7 @@ test(`Part 3 #1: real controller/player, audio ${status}, done ${fullyRevealed ?
     audioStore: new Map(), putCachedAudioBlob() {}, fetchAndCacheAudio: async () => {},
     audioPlayer, getCurrentVoice: () => null, stopCurrentVoice() {}, setCurrentVoice() {},
     clearMicTimers() {}, beforeSend() {}, onBlocked() {}, getAudioControl: () => null,
-    getAudioMode: () => 'lines', fetch: stream.fetch,
+    fetch: stream.fetch,
   });
 
   let enteredInput = false;

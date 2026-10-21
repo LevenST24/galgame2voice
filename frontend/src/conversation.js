@@ -1,5 +1,5 @@
 /**
- * 会话逻辑不依赖 DOM；聊天气泡和后续 ADV 舞台订阅同一组事件。
+ * 会话逻辑不依赖 DOM；ADV 舞台订阅控制器事件。
  *
  * 控制器事件 (Controller Events):
  * - turnstart: ({ userMessage, assistantMessage, originId, retryOf })
@@ -7,9 +7,9 @@
  * - line: ({ messageId, line }) — 新单句台词到达，line 为 { index, zh, ja, emotion, act, audio: { status, chunks } }
  * - line_audio: ({ messageId, line, status, chunks }) — 某句台词的音频结果权威状态与切片
  * - audio_chunk: (chunk) — 逐句音频切片事件
- * - done: ({ message, error, kind, originId, failedInline, meta, hasStartedStreamAudio })
- * - cancelled: ({ message, error, kind, originId, failedInline, meta, hasStartedStreamAudio })
- * - error: ({ message, error, kind, originId, failedInline, meta, hasStartedStreamAudio })
+ * - done: ({ message, error, kind, originId, failedInline, meta })
+ * - cancelled: ({ message, error, kind, originId, failedInline, meta })
+ * - error: ({ message, error, kind, originId, failedInline, meta })
  */
 import { streamChat } from './ai.js';
 import { normalizeLines } from './session_data.js';
@@ -17,9 +17,8 @@ import { normalizeLines } from './session_data.js';
 export function createConversation({
   state, getActive, getSession, addMessage, uid, saveState, persistSession,
   isSessionDeleting, audioStore, putCachedAudioBlob, fetchAndCacheAudio,
-  audioPlayer, getCurrentVoice, stopCurrentVoice, setCurrentVoice,
-  clearMicTimers, beforeSend, onBlocked, getAudioControl,
-  getAudioMode = () => 'sequential',
+  audioPlayer, getCurrentVoice, stopCurrentVoice,
+  clearMicTimers, beforeSend, onBlocked,
   fetch: fetchRequest = (...args) => globalThis.fetch(...args),
 }) {
   const listeners = new Map();
@@ -38,22 +37,6 @@ export function createConversation({
     const session = getActive();
     return busy || Boolean(session?.loadingOlder || (session && isSessionDeleting(session.id)));
   };
-
-  function attachVoiceControl(voiceCtl, message) {
-    if (!turn?.hasStartedStreamAudio || audioPlayer.currentMsgId !== turn.streamMsgId) return;
-    audioPlayer.attachControl(voiceCtl, message.id);
-    if (audioPlayer.isPlaying) {
-      setCurrentVoice({
-        msgId: message.id,
-        get paused() { return audioPlayer.paused; },
-        pause() { audioPlayer.pause(); },
-        resume() { audioPlayer.resume(); },
-        stop() { audioPlayer.interrupt(40); },
-        setPlaying: voiceCtl?.setPlaying,
-        setProgress: voiceCtl?.setProgress,
-      });
-    }
-  }
 
   function send(rawText = '', voiceMeta, { retryOf = null } = {}) {
     clearMicTimers?.();
@@ -95,8 +78,6 @@ export function createConversation({
     const assistantMessage = { id: uid('m_stream'), role: 'assistant', content: '', ts: Date.now() };
     const current = {
       originId,
-      streamMsgId: assistantMessage.id,
-      hasStartedStreamAudio: false,
       bufferedChunksByLine: new Map(),
       linesByLineIndex: new Map(),
       hasReceivedLineEvents: false,
@@ -182,38 +163,10 @@ export function createConversation({
           emit(type, payload);
         }
       },
-      onAudio: (url, idx, sentence, meta = {}) => {
+      // ADV owns playback per line; arrival only warms the cache.
+      onAudio: url => {
         if (turn !== current || current.settled) return;
-        const mode = typeof getAudioMode === 'function' ? getAudioMode() : 'sequential';
-        if (mode === 'lines') {
-          if (url && typeof url === 'string' && url.startsWith('/audio/')) {
-            fetchAndCacheAudio(url).catch(() => {});
-          }
-          return;
-        }
-        if ((!state.global.voiceMode || originId !== state.activeId) && url && typeof url === 'string' && url.startsWith('/audio/')) {
-          fetchAndCacheAudio(url).catch(() => {});
-        }
-        if (state.global.voiceMode && originId === state.activeId && url) {
-          if (idx === 0 || !current.hasStartedStreamAudio) {
-            current.hasStartedStreamAudio = true;
-            current.audioControl = getAudioControl?.() || null;
-            const ctl = current.audioControl;
-            audioPlayer.startSession(current.streamMsgId, ctl, { streaming: true });
-            setCurrentVoice({
-              msgId: current.streamMsgId,
-              get paused() { return audioPlayer.paused; },
-              pause() { audioPlayer.pause(); if (ctl) ctl.setPlaying(false); },
-              resume() { audioPlayer.resume(); if (ctl) ctl.setPlaying(true); },
-              setPlaying: (p) => { if (ctl) ctl.setPlaying(p); },
-              setProgress: (pct) => { if (ctl) ctl.setProgress(pct); },
-              stop() { audioPlayer.interrupt(40); },
-            });
-          } else {
-            current.audioControl = getAudioControl?.() || null;
-          }
-          audioPlayer.enqueueChunk({ url, index: idx, sentence, ctl: current.audioControl, emotion: meta.emotion || '' });
-        }
+        if (typeof url === 'string' && url.startsWith('/audio/')) fetchAndCacheAudio(url).catch(() => {});
       },
       onEnd: (finalText, meta = {}) => finish(finalText, meta),
     });
@@ -227,7 +180,6 @@ export function createConversation({
       let { error = null, errorCode = null } = meta;
       cancelStream = null;
       const textToSave = (finalText || lastFull || '').trim();
-      if (audioPlayer.currentMsgId === current.streamMsgId) audioPlayer.finishInput();
       const message = {
         id: uid('m'), role: 'assistant', content: textToSave,
         japanese: meta.japanese || '', audioUrls, audioChunks: meta.chunks || [],
@@ -270,7 +222,7 @@ export function createConversation({
       busy = false;
       emit(error ? 'error' : cancelled ? 'cancelled' : 'done', {
         message: stored ? message : null, error, kind: errorCode,
-        originId, failedInline, meta, hasStartedStreamAudio: current.hasStartedStreamAudio,
+        originId, failedInline, meta,
       });
     }
   }
@@ -298,5 +250,5 @@ export function createConversation({
     return send(message.content, null, { retryOf: message });
   }
 
-  return { on, send, stop, retry, canRetry, attachVoiceControl, get busy() { return isBusy(); } };
+  return { on, send, stop, retry, canRetry, get busy() { return isBusy(); } };
 }

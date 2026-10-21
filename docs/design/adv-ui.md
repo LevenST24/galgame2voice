@@ -4,6 +4,30 @@ Status: P0 design contract, 2026-10-19; implementation is delivered in P1–P8.
 The approved Chinese plan controls scope, dependencies, and rollout; this contract fixes unspecified interfaces/defaults.
 **Provisional** measurements may change after the P3 prototype; protocol/persistence changes require a spec revision.
 
+P7 implementation (2026-10-21): ADV is the only main UI for every session.
+`advEnabled` is retired: browser snapshots and backup imports drop it, including
+old `false` values. The earlier preview/default-chat references below describe P3–P6.
+The parked session sidebar becomes the ADV drawer; LOG owns history paging,
+bilingual subtitles, per-line/legacy voice replay, recordings, and failure/retry.
+Existing token, session/character/voice and global settings dialogs remain above the stage.
+
+Removed compatibility IDs: `backdrop`, `menuBtn`, `chatTitle`, `modelBadge`, `badgeDot`,
+`sessionSettingsBtn`, `voiceModeBtn`, `voiceModeIcon`, `messages`, `composer`, `input`,
+`sendBtn`, `stopBtn`, `micBtn`, `portraitToggleBtn`, `stageBackdrop`, `characterStage`,
+`stageCharacterName`, `stageEmotionLabel`, `stageCostumeToggleBtn`, `stageCostumeIcon`,
+`stageCollapseBtn`, `stageCostumeBar`, `stageViewport`, `stageEmptyState`,
+`portraitImgA`, `portraitImgB`, `stageDialogueCard`, `stageDialogueName`, `stageDialogueText`.
+`portrait.js`, bubble/typing/composer rendering and arrival-driven sequential autoplay are removed.
+
+After the first authenticated session sync, `main.js` calls `showTitle(actions)` from
+`adv/title_hook.js`; the default is a no-op and leaves the mounted stage visible.
+The separately implemented title screen can use that argument or import `advActions`
+from `main.js`: `startNew()`, `continueLatest()`, `loadSession(id)`, `openCharacters()`,
+`openSettings()`, `listSessions()`. The last returns fresh
+`{id, title, characterName, lastLine, updatedAt, background}` records newest first;
+timestamps are milliseconds, background is a portable ID, absent text/character/background
+is `''`, and unloaded histories use the backend's last-message summary.
+
 Sources read: the approved `staged-launching-otter.md` plan, local `play-notes.md`,
 `yuzusoft-directing.md` plus statistics JSON, `tenshi-assets.md`, stream coordinator,
 portrait controller, P1 `conversation.js`, `PORTRAIT_EXPORT.md`, and `scripts/dev_standins.py`.
@@ -37,7 +61,7 @@ P0 supplies this spec, local reference capture, asset reconnaissance, a small
 format experiment, helper feasibility, and GPU-free development stand-ins.
 Dependency order: P0 → P1 plus P2a backend → P2a frontend → P3 plus P2b →
 P4 → P5 → P6 → P7 → P8. P2b and P3 can proceed independently on `line`.
-The old chat layout remains the default until P7 acceptance.
+The old chat layout was the default through P6 and is removed in P7.
 Each implementation phase has its own PR and user acceptance before merge.
 
 Non-goals: scripted branching/rollback, favorite voices, screenshots/gallery tools,
@@ -358,13 +382,13 @@ Controls are keyboard reachable and disabled states are semantic, not just dimme
 
 | Existing feature | ADV destination / acceptance |
 | --- | --- |
-| Session list and history browsing | P3 existing sidebar becomes a drawer; P7 title Load owns sessions; LOG still pages older history. |
+| Session list and history browsing | ADV session drawer; title Load uses the P7 actions hook; LOG pages older history and disables paging during generation. |
 | Microphone / speech input | Microphone inside player textbox with current permissions/recovery. |
 | Disable automatic voice | Existing voice mode off: typewriter and advance work; AUTO uses text count. |
-| Failure note / resend | Inline reason with Retry and Settings, preserving controller retry semantics. |
+| Failure note / resend | Textbox reason with Retry and Settings; LOG retains recovery actions after reopening a failed session, preserving controller retry semantics. |
 | Model badge | Accessible status point next to quick menu; opens existing settings. |
 | Japanese translation panel | Subtitle selection and LOG bilingual lines. |
-| Player recording bar | Playback button on the matching player LOG message. |
+| Player recording bar | Playback button on the matching player LOG message, including failed sends. |
 | Token and settings modals | Existing dialogs over the stage; retain cancellation/authentication behavior. |
 | Hint/toast bars | Anchor above the message band instead of assuming a bottom chat input. |
 
@@ -774,7 +798,7 @@ Keep existing `state.global.voiceMode` and TTS preset behavior; do not duplicate
 | P1 | None | Refactor only. |
 | P2a | None | Audio mode is selected by renderer, not persisted as another preference. |
 | P2b | `advReplyFormat` | `old`; enum `old`, `lines`. |
-| P3 | `advEnabled` | `false` through P6; new sessions default true in P7. |
+| P3–P6 only | `advEnabled` (removed) | Ignored/dropped in P7; all sessions use ADV. |
 | P3 | `advPlayerName` | `Player`; nonempty string, maximum 40 graphemes. |
 | P3 | `advPrimaryLanguage` | `zh`; enum `zh`, `ja`. |
 | P3 | `advSubtitleLanguage` | `ja`; enum `zh`, `ja`, `none`, distinct from primary. |
@@ -791,12 +815,12 @@ Keep existing `state.global.voiceMode` and TTS preset behavior; do not duplicate
 | P6 | `advBackground` | Empty string means CSS sky; otherwise local manifest ID. |
 | P6 | `advBackgroundTime` | `clock`; enum `clock`, `day`, `evening`, `night`. |
 | P6 | `advBackgroundBlur` | 6; finite number 0–12 logical units. |
-| P7 | No additional keys | Title reads sessions; preserve explicit preview preferences during migration. |
+| P7 | No additional keys | Title reads sessions through `advActions`; the preview toggle is removed. |
 | P8 | No required keys | Responsive composition and preload policy are automatic. |
 
 P3 owns the behavior/defaults; P4 completes the consolidated preference panel.
-P7 retires the preview switch; preserve old stored values for backup compatibility,
-but route all sessions through ADV once the old layout is removed.
+P7 retires the preview switch; ignore/drop old stored values for backup compatibility
+and route all sessions through ADV.
 AUTO/SKIP active flags, drafts, hidden-window state, timers, signed links, analyser
 state, and decoded-image caches are transient and must not be restored as playback.
 OS reduced motion is evaluated live and overrides animation preference switches.

@@ -13,7 +13,7 @@ const doc = fakeDocument();
 globalThis.document = doc;
 
 const { BUILTIN_PRESETS, formatProviderDiagnostic } = await import('../frontend/src/settings.js');
-const { createMessageEl, needsModelSettings } = await import('../frontend/src/ui.js');
+const { needsModelSettings } = await import('../frontend/src/ui.js');
 const { mountAdv } = await import('../frontend/src/adv/adv_app.js');
 const { DEFAULT_SESSION_SETTINGS } = await import('../frontend/src/store.js');
 
@@ -55,7 +55,6 @@ function setup(t, options = {}) {
     saveSettings: patch => { Object.assign(active.settings, patch); },
     onSettings: () => { calls.settings++; }, onModelSettings: () => { calls.models++; },
     onNewSession: () => { calls.newSession++; }, onMic: () => { calls.mic++; },
-    renderHistory: () => { calls.history++; },
     subscribeOverlay: fn => { overlayChange = fn; return () => { overlayChange = null; }; },
     subscribe: fn => { subscription = fn; return () => { subscription = null; }; },
   });
@@ -94,37 +93,6 @@ test('needsModelSettings considers empty_reply a model setting issue', () => {
   assert.equal(needsModelSettings('任何信息', 'empty_reply'), true);
   assert.equal(needsModelSettings('模型把生成长度用完了，却没有写出回复', null), true);
   assert.equal(needsModelSettings('模型这次没有返回任何内容', null), true);
-});
-
-test('chat view createMessageEl with empty_reply renders 重新发送 and 去设置', () => {
-  const calls = [];
-  const msg = {
-    id: 'm_empty',
-    role: 'user',
-    content: '你好',
-    ts: 0,
-    failed: {
-      error: '模型把生成长度用完了，却没有写出回复，通常是思考占满了额度。可以在模型设置里把“思考强度”调低，或在会话设置里调大“最大生成长度”。',
-      code: 'empty_reply',
-    },
-  };
-
-  const { el } = createMessageEl(msg, {
-    onRetry: m => calls.push(['retry', m]),
-    onOpenModels: () => calls.push(['models']),
-  });
-
-  assert.ok(el.classList.contains('has-failure'));
-  const note = el.querySelector('.msg-failure');
-  assert.ok(note);
-  assert.equal(note.attributes.role, 'status');
-  assert.ok(note.querySelector('.msg-failure-text').textContent.includes('未收到回复：模型把生成长度用完了'));
-
-  const buttons = el.querySelectorAll('.msg-failure-btn');
-  assert.deepEqual(buttons.map(b => b.textContent), ['重新发送', '去设置']);
-
-  buttons.forEach(b => b.click());
-  assert.deepEqual(calls, [['retry', msg], ['models']]);
 });
 
 test('ADV textbox displays empty_reply with 重新发送 and 去设置 actions', t => {

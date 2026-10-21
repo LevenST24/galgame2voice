@@ -22,7 +22,6 @@ import {
 } from '../cache.js';
 import { withAudioDeadline } from '../audio_request.js';
 import { streamAudioController } from '../audio_player.js';
-import { portraitStage } from '../portrait.js';
 import { showToast } from '../ui.js';
 
 let _dom = {};
@@ -68,31 +67,7 @@ export function initAudioPlayerUi(dom, callbacks = {}) {
   _dom = dom;
   _callbacks = callbacks;
 
-  // Stream audio controller hookups with portrait stage
-  streamAudioController.onStatusChange = (isPlaying) => {
-    try {
-      portraitStage.setSpeaking(isPlaying);
-    } catch (_) {}
-  };
-
-  streamAudioController.onChunkStart = (chunk) => {
-    if (chunk && chunk.sentence) {
-      try {
-        portraitStage.updateDialogue(chunk.sentence);
-        // 后端随音频切片下发逐句情绪，立绘据此在同情绪内做细微漂移
-        if (chunk.emotion) {
-          portraitStage.setEmotion(chunk.emotion, chunk.sentence);
-        } else {
-          portraitStage.handleMessageEmotion(chunk.sentence);
-        }
-      } catch (_) {}
-    }
-  };
-
   streamAudioController.onQueueEmpty = () => {
-    try {
-      portraitStage.setSpeaking(false);
-    } catch (_) {}
     if (currentVoice?.msgId === streamAudioController.currentMsgId) {
       try {
         currentVoice.setPlaying(false);
@@ -110,18 +85,6 @@ export function initAudioPlayerUi(dom, callbacks = {}) {
       } : null);
   };
 
-  if (_dom.voiceModeBtn) {
-    _dom.voiceModeBtn.addEventListener('click', () => {
-      state.global.voiceMode = !state.global.voiceMode;
-      // Save now: otherwise a reload restores the previous choice and replies start speaking again.
-      saveState();
-      updateVoiceModeUI();
-    });
-  }
-
-  if (_dom.micBtn) {
-    _dom.micBtn.addEventListener('click', toggleMic);
-  }
 }
 
 export function clearMicTimers() {
@@ -137,9 +100,6 @@ export function stopCurrentVoice() {
   pendingSynthesis = null;
   try {
     streamAudioController.interrupt(40);
-  } catch (_) {}
-  try {
-    portraitStage.setSpeaking(false);
   } catch (_) {}
   if (currentVoice) {
     const v = currentVoice;
@@ -159,16 +119,10 @@ export function playSingleAudio(getAudio, msgId, ctl, { objectUrl = null } = {})
   let paused = false;
 
   const attach = () => {
-    try {
-      portraitStage.setSpeaking(true);
-    } catch (_) {}
     audio.ontimeupdate = () => {
       if (audio.duration && ctl && ctl.setProgress) ctl.setProgress(audio.currentTime / audio.duration);
     };
     audio.onended = () => {
-      try {
-        portraitStage.setSpeaking(false);
-      } catch (_) {}
       audio.ontimeupdate = null;
       audio.onended = null;
       audio.onerror = null;
@@ -186,9 +140,6 @@ export function playSingleAudio(getAudio, msgId, ctl, { objectUrl = null } = {})
     };
     audio.onerror = () => {
       if (cancelled) return;
-      try {
-        portraitStage.setSpeaking(false);
-      } catch (_) {}
       audio.ontimeupdate = null;
       audio.onended = null;
       audio.onerror = null;
@@ -214,7 +165,6 @@ export function playSingleAudio(getAudio, msgId, ctl, { objectUrl = null } = {})
     pause() {
       paused = true;
       audio.pause();
-      portraitStage.setSpeaking(false);
       if (ctl && ctl.setPlaying) ctl.setPlaying(false);
     },
     resume() {
@@ -226,7 +176,6 @@ export function playSingleAudio(getAudio, msgId, ctl, { objectUrl = null } = {})
             audio.pause();
             if (ctl && ctl.setPlaying) ctl.setPlaying(false);
           } else {
-            portraitStage.setSpeaking(true);
             if (ctl && ctl.setPlaying) ctl.setPlaying(true);
           }
         }).catch((err) => {
@@ -556,17 +505,13 @@ export function playVoice(msg, ctl) {
 }
 
 export function updateVoiceModeUI() {
-  const on = state.global.voiceMode;
-  if (_dom.voiceModeBtn) {
-    _dom.voiceModeBtn.classList.toggle('active', on);
-    _dom.voiceModeBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-    _dom.voiceModeBtn.title = on ? '关闭自动播放语音回复' : '自动播放语音回复';
-  }
-  if (_dom.voiceModeIcon) {
-    const use = _dom.voiceModeIcon.querySelector('use');
-    if (use) use.setAttribute('href', on ? '#i-volume' : '#i-volume-off');
-  }
-  if (!on) stopCurrentVoice();
+  if (!state.global.voiceMode) stopCurrentVoice();
+}
+
+export function toggleVoiceMode() {
+  state.global.voiceMode = !state.global.voiceMode;
+  saveState();
+  updateVoiceModeUI();
 }
 
 export function updateMicUI(listening) {

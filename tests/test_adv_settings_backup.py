@@ -10,12 +10,37 @@ from galgame2voice.services.chat_backup import SESSION_SETTINGS
 from galgame2voice.routers.chat import ImportedSession
 
 P3_SETTINGS = {
-    "advEnabled": True, "advPlayerName": "旅行者", "advPrimaryLanguage": "ja",
+    "advPlayerName": "旅行者", "advPrimaryLanguage": "ja",
     "advSubtitleLanguage": "zh", "advWindowOpacity": 0, "advTextIntervalMs": 100,
     "advInterruptVoice": False, "advAutoBaseMs": 6000, "advAutoPerCharMs": 200,
     "advAutoMode": "normal", "advOutfit": "uniform_2", "advBlink": True, "advLipSync": True,
     "advBackground": "cafe", "advBgTime": "evening",
 }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_value", [False, True, "obsolete"])
+async def test_old_export_with_removed_adv_toggle_imports_without_data_loss(tmp_path, monkeypatch, legacy_value):
+    db = tmp_path / "legacy-adv.db"
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
+    await init_db(db)
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+        response = await client.post("/api/chat/import", json={
+            "format": "galgame2voice.chat", "version": 1, "sessions": [{
+                "id": "s_import_old_adv", "title": "旧会话", "settings": {
+                    "advEnabled": legacy_value, "advPlayerName": "旅行者", "temperature": 0.7,
+                }, "messages": [{"role": "user", "content": "保留文字"}],
+            }],
+        })
+        assert response.status_code == 200, response.text
+        async with get_db(db) as conn:
+            row = await (await conn.execute("SELECT settings_json FROM sessions WHERE id='s_import_old_adv'")).fetchone()
+        assert "advEnabled" not in json.loads(row[0])
+        exported = (await client.get("/api/chat/export")).json()["sessions"][0]
+        assert "advEnabled" not in exported["settings"]
+        assert exported["settings"]["advPlayerName"] == "旅行者"
+        assert exported["settings"]["temperature"] == 0.7
+        assert exported["messages"][0]["content"] == "保留文字"
 
 INVALID_P3 = [
     ("advEnabled", "false"), ("advInterruptVoice", 1),

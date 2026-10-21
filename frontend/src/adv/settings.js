@@ -2,7 +2,6 @@ import { validAdvSetting, pickSettings } from '../session_data.js';
 
 // Same field/label structure as the existing session panel. Values are inert text.
 export const ADV_FIELDS = {
-  advEnabled: ['启用 ADV 预览', ['false', 'true']],
   advPlayerName: ['玩家名字'],
   advPrimaryLanguage: ['主要语言', ['zh', 'ja']],
   advSubtitleLanguage: ['字幕语言', ['zh', 'ja', 'none']],
@@ -59,7 +58,7 @@ export function createAdvSettings(container, defaults) {
   const group = document.createElement('details');
   group.className = 'settings-advanced';
   const summary = document.createElement('summary');
-  summary.textContent = 'ADV 预览（实验）';
+  summary.textContent = 'ADV 显示与交互';
   group.appendChild(summary);
   const body = document.createElement('div');
   body.className = 'settings-fields';
