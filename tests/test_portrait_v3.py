@@ -767,6 +767,95 @@ class TestSignedLayerUrlsAndPathSafety:
 # ===========================================================================
 
 
+@pytest.fixture
+def frame_only_pack(tmp_path):
+    root, data = make_valid_v3(tmp_path)
+    for fid in ("02", "14", "16"):
+        data["looks"]["a/uniform"]["faces"][fid]["frameOnly"] = True
+    return root, data
+
+
+class TestFrameOnly:
+    @pytest.mark.parametrize("with_metadata", [True, False])
+    def test_load_preserves_partners_but_excludes_metadata_and_pools(self, frame_only_pack, with_metadata):
+        root, data = frame_only_pack
+        if not with_metadata:
+            for fid in ("02", "14", "16"):
+                del data["faces"][fid]
+        assert _validate_v3(root, data) == (True, "")
+        (root / "layers.json").write_text(json.dumps(data), encoding="utf-8")
+        payload = load_portrait_manifest(root)
+        assert payload["version"] == 3
+        assert set(payload["faces"]) == {"01", "20"}
+        assert all(entry["id"] not in {"02", "14", "16"}
+                   for pool in payload["expression_sets"].values() for entry in pool)
+        assert payload["looks"]["a/uniform"] == data["looks"]["a/uniform"]
+
+    @pytest.mark.parametrize("normalized", [True, False])
+    def test_menu_and_sanitize_exclude_partner_ids_and_labels(self, frame_only_pack, normalized):
+        root, data = frame_only_pack
+        # Exercise the menu with metadata still present, as well as the loader's payload.
+        payload = _normalize_v3(root, data) if normalized else data
+        menu = build_acting_menu(payload, "uniform")
+        assert menu["look_faces"]["a"] == ["平常"]
+        for fid in ("02", "14", "16"):
+            label = data["faces"][fid]["label"]
+            assert label not in menu["faces"]
+            assert label not in menu["face_ids"]
+            assert all(fid not in ids for ids in menu["face_ids"].values())
+            for requested in (fid, label):
+                assert sanitize_act({"pose": "a", "face": requested}, menu,
+                                    line_index=0, character="fixture") == {"pose": "a"}
+
+    @pytest.mark.parametrize("value", [None, 0, 1, "true", [], {}])
+    def test_flag_must_be_boolean(self, frame_only_pack, value):
+        root, data = frame_only_pack
+        data["looks"]["a/uniform"]["faces"]["14"]["frameOnly"] = value
+        valid, reason = _validate_v3(root, data)
+        assert not valid
+        assert "frameOnly must be a boolean" in reason
+
+    def test_default_must_be_selectable(self, frame_only_pack):
+        root, data = frame_only_pack
+        data["looks"]["a/uniform"]["defaultFace"] = "14"
+        valid, reason = _validate_v3(root, data)
+        assert not valid
+        assert "defaultFace '14' must not be frameOnly" in reason
+
+    @pytest.mark.parametrize("field", ["blink", "mouth", "combinedFrames", None, "self", "extra"])
+    def test_unreferenced_frames_warn_without_rejecting(self, frame_only_pack, caplog, field):
+        root, data = frame_only_pack
+        look = data["looks"]["a/uniform"]
+        look["faces"]["orphan"] = {"layers": ["A/1531"], "eyesClosed": True, "frameOnly": True}
+        if field == "blink":
+            look["faces"]["01"]["blink"]["closed"] = "orphan"
+        elif field == "mouth":
+            look["faces"]["01"]["mouth"]["open"] = "orphan"
+        elif field == "combinedFrames":
+            look["faces"]["01"]["combinedFrames"]["closed:open"] = "orphan"
+        elif field == "self":
+            look["faces"]["orphan"]["mouth"] = {"closed": "orphan", "open": "orphan"}
+        elif field == "extra":
+            look["faces"]["01"]["blink"]["extra"] = {"unreviewed": "orphan"}
+        with caplog.at_level(logging.WARNING):
+            assert _validate_v3(root, data) == (True, "")
+        assert ("frameOnly face 'orphan' is not referenced" in caplog.text) == (field in (None, "self", "extra"))
+
+    def test_flag_is_scoped_to_look_and_false_keeps_expression(self, frame_only_pack):
+        root, data = frame_only_pack
+        other = data["looks"]["b/uniform"]
+        other["faces"]["14"] = {"layers": ["A/1531"], "eyesClosed": True, "frameOnly": False}
+        assert _validate_v3(root, data) == (True, "")
+        payload = _normalize_v3(root, data)
+        assert "14" in payload["faces"]
+        assert any(e["id"] == "14" for e in payload["expression_sets"]["gentle"])
+        menu = build_acting_menu(payload, "uniform")
+        assert "闭眼" not in menu["look_faces"]["a"]
+        assert "闭眼" in menu["look_faces"]["b"]
+        assert sanitize_act({"pose": "b", "face": "闭眼"}, menu,
+                            line_index=0, character="fixture") == {"pose": "b", "face": "闭眼"}
+
+
 class TestActingMenuV3:
     def test_acting_menu_poses_and_faces_for_outfit(self, tmp_path):
         root, data = make_valid_v3(tmp_path)

@@ -97,7 +97,9 @@ def build_acting_menu(portrait: dict | None, outfit: str | None = None) -> dict 
         look_faces_dict = default_look.get("faces") or {}
         labels: list[str] = []
         face_ids: dict[str, list[str]] = {}
-        for face_id in look_faces_dict:
+        for face_id, entry in look_faces_dict.items():
+            if entry.get("frameOnly") is True:
+                continue
             meta = faces_meta.get(face_id)
             label = meta.get("label") if isinstance(meta, dict) else face_id
             if not isinstance(label, str) or not label:
@@ -115,10 +117,13 @@ def build_acting_menu(portrait: dict | None, outfit: str | None = None) -> dict 
             l_look = looks_meta.get(f"{pid}/{resolved_outfit}") or {}
             look_blush[pid] = any(
                 bool(entry.get("blush", l_look.get("blush")))
-                for entry in l_look.get("faces", {}).values() if isinstance(entry, dict)
+                for entry in l_look.get("faces", {}).values()
+                if isinstance(entry, dict) and entry.get("frameOnly") is not True
             )
             l_labels: list[str] = []
-            for fid in l_look.get("faces", {}):
+            for fid, entry in l_look.get("faces", {}).items():
+                if entry.get("frameOnly") is True:
+                    continue
                 meta = faces_meta.get(fid)
                 lbl = meta.get("label") if isinstance(meta, dict) else fid
                 if not isinstance(lbl, str) or not lbl:

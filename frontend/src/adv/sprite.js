@@ -9,7 +9,7 @@
  */
 
 import { createFxElement, FX_TYPES } from './sprite_fx.js';
-import { createActingGate } from '../sprite_state.js';
+import { createActingGate, isExpressionFace } from '../sprite_state.js';
 
 export const FRAMING = {
   centerX: 1100,
@@ -193,7 +193,7 @@ export function planLayers(model, lookKey, state) {
   const look = model?.looks?.[lookKey];
   const base = state?.face;
   const crop = look?.crop;
-  if (!look?.faces?.[base] || !(crop?.width > 0) || !(crop?.height > 0)) return null;
+  if (!isExpressionFace(look?.faces, base) || !(crop?.width > 0) || !(crop?.height > 0)) return null;
   const blush = state.blush === true;
   const items = [];
   const push = (layerId, group, fx = false) => {
@@ -348,7 +348,7 @@ export function createSpriteView({
   // same queue as whole images: one budget, two decodes and six entries. Faces
   // already in a frame set, such as blink and mouth partners, are skipped.
   function preloadUpcomingLayers(plan) {
-    const ids = Object.keys(plan.look.faces);
+    const ids = Object.keys(plan.look.faces).filter(id => isExpressionFace(plan.look.faces, id));
     const start = ids.indexOf(plan.base);
     const covered = new Set(plan.groups);
     const upcoming = [];

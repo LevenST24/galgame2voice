@@ -209,10 +209,15 @@ export function pickFace(model, costume, emotion, activeFace, recentFaces = []) 
   return ranked(true) || ranked(false) || pool[0].id;
 }
 
+// Expression eligibility is local to the look; partner rendering keeps all faces.
+export function isExpressionFace(lookFaces, id) {
+  return Boolean(lookFaces?.[id] && lookFaces[id].frameOnly !== true);
+}
+
 // Several faces of a look may share a label, as the server's `face_ids` allow.
 // Take the one the line's emotion pool ranks highest, else the first.
 function faceForLabel(model, lookFaces, label, emotion) {
-  const ids = Object.keys(lookFaces).filter(fid => model.faces?.[fid]?.label === label);
+  const ids = Object.keys(lookFaces).filter(fid => isExpressionFace(lookFaces, fid) && model.faces?.[fid]?.label === label);
   if (ids.length < 2) return ids[0] || null;
   let best = null;
   let strength = -Infinity;
@@ -228,11 +233,11 @@ function faceForLabel(model, lookFaces, label, emotion) {
 
 function pickFaceV3(model, look, emotion, activeFace, recentFaces = []) {
   const lookFaces = look?.faces || {};
-  const available = pool => (Array.isArray(pool) ? pool : []).filter(entry => entry && entry.id && lookFaces[entry.id]);
+  const available = pool => (Array.isArray(pool) ? pool : []).filter(entry => entry && entry.id && isExpressionFace(lookFaces, entry.id));
   let pool = available(model.expressionSets?.[emotion]);
   if (!pool.length) pool = available(model.expressionSets?.gentle);
-  if (!pool.length && lookFaces[look.defaultFace]) return look.defaultFace;
-  if (!pool.length) pool = Object.keys(lookFaces).map(id => ({ id, strength: 0 }));
+  if (!pool.length && isExpressionFace(lookFaces, look.defaultFace)) return look.defaultFace;
+  if (!pool.length) pool = Object.keys(lookFaces).filter(id => isExpressionFace(lookFaces, id)).map(id => ({ id, strength: 0 }));
   if (!pool.length) return null;
 
   const faces = model.faces || {};
@@ -313,7 +318,9 @@ function resolveOutfitPose(model, costume, requestedPose, stickyPose) {
 export function resolveLookLayers(model, lookKey, faceId, isBlushing = false, fx = null) {
   const look = model.looks?.[lookKey];
   if (!look) return [];
-  const faceEntry = look.faces?.[faceId] || (look.defaultFace ? look.faces?.[look.defaultFace] : null);
+  const fallback = isExpressionFace(look.faces, look.defaultFace)
+    ? look.defaultFace : Object.keys(look.faces || {}).find(id => isExpressionFace(look.faces, id));
+  const faceEntry = look.faces?.[faceId] || look.faces?.[fallback];
   const body = Array.isArray(look.body) ? look.body : [];
   const faceLayers = faceEntry && Array.isArray(faceEntry.layers) ? faceEntry.layers : [];
   let blushLayers = [];
@@ -379,11 +386,12 @@ export function resolveSpriteState(model, prev, intent, ctx = {}) {
     if (!look) return null;
 
     const lookFaces = look.faces || {};
-    const defaultFace = look.defaultFace || Object.keys(lookFaces)[0] || '01';
+    const selectable = id => isExpressionFace(lookFaces, id);
+    const defaultFace = selectable(look.defaultFace) ? look.defaultFace : Object.keys(lookFaces).find(selectable);
 
     let baseFace = null;
     if (act.face) {
-      if (lookFaces[act.face]) {
+      if (selectable(act.face)) {
         baseFace = act.face;
       } else {
         const match = faceForLabel(model, lookFaces, act.face, emotion);
@@ -397,14 +405,14 @@ export function resolveSpriteState(model, prev, intent, ctx = {}) {
 
     if (!baseFace) {
       if (costumeChanged) {
-        if (prevState?.face && lookFaces[prevState.face]) {
+        if (prevState?.face && selectable(prevState.face)) {
           baseFace = prevState.face;
         } else {
           baseFace = pickFaceV3(model, look, emotion, null, []) || defaultFace;
         }
       } else if (emotion === 'thinking') {
-        const thinkingPool = (model.expressionSets?.thinking || []).filter(e => e && e.id && lookFaces[e.id]);
-        if (thinkingPool.length === 0 && prevState?.face && lookFaces[prevState.face]) {
+        const thinkingPool = (model.expressionSets?.thinking || []).filter(e => e && e.id && selectable(e.id));
+        if (thinkingPool.length === 0 && prevState?.face && selectable(prevState.face)) {
           baseFace = prevState.face;
         } else {
           baseFace = pickFaceV3(model, look, emotion, prevState?.face, recentFaces) || defaultFace;
@@ -415,6 +423,7 @@ export function resolveSpriteState(model, prev, intent, ctx = {}) {
     }
 
     if (!baseFace) baseFace = defaultFace;
+    if (!baseFace) return null;
 
     let nextRecentFaces = recentFaces;
     if (prevState?.face && !costumeChanged && prevState.face !== baseFace) {

@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createSpriteView, planLayers, LIP_SYNC } from '../frontend/src/adv/sprite.js';
-import { normalizePortrait } from '../frontend/src/sprite_state.js';
+import { normalizePortrait, resolveSpriteState, resolveLookLayers } from '../frontend/src/sprite_state.js';
 import { Element, fakeDocument, fakeClock, microtasks } from './helpers/adv_dom.mjs';
 
 const CROP = { left: 100, top: 50, width: 800, height: 1600 };
@@ -47,14 +47,14 @@ function pack() {
             mouth: { closed: 'smile', half: 'smile_mouth_half', open: 'smile_mouth_open' },
             combinedFrames: { 'closed:open': 'smile_closed_open' },
           }),
-          smile_half: face('eyes_half'),
-          smile_closed: face('eyes_closed', { eyesClosed: true }),
-          smile_mouth_half: face('mouth_half'),
-          smile_mouth_open: face('mouth_open'),
-          smile_closed_open: face('closed_open', { eyesClosed: true }),
+          smile_half: face('eyes_half', { frameOnly: true }),
+          smile_closed: face('eyes_closed', { eyesClosed: true, frameOnly: true }),
+          smile_mouth_half: face('mouth_half', { frameOnly: true }),
+          smile_mouth_open: face('mouth_open', { frameOnly: true }),
+          smile_closed_open: face('closed_open', { eyesClosed: true, frameOnly: true }),
           shy: face('face_shy', { blush: ['blush_strong'], blink: { closed: 'shy_closed' }, mouth: { closed: 'shy', open: 'shy_open' } }),
-          shy_closed: face('shy_closed_l', { eyesClosed: true }),
-          shy_open: face('shy_open_l'),
+          shy_closed: face('shy_closed_l', { eyesClosed: true, frameOnly: true }),
+          shy_open: face('shy_open_l', { frameOnly: true }),
           sleepy: face('face_sleepy', { eyesClosed: true }),
           plain: face('face_plain'),
           calm: face('face_calm', { blush: [] }),
@@ -68,6 +68,59 @@ function pack() {
     layers,
   };
 }
+
+test('frameOnly partners never become expressions through tags, pools, drift or sticky state', () => {
+  const raw = pack();
+  const look = raw.looks['a/uniform'];
+  const partners = Object.keys(look.faces).filter(id => look.faces[id].frameOnly);
+  for (const id of partners) raw.faces[id] = { label: `partner ${id}`, parts: [], emotion: 'happy' };
+  raw.expression_sets.happy = [...partners, 'smile', 'shy'].map(id => ({ id, strength: 100 }));
+  const model = normalizePortrait(raw);
+  assert.equal(model.looks['a/uniform'].faces.smile_closed.frameOnly, true);
+  for (const id of partners) {
+    for (const face of [id, `partner ${id}`]) {
+      assert.equal(resolveSpriteState(model, null, { act: { face } }).state.face, 'smile');
+    }
+    for (const emotion of ['happy', 'thinking']) {
+      const prev = { outfit: 'uniform', pose: 'a', face: id };
+      assert.ok(['smile', 'shy'].includes(resolveSpriteState(model, prev, { emotion }).state.face));
+    }
+    const switched = resolveSpriteState(model, { outfit: 'other', face: id }, { emotion: 'happy' });
+    assert.equal(switched.state.face, 'smile');
+  }
+  assert.equal(resolveSpriteState(model, { outfit: 'uniform', face: 'smile' }, { emotion: 'happy' }).state.face, 'shy');
+  assert.equal(planLayers(model, 'a/uniform', { face: partners[0] }), null);
+});
+
+test('frameOnly is excluded from default and first-face fallbacks, even with animation partners', () => {
+  const raw = pack();
+  const look = raw.looks['a/uniform'];
+  const partner = look.faces.smile_mouth_open;
+  partner.blink = { closed: 'smile_closed' };
+  partner.mouth = { closed: 'smile_mouth_open', open: 'smile_mouth_half' };
+  delete look.faces.smile.blink;
+  delete look.faces.smile.mouth;
+  look.faces = { smile_mouth_open: partner, ...look.faces };
+  look.defaultFace = 'smile_mouth_open';
+  raw.expression_sets = { gentle: [{ id: 'smile_mouth_open', strength: 999 }] };
+  const model = normalizePortrait(raw);
+  for (const act of [{}, { face: 'unknown' }, { face: 'smile_mouth_open' }]) {
+    assert.equal(resolveSpriteState(model, null, { act }).state.face, 'smile');
+  }
+  assert.ok(resolveLookLayers(model, 'a/uniform', 'unknown').some(layer => layer.id === 'face_smile'));
+  delete look.defaultFace;
+  assert.equal(resolveSpriteState(model, null, {}).state.face, 'smile');
+  look.faces = { smile_mouth_open: partner };
+  assert.equal(resolveSpriteState(model, null, {}), null);
+});
+
+test('frameOnly is scoped to a look and false keeps a face selectable', () => {
+  const raw = pack();
+  raw.looks['b/uniform'].faces.smile_mouth_open = { layers: ['mouth_open'], frameOnly: false };
+  const model = normalizePortrait(raw);
+  assert.equal(resolveSpriteState(model, null, { act: { pose: 'b', face: 'smile_mouth_open' } }).state.face, 'smile_mouth_open');
+  assert.equal(resolveSpriteState(model, null, { act: { pose: 'a', face: 'smile_mouth_open' } }).state.face, 'smile');
+});
 
 const v3 = (face, state = {}, lookKey = 'a/uniform') => ({
   isV3: true, lookKey, state: { outfit: 'uniform', pose: lookKey.split('/')[0], face, blush: false, fx: null, ...state },
