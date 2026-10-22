@@ -214,18 +214,38 @@ export function isExpressionFace(lookFaces, id) {
   return Boolean(lookFaces?.[id] && lookFaces[id].frameOnly !== true);
 }
 
+// A v3 face can only move its mouth or blink when the look's face entry owns
+// those partner frames. Small enough to break ties, never to beat a shared part.
+const ANIMATION_MOUTH_BONUS = 0.9;
+const ANIMATION_BLINK_BONUS = 0.3;
+
+function animationBonus(faceEntry) {
+  let bonus = 0;
+  if (faceEntry && faceEntry.mouth) bonus += ANIMATION_MOUTH_BONUS;
+  if (faceEntry && faceEntry.blink) bonus += ANIMATION_BLINK_BONUS;
+  return bonus;
+}
+
 // Several faces of a look may share a label, as the server's `face_ids` allow.
-// Take the one the line's emotion pool ranks highest, else the first.
+// Take the one the line's emotion pool ranks highest, preferring faces with
+// animation partners, else the first.
 function faceForLabel(model, lookFaces, label, emotion) {
   const ids = Object.keys(lookFaces).filter(fid => isExpressionFace(lookFaces, fid) && model.faces?.[fid]?.label === label);
   if (ids.length < 2) return ids[0] || null;
+  const strengths = new Map();
+  const pool = Array.isArray(model.expressionSets?.[emotion]) ? model.expressionSets[emotion] : [];
+  for (const entry of pool) {
+    if (!entry || !ids.includes(entry.id)) continue;
+    const value = Number(entry.strength) || 0;
+    if (!strengths.has(entry.id) || value > strengths.get(entry.id)) strengths.set(entry.id, value);
+  }
   let best = null;
-  let strength = -Infinity;
-  for (const entry of Array.isArray(model.expressionSets?.[emotion]) ? model.expressionSets[emotion] : []) {
-    const value = Number(entry?.strength) || 0;
-    if (entry && ids.includes(entry.id) && value > strength) {
-      best = entry.id;
-      strength = value;
+  let score = -Infinity;
+  for (const id of ids) {
+    const s = (strengths.get(id) || 0) + animationBonus(lookFaces[id]);
+    if (s > score) {
+      score = s;
+      best = id;
     }
   }
   return best || ids[0];
@@ -243,7 +263,16 @@ function pickFaceV3(model, look, emotion, activeFace, recentFaces = []) {
   const faces = model.faces || {};
   const current = faces[activeFace];
   if (!current || !pool.some(e => e.id === activeFace)) {
-    return pool[0].id;
+    let pick = pool[0].id;
+    let score = -Infinity;
+    for (const entry of pool) {
+      const s = (Number(entry.strength) || 0) + animationBonus(lookFaces[entry.id]);
+      if (s > score) {
+        score = s;
+        pick = entry.id;
+      }
+    }
+    return pick;
   }
   const recent = new Set(recentFaces || []);
   const ranked = (skipRecent) => {
@@ -256,7 +285,7 @@ function pickFaceV3(model, look, emotion, activeFace, recentFaces = []) {
       const parts = Array.isArray(cand.parts) ? cand.parts : [];
       const currentParts = Array.isArray(current.parts) ? current.parts : [];
       const shared = parts.filter(p => p && currentParts.some(q => q && q.romaji === p.romaji)).length;
-      const s = shared * 10 + (Number(entry.strength) || 0);
+      const s = shared * 10 + (Number(entry.strength) || 0) + animationBonus(lookFaces[entry.id]);
       if (s > score) {
         score = s;
         pick = entry.id;

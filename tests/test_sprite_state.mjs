@@ -277,3 +277,177 @@ test('the acting gate: consecutive repeats, 2000 ms, 3000 ms fx', () => {
   assert.equal(gate.allowFx('anger', 2500), true, 'Different fx is allowed');
   assert.equal(gate.allowFx('sweat', 4000), true, '3000ms elapsed since sweat at 1000ms');
 });
+
+// ---------------------------------------------------------------------------
+// v3 animation partners: only faces whose look entry has `mouth` / `blink`
+// can move, so they win the ties.
+// ---------------------------------------------------------------------------
+
+function layer(id) {
+  return { canvas: 'base', file: `/art/${id}.webp`, rect: { x: 0, y: 0, width: 1000, height: 2000 }, z: 10 };
+}
+
+// faces: { id: { label, mouth?, blink?, parts? } }; sets: expression_sets.
+function createV3SampleModel({ faces, sets = {}, defaultFace }) {
+  const layers = { body: layer('body') };
+  const modelFaces = {};
+  const lookFaces = {};
+  for (const [id, meta] of Object.entries(faces)) {
+    layers[`l_${id}`] = layer(id);
+    const global = { label: meta.label };
+    if (meta.parts) global.parts = meta.parts;
+    modelFaces[id] = global;
+    const entry = { label: meta.label, layers: [`l_${id}`] };
+    if (meta.mouth) entry.mouth = { open: `${id}_open` };
+    if (meta.blink) entry.blink = { closed: `${id}_closed` };
+    lookFaces[id] = entry;
+  }
+  return normalizePortrait({
+    version: 3,
+    enabled: true,
+    defaultCostume: 'casual',
+    default_pose: 'p',
+    costumes: [{ id: 'casual', name: 'Casual Clothes', icon: '👗' }],
+    outfits: { casual: { name: 'Casual Clothes' } },
+    poses: { p: { name: 'Standard Pose' } },
+    canvases: { base: { width: 1000, height: 2000 } },
+    layers,
+    faces: modelFaces,
+    looks: {
+      'p/casual': { pose: 'p', outfit: 'casual', body: ['body'], defaultFace, faces: lookFaces },
+    },
+    expression_sets: sets,
+  });
+}
+
+test('v3 a label shared by two faces takes the one with a mouth partner', () => {
+  const model = createV3SampleModel({
+    faces: {
+      calm: { label: 'Happy Look' },
+      grin: { label: 'Happy Look', mouth: true },
+    },
+    sets: { happy: [{ id: 'calm', strength: 2 }, { id: 'grin', strength: 2 }] },
+  });
+  const byLabel = resolveSpriteState(model, null, { emotion: 'happy', act: { face: 'Happy Look' } });
+  assert.equal(byLabel.state.face, 'grin', 'the partnered face wins an equal strength');
+
+  // A face missing from the pool counts as strength 0, yet still beats an
+  // unpartnered pool entry of the same strength.
+  const outside = createV3SampleModel({
+    faces: {
+      calm: { label: 'Happy Look' },
+      grin: { label: 'Happy Look', blink: true },
+    },
+    sets: { happy: [{ id: 'calm', strength: 0 }] },
+  });
+  assert.equal(
+    resolveSpriteState(outside, null, { emotion: 'happy', act: { face: 'Happy Look' } }).state.face,
+    'grin',
+  );
+});
+
+test('v3 a stronger face without partners beats a weaker face with partners', () => {
+  const model = createV3SampleModel({
+    faces: {
+      grin: { label: 'Grin', mouth: true, blink: true },
+      calm: { label: 'Calm' },
+    },
+    sets: { happy: [{ id: 'grin', strength: 1 }, { id: 'calm', strength: 3 }] },
+  });
+  // No current face: grin comes first in the pool.
+  const opened = resolveSpriteState(model, null, { emotion: 'happy' });
+  assert.equal(opened.state.face, 'calm', 'the bonus must not outrank a higher strength');
+});
+
+test('v3 with no usable current face the partnered face wins equal strengths', () => {
+  const model = createV3SampleModel({
+    faces: {
+      plain: { label: 'Plain' },
+      lively: { label: 'Lively', blink: true },
+    },
+    sets: { gentle: [{ id: 'plain', strength: 2 }, { id: 'lively', strength: 2 }] },
+  });
+  const first = resolveSpriteState(model, null, { emotion: 'gentle' });
+  assert.equal(first.state.face, 'lively', 'pool order alone would keep the static face');
+
+  // Equal strengths and no pool entry at all: the blink partner still wins.
+  const noPool = createV3SampleModel({
+    faces: { plain: { label: 'Plain' }, lively: { label: 'Lively', mouth: true } },
+  });
+  assert.equal(resolveSpriteState(noPool, null, { emotion: 'sad' }).state.face, 'lively');
+});
+
+test('v3 shared parts continuity still dominates the animation bonus', () => {
+  const model = createV3SampleModel({
+    faces: {
+      base: { label: 'Base', parts: [{ romaji: 'eye_a' }, { romaji: 'mouth_a' }] },
+      lively: { label: 'Lively', mouth: true, blink: true, parts: [{ romaji: 'eye_z' }] },
+      near: { label: 'Near', parts: [{ romaji: 'eye_a' }, { romaji: 'mouth_a' }] },
+    },
+    sets: {
+      gentle: [
+        { id: 'base', strength: 0 },
+        { id: 'lively', strength: 3 },
+        { id: 'near', strength: 1 },
+      ],
+    },
+  });
+  const prev = { state: { outfit: 'casual', pose: 'p', face: 'base', blush: false, fx: null } };
+  const kept = resolveSpriteState(model, prev, { emotion: 'gentle' });
+  assert.equal(kept.state.face, 'near', 'two shared parts outweigh a stronger animated face');
+
+  // Once continuity and strength tie, the partner breaks it.
+  const tied = createV3SampleModel({
+    faces: {
+      base: { label: 'Base', parts: [{ romaji: 'eye_a' }, { romaji: 'mouth_a' }] },
+      still: { label: 'Still', parts: [{ romaji: 'eye_a' }, { romaji: 'mouth_a' }] },
+      lively: { label: 'Lively', mouth: true, parts: [{ romaji: 'eye_a' }, { romaji: 'mouth_a' }] },
+    },
+    sets: {
+      gentle: [
+        { id: 'base', strength: 0 },
+        { id: 'still', strength: 2 },
+        { id: 'lively', strength: 2 },
+      ],
+    },
+  });
+  assert.equal(
+    resolveSpriteState(tied, prev, { emotion: 'gentle' }).state.face,
+    'lively',
+    'the bonus breaks a continuity tie',
+  );
+});
+
+test('v2 packs keep picking without any animation bonus', () => {
+  const payload = {
+    enabled: true,
+    default_costume: 'casual',
+    costumes: [{ id: 'casual', name: 'Casual Clothes', icon: '👗' }],
+    sprites: {
+      casual: {
+        '01': { file: '/casual/01.png' },
+        '02': { file: '/casual/02.png' },
+        '04': { file: '/casual/04.png' },
+      },
+    },
+    faces: {
+      '01': { label: 'Gentle Smile', parts: [{ romaji: 'eye_a' }, { romaji: 'mouth_a' }] },
+      '02': { label: 'Happy Grin', parts: [{ romaji: 'eye_a' }, { romaji: 'mouth_a' }] },
+      // v2 has no partner frames; stray keys must not bend the choice.
+      '04': {
+        label: 'Surprised',
+        parts: [{ romaji: 'eye_a' }, { romaji: 'mouth_a' }],
+        mouth: { open: '/casual/04_open.png' },
+        blink: { closed: '/casual/04_closed.png' },
+      },
+    },
+    expression_sets: {
+      happy: [{ id: '01', strength: 2 }, { id: '02', strength: 2 }, { id: '04', strength: 2 }],
+    },
+  };
+  const model = normalizePortrait(payload);
+  assert.equal(model.version, undefined);
+  assert.equal(pickFace(model, 'casual', 'happy', '01'), '02', 'ties keep the pool order');
+  assert.equal(resolveSpriteState(model, null, { emotion: 'happy', act: { face: 'Surprised' } }).state.face, '04');
+  assert.equal(resolveSpriteState(model, null, { emotion: 'happy' }).state.face, '01', 'no current face still takes the first pool entry');
+});

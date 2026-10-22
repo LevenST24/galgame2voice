@@ -100,6 +100,9 @@ test('frameOnly is excluded from default and first-face fallbacks, even with ani
   partner.mouth = { closed: 'smile_mouth_open', open: 'smile_mouth_half' };
   delete look.faces.smile.blink;
   delete look.faces.smile.mouth;
+  // Leave the frameOnly face as the only animated one; an animated selectable face would win the fallback.
+  delete look.faces.shy.blink;
+  delete look.faces.shy.mouth;
   look.faces = { smile_mouth_open: partner, ...look.faces };
   look.defaultFace = 'smile_mouth_open';
   raw.expression_sets = { gentle: [{ id: 'smile_mouth_open', strength: 999 }] };

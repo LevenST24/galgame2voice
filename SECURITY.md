@@ -1,6 +1,18 @@
-# 安全说明（SECURITY.md）
+# 安全说明 / Security Policy
 
 本文档描述 galgame2voice 当前实际实现的安全机制、部署边界与已知限制。
+
+## Security maintainer / 安全维护者
+
+[@LevenST24](https://github.com/LevenST24) maintains galgame2voice and is its named security maintainer, responsible for triaging vulnerability reports, fixing confirmed issues and shipping the fixes in a release.
+
+本项目由 [@LevenST24](https://github.com/LevenST24) 维护，并担任署名的安全维护者，负责受理漏洞报告、修复已确认的问题并随版本发布修复。
+
+## Reporting a vulnerability / 报告漏洞
+
+Please report vulnerabilities privately through GitHub's private vulnerability reporting: open this repository's **Security** tab and click **Report a vulnerability**. Do not open a public issue for an unfixed vulnerability.
+
+请通过 GitHub 私密漏洞报告提交：打开本仓库的 **Security** 页，点 **Report a vulnerability**。尚未修复的漏洞请不要发公开 issue。
 
 ## 部署边界
 
