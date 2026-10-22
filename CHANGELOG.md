@@ -56,6 +56,9 @@ All notable changes to galgame2voice are documented here. The format follows
   out of the image's `ENV`, where its name failed Docker's build checks.
 
 ### Fixed
+- Two database backups taken within one tick of a coarse system clock (about 2 ms
+  on some Windows machines) got the same name, so the second replaced the first.
+  The second now waits for the next tick.
 - Voiced sentences without their own emotion cue now show the reply's declared
   emotion on the portrait instead of always falling back to "gentle".
 - Turning automatic voice playback off is saved immediately; a reload no longer
