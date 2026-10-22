@@ -93,6 +93,16 @@ test('the auto-play toggle is saved immediately so a reload keeps the choice', (
   toggleVoiceMode();
   assert.equal(JSON.parse(saved.get('gal2voice.chat.v1')).global.voiceMode, true);
 });
+test('a new browser starts with voice on, and a saved choice to turn it off is kept', () => {
+  const saved = new Map();
+  globalThis.localStorage = { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) };
+  loadState();
+  assert.equal(state.global.voiceMode, true);
+  saved.clear();
+  saved.set('gal2voice.chat.v1', JSON.stringify({ sessions: [], activeId: null, global: { voiceMode: false } }));
+  loadState();
+  assert.equal(state.global.voiceMode, false);
+});
 test('a rejected browser play releases ownership so the next click can retry', async () => {
   const ctl = control();
   const audio = { async play() { throw new Error('NotAllowedError'); }, pause() {} };
