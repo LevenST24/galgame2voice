@@ -132,21 +132,23 @@ for (const invalid of ['{broken', 'null', '{"format":"other"}', JSON.stringify({
   const session = (id, advReplyFormat) => ({ id, title: id, createdAt: 1, updatedAt: 2,
     settings: { temperature: 0.7, ...(advReplyFormat === undefined ? {} : { advReplyFormat }) },
     messages: [{ id: `m_${id}`, role: 'user', content: '台词', ts: 1 }] });
-  storage({ sessions: [session('s_lines', 'lines'), session('s_invalid', 'bogus'), session('s_missing')],
-    activeId: 's_lines', global: {} });
+  // 'old' was the stored default before per-line replies became the default; only 'legacy' opts out.
+  storage({ sessions: [session('s_legacy', 'legacy'), session('s_old', 'old'), session('s_invalid', 'bogus'),
+    session('s_missing')], activeId: 's_legacy', global: {} });
   loadState();
-  assert.deepEqual(state.sessions.map(s => s.settings.advReplyFormat), ['lines', 'old', 'old']);
+  const expected = ['legacy', 'lines', 'lines', 'lines'];
+  assert.deepEqual(state.sessions.map(s => s.settings.advReplyFormat), expected);
   state.activeId = 's_invalid';
-  assert.equal(state.sessions.find(s => s.id === 's_invalid').settings.advReplyFormat, 'old');
-  assert.equal(state.sessions.find(s => s.id === 's_lines').settings.advReplyFormat, 'lines');
-  state.activeId = 's_lines';
+  assert.equal(state.sessions.find(s => s.id === 's_invalid').settings.advReplyFormat, 'lines');
+  assert.equal(state.sessions.find(s => s.id === 's_legacy').settings.advReplyFormat, 'legacy');
+  state.activeId = 's_legacy';
   const exported = JSON.parse(exportSessionData());
-  assert.equal(exported.activeId, 's_lines');
-  assert.deepEqual(exported.sessions.map(s => s.settings.advReplyFormat), ['lines', 'old', 'old']);
+  assert.equal(exported.activeId, 's_legacy');
+  assert.deepEqual(exported.sessions.map(s => s.settings.advReplyFormat), expected);
   state.activeId = 's_invalid';
   const incoming = prepareSessionImport(JSON.stringify(exported));
-  assert.deepEqual(incoming.sessions.map(s => s.settings.advReplyFormat), ['lines', 'old', 'old']);
-  assert.notEqual(incoming.sessions[0].id, 's_lines'); passed++;
+  assert.deepEqual(incoming.sessions.map(s => s.settings.advReplyFormat), expected);
+  assert.notEqual(incoming.sessions[0].id, 's_legacy'); passed++;
 }
 
 function uiFixture() {

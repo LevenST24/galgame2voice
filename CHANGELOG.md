@@ -38,6 +38,10 @@ All notable changes to galgame2voice are documented here. The format follows
   match the deployed and built frontend.
 
 ### Changed
+- The browser now asks for per-line replies with acting tags by default. Session
+  settings → 回复格式 → "旧格式：整段回复" switches a session back. Sessions saved
+  with the earlier default also move to the new format; API clients that omit
+  `reply_format` still get the old format.
 - Sending a message goes through `frontend/src/conversation.js`, a DOM-free
   controller that emits turn, text, audio, done, error and cancelled events. The
   chat view subscribes to it now and the coming visual-novel stage will reuse it;

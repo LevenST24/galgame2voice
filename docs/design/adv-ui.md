@@ -491,7 +491,10 @@ P2a must prevent the controller from immediately autoplaying ADV's future lines.
 
 ### 5.2 P2b reply format and acting semantics
 
-Enable with `advReplyFormat='lines'`; default remains `old` until validation passes.
+The browser requests this format by default (`advReplyFormat='lines'`). A session set to
+`legacy` requests the old whole-reply format instead. A stored `old`, the default before
+this format became the default, reads as `lines`. API clients that omit `reply_format`
+still get `old`.
 The LLM's JSON has this shape; placeholder strings below are not dialogue examples.
 
 ```json
@@ -798,7 +801,7 @@ Keep existing `state.global.voiceMode` and TTS preset behavior; do not duplicate
 | --- | --- | --- |
 | P1 | None | Refactor only. |
 | P2a | None | Audio mode is selected by renderer, not persisted as another preference. |
-| P2b | `advReplyFormat` | `old`; enum `old`, `lines`. |
+| P2b | `advReplyFormat` | `lines`; enum `lines`, `legacy`. A stored `old` reads as `lines`. |
 | P3–P6 only | `advEnabled` (removed) | Ignored/dropped in P7; all sessions use ADV. |
 | P3 | `advPlayerName` | `Player`; nonempty string, maximum 40 graphemes. |
 | P3 | `advPrimaryLanguage` | `zh`; enum `zh`, `ja`. |

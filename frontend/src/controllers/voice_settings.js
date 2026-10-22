@@ -129,7 +129,7 @@ export async function openSessionSettings() {
   if (_dom.sMaxTokens) _dom.sMaxTokens.value = s.settings.maxTokens;
   if (_dom.sCtx) _dom.sCtx.value = s.settings.maxContext;
   if (_dom.sAiAdaptiveVoice) _dom.sAiAdaptiveVoice.value = String(s.settings.aiAdaptiveVoice !== false);
-  if (_dom.sAdvReplyFormat) _dom.sAdvReplyFormat.value = s.settings.advReplyFormat === 'lines' ? 'lines' : 'old';
+  if (_dom.sAdvReplyFormat) _dom.sAdvReplyFormat.value = s.settings.advReplyFormat === 'legacy' ? 'legacy' : 'lines';
   if (_dom.sTtsSpeed) _dom.sTtsSpeed.value = s.settings.ttsSpeed;
   if (_dom.sTtsTopK) _dom.sTtsTopK.value = s.settings.ttsTopK;
   if (_dom.sTtsTopP) _dom.sTtsTopP.value = s.settings.ttsTopP;
@@ -582,7 +582,7 @@ async function handleSaveSessionSettings() {
       presPenalty: Number(_dom.sPres.value),
       maxContext: Number(_dom.sCtx.value),
       aiAdaptiveVoice: _dom.sAiAdaptiveVoice.value === 'true',
-      advReplyFormat: _dom.sAdvReplyFormat.value === 'lines' ? 'lines' : 'old',
+      advReplyFormat: _dom.sAdvReplyFormat.value === 'legacy' ? 'legacy' : 'lines',
       ttsSpeed: Number(_dom.sTtsSpeed.value),
       ttsTopK: Math.round(Number(_dom.sTtsTopK.value)),
       ttsTopP: Number(_dom.sTtsTopP.value),

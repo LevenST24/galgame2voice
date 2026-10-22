@@ -145,19 +145,21 @@ const backup = sessions => ({ format: 'galgame2voice.chat', version: 1, sessions
     return new Response('event: done\ndata: {"chinese":"收到"}\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
   };
   const sessions = [
+    { id: 's_legacy', settings: { advReplyFormat: 'legacy' } },
     { id: 's_old', settings: { advReplyFormat: 'old' } },
     { id: 's_lines', settings: { advReplyFormat: 'lines', advOutfit: 'casual' } },
+    { id: 's_unset', settings: {} },
   ];
-  let active = sessions[0];
-  const turn = () => new Promise((resolve) => streamChat({
-    prompt: '你好', sessionId: active.id, settings: active.settings,
-    onChunk() {}, onEnd: () => resolve(), fetch: globalThis.fetch,
-  }));
-  await turn();
-  active = sessions[1];
-  await turn();
+  for (const active of sessions) {
+    await new Promise((resolve) => streamChat({
+      prompt: '你好', sessionId: active.id, settings: active.settings,
+      onChunk() {}, onEnd: () => resolve(), fetch: globalThis.fetch,
+    }));
+  }
+  // Only the explicit opt-out asks the server for the old whole-reply format.
   assert.deepEqual(bodies.map(body => [body.session_id, body.reply_format, body.outfit]), [
-    ['s_old', 'old', undefined], ['s_lines', 'lines', 'casual'],
+    ['s_legacy', 'old', undefined], ['s_old', 'lines', undefined],
+    ['s_lines', 'lines', 'casual'], ['s_unset', 'lines', undefined],
   ]); passed++;
 }
 console.log(`Session persistence and complete backups: ${passed} scenarios passed`);

@@ -24,9 +24,12 @@ SESSION_SETTINGS = frozenset({
     "advBackground", "advBgTime",
 })
 
+# advReplyFormat: "legacy" is the browser's explicit opt-out of per-line replies.
+# "old" was the stored default before "lines" became the default; it stays valid
+# so older pages keep their settings, and current pages read it as "lines".
 _ADV_ENUMS = {
     "advPrimaryLanguage": {"zh", "ja"}, "advSubtitleLanguage": {"zh", "ja", "none"},
-    "advAutoMode": {"normal", "voice-priority"}, "advReplyFormat": {"old", "lines"},
+    "advAutoMode": {"normal", "voice-priority"}, "advReplyFormat": {"old", "lines", "legacy"},
     "advBgTime": {"auto", "day", "evening", "night"},
 }
 _ADV_RANGES = {"advWindowOpacity": 100, "advTextIntervalMs": 100, "advAutoBaseMs": 6000, "advAutoPerCharMs": 200}
