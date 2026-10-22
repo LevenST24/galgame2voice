@@ -78,6 +78,13 @@ def test_background_settings_reject_keys_that_are_not_one_work_slash_id(backgrou
     assert session.settings["advBgTime"] == "day"
 
 
+# "legacy" opts out of per-line replies; "old" is the earlier stored default that older pages still send.
+@pytest.mark.parametrize("value", ["lines", "legacy", "old"])
+def test_reply_format_values_survive_import(value):
+    session = ImportedSession(id="s_import_format", title="format", messages=[], settings={"advReplyFormat": value})
+    assert session.settings == {"advReplyFormat": value}
+
+
 @pytest.mark.parametrize("key,value", INVALID_P3)
 def test_import_drops_invalid_p3_values_preserving_other_settings(key, value):
     session = ImportedSession(id="s_import_check", title="check", messages=[],

@@ -79,7 +79,7 @@ test('normal turn emits in order, sends the same payload, and saves before unloc
   assert.deepEqual(request.options.headers, { 'Content-Type': 'application/json' });
   assert.deepEqual(JSON.parse(request.options.body), {
     prompt: '你好', session_id: 's', stream: true, voice_profile_id: 3,
-    temperature: 0.7, preset: 'balanced',
+    temperature: 0.7, reply_format: 'lines', preset: 'balanced',
   });
   await request.event('text', { delta_chinese: '你好' });
   await request.event('text', { delta_chinese: '！' });

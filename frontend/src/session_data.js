@@ -31,9 +31,11 @@ export function pickSettings(value, defaults) {
   return result;
 }
 
+// advReplyFormat 'legacy' is the explicit opt-out. 'old' was the stored default
+// before per-line replies became the default, so it now falls back to 'lines'.
 const advEnums = {
   advPrimaryLanguage: ['zh', 'ja'], advSubtitleLanguage: ['zh', 'ja', 'none'],
-  advAutoMode: ['normal', 'voice-priority'], advReplyFormat: ['old', 'lines'],
+  advAutoMode: ['normal', 'voice-priority'], advReplyFormat: ['lines', 'legacy'],
   advBgTime: ['auto', 'day', 'evening', 'night'],
 };
 const advRanges = { advWindowOpacity: 100, advTextIntervalMs: 100, advAutoBaseMs: 6000, advAutoPerCharMs: 200 };

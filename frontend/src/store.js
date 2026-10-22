@@ -32,7 +32,7 @@ export const DEFAULT_SESSION_SETTINGS = {
   presPenalty: 0,
   maxContext: 20,
   aiAdaptiveVoice: true,
-  advReplyFormat: 'old',
+  advReplyFormat: 'lines',
   ttsSpeed: 1.0,
   ttsTopK: 15,
   ttsTopP: 1.0,
