@@ -63,6 +63,10 @@ All notable changes to galgame2voice are documented here. The format follows
   out of the image's `ENV`, where its name failed Docker's build checks.
 
 ### Fixed
+- After sending a message, Space, Enter and Esc work at once on the ADV stage.
+  Sending hid the focused input box, focus fell to the page body, and the stage's
+  shortcuts heard nothing until the stage was clicked; Esc could not stop a reply
+  that was still generating.
 - Two database backups taken within one tick of a coarse system clock (about 2 ms
   on some Windows machines) got the same name, so the second replaced the first.
   The second now waits for the next tick.

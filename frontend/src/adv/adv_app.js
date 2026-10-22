@@ -659,6 +659,13 @@ export function mountAdv(dom, deps) {
     textbox.setDraft(''); textbox.clearError();
     textbox.setSpeaker({ name: deps.getCharacter?.()?.name || '角色', mode: 'character' });
     player.startTurn(turnId); syncControls();
+    // Sending hides the input or removes the retry button that had focus. Focus
+    // then falls to the page body, where Space, Enter and Esc never reach the
+    // stage's shortcuts, so hand it to the stage unless an overlay holds it.
+    const focused = doc.activeElement;
+    if (!focused || focused === doc.body || !doc.body.contains(focused) || stage.textbox.contains(focused)) {
+      stage.stage.focus?.({ preventScroll: true });
+    }
     if (drawer || backlog) player.suspend('overlay');
     if (externalOverlay || configPanel?.isOpen) player.suspend('dialog');
   }));
