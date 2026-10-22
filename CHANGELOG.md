@@ -42,6 +42,9 @@ All notable changes to galgame2voice are documented here. The format follows
   settings → 回复格式 → "旧格式：整段回复" switches a session back. Sessions saved
   with the earlier default also move to the new format; API clients that omit
   `reply_format` still get the old format.
+- Voice replies play by default in a browser that has no saved settings, so the
+  first ADV conversation is voiced. A browser that already saved the voice switch
+  keeps it; "语音开关" on the stage or 设置 → 自动播放语音 changes it.
 - Sending a message goes through `frontend/src/conversation.js`, a DOM-free
   controller that emits turn, text, audio, done, error and cancelled events. The
   chat view subscribes to it now and the coming visual-novel stage will reuse it;

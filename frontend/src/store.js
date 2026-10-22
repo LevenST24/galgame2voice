@@ -53,8 +53,10 @@ export const DEFAULT_SESSION_SETTINGS = {
   advLipSync: true,
 };
 
+// A browser that already saved voiceMode keeps its choice; only new browsers
+// start with voice on, since the ADV stage is built around voiced lines.
 export const DEFAULT_GLOBAL = {
-  voiceMode: false,
+  voiceMode: true,
   ttsPreset: '',
   autoTranslate: false,
 };
