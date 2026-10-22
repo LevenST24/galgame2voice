@@ -396,6 +396,7 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
     # 6. Looks
     used_outfits = set()
     used_poses = set()
+    unused_frames = []
 
     def _check_layer(lid: Any, context_name: str, look_key: str, l_canvas: str) -> str | None:
         if not isinstance(lid, str) or lid not in data["layers"]:
@@ -504,7 +505,11 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
         for l_fid, l_fentry in look_faces.items():
             if not isinstance(l_fentry, dict):
                 return False, f"look '{look_key}' face '{l_fid}' must be an object"
-            if l_fid not in data["faces"]:
+            if "frameOnly" in l_fentry and not isinstance(l_fentry["frameOnly"], bool):
+                return False, f"look '{look_key}' face '{l_fid}' frameOnly must be a boolean"
+            if l_fentry.get("frameOnly") is True and l_fid == default_face:
+                return False, f"look '{look_key}' defaultFace '{l_fid}' must not be frameOnly"
+            if l_fentry.get("frameOnly") is not True and l_fid not in data["faces"]:
                 return False, f"look '{look_key}' face '{l_fid}' not found in top-level faces"
             f_layers = l_fentry.get("layers")
             if not isinstance(f_layers, list) or not f_layers:
@@ -574,6 +579,20 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
                     if not isinstance(cv, str) or cv not in look_faces:
                         return False, f"look '{look_key}' face '{l_fid}' combinedFrames target '{cv}' not in look faces"
 
+        referenced_frames = {
+            target
+            for source, entry in look_faces.items()
+            for field in ("blink", "mouth", "combinedFrames")
+            for phase, target in entry.get(field, {}).items()
+            if isinstance(target, str) and source != target
+            and (field == "combinedFrames"
+                 or phase in (("closed", "half") if field == "blink" else ("closed", "half", "open")))
+        }
+        unused_frames.extend(
+            (look_key, fid) for fid, entry in look_faces.items()
+            if entry.get("frameOnly") is True and fid not in referenced_frames
+        )
+
     # 7. Cross-checks
     default_look_key = f"{default_pose}/{default_outfit}"
     if default_look_key not in data["looks"]:
@@ -587,6 +606,8 @@ def _validate_v3(root: Path, data: dict[str, Any]) -> tuple[bool, str]:
         if pid not in used_poses:
             return False, f"pose '{pid}' is not used by any look"
 
+    for look_key, fid in unused_frames:
+        logger.warning("look '%s' frameOnly face '%s' is not referenced by another face", look_key, fid)
     return True, ""
 
 
@@ -614,8 +635,14 @@ def _normalize_v3(root: Path, data: dict[str, Any]) -> dict[str, Any]:
                 costume_meta["stage"] = default_look["stage"]
         metadata.append(costume_meta)
 
+    selectable_ids = {
+        fid for look in data["looks"].values() for fid, entry in look["faces"].items()
+        if entry.get("frameOnly") is not True
+    }
     faces = {}
     for fid, f in data["faces"].items():
+        if fid not in selectable_ids:
+            continue
         emotion = f.get("emotion", "gentle")
         weights = f.get("weights")
         if not isinstance(weights, dict):

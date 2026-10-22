@@ -38,7 +38,7 @@ Galgame2Voice 是一个运行在你自己电脑上的角色对话程序。对话
 
 应用以 ADV 舞台作为唯一界面，回复按句显示并播放语音。点击舞台、Enter 或 Space 推进（先显示完整台词，再进入下一句）；右键隐藏文本框，点击恢复；滚轮向上打开 LOG，按住 Ctrl 临时快进，Esc 关闭当前面板、恢复文本框或停止生成。输入框内保留文字编辑操作，Enter 发送，Shift+Enter 换行。快捷菜单提供 AUTO、SKIP、LOG、VOICE 重播、HIDE、CONFIG 设置和背景选择；左上角可切换会话、进入输入、切换语音及停止生成。
 
-本地素材需自行准备：v3 分层立绘包（`layers.json` 及其引用的图片）放在 `characters/<name>/portrait/`。背景按作品分包，每个作品一个目录 `backgrounds/<work>/`，目录里的 `manifest.json` 写明作品 id（`work`，与目录名相同）、显示名、可选的默认背景 `default`，以及每个背景白天／傍晚／夜晚图片的相对路径：
+本地素材需自行准备：v3 分层立绘包（`layers.json` 及其引用的图片）放在 `characters/<name>/portrait/`。可在 `looks[...].faces[id]` 设置可选布尔字段 `frameOnly: true`，将该 face 限定为同一 look 的眨眼、口型或组合动画帧，无需顶层 `faces` 元数据，也不会作为表情被选择；不能用作 `defaultFace`，无人引用时仅警告。完整规则见 [v3 格式说明](docs/design/adv-ui.md#62-v3-manifest-schema-portraitlayersjson)。背景按作品分包，每个作品一个目录 `backgrounds/<work>/`，目录里的 `manifest.json` 写明作品 id（`work`，与目录名相同）、显示名、可选的默认背景 `default`，以及每个背景白天／傍晚／夜晚图片的相对路径：
 
 ```json
 {"version": 1, "work": "cafe_stella", "name": "喫茶ステラ", "default": "cafe_hall",
