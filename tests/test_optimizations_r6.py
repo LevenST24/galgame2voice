@@ -6,7 +6,7 @@ Verifies:
    - idx_messages_role_session
    - idx_token_usage_provider_tokens
 2. SQLite query plans utilize indexes for updated_at sorting.
-3. Frontend built static distribution contains the complete Galgame Character Stage.
+3. Frontend source mounts ADV and retires old stage IDs; distribution assets still exist.
 """
 
 from pathlib import Path
@@ -77,18 +77,17 @@ async def test_recent_messages_ordering_uses_index(tmp_path):
 
 
 def test_frontend_distribution_stage_markup():
-    """Verifies that the compiled static index.html and frontend contain the character stage."""
+    """Check the current ADV source separately from the unchanged distribution."""
     project_root = Path(__file__).resolve().parent.parent
     static_html = project_root / "galgame2voice" / "static" / "index.html"
     assert static_html.is_file(), "Static index.html must exist in backend distribution"
 
-    content = static_html.read_text(encoding="utf-8")
-    assert 'id="characterStage"' in content
-    assert 'id="portraitToggleBtn"' in content
-    assert 'id="portraitImgA"' in content
-    assert 'id="portraitImgB"' in content
-    assert 'id="stageDialogueCard"' in content
-    assert 'id="stageCostumeBar"' in content
+    content = (project_root / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert 'id="advRoot"' in content
+    for removed in ("characterStage", "portraitToggleBtn", "portraitImgA", "portraitImgB", "stageDialogueCard", "stageCostumeBar", "messages", "composer", "input"):
+        assert f'id="{removed}"' not in content
+    stage = (project_root / "frontend" / "src" / "adv" / "stage.js").read_text(encoding="utf-8")
+    assert "adv-stage" in stage and "adv-layer-textbox" in stage
 
     # Check that assets directory exists and contains bundled JS/CSS
     assets_dir = project_root / "galgame2voice" / "static" / "assets"

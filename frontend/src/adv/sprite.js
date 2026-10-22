@@ -504,7 +504,8 @@ export function createSpriteView({
         };
       }
 
-      return { stageStyle, faceStyle, anchor };
+      const centerX = anchor ? anchor.x : ox + (sourceWidth * scale) / 2;
+      return { stageStyle, faceStyle, anchor, centerX };
     }
 
     // 2. Calibrated
@@ -535,7 +536,7 @@ export function createSpriteView({
         y: FRAMING.headTopY,
       };
 
-      return { stageStyle, faceStyle, anchor };
+      return { stageStyle, faceStyle, anchor, centerX: FRAMING.centerX };
     }
 
     // 3. Legacy fallback (without calibration)
@@ -551,7 +552,14 @@ export function createSpriteView({
       height: `calc(1080 * var(--u))`,
     };
 
-    return { stageStyle, faceStyle: null, anchor: null };
+    return { stageStyle, faceStyle: null, anchor: null, centerX: leftU + widthU / 2 };
+  }
+
+  // The portrait layout scales the landscape sprite space around the stage centre;
+  // --sprite-cx tells its CSS which landscape x to bring to the middle of the phone.
+  function setPortraitCenter(centerX) {
+    if (!Number.isFinite(centerX)) return;
+    for (const el of [spriteLayer, fxLayer]) el?.style?.setProperty?.('--sprite-cx', String(Math.round(centerX)));
   }
 
   function suppressed(options) {
@@ -656,7 +664,7 @@ export function createSpriteView({
       if (!current()) return;
       const width = decoded.naturalWidth || decoded.width;
       const height = decoded.naturalHeight || decoded.height;
-      const { stageStyle, faceStyle, anchor } = computeFraming(currentCostume, width, height);
+      const { stageStyle, faceStyle, anchor, centerX } = computeFraming(currentCostume, width, height);
       request.frame = raf(() => {
         request.frame = null;
         if (!current()) return;
@@ -668,6 +676,7 @@ export function createSpriteView({
         stageBack.src = faceUrl;
         faceBack.src = faceUrl;
         Object.assign(stageBack.style, stageStyle);
+        setPortraitCenter(centerX);
         if (faceStyle) Object.assign(faceBack.style, faceStyle);
         faceBack.style.display = faceStyle ? '' : 'none';
         showBack(stageBack, true);
@@ -762,7 +771,7 @@ export function createSpriteView({
     return { groups, fx };
   }
 
-  function commitLayers(plan, images, { stageStyle, faceStyle, anchor }, state, options, rev) {
+  function commitLayers(plan, images, { stageStyle, faceStyle, anchor, centerX }, state, options, rev) {
     cancelBlink();
     const buffers = ensureLayerBuffers();
     const back = activeSlot === 'A' ? 'B' : 'A';
@@ -775,6 +784,7 @@ export function createSpriteView({
     const stage = fillLayers(stageBack, plan, images.slice(0, count));
     const face = fillLayers(faceBack, plan, images.slice(count));
     Object.assign(stageBack.style, stageStyle);
+    setPortraitCenter(centerX);
     if (faceStyle) Object.assign(faceBack.style, faceStyle);
     faceBack.style.display = faceStyle ? '' : 'none';
     showBack(stageBack, true);
@@ -955,6 +965,19 @@ export function createSpriteView({
     setModel, apply, clear, suspend, destroy,
     startLipSync, stopLipSync, setAnimationOptions,
     preload: urls => preloads.add(urls),
+    preloadState(input) {
+      if (!input || !model) return;
+      if (!input.isV3) return preloads.add(input.faceUrl ? [input.faceUrl] : []);
+      const plan = planLayers(model, input.lookKey, input.state);
+      if (!plan) return;
+      // Keep the queue's six-entry budget for distinct facial frames first.
+      const urls = new Map();
+      const items = [...plan.items].sort((a, b) => Number(b.group !== null) - Number(a.group !== null));
+      for (const item of items) if (!urls.has(item.file)) urls.set(item.file, {
+        url: item.file, width: item.rect?.width, height: item.rect?.height,
+      });
+      return preloads.add([...urls.values()]);
+    },
     getModel: () => model,
     getRevision: () => revision,
     getActiveSlot: () => activeSlot,

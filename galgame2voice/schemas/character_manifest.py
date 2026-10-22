@@ -7,12 +7,23 @@ and package integrity verification.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from galgame2voice.services.tts_service import TtsService
+
+# A work id is the background pack folder name; characters declare which work they belong to.
+CHARACTER_WORK_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def clean_character_work(value: object) -> str | None:
+    """Return the work id when it matches the pack pattern, else None (absent)."""
+    if isinstance(value, str) and CHARACTER_WORK_RE.fullmatch(value):
+        return value
+    return None
 
 
 class VoiceParamsConfig(BaseModel):
@@ -46,6 +57,8 @@ class CharacterManifest(BaseModel):
     is_default: bool = Field(default=False, description="Whether this character is the default character")
     aliases: list[str] = Field(default_factory=list, description="Optional alternate names or aliases for matching")
     portrait: dict[str, Any] | None = Field(default=None, description="Optional portrait metadata")
+    # Cleaned on read (clean_character_work): a bad optional value must not invalidate the package.
+    work: str | None = Field(default=None, description="Background work/pack this character belongs to")
 
 
 class CharacterManifestV2(CharacterManifest):
@@ -114,5 +127,7 @@ __all__ = [
     "EmotionConfig",
     "CharacterManifest",
     "CharacterManifestV2",
+    "CHARACTER_WORK_RE",
+    "clean_character_work",
     "validate_character_package",
 ]

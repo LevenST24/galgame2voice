@@ -6,18 +6,18 @@ import { DEFAULT_SESSION_SETTINGS as defaults, DEFAULT_GLOBAL, state, loadState,
 import { createAdvSettings } from '../frontend/src/adv/settings.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
 
-const expected = { advEnabled: false, advPlayerName: 'Player', advPrimaryLanguage: 'zh', advSubtitleLanguage: 'ja',
+const expected = { advPlayerName: 'Player', advPrimaryLanguage: 'zh', advSubtitleLanguage: 'ja',
   advWindowOpacity: 75, advTextIntervalMs: 30, advInterruptVoice: true, advAutoBaseMs: 1500,
   advAutoPerCharMs: 45, advAutoMode: 'voice-priority', advOutfit: '', advBlink: true, advLipSync: true };
-const custom = { advEnabled: true, advPlayerName: '旅行者', advPrimaryLanguage: 'ja', advSubtitleLanguage: 'zh',
+const custom = { advPlayerName: '旅行者', advPrimaryLanguage: 'ja', advSubtitleLanguage: 'zh',
   advWindowOpacity: 50, advTextIntervalMs: 0, advInterruptVoice: false, advAutoBaseMs: 6000,
   advAutoPerCharMs: 200, advAutoMode: 'normal', advOutfit: '制服_2', advBlink: true, advLipSync: true };
-const backgroundSettings = { advBackground: 'cafe', advBgTime: 'evening' };
+const backgroundSettings = { advBackground: 'cafe/stella', advBgTime: 'evening' };
 
-test('background defaults and portable ID/time validation', () => {
+test('background defaults and global key/time validation', () => {
   assert.equal(defaults.advBackground, '');
   assert.equal(defaults.advBgTime, 'auto');
-  for (const advBackground of ['', 'A_-09', 'a'.repeat(64)]) {
+  for (const advBackground of ['', 'cafe/stella', 'A_-09/a', 'a'.repeat(64) + '/' + 'b'.repeat(64)]) {
     for (const advBgTime of ['auto', 'day', 'evening', 'night']) {
       const picked = pickSettings({ advBackground, advBgTime }, defaults);
       assert.equal(picked.advBackground, advBackground);
@@ -26,7 +26,7 @@ test('background defaults and portable ID/time validation', () => {
   }
 });
 
-test('all eleven P3 keys have exact store defaults and pickSettings preserves every valid value', () => {
+test('ADV preferences have exact store defaults and pickSettings preserves every valid value', () => {
   for (const [key, value] of Object.entries(expected)) assert.equal(defaults[key], value, key);
   const picked = pickSettings(custom, defaults);
   for (const [key, value] of Object.entries(custom)) assert.equal(picked[key], value, key);
@@ -34,13 +34,14 @@ test('all eleven P3 keys have exact store defaults and pickSettings preserves ev
 });
 
 const invalid = {
-  advEnabled: [0, 1, 'true', null], advInterruptVoice: ['false', 1, null],
+  advInterruptVoice: ['false', 1, null],
   advPlayerName: ['', '   ', '字'.repeat(41), null, 3],
   advPrimaryLanguage: ['en', 'none', null, 1], advSubtitleLanguage: ['en', null, false],
   advWindowOpacity: [-1, 101, 1.5, Infinity, '75'], advTextIntervalMs: [-1, 101, 0.5, NaN, '30'],
   advAutoBaseMs: [-1, 6001, 1.1, Infinity, null], advAutoPerCharMs: [-1, 201, 0.5, NaN],
   advAutoMode: ['fast', '', null, 2], advOutfit: ['../private', '/absolute', 'a/b', 'a\\b', {}, null],
-  advBackground: ['../cafe', 'cafe/day', 'cafe\\day', '咖啡店', 'a'.repeat(65), 'cafe\n', {}, null, 1],
+  advBackground: ['../cafe', 'cafe', 'cafe/stella/day', 'cafe//stella', '/stella', 'cafe/', 'cafe\\day',
+    '咖啡店', 'a'.repeat(65), 'cafe\n', 'cafe/' + 'a'.repeat(65), {}, null, 1],
   advBgTime: ['dawn', '', 'DAY', null, 1],
 };
 for (const [key, values] of Object.entries(invalid)) test(`${key}: invalid values fall back at the snapshot boundary`, () => {
@@ -68,14 +69,14 @@ test('store reload, browser backup/import and switching keep each session settin
   const settings = { ...custom, ...backgroundSettings };
   loadState(); const first = getActive(); Object.assign(first.settings, settings); saveState();
   const second = createSession('default'); assert.equal(getActive(), second);
-  assert.equal(second.settings.advEnabled, false); state.activeId = first.id; saveState();
+  assert.equal(second.settings.advEnabled, undefined); state.activeId = first.id; saveState();
   loadState(); for (const [key, value] of Object.entries(settings)) assert.equal(getActive().settings[key], value, key);
   state.activeId = second.id; assert.equal(getActive().settings.advPlayerName, 'Player');
   assert.equal(getActive().settings.advBackground, ''); assert.equal(getActive().settings.advBgTime, 'auto');
   const incoming = prepareSessionImport(exportSessionData()); applySessionImport(incoming);
   const restored = state.sessions.find(session => session.id.startsWith('s_import_') && session.title === first.title);
   for (const [key, value] of Object.entries(settings)) assert.equal(restored.settings[key], value, key);
-  state.activeId = restored.id; assert.equal(getActive().settings.advBackground, 'cafe');
+  state.activeId = restored.id; assert.equal(getActive().settings.advBackground, 'cafe/stella');
   state.activeId = second.id; assert.equal(getActive().settings.advBgTime, 'auto');
   assert.equal(restored.settings.voiceProfileId, null);
 });
@@ -88,7 +89,7 @@ test('session settings group validates draft values, resets and safely renders l
   assert.equal(ui.read().advPlayerName, name.value);
   const opacity = panel.querySelector('#s-advWindowOpacity'); opacity.value = '101'; assert.throws(() => ui.read(), /ADV/);
   opacity.value = ''; assert.throws(() => ui.read(), /ADV/);
-  ui.load(defaults); panel.querySelector('#s-advEnabled').value = 'invalid'; assert.throws(() => ui.read(), /ADV/);
+  assert.equal(panel.querySelector('#s-advEnabled'), null);
   ui.load(defaults); assert.deepEqual(ui.read(), expected);
-  assert.equal(panel.querySelector('summary').textContent, 'ADV 预览（实验）');
+  assert.equal(panel.querySelector('summary').textContent, 'ADV 显示与交互');
 });

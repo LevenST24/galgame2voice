@@ -10,7 +10,7 @@ import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
 /* -------------------------------------------------------------
  * 1. Controller Tests
  * -----------------------------------------------------------*/
-function setupController({ voiceMode = false, audioMode = 'sequential' } = {}) {
+function setupController({ voiceMode = false } = {}) {
   const session = { id: 's', title: '新对话', settings: { temperature: 0.7, voiceProfileId: 3 }, messages: [] };
   const appState = { activeId: 's', global: { voiceMode, ttsPreset: 'balanced' }, sessions: [session] };
   const stream = fakeChatStream();
@@ -39,7 +39,6 @@ function setupController({ voiceMode = false, audioMode = 'sequential' } = {}) {
     getCurrentVoice: () => currentVoice, setCurrentVoice: voice => { currentVoice = voice; },
     stopCurrentVoice: () => { currentVoice = null; audioPlayer.interrupt(40); },
     getAudioControl: () => control, onBlocked: () => {},
-    getAudioMode: () => audioMode,
     fetch: stream.fetch,
   });
   return { conversation, session, state: appState, stream, saves, cached, audio, audioPlayer,
@@ -47,7 +46,7 @@ function setupController({ voiceMode = false, audioMode = 'sequential' } = {}) {
 }
 
 test('Controller: line, line_audio and done.lines reconciliation', async () => {
-  const app = setupController({ audioMode: 'lines' });
+  const app = setupController({ });
   const lineEvents = [], lineAudioEvents = [];
   app.conversation.on('line', event => lineEvents.push(event));
   app.conversation.on('line_audio', event => lineAudioEvents.push(event));
@@ -90,7 +89,7 @@ test('Controller: line, line_audio and done.lines reconciliation', async () => {
 });
 
 test('Controller: audio_chunk arriving before its line', async () => {
-  const app = setupController({ audioMode: 'lines' });
+  const app = setupController({ });
   const lineEvents = [];
   app.conversation.on('line', event => lineEvents.push(event));
 
@@ -116,7 +115,7 @@ test('Controller: audio_chunk arriving before its line', async () => {
 });
 
 test('Controller: failed with partial chunks', async () => {
-  const app = setupController({ audioMode: 'lines' });
+  const app = setupController({ });
   const lineAudioEvents = [];
   app.conversation.on('line_audio', event => lineAudioEvents.push(event));
 
@@ -145,7 +144,7 @@ test('Controller: failed with partial chunks', async () => {
 
 test('Controller: pending lines becoming failed on error and on cancel', async () => {
   // 1. On error
-  const appError = setupController({ audioMode: 'lines' });
+  const appError = setupController({ });
   appError.conversation.send('错误测试');
   const reqError = appError.stream.requests[0];
   await reqError.onChunk('错误');
@@ -157,7 +156,7 @@ test('Controller: pending lines becoming failed on error and on cancel', async (
   assert.equal(appError.conversation.busy, false);
 
   // 2. On cancel
-  const appCancel = setupController({ audioMode: 'lines' });
+  const appCancel = setupController({ });
   appCancel.conversation.send('取消测试');
   const reqCancel = appCancel.stream.requests[0];
   await reqCancel.onChunk('部分回复');
@@ -170,7 +169,7 @@ test('Controller: pending lines becoming failed on error and on cancel', async (
 
 test('Controller: a truncated done stays a completion and settles pending lines', async () => {
   for (const meta of [{ truncated: true }, {}]) {
-    const app = setupController({ audioMode: 'lines' });
+    const app = setupController({ });
     const ends = [];
     app.conversation.on('done', event => ends.push(['done', event]));
     app.conversation.on('cancelled', event => ends.push(['cancelled', event]));
@@ -201,19 +200,9 @@ test('Controller: an old server with no line events keeps lines undefined', asyn
   assert.equal(finalMsg.lines, undefined);
 });
 
-test('Controller: sequential vs lines mode, with no autoplay in lines mode', async () => {
-  // Sequential mode autoplays
-  const appSeq = setupController({ voiceMode: true, audioMode: 'sequential' });
-  appSeq.conversation.send('顺序播放');
-  const reqSeq = appSeq.stream.requests[0];
-  await reqSeq.onChunk('顺序');
-  await reqSeq.event('audio_chunk', { audio_url: '/audio/seq.wav', sentence: 'じゅんばん' });
-  assert.ok(appSeq.audio.some(([type]) => type === 'start'));
-  assert.ok(appSeq.audio.some(([type]) => type === 'chunk'));
-  await reqSeq.onEnd('顺序');
-
+test('Controller: line audio never autoplays before the stage chooses it', async () => {
   // Lines mode does NOT autoplay
-  const appLines = setupController({ voiceMode: true, audioMode: 'lines' });
+  const appLines = setupController({ voiceMode: true, });
   appLines.conversation.send('按行播放');
   const reqLines = appLines.stream.requests[0];
   await reqLines.onChunk('按行');
@@ -225,7 +214,7 @@ test('Controller: sequential vs lines mode, with no autoplay in lines mode', asy
 });
 
 test('Controller: stale turns ignored', async () => {
-  const app = setupController({ audioMode: 'lines' });
+  const app = setupController({ });
   const lineEvents = [], lineAudioEvents = [];
   app.conversation.on('text', () => app.conversation.stop());
   app.conversation.on('line', e => lineEvents.push(e));

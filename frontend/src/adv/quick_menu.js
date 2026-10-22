@@ -144,7 +144,7 @@ export function createQuickMenu(container, { onAction } = {}) {
     btn.disabled = !bool;
   }
 
-  function setModelStatus({ label, state: modelState = 'ok' } = {}) {
+  function setModelStatus({ label, title, state: modelState = 'ok' } = {}) {
     const displayLabel = label ?? 'Model';
     statusLabel.textContent = displayLabel;
 
@@ -152,6 +152,7 @@ export function createQuickMenu(container, { onAction } = {}) {
     statusDot.classList.add(`state-${modelState}`);
 
     statusBtn.setAttribute('aria-label', `模型状态: ${displayLabel} (${modelState})`);
+    statusBtn.title = title || displayLabel;
   }
 
   function setHidden(bool) {

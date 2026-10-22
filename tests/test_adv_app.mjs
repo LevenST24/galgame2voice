@@ -47,7 +47,6 @@ function setup(t, options = {}) {
     saveSettings: patch => { Object.assign(active.settings, patch); },
     onSettings: () => { calls.settings++; }, onModelSettings: () => { calls.models++; },
     onNewSession: () => { calls.newSession++; }, onMic: () => { calls.mic++; },
-    renderHistory: () => { calls.history++; },
     subscribeOverlay: fn => { overlayChange = fn; return () => { overlayChange = null; }; },
     subscribe: fn => { subscription = fn; return () => { subscription = null; }; },
   });
@@ -319,14 +318,14 @@ test('closing overlays restores the same stage/crop revision without replaying o
   }
 });
 
-test('session drafts stay in memory by id and never pass through the shared legacy input', t => {
+test('session drafts stay in memory by id in the ADV textbox', t => {
   const h = setup(t);
   h.app.textbox.setDraft('A 草稿'); h.switchSession(1);
-  assert.equal(h.app.textbox.draft, ''); assert.equal(h.dom.input.value, '');
+  assert.equal(h.app.textbox.draft, '');
   h.app.textbox.setDraft('B 草稿'); h.switchSession(0);
   assert.equal(h.app.textbox.draft, 'A 草稿');
   h.switchSession(1); assert.equal(h.app.textbox.draft, 'B 草稿');
-  h.app.unmount(); assert.equal(h.dom.input.value, '');
+  h.app.unmount();
 });
 
 for (const trigger of ['click', 'Enter']) test(`hidden queued line survives done and restores on ${trigger} even in input context`, t => {

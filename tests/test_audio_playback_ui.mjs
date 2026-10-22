@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { test, beforeEach, afterEach } from 'node:test';
-import { playAiVoice, playUserVoice, playSingleAudio, synthesizeAiVoice, stopCurrentVoice, getCurrentVoice, initAudioPlayerUi } from '../frontend/src/controllers/audio_player_ui.js';
+import { playAiVoice, playUserVoice, playSingleAudio, synthesizeAiVoice, stopCurrentVoice, getCurrentVoice, initAudioPlayerUi, toggleVoiceMode } from '../frontend/src/controllers/audio_player_ui.js';
 import { streamAudioController } from '../frontend/src/audio_player.js';
 import { state, loadState } from '../frontend/src/store.js';
 import { clearMemAudioCache } from '../frontend/src/cache.js';
-import { portraitStage } from '../frontend/src/portrait.js';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -17,7 +16,6 @@ beforeEach(() => {
   globalThis.document = { getElementById: () => null };
   globalThis.window = {};
   globalThis.localStorage = { getItem: () => null, setItem() {} };
-  portraitStage.setSpeaking = () => {};
   played = []; synthesized = [];
   streamAudioController.playChunks = async (chunks, ctl, id) => { played.push({ id, chunks }); };
   globalThis.fetch = async (url, options) => { if (url.includes('synthesize')) synthesized.push(JSON.parse(options.body)); return new Response(blob()); };
@@ -86,18 +84,13 @@ test('cancelled user-recording cache reads cannot steal playback', async () => {
 test('the auto-play toggle is saved immediately so a reload keeps the choice', () => {
   const saved = new Map();
   globalThis.localStorage = { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) };
-  let click;
-  const button = {
-    addEventListener: (type, fn) => { if (type === 'click') click = fn; },
-    classList: { toggle() {} }, setAttribute() {}, title: '',
-  };
   loadState(); // start from this test's storage, as a freshly opened page would
-  initAudioPlayerUi({ voiceModeBtn: button }, {});
+  initAudioPlayerUi({}, {});
   state.global.voiceMode = true;
-  click();
+  toggleVoiceMode();
   const stored = JSON.parse(saved.get('gal2voice.chat.v1'));
   assert.equal(stored.global.voiceMode, false);
-  click();
+  toggleVoiceMode();
   assert.equal(JSON.parse(saved.get('gal2voice.chat.v1')).global.voiceMode, true);
 });
 test('a rejected browser play releases ownership so the next click can retry', async () => {

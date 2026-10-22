@@ -7,8 +7,8 @@
   <title>Gal2Voice · AI 多会话对话</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
 
-  <script type="module" crossorigin src="/static/assets/index-BqCp1D6T.js"></script>
-  <link rel="stylesheet" crossorigin href="/static/assets/index-DcU7V7Ab.css">
+  <script type="module" crossorigin src="/static/assets/index-BLbMF0DL.js"></script>
+  <link rel="stylesheet" crossorigin href="/static/assets/index-BRUXdDuC.css">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -97,7 +97,7 @@
     </symbol>
   </svg>
 
-  <div class="app">
+  <div id="sessionDrawerHome" hidden>
     <aside class="sidebar" id="sidebar">
       <div class="brand">
         <span class="brand-mark"><svg class="icon"><use href="#i-nib"></use></svg></span>
@@ -127,81 +127,6 @@
           <svg class="icon"><use href="#i-gear"></use></svg><span>全局设置</span>
         </button>
       </footer>
-    </aside>
-
-    <div class="backdrop" id="backdrop"></div>
-
-    <main class="chat">
-      <header class="chat-head">
-        <button class="icon-btn menu-btn" id="menuBtn" aria-label="打开会话列表">
-          <svg class="icon"><use href="#i-menu"></use></svg>
-        </button>
-        <div class="chat-head-text">
-          <h1 id="chatTitle">新对话</h1>
-          <span class="model-badge" id="modelBadge"><span class="badge-dot" id="badgeDot"></span><span class="badge-label">正在读取模型配置</span></span>
-        </div>
-        <button class="icon-btn head-settings" id="sessionSettingsBtn" title="会话设置（人设 / 参数）" aria-label="会话设置">
-          <svg class="icon"><use href="#i-sliders"></use></svg>
-        </button>
-        <button class="icon-btn head-voice" id="voiceModeBtn" title="朗读回复" aria-label="朗读回复" aria-pressed="false">
-          <svg class="icon" id="voiceModeIcon"><use href="#i-volume-off"></use></svg>
-        </button>
-        <button class="icon-btn head-portrait active" id="portraitToggleBtn" title="立绘演出舞台" aria-label="立绘演出舞台" aria-pressed="true">
-          <svg class="icon"><use href="#i-portrait"></use></svg>
-        </button>
-      </header>
-
-      <div class="messages" id="messages"></div>
-
-      <div class="composer-wrap">
-        <form class="composer" id="composer">
-          <textarea id="input" rows="1" placeholder="想说点什么？" aria-label="消息输入框"></textarea>
-          <div class="composer-actions">
-            <button type="button" class="mic-btn" id="micBtn" title="语音输入" aria-label="语音输入" aria-pressed="false">
-              <svg class="icon"><use href="#i-mic"></use></svg>
-            </button>
-            <button type="button" class="stop-btn hidden" id="stopBtn" aria-label="停止生成">
-              <svg class="icon"><use href="#i-stop"></use></svg>
-            </button>
-            <button type="submit" class="send-btn" id="sendBtn" aria-label="发送">
-              <svg class="icon"><use href="#i-send"></use></svg>
-            </button>
-          </div>
-        </form>
-        <p class="composer-hint">Enter 发送 · Shift + Enter 换行</p>
-      </div>
-    </main>
-
-    <div class="stage-backdrop" id="stageBackdrop" aria-hidden="true"></div>
-    <aside class="character-stage" id="characterStage" aria-label="角色立绘舞台">
-      <header class="stage-header">
-        <div class="stage-char-info">
-          <span class="stage-name" id="stageCharacterName"></span>
-          <span class="stage-emotion-badge" id="stageEmotionLabel"></span>
-        </div>
-        <div class="stage-header-actions">
-          <button type="button" class="icon-btn stage-costume-btn" id="stageCostumeToggleBtn" title="切换服装">
-            <span id="stageCostumeIcon">👗</span>
-          </button>
-          <button type="button" class="icon-btn stage-collapse-btn" id="stageCollapseBtn" title="收起立绘" aria-label="收起立绘">
-            <svg class="icon"><use href="#i-x"></use></svg>
-          </button>
-        </div>
-      </header>
-
-      <div class="stage-costume-bar" id="stageCostumeBar"></div>
-
-      <div class="stage-viewport" id="stageViewport">
-        <div class="stage-glow"></div>
-        <p class="stage-empty-state" id="stageEmptyState" role="status">正在加载角色立绘…</p>
-        <img id="portraitImgA" class="portrait-sprite is-hidden" alt="角色立绘" />
-        <img id="portraitImgB" class="portrait-sprite is-hidden" alt="角色立绘" />
-      </div>
-
-      <div class="stage-dialogue-card" id="stageDialogueCard">
-        <div class="stage-dialogue-name" id="stageDialogueName">当前角色</div>
-        <div class="stage-dialogue-text" id="stageDialogueText">与角色聊天后，这里会显示台词。</div>
-      </div>
     </aside>
   </div>
 

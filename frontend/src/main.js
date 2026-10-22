@@ -14,15 +14,14 @@ import {
 } from './store.js';
 import { createConversation } from './conversation.js';
 import { mountAdv } from './adv/adv_app.js';
-import { updateBadge as renderModelBadge } from './model_badge.js';
-import { voiceSupported, recorderSupported, audioStore } from './voice.js';
+import { getModelStatus } from './model_badge.js';
+import { audioStore } from './voice.js';
 import { fetchAndCacheAudio, putCachedAudioBlob } from './cache.js';
 import { streamAudioController } from './audio_player.js';
-import { portraitStage } from './portrait.js';
-import {
-  renderSessionList, renderMessages, createMessageEl, createTypingEl, showToast,
-  keepToastsAboveComposer, needsModelSettings,
-} from './ui.js';
+import { renderSessionList, showToast, needsModelSettings } from './ui.js';
+import { advActions, createTitleActions } from './adv/actions.js';
+import { showTitle } from './adv/title_hook.js';
+
 import { initAuthInterceptor } from './auth.js';
 import { initSessionBackup } from './controllers/session_backup.js';
 import { requestJson } from './api.js';
@@ -53,21 +52,24 @@ import {
   playVoice,
   stopCurrentVoice,
   revokeAllCachedAudioUrls,
-  updateVoiceModeUI,
+  toggleVoiceMode,
   getCurrentVoice,
-  setCurrentVoice,
   clearMicTimers,
   toggleMic,
   cancelMic,
 } from './controllers/audio_player_ui.js';
 
+// Stable integration point for the separately implemented title screen.
+export { advActions };
+
 const appDependencies = {
   state, getActive, getSession, addMessage, uid,
   saveState, persistSession, isSessionDeleting, audioStore, putCachedAudioBlob,
-  fetchAndCacheAudio, streamAudioController, getCurrentVoice, stopCurrentVoice, setCurrentVoice,
-  clearMicTimers, renderSessionList, renderMessages, createMessageEl, createTypingEl,
-  showToast, autoTitle, fetchSessionHistoryPage, earliestServerMessageId, portraitStage,
+  fetchAndCacheAudio, streamAudioController, getCurrentVoice, stopCurrentVoice,
+  clearMicTimers, renderSessionList,
+  showToast, autoTitle, fetchSessionHistoryPage, earliestServerMessageId,
   getCurrentActiveProvider, getVoiceProfiles, haveProvidersLoaded,
+  showTitle,
 };
 
 export function mapBackendMessage(bm) {
@@ -90,10 +92,11 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   const {
     state, getActive, getSession, addMessage, uid,
     saveState, persistSession, isSessionDeleting, audioStore, putCachedAudioBlob,
-    fetchAndCacheAudio, streamAudioController, getCurrentVoice, stopCurrentVoice, setCurrentVoice,
-    clearMicTimers, renderSessionList, renderMessages, createMessageEl, createTypingEl,
-    showToast, autoTitle, fetchSessionHistoryPage, earliestServerMessageId, portraitStage,
+    fetchAndCacheAudio, streamAudioController, getCurrentVoice, stopCurrentVoice,
+    clearMicTimers, renderSessionList,
+    showToast, autoTitle, fetchSessionHistoryPage, earliestServerMessageId,
     getCurrentActiveProvider, getVoiceProfiles, haveProvidersLoaded,
+    showTitle: showTitleScreen,
   } = { ...appDependencies, ...callbacks };
   if (initialize) {
     initSettingsUi();
@@ -102,24 +105,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   const $ = (id) => document.getElementById(id);
   const dom = injectedDom || {
     sidebar: $('sidebar'),
-    backdrop: $('backdrop'),
-    menuBtn: $('menuBtn'),
     sidebarClose: $('sidebarClose'),
     newChatBtn: $('newChatBtn'),
     sessionList: $('sessionList'),
     sessionCount: $('sessionCount'),
-    chatTitle: $('chatTitle'),
-    messages: $('messages'),
-    composer: $('composer'),
-    input: $('input'),
-    sendBtn: $('sendBtn'),
-    stopBtn: $('stopBtn'),
-    micBtn: $('micBtn'),
-    voiceModeBtn: $('voiceModeBtn'),
-    voiceModeIcon: $('voiceModeIcon'),
-    badge: $('modelBadge'),
-    badgeDot: $('badgeDot'),
-    sessionSettingsBtn: $('sessionSettingsBtn'),
     globalSettingsBtn: $('globalSettingsBtn'),
     globalModal: $('globalModal'),
     sessionModal: $('sessionModal'),
@@ -273,37 +262,22 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     gUpdateLogOutput: $('gUpdateLogOutput'),
   };
 
-  let listInner = null;
-  let nearBottom = true;
   let _syncSessionsGen = 0;
-  let getStreamAudioControl = () => null;
   let advApp = null;
   let syncingAdv = false;
   const conversation = createConversation({
     state, getActive, getSession, addMessage, uid, saveState, persistSession,
     isSessionDeleting, audioStore, putCachedAudioBlob, fetchAndCacheAudio,
-    audioPlayer: streamAudioController, getCurrentVoice, stopCurrentVoice, setCurrentVoice,
+    audioPlayer: streamAudioController, getCurrentVoice, stopCurrentVoice,
     clearMicTimers, beforeSend: () => { ++_syncSessionsGen; },
     onBlocked: (message) => showToast(message, 'info'),
-    getAudioControl: () => getStreamAudioControl(),
-    getAudioMode: callbacks.getAudioMode || (() => getActive()?.settings?.advEnabled ? 'lines' : 'sequential'),
     fetch: callbacks.fetch || ((...args) => globalThis.fetch(...args)),
   });
 
-  /* ---------- 抽屉操作 ---------- */
-  function openDrawer() {
-    if (dom.sidebar) { dom.sidebar.inert = false; dom.sidebar.classList.add('open'); }
-    if (dom.backdrop) dom.backdrop.classList.add('show');
-  }
-
-  function closeDrawer() {
-    if (dom.sidebar) { dom.sidebar.classList.remove('open'); dom.sidebar.inert = window.innerWidth <= 820; }
-    if (dom.backdrop) dom.backdrop.classList.remove('show');
-  }
+  const closeDrawer = () => advApp?.closeDrawer();
 
   /* ---------- 渲染与状态栏 ---------- */
   function updateBadge() {
-    renderModelBadge(dom, { getCurrentActiveProvider, getActive, getVoiceProfiles, haveProvidersLoaded });
     syncAdv();
   }
 
@@ -312,28 +286,19 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     if (!root || syncingAdv) return;
     syncingAdv = true;
     try {
-      const enabled = Boolean(getActive()?.settings?.advEnabled);
-      if (enabled !== Boolean(advApp) && conversation.busy) interruptAll();
-      const layout = document.querySelector('.app');
-      if (layout) layout.inert = enabled || hasOpenModal();
-      if (!enabled) {
-        advApp?.unmount(); advApp = null; root.hidden = true;
-        document.body.classList.remove('adv-active');
-        return;
-      }
-      root.hidden = false; document.body.classList.add('adv-active');
+      root.hidden = false;
       if (advApp) { advApp.update(); return; }
       advApp = mountAdv({ ...dom, root }, {
         controller: conversation, audio: streamAudioController, getSession: getActive,
         voiceEnabled: () => state.global.voiceMode,
         getCharacter: () => {
           const id = getActive()?.settings?.voiceProfileId || getActiveProfileId();
-          return { id, name: getVoiceProfiles().find(profile => profile.id === id)?.name || '角色' };
+          const profile = getVoiceProfiles().find(p => p.id === id);
+          return { id, name: profile?.name || '角色', work: profile?.work ?? null };
         },
         getModelStatus: () => {
-          const provider = getCurrentActiveProvider();
-          return { label: dom.badge?.textContent || provider?.name || '未配置模型',
-            state: conversation.busy ? 'busy' : provider ? 'ok' : 'error' };
+          const model = getModelStatus({ getCurrentActiveProvider, getActive, getVoiceProfiles, haveProvidersLoaded });
+          return { ...model, state: conversation.busy ? 'busy' : model.state };
         },
         loadPortrait: (id, { signal }) => requestJson(`/api/characters/${encodeURIComponent(id)}/portrait`, { signal }),
         saveSettings: patch => {
@@ -341,16 +306,16 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           session.settings = pickSettings({ ...session.settings, ...patch }, DEFAULT_SESSION_SETTINGS);
           saveState(); persistSession(session).catch(() => {});
         },
-        toggleVoice: () => dom.voiceModeBtn?.click(),
+        toggleVoice: () => toggleVoiceMode(),
         stopOtherVoice: stopCurrentVoice,
         onMic: () => toggleMic(),
         cancelMic,
         onSettings: openSessionSettings,
         onModelSettings: () => openGlobalSettings('models'),
         onNewSession: newChat,
-        renderHistory: () => fullRender(false, { scrollToBottom: false }),
         loadOlderHistory: session => loadOlderSessionHistory(session),
         playUserVoice: (msg, ctl) => playVoice(msg, ctl),
+        playLegacyVoice: (msg, ctl) => playVoice(msg, ctl),
         subscribeOverlay: onModalChange,
         closeOverlay: () => document.querySelector('.overlay.active [data-close]')?.click(),
       });
@@ -372,97 +337,26 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     }
   }
 
-  function renderHeader() {
-    const s = getActive();
-    if (dom.chatTitle) {
-      dom.chatTitle.textContent = s ? s.title : '新对话';
-      dom.chatTitle.title = dom.chatTitle.textContent;
-    }
-    if (s && dom.sessionSettingsBtn) {
-      const st = s.settings;
-      // 会话是否"已配置"看有没有绑定角色：人设提示词属于角色包，不再是会话属性
-      dom.sessionSettingsBtn.classList.toggle('configured', Boolean(st?.voiceProfileId));
-    }
-    updateBadge();
-  }
+  function renderHeader() { updateBadge(); }
 
   async function resolveJapanese(msg) {
     if (msg.japanese) return msg.japanese;
     try {
       const data = await requestJson('/api/chat/japanese', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: msg.content,
-          session_id: state.activeId,
-        }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: msg.content, session_id: state.activeId }),
       }, { timeoutMs: 60000 });
-      if (data && data.japanese) {
-        msg.japanese = data.japanese;
-        saveState();
-        return data.japanese;
-      }
-    } catch (e) {
-      console.warn('获取日文配音原文失败', e);
-    }
+      if (data.japanese) { msg.japanese = data.japanese; saveState(); return data.japanese; }
+    } catch (error) { console.debug('Japanese voice text unavailable:', error); }
     return '';
   }
 
-  function fullRender(animate = false, { scrollToBottom = true } = {}) {
+  function fullRender() {
     renderSidebar();
     renderHeader();
-    if (dom.messages) {
-      listInner = renderMessages(dom.messages, getActive(), {
-        animate,
-        onPick: sendMessage,
-        onPlayVoice: playVoice,
-        onResolveJapanese: resolveJapanese,
-        onLoadOlder: loadOlderSessionHistory,
-        historyBlocked: conversation.busy,
-        onOpenModels: () => openGlobalSettings('models'),
-        onOpenVoice: openSessionSettings,
-        onRetry: retryFailedMessage,
-        autoTranslate: Boolean(state.global.autoTranslate),
-      });
-      if (scrollToBottom) {
-        dom.messages.scrollTop = dom.messages.scrollHeight;
-        nearBottom = true;
-      }
-    }
   }
 
-  function updateComposer() {
-    if (dom.sendBtn && dom.input) {
-      dom.sendBtn.disabled = conversation.busy || Boolean(getActive()?.loadingOlder)
-        || isSessionDeleting(state.activeId) || !dom.input.value.trim();
-    }
-    if (dom.stopBtn) {
-      dom.stopBtn.classList.toggle('hidden', !conversation.busy);
-    }
-    const moreBtn = dom.messages?.querySelector('.history-more-btn');
-    if (moreBtn) {
-      const loading = Boolean(getActive()?.loadingOlder);
-      moreBtn.disabled = conversation.busy || loading;
-      moreBtn.textContent = loading ? '正在加载更早的聊天记录…'
-        : conversation.busy ? '回复完成后可查看更早的聊天记录' : '↑ 查看更早的聊天记录';
-    }
-  }
-
-  function autoGrow() {
-    if (!dom.input) return;
-    dom.input.style.height = 'auto';
-    dom.input.style.height = `${Math.min(dom.input.scrollHeight, 160)}px`;
-  }
-
-  function scrollBottom(smooth = false) {
-    if (!dom.messages) return;
-    dom.messages.scrollTo({ top: dom.messages.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
-    nearBottom = true;
-  }
-
-  function maybeScroll() {
-    if (nearBottom) scrollBottom(false);
-  }
+  function updateControls() { advApp?.update(); }
 
   /* ---------- 流式回复与打断 ---------- */
   function stopStream() {
@@ -475,207 +369,26 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   }
 
   function sendMessage(rawText, voiceMeta) {
-    conversation.send(typeof rawText === 'string' ? rawText : dom.input.value, voiceMeta);
+    return conversation.send(typeof rawText === 'string' ? rawText : advApp?.textbox.draft || '', voiceMeta);
   }
 
   function retryFailedMessage(msg) {
     conversation.retry(msg);
   }
 
-  conversation.on('turnstart', ({ userMessage: userMsg, assistantMessage, originId, retryOf }) => {
-    if (retryOf) {
-      fullRender(false);
-    } else {
-      dom.input.value = '';
-      autoGrow();
-      if (!listInner || !listInner.isConnected) fullRender(false);
-      const { el: userEl } = createMessageEl(userMsg, { onPlayVoice: playVoice });
-      userEl.classList.add('animate-in');
-      listInner.classList.remove('is-empty');
-      if (listInner.querySelector('.empty')) listInner.innerHTML = '';
-      listInner.appendChild(userEl);
+  conversation.on('turnstart', () => { renderSidebar(); renderHeader(); });
+  for (const kind of ['done', 'error', 'cancelled']) conversation.on(kind, event => {
+    const { error, kind: code, failedInline, originId, meta = {} } = event;
+    if (error && !(failedInline && originId === state.activeId)) {
+      showToast(error, 'error', needsModelSettings(error, code) ? {
+        actionLabel: '配置对话模型', onAction: () => openGlobalSettings('models'),
+      } : null);
+    } else if (meta.audioError && !meta.cancelled) {
+      showToast(meta.audioError, 'info', {
+        actionLabel: '检查运行状态', onAction: () => openGlobalSettings('dashboard'),
+      });
     }
-    scrollBottom(true);
-    renderSidebar();
-    renderHeader();
-    updateComposer();
-    const typing = createTypingEl();
-    listInner.appendChild(typing);
-    scrollBottom(false);
-    let streamEl = null;
-    let streamContentEl = null;
-    let streamBarCtl = null;
-    const ensureStreamVoiceBar = () => {
-      if (!streamEl) return null;
-      let actions = streamEl.querySelector('.msg-actions');
-      if (!actions) {
-        actions = document.createElement('div');
-        actions.className = 'msg-actions stream-actions';
-        const bubble = streamEl.querySelector('.msg-bubble');
-        if (bubble) bubble.appendChild(actions);
-      }
-      let bar = actions.querySelector('.voice-bar');
-      if (!bar) {
-        bar = document.createElement('div');
-        bar.className = 'voice-bar kind-ai playing';
-        bar.setAttribute('role', 'button');
-        bar.setAttribute('tabindex', '0');
-        bar.setAttribute('aria-label', '播放 / 暂停语音');
-        bar.style.setProperty('--vb-w', '140px');
-
-        const btn = document.createElement('span');
-        btn.className = 'vb-play';
-        btn.setAttribute('aria-hidden', 'true');
-        btn.innerHTML =
-          '<svg class="icon vb-ico-play"><use href="#i-play"></use></svg><svg class="icon vb-ico-pause"><use href="#i-pause"></use></svg>';
-
-        const waves = document.createElement('span');
-        waves.className = 'vb-waves';
-        const count = 20;
-        for (let i = 0; i < count; i++) {
-          const barH = 0.2 + (Math.sin(i * 0.7) + 1) * 0.38;
-          const ii = document.createElement('i');
-          ii.style.height = `${Math.round(barH * 100)}%`;
-          waves.appendChild(ii);
-        }
-
-        const durEl = document.createElement('span');
-        durEl.className = 'vb-dur';
-        durEl.textContent = '播放中…';
-
-        bar.append(btn, waves, durEl);
-        actions.prepend(bar);
-
-        let isPlaying = true;
-        let progress = 0;
-        const paint = () => {
-          bar.classList.toggle('playing', isPlaying);
-          const lit = Math.round(progress * count);
-          [...waves.children].forEach((el, idx) => el.classList.toggle('on', idx < lit));
-          durEl.textContent = isPlaying ? '播放中…' : '已暂停';
-        };
-
-        streamBarCtl = {
-          setPlaying: (v) => {
-            isPlaying = Boolean(v);
-            paint();
-          },
-          setProgress: (p) => {
-            progress = Math.min(1, Math.max(0, p || 0));
-            paint();
-          },
-        };
-
-        const toggle = (e) => {
-          if (e) {
-            e.preventDefault();
-            e.stopPropagation();
-          }
-          if (streamAudioController.isPlaying) {
-            if (streamAudioController.paused) {
-              streamAudioController.resume();
-              streamBarCtl.setPlaying(true);
-            } else {
-              streamAudioController.pause();
-              streamBarCtl.setPlaying(false);
-            }
-          }
-        };
-        bar.addEventListener('click', toggle);
-        bar.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter' || e.key === ' ') toggle(e);
-        });
-      }
-      return streamBarCtl;
-    };
-
-    const onChunk = (full) => {
-      typing.remove();
-      if (!streamEl) {
-        const pendingMsg = { ...assistantMessage, content: full, ts: Date.now() };
-        const built = createMessageEl(pendingMsg, { streaming: true });
-        streamEl = built.el;
-        streamContentEl = built.contentEl;
-        streamEl.classList.add('animate-in', 'streaming');
-        listInner.appendChild(streamEl);
-        if (!advApp && state.global.voiceMode && originId === state.activeId) {
-          ensureStreamVoiceBar();
-        }
-      } else {
-        streamContentEl.textContent = full;
-      }
-      maybeScroll();
-    };
-
-    const onEnd = ({ message: stored, error, kind: errorCode, failedInline, meta = {}, hasStartedStreamAudio }) => {
-      const { cancelled = false } = meta;
-      typing.remove();
-      if (streamEl) {
-        if (stored) {
-          streamEl.classList.remove('streaming');
-          const { el: finalEl, voiceCtl } = createMessageEl(stored, {
-            onPlayVoice: playVoice,
-            onResolveJapanese: resolveJapanese,
-            autoTranslate: Boolean(state.global.autoTranslate),
-          });
-          streamEl.replaceWith(finalEl);
-          streamEl = finalEl;
-          conversation.attachVoiceControl(voiceCtl, stored);
-        } else {
-          streamEl.remove();
-        }
-      }
-      if (failedInline && originId === state.activeId) fullRender(false);
-      updateComposer();
-      if (error && !(failedInline && originId === state.activeId)) {
-        showToast(error, 'error', needsModelSettings(error, errorCode) ? {
-          actionLabel: '配置对话模型',
-          onAction: () => openGlobalSettings('models'),
-        } : null);
-      } else if (meta.audioError && !cancelled) {
-        showToast(meta.audioError, 'info', {
-          actionLabel: '检查运行状态',
-          onAction: () => openGlobalSettings('dashboard'),
-        });
-      }
-      renderSidebar();
-      renderHeader();
-      if (!cancelled) maybeScroll();
-      if (!advApp && stored && !error && !cancelled && originId === state.activeId && !streamAudioController.isPlaying) {
-        const quote = stored.japanese || stored.content;
-        portraitStage.updateDialogue(quote);
-        if (meta.emotion) {
-          try {
-            portraitStage.setEmotion(meta.emotion, quote);
-          } catch (_) {}
-        } else {
-          try {
-            portraitStage.handleMessageEmotion(stored.content);
-          } catch (_) {}
-        }
-      }
-      // Refresh unlocks even if dialogue is still following paused/live audio.
-      if (stored && !error && !cancelled && originId === state.activeId) portraitStage.refreshAffection();
-      if (!advApp && stored && !error && !cancelled && state.global.voiceMode && originId === state.activeId) {
-        if (!hasStartedStreamAudio && !streamAudioController.isPlaying) {
-          const bar = streamEl && (streamEl.querySelector('.voice-bar') || streamEl.querySelector('.vb-play'));
-          if (bar) bar.click();
-        }
-      }
-    };
-
-    getStreamAudioControl = ensureStreamVoiceBar;
-    const offText = conversation.on('text', ({ text }) => onChunk(text));
-    const finish = (event) => {
-      offText();
-      offDone();
-      offError();
-      offCancelled();
-      onEnd(event);
-    };
-    const offDone = conversation.on('done', finish);
-    const offError = conversation.on('error', finish);
-    const offCancelled = conversation.on('cancelled', finish);
+    renderSidebar(); renderHeader();
   });
 
   /* ---------- 会话操作 ---------- */
@@ -712,14 +425,12 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       : earliestServerMessageId(session.messages);
     if (!beforeId || beforeId <= 1) {
       session.hasMoreHistory = false;
-      if (getActive() === session) fullRender(false, { scrollToBottom: false });
+      if (getActive() === session) fullRender();
       return;
     }
     session.loadingOlder = true;
-    updateComposer();
-    if (getActive() === session) fullRender(false, { scrollToBottom: false });
-    const prevScrollHeight = dom.messages ? dom.messages.scrollHeight : 0;
-    const prevScrollTop = dom.messages ? dom.messages.scrollTop : 0;
+    updateControls();
+    if (getActive() === session) fullRender();
     try {
       const data = await fetchSessionHistoryPage(session.id, { limit: 100, beforeId });
       if (getSession(session.id) !== session) return;
@@ -739,24 +450,21 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       showToast(`加载更早消息失败：${e.message}`, 'error');
     } finally {
       session.loadingOlder = false;
-      updateComposer();
+      updateControls();
       if (getActive() === session) {
-        fullRender(false, { scrollToBottom: false });
-        if (dom.messages) {
-          const delta = dom.messages.scrollHeight - prevScrollHeight;
-          dom.messages.scrollTop = Math.max(0, prevScrollTop + delta);
-        }
+        fullRender();
       }
     }
   }
 
   async function switchSession(id) {
+    if (!getSession(id)) return false;
     closeDrawer();
     if (id === state.activeId) {
       const current = getActive();
       if (current && !current.messages?.length) {
         await loadSessionHistory(current);
-        if (getActive() === current) fullRender(false);
+        if (getActive() === current) fullRender();
       }
       return;
     }
@@ -765,14 +473,14 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     revokeAllCachedAudioUrls();
     const s = getActive();
     saveState();
-    fullRender(true);
+    fullRender();
     ensureSessionVoice(s);
     if (s && (!s.messages || s.messages.length === 0)) {
       await loadSessionHistory(s);
       if (getActive() !== s) return;
-      fullRender(false);
+      fullRender();
     }
-    if (dom.input) dom.input.focus();
+    advApp?.textbox.inputElement?.focus();
   }
 
   async function handleDelete(id) {
@@ -785,11 +493,11 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     }
     try {
       const removal = deletePersistedSession(id);
-      updateComposer();
+      updateControls();
       await removal;
     } catch (error) {
       showToast(`尚未确认删除，对话保留在列表中。${error.message} 可以稍后重试。`, 'error');
-      updateComposer();
+      updateControls();
       return;
     }
     const sess = getSession(id);
@@ -801,7 +509,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       }
     }
     deleteSession(id);
-    fullRender(true);
+    fullRender();
     ensureSessionVoice(getActive());
     showToast('对话已删除');
   }
@@ -831,74 +539,25 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       }
     }
     saveState();
-    fullRender(true);
+    fullRender();
     ensureSessionVoice(s);
-    if (dom.input) dom.input.focus();
+    advApp?.textbox.inputElement?.focus();
     persistSession(s).catch(() => {});
+    return s;
   }
 
-  function handleInputKeydown(e) {
-    if (e.isComposing || e.keyCode === 229) return;
-    if ((e.key === 'Enter' && !e.shiftKey) || ((e.ctrlKey || e.metaKey) && e.key === 'Enter')) {
-      e.preventDefault();
-      sendMessage();
-    }
-  }
-
-  const app = { sendMessage, retryFailedMessage, loadOlderSessionHistory, fullRender, updateComposer, conversation,
-    switchSession, syncAdv, handleInputKeydown, get adv() { return advApp; } };
+  const actions = createTitleActions({
+    getSessions: () => state.sessions, getProfiles: getVoiceProfiles,
+    startNew: newChat, loadSession: switchSession,
+    openCharacters: openSessionSettings, openSettings: () => openGlobalSettings(),
+    getBackgroundUrl: (id, time, work) => advApp?.backgroundUrl(id, time, work) || '',
+  });
+  Object.assign(advActions, actions);
+  const app = { sendMessage, retryFailedMessage, loadOlderSessionHistory, fullRender, updateControls, conversation,
+    switchSession, syncAdv, actions, get adv() { return advApp; } };
   if (!initialize) return app;
 
-  /* ---------- 核心事件绑定 ---------- */
-  if (dom.newChatBtn) dom.newChatBtn.addEventListener('click', newChat);
-  if (dom.menuBtn) dom.menuBtn.addEventListener('click', openDrawer);
-  if (dom.sidebarClose) dom.sidebarClose.addEventListener('click', closeDrawer);
-  if (dom.backdrop) dom.backdrop.addEventListener('click', closeDrawer);
-
-  if (dom.composer) {
-    dom.composer.addEventListener('submit', (e) => {
-      e.preventDefault();
-      sendMessage();
-    });
-    keepToastsAboveComposer(dom.composer.closest('.composer-wrap'));
-  }
-  if (dom.input) {
-    dom.input.addEventListener('input', () => {
-      autoGrow();
-      updateComposer();
-    });
-    dom.input.addEventListener('keydown', handleInputKeydown);
-  }
-  if (dom.stopBtn) dom.stopBtn.addEventListener('click', interruptAll);
-
-  if (dom.messages) {
-    dom.messages.addEventListener(
-      'scroll',
-      () => {
-        const d = dom.messages;
-        nearBottom = d.scrollHeight - d.scrollTop - d.clientHeight < 160;
-      },
-      { passive: true }
-    );
-  }
-
-  document.addEventListener('keydown', (e) => {
-    if (hasOpenModal() || advApp) return;
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
-      e.preventDefault();
-      newChat();
-    }
-    if (e.key === 'Escape') {
-      if (portraitStage.dismissMobile()) return;
-      closeDrawer();
-      if (typeof streamAudioController !== 'undefined' && streamAudioController.isPlaying) {
-        streamAudioController.interrupt(40);
-      }
-      if (conversation.busy) {
-        interruptAll();
-      }
-    }
-  });
+  dom.newChatBtn?.addEventListener('click', newChat);
 
   /* ---------- 初始化控制器 ---------- */
   initUpdateManager(dom);
@@ -924,28 +583,17 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     revokeAllCachedAudioUrls,
   });
   initAudioPlayerUi(dom, {
-    getInput: () => advApp?.textbox.inputElement || dom.input,
-    getMicButton: () => advApp?.textbox.micButton || dom.micBtn,
+    getInput: () => advApp?.textbox.inputElement,
+    getMicButton: () => advApp?.textbox.micButton,
     sendMessage,
-    autoGrow,
     isBusy: () => conversation.busy,
     resolveJapanese,
     onOpenEngineStatus: () => openGlobalSettings('dashboard'),
   });
 
-  dom.voiceModeBtn?.addEventListener('click', () => advApp?.update());
-
-  if (dom.sessionSettingsBtn) {
-    dom.sessionSettingsBtn.addEventListener('click', openSessionSettings);
-  }
   if (dom.globalSettingsBtn) {
     dom.globalSettingsBtn.addEventListener('click', () => openGlobalSettings());
   }
-  if (dom.badge) {
-    dom.badge.style.cursor = 'pointer';
-    dom.badge.addEventListener('click', () => openGlobalSettings('models'));
-  }
-
   /* ---------- 启动同步与渲染 ---------- */
   loadState();
   initSessionBackup({
@@ -954,17 +602,14 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     onImport: () => {
       ++_syncSessionsGen;
       interruptAll();
-      fullRender(false);
+      fullRender();
       ensureSessionVoice(getActive(), { silent: true });
     },
   });
-  fullRender(true);
-  autoGrow();
-  updateComposer();
-  updateVoiceModeUI();
+  fullRender();
+  updateControls();
   ensureSessionVoice(getActive());
-  if (!voiceSupported() && !recorderSupported() && dom.micBtn) dom.micBtn.classList.add('hidden');
-  if (window.innerWidth > 820 && dom.input) dom.input.focus();
+  if (window.innerWidth > 820) advApp?.textbox.inputElement?.focus();
 
   // 同步后端 SQLite 会话列表及历史消息（generation counter 防止过期结果覆盖用户新建会话）
   async function syncSessionsFromBackend() {
@@ -979,6 +624,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         for (const bs of backendSessions) {
           let local = existingMap.get(bs.id);
           if (local) {
+            local.lastLine = bs.last_message || '';
             if (bs.title && (local.title === '新对话' || !local.title)) local.title = bs.title;
             local.updatedAt = serverTimestamp(bs.updated_at, local.updatedAt);
             if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
@@ -1002,6 +648,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
               createdAt: serverTimestamp(bs.created_at),
               updatedAt: serverTimestamp(bs.updated_at),
               messages: [],
+              lastLine: bs.last_message || '',
               settings: pickSettings({
                 ...DEFAULT_SESSION_SETTINGS,
                 ...(bs.settings || {}),
@@ -1030,26 +677,24 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       }
       if (isStale()) return;
       saveState();
-      fullRender(false);
+      fullRender();
       ensureSessionVoice(getActive(), { silent: true });
-      if (window.innerWidth > 820 && dom.input) dom.input.focus();
+      if (window.innerWidth > 820) advApp?.textbox.inputElement?.focus();
       loadProviders().catch(() => {});
     } catch (err) {
       console.debug('Failed to sync sessions from backend:', err);
+      throw err;
     }
   }
 
-  syncSessionsFromBackend().catch(() => {});
+  // The first protected request completes token authentication before title UI.
+  app.ready = syncSessionsFromBackend().then(() => showTitleScreen(actions)).catch(error => {
+    console.debug('Title startup deferred:', error);
+  });
 
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.get('settings') === '1' || window.location.hash === '#settings') {
     openGlobalSettings();
-  }
-
-  try {
-    portraitStage.init({ profileId: getActive()?.settings?.voiceProfileId, deferLoad: Boolean(advApp) });
-  } catch (e) {
-    console.warn('Failed to initialize portrait stage:', e);
   }
 
   return app;

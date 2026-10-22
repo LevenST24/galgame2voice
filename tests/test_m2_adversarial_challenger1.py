@@ -168,17 +168,17 @@ class TestFrontendAssetsAndDOMStructure:
     """Verifies static files, DOM hierarchy, and CSS contracts for Milestone 2."""
 
     def test_index_html_contains_all_required_dom_elements(self):
-        index_file = Path("galgame2voice/static/index.html")
+        index_file = Path("frontend/index.html")
         assert index_file.exists(), "index.html must exist"
         content = index_file.read_text(encoding="utf-8")
 
         # Gal2Voice 新版 UI（多会话聊天 + 语音）必需元素
         required_ids = [
             'id="sidebar"', 'id="sessionList"', 'id="newChatBtn"',
-            'id="sessionCount"', 'id="messages"', 'id="composer"',
-            'id="input"', 'id="sendBtn"', 'id="stopBtn"', 'id="micBtn"',
-            'id="voiceModeBtn"', 'id="sessionSettingsBtn"', 'id="globalSettingsBtn"',
-            'id="modelBadge"', 'id="toastRoot"', 'id="sessionModal"', 'id="globalModal"',
+            'id="sessionCount"',
+            'id="advRoot"',
+            'id="globalSettingsBtn"',
+            'id="toastRoot"', 'id="sessionModal"', 'id="globalModal"',
         ]
         missing = [rid for rid in required_ids if rid not in content]
         assert not missing, f"index.html missing required elements: {missing}"

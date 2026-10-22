@@ -24,7 +24,8 @@ from galgame2voice.security.media_urls import (
     sign_media_url,
     verify_media_url_signature,
 )
-from galgame2voice.services.character_manager import get_character_manager
+from galgame2voice.services.character_manager import get_character_manager, get_character_work
+from galgame2voice.schemas.character_manifest import clean_character_work
 from galgame2voice.services.portrait_manifest import (
     CANVAS_ID_RE,
     LAYER_FILE_NAME_RE,
@@ -136,6 +137,7 @@ def _resolve_character_portrait(char_name: str, character_id: int | None = None)
         **portrait,
         "character_id": pkg.manifest.id,
         "character_name": pkg.manifest.name,
+        "work": clean_character_work(getattr(pkg.manifest, "work", None)),
     }
     if character_id is not None:
         _rewrite_sprite_urls(data, character_id, pkg.folder / "portrait")
@@ -176,6 +178,7 @@ async def list_characters(
                     "id": prof.id,
                     "name": prof.name,
                     "description": prof.description,
+                    "work": get_character_work(prof.name),
                     "is_active": (prof.id == active_id),
                     "is_default": prof.is_default,
                     "prompt_lang": prof.prompt_lang,
@@ -267,6 +270,7 @@ async def get_character_detail(
                 "id": prof.id,
                 "name": prof.name,
                 "description": prof.description,
+                "work": get_character_work(prof.name),
                 "is_active": (prof.id == active_id),
                 "is_default": prof.is_default,
                 "gpt_weights_path": prof.gpt_weights_path,

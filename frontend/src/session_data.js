@@ -38,7 +38,7 @@ const advEnums = {
 };
 const advRanges = { advWindowOpacity: 100, advTextIntervalMs: 100, advAutoBaseMs: 6000, advAutoPerCharMs: 200 };
 export function validAdvSetting(key, value) {
-  if (key === 'advEnabled' || key === 'advInterruptVoice' || key === 'advBlink' || key === 'advLipSync') return typeof value === 'boolean';
+  if (key === 'advInterruptVoice' || key === 'advBlink' || key === 'advLipSync') return typeof value === 'boolean';
   if (advEnums[key]) return advEnums[key].includes(value);
   if (key in advRanges) return Number.isInteger(value) && value >= 0 && value <= advRanges[key];
   if (key === 'advPlayerName') {
@@ -49,7 +49,13 @@ export function validAdvSetting(key, value) {
   }
   // Outfit IDs are manifest keys, never paths. Missing installed IDs remain portable.
   if (key === 'advOutfit') return typeof value === 'string' && (value === '' || /^[\p{L}\p{N}_-]{1,200}$/u.test(value));
-  if (key === 'advBackground') return typeof value === 'string' && value.length <= 64 && !/[^A-Za-z0-9_-]/.test(value);
+  // advBackground is "" (follow the character's work), "none" (plain sky) or a global "<work>/<id>" key.
+  if (key === 'advBackground') {
+    if (typeof value !== 'string') return false;
+    if (value === '' || value === 'none') return true;
+    const parts = value.split('/');
+    return parts.length === 2 && parts.every(part => /^[A-Za-z0-9_-]{1,64}$/.test(part));
+  }
   return false;
 }
 

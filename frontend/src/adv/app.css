@@ -1,7 +1,6 @@
 #advRoot { position: fixed; inset: 0; z-index: 45; }
 #advRoot[hidden] { display: none; }
-body.adv-active .app { visibility: hidden; }
-body.adv-active .toast-root { bottom: calc((100dvh - 1080 * var(--u)) / 2 + 300 * var(--u)); }
+.toast-root { bottom: calc((100dvh - 1080 * var(--u)) / 2 + 300 * var(--u)); }
 .adv-app-tools { position: absolute; top: calc(28 * var(--u)); left: calc(32 * var(--u)); z-index: 50; display: flex; gap: calc(12 * var(--u)); }
 .adv-app-tools[hidden] { display: none; }
 .adv-app-tools button, .adv-art-status, .adv-drawer > button {
@@ -14,7 +13,6 @@ body.adv-active .toast-root { bottom: calc((100dvh - 1080 * var(--u)) / 2 + 300 
   display: flex; flex-direction: column; gap: 8px; background: var(--bg, #f7f5fc); color: var(--text, #252334);
   border-radius: 14px; box-shadow: 0 8px 60px #0009; overflow: auto; user-select: text; }
 .adv-drawer > button { align-self: flex-end; flex: none; }
-.adv-drawer .messages { visibility: visible; flex: 1; min-height: 0; overflow-y: auto; }
 .adv-drawer .sidebar { visibility: visible; position: static; transform: none; width: 100%; height: auto;
   flex: 1; min-height: 0; overflow-y: auto; border: 0; }
 .adv-drawer .sidebar-close { display: grid; }

@@ -16,7 +16,9 @@ from galgame2voice.database import crud
 from galgame2voice.database.models import VoiceProfileCreate
 from galgame2voice.database.session import init_db, get_db
 from galgame2voice.routers import characters as characters_router
-from galgame2voice.services.character_manager import get_character_manager
+from galgame2voice.schemas.character_manifest import clean_character_work
+from galgame2voice.services import character_manager as character_manager_module
+from galgame2voice.services.character_manager import get_character_manager, get_character_work
 
 CHAT_EMOTIONS = {"gentle", "happy", "shy", "tsundere", "cool", "sad", "angry"}
 
@@ -165,3 +167,87 @@ async def test_sprite_path_traversal_is_rejected(tmp_path, monkeypatch):
         with pytest.raises(HTTPException) as rejected:
             await characters_router.get_character_portrait_file(profile.id, costume, file_name)
         assert rejected.value.status_code in (400, 404)
+
+
+def _fake_package(tmp_path, name, work, *, is_valid=True):
+    """A discovered character package exposing the manifest fields the API reads."""
+    folder = tmp_path / name
+    (folder / "portrait").mkdir(parents=True)
+    manifest = SimpleNamespace(id=f"id_{name}", name=name, work=work)
+    return SimpleNamespace(folder=folder, manifest=manifest, is_valid=is_valid)
+
+
+def _patch_manager(monkeypatch, packages):
+    by_name = {pkg.manifest.name: pkg for pkg in packages}
+
+    def fake_manager():
+        return SimpleNamespace(get_character=lambda name: by_name.get(name))
+
+    monkeypatch.setattr(characters_router, "get_character_manager", fake_manager)
+    monkeypatch.setattr(character_manager_module, "get_character_manager", fake_manager)
+
+
+async def _make_profile(name, weights):
+    async with get_db() as conn:
+        await crud.get_settings_raw(conn)
+        return await crud.create_voice_profile(conn, VoiceProfileCreate(
+            name=name, gpt_weights_path=weights + ".ckpt", sovits_weights_path=weights + ".pth",
+            ref_audio_path=weights + ".wav", prompt_text="テスト", prompt_lang="ja", text_lang="ja",
+        ))
+
+
+@pytest.mark.asyncio
+async def test_character_work_is_exposed_on_the_profile_apis(tmp_path, monkeypatch):
+    """A character's declared background work surfaces on every endpoint the frontend reads."""
+    pkg = _fake_package(tmp_path, "作品角色", "cafe_stella")
+    _patch_manager(monkeypatch, [pkg])
+    profile = await _make_profile("作品角色", "work_role")
+
+    async with await _client() as client:
+        entry = next(c for c in (await client.get("/api/characters?user_id=test_user")).json()["characters"]
+                     if c["id"] == profile.id)
+        assert entry["work"] == "cafe_stella"
+        prof = next(p for p in (await client.get("/api/voice/profiles")).json()["profiles"]
+                    if p["id"] == profile.id)
+        assert prof["work"] == "cafe_stella"
+
+
+@pytest.mark.asyncio
+async def test_character_reports_null_work_when_absent_or_invalid(tmp_path, monkeypatch):
+    invalid = _fake_package(tmp_path, "无作品角色", "../etc")
+    _patch_manager(monkeypatch, [invalid])
+    profile = await _make_profile("无作品角色", "no_work")
+
+    async with await _client() as client:
+        entry = next(c for c in (await client.get("/api/characters?user_id=test_user")).json()["characters"]
+                     if c["id"] == profile.id)
+        assert entry["work"] is None
+        prof = next(p for p in (await client.get("/api/voice/profiles")).json()["profiles"]
+                    if p["id"] == profile.id)
+        assert prof["work"] is None
+
+
+def test_resolve_character_portrait_payload_carries_work(tmp_path, monkeypatch):
+    pkg = _fake_package(tmp_path, "作品角色", "cafe_stella")
+    _patch_manager(monkeypatch, [pkg])
+    monkeypatch.setattr(characters_router, "load_portrait_manifest", lambda folder: {"costumes": []})
+    assert characters_router._resolve_character_portrait("作品角色")["work"] == "cafe_stella"
+
+
+def test_get_character_work_skips_unknown_and_invalid_packages(tmp_path, monkeypatch):
+    _patch_manager(monkeypatch, [
+        _fake_package(tmp_path, "有作品", "cafe_stella"),
+        _fake_package(tmp_path, "坏包", "cafe_stella", is_valid=False),
+        _fake_package(tmp_path, "坏作品", "../etc"),
+    ])
+    assert get_character_work("有作品") == "cafe_stella"
+    assert [get_character_work(name) for name in ("坏包", "坏作品", "不存在", "")] == [None] * 4
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("cafe_stella", "cafe_stella"), ("A_-09", "A_-09"), ("a" * 64, "a" * 64),
+    (None, None), ("", None), ("../cafe", None), ("cafe/day", None),
+    ("咖啡店", None), ("a" * 65, None), ("cafe\n", None), (7, None),
+])
+def test_clean_character_work_only_accepts_pack_ids(raw, expected):
+    assert clean_character_work(raw) == expected

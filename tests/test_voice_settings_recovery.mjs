@@ -3,13 +3,10 @@ import { state, loadState, DEFAULT_SESSION_SETTINGS } from '../frontend/src/stor
 import { initVoiceSettings, createCustomVoice, loadSessionVoiceSelect, handleRescanCharacters, populateScanOptions, invalidateScannedModels, ensureSessionVoice } from '../frontend/src/controllers/voice_settings.js';
 import { persistSession } from '../frontend/src/session_api.js';
 import { openSessionSettings } from '../frontend/src/controllers/voice_settings.js';
-import { portraitStage } from '../frontend/src/portrait.js';
 
 const storage = new Map();
 globalThis.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
 globalThis.document = { getElementById: () => null, createElement: () => element() };
-portraitStage.setCharacter = async () => {};
-portraitStage.initDefaultCharacter = async () => {};
 const response = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 function element(value = '') {

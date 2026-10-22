@@ -35,6 +35,30 @@ export function resolveVariant(background, time) {
   return null;
 }
 
+// Stored advBackground values: '' follows the character's work, 'none' is the plain sky,
+// anything else is a global "<work>/<id>" key.
+export const BG_AUTO = '';
+export const BG_NONE = 'none';
+
+// The key the stage shows for a stored value; '' (the sky) when nothing fits.
+export function effectiveBackgroundKey(stored, { list, works, work } = {}) {
+  if (stored === BG_NONE) return '';
+  // Bare ids saved before per-work packs fall back to auto, like an empty value.
+  if (typeof stored === 'string' && stored.includes('/')) return stored;
+  if (!work) return '';
+  const items = Array.isArray(list) ? list : [];
+  const declared = (Array.isArray(works) ? works : []).find(entry => entry?.id === work)?.default;
+  if (typeof declared === 'string' && items.some(item => item?.key === declared)) return declared;
+  return items.find(item => item?.work === work && typeof item.key === 'string')?.key || '';
+}
+
+// The image a thumbnail of a background key shows: its chosen time, or the clock's for auto.
+export function selectionUrl(list, value, now = new Date()) {
+  const { id, time } = normalizeBackgroundSelection(value);
+  const found = id && Array.isArray(list) ? list.find(item => item?.key === id) : null;
+  return resolveVariant(found, time === 'auto' ? timeOfDay(now) : time)?.url || '';
+}
+
 function validTime(time) {
   return BG_TIME_CHOICES.includes(time) ? time : 'auto';
 }
@@ -89,6 +113,28 @@ export function createBackgroundView({
   let request = 0;
   let timer = null;
   let destroyed = false;
+  const preloaded = new Map();
+  let preloadedFor = null;
+
+  function preloadVariants() {
+    const variants = backgrounds.get(selection.id)?.variants;
+    if (!variants) return;
+    // Hold decoded variants for the chosen background only, so browsing the panel
+    // does not pin every full-size image in memory.
+    if (preloadedFor !== selection.id) {
+      for (const image of preloaded.values()) release(image);
+      preloaded.clear();
+      preloadedFor = selection.id;
+    }
+    for (const url of Object.values(variants)) {
+      if (typeof url !== 'string' || !url || preloaded.has(url)) continue;
+      const image = typeof ImageClass === 'function' ? new ImageClass() : doc.createElement('img');
+      preloaded.set(url, image);
+      image.src = url;
+      // Warm the HTTP and decode caches; failure must not interrupt playback.
+      try { image.decode?.().catch(() => {}); } catch { /* unsupported decode */ }
+    }
+  }
 
   const reducedMotion = () => Boolean(matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
 
@@ -159,6 +205,7 @@ export function createBackgroundView({
 
   function render() {
     if (destroyed) return;
+    preloadVariants();
     sky.dataset.time = part();
     const found = target();
     if (!found) {
@@ -185,7 +232,7 @@ export function createBackgroundView({
     setList(list) {
       const next = new Map();
       for (const item of Array.isArray(list) ? list : []) {
-        if (item && typeof item.id === 'string' && item.id) next.set(item.id, item);
+        if (item && typeof item.key === 'string' && item.key) next.set(item.key, item);
       }
       backgrounds = next;
       render();
@@ -208,6 +255,8 @@ export function createBackgroundView({
         image.remove?.();
       }
       sky.remove?.();
+      for (const image of preloaded.values()) release(image);
+      preloaded.clear();
     },
   };
 }

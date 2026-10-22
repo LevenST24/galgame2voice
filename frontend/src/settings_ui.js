@@ -19,8 +19,6 @@ export function openModal(el, { focus = null } = {}) {
   const previousFocus = document.activeElement;
   if (top()) top().el.inert = true;
   dialogs.push({ el, previousFocus });
-  const app = document.querySelector('.app');
-  if (app) app.inert = true;
   el.hidden = false;
   el.inert = false;
   el.classList.remove('hidden');
@@ -44,8 +42,6 @@ export function closeModal(el) {
   el.hidden = true;
   el.inert = false;
   if (top()) top().el.inert = false;
-  const app = document.querySelector('.app');
-  if (app) app.inert = Boolean(top()) || Boolean(document.body?.classList.contains('adv-active'));
   notifyModals();
   if (previousFocus?.isConnected && !previousFocus.closest('[inert], [hidden], .hidden')) previousFocus.focus({ preventScroll: true });
   else if (top()) top().el.querySelector('.modal')?.focus({ preventScroll: true });
