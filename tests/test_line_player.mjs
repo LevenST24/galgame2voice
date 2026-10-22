@@ -874,6 +874,44 @@ test('repaginate recomputes pages for current line with new primary setting with
   assert.equal(reveals[reveals.length - 1][1], 'ja_p2');
 });
 
+test('isPresenting is false unless the stage is showing or waiting for a line', () => {
+  const { player } = setup({ settings: { voiceEnabled: false } });
+  assert.equal(player.isPresenting(), false, 'idle');
+
+  player.startTurn('t');
+  assert.equal(player.state, 'waiting_line');
+  assert.equal(player.isPresenting(), true, 'waiting_line');
+  player.suspend('overlay');
+  assert.equal(player.state, 'suspended');
+  assert.equal(player.isPresenting(), true, 'suspended from waiting_line');
+  player.resume('overlay');
+
+  player.pushLine('t', sampleLine0);
+  assert.equal(player.state, 'revealing');
+  assert.equal(player.isPresenting(), true, 'revealing');
+  player.suspend('overlay');
+  assert.equal(player.isPresenting(), true, 'suspended from revealing');
+  player.resume('overlay');
+
+  assert.equal(player.state, 'waiting_advance');
+  assert.equal(player.isPresenting(), true, 'waiting_advance');
+  player.suspend('overlay');
+  assert.equal(player.isPresenting(), true, 'suspended from waiting_advance');
+  player.resume('overlay');
+
+  player.beginPlayerEdit();
+  assert.equal(player.state, 'input');
+  assert.equal(player.isPresenting(), false, 'input');
+  player.suspend('overlay');
+  assert.equal(player.state, 'suspended');
+  assert.equal(player.isPresenting(), false, 'suspended from input');
+  player.resume('overlay');
+
+  player.settle('t', { ok: false, kind: 'error', error: 'boom' });
+  assert.equal(player.state, 'error');
+  assert.equal(player.isPresenting(), false, 'error');
+});
+
 test('repaginate preserves the raw text offset when viewport page widths change', () => {
   let wide = false;
   const { player, render } = setup({ settings: { voiceEnabled: false, revealMsPerGrapheme: 0 },

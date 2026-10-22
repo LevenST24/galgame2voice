@@ -208,6 +208,49 @@ test('voice off uses typewriter and count-based AUTO with no audio terminal or a
   assert.equal(h.app.sprite.getLastCommitted(), null);
 });
 
+test('LOG hides lines the stage has not shown until the turn stops being presented', t => {
+  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
+  h.start();
+  const lines = [0, 1, 2].map(index => ({ index, zh: `第${index}句`, ja: '', emotion: 'gentle', act: {} }));
+  h.sessions[0].messages.push({ id: 'turn_0', role: 'assistant', ts: Date.now(), lines });
+  for (const line of lines) h.emit('line', { messageId: 'turn_0', line });
+
+  const logTexts = () => [...h.app.backlog.element.querySelectorAll('.adv-log-entry')]
+    .map(el => [el.classList.contains('is-assistant'), el.querySelector('.adv-log-primary').textContent]);
+
+  h.app.action('log');
+  assert.equal(h.app.player.state, 'suspended');
+  assert.deepEqual(logTexts(), [[false, '问题'], [true, '第0句']], 'Queued lines stay out of LOG until the stage shows them');
+
+  h.app.action('close_overlay');
+  h.app.action('advance'); h.app.action('advance'); h.app.action('advance');
+  h.done();
+  assert.equal(h.app.player.state, 'input');
+
+  h.app.action('log');
+  assert.deepEqual(logTexts(), [[false, '问题'], [true, '第0句'], [true, '第1句'], [true, '第2句']],
+    'A turn that stopped being presented lists every line');
+  h.app.action('close_overlay');
+});
+
+test('LOG still hides unshown lines after the finished reply is stored under a new id', t => {
+  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
+  h.start('m_stream_1');
+  const lines = [0, 1, 2].map(index => ({ index, zh: `第${index}句`, ja: '', emotion: 'gentle', act: {} }));
+  for (const line of lines) h.emit('line', { messageId: 'm_stream_1', line });
+  // conversation.js stores the finished reply under a fresh id, not the stream id.
+  const stored = { id: 'm_final_1', role: 'assistant', ts: Date.now(), lines };
+  h.sessions[0].messages.push(stored);
+  h.controller.busy = false;
+  h.emit('done', { originId: h.sessions[0].id, message: stored });
+
+  h.app.action('log');
+  const texts = [...h.app.backlog.element.querySelectorAll('.adv-log-entry.is-assistant')]
+    .map(el => el.querySelector('.adv-log-primary').textContent);
+  assert.deepEqual(texts, ['第0句'], 'The stored copy of the presented turn is filtered too');
+  h.app.action('close_overlay');
+});
+
 test('drawers and settings suspend playback, restore draft/focus, and recovery delegates retry', t => {
   const h = setup(t); h.start(); h.line(); h.audioEvent(); h.app.action('input');
   const input = h.app.textbox.inputElement; input.value = '保留'; input.dispatchEvent({ type: 'input' });

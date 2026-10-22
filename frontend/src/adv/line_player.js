@@ -17,6 +17,9 @@ export const DEFAULT_SETTINGS = {
   primary: 'zh', // 'zh' | 'ja'
 };
 
+/** States where the stage is showing or about to show a line of the current turn. */
+const PRESENTING_STATES = new Set(['waiting_line', 'waiting_audio', 'revealing', 'waiting_advance']);
+
 /**
  * Creates a deterministic visual-novel line player state machine.
  *
@@ -813,6 +816,10 @@ export function createLinePlayer({
     if (page < 0) page = Math.max(0, pages.length - 1);
   }
 
+  function isPresenting() {
+    return PRESENTING_STATES.has(state === 'suspended' ? suspendedFrom : state);
+  }
+
   return {
     // Stream input
     startTurn,
@@ -837,6 +844,7 @@ export function createLinePlayer({
     setSettings,
 
     // Introspection
+    isPresenting,
     get state() { return state; },
     get currentIndex() { return currentIndex; },
     get page() { return page; },

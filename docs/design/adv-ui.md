@@ -304,7 +304,9 @@ Hiding pauses AUTO progression; voice may finish; no unread line is silently los
 Wheel up outside editors/scrolling overlays opens LOG; it never rewinds the model.
 P3 may open the existing message-list overlay; P4 adds normalized per-line entries.
 LOG shows speaker, primary/subtitle, and available replay controls, with older-page
-loading preserved. Expired seven-day audio cache entries have disabled replay.
+loading preserved. While a turn is still being presented, LOG lists only the lines
+the stage has shown; queued lines appear once shown or skipped, or when the turn
+ends. Expired seven-day audio cache entries have disabled replay.
 Opening LOG cancels SKIP, pauses AUTO and voice, and preserves the current page.
 Only one voice source group, including replay, may own output at a time.
 

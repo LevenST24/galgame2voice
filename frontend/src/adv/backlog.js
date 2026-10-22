@@ -9,7 +9,7 @@
  * - Failed user messages with inline reason, retry/settings and recording playback
  * - Per-line voice replay with exclusive playback and 7-day expiration checks
  * - Paging via loadOlderSessionHistory with scroll position preservation
- * - Live turn updates via controller subscriptions (turnstart, line, line_audio, done, error, cancelled)
+ * - Live turn updates via controller subscriptions (turnstart, line, line_audio, done, error, cancelled); while the stage presents a turn, only its shown lines are listed
  * - Accessibility: role="dialog", aria-modal="true", accessible name, focus trap and focus return
  * - Keyboard & gesture controls: Esc / close button / wheel-down at bottom to close
  * - Text rendered strictly with textContent
@@ -100,6 +100,13 @@ export function createBacklog(container, deps = {}) {
 
   function isVoiceEnabled() {
     return typeof deps.voiceEnabled === 'function' ? Boolean(deps.voiceEnabled()) : true;
+  }
+
+  function isHiddenLine(msg, line) {
+    const hidden = deps.getHiddenFrom?.();
+    return Boolean(hidden)
+      && (hidden.messageIds || []).some(id => String(id) === String(msg?.id))
+      && Number(line?.index) > Number(hidden.after);
   }
 
   function updateReplayButtonState(btn, line, msg, statusSpan) {
@@ -374,7 +381,9 @@ export function createBacklog(container, deps = {}) {
     }
     if (msg.role === 'assistant') {
       if (Array.isArray(msg.lines) && msg.lines.length > 0) {
-        return msg.lines.map((line) => renderAssistantLineEntry(line, msg, settings));
+        return msg.lines
+          .filter((line) => !isHiddenLine(msg, line))
+          .map((line) => renderAssistantLineEntry(line, msg, settings));
       }
       return msg.content || msg.japanese ? [renderAssistantLegacyEntry(msg, settings)] : [];
     }
@@ -513,6 +522,7 @@ export function createBacklog(container, deps = {}) {
         const session = deps.getSession?.();
         const msg = session?.messages?.find(m => m.id === event.messageId) || deps.getLiveMessage?.();
         if (!msg || msg.id !== event.messageId) return;
+        if (isHiddenLine(msg, event.line)) return;
         const settings = deps.getSettings?.() || {};
         const atBottom = listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight <= 20;
         const existing = [...listEl.querySelectorAll('.adv-log-entry')].find(el =>

@@ -514,9 +514,17 @@ test('LOG: a live turn updates an open LOG through done and through cancelled', 
   assert.equal(entries.length, 1);
   assert.equal(entries[0].querySelector('.adv-log-primary').textContent, '用户实时提问');
 
-  // Line event arrives
+  // Line event arrives, but the suspended stage has not shown it: LOG keeps it out
   h.line(0, { zh: '第一句实时台词', ja: 'リアルタイム1' });
   entries = overlay.querySelectorAll('.adv-log-entry');
+  assert.equal(entries.length, 1, 'A line the stage never showed must not spoil the backlog');
+
+  // Closing LOG lets the stage activate it, and a reopened LOG lists it
+  h.app.action('close_overlay');
+  assert.equal(h.app.player.currentIndex, 0);
+  h.app.action('log');
+  const reopened = h.app.stage.stage.querySelector('.adv-log-overlay');
+  entries = reopened.querySelectorAll('.adv-log-entry');
   assert.equal(entries.length, 2);
   assert.equal(entries[1].querySelector('.adv-log-primary').textContent, '第一句实时台词');
 
@@ -527,15 +535,62 @@ test('LOG: a live turn updates an open LOG through done and through cancelled', 
 
   // Done event arrives
   h.done('done');
-  entries = overlay.querySelectorAll('.adv-log-entry');
+  entries = reopened.querySelectorAll('.adv-log-entry');
   assert.equal(entries.length, 2);
 
   // Next turn cancelled
   h.start('turn_cancel', '即将被取消的提问');
   h.line(0, { zh: '部分输出', ja: '' });
   h.done('cancelled');
-  entries = overlay.querySelectorAll('.adv-log-entry');
+  entries = reopened.querySelectorAll('.adv-log-entry');
   assert.equal(entries.length, 4, 'Cancelled turn retains delivered user and assistant lines');
+});
+
+test('LOG: the presented turn lists only the lines the stage has shown', (t) => {
+  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+  const now = 1700000000000;
+  const line = (index) => ({
+    index, zh: `第${index}句`, ja: '',
+    audio: { status: 'ready', chunks: [{ index, audio_url: `/${index}.wav` }] },
+  });
+  const live = { id: 'live', role: 'assistant', ts: now, lines: [line(0), line(1), line(2)] };
+  const other = { id: 'other', role: 'assistant', ts: now, lines: [line(0)] };
+  const session = { id: 's', messages: [{ id: 'u', role: 'user', content: '提问', ts: now }, live, other] };
+
+  const listeners = new Map();
+  const controller = {
+    on(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(fn);
+      return () => listeners.get(type)?.delete(fn);
+    },
+  };
+  const emit = (type, event) => { for (const fn of [...listeners.get(type) || []]) fn(event); };
+
+  let hidden = { messageIds: ['live'], after: 0 };
+  const log = createBacklog(root, {
+    controller, audio: { stopLine() {} }, getSession: () => session,
+    getSettings: () => DEFAULT_SESSION_SETTINGS, getCharacter: () => ({ name: '角色' }),
+    getHiddenFrom: () => hidden,
+  });
+  t.after(() => log.destroy());
+
+  const texts = (msgId) => [...log.element.querySelectorAll('.adv-log-entry')]
+    .filter(el => el.classList.contains('is-assistant') && el.dataset.msgId === msgId)
+    .map(el => el.querySelector('.adv-log-primary').textContent);
+
+  assert.deepEqual(texts('live'), ['第0句'], 'Only the shown line of the presented turn is listed');
+  assert.deepEqual(texts('other'), ['第0句'], 'Another message is never filtered');
+
+  emit('line', { messageId: 'live', line: line(2) });
+  assert.deepEqual(texts('live'), ['第0句'], 'A hidden live line adds no entry');
+
+  emit('line', { messageId: 'other', line: line(1) });
+  assert.deepEqual(texts('other'), ['第0句', '第1句'], 'A line of another message still arrives live');
+
+  hidden = null;
+  log.renderAll();
+  assert.deepEqual(texts('live'), ['第0句', '第1句', '第2句'], 'Nothing is hidden once the turn stops being presented');
 });
 
 test('LOG: pause reasons, SKIP cancel and focus return', (t) => {
@@ -859,7 +914,12 @@ test('LOG replay failure: empty chunks remain disabled while existing chunks are
 });
 
 test('LOG repeated replay ignores the interrupted promise and clears prior playing indicator', async t => {
-  const h = setupApp(t); h.start(); h.line(0); h.line(1); h.app.action('log');
+  const h = setupApp(t);
+  h.active().messages = [{ id: 'a', role: 'assistant', ts: h.getWallTime(), lines: [
+    { index: 0, zh: '第0句', ja: '', audio: { status: 'ready', chunks: [{ index: 0, audio_url: '/0.wav' }] } },
+    { index: 1, zh: '第1句', ja: '', audio: { status: 'ready', chunks: [{ index: 1, audio_url: '/1.wav' }] } },
+  ] }];
+  h.app.action('log');
   const buttons = h.app.backlog.element.querySelectorAll('.adv-log-replay-btn');
   buttons[0].click(); buttons[0].click(); await microtasks();
   assert.equal(buttons[0].classList.contains('is-playing'), true);
