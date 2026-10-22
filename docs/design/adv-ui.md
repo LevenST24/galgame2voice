@@ -649,9 +649,9 @@ All paths are relative to the character's `portrait/` folder. Coordinate values 
         "01": {"layers": ["A/1511", "A/1402"], "eyesClosed": false,
                "blink": {"half": "16", "closed": "14"},
                "mouth": {"closed": "01", "open": "02"}},
-        "02": {"layers": ["A/1512", "A/1402"], "eyesClosed": false},
-        "14": {"layers": ["A/1531", "A/1402"], "eyesClosed": true},
-        "16": {"layers": ["A/1533", "A/1402"], "eyesClosed": false}
+        "02": {"layers": ["A/1512", "A/1402"], "eyesClosed": false, "frameOnly": true},
+        "14": {"layers": ["A/1531", "A/1402"], "eyesClosed": true, "frameOnly": true},
+        "16": {"layers": ["A/1533", "A/1402"], "eyesClosed": false, "frameOnly": true}
       }
     }
   },
@@ -666,7 +666,7 @@ All paths are relative to the character's `portrait/` folder. Coordinate values 
 - **`canvases`:** source canvases. A pose draws on exactly one canvas, and a layer belongs to exactly one canvas. A look may only reference layers on its pose's canvas.
 - **`outfits`:** display data for every outfit id used by any look: a Chinese `name`, and an optional one-emoji `icon`.
 - **`poses`:** pose ids are short ASCII strings (`a`, `a2`, `b`). `name` is a short Chinese display name.
-- **`faces`:** shared metadata for every face id used by any look: `label` (Chinese act tag), `emotion` (one of the 7 primary emotions), `weights` (primary 3, secondaries 1-2), and `jp`.
+- **`faces`:** shared metadata for every selectable face id used by any look: `label` (Chinese act tag), `emotion` (one of the 7 primary emotions), `weights` (primary 3, secondaries 1-2), and `jp`. Partner-only faces need no metadata entry.
 - **`looks`:** keyed by `"<pose>/<outfit>"`. Pose and outfit support is not a Cartesian product.
   - **`crop`:** the drawing box in canvas pixels. The renderer treats the box like a v2 sprite of `crop.width × crop.height`. A layer is drawn at `rect.x - crop.left`, `rect.y - crop.top`.
   - **`faceRect`, `headAnchor`, and optional `stage`:** relative to the crop, exactly as in v2. Stage placement and the 450×404 face window reuse the v2 code paths unchanged.
@@ -674,6 +674,7 @@ All paths are relative to the character's `portrait/` folder. Coordinate values 
   - **`blush`:** optional overlay for `blush: true`. A face may override it with its own `blush` array, or turn it off with `"blush": []`.
   - **`fx`:** optional source effect layers keyed by the P2b fx names. Drawn instead of the SVG mark when present.
   - **`faces`:** face recipes. Blush layers are listed separately and never in face `layers`. `eyesClosed` must be true for faces whose eyes are closed.
+  - **`faces[id].frameOnly`:** optional boolean, default `false`. When `true`, this recipe is only an animation partner in this look; tags, emotion pools, drift, animation preferences, defaults and first-face fallbacks cannot select it as an expression. Top-level metadata, if present, is ignored for selection in this look. The same id may remain selectable in another look. Blink, mouth and `combinedFrames` references still render it. Non-boolean values and a `frameOnly` `defaultFace` are errors. An unreferenced partner (including one referenced only by itself) produces a warning, not an error.
 - **Draw order:** collect `body` + current face `layers` + active blush layers + active fx layers, then draw in ascending `z`. Equal `z` keeps list order. `opacity` is 0–1 with normal alpha blending.
 - **Partners:** optional `blink:{half?, closed}` and `mouth:{closed, half?, open}` referencing compatible face IDs in the same look.
   - Blink and mouth frames keep the blush of the face they animate (its override, otherwise the look's blush).
