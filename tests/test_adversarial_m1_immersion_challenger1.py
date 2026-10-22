@@ -118,7 +118,9 @@ class TestAutoModeControllerAdversarial:
             nonlocal called_count
             called_count += 1
 
-        controller = self.MockAutoModeController(default_delay_ms=60, on_advance=_on_advance)
+        # A 10 ms sleep can overshoot by tens of milliseconds on a busy Windows
+        # runner, so the delay leaves a wide margin over each gap.
+        controller = self.MockAutoModeController(default_delay_ms=300, on_advance=_on_advance)
         controller.set_enabled(True)
         loop = asyncio.get_running_loop()
 
@@ -126,14 +128,16 @@ class TestAutoModeControllerAdversarial:
             controller.on_audio_queue_finished(loop)
             await asyncio.sleep(0.01)
 
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.4)
         assert called_count == 1
 
     @pytest.mark.asyncio
     async def test_cancel_mid_countdown_aborts_advance(self):
         """User interruption or toggle OFF during timer countdown cleanly cancels advance."""
         called = asyncio.Event()
-        controller = self.MockAutoModeController(default_delay_ms=60, on_advance=lambda: called.set())
+        # With a 60 ms delay, a 20 ms sleep that overshot on a busy Windows runner
+        # let the timer fire before cancel(). Wait past the delay after cancelling.
+        controller = self.MockAutoModeController(default_delay_ms=300, on_advance=lambda: called.set())
         controller.set_enabled(True)
         loop = asyncio.get_running_loop()
 
@@ -141,7 +145,7 @@ class TestAutoModeControllerAdversarial:
         await asyncio.sleep(0.02)
         controller.cancel()
 
-        await asyncio.sleep(0.08)
+        await asyncio.sleep(0.35)
         assert not called.is_set()
         assert controller.advance_call_count == 0
 

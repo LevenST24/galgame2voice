@@ -55,7 +55,10 @@ def create_database_backup(path: Path, *, required: bool = False) -> Path | None
     try:
         backup_dir.mkdir(parents=True, exist_ok=True)
         _snapshot(path, pending)
-        backup = backup_dir / f"{path.name}.bak_{datetime.now():%Y%m%d_%H%M%S_%f}"
+        # Some Windows clocks advance only every few milliseconds, so two snapshots can
+        # read the same time. Wait for the next tick instead of replacing a backup.
+        while (backup := backup_dir / f"{path.name}.bak_{datetime.now():%Y%m%d_%H%M%S_%f}").exists():
+            time.sleep(0.001)
         os.replace(pending, backup)
         logger.info("Created verified database backup: %s", backup)
     except Exception as exc:

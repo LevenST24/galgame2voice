@@ -1,6 +1,7 @@
 """Committed WAL data, recovery rollback, and atomic chat import regressions."""
 
 from contextlib import closing
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import sqlite3
@@ -58,6 +59,25 @@ def test_retention_preserves_latest_five_and_recovery_originals(tmp_path):
     snapshots = [backups.create_database_backup(database, required=True) for _ in range(7)]
     assert set(backups.list_database_backups(database)) == set(snapshots[-5:])
     assert (preservation / "chat.db").read_bytes() == b"preserved original"
+
+
+def test_snapshots_in_one_clock_tick_keep_both(tmp_path, monkeypatch):
+    database = tmp_path / "chat.db"
+    database_fixture(database).close()
+    tick = datetime(2026, 10, 22, 4, 25, 22, 880826)
+    # A coarse Windows clock: both snapshots read the same time until it advances.
+    readings = iter([tick] * 4 + [tick + timedelta(milliseconds=2)])
+
+    class CoarseClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(readings)
+
+    monkeypatch.setattr(backups, "datetime", CoarseClock)
+    first = backups.create_database_backup(database, required=True)
+    second = backups.create_database_backup(database, required=True)
+    assert first != second
+    assert backups.list_database_backups(database) == [second, first]
 
 
 @pytest.mark.parametrize("required", [False, True])
