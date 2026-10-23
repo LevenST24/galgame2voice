@@ -251,8 +251,14 @@ class TestMultiUserConcurrencyAndIsolation:
             async def send_msg_worker():
                 for i in range(5):
                     t = await handlers.process_text_chat(chat_id, f"Race message {i}", bot_client)
+                    if i == 0:
+                        # A reset before the voice task first runs, the interleaving CI hit by chance.
+                        await handlers.handle_reset(DummyUpdate(chat_id), DummyContext(bot_client))
                     await asyncio.sleep(0.01)
-                    await t
+                    # /reset cancels the pending voice task by design; other failures still surface.
+                    await asyncio.wait({t})
+                    if not t.cancelled():
+                        t.result()
 
             async def reset_worker():
                 for _ in range(3):
