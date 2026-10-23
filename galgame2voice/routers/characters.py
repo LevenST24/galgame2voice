@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from galgame2voice.database import crud
-from galgame2voice.database.session import get_db
+from galgame2voice.database.session import get_db, immediate_transaction
 from galgame2voice.routers.common import switch_voice_profile_or_raise, validate_user_id
 from galgame2voice.security.media_urls import (
     get_media_signing_key,
@@ -572,12 +572,11 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
     mgr.discover_characters()
 
     async with get_db() as conn:
-        await conn.execute(
-            "UPDATE voice_profiles SET system_prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
-            (text, character_id),
-        )
-        # get_db() 不自动提交，漏掉 commit 会让这次 UPDATE 随连接关闭被回滚
-        await conn.commit()
+        async with immediate_transaction(conn):
+            await conn.execute(
+                "UPDATE voice_profiles SET system_prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+                (text, character_id),
+            )
 
     logger.info("System prompt updated for character %s (%d chars)", prof.name, len(text))
     return {
