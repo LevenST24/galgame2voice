@@ -67,6 +67,10 @@ All notable changes to galgame2voice are documented here. The format follows
   needs 「允许私网 LLM 端点」 turned on.
 
 ### Fixed
+- `resolve_reference_audio_path()` and `validate_reference_audio()` now check
+  `project_file()` before falling back to the current working directory for
+  relative paths, preventing colliding files in the launching directory from
+  overriding project reference audio.
 - `find_ffmpeg()` now falls back to a bundled `imageio-ffmpeg` binary when no
   system `ffmpeg` is on `PATH`, so `doctor` and audio conversion work in virtual
   environments that have only the wheel installed.

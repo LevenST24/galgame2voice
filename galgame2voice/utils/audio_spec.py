@@ -352,6 +352,17 @@ async def async_probe_audio_duration_seconds(
     return await asyncio.to_thread(probe_audio_duration_seconds, path_or_bytes)
 
 
+def _locate_reference_file(path: str | Path) -> Path | None:
+    """
+    Locates existing reference audio file. Prioritizes project_file() over current
+    working directory for relative paths to avoid dependency on process workdir.
+    """
+    p = Path(path)
+    if p.is_absolute():
+        return p if p.is_file() else None
+    return project_file(p) or (p if p.is_file() else None)
+
+
 def validate_reference_audio(
     path_or_bytes: str | Path | bytes | bytearray | memoryview | None,
 ) -> tuple[bool, str]:
@@ -380,12 +391,10 @@ def validate_reference_audio(
     if not ref_audio_str.strip():
         return False, "empty reference audio path"
 
-    p = Path(path_or_bytes)
-    if not p.is_file():
-        found = project_file(path_or_bytes)
-        if found is None:
-            return False, f"reference audio file not found: {ref_audio_str}"
-        p = found.resolve()
+    found = _locate_reference_file(path_or_bytes)
+    if found is None:
+        return False, f"reference audio file not found: {ref_audio_str}"
+    p = found.resolve()
 
     duration = probe_audio_duration_seconds(str(p))
     if duration is None:
@@ -403,10 +412,7 @@ def resolve_reference_audio_path(path: str) -> str:
     """Converts a relative project reference audio path to an absolute path for GPT-SoVITS."""
     if not path:
         return ""
-    p = Path(path)
-    if p.is_file():
-        return str(p.resolve())
-    found = project_file(path)
+    found = _locate_reference_file(path)
     return str(found.resolve()) if found else path
 
 
