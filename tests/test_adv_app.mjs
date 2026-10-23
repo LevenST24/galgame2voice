@@ -579,3 +579,61 @@ test('player in input mode: quick-menu settings lands focus inside panel on firs
   assert.equal(h.app.configPanel.isOpen, false);
   assert.equal(h.doc.activeElement, h.app.textbox.inputElement);
 });
+
+
+test('temporary hold-skip is cleared when playback stops skip or player toggles SKIP manually', t => {
+  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
+  const skipBtn = h.app.stage.stage.querySelector('.adv-qm-btn-skip');
+
+  // 1. Hold Ctrl during playback -> temporarySkip = true, player.skip = true
+  h.start('turn_0');
+  h.line(0);
+  h.done();
+  h.app.stage.stage.dispatchEvent({ type: 'keydown', key: 'Control' });
+  assert.equal(h.app.player.skip, true);
+
+  // 2. Skip runs until turn finishes and player enters input (auto/skip reset to false)
+  h.clock.tick(80);
+  assert.equal(h.app.player.state, 'input');
+  assert.equal(h.app.player.skip, false);
+
+  // 3. Release Ctrl while focus is in input (shortcuts ignores keyup Control inInput)
+  assert.equal(h.doc.activeElement, h.app.textbox.inputElement);
+  h.app.textbox.inputElement.dispatchEvent({ type: 'keyup', key: 'Control' });
+
+  // 4. Next turn starts; player clicks quick-menu SKIP to turn skip on manually
+  h.start('turn_1');
+  h.line(0);
+  h.line(1);
+  skipBtn.click();
+  assert.equal(h.app.player.skip, true);
+
+  // 5. Window blur fires skip-hold-end; manual SKIP must stay true
+  h.app.stage.stage.dispatchEvent({ type: 'blur' });
+  assert.equal(h.app.player.skip, true);
+
+  // Overlay opening (setSkip(false) / suspend) also clears temporarySkip
+  skipBtn.click();
+  assert.equal(h.app.player.skip, false);
+  h.app.stage.stage.dispatchEvent({ type: 'keydown', key: 'Control' });
+  assert.equal(h.app.player.skip, true);
+  h.app.action('log');
+  assert.equal(h.app.player.skip, false);
+  h.app.action('close_overlay');
+  skipBtn.click();
+  assert.equal(h.app.player.skip, true);
+  h.app.stage.stage.dispatchEvent({ type: 'blur' });
+  assert.equal(h.app.player.skip, true);
+
+  // Manual toggle off and back on also clears temporarySkip
+  skipBtn.click();
+  assert.equal(h.app.player.skip, false);
+  h.app.stage.stage.dispatchEvent({ type: 'keydown', key: 'Control' });
+  assert.equal(h.app.player.skip, true);
+  skipBtn.click();
+  assert.equal(h.app.player.skip, false);
+  skipBtn.click();
+  assert.equal(h.app.player.skip, true);
+  h.app.stage.stage.dispatchEvent({ type: 'blur' });
+  assert.equal(h.app.player.skip, true);
+});

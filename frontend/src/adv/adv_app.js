@@ -328,6 +328,7 @@ export function mountAdv(dom, deps) {
     return { advBlink: values.advBlink !== false, advLipSync: values.advLipSync !== false };
   }
   function syncControls() {
+    if (!player.skip) temporarySkip = false;
     textbox.setCanSend(!controller.busy);
     const input = player.state === 'input' || player.state === 'error';
     const overlayActive = Boolean(drawer || backlog || externalOverlay || configPanel?.isOpen || bgPanel?.isOpen);
@@ -398,6 +399,7 @@ export function mountAdv(dom, deps) {
     closeLog();
     if (configPanel?.isOpen) configPanel.close({ revert: true });
     savedFocus = doc.activeElement;
+    temporarySkip = false;
     player.setSkip(false);
     player.suspend('overlay');
     deps.stopOtherVoice?.();
@@ -435,6 +437,7 @@ export function mountAdv(dom, deps) {
       case 'toggle_skip':
       case 'skip':
         if (!['input', 'error', 'suspended'].includes(player.state)) {
+          temporarySkip = false;
           const next = !player.skip;
           player.setSkip(next);
           if (next) sprite.suspend();
@@ -442,19 +445,19 @@ export function mountAdv(dom, deps) {
         }
         break;
       case 'skip-hold-start':
-        if (!['input', 'error', 'suspended'].includes(player.state)) {
-          temporarySkip = !player.skip;
-          if (temporarySkip) {
-            player.setSkip(true);
-            sprite.suspend();
-          }
+        if (!['input', 'error', 'suspended'].includes(player.state) && !player.skip) {
+          temporarySkip = true;
+          player.setSkip(true);
+          sprite.suspend();
         }
         break;
       case 'skip-hold-end':
         if (temporarySkip) {
-          player.setSkip(false);
           temporarySkip = false;
-          restoreSprite();
+          if (player.skip) {
+            player.setSkip(false);
+            restoreSprite();
+          }
         }
         break;
       case 'toggle_hide':
