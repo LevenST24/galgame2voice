@@ -161,10 +161,11 @@ export function createTitleScreen(root, {
     item.appendChild(el('span', 'adv-title-item-label', spec.label));
     item.appendChild(el('span', 'adv-title-item-en', spec.en));
     item.setAttribute('aria-disabled', 'false');
-    listen(item, 'click', event => {
+    // The click can land on the label spans inside the button; the item is the button.
+    listen(item, 'click', () => {
       lastActivated = null;
-      if (lastActivatedWas(event.target)) return;
-      activate(event.target);
+      if (lastActivatedWas(item)) return;
+      activate(item);
     });
     listen(item, 'keydown', event => {
       if (event.key === 'Enter') {

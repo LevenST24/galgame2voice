@@ -80,6 +80,9 @@ All notable changes to galgame2voice are documented here. The format follows
   LOG and the title screen's 读取 slots print plain text. It now points to the
   text box, its microphone and the CONFIG panel. Backups still recognize the old
   greeting, so older sessions are not exported as extra browser copies.
+- In a landscape window the title screen's menu ignored mouse clicks, which went
+  to the hidden input box underneath; only the keyboard worked. On a phone, a
+  click on an item's label text did nothing. Both now open the item.
 - Holding Ctrl to fast-forward until a reply ends in input mode no longer leaves
   a stale temporary-skip flag that later turns off a manually enabled `SKIP` when
   the window loses focus or when skip is toggled.

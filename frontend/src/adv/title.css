@@ -7,6 +7,8 @@
 .adv-title-screen {
   position: absolute;
   inset: 0;
+  /* The overlay layer lets clicks through to the stage; the title takes them back. */
+  pointer-events: auto;
   z-index: 90;
   overflow: hidden;
   color: #16202b;

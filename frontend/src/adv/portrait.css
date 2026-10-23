@@ -125,7 +125,6 @@
 .adv-stage.is-portrait .adv-bg-title { font-size: 18px; }
 .adv-stage.is-portrait .adv-bg-times { flex-wrap: wrap; }
 .adv-stage.is-portrait .adv-title-brand { top: 20%; }
-.adv-stage.is-portrait .adv-title-screen { pointer-events: auto; }
 .adv-stage.is-portrait .adv-title-logo { font-size: calc(100 * var(--u)); }
 .adv-stage.is-portrait .adv-title-sub { font-size: calc(38 * var(--u)); letter-spacing: calc(4 * var(--u)); }
 .adv-stage.is-portrait .adv-title-menu {
