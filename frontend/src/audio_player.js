@@ -771,7 +771,7 @@ export class StreamAudioController {
 
   _playbackBlocked() {
     this.pause();
-    this._reportError(new Error('浏览器暂停了语音播放，请点击消息旁的播放按钮继续。'));
+    this._reportError(new Error('浏览器暂停了语音播放，请在 LOG 里再点一次「语音」。'));
   }
 
   _setSpeaking(value) {

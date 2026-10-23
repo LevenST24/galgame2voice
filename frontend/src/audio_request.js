@@ -11,7 +11,7 @@ export async function withAudioDeadline(operation, { signal, timeoutMs = 15000 }
     };
     signal?.addEventListener('abort', cancel, { once: true });
     timer = setTimeout(() => {
-      const error = new Error('音频加载超时，请稍后点击播放重试。');
+      const error = new Error('音频加载超时，请稍后在 LOG 里再点「语音」重试。');
       error.code = 'AUDIO_TIMEOUT';
       reject(error);
       controller.abort();

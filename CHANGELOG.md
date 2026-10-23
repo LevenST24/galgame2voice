@@ -168,6 +168,9 @@ All notable changes to galgame2voice are documented here. The format follows
 - A reply with an empty "chinese" field is no longer shown, saved and voiced as
   raw JSON in the non-streaming API and Telegram; Telegram reports it as a failed
   reply.
+- Audio error messages, including the one shown when the browser blocks playback,
+  pointed to a per-message play button that the ADV interface no longer has. They
+  now point to the 「语音」 and 「播放录音」 buttons in LOG.
 
 ### Removed
 - Legacy `galgame2voice/static/js/audio_player.js` and `chat_client.js` scripts
