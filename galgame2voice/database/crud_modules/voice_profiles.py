@@ -150,6 +150,8 @@ async def update_voice_profile(conn: aiosqlite.Connection, profile_id: int, upda
         values.append(profile_id)
         query = f"UPDATE voice_profiles SET {', '.join(fields)} WHERE id = ?;"
         async with immediate_transaction(conn):
+            if up_dict.get("is_default"):
+                await conn.execute("UPDATE voice_profiles SET is_default = 0 WHERE id != ?;", (profile_id,))
             await conn.execute(query, tuple(values))
 
     return await get_voice_profile(conn, profile_id)

@@ -1,6 +1,8 @@
 // 控制台访问令牌鉴权管理 (Console Token Auth)
 // 令牌仅保存在当前浏览器的会话存储 (sessionStorage) 中，绝不写入 localStorage 或磁盘
 
+import { openModal, closeModal } from './settings_ui.js';
+
 const STORAGE_KEY = 'galgame_console_token';
 
 let _pendingAuthPromise = null;
@@ -162,4 +164,3 @@ export function initAuthInterceptor() {
     return res;
   };
 }
-import { openModal, closeModal } from './settings_ui.js';

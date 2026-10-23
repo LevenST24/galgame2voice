@@ -5,10 +5,9 @@ Supports HTTP, HTTPS, and SOCKS5 proxies with fallback and connection probing.
 
 import logging
 from typing import Any
-import httpx
 
 from galgame2voice.database.models import SettingsInDB
-from galgame2voice.utils.http_client import proxy_environment_is_usable
+from galgame2voice.utils.http_client import create_async_client, proxy_environment_is_usable
 
 logger = logging.getLogger("galgame2voice.telegram_bot.proxy")
 
@@ -67,7 +66,7 @@ def get_telegram_request_kwargs(
 async def test_proxy_connectivity(proxy_url: str, timeout: float = 5.0) -> bool:
     """Probes whether the configured proxy is reachable."""
     try:
-        async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout) as client:
+        async with create_async_client(proxy=proxy_url, timeout=timeout) as client:
             resp = await client.get("https://api.telegram.org", follow_redirects=True)
             return resp.status_code < 500
     except Exception as exc:

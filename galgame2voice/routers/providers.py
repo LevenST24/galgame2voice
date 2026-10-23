@@ -33,6 +33,7 @@ from galgame2voice.database.session import get_db
 from galgame2voice.security import url_guard
 from galgame2voice.telegram_bot.proxy import get_proxy_url
 from galgame2voice.utils.error_diagnostics import format_provider_error
+from galgame2voice.utils.http_client import create_async_client
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.text_sanitize import sanitize_bot_token
 
@@ -514,14 +515,28 @@ test_provider_connectivity = test_provider
 def _map_telegram_response(resp: httpx.Response, latency: float) -> dict[str, Any]:
     """Maps Telegram getMe HTTP response into test result payload."""
     if resp.status_code == status.HTTP_200_OK:
-        data = resp.json()
+        try:
+            data = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            return {
+                "success": False,
+                "message": "Telegram 响应格式无效（可能被代理或网关拦截）",
+                "latency_ms": latency,
+            }
+        if not isinstance(data, dict):
+            return {
+                "success": False,
+                "message": "Telegram 响应格式无效（可能被代理或网关拦截）",
+                "latency_ms": latency,
+            }
         if data.get("ok"):
-            bot_user = (data.get("result") or {}).get("username", "")
+            result_obj = data.get("result")
+            bot_user = result_obj.get("username", "") if isinstance(result_obj, dict) else ""
             return {
                 "success": True,
                 "message": f"连接成功！Bot: @{bot_user}",
                 "latency_ms": latency,
-                "bot_info": data.get("result"),
+                "bot_info": result_obj,
             }
         else:
             return {
@@ -591,7 +606,7 @@ async def test_telegram_bot(req: TelegramTestRequest):
     last_err = None
     for p_url in proxy_urls:
         try:
-            async with httpx.AsyncClient(proxy=p_url, timeout=6.0) as client:
+            async with create_async_client(proxy=p_url, timeout=6.0) as client:
                 resp = await client.get(f"https://api.telegram.org/bot{token}/getMe")
                 latency = round((time.perf_counter() - t0) * 1000, 2)
                 return _map_telegram_response(resp, latency)

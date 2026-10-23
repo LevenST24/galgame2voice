@@ -29,9 +29,19 @@ def reset_ffmpeg_cache() -> None:
 
 
 def _find_ffmpeg_in_python_env(exe_name: str, scripts_dir: str) -> str | None:
-    """Checks virtualenv and base Python scripts directories for ffmpeg binary."""
+    """Checks isolated virtualenv or Conda Python scripts directories for ffmpeg binary."""
+    system_prefixes = {Path("/"), Path("/usr"), Path("/usr/local")} if sys.platform != "win32" else set()
     for prefix in (sys.prefix, sys.base_prefix):
-        candidate = Path(prefix) / scripts_dir / exe_name
+        if not prefix:
+            continue
+        prefix_path = Path(prefix)
+        try:
+            resolved_prefix = prefix_path.resolve()
+        except OSError:
+            resolved_prefix = prefix_path
+        if resolved_prefix in system_prefixes or prefix_path in system_prefixes:
+            continue
+        candidate = prefix_path / scripts_dir / exe_name
         if candidate.is_file():
             return str(candidate.resolve())
     return None
@@ -106,6 +116,17 @@ def find_ffmpeg(custom_path: str | None = None) -> str | None:
     if bundled_ffmpeg:
         _cached_ffmpeg_bin = bundled_ffmpeg
         return _cached_ffmpeg_bin
+
+    # 5. imageio-ffmpeg bundled binary
+    try:
+        import imageio_ffmpeg
+
+        candidate = imageio_ffmpeg.get_ffmpeg_exe()
+        if candidate and Path(candidate).is_file():
+            _cached_ffmpeg_bin = candidate
+            return _cached_ffmpeg_bin
+    except Exception:
+        pass
 
     return None
 

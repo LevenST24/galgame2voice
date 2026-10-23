@@ -605,6 +605,11 @@ export function toggleMic() {
     return;
   }
   micBase = inputDom() ? inputDom().value : '';
+  if (pendingVoice?.audio) {
+    try {
+      URL.revokeObjectURL(pendingVoice.audio);
+    } catch (_) {}
+  }
   pendingVoice = { text: null, audio: null, dur: 0, blob: null };
   micSecs = 0;
   updateMicUI(true);

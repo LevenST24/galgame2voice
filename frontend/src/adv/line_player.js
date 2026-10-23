@@ -13,6 +13,7 @@ export const DEFAULT_SETTINGS = {
   voiceEnabled: true,
   reducedMotion: false,
   audioWaitMs: 1500,
+  voiceTimeoutMs: 0,
   skipIntervalMs: 80,
   primary: 'zh', // 'zh' | 'ja'
 };
@@ -65,6 +66,24 @@ export function createLinePlayer({
   let audioWaitTimerId = null;
   let autoTimerId = null;
   let skipTimerId = null;
+  let voiceFallbackTimerId = null;
+
+  function clearVoiceFallbackTimer() {
+    if (voiceFallbackTimerId !== null) {
+      clock.clearTimeout(voiceFallbackTimerId);
+      voiceFallbackTimerId = null;
+    }
+  }
+
+  function getVoiceContext() {
+    return voice?.ctx || voice?.audioContext || (typeof AudioContext !== 'undefined' ? voice?.context : null);
+  }
+
+  function isVoiceSuspended() {
+    const ctx = getVoiceContext();
+    if (ctx?.state === 'suspended') return true;
+    return Boolean(typeof voice?.isSuspended === 'function' ? voice.isSuspended() : voice?.isSuspended);
+  }
 
   // Event listeners
   const listeners = new Map();
@@ -101,6 +120,7 @@ export function createLinePlayer({
   }
 
   function clearAllTimers() {
+    clearVoiceFallbackTimer();
     if (revealTimerId !== null) {
       clock.clearTimeout(revealTimerId);
       revealTimerId = null;
@@ -135,6 +155,7 @@ export function createLinePlayer({
   }
 
   function playVoice(lineIndex, chunks) {
+    clearVoiceFallbackTimer();
     playSequence++;
     const token = {
       turnId: currentTurnId,
@@ -143,6 +164,39 @@ export function createLinePlayer({
     };
     currentVoiceToken = token;
     voicePlaying = true;
+
+    const ctx = getVoiceContext();
+    if (isVoiceSuspended() && typeof ctx?.resume !== 'function') {
+      onVoiceEnd(token, 'failed');
+      return;
+    }
+
+    if (settings.voiceTimeoutMs && settings.voiceTimeoutMs > 0) {
+      voiceFallbackTimerId = clock.setTimeout(() => {
+        voiceFallbackTimerId = null;
+        if (voicePlaying && currentVoiceToken?.seq === token.seq) {
+          voice?.stop?.({ fadeMs: 0 });
+          onVoiceEnd(token, 'failed');
+        }
+      }, settings.voiceTimeoutMs);
+    }
+
+    if (ctx?.state === 'suspended' && typeof ctx.resume === 'function') {
+      Promise.resolve()
+        .then(() => ctx.resume())
+        .then(() => {
+          if (voicePlaying && currentVoiceToken?.seq === token.seq && isVoiceSuspended()) {
+            voice?.stop?.({ fadeMs: 0 });
+            onVoiceEnd(token, 'failed');
+          }
+        })
+        .catch(() => {
+          if (voicePlaying && currentVoiceToken?.seq === token.seq && isVoiceSuspended()) {
+            voice?.stop?.({ fadeMs: 0 });
+            onVoiceEnd(token, 'failed');
+          }
+        });
+    }
 
     Promise.resolve(voice?.play?.(lineIndex, chunks || []))
       .then((result) => {
@@ -163,6 +217,7 @@ export function createLinePlayer({
       // Stale resolution from superseded or stopped playback
       return;
     }
+    clearVoiceFallbackTimer();
     currentVoiceToken = null;
     voicePlaying = false;
 
@@ -276,8 +331,29 @@ export function createLinePlayer({
 
     const isFinalPage = page === pages.length - 1;
     if (isFinalPage && settings.autoMode === 'voice-priority' && voicePlaying) {
-      // In voice-priority mode on final page, delay starts after voice ends
-      return;
+      const ctx = getVoiceContext();
+      if (isVoiceSuspended() && typeof ctx?.resume !== 'function') {
+        if (currentVoiceToken) {
+          voice?.stop?.({ fadeMs: 0 });
+          onVoiceEnd(currentVoiceToken, 'failed');
+        } else {
+          voicePlaying = false;
+        }
+      } else if (settings.voiceTimeoutMs && settings.voiceTimeoutMs > 0) {
+        if (voiceFallbackTimerId === null) {
+          voiceFallbackTimerId = clock.setTimeout(() => {
+            voiceFallbackTimerId = null;
+            if (voicePlaying && currentVoiceToken) {
+              voice?.stop?.({ fadeMs: 0 });
+              onVoiceEnd(currentVoiceToken, 'failed');
+            }
+          }, settings.voiceTimeoutMs);
+        }
+        return;
+      } else {
+        // In voice-priority mode on final page, delay starts after voice ends
+        return;
+      }
     }
 
     const pageText = pages[page] ?? '';
@@ -371,6 +447,7 @@ export function createLinePlayer({
       // Final page: moving to next line
       if (voicePlaying && !skip) {
         if (settings.interruptVoice) {
+          clearVoiceFallbackTimer();
           currentVoiceToken = null;
           voicePlaying = false;
           voice?.stop?.({ fadeMs: 40 });
@@ -412,6 +489,7 @@ export function createLinePlayer({
         setAuto(false);
       }
       if (voicePlaying) {
+        clearVoiceFallbackTimer();
         currentVoiceToken = null;
         voicePlaying = false;
         voice?.stop?.({ fadeMs: 40 });
@@ -490,6 +568,7 @@ export function createLinePlayer({
       autoTimerId = null;
     }
     if (voicePlaying) {
+      clearVoiceFallbackTimer();
       currentVoiceToken = null;
       voicePlaying = false;
       voice?.stop?.({ fadeMs: 40 });
@@ -784,6 +863,7 @@ export function createLinePlayer({
   function setSettings(patch) {
     settings = { ...settings, ...patch };
     if (!settings.voiceEnabled && voicePlaying) {
+      clearVoiceFallbackTimer();
       currentVoiceToken = null;
       voicePlaying = false;
       voice?.stop?.({ fadeMs: 40 });

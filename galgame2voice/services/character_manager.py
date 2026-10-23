@@ -712,40 +712,42 @@ class CharacterManager:
 
         valid_pkgs = sorted(valid_pkgs, key=_pkg_sort_key)
 
-        cur = await conn.execute("SELECT COUNT(*) FROM voice_profiles;")
-        count_row = await cur.fetchone()
-        existing_count = count_row[0] if count_row else 0
+        from galgame2voice.database.session import immediate_transaction
 
-        # 1. Prune ghost profiles whose package directory under characters/ no longer exists
-        pruned_count = await self._prune_ghost_profiles(conn)
-        synced_count = pruned_count
-        existing_count = max(0, existing_count - pruned_count)
+        async with immediate_transaction(conn):
+            cur = await conn.execute("SELECT COUNT(*) FROM voice_profiles;")
+            count_row = await cur.fetchone()
+            existing_count = count_row[0] if count_row else 0
 
-        # Check if an active default already exists
-        cur_def = await conn.execute("SELECT COUNT(*) FROM voice_profiles WHERE is_default = 1;")
-        has_default_row = await cur_def.fetchone()
-        has_default = bool(has_default_row and has_default_row[0] > 0)
+            # 1. Prune ghost profiles whose package directory under characters/ no longer exists
+            pruned_count = await self._prune_ghost_profiles(conn)
+            synced_count = pruned_count
+            existing_count = max(0, existing_count - pruned_count)
 
-        for pkg in valid_pkgs:
-            manifest = pkg.manifest
-            char_name = manifest.name
-            existing_row = await self._find_existing_profile_row(conn, char_name, getattr(manifest, "aliases", None))
-            defaults = self._resolve_package_profile_defaults(pkg)
+            # Check if an active default already exists
+            cur_def = await conn.execute("SELECT COUNT(*) FROM voice_profiles WHERE is_default = 1;")
+            has_default_row = await cur_def.fetchone()
+            has_default = bool(has_default_row and has_default_row[0] > 0)
 
-            if existing_row:
-                if await self._update_existing_profile(conn, existing_row, pkg, defaults):
+            for pkg in valid_pkgs:
+                manifest = pkg.manifest
+                char_name = manifest.name
+                existing_row = await self._find_existing_profile_row(conn, char_name, getattr(manifest, "aliases", None))
+                defaults = self._resolve_package_profile_defaults(pkg)
+
+                if existing_row:
+                    if await self._update_existing_profile(conn, existing_row, pkg, defaults):
+                        synced_count += 1
+                else:
+                    is_default_val = 0
+                    if not has_default and (getattr(manifest, "is_default", False) or existing_count == 0):
+                        is_default_val = 1
+                        has_default = True
+
+                    await self._insert_new_profile(conn, char_name, manifest, defaults, is_default_val)
+                    existing_count += 1
                     synced_count += 1
-            else:
-                is_default_val = 0
-                if not has_default and (getattr(manifest, "is_default", False) or existing_count == 0):
-                    is_default_val = 1
-                    has_default = True
 
-                await self._insert_new_profile(conn, char_name, manifest, defaults, is_default_val)
-                existing_count += 1
-                synced_count += 1
-
-        await conn.commit()
         return synced_count
 
 
