@@ -3,6 +3,7 @@ import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSess
 import { mergeChatBackup, exportCompleteChatBackup } from '../frontend/src/chat_backup.js';
 import { serverTimestamp } from '../frontend/src/session_data.js';
 import { streamChat } from '../frontend/src/ai.js';
+import { GREETING, LEGACY_GREETINGS } from '../frontend/src/store.js';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const response = data => ({ ok: true, json: async () => data });
@@ -122,6 +123,17 @@ const backup = sessions => ({ format: 'galgame2voice.chat', version: 1, sessions
   const result = mergeChatBackup(backup([session('no-voice', [])]), local);
   assert.equal(result.browserCopies, 1);
   assert.ok(result.content.includes('不能丢弃的无语音回复')); passed++;
+}
+{
+  // LOG and the title screen print the greeting as plain text, and the old chat layout is gone.
+  assert.doesNotMatch(GREETING, /\*\*|顶栏|侧边栏|右上角/);
+  // A session that still holds an older greeting is not exported as an extra browser copy.
+  for (const greeting of [GREETING, ...LEGACY_GREETINGS]) {
+    const local = backup([session('greeted', [{ ...message(0, greeting), role: 'assistant', noVoice: true }, message(1)])]);
+    const result = mergeChatBackup(backup([session('greeted', [message(1)])]), local);
+    assert.equal(result.browserCopies, 0);
+  }
+  passed++;
 }
 {
   assert.equal(earliestServerMessageId([{ id: 'm_stream_1' }, { id: 'm_42' }, { id: 'm_15' }, { id: 'm_99' }]), 15);

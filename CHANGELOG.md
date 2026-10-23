@@ -69,6 +69,11 @@ All notable changes to galgame2voice are documented here. The format follows
   needs 「允许私网 LLM 端点」 turned on.
 
 ### Fixed
+- A new session's greeting still described the old chat layout (a speaker in the
+  top bar, a gear at the bottom of the sidebar) and showed raw `**` marks, since
+  LOG and the title screen's 读取 slots print plain text. It now points to the
+  text box, its microphone and the CONFIG panel. Backups still recognize the old
+  greeting, so older sessions are not exported as extra browser copies.
 - Holding Ctrl to fast-forward until a reply ends in input mode no longer leaves
   a stale temporary-skip flag that later turns off a manually enabled `SKIP` when
   the window loses focus or when skip is toggled.

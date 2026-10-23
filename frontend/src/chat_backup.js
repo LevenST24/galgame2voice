@@ -1,6 +1,6 @@
 import { requestJson } from './api.js';
 import { normalizeSnapshot, portableSnapshot } from './session_data.js';
-import { exportSessionData, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GREETING, uid } from './store.js';
+import { exportSessionData, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GREETING, LEGACY_GREETINGS, uid } from './store.js';
 
 const normalize = data => portableSnapshot(normalizeSnapshot(data, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL));
 const messageKey = message => JSON.stringify([message.role, message.content]);
@@ -9,7 +9,8 @@ const messageKey = message => JSON.stringify([message.role, message.content]);
 function containsLocalMessages(server, local) {
   let position = 0;
   for (const message of local) {
-    if (message.noVoice && message.role === 'assistant' && message.content === GREETING) continue;
+    if (message.noVoice && message.role === 'assistant'
+      && (message.content === GREETING || LEGACY_GREETINGS.includes(message.content))) continue;
     const key = messageKey(message);
     while (position < server.length && messageKey(server[position]) !== key) position++;
     if (position === server.length) return false;

@@ -67,8 +67,14 @@ export const state = {
   global: { ...DEFAULT_GLOBAL },
 };
 
+// LOG and the title screen show it as plain text, so no Markdown.
 export const GREETING =
-  '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。右上角`会话设置`可绑定角色音色并配置人设与采样参数，侧边栏底部齿轮可切换对话模型。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。';
+  '欢迎使用 Gal2Voice。\n\n支持语音输入与朗读回复：轮到你时，在文本框里打字后回车发送，或者点文本框里的麦克风说话。回复会一句一句显示并配上语音，点击画面推进。快捷菜单 CONFIG 面板的底部可以打开会话与角色设置（音色、人设、采样参数）和对话模型设置。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。';
+
+// Greetings that sessions created by earlier versions still carry.
+export const LEGACY_GREETINGS = [
+  '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。右上角`会话设置`可绑定角色音色并配置人设与采样参数，侧边栏底部齿轮可切换对话模型。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
+];
 
 export function uid(prefix = 'id') {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
