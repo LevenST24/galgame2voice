@@ -32,6 +32,8 @@ export function mountAdv(dom, deps) {
   const disposers = [];
   let destroyed = false, sessionId, characterKey, outfit, turnId = null;
   let settings, model = null, resolved = null, currentLine = null, failedUser = null, liveMessage = null;
+  // The controller stores a finished reply under a new id; LOG must still know it is this turn.
+  let storedTurnId = null;
   let turnLines = [];
   let pendingOutfit = null;
   let portraitRevision = 0, portraitRequest = null, refreshTimer = null, refreshAttempted = false;
@@ -410,6 +412,8 @@ export function mountAdv(dom, deps) {
       getLiveMessage: () => liveMessage,
       getSettings: () => settings,
       getCharacter: () => deps.getCharacter?.(),
+      getHiddenFrom: () => (turnId && player.isPresenting()
+        ? { messageIds: [turnId, storedTurnId].filter(Boolean), after: currentLine?.index ?? -1 } : null),
       voiceEnabled: () => Boolean(deps.voiceEnabled?.()),
       loadOlderHistory: session => (deps.loadOlderHistory || deps.loadOlderSessionHistory)?.(session),
       playUserVoice: (msg, ctl) => (deps.playUserVoice || deps.playVoice)?.(msg, ctl),
@@ -667,7 +671,7 @@ export function mountAdv(dom, deps) {
     if (event.originId !== sessionId) return;
     liveMessage = { ...event.assistantMessage, lines: [...event.assistantMessage.lines || []] };
     turnLines = liveMessage.lines;
-    failedUser = event.userMessage; turnId = event.assistantMessage.id; currentLine = null;
+    failedUser = event.userMessage; turnId = event.assistantMessage.id; storedTurnId = null; currentLine = null;
     textbox.setDraft(''); textbox.clearError();
     textbox.setSpeaker({ name: deps.getCharacter?.()?.name || '角色', mode: 'character' });
     player.startTurn(turnId); syncControls();
@@ -700,6 +704,7 @@ export function mountAdv(dom, deps) {
   for (const kind of ['done', 'error', 'cancelled']) disposers.push(controller.on(kind, event => {
     if (event.originId !== sessionId || deps.getSession()?.id !== sessionId) return;
     if (!turnId) { textbox.enterInput({ canSend: !controller.busy }); syncControls(); return; }
+    storedTurnId = event.message?.id ?? null;
     const hasContent = msg => Boolean(msg?.content?.trim() || msg?.japanese?.trim() ||
       msg?.lines?.some(l => l.zh?.trim() || l.ja?.trim()));
     const isEmptyDone = kind === 'done' && !hasContent(event.message) && !hasContent(liveMessage);

@@ -38,6 +38,8 @@ All notable changes to galgame2voice are documented here. The format follows
   match the deployed and built frontend.
 
 ### Changed
+- ADV: LOG no longer lists lines of the current reply that the stage has not
+  shown yet, so opening it mid-reply does not reveal the next lines.
 - The browser now asks for per-line replies with acting tags by default. Session
   settings → 回复格式 → "旧格式：整段回复" switches a session back. Sessions saved
   with the earlier default also move to the new format; API clients that omit
