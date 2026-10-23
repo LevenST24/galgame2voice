@@ -120,7 +120,7 @@
   ```
   `npm run deploy` 顺序执行 `vite build` 与 `node deploy.mjs`：
   1. Vite 将前端产物打包至 `frontend/dist/`。
-  2. `deploy.mjs` 自动清空 `galgame2voice/static/assets/` 下带有历史哈希的旧打包文件，保留 `characters/`、`js/`（旧脚本）两个目录和隐藏文件，并将 `dist/` 完整同步到 `galgame2voice/static/`。
+  2. `deploy.mjs` 自动清空 `galgame2voice/static/assets/` 下带有历史哈希的旧打包文件，保留 `characters/` 和隐藏文件，并将 `dist/` 完整同步到 `galgame2voice/static/`。
   3. **严禁手动直接复制 `dist/*`**，否则会导致历史哈希文件堆积产生漂移。
 
 ---
@@ -130,4 +130,3 @@
 - **Windows MIME 类型**：Windows 注册表常把 `.js` 关联为 `text/plain`，导致浏览器因 Strict MIME Type 拦截拒绝加载 ES 模块。后端已在 `galgame2voice/main.py` 启动阶段通过 `mimetypes.add_type("text/javascript", ".js")` 和 `mimetypes.add_type("text/javascript", ".mjs")` 强制显式修正，**切勿删除该逻辑**。
 - **语音识别时序**：浏览器的 `SpeechRecognition` 通常在执行 `stop()` 之后才会触发 `onresult` 递交最终的识别文本，不要在 `stopListening()` 中强行重置该轮代际编号，否则会丢失识别内容。
 - **AudioContext 唤醒机制**：没有用户手势时，浏览器让 `AudioContext` 保持 `suspended`，`resume()` 返回的 Promise 可能一直不完成。必须给它设时限（`audio_player.js` 用 `withAudioDeadline` 限 1.5 秒），不要直接 `await`，否则播放流程会卡住。
-- **`static/js/` 旧脚本**：`galgame2voice/static/js/` 下的 `audio_player.js`、`chat_client.js` 是旧版页面留下的，当前页面不再加载，只有几个旧测试还在读它们。`deploy.mjs` 把 `js` 列在 `PRESERVED_DIRS` 里，所以部署不会删掉它们。新代码不要引用这两个文件。

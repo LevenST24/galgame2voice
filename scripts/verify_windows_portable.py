@@ -47,8 +47,7 @@ def verify_archive(archive: Path, project_root: Path = PROJECT_ROOT) -> dict:
         static = project_root / "galgame2voice" / "static"
         built = project_root / "frontend" / "dist"
         expected = {"index.html"}
-        for folder in ("assets", "js"):
-            expected.update(path.relative_to(static).as_posix() for path in (static / folder).rglob("*") if path.is_file())
+        expected.update(path.relative_to(static).as_posix() for path in (static / "assets").rglob("*") if path.is_file())
         shipped = {name.removeprefix(PREFIX + "galgame2voice/static/") for name in files
                    if name.startswith(PREFIX + "galgame2voice/static/")}
         if shipped != expected:
@@ -57,9 +56,8 @@ def verify_archive(archive: Path, project_root: Path = PROJECT_ROOT) -> dict:
             content = (static / relative).read_bytes()
             if content != bundle.read(PREFIX + "galgame2voice/static/" + relative):
                 raise ValueError(f"ZIP frontend content differs: {relative}")
-            if relative == "index.html" or relative.startswith("assets/"):
-                if content != (built / relative).read_bytes():
-                    raise ValueError(f"Deployed frontend differs from Vite build: {relative}")
+            if content != (built / relative).read_bytes():
+                raise ValueError(f"Deployed frontend differs from Vite build: {relative}")
         if bundle.read(PREFIX + "使用说明.md") != (project_root / "docs" / "WINDOWS_PORTABLE.md").read_bytes():
             raise ValueError("Portable guide differs from the current documentation")
     return {"archive": str(archive.resolve()), "bytes": archive.stat().st_size, "sha256": checksum,

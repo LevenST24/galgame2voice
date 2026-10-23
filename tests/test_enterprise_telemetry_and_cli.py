@@ -291,12 +291,6 @@ class TestStaticAssetCaching:
             assert "cache-control" in resp.headers
             assert resp.headers["cache-control"] == "public, max-age=31536000, immutable"
 
-            # Request under /static/ (non-assets)
-            resp_js = await client.get("/static/js/audio_player.js")
-            assert resp_js.status_code == 200
-            assert "cache-control" in resp_js.headers
-            assert resp_js.headers["cache-control"] == "public, max-age=3600"
-
             # Entry point index.html
             resp_index = await client.get("/")
             assert resp_index.status_code == 200

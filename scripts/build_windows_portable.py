@@ -40,9 +40,8 @@ def assemble_portable_files(folder: Path, ffmpeg_binary: Path) -> None:
     static_target = folder / "galgame2voice" / "static"
     static_target.mkdir(parents=True, exist_ok=True)
     shutil.copy2(static_source / "index.html", static_target / "index.html")
-    for name in ("assets", "js"):
-        if (static_source / name).is_dir():
-            shutil.copytree(static_source / name, static_target / name, dirs_exist_ok=True)
+    if (static_source / "assets").is_dir():
+        shutil.copytree(static_source / "assets", static_target / "assets", dirs_exist_ok=True)
     for name in ("LICENSE", "SECURITY.md", ".env.example"):
         shutil.copy2(PROJECT_ROOT / name, folder / name)
     shutil.copy2(PROJECT_ROOT / "docs" / "WINDOWS_PORTABLE.md", folder / "使用说明.md")
