@@ -128,10 +128,13 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
       let eventName = 'text';
       while (!settled) {
         const { done, value } = await withDeadline(reader.read());
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        if (done) {
+          buffer += decoder.decode();
+        } else {
+          buffer += decoder.decode(value, { stream: true });
+        }
         const lines = buffer.split(/\r?\n/);
-        buffer = lines.pop() || '';
+        buffer = done ? '' : (lines.pop() || '');
         for (const rawLine of lines) {
           if (settled) return;
           const line = rawLine.replace(/\r$/, '');
@@ -156,11 +159,11 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
           }
           const currentEvent = eventName;
           eventName = 'text';
-          if (currentEvent === 'text') {
+          if (currentEvent === 'text' || currentEvent === 'message') {
             const delta = json.delta_chinese || '';
             if (delta) {
               acc += delta;
-              onChunk(acc, delta);
+              onChunk?.(acc, delta);
             }
           } else if (currentEvent === 'audio_chunk') {
             onEvent?.(currentEvent, json);
@@ -223,7 +226,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             // 以服务器保存的终稿为准：流式阶段的开场白或解析残片不能留在气泡和本地记录里。
             if (typeof json.chinese === 'string' && json.chinese && json.chinese !== acc) {
               acc = json.chinese;
-              onChunk(acc, '');
+              onChunk?.(acc, '');
             }
             finish(false, null);
             return;
@@ -231,6 +234,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             onEvent?.(currentEvent, json);
           }
         }
+        if (done) break;
       }
       finish(false, '回复连接提前结束，已保留收到的内容。请检查服务与网络，稍后重新发送上一条消息。');
     } catch (err) {

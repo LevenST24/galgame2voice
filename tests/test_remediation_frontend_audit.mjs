@@ -663,3 +663,138 @@ test('voice.js: startListening returns ok: false when neither MediaRecorder nor 
     Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true, writable: true });
   }
 });
+
+test('voice.js: rapid startListening -> stopListening -> startListening stops stale stream tracks and preserves active recorder', async () => {
+  const originalWin = globalThis.window;
+  const originalNav = globalThis.navigator;
+  const originalMediaRecorder = globalThis.MediaRecorder;
+
+  try {
+    let resolveFirstGUM;
+    let gumCallCount = 0;
+    let firstStreamTrackStopped = false;
+    let secondStreamTrackStopped = false;
+    const recordedBlobs = [];
+
+    class FakeMediaRecorder {
+      constructor(stream) {
+        this.stream = stream;
+        this.mimeType = 'audio/webm';
+        this.state = 'inactive';
+      }
+      start() {
+        this.state = 'recording';
+      }
+      stop() {
+        this.state = 'inactive';
+        this.ondataavailable?.({ data: new Blob(['second_session_audio']) });
+        this.onstop?.();
+      }
+    }
+    FakeMediaRecorder.isTypeSupported = () => true;
+
+    globalThis.MediaRecorder = FakeMediaRecorder;
+    globalThis.window = { MediaRecorder: FakeMediaRecorder };
+
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        mediaDevices: {
+          getUserMedia: () => {
+            gumCallCount++;
+            if (gumCallCount === 1) {
+              return new Promise((resolve) => {
+                resolveFirstGUM = () => resolve({
+                  getTracks: () => [{ stop() { firstStreamTrackStopped = true; } }],
+                });
+              });
+            }
+            return Promise.resolve({
+              getTracks: () => [{ stop() { secondStreamTrackStopped = true; } }],
+            });
+          },
+        },
+      },
+      configurable: true,
+      writable: true,
+    });
+
+    // Session 1 starts (GUM #1 pending), then immediately stops
+    startListening({ onRecorded: () => recordedBlobs.push('session1') });
+    stopListening();
+
+    // Session 2 starts immediately before GUM #1 resolves
+    startListening({ onRecorded: () => recordedBlobs.push('session2') });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Now stale GUM #1 resolves; its track must be stopped immediately and must not clobber Session 2
+    resolveFirstGUM();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(firstStreamTrackStopped, true, 'Stale GUM #1 stream tracks must be stopped immediately');
+    assert.equal(secondStreamTrackStopped, false, 'Active Session 2 stream must remain open while recording');
+
+    // Stop Session 2 and verify its recording completes and stops its tracks
+    stopListening();
+    assert.deepEqual(recordedBlobs, ['session2']);
+    assert.equal(secondStreamTrackStopped, true);
+  } finally {
+    stopListening();
+    globalThis.window = originalWin;
+    globalThis.MediaRecorder = originalMediaRecorder;
+    Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true, writable: true });
+  }
+});
+
+test('line_player: suspended AudioContext with working async resume() plays voice instead of prematurely aborting', async () => {
+  const { createLinePlayer } = await import('../frontend/src/adv/line_player.js');
+
+  const timers = [];
+  const clock = {
+    now: () => 0,
+    setTimeout: (fn, ms) => {
+      const id = timers.length + 1;
+      timers.push({ id, fn, ms, cleared: false });
+      return id;
+    },
+    clearTimeout: (id) => {
+      const t = timers.find((x) => x.id === id);
+      if (t) t.cleared = true;
+    },
+  };
+
+  let playCalled = 0;
+  const ctx = {
+    state: 'suspended',
+    async resume() {
+      this.state = 'running';
+    },
+  };
+
+  let resolvePlay;
+  const voice = {
+    ctx,
+    play: () => {
+      playCalled++;
+      return new Promise((resolve) => {
+        resolvePlay = resolve;
+      });
+    },
+    stop: () => {},
+  };
+
+  const player = createLinePlayer({
+    clock,
+    voice,
+    settings: { revealMsPerGrapheme: 0, autoMode: 'voice-priority' },
+  });
+
+  player.startTurn('turn_resume');
+  player.setLineAudio('turn_resume', 0, { status: 'ready', chunks: ['/audio/cache/test.wav'] });
+  player.pushLine('turn_resume', { index: 0, zh: '测试恢复播放', ja: 'テスト' });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(playCalled, 1, 'voice.play must be called so resumable AudioContext can resume');
+  assert.equal(ctx.state, 'running');
+  resolvePlay('ended');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+});
+

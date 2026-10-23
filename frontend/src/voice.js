@@ -1,6 +1,7 @@
 // 语音能力：麦克风录音（MediaRecorder）+ 语音转写（SpeechRecognition）+ 语音回复播放（SpeechSynthesis）
 let recog = null;
 let listening = false;
+let listenGen = 0;
 let recorder = null;
 let recStream = null;
 let recChunks = [];
@@ -37,37 +38,52 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
     };
   }
 
+  const myGen = ++listenGen;
   let recogOk = false;
+  let recorderActive = hasRecorder;
 
   // 1) 录音（可选能力，失败不阻断转写）
   if (hasRecorder) {
     navigator.mediaDevices
       .getUserMedia({ audio: true })
       .then((stream) => {
-        if (!listening) {
+        if (!listening || myGen !== listenGen) {
           stream.getTracks().forEach((t) => t.stop());
           return;
         }
+        if (recStream && recStream !== stream) {
+          recStream.getTracks().forEach((t) => t.stop());
+        }
         recStream = stream;
-        recChunks = [];
-        recStartTs = Date.now();
+        const myChunks = [];
+        recChunks = myChunks;
+        const myStartTs = Date.now();
+        recStartTs = myStartTs;
         const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(
           (m) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)
         );
-        recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-        recorder.ondataavailable = (e) => {
-          if (e.data && e.data.size) recChunks.push(e.data);
+        const myRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+        recorder = myRecorder;
+        myRecorder.ondataavailable = (e) => {
+          if (e.data && e.data.size) myChunks.push(e.data);
         };
-        recorder.onstop = () => {
-          const dur = Math.max(1, Math.round((Date.now() - recStartTs) / 1000));
-          const mimeType = recorder?.mimeType || mime || 'audio/webm';
-          const blob = recChunks.length ? new Blob(recChunks, { type: mimeType }) : null;
-          cleanupRecorder();
+        myRecorder.onstop = () => {
+          const dur = Math.max(1, Math.round((Date.now() - myStartTs) / 1000));
+          const mimeType = myRecorder?.mimeType || mime || 'audio/webm';
+          const blob = myChunks.length ? new Blob(myChunks, { type: mimeType }) : null;
+          try {
+            stream.getTracks().forEach((t) => t.stop());
+          } catch (_) {}
+          if (recorder === myRecorder) {
+            cleanupRecorder();
+          }
           if (blob && typeof onRecorded === 'function') onRecorded(blob, dur);
         };
-        recorder.start();
+        myRecorder.start();
       })
       .catch(() => {
+        recorderActive = false;
+        if (myGen !== listenGen) return;
         if (!recogOk) listening = false;
         if (!recogOk && typeof onError === 'function') onError('无法访问麦克风，请在浏览器中允许麦克风权限');
       });
@@ -76,13 +92,15 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
   // 2) 转写（可选能力）
   if (hasRecognition) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recog = new SR();
-    recog.lang = 'zh-CN';
-    recog.interimResults = true;
-    recog.continuous = false;
-    recog.maxAlternatives = 1;
+    const myRecog = new SR();
+    recog = myRecog;
+    myRecog.lang = 'zh-CN';
+    myRecog.interimResults = true;
+    myRecog.continuous = false;
+    myRecog.maxAlternatives = 1;
     listening = true;
-    recog.onresult = (e) => {
+    myRecog.onresult = (e) => {
+      if (myGen !== listenGen) return;
       let interim = '';
       let finalText = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -95,8 +113,10 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
         onText(finalText.trim());
       }
     };
-    recog.onerror = (e) => {
-      listening = false;
+    myRecog.onerror = (e) => {
+      if (myGen !== listenGen) return;
+      recogOk = false;
+      if (!recorderActive) listening = false;
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
         if (typeof onError === 'function') onError('麦克风权限被拒绝，请在浏览器地址栏允许使用麦克风');
       } else if (e.error === 'no-speech') {
@@ -104,14 +124,16 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
       }
       //其他错误静默：由停止流程兜底
     };
-    recog.onend = () => {
-      listening = false;
+    myRecog.onend = () => {
+      if (myGen !== listenGen) return;
+      recogOk = false;
+      if (!recorderActive) listening = false;
     };
     try {
-      recog.start();
+      myRecog.start();
       recogOk = true;
     } catch {
-      listening = false;
+      if (!recorderActive) listening = false;
       recog = null;
     }
   }
@@ -128,6 +150,7 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
 
 /** 停止聆听；转写结果与录音 blob 通过 startListening 的回调返回 */
 export function stopListening() {
+  ++listenGen;
   listening = false;
   if (recog) {
     try {

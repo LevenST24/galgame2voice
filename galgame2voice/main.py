@@ -413,10 +413,12 @@ class AudioStaticFiles(StaticFiles):
     """
 
     async def get_response(self, path: str, scope: Scope) -> Response:
+        import posixpath
+
         response = await super().get_response(path, scope)
         if response.status_code in (200, 206):
-            norm_path = path.replace("\\", "/").strip("/")
-            if norm_path.startswith("cache/") or "/cache/" in norm_path:
+            norm_path = posixpath.normpath(path.replace("\\", "/")).strip("/")
+            if norm_path == "cache" or norm_path.startswith("cache/"):
                 response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
             else:
                 response.headers["Cache-Control"] = "public, max-age=3600"
@@ -435,18 +437,26 @@ class StaticCacheControlMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        path = scope.get("path", "") if scope["type"] == "http" else ""
-        if path in ("/", "/index.html"):
+        import posixpath
+
+        raw_path = scope.get("path", "") if scope["type"] == "http" else ""
+        if raw_path:
+            norm_path = posixpath.normpath(raw_path.replace("\\", "/"))
+            if raw_path.endswith("/") and norm_path != "/":
+                norm_path += "/"
+        else:
+            norm_path = ""
+        if norm_path in ("/", "/index.html", "/static/index.html"):
             # 入口页面必须每次回源校验，避免发版后浏览器用旧 index 加载旧 JS
             cache_value = "no-cache"
-        elif path.startswith("/static/assets/") or path == "/static/assets":
+        elif norm_path.startswith("/static/assets/") or norm_path == "/static/assets":
             # 指纹化静态资源永久强缓存（1年），极大提升二次加载速度
             cache_value = "public, max-age=31536000, immutable"
-        elif path.startswith("/static/"):
+        elif norm_path.startswith("/static/"):
             cache_value = "public, max-age=3600"
-        elif path.startswith("/audio/cache/") or "/audio/cache/" in path:
+        elif norm_path.startswith("/audio/cache/") or norm_path == "/audio/cache":
             cache_value = "public, max-age=31536000, immutable"
-        elif path.startswith("/audio/"):
+        elif norm_path.startswith("/audio/"):
             cache_value = "private, max-age=0"
         else:
             cache_value = None

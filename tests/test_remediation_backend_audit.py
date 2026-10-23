@@ -461,3 +461,45 @@ class TestUrlGuardAndVoiceProfileHardening:
         ok = await test_proxy_connectivity(None)
         assert ok is True
 
+    @pytest.mark.asyncio
+    async def test_assert_llm_url_safe_blocks_dns_rebinding_within_cache_ttl(self, monkeypatch):
+        """assert_llm_url_safe must re-resolve DNS even if validate_llm_base_url cached a public IP <60s ago."""
+        import socket
+        from galgame2voice.security.url_guard import (
+            assert_llm_url_safe,
+            clear_dns_cache,
+            validate_llm_base_url,
+        )
+
+        clear_dns_cache()
+        current_ip = ["93.184.216.34"]
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (current_ip[0], port))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+        # Step 1: Initial validation resolves to public IP and populates _DNS_CACHE
+        ok, _ = validate_llm_base_url("https://rebind-live.org/v1", allow_private=False)
+        assert ok is True
+
+        # Step 2: Immediately (<1s later, well within 60s TTL), attacker flips DNS to 127.0.0.1
+        current_ip[0] = "127.0.0.1"
+        with pytest.raises(PermissionError, match="SSRF/DNS-Rebinding"):
+            await assert_llm_url_safe("https://rebind-live.org/v1/chat/completions", allow_private=False)
+
+    def test_map_telegram_response_handles_html_or_non_dict_200(self):
+        """_map_telegram_response must not raise on HTTP 200 HTML proxy page or JSON array."""
+        import httpx
+        from galgame2voice.routers.providers import _map_telegram_response
+
+        html_resp = httpx.Response(200, text="<html><body>Captive Portal</body></html>")
+        res1 = _map_telegram_response(html_resp, 12.5)
+        assert res1["success"] is False
+        assert "格式无效" in res1["message"]
+
+        list_resp = httpx.Response(200, json=["unexpected", "list"])
+        res2 = _map_telegram_response(list_resp, 10.0)
+        assert res2["success"] is False
+        assert "格式无效" in res2["message"]
+

@@ -515,14 +515,28 @@ test_provider_connectivity = test_provider
 def _map_telegram_response(resp: httpx.Response, latency: float) -> dict[str, Any]:
     """Maps Telegram getMe HTTP response into test result payload."""
     if resp.status_code == status.HTTP_200_OK:
-        data = resp.json()
+        try:
+            data = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            return {
+                "success": False,
+                "message": "Telegram 响应格式无效（可能被代理或网关拦截）",
+                "latency_ms": latency,
+            }
+        if not isinstance(data, dict):
+            return {
+                "success": False,
+                "message": "Telegram 响应格式无效（可能被代理或网关拦截）",
+                "latency_ms": latency,
+            }
         if data.get("ok"):
-            bot_user = (data.get("result") or {}).get("username", "")
+            result_obj = data.get("result")
+            bot_user = result_obj.get("username", "") if isinstance(result_obj, dict) else ""
             return {
                 "success": True,
                 "message": f"连接成功！Bot: @{bot_user}",
                 "latency_ms": latency,
-                "bot_info": data.get("result"),
+                "bot_info": result_obj,
             }
         else:
             return {

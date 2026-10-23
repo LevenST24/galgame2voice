@@ -331,7 +331,15 @@ export class StreamAudioController {
     const ctx = this.ensureContext();
     if (!ctx) return 'failed';
     if (ctx.state === 'suspended' && !this.isPaused) {
-      ctx.resume().catch(() => {});
+      try {
+        await Promise.race([
+          Promise.resolve(ctx.resume()),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('AudioContext resume timeout')), 1500)),
+        ]);
+      } catch (_) {}
+      if (ctx.state === 'suspended') {
+        return 'failed';
+      }
     }
 
     const abortController = new AbortController();

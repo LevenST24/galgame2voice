@@ -102,7 +102,7 @@ export function mountAdv(dom, deps) {
       let result;
       try {
         if (audio?.ctx?.state === 'suspended') {
-          audio?.ensureContext?.()?.resume?.()?.catch?.(() => {});
+          await audio?.ensureContext?.()?.resume?.()?.catch?.(() => {});
         }
         result = await audio.playLine(index, chunks, { msgId: key });
       }

@@ -13,6 +13,7 @@ export const DEFAULT_SETTINGS = {
   voiceEnabled: true,
   reducedMotion: false,
   audioWaitMs: 1500,
+  voiceTimeoutMs: 0,
   skipIntervalMs: 80,
   primary: 'zh', // 'zh' | 'ja'
 };
@@ -74,13 +75,14 @@ export function createLinePlayer({
     }
   }
 
+  function getVoiceContext() {
+    return voice?.ctx || voice?.audioContext || (typeof AudioContext !== 'undefined' ? voice?.context : null);
+  }
+
   function isVoiceSuspended() {
-    return Boolean(
-      voice?.ctx?.state === 'suspended' ||
-      voice?.audioContext?.state === 'suspended' ||
-      (typeof AudioContext !== 'undefined' && voice?.context?.state === 'suspended') ||
-      (typeof voice?.isSuspended === 'function' ? voice.isSuspended() : voice?.isSuspended)
-    );
+    const ctx = getVoiceContext();
+    if (ctx?.state === 'suspended') return true;
+    return Boolean(typeof voice?.isSuspended === 'function' ? voice.isSuspended() : voice?.isSuspended);
   }
 
   // Event listeners
@@ -163,7 +165,8 @@ export function createLinePlayer({
     currentVoiceToken = token;
     voicePlaying = true;
 
-    if (isVoiceSuspended()) {
+    const ctx = getVoiceContext();
+    if (isVoiceSuspended() && typeof ctx?.resume !== 'function') {
       onVoiceEnd(token, 'failed');
       return;
     }
@@ -172,9 +175,27 @@ export function createLinePlayer({
       voiceFallbackTimerId = clock.setTimeout(() => {
         voiceFallbackTimerId = null;
         if (voicePlaying && currentVoiceToken?.seq === token.seq) {
+          voice?.stop?.({ fadeMs: 0 });
           onVoiceEnd(token, 'failed');
         }
       }, settings.voiceTimeoutMs);
+    }
+
+    if (ctx?.state === 'suspended' && typeof ctx.resume === 'function') {
+      Promise.resolve()
+        .then(() => ctx.resume())
+        .then(() => {
+          if (voicePlaying && currentVoiceToken?.seq === token.seq && isVoiceSuspended()) {
+            voice?.stop?.({ fadeMs: 0 });
+            onVoiceEnd(token, 'failed');
+          }
+        })
+        .catch(() => {
+          if (voicePlaying && currentVoiceToken?.seq === token.seq && isVoiceSuspended()) {
+            voice?.stop?.({ fadeMs: 0 });
+            onVoiceEnd(token, 'failed');
+          }
+        });
     }
 
     Promise.resolve(voice?.play?.(lineIndex, chunks || []))
@@ -310,8 +331,10 @@ export function createLinePlayer({
 
     const isFinalPage = page === pages.length - 1;
     if (isFinalPage && settings.autoMode === 'voice-priority' && voicePlaying) {
-      if (isVoiceSuspended()) {
+      const ctx = getVoiceContext();
+      if (isVoiceSuspended() && typeof ctx?.resume !== 'function') {
         if (currentVoiceToken) {
+          voice?.stop?.({ fadeMs: 0 });
           onVoiceEnd(currentVoiceToken, 'failed');
         } else {
           voicePlaying = false;
@@ -321,6 +344,7 @@ export function createLinePlayer({
           voiceFallbackTimerId = clock.setTimeout(() => {
             voiceFallbackTimerId = null;
             if (voicePlaying && currentVoiceToken) {
+              voice?.stop?.({ fadeMs: 0 });
               onVoiceEnd(currentVoiceToken, 'failed');
             }
           }, settings.voiceTimeoutMs);

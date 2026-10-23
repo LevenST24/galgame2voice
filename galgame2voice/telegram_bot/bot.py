@@ -253,9 +253,10 @@ class TelegramBotManager:
                 resp = await client.get(url)
                 if resp.status_code == 200:
                     data = resp.json()
-                    if data.get("ok"):
-                        username = (data.get("result") or {}).get("username", "")
-                        return {"success": True, "message": f"Connected to @{username}", "info": data.get("result")}
+                    if isinstance(data, dict) and data.get("ok"):
+                        result_obj = data.get("result")
+                        username = result_obj.get("username", "") if isinstance(result_obj, dict) else ""
+                        return {"success": True, "message": f"Connected to @{username}", "info": result_obj}
                 return {"success": False, "message": f"Telegram API error (code {resp.status_code})"}
         except Exception as exc:
             safe_err = sanitize_error_detail(exc)

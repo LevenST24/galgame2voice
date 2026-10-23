@@ -182,6 +182,23 @@ def validate_local_service_url(url: Optional[str]) -> Tuple[bool, str]:
     return validate_llm_base_url(url, allow_private=True)
 
 
+def _invalidate_host_cache(url: Optional[str]) -> None:
+    """Evicts cached DNS entry for the URL's (host, port) so pre-request checks re-resolve DNS."""
+    if not url:
+        return
+    try:
+        parsed = urlparse(str(url).strip())
+        host = parsed.hostname
+        if not host:
+            return
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return
+    key = (host.lower().strip(), port)
+    with _DNS_CACHE_LOCK:
+        _DNS_CACHE.pop(key, None)
+
+
 async def assert_llm_url_safe(url: str, allow_private: bool = False) -> None:
     """
     Validates the target URL before making outbound LLM or STT requests.
@@ -189,6 +206,7 @@ async def assert_llm_url_safe(url: str, allow_private: bool = False) -> None:
     to internal or loopback IP addresses.
     """
     import asyncio
+    _invalidate_host_cache(url)
     ok, reason = await asyncio.to_thread(validate_llm_base_url, url, allow_private)
     if not ok:
         raise PermissionError(f"SSRF/DNS-Rebinding 阻止: {reason}")

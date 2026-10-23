@@ -234,7 +234,7 @@ class TestAdversarialCacheControlMiddleware:
         assert resp_enc.headers.get("Cache-Control") == "public, max-age=31536000, immutable"
 
     def test_directory_traversal_out_of_bounds(self):
-        """Path traversal escaping audio directory returns 404 and never receives immutable cache."""
+        """Path traversal escaping audio/cache or static/assets never receives immutable cache."""
         # 1. Traversal escaping out of /audio/ entirely (/secret.txt)
         resp_esc = self.client.get("/audio/cache/../../secret.txt")
         assert resp_esc.status_code in (403, 404)
@@ -244,6 +244,16 @@ class TestAdversarialCacheControlMiddleware:
         resp_inner = self.client.get("/audio/cache/../missing_traversal.wav")
         assert resp_inner.status_code == 404
         assert resp_inner.headers.get("Cache-Control") == "no-cache, no-store, must-revalidate"
+
+        # 3. Percent-encoded traversal from /audio/cache/ into existing private /audio/ file
+        resp_pct_priv = self.client.get("/audio/cache/%2e%2e/user_private_recording.wav")
+        assert resp_pct_priv.headers.get("Cache-Control") != "public, max-age=31536000, immutable"
+        if resp_pct_priv.status_code == 200:
+            assert resp_pct_priv.headers.get("Cache-Control") == "private, max-age=0"
+
+        # 4. Percent-encoded traversal from /static/assets/ into /static/index.html
+        resp_pct_html = self.client.get("/static/assets/%2e%2e/index.html")
+        assert resp_pct_html.headers.get("Cache-Control") != "public, max-age=31536000, immutable"
 
 
 # ============================================================================
@@ -360,7 +370,9 @@ class TestAdversarialDeleteMessageAndTransactions:
 
     @pytest.mark.asyncio
     async def test_task_cancellation_during_delete_message(self, tmp_path):
-        """Task cancellation while in transaction (both during BEGIN IMMEDIATE and mid-body) must restore transaction depth and locks cleanly."""
+        """Task cancellation while in transaction (during BEGIN IMMEDIATE, locked retry, and mid-body) must restore transaction depth and locks cleanly."""
+        import sqlite3
+
         db_path = str(tmp_path / "cancel_tx.db")
         await init_db(db_path)
 
@@ -380,16 +392,42 @@ class TestAdversarialDeleteMessageAndTransactions:
             t0 = asyncio.create_task(cancel_at_begin())
             await asyncio.sleep(0)
             t0.cancel()
-            try:
+            with pytest.raises(asyncio.CancelledError):
                 await t0
-            except asyncio.CancelledError:
-                pass
 
             assert getattr(conn, "_imm_tx_depth", 0) == 0
             assert getattr(conn, "_imm_tx_lock_owner", None) is None
             assert await crud.count_session_messages(conn, "sess_cancel") == 1
 
-            # 2. Deterministic mid-transaction cancellation after nested savepoint delete
+            # 2. Cancellation when BEGIN IMMEDIATE fails with OperationalError("database is locked")
+            orig_execute = conn.execute
+            begin_started = asyncio.Event()
+
+            async def failing_begin_execute(sql, *args, **kwargs):
+                if str(sql).strip().upper().startswith("BEGIN IMMEDIATE"):
+                    begin_started.set()
+                    await asyncio.sleep(0.05)
+                    raise sqlite3.OperationalError("database is locked")
+                return await orig_execute(sql, *args, **kwargs)
+
+            conn.execute = failing_begin_execute
+            try:
+                async def cancel_on_locked_begin():
+                    async with immediate_transaction(conn):
+                        await crud.delete_message(conn, msg.id)
+
+                t_locked = asyncio.create_task(cancel_on_locked_begin())
+                await begin_started.wait()
+                t_locked.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await t_locked
+            finally:
+                conn.execute = orig_execute
+
+            assert getattr(conn, "_imm_tx_depth", 0) == 0
+            assert getattr(conn, "_imm_tx_lock_owner", None) is None
+
+            # 3. Deterministic mid-transaction cancellation after nested savepoint delete
             entered_body = asyncio.Event()
 
             async def cancel_mid_body():
@@ -401,10 +439,8 @@ class TestAdversarialDeleteMessageAndTransactions:
             t = asyncio.create_task(cancel_mid_body())
             await entered_body.wait()
             t.cancel()
-            try:
+            with pytest.raises(asyncio.CancelledError):
                 await t
-            except asyncio.CancelledError:
-                pass
 
             # Depth and owner must be restored, and deletion rolled back
             assert getattr(conn, "_imm_tx_depth", 0) == 0
