@@ -69,6 +69,9 @@ All notable changes to galgame2voice are documented here. The format follows
   needs 「允许私网 LLM 端点」 turned on.
 
 ### Fixed
+- Holding Ctrl to fast-forward until a reply ends in input mode no longer leaves
+  a stale temporary-skip flag that later turns off a manually enabled `SKIP` when
+  the window loses focus or when skip is toggled.
 - `resolve_reference_audio_path()` and `validate_reference_audio()` now check
   `project_file()` before falling back to the current working directory for
   relative paths, preventing colliding files in the launching directory from
