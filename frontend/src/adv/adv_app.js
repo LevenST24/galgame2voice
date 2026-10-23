@@ -111,9 +111,6 @@ export function mountAdv(dom, deps) {
       return result;
     },
     stop(options) { ++voiceSequence; audio.stopLine(destroyed ? { fadeMs: 0 } : options); textbox.setVoice({ active: false }); sprite.stopLipSync(); },
-    get ctx() { return audio?.ctx; },
-    get audioContext() { return audio?.ctx; },
-    get isSuspended() { return audio?.ctx?.state === 'suspended'; },
   };
   const render = {
     ...textbox,

@@ -925,3 +925,72 @@ test('repaginate preserves the raw text offset when viewport page widths change'
   player.reset();
 });
 
+test('voice.play returning failed or throwing reveals line and lets voice-priority AUTO continue', async () => {
+  // Case A: voice.play() resolves to 'failed'
+  const { player, clock, voice } = setup({
+    settings: { autoMode: 'voice-priority', autoBaseMs: 2000, autoPerCharMs: 0, revealMsPerGrapheme: 0 },
+  });
+  player.setAuto(true);
+  player.startTurn('t-fail');
+  player.setLineAudio('t-fail', 0, { status: 'ready', chunks: [{ audio_url: '/a.wav' }] });
+  player.pushLine('t-fail', sampleLine0);
+  player.pushLine('t-fail', sampleLine1);
+
+  assert.equal(player.state, 'waiting_advance');
+  assert.equal(clock.activeTimerCount, 0);
+
+  voice.resolveLast('failed');
+  await flushMicrotasks();
+
+  assert.equal(clock.activeTimerCount, 1, 'AUTO timer starts after voice.play returns failed');
+  clock.tick(2000);
+  assert.equal(player.currentIndex, 1, 'AUTO advances to next line after failed voice');
+
+  // Case B: voice.play() rejects asynchronously
+  const rejectingVoice = {
+    play() {
+      return Promise.reject(new Error('playback failed'));
+    },
+    stop() {},
+  };
+  const { player: playerReject, clock: clockReject } = setup({
+    voice: rejectingVoice,
+    settings: { autoMode: 'voice-priority', autoBaseMs: 2000, autoPerCharMs: 0, revealMsPerGrapheme: 0 },
+  });
+  playerReject.setAuto(true);
+  playerReject.startTurn('t-reject');
+  playerReject.setLineAudio('t-reject', 0, { status: 'ready', chunks: [{ audio_url: '/a.wav' }] });
+  playerReject.pushLine('t-reject', sampleLine0);
+  playerReject.pushLine('t-reject', sampleLine1);
+
+  assert.equal(playerReject.state, 'waiting_advance');
+  await flushMicrotasks();
+
+  assert.equal(clockReject.activeTimerCount, 1, 'AUTO timer starts after voice.play rejects');
+  clockReject.tick(2000);
+  assert.equal(playerReject.currentIndex, 1, 'AUTO advances to next line after rejected voice');
+
+  // Case C: voice.play() throws synchronously
+  const throwingVoice = {
+    play() {
+      throw new Error('sync playback error');
+    },
+    stop() {},
+  };
+  const { player: playerThrow, clock: clockThrow } = setup({
+    voice: throwingVoice,
+    settings: { autoMode: 'voice-priority', autoBaseMs: 2000, autoPerCharMs: 0, revealMsPerGrapheme: 0 },
+  });
+  playerThrow.setAuto(true);
+  playerThrow.startTurn('t-throw');
+  playerThrow.setLineAudio('t-throw', 0, { status: 'ready', chunks: [{ audio_url: '/a.wav' }] });
+  playerThrow.pushLine('t-throw', sampleLine0);
+  playerThrow.pushLine('t-throw', sampleLine1);
+
+  assert.equal(playerThrow.state, 'waiting_advance');
+  await flushMicrotasks();
+
+  assert.equal(clockThrow.activeTimerCount, 1, 'AUTO timer starts after voice.play throws');
+  clockThrow.tick(2000);
+  assert.equal(playerThrow.currentIndex, 1, 'AUTO advances to next line after thrown voice');
+});
