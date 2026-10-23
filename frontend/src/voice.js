@@ -27,11 +27,20 @@ export function isListening() {
  */
 export function startListening({ onInterim, onText, onRecorded, onError }) {
   if (listening) return { ok: true };
-  let recOk = false;
+  const hasRecorder = recorderSupported();
+  const hasRecognition = voiceSupported();
+
+  if (!hasRecorder && !hasRecognition) {
+    return {
+      ok: false,
+      reason: '当前浏览器不支持语音输入，建议使用 Chrome / Edge',
+    };
+  }
+
   let recogOk = false;
 
   // 1) 录音（可选能力，失败不阻断转写）
-  if (recorderSupported()) {
+  if (hasRecorder) {
     navigator.mediaDevices
       .getUserMedia({ audio: true })
       .then((stream) => {
@@ -51,20 +60,21 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
         };
         recorder.onstop = () => {
           const dur = Math.max(1, Math.round((Date.now() - recStartTs) / 1000));
-          const blob = recChunks.length ? new Blob(recChunks, { type: recorder.mimeType || 'audio/webm' }) : null;
+          const mimeType = recorder?.mimeType || mime || 'audio/webm';
+          const blob = recChunks.length ? new Blob(recChunks, { type: mimeType }) : null;
           cleanupRecorder();
           if (blob && typeof onRecorded === 'function') onRecorded(blob, dur);
         };
         recorder.start();
-        recOk = true;
       })
       .catch(() => {
+        if (!recogOk) listening = false;
         if (!recogOk && typeof onError === 'function') onError('无法访问麦克风，请在浏览器中允许麦克风权限');
       });
   }
 
   // 2) 转写（可选能力）
-  if (voiceSupported()) {
+  if (hasRecognition) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     recog = new SR();
     recog.lang = 'zh-CN';
@@ -106,7 +116,7 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
     }
   }
 
-  if (!recOk && !recogOk) {
+  if (!hasRecorder && !recogOk) {
     return {
       ok: false,
       reason: '当前浏览器不支持语音输入，建议使用 Chrome / Edge',
@@ -262,9 +272,19 @@ function safeRevokeUrl(url) {
  * BoundedAudioStore — 具备 30 条硬上限、LRU 淘汰机制与自动 URL.revokeObjectURL 的安全存储
  */
 export class BoundedAudioStore extends Map {
+  get(key) {
+    if (this.has(key)) {
+      const val = super.get(key);
+      super.delete(key);
+      super.set(key, val);
+      return val;
+    }
+    return undefined;
+  }
+
   set(key, value) {
     if (this.has(key)) {
-      const old = this.get(key);
+      const old = super.get(key);
       if (old && old.url && old.url !== value?.url) {
         safeRevokeUrl(old.url);
       }
@@ -275,7 +295,7 @@ export class BoundedAudioStore extends Map {
     if (this.size > MAX_AUDIO_STORE_ENTRIES) {
       const oldestKey = this.keys().next().value;
       if (oldestKey !== undefined) {
-        const evicted = this.get(oldestKey);
+        const evicted = super.get(oldestKey);
         if (evicted && evicted.url) {
           safeRevokeUrl(evicted.url);
         }
@@ -287,7 +307,7 @@ export class BoundedAudioStore extends Map {
 
   delete(key) {
     if (this.has(key)) {
-      const item = this.get(key);
+      const item = super.get(key);
       if (item && item.url) {
         safeRevokeUrl(item.url);
       }

@@ -419,7 +419,7 @@ export class StreamAudioController {
       if (lineState.settled) return;
 
       const now = ctx.currentTime;
-      if (self.nextStartTime < now) {
+      if (self.nextStartTime <= now) {
         self.nextStartTime = now + self.currentBufferLeadSec;
       }
 
@@ -549,7 +549,7 @@ export class StreamAudioController {
         }
       } catch (_) {}
     }
-    if (this.nextStartTime < now) {
+    if (this.nextStartTime <= now) {
       if (this.nextStartTime > 0 && this.isPlaying && this.activeSources.length === 0) {
         this.underrunCount++;
         // 欠载自适应：缓冲裕度递增 20ms（上限 120ms），消除后续切片抖动

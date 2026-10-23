@@ -65,6 +65,23 @@ export function createLinePlayer({
   let audioWaitTimerId = null;
   let autoTimerId = null;
   let skipTimerId = null;
+  let voiceFallbackTimerId = null;
+
+  function clearVoiceFallbackTimer() {
+    if (voiceFallbackTimerId !== null) {
+      clock.clearTimeout(voiceFallbackTimerId);
+      voiceFallbackTimerId = null;
+    }
+  }
+
+  function isVoiceSuspended() {
+    return Boolean(
+      voice?.ctx?.state === 'suspended' ||
+      voice?.audioContext?.state === 'suspended' ||
+      (typeof AudioContext !== 'undefined' && voice?.context?.state === 'suspended') ||
+      (typeof voice?.isSuspended === 'function' ? voice.isSuspended() : voice?.isSuspended)
+    );
+  }
 
   // Event listeners
   const listeners = new Map();
@@ -101,6 +118,7 @@ export function createLinePlayer({
   }
 
   function clearAllTimers() {
+    clearVoiceFallbackTimer();
     if (revealTimerId !== null) {
       clock.clearTimeout(revealTimerId);
       revealTimerId = null;
@@ -135,6 +153,7 @@ export function createLinePlayer({
   }
 
   function playVoice(lineIndex, chunks) {
+    clearVoiceFallbackTimer();
     playSequence++;
     const token = {
       turnId: currentTurnId,
@@ -143,6 +162,20 @@ export function createLinePlayer({
     };
     currentVoiceToken = token;
     voicePlaying = true;
+
+    if (isVoiceSuspended()) {
+      onVoiceEnd(token, 'failed');
+      return;
+    }
+
+    if (settings.voiceTimeoutMs && settings.voiceTimeoutMs > 0) {
+      voiceFallbackTimerId = clock.setTimeout(() => {
+        voiceFallbackTimerId = null;
+        if (voicePlaying && currentVoiceToken?.seq === token.seq) {
+          onVoiceEnd(token, 'failed');
+        }
+      }, settings.voiceTimeoutMs);
+    }
 
     Promise.resolve(voice?.play?.(lineIndex, chunks || []))
       .then((result) => {
@@ -163,6 +196,7 @@ export function createLinePlayer({
       // Stale resolution from superseded or stopped playback
       return;
     }
+    clearVoiceFallbackTimer();
     currentVoiceToken = null;
     voicePlaying = false;
 
@@ -276,8 +310,26 @@ export function createLinePlayer({
 
     const isFinalPage = page === pages.length - 1;
     if (isFinalPage && settings.autoMode === 'voice-priority' && voicePlaying) {
-      // In voice-priority mode on final page, delay starts after voice ends
-      return;
+      if (isVoiceSuspended()) {
+        if (currentVoiceToken) {
+          onVoiceEnd(currentVoiceToken, 'failed');
+        } else {
+          voicePlaying = false;
+        }
+      } else if (settings.voiceTimeoutMs && settings.voiceTimeoutMs > 0) {
+        if (voiceFallbackTimerId === null) {
+          voiceFallbackTimerId = clock.setTimeout(() => {
+            voiceFallbackTimerId = null;
+            if (voicePlaying && currentVoiceToken) {
+              onVoiceEnd(currentVoiceToken, 'failed');
+            }
+          }, settings.voiceTimeoutMs);
+        }
+        return;
+      } else {
+        // In voice-priority mode on final page, delay starts after voice ends
+        return;
+      }
     }
 
     const pageText = pages[page] ?? '';
@@ -371,6 +423,7 @@ export function createLinePlayer({
       // Final page: moving to next line
       if (voicePlaying && !skip) {
         if (settings.interruptVoice) {
+          clearVoiceFallbackTimer();
           currentVoiceToken = null;
           voicePlaying = false;
           voice?.stop?.({ fadeMs: 40 });
@@ -412,6 +465,7 @@ export function createLinePlayer({
         setAuto(false);
       }
       if (voicePlaying) {
+        clearVoiceFallbackTimer();
         currentVoiceToken = null;
         voicePlaying = false;
         voice?.stop?.({ fadeMs: 40 });
@@ -490,6 +544,7 @@ export function createLinePlayer({
       autoTimerId = null;
     }
     if (voicePlaying) {
+      clearVoiceFallbackTimer();
       currentVoiceToken = null;
       voicePlaying = false;
       voice?.stop?.({ fadeMs: 40 });
@@ -784,6 +839,7 @@ export function createLinePlayer({
   function setSettings(patch) {
     settings = { ...settings, ...patch };
     if (!settings.voiceEnabled && voicePlaying) {
+      clearVoiceFallbackTimer();
       currentVoiceToken = null;
       voicePlaying = false;
       voice?.stop?.({ fadeMs: 40 });

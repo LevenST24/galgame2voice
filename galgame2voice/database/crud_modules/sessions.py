@@ -308,4 +308,5 @@ async def count_session_messages(conn: aiosqlite.Connection, session_id: str) ->
 
 async def delete_message(conn: aiosqlite.Connection, message_id: int) -> None:
     """Deletes a message by its ID."""
-    await conn.execute("DELETE FROM messages WHERE id = ?;", (message_id,))
+    async with immediate_transaction(conn):
+        await conn.execute("DELETE FROM messages WHERE id = ?;", (message_id,))

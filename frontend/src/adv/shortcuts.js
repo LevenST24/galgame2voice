@@ -188,6 +188,7 @@ export function decide(event, context = {}) {
 
   // Left click
   if (event.type === 'click') {
+    if (overlayOpen) return null;
     if (event.button !== undefined && event.button !== 0) {
       return null;
     }

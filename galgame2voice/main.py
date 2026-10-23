@@ -444,6 +444,8 @@ class StaticCacheControlMiddleware:
             cache_value = "public, max-age=31536000, immutable"
         elif path.startswith("/static/"):
             cache_value = "public, max-age=3600"
+        elif path.startswith("/audio/cache/") or "/audio/cache/" in path:
+            cache_value = "public, max-age=31536000, immutable"
         elif path.startswith("/audio/"):
             cache_value = "private, max-age=0"
         else:

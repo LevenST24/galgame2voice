@@ -107,6 +107,17 @@ def find_ffmpeg(custom_path: str | None = None) -> str | None:
         _cached_ffmpeg_bin = bundled_ffmpeg
         return _cached_ffmpeg_bin
 
+    # 5. imageio-ffmpeg bundled binary
+    try:
+        import imageio_ffmpeg
+
+        candidate = imageio_ffmpeg.get_ffmpeg_exe()
+        if candidate and Path(candidate).is_file():
+            _cached_ffmpeg_bin = candidate
+            return _cached_ffmpeg_bin
+    except Exception:
+        pass
+
     return None
 
 

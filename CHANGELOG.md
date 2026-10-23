@@ -63,6 +63,19 @@ All notable changes to galgame2voice are documented here. The format follows
   out of the image's `ENV`, where its name failed Docker's build checks.
 
 ### Fixed
+- `find_ffmpeg()` now falls back to a bundled `imageio-ffmpeg` binary when no
+  system `ffmpeg` is on `PATH`, so `doctor` and audio conversion work in virtual
+  environments that have only the wheel installed.
+- Cached TTS WAV files under `/audio/cache/` keep their `Cache-Control: public,
+  max-age=31536000, immutable` header instead of having it overwritten with
+  `private, max-age=0` by the general `/audio/` middleware rule; message deletion
+  runs inside `immediate_transaction` for WAL savepoint safety.
+- On the ADV stage, re-recording voice input revokes the previous recording's
+  Blob URL and guards async `recorder.onstop` callbacks across resets; audio cache
+  lookups refresh LRU order; suspended `AudioContext` instances resume on stage
+  interaction or fall back without stalling AUTO mode; modal overlay clicks no
+  longer bleed through to advance the stage; SSE parsing handles `CRLF` line
+  endings; and browsers without `SpeechRecognition` fall back to `MediaRecorder`.
 - After sending a message, Space, Enter and Esc work at once on the ADV stage.
   Sending hid the focused input box, focus fell to the page body, and the stage's
   shortcuts heard nothing until the stage was clicked; Esc could not stop a reply
