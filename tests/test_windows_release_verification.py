@@ -14,15 +14,14 @@ def release(tmp_path):
         "Galgame2Voice.exe", "启动.bat", "数据恢复.bat", "tools/ffmpeg.exe", "LICENSE", "_internal/python312.dll",
     )}
     files.update({f"{folder}/.keep": b"" for folder in ("data", "audio", "logs", "characters")})
-    for relative in ("index.html", "assets/app.js", "assets/app.css", "js/audio_player.js"):
+    for relative in ("index.html", "assets/app.js", "assets/app.css"):
         content = relative.encode()
         deployed = tmp_path / "galgame2voice/static" / relative
         deployed.parent.mkdir(parents=True, exist_ok=True)
         deployed.write_bytes(content)
-        if not relative.startswith("js/"):
-            built = tmp_path / "frontend/dist" / relative
-            built.parent.mkdir(parents=True, exist_ok=True)
-            built.write_bytes(content)
+        built = tmp_path / "frontend/dist" / relative
+        built.parent.mkdir(parents=True, exist_ok=True)
+        built.write_bytes(content)
         files["galgame2voice/static/" + relative] = content
     guide = tmp_path / "docs/WINDOWS_PORTABLE.md"
     guide.parent.mkdir()

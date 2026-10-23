@@ -32,11 +32,10 @@ def test_frozen_paths_keep_user_data_beside_executable(tmp_path, monkeypatch):
 def test_portable_assets_do_not_copy_user_secrets_or_characters(tmp_path, monkeypatch):
     source = tmp_path / "source"
     static = source / "galgame2voice" / "static"
-    for folder in (static / "assets", static / "js", static / "characters", source / "data", source / "characters", source / "docs"):
+    for folder in (static / "assets", static / "characters", source / "data", source / "characters", source / "docs"):
         folder.mkdir(parents=True, exist_ok=True)
     (static / "index.html").write_text("<html>application</html>")
     (static / "assets" / "app.js").write_text("console.log('app')")
-    (static / "js" / "audio_player.js").write_text("export const player = {}")
     (static / "characters" / "private.png").write_bytes(b"private portrait")
     (source / "characters" / "private.json").write_text("private character")
     (source / "data" / ".master_key").write_bytes(b"private key")
