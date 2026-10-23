@@ -1,24 +1,120 @@
-# AGENTS.md（本地版，适配 Galgame2Voice 后端）
+# AGENTS.md（前端指南：纯 ADV 界面架构）
 
-## Dependencies
-- vite ^6：构建与 dev server（端口 3015，base '/static/'，产物 dist/index.html）
-- 无运行时 npm 依赖（原 Supabase 客户端已在本地化时移除）
+本文件为开发与维护 `frontend/` 纯 ADV 界面提供架构地图与技术约定。
 
-## Architecture
-- 纯原生 JS 多模块，无框架：`index.html` 骨架 + SVG sprite；`src/main.js` 事件绑定与渲染调度；`src/store.js` 会话状态（localStorage key: `gal2voice.chat.v1`，回退读取历史 inkwell key 兼容旧数据）；`src/ui.js` DOM 渲染；`src/ai.js` 本地后端流式客户端；`src/voice.js` 浏览器原生语音（SpeechRecognition 语音输入 / SpeechSynthesis 朗读兜底）；`src/styles.css` 全部样式与设计令牌（浅色主题，主色紫）。
-- 聊天链路（`src/ai.js`）：POST `/api/chat/stream`，SSE 命名事件 `text`（`delta_chinese` 增量）/ `audio_chunk`（逐句 GPT-SoVITS 音频 URL）/ `audio_chunk_error`（忽略）/ `error` / `done`。请求携带会话设置覆盖：`system_prompt` / `temperature` / `max_context`（后端 ChatRequest 已支持，为空时走 Voice Profile 默认人设）。删除会话时前端同时调 `DELETE /api/chat/history?session_id=` 清理后端持久化历史。
-- 语音链路：发送侧 = MediaRecorder 真录音（blob 存内存 `audioStore`，语音条可回放）+ SpeechRecognition 并行转文字；接收侧 = AI 回复携带 `audioUrls`（后端 TTS 分句缓存，路径如 `/audio/cache/xxx.wav`，内容为日文台词，匹配参考音频语言），播放器按顺序逐段播放并按 (i + 片内进度)/总段数 点亮波形；无音频时回退浏览器 SpeechSynthesis 并 toast 说明原因（旧消息或生成时引擎未就绪）。
-- 设置分层：**会话设置**（右上角滑杆图标）= System Prompt、角色音色绑定（voiceProfileId）、采样参数（温度/Top P/频率惩罚/存在惩罚）、生成控制（max_tokens、上下文条数）、语音推理参数（tts_options：语速 speed/Top K/TTS Top P/TTS 温度，覆盖全局质量预设），全部随请求实时生效，后端 ChatRequest 已支持全部字段。**全局设置**（侧边栏齿轮）= 对话模型（`/api/providers` 列表 + `POST /api/providers/{id}/activate` 启用，含"＋自定义模型/接口"表单 OpenAI 兼容 Base URL/Key/模型名，id 固定 'custom'）、TTS 质量预设（存 localStorage `state.global.ttsPreset`，随 chat 请求 `preset` 字段发送）。人设预设 chips 已按用户要求删除。禁止把音色选择放回全局设置——用户明确要求"每个会话可以跟不同的人设/音色聊天"。
-- 音色按会话绑定（`ensureSessionVoice`）：会话 settings.voiceProfileId 非空时，切换到该会话自动 `POST /api/voice/switch` 加载对应权重（toast 提示，失败回滚）。切换权重会触发 GPT-SoVITS 重新加载模型，系统内存不足时可能 OOM 崩掉引擎进程（之后所有 TTS 500），需重启 GPT-SoVITS 恢复。
-- 会话内新建自定义音色：音色下拉含"＋ 新建自定义音色"项，展开表单从 `GET /api/voice/scan-models`（结果缓存 60s，前端亦有模块级缓存，创建成功后置 null 强制重扫）选择 .ckpt/.pth/参考音频，`POST /api/voice/profiles` 创建后立即绑定到会话并触发切换。注意 GPT-SoVITS 无参考音频会显著降低音色相似度。
-- 构建部署：`npm run deploy`（= vite build + deploy.mjs 清理旧 assets 后整目录拷贝到 `../galgame2voice/static/`）。**禁止**手动 `cp -r dist/*`——会残留历史哈希产物。`/` 由 FastAPI 托管 index.html，`/static/` 挂载同目录。旧版 UI（index_legacy.html、settings.html、static/css）已删除（git 历史可找回）；但 `static/js/`（audio_player.js、chat_client.js）**并未删除**——它列在 deploy.mjs 的 `PRESERVED_DIRS` 白名单里作为向后兼容脚本目录被刻意保留，清理产物时不得删除；旧版 settings.html 控制台已被用户明令禁止出现在 UI 中（"不要搞跳转"）——前端任何地方不得链接 settings.html，其全部设置已原生融入：系统状态行、对话模型、TTS 质量预设、音频缓存保留时长、Telegram（token/代理/测试连接/热重载保存）在全局设置；音色、采样、推理参数在会话设置。齿轮图标用 lucide settings 路径（旧的自画齿轮形似太阳被否决）。
-- 开发模式：`npm run dev`，vite 代理 `/api`、`/audio`、`/ai` 到 `127.0.0.1:8080`。
+---
 
-## What Didn't Work
-- ❌ Windows 下 Python mimetypes 跟随注册表把 .js 判为 text/plain，ES module 被 Strict MIME 拒载 → 已在 `galgame2voice/main.py` 顶部 `mimetypes.add_type("text/javascript", ".js")` 强制修正，勿删。
-- ❌ 暗色鎏金主题 → 用户反馈不实用，已重做为主色紫浅色方案；勿再引入深色装饰元素。
+## 依赖与环境
 
-## Lessons
-- 顶栏徽章外层 span 必须带 `id="modelBadge"`（updateBadge 依赖该元素，缺失会在启动时抛 TypeError 中断首条消息渲染）。
-- `ui.js` 渲染语音时长依赖 voice.js 的 `estimateDuration`，import 列表曾遗漏导致 ReferenceError，新增语音相关调用时检查导入完整性。
-- 验证脚本（puppeteer-core + 系统 Chrome；该脚本未纳入仓库、`frontend/package.json` 也不含 puppeteer 依赖，仅作为一次性人工验收手段，CI 不会执行）判断"回复完成"要等 `#stopBtn` 隐藏，语音条在问候语上始终存在，不能作为流结束信号。
+- **构建与开发工具**：Vite ^6（开发服务器端口 `3015`，基础路径 `base: '/static/'`，构建输出至 `dist/`）。
+- **运行时环境**：纯原生 JavaScript (ES Modules)，无前端框架，无第三方运行时 npm 依赖。
+
+---
+
+## 模块地图 (`frontend/src/`)
+
+应用以 `index.html` 为宿主骨架，入口自 `src/main.js` 启动。模块依赖链路如下：
+
+### 1. 核心与数据流
+- `src/main.js`：应用入口，协调会话同步、鉴权拦截、全局与会话设置控制器，并将 `conversation` 控制器挂载至 ADV 舞台。
+- `src/store.js`：前端状态管理与 `localStorage` 持久化（Key: `gal2voice.chat.v1`，包含会话列表 `sessions`、活跃会话 `activeId` 及全局设置 `global`）。
+- `src/conversation.js`：无 DOM 依赖的会话生命周期控制器，管理单轮回复状态机（`turnstart`、`text`、`line`、`line_audio`、`audio_chunk`、`done`、`cancelled`、`error`），控制发送、停止（`stop`）与行内重试（`retry`）。
+- `src/ai.js`：底层流式客户端，通过 `fetch` 发起 POST `/api/chat/stream` 并解析 Server-Sent Events (SSE)。
+- `src/session_api.js`：与后端 SQLite 同步会话列表及历史分页（`/api/chat/sessions`、`/api/chat/history`）。
+- `src/session_data.js`：会话数据清洗与白名单校验，包括 `pickSettings`、`validAdvSetting`、`normalizeLines` 与快照序列化。
+- `src/auth.js`：控制台访问令牌鉴权拦截器（SessionStorage Key: `galgame_console_token`，自动注入 Bearer Token，处理 401 弹窗）。
+
+### 2. 语音与音频
+- `src/voice.js`：浏览器原生语音能力。发送端使用 `SpeechRecognition`（中文转写，要求 Chrome / Edge）与 `MediaRecorder`（录音暂存）；提供 `BoundedAudioStore`（LRU 30 项硬上限，自动调用 `URL.revokeObjectURL` 释放 Blob 内存）。
+- `src/audio_player.js`：`StreamAudioController`，基于 Web Audio API 的流式无缝音频播放器。支持 12ms 瞬态防爆微渐变（Micro-fade）、40ms 平滑线性渐出打断（Smooth Linear Fade-out Interrupt）、单句排期播放（`playLine` / `stopLine`）、自适应 Jitter 缓冲以及通过 `getRms()` 计算均方根振幅驱动立绘口型同步。
+- `src/cache.js`：音频两级缓存（Web Cache Storage API + 内存 LRU），支持音频 Blob 持久化与秒开重播。
+
+### 3. ADV 舞台与组件 (`src/adv/`)
+- `adv_app.js`：ADV 舞台统一装配与挂载入口（`mountAdv`），管理舞台生命周期、尺寸更新、背景同步、历史会话抽屉及各子组件协同。
+- `stage.js`：1920×1080 逻辑舞台画布容器（`createStage`）。通过 CSS 变量 `--u` 统一缩放（横屏 `--u: min(100vw / 1920, 100dvh / 1080)`；手机竖屏为 1080×1920 并切换 `.is-portrait`）。管理 0 至 60 级分层（Shell → Background → Sprite → Fx → Textbox → QuickMenu → Overlay）。
+- `textbox.js`：对话文本框（`createTextbox`）。包括半透明渐变底板（`.adv-band`）、立绘面部视口（`.adv-face-slot`）、角色姓名牌（`.adv-name-plate`）、中日双语字幕列、思考动画指示器以及用户文本输入框（`.adv-player-input-wrap`）。
+- `sprite.js`：立绘渲染核心（`createSpriteView`）。支持全图立绘与 v3 分层立绘（`layers.json`），实现 A/B 缓冲区平滑过渡、眨眼机制（`BLINK`）、基于音频 RMS 的口型同步（`LIP_SYNC`）以及 96MB 内存预加载控制。
+- `transitions.js`：基于 Web Animations API 的立绘平滑切换动效。
+- `line_player.js`：无 DOM 台词播放状态机（`createLinePlayer`）。精确调度单句台词展现、打字机逐字间隔、语音同步、AUTO 自动推进与 SKIP 快速跳过。
+- `quick_menu.js`：舞台底部快捷菜单（`createQuickMenu`），集成 AUTO、SKIP、LOG、VOICE 重播、HIDE 隐藏文本框、CONFIG 快速设置、背景切换及模型状态指示灯。
+- `shortcuts.js`：全局键盘与手势控制器（`createShortcuts`）。处理 Enter / Space 推进、右键隐藏文本框、滚轮向上呼出 LOG、Esc 关闭面板/停止生成、长按 Ctrl 临时快进。
+- `backlog.js`：LOG 历史记录抽屉（`createBacklog`），展示完整对话历史，支持单句语音与用户录音重播、历史记录向前分页加载。
+- `config_panel.js`：全屏半透明 ADV 交互设置面板（`createConfigPanel`），支持文字速度试打样、窗口透明度、语言切换等即时预览与还原。
+- `background.js` & `bg_panel.js`：舞台背景及时间差分选择器（白天 / 傍晚 / 夜晚 / 自动跟随时间），支持作品分包。
+- `actions.js` & `title_hook.js` & `title.js`：启动标题画面，提供开始新对话、继续上次对话、读取存档（会话）、角色配置及设置入口。
+- `paginate.js` & `graphemes.js`：基于字符簇（Grapheme Clusters）的文本分页折行算法，避免行末禁则与字符撕裂。
+- `sprite_fx.js`：角色头顶情绪特效 SVG 标记（出汗、生气、爱心、闪光、问号、叹号）。
+- `settings.js`：ADV 设置项校验与字段规范。
+
+### 4. 控制器与弹窗 (`src/controllers/`)
+- `global_settings.js`：全局设置弹窗（`#globalModal`，包含运行状态、语音服务、对话模型、Telegram、角色与记忆、备份与更新 6 个 Tab）。
+- `voice_settings.js`：会话设置弹窗（`#sessionModal`，配置当前会话的角色人设、音色绑定、LLM 采样参数及 TTS 推理参数）。
+- `audio_player_ui.js`：输入端麦克风录音控制与播放器 UI 状态协调。
+- `session_backup.js`：完整聊天备份与浏览器本地快照的导出与导入。
+- `update_manager.js`：版本检查与在线更新管理。
+
+---
+
+## SSE 事件流规范 (`POST /api/chat/stream`)
+
+`src/ai.js` 消费服务端返回的标准 SSE 流，涉及以下命名事件：
+
+| 事件名 | 载荷内容 | 说明 |
+| :--- | :--- | :--- |
+| `text` | `{ "delta_chinese": "..." }` | 中文增量文本片断，用于流式累加展示。 |
+| `line` | `{ "index": 0, "zh": "...", "ja": "...", "emotion": "...", "act": {} }` | 单句台词解析就绪事件，包含对齐的文本与演出标记。 |
+| `line_audio` | `{ "line": 0, "status": "ready"\|"failed", "chunks": [...] }` | 某句台词对应的 TTS 音频最终状态与切片列表。 |
+| `audio_chunk` | `{ "line": 0, "index": 0, "audio_url": "...", "sentence": "...", "emotion": "..." }` | GPT-SoVITS 合成的单个音频片段到达，用于预热和播放队列。 |
+| `audio_chunk_error` | `{ "error": "...", "sentence": "..." }` | 单句音频合成异常提示，文字流继续推进，不打断整体对话。 |
+| `error` | `{ "error": "...", "error_code": "..." }` | 生成过程中断的错误事件，附带结构化错误码与中文指引。 |
+| `done` | `{ "chinese": "...", "japanese": "...", "chunks": [...], "lines": [...] }` | 本轮对话生成结束，携带最终完整文本、音频切片与行元数据。 |
+
+---
+
+## 设置面板位置
+
+1. **ADV 交互设置（CONFIG 面板）**：
+   - 入口：快捷菜单中的 **CONFIG** 按钮或按键 `F8`。
+   - 包含：玩家名字、主副字幕语言、窗口不透明度、打字速度、AUTO 参数、服装、眨眼及口型动画开关；底部提供直达“对话模型设置”与“会话与角色设置”的导航按钮。
+2. **会话与角色设置（Session Settings，`#sessionModal`）**：
+   - 入口：左上角工具栏“会话”抽屉内部、CONFIG 面板直达按钮。
+   - 包含：角色人设编辑（保存后写回角色包）、角色音色选择与扫描、新建自定义音色、大模型采样参数（温度、Top P、惩罚项、最大长度、上下文条数）、回复格式（默认 lines 逐句）以及会话级 TTS 推理参数。
+3. **全局系统设置（Global Settings，`#globalModal`）**：
+   - 入口：快捷菜单中的模型状态标签、侧边栏底部“全局设置”按钮、CONFIG 面板直达按钮。
+   - 包含 6 个标签页：
+     - **运行状态**（`gp-dashboard`）：GPT-SoVITS 连通性、计算精度切换与重启、硬件资源与缓存清空。
+     - **语音服务**（`gp-inference`）：引擎地址、本机 SoVITS 目录选择、全局计算精度与缓存保留时长。
+     - **对话模型**（`gp-models`）：全厂商模型卡片（API Key、Base URL、模型选择、思考强度、连通性测试与一键启用、允许私网 LLM 端点开关）。
+     - **Telegram**（`gp-telegram`）：机器人 Token、管理用户 ID、代理配置与连通性测试。
+     - **角色与记忆**（`gp-memory`）：长期记忆说明。
+     - **备份与更新**（`gp-update`）：完整聊天备份导出/导入与版本更新拉取。
+
+---
+
+## 构建与部署
+
+- **日常开发**：
+  ```bash
+  cd frontend
+  npm run dev
+  ```
+  通过 Vite 开发服务器热更新，代理请求至 `http://127.0.0.1:8080`。
+
+- **构建与产物部署**：
+  ```bash
+  cd frontend
+  npm run deploy
+  ```
+  `npm run deploy` 顺序执行 `vite build` 与 `node deploy.mjs`：
+  1. Vite 将前端产物打包至 `frontend/dist/`。
+  2. `deploy.mjs` 自动清空 `galgame2voice/static/assets/` 下带有历史哈希的旧打包文件，保留保护目录（`characters/`、`js/` 兼容脚本）和隐藏文件，并将 `dist/` 完整同步到 `galgame2voice/static/`。
+  3. **严禁手动直接复制 `dist/*`**，否则会导致历史哈希文件堆积产生漂移。
+
+---
+
+## 避坑经验与已知约束
+
+- **Windows MIME 类型**：Windows 注册表常把 `.js` 关联为 `text/plain`，导致浏览器因 Strict MIME Type 拦截拒绝加载 ES 模块。后端已在 `galgame2voice/main.py` 启动阶段通过 `mimetypes.add_type("text/javascript", ".js")` 和 `mimetypes.add_type("text/javascript", ".mjs")` 强制显式修正，**切勿删除该逻辑**。
+- **语音识别时序**：浏览器的 `SpeechRecognition` 通常在执行 `stop()` 之后才会触发 `onresult` 递交最终的识别文本，不要在 `stopListening()` 中强行重置该轮代际编号，否则会丢失识别内容。
+- **AudioContext 唤醒机制**：未发生用户手势前，浏览器会强制挂起 `AudioContext`。调用 `AudioContext.resume()` 时必须附带超时保护（如 `withAudioDeadline`），切勿无保护 `await` 导致线程/流程假死。
+- **静态资源白名单保护**：`galgame2voice/static/js/`（如 `audio_player.js`, `chat_client.js`）被保留用于旧接口兼容，位于 `deploy.mjs` 的 `PRESERVED_DIRS` 白名单中，构建部署时不会被清理。
