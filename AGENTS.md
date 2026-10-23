@@ -74,7 +74,7 @@ cd frontend && npm run deploy
 
 9. **浏览器环境时序注意事项**：
    - `SpeechRecognition`（浏览器语音识别）通常在调用 `stop()` 之后才触发 `onresult` 送达最终识别文本。
-   - `AudioContext.resume()` 在缺乏用户直接手势（User Gesture）交互时可能会处于 `suspended` 挂起状态，禁止无超时保护直接 `await` 它。
+   - 没有用户手势（User Gesture）时，`AudioContext` 保持 `suspended`，`resume()` 返回的 Promise 可能一直不完成；禁止不设时限地直接 `await` 它。
 
 10. **代码提交规范**：
     - 提交信息必须使用英文 Conventional Commits 格式（例如：`fix(adv): ...`、`feat(api): ...`、`docs: ...`）。
