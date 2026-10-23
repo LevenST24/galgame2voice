@@ -100,12 +100,8 @@ export function mountAdv(dom, deps) {
       textbox.setVoice({ active: true });
       const lipSync = sprite.startLipSync({ audioPlayer: audio, characterVoice: true });
       let result;
-      try {
-        if (audio?.ctx?.state === 'suspended') {
-          await audio?.ensureContext?.()?.resume?.()?.catch?.(() => {});
-        }
-        result = await audio.playLine(index, chunks, { msgId: key });
-      }
+      // playLine resumes a suspended context itself and gives up after a bounded wait.
+      try { result = await audio.playLine(index, chunks, { msgId: key }); }
       catch { result = 'failed'; }
       if (!destroyed && key === turnId && sequence === voiceSequence) textbox.setVoice({ active: false });
       // A later line may own the mouth by now; this line's token cannot stop it.

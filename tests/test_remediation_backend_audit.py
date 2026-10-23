@@ -376,6 +376,8 @@ class TestUrlGuardAndVoiceProfileHardening:
             "http://100.127.255.254:8000/v1",
             "http://[::ffff:127.0.0.1]:8000/v1",
             "http://[::ffff:100.64.0.1]:8000/v1",
+            "http://[64:ff9b::7f00:1]:8000/v1",
+            "http://[64:ff9b::a00:1]:8000/v1",
             "http://[fe80::1%25eth0]:8000/v1",
         ):
             ok, reason = validate_llm_base_url(malformed, allow_private=False)

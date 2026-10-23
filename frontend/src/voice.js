@@ -23,7 +23,7 @@ export function isListening() {
 }
 
 /**
- * 开始录音 + 并行转写（转写不可用时仅录音）
+ * 开始转写 + 并行录音（转写必需；录音不可用时仅转写）
  * @returns {{ok: boolean, reason?: string}}
  */
 export function startListening({ onInterim, onText, onRecorded, onError }) {
@@ -31,7 +31,8 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
   const hasRecorder = recorderSupported();
   const hasRecognition = voiceSupported();
 
-  if (!hasRecorder && !hasRecognition) {
+  // 发出去的是转写文字，录音只是附件；没有转写时录了也发不出去。
+  if (!hasRecognition) {
     return {
       ok: false,
       reason: '当前浏览器不支持语音输入，建议使用 Chrome / Edge',
@@ -138,7 +139,10 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
     }
   }
 
-  if (!hasRecorder && !recogOk) {
+  if (!recogOk) {
+    // 换代并清掉聆听状态，让还在等麦克风权限的录音拿到流后立即关掉。
+    ++listenGen;
+    listening = false;
     return {
       ok: false,
       reason: '当前浏览器不支持语音输入，建议使用 Chrome / Edge',
@@ -150,7 +154,8 @@ export function startListening({ onInterim, onText, onRecorded, onError }) {
 
 /** 停止聆听；转写结果与录音 blob 通过 startListening 的回调返回 */
 export function stopListening() {
-  ++listenGen;
+  // 这里不换代：浏览器在 stop() 之后才送来最终识别结果，换代会把它丢掉。
+  // 下一次 startListening 会换代，挡住上一轮迟到的回调。
   listening = false;
   if (recog) {
     try {

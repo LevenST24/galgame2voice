@@ -588,13 +588,14 @@ test('voice.js: recorder.onstop does not throw TypeError when cancelMic() execut
 // 7. Voice Input Capability Check for Firefox / Non-SpeechRecognition in voice.js
 // ============================================================================
 
-test('voice.js: startListening succeeds in Firefox / environments with MediaRecorder but no SpeechRecognition', async () => {
+test('voice.js: startListening reports unsupported with MediaRecorder but no SpeechRecognition (nothing could be sent)', async () => {
   const originalWin = globalThis.window;
   const originalNav = globalThis.navigator;
   const originalMediaRecorder = globalThis.MediaRecorder;
 
   try {
     let recorderStarted = false;
+    let gumCalls = 0;
     class FakeMediaRecorder {
       constructor(stream) {
         this.stream = stream;
@@ -618,20 +619,24 @@ test('voice.js: startListening succeeds in Firefox / environments with MediaReco
     Object.defineProperty(globalThis, 'navigator', {
       value: {
         mediaDevices: {
-          getUserMedia: async () => ({
-            getTracks: () => [{ stop() {} }],
-          }),
+          getUserMedia: async () => {
+            gumCalls++;
+            return { getTracks: () => [{ stop() {} }] };
+          },
         },
       },
       configurable: true,
       writable: true,
     });
 
+    // Only the transcript is sent; a recording alone would always end in "no speech recognized".
     const res = startListening({});
-    assert.equal(res.ok, true, 'startListening must return { ok: true } when MediaRecorder is supported');
+    assert.equal(res.ok, false, 'startListening must report unsupported without SpeechRecognition');
+    assert.ok(res.reason.includes('不支持语音输入'));
 
     await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.equal(recorderStarted, true, 'MediaRecorder must be started after getUserMedia resolves');
+    assert.equal(gumCalls, 0, 'the microphone must not be requested');
+    assert.equal(recorderStarted, false, 'no MediaRecorder may start');
   } finally {
     stopListening();
     globalThis.window = originalWin;
@@ -692,9 +697,10 @@ test('voice.js: rapid startListening -> stopListening -> startListening stops st
       }
     }
     FakeMediaRecorder.isTypeSupported = () => true;
+    class FakeRecognition { start() {} stop() {} }
 
     globalThis.MediaRecorder = FakeMediaRecorder;
-    globalThis.window = { MediaRecorder: FakeMediaRecorder };
+    globalThis.window = { MediaRecorder: FakeMediaRecorder, SpeechRecognition: FakeRecognition };
 
     Object.defineProperty(globalThis, 'navigator', {
       value: {
@@ -740,6 +746,42 @@ test('voice.js: rapid startListening -> stopListening -> startListening stops st
     stopListening();
     globalThis.window = originalWin;
     globalThis.MediaRecorder = originalMediaRecorder;
+    Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true, writable: true });
+  }
+});
+
+test('voice.js: the final transcript the browser delivers after stopListening still reaches onText', () => {
+  const originalWin = globalThis.window;
+  const originalNav = globalThis.navigator;
+
+  try {
+    let recognizer = null;
+    class FakeRecognition {
+      constructor() { recognizer = this; }
+      start() {}
+      stop() {}
+    }
+    globalThis.window = { SpeechRecognition: FakeRecognition };
+    Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true, writable: true });
+
+    const texts = [];
+    assert.equal(startListening({ onText: text => texts.push(text) }).ok, true);
+    // The user taps the mic to finish; Chrome then returns the result for the audio so far.
+    stopListening();
+    const finalResult = Object.assign([{ transcript: '你好' }], { isFinal: true });
+    recognizer.onresult({ resultIndex: 0, results: [finalResult] });
+    assert.deepEqual(texts, ['你好']);
+
+    // A new session fences off late results from the previous one.
+    const stale = recognizer;
+    const newTexts = [];
+    startListening({ onText: text => newTexts.push(text) });
+    stale.onresult({ resultIndex: 0, results: [finalResult] });
+    assert.deepEqual(texts, ['你好']);
+    assert.deepEqual(newTexts, []);
+  } finally {
+    stopListening();
+    globalThis.window = originalWin;
     Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true, writable: true });
   }
 });

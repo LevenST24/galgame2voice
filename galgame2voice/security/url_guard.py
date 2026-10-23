@@ -8,9 +8,10 @@ legitimate private endpoint.
 Policy:
 - Scheme must be http/https; known official provider hosts must use https.
 - When `allow_private` is disabled (default), the resolved IPs may not be
-  loopback/private/link-local/reserved/multicast (blocks 127.0.0.0/8,
-  10/8, 172.16/12, 192.168/16, 169.254/16 including cloud metadata, ::1,
-  fc00::/7, etc.).
+  loopback/private/link-local/reserved/multicast or otherwise non-global
+  (blocks 127.0.0.0/8, 10/8, 172.16/12, 192.168/16, 169.254/16 including
+  cloud metadata, 100.64/10 CGNAT such as Tailscale, ::1, fc00::/7, the
+  NAT64 prefix 64:ff9b::/96 inside the reserved ::/8, etc.).
 - When `allow_private` is enabled the address is trusted as-is (operator
   explicitly runs a local Ollama/vLLM or a LAN relay).
 """
