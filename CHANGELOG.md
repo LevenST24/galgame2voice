@@ -69,6 +69,11 @@ All notable changes to galgame2voice are documented here. The format follows
   needs 「允许私网 LLM 端点」 turned on.
 
 ### Fixed
+- After a reply failed with a model error, such as a refused connection or a
+  blocked private endpoint, 「去设置」 in the text box opened the session settings,
+  which have no model fields. The text box and LOG now choose like the error
+  toasts: model errors open 「全局设置 → 对话模型」 and a rate limit opens the
+  session settings.
 - A new session's greeting still described the old chat layout (a speaker in the
   top bar, a gear at the bottom of the sidebar) and showed raw `**` marks, since
   LOG and the title screen's 读取 slots print plain text. It now points to the

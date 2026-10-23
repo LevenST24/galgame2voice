@@ -13,6 +13,7 @@ import { normalizePortrait, resolveSpriteState } from '../sprite_state.js';
 import { DEFAULT_SESSION_SETTINGS } from '../store.js';
 import { pickSettings } from '../session_data.js';
 import { requestJson } from '../request.js';
+import { needsModelSettings } from '../ui.js';
 export { advActions } from './actions.js';
 
 /** Mount one disposable renderer. Controller remains the sole history writer.
@@ -112,6 +113,9 @@ export function mountAdv(dom, deps) {
     },
     stop(options) { ++voiceSequence; audio.stopLine(destroyed ? { fadeMs: 0 } : options); textbox.setVoice({ active: false }); sprite.stopLipSync(); },
   };
+  // 去设置 on a failed reply, in the textbox and in LOG: the same choice as the error toasts.
+  const openErrorSettings = error => (needsModelSettings(error?.message, error?.code)
+    ? (deps.onModelSettings || deps.onSettings) : deps.onSettings)?.();
   const render = {
     ...textbox,
     activate(line, options) {
@@ -126,7 +130,7 @@ export function mountAdv(dom, deps) {
       sprite.suspend();
       textbox.showError({ message: String(error?.message || error || '回复失败'), actions: [
         ...(controller.canRetry(failedUser) ? [{ label: '重新发送', run: () => controller.retry(failedUser) }] : []),
-        { label: '去设置', run: () => (error?.code === 'empty_reply' ? (deps.onModelSettings || deps.onSettings) : deps.onSettings)?.() },
+        { label: '去设置', run: () => openErrorSettings(error) },
       ] });
     },
   };
@@ -419,7 +423,7 @@ export function mountAdv(dom, deps) {
       stopOtherVoice: () => deps.stopOtherVoice?.(),
       playLegacyVoice: (msg, ctl) => deps.playLegacyVoice?.(msg, ctl),
       wallNow: () => deps.wallNow?.() ?? Date.now(),
-      onSettings: () => (deps.onModelSettings || deps.onSettings)?.(),
+      onSettings: openErrorSettings,
       onClose: closeLog,
     });
     stage.textbox.inert = true; stage.quickmenu.inert = true; tools.inert = true;

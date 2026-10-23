@@ -308,6 +308,18 @@ test('LOG: entries for lines, legacy and user messages, and subtitle settings', 
   h.app.action('close_overlay');
 });
 
+for (const [code, opened] of [['PROVIDER_ERROR', 'models'], ['OPENAI_RATE_LIMIT', 'settings']]) {
+  test(`LOG: 去设置 for a ${code} failure opens the ${opened === 'models' ? 'model' : 'session'} settings`, (t) => {
+    const h = setupApp(t);
+    h.active().messages = [
+      { id: 'm_f', role: 'user', content: '失败的用户消息', failed: { error: '提供商调用异常', code }, ts: h.getWallTime() },
+    ];
+    h.app.action('log');
+    h.app.stage.stage.querySelector('.adv-log-overlay').querySelectorAll('.adv-error-btn').at(-1).click();
+    assert.deepEqual([h.calls.models, h.calls.settings], opened === 'models' ? [1, 0] : [0, 1]);
+  });
+}
+
 test('LOG: subtitle none setting hides subtitle line', (t) => {
   const h = setupApp(t, { settings: { advSubtitleLanguage: 'none' } });
   const session = h.active();

@@ -413,6 +413,15 @@ test('partial failure exposes its reason and settings without an unsupported ret
   assert.equal(h.app.stage.stage.querySelector('.adv-error-message').textContent, '测试故障');
 });
 
+for (const [code, opened] of [['PROVIDER_ERROR', 'models'], ['OPENAI_RATE_LIMIT', 'settings']]) {
+  test(`去设置 after a ${code} error opens the ${opened === 'models' ? 'model' : 'session'} settings`, t => {
+    const h = setup(t); h.start(); h.controller.busy = false;
+    h.emit('error', { originId: 's_0', error: '提供商调用异常', kind: code });
+    h.app.stage.stage.querySelector('.adv-error-actions').children.at(-1).click();
+    assert.deepEqual([h.calls.models, h.calls.settings], opened === 'models' ? [1, 0] : [0, 1]);
+  });
+}
+
 test('error action listeners are disposed on replacement and clearing', t => {
   const h = setup(t); let calls = 0;
   h.app.textbox.showError({ actions: [{ label: 'old', run: () => calls++ }] });
