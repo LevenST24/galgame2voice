@@ -12,7 +12,6 @@ Verifies:
 3. R2 Frontend Audio Player Static Integrity:
    - frontend/src/audio_player.js Web Audio API AudioContext, sample-accurate scheduling,
      12ms micro-fade envelope, 40ms linear fade-out interrupt.
-   - galgame2voice/static/js/audio_player.js static preservation.
 4. R2 Interrupt & Cancellation Timing:
    - stream_chat cancel event responsiveness and queue/lock release latency < 100ms.
 5. R3 50+ Turn Conversation Memory Stability & VRAM Watermark Guard:
@@ -402,16 +401,6 @@ class TestR2FrontendAudioPlayerStaticIntegrity:
         assert "this.queue = []" in code
         assert "source.stop()" in code
 
-    def test_r2_static_audio_player_untouched_and_intact(self):
-        """Verifies galgame2voice/static/js/audio_player.js remains intact for backward compatibility."""
-        static_path = Path("galgame2voice/static/js/audio_player.js")
-        assert static_path.exists(), "galgame2voice/static/js/audio_player.js must remain intact"
-        code = static_path.read_text(encoding="utf-8")
-
-        assert "class StreamingAudioPlayer" in code
-        assert "crossFadeDuration = options.crossFadeDuration || 0.025" in code
-        assert "initContext()" in code
-        assert "enqueue(" in code
 
 
 # ============================================================================

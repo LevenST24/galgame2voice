@@ -167,6 +167,9 @@ All notable changes to galgame2voice are documented here. The format follows
   reply.
 
 ### Removed
+- Legacy `galgame2voice/static/js/audio_player.js` and `chat_client.js` scripts
+  left over from the pre-ADV chat UI, along with the `js` preservation rule in
+  `frontend/deploy.mjs` and tests targeting those unused files.
 - The speech recognition engine selector (本地 SenseVoice / Whisper) in global
   settings. Those engines were never connected; voice input always used the
   browser's speech recognition.

@@ -37,21 +37,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 class TestAnalyserNodeFrequencyScaling:
     """Stress-test AnalyserNode frequency scaling calculations and bounds."""
 
-    def test_audio_player_source_file_structure(self):
-        """Verify audio_player.js contains genuine Web Audio API AnalyserNode integration."""
-        js_path = PROJECT_ROOT / "galgame2voice" / "static" / "js" / "audio_player.js"
-        assert js_path.exists(), "audio_player.js does not exist"
-        content = js_path.read_text(encoding="utf-8")
-
-        # Verify AnalyserNode creation and parameters
-        assert "createAnalyser" in content
-        assert "fftSize = 64" in content or "fftSize = 128" in content or "fftSize" in content
-        assert "smoothingTimeConstant" in content
-        assert "getByteFrequencyData" in content
-        assert "attachEqualizer" in content
-        assert "requestAnimationFrame" in content
-        assert "interrupt" in content
-
     def test_equalizer_bar_height_mathematical_bounds(self):
         """
         Empirically test the formula:
@@ -422,17 +407,3 @@ class TestFrontendDOMStructure:
         # Check modern UI container / layout classes
         assert ".app" in content or ".chat" in content or ".modal" in content
 
-    def test_chat_client_sse_parser_state_machine_robustness(self):
-        """
-        Verify chat_client.js properly handles SSE event streams without fragile assumptions.
-        """
-        js_path = PROJECT_ROOT / "galgame2voice" / "static" / "js" / "chat_client.js"
-        assert js_path.exists()
-        content = js_path.read_text(encoding="utf-8")
-
-        assert "event: text" in content or "currentEventType === 'text'" in content
-        assert "audio_chunk" in content
-        assert "event: done" in content or "currentEventType === 'done'" in content
-        assert "event: error" in content or "currentEventType === 'error'" in content
-        assert "skipTypewriter" in content
-        assert "StreamingAudioPlayer" in content

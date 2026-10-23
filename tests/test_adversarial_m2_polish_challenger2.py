@@ -56,22 +56,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 class TestFrontendAudioStreamingResilience:
     """Stress-tests player logic, volume bounds, mute toggles, and interrupt invalidation."""
 
-    def test_audio_player_js_source_completeness(self):
-        """Verifies audio_player.js implements volume control, mute, cross-fade, and interrupt."""
-        js_path = PROJECT_ROOT / "galgame2voice" / "static" / "js" / "audio_player.js"
-        assert js_path.exists(), "audio_player.js missing"
-        code = js_path.read_text(encoding="utf-8")
-
-        assert "class StreamingAudioPlayer" in code
-        assert "setVolume" in code
-        assert "setMuted" in code
-        assert "interrupt" in code
-        assert "enqueue" in code
-        assert "crossFadeDuration" in code
-        assert "currentSessionId" in code
-        assert "decodeAudioData" in code
-        assert "createAnalyser" in code
-
     def test_volume_clamping_and_muting_logic(self):
         """Emulates setVolume and setMuted bounds checking."""
         class MockPlayer:
@@ -285,18 +269,6 @@ class TestReplayAndDownloadHelper:
         assert 'id="sCustomVoiceBox"' in content, "Missing #sCustomVoiceBox in index.html"
         assert "角色音色" in content
 
-    def test_chat_client_js_contains_download_audio_helper_and_bindings(self):
-        """Verify chat_client.js defines downloadAudioFile and attaches handlers."""
-        js_path = PROJECT_ROOT / "galgame2voice" / "static" / "js" / "chat_client.js"
-        content = js_path.read_text(encoding="utf-8")
-
-        assert "function downloadAudioFile(" in content
-        assert "btn-vn-download" in content
-        assert "btn-download-bubble" in content
-        assert "btn-play-bubble" in content
-        assert "lastVoiceData.audio_url" in content
-        assert "audioPlayer.interrupt()" in content
-
     def test_download_audio_helper_url_resolution(self):
         """
         Emulate downloadAudioFile target URL resolution for:
@@ -340,47 +312,6 @@ class TestReplayAndDownloadHelper:
         assert url is None
         assert "暂无" in err
 
-    def test_multi_sentence_replay_queue_dispatch(self):
-        """
-        Verifies that clicking replay on a multi-sentence response interrupts active
-        audio and enqueues all chunks sequentially.
-        """
-        class MockPlayerRecorder:
-            def __init__(self):
-                self.enqueued = []
-                self.interrupted = False
-
-            def interrupt(self):
-                self.interrupted = True
-                self.enqueued.clear()
-
-            def enqueue(self, chunk):
-                self.enqueued.append(chunk)
-
-        player = MockPlayerRecorder()
-        voice_data = {
-            "audio_url": "/audio/full_merged.wav",
-            "sentence": "こんにちは。いい天気ですね。",
-            "chunks": [
-                {"index": 0, "audio_url": "/audio/chunk_0.wav", "sentence": "こんにちは。"},
-                {"index": 1, "audio_url": "/audio/chunk_1.wav", "sentence": "いい天気ですね。"}
-            ]
-        }
-
-        # Simulate replay click handler logic from chat_client.js
-        player.interrupt()
-        if voice_data.get("chunks") and len(voice_data["chunks"]) > 0:
-            for i, chunk in enumerate(voice_data["chunks"]):
-                player.enqueue({
-                    "index": chunk.get("index", i),
-                    "audio_url": chunk["audio_url"],
-                    "sentence": chunk.get("sentence", "")
-                })
-
-        assert player.interrupted is True
-        assert len(player.enqueued) == 2
-        assert player.enqueued[0]["audio_url"] == "/audio/chunk_0.wav"
-        assert player.enqueued[1]["audio_url"] == "/audio/chunk_1.wav"
 
 
 # ============================================================================

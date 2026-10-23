@@ -288,11 +288,3 @@ def test_character_packager_pack_and_install():
         assert installed_manifest.is_file()
 
 
-def test_web_audio_crossfade_and_interrupt_constants():
-    # Verify static audio_player.js defines 12ms micro-fade and 40ms interrupt ramp
-    js_path = Path("galgame2voice/static/js/audio_player.js")
-    assert js_path.is_file()
-    content = js_path.read_text(encoding="utf-8")
-    assert "0.012" in content  # 12ms micro-fade default
-    assert "0.04" in content   # 40ms linear interruption fade-out
-
