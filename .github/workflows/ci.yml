@@ -91,14 +91,18 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
-        # ffmpeg is a real runtime dependency (OGG/voice-note conversion), not an
-        # optional extra. Declaring it here keeps the contract explicit instead
-        # of depending on whatever the runner image happens to ship.
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
       - name: Install dependencies
         run: uv sync --frozen --extra dev
+
+      # ffmpeg is a real runtime dependency (OGG/voice-note conversion), so the job
+      # names it instead of depending on whatever the runner image ships. It is the
+      # same locked binary as the Windows legs: `apt-get install ffmpeg` pulled 94 MB
+      # from the Ubuntu mirror and sometimes took 35-45 minutes.
+      - name: Use the locked FFmpeg for audio tests
+        run: |
+          ffmpeg="$(uv run --frozen --extra dev python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')"
+          "$ffmpeg" -version
+          echo "FFMPEG_PATH=$ffmpeg" >> "$GITHUB_ENV"
 
       - name: Run test suite
         run: uv run pytest -q
