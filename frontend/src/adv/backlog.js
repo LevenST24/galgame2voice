@@ -367,7 +367,9 @@ export function createBacklog(container, deps = {}) {
       if (deps.controller?.canRetry?.(msg)) addAction('重新发送', () => {
         deps.onClose?.(); deps.controller.retry(msg);
       });
-      if (deps.onSettings) addAction('去设置', () => { deps.onClose?.(); deps.onSettings(); });
+      if (deps.onSettings) addAction('去设置', () => {
+        deps.onClose?.(); deps.onSettings({ message: failReason, code: msg.failed.code });
+      });
     }
 
     entryEl.appendChild(header);
