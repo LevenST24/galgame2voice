@@ -331,7 +331,15 @@ export class StreamAudioController {
     const ctx = this.ensureContext();
     if (!ctx) return 'failed';
     if (ctx.state === 'suspended' && !this.isPaused) {
-      ctx.resume().catch(() => {});
+      try {
+        await Promise.race([
+          Promise.resolve(ctx.resume()),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('AudioContext resume timeout')), 1500)),
+        ]);
+      } catch (_) {}
+      if (ctx.state === 'suspended') {
+        return 'failed';
+      }
     }
 
     const abortController = new AbortController();
@@ -419,7 +427,7 @@ export class StreamAudioController {
       if (lineState.settled) return;
 
       const now = ctx.currentTime;
-      if (self.nextStartTime < now) {
+      if (self.nextStartTime <= now) {
         self.nextStartTime = now + self.currentBufferLeadSec;
       }
 
@@ -549,7 +557,7 @@ export class StreamAudioController {
         }
       } catch (_) {}
     }
-    if (this.nextStartTime < now) {
+    if (this.nextStartTime <= now) {
       if (this.nextStartTime > 0 && this.isPlaying && this.activeSources.length === 0) {
         this.underrunCount++;
         // 欠载自适应：缓冲裕度递增 20ms（上限 120ms），消除后续切片抖动

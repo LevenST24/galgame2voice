@@ -65,7 +65,7 @@ export function mountAdv(dom, deps) {
   });
   settings = pickSettings(deps.getSession()?.settings, DEFAULT_SESSION_SETTINGS);
   const textbox = createTextbox(stage.textbox, {
-    clock, matchMedia: () => ({ matches: false }), getSettings: playerSettings,
+    clock, matchMedia, getSettings: playerSettings,
     isOverlayOpen: () => Boolean(drawer || backlog || externalOverlay || configPanel?.isOpen || bgPanel?.isOpen),
     onAdvance: () => player.advance(),
     onSend: text => !controller.busy && controller.send(text),
@@ -102,6 +102,7 @@ export function mountAdv(dom, deps) {
       textbox.setVoice({ active: true });
       const lipSync = sprite.startLipSync({ audioPlayer: audio, characterVoice: true });
       let result;
+      // playLine resumes a suspended context itself and gives up after a bounded wait.
       try { result = await audio.playLine(index, chunks, { msgId: key }); }
       catch { result = 'failed'; }
       if (!destroyed && key === turnId && sequence === voiceSequence) textbox.setVoice({ active: false });
@@ -110,6 +111,9 @@ export function mountAdv(dom, deps) {
       return result;
     },
     stop(options) { ++voiceSequence; audio.stopLine(destroyed ? { fadeMs: 0 } : options); textbox.setVoice({ active: false }); sprite.stopLipSync(); },
+    get ctx() { return audio?.ctx; },
+    get audioContext() { return audio?.ctx; },
+    get isSuspended() { return audio?.ctx?.state === 'suspended'; },
   };
   const render = {
     ...textbox,
@@ -509,6 +513,14 @@ export function mountAdv(dom, deps) {
       composing: textbox.composing }),
     onAction: action,
   });
+  const unlockAudio = () => {
+    try {
+      const ctx = audio?.ensureContext?.();
+      ctx?.resume?.()?.catch?.(() => {});
+    } catch (_) {}
+  };
+  listen(stage.stage, 'pointerdown', unlockAudio);
+  listen(stage.stage, 'keydown', unlockAudio);
   // Trap focus in the temporary drawer, including its existing playback controls.
   listen(stage.stage, 'keydown', event => {
     if (!drawer || event.key !== 'Tab') return;
@@ -663,6 +675,13 @@ export function mountAdv(dom, deps) {
     textbox.setDraft(''); textbox.clearError();
     textbox.setSpeaker({ name: deps.getCharacter?.()?.name || '角色', mode: 'character' });
     player.startTurn(turnId); syncControls();
+    // Sending hides the input or removes the retry button that had focus. Focus
+    // then falls to the page body, where Space, Enter and Esc never reach the
+    // stage's shortcuts, so hand it to the stage unless an overlay holds it.
+    const focused = doc.activeElement;
+    if (!focused || focused === doc.body || !doc.body.contains(focused) || stage.textbox.contains(focused)) {
+      stage.stage.focus?.({ preventScroll: true });
+    }
     if (drawer || backlog) player.suspend('overlay');
     if (externalOverlay || configPanel?.isOpen) player.suspend('dialog');
   }));
@@ -673,6 +692,7 @@ export function mountAdv(dom, deps) {
         const index = liveMessage.lines.findIndex(l => l.index === event.line.index);
         if (index < 0) liveMessage.lines.push(event.line);
         else liveMessage.lines[index] = event.line;
+        liveMessage.lines.sort((a, b) => a.index - b.index);
       }
       player.pushLine(turnId, event.line);
       preloadNextLine();

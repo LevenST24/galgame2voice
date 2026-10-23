@@ -8,7 +8,7 @@ import aiosqlite
 from pydantic import BaseModel, Field
 
 from galgame2voice.adapters.base import ChatMessage
-from galgame2voice.database.session import get_database_path, get_db
+from galgame2voice.database.session import get_database_path, get_db, immediate_transaction
 from galgame2voice.database.models import decode_lines
 from galgame2voice.services.metrics_collector import MetricsCollector
 from galgame2voice.services.chat_pipelines.line_builder import build_lines
@@ -114,51 +114,51 @@ class SessionManager:
         if role == "assistant" and lines is None:
             lines = build_lines(chinese, japanese, emotion, with_audio=True)
         async with get_db(self.db_path) as db:
-            # Check table existence: session_messages vs messages
-            cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
-            has_session_messages = await cur.fetchone()
+            async with immediate_transaction(db):
+                # Check table existence: session_messages vs messages
+                cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
+                has_session_messages = await cur.fetchone()
 
-            if has_session_messages:
-                if self._session_messages_has_lines is None:
-                    cols = await (await db.execute("PRAGMA table_info(session_messages);")).fetchall()
-                    self._session_messages_has_lines = any(c[1] == "lines_json" for c in cols)
+                if has_session_messages:
+                    if self._session_messages_has_lines is None:
+                        cols = await (await db.execute("PRAGMA table_info(session_messages);")).fetchall()
+                        self._session_messages_has_lines = any(c[1] == "lines_json" for c in cols)
 
-                if self._session_messages_has_lines:
-                    await db.execute("""
-                        INSERT INTO session_messages (session_id, role, content_chinese, content_japanese, raw_content, lines_json)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (session_id, role, chinese, japanese, raw or chinese,
-                          json.dumps(lines, ensure_ascii=False) if lines is not None else None))
+                    if self._session_messages_has_lines:
+                        await db.execute("""
+                            INSERT INTO session_messages (session_id, role, content_chinese, content_japanese, raw_content, lines_json)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (session_id, role, chinese, japanese, raw or chinese,
+                              json.dumps(lines, ensure_ascii=False) if lines is not None else None))
+                    else:
+                        await db.execute("""
+                            INSERT INTO session_messages (session_id, role, content_chinese, content_japanese, raw_content)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (session_id, role, chinese, japanese, raw or chinese))
                 else:
-                    await db.execute("""
-                        INSERT INTO session_messages (session_id, role, content_chinese, content_japanese, raw_content)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (session_id, role, chinese, japanese, raw or chinese))
-            else:
-                # Check if sessions table exists to satisfy foreign keys
-                cur_sess = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions';")
-                if await cur_sess.fetchone():
-                    await db.execute("""
-                        INSERT OR IGNORE INTO sessions (id, channel, user_id)
-                        VALUES (?, 'web', '')
-                    """, (session_id,))
+                    # Check if sessions table exists to satisfy foreign keys
+                    cur_sess = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions';")
+                    if await cur_sess.fetchone():
+                        await db.execute("""
+                            INSERT OR IGNORE INTO sessions (id, channel, user_id)
+                            VALUES (?, 'web', '')
+                        """, (session_id,))
 
-                if self._messages_has_lines is None:
-                    cols = await (await db.execute("PRAGMA table_info(messages);")).fetchall()
-                    self._messages_has_lines = any(c[1] == "lines_json" for c in cols)
+                    if self._messages_has_lines is None:
+                        cols = await (await db.execute("PRAGMA table_info(messages);")).fetchall()
+                        self._messages_has_lines = any(c[1] == "lines_json" for c in cols)
 
-                if self._messages_has_lines:
-                    await db.execute("""
-                        INSERT INTO messages (session_id, role, content_chinese, content_japanese, audio_url, latency_ms, lines_json)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (session_id, role, chinese, japanese, audio_url, latency_ms,
-                          json.dumps(lines, ensure_ascii=False) if lines is not None else None))
-                else:
-                    await db.execute("""
-                        INSERT INTO messages (session_id, role, content_chinese, content_japanese, audio_url, latency_ms)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (session_id, role, chinese, japanese, audio_url, latency_ms))
-            await db.commit()
+                    if self._messages_has_lines:
+                        await db.execute("""
+                            INSERT INTO messages (session_id, role, content_chinese, content_japanese, audio_url, latency_ms, lines_json)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """, (session_id, role, chinese, japanese, audio_url, latency_ms,
+                              json.dumps(lines, ensure_ascii=False) if lines is not None else None))
+                    else:
+                        await db.execute("""
+                            INSERT INTO messages (session_id, role, content_chinese, content_japanese, audio_url, latency_ms)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (session_id, role, chinese, japanese, audio_url, latency_ms))
 
         return SessionTurn(
             role=role,
@@ -248,12 +248,10 @@ class SessionManager:
         max_tokens: int,
     ) -> list[SessionTurn]:
         db.row_factory = aiosqlite.Row
-        if not await self._detect_table_name(db):
-            return []
-
-        query = self._history_query_for_table(self._table_name)
-
         try:
+            if not await self._detect_table_name(db):
+                return []
+            query = self._history_query_for_table(self._table_name)
             async with db.execute(query, (session_id, max_messages)) as cursor:
                 rows = await cursor.fetchall()
         except aiosqlite.OperationalError:
@@ -290,18 +288,18 @@ class SessionManager:
     async def clear_session(self, session_id: str) -> bool:
         """Clears all conversation turns for a given session ID."""
         async with get_db(self.db_path) as db:
-            cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
-            has_session_messages = await cur.fetchone()
+            async with immediate_transaction(db):
+                cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages';")
+                has_session_messages = await cur.fetchone()
 
-            if has_session_messages:
-                res = await db.execute("DELETE FROM session_messages WHERE session_id = ?", (session_id,))
-            else:
-                cur_msg = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages';")
-                if not await cur_msg.fetchone():
-                    return False
-                res = await db.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-            await db.commit()
-            return res.rowcount > 0
+                if has_session_messages:
+                    res = await db.execute("DELETE FROM session_messages WHERE session_id = ?", (session_id,))
+                else:
+                    cur_msg = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages';")
+                    if not await cur_msg.fetchone():
+                        return False
+                    res = await db.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+                return res.rowcount > 0
 
     def format_llm_messages(
         self,

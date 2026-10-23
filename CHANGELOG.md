@@ -63,8 +63,29 @@ All notable changes to galgame2voice are documented here. The format follows
 - The Docker image starts through `scripts/run_container.py`, which turns console
   authentication on unless `GALGAME2VOICE_AUTH_DISABLED` is set. The default moved
   out of the image's `ENV`, where its name failed Docker's build checks.
+- The LLM endpoint check now treats every non-global address as private, including
+  `100.64.0.0/10` (shared CGNAT space, which Tailscale uses) and IPv4 addresses
+  carried in IPv4-mapped, 6to4 and Teredo IPv6. A model served over Tailscale
+  needs 「允许私网 LLM 端点」 turned on.
 
 ### Fixed
+- `find_ffmpeg()` now falls back to a bundled `imageio-ffmpeg` binary when no
+  system `ffmpeg` is on `PATH`, so `doctor` and audio conversion work in virtual
+  environments that have only the wheel installed.
+- Cached TTS WAV files under `/audio/cache/` keep their `Cache-Control: public,
+  max-age=31536000, immutable` header instead of having it overwritten with
+  `private, max-age=0` by the general `/audio/` middleware rule; message deletion
+  runs inside `immediate_transaction` for WAL savepoint safety.
+- On the ADV stage, re-recording voice input revokes the previous recording's
+  Blob URL and guards async `recorder.onstop` callbacks across resets; audio cache
+  lookups refresh LRU order; suspended `AudioContext` instances resume on stage
+  interaction or fall back without stalling AUTO mode; modal overlay clicks no
+  longer bleed through to advance the stage; and SSE parsing handles `CRLF` line
+  endings.
+- After sending a message, Space, Enter and Esc work at once on the ADV stage.
+  Sending hid the focused input box, focus fell to the page body, and the stage's
+  shortcuts heard nothing until the stage was clicked; Esc could not stop a reply
+  that was still generating.
 - Two database backups taken within one tick of a coarse system clock (about 2 ms
   on some Windows machines) got the same name, so the second replaced the first.
   The second now waits for the next tick.

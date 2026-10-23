@@ -523,6 +523,30 @@ test('stage pointerdown ignores overlay elements and select controls without foc
   assert.notEqual(h.doc.activeElement, h.app.stage.stage);
 });
 
+test('sending moves keyboard focus from the hidden input or retry button to the stage', t => {
+  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
+  assert.equal(h.doc.activeElement, h.app.textbox.inputElement);
+  h.start();
+  assert.equal(h.doc.activeElement, h.app.stage.stage);
+  h.done('error');
+  const retry = h.app.stage.stage.querySelector('.adv-error-actions').children[0];
+  retry.focus();
+  h.start('turn_retry');
+  assert.equal(h.doc.activeElement, h.app.stage.stage);
+  h.done(); h.doc.activeElement = h.doc.body;
+  h.start('turn_body');
+  assert.equal(h.doc.activeElement, h.app.stage.stage);
+});
+
+test('a turn that starts while the sessions drawer is open leaves focus in the drawer', t => {
+  const h = setup(t, { voice: false });
+  h.app.action('sessions');
+  const focused = h.doc.activeElement;
+  assert.equal(h.dom.sidebar.parentNode.contains(focused), true);
+  h.start();
+  assert.equal(h.doc.activeElement, focused);
+});
+
 test('player in input mode: quick-menu settings lands focus inside panel on first control, outside elements cannot steal focus', t => {
   const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
   // Player is in input mode with textarea focused

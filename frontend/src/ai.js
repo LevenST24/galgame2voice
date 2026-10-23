@@ -125,37 +125,48 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
       reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      let eventName = 'message';
+      let eventName = 'text';
       while (!settled) {
         const { done, value } = await withDeadline(reader.read());
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
+        if (done) {
+          buffer += decoder.decode();
+        } else {
+          buffer += decoder.decode(value, { stream: true });
+        }
+        const lines = buffer.split(/\r?\n/);
+        buffer = done ? '' : (lines.pop() || '');
+        for (const rawLine of lines) {
           if (settled) return;
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          if (trimmed.startsWith('event: ')) {
-            eventName = trimmed.slice(7).trim();
+          const line = rawLine.replace(/\r$/, '');
+          if (!line.trim()) {
+            eventName = 'text';
             continue;
           }
-          if (!trimmed.startsWith('data: ')) continue;
-          const payload = trimmed.slice(6);
+          const eventMatch = line.match(/^event:\s*(.*)$/);
+          if (eventMatch) {
+            eventName = eventMatch[1].trim() || 'text';
+            continue;
+          }
+          const dataMatch = line.match(/^data:\s*(.*)$/);
+          if (!dataMatch) continue;
+          const payload = dataMatch[1];
           let json;
           try {
             json = JSON.parse(payload);
           } catch {
+            eventName = 'text';
             continue;
           }
-          if (eventName === 'text') {
+          const currentEvent = eventName;
+          eventName = 'text';
+          if (currentEvent === 'text' || currentEvent === 'message') {
             const delta = json.delta_chinese || '';
             if (delta) {
               acc += delta;
-              onChunk(acc, delta);
+              onChunk?.(acc, delta);
             }
-          } else if (eventName === 'audio_chunk') {
-            onEvent?.(eventName, json);
+          } else if (currentEvent === 'audio_chunk') {
+            onEvent?.(currentEvent, json);
             if (settled) return;
             if (json.sentence) {
               jaSentences.push(json.sentence);
@@ -178,15 +189,15 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
                 });
               }
             }
-          } else if (eventName === 'audio_chunk_error') {
-            onEvent?.(eventName, json);
+          } else if (currentEvent === 'audio_chunk_error') {
+            onEvent?.(currentEvent, json);
             audioError ||= getErrorMessage(json, '本轮角色语音暂不可用，文字回复已保留。请在「全局设置 → 运行状态」启动引擎，或切换 CPU 稳定模式后重试。');
             console.warn('[streamChat] audio chunk error:', json.error, json.sentence);
-          } else if (eventName === 'error') {
+          } else if (currentEvent === 'error') {
             errorCode = typeof json.error_code === 'string' ? json.error_code : null;
             finish(false, getErrorMessage(json, '对话暂时未完成，请检查「全局设置」中的模型地址、密钥与模型名称，再重新发送消息。'));
             return;
-          } else if (eventName === 'done') {
+          } else if (currentEvent === 'done') {
             doneMeta = json;
             if (json.japanese) {
               fullJapanese = json.japanese;
@@ -215,14 +226,15 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             // 以服务器保存的终稿为准：流式阶段的开场白或解析残片不能留在气泡和本地记录里。
             if (typeof json.chinese === 'string' && json.chinese && json.chinese !== acc) {
               acc = json.chinese;
-              onChunk(acc, '');
+              onChunk?.(acc, '');
             }
             finish(false, null);
             return;
           } else {
-            onEvent?.(eventName, json);
+            onEvent?.(currentEvent, json);
           }
         }
+        if (done) break;
       }
       finish(false, '回复连接提前结束，已保留收到的内容。请检查服务与网络，稍后重新发送上一条消息。');
     } catch (err) {
