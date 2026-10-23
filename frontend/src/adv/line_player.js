@@ -421,7 +421,7 @@ export function createLinePlayer({
         setAuto(false);
       }
       if (voicePlaying) {
-      currentVoiceToken = null;
+        currentVoiceToken = null;
         voicePlaying = false;
         voice?.stop?.({ fadeMs: 40 });
       }
@@ -761,7 +761,7 @@ export function createLinePlayer({
       pendingAdvance = false;
       clearAllTimers();
       if (voicePlaying) {
-      currentVoiceToken = null;
+        currentVoiceToken = null;
         voicePlaying = false;
         voice?.stop?.({ fadeMs: 40 });
       }
