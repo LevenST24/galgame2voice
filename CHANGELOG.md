@@ -6,6 +6,8 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-23
+
 ### Added
 - ADV interface (P0–P8): line-by-line playback with voice, acting tags,
   layered sprites with blink and lip sync, LOG history and voice replay,
@@ -19,7 +21,7 @@ All notable changes to galgame2voice are documented here. The format follows
 - `scripts/dev_standins.py` starts a fake LLM and a fake GPT-SoVITS server (old,
   per-line and deliberately broken reply formats; WAVs with a speech-like envelope)
   so the chat, voice and playback pipeline runs without a GPU or a paid model.
-- `docs/design/adv-ui.md`, the design spec for the coming visual-novel interface.
+- `docs/design/adv-ui.md`, the design spec for the ADV interface.
 - "允许私网 LLM 端点" switch in chat model settings for Ollama, LM Studio and LAN
   models. It saves on change; testing or enabling a model waits for the save.
   Model lists and connection tests now apply the same private-network rule as chat.
@@ -30,7 +32,7 @@ All notable changes to galgame2voice are documented here. The format follows
   API key names the provider, and a blocked private endpoint points to the switch
   above instead of being reported as a DNS failure. Connection tests explain a
   missing key the same way.
-- The header badge says "未填写 API Key" when the active cloud provider has no key,
+- The model status says "未填写 API Key" when the active cloud provider has no key,
   and "正在读取模型配置…" until the model list loads instead of briefly claiming that
   no model is configured.
 - `scripts/verify_windows_portable.py` checks the release ZIP's checksum, required
@@ -48,9 +50,8 @@ All notable changes to galgame2voice are documented here. The format follows
   first ADV conversation is voiced. A browser that already saved the voice switch
   keeps it; "语音开关" on the stage or 设置 → 自动播放语音 changes it.
 - Sending a message goes through `frontend/src/conversation.js`, a DOM-free
-  controller that emits turn, text, audio, done, error and cancelled events. The
-  chat view subscribes to it now and the coming visual-novel stage will reuse it;
-  nothing visible changes. `main.js` starts through an injectable `initApp()`, and
+  controller that emits turn, text, audio, done, error and cancelled events; the
+  ADV stage subscribes to it. `main.js` starts through an injectable `initApp()`, and
   the history and model-badge tests import the real modules instead of slicing
   source text.
 - Persona prompts without the bilingual reply format (new custom voices, edited or
@@ -428,4 +429,5 @@ First tagged release. The single source of truth for the version is
   assets, no network/GPU) are unrelated to this release; the failure set is
   byte-identical before and after these changes.
 
+[3.0.0]: https://github.com/LevenST24/galgame2voice/releases/tag/v3.0.0
 [2.0.0]: https://github.com/LevenST24/galgame2voice/releases/tag/v2.0.0
