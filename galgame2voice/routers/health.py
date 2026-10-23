@@ -586,16 +586,16 @@ def _resolve_sovits_directory(project_root: Path) -> Path:
     if not sovits_dir_file.exists():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="尚未选择语音引擎目录。请在「全局设置 → 语音与推理」点击「选择文件夹」，选择完整解压的引擎包并保存。",
+            detail="尚未选择语音引擎目录。请在「全局设置 → 语音服务」点击「选择文件夹」，选择完整解压的引擎包并保存。",
         )
     try:
         sovits_dir = read_sovits_directory(project_root)
     except (OSError, ValueError, UnicodeError) as exc:
-        raise HTTPException(status_code=400, detail="引擎目录配置无法读取。请在「语音与推理」重新选择文件夹并保存。") from exc
+        raise HTTPException(status_code=400, detail="引擎目录配置无法读取。请在「语音服务」重新选择文件夹并保存。") from exc
     if sovits_dir is None or not sovits_dir.is_dir():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="保存的引擎目录已移动或删除。请在「语音与推理」重新选择实际存在的引擎文件夹并保存。",
+            detail="保存的引擎目录已移动或删除。请在「语音服务」重新选择实际存在的引擎文件夹并保存。",
         )
     return sovits_dir
 
@@ -608,7 +608,7 @@ async def engine_status_endpoint() -> dict[str, Any]:
     try:
         endpoint = await resolve_effective_sovits_endpoint()
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="语音引擎服务地址无效。请在「语音与推理」检查并保存服务地址。") from exc
+        raise HTTPException(status_code=400, detail="语音引擎服务地址无效。请在「语音服务」检查并保存服务地址。") from exc
     if _engine_restart_lock.locked():
         return {"state": "starting", "ready": False, "message": "引擎正在重启，请等待当前操作完成。"}
     from scripts import run_server
@@ -622,7 +622,7 @@ async def engine_status_endpoint() -> dict[str, Any]:
     if endpoint.is_local and proc is not None:
         return {"state": "starting", "ready": False, "message": "引擎正在加载模型，请稍候；文字聊天可继续使用。"}
     return {"state": "unavailable", "ready": False,
-            "message": "语音引擎尚未就绪。请在「语音与推理」选择引擎目录后启动，或检查已配置的远端引擎地址。文字聊天可继续使用。"}
+            "message": "语音引擎尚未就绪。请在「语音服务」选择引擎目录后启动，或检查已配置的远端引擎地址。文字聊天可继续使用。"}
 
 
 @router.post(
@@ -676,14 +676,14 @@ async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -
         raise
     except Exception as exc:
         logger.exception("Engine restart preparation failed")
-        raise HTTPException(status_code=500, detail="无法准备语音引擎。请确认程序和引擎目录可写，在「语音与推理」重新选择完整引擎包后再试。") from exc
+        raise HTTPException(status_code=500, detail="无法准备语音引擎。请确认程序和引擎目录可写，在「语音服务」重新选择完整引擎包后再试。") from exc
 
 
 async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovitsPayload | None) -> dict[str, Any]:
     settings = get_settings()
     sovits_dir = await asyncio.to_thread(_resolve_sovits_directory, settings.project_root)
     if not await asyncio.to_thread((sovits_dir / "api_v2.py").is_file):
-        raise HTTPException(status_code=400, detail="所选文件夹缺少 api_v2.py。请完整解压引擎包，在「语音与推理」重新选择引擎文件夹。")
+        raise HTTPException(status_code=400, detail="所选文件夹缺少 api_v2.py。请完整解压引擎包，在「语音服务」重新选择引擎文件夹。")
     if getattr(sys, "frozen", False) and await asyncio.to_thread(find_engine_python, sovits_dir) is None:
         raise HTTPException(status_code=400, detail="所选引擎缺少自己的运行环境。请使用包含 runtime 的完整集成包，重新选择文件夹后启动。")
 
@@ -691,7 +691,7 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
     owned = run_server._SPAWNED_SOVITS_PROC
     live_owned = owned is not None and owned.poll() is None
     if not live_owned and await asyncio.to_thread(run_server.is_port_in_use, endpoint.port, endpoint.host):
-        raise HTTPException(status_code=409, detail="语音引擎已在其他窗口运行，可直接使用。若需重启，请先关闭该引擎窗口，再点击「重启引擎」。")
+        raise HTTPException(status_code=409, detail="语音引擎已在其他窗口运行，可直接使用。若需重启，请先关闭该引擎窗口，再在「运行状态」点击「重启 SoVITS 引擎」。")
     # Determine precision and device target only after validation and ownership checks.
     req_prec = str(payload.precision).strip().lower() if (payload and payload.precision) else None
     device, is_half, source = await _apply_sovits_precision_config(settings.project_root, sovits_dir, req_prec)
@@ -752,5 +752,5 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
         logger.exception("Engine restart failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="语音引擎启动未完成。请确认引擎已完整解压且目录可写，在「语音与推理」重新选择文件夹后再试。详细原因已记录在程序日志。",
+            detail="语音引擎启动未完成。请确认引擎已完整解压且目录可写，在「语音服务」重新选择文件夹后再试。详细原因已记录在程序日志。",
         ) from exc

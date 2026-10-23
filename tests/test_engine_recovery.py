@@ -2,6 +2,8 @@
 
 import asyncio
 import os
+from pathlib import Path
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -183,3 +185,20 @@ def test_failed_application_startup_keeps_nonzero_exit(engine, monkeypatch):
     with pytest.raises(SystemExit) as error:
         run_server.main(["--no-engine", "--no-browser", "--host", "127.0.0.1", "--port", "18080"])
     assert error.value.code == 3
+
+
+def test_engine_guidance_quotes_only_names_the_settings_page_shows():
+    """Guidance tells the user which tab, button or option to use, quoting its name in 「」.
+
+    The tab was renamed from 语音与推理 to 语音服务, and messages kept the old name. Each
+    quoted name (each step of 「全局设置 → 语音服务」) must be text the page shows.
+    """
+    repo = Path(__file__).resolve().parents[1]
+    page = re.sub(r"<!--.*?-->", " ", (repo / "frontend" / "index.html").read_text(encoding="utf-8"), flags=re.S)
+    visible = re.sub(r"<[^>]+>", " ", page)
+    sources = [repo / "galgame2voice" / "routers" / "health.py", repo / "galgame2voice" / "services" / "engine_recovery.py"]
+    quoted = {step.strip() for source in sources
+              for name in re.findall(r"「([^」]+)」", source.read_text(encoding="utf-8"))
+              for step in name.split("→")}
+    # 「文档」 is the Windows Documents folder, not part of the page.
+    assert sorted(name for name in quoted - {"文档"} if name not in visible) == []

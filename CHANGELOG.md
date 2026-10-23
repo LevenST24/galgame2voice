@@ -176,6 +176,10 @@ All notable changes to galgame2voice are documented here. The format follows
 - Audio error messages, including the one shown when the browser blocks playback,
   pointed to a per-message play button that the ADV interface no longer has. They
   now point to the 「语音」 and 「播放录音」 buttons in LOG.
+- Voice engine messages still sent users to 「语音与推理」, the old name of the
+  「语音服务」 settings tab, and to a 「重启引擎」 button and a "CPU 稳定模式" the
+  page doesn't have. They now name 「语音服务」, its 「计算方式」 setting's
+  「CPU 模式」, and 「重启 SoVITS 引擎」 in 「运行状态」.
 
 ### Removed
 - Legacy `galgame2voice/static/js/audio_player.js` and `chat_client.js` scripts
