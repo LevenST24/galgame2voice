@@ -129,7 +129,7 @@ test('blocked autoplay becomes an actionable paused state and can resume', async
   const errors = []; const p = player({ onError: error => errors.push(error) });
   p.ctx.state = 'suspended'; p.ctx.resume = async () => { throw new Error('gesture required'); };
   await p.enqueueChunk({ url: '/autoplay.wav', index: 0 }); await tick();
-  assert.equal(p.paused, true); assert.match(errors[0].message, /播放按钮/);
+  assert.equal(p.paused, true); assert.match(errors[0].message, /LOG 里再点一次「语音」/);
   p.ctx.resume = AudioContextMock.prototype.resume;
   p.resume(); await tick(); assert.equal(p.activeSources.length, 1);
 });

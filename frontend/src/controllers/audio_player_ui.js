@@ -79,7 +79,7 @@ export function initAudioPlayerUi(dom, callbacks = {}) {
   streamAudioController.onError = (error) => {
     const isBrowserBlock = Boolean(error.message?.includes('浏览器'));
     showToast(isBrowserBlock ? error.message
-      : '部分语音暂时无法播放，已跳过并保留文字。可稍后点击播放重试；若反复失败，请打开「运行状态」检查服务。', 'info', (!isBrowserBlock && _callbacks.onOpenEngineStatus) ? {
+      : '部分语音暂时无法播放，已跳过并保留文字。可稍后在 LOG 里再点「语音」重试；若反复失败，请打开「运行状态」检查服务。', 'info', (!isBrowserBlock && _callbacks.onOpenEngineStatus) ? {
         actionLabel: '检查运行状态',
         onAction: () => _callbacks.onOpenEngineStatus(),
       } : null);
@@ -152,7 +152,7 @@ export function playSingleAudio(getAudio, msgId, ctl, { objectUrl = null } = {})
         } catch (_) {}
         objectUrl = null;
       }
-      showToast('音频暂时无法播放，请再点一次播放按钮；若仍失败，请检查浏览器声音权限。', 'info');
+      showToast('音频暂时无法播放，请在 LOG 里再点一次「语音」或「播放录音」重试；若仍失败，请检查浏览器声音权限。', 'info');
     };
   };
   attach();
@@ -461,7 +461,7 @@ export async function playAiVoice(msg, ctl) {
   } catch (error) {
     if (!request.current() || error.name === 'AbortError') return;
     ctl?.setPlaying?.(false);
-    showToast('语音暂时无法加载，原有音频记录已保留。请稍后点击播放重试，或打开「运行状态」检查服务。', 'info', _callbacks.onOpenEngineStatus ? {
+    showToast('语音暂时无法加载，原有音频记录已保留。请稍后在 LOG 里点「语音」重试，或打开「运行状态」检查服务。', 'info', _callbacks.onOpenEngineStatus ? {
       actionLabel: '检查运行状态',
       onAction: () => _callbacks.onOpenEngineStatus(),
     } : null);
