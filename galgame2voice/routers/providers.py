@@ -33,6 +33,7 @@ from galgame2voice.database.session import get_db
 from galgame2voice.security import url_guard
 from galgame2voice.telegram_bot.proxy import get_proxy_url
 from galgame2voice.utils.error_diagnostics import format_provider_error
+from galgame2voice.utils.http_client import create_async_client
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.text_sanitize import sanitize_bot_token
 
@@ -591,7 +592,7 @@ async def test_telegram_bot(req: TelegramTestRequest):
     last_err = None
     for p_url in proxy_urls:
         try:
-            async with httpx.AsyncClient(proxy=p_url, timeout=6.0) as client:
+            async with create_async_client(proxy=p_url, timeout=6.0) as client:
                 resp = await client.get(f"https://api.telegram.org/bot{token}/getMe")
                 latency = round((time.perf_counter() - t0) * 1000, 2)
                 return _map_telegram_response(resp, latency)

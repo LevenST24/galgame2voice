@@ -63,6 +63,8 @@ class TestFFmpegDiscoveryBundledFallback:
         monkeypatch.setenv("PATH", "")
         monkeypatch.delenv("FFMPEG_PATH", raising=False)
         monkeypatch.delenv("FFMPEG_BIN", raising=False)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_python_env", lambda *a: None)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_project_dirs", lambda *a: None)
 
         # Ensure imageio_ffmpeg binary path is valid on this machine
         expected_bin = imageio_ffmpeg.get_ffmpeg_exe()
@@ -97,10 +99,30 @@ class TestFFmpegDiscoveryBundledFallback:
         monkeypatch.setenv("PATH", "")
         monkeypatch.delenv("FFMPEG_PATH", raising=False)
         monkeypatch.delenv("FFMPEG_BIN", raising=False)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_python_env", lambda *a: None)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_project_dirs", lambda *a: None)
 
         with patch("imageio_ffmpeg.get_ffmpeg_exe", side_effect=RuntimeError("Bundled binary corrupted")):
             assert find_ffmpeg() is None
             assert is_ffmpeg_available() is False
+
+    def test_find_ffmpeg_in_python_env_skips_posix_system_prefixes(self, monkeypatch, tmp_path):
+        """_find_ffmpeg_in_python_env ignores global /usr prefix on POSIX while discovering isolated venvs."""
+        from galgame2voice.utils.audio_converter import _find_ffmpeg_in_python_env
+
+        venv_dir = tmp_path / "isolated_venv"
+        bin_dir = venv_dir / "bin"
+        bin_dir.mkdir(parents=True)
+        fake_ffmpeg = bin_dir / "ffmpeg"
+        fake_ffmpeg.write_text("#!/bin/sh\n")
+
+        monkeypatch.setattr("sys.platform", "linux")
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        assert _find_ffmpeg_in_python_env("ffmpeg", "bin") is None
+
+        monkeypatch.setattr("sys.prefix", str(venv_dir))
+        assert _find_ffmpeg_in_python_env("ffmpeg", "bin") == str(fake_ffmpeg.resolve())
 
     @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
@@ -332,3 +354,110 @@ class TestDeleteMessageTransactionIsolation:
         async with get_db(db_path) as conn:
             count = await crud.count_session_messages(conn, session_id)
             assert count == 0
+
+
+# ============================================================================
+# 4. SSRF URL Guard Hardening, Voice Profile Default Exclusivity & Proxy Env
+# ============================================================================
+
+
+class TestUrlGuardAndVoiceProfileHardening:
+    """Verifies URL guard malformed port/IPv6/CGNAT handling, voice profile default exclusivity, and Telegram proxy env."""
+
+    def test_url_guard_malformed_urls_and_cgnat_blocked(self):
+        """validate_llm_base_url rejects malformed IPv6, invalid ports, CGNAT, and mapped IPv6 without raising ValueError."""
+        from galgame2voice.security.url_guard import validate_llm_base_url
+
+        for malformed in (
+            "http://[::1",
+            "http://example.com:99999/v1",
+            "http://example.com:notaport/v1",
+            "http://100.64.0.1:8000/v1",
+            "http://100.127.255.254:8000/v1",
+            "http://[::ffff:127.0.0.1]:8000/v1",
+            "http://[::ffff:100.64.0.1]:8000/v1",
+            "http://[fe80::1%25eth0]:8000/v1",
+        ):
+            ok, reason = validate_llm_base_url(malformed, allow_private=False)
+            assert ok is False, f"Expected {malformed} to be rejected, but got ok=True"
+            assert reason
+
+        # Even with allow_private=True, syntactically invalid ports/URLs must be rejected
+        for bad_syntax in ("http://[::1", "http://127.0.0.1:99999", "http://localhost:abc"):
+            ok, _ = validate_llm_base_url(bad_syntax, allow_private=True)
+            assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_update_voice_profile_enforces_single_default(self, tmp_path):
+        """Setting is_default=True via update_voice_profile must clear is_default on all other profiles."""
+        from galgame2voice.database.models import VoiceProfileCreate, VoiceProfileUpdate
+
+        db_path = str(tmp_path / "voice_default_excl.db")
+        await init_db(db_path)
+
+        async with get_db(db_path) as conn:
+            p1 = await crud.create_voice_profile(
+                conn,
+                VoiceProfileCreate(
+                    name="CharA",
+                    gpt_weights_path="models/a.ckpt",
+                    sovits_weights_path="models/a.pth",
+                    is_default=True,
+                ),
+            )
+            p2 = await crud.create_voice_profile(
+                conn,
+                VoiceProfileCreate(
+                    name="CharB",
+                    gpt_weights_path="models/b.ckpt",
+                    sovits_weights_path="models/b.pth",
+                    is_default=False,
+                ),
+            )
+            assert p1.is_default is True
+            assert p2.is_default is False
+
+            updated_p2 = await crud.update_voice_profile(
+                conn,
+                p2.id,
+                VoiceProfileUpdate(is_default=True),
+            )
+            assert updated_p2 is not None and updated_p2.is_default is True
+
+            refreshed_p1 = await crud.get_voice_profile(conn, p1.id)
+            assert refreshed_p1 is not None and refreshed_p1.is_default is False
+
+            profiles = await crud.list_voice_profiles(conn)
+            defaults = [p for p in profiles if p.is_default]
+            assert len(defaults) == 1
+            assert defaults[0].id == p2.id
+
+    @pytest.mark.asyncio
+    async def test_telegram_connectivity_survives_bracketed_ipv6_no_proxy(self, monkeypatch):
+        """TelegramBotManager.test_token and test_proxy_connectivity survive NO_PROXY='[::1]'."""
+        import httpx
+        from galgame2voice.telegram_bot.bot import TelegramBotManager
+        from galgame2voice.telegram_bot.proxy import test_proxy_connectivity
+
+        monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,[::1]")
+
+        class DummyResp:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"ok": True, "result": {"username": "galgame_test_bot"}}
+
+        async def fake_get(self, url, **kwargs):
+            return DummyResp()
+
+        monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+        mgr = TelegramBotManager()
+        res = await mgr.test_token("123456789:ABCDEF1234567890abcdef")
+        assert res["success"] is True
+        assert "galgame_test_bot" in res["message"]
+
+        ok = await test_proxy_connectivity(None)
+        assert ok is True
+

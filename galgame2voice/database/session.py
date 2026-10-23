@@ -133,6 +133,18 @@ async def get_db(db_path: str | Path | None = None) -> AsyncGenerator[aiosqlite.
         yield conn
 
 
+async def _run_uncancellable(coro):
+    """Awaits an aiosqlite coroutine to completion on the worker thread even if the caller task is cancelled."""
+    task = asyncio.ensure_future(coro)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    return task.result(), cancelled
+
+
 @asynccontextmanager
 async def immediate_transaction(
     conn: aiosqlite.Connection,
@@ -176,17 +188,25 @@ async def immediate_transaction(
             # without committing outer changes prematurely.
             conn._imm_tx_depth = depth + 1
             sp_id = f"sp_{uuid.uuid4().hex[:8]}"
-            await conn.execute(f"SAVEPOINT {sp_id};")
+            sp_started = False
             try:
+                _, cancelled = await _run_uncancellable(conn.execute(f"SAVEPOINT {sp_id};"))
+                sp_started = True
+                if cancelled:
+                    raise asyncio.CancelledError()
                 yield conn
-                await conn.execute(f"RELEASE SAVEPOINT {sp_id};")
+                _, cancelled = await _run_uncancellable(conn.execute(f"RELEASE SAVEPOINT {sp_id};"))
+                sp_started = False
+                if cancelled:
+                    raise asyncio.CancelledError()
             except BaseException:
-                try:
-                    await conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};")
-                    await conn.execute(f"RELEASE SAVEPOINT {sp_id};")
-                except (sqlite3.Error, aiosqlite.Error):
-                    # Suppress secondary errors during rollback to ensure original exception propagates
-                    pass
+                if sp_started:
+                    try:
+                        await _run_uncancellable(conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};"))
+                        await _run_uncancellable(conn.execute(f"RELEASE SAVEPOINT {sp_id};"))
+                    except (sqlite3.Error, aiosqlite.Error):
+                        # Suppress secondary errors during rollback to ensure original exception propagates
+                        pass
                 raise
             finally:
                 conn._imm_tx_depth = depth
@@ -200,41 +220,60 @@ async def immediate_transaction(
             conn._imm_tx_depth = 1
             try:
                 sp_id: str | None = None
-                if is_in_tx:
-                    # Connection was already in a transaction (e.g. uncommitted raw DML), use savepoint under outermost block
-                    sp_id = f"sp_{uuid.uuid4().hex[:8]}"
-                    await conn.execute(f"SAVEPOINT {sp_id};")
-                else:
-                    for attempt in range(max_retries):
-                        try:
-                            await conn.execute("BEGIN IMMEDIATE;")
-                            break
-                        except (sqlite3.OperationalError, aiosqlite.OperationalError) as err:
-                            err_msg = str(err).lower()
-                            if ("locked" in err_msg or "busy" in err_msg) and attempt < max_retries - 1:
-                                await asyncio.sleep(base_delay * (2 ** min(attempt, 5)) + random.uniform(0.005, 0.02))
-                                continue
-                            raise
-
+                tx_started = False
                 try:
+                    if is_in_tx:
+                        # Connection was already in a transaction (e.g. uncommitted raw DML), use savepoint under outermost block
+                        sp_id = f"sp_{uuid.uuid4().hex[:8]}"
+                        _, cancelled = await _run_uncancellable(conn.execute(f"SAVEPOINT {sp_id};"))
+                        tx_started = True
+                        if cancelled:
+                            raise asyncio.CancelledError()
+                    else:
+                        for attempt in range(max_retries):
+                            cancelled = False
+                            try:
+                                _, cancelled = await _run_uncancellable(conn.execute("BEGIN IMMEDIATE;"))
+                                tx_started = True
+                                if cancelled:
+                                    raise asyncio.CancelledError()
+                                break
+                            except (sqlite3.OperationalError, aiosqlite.OperationalError) as err:
+                                if cancelled:
+                                    raise asyncio.CancelledError() from err
+                                err_msg = str(err).lower()
+                                if ("locked" in err_msg or "busy" in err_msg) and attempt < max_retries - 1:
+                                    await asyncio.sleep(base_delay * (2 ** min(attempt, 5)) + random.uniform(0.005, 0.02))
+                                    continue
+                                raise
+
                     yield conn
                     if sp_id:
-                        await conn.execute(f"RELEASE SAVEPOINT {sp_id};")
-                    await conn.commit()
-                except BaseException:
-                    if sp_id:
-                        try:
-                            await conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};")
-                            await conn.execute(f"RELEASE SAVEPOINT {sp_id};")
-                        except (sqlite3.Error, aiosqlite.Error):
-                            # Suppress secondary error during savepoint rollback to preserve original exception
-                            pass
+                        _, c1 = await _run_uncancellable(conn.execute(f"RELEASE SAVEPOINT {sp_id};"))
+                        _, c2 = await _run_uncancellable(conn.commit())
+                        tx_started = False
+                        if c1 or c2:
+                            raise asyncio.CancelledError()
                     else:
-                        try:
-                            await conn.rollback()
-                        except (sqlite3.Error, aiosqlite.Error):
-                            # Suppress secondary error during rollback to preserve original exception
-                            pass
+                        _, cancelled = await _run_uncancellable(conn.commit())
+                        tx_started = False
+                        if cancelled:
+                            raise asyncio.CancelledError()
+                except BaseException:
+                    if tx_started:
+                        if sp_id:
+                            try:
+                                await _run_uncancellable(conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};"))
+                                await _run_uncancellable(conn.execute(f"RELEASE SAVEPOINT {sp_id};"))
+                            except (sqlite3.Error, aiosqlite.Error):
+                                # Suppress secondary error during savepoint rollback to preserve original exception
+                                pass
+                        else:
+                            try:
+                                await _run_uncancellable(conn.rollback())
+                            except (sqlite3.Error, aiosqlite.Error):
+                                # Suppress secondary error during rollback to preserve original exception
+                                pass
                     raise
             finally:
                 # Restore the depth observed on entry (always 0 on the outermost

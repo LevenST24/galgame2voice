@@ -98,6 +98,8 @@ class TestAdversarialFFmpegDiscovery:
         monkeypatch.setenv("PATH", "")
         monkeypatch.delenv("FFMPEG_PATH", raising=False)
         monkeypatch.delenv("FFMPEG_BIN", raising=False)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_python_env", lambda *a: None)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_project_dirs", lambda *a: None)
 
         # imageio_ffmpeg raises generic Exception
         with patch("imageio_ffmpeg.get_ffmpeg_exe", side_effect=Exception("Simulated DLL missing")):
@@ -358,7 +360,7 @@ class TestAdversarialDeleteMessageAndTransactions:
 
     @pytest.mark.asyncio
     async def test_task_cancellation_during_delete_message(self, tmp_path):
-        """Task cancellation while in transaction must restore transaction depth and locks cleanly."""
+        """Task cancellation while in transaction (both during BEGIN IMMEDIATE and mid-body) must restore transaction depth and locks cleanly."""
         db_path = str(tmp_path / "cancel_tx.db")
         await init_db(db_path)
 
@@ -369,23 +371,47 @@ class TestAdversarialDeleteMessageAndTransactions:
                 MessageCreate(session_id="sess_cancel", role="user", content_chinese="cancel_me"),
             )
 
-            async def cancel_candidate():
+            # 1. Immediate cancellation while BEGIN IMMEDIATE is in-flight on the worker thread
+            async def cancel_at_begin():
                 async with immediate_transaction(conn):
                     await crud.delete_message(conn, msg.id)
+                    await asyncio.sleep(5)
+
+            t0 = asyncio.create_task(cancel_at_begin())
+            await asyncio.sleep(0)
+            t0.cancel()
+            try:
+                await t0
+            except asyncio.CancelledError:
+                pass
+
+            assert getattr(conn, "_imm_tx_depth", 0) == 0
+            assert getattr(conn, "_imm_tx_lock_owner", None) is None
+            assert await crud.count_session_messages(conn, "sess_cancel") == 1
+
+            # 2. Deterministic mid-transaction cancellation after nested savepoint delete
+            entered_body = asyncio.Event()
+
+            async def cancel_mid_body():
+                async with immediate_transaction(conn):
+                    await crud.delete_message(conn, msg.id)
+                    entered_body.set()
                     await asyncio.sleep(5)  # Cancelled here
 
-            t = asyncio.create_task(cancel_candidate())
-            await asyncio.sleep(0.01)
+            t = asyncio.create_task(cancel_mid_body())
+            await entered_body.wait()
             t.cancel()
             try:
                 await t
             except asyncio.CancelledError:
                 pass
 
-            # Depth and owner must be restored
+            # Depth and owner must be restored, and deletion rolled back
             assert getattr(conn, "_imm_tx_depth", 0) == 0
             assert getattr(conn, "_imm_tx_lock_owner", None) is None
+            assert await crud.count_session_messages(conn, "sess_cancel") == 1
 
             # Next transaction on the same connection must succeed normally
             await crud.delete_message(conn, msg.id)
             assert await crud.count_session_messages(conn, "sess_cancel") == 0
+

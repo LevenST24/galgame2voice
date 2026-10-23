@@ -42,6 +42,14 @@ _PRIVATE_REASONS = (
 
 
 def _is_blocked_ip(addr: ipaddress._BaseAddress) -> bool:
+    if isinstance(addr, ipaddress.IPv6Address):
+        for embedded in (addr.ipv4_mapped, addr.sixtofour):
+            if embedded is not None and _is_blocked_ip(embedded):
+                return True
+        if addr.teredo is not None:
+            for teredo_ip in addr.teredo:
+                if _is_blocked_ip(teredo_ip):
+                    return True
     return (
         addr.is_loopback
         or addr.is_private
@@ -49,6 +57,7 @@ def _is_blocked_ip(addr: ipaddress._BaseAddress) -> bool:
         or addr.is_reserved
         or addr.is_multicast
         or addr.is_unspecified
+        or not addr.is_global
     )
 
 
@@ -91,7 +100,11 @@ def _resolve_host(host: str, port: int) -> Tuple[bool, str]:
         return True, ""
 
     for info in infos:
-        addr = ipaddress.ip_address(info[4][0])
+        raw_ip = str(info[4][0]).split("%")[0]
+        try:
+            addr = ipaddress.ip_address(raw_ip)
+        except ValueError:
+            continue
         if _is_blocked_ip(addr):
             res = (False, _PRIVATE_REASONS)
             with _DNS_CACHE_LOCK:
@@ -120,27 +133,38 @@ def validate_llm_base_url(url: Optional[str], allow_private: bool = False) -> Tu
         return False, "接口地址不能为空"
     candidate = str(url).strip()
 
-    parsed = urlparse(candidate)
-    if parsed.scheme not in ("http", "https"):
+    try:
+        parsed = urlparse(candidate)
+        scheme = parsed.scheme
+        username = parsed.username
+        password = parsed.password
+        host = parsed.hostname
+        raw_port = parsed.port
+    except ValueError:
+        return False, "接口地址格式或端口无效"
+
+    if scheme not in ("http", "https"):
         return False, "接口地址仅支持 http/https 协议"
-    if parsed.username or parsed.password:
+    if username or password:
         return False, "接口地址不应包含用户名/密码"
-    host = parsed.hostname
     if not host:
         return False, "接口地址缺少主机名"
 
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    port = raw_port or (443 if scheme == "https" else 80)
 
-    if host.lower() in OFFICIAL_LLM_HOSTS and parsed.scheme != "https":
+    if host.lower() in OFFICIAL_LLM_HOSTS and scheme != "https":
         return False, "官方提供商接口必须使用 https"
 
     if allow_private:
         return True, ""
 
     # IP literal short-circuit avoids DNS for the common SSRF payloads
+    clean_host = host.split("%")[0]
     try:
-        addr = ipaddress.ip_address(host)
+        addr = ipaddress.ip_address(clean_host)
     except ValueError:
+        if "%" in host:
+            return False, "接口地址主机名格式无效"
         return _resolve_host(host, port)
     if _is_blocked_ip(addr):
         return False, _PRIVATE_REASONS
