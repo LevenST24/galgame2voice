@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: galgame2voice:2.1.0
+    image: galgame2voice:3.0.0
     container_name: galgame2voice
     restart: unless-stopped
     ports:

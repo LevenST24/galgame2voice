@@ -80,8 +80,8 @@ Windows 凭据使用 DPAPI，换 Windows 用户或另一台电脑时，原加密
 ```powershell
 uv sync --frozen --extra desktop
 uv run --frozen --extra desktop python scripts/build_windows_portable.py
-uv run --frozen --extra desktop python scripts/verify_windows_portable.py dist/galgame2voice-v2.1.0-windows-x64.zip
-uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/galgame2voice-v2.1.0-windows-x64.zip
+uv run --frozen --extra desktop python scripts/verify_windows_portable.py dist/galgame2voice-v3.0.0-windows-x64.zip
+uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/galgame2voice-v3.0.0-windows-x64.zip
 ```
 
 前端修改后应先在 `frontend` 目录执行 `npm ci` 和 `npm run deploy`。

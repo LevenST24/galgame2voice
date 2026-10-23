@@ -15,8 +15,8 @@ npm --prefix frontend run deploy
 uv run --frozen --extra dev pytest -q
 uv run --frozen --extra dev ruff check galgame2voice scripts
 uv run --frozen --extra desktop python scripts/build_windows_portable.py
-uv run --frozen --extra desktop python scripts/verify_windows_portable.py dist/galgame2voice-v2.1.0-windows-x64.zip
-uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/galgame2voice-v2.1.0-windows-x64.zip
+uv run --frozen --extra desktop python scripts/verify_windows_portable.py dist/galgame2voice-v3.0.0-windows-x64.zip
+uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/galgame2voice-v3.0.0-windows-x64.zip
 ```
 
 `verify_windows_portable.py` 检查校验和、必需运行文件、空用户目录、模型和凭据排除，以及 ZIP、已部署网页和 Vite 产物的一致性。
@@ -31,12 +31,12 @@ uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/ga
 | 首次启动 | 完整解压后可打开网页，数据写在安装目录的 `data` 中；缺少语音引擎时有配置入口。 |
 | 配置模型 | 密钥不回显；公网模型正常保存；本地模型在明确开启私网许可后可测试和聊天。 |
 | 撤销私网许可 | 保留已保存配置；后续本地聊天、连接测试和模型列表请求均受到限制。 |
-| 聊天与重启 | 回复完成后发送按钮恢复；刷新或重启程序后，会话设置及已完成的文字记录仍可读取。 |
-| 角色与立绘 | 绑定两个测试角色后分别切换会话；角色名、图片 URL 和人设保持对应。无立绘的角色清除旧图。 |
+| 聊天与重启 | 台词逐句推进，播完后文本框回到玩家输入；刷新或重启程序后，会话设置和已完成的台词仍可在 LOG 中读取。 |
+| 角色与立绘 | 绑定两个测试角色后分别切换会话；名字牌、立绘、头像和人设保持对应。无立绘的角色清除旧图。 |
 | 模型或引擎离线 | 用户能看到具体的配置或重试入口；收到的文字仍保留，恢复后可再次操作。 |
 | 导出与导入 | 实际下载完整备份，检查消息内容和数量；导入新增会话，原会话仍在；刷新后导入结果仍在。 |
 | 本机服务中断 | 保存、导出或删除失败时保留内容；服务恢复后能重试。 |
-| 小窗口 | 设置可滚动、按钮可操作；侧栏和立绘不遮住输入区。 |
+| 小窗口 | 设置可滚动、按钮可操作；立绘和快捷菜单不遮住文本框；手机竖屏下能输入和推进。 |
 
 浏览器可单独通过应用内 Browser 验证；在这种情况下 smoke 可以使用 `--skip-browser`，但应在记录中注明同一 ZIP 的浏览器验收结果。
 
