@@ -189,6 +189,14 @@ test('title: menu actions fire and close only when they should', async t => {
   assert.equal(h.load().hidden, true);
 });
 
+test('title: a click on the label text of a menu item activates it', async t => {
+  const h = setup(t, { sessions: SESSIONS });
+  h.title.open();
+  await microtasks();
+  h.items()[0].querySelector('.adv-title-item-label').click();
+  assert.deepEqual(h.actions.calls, ['startNew']);
+});
+
 test('title: 继续 is disabled while there are zero sessions', async t => {
   const h = setup(t, { sessions: [] });
   h.title.open();
@@ -444,6 +452,8 @@ test('title.css: unit geometry, drifting clouds, sky thumbs, reduced motion', ()
 
   assert.match(css, /\.adv-title-screen\s*\{[^}]*position:\s*absolute/);
   assert.match(css, /\.adv-title-screen\s*\{[^}]*inset:\s*0/);
+  // The overlay layer lets clicks through to the stage; the title must take them back.
+  assert.match(css, /\.adv-title-screen\s*\{[^}]*pointer-events:\s*auto/);
   assert.equal(/transform:\s*scale\(/.test(css), false, 'no self scaling');
   assert.equal(/100vw|100dvh/.test(css), false, 'no own letterbox viewport math');
 
