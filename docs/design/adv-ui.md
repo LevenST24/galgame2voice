@@ -26,6 +26,7 @@ Removed compatibility IDs: `backdrop`, `menuBtn`, `chatTitle`, `modelBadge`, `ba
 `title.js` / `title.css` 绘制 `.adv-layer-overlay` 内的透明首页，真实背景和立绘仍由舞台绘制。
 主角优先使用当前会话，没有当前会话时预览最近更新的会话，使舞台与摘录保持一致。
 首页按会话的 `voiceProfileId` 显示角色；未绑定时不借用后端当前音色的立绘，也不从会话标题猜测角色。
+没有任何台词的会话（例如第一条消息回复到一半就被中断）摘录显示「从这一刻，开始你们的故事。」，不显示空引号。
 
 - 顶栏为小字标 Gal2Voice、带文字的对话/语音状态胶囊和全局设置齿轮。
   对话状态来自 `getModelStatus` 与模型配置加载状态；语音来自 `/api/system/engine-status`。

@@ -128,6 +128,13 @@ test('legacy content and full portable greeting remain in the DOM; missing user/
   assert.equal(h.q('.home-you'), null); assert.equal(h.q('.home-ja'), null); assert.equal(h.q('.home-recents').hidden, true);
   assert.equal(h.q('.home-listen'), null);
 });
+test('a session with nothing said yet shows the story opener, not an empty quote', async t => {
+  const empty = { ...snapshot('a'), hasUserMessages: false, excerpt: homeExcerpt([]), lastLine: '' };
+  const h = await fixture(t, { sessions: [empty] });
+  assert.equal(h.q('.home-quote').textContent, '「从这一刻，开始你们的故事。」');
+  assert.equal(h.q('.home-you'), null); assert.equal(h.q('.home-ja'), null); assert.equal(h.q('.home-listen'), null);
+  assert.equal(h.q('.home-continue').children[0].textContent, '开始聊天');
+});
 test('continue uses current session even when another is newer; stage home class and input inert restored', async t => {
   const h = await fixture(t, { active: 'c' });
   assert.equal(h.stage.classList.contains('is-home'), true);
