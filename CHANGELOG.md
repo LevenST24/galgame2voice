@@ -6,6 +6,8 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-24
+
 ### Changed
 - 启动页改成首页：打开就回到上次聊天的场景，看到她和你们最后聊到的那句，可以接着聊、试听那句语音、切换到最近聊过的会话，或者换个角色、地点另开一段对话。右上角显示对话模型和语音引擎是否可用。第一次使用时会引导你连接模型、语音引擎和选择角色。首页上不再弹出音色切换的提示，进入对话时如果音色还没切换好会再切换一次。
 
@@ -448,5 +450,6 @@ First tagged release. The single source of truth for the version is
   assets, no network/GPU) are unrelated to this release; the failure set is
   byte-identical before and after these changes.
 
+[3.1.0]: https://github.com/LevenST24/galgame2voice/releases/tag/v3.1.0
 [3.0.0]: https://github.com/LevenST24/galgame2voice/releases/tag/v3.0.0
 [2.0.0]: https://github.com/LevenST24/galgame2voice/releases/tag/v2.0.0
