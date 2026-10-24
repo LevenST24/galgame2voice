@@ -195,3 +195,164 @@ test('empty_reply travels through SSE and conversation to a retryable inline fai
   assert.equal(cancelled, 1);
   assert.equal(user.failed, undefined);
 });
+
+async function setupProviderFooter(t) {
+  const settings = await import('../frontend/src/controllers/global_settings.js');
+  const previousDocument = globalThis.document, previousFetch = globalThis.fetch;
+  const d = fakeDocument();
+  globalThis.document = d;
+  const toastRoot = d.createElement('div');
+  toastRoot.id = 'toastRoot';
+  d.body.appendChild(toastRoot);
+  const dom = Object.fromEntries(['gProvider', 'gProviderActivate', 'gTgSave', 'gApiKey',
+    'gBaseUrl', 'gChatModel', 'gChatModelSelect', 'gReasoningEffort', 'gCustomName',
+    'gCustomNameField'].map(key => [key, d.createElement('input')]));
+  const calls = [];
+  let providers = [{ id: 'openai', name: 'OpenAI', api_key: '****',
+    api_base_url: 'https://api.openai.com/v1', chat_model: 'gpt-test', is_active: true }];
+  let failure = '';
+  const response = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url, method: options.method || 'GET', body: options.body && JSON.parse(options.body) });
+    if (options.method === 'POST' && url === failure) {
+      return response({ detail: '测试服务拒绝保存，请检查配置' }, 400);
+    }
+    if (url === '/api/providers') {
+      if (options.method === 'POST') {
+        providers = [{ ...JSON.parse(options.body), api_key: '****' }];
+        return response({ provider: providers[0] });
+      }
+      return response({ providers, presets: BUILTIN_PRESETS });
+    }
+    if (url.endsWith('/activate')) return response({ active_provider: providers[0] });
+    if (url === '/api/config') return response({ status: 'ok', settings: {} });
+    return response({});
+  };
+  t.after(() => {
+    for (const toast of toastRoot.children) clearTimeout(toast._timer);
+    globalThis.fetch = previousFetch;
+    globalThis.document = previousDocument;
+  });
+  settings.initGlobalSettings(dom);
+  dom.gProvider.value = 'openai';
+  await settings.loadProviders();
+  await settings.loadGlobalConfig();
+  calls.length = 0;
+  return { dom, calls, settings, toastRoot,
+    edit(field, value, type = 'input') {
+      dom[field].value = value;
+      dom[field].dispatchEvent({ type });
+    },
+    async save(button = 'gTgSave') {
+      dom[button].click();
+      await new Promise(resolve => setImmediate(resolve));
+    },
+    fail(url) { failure = url; },
+    writes: () => calls.filter(c => c.method === 'POST' && c.url === '/api/providers'),
+    messages: () => toastRoot.children.map(toast => toast.textContent),
+  };
+}
+
+test('footer saves an edited API key and activates the model', async t => {
+  const h = await setupProviderFooter(t);
+  h.edit('gApiKey', 'synthetic-footer-key');
+  await h.save();
+  assert.equal(h.writes().length, 1, 'footer must save the edited model via POST /api/providers');
+  assert.equal(h.writes()[0].body.api_key, 'synthetic-footer-key');
+  assert.equal(h.calls.filter(c => c.url === '/api/providers/openai/activate').length, 1);
+  assert.ok(h.calls.some(c => c.url === '/api/config' && c.method === 'POST'));
+  assert.ok(h.messages().some(msg => /全局配置.*模型.*保存.*启用/.test(msg)));
+  await h.save();
+  assert.equal(h.writes().length, 1, 'successful save must clear pending model edits');
+});
+
+test('footer leaves an untouched or programmatically filled model alone', async t => {
+  const h = await setupProviderFooter(t);
+  h.dom.gApiKey.value = 'programmatic-value';
+  await h.save();
+  assert.equal(h.calls.filter(c => c.url.startsWith('/api/providers')).length, 0);
+  assert.ok(h.messages().includes('全局配置已保存'));
+});
+
+test('footer reports model validation errors without claiming global save success', async t => {
+  const h = await setupProviderFooter(t);
+  h.edit('gBaseUrl', '');
+  await h.save();
+  assert.equal(h.writes().length, 0);
+  assert.ok(h.messages().some(msg => /模型.*未保存.*API Base URL.*其他设置也还没有保存/.test(msg)));
+  assert.ok(!h.messages().some(msg => msg.includes('全局配置已保存')));
+  assert.equal(h.dom.gTgSave.disabled, false);
+  assert.equal(h.dom.gProviderActivate.disabled, false);
+});
+
+test('footer tracks input and change on every model field', async t => {
+  const fields = { gApiKey: ['synthetic-key', 'api_key'],
+    gBaseUrl: ['https://example.test/v1', 'api_base_url'],
+    gChatModel: ['typed-model', 'chat_model'], gChatModelSelect: ['selected-model', 'chat_model'],
+    gReasoningEffort: ['high', 'reasoning_effort'], gCustomName: ['测试名称', 'name'] };
+  for (const [field, [value, property]] of Object.entries(fields)) {
+    for (const event of ['input', 'change']) await t.test(`${field} ${event}`, async t => {
+      const h = await setupProviderFooter(t);
+      if (field === 'gCustomName') {
+        h.dom.gProvider.value = '__custom__';
+        h.dom.gProvider.dispatchEvent({ type: 'change' });
+      }
+      h.edit(field, value, event);
+      await h.save();
+      assert.equal(h.writes().length, 1);
+      // The model dropdown copies its selection into the text field on change.
+      if (field !== 'gChatModelSelect' || event === 'change') {
+        assert.equal(h.writes()[0].body[property], value);
+      }
+    });
+  }
+});
+
+test('switching providers and reloading providers clear model edits', async t => {
+  for (const reset of ['switch', 'reload']) await t.test(reset, async t => {
+    const h = await setupProviderFooter(t);
+    h.edit('gApiKey', 'discarded-key');
+    if (reset === 'reload') await h.settings.loadProviders();
+    else {
+      h.dom.gProvider.value = 'gemini';
+      h.dom.gProvider.dispatchEvent({ type: 'change' });
+    }
+    h.calls.length = 0;
+    await h.save();
+    assert.equal(h.calls.filter(c => c.url.startsWith('/api/providers')).length, 0);
+  });
+});
+
+test('footer reports save and activation request failures and allows retry', async t => {
+  for (const url of ['/api/providers', '/api/providers/openai/activate']) await t.test(url, async t => {
+    const h = await setupProviderFooter(t);
+    h.edit('gApiKey', 'synthetic-retry-key');
+    h.fail(url);
+    await h.save();
+    assert.ok(h.messages().some(msg => /模型.*未保存.*测试服务拒绝保存/.test(msg)));
+    assert.ok(!h.messages().some(msg => msg.includes('全局配置已保存')));
+    assert.equal(h.dom.gApiKey.value, 'synthetic-retry-key');
+    assert.equal(h.dom.gTgSave.disabled, false);
+    assert.equal(h.dom.gProviderActivate.disabled, false);
+    h.fail('');
+    await h.save();
+    assert.equal(h.writes().length, 2, 'failed request must retain pending edits for retry');
+    assert.ok(h.messages().some(msg => /全局配置.*模型.*保存.*启用/.test(msg)));
+  });
+});
+
+test('save-and-activate button keeps its busy label and clears edits for footer save', async t => {
+  const h = await setupProviderFooter(t);
+  const originalHtml = '<span>保存并启用</span>';
+  h.dom.gProviderActivate.innerHTML = originalHtml;
+  h.edit('gApiKey', 'synthetic-button-key');
+  const saved = h.save('gProviderActivate');
+  assert.equal(h.dom.gProviderActivate.disabled, true);
+  assert.match(h.dom.gProviderActivate.innerHTML, /保存并启用中/);
+  await saved;
+  assert.equal(h.dom.gProviderActivate.innerHTML, originalHtml);
+  assert.equal(h.dom.gProviderActivate.disabled, false);
+  assert.ok(h.messages().some(msg => msg.startsWith('已成功保存并启用')));
+  await h.save();
+  assert.equal(h.writes().length, 1);
+});
