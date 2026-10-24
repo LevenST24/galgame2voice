@@ -161,7 +161,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       add(meta, el('b', '', session?.characterName || session?.title || '新对话'),
         el('span', 'home-time', session ? ` · ${formatHomeTime(session.updatedAt, now())}` : ''));
       pane.appendChild(meta);
-      const excerpt = session?.excerpt || { zh: session?.lastLine || '从这一刻，开始你们的故事。' };
+      const excerpt = session?.excerpt?.zh ? session.excerpt : { zh: '从这一刻，开始你们的故事。' };
       if (excerpt.user) pane.appendChild(el('p', 'home-you', `你：${excerpt.user}`));
       pane.appendChild(el('blockquote', 'home-quote', `「${String(excerpt.zh || '').replace(/^「|」$/g, '')}」`));
       if (excerpt.ja) pane.appendChild(el('p', 'home-ja', excerpt.ja));
