@@ -196,7 +196,9 @@ def test_engine_guidance_quotes_only_names_the_settings_page_shows():
     repo = Path(__file__).resolve().parents[1]
     page = re.sub(r"<!--.*?-->", " ", (repo / "frontend" / "index.html").read_text(encoding="utf-8"), flags=re.S)
     visible = re.sub(r"<[^>]+>", " ", page)
-    sources = [repo / "galgame2voice" / "routers" / "health.py", repo / "galgame2voice" / "services" / "engine_recovery.py"]
+    sources = [repo / "galgame2voice" / "routers" / "health.py", repo / "galgame2voice" / "routers" / "common.py",
+               repo / "galgame2voice" / "services" / "engine_recovery.py",
+               repo / "galgame2voice" / "services" / "sovits_installation.py"]
     quoted = {step.strip() for source in sources
               for name in re.findall(r"「([^」]+)」", source.read_text(encoding="utf-8"))
               for step in name.split("→")}
