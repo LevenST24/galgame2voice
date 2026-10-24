@@ -76,6 +76,13 @@ def test_failed_atomic_write_preserves_previous_hint_and_cleans_temp(tmp_path, m
     assert list((tmp_path / "data").glob(".sovits-dir-*.tmp")) == []
 
 
+def test_valid_directory_message_names_the_tab_that_starts_the_engine(tmp_path):
+    # The tab was renamed from 状态诊断 to 运行状态; this message kept the old name.
+    make_engine(tmp_path / "engine")
+    installation.save_sovits_directory(tmp_path, "engine")
+    assert "「运行状态」" in installation.inspect_sovits_directory(tmp_path)["message"]
+
+
 def test_portable_rejects_engine_without_runtime(tmp_path, monkeypatch):
     (tmp_path / "api_v2.py").write_text("# source-only engine")
     monkeypatch.setattr(installation.sys, "frozen", True, raising=False)

@@ -37,7 +37,7 @@ def inspect_sovits_directory(project_root: Path) -> dict:
             return {"directory": "", "valid": False, "runtime_available": False, "message": "尚未设置本机语音引擎目录；连接远端引擎时无需设置。"}
         valid = directory.is_dir() and (directory / "api_v2.py").is_file()
         runtime = find_engine_python(directory) is not None if valid else False
-        message = "引擎目录有效，可在状态诊断中启动或重启引擎。" if valid else "目录已失效或缺少 api_v2.py，请重新选择解压后的引擎文件夹。"
+        message = "引擎目录有效，可在「运行状态」中启动或重启引擎。" if valid else "目录已失效或缺少 api_v2.py，请重新选择解压后的引擎文件夹。"
         if valid and not runtime:
             message = "目录有效，但未找到引擎自带的 Python；便携版需使用包含 runtime 的完整集成包。"
         return {"directory": str(directory), "valid": valid, "runtime_available": runtime, "message": message}
