@@ -1,476 +1,393 @@
-// P7: 标题画面模块 title.js（占位方案 B）——菜单、读取存档、键盘导航、减弱动效。
-// DOM 环境复用 tests/helpers/adv_dom.mjs（与 test_adv_p6.mjs 相同风格）。
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { fakeDocument, microtasks } from './helpers/adv_dom.mjs';
-import { createTitleScreen } from '../frontend/src/adv/title.js';
+import { fakeDocument, fakeClock, microtasks } from './helpers/adv_dom.mjs';
+import { createTitleScreen, formatHomeTime } from '../frontend/src/adv/title.js';
+import { homeExcerpt, createTitleActions } from '../frontend/src/adv/actions.js';
+import { showTitle } from '../frontend/src/adv/title_hook.js';
+import { createPortraitCache } from '../frontend/src/adv/portrait_cache.js';
 
-const pad2 = value => String(value).padStart(2, '0');
-const localStamp = date => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`
-  + ` ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
-const DATE_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/;
-const keyEvent = key => ({ type: 'keydown', key, bubbles: true });
+const NOW = new Date(2026, 9, 24, 22, 30);
+const audio = { status: 'ready', chunks: [{ audio_url: '/fake.wav' }] };
+const messages = [{ role: 'user', content: '之前的问题' }, { role: 'assistant', content: '旧回复' },
+  { role: 'user', content: '想去哪里？' }, { id: 'm9', role: 'assistant', ts: NOW.getTime(),
+    lines: [{ index: 0, zh: '第一句', ja: '一' }, { index: 1, zh: '去海边吧。', ja: '海へ。', audio }] },
+  { role: 'user', content: '这条在她之后，不应显示' }, { role: 'assistant', content: '' }];
+const snapshot = (id, n = 0) => ({ id, title: `对话${id}`, characterName: `角色${id}`, updatedAt: NOW.getTime() - n * 86400000,
+  hasUserMessages: id === 'a', settings: { voiceProfileId: 7, advBackground: 'w/sea', advBgTime: 'night' },
+  excerpt: id === 'a' ? homeExcerpt(messages) : { zh: `台词${id}` }, lastLine: `台词${id}`, background: '/fake.webp' });
+function textTree(node) { return node.textContent + node.children.map(textTree).join(''); }
+const escape = (node, extra = {}) => node.dispatchEvent({ type: 'keydown', key: 'Escape', ...extra });
 
-// 升序给出 12 个存档：s01 最旧（epoch 数字时间），s12 最新（ISO 本地串）。
-const SESSIONS = [
-  { id: 's01', title: '对话一', characterName: '小春', lastLine: '第一句。',
-    updatedAt: 1420000000000, background: '/bg/cafe.png' },
-  { id: 's02', title: '对话二', characterName: '凛', lastLine: '第二句。',
-    updatedAt: '2016-02-02T02:02', background: '/bg/library.png' },
-  { id: 's03', title: '对话三', characterName: '白鸟诗音', lastLine: '第三句。',
-    updatedAt: '2017-03-03T03:03', background: null },
-  { id: 's04', title: '对话四', characterName: '夜羽', lastLine: '第四句。',
-    updatedAt: '2018-04-04T04:04', background: '/bg/sea.png' },
-  { id: 's05', title: '对话五', characterName: '结衣', lastLine: '第五句。',
-    updatedAt: '2019-05-05T05:05', background: null },
-  { id: 's06', title: '对话六', characterName: '空', lastLine: '第六句。',
-    updatedAt: '2020-06-06T06:06', background: null },
-  { id: 's07', title: '对话七', characterName: '雪乃', lastLine: '第七句。',
-    updatedAt: '2021-07-07T07:07', background: null },
-  { id: 's08', title: '对话八', characterName: '霞', lastLine: '第八句。',
-    updatedAt: '2022-08-08T08:08', background: null },
-  { id: 's09', title: '对话九', characterName: '千夏', lastLine: '第九句。',
-    updatedAt: '2023-09-09T09:09', background: null },
-  { id: 's10', title: '对话十', characterName: '柚罗', lastLine: '第十句。',
-    updatedAt: '2024-10-10T10:10', background: null },
-  { id: 's11', title: '对话十一', characterName: '真琴', lastLine: '第十一句。',
-    updatedAt: '2025-11-11T11:11', background: null },
-  { id: 's12', title: '对话十二', characterName: '小春', lastLine: '第十二句。',
-    updatedAt: '2026-10-19T21:04', background: null },
-];
+test('loading providers keeps the excerpt and checking pill; onboarding history never controls the primary label', async t => {
+  const h = await fixture(t, { status: { modelLoaded: false, hasModel: false, model: { state: 'error' } } });
+  assert.ok(!h.q('.home-first-title'));
+  assert.ok(h.q('.home-quote'));
+  assert.equal(h.q('.home-dot').className, 'home-dot warn');
+  assert.match(textTree(h.q('.home-pill')), /对话 检查中/);
+  h.setStatus({ modelLoaded: true, hasModel: false, model: { state: 'error' } }); await h.ui.refresh();
+  assert.ok(h.q('.home-first-title'));
+  h.sessions[0].hasUserMessages = true;
+  h.setStatus({ modelLoaded: true, hasModel: true, model: { state: 'ok' } }); await h.ui.refresh();
+  assert.equal(textTree(h.q('.home-continue')), '接着聊 →');
+  h.sessions[0].hasUserMessages = false; await h.ui.refresh();
+  assert.equal(textTree(h.q('.home-continue')), '开始聊天');
+});
 
-function setup(t, options = {}) {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  const mqlEvents = [];
-  const mql = {
-    matches: Boolean(options.reduced),
-    addEventListener(type, fn) { mqlEvents.push({ type, fn }); },
-    removeEventListener(type, fn) {
-      const at = mqlEvents.findIndex(entry => entry.type === type && entry.fn === fn);
-      if (at >= 0) mqlEvents.splice(at, 1);
-    },
-  };
-  // 闭包写法：模块会解构 actions，方法脱离 this 也不能丢调用记录。
-  const calls = [];
-  const listCalls = { count: 0 };
-  const actions = {
-    calls,
-    startNew: () => calls.push('startNew'),
-    continueLatest: () => calls.push('continueLatest'),
-    loadSession: id => calls.push(['loadSession', id]),
-    openCharacters: () => calls.push('openCharacters'),
-    openSettings: () => calls.push('openSettings'),
-    listSessions: () => {
-      listCalls.count += 1;
-      if (options.fail) return Promise.reject(new Error('offline'));
-      return Promise.resolve(options.sessions);
-    },
-  };
-  const root = doc.createElement('div');
-  root.className = 'adv-stage';
-  doc.body.appendChild(root);
-  const title = createTitleScreen(root, {
-    actions,
-    documentObj: doc,
-    matchMedia: () => mql,
-  });
-  t.after(() => title.destroy());
-  return {
-    doc, root, title, mql, mqlEvents, actions, listCalls,
-    screen: () => title.element,
-    items: () => title.element.querySelectorAll('.adv-title-item'),
-    itemBy: key => title.element.querySelectorAll('.adv-title-item')
-      .find(node => node.dataset.key === key),
-    load: () => title.loadScreen,
-    slots: () => title.loadScreen.querySelectorAll('.adv-title-slot'),
-    empty: () => title.loadScreen.querySelector('.adv-title-empty'),
-    back: () => title.loadScreen.querySelector('.adv-title-back'),
-    prev: () => title.loadScreen.querySelector('.adv-title-page-prev'),
-    next: () => title.loadScreen.querySelector('.adv-title-page-next'),
-    info: () => title.loadScreen.querySelector('.adv-title-page-info'),
-  };
+test('opening reconciles the stage even if the selected id already matches; stale active id cannot replace preview target', async t => {
+  const h = await fixture(t, { active: 'missing', actions: { previewSession: async () => {} } });
+  assert.equal(h.q('.home-meta').children[0].textContent, '角色a');
+  const same = await fixture(t);
+  assert.ok(same.calls.some(c => Array.isArray(c) && c[0] === 'preview' && c[1] === 'a'));
+});
+
+test('late profiles update names and cropped avatars; late manifests retry without replacing focused recent buttons', async t => {
+  let profiles = [], artReady = false;
+  const sessions = ['a', 'b'].map(id => ({ id, title: `和${id}聊天`, messages: [], settings: { voiceProfileId: 7 } }));
+  const actions = createTitleActions({ getSessions: () => sessions, getProfiles: () => profiles });
+  const h = await fixture(t, { actions: { listSessions: actions.listSessions, getAvatar: async () => artReady ? {
+    rect: { x: 175, y: 0, width: 362, height: 325 }, crop: { left: 540, top: 865 },
+    layers: [{ file: '/api/media/portrait/7/layers/A/face.webp?sig=fake', rect: { x: 715, y: 865, width: 362, height: 325 } }],
+  } : null } });
+  profiles = [{ id: 7, name: '白雪乃爱' }]; h.clock.tick(5000); await microtasks();
+  assert.equal(h.q('.home-meta').children[0].textContent, '白雪乃爱');
+  const recent = h.q('.home-recent'); recent.focus();
+  artReady = true; h.clock.tick(5000); await microtasks();
+  assert.ok(h.q('.home-avatar').querySelector('img'));
+  assert.equal(h.q('.home-avatar').querySelector('img').style.left, '0%');
+  assert.equal(h.doc.activeElement, recent);
+});
+
+test('home hides and inerts every stage control and restores them on close', async t => {
+  const h = await fixture(t);
+  assert.equal(h.q('.adv-drawer'), null);
+  assert.equal(h.root.querySelector('.adv-drawer').inert, true);
+  for (const selector of ['.adv-layer-textbox', '.adv-layer-quickmenu', '.adv-app-tools', '.adv-art-status']) {
+    assert.equal(h.stage.querySelector(selector).inert, true, selector);
+    const css = readFileSync(new URL('../frontend/src/adv/title.css', import.meta.url), 'utf8');
+    assert.ok(css.includes(`.adv-stage.is-home ${selector}`));
+  }
+  h.ui.close();
+  assert.equal(h.root.querySelector('.adv-drawer').inert, false);
+  for (const node of h.stage.querySelectorAll('.adv-layer-textbox, .adv-layer-quickmenu, .adv-app-tools, .adv-art-status')) assert.equal(node.inert, false);
+});
+
+test('all-session cards have title then optional character; background getter is re-read after lists arrive', async t => {
+  let loaded = false;
+  const a = snapshot('a'); Object.defineProperty(a, 'background', { get: () => loaded ? '/fake-late.webp' : '' });
+  const h = await fixture(t, { sessions: [a, { ...snapshot('b'), characterName: '', background: '' }] });
+  h.q('.home-all').click(); assert.ok(!h.q('.adv-title-thumb-image'));
+  loaded = true; h.clock.tick(5000); await microtasks();
+  assert.equal(h.q('.adv-title-thumb-image').src, '/fake-late.webp');
+  assert.equal(h.q('.adv-title-slot-meta').children[0].textContent, a.title);
+  assert.equal(h.q('.adv-title-slot-title').textContent, a.characterName);
+  assert.ok(!h.ui.element.querySelectorAll('.adv-title-slot')[1].querySelector('.adv-title-slot-title'));
+});
+async function fixture(t, options = {}) {
+  const doc = fakeDocument(), clock = fakeClock(), calls = [];
+  const stage = doc.createElement('div'); stage.className = 'adv-stage'; doc.body.appendChild(stage);
+  for (const cls of ['adv-layer-textbox', 'adv-layer-quickmenu', 'adv-app-tools', 'adv-art-status']) { const n = doc.createElement('div'); n.className = cls; stage.appendChild(n); }
+  const root = doc.createElement('div'); root.className = 'adv-layer-overlay'; stage.appendChild(root);
+  const drawer = doc.createElement('div'); drawer.className = 'adv-drawer'; root.appendChild(drawer);
+  let active = options.active === undefined ? 'a' : options.active;
+  let status = options.status || { model: { state: 'ok', label: '测试模型 · 假模型' }, modelLoaded: true, hasModel: true, engine: { state: 'ready', base_url: 'http://127.0.0.1:9880' } };
+  const sessions = options.sessions || ['a','b','c','d','e','f','g','h'].map((id, n) => snapshot(id, n));
+  let finish, notify;
+  const actions = { listSessions: () => sessions, getActiveId: () => active, getStatus: async () => { calls.push('status'); return status; },
+    loadSession: id => calls.push(['load', id]), startNew: () => calls.push('new'), startNewWith: data => calls.push(['newWith', data]),
+    previewSession: async id => { active = id; calls.push(['preview', id]); },
+    listCharacters: () => [{ id: 7, name: '角色甲' }, { id: 8, name: '角色乙' }],
+    getBackgrounds: () => [{ key: 'w/sea', name: '海边' }, { key: 'w/room', name: '房间' }],
+    openSettings: tab => calls.push(['settings', tab]), openCharacters: () => calls.push('characters'),
+    voiceEnabled: () => true,
+    playExcerpt: e => { calls.push(['play', e.messageId, e.line.index]); return new Promise(resolve => { finish = resolve; }); },
+    stopExcerpt: () => calls.push('stop'), subscribeSettings: fn => { notify = fn; return () => { notify = null; }; },
+    ...options.actions };
+  const ui = createTitleScreen(root, { actions, documentObj: doc, clock, now: () => NOW });
+  t.after(() => ui.destroy()); ui.open(); await microtasks();
+  const q = selector => ui.element.querySelector(selector);
+  return { doc, clock, calls, stage, root, ui, q, sessions, actions,
+    setStatus(value) { status = value; }, finish: result => finish(result), notify: () => notify?.() };
 }
 
-// ---------------------------------------------------------------------------
-// 1. 结构与设计稿要求
-// ---------------------------------------------------------------------------
-
-test('title: labels follow design B without the prototype note', t => {
-  const h = setup(t);
-  const items = h.items();
-  assert.equal(items.length, 5);
-  assert.deepEqual(items.map(item => item.tagName), ['BUTTON', 'BUTTON', 'BUTTON', 'BUTTON', 'BUTTON']);
-  assert.deepEqual(items.map(item => item.querySelector('.adv-title-item-label').textContent),
-    ['开始', '继续', '读取', '角色', '设置']);
-  assert.deepEqual(items.map(item => item.querySelector('.adv-title-item-en').textContent),
-    ['NEW', 'CONTINUE', 'LOAD', 'CAST', 'CONFIG']);
-  assert.equal(h.screen().querySelector('.adv-title-logo').textContent, 'galgame2voice');
-  assert.equal(h.screen().querySelector('.adv-title-sub').textContent, '与 AI 角色的对话剧场');
-  const texts = [h.screen(), ...h.screen().querySelectorAll('*')].map(node => node.textContent);
-  assert.equal(texts.some(text => /prototype/i.test(text)), false, 'no PROTOTYPE B leftover');
-  assert.equal(texts.some(text => /原型/.test(text)), false, 'no 原型 leftover');
-  assert.equal(h.back().textContent, '返回');
-  assert.equal(h.prev().textContent, '上一页');
-  assert.equal(h.next().textContent, '下一页');
-  assert.equal(h.screen().querySelector('.adv-title-hint').textContent.includes('← →'), true);
-  assert.equal(h.load().getAttribute('aria-label'), '读取存档');
-  assert.equal(h.screen().querySelector('.adv-title-menu').getAttribute('aria-label'), '主菜单');
-  const strips = h.screen().querySelectorAll('.adv-title-strip');
-  assert.equal(strips.length, 2, 'two cloud layers');
-  assert.equal(strips[0].querySelectorAll('.adv-title-blob').length, 10, 'one pattern repeated twice');
+test('excerpt selects last textual assistant and its final sentence, earlier user, Chinese/Japanese and time', async t => {
+  const h = await fixture(t);
+  assert.equal(h.q('.home-meta').children[0].textContent, '角色a');
+  assert.equal(h.q('.home-time').textContent, ' · 今天 22:30');
+  assert.equal(h.q('.home-you').textContent, '你：想去哪里？');
+  assert.equal(h.q('.home-quote').textContent, '「去海边吧。」'); assert.equal(h.q('.home-ja').textContent, '海へ。');
+  assert.equal(h.doc.activeElement, h.q('.home-continue'));
+  assert.equal(h.ui.element.getAttribute('aria-label'), '首页');
+});
+test('legacy content and full portable greeting remain in the DOM; missing user/Japanese hidden', async t => {
+  const greeting = '你好！我是你的 AI 助手，支持语音输入与朗读回复。\n请随时和我聊天。';
+  const excerpt = homeExcerpt([{ role: 'assistant', content: greeting }]);
+  const h = await fixture(t, { sessions: [{ ...snapshot('a'), characterName: '', excerpt }] });
+  assert.equal(h.q('.home-quote').textContent, `「${greeting}」`); assert.match(textTree(h.ui.element), /支持语音输入与朗读回复/);
+  assert.equal(h.q('.home-meta').children[0].textContent, '对话a');
+  assert.equal(h.q('.home-you'), null); assert.equal(h.q('.home-ja'), null); assert.equal(h.q('.home-recents').hidden, true);
+  assert.equal(h.q('.home-listen'), null);
+});
+test('continue uses current session even when another is newer; stage home class and input inert restored', async t => {
+  const h = await fixture(t, { active: 'c' });
+  assert.equal(h.stage.classList.contains('is-home'), true);
+  assert.equal(h.stage.querySelector('.adv-layer-textbox').inert, true);
+  h.q('.home-continue').children[0].click();
+  assert.deepEqual(h.calls.at(-1), ['load', 'c']); assert.equal(h.ui.isOpen, false);
+  assert.equal(h.stage.classList.contains('is-home'), false); assert.equal(h.stage.querySelector('.adv-layer-textbox').inert, false);
+});
+test('no active session previews the latest so the stage and excerpt agree', async t => {
+  const h = await fixture(t, { active: null });
+  assert.ok(h.calls.some(c => Array.isArray(c) && c[0] === 'preview' && c[1] === 'a'));
+  assert.equal(h.q('.home-meta').children[0].textContent, '角色a');
+});
+test('recents exclude main, cap at three, preview without closing/fade and put previous main back', async t => {
+  const h = await fixture(t);
+  const recents = () => h.ui.element.querySelectorAll('.home-recent');
+  assert.deepEqual(recents().map(n => n.dataset.session), ['b','c','d']);
+  recents()[0].children[1].children[0].click(); await microtasks();
+  assert.deepEqual(h.calls.at(-1), ['preview', 'b']); assert.equal(h.ui.isOpen, true);
+  assert.equal(h.q('.home-quote').textContent, '「台词b」'); assert.equal(h.stage.classList.contains('is-home'), true);
+  assert.deepEqual(recents().map(n => n.dataset.session), ['a','c','d']);
+  assert.equal(h.doc.activeElement, h.q('.home-continue'));
+});
+test('audio availability, stop toggle, natural completion and playback failure', async t => {
+  const h = await fixture(t); h.q('.home-listen').children[0].click();
+  assert.equal(textTree(h.q('.home-listen')), '■ 停止'); assert.deepEqual(h.calls.at(-1), ['play','m9',1]);
+  h.q('.home-listen').click(); assert.equal(h.calls.at(-1), 'stop'); assert.equal(textTree(h.q('.home-listen')), '▶ 试听这句');
+  h.finish('ended'); await microtasks();
+  h.q('.home-listen').click(); h.finish('ended'); await microtasks(); assert.equal(textTree(h.q('.home-listen')), '▶ 试听这句');
+  h.q('.home-listen').click(); h.finish('failed'); await microtasks(); assert.equal(h.q('.home-listen').hidden, true);
+});
+for (const scenario of ['empty', 'expired', 'voiceOff']) test(`unplayable audio: ${scenario}`, async t => {
+  const s = snapshot('a'); s.excerpt = structuredClone(s.excerpt);
+  if (scenario === 'empty') s.excerpt.line.audio.chunks = [];
+  if (scenario === 'expired') s.excerpt.ts = NOW.getTime() - 7 * 86400000 - 1;
+  const h = await fixture(t, { sessions: [s], actions: { voiceEnabled: () => scenario !== 'voiceOff' } });
+  assert.equal(h.q('.home-listen'), null);
+});
+test('draft lists/defaults, selection arguments and cancel without mutation', async t => {
+  const h = await fixture(t); h.q('.home-new').click();
+  const open = key => { h.q(`.home-pick-${key}`).click(); return h.ui.element.querySelectorAll('.home-option'); };
+  let opts = open('voiceProfileId'); assert.deepEqual(opts.map(textTree), ['角色甲','角色乙']); assert.equal(opts[0].getAttribute('aria-pressed'), 'true');
+  opts[1].children[0].click();
+  opts = open('advBackground'); assert.deepEqual(opts.map(textTree), ['默认背景','海边','房间']); assert.equal(opts[1].getAttribute('aria-pressed'), 'true'); opts[2].click();
+  opts = open('advBgTime'); assert.deepEqual(opts.map(textTree), ['跟随时间','白天','傍晚','夜晚']); assert.equal(opts[3].getAttribute('aria-pressed'), 'true'); opts[1].click();
+  h.q('.home-start').click(); assert.deepEqual(h.calls.at(-1), ['newWith', { voiceProfileId: 8, advBackground: 'w/room', advBgTime: 'day' }]);
+  assert.equal(h.sessions[0].settings.voiceProfileId, 7);
+  h.ui.open(); await microtasks(); h.q('.home-new').click(); h.q('.home-cancel').click(); assert.ok(h.q('.home-continue'));
+});
+test('draft filters places by character work and resets a place from the previous work', async t => {
+  const h = await fixture(t, { actions: {
+    listCharacters: () => [{ id: 7, name: '角色甲', work: 'a' }, { id: 8, name: '角色乙', work: 'b' }],
+    getBackgrounds: () => [{ key: 'w/sea', name: '甲海边', work: 'a' }, { key: 'b/sea', name: '乙海边', work: 'b' }],
+  } });
+  h.q('.home-new').click(); h.q('.home-pick-advBackground').click();
+  let opts = h.ui.element.querySelectorAll('.home-option');
+  assert.deepEqual(opts.map(textTree), ['默认背景', '甲海边']); assert.equal(opts[1].getAttribute('aria-pressed'), 'true');
+  opts[1].click(); h.q('.home-pick-voiceProfileId').click(); h.ui.element.querySelectorAll('.home-option')[1].click();
+  h.q('.home-pick-advBackground').click(); opts = h.ui.element.querySelectorAll('.home-option');
+  assert.deepEqual(opts.map(textTree), ['默认背景', '乙海边']); assert.equal(opts[0].getAttribute('aria-pressed'), 'true');
+  h.q('.home-start').click();
+  assert.deepEqual(h.calls.at(-1), ['newWith', { voiceProfileId: 8, advBackground: '', advBgTime: 'night' }]);
+  assert.equal(h.sessions[0].settings.advBackground, 'w/sea');
 });
 
-// ---------------------------------------------------------------------------
-// 2. 键盘导航：方向键、Enter、Esc
-// ---------------------------------------------------------------------------
-
-test('title: arrow keys cycle the menu, Enter opens the load page, Esc returns', async t => {
-  const h = setup(t, { sessions: SESSIONS });
-  h.title.open();
-  await microtasks();
-  const items = h.items();
-  assert.equal(h.doc.activeElement, items[0], 'open focuses the first menu item');
-
-  const press = (node, key) => node.dispatchEvent(keyEvent(key));
-  press(items[0], 'ArrowRight');
-  assert.equal(h.doc.activeElement, items[1]);
-  press(items[1], 'ArrowLeft');
-  assert.equal(h.doc.activeElement, items[0]);
-  press(items[0], 'ArrowDown');
-  assert.equal(h.doc.activeElement, items[1]);
-  press(items[1], 'ArrowUp');
-  assert.equal(h.doc.activeElement, items[0]);
-  press(items[0], 'ArrowLeft');
-  assert.equal(h.doc.activeElement, items.at(-1), 'arrow navigation wraps');
-
-  items[2].focus();
-  press(items[2], 'Enter');
-  assert.equal(h.load().hidden, false, 'Enter opens the load screen');
-  assert.equal(h.title.isOpen, true);
-  assert.equal(h.screen().classList.contains('is-load'), true);
-  assert.equal(h.slots().length, 6);
-
-  h.screen().dispatchEvent(keyEvent('Escape'));
-  assert.equal(h.load().hidden, true, 'Esc returns to the menu');
-  assert.equal(h.doc.activeElement, items[2]);
-
-  h.screen().dispatchEvent(keyEvent('Escape'));
-  assert.equal(h.title.isOpen, true, 'Esc alone never closes the title');
+for (const work of [undefined, 'missing']) test(`draft lists all places when character work is ${work}`, async t => {
+  const h = await fixture(t, { actions: {
+    listCharacters: () => [{ id: 7, name: '角色甲', work }],
+    getBackgrounds: () => [{ key: 'w/sea', name: '甲海边', work: 'a' }, { key: 'b/sea', name: '乙海边', work: 'b' }],
+  } });
+  h.q('.home-new').click(); h.q('.home-pick-advBackground').click();
+  assert.deepEqual(h.ui.element.querySelectorAll('.home-option').map(textTree), ['默认背景', '甲海边', '乙海边']);
 });
 
-// ---------------------------------------------------------------------------
-// 3. 菜单动作与 继续 的禁用
-// ---------------------------------------------------------------------------
-
-test('title: menu actions fire and close only when they should', async t => {
-  const h = setup(t, { sessions: SESSIONS });
-  h.title.open();
-  await microtasks();
-  const items = h.items();
-
-  items[0].click();
-  assert.deepEqual(h.actions.calls, ['startNew']);
-  assert.equal(h.title.isOpen, false, '开始 closes the title');
-
-  h.title.open();
-  await microtasks();
-  items[1].click();
-  assert.deepEqual(h.actions.calls.at(-1), 'continueLatest');
-  assert.equal(h.title.isOpen, false, '继续 closes the title');
-
-  h.title.open();
-  await microtasks();
-  items[3].click();
-  items[4].click();
-  assert.deepEqual(h.actions.calls.slice(-2), ['openCharacters', 'openSettings']);
-  assert.equal(h.title.isOpen, true, '角色 and 设置 keep the title open');
-  assert.equal(h.load().hidden, true);
+test('draft starts from 默认背景 when the main session uses a place the list cannot show', async t => {
+  // 'none' is the plain sky from the ADV background panel; the draft list has no such entry.
+  const session = snapshot('a'); session.settings.advBackground = 'none';
+  const h = await fixture(t, { sessions: [session], actions: { listCharacters: () => [{ id: 7, name: '角色甲' }] } });
+  h.q('.home-new').click();
+  assert.equal(textTree(h.q('.home-pick-advBackground')), '默认背景 ▾');
+  h.q('.home-start').click();
+  assert.deepEqual(h.calls.at(-1), ['newWith', { voiceProfileId: 7, advBackground: '', advBgTime: 'night' }]);
 });
 
-test('title: a click on the label text of a menu item activates it', async t => {
-  const h = setup(t, { sessions: SESSIONS });
-  h.title.open();
-  await microtasks();
-  h.items()[0].querySelector('.adv-title-item-label').click();
-  assert.deepEqual(h.actions.calls, ['startNew']);
+test('changing to a work without backgrounds resets the previous work place while offering all places', async t => {
+  const h = await fixture(t, { actions: {
+    listCharacters: () => [{ id: 7, name: '角色甲', work: 'a' }, { id: 8, name: '角色乙', work: 'missing' }],
+    getBackgrounds: () => [{ key: 'w/sea', name: '甲海边', work: 'a' }],
+  } });
+  h.q('.home-new').click(); h.q('.home-pick-voiceProfileId').click(); h.ui.element.querySelectorAll('.home-option')[1].click();
+  h.q('.home-pick-advBackground').click();
+  const opts = h.ui.element.querySelectorAll('.home-option');
+  assert.deepEqual(opts.map(textTree), ['默认背景', '甲海边']); assert.equal(opts[0].getAttribute('aria-pressed'), 'true');
 });
 
-test('title: 继续 is disabled while there are zero sessions', async t => {
-  const h = setup(t, { sessions: [] });
-  h.title.open();
-  await microtasks();
-  const cont = h.itemBy('continue');
-  assert.equal(cont.disabled, true);
-  assert.equal(cont.getAttribute('aria-disabled'), 'true');
-  assert.equal(h.itemBy('load').getAttribute('aria-disabled'), 'false');
-
-  // A forced click must not fire continueLatest.
-  cont.dispatchEvent({ type: 'click', button: 0 });
-  assert.deepEqual(h.actions.calls, []);
-  assert.equal(h.title.isOpen, true, 'a disabled item cannot close the title');
-
-  h.title.close();
-  h.listCalls.count = 0;
-  h.title.open();
-  await microtasks();
-  assert.equal(h.listCalls.count, 1, 'open() re-reads the sessions once');
+test('first use checks model/voice/character, text-only lasts only this opening, updates after settings close', async t => {
+  const status = { modelLoaded: true, hasModel: false, model: { state: 'error', label: '未配置对话模型' }, engine: { state: 'unavailable' } };
+  const session = snapshot('a'); session.settings.voiceProfileId = null;
+  const h = await fixture(t, { status, sessions: [session] });
+  assert.ok(h.q('.home-first-title')); assert.equal(h.ui.element.querySelectorAll('.home-step.is-done').length, 0);
+  assert.equal(h.q('.home-continue'), null); assert.equal(h.doc.activeElement, h.q('.home-step-pending'));
+  assert.equal(h.ui.element.querySelectorAll('button').some(button => textTree(button) === '开始聊天'), false);
+  h.q('.home-step-pending').click(); assert.deepEqual(h.calls.at(-1), ['settings','models']);
+  h.q('.home-text-only').click(); assert.equal(h.ui.element.querySelectorAll('.home-step.is-done').length, 1);
+  session.settings.voiceProfileId = 7; h.notify(); await microtasks(); assert.equal(h.ui.element.querySelectorAll('.home-step.is-done').length, 2);
+  h.ui.close(); h.ui.open(); await microtasks(); assert.equal(h.ui.element.querySelectorAll('.home-step.is-done').length, 1);
+  h.setStatus({ ...status, hasModel: true, model: { state: 'ok' } }); h.notify(); await microtasks();
+  assert.equal(h.q('.home-first-title'), null); assert.ok(h.q('.home-continue')); assert.match(textTree(h.q('.home-notice')), /先用文字/);
+  assert.equal(textTree(h.q('.home-continue')), '接着聊 →');
 });
-
-test('title: a failed session list also disables 继续', async t => {
-  const h = setup(t, { fail: true });
-  h.title.open();
-  await microtasks();
-  assert.equal(h.itemBy('continue').disabled, true);
-  assert.equal(h.itemBy('continue').getAttribute('aria-disabled'), 'true');
+test('status colors/text, explanations, settings tabs, polling and disposal with fake clock', async t => {
+  const h = await fixture(t);
+  assert.deepEqual(h.ui.element.querySelectorAll('.home-dot').map(n => n.className), ['home-dot ok','home-dot ok']);
+  const pills = h.ui.element.querySelectorAll('.home-pill');
+  pills[0].children[1].click(); assert.match(textTree(h.q('.home-popover')), /测试模型/);
+  h.q('.home-popover').querySelector('button').click(); assert.deepEqual(h.calls.at(-1), ['settings','models']);
+  pills[1].click(); assert.match(textTree(h.q('.home-popover')), /语音服务已连接.*127.0.0.1:9880/);
+  h.q('.home-popover').querySelector('button').click(); assert.deepEqual(h.calls.at(-1), ['settings','inference']);
+  h.setStatus({ modelLoaded: false, model: { state: 'error' }, engine: { state: 'starting' } });
+  h.clock.tick(4999); await microtasks(); assert.equal(h.calls.filter(c => c === 'status').length, 1);
+  h.clock.tick(1); await microtasks(); assert.equal(h.calls.filter(c => c === 'status').length, 2);
+  assert.deepEqual(h.ui.element.querySelectorAll('.home-dot').map(n => n.className), ['home-dot warn','home-dot warn']);
+  assert.match(textTree(pills[0]), /对话 检查中/); assert.match(textTree(pills[1]), /语音 启动中/);
+  h.setStatus({ modelLoaded: true, hasModel: false, model: { state: 'error', label: '未填写 API Key' }, engine: { state: 'failed', message: '假引擎失败原因' } });
+  h.clock.tick(5000); await microtasks();
+  assert.deepEqual(h.ui.element.querySelectorAll('.home-dot').map(n => n.className), ['home-dot bad','home-dot bad']);
+  assert.match(textTree(pills[0]), /对话 未设置/); assert.match(textTree(pills[1]), /语音 未连接/);
+  pills[1].click(); assert.match(textTree(h.q('.home-popover')), /假引擎失败原因/);
+  h.ui.close(); const count = h.calls.length; h.clock.tick(20000); await microtasks(); h.notify();
+  assert.equal(h.calls.length, count); assert.equal(h.clock.timers.size, 0);
 });
-
-// ---------------------------------------------------------------------------
-// 4. 读取界面：排序、字段、日期、天空缩略图
-// ---------------------------------------------------------------------------
-
-test('title: load slots show newest first with full fields', async t => {
-  const h = setup(t, { sessions: SESSIONS });
-  h.title.open();
-  await microtasks();
-  h.itemBy('load').click();
-  const slots = h.slots();
-  assert.equal(slots.length, 6, 'six slots per page');
-  assert.deepEqual(slots.map(slot => slot.getAttribute('data-session')),
-    ['s12', 's11', 's10', 's09', 's08', 's07'], 'newest first');
-
-  const first = slots[0];
-  assert.equal(first.querySelector('.adv-title-slot-character').textContent, '小春');
-  assert.equal(first.querySelector('.adv-title-slot-title').textContent, '对话十二');
-  assert.equal(first.querySelector('.adv-title-slot-line').textContent, '第十二句。');
-  assert.equal(first.querySelector('.adv-title-slot-date').textContent, '2026-10-19 21:04');
-  assert.equal(first.querySelector('.adv-title-thumb-image'), null, 'a null background keeps the CSS sky');
-
-  const second = slots[1];
-  assert.equal(second.querySelector('.adv-title-slot-character').textContent, '真琴');
-  assert.equal(second.querySelector('.adv-title-slot-date').textContent, '2025-11-11 11:11');
-
-  assert.equal(slots[5].getAttribute('data-session'), 's07');
-  assert.equal(slots[5].querySelector('.adv-title-slot-date').textContent, '2021-07-07 07:07');
-  assert.equal(localStamp(new Date(SESSIONS[0].updatedAt)).match(DATE_RE) !== null, true);
-
-  assert.equal(h.empty().hidden, true, 'the empty note stays hidden with saves');
-  assert.ok(slots.every(slot => slot.tagName === 'BUTTON'));
+test('all sessions paginate, show image/title/last line/time, return and load via nested spans', async t => {
+  const h = await fixture(t); h.q('.home-all').click(); assert.equal(h.ui.loadScreen.hidden, false);
+  assert.equal(h.ui.element.querySelectorAll('.adv-title-slot').length, 6); assert.equal(h.q('.adv-title-thumb-image').src, '/fake.webp');
+  assert.match(textTree(h.q('.adv-title-slot')), /对话a.*角色a.*台词a.*今天/);
+  h.q('.adv-title-page-next').click(); assert.equal(h.ui.element.querySelectorAll('.adv-title-slot').length, 2);
+  assert.match(h.q('.adv-title-page-info').textContent, /第 2 \/ 2 页/);
+  h.q('.adv-title-page-prev').click(); h.q('.adv-title-back').click(); assert.equal(h.ui.loadScreen.hidden, true);
+  h.q('.home-all').click(); escape(h.q('.adv-title-back')); assert.equal(h.ui.loadScreen.hidden, true);
+  h.q('.home-all').click(); h.q('.adv-title-slot-meta').children[0].click(); assert.deepEqual(h.calls.at(-1), ['load','a']); assert.equal(h.ui.isOpen, false);
 });
-
-test('title: numeric and invalid timestamps format as YYYY-MM-DD HH:mm', async t => {
-  const rows = [
-    { id: 'n1', title: '数字', characterName: 'A', lastLine: 'ok', updatedAt: 1759999999999, background: null },
-    { id: 'n2', title: '坏值', characterName: 'B', lastLine: 'ok', updatedAt: 'not-a-date', background: null },
-    { id: 'n3', title: '缺失', characterName: 'C', lastLine: 'ok', updatedAt: undefined, background: null },
-  ];
-  const h = setup(t, { sessions: rows });
-  h.title.open();
-  await microtasks();
-  h.itemBy('load').click();
-  const slots = h.slots();
-  assert.equal(slots.map(slot => slot.getAttribute('data-session')).join(','), 'n1,n2,n3');
-  assert.equal(slots[0].querySelector('.adv-title-slot-date').textContent.match(DATE_RE) !== null, true);
-  assert.equal(slots[1].querySelector('.adv-title-slot-date').textContent, '');
-  assert.equal(slots[2].querySelector('.adv-title-slot-date').textContent, '');
+test('Escape closes popover then dropdown then draft/list; composing keys ignored; outside click closes', async t => {
+  const h = await fixture(t); h.q('.home-new').click();
+  h.q('.home-pick-advBgTime').click(); escape(h.q('.home-option'), { isComposing: true }); assert.ok(h.q('.home-dropdown'));
+  escape(h.q('.home-option'), { keyCode: 229 }); assert.ok(h.q('.home-dropdown'));
+  escape(h.q('.home-option')); assert.equal(h.q('.home-dropdown'), null); assert.ok(h.q('.home-start'));
+  h.q('.home-pill').click(); escape(h.q('.home-popover').querySelector('button')); assert.equal(h.q('.home-popover'), null); assert.ok(h.q('.home-start'));
+  escape(h.q('.home-start')); assert.ok(h.q('.home-continue')); escape(h.q('.home-continue')); assert.equal(h.ui.isOpen, true);
+  h.q('.home-pill').click(); h.ui.element.click(); assert.equal(h.q('.home-popover'), null);
+  h.q('.home-new').click(); h.q('.home-pick-advBgTime').click(); h.ui.element.click(); assert.equal(h.q('.home-dropdown'), null);
 });
-
-test('title: no sessions shows 还没有存档', async t => {
-  const h = setup(t, { sessions: [] });
-  h.title.open();
-  await microtasks();
-  h.itemBy('load').click();
-  assert.equal(h.slots().length, 0);
-  assert.equal(h.empty().hidden, false);
-  assert.equal(h.empty().textContent, '还没有存档');
-  assert.equal(h.doc.activeElement, h.back(), 'focus falls back to the back button');
-});
-
-// ---------------------------------------------------------------------------
-// 5. 分页与点击读取
-// ---------------------------------------------------------------------------
-
-test('title: pagination walks pages newest first and a slot loads and closes', async t => {
-  const h = setup(t, { sessions: SESSIONS });
-  h.title.open();
-  await microtasks();
-  h.itemBy('load').click();
-
-  assert.equal(h.prev().disabled, true, 'first page has no previous');
-  assert.equal(h.prev().getAttribute('aria-disabled'), 'true');
-  assert.equal(h.next().disabled, false);
-  assert.equal(h.info().textContent, '第 1 / 2 页 · 共 12 个存档');
-
-  h.next().click();
-  assert.equal(h.slots().length, 6, 'still six per page');
-  assert.deepEqual(h.slots().map(slot => slot.getAttribute('data-session')),
-    ['s06', 's05', 's04', 's03', 's02', 's01']);
-  assert.equal(h.info().textContent, '第 2 / 2 页 · 共 12 个存档');
-  assert.equal(h.next().disabled, true, 'last page has no next');
-  assert.equal(h.prev().disabled, false);
-
-  h.slots()[0].click();
-  assert.deepEqual(h.actions.calls.at(-1), ['loadSession', 's06']);
-  assert.equal(h.title.isOpen, false, 'a slot click closes the title');
-  assert.equal(h.load().hidden, true, 'the load screen resets for the next visit');
-
-  h.title.open();
-  await microtasks();
-  h.itemBy('load').click();
-  assert.equal(h.info().textContent, '第 1 / 2 页 · 共 12 个存档', 'a new visit starts on the newest page');
-  h.next().click();
-  const thumbs = [];
-  for (const slot of h.slots()) {
-    const image = slot.querySelector('.adv-title-thumb-image');
-    if (image) thumbs.push([slot.getAttribute('data-session'), image.src]);
-  }
-  assert.deepEqual(thumbs,
-    [['s04', '/bg/sea.png'], ['s02', '/bg/library.png'], ['s01', '/bg/cafe.png']],
-    'backgrounds arrive as image thumbs');
-});
-
-// ---------------------------------------------------------------------------
-// 6. 返回按钮
-// ---------------------------------------------------------------------------
-
-test('title: the back button returns to the menu', async t => {
-  const h = setup(t, { sessions: SESSIONS });
-  h.title.open();
-  await microtasks();
-  h.itemBy('load').click();
-  assert.equal(h.load().hidden, false);
-  h.back().click();
-  assert.equal(h.load().hidden, true);
-  assert.equal(h.doc.activeElement, h.itemBy('load'));
-  assert.equal(h.title.isOpen, true);
-  assert.equal(h.screen().classList.contains('is-load'), false);
-});
-
-// ---------------------------------------------------------------------------
-// 7. 减弱动效
-// ---------------------------------------------------------------------------
-
-test('title: reduced motion freezes the clouds and can change live', t => {
-  const h = setup(t, { reduced: false });
-  assert.equal(h.mqlEvents.length, 1, 'one change listener subscribed');
-  assert.equal(h.screen().classList.contains('is-reduced'), false, 'full motion by default');
-
-  h.mql.matches = true;
-  h.mqlEvents.forEach(entry => entry.fn({ type: 'change', matches: true }));
-  assert.equal(h.screen().classList.contains('is-reduced'), true, 'the clouds stop drifting');
-
-  h.mql.matches = false;
-  h.mqlEvents.forEach(entry => entry.fn({ type: 'change', matches: false }));
-  assert.equal(h.screen().classList.contains('is-reduced'), false, 'motion comes back');
-
-  h.mql.matches = true;
-  h.mqlEvents.forEach(entry => entry.fn({ type: 'change', matches: true }));
-  h.title.destroy();
-  assert.equal(h.mqlEvents.length, 0, 'destroy releases the media listener');
-});
-
-// ---------------------------------------------------------------------------
-// 8. open/close/isOpen
-// ---------------------------------------------------------------------------
-
-test('title: open covers the stage and close hides it', async t => {
-  const h = setup(t, { sessions: SESSIONS });
-  assert.equal(h.title.isOpen, false);
-  assert.equal(h.screen().hidden, true);
-  assert.equal(h.screen().getAttribute('hidden'), '');
-
-  h.title.open();
-  await microtasks();
-  assert.equal(h.title.isOpen, true);
-  assert.equal(h.screen().hidden, false);
-  assert.equal(h.screen().getAttribute('hidden'), null);
-  assert.equal(h.root.querySelector('.adv-title-screen'), h.screen(), 'mounted inside the stage');
-
-  h.title.close();
-  assert.equal(h.title.isOpen, false);
-  assert.equal(h.screen().hidden, true);
-  assert.equal(h.screen().getAttribute('hidden'), '');
-});
-
-// ---------------------------------------------------------------------------
-// 9. destroy 清理
-// ---------------------------------------------------------------------------
-
-test('title: destroy removes the DOM and every listener', async t => {
-  const h = setup(t, { sessions: SESSIONS });
-  h.title.open();
-  await microtasks();
-  h.itemBy('load').click();
-  const screen = h.screen();
-  const nodes = [screen, ...screen.querySelectorAll('button')];
-  assert.ok(nodes.length > 10);
-  h.title.destroy();
-
-  assert.equal(h.root.querySelector('.adv-title-screen'), null, 'the module node is gone');
-  assert.equal(screen.parentNode, null);
-  assert.equal(h.title.isOpen, false);
-  for (const node of nodes) {
-    assert.ok([...node.listeners.values()].every(set => set.size === 0), `${node.className} leaked listeners`);
-    assert.equal(node.onclick ?? null, null, `${node.className} leaked onclick`);
-  }
-  assert.equal(h.mqlEvents.length, 0, 'the media listener is released');
-
-  h.title.open();
-  assert.equal(h.title.isOpen, false, 'a destroyed module never re-mounts');
-});
-
-// ---------------------------------------------------------------------------
-// 10. 默认参数容忍
-// ---------------------------------------------------------------------------
-
-test('title: works with an empty actions object', async t => {
-  const doc = fakeDocument();
-  globalThis.document = doc;
-  const root = doc.createElement('div');
-  doc.body.appendChild(root);
-  const title = createTitleScreen(root, { documentObj: doc, matchMedia: () => ({ matches: false }) });
-  t.after(() => title.destroy());
-  title.open();
-  await microtasks();
-  const items = title.element.querySelectorAll('.adv-title-item');
-  items[0].click();
-  title.open();
-  items[2].click();
-  assert.equal(title.loadScreen.hidden, false);
-  assert.equal(title.isOpen, true);
-});
-
-// ---------------------------------------------------------------------------
-// 11. title.css 结构检查（同 P6 对 background.css 的做法）
-// ---------------------------------------------------------------------------
-
-test('title.css: unit geometry, drifting clouds, sky thumbs, reduced motion', () => {
+test('home CSS uses transparent interactive overlay, framing-based movement, clamping and reduced motion', () => {
   const css = readFileSync(new URL('../frontend/src/adv/title.css', import.meta.url), 'utf8');
-  const unitSized = css.match(/calc\(-?\d+(?:\.\d+)? \* var\(--u\)\)/g) || [];
-  assert.ok(unitSized.length >= 25, `sizes use the --u stage unit (found ${unitSized.length})`);
+  assert.match(css, /pointer-events:\s*auto/); assert.match(css, /1380 - var\(--sprite-cx/);
+  assert.match(css, /-webkit-line-clamp:\s*3/); assert.match(css, /prefers-reduced-motion/);
+  assert.doesNotMatch(css, /adv-title-menu|adv-title-cloud/);
+});
+test('reduced motion leaves nothing in the textbox transitioning, so entering chat can focus the input', () => {
+  const css = readFileSync(new URL('../frontend/src/adv/title.css', import.meta.url), 'utf8');
+  const reduced = css.match(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\r?\n\}/)?.[1] || '';
+  assert.match(reduced, /\.adv-stage \.adv-layer-textbox \* \{ transition: none !important; \}/);
+});
 
-  assert.match(css, /\.adv-title-screen\s*\{[^}]*position:\s*absolute/);
-  assert.match(css, /\.adv-title-screen\s*\{[^}]*inset:\s*0/);
-  // The overlay layer lets clicks through to the stage; the title must take them back.
-  assert.match(css, /\.adv-title-screen\s*\{[^}]*pointer-events:\s*auto/);
-  assert.equal(/transform:\s*scale\(/.test(css), false, 'no self scaling');
-  assert.equal(/100vw|100dvh/.test(css), false, 'no own letterbox viewport math');
+test('home layout anchors the excerpt and contains mobile pills, full-width primary and scrollable recents', () => {
+  const css = readFileSync(new URL('../frontend/src/adv/title.css', import.meta.url), 'utf8');
+  assert.match(css, /\.home-excerpt\.is-reading\s*\{[^}]*top:\s*calc\(330 \* var\(--u\)\)/);
+  assert.match(css, /\.home-notice\s*\{[^}]*bottom:\s*100%/);
+  assert.match(css, /\.home-step-mark\s*\{[^}]*border-radius:\s*50%/);
+  assert.match(css, /\.home-step\s*\{[^}]*border-top:/);
+  assert.match(css, /\.adv-stage\.is-portrait \.home-pill-text\s*\{\s*display:\s*none/);
+  assert.match(css, /\.adv-stage\.is-portrait \.home-pill-short\s*\{\s*display:\s*inline/);
+  assert.match(css, /\.adv-stage\.is-portrait \.home-primary\s*\{[^}]*min-width:\s*0/);
+  assert.match(css, /\.adv-stage\.is-portrait \.home-recents\s*\{[^}]*overflow-x:\s*auto/);
+  assert.match(css, /\.adv-stage\.is-portrait \.home-recents\s*\{[^}]*scrollbar-width:\s*thin;[^}]*scrollbar-color:\s*#ffffff26 #0d0f18/);
+  assert.match(css, /\.adv-stage\.is-portrait \.adv-title-screen::before\s*\{[^}]*flex:\s*1 0 30dvh/);
+});
+test('formatHomeTime covers calendar days including year boundary and invalid dates', () => {
+  const fmt = d => formatHomeTime(d, NOW);
+  assert.equal(fmt(new Date(2026,9,24,22,14)), '今天 22:14'); assert.equal(fmt(new Date(2026,9,23,22,14)), '昨天 22:14');
+  assert.equal(fmt(new Date(2026,9,20)), '周二'); assert.equal(fmt(new Date(2026,9,18)), '周日');
+  assert.equal(fmt(new Date(2026,9,17)), '10月17日'); assert.equal(fmt(new Date(2026,9,3)), '10月3日');
+  assert.equal(fmt(new Date(2025,9,3)), '2025年10月3日'); assert.equal(fmt('invalid'), '');
+  assert.equal(formatHomeTime(new Date(2025,11,31,23), new Date(2026,0,1)), '昨天 23:00');
+});
+test('hook fades continue and newWith only; preview remains open with no animation', async t => {
+  const h = await fixture(t); h.ui.destroy();
+  const ui = showTitle(h.actions, { documentObj: h.doc, matchMedia: () => ({ matches: false }) }); t.after(() => ui.destroy());
+  await microtasks(); const animations = [];
+  ui.element.animate = (frames, options) => { animations.push({ frames, options }); return { finished: Promise.resolve(), cancel() {} }; };
+  ui.element.querySelector('.home-recent').click(); await microtasks(); assert.equal(animations.length, 0); assert.equal(ui.isOpen, true);
+  ui.element.querySelector('.home-continue').click(); assert.equal(animations[0].options.duration, 300); assert.deepEqual(h.calls.at(-1), ['load','b']);
+  ui.open(); await microtasks(); ui.element.querySelector('.home-new').click(); ui.element.querySelector('.home-start').click();
+  assert.equal(animations.length, 2); assert.equal(h.calls.at(-1)[0], 'newWith');
+});
+test('portrait cache shares concurrent manifests and expires/refreshes/fails without retaining rejection', async () => {
+  let count = 0, time = 0;
+  const cache = createPortraitCache(async () => { count++; return { enabled: false }; }, () => time);
+  await Promise.all([cache.get(7), cache.get(7)]); assert.equal(count, 1);
+  await cache.get(7, { refresh: true }); assert.equal(count, 2); time = 61000; await cache.get(7); assert.equal(count, 3);
+  const fail = createPortraitCache(async () => { count++; throw Error('fake'); });
+  await assert.rejects(fail.get(8)); await assert.rejects(fail.get(8)); assert.equal(count, 5);
+});
 
-  assert.match(css, /@keyframes\s+adv-title-drift\s*\{[\s\S]*?-1920 \* var\(--u\)/);
-  assert.match(css, /\.adv-title-strip\s*\{[^}]*animation:\s*adv-title-drift[^}]*infinite/);
-  assert.match(css, /\.adv-title-strip-far\s*\{[^}]*150s/);
-  assert.match(css, /\.adv-title-strip-near\s*\{[^}]*84s/);
+test('onboarding keeps the actual new-session greeting in the DOM for portable smoke', async t => {
+  const greeting = '你好，支持语音输入与朗读回复。这里是完整开场白。';
+  const session = { ...snapshot('a'), excerpt: homeExcerpt([{ role: 'assistant', content: greeting }]) };
+  const h = await fixture(t, { sessions: [session], status: { modelLoaded: true, hasModel: false, model: { state: 'error' } } });
+  assert.ok(h.q('.home-first-title')); assert.match(textTree(h.ui.element), /支持语音输入与朗读回复/);
+  assert.equal(h.q('.home-greeting').textContent, greeting);
+});
 
-  assert.match(css, /\.adv-title-slot-line\s*\{[^}]*white-space:\s*nowrap/);
-  assert.match(css, /\.adv-title-slot-line\s*\{[^}]*text-overflow:\s*ellipsis/);
-  assert.match(css, /\.adv-title-thumb-image[^{]*\{[^}]*object-fit:\s*cover/);
-  assert.match(css, /:has\(\.adv-title-thumb-image\)/);
-  assert.match(css, /radial-gradient\(/);
+test('preview of an older active session puts it back into the clicked recent slot', async t => {
+  const h = await fixture(t, { active: 'h' });
+  assert.deepEqual(h.ui.element.querySelectorAll('.home-recent').map(n => n.dataset.session), ['a','b','c']);
+  h.q('.home-recent').click(); await microtasks();
+  assert.deepEqual(h.ui.element.querySelectorAll('.home-recent').map(n => n.dataset.session), ['h','b','c']);
+});
+test('ready engine and a bound character complete only their respective onboarding steps', async t => {
+  const h = await fixture(t, { status: { modelLoaded: true, model: { state: 'error' }, hasModel: false, engine: { state: 'ready' } } });
+  const steps = h.ui.element.querySelectorAll('.home-step');
+  assert.equal(steps[0].classList.contains('is-done'), false);
+  assert.equal(steps[1].classList.contains('is-done'), true); assert.equal(steps[2].classList.contains('is-done'), true);
+  assert.equal(h.q('.home-continue'), null);
+});
+test('closing home stops active replay; late playback/status completions cannot reopen it', async t => {
+  let resolveStatus;
+  const h = await fixture(t);
+  h.q('.home-listen').click();
+  h.actions.getStatus = () => new Promise(resolve => { resolveStatus = resolve; });
+  h.ui.refresh(); h.ui.close(); assert.equal(h.calls.at(-1), 'stop');
+  h.finish('ended'); resolveStatus({ modelLoaded: true, model: { state: 'error' } }); await microtasks();
+  assert.equal(h.ui.isOpen, false); assert.equal(h.ui.element.hidden, true); assert.equal(h.clock.timers.size, 0);
+});
+test('avatar crop uses manifest faceRect with fallback and no real artwork', async t => {
+  const h = await fixture(t, { actions: { getAvatar: async () => ({ rect: { x: 200, y: 100, width: 400, height: 360 },
+    crop: { left: 100, top: 50 }, layers: [{ file: '/fake-face.webp', rect: { x: 300, y: 150, width: 400, height: 300 } }] }) } });
+  const avatar = h.q('.home-avatar'); const img = avatar.querySelector('img');
+  assert.equal(img.src, '/fake-face.webp'); assert.equal(img.style.left, '0%'); assert.equal(img.style.top, '0%'); assert.equal(img.style.width, '100%');
+  img.onerror(); assert.equal(avatar.textContent, '角'); assert.equal(avatar.querySelector('img'), null);
+});
 
-  assert.match(css, /\.adv-title-screen\.is-reduced\s+\.adv-title-strip\s*\{[^}]*animation:\s*none/);
-  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.adv-title-strip[\s\S]*animation:\s*none/);
-  assert.match(css, /:focus-visible\s*\{[^}]*outline:\s*calc/);
-  assert.match(css, /\.adv-title-menu\s*\{[^}]*bottom:\s*calc\(\d+ \* var\(--u\)\)/);
-  assert.equal(/backdrop-filter/.test(css), false, 'no backdrop-filter anywhere');
+test('manifest-backed avatars reuse stage v2/v3 normalization and layer planning', async () => {
+  const rect = { x: 200, y: 100, width: 400, height: 360 };
+  const whole = { enabled: true, defaultCostume: 'uniform', costumes: [{ id: 'uniform', faceRect: rect }],
+    sprites: { uniform: { smile: { file: '/fake-whole.webp', width: 800, height: 1600 } } },
+    faces: { smile: { primary: 'gentle' } }, expressionSets: { gentle: [{ id: 'smile' }] } };
+  const crop = { left: 100, top: 50, width: 800, height: 1600 };
+  const layered = { enabled: true, version: 3, defaultOutfit: 'uniform', defaultPose: 'a',
+    canvases: { A: { width: 1000, height: 2000 } }, outfits: { uniform: { name: '校服' } }, poses: { a: { name: '站姿', canvas: 'A' } },
+    faces: { smile: { emotion: 'gentle' } }, expression_sets: { gentle: [{ id: 'smile' }] },
+    looks: { 'a/uniform': { pose: 'a', outfit: 'uniform', crop, faceRect: rect, headAnchor: { x: 400, y: 80 },
+      defaultFace: 'smile', body: ['body'], faces: { smile: { layers: ['face'] } } } },
+    layers: { body: { canvas: 'A', file: '/fake-body.webp', z: 0, rect: { x: 100, y: 50, width: 800, height: 1600 } },
+      face: { canvas: 'A', file: '/fake-face.webp', z: 2, rect: { x: 300, y: 150, width: 400, height: 300 } } } };
+  let calls = 0;
+  const cache = createPortraitCache(async id => { calls++; return id === 7 ? whole : layered; });
+  await cache.get(7);
+  const avatar = await cache.avatar({ settings: { voiceProfileId: 7 } });
+  assert.equal(calls, 1); assert.deepEqual(avatar.rect, rect); assert.equal(avatar.layers[0].file, '/fake-whole.webp');
+  const layeredAvatar = await cache.avatar({ settings: { voiceProfileId: 8 } });
+  assert.deepEqual(layeredAvatar.crop, crop); assert.deepEqual(layeredAvatar.rect, rect);
+  assert.deepEqual(layeredAvatar.layers.map(l => l.file), ['/fake-body.webp', '/fake-face.webp']);
 });

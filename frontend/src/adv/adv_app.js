@@ -67,7 +67,7 @@ export function mountAdv(dom, deps) {
   settings = pickSettings(deps.getSession()?.settings, DEFAULT_SESSION_SETTINGS);
   const textbox = createTextbox(stage.textbox, {
     clock, matchMedia, getSettings: playerSettings,
-    isOverlayOpen: () => Boolean(drawer || backlog || externalOverlay || configPanel?.isOpen || bgPanel?.isOpen),
+    isOverlayOpen: () => Boolean(stage.stage.classList.contains('is-home') || drawer || backlog || externalOverlay || configPanel?.isOpen || bgPanel?.isOpen),
     onAdvance: () => player.advance(),
     onSend: text => !controller.busy && controller.send(text),
     onMic: () => {
@@ -511,7 +511,7 @@ export function mountAdv(dom, deps) {
   const shortcuts = createShortcuts(stage.stage, {
     clock,
     getContext: () => ({ stage: stage.stage, hidden: player.hidden,
-      overlayOpen: Boolean(drawer || backlog || externalOverlay || configPanel?.isOpen || bgPanel?.isOpen),
+      overlayOpen: Boolean(stage.stage.classList.contains('is-home') || drawer || backlog || externalOverlay || configPanel?.isOpen || bgPanel?.isOpen),
       subtitleNone: settings.advSubtitleLanguage === 'none',
       playerInput: player.state === 'input',
       composing: textbox.composing }),
@@ -738,6 +738,7 @@ export function mountAdv(dom, deps) {
   return {
     update, player, textbox, sprite, stage, action, configPanel, background, bgPanel, closeDrawer,
     backgroundUrl: (id, time, work) => selectionUrl(backgrounds, { id: backgroundKey(id ?? '', work || null), time }),
+    listBackgrounds: () => backgrounds.map(({ key, name, work }) => ({ key, name, work })),
     isConfigOpen: () => Boolean(configPanel?.isOpen),
     get backlog() { return backlog; },
     unmount() {

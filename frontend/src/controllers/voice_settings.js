@@ -211,7 +211,7 @@ export async function ensureSessionVoice(session, { silent = false } = {}) {
       if (clean && String(_dom.sVoice?.value) === String(want)) applyProfilePromptToField(want);
     }
     if (_callbacks.renderHeader) _callbacks.renderHeader();
-    if (!silent) showToast(`已切换音色：${data.profile || want}`, 'success');
+    if (!silent && !_callbacks.isHomeOpen?.()) showToast(`已切换音色：${data.profile || want}`, 'success');
   } catch (e) {
     if (!isCurrent()) return;
     if (e.status === 404) {
@@ -234,6 +234,7 @@ export async function ensureSessionVoice(session, { silent = false } = {}) {
         }
       } catch { /* Keep the binding when its existence cannot be checked. */ }
     }
+    if (_callbacks.isHomeOpen?.()) return;
     showToast(`音色切换失败: ${e.message || e}`, 'error', _callbacks.onOpenEngineStatus ? {
       actionLabel: '检查语音状态',
       onAction: () => _callbacks.onOpenEngineStatus(),

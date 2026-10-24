@@ -19,14 +19,60 @@ Removed compatibility IDs: `backdrop`, `menuBtn`, `chatTitle`, `modelBadge`, `ba
 `portraitImgA`, `portraitImgB`, `stageDialogueCard`, `stageDialogueName`, `stageDialogueText`.
 `portrait.js`, bubble/typing/composer rendering and arrival-driven sequential autoplay are removed.
 
-After the first authenticated session sync, `main.js` calls `showTitle(actions)` from
-`adv/title_hook.js`; the default is a no-op and leaves the mounted stage visible.
-The separately implemented title screen can use that argument or import `advActions`
-from `main.js`: `startNew()`, `continueLatest()`, `loadSession(id)`, `openCharacters()`,
-`openSettings()`, `listSessions()`. The last returns fresh
-`{id, title, characterName, lastLine, updatedAt, background}` records newest first;
-timestamps are milliseconds, background is a portable ID, absent text/character/background
-is `''`, and unloaded histories use the backend's last-message summary.
+### 启动首页（2026-10-24）
+
+首次鉴权与会话同步完成后，`main.js` 调用 `adv/title_hook.js` 的 `showTitle(actions)`。
+`createTitleScreen(root, { actions, documentObj, matchMedia })` 保留原入口；
+`title.js` / `title.css` 绘制 `.adv-layer-overlay` 内的透明首页，真实背景和立绘仍由舞台绘制。
+主角优先使用当前会话，没有当前会话时预览最近更新的会话，使舞台与摘录保持一致。
+首页按会话的 `voiceProfileId` 显示角色；未绑定时不借用后端当前音色的立绘，也不从会话标题猜测角色。
+
+- 顶栏为小字标 Gal2Voice、带文字的对话/语音状态胶囊和全局设置齿轮。
+  对话状态来自 `getModelStatus` 与模型配置加载状态；语音来自 `/api/system/engine-status`。
+  打开时读取，此后每 5 秒刷新，设置弹窗关闭也刷新；关闭首页时注销计时器和订阅。
+  模型配置未读完时显示琥珀色「对话 检查中」与正常摘录，模型状态各字段在同一时刻读取。
+  轮询也更新晚到的角色名称、头像和背景缩略图；头像沿用真实立绘的 `faceRect` 与分层 `crop`。
+  胶囊说明框分别直达全局设置的 `models` / `inference` 页。
+  启动、同步、预览及会话设置保存产生的音色切换，均按结果到达时首页是否打开判断（舞台带 `is-home`，或启动同步尚未结束、首页还没来得及打开）：
+  首页打开时不弹成功或一般失败提示，由语音胶囊显示状态；404 确认音色被删除并解除绑定时仍提示数据变更。
+  从「接着聊 →」「开始聊天」、全部会话卡片或新建对话进入 ADV 时，仅当会话已绑定音色且
+  `getActiveProfileId()` 与绑定不同时再切换一次，成功、失败提示沿用 ADV 规则。
+  预览后同 ID 会话也执行此判断；已加载目标音色或未绑定时不请求、不提示，新建入口不重复切换。
+  首页以外的会话抽屉切换与删除行为保持原样。
+- 左侧显示角色名（无绑定角色则显示会话标题）、日期、最近一条有文字的助手消息的最后一句中文、
+  同句日语以及该助手消息之前最近的用户消息。没有 `lines` 的旧消息保留完整 `content`。
+  中文最多三行，CSS 截断，DOM 保留全文。引导卡期间也保留实际会话开场白，兼容便携版 DOM 冒烟。
+  「试听这句」与 LOG 共用 `canReplayLine`、`StreamAudioController.playLine/stopLine`，
+  包括七天过期、语音开关及部分音频失败的判定；切换或离开首页时停止试听。
+- 底部「最近还聊过」排除主角，最多显示三个会话。圆形头像复用舞台清单缓存、
+  `normalizePortrait` / `resolveSpriteState` / `planLayers`，按 `faceRect` 裁脸，失败用姓名首字。
+  `previewSession(id)` 复用切换会话但禁止聚焦输入框，保持首页打开；
+  「全部会话」保留原读取格子的缩略图、标题、末句、时间与每页六个的分页，标题下仅在有角色时显示角色名。
+- 「另开一段对话」显示角色/地点/时间三个下拉列表，默认取主角会话设置。
+  角色与背景列表保留 `work`；地点第一项为「默认背景」（值 `''`），其后只列所选角色 `profile.work` 的背景。
+  角色未标注作品或该作品没有背景时才列全部背景，规则与 ADV 背景面板一致。
+  换角色后，已选地点不属于新角色的作品时重置为「默认背景」，不修改原会话设置。
+  `startNewWith({ voiceProfileId, advBackground, advBgTime })` 复用 `newChat` 与角色默认语速。
+  草稿不写当前会话；目前不预览草稿舞台，因为现有背景选择器的预览会同时保存设置，角色也没有独立预览入口。
+- 模型配置读完且无可用模型时显示三步首次使用引导，语音可在本次首页临时选择「暂时只用文字」，
+  角色步骤按主角会话的 `voiceProfileId` 判定；模型可用后立即切换到摘录。
+  主按钮仅按会话是否有用户消息决定：有则「接着聊 →」，只有开场白则「开始聊天」。
+  引导不额外模糊舞台，避免对真实背景增加全屏滤镜开销。
+
+数据与操作只通过 `actions.js`：保留 `startNew`、`continueLatest`、`loadSession`、
+`openCharacters`、`openSettings(page)`、`listSessions`；新增 `startNewWith`、`previewSession`、
+`getActiveId`、`getStatus`、`getBackgrounds`、`listCharacters`、`getAvatar`、`playExcerpt`、
+`stopExcerpt`、`subscribeSettings`、`voiceEnabled`。
+`listSessions` 每次返回独立的 `{ id, title, characterName, lastLine, updatedAt, background, settings, excerpt, hasUserMessages }`；
+`background` 是按会话、作品、时间解析的图片 URL，时间戳为毫秒，`excerpt` 不暴露原始可变消息。
+
+首页打开给舞台加 `is-home`：横屏立绘按 `--sprite-cx` 的实际构图中心平移到约 1380u，
+竖屏不移动；文本框和快捷菜单隐藏且 inert，首页添加左侧/底部渐变暗角。
+进入对话时去掉 class，立绘用 300ms 回到原位、对话层淡入，hook 将首页淡出 300ms；
+`prefers-reduced-motion` 时瞬间完成。仅进入对话的 action 包装淡出，预览不包装。
+竖屏上部约 55% 留给场景，下部为可滚动深色摘录与整行主按钮，最近会话横向滚动。
+打开与预览后焦点放在主按钮，首次使用放在第一个未完成步骤，均使用 `preventScroll`。
+Esc 依次关闭说明框、下拉列表、全部会话/新对话页，首页本身不响应；组字按键忽略。
 
 Sources read: the approved `staged-launching-otter.md` plan, local `play-notes.md`,
 `yuzusoft-directing.md` plus statistics JSON, `tenshi-assets.md`, stream coordinator,
