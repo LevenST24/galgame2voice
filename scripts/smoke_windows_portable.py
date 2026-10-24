@@ -11,12 +11,44 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
 import wave
 import zipfile
+
+
+def check_browser(browser: Path, base_url: str, env: dict[str, str], root: Path, scratch: Path) -> None:
+    # The host may already isolate child processes. This browser
+    # only visits our temporary loopback fixture with fake data.
+    timeout = 60
+    for attempt in (1, 2):
+        try:
+            rendered = subprocess.run([
+                str(browser), "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-sync",
+                "--no-proxy-server",
+                "--disable-background-networking", "--dump-dom", "--virtual-time-budget=5000",
+                f"--user-data-dir={root / f'browser-profile-{attempt}'}", base_url,
+            ], env=env, capture_output=True, timeout=timeout, creationflags=subprocess.CREATE_NO_WINDOW)
+        except subprocess.TimeoutExpired as failure:
+            (scratch / f"browser-attempt-{attempt}-stdout.log").write_bytes(failure.stdout or b"")
+            (scratch / f"browser-attempt-{attempt}-stderr.log").write_bytes(failure.stderr or b"")
+            print(f"Browser attempt {attempt} timed out after {timeout} seconds; diagnostics saved in {scratch}")
+            if attempt == 2:
+                raise RuntimeError(
+                    f"Browser initialization timed out after 2 attempts ({timeout} seconds each); "
+                    f"diagnostics saved in {scratch}"
+                ) from failure
+            continue
+        if rendered.returncode or "支持语音输入与朗读回复" not in rendered.stdout.decode("utf-8", errors="replace"):
+            (scratch / "browser-rendered.html").write_bytes(rendered.stdout)
+            (scratch / "browser-errors.log").write_bytes(rendered.stderr)
+            print(f"Browser exit status: {rendered.returncode}; diagnostics saved in {scratch}")
+            raise RuntimeError("The real browser did not initialize the portable chat interface")
+        print("Portable browser initialization passed with an isolated headless profile.")
+        return
 
 
 def smoke_test(archive: Path, scratch: Path, *, skip_browser: bool = False) -> None:
@@ -148,20 +180,7 @@ def smoke_test(archive: Path, scratch: Path, *, skip_browser: bool = False) -> N
                 ]
                 browser = next((candidate for candidate in browser_candidates if candidate.is_file()), None)
                 if browser and not skip_browser:
-                    # The host may already isolate child processes. This browser
-                    # only visits our temporary loopback fixture with fake data.
-                    rendered = subprocess.run([
-                        str(browser), "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-sync",
-                        "--no-proxy-server",
-                        "--disable-background-networking", "--dump-dom", "--virtual-time-budget=5000",
-                        f"--user-data-dir={root / 'browser-profile'}", base_url,
-                    ], env=env, capture_output=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
-                    if rendered.returncode or "支持语音输入与朗读回复" not in rendered.stdout.decode("utf-8", errors="replace"):
-                        (scratch / "browser-rendered.html").write_bytes(rendered.stdout)
-                        (scratch / "browser-errors.log").write_bytes(rendered.stderr)
-                        print(f"Browser exit status: {rendered.returncode}; diagnostics saved in {scratch}")
-                        raise RuntimeError("The real browser did not initialize the portable chat interface")
-                    print("Portable browser initialization passed with an isolated headless profile.")
+                    check_browser(browser, base_url, env, root, scratch)
                 else:
                     print("Separate browser smoke skipped; HTML and JavaScript HTTP checks still run.")
                 with opener.open(base_url + "/api/system/engine-status", timeout=10) as response:
@@ -392,6 +411,8 @@ def smoke_test(archive: Path, scratch: Path, *, skip_browser: bool = False) -> N
 
 
 if __name__ == "__main__":
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", type=Path)
     parser.add_argument("--scratch", type=Path, default=Path(".local/portable-smoke"))
