@@ -21,6 +21,7 @@ import { streamAudioController } from './audio_player.js';
 import { renderSessionList, showToast, needsModelSettings } from './ui.js';
 import { advActions, createTitleActions } from './adv/actions.js';
 import { showTitle } from './adv/title_hook.js';
+import { createPortraitCache } from './adv/portrait_cache.js';
 
 import { initAuthInterceptor } from './auth.js';
 import { initSessionBackup } from './controllers/session_backup.js';
@@ -265,6 +266,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   let _syncSessionsGen = 0;
   let advApp = null;
   let syncingAdv = false;
+  // Home opens after the startup sync; a voice result that arrives earlier belongs to it too.
+  let homeStarting = true;
+  const portraits = createPortraitCache(id => requestJson(`/api/characters/${encodeURIComponent(id)}/portrait`));
   const conversation = createConversation({
     state, getActive, getSession, addMessage, uid, saveState, persistSession,
     isSessionDeleting, audioStore, putCachedAudioBlob, fetchAndCacheAudio,
@@ -292,7 +296,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         controller: conversation, audio: streamAudioController, getSession: getActive,
         voiceEnabled: () => state.global.voiceMode,
         getCharacter: () => {
-          const id = getActive()?.settings?.voiceProfileId || getActiveProfileId();
+          // An unbound imported session has no character of its own. On home,
+          // do not present the engine's globally loaded voice as that session.
+          const homeOpen = advApp?.stage.stage.classList.contains('is-home');
+          const id = getActive()?.settings?.voiceProfileId || (homeOpen ? null : getActiveProfileId());
           const profile = getVoiceProfiles().find(p => p.id === id);
           return { id, name: profile?.name || '角色', work: profile?.work ?? null };
         },
@@ -300,7 +307,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           const model = getModelStatus({ getCurrentActiveProvider, getActive, getVoiceProfiles, haveProvidersLoaded });
           return { ...model, state: conversation.busy ? 'busy' : model.state };
         },
-        loadPortrait: (id, { signal }) => requestJson(`/api/characters/${encodeURIComponent(id)}/portrait`, { signal }),
+        loadPortrait: (id, options) => portraits.get(id, options),
         saveSettings: patch => {
           const session = getActive();
           session.settings = pickSettings({ ...session.settings, ...patch }, DEFAULT_SESSION_SETTINGS);
@@ -457,15 +464,24 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     }
   }
 
-  async function switchSession(id) {
+  function ensureHomeEntryVoice(session) {
+    const want = session?.settings?.voiceProfileId;
+    if (want && getActiveProfileId() !== want) ensureSessionVoice(session);
+  }
+
+  async function switchSession(id, { focusInput = true, enterFromHome = false } = {}) {
     if (!getSession(id)) return false;
     closeDrawer();
     if (id === state.activeId) {
       const current = getActive();
       if (current && !current.messages?.length) {
         await loadSessionHistory(current);
-        if (getActive() === current) fullRender();
       }
+      if (getActive() === current) {
+        fullRender();
+        if (enterFromHome) ensureHomeEntryVoice(current);
+      }
+      if (focusInput) advApp?.textbox.inputElement?.focus();
       return;
     }
     interruptAll();
@@ -474,13 +490,14 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     const s = getActive();
     saveState();
     fullRender();
-    ensureSessionVoice(s);
+    if (enterFromHome) ensureHomeEntryVoice(s);
+    else ensureSessionVoice(s);
     if (s && (!s.messages || s.messages.length === 0)) {
       await loadSessionHistory(s);
       if (getActive() !== s) return;
       fullRender();
     }
-    advApp?.textbox.inputElement?.focus();
+    if (focusInput) advApp?.textbox.inputElement?.focus();
   }
 
   async function handleDelete(id) {
@@ -514,7 +531,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     showToast('对话已删除');
   }
 
-  function newChat() {
+  function newChat(selection, { enterFromHome = false } = {}) {
+    if (!selection || !Object.hasOwn(selection, 'voiceProfileId')) selection = null;
     ++_syncSessionsGen;
     interruptAll();
     closeDrawer();
@@ -529,8 +547,15 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       // 不再复制会话副本（复制正是同一角色在不同会话设定不一致的来源）
       s.settings.voiceProfileId = prevSession.settings.voiceProfileId;
       s.settings.ttsSpeed = prevSession.settings.ttsSpeed;
-    } else if (activeProfileId) {
-      const active = voiceProfiles.find((p) => p.id === activeProfileId);
+    }
+    if (selection && Object.hasOwn(selection, 'voiceProfileId')) {
+      s.settings.voiceProfileId = selection.voiceProfileId;
+      s.settings.advBackground = selection.advBackground;
+      s.settings.advBgTime = selection.advBgTime;
+      s.settings.ttsSpeed = DEFAULT_SESSION_SETTINGS.ttsSpeed;
+    }
+    if (selection || !s.settings.voiceProfileId) {
+      const active = voiceProfiles.find((p) => p.id === (selection ? selection.voiceProfileId : activeProfileId));
       if (active) {
         s.settings.voiceProfileId = active.id;
         if (active.name === '高楯欧丽叶') s.settings.ttsSpeed = 0.88;
@@ -540,7 +565,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     }
     saveState();
     fullRender();
-    ensureSessionVoice(s);
+    if (enterFromHome) ensureHomeEntryVoice(s);
+    else ensureSessionVoice(s);
     advApp?.textbox.inputElement?.focus();
     persistSession(s).catch(() => {});
     return s;
@@ -548,9 +574,31 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
 
   const actions = createTitleActions({
     getSessions: () => state.sessions, getProfiles: getVoiceProfiles,
-    startNew: newChat, loadSession: switchSession,
-    openCharacters: openSessionSettings, openSettings: () => openGlobalSettings(),
+    getActiveId: () => state.activeId,
+    startNew: selection => newChat(selection, { enterFromHome: true }),
+    loadSession: id => switchSession(id, { enterFromHome: true }),
+    previewSession: id => switchSession(id, { focusInput: false }),
+    openCharacters: openSessionSettings, openSettings: page => openGlobalSettings(page),
     getBackgroundUrl: (id, time, work) => advApp?.backgroundUrl(id, time, work) || '',
+    getBackgrounds: () => advApp?.listBackgrounds() || [],
+    getAvatar: session => portraits.avatar(session),
+    getStatus: async () => {
+      let engine;
+      try { engine = await requestJson('/api/system/engine-status', {}, { timeoutMs: 4500 }); }
+      catch (error) { engine = { state: 'unavailable', message: error.message }; }
+      // Sample all model fields together after the engine request. Providers may
+      // finish loading while it is pending; never mix that flag with an old model.
+      syncAdv();
+      const model = getModelStatus({ getCurrentActiveProvider, getActive, getVoiceProfiles, haveProvidersLoaded });
+      return { model, modelLoaded: haveProvidersLoaded(), hasModel: Boolean(getCurrentActiveProvider()), engine };
+    },
+    voiceEnabled: () => state.global.voiceMode,
+    playExcerpt: excerpt => {
+      stopCurrentVoice();
+      return streamAudioController.playLine(excerpt.line.index, excerpt.line.audio.chunks, { msgId: excerpt.messageId });
+    },
+    stopExcerpt: () => streamAudioController.stopLine({ fadeMs: 0 }),
+    subscribeSettings: listener => onModalChange(open => { if (!open) listener(); }),
   });
   Object.assign(advActions, actions);
   const app = { sendMessage, retryFailedMessage, loadOlderSessionHistory, fullRender, updateControls, conversation,
@@ -568,6 +616,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     renderHeader,
     onOpenSessionSettings: openSessionSettings,
     onOpenEngineStatus: () => openGlobalSettings('dashboard'),
+    isHomeOpen: () => homeStarting || Boolean(advApp?.stage.stage.classList.contains('is-home')),
     invalidateSessionSync: () => { ++_syncSessionsGen; },
   });
   initGlobalSettings(dom, {
@@ -690,7 +739,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   // The first protected request completes token authentication before title UI.
   app.ready = syncSessionsFromBackend().then(() => showTitleScreen(actions)).catch(error => {
     console.debug('Title startup deferred:', error);
-  });
+  }).finally(() => { homeStarting = false; });
 
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.get('settings') === '1' || window.location.hash === '#settings') {

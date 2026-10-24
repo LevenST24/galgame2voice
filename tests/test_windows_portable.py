@@ -1,15 +1,22 @@
 """Portable data paths, asset boundaries and safe frozen launcher behavior."""
 
 import builtins
+import hashlib
+import io
 from pathlib import Path
+import re
+import runpy
+import subprocess
+import sys
 from unittest.mock import MagicMock
+import zipfile
 
 import pytest
 
 from galgame2voice.config import Settings
 from galgame2voice import runtime_paths
 from galgame2voice.routers import system
-from scripts import build_windows_portable, run_server
+from scripts import build_windows_portable, run_server, smoke_windows_portable
 
 
 def test_source_install_root_is_project():
@@ -121,3 +128,98 @@ def test_launcher_failure_writes_diagnostic_log(tmp_path, monkeypatch, capsys):
     text = (tmp_path / "logs" / "launcher_error.log").read_text(encoding="utf-8")
     assert "Traceback" in text and "startup diagnostic marker" in text
     assert "launcher_error.log" in capsys.readouterr().out
+
+
+def test_smoke_cli_prints_chinese_failure_log_with_cp1252_stdio(tmp_path, monkeypatch):
+    archive = tmp_path / "portable.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("Galgame2Voice/tools/ffmpeg.exe", b"fake ffmpeg")
+    archive.with_suffix(".zip.sha256").write_text(hashlib.sha256(archive.read_bytes()).hexdigest())
+    log_text = "启动失败：中文诊断日志\n"
+
+    def fake_run(command, **kwargs):
+        install = Path(command[0]).parent
+        if "--check-only" in command and (install / "tools/ffmpeg.disabled").exists():
+            (install / "logs").mkdir()
+            (install / "logs/launcher_error.log").write_text("missing ffmpeg.exe", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 1, b"", b"")
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    def failed_launch(*args, **kwargs):
+        kwargs["stdout"].write(log_text.encode("utf-8"))
+        return MagicMock(poll=MagicMock(return_value=1))
+
+    monkeypatch.setattr(smoke_windows_portable.subprocess, "run", fake_run)
+    monkeypatch.setattr(smoke_windows_portable.subprocess, "Popen", failed_launch)
+    monkeypatch.setattr(smoke_windows_portable.urllib.request, "build_opener", MagicMock())
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", [str(smoke_windows_portable.__file__), str(archive),
+                                      "--scratch", str(tmp_path / "scratch")])
+    output = io.BytesIO()
+    errors = io.BytesIO()
+    with monkeypatch.context() as stdio_patch:
+        stdout = io.TextIOWrapper(output, encoding="cp1252")
+        stderr = io.TextIOWrapper(errors, encoding="cp1252")
+        stdio_patch.setattr(sys, "stdout", stdout)
+        stdio_patch.setattr(sys, "stderr", stderr)
+        with pytest.raises(RuntimeError, match="Portable application exited early"):
+            runpy.run_path(smoke_windows_portable.__file__, run_name="__main__")
+        stdout.flush()
+        assert stdout.encoding == stderr.encoding == "utf-8"
+    assert log_text.rstrip("\n") in output.getvalue().decode("utf-8").splitlines()
+
+
+def test_smoke_browser_retries_timeout_with_new_profile(tmp_path, monkeypatch, capsys):
+    calls = []
+    partial_stdout = b"<html>partial output\xff"
+    partial_stderr = b"Chrome startup diagnostic"
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=partial_stdout, stderr=partial_stderr)
+        return subprocess.CompletedProcess(command, 0, "支持语音输入与朗读回复".encode("utf-8"), b"")
+
+    monkeypatch.setattr(smoke_windows_portable.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    smoke_windows_portable.check_browser(Path("chrome.exe"), "http://127.0.0.1:1234", {}, tmp_path, tmp_path)
+    assert len(calls) == 2
+    profiles = [next(arg for arg in command if arg.startswith("--user-data-dir=")) for command, _ in calls]
+    assert profiles[0] != profiles[1]
+    assert all(kwargs["timeout"] == 60 and kwargs["capture_output"] for _, kwargs in calls)
+    assert (tmp_path / "browser-attempt-1-stdout.log").read_bytes() == partial_stdout
+    assert (tmp_path / "browser-attempt-1-stderr.log").read_bytes() == partial_stderr
+    assert "60" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("output", [b"partial diagnostic", None])
+def test_smoke_browser_reports_both_timeouts(tmp_path, monkeypatch, capsys, output):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=output, stderr=output)
+
+    monkeypatch.setattr(smoke_windows_portable.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    with pytest.raises(RuntimeError, match="60.*" + re.escape(str(tmp_path))) as failure:
+        smoke_windows_portable.check_browser(Path("chrome.exe"), "http://127.0.0.1:1234", {}, tmp_path, tmp_path)
+    assert isinstance(failure.value.__cause__, subprocess.TimeoutExpired)
+    assert len(calls) == 2
+    for attempt in (1, 2):
+        for stream in ("stdout", "stderr"):
+            assert (tmp_path / f"browser-attempt-{attempt}-{stream}.log").read_bytes() == (output or b"")
+    assert len(capsys.readouterr().out.splitlines()) == 2
+
+
+@pytest.mark.parametrize(("returncode", "dom"), [(0, b"<html></html>"), (1, "支持语音输入与朗读回复".encode("utf-8"))])
+def test_smoke_browser_preserves_failed_render_diagnostics(tmp_path, monkeypatch, returncode, dom):
+    run = MagicMock(return_value=subprocess.CompletedProcess([], returncode, dom, b"render error"))
+    monkeypatch.setattr(smoke_windows_portable.subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    with pytest.raises(RuntimeError, match="The real browser did not initialize the portable chat interface"):
+        smoke_windows_portable.check_browser(Path("chrome.exe"), "http://127.0.0.1:1234", {}, tmp_path, tmp_path)
+    run.assert_called_once()
+    assert (tmp_path / "browser-rendered.html").read_bytes() == dom
+    assert (tmp_path / "browser-errors.log").read_bytes() == b"render error"

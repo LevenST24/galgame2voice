@@ -239,16 +239,17 @@ test('P8 title thumbnails resolve a stored background to its image URL', () => {
 for (const reduced of [false, true]) test(`P8 title ${reduced ? 'reduced-motion bypass' : 'fade 300ms'}`, async () => {
   const doc = documentFixture(), clock = fakeClock(), calls = [], mql = media(reduced);
   const overlay = doc.createElement('div'); overlay.className = 'adv-layer-overlay'; doc.body.appendChild(overlay);
-  const title = showTitle({ startNew: () => calls.push('start'), listSessions: () => [] }, {
+  const title = showTitle({ startNew: () => calls.push('start'), listSessions: () => [], getStatus: () => ({ model: { state: 'ok' }, modelLoaded: true, engine: { state: 'ready' } }) }, {
     documentObj: doc, matchMedia: () => mql,
   });
+  await microtasks();
   const animations = animateFixture(title.element, clock);
-  title.element.querySelectorAll('.adv-title-item').find(button => button.dataset.key === 'start').click();
+  title.element.querySelector('.home-continue').click();
   assert.deepEqual(calls, ['start']); assert.equal(title.isOpen, false);
   if (reduced) {
     assert.equal(animations.length, 0); assert.equal(title.element.hidden, true);
     mql.rotate(false); title.open();
-    title.element.querySelectorAll('.adv-title-item').find(button => button.dataset.key === 'start').click();
+    title.element.querySelector('.home-continue').click();
     assert.equal(animations.length, 1, 'normal motion must fade');
   }
   else {
@@ -315,3 +316,4 @@ test('P8 queued-line preloading after done', async t => {
   assert.equal(h.app.player.currentIndex, 1);
   assert.equal(preloaded.at(-1).state.face, 'smile', 'queue stays available after stream completion');
 });
+

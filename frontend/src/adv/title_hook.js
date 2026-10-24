@@ -2,9 +2,8 @@ import { createTitleScreen } from './title.js';
 
 let screen = null;
 
-/** Called once after startup authentication/sync: shows the title screen over the ADV stage.
- * The title's look lives in title.js and title.css only, so a new design replaces those two files.
- * actions is the public API from actions.js (startNew, continueLatest, loadSession, ...).
+/** Called after startup sync: home overlays the active session's real ADV stage.
+ * Visuals live in title.js/title.css. Only actions entering chat fade; preview stays open.
  */
 export function showTitle(actions, { documentObj = document, matchMedia = query => globalThis.matchMedia?.(query) } = {}) {
   const root = documentObj.querySelector('.adv-layer-overlay');
@@ -17,7 +16,7 @@ export function showTitle(actions, { documentObj = document, matchMedia = query 
   if (motion?.addEventListener) motion.addEventListener('change', motionChange);
   else motion?.addListener?.(motionChange);
   const wrapped = { ...actions };
-  for (const name of ['startNew', 'continueLatest', 'loadSession']) {
+  for (const name of ['startNew', 'startNewWith', 'continueLatest', 'loadSession']) {
     wrapped[name] = (...args) => {
       const element = screen.element;
       const token = ++revision;
