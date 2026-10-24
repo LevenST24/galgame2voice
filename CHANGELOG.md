@@ -6,6 +6,9 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- 修复切换会话后，读屏软件仍能读到上一个会话最后一句台词的问题。
+
 ## [3.0.0] - 2026-10-23
 
 ### Added

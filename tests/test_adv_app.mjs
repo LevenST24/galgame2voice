@@ -334,6 +334,33 @@ test('one live announcement per activated line; viewport reflow never replays or
   assert.equal(live.textWrites.length, before + 2);
 });
 
+test('switching sessions clears the previous live announcement', t => {
+  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } }); h.start();
+  const live = h.app.stage.stage.querySelector('.adv-live-region');
+  h.line(0, { zh: '电车已经开走了。' });
+  assert.equal(live.textContent, '测试角色：电车已经开走了。');
+  h.switchSession(1);
+  assert.equal(live.textContent, '');
+  h.switchSession(0);
+  assert.equal(live.textContent, '', 'returning to a session does not restore an old announcement');
+});
+
+test('advancing within a session replaces the live announcement with the next line', t => {
+  const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } }); h.start();
+  const live = h.app.stage.stage.querySelector('.adv-live-region');
+  h.line(0, { zh: '电车已经开走了。' });
+  h.line(1, { zh: '我们等下一班吧。' });
+  assert.equal(live.textContent, '测试角色：电车已经开走了。');
+  const before = live.textWrites.length;
+  h.app.action('advance');
+  assert.equal(live.textContent, '测试角色：我们等下一班吧。');
+  assert.deepEqual(live.textWrites.slice(before), ['测试角色：我们等下一班吧。']);
+  h.app.update();
+  h.viewport.dispatchEvent({ type: 'resize' });
+  assert.equal(live.textContent, '测试角色：我们等下一班吧。');
+  assert.equal(live.textWrites.length, before + 1);
+});
+
 test('mic, model and configuration controls are reachable without advancing the dialogue', t => {
   const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } }); h.start(); h.line(); h.line(1);
   const inputButton = h.app.stage.stage.querySelector('.adv-app-tools').children[1]; inputButton.click();
