@@ -31,6 +31,7 @@ export class Element {
   set tabIndex(value) { this.setAttribute('tabindex', value); }
   removeAttribute(k) { delete this.attributes[k]; if (k === 'src') this.src = ''; }
   appendChild(child) { child.remove(); this.children.push(child); child.parentNode = this; return child; }
+  append(...children) { children.forEach(child => this.appendChild(child)); }
   insertBefore(child, next) {
     child.remove(); const index = this.children.indexOf(next);
     if (index < 0) this.children.push(child); else this.children.splice(index, 0, child);

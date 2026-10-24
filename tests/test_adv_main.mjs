@@ -4,7 +4,105 @@ import test from 'node:test';
 import { setup } from './helpers/adv_main.mjs';
 import { tick } from './helpers/chat_stream.mjs';
 import { state as storedState, getActive as storedActive, getSession as storedSession, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
-import { initVoiceSettings, ensureSessionVoice, getVoiceProfiles } from '../frontend/src/controllers/voice_settings.js';
+import { initVoiceSettings, ensureSessionVoice, getVoiceProfiles, fetchVoiceProfiles, getActiveProfileId } from '../frontend/src/controllers/voice_settings.js';
+import { createTitleScreen } from '../frontend/src/adv/title.js';
+import { initApp } from '../frontend/src/main.js';
+import { fakeDocument } from './helpers/adv_dom.mjs';
+
+const ENGINE_NOT_LOADED = '语音模型尚未加载。请在「全局设置 → 状态诊断」检查语音状态。';
+async function homeVoiceFixture(t, { status = 502, defer = false } = {}) {
+  storedState.sessions = [1, 2].map(id => ({ id: `home_${id}`, title: '假会话', updatedAt: id,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: id }, messages: [{ role: 'user', content: '你好' }] }));
+  storedState.activeId = 'home_1';
+  const requests = [];
+  let finishSwitch;
+  const h = setup(t, { callbacks: { state: storedState, getActive: storedActive, getSession: storedSession, getVoiceProfiles },
+    fetch: async (url, options = {}) => {
+      if (url === '/api/voice/profiles') return Response.json({ profiles: status === 404 && requests.length ? [] : [{ id: 1, name: '甲' }, { id: 2, name: '乙' }], active_profile_id: 99 });
+      if (url === '/api/voice/switch') {
+        requests.push(JSON.parse(options.body).profile_id);
+        const response = () => Response.json(status === 200 ? { profile: '假角色' } : { detail: ENGINE_NOT_LOADED }, { status });
+        return defer ? new Promise(resolve => { finishSwitch = () => resolve(response()); }) : response();
+      }
+      return Response.json({ backgrounds: [] });
+    } });
+  const toasts = document.createElement('div'); toasts.id = 'toastRoot'; document.body.appendChild(toasts);
+  t.after(() => { for (const toast of toasts.children) clearTimeout(toast._timer); });
+  const stage = h.app.adv.stage.stage;
+  initVoiceSettings({}, { isHomeOpen: () => stage.classList.contains('is-home') });
+  await fetchVoiceProfiles();
+  const home = createTitleScreen(h.app.adv.stage.overlay, { documentObj: document, actions: {
+    ...h.app.actions, getStatus: async () => ({ modelLoaded: true, hasModel: true, model: { state: 'ok' }, engine: { state: 'unavailable' } }),
+  } });
+  t.after(() => home.destroy());
+  return { ...h, home, stage, requests, toasts, finish: async () => { finishSwitch?.(); await tick(); } };
+}
+
+test('home suppresses startup failure by result-time state, including requests sent before home opens', async t => {
+  const h = await homeVoiceFixture(t, { defer: true });
+  const pending = ensureSessionVoice(storedActive()); await tick();
+  assert.equal(h.stage.classList.contains('is-home'), false);
+  h.home.open(); await tick(); await h.finish(); await pending;
+  assert.deepEqual(h.requests, [1]); assert.equal(h.toasts.children.length, 0);
+});
+
+test('home preview success is silent; continuing the previewed session does not switch again', async t => {
+  const h = await homeVoiceFixture(t, { status: 200 }); h.home.open(); await tick();
+  const preview = h.app.actions.previewSession('home_2'); await tick(); await h.finish(); await preview;
+  assert.equal(getActiveProfileId(), 2); assert.equal(h.toasts.children.length, 0);
+  await h.home.refresh();
+  h.home.element.querySelector('.home-continue').click(); await tick();
+  assert.equal(h.stage.classList.contains('is-home'), false);
+  assert.deepEqual(h.requests, [2]); assert.equal(h.toasts.children.length, 0);
+});
+
+test('continuing the same session after silent home failure retries once and reports the failure in ADV', async t => {
+  const h = await homeVoiceFixture(t); h.home.open(); await tick();
+  const pending = ensureSessionVoice(storedActive()); await tick(); await h.finish(); await pending;
+  assert.equal(h.toasts.children.length, 0);
+  h.home.element.querySelector('.home-continue').click(); await tick();
+  assert.deepEqual(h.requests, [1, 1]); await h.finish();
+  assert.equal(h.toasts.children.length, 1); assert.match(h.toasts.children[0].dataset.msg, /音色切换失败: 语音模型尚未加载/);
+});
+
+test('home visibility callback suppresses session-settings voice results and uses visibility when results arrive', async t => {
+  const h = await homeVoiceFixture(t, { status: 200, defer: true }); h.home.open(); await tick();
+  // Session settings saves call this same controller path after closing the modal.
+  let pending = ensureSessionVoice(storedActive()); await tick(); await h.finish(); await pending;
+  assert.equal(h.toasts.children.length, 0);
+  pending = ensureSessionVoice(storedActive()); await tick(); h.home.close(); await h.finish(); await pending;
+  assert.equal(h.toasts.children.length, 1); assert.match(h.toasts.children[0].dataset.msg, /已切换音色/);
+});
+
+for (const entry of ['startNew', 'startNewWith']) test(`home ${entry} switches a newly selected voice exactly once`, async t => {
+  const h = await homeVoiceFixture(t); h.home.open(); await tick(); h.home.close();
+  h.app.actions[entry]({ voiceProfileId: 2, advBackground: '', advBgTime: 'auto' }); await tick();
+  assert.deepEqual(h.requests, [entry === 'startNew' ? 1 : 2]); await h.finish();
+  assert.equal(h.toasts.children.length, 1);
+});
+
+test('home entry skips switching when voice is already active or session is unbound', async t => {
+  const h = await homeVoiceFixture(t, { status: 200 }); h.home.open(); await tick();
+  const pending = ensureSessionVoice(storedActive()); await tick(); await h.finish(); await pending;
+  h.home.close(); h.app.actions.startNew(); await tick();
+  assert.deepEqual(h.requests, [1]);
+  storedActive().settings.voiceProfileId = null;
+  await h.app.actions.loadSession(storedActive().id); await tick();
+  assert.deepEqual(h.requests, [1]); assert.equal(h.toasts.children.length, 0);
+});
+
+test('home still reports a confirmed deleted voice binding and clears it', async t => {
+  const h = await homeVoiceFixture(t, { status: 404 }); h.home.open(); await tick();
+  await ensureSessionVoice(storedActive());
+  assert.equal(storedActive().settings.voiceProfileId, null);
+  assert.equal(h.toasts.children.length, 1); assert.match(h.toasts.children[0].dataset.msg, /音色已被删除，已解除失效绑定/);
+});
+
+for (const status of [200, 502]) test(`ADV drawer switches keep notifications after leaving home: ${status}`, async t => {
+  const h = await homeVoiceFixture(t, { status });
+  await h.app.switchSession('home_2'); await tick();
+  assert.deepEqual(h.requests, [2]); assert.match(h.toasts.children[0].dataset.msg, status === 200 ? /已切换音色/ : /音色切换失败/);
+});
 
 for (const terminal of ['done', 'error', 'cancelled']) test(`LOG opened mid-stream includes existing lines through ${terminal}`, async t => {
   const h = setup(t); h.app.sendMessage('问题');
@@ -157,4 +255,128 @@ test('offline voice engine cannot block ADV art or let an old engine completion 
   finishSwitch(Response.json({ profile: '甲' })); await pending; await tick();
   assert.equal(h.app.adv.sprite.getModel().defaultCostume, 'outfit_3');
   assert.equal(storedActive().settings.voiceProfileId, 3);
+});
+
+test('home preview switches real session/stage without stealing focus for the hidden input', async t => {
+  const h = setup(t);
+  h.app.adv.stage.stage.classList.add('is-home');
+  const button = document.createElement('button'); h.app.adv.stage.overlay.appendChild(button); button.focus();
+  h.sessions[1].messages.push({ role: 'assistant', content: '假会话台词' });
+  await h.app.actions.previewSession('s_1');
+  assert.equal(h.state.activeId, 's_1'); assert.ok(document.activeElement === button, 'home preview must preserve focus');
+  assert.equal(h.app.actions.getActiveId(), 's_1'); assert.equal(h.app.actions.listSessions().find(s => s.id === 's_1').excerpt.zh, '假会话台词');
+});
+
+for (const [name, speed] of [['高楯欧丽叶', .88], ['常陆茉子', .90], ['白雪乃爱', 1.05], ['假角色', 1]]) {
+  test(`home newWith reuses newChat and character default speed: ${name}`, async t => {
+    storedState.sessions = [{ id: 'old_home', settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 9, ttsSpeed: 1.8 }, messages: [] }];
+    storedState.activeId = 'old_home';
+    const h = setup(t, { callbacks: { state: storedState, getActive: storedActive, getSession: storedSession,
+      getVoiceProfiles: () => [{ id: 7, name }] } });
+    const old = structuredClone(storedActive().settings);
+    const created = h.app.actions.startNewWith({ voiceProfileId: 7, advBackground: 'fake/sea', advBgTime: 'evening' });
+    assert.equal(storedActive(), created); assert.equal(created.settings.voiceProfileId, 7);
+    assert.equal(created.settings.advBackground, 'fake/sea'); assert.equal(created.settings.advBgTime, 'evening');
+    assert.equal(created.settings.ttsSpeed, speed); assert.deepEqual(storedSession('old_home').settings, old);
+    const next = h.app.actions.startNew(); assert.equal(next.settings.voiceProfileId, 7); assert.equal(next.settings.ttsSpeed, speed);
+    await tick();
+  });
+}
+
+test('real startup wiring silences both startup switches and all-session entry retries with an ADV status action', async t => {
+  const doc = fakeDocument(); globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div'); root.id = 'advRoot'; doc.body.appendChild(root);
+  const toasts = doc.createElement('div'); toasts.id = 'toastRoot'; doc.body.appendChild(toasts);
+  // Fixed times keep 全部会话 in this order; times filled in at load can land a millisecond apart.
+  storedState.sessions = [{ id: 'startup_home', title: '假启动会话', updatedAt: 2000, settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 1 },
+    messages: [{ id: 'startup_msg', role: 'user', content: '你好' }] },
+  { id: 'other_home', title: '另一个假会话', updatedAt: 1000, settings: { ...DEFAULT_SESSION_SETTINGS }, messages: [] }];
+  storedState.activeId = 'startup_home';
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedState)]]);
+  globalThis.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
+  let home, defer = true;
+  const pending = [], switches = [];
+  globalThis.location = { origin: 'http://home.test' };
+  globalThis.window = { innerWidth: 1280, location: { search: '', hash: '' },
+    sessionStorage: { getItem: () => '', setItem() {} },
+    fetch: async (url, options = {}) => {
+      if (url === '/api/voice/profiles') return Response.json({ profiles: [{ id: 1, name: '甲', work: 'a' }], active_profile_id: 99 });
+      if (url === '/api/voice/switch') {
+        switches.push(JSON.parse(options.body).profile_id);
+        const failure = () => Response.json({ detail: ENGINE_NOT_LOADED }, { status: 502 });
+        return defer ? new Promise(resolve => pending.push(() => resolve(failure()))) : failure();
+      }
+      return Response.json({ sessions: [], has_more: false, providers: [], backgrounds: [{ key: 'a/room', name: '房间', work: 'a' }] });
+    } };
+  globalThis.fetch = (...args) => window.fetch(...args);
+  await fetchVoiceProfiles();
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {}, showTitle: actions => {
+    home = createTitleScreen(app.adv.stage.overlay, { documentObj: doc, actions: {
+      ...actions, getStatus: async () => ({ modelLoaded: true, hasModel: true, model: { state: 'ok' }, engine: { state: 'unavailable' } }),
+    } }); home.open();
+  } });
+  t.after(() => {
+    home?.destroy(); app.conversation.stop(); app.adv.unmount();
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document; delete globalThis.location;
+  });
+  await app.ready; await tick();
+  assert.deepEqual(switches, [1, 1]);
+  for (const finish of pending) finish(); await tick();
+  assert.equal(toasts.children.length, 0);
+  assert.deepEqual(app.actions.listCharacters(), [{ id: 1, name: '甲', work: 'a' }]);
+  assert.deepEqual(app.actions.getBackgrounds(), [{ key: 'a/room', name: '房间', work: 'a' }]);
+  defer = false;
+  home.element.querySelector('.home-all').click();
+  home.element.querySelector('.adv-title-slot').click(); await tick();
+  assert.deepEqual(switches, [1, 1, 1]); assert.equal(toasts.children.length, 1);
+  assert.equal(toasts.querySelector('.toast-action-btn').textContent, '检查语音状态');
+});
+
+
+test('a startup voice switch that fails before home opens stays quiet', async t => {
+  // The switch starts before the session sync, and a stopped engine answers at once.
+  const doc = fakeDocument(); globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div'); root.id = 'advRoot'; doc.body.appendChild(root);
+  const toasts = doc.createElement('div'); toasts.id = 'toastRoot'; doc.body.appendChild(toasts);
+  storedState.sessions = [{ id: 'early_home', title: '假启动会话', settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 1 },
+    messages: [{ id: 'early_msg', role: 'user', content: '你好' }] }];
+  storedState.activeId = 'early_home';
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedState)]]);
+  globalThis.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
+  let home, releaseSync;
+  const syncGate = new Promise(resolve => { releaseSync = resolve; });
+  const switches = [];
+  globalThis.location = { origin: 'http://home.test' };
+  globalThis.window = { innerWidth: 1280, location: { search: '', hash: '' },
+    sessionStorage: { getItem: () => '', setItem() {} },
+    fetch: async (url, options = {}) => {
+      if (url === '/api/voice/profiles') return Response.json({ profiles: [{ id: 1, name: '甲', work: 'a' }], active_profile_id: 99 });
+      if (url === '/api/voice/switch') {
+        switches.push(JSON.parse(options.body).profile_id);
+        return Response.json({ detail: ENGINE_NOT_LOADED }, { status: 502 });
+      }
+      if (String(url).startsWith('/api/chat/sessions')) await syncGate;
+      return Response.json({ sessions: [], has_more: false, providers: [], backgrounds: [] });
+    } };
+  globalThis.fetch = (...args) => window.fetch(...args);
+  await fetchVoiceProfiles();
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {}, showTitle: actions => {
+    home = createTitleScreen(app.adv.stage.overlay, { documentObj: doc, actions: {
+      ...actions, getStatus: async () => ({ modelLoaded: true, hasModel: true, model: { state: 'ok' }, engine: { state: 'unavailable' } }),
+    } }); home.open();
+  } });
+  t.after(() => {
+    home?.destroy(); app.conversation.stop(); app.adv.unmount();
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document; delete globalThis.location;
+  });
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(switches, [1]); assert.equal(home, undefined);
+  assert.equal(toasts.children.length, 0);
+  releaseSync(); await app.ready; for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(switches, [1, 1]); assert.equal(home.isOpen, true);
+  assert.equal(toasts.children.length, 0);
 });
