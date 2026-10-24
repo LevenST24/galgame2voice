@@ -627,6 +627,7 @@ export function mountAdv(dom, deps) {
       if (configPanel?.isOpen) configPanel.close({ revert: true });
       closeBgPanel();
       closeDrawer(); closeLog(); resetInput(); turnId = null; currentLine = null; failedUser = null;
+      textbox.clearAnnouncement();
       textbox.setDraft(drafts.get(session?.id) || '');
     }
     sessionId = session?.id; characterKey = character?.id; outfit = settings.advOutfit;

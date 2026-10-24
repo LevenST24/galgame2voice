@@ -810,6 +810,7 @@ export function createTextbox(container, opts = {}) {
     setSpeaker,
     setVoice,
     clearError,
+    clearAnnouncement() { liveRegionEl.textContent = ''; },
     setHidden,
     swapLanguages,
     reflow,
