@@ -7,6 +7,7 @@ All notable changes to galgame2voice are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- 在「对话模型」页填了 Key 或改了地址等设置后，点页脚的「保存全局配置」曾提示已保存，但模型设置其实没存。现在会一起保存并启用；保存失败时会说明原因。未改动模型表单时不会保存或切换当前模型。
 - 修复切换会话后，读屏软件仍能读到上一个会话最后一句台词的问题。
 
 ## [3.0.0] - 2026-10-23

@@ -24,6 +24,7 @@ let cachedProviders = [];
 let cachedPresets = [];
 let currentActiveProvider = null;
 let providersLoaded = false;
+let providerDirty = false;
 let engineDirectory = null;
 let configDirty = false;
 let configRevision = 0;
@@ -56,6 +57,7 @@ export function haveProvidersLoaded() {
 export function initGlobalSettings(dom, callbacks = {}) {
   _dom = dom;
   _callbacks = callbacks;
+  providerDirty = false;
   configDirty = false;
   configRevision = 0;
   configLoad = 0;
@@ -201,6 +203,11 @@ export function initGlobalSettings(dom, callbacks = {}) {
   if (_dom.gChatModelSelect) _dom.gChatModelSelect.addEventListener('change', onChatModelSelectChange);
   if (_dom.gProviderTest) _dom.gProviderTest.addEventListener('click', handleProviderTest);
   if (_dom.gProviderActivate) _dom.gProviderActivate.addEventListener('click', handleActivateProvider);
+  for (const field of ['gApiKey', 'gBaseUrl', 'gChatModel', 'gChatModelSelect', 'gReasoningEffort', 'gCustomName']) {
+    for (const event of ['input', 'change']) _dom[field]?.addEventListener(event, () => {
+      providerDirty = true;
+    });
+  }
 
   // 恢复默认参数
   if (_dom.gResetBtn) {
@@ -366,6 +373,7 @@ export async function loadProviders() {
 }
 
 export function onProviderChange() {
+  providerDirty = false;
   if (!_dom.gProvider) return;
   const pid = _dom.gProvider.value;
   const isCustom = pid === 'custom' || pid === '__custom__';
@@ -621,8 +629,13 @@ export async function handleProviderTest() {
 }
 
 export async function handleActivateProvider() {
-  if (!_dom.gProviderActivate || !_dom.gProvider) return;
-  if (connectionPreferencePending()) return;
+  return saveAndActivateProvider();
+}
+
+// The footer save reuses this; it reports success itself and must say the rest was not saved either.
+async function saveAndActivateProvider({ fromFooter = false } = {}) {
+  if (!_dom.gProviderActivate || !_dom.gProvider) return false;
+  if (connectionPreferencePending()) return false;
   _dom.gProviderActivate.disabled = true;
   const origHtml = _dom.gProviderActivate.innerHTML;
   _dom.gProviderActivate.innerHTML =
@@ -640,12 +653,10 @@ export async function handleActivateProvider() {
     const customName = _dom.gCustomName ? _dom.gCustomName.value.trim() : '';
 
     if (!baseUrl) {
-      showToast('请填写 API Base URL', 'error');
-      return;
+      throw new Error('请填写 API Base URL');
     }
     if (!chatModel) {
-      showToast('请填写或选择模型名称', 'error');
-      return;
+      throw new Error('请填写或选择模型名称');
     }
 
     const stored = cachedProviders.find((p) => p.id === pid);
@@ -653,9 +664,8 @@ export async function handleActivateProvider() {
 
     const hasExistingKey = Boolean(stored?.api_key && stored.api_key.length > 0);
     if (!isCustom && !hasExistingKey && !apiKey) {
-      showToast(`请先输入 ${preset?.name || pid} 的 API Key 再启用`, 'error');
       if (_dom.gApiKey) _dom.gApiKey.focus();
-      return;
+      throw new Error(`请先输入 ${preset?.name || pid} 的 API Key 再启用`);
     }
 
     const payload = {
@@ -678,11 +688,14 @@ export async function handleActivateProvider() {
     currentActiveProvider = active || { name: payload.name, chat_model: chatModel };
     if (_callbacks.updateBadge) _callbacks.updateBadge();
 
-    showToast(`已成功保存并启用：${payload.name} · ${chatModel}`, 'success');
+    providerDirty = false;
+    if (!fromFooter) showToast(`已成功保存并启用：${payload.name} · ${chatModel}`, 'success');
     await loadProviders();
+    return true;
   } catch (e) {
     console.error('Failed to activate provider:', e);
-    showToast(`模型启用失败: ${e.message || e}`, 'error');
+    showToast(`模型设置未保存或启用失败：${e.message || e}${fromFooter ? '；其他设置也还没有保存' : ''}`, 'error');
+    return false;
   } finally {
     _dom.gProviderActivate.disabled = false;
     _dom.gProviderActivate.innerHTML = origHtml;
@@ -909,6 +922,8 @@ export async function saveGlobalConfig() {
   }
   if (_dom.gTgSave) _dom.gTgSave.disabled = true;
   try {
+    const saveModel = providerDirty;
+    if (saveModel && !await saveAndActivateProvider({ fromFooter: true })) return;
     const savedRevision = configRevision;
     const payload = {
       gpt_sovits_url: _dom.gParamSovitsUrl ? _dom.gParamSovitsUrl.value.trim() || 'http://127.0.0.1:9880' : undefined,
@@ -946,7 +961,9 @@ export async function saveGlobalConfig() {
       saveGlobal({ autoTranslate: _dom.gAutoTranslate.value === 'auto' });
     }
 
-    showToast(configDirty ? '之前的配置已保存；当前修改尚未保存。' : '全局配置已保存', 'success');
+    showToast(configDirty
+      ? (saveModel ? '模型设置已保存并启用，之前的全局配置已保存；当前修改尚未保存。' : '之前的配置已保存；当前修改尚未保存。')
+      : (saveModel ? '全局配置和模型设置已保存，模型已启用。' : '全局配置已保存'), 'success');
     loadGlobalConfig();
     fetchSystemTelemetry();
   } catch (e) {
