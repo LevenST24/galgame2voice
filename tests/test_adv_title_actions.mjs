@@ -58,9 +58,10 @@ test('fresh browser drops its unused local starter after sync and home previews 
   const profiles = [{ id: 7, name: '主角', work: 'fake' }, { id: 8, name: '其他角色', work: 'fake' }];
   globalThis.window = { innerWidth: 1280, location: { search: '', hash: '' },
     sessionStorage: { getItem: () => '', setItem() {} }, fetch: async url => {
+      // The server sends SQLite times; anything else falls back to Date.now() per session.
       if (url.startsWith('/api/chat/sessions?')) return new Promise(resolve => { releaseSessions = () => resolve(Response.json({ sessions: [
-        { id: 'latest', title: '主角会话', updated_at: 30, voice_profile_id: 7 },
-        { id: 'older', title: '其他会话', updated_at: 10, voice_profile_id: 8 },
+        { id: 'latest', title: '主角会话', updated_at: '2026-10-20 08:30:00', voice_profile_id: 7 },
+        { id: 'older', title: '其他会话', updated_at: '2026-10-20 08:10:00', voice_profile_id: 8 },
       ], has_more: false })); });
       if (url === '/api/voice/profiles') return Response.json({ profiles, active_profile_id: 8 });
       return Response.json({ providers: [], backgrounds: [] });
