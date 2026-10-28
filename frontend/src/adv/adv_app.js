@@ -29,7 +29,7 @@ export function mountAdv(dom, deps) {
   };
   const raf = deps.raf || (fn => requestAnimationFrame(fn));
   const cancelRaf = deps.cancelRaf || (id => cancelAnimationFrame(id));
-  const stage = createStage(dom.root, { matchMedia: deps.matchMedia });
+  const stage = createStage(dom.root);
   const disposers = [];
   let destroyed = false, sessionId, characterKey, outfit, turnId = null;
   let settings, model = null, resolved = null, currentLine = null, failedUser = null, liveMessage = null;

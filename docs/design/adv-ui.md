@@ -68,10 +68,10 @@ Removed compatibility IDs: `backdrop`, `menuBtn`, `chatTitle`, `modelBadge`, `ba
 `background` 是按会话、作品、时间解析的图片 URL，时间戳为毫秒，`excerpt` 不暴露原始可变消息。
 
 首页打开给舞台加 `is-home`：横屏立绘按 `--sprite-cx` 的实际构图中心平移到约 1380u，
-竖屏不移动；文本框和快捷菜单隐藏且 inert，首页添加左侧/底部渐变暗角。
+文本框和快捷菜单隐藏且 inert，首页添加渐变暗角。
 进入对话时去掉 class，立绘用 300ms 回到原位、对话层淡入，hook 将首页淡出 300ms；
 `prefers-reduced-motion` 时瞬间完成。仅进入对话的 action 包装淡出，预览不包装。
-竖屏上部约 55% 留给场景，下部为可滚动深色摘录与整行主按钮，最近会话横向滚动。
+所有窗口比例使用同一 16:9 舞台，空余区域留黑边。
 打开与预览后焦点放在主按钮，首次使用放在第一个未完成步骤，均使用 `preventScroll`。
 Esc 依次关闭说明框、下拉列表、全部会话/新对话页，首页本身不响应；组字按键忽略。
 
@@ -102,7 +102,7 @@ Phase ownership follows the approved plan; P2 has two separately gated parts:
 | P5 | Add layered v3 sprites, supported blink/mouth animation, conversion tooling, tags, five Tenshi heroines, and rebuilt Natsume assets. |
 | P6 | Add local backgrounds, selection, time variants, and clock following. |
 | P7 | Add title/start/continue/load/character/settings screens, make ADV default, and retire the old layout and compatibility IDs. |
-| P8 | Refine transitions/preloading, implement portrait-phone layout, and update README/CHANGELOG. |
+| P8 | Refine transitions/preloading, and update README/CHANGELOG. |
 
 P0 supplies this spec, local reference capture, asset reconnaissance, a small
 format experiment, helper feasibility, and GPU-free development stand-ins.
@@ -113,7 +113,7 @@ Each implementation phase has its own PR and user acceptance before merge.
 
 Non-goals: scripted branching/rollback, favorite voices, screenshots/gallery tools,
 automatic scene/outfit inference, BGM, Live2D, or proprietary UI artwork reproduction.
-P3 targets desktop landscape; P8 owns phone portrait composition. Multi-speaker generation is outside P2.
+All viewport orientations use the same 16:9 stage. Multi-speaker generation is outside P2.
 Never infer speakers from quoted names or require commercial assets to boot, test, or ship.
 
 Architecture uses `initX(dom, callbacks)` injection and disposable subscriptions.
@@ -958,7 +958,7 @@ the plan's intended fixture reuse is not an implementation prerequisite.
 | P5 | Validate v3 dimensions/recipes, hair/blush order, crop-origin alignment, unsupported combinations, and whole-image fallback. Test blink timer cancellation, eyes-closed suppression, partner-only mouth frames, analyser silence/end/reset, animation cancellation, and shared crop frames. Visually inspect each of the six planned local packs. |
 | P6 | Test manifest/path validation, absent variants, signed URLs, clock boundaries/tab resume, blur edge handling, and background/time round-trip through all three settings boundaries. Missing assets must show CSS sky. |
 | P7 | Review two clickable title prototypes from each planned helper before selection; verify Start/Continue/Load/Character/Settings, session thumbnails, newest-session selection, empty history, and character binding. Switch default to ADV, remove obsolete layout IDs, and update their tests in the same phase. |
-| P8 | Measure preload budgets/cancellation, transitions, resize/fullscreen, phone portrait with software keyboard, safe-area controls, and reduced-motion behavior. Update README/CHANGELOG and verify source/Docker/portable archives exclude all local assets. |
+| P8 | Measure preload budgets/cancellation, transitions, resize/fullscreen, touch interaction and reduced-motion behavior. Update README/CHANGELOG and verify source/Docker/portable archives exclude all local assets. |
 
 Broken stand-in mode cycles `fence`, `preamble`, `truncated_string`,
 `truncated_lines`, `unknown_act`, `missing_emotion`, and `trailing_text`.
