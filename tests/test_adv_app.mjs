@@ -32,6 +32,7 @@ function setup(t, options = {}) {
     retry(user) { if (this.canRetry(user)) this.retried.push(user); }, stop() { this.stopped++; },
   };
   const audio = { played: [], stopped: [],
+    supportsStartNotification: options.startNotification === true,
     playLine(index, chunks, opts) { this.played.push({ index, chunks, opts }); return new Promise(resolve => { voiceEnd = resolve; }); },
     stopLine(opts) { this.stopped.push(opts); voiceEnd?.('interrupted'); },
   };
@@ -104,8 +105,17 @@ test('line → audio wait → per-line voice and typewriter → click reveal →
   assert.equal(h.app.stage.stage.querySelector('.adv-name-text').textContent, 'Player');
 });
 
+test('the audio start notification reaches the sentence player before revealing', t => {
+  const h = setup(t, { startNotification: true }); h.start(); h.line(); h.audioEvent();
+  assert.equal(h.app.player.state, 'waiting_audio');
+  h.clock.tick(2000);
+  assert.equal(h.app.player.state, 'waiting_audio');
+  h.audio.played[0].opts.onStart();
+  assert.equal(h.app.player.state, 'revealing');
+});
+
 test('timeout accepts late audio only on the current line and rejects old turn events', async t => {
-  const h = setup(t, { settings: { advTextIntervalMs: 0 } }); h.start(); h.line(); h.line(1);
+  const h = setup(t, { settings: { advTextIntervalMs: 0, advAutoMode: 'normal' } }); h.start(); h.line(); h.line(1);
   h.clock.tick(1500); assert.equal(h.app.player.state, 'waiting_advance');
   h.audioEvent(); assert.equal(h.audio.played.length, 1);
   h.app.action('advance'); h.audioEvent(0); assert.equal(h.audio.played.length, 1);
@@ -541,6 +551,64 @@ test('resize during revealing leaves waiting_advance and next advance steps line
   h.app.action('advance');
   assert.equal(h.app.player.state, 'input');
 });
+
+for (const ready of [false, true]) {
+  for (const action of ['resize', 'swap_languages']) {
+    test(`${action} preserves the text gate while ${ready ? 'decoding audio' : 'generating audio'}`, t => {
+      const h = setup(t, { startNotification: true, settings: { advTextIntervalMs: 0 } });
+      h.start(); h.line();
+      if (ready) h.audioEvent();
+      const primary = h.app.stage.stage.querySelector('.adv-primary-text');
+      const subtitle = h.app.stage.stage.querySelector('.adv-subtitle-text');
+      assert.equal(primary.textContent, '');
+      assert.equal(h.app.player.state, 'waiting_audio');
+      if (action === 'resize') h.viewport.dispatchEvent({ type: 'resize' });
+      else h.app.action(action);
+      assert.equal(primary.textContent, '', 'reflow cannot reveal a sentence before its playback or preview deadline');
+      assert.equal(subtitle.textContent, '', 'secondary subtitles obey the same gate');
+      assert.equal(h.app.player.state, 'waiting_audio');
+      if (!ready) h.audioEvent();
+      assert.equal(h.audio.played.length, 1);
+      h.audio.played[0].opts.onStart();
+      assert.equal(h.app.player.state, 'waiting_advance');
+      assert.ok(primary.textContent.includes(action === 'resize' ? '你好世界' : 'こんにちは'));
+    });
+  }
+}
+
+test('opening settings before a new sentence is revealed cannot resurrect the previous reply', t => {
+  const h = setup(t, { startNotification: true, settings: { advTextIntervalMs: 0 } });
+  const primary = h.app.stage.stage.querySelector('.adv-primary-text');
+  h.start('first'); h.line(0, { zh: '上一轮已经结束。' }); h.audioEvent();
+  h.audio.played[0].opts.onStart();
+  h.done(); h.app.action('advance');
+  h.start('next'); h.line(0, { zh: '这一轮仍在等待语音。' });
+  assert.equal(primary.textContent, '');
+  h.overlay(true);
+  assert.equal(primary.textContent, '', 'completing a not-yet-revealed sentence cannot write stale page text');
+  h.overlay(false);
+  assert.equal(primary.textContent, '');
+  h.audioEvent(); h.audio.played.at(-1).opts.onStart();
+  assert.ok(primary.textContent.includes('这一轮仍在等待语音'));
+});
+
+for (const action of ['resize', 'swap_languages', 'settings']) {
+  test(`${action} keeps the thinking view clear between replies`, t => {
+    const h = setup(t, { voice: false, settings: { advTextIntervalMs: 0 } });
+    const primary = h.app.stage.stage.querySelector('.adv-primary-text');
+    h.start('first'); h.line(0, { zh: '上一轮已经结束。' });
+    h.done(); h.app.action('advance');
+    h.start('next');
+    assert.equal(primary.textContent, '');
+    if (action === 'settings') h.overlay(true);
+    else if (action === 'resize') h.viewport.dispatchEvent({ type: 'resize' });
+    else h.app.action(action);
+    assert.equal(primary.textContent, '', 'the previous reply is not the next turn preview');
+    if (action === 'settings') h.overlay(false);
+    h.line(0, { zh: '这一轮的新内容。' });
+    assert.ok(primary.textContent.includes(action === 'swap_languages' ? 'こんにちは' : '这一轮的新内容'));
+  });
+}
 
 test('stage pointerdown ignores overlay elements and select controls without focusing stage', t => {
   const h = setup(t, { voice: false });

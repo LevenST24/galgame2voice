@@ -100,6 +100,7 @@ export function createLinePlayer({
       auto = false; skip = false; clearAllTimers();
     }
     state = newState;
+    render?.waitingForAudio?.(newState === 'waiting_audio');
     emit('state', newState);
   }
 
@@ -137,7 +138,7 @@ export function createLinePlayer({
     return (status === 'ready' || status === 'failed') && Array.isArray(chunks) && chunks.length > 0;
   }
 
-  function playVoice(lineIndex, chunks) {
+  function playVoice(lineIndex, chunks, onStart) {
     playSequence++;
     const token = {
       turnId: currentTurnId,
@@ -149,7 +150,9 @@ export function createLinePlayer({
 
     let playPromise;
     try {
-      playPromise = Promise.resolve(voice?.play?.(lineIndex, chunks || []));
+      playPromise = Promise.resolve(voice?.play?.(lineIndex, chunks || [], { onStart: () => {
+        if (currentVoiceToken === token) onStart?.();
+      } }));
     } catch (err) {
       playPromise = Promise.reject(err);
     }
@@ -175,6 +178,10 @@ export function createLinePlayer({
     currentVoiceToken = null;
     voicePlaying = false;
 
+    // Download/decode or AudioContext activation can fail before playback starts.
+    // Text must remain accessible even when there was no start notification.
+    if (state === 'waiting_audio') revealPage(page);
+
     if (pendingAdvance) {
       pendingAdvance = false;
       advance();
@@ -183,6 +190,18 @@ export function createLinePlayer({
 
     if (auto && !hidden && state === 'waiting_advance' && settings.autoMode === 'voice-priority' && page === pages.length - 1) {
       startAutoTimer();
+    }
+  }
+
+  function playAndReveal(index, chunks, pageIndex = 0) {
+    if (voice?.supportsStartNotification === true) {
+      changeState('waiting_audio');
+      playVoice(index, chunks, () => {
+        if (state === 'waiting_audio') revealPage(pageIndex);
+      });
+    } else {
+      playVoice(index, chunks);
+      revealPage(pageIndex);
     }
   }
 
@@ -207,20 +226,29 @@ export function createLinePlayer({
     const audioInfo = lineAudio.get(index);
     if (audioInfo) {
       if (isAudioPlayable(audioInfo.status, audioInfo.chunks)) {
-        if (settings.voiceEnabled) {
-          playVoice(index, audioInfo.chunks);
-        }
-        revealPage(0);
+        playAndReveal(index, audioInfo.chunks);
       } else {
         // skipped, or failed without playable chunks: reveal immediately
         revealPage(0);
       }
     } else {
-      // Audio status unknown: wait up to audioWaitMs
-      changeState('waiting_audio');
+      waitForAudio();
+    }
+  }
+
+  function waitForAudio() {
+    if (turnSettled) {
+      revealPage(page);
+      return;
+    }
+    changeState('waiting_audio');
+    // A preview deadline is useful in reading mode, but breaks voice sync when
+    // synthesis takes longer. Stream completion/failure bounds the synced wait;
+    // manual advance and disabling voice always remain available.
+    if (settings.autoMode !== 'voice-priority') {
       audioWaitTimerId = clock.setTimeout(() => {
         audioWaitTimerId = null;
-        revealPage(0);
+        revealPage(page);
       }, settings.audioWaitMs);
     }
   }
@@ -286,6 +314,12 @@ export function createLinePlayer({
     const isFinalPage = page === pages.length - 1;
     if (isFinalPage && settings.autoMode === 'voice-priority' && voicePlaying) {
       // In voice-priority mode on final page, delay starts after voice ends
+      return;
+    }
+    if (isFinalPage && settings.autoMode === 'voice-priority' && settings.voiceEnabled
+      && !turnSettled && !lineAudio.has(currentIndex)) {
+      // The text preview deadline is not an audio failure. Do not AUTO past a
+      // sentence whose synthesis is still pending, discarding its late audio.
       return;
     }
 
@@ -530,21 +564,20 @@ export function createLinePlayer({
       }
     } else if (restoreTo === 'waiting_audio') {
       const audioInfo = lineAudio.get(currentIndex);
-      if (audioInfo) {
+      if (!settings.voiceEnabled) {
+        // Voice may have been disabled while the settings overlay was open.
+        // Do not keep waiting for synthesis when the user returns to the line.
+        revealPage(page);
+      } else if (audioInfo) {
         if (isAudioPlayable(audioInfo.status, audioInfo.chunks)) {
           if (!skip && settings.voiceEnabled) {
-            playVoice(currentIndex, audioInfo.chunks);
-          }
-          revealPage(page);
+            playAndReveal(currentIndex, audioInfo.chunks, page);
+          } else revealPage(page);
         } else {
           revealPage(page);
         }
       } else {
-        changeState('waiting_audio');
-        audioWaitTimerId = clock.setTimeout(() => {
-          audioWaitTimerId = null;
-          revealPage(page);
-        }, settings.audioWaitMs);
+        waitForAudio();
       }
     } else if (restoreTo === 'waiting_line') {
       // Re-evaluate line queue and settlement that may have arrived while suspended
@@ -699,9 +732,8 @@ export function createLinePlayer({
         }
         if (playable) {
           if (!skip && settings.voiceEnabled) {
-            playVoice(index, chunkList);
-          }
-          revealPage(0);
+            playAndReveal(index, chunkList);
+          } else revealPage(0);
         } else {
           // skipped or failed without chunks
           revealPage(0);
@@ -716,6 +748,8 @@ export function createLinePlayer({
             clock.clearTimeout(autoTimerId);
             autoTimerId = null;
           }
+        } else if (state === 'waiting_advance' && !playable && auto) {
+          startAutoTimer();
         }
       }
     }
@@ -726,6 +760,11 @@ export function createLinePlayer({
 
     if (result.ok === true) {
       turnSettled = true;
+      if (state === 'waiting_audio' && !voicePlaying) {
+        if (audioWaitTimerId !== null) clock.clearTimeout(audioWaitTimerId);
+        audioWaitTimerId = null;
+        revealPage(page);
+      }
       if (isPlayerEditing) {
         if (pauseReasons.size) {
           suspendedFrom = 'input';
@@ -756,6 +795,7 @@ export function createLinePlayer({
         return;
       }
       // Otherwise unread lines are still current; do not jump over them
+      if (state === 'waiting_advance' && auto && autoTimerId === null) startAutoTimer();
     } else {
       turnSettled = true;
       pendingAdvance = false;
@@ -791,11 +831,22 @@ export function createLinePlayer({
   }
 
   function setSettings(patch) {
+    const previousVoice = settings.voiceEnabled;
+    const previousMode = settings.autoMode;
     settings = { ...settings, ...patch };
+    if (state === 'waiting_audio' && !voicePlaying && previousMode !== settings.autoMode) {
+      if (audioWaitTimerId !== null) clock.clearTimeout(audioWaitTimerId);
+      audioWaitTimerId = null;
+      waitForAudio();
+    }
     if (!settings.voiceEnabled && voicePlaying) {
       currentVoiceToken = null;
       voicePlaying = false;
       voice?.stop?.({ fadeMs: 40 });
+      if (pendingAdvance && state === 'waiting_advance') {
+        pendingAdvance = false;
+        advance();
+      }
     }
     if (!settings.voiceEnabled && state === 'waiting_audio') {
       if (audioWaitTimerId !== null) clock.clearTimeout(audioWaitTimerId);
@@ -811,6 +862,8 @@ export function createLinePlayer({
       changeState('waiting_advance');
       onRevealComplete();
     }
+    if (state === 'waiting_advance' && auto
+      && (previousVoice !== settings.voiceEnabled || previousMode !== settings.autoMode)) startAutoTimer();
   }
 
   function repaginate() {

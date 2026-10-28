@@ -257,6 +257,7 @@ export function createTextbox(container, opts = {}) {
   let currentPageText = '';
   let currentPageIndex = 0;
   let currentPageCount = 1;
+  let pageRevealed = false;
   let currentSubPages = [];
   let typewriterTimerId = null;
   let isHidden = false;
@@ -438,6 +439,11 @@ export function createTextbox(container, opts = {}) {
 
   function activate(line, { skipping = false, reducedMotion = false } = {}) {
     currentLine = line;
+    pageRevealed = false;
+    currentPageIndex = 0;
+    currentPageCount = 1;
+    currentPageText = '';
+    currentFullPageText = '';
     clearTypewriter();
     applyWindowOpacity();
 
@@ -466,6 +472,7 @@ export function createTextbox(container, opts = {}) {
   }
 
   function reveal(pageText, { durationMs = 0, pageIndex = 0, pageCount = 1 } = {}) {
+    pageRevealed = true;
     clearTypewriter();
     currentPageText = pageText;
     currentPageIndex = pageIndex;
@@ -525,6 +532,7 @@ export function createTextbox(container, opts = {}) {
   }
 
   function completeReveal() {
+    if (!pageRevealed) return;
     clearTypewriter();
     primaryTextEl.textContent = currentFullPageText;
   }
@@ -536,6 +544,7 @@ export function createTextbox(container, opts = {}) {
   function thinking(on) {
     clearTypewriter();
     if (on) {
+      pageRevealed = false;
       speechViewEl.classList.remove('is-hidden');
       inputWrapEl.classList.add('is-hidden');
       primaryTextEl.textContent = '';
@@ -547,6 +556,11 @@ export function createTextbox(container, opts = {}) {
     } else {
       thinkingDotsEl.classList.add('is-hidden');
     }
+  }
+
+  function waitingForAudio(on) {
+    thinkingDotsEl.textContent = on ? '语音准备中…点击可先看文字' : '……';
+    thinkingDotsEl.classList.toggle('is-hidden', !on);
   }
 
   function enterInput({ canSend = true } = {}) {
@@ -572,6 +586,7 @@ export function createTextbox(container, opts = {}) {
   // invokes player_edit; the application can therefore preserve IME drafts.
   function prepareInput({ canSend = false } = {}) {
     clearError();
+    glyph(false);
     setCanSend(canSend);
     speechViewEl.classList.add('is-hidden');
     errorWrapEl.classList.add('is-hidden');
@@ -754,6 +769,9 @@ export function createTextbox(container, opts = {}) {
       const targetPageIdx = Math.min(currentPageIndex, newPageCount - 1);
       const newPageText = newPages[targetPageIdx] ?? '';
 
+      // Reflow updates language and pagination, but the line player alone opens
+      // the first text gate (audio start, preview deadline or manual advance).
+      if (!pageRevealed) return true;
       reveal(newPageText, {
         durationMs: 0,
         pageIndex: targetPageIdx,
@@ -772,6 +790,7 @@ export function createTextbox(container, opts = {}) {
     currentSubText = resolved.subText;
     const newPages = paginate(currentLine, currentPrimaryText);
     const target = Math.min(pageIndex, newPages.length - 1);
+    if (!pageRevealed) return;
     reveal(newPages[target] || '', { durationMs: 0, pageIndex: target, pageCount: newPages.length });
     completeReveal();
   }
@@ -799,6 +818,7 @@ export function createTextbox(container, opts = {}) {
     completeReveal,
     glyph,
     thinking,
+    waitingForAudio,
     enterInput,
     prepareInput,
     setCanSend,
