@@ -34,6 +34,11 @@ from galgame2voice.utils.hardware import (
 logger = logging.getLogger("galgame2voice.services.voice_manager")
 
 
+# GPT-SoVITS rejects symbol-only text ("。") with HTTP 400 "请输入有效文本",
+# which leaves the prompt cache cold, so the probe has to be a real word.
+WARMUP_PROBE_TEXT = "はい。"
+
+
 class InsufficientMemoryError(RuntimeError):
     """Raised when free memory is too low to safely load new model weights."""
 
@@ -312,7 +317,7 @@ class VoiceManager:
                 scheduler = get_tts_scheduler()
                 await asyncio.wait_for(
                     scheduler.schedule(
-                        lambda: self.client.synthesize("。", options=opts),
+                        lambda: self.client.synthesize(WARMUP_PROBE_TEXT, options=opts),
                         priority=TtsPriority.LOW,
                         task_id=f"warmup_{getattr(profile, 'id', 'default')}",
                     ),
