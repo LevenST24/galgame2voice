@@ -51,6 +51,16 @@ test('normal reading mode still previews text after its finite wait', () => {
   assert.deepEqual(h.revealed, ['先看文字']);
 });
 
+test('reading mode shows ready audio text at once instead of waiting for the sound to start', () => {
+  const h = setup({ startNotification: true });
+  h.player.setSettings({ autoMode: 'normal' });
+  h.player.setLineAudio('turn', 1, { status: 'ready', chunks: ['/second.wav'] });
+  h.player.setLineAudio('turn', 0, { status: 'ready', chunks: ['/first.wav'] });
+  assert.deepEqual(h.revealed, ['第一句']);
+  h.player.advance();
+  assert.deepEqual(h.revealed, ['第一句', '第二句']);
+});
+
 test('voice-priority AUTO keeps the current sentence while its audio is still being generated', () => {
   const { player, clock } = setup();
   player.setAuto(true);

@@ -445,6 +445,10 @@ export function createTextbox(container, opts = {}) {
     currentPageText = '';
     currentFullPageText = '';
     clearTypewriter();
+    // The player may hold this line's text until its voice starts; meanwhile the
+    // previous line must not stay on screen beside this line's acting.
+    primaryTextEl.textContent = '';
+    subtitleTextEl.textContent = '';
     applyWindowOpacity();
 
     // Mode is character by default unless setSpeaker called

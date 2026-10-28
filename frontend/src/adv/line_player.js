@@ -194,7 +194,9 @@ export function createLinePlayer({
   }
 
   function playAndReveal(index, chunks, pageIndex = 0) {
-    if (voice?.supportsStartNotification === true) {
+    // Only voice-priority holds the text until the sound starts. Reading mode
+    // shows it as soon as playable audio is known, however long decoding takes.
+    if (voice?.supportsStartNotification === true && settings.autoMode === 'voice-priority') {
       changeState('waiting_audio');
       playVoice(index, chunks, () => {
         if (state === 'waiting_audio') revealPage(pageIndex);

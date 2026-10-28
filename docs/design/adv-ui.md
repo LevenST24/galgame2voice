@@ -326,7 +326,7 @@ An overlay suspends progression; closing it restores the same line/page.
 | Next line available | Resolve acting, wait briefly for audio, then reveal its first page. |
 | Audio `ready` | Decode and play only when its matching line is current. |
 | Audio `skipped` or `failed` | Reveal without waiting; failure is available in LOG/status. |
-| Audio absent after line activation | In voice-priority mode, keep text hidden until playback starts, audio fails/is skipped, or the turn finishes without audio. Manual advance can reveal early. Reading mode retains the 1500ms preview deadline and accepts late audio only while this line is current. |
+| Audio absent after line activation | In voice-priority mode, keep text hidden until playback starts, audio fails/is skipped, or the turn finishes without audio. Manual advance can reveal early. Reading mode retains the 1500ms preview deadline, shows the text as soon as playable audio arrives, and accepts late audio only while this line is current. |
 | Click / Enter / Space during reveal | Complete current page immediately, without advancing or stopping voice. |
 | Same action after reveal | Advance one page, or request the next logical line on the final page. |
 | Last line exhausted but generation open | Show waiting indicator; do not invent a player turn. |
