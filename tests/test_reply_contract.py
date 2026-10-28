@@ -78,6 +78,7 @@ class TestRenderLinesContract:
             "act 可省略；不要输出 index、audio、outfit 或 pose。\n"
             "face 通常每行都给出，只能取：微笑、生气。\n"
             f"motion 很少使用，大多数行不写；允许值：{'、'.join(MOTIONS)}。\n"
+            "move 可省略，只在人物真的移动时使用，不要每句都动：approach 走近一档、retreat 退后一档、closeup 特写、left 左移一档、right 右移一档、center 回到中间。\n"
             f"fx 很少使用，大多数行不写；允许值：{'、'.join(FX)}。\n"
             "blush 仅在需要时设为 true，省略或 false 表示不添加。"
         )

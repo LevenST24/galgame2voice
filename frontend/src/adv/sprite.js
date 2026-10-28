@@ -8,6 +8,7 @@
  * group is visible.
  */
 
+import { stagingTransform } from './staging.js';
 import { createFxElement, FX_TYPES } from './sprite_fx.js';
 import { createActingGate, isExpressionFace } from '../sprite_state.js';
 
@@ -254,9 +255,17 @@ export function createSpriteView({
   let speechToken = 0;
 
   // Build stage DOM
+  const stagingWrapper = documentObj.createElement('div');
+  stagingWrapper.className = 'adv-sprite-staging';
+  spriteLayer.appendChild(stagingWrapper);
+  const fxStaging = documentObj.createElement('div');
+  fxStaging.className = 'adv-sprite-staging';
+  fxLayer.appendChild(fxStaging);
+  let stagePosition = { x: 0, depth: 1 };
+  let stageBounds = {};
   const motionWrapper = documentObj.createElement('div');
   motionWrapper.className = 'adv-sprite-motion';
-  spriteLayer.appendChild(motionWrapper);
+  stagingWrapper.appendChild(motionWrapper);
 
   const stageImgA = documentObj.createElement('img');
   stageImgA.className = 'adv-sprite-buffer is-hidden';
@@ -305,7 +314,7 @@ export function createSpriteView({
       clock.clearTimeout(fxTimeout);
       fxTimeout = null;
     }
-    fxLayer.innerHTML = '';
+    fxStaging.innerHTML = '';
   }
 
   function clearMotion() {
@@ -463,7 +472,8 @@ export function createSpriteView({
     model = null;
     preloads.destroy();
     documentObj.removeEventListener?.('visibilitychange', refreshAnimation);
-    motionWrapper.remove();
+    stagingWrapper.remove();
+    fxStaging.remove();
     faceImgA.remove();
     faceImgB.remove();
     if (layerBuffers) {
@@ -555,8 +565,27 @@ export function createSpriteView({
     return { stageStyle, faceStyle: null, anchor: null, centerX: leftU + widthU / 2 };
   }
 
+  function updateStagingBounds(costume, width, height, anchor, centerX, instant) {
+    const face = costume?.faceRect;
+    const scale = costume?.stage?.scale ?? (face?.height ? FRAMING.faceHeightU / face.height : 1080 / height);
+    const top = costume?.stage?.offset?.y ?? (anchor ? anchor.y - costume.headAnchor.y * scale : 0);
+    stageBounds = { centerX, headY: anchor?.y ?? 70, faceBottom: face ? top + (face.y + face.height) * scale : 410 };
+    setStaging(stagePosition, { instant });
+  }
+
   // The portrait layout scales the landscape sprite space around the stage centre;
   // --sprite-cx tells its CSS which landscape x to bring to the middle of the phone.
+  function setStaging(position, { instant = false } = {}) {
+    const walk = Math.abs(position.x - stagePosition.x) >= 2 && !instant;
+    stagePosition = position;
+    const t = stagingTransform(position, stageBounds);
+    for (const el of [stagingWrapper, fxStaging]) {
+      el.style.transition = instant ? 'none' : '';
+      if (walk && !reducedMotion) el.animate?.([{ translate: '0 0' }, { translate: '0 calc(-8 * var(--u))', offset: 0.35 }, { translate: '0 0', offset: 0.7 }, { translate: '0 0' }], { duration: 650, easing: 'ease-in-out' });
+      el.style.transform = `translate(calc(${t.x} * var(--u)), calc(${t.y} * var(--u))) scale(${t.scale})`;
+    }
+  }
+
   function setPortraitCenter(centerX) {
     if (!Number.isFinite(centerX)) return;
     for (const el of [spriteLayer, fxLayer]) el?.style?.setProperty?.('--sprite-cx', String(Math.round(centerX)));
@@ -612,7 +641,7 @@ export function createSpriteView({
       const fxEl = createFxElement(fx, documentObj);
       fxEl.style.left = `calc(${anchor.x} * var(--u))`;
       fxEl.style.top = `calc(${anchor.y} * var(--u))`;
-      fxLayer.appendChild(fxEl);
+      fxStaging.appendChild(fxEl);
       fxTimeout = clock.setTimeout(clearFx, 1200);
     }
   }
@@ -665,6 +694,7 @@ export function createSpriteView({
       const width = decoded.naturalWidth || decoded.width;
       const height = decoded.naturalHeight || decoded.height;
       const { stageStyle, faceStyle, anchor, centerX } = computeFraming(currentCostume, width, height);
+      updateStagingBounds(currentCostume, width, height, anchor, centerX, Boolean(options.reducedMotion));
       request.frame = raf(() => {
         request.frame = null;
         if (!current()) return;
@@ -723,6 +753,7 @@ export function createSpriteView({
     Promise.all(request.loads.map(load => load.promise)).then(images => {
       if (!current()) return;
       const framing = computeFraming(plan.look, plan.crop.width, plan.crop.height);
+      updateStagingBounds(plan.look, plan.crop.width, plan.crop.height, framing.anchor, framing.centerX, Boolean(options.reducedMotion));
       request.frame = raf(() => {
         request.frame = null;
         if (!current()) return;
@@ -962,7 +993,7 @@ export function createSpriteView({
   }
 
   return {
-    setModel, apply, clear, suspend, destroy,
+    setModel, apply, clear, suspend, destroy, setStaging,
     startLipSync, stopLipSync, setAnimationOptions,
     preload: urls => preloads.add(urls),
     preloadState(input) {

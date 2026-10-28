@@ -175,7 +175,7 @@ test('nothing is visible before decode', async () => {
   const model = createTestModel();
   view.setModel(model);
 
-  const motionWrapper = spriteLayer.children[0];
+  const motionWrapper = spriteLayer.children[0].children[0];
   const stageImgA = motionWrapper.children[0];
   const stageImgB = motionWrapper.children[1];
 
@@ -208,7 +208,7 @@ test('stage and crop swap in one frame with the same revision', async () => {
   const model = createTestModel();
   view.setModel(model);
 
-  const motionWrapper = spriteLayer.children[0];
+  const motionWrapper = spriteLayer.children[0].children[0];
   const stageImgA = motionWrapper.children[0];
   const stageImgB = motionWrapper.children[1];
   const faceImgA = faceSlot.children[0];
@@ -240,7 +240,7 @@ test('a stale decode after setModel paints nothing', async () => {
   const model = createTestModel();
   view.setModel(model);
 
-  const motionWrapper = spriteLayer.children[0];
+  const motionWrapper = spriteLayer.children[0].children[0];
   const stageImgB = motionWrapper.children[1];
 
   let resolveOldDecode;
@@ -278,7 +278,7 @@ test('a decode failure keeps the old picture and reports a status', async () => 
   flushRaf();
   await firstApply;
 
-  const motionWrapper = spriteLayer.children[0];
+  const motionWrapper = spriteLayer.children[0].children[0];
   const stageImgB = motionWrapper.children[1]; // active
   const stageImgA = motionWrapper.children[0]; // next back buffer
   assert.equal(stageImgB.classList.contains('is-visible'), true);
@@ -314,7 +314,7 @@ test('reduced motion skips the crossfade', async () => {
   flushRaf();
   await applyPromise;
 
-  const motionWrapper = spriteLayer.children[0];
+  const motionWrapper = spriteLayer.children[0].children[0];
   const stageImgB = motionWrapper.children[1];
   const faceImgB = faceSlot.children[1];
 
@@ -338,7 +338,7 @@ test('framing and crop math for the calibrated, stage-override and legacy cases'
   const model = createTestModel();
   view.setModel(model);
 
-  const motionWrapper = spriteLayer.children[0];
+  const motionWrapper = spriteLayer.children[0].children[0];
   const stageImgB = motionWrapper.children[1];
   const faceImgB = faceSlot.children[1];
 
@@ -422,7 +422,7 @@ test('a motion class is applied, then cleared, and suppressed while skipping', a
   const model = createTestModel();
   view.setModel(model);
 
-  const motionWrapper = spriteLayer.children[0];
+  const motionWrapper = spriteLayer.children[0].children[0];
 
   // Applied
   const motionApply = view.apply(
@@ -482,15 +482,15 @@ test('an fx is placed at mapped headAnchor, then expires at 1200ms', async () =>
   flushRaf();
   await uniformApply;
 
-  assert.equal(fxLayer.children.length, 1);
-  const fxEl = fxLayer.children[0];
+  assert.equal(fxLayer.children[0].children.length, 1);
+  const fxEl = fxLayer.children[0].children[0];
   assert.equal(fxEl.classList.contains('adv-fx-sweat'), true);
   assert.equal(fxEl.style.left, `calc(${FRAMING.centerX} * var(--u))`);
   assert.equal(fxEl.style.top, `calc(${FRAMING.headTopY} * var(--u))`);
 
   // Wait 1250ms for expiry
   await new Promise(r => setTimeout(r, 1250));
-  assert.equal(fxLayer.children.length, 0, 'FX should expire after 1200ms');
+  assert.equal(fxLayer.children[0].children.length, 0, 'FX should expire after 1200ms');
 
   // Legacy without headAnchor shows no fx
   const legacyApply = view.apply({
@@ -501,7 +501,7 @@ test('an fx is placed at mapped headAnchor, then expires at 1200ms', async () =>
   await waitForRaf();
   flushRaf();
   await legacyApply;
-  assert.equal(fxLayer.children.length, 0, 'No fx when headAnchor is absent');
+  assert.equal(fxLayer.children[0].children.length, 0, 'No fx when headAnchor is absent');
 });
 
 test('the preload caps', async () => {
@@ -543,4 +543,21 @@ test('the preload caps', async () => {
   assert.equal(results.length, 6, 'Should cap total URLs to 6');
   assert.equal(requested.length, 6);
   assert.ok(maxObservedConcurrent <= 2, `Concurrent requests was ${maxObservedConcurrent}, expected <= 2`);
+});
+
+test('staging and acting use separate transforms and fx follows the stage', async () => {
+  const { view, spriteLayer, fxLayer, flushRaf, waitForRaf } = setupView();
+  view.setModel(createTestModel());
+  view.setStaging({ x: 1, depth: 2 });
+  const pending = view.apply({ state: { outfit: 'uniform', face: '01', fx: 'heart' }, faceUrl: '/uniform/01.webp' }, { motion: 'nod' });
+  await waitForRaf(); flushRaf(); await pending;
+  const staging = spriteLayer.children[0];
+  const motion = staging.children[0];
+  assert.match(staging.style.transform, /scale\(/);
+  assert.equal(fxLayer.children[0].style.transform, staging.style.transform);
+  assert.equal(motion.classList.contains('adv-motion-nod'), true);
+  view.setStaging({ x: 0, depth: 1 }, { instant: true });
+  assert.equal(staging.style.transition, 'none');
+  assert.equal(motion.classList.contains('adv-motion-nod'), true);
+  view.destroy();
 });

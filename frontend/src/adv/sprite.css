@@ -1,3 +1,13 @@
+.adv-sprite-staging {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transform-origin: 0 0;
+  transition: transform 650ms ease-in-out;
+}
+.adv-reduced-motion .adv-sprite-staging { transition: none !important; }
+@media (prefers-reduced-motion: reduce) { .adv-sprite-staging { transition: none !important; } }
+
 /* Galgame ADV Sprite and FX Renderer CSS */
 
 /* Motion wrapper around stage buffers */

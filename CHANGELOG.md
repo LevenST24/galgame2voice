@@ -6,6 +6,8 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ## [Unreleased]
 
+- ADV 人物可随台词与情绪改变站位和远近，支持减少动态效果。
+
 ### Fixed
 - 首页遇到一个还没有任何台词的会话（比如第一条消息回复到一半就被中断）时，不再显示空的引号「」，改为显示「从这一刻，开始你们的故事。」。
 

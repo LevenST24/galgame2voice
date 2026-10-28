@@ -11,6 +11,7 @@ from typing import Any
 
 EMOTIONS = ("gentle", "happy", "shy", "tsundere", "cool", "sad", "angry")
 MOTIONS = ("nod", "bounce", "startle", "sigh", "fidget", "head-shake", "lean-in", "step-back")
+MOVES = ("approach", "retreat", "closeup", "left", "right", "center")
 FX = ("sweat", "anger", "heart", "sparkle", "question", "exclamation")
 
 
@@ -110,6 +111,11 @@ def validate_line(obj: Any, ordinal: int = 0) -> tuple[ScannedLine | None, list[
                         act["motion"] = v
                     else:
                         issues.append(f"invalid act motion: {v!r}")
+                elif k == "move":
+                    if isinstance(v, str) and v in MOVES:
+                        act["move"] = v
+                    else:
+                        issues.append(f"invalid act move: {v!r}")
                 elif k == "blush":
                     if isinstance(v, bool):
                         act["blush"] = v

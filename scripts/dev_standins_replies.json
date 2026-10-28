@@ -16,7 +16,7 @@
       {"zh": "明天也会是好天气吧。", "ja": "明日も晴れるといいね。", "emotion": "gentle"}
     ]},
     {"tts": {"speed": 0.95, "temp": 0.85, "emotion": "shy"}, "lines": [
-      {"zh": "这个，是给你的。", "ja": "これ、あなたに。", "emotion": "shy", "act": {"blush": true}},
+      {"zh": "这个，是给你的。", "ja": "これ、あなたに。", "emotion": "shy", "act": {"blush": true, "move": "approach"}},
       {"zh": "……", "ja": "……", "emotion": "shy"},
       {"zh": "打开看看嘛。", "ja": "開けてみてよ。", "emotion": "happy", "act": {}}
     ]},
@@ -34,7 +34,7 @@
       {"zh": "我请客。", "ja": "私がおごるよ。", "emotion": "happy"}
     ]},
     {"tts": {"speed": 1.0, "temp": 0.9, "emotion": "angry"}, "lines": [
-      {"zh": "下次迟到要先发消息呀。", "ja": "今度遅れる時は、先に連絡してよね。", "emotion": "angry", "act": {"pose": "b"}},
+      {"zh": "下次迟到要先发消息呀。", "ja": "今度遅れる時は、先に連絡してよね。", "emotion": "angry", "act": {"pose": "b", "move": "left"}},
       {"zh": "我可是会担心的。", "ja": "心配するんだから。", "emotion": "shy", "act": {"blush": true}}
     ]}
   ],

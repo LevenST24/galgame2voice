@@ -4,6 +4,7 @@ import { createTextbox } from './textbox.js';
 import { createQuickMenu } from './quick_menu.js';
 import { createShortcuts } from './shortcuts.js';
 import { createLinePlayer } from './line_player.js';
+import { createStaging } from './staging.js';
 import { createSpriteView } from './sprite.js';
 import { createBacklog } from './backlog.js';
 import { createConfigPanel } from './config_panel.js';
@@ -116,10 +117,12 @@ export function mountAdv(dom, deps) {
   // 去设置 on a failed reply, in the textbox and in LOG: the same choice as the error toasts.
   const openErrorSettings = error => (needsModelSettings(error?.message, error?.code)
     ? (deps.onModelSettings || deps.onSettings) : deps.onSettings)?.();
+  const staging = createStaging({ random: deps.random });
   const render = {
     ...textbox,
     activate(line, options) {
       currentLine = line;
+      sprite.setStaging(staging.next({ move: line.act?.move, emotion: line.emotion }), { instant: reducedMotion || player.skip });
       textbox.setSpeaker({ name: deps.getCharacter?.()?.name || '角色', mode: 'character' });
       textbox.activate(line, options);
       paint(line, options)?.then(() => { if (!destroyed) preloadNextLine(); });
@@ -623,6 +626,7 @@ export function mountAdv(dom, deps) {
     const changedLanguage = settings.advPrimaryLanguage !== nextSettings.advPrimaryLanguage || settings.advSubtitleLanguage !== nextSettings.advSubtitleLanguage;
     settings = nextSettings;
     if (switched) {
+      sprite.setStaging(staging.enter(), { instant: true });
       if (sessionId !== undefined) drafts.set(sessionId, textbox.draft);
       if (configPanel?.isOpen) configPanel.close({ revert: true });
       closeBgPanel();
