@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import threading
 import tempfile
@@ -21,12 +22,19 @@ ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_TEMP = tempfile.gettempdir()
 
 
+class LayoutServer(ThreadingHTTPServer):
+    # Chrome opens several connections at once for the module graph. Windows refuses
+    # connections beyond the listen backlog (5 by default) instead of queueing them,
+    # which left the page blank whenever the accept loop fell briefly behind.
+    request_queue_size = 64
+
+
 def make_layout_server(handler):
     # Windows can allocate port 0 from a range containing browser-blocked ports.
     # Bind an unused high loopback port for this isolated, source-only fixture.
     for _ in range(50):
         try:
-            return ThreadingHTTPServer(("127.0.0.1", 20000 + secrets.randbelow(10000)), handler)
+            return LayoutServer(("127.0.0.1", 20000 + secrets.randbelow(10000)), handler)
         except OSError as exc:
             if exc.errno not in (errno.EADDRINUSE, 10048):
                 raise
@@ -118,6 +126,21 @@ def browser_path():
         Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Microsoft/Edge/Application/msedge.exe",
     ]
     return next((str(path) for path in candidates if path.is_file()), None)
+
+
+def test_layout_server_queues_a_burst_of_browser_connections():
+    server = make_layout_server(BaseHTTPRequestHandler)
+    clients = []
+    try:
+        # Nothing accepts yet, as when the accept loop falls behind a burst of module requests.
+        for _ in range(12):
+            client = socket.create_connection(("127.0.0.1", server.server_port), timeout=2)
+            clients.append(client)
+    finally:
+        for client in clients:
+            client.close()
+        server.server_close()
+    assert len(clients) == 12
 
 
 @pytest.mark.requires_piped_subprocess
