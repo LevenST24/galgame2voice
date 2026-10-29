@@ -39,6 +39,9 @@ globalThis.fetch=async(url,options={})=>{
 """
 
 RECOVERY = """
+// Without reduced motion, as on the Linux CI runner, the player buttons transition every property,
+// visibility included, and the hit tests below could run before that transition had ticked.
+document.head.appendChild(Object.assign(document.createElement('style'),{textContent:'*{transition:none!important}'}));
 if(!state.error)try{
   click('.home-continue');await wait();await wait();
   const input=document.querySelector('.adv-player-textarea');
