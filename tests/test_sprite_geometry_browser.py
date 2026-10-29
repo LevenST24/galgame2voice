@@ -94,10 +94,14 @@ def test_browser_paints_expression_at_shared_body_coordinates(tmp_path, switch, 
             try:
                 deadline = time.monotonic() + 20
                 port_file = Path(profile) / "DevToolsActivePort"
-                while not port_file.exists() and process.poll() is None and time.monotonic() < deadline:
-                    time.sleep(0.05)
-                assert port_file.exists(), "Browser debugging endpoint did not start"
-                port = int(port_file.read_text(encoding="utf-8").splitlines()[0])
+                port = None
+                # The browser may still hold the file open or have written it only partly.
+                while port is None and process.poll() is None and time.monotonic() < deadline:
+                    try:
+                        port = int(port_file.read_text(encoding="utf-8").splitlines()[0])
+                    except (OSError, IndexError, ValueError):
+                        time.sleep(0.05)
+                assert port, "Browser debugging endpoint did not start"
                 with opener.open(f"http://127.0.0.1:{port}/json/list", timeout=5) as response:
                     targets = json.load(response)
                 target = next(item for item in targets if item["type"] == "page")

@@ -85,7 +85,7 @@ def test_selection_failure_opens_relevant_settings_without_resubmitting(tmp_path
         API.replace("__KIND__", json.dumps(kind)) + "\nawait import('/frontend/src/main.js');")
     script = script.replace("const output=document.createElement('pre');", RECOVERY + "\nconst output=document.createElement('pre');")
     data = render_engine_case(tmp_path, width, height, script, 10000)
-    assert "error" not in data, data
+    assert "error" not in data, data.get("error")
     assert data["selectionSettingsCorrect"] is True
     assert data["noAutomaticResend"] is True
     if kind == "voice":

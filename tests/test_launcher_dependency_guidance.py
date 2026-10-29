@@ -5,6 +5,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 from unittest.mock import MagicMock
@@ -41,11 +42,13 @@ def test_dependency_recovery_quotes_project_interpreter_and_targets_same_environ
     assert not run_server.check_python_environment()
     output = capsys.readouterr().out
     if has_requirements:
-        install.assert_called_once_with([python, "-m", "pip", "install", "-r", str(requirements)], check=True)
-        assert f'"{python}" -m pip install -r "{requirements}"' in output
+        command = [python, "-m", "pip", "install", "-r", str(requirements)]
+        install.assert_called_once_with(command, check=True)
     else:
+        command = [python, "-m", "pip", "install", "cryptography"]
         install.assert_not_called()
-        assert f'"{python}" -m pip install cryptography' in output
+    quoted = subprocess.list2cmdline(command) if sys.platform == "win32" else shlex.join(command)
+    assert quoted in output
     assert "py -m pip" not in output
 
 
