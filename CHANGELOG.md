@@ -6,6 +6,9 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ## [Unreleased]
 
+### Removed
+- 移除手机竖屏专用布局：竖向窗口（包括手机竖着拿）改为显示等比缩小的横屏舞台，上下留黑边；横过来就是完整画面。
+
 ### Fixed
 - 首页遇到一个还没有任何台词的会话（比如第一条消息回复到一半就被中断）时，不再显示空的引号「」，改为显示「从这一刻，开始你们的故事。」。
 

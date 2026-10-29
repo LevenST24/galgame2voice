@@ -555,8 +555,7 @@ export function createSpriteView({
     return { stageStyle, faceStyle: null, anchor: null, centerX: leftU + widthU / 2 };
   }
 
-  // The portrait layout scales the landscape sprite space around the stage centre;
-  // --sprite-cx tells its CSS which landscape x to bring to the middle of the phone.
+  // The home layout uses the character framing centre to position the sprite.
   function setPortraitCenter(centerX) {
     if (!Number.isFinite(centerX)) return;
     for (const el of [spriteLayer, fxLayer]) el?.style?.setProperty?.('--sprite-cx', String(Math.round(centerX)));

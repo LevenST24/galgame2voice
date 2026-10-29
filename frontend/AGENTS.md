@@ -35,7 +35,7 @@
 
 ### 3. ADV 舞台与组件 (`src/adv/`)
 - `adv_app.js`：ADV 舞台统一装配与挂载入口（`mountAdv`），管理舞台生命周期、尺寸更新、背景同步、历史会话抽屉及各子组件协同。
-- `stage.js`：1920×1080 逻辑舞台画布容器（`createStage`）。通过 CSS 变量 `--u` 统一缩放（横屏 `--u: min(100vw / 1920, 100dvh / 1080)`；手机竖屏为 1080×1920 并切换 `.is-portrait`）。管理 0 至 60 级分层（Shell → Background → Sprite → Fx → Textbox → QuickMenu → Overlay）。
+- `stage.js`：1920×1080 逻辑舞台画布容器（`createStage`）。通过 CSS 变量 `--u` 统一缩放（`--u: min(100vw / 1920, 100dvh / 1080)`，所有窗口比例均使用 16:9 舞台）。管理 0 至 60 级分层（Shell → Background → Sprite → Fx → Textbox → QuickMenu → Overlay）。
 - `textbox.js`：对话文本框（`createTextbox`）。包括半透明渐变底板（`.adv-band`）、立绘面部视口（`.adv-face-slot`）、角色姓名牌（`.adv-name-plate`）、中日双语字幕列、思考动画指示器以及用户文本输入框（`.adv-player-input-wrap`）。
 - `sprite_state.js`：无 DOM、无计时器的立绘状态纯函数：解析立绘清单（`normalizePortrait`）、按情绪选脸（`facePool`、`pickFace`）、脸红分级（`blushTier`）、组合分层（`resolveSpriteState`）和演出限频（`createActingGate`）。选状态的逻辑放这里，`sprite.js` 只管绘制和计时。
 - `sprite.js`：立绘渲染核心（`createSpriteView`）。支持全图立绘与 v3 分层立绘（`layers.json`），实现 A/B 缓冲区平滑过渡、眨眼机制（`BLINK`）、基于音频 RMS 的口型同步（`LIP_SYNC`）以及 96MB 内存预加载控制。
