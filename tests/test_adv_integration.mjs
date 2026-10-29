@@ -318,6 +318,7 @@ test('integration: audio timeout fallback (1500ms), AUTO progression, SKIP speed
   const subEl = container.querySelector('.adv-subtitle-text');
 
   // --- 1. Audio timeout fallback (1500ms) ---
+  player.setSettings({ autoMode: 'normal' });
   player.startTurn('t-advanced');
   const line0 = { index: 0, zh: '第一句等待语音超时', ja: '音声タイムアウト', speaker: '艾尔' };
   player.pushLine('t-advanced', line0);

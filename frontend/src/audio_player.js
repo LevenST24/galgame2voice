@@ -41,6 +41,7 @@ export class StreamAudioController {
     this._speaking = false;
     this._lastProgress = 0;
     this._linePlayState = null;
+    this.supportsStartNotification = true;
 
     this.underrunCount = 0;
     this.chunksPlayed = 0;
@@ -317,9 +318,10 @@ export class StreamAudioController {
    * @param {Array<string|Object>} chunks
    * @param {Object} [options]
    * @param {string} [options.msgId]
+   * @param {() => void} [options.onStart] 首个切片进入排定播放时刻时触发一次
    * @returns {Promise<'ended'|'interrupted'|'failed'>}
    */
-  async playLine(lineIndex, chunks, { msgId = null } = {}) {
+  async playLine(lineIndex, chunks, { msgId = null, onStart = null } = {}) {
     if (this._linePlayState) {
       this.stopLine({ fadeMs: 0 });
     }
@@ -359,9 +361,12 @@ export class StreamAudioController {
       abortController,
       lineGain,
       settled: false,
+      startTimer: null,
+      started: false,
       resolve(outcome, { fadeMs = 0 } = {}) {
         if (lineState.settled) return;
         lineState.settled = true;
+        clearTimeout(lineState.startTimer);
         abortController.abort();
         const sources = lineState.activeSources.splice(0);
         lineState.queue = [];
@@ -461,6 +466,24 @@ export class StreamAudioController {
         chunkGain.connect(lineGain);
 
         source.start(startTime);
+        if (typeof onStart === 'function' && !lineState.started && lineState.startTimer === null) {
+          const notifyStart = () => {
+            lineState.startTimer = null;
+            if (lineState.settled || self._linePlayState !== lineState) return;
+            // Browser timers keep advancing while an interrupted/suspended
+            // AudioContext does not. Only its running clock can release text.
+            const remainingMs = (startTime - ctx.currentTime) * 1000;
+            if (ctx.state !== 'running' || self.isPaused || remainingMs > 0) {
+              const delay = ctx.state === 'running' && !self.isPaused
+                ? Math.max(10, Math.min(50, remainingMs)) : 50;
+              lineState.startTimer = setTimeout(notifyStart, delay);
+              return;
+            }
+            lineState.started = true;
+            try { onStart(); } catch (error) { console.error('Audio start notification failed:', error); }
+          };
+          lineState.startTimer = setTimeout(notifyStart, Math.max(0, (startTime - ctx.currentTime) * 1000));
+        }
         self.nextStartTime = startTime + duration - (fadeDur / 2);
 
         const entry = { source, chunkGain, startTime, duration };
