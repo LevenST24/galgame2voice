@@ -446,7 +446,25 @@ test('textbox: paginate computes max page count for bilingual lines and respects
   assert.equal(subEl.textContent, '「こんにちは！」');
 });
 
-test('textbox: prepareInput clears previous error message and hides errorWrapEl', () => {
+test('textbox: activating the next line clears the previous line until its own text is revealed', () => {
+  const container = new FakeElement();
+  const tb = createTextbox(container, {
+    getSettings: () => ({ primary: 'zh', subtitle: 'ja', reducedMotion: true }),
+  });
+  tb.activate({ index: 0, zh: '第一句。', ja: '一つ目。', speaker: '菲莉' });
+  tb.reveal('第一句。', { durationMs: 0, pageIndex: 0, pageCount: 1 });
+  const primaryEl = container.querySelector('.adv-primary-text');
+  const subEl = container.querySelector('.adv-subtitle-text');
+  assert.equal(primaryEl.textContent, '「第一句。」');
+  assert.equal(subEl.textContent, '「一つ目。」');
+
+  // The line player may hold the next line until its voice starts.
+  tb.activate({ index: 1, zh: '第二句。', ja: '二つ目。', speaker: '菲莉' });
+  assert.equal(primaryEl.textContent, '');
+  assert.equal(subEl.textContent, '');
+});
+
+test('textbox: prepareInput clears errors and hides the click-wait glyph', () => {
   const container = new FakeElement();
   const tb = createTextbox(container, {
     getSettings: () => ({ playerName: '勇者' }),
@@ -458,7 +476,10 @@ test('textbox: prepareInput clears previous error message and hides errorWrapEl'
   assert.equal(errorWrapEl.classList.contains('is-hidden'), false);
   assert.equal(errorMsgEl.textContent, '网络错误，请稍后重试');
 
+  tb.glyph(true);
+  assert.equal(container.querySelector('.adv-click-glyph').classList.contains('is-hidden'), false);
   tb.prepareInput({ canSend: true });
+  assert.equal(container.querySelector('.adv-click-glyph').classList.contains('is-hidden'), true);
   assert.equal(errorWrapEl.classList.contains('is-hidden'), true);
   assert.equal(errorMsgEl.textContent, '');
 });

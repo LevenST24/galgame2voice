@@ -222,7 +222,7 @@ test('Table 4.1 Row 4: audio skipped or failed -> reveal without waiting, no voi
 });
 
 test('Table 4.1 Row 5: audio absent for 1500ms -> reveals, late audio plays while line is current', async () => {
-  const { player, clock, voice, render } = setup();
+  const { player, clock, voice, render } = setup({ settings: { autoMode: 'normal' } });
   player.startTurn('turn-1');
   player.pushLine('turn-1', sampleLine0);
 
@@ -243,7 +243,7 @@ test('Table 4.1 Row 5: audio absent for 1500ms -> reveals, late audio plays whil
 });
 
 test('Table 4.1 Row 5: late audio arriving after moving to next line is ignored', async () => {
-  const { player, clock, voice } = setup();
+  const { player, clock, voice } = setup({ settings: { autoMode: 'normal' } });
   player.startTurn('turn-1');
   player.pushLine('turn-1', sampleLine0);
   player.pushLine('turn-1', sampleLine1);
@@ -326,7 +326,7 @@ test('Table 4.1 Row 9: last line exhausted and turn settled -> enter player inpu
 });
 
 test('Table 4.1 Row 10: reset cancels owned timers and goes to idle', () => {
-  const { player, clock, voice } = setup();
+  const { player, clock, voice } = setup({ settings: { autoMode: 'normal' } });
   player.startTurn('turn-1');
   player.pushLine('turn-1', sampleLine0); // waiting_audio timer active
   assert.ok(clock.activeTimerCount > 0);
@@ -398,6 +398,32 @@ test('interruptVoice: false waits for voice and collapses multiple advances', as
 
   // Advances to line 1 once!
   assert.equal(player.currentIndex, 1);
+});
+
+test('disabling voice completes a pending advance exactly once', async () => {
+  const { player, voice } = setup({ settings: { interruptVoice: false, revealMsPerGrapheme: 0 } });
+  player.startTurn('turn-1');
+  player.setLineAudio('turn-1', 0, { status: 'ready', chunks: [{ audio_url: '/a.wav' }] });
+  player.pushLine('turn-1', sampleLine0);
+  player.pushLine('turn-1', sampleLine1);
+  player.advance();
+  assert.equal(player.currentIndex, 0);
+
+  player.setSettings({ voiceEnabled: false });
+  assert.equal(player.currentIndex, 1, 'the queued next action must not be lost');
+  assert.equal(voice.calls.filter(call => call.type === 'stop').length, 1);
+  await flushMicrotasks();
+  assert.equal(player.currentIndex, 1, 'the old playback completion must not advance again');
+});
+
+test('disabling voice without a pending advance keeps the current line', () => {
+  const { player } = setup({ settings: { interruptVoice: false, revealMsPerGrapheme: 0 } });
+  player.startTurn('turn-1');
+  player.setLineAudio('turn-1', 0, { status: 'ready', chunks: [{ audio_url: '/a.wav' }] });
+  player.pushLine('turn-1', sampleLine0);
+  player.pushLine('turn-1', sampleLine1);
+  player.setSettings({ voiceEnabled: false });
+  assert.equal(player.currentIndex, 0);
 });
 
 // -------------------------------------------------------------
