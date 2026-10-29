@@ -54,6 +54,10 @@ class VoiceReferenceMissingError(ValueError):
     """A resolved voice has no reference audio and must not borrow another voice."""
 
 
+class VoiceProfileMissingError(ValueError):
+    """An explicitly selected voice profile no longer exists."""
+
+
 class VoiceModelMissingError(ValueError):
     """A resolved voice lacks weights and cannot use an unrelated engine model."""
 
@@ -255,7 +259,7 @@ class TtsService:
             )
 
             if ctx is None and has_selector:
-                raise ValueError("所选音色已不存在，请在角色与会话中重新选择音色。")
+                raise VoiceProfileMissingError("所选音色已不存在，请在角色与会话中重新选择音色。")
 
             if ctx:
                 opts.setdefault("voice_profile_id", ctx.profile_id or 1)
@@ -294,7 +298,7 @@ class TtsService:
                 _require_voice_models(opts)
                 resolved_name = ctx.name
         except (AmbiguousProfileName, VoiceContextChangedError, VoiceContextUnavailableError,
-                VoiceReferenceMissingError, VoiceModelMissingError):
+                VoiceReferenceMissingError, VoiceModelMissingError, VoiceProfileMissingError):
             raise
         except Exception as exc:
             if has_selector:

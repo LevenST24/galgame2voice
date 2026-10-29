@@ -333,7 +333,9 @@ export async function synthesizeAiVoice(msg, ctl) {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         const detail = data.detail || `HTTP ${res.status}`;
-        throw new Error(detail);
+        const error = new Error(detail);
+        error.status = res.status;
+        throw error;
       }
       return res.blob();
     }, { signal: abortCtrl.signal, timeoutMs: 16000 });
@@ -367,6 +369,11 @@ export async function synthesizeAiVoice(msg, ctl) {
       showToast('语音合成超时（16s），请检查 GPT-SoVITS 服务是否正常运行', 'error', engineAction);
     } else if (cancelled || (e && e.name === 'AbortError')) {
       return;
+    } else if (e.status === 422 && e.message?.includes('所选音色已不存在')) {
+      showToast(e.message, 'error', _callbacks.onOpenSessionSettings ? {
+        actionLabel: '角色与会话',
+        onAction: () => _callbacks.onOpenSessionSettings(),
+      } : null);
     } else {
       const errStr = e.message || String(e);
       showToast(`语音合成失败（${errStr}），请检查 GPT-SoVITS 服务是否就绪`, 'error', engineAction);
