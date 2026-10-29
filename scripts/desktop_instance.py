@@ -11,6 +11,7 @@ import urllib.request
 import webbrowser
 
 from galgame2voice.utils.windows_runtime import kernel32
+from scripts.launcher_address import browser_hosts
 
 
 class DesktopInstance:
@@ -66,13 +67,10 @@ def open_existing_instance(root: Path, *, no_browser: bool, timeout: float = 8.0
                 raise ValueError("Invalid instance port")
             host = data["host"]
             # Never open a URL supplied by an arbitrary metadata file.
-            if host in ("0.0.0.0", "::", "127.0.0.1", "localhost"):
-                host = "127.0.0.1"
-            elif host == "::1":
-                host = "[::1]"
-            else:
+            if host not in ("0.0.0.0", "::", "127.0.0.1", "localhost", "::1"):
                 raise ValueError("Existing instance is not bound to loopback")
-            url = f"http://{host}:{port}/"
+            _, url_host = browser_hosts("127.0.0.1" if host == "localhost" else host)
+            url = f"http://{url_host}:{port}/"
             with opener.open(url + "api/health", timeout=0.5) as response:
                 health = json.loads(response.read(4096))
             if health.get("app") != "galgame2voice" or health.get("status") != "ok":

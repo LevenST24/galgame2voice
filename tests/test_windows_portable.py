@@ -179,7 +179,7 @@ def test_smoke_browser_retries_timeout_with_new_profile(tmp_path, monkeypatch, c
         calls.append((command, kwargs))
         if len(calls) == 1:
             raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=partial_stdout, stderr=partial_stderr)
-        return subprocess.CompletedProcess(command, 0, "支持语音输入与朗读回复".encode("utf-8"), b"")
+        return subprocess.CompletedProcess(command, 0, b'<div id="advRoot"><div class="adv-stage is-home"><div class="adv-title-screen"></div></div></div>', b"")
 
     monkeypatch.setattr(smoke_windows_portable.subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising=False)

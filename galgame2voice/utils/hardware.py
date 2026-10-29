@@ -261,6 +261,14 @@ def _detect_host_memory_status() -> tuple[float | None, float | None]:
     return _detect_psutil_memory()
 
 
+def _loaded_torch():
+    """Return only a completed framework import; a metric read must not wait for it."""
+    module = sys.modules.get("torch")
+    if module is None or getattr(getattr(module, "__spec__", None), "_initializing", False) is True:
+        return None
+    return module
+
+
 def _detect_torch_gpus() -> list[str]:
     """Detects GPU names via PyTorch CUDA interface if available."""
     try:
@@ -326,45 +334,48 @@ def _detect_linux_lspci_gpus() -> list[str]:
     return []
 
 
-def _get_all_detected_gpu_names() -> list[str]:
+def _get_all_detected_gpu_names(*, allow_torch_import: bool = True) -> list[str]:
     """
-    Internal helper collecting graphics device names from PyTorch, nvidia-smi,
-    Windows WMI/CIM, or Linux lspci.
+    Reuse loaded CUDA metadata; otherwise prefer native inventory before importing
+    PyTorch. A status poll must not initialize a large framework unnecessarily.
     """
-    # 1. PyTorch CUDA inspection if available
-    torch_names = _detect_torch_gpus()
-    if torch_names:
-        return torch_names
+    torch_loaded = _loaded_torch() is not None
+    if torch_loaded:
+        torch_names = _detect_torch_gpus()
+        if torch_names:
+            return torch_names
 
-    # 2. nvidia-smi tool inspection
+    # Native tools are bounded and do not allocate a PyTorch CUDA context.
     smi_names = _detect_nvidia_smi_gpus()
     if smi_names:
         return smi_names
 
-    # 3. Windows WMI / CIM query
+    # Windows WMI / CIM query
     if sys.platform == "win32":
         win_names = _detect_windows_gpus()
         if win_names:
             return win_names
 
-    # 4. Linux lspci query
+    # Linux lspci query
     if sys.platform.startswith("linux"):
         linux_names = _detect_linux_lspci_gpus()
         if linux_names:
             return linux_names
 
-    return []
+    return _detect_torch_gpus() if allow_torch_import and not torch_loaded else []
 
 
-def detect_gpu_capability() -> tuple[bool, str, int | None]:
+def detect_gpu_capability(*, allow_torch_import: bool = True) -> tuple[bool, str, int | None]:
     """
     Detects GPU compute availability and primary device metadata.
     Returns: (gpu_available, gpu_name, device_count)
     - gpu_available: True if a CUDA-compatible or NVIDIA accelerator is detected.
     - gpu_name: Name of the primary graphics device or 'N/A' if none found.
     - device_count: Number of detected discrete compute units (or None if unverified).
+    Set allow_torch_import=False for diagnostics: native inventory and a fully
+    loaded framework may be reused, but a status read never initializes one.
     """
-    gpu_names = _get_all_detected_gpu_names()
+    gpu_names = _get_all_detected_gpu_names(allow_torch_import=allow_torch_import)
     if not gpu_names:
         return False, "N/A", None
 
@@ -386,9 +397,9 @@ def release_system_memory() -> None:
     """
     import gc
     gc.collect()
-    if "torch" in sys.modules:
+    torch = _loaded_torch()
+    if torch is not None:
         try:
-            import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
@@ -400,7 +411,8 @@ def release_system_memory() -> None:
 def get_gpu_vram_status() -> tuple[float | None, float | None]:
     """
     Returns (total_vram_gb, free_vram_gb) of primary NVIDIA GPU if available, else (None, None).
-    Queries nvidia-smi first so no PyTorch CUDA context is created, falling back to PyTorch.
+    Queries nvidia-smi first, then reuses an already loaded PyTorch CUDA interface.
+    Never cold-imports the training framework just to check a remote engine's resources.
     Not cheap: the nvidia-smi branch spawns a blocking subprocess (up to
     DEFAULT_SUBPROCESS_TIMEOUT seconds) and nothing is cached, so every call stalls the
     calling thread — cache it or run it via asyncio.to_thread before calling from the loop.
@@ -419,12 +431,14 @@ def get_gpu_vram_status() -> tuple[float | None, float | None]:
     except (subprocess.SubprocessError, OSError, ValueError, IndexError):
         pass
 
+    torch = _loaded_torch()
     try:
-        import torch
+        if torch is None:
+            return None, None
         if torch.cuda.is_available():
             props = torch.cuda.get_device_properties(0)
             total_gb = round(props.total_memory / BYTES_PER_GB, 2)
-            free_bytes, _ = torch.cuda.mem_get_info()
+            free_bytes, _ = torch.cuda.mem_get_info(0)
             return total_gb, round(free_bytes / BYTES_PER_GB, 2)
     except Exception:
         pass

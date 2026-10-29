@@ -25,17 +25,22 @@ from galgame2voice.services.gpt_sovits_client import (
 from galgame2voice.services.tts_options import resolve_tts_options
 from galgame2voice.utils.async_tasks import drain_background_tasks
 from galgame2voice.utils.audio_spec import project_file
+from galgame2voice.services.audio_identity import AudioIdentity, database_scope
 
 logger = logging.getLogger("galgame2voice.services.tts_cache_manager")
 
-# v1 keys omitted some effective parameters, so even a default-parameter entry
-# could contain audio generated using a different speed/preset. Keep the old
-# files playable from history, but do not reuse them for new synthesis requests.
-_CACHE_KEY_VERSION = 2
+# v3 also includes database scope, effective endpoint and full file revisions.
+# Keep earlier files playable from history without reusing them for new requests.
+_CACHE_KEY_VERSION = 3
 
 # Sentinel for "the previous cache row could not be read", which is distinct from
 # None ("no previous row exists" = this write is an INSERT).
 _STATS_UNKNOWN = object()
+_MAX_FAILED_READS = 256
+
+
+class CachedAudioReadError(OSError):
+    """A cached stream failed after bytes had already reached its consumer."""
 
 
 def _get_prof_val(prof: Any, attr: str, default: Any = "") -> Any:
@@ -56,7 +61,8 @@ def _extract_voice_profile_cache_fields(
     gpt_weights = opts.get("gpt_weights_path", "")
     sovits_weights = opts.get("sovits_weights_path", "")
     ref_audio = opts.get("ref_audio_path") or opts.get("refer_audio_path", "")
-    prompt_text = opts.get("prompt_text") or opts.get("refer_text", "")
+    prompt_pinned = bool(opts.get("_profile_prompt_resolved")) and opts.get("prompt_text") is not None
+    prompt_text = opts["prompt_text"] if prompt_pinned else opts.get("prompt_text") or opts.get("refer_text", "")
     prompt_lang = opts.get("prompt_lang") or opts.get("refer_language") or opts.get("prompt_language", "ja")
     text_lang = opts.get("text_lang") or opts.get("text_language", "ja")
 
@@ -67,7 +73,7 @@ def _extract_voice_profile_cache_fields(
             sovits_weights = _get_prof_val(voice_profile, "sovits_weights_path", "")
         if not ref_audio:
             ref_audio = _get_prof_val(voice_profile, "ref_audio_path", "")
-        if not prompt_text:
+        if not prompt_text and not prompt_pinned:
             prompt_text = _get_prof_val(voice_profile, "prompt_text", "")
         if not prompt_lang:
             prompt_lang = _get_prof_val(voice_profile, "prompt_lang", "")
@@ -89,9 +95,7 @@ def _normalize_ref_audio(ref_audio: str) -> str:
     """Normalizes reference audio path to name:mtime_ns:size if file exists, falling back to name."""
     if not ref_audio:
         return ""
-    p = Path(ref_audio)
-    if not p.is_file():
-        p = project_file(ref_audio) or p
+    p = project_file(ref_audio) or Path(ref_audio)
     if p.is_file():
         try:
             st = p.stat()
@@ -131,13 +135,20 @@ def _build_canonical_params_dict(
     fragment_interval = resolved["fragment_interval"]
     frag_str = f"{fragment_interval:.3f}"
 
-    ref_audio_norm = _normalize_ref_audio(prof_fields["ref_audio"])
+    identity = opts.get("_audio_identity")
+    if not isinstance(identity, AudioIdentity):
+        identity = AudioIdentity.capture({**opts,
+            "gpt_weights_path": prof_fields["gpt_weights"],
+            "sovits_weights_path": prof_fields["sovits_weights"],
+            "ref_audio_path": prof_fields["ref_audio"],
+        })
 
     return {
         "voice_profile_id": prof_fields["voice_profile_id"],
-        "gpt_weights": str(prof_fields["gpt_weights"]),
-        "sovits_weights": str(prof_fields["sovits_weights"]),
-        "ref_audio": ref_audio_norm,
+        "gpt_weights": identity.gpt.fingerprint(),
+        "sovits_weights": identity.sovits.fingerprint(),
+        "ref_audio": identity.reference.fingerprint(),
+        "engine_url": identity.engine_url,
         "prompt_text": str(prof_fields["prompt_text"]),
         "prompt_lang": str(prof_fields["prompt_lang"]).lower(),
         "text_lang": str(prof_fields["text_lang"]).lower(),
@@ -185,6 +196,7 @@ class TtsCacheManager:
         self._write_lock = asyncio.Lock()
         # High-speed In-Memory LRU Cache layer (<0.1ms access time)
         self._mem_cache: OrderedDict[str, bytes] = OrderedDict()
+        self._failed_reads: OrderedDict[str, tuple[int, ...]] = OrderedDict()
         self._mem_bytes_total: int = 0
         self._touch_throttle: dict[str, float] = {}
         # Batch write cache access times: in-memory buffer protected by self._lock
@@ -220,6 +232,48 @@ class TtsCacheManager:
         ):
             _, evicted = self._mem_cache.popitem(last=False)
             self._mem_bytes_total -= len(evicted)
+
+    @staticmethod
+    def _file_revision(file_stat: os.stat_result) -> tuple[int, ...]:
+        # Windows path stat and handle fstat can report different ctime values
+        # for the same file. Use identity fields shared by both APIs.
+        return (file_stat.st_dev, file_stat.st_ino, file_stat.st_size,
+                file_stat.st_mtime_ns)
+
+    def _failed_read_matches_locked(self, cache_key: str, file_stat: os.stat_result) -> bool:
+        failed = self._failed_reads.get(cache_key)
+        if failed is None:
+            return False
+        if failed == self._file_revision(file_stat):
+            self._failed_reads.move_to_end(cache_key)
+            return True
+        self._failed_reads.pop(cache_key, None)
+        return False
+
+    async def _remember_failed_read(
+        self, cache_key: str, file_path: Path, revision: tuple[int, ...], *, short_read: bool = False,
+    ) -> None:
+        # Do not discard a newer successful write because an older reader failed.
+        # Preserve the original file; a later synthesis can replace it atomically.
+        async with self._write_lock:
+            try:
+                current = await asyncio.to_thread(file_path.stat)
+            except OSError:
+                return
+            current_revision = self._file_revision(current)
+            if current_revision != revision:
+                # An in-place truncation changes size/mtime but keeps the opened
+                # file identity. Atomic replacement by a newer writer does not.
+                if not (short_read and revision[1] and current_revision[:2] == revision[:2]
+                        and current_revision[2] < revision[2]):
+                    return
+                revision = current_revision
+            async with self._lock:
+                self._mem_cache_discard(cache_key)
+                self._failed_reads[cache_key] = revision
+                self._failed_reads.move_to_end(cache_key)
+                while len(self._failed_reads) > _MAX_FAILED_READS:
+                    self._failed_reads.popitem(last=False)
 
     def _update_disk_stats_after_write(self, file_size: int, prev_file_size: int | None) -> None:
         """Updates in-memory disk cache size delta after writing an entry."""
@@ -377,6 +431,7 @@ class TtsCacheManager:
 
         prof_fields = _extract_voice_profile_cache_fields(opts, voice_profile)
         params_dict = _build_canonical_params_dict(opts, prof_fields, clean_text)
+        params_dict["database"] = database_scope(self.db_path)
 
         params_json = json.dumps(params_dict, sort_keys=True, separators=(",", ":"))
         params_hash = hashlib.sha256(params_json.encode("utf-8")).hexdigest()
@@ -410,6 +465,9 @@ class TtsCacheManager:
             return None
 
         async with self._lock:
+            if self._failed_read_matches_locked(cache_key, file_stat):
+                self._record_miss_discard_locked(cache_key, record_miss=record_miss)
+                return None
             if cache_key in self._mem_cache:
                 self._mem_cache.move_to_end(cache_key)
             self._record_hit_locked(cache_key)
@@ -448,7 +506,8 @@ class TtsCacheManager:
             return None
 
         try:
-            file_size = file_path.stat().st_size
+            file_stat = file_path.stat()
+            file_size = file_stat.st_size
         except OSError:
             async with self._lock:
                 self._record_miss_discard_locked(cache_key, record_miss=record_miss)
@@ -464,8 +523,17 @@ class TtsCacheManager:
                 pass
             return None
 
+        async with self._lock:
+            if self._failed_read_matches_locked(cache_key, file_stat):
+                self._record_miss_discard_locked(cache_key, record_miss=record_miss)
+                return None
+
+        short_read = False
         try:
             audio_bytes = await asyncio.to_thread(file_path.read_bytes)
+            if len(audio_bytes) < file_size:
+                short_read = True
+                raise OSError("Cached audio was truncated while reading")
             async with self._lock:
                 self._record_hit_locked(cache_key)
                 # Populate In-Memory LRU Cache
@@ -473,6 +541,9 @@ class TtsCacheManager:
             return audio_bytes, url_path, len(audio_bytes)
         except Exception as e:
             logger.warning("Failed to read cache file %s: %s", file_path, e)
+            await self._remember_failed_read(
+                cache_key, file_path, self._file_revision(file_stat), short_read=short_read,
+            )
             async with self._lock:
                 if record_miss:
                     self._misses += 1
@@ -522,19 +593,34 @@ class TtsCacheManager:
                 self._record_miss_discard_locked(cache_key, record_miss=record_miss)
             return
 
+        async with self._lock:
+            if self._failed_read_matches_locked(cache_key, file_stat):
+                self._record_miss_discard_locked(cache_key, record_miss=record_miss)
+                return
+
         should_buffer = (sz <= self.max_mem_bytes)
         collected = bytearray() if should_buffer else None
 
         hit_recorded = False
+        revision = self._file_revision(file_stat)
+        short_read = False
         try:
             # Opening the file is a syscall too: keep it off the event loop, the
             # same way the reads below already are.
             file_handle = await asyncio.to_thread(open, file_path, "rb")
             try:
+                opened_stat = await asyncio.to_thread(os.fstat, file_handle.fileno())
+                revision = self._file_revision(opened_stat)
+                expected_size = opened_stat.st_size
+                bytes_read = 0
                 while True:
                     chunk = await asyncio.to_thread(file_handle.read, bounded_chunk_size)
                     if not chunk:
+                        if bytes_read < expected_size:
+                            short_read = True
+                            raise OSError("Cached audio ended before its recorded size")
                         break
+                    bytes_read += len(chunk)
                     if not hit_recorded:
                         async with self._lock:
                             self._record_hit_locked(cache_key)
@@ -555,6 +641,11 @@ class TtsCacheManager:
                     self._mem_cache_store(cache_key, bytes(collected))
         except Exception as exc:
             logger.warning("stream_cached failed for %s: %s", file_path, exc)
+            await self._remember_failed_read(cache_key, file_path, revision, short_read=short_read)
+            if hit_recorded:
+                raise CachedAudioReadError(
+                    "缓存语音读取中断，请重新请求本句语音；若仍失败，请检查数据目录的读写权限。"
+                ) from exc
         finally:
             if not hit_recorded:
                 async with self._lock:
@@ -571,20 +662,6 @@ class TtsCacheManager:
                     tmp_path.replace(file_path)
                     return
                 except (PermissionError, OSError) as err:
-                    try:
-                        if file_path.exists() and file_path.stat().st_size > 0:
-                            # Windows AV/indexer may transiently lock the target;
-                            # the existing file is a valid cache entry for this key,
-                            # so keep it rather than failing the whole put.
-                            logger.warning(
-                                "Cache file %s locked (%s); keeping existing file, "
-                                "fresh bytes discarded for this write.",
-                                file_path, err,
-                            )
-                            tmp_path.unlink(missing_ok=True)
-                            return
-                    except OSError:
-                        pass
                     if attempt == 4:
                         tmp_path.unlink(missing_ok=True)
                         raise err
@@ -706,6 +783,7 @@ class TtsCacheManager:
 
                 # Populate In-Memory LRU Cache only after successful persistence
                 async with self._lock:
+                    self._failed_reads.pop(cache_key, None)
                     self._mem_cache_store(cache_key, audio_bytes)
                     self._update_disk_stats_after_write(file_size, prev_file_size)
             except Exception:
@@ -809,6 +887,7 @@ class TtsCacheManager:
                                 await crud.delete_tts_cache_entry(conn, entry.cache_key)
                                 async with self._lock:
                                     self._mem_cache_discard(entry.cache_key)
+                                    self._failed_reads.pop(entry.cache_key, None)
                                 total_bytes -= entry.file_size
                                 total_files -= 1
                                 pruned_count += 1
@@ -862,6 +941,7 @@ class TtsCacheManager:
 
             async with self._lock:
                 self._mem_cache.clear()
+                self._failed_reads.clear()
                 self._mem_bytes_total = 0
                 self._touch_throttle.clear()
                 self._dirty_touches.clear()
@@ -918,20 +998,46 @@ class TtsCacheManager:
 
 # Singleton accessor
 _tts_cache_manager_instance: TtsCacheManager | None = None
+_tts_cache_managers: dict[tuple[str, str], TtsCacheManager] = {}
 
 
 def get_tts_cache_manager(
     cache_dir: str | Path | None = None,
     db_path: str | Path | None = None,
 ) -> TtsCacheManager:
-    """Returns singleton instance of TtsCacheManager."""
+    """Share a manager only within the same database and audio directory."""
     global _tts_cache_manager_instance
-    if _tts_cache_manager_instance is None:
-        _tts_cache_manager_instance = TtsCacheManager(cache_dir=cache_dir, db_path=db_path)
-    return _tts_cache_manager_instance
+    if cache_dir is None and db_path is None and _tts_cache_manager_instance is not None:
+        return _tts_cache_manager_instance
+    settings = get_settings()
+    key = (database_scope(db_path or get_database_path()),
+           database_scope(cache_dir or settings.audio_dir / "cache"))
+    primary = _tts_cache_manager_instance
+    if primary is not None and key == (database_scope(primary.db_path), database_scope(primary.cache_dir)):
+        _tts_cache_managers[key] = primary
+    if key not in _tts_cache_managers:
+        _tts_cache_managers[key] = TtsCacheManager(cache_dir=cache_dir, db_path=db_path)
+    manager = _tts_cache_managers[key]
+    default_key = (database_scope(get_database_path()), database_scope(settings.audio_dir / "cache"))
+    if _tts_cache_manager_instance is None and key == default_key:
+        _tts_cache_manager_instance = manager
+    return manager
+
+
+async def close_tts_cache_managers() -> None:
+    """Flush all app-owned caches, including scopes other than the primary one."""
+    managers = set(_tts_cache_managers.values())
+    if _tts_cache_manager_instance is not None:
+        managers.add(_tts_cache_manager_instance)
+    try:
+        for manager in managers:
+            await manager.aclose()
+    finally:
+        reset_tts_cache_manager()
 
 
 def reset_tts_cache_manager() -> None:
     """Resets the singleton for test isolation."""
     global _tts_cache_manager_instance
     _tts_cache_manager_instance = None
+    _tts_cache_managers.clear()

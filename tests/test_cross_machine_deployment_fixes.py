@@ -48,7 +48,8 @@ def create_synthetic_wav(path: Path, duration_sec: float, sample_rate: int = 160
 async def fallback_voice(tmp_path):
     """Reference fallback requires a configured voice, supplied by this test."""
     from galgame2voice.database.models import VoiceProfileCreate
-    from galgame2voice.database.session import get_db
+    from galgame2voice.database.session import get_db, init_db
+    await init_db()
     reference = create_synthetic_wav(tmp_path / "fallback_reference.wav", duration_sec=5.0)
     async with get_db() as conn:
         profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
@@ -195,7 +196,7 @@ async def test_tts_service_duration_accepts_valid_audio(tmp_path):
 
 @pytest.mark.asyncio
 async def test_database_auto_healing_legacy_and_missing_paths(tmp_path, monkeypatch):
-    """Verifies that crud.auto_heal_voice_profiles repairs broken, missing, and dev machine paths."""
+    """Startup healing never swaps a broken reference for another voice."""
     # "Valid Profile" points at the bundled reference audio, which is git-ignored
     # (audio/* is excluded from version control). Materialise an isolated project
     # root so this test measures the healing rules instead of the developer's
@@ -241,18 +242,18 @@ async def test_database_auto_healing_legacy_and_missing_paths(tmp_path, monkeypa
         healed_count = await crud.auto_heal_voice_profiles(conn)
         await conn.commit()
 
-        # Profiles 1, 2, 3 should be healed; Profile 4 should remain
-        assert healed_count == 3
+        # No in-project path needs canonicalizing; foreign, missing and empty
+        # references keep their value until a unique package match repairs them.
+        assert healed_count == 0
 
         cur = await conn.execute("SELECT id, ref_audio_path FROM voice_profiles ORDER BY id;")
         rows = await cur.fetchall()
-        for r in rows[:3]:
-            assert "gentle.ogg" in r["ref_audio_path"] or "nat002_032.ogg" in r["ref_audio_path"]
-            assert "yuzusoft" not in r["ref_audio_path"]
-            assert "non_existent" not in r["ref_audio_path"]
-
-        # Profile 4 remains unchanged
-        assert rows[3]["ref_audio_path"] == "audio/references/natsume/gentle.ogg"
+        assert [r["ref_audio_path"] for r in rows] == [
+            "E:/yuzusoft/cafeStella/sikivoice/nat002_032.ogg",
+            "C:/non_existent_folder/missing.wav",
+            "",
+            "audio/references/natsume/gentle.ogg",
+        ]
 
 
 # ============================================================================
@@ -366,7 +367,7 @@ async def test_init_schema_and_seeds_leaves_voice_setup_to_user(tmp_path):
 
 @pytest.mark.asyncio
 async def test_auto_heal_arbitrary_drive_letters(tmp_path):
-    """Verifies that auto_heal_voice_profiles cleanses arbitrary machine-specific drive letters."""
+    """A foreign drive path is not replaced by another voice, so the user can still see what is missing."""
     from galgame2voice.database.session import init_db
     db_path = tmp_path / "drive_letters.db"
     await init_db(db_path)
@@ -381,11 +382,10 @@ async def test_auto_heal_arbitrary_drive_letters(tmp_path):
         await conn.execute("UPDATE voice_profiles SET ref_audio_path = 'D:\\other_user\\voice.wav' WHERE id = 1;")
         await conn.commit()
 
-        healed = await crud.auto_heal_voice_profiles(conn)
-        assert healed >= 1
+        assert await crud.auto_heal_voice_profiles(conn) == 0
 
         cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE id = 1;")
         row = await cur.fetchone()
-        assert not Path(row["ref_audio_path"]).is_absolute()
+        assert row["ref_audio_path"] == "D:\\other_user\\voice.wav"
 
 

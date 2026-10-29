@@ -3,3 +3,5 @@
 *.sh text eol=lf
 frontend/index.html text eol=lf
 galgame2voice/static/index.html text eol=lf
+galgame2voice/static/assets/*.js text eol=lf
+galgame2voice/static/assets/*.css text eol=lf

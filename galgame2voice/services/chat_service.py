@@ -27,6 +27,7 @@ from anyio import CancelScope
 from galgame2voice.adapters.base import ChatMessage, BaseLLMAdapter, configured_reasoning_effort
 from galgame2voice.adapters.registry import get_llm_adapter
 from galgame2voice.database import crud
+from galgame2voice.database.commit_hooks import after_commit
 from galgame2voice.database.models import MessageCreate
 from galgame2voice.database.session import get_database_path, get_db, immediate_transaction
 from galgame2voice.services.tts_service import TtsService
@@ -34,6 +35,8 @@ from galgame2voice.services.session_manager import SessionManager
 from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.services.affection_service import AffectionService
 from galgame2voice.services.metrics_collector import get_metrics_collector, MetricsCollector
+from galgame2voice.services.character_identity import AmbiguousProfileName
+from galgame2voice.services.voice_selection import select_voice_profile
 from galgame2voice.utils.async_tasks import drain_background_tasks
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.sse import format_sse_frame
@@ -42,6 +45,8 @@ from galgame2voice.utils.error_diagnostics import (
     EMPTY_REPLY_DEFAULT,
     EMPTY_REPLY_STOPPED_ON_LENGTH,
     EmptyReplyError,
+    ConfigurationSelectionError,
+    chat_error_payload,
 )
 
 from galgame2voice.services.emotion_classifier import (
@@ -66,6 +71,8 @@ from galgame2voice.services.chat_pipelines import (
 from galgame2voice.services.chat_pipelines.acting_menu import get_recent_pose, sanitize_act
 from galgame2voice.services.chat_pipelines.context_builder import build_chat_context
 from galgame2voice.services.chat_pipelines.line_builder import build_lines
+from galgame2voice.services.chat_pipelines.turn_persistence import require_user_turn
+from galgame2voice.services.chat_pipelines.turn_ownership import serialize_stream_turn, serialize_sync_turn
 from galgame2voice.utils.audio_concat import concat_wav_files
 
 logger = logging.getLogger("galgame2voice.services.chat_service")
@@ -87,8 +94,8 @@ class ChatService:
         db_path: str | Path | None = None,
         metrics_collector: MetricsCollector | None = None,
     ):
-        self.tts_service = tts_service or TtsService()
         self.db_path = str(db_path or get_database_path())
+        self.tts_service = tts_service or TtsService(db_path=self.db_path)
         self.session_manager = SessionManager(db_path=self.db_path)
         self.memory_service = MemoryService(db_path=self.db_path)
         self.affection_service = AffectionService(db_path=self.db_path)
@@ -228,6 +235,11 @@ class ChatService:
             allow_private = bool(getattr(settings, "allow_private_llm_endpoints", False))
             if provider_id:
                 provider = await crud.get_provider_raw(active_conn, provider_id)
+                if provider is None:
+                    raise ConfigurationSelectionError(
+                        "指定的模型配置已不存在，请在「设置中心 → 对话模型」重新选择并启用模型。",
+                        error_code="PROVIDER_NOT_FOUND",
+                    )
             else:
                 provider = await crud.get_active_provider_raw(active_conn)
 
@@ -345,16 +357,23 @@ class ChatService:
         sess_obj: Any | None,
         character_name: str | None,
     ) -> Any | None:
-        """Resolves active voice profile: explicit voice_profile_id -> tts_options -> session -> character_name -> global active."""
-        target_profile_id = voice_profile_id or (tts_options or {}).get("voice_profile_id") or (sess_obj.voice_profile_id if sess_obj else None)
-        active_prof = None
-        if target_profile_id is not None:
-            active_prof = await crud.get_voice_profile(conn, int(target_profile_id))
-        if active_prof is None and character_name:
-            active_prof = await crud.get_voice_profile_by_name(conn, character_name)
-        if active_prof is None:
-            active_prof = await crud.get_active_voice_profile(conn)
-        return active_prof
+        """Explicit ID/name selectors precede a session binding and global default."""
+        name = character_name.strip() if character_name else None
+        target_profile_id = voice_profile_id
+        if target_profile_id is None:
+            target_profile_id = (tts_options or {}).get("voice_profile_id")
+        if target_profile_id is None and not name:
+            target_profile_id = getattr(sess_obj, "voice_profile_id", None)
+        try:
+            profile = await select_voice_profile(conn, target_profile_id, name)
+        except AmbiguousProfileName as exc:
+            raise ConfigurationSelectionError(str(exc), error_code="VOICE_PROFILE_AMBIGUOUS", status_code=409) from exc
+        if profile is None and (target_profile_id is not None or name):
+            raise ConfigurationSelectionError(
+                "所选音色已不存在，请在「设置中心 → 角色与会话」重新选择音色。",
+                error_code="VOICE_PROFILE_NOT_FOUND",
+            )
+        return profile
 
     async def _init_turn_session_and_message(
         self,
@@ -479,6 +498,7 @@ class ChatService:
                 logger.warning("TTS synthesis in chat_sync failed for profile '%s': %s", profile_name, e)
         return audio_url, tts_first_chunk_ms, tts_cached_chunks, tts_generated_chunks
 
+    @serialize_stream_turn
     async def stream_chat(
         self,
         prompt: str,
@@ -546,8 +566,6 @@ class ChatService:
                         logger.debug("Failed background affection record init: %s", exc)
                     await self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
 
-                self._spawn_background(_bg_affection_and_memory())
-
                 (
                     adapter,
                     model_name,
@@ -566,6 +584,7 @@ class ChatService:
                     outfit=outfit,
                     reply_format=reply_format,
                 )
+                self._spawn_background(_bg_affection_and_memory())
 
             coordinator = StreamCoordinator(
                 adapter=adapter,
@@ -606,6 +625,8 @@ class ChatService:
             finally:
                 await stream_iter.aclose()
 
+        except ConfigurationSelectionError as exc:
+            yield {"event": "error", "data": chat_error_payload(exc)}
         except Exception as exc:
             logger.error(
                 "Error in stream_chat pipeline (session_id=%s, character=%s, provider=%s): %s",
@@ -675,6 +696,7 @@ class ChatService:
         ):
             yield format_sse_frame(event)
 
+    @serialize_sync_turn
     async def chat_sync(
         self,
         prompt: str,
@@ -703,6 +725,11 @@ class ChatService:
         t_start = time.perf_counter()
         user_msg = None
         persisted_assistant = False
+
+        def mark_assistant_persisted() -> None:
+            nonlocal persisted_assistant
+            persisted_assistant = True
+
         try:
             async with get_db(self.db_path) as conn:
                 async with immediate_transaction(conn):
@@ -718,11 +745,6 @@ class ChatService:
                     await crud.get_or_create_character_affection(
                         conn, user_id=user_id, character_id=profile_id or 1
                     )
-
-                # Extract user memory facts in background
-                self._spawn_background(
-                    self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
-                )
 
                 (
                     adapter,
@@ -741,6 +763,10 @@ class ChatService:
                     session=sess_obj,
                     outfit=outfit,
                     reply_format=reply_format,
+                )
+                # Configuration rejection must not process the prompt elsewhere.
+                self._spawn_background(
+                    self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
                 )
 
             current_pose = await get_recent_pose(self.db_path, session_id)
@@ -822,6 +848,7 @@ class ChatService:
             if chinese.strip() or japanese.strip():
                 async with get_db(self.db_path) as conn:
                     async with immediate_transaction(conn):
+                        await require_user_turn(conn, session_id, getattr(user_msg, "id", None))
                         await crud.add_message(conn, MessageCreate(
                             session_id=session_id,
                             role="assistant",
@@ -831,7 +858,7 @@ class ChatService:
                             audio_url=audio_url,
                             latency_ms=latency_ms,
                         ))
-                    persisted_assistant = True
+                        after_commit(conn, mark_assistant_persisted)
 
             # Only a saved turn earns affection: a withdrawn one can be sent again.
             if persisted_assistant:

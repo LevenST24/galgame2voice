@@ -103,6 +103,7 @@ export function renderSessionList(container, { sessions, activeId, onSelect, onD
 
 /** 失败是否需要去「对话模型」处理：后端给出错误码时按码判断，频率超限只需稍后重试。 */
 export function needsModelSettings(error, code = null) {
+  if (/^VOICE_PROFILE_/.test(code || '')) return false;
   if (code) return !/RATE_LIMIT$/.test(code);
   return /模型|密钥|Key|Provider|401|403|未配置/i.test(error || '');
 }

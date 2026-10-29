@@ -47,6 +47,10 @@ export function closeModal(el) {
   else if (top()) top().el.querySelector('.modal')?.focus({ preventScroll: true });
 }
 
+export function closeAllModals() {
+  for (const { el } of [...dialogs].reverse()) closeModal(el);
+}
+
 export function initSettingsUi() {
   if (installed) return;
   installed = true;
@@ -77,14 +81,12 @@ export function initSettingsUi() {
   }, true);
 }
 
-export function initSettingsTabs(root) {
+export function initSettingsTabs(root, onSelect) {
   if (!root) return;
   const tabs = [...root.querySelectorAll('[data-gtab]')];
   root.setAttribute('role', 'tablist');
-  root.setAttribute('aria-label', '全局设置分类');
-  const orientation = () => root.setAttribute('aria-orientation', window.innerWidth <= 620 ? 'horizontal' : 'vertical');
-  orientation();
-  window.addEventListener('resize', orientation);
+  root.setAttribute('aria-label', '设置中心分类');
+  root.setAttribute('aria-orientation', 'vertical');
   const select = tab => {
     for (const item of tabs) {
       const active = item === tab;
@@ -95,9 +97,10 @@ export function initSettingsTabs(root) {
     }
     root.closest('.modal')?.querySelector('.modal-body')?.scrollTo(0, 0);
     tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    onSelect?.(tab.dataset.gtab);
   };
   tabs.forEach((tab, index) => {
-    tab.id = `gt-${tab.dataset.gtab}`;
+    tab.id ||= `gt-${tab.dataset.gtab}`;
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-controls', `gp-${tab.dataset.gtab}`);
     tab.setAttribute('aria-selected', String(tab.classList.contains('active')));

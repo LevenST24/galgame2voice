@@ -114,7 +114,9 @@ class TestTtsCacheHitLatencyBenchmark:
         # 2. Benchmark 100 consecutive hits
         hit_latencies_ms: List[float] = []
         disk_io_latencies_ms: List[float] = []
-        key, _, _ = mgr.compute_cache_key(sample_text)
+        # Include effective client reference/model defaults, as synthesis does.
+        options = await tts_service._populate_voice_profile_opts({})
+        key, _, _ = mgr.compute_cache_key(sample_text, options=options)
         target_file = cache_dir / f"{key}.wav"
         assert target_file.exists()
 

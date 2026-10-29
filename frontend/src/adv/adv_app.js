@@ -152,15 +152,23 @@ export function mountAdv(dom, deps) {
     if (name === 'voice_mode') voiceModeButton = button;
     listen(button, 'click', () => action(name)); tools.appendChild(button);
   }
+  if (deps.onHome) {
+    const button = doc.createElement('button'); button.type = 'button'; button.textContent = '首页';
+    button.dataset.action = 'home'; button.setAttribute('aria-label', '返回首页');
+    listen(button, 'click', () => action('home')); tools.appendChild(button);
+  }
 
-  const configPanel = createConfigPanel(stage.overlay, {
+  const configPanel = createConfigPanel(deps.readingSettingsContainer || stage.overlay, {
+    embedded: Boolean(deps.readingSettingsContainer),
     getSession: () => deps.getSession?.(),
     getCharacter: () => deps.getCharacter?.(),
     getCostumes: () => model?.costumes || sprite.getModel?.()?.costumes || deps.getCostumes?.() || [],
     saveSettings: patch => {
-      deps.saveSettings?.(patch);
+      const confirmation = deps.saveSettings?.(patch, { confirm: true });
       update();
+      return confirmation;
     },
+    onSaveError: (error, origin) => deps.onSettingsSaveError?.(error, origin),
     voiceEnabled: () => Boolean(deps.voiceEnabled?.()),
     toggleVoice: () => {
       deps.toggleVoice?.();
@@ -168,6 +176,8 @@ export function mountAdv(dom, deps) {
     },
     onModelSettings: () => deps.onModelSettings?.(),
     onSessionSettings: () => (deps.onSessionSettings || deps.onSettings)?.(),
+    onOpenSettings: deps.onOpenSettings,
+    onReturnHome: deps.onHome ? () => action('home') : undefined,
     onPreview: patch => {
       if (patch.advWindowOpacity !== undefined) {
         const band = stage.textbox.querySelector('.adv-band');
@@ -214,9 +224,10 @@ export function mountAdv(dom, deps) {
       stage.textbox.inert = false;
       stage.quickmenu.inert = false;
       tools.inert = false;
-      player.resume('dialog');
+      if (!externalOverlay) player.resume('dialog');
       if (!drawer && !backlog && !externalOverlay) restoreSprite();
       syncControls();
+      deps.onReadingSettingsClose?.();
     },
     clock,
     matchMedia,
@@ -426,6 +437,9 @@ export function mountAdv(dom, deps) {
       playUserVoice: (msg, ctl) => (deps.playUserVoice || deps.playVoice)?.(msg, ctl),
       stopOtherVoice: () => deps.stopOtherVoice?.(),
       playLegacyVoice: (msg, ctl) => deps.playLegacyVoice?.(msg, ctl),
+      regenerateLineAudio: deps.regenerateLineAudio,
+      getRecoveryVoice: () => deps.getRecoveryVoice?.(),
+      onChooseVoice: () => { closeLog(); deps.onSettings?.(); },
       wallNow: () => deps.wallNow?.() ?? Date.now(),
       onSettings: openErrorSettings,
       onClose: closeLog,
@@ -483,10 +497,20 @@ export function mountAdv(dom, deps) {
         break;
       case 'settings':
       case 'config':
+        if (deps.onOpenSettings) {
+          closeBgPanel(); closeLog(); closeDrawer();
+          configPanel.close({ revert: true });
+          deps.onOpenSettings();
+          break;
+        }
+        // A standalone stage can still host its local experience editor.
+      case 'reading_settings':
         closeBgPanel();
         closeLog();
-        configPanel.open();
+        if (deps.onOpenReadingSettings) deps.onOpenReadingSettings();
+        else configPanel.open();
         break;
+      case 'home': deps.onHome?.(); break;
       case 'model_status': deps.onModelSettings?.(); break;
       case 'swap_languages': textbox.swapLanguages(); break;
       case 'new_session': deps.onNewSession?.(); break;
@@ -643,7 +667,13 @@ export function mountAdv(dom, deps) {
       pendingOutfit = null;
       if (!switched) {
         controller.stop();
-        resetInput(); turnId = null; currentLine = null;
+        const idle = resetInput(); turnId = null; currentLine = null;
+        if (/^VOICE_PROFILE_/.test(failedUser?.failed?.code || '')
+          && controller.canRetry(failedUser) && !textbox.draft.trim()) {
+          player.settle(idle, { kind: 'error', error: {
+            message: '已重新选择角色音色，可以重新发送上一条问题。', code: 'VOICE_PROFILE_CHANGED',
+          } });
+        }
       }
       const swap = () => {
         model = null; resolved = null; sprite.setModel(null); refreshAttempted = false;
@@ -675,6 +705,7 @@ export function mountAdv(dom, deps) {
     const idle = Symbol('session input');
     player.startTurn(idle); player.settle(idle, { ok: true });
     textbox.enterInput({ canSend: !controller.busy });
+    return idle;
   }
   disposers.push(controller.on('turnstart', event => {
     update();
@@ -743,6 +774,12 @@ export function mountAdv(dom, deps) {
   update();
   return {
     update, player, textbox, sprite, stage, action, configPanel, background, bgPanel, closeDrawer,
+    prepareHome() {
+      configPanel.close({ revert: true }); closeBgPanel(); closeLog(); closeDrawer();
+      temporarySkip = false; ++replayToken;
+      resetInput(); turnId = null; currentLine = null;
+      sprite.suspend(); syncControls();
+    },
     backgroundUrl: (id, time, work) => selectionUrl(backgrounds, { id: backgroundKey(id ?? '', work || null), time }),
     listBackgrounds: () => backgrounds.map(({ key, name, work }) => ({ key, name, work })),
     isConfigOpen: () => Boolean(configPanel?.isOpen),

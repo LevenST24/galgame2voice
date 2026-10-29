@@ -34,6 +34,12 @@ test('error codes decide model-settings toast actions; text is the fallback', ()
   assert.equal(needsModelSettings('API Key 无效', null), true);
   assert.equal(needsModelSettings('连接中断，请检查服务与网络后再试。', null), false);
 });
+
+test('missing or ambiguous voice selections open character settings while missing providers open model settings', () => {
+  assert.equal(needsModelSettings('音色已不存在', 'VOICE_PROFILE_NOT_FOUND'), false);
+  assert.equal(needsModelSettings('角色名不唯一', 'VOICE_PROFILE_AMBIGUOUS'), false);
+  assert.equal(needsModelSettings('模型配置已不存在', 'PROVIDER_NOT_FOUND'), true);
+});
 test('toast positioning uses stage geometry above the ADV band', () => {
   const css = readFileSync(new URL('../frontend/src/adv/app.css', import.meta.url), 'utf8');
   assert.ok(css.includes('.toast-root { bottom: calc((100dvh - 1080 * var(--u)) / 2 + 300 * var(--u))'));

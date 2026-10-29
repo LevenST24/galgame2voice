@@ -2,6 +2,20 @@
 // SSE 事件：text（增量中文）→ audio_chunk（逐句 GPT-SoVITS 音频 URL）→ done / error
 import { getErrorMessage, connectionMessage } from './request.js';
 
+const IDLE_TIMEOUT_MESSAGE = '回复等待超时，已保留收到的内容。请在「设置中心」检查网络、模型与语音服务，稍后重新发送上一条消息。';
+const MAX_VOICE_WAIT_MS = 600000;
+
+function isReplyProgress(event, data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  const text = value => typeof value === 'string' && value.trim().length > 0;
+  if (event === 'text' || event === 'message') return text(data.delta_chinese);
+  if (event === 'line') return Number.isInteger(data.index) && data.index >= 0 && (text(data.zh) || text(data.ja));
+  if (event === 'audio_chunk') return text(data.audio_url);
+  if (event === 'audio_chunk_error') return text(data.error);
+  return event === 'line_audio' && Number.isInteger(data.line) && data.line >= 0
+    && ['ready', 'failed', 'skipped'].includes(data.status);
+}
+
 /**
  * 流式请求本地后端
  * @returns {() => void} cancel
@@ -20,7 +34,38 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
   let timedOut = false;
   let audioError = null;
   let errorCode = null;
+  // Old servers cannot announce slow voice work. Keep a finite compatibility
+  // window while retaining the original transport idle timeout per read.
+  let progressPolicy = false;
+  let voiceBudgetMs = MAX_VOICE_WAIT_MS;
+  let progressDeadline = performance.now() + Math.max(idleTimeoutMs, MAX_VOICE_WAIT_MS);
+  const voiceJobs = new Map();
+  const seenVoiceJobs = new Set();
+  const progressBudget = () => progressPolicy ? idleTimeoutMs : Math.max(idleTimeoutMs, MAX_VOICE_WAIT_MS);
+  const updateVoiceJob = data => {
+    if (!progressPolicy || !Number.isInteger(data?.index) || data.index < 0) return;
+    if (data.status === 'started' && !seenVoiceJobs.has(data.index)) {
+      seenVoiceJobs.add(data.index);
+      voiceJobs.set(data.index, performance.now() + voiceBudgetMs);
+      progressDeadline = performance.now() + idleTimeoutMs;
+    } else if (data.status === 'finished' && voiceJobs.delete(data.index)) {
+      progressDeadline = performance.now() + idleTimeoutMs;
+    }
+  };
+  const idleTimeoutError = () => {
+    timedOut = true;
+    errorCode = 'stream_idle_timeout';
+    return new Error(IDLE_TIMEOUT_MESSAGE);
+  };
   const withDeadline = async (operation) => {
+    if (controller.signal.aborted) throw new DOMException('操作已取消', 'AbortError');
+    const deadline = Math.max(progressDeadline, ...voiceJobs.values());
+    const remaining = Math.min(idleTimeoutMs, deadline - performance.now());
+    if (remaining <= 0) {
+      const error = idleTimeoutError();
+      controller.abort();
+      throw error;
+    }
     let timer;
     let abort;
     const cancelled = new Promise((_, reject) => {
@@ -29,12 +74,11 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
       else controller.signal.addEventListener('abort', abort, { once: true });
     });
     try {
-      return await Promise.race([operation, cancelled, new Promise((_, reject) => {
+      return await Promise.race([operation(), cancelled, new Promise((_, reject) => {
         timer = setTimeout(() => {
-          timedOut = true;
-          reject(new Error('回复等待超时，已保留收到的内容。请检查网络或模型服务，稍后重新发送上一条消息。'));
+          reject(idleTimeoutError());
           controller.abort();
-        }, idleTimeoutMs);
+        }, remaining);
       })]);
     } finally {
       clearTimeout(timer);
@@ -60,6 +104,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
       emotion: (doneMeta && doneMeta.emotion) || null,
       affection: (doneMeta && doneMeta.affection) || null,
       ttsParams: (doneMeta && doneMeta.tts_params) || null,
+      ...(Number.isSafeInteger(doneMeta?.message_id) && doneMeta.message_id > 0 ? { messageId: doneMeta.message_id } : {}),
       lines: (doneMeta && Array.isArray(doneMeta.lines)) ? doneMeta.lines : null,
     });
   };
@@ -99,7 +144,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
 
   (async () => {
     try {
-      const res = await withDeadline(fetchRequest('/api/chat/stream', {
+      const res = await withDeadline(() => fetchRequest('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -109,7 +154,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
       if (!res.ok) {
         let msg = `请求失败 (${res.status})`;
         try {
-          const data = await withDeadline(res.json());
+          const data = await withDeadline(() => res.json());
           msg = getErrorMessage(data, `HTTP ${res.status}`);
         } catch (error) {
           if (timedOut || controller.signal.aborted) throw error;
@@ -122,12 +167,19 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
         finish(false, '当前环境不支持流式响应');
         return;
       }
+      const advertisedBudget = Number(res.headers?.get('X-G2V-Voice-Job-Timeout-Ms'));
+      progressPolicy = res.headers?.get('X-G2V-Progress-Policy') === '1'
+        && Number.isFinite(advertisedBudget) && advertisedBudget > 0 && advertisedBudget <= MAX_VOICE_WAIT_MS;
+      if (progressPolicy) {
+        voiceBudgetMs = advertisedBudget;
+        progressDeadline = performance.now() + idleTimeoutMs;
+      }
       reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
       let eventName = 'text';
       while (!settled) {
-        const { done, value } = await withDeadline(reader.read());
+        const { done, value } = await withDeadline(() => reader.read());
         if (done) {
           buffer += decoder.decode();
         } else {
@@ -159,6 +211,10 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
           }
           const currentEvent = eventName;
           eventName = 'text';
+          // Transport heartbeats and partial/malformed frames do not prove
+          // that the model or an audio job has made progress.
+          if (currentEvent === 'voice_job') updateVoiceJob(json);
+          if (isReplyProgress(currentEvent, json)) progressDeadline = performance.now() + progressBudget();
           if (currentEvent === 'text' || currentEvent === 'message') {
             const delta = json.delta_chinese || '';
             if (delta) {
@@ -191,11 +247,11 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             }
           } else if (currentEvent === 'audio_chunk_error') {
             onEvent?.(currentEvent, json);
-            audioError ||= getErrorMessage(json, '本轮角色语音暂不可用，文字回复已保留。请在「全局设置 → 运行状态」启动引擎，或切换 CPU 稳定模式后重试。');
+            audioError ||= getErrorMessage(json, '本轮角色语音暂不可用，文字回复已保留。请在「设置中心 → 运行状态」启动引擎，或切换 CPU 稳定模式后重试。');
             console.warn('[streamChat] audio chunk error:', json.error, json.sentence);
           } else if (currentEvent === 'error') {
             errorCode = typeof json.error_code === 'string' ? json.error_code : null;
-            finish(false, getErrorMessage(json, '对话暂时未完成，请检查「全局设置」中的模型地址、密钥与模型名称，再重新发送消息。'));
+            finish(false, getErrorMessage(json, '对话暂时未完成，请检查「设置中心」中的模型地址、密钥与模型名称，再重新发送消息。'));
             return;
           } else if (currentEvent === 'done') {
             doneMeta = json;
@@ -238,6 +294,10 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
       }
       finish(false, '回复连接提前结束，已保留收到的内容。请检查服务与网络，稍后重新发送上一条消息。');
     } catch (err) {
+      if (timedOut) {
+        finish(false, IDLE_TIMEOUT_MESSAGE);
+        return;
+      }
       if (err && err.name === 'AbortError' && !timedOut) {
         finish(true, null);
         return;

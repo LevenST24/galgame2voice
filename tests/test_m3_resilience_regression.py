@@ -18,6 +18,15 @@ from galgame2voice.services.voice_manager import VoiceManager, set_voice_manager
 from galgame2voice.security.url_guard import validate_llm_base_url, clear_dns_cache
 
 
+@pytest.fixture
+async def temp_db_path(isolate_test_database):
+    """REST routes and their manager must use the same initialized database."""
+    from galgame2voice.database.session import init_db
+
+    await init_db(isolate_test_database)
+    return isolate_test_database
+
+
 @pytest.mark.asyncio
 async def test_session_manager_stale_cache_recovery():
     """Verify that SessionManager handles dynamic table re-initialization and arbitrary connection row_factories."""
@@ -248,7 +257,6 @@ def test_posix_signal_registration_and_handling(monkeypatch):
     """Verifies setup_signal_handlers registers SIGTERM and SIGHUP on non-Windows and calls cleanup."""
     import signal
     import sys
-    from unittest.mock import MagicMock
     import scripts.run_server as run_server
 
     registered_handlers = {}

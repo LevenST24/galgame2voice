@@ -168,7 +168,7 @@ def pytest_collection_modifyitems(config, items):
     # multiplies the cost of every executed line, so a budget like "average cache
     # hit under 0.005 ms" measures the tracer, not the cache. Skipping is the
     # only outcome that does not turn the coverage job into a false alarm.
-    coverage_active = config.getoption("cov_source", None) is not None
+    coverage_active = bool(config.getoption("cov_source", None)) and not config.getoption("no_cov", False)
     if coverage_active:
         for item in items:
             if "wall_clock" in item.keywords:
@@ -734,21 +734,30 @@ def isolate_test_database(monkeypatch, tmp_path):
 async def isolate_runtime_services(monkeypatch, isolate_test_database):
     """Singletons must use this test's paths and release their background jobs."""
     from galgame2voice.services import gpt_sovits_client, tts_cache_manager, tts_scheduler, voice_manager, voice_resolver
+    owners = set()
+    spawn = voice_manager.VoiceManager._spawn_background
+    def track_background_owner(manager, coro):
+        owners.add(manager)
+        return spawn(manager, coro)
+    monkeypatch.setattr(voice_manager.VoiceManager, "_spawn_background", track_background_owner)
     monkeypatch.setattr(tts_cache_manager, "_tts_cache_manager_instance", None)
+    monkeypatch.setattr(tts_cache_manager, "_tts_cache_managers", {})
     monkeypatch.setattr(tts_scheduler, "_GLOBAL_TTS_SCHEDULER", None)
     monkeypatch.setattr(voice_manager, "_global_voice_manager", None)
     monkeypatch.setattr(gpt_sovits_client, "_global_gpt_sovits_client", None)
     monkeypatch.setattr(voice_resolver, "_GLOBAL_VOICE_RESOLVER", None)
     yield
+    manager = voice_manager._global_voice_manager
+    if isinstance(manager, voice_manager.VoiceManager):
+        owners.add(manager)
+    # Close producers before the scheduler they use. Local test-created managers
+    # can own warmups even when they were never installed as the global manager.
+    for owner in owners:
+        await owner.aclose()
     scheduler = tts_scheduler._GLOBAL_TTS_SCHEDULER
     if isinstance(scheduler, tts_scheduler.TtsScheduler):
         await scheduler.aclose()
-    manager = voice_manager._global_voice_manager
-    if isinstance(manager, voice_manager.VoiceManager):
-        await manager.aclose()
-    cache = tts_cache_manager._tts_cache_manager_instance
-    if isinstance(cache, tts_cache_manager.TtsCacheManager):
-        await cache.aclose()
+    await tts_cache_manager.close_tts_cache_managers()
     await gpt_sovits_client.close_gpt_sovits_client()
 
 

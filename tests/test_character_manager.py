@@ -19,6 +19,7 @@ import aiosqlite
 import pytest
 
 from galgame2voice.config import get_settings
+from galgame2voice.utils.path_guard import to_project_relative_path
 from galgame2voice.services.character_manager import (
     CharacterManager,
     CharacterManifest,
@@ -623,7 +624,7 @@ def test_character_weights_are_real_binaries_gt_100mb():
 @pytest.mark.requires_character_assets
 @pytest.mark.asyncio
 async def test_character_manager_sync_with_db_all_characters_and_default(tmp_path):
-    """Verifies that DB sync syncs all 3 characters, cleans ghosts, and sets Natsume as deterministic default."""
+    """Verifies that DB sync syncs all 3 characters, keeps user profiles, and sets Natsume as deterministic default."""
     db_file = tmp_path / "multi_char_sync.db"
     async with aiosqlite.connect(str(db_file)) as conn:
         conn.row_factory = aiosqlite.Row
@@ -644,25 +645,29 @@ async def test_character_manager_sync_with_db_all_characters_and_default(tmp_pat
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        # Insert a stale ghost profile that should be pruned
+        # Insert a user profile that no package owns; sync must never delete it
         await conn.execute("""
             INSERT INTO voice_profiles (name, gpt_weights_path, ref_audio_path)
-            VALUES ('kazari', 'characters/kazari/gpt.ckpt', 'audio/references/natsume/gentle.ogg');
+            VALUES ('my-custom-voice', 'models/custom.ckpt', 'audio/references/natsume/gentle.ogg');
         """)
         # Insert a stale Kanna profile with wrong audio and external E: weights
+        mgr = CharacterManager(get_settings().characters_dir)
+        natsume = mgr.get_character("natsume")
+        natsume_ref = to_project_relative_path(
+            natsume.resolve_audio_path(natsume.manifest.emotions["gentle"].audio)
+        )
         await conn.execute("""
             INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text)
-            VALUES ('明月栞那', 'E:\\stale\\kanna.ckpt', 'E:\\stale\\kanna.pth', 'audio/references/natsume/gentle.ogg', '');
-        """)
+            VALUES ('明月栞那', 'E:\\stale\\kanna.ckpt', 'E:\\stale\\kanna.pth', ?, '');
+        """, (natsume_ref,))
         await conn.commit()
 
-        mgr = CharacterManager(get_settings().characters_dir)
         synced = await mgr.sync_with_db(conn)
         assert synced >= 2
 
-        # 1. Ghost profile kazari must be pruned
-        cur = await conn.execute("SELECT * FROM voice_profiles WHERE name = 'kazari';")
-        assert (await cur.fetchone()) is None
+        # 1. Profiles are never deleted by a rescan
+        cur = await conn.execute("SELECT * FROM voice_profiles WHERE name = 'my-custom-voice';")
+        assert (await cur.fetchone()) is not None
 
         # 2. All 3 characters must exist in DB
         for name in ["四季夏目", "明月栞那", "西园寺风莉"]:
@@ -677,7 +682,7 @@ async def test_character_manager_sync_with_db_all_characters_and_default(tmp_pat
         # 3. Kanna's stale row must be healed
         cur = await conn.execute("SELECT * FROM voice_profiles WHERE name = '明月栞那';")
         kanna_row = await cur.fetchone()
-        assert "natsume" not in kanna_row["ref_audio_path"]
+        assert kanna_row["ref_audio_path"] != natsume_ref
         assert "characters/明月栞那" in kanna_row["ref_audio_path"]
         assert "characters/明月栞那" in kanna_row["gpt_weights_path"]
         assert "characters/明月栞那" in kanna_row["sovits_weights_path"]

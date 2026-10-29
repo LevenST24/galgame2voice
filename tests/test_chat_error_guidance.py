@@ -14,7 +14,7 @@ from galgame2voice.utils.error_diagnostics import chat_error_payload, format_pro
 def test_missing_key_names_the_provider_and_the_settings_page():
     payload = chat_error_payload(MissingApiKeyError(), provider_id="gemini", api_key_configured=False)
     assert payload["error_code"] == "API_KEY_MISSING"
-    assert "Google Gemini" in payload["error"] and "全局设置 → 对话模型" in payload["error"]
+    assert "Google Gemini" in payload["error"] and "设置中心 → 对话模型" in payload["error"]
     # Still a ValueError mentioning authentication, as callers and tests expect.
     assert isinstance(MissingApiKeyError(), ValueError)
     assert "Authentication error" in str(MissingApiKeyError())

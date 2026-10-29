@@ -161,12 +161,12 @@ async def _reload_telegram_if_needed(sanitized_updates: dict[str, Any], updated_
 
 
 def _sync_precision_cache(new_precision: str | None) -> None:
-    """Syncs precision cache files on disk when inference_precision is updated."""
+    """Save next-start preferences without modifying the running engine or its files."""
     if not new_precision:
         return
     try:
         # Lazy import avoids circular import with config; precision disk sync is best-effort
-        from galgame2voice.utils.precision import write_precision_cache, write_sovits_yaml_config
+        from galgame2voice.utils.precision import write_precision_cache
         from galgame2voice.config import get_settings
         app_settings = get_settings()
         from galgame2voice.services.sovits_installation import read_sovits_directory
@@ -176,13 +176,11 @@ def _sync_precision_cache(new_precision: str | None) -> None:
         if prec_lower in _PRECISION_CONFIG_MAP:
             is_half, device = _PRECISION_CONFIG_MAP[prec_lower]
             write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=is_half, device=device)
-            if sovits_dir_str:
-                write_sovits_yaml_config(sovits_dir_str, is_half=is_half, device=device)
         elif prec_lower == "auto":
             cache_file = app_settings.project_root / "data" / "precision.json"
             if cache_file.exists():
                 cache_file.unlink(missing_ok=True)
-        logger.info("Inference precision configuration synced: %s", new_precision)
+        logger.info("Inference precision preference saved for next engine start: %s", new_precision)
     except Exception as exc:
         # Disk sync failure is non-fatal and must not block or fail the configuration update API
         logger.warning("Failed to sync precision cache on config update: %s", exc)

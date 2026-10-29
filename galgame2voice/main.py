@@ -27,6 +27,7 @@ from galgame2voice.routers import chat, config, health, voice, memory, affection
 from galgame2voice.security.auth import require_auth
 from galgame2voice.security.rate_limit import RateLimitMiddleware
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
+from galgame2voice.services.telemetry_jobs import TelemetryJobs
 from galgame2voice.services.audio_cleaner import (
     CACHE_RETENTION_DAYS as _CACHE_RETENTION_DAYS,
     _cache_scan_and_clean,
@@ -35,7 +36,6 @@ from galgame2voice.services.audio_cleaner import (
     AudioCleanerService,
 )
 from galgame2voice.utils.logger import setup_logger
-from galgame2voice.utils.path_guard import resolve_existing_audio_path
 
 __all__ = [
     "app",
@@ -189,7 +189,7 @@ async def _init_database_and_characters(settings) -> None:
 
 
 async def _init_gpt_sovits_client(settings) -> None:
-    """Initializes shared GPT-SoVITS client, pre-seeds active profile, and triggers background warm-up."""
+    """Initialize the endpoint and queue warm-up without inventing loaded state."""
     try:
         from galgame2voice.services.voice_manager import get_voice_manager
         from galgame2voice.services.sovits_endpoint import (
@@ -208,29 +208,6 @@ async def _init_gpt_sovits_client(settings) -> None:
         client = get_gpt_sovits_client()
         if client.base_url.rstrip("/") != endpoint.base_url:
             await client.set_base_url(endpoint.base_url)
-
-        # Pre-seed active voice profile from DB so frontend's initial switch is instantaneous
-        try:
-            vm = get_voice_manager()
-            async with get_db(settings.db_path) as conn:
-                default_profile = await crud.get_active_voice_profile(conn)
-                if default_profile:
-                    vm.active_profile = default_profile
-                    if not client.current_gpt_weights:
-                        client.current_gpt_weights = default_profile.gpt_weights_path
-                    if not client.current_sovits_weights:
-                        client.current_sovits_weights = default_profile.sovits_weights_path
-                    if not client.current_refer_audio:
-                        client.current_refer_audio = str(
-                            resolve_existing_audio_path(default_profile.ref_audio_path)
-                            or default_profile.ref_audio_path
-                        )
-                    if not client.current_refer_text:
-                        client.current_refer_text = default_profile.prompt_text
-                    if not client.current_refer_language:
-                        client.current_refer_language = default_profile.prompt_lang
-        except Exception as exc:
-            logger.debug("Could not pre-seed active voice profile on startup: %s", exc)
 
         # Trigger non-blocking background warm-up of default voice profile
         try:
@@ -296,9 +273,7 @@ async def _drain_active_services() -> None:
                 ):
                     await chat_svc.session_manager.aclose()
         import galgame2voice.services.tts_cache_manager as tts_cache_mod
-        cache_mgr = getattr(tts_cache_mod, "_tts_cache_manager_instance", None)
-        if cache_mgr is not None and hasattr(cache_mgr, "aclose"):
-            await cache_mgr.aclose()
+        await tts_cache_mod.close_tts_cache_managers()
         import galgame2voice.services.voice_manager as vm_mod
         vm_inst = getattr(vm_mod, "_global_voice_manager", None)
         if vm_inst is not None and hasattr(vm_inst, "aclose"):
@@ -377,6 +352,7 @@ async def lifespan(app: FastAPI):
     # --- STARTUP PHASE ---
     app.state.start_time = time.time()
     app.state.start_time_iso = datetime.now(timezone.utc).isoformat()
+    app.state.telemetry_jobs = TelemetryJobs()
 
     _init_logging_and_safety(settings)
     _init_directories(settings)
@@ -401,7 +377,10 @@ async def lifespan(app: FastAPI):
         yield  # Application serving requests
     finally:
         # Release workers and connections even when the serving context raises.
-        await _shutdown_services(settings, cleanup_task, tg_startup_task)
+        try:
+            await app.state.telemetry_jobs.aclose()
+        finally:
+            await _shutdown_services(settings, cleanup_task, tg_startup_task)
 
 
 class AudioStaticFiles(StaticFiles):

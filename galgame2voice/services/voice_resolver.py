@@ -1,17 +1,21 @@
 """
 Voice Profile Resolver and In-Memory Resolved Context for galgame2voice.
 
-Provides zero-IO, in-memory caching of fully resolved voice profiles and emotion
-reference audios. Pre-resolves reference audio paths, probes and range-checks
-emotion reference durations, and absolutizes weight paths (weights are not validated)
-to eliminate database and filesystem latency from the TTS critical path (TTFA < 1s).
-Supports clean cache invalidation upon profile creation, update, or deletion.
+Caches committed voice snapshots within their database and complete selector.
+Cold loads coalesce, and reference/model path preparation runs in a worker.
+Repository writes invalidate all affected selectors only after a durable commit.
 """
 
+import asyncio
+from collections import OrderedDict
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from weakref import WeakValueDictionary
+
+from galgame2voice.services.character_identity import AmbiguousProfileName
 
 from galgame2voice.utils.path_guard import resolve_weight_file_path, resolve_existing_audio_path
 from galgame2voice.utils.audio_spec import (
@@ -22,6 +26,14 @@ from galgame2voice.services.gpt_sovits_client import probe_audio_duration_second
 from galgame2voice.services.emotion_references import resolve_emotion_reference
 
 logger = logging.getLogger("galgame2voice.services.voice_resolver")
+
+class VoiceContextChangedError(RuntimeError):
+    """A stable committed voice snapshot could not be obtained in time."""
+
+
+class VoiceContextUnavailableError(ValueError):
+    """A voice context could not be read or built; absence is not established."""
+
 
 DEFAULT_EMOTION_KEYS: tuple[str, ...] = (
     "joy",
@@ -40,7 +52,7 @@ DEFAULT_EMOTION_KEYS: tuple[str, ...] = (
 
 @dataclass
 class ResolvedVoiceContext:
-    """Pre-resolved, immutable-in-memory representation of an active voice profile."""
+    """Pre-resolved snapshot of a committed voice profile and its references."""
     profile_id: int | None
     name: str
     gpt_weights_path: str
@@ -68,6 +80,24 @@ def _extract_field(raw: Any, key: str, default: Any = "") -> Any:
     return default
 
 
+def database_scope(db_path: str | os.PathLike | None = None) -> str:
+    """Use the same default DB as get_db, independent of selector and path spelling."""
+    from galgame2voice.database.session import get_database_path
+
+    return os.path.normcase(os.path.realpath(os.path.abspath(os.fspath(db_path or get_database_path()))))
+
+
+@dataclass(frozen=True)
+class _CacheEntry:
+    expires_at: float
+    context: ResolvedVoiceContext | None
+
+
+@dataclass
+class _ScopeGeneration:
+    value: int = 0
+
+
 class VoiceProfileResolver:
     """
     Maintains in-memory memoization of resolved voice profiles.
@@ -75,28 +105,37 @@ class VoiceProfileResolver:
     and filesystem duration probes.
     """
 
-    def __init__(self, ttl_seconds: float = 300.0) -> None:
+    def __init__(self, ttl_seconds: float = 300.0, *, negative_ttl_seconds: float = 1.0, max_entries: int = 256) -> None:
         self._ttl = ttl_seconds
-        # Keys: "id:<int>", "name:<str>", "active"
-        self._cache: dict[str, tuple[float, ResolvedVoiceContext]] = {}
+        self._negative_ttl = negative_ttl_seconds
+        self._max_entries = max_entries
+        self._cache: OrderedDict[tuple[str, int | None, str | None], _CacheEntry] = OrderedDict()
+        self._load_locks: WeakValueDictionary = WeakValueDictionary()
+        self._scope_generations: WeakValueDictionary = WeakValueDictionary()
+        self._generation = 0
 
-    def invalidate(self, profile_id: int | None = None, name: str | None = None) -> None:
-        """Invalidates cached contexts. If no arguments provided, clears all."""
-        if profile_id is None and name is None:
+    def invalidate(self, profile_id: int | None = None, name: str | None = None, *, db_path: str | None = None) -> None:
+        """Evict a DB's selectors together; legacy unscoped calls evict all scopes."""
+        if db_path is None:
+            self._generation += 1
             self._cache.clear()
-            logger.debug("VoiceProfileResolver: Cleared all cached voice contexts")
-            return
+        else:
+            scope = database_scope(db_path)
+            pending = self._scope_generations.get(scope)
+            if pending is not None:
+                pending.value += 1
+            for key in list(self._cache):
+                if key[0] == scope:
+                    self._cache.pop(key, None)
 
-        keys_to_delete = ["active"]
-        if profile_id is not None:
-            keys_to_delete.append(f"id:{profile_id}")
-        if name:
-            clean_name = name.split("(")[0].strip()
-            keys_to_delete.append(f"name:{clean_name}")
-
-        for k in keys_to_delete:
-            self._cache.pop(k, None)
-        logger.debug("VoiceProfileResolver: Invalidated keys %s", keys_to_delete)
+    def _cached(self, key: tuple[str, int | None, str | None]) -> tuple[bool, ResolvedVoiceContext | None]:
+        entry = self._cache.get(key)
+        if entry is not None:
+            if time.monotonic() < entry.expires_at:
+                self._cache.move_to_end(key)
+                return True, entry.context
+            self._cache.pop(key, None)
+        return False, None
 
     async def resolve_context(
         self,
@@ -107,32 +146,50 @@ class VoiceProfileResolver:
         """
         Resolves a voice profile from memory cache, falling back to SQLite and package manifests.
         """
-        now = time.monotonic()
-        cache_key = (
-            f"id:{profile_id}"
-            if profile_id is not None
-            else (f"name:{character_name.split('(')[0].strip()}" if character_name else "active")
-        )
+        scope = database_scope(db_path)
+        cache_key = (scope, profile_id, character_name.strip() if character_name else None)
+        found, context = self._cached(cache_key)
+        if found:
+            return context
 
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            ts, ctx = cached
-            if now - ts < self._ttl:
-                return ctx
-
-        # Cache miss: query database
-        raw_profile = await self._fetch_raw_profile(db_path, profile_id, character_name)
-        if not raw_profile:
-            return None
-
-        ctx = self._build_context(raw_profile)
-        self._cache[cache_key] = (now, ctx)
-        if cache_key == "active":
-            if ctx.profile_id is not None:
-                self._cache[f"id:{ctx.profile_id}"] = (now, ctx)
-            if ctx.name:
-                self._cache[f"name:{ctx.name}"] = (now, ctx)
-        return ctx
+        lock_key = (asyncio.get_running_loop(), cache_key)
+        lock = self._load_locks.get(lock_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._load_locks[lock_key] = lock
+        async with lock:
+            found, context = self._cached(cache_key)
+            if found:
+                return context
+            scope_generation = self._scope_generations.get(scope)
+            if scope_generation is None:
+                scope_generation = _ScopeGeneration()
+                self._scope_generations[scope] = scope_generation
+            # A commit may land during either the DB read or the worker's
+            # filesystem probes. Never return that superseded snapshot to TTS.
+            for _ in range(3):
+                generation = (self._generation, scope_generation.value)
+                try:
+                    raw_profile = await self._fetch_raw_profile(db_path, profile_id, character_name)
+                    context = await asyncio.to_thread(self._build_context, raw_profile) if raw_profile is not None else None
+                except AmbiguousProfileName:
+                    if generation != (self._generation, scope_generation.value):
+                        continue
+                    raise
+                except Exception as exc:
+                    if generation != (self._generation, scope_generation.value):
+                        continue
+                    logger.warning("Voice context unavailable; the next request will retry: %s", exc)
+                    raise VoiceContextUnavailableError("音色配置暂时无法读取，请稍后重试。") from exc
+                if generation != (self._generation, scope_generation.value):
+                    continue
+                ttl = self._ttl if context is not None else self._negative_ttl
+                self._cache[cache_key] = _CacheEntry(time.monotonic() + ttl, context)
+                self._cache.move_to_end(cache_key)
+                while len(self._cache) > max(0, self._max_entries):
+                    self._cache.popitem(last=False)
+                return context
+            raise VoiceContextChangedError("音色配置正在更新，请稍后重试。")
 
     async def _fetch_raw_profile(
         self,
@@ -140,48 +197,17 @@ class VoiceProfileResolver:
         profile_id: int | None,
         character_name: str | None,
     ) -> Any | None:
-        from galgame2voice.database import crud
         from galgame2voice.database.session import get_db
+        from galgame2voice.services.voice_selection import select_voice_profile
 
-        raw = None
-        # Tiered profile resolution: each tier catches exceptions so failures do not block subsequent fallbacks
-        if profile_id is not None:
-            try:
-                async with get_db(db_path) as conn:
-                    raw = await crud.get_voice_profile(conn, int(profile_id))
-            except Exception as exc:
-                logger.debug("Resolver could not fetch profile_id %s: %s", profile_id, exc)
-
-        if not raw and character_name:
-            try:
-                clean_name = character_name.split("(")[0].strip()
-                async with get_db(db_path) as conn:
-                    raw = await crud.get_voice_profile_by_name(conn, clean_name)
-            except Exception as exc:
-                logger.debug("Resolver could not fetch character_name %s: %s", character_name, exc)
-
-        if not raw:
-            try:
-                async with get_db(db_path) as conn:
-                    raw = await crud.get_active_voice_profile(conn)
-            except Exception as exc:
-                logger.debug("Resolver could not fetch active profile: %s", exc)
-
-        if not raw:
-            try:
-                from galgame2voice.services.voice_manager import get_voice_manager
-                vm = get_voice_manager()
-                raw = vm.active_profile or await vm.get_active_profile()
-            except Exception as exc:
-                logger.debug("Resolver fallback to voice_manager active profile failed: %s", exc)
-
-        return raw
+        async with get_db(db_path) as conn:
+            return await select_voice_profile(conn, profile_id, character_name)
 
     def _build_context(self, raw: Any) -> ResolvedVoiceContext:
         """Constructs a validated ResolvedVoiceContext from a raw DB model or dict."""
         pid = _extract_field(raw, "id", None)
-        name = _extract_field(raw, "name", "Default") or "Default"
-        clean_name = name.split("(")[0].strip()
+        name = (_extract_field(raw, "name", "Default") or "Default").strip()
+        clean_name = name.split("(")[0].strip() or name
 
         gpt_path = _extract_field(raw, "gpt_weights_path", "") or ""
         sovits_path = _extract_field(raw, "sovits_weights_path", "") or ""
@@ -194,32 +220,56 @@ class VoiceProfileResolver:
         abs_gpt = resolve_weight_file_path(gpt_path)
         abs_sovits = resolve_weight_file_path(sovits_path)
 
-        # Fallback to character package manifest if audio path is missing or relative
-        resolved_ref = resolve_existing_audio_path(ref_audio)
-        if not resolved_ref and clean_name:
-            try:
-                from galgame2voice.services.character_manager import get_character_manager
-                mgr = get_character_manager()
-                pkg = mgr.get_character(clean_name)
-                if pkg and pkg.manifest and pkg.manifest.emotions:
-                    emo = pkg.manifest.emotions.get("gentle") or next(iter(pkg.manifest.emotions.values()), None)
-                    if emo:
-                        found_path = pkg.resolve_audio_path(emo.audio)
-                        if found_path and found_path.is_file():
-                            ref_audio = str(found_path.resolve())
-                            if not prompt_text:
-                                prompt_text = emo.text
-                                prompt_lang = emo.lang
-            except Exception as exc:
-                logger.debug("Failed resolving audio path from character package '%s': %s", clean_name, exc)
-        elif resolved_ref:
-            ref_audio = resolved_ref
+        pkg = None
+        is_conflicting = False
+        try:
+            from galgame2voice.services.character_manager import CharacterManager, get_character_manager
+            mgr = get_character_manager()
+            pkg = mgr.get_character(name)
+            is_conflicting = bool(
+                pkg is None
+                and getattr(mgr, "_identity_index", None)
+                and mgr._identity_index.is_conflicting(name)
+            )
+        except Exception as exc:
+            logger.debug("Failed looking up character package for '%s': %s", name, exc)
+
+        if pkg is not None and pkg.is_valid:
+            is_cross_char = bool(ref_audio and CharacterManager._is_cross_character_audio(ref_audio, pkg))
+            own_ref = (
+                CharacterManager._resolve_profile_reference(ref_audio, pkg)
+                if ref_audio and not is_cross_char
+                else None
+            )
+            if own_ref is None and ref_audio and not is_cross_char:
+                cand = resolve_existing_audio_path(ref_audio)
+                if cand is not None and not CharacterManager._is_cross_character_audio(str(cand), pkg):
+                    own_ref = cand
+
+            if own_ref is not None:
+                ref_audio = str(own_ref.resolve())
+            elif pkg.manifest and pkg.manifest.emotions:
+                emo = pkg.manifest.emotions.get("gentle") or next(iter(pkg.manifest.emotions.values()), None)
+                if emo:
+                    found_path = pkg.resolve_audio_path(emo.audio)
+                    if found_path and found_path.is_file():
+                        ref_audio = str(found_path.resolve())
+                        if not prompt_text or is_cross_char:
+                            prompt_text = emo.text
+                            prompt_lang = emo.lang
+        elif not is_conflicting:
+            resolved_ref = resolve_existing_audio_path(ref_audio)
+            if resolved_ref is not None:
+                ref_audio = str(resolved_ref.resolve())
+
+        display_name = pkg.name if (pkg and pkg.is_valid) else (name if is_conflicting else clean_name)
+        emotion_target = pkg.id if (pkg and pkg.is_valid) else ("" if is_conflicting else clean_name)
 
         # Pre-resolve known emotion references for this character
         emotions_map: dict[str, dict[str, str]] = {}
-        if clean_name:
+        if emotion_target:
             for emo_name in DEFAULT_EMOTION_KEYS:
-                ref = resolve_emotion_reference(clean_name, emo_name)
+                ref = resolve_emotion_reference(emotion_target, emo_name)
                 if ref:
                     cand_audio = ref["ref_audio_path"]
                     cand_dur = probe_audio_duration_seconds(cand_audio)
@@ -232,7 +282,7 @@ class VoiceProfileResolver:
 
         return ResolvedVoiceContext(
             profile_id=pid,
-            name=clean_name,
+            name=display_name,
             gpt_weights_path=abs_gpt,
             sovits_weights_path=abs_sovits,
             ref_audio_path=ref_audio,

@@ -21,6 +21,14 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
     let title = '连通性诊断提示';
     if (isParamError) {
       title = '模型参数不受支持 (HTTP 400)';
+    } else if (/dns error|域名解析失败|getaddrinfo failed|name resolution/.test(lower)) {
+      title = '服务器域名解析失败';
+    } else if (/timeout|timed out|连接超时/.test(lower)) {
+      title = '网络连接超时';
+    } else if (/connection refused|连接被拒绝/.test(lower)) {
+      title = '连接被拒绝';
+    } else if (/connecterror|connection failed|网络连接失败/.test(lower)) {
+      title = '网络连接失败';
     } else if (lower.includes('401') || lower.includes('key') || lower.includes('auth')) {
       title = 'API Key 凭据鉴权未通过';
     } else if (lower.includes('429') || lower.includes('quota') || lower.includes('rate')) {

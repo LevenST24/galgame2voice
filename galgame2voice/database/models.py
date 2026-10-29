@@ -293,6 +293,9 @@ class ReplyLineAudio(BaseModel):
 
     status: Literal["ready", "skipped", "failed"]
     chunks: list[ReplyLineChunk]
+    generated_at: int | None = Field(default=None, ge=0)
+    voice_profile_id: int | None = Field(default=None, ge=1)
+    voice_name: str | None = Field(default=None, max_length=100)
 
 
 class ReplyLineRecord(BaseModel):

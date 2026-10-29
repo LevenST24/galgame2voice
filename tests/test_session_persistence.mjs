@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSessions, fetchSessionHistoryPage, earliestServerMessageId } from '../frontend/src/session_api.js';
 import { mergeChatBackup, exportCompleteChatBackup } from '../frontend/src/chat_backup.js';
-import { serverTimestamp } from '../frontend/src/session_data.js';
+import { pickSettings, serverTimestamp } from '../frontend/src/session_data.js';
 import { streamChat } from '../frontend/src/ai.js';
 import { GREETING, LEGACY_GREETINGS } from '../frontend/src/store.js';
 
@@ -9,6 +9,13 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const response = data => ({ ok: true, json: async () => data });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 let passed = 0;
+
+{
+  const defaults = { advPlayerName: '我' };
+  assert.equal(pickSettings({ advPlayerName: 'Player' }, defaults).advPlayerName, '我');
+  assert.equal(pickSettings({ advPlayerName: '小明' }, defaults).advPlayerName, '小明');
+  assert.equal(pickSettings({}, defaults).advPlayerName, '我'); passed++;
+}
 
 {
   const expected = Date.UTC(2024, 2, 2, 1, 2, 3, 456);
@@ -127,6 +134,9 @@ const backup = sessions => ({ format: 'galgame2voice.chat', version: 1, sessions
 {
   // LOG and the title screen print the greeting as plain text, and the old chat layout is gone.
   assert.doesNotMatch(GREETING, /\*\*|顶栏|侧边栏|右上角/);
+  assert.match(GREETING, /设置中心/);
+  assert.match(GREETING, /返回开始页/);
+  assert.doesNotMatch(GREETING, /CONFIG 面板的底部/);
   // A session that still holds an older greeting is not exported as an extra browser copy.
   for (const greeting of [GREETING, ...LEGACY_GREETINGS]) {
     const local = backup([session('greeted', [{ ...message(0, greeting), role: 'assistant', noVoice: true }, message(1)])]);

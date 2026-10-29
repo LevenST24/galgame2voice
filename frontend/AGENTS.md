@@ -19,7 +19,9 @@
 - `src/main.js`：应用入口，协调会话同步、鉴权拦截、全局与会话设置控制器，并将 `conversation` 控制器挂载至 ADV 舞台。
 - `src/store.js`：前端状态管理与 `localStorage` 持久化（Key: `gal2voice.chat.v1`，包含会话列表 `sessions`、活跃会话 `activeId` 及全局设置 `global`）。
 - `src/conversation.js`：无 DOM 依赖的会话生命周期控制器，管理单轮回复状态机（`turnstart`、`text`、`line`、`line_audio`、`audio_chunk`、`done`、`cancelled`、`error`），控制发送、停止（`stop`）与行内重试（`retry`）。
+  终稿补齐缺失的台词和音频事件；旧格式整段回复的临时展示索引不作为历史行身份。见 `docs/development/FINAL_REPLY.md`。
 - `src/ai.js`：底层流式客户端，通过 `fetch` 发起 POST `/api/chat/stream` 并解析 Server-Sent Events (SSE)。
+  网络保活与回复进展分开计算，`voice_job` 使用后端公告的固定语音任务预算；详见 `docs/development/STREAM_PROGRESS.md`。
 - `src/session_api.js`：与后端 SQLite 同步会话列表及历史分页（`/api/chat/sessions`、`/api/chat/history`）。
 - `src/session_data.js`：会话数据清洗与白名单校验，包括 `pickSettings`、`validAdvSetting`、`normalizeLines` 与快照序列化。
 - `src/auth.js`：控制台访问令牌鉴权拦截器（SessionStorage Key: `galgame_console_token`，自动注入 Bearer Token，处理 401 弹窗）。
@@ -30,7 +32,7 @@
 ### 2. 语音与音频
 - `src/voice.js`：浏览器原生语音能力。发送端使用 `SpeechRecognition`（中文转写，要求 Chrome / Edge）与 `MediaRecorder`（录音暂存）；提供 `BoundedAudioStore`（LRU 30 项硬上限，自动调用 `URL.revokeObjectURL` 释放 Blob 内存）。
 - `src/audio_player.js`：`StreamAudioController`，基于 Web Audio API 的流式无缝音频播放器。支持 12ms 瞬态防爆微渐变（Micro-fade）、40ms 平滑线性渐出打断（Smooth Linear Fade-out Interrupt）、单句排期播放（`playLine` / `stopLine`）、自适应 Jitter 缓冲以及通过 `getRms()` 计算均方根振幅驱动立绘口型同步。
-- `src/cache.js`：音频两级缓存（Web Cache Storage API + 内存 LRU），支持音频 Blob 持久化与秒开重播。
+- `src/cache.js`：音频两级缓存（Web Cache Storage API + 内存 LRU），支持音频 Blob 持久化；`loadAudioBuffer` 让单句/流式播放共用解码与一次只读恢复。坏副本按版本清理，持久写入按键协调，下载和解码沿用同一个总时限；见 `docs/development/AUDIO_IDENTITY.md`。
 - `src/audio_request.js`：`withAudioDeadline`，给音频请求连同读取、解码设一个总时限（默认 15 秒），可随播放一起取消。`audio_player.js` 也用它限制 `AudioContext.resume()` 的等待（1.5 秒）。
 
 ### 3. ADV 舞台与组件 (`src/adv/`)
@@ -54,13 +56,17 @@
 
 ### 4. 控制器与弹窗 (`src/controllers/`)
 - `global_settings.js`：全局设置弹窗（`#globalModal`，包含运行状态、语音服务、对话模型、Telegram、角色与记忆、备份与更新 6 个 Tab）。
+  遥测三路读取由本轮 AbortController 持有，关闭、后台隐藏和新刷新会取消旧读取；引擎卡独立更新，所有字段都核对操作所有权。详见 `docs/development/TELEMETRY.md`。
 - `voice_settings.js`：会话设置弹窗（`#sessionModal`，配置当前会话的角色人设、音色绑定、LLM 采样参数及 TTS 推理参数）。
+  同一页面的音色切换串行执行，排队期间过时的会话选择直接跳过；列表目录与当前启用状态分别防止迟到响应覆盖。首页进入聊天会通过切换接口核验模型，已保存的音色 ID 仅作界面提示。
 - `audio_player_ui.js`：输入端麦克风录音控制与播放器 UI 状态协调。
 - `session_backup.js`：完整聊天备份与浏览器本地快照的导出与导入。
 - `update_manager.js`：版本检查与在线更新管理。
 - `engine_directory.js`：「语音服务」页里本机 GPT-SoVITS 安装目录的选择与保存（保存目录和启动引擎是两步）。
-- `engine_recovery.js`：`waitForEngine`，轮询 `/api/system/engine-status` 直到引擎就绪（默认最多 3 分钟）。
-- `config_recovery.js`：`saveConfirmedConfig`，保存全局配置；响应丢失时用一次 GET 核对是否已经写入，不重发写请求。
+- `engine_recovery.js`：`waitForEngine`，轮询 `/api/system/engine-status` 直到引擎就绪（默认最多 3 分钟，含单次读取和间隔）。短暂读取故障显示待确认并继续 GET，明确失败、鉴权拒绝和取消立即停止；不自动重发重启 POST。
+- `config_recovery.js`：`saveConfirmedConfig`，保存全局配置；响应丢失时用一次 GET 核对是否已经写入，不重发写请求。`runSettingsMutation` 按同一页面的操作顺序协调配置保存和重启，未确认的写入阻止当前排队的后续操作。
+- `provider_recovery.js`：模型保存或启用响应丢失后的只读核对；新 Key 不以脱敏值确认，未知结果保留草稿；已确认启用的保存不再发第二次启用请求。
+- `line_audio_recovery.js`：LOG 单句语音重建，仅使用会话明确绑定的音色；每次点击发送一个 POST，不自动重试或播放。核对会话、台词、音色及操作所有权后更新本地音频；仅可信的 `serverMessageId` 允许服务端更新历史。
 
 ### 5. 共享界面工具 (`src/`)
 - `ui.js`：会话列表渲染（`renderSessionList`，「会话」抽屉里用）与提示条（`showToast`）。
@@ -80,22 +86,28 @@
 | `line_audio` | `{ "line": 0, "status": "ready"\|"skipped"\|"failed", "chunks": [...] }` | 某句台词的语音最终状态，按台词顺序发出。`skipped` 表示这句没有生成语音（例如只有省略号），前端直接出字、不等语音；`failed` 另带 `error`。 |
 | `audio_chunk` | `{ "line": 0, "index": 0, "audio_url": "...", "sentence": "...", "emotion": "..." }` | GPT-SoVITS 合成的单个音频片段到达，用于预热和播放队列。能对应到台词时才带 `line`。 |
 | `audio_chunk_error` | `{ "line": 0, "index": 0, "sentence": "...", "error": "..." }` | 单句音频合成异常提示，文字流继续推进，不打断整体对话。能对应到台词时才带 `line`。 |
+| `voice_job` | `{ "index": 0, "status": "started"\|"finished" }` | 单个语音任务的有界等待阶段，需配合 HTTP 进展策略头；重复公告不续期。 |
 | `error` | `{ "error": "...", "error_code": "..." }` | 生成过程中断的错误事件，附带结构化错误码与中文指引。 |
-| `done` | `{ "chinese": "...", "japanese": "...", "chunks": [...], "lines": [...] }` | 本轮对话生成结束，携带最终完整文本、音频切片与行元数据。 |
+| `done` | `{ "chinese": "...", "japanese": "...", "chunks": [...], "lines": [...], "message_id": 42 }` | 本轮对话生成结束，携带最终完整文本、音频切片与行元数据。历史成功提交后才提供 `message_id`，前端保存为 `serverMessageId`，不得从浏览器消息 ID 推断数据库 ID。 |
 
 ---
 
 ## 设置面板位置
 
+主界面的设置按钮、F8 和首页齿轮统一进入设置中心；“聊天体验”和“角色与会话”从中心
+的分类导航进入，均嵌入同一个窗口，共享关闭、焦点与顶部返回开始页入口。聊天界面也有返回首页的入口。角色面板不再重复
+注入 ADV 显示控件；显示与播放选项统一在聊天体验中编辑。返回流程与验证见
+`docs/development/SETTINGS_NAVIGATION.md`。
+
 1. **ADV 交互设置（CONFIG 面板）**：
-   - 入口：快捷菜单中的 **CONFIG** 按钮或按键 `F8`。
-   - 包含：玩家名字、主副字幕语言、窗口不透明度、打字速度、AUTO 参数、服装、眨眼及口型动画开关；底部提供直达“对话模型设置”与“会话与角色设置”的导航按钮。
+   - 入口：设置中心分类页“聊天体验”；主界面设置按钮和 `F8` 先打开设置中心。正式应用嵌入中心，独立舞台保留本地编辑器。
+   - 包含：玩家名字、主副字幕语言、窗口不透明度、打字速度、语音同步与 AUTO 参数、服装、眨眼及口型动画开关；正式应用通过中心分类导航切页。
 2. **会话与角色设置（Session Settings，`#sessionModal`）**：
-   - 入口：CONFIG 面板底部的直达按钮、首页首次使用引导的「选一个角色」、全局设置「角色与记忆」页的「打开当前会话设置」，以及请求频率超限等非模型错误的「去设置」。
+   - 入口：设置中心分类页“角色与会话”、首页首次使用引导的「选一个角色」，以及请求频率超限等非模型错误的「去设置」；这些入口都使用同一个设置窗口。
    - 包含：角色人设编辑（保存后写回角色包）、角色音色选择与扫描、新建自定义音色、大模型采样参数（温度、Top P、惩罚项、最大长度、上下文条数）、回复格式（默认 lines 逐句）以及会话级 TTS 推理参数。
 3. **全局系统设置（Global Settings，`#globalModal`）**：
    - 入口：左上角工具栏「会话」抽屉底部的「全局设置」按钮、首页齿轮；首页状态胶囊的「去设置」分别打开「对话模型」/「语音服务」页；快捷菜单的模型状态点、CONFIG 面板的直达按钮，以及模型相关错误的「去设置」（文本框和 LOG 一样，按 `needsModelSettings` 判断）直接打开「对话模型」页。
-   - 包含 6 个标签页：
+   - 包含角色与会话、聊天体验，以及以下 6 个服务标签页：
      - **运行状态**（`gp-dashboard`）：GPT-SoVITS 连通性、计算精度切换与重启、硬件资源与缓存清空。
      - **语音服务**（`gp-inference`）：引擎地址、本机 SoVITS 目录选择、全局计算精度与缓存保留时长。
      - **对话模型**（`gp-models`）：全厂商模型卡片（API Key、Base URL、模型选择、思考强度、连通性测试与一键启用、允许私网 LLM 端点开关）。

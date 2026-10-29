@@ -13,6 +13,10 @@ import threading
 import webbrowser
 import subprocess
 import argparse
+import importlib
+import json
+import shlex
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -27,17 +31,48 @@ if __name__ == "__main__":
     # The API's engine restart must share this launcher's process ownership.
     sys.modules["scripts.run_server"] = sys.modules[__name__]
 
+
+def _print_python_recovery_command(arguments: list[str]) -> None:
+    """Show commands for the current interpreter in each supported shell."""
+    command = [sys.executable, *arguments]
+    if sys.platform == "win32":
+        print(f"    命令提示符: {subprocess.list2cmdline(command)}")
+        quoted = ["'" + part.replace("'", "''") + "'" for part in command]
+        print("    PowerShell: & " + " ".join(quoted))
+    else:
+        print(f"    {shlex.join(command)}")
+
+
 # E402: these imports must follow the sys.path bootstrap above, otherwise the
 # script cannot find the package when it is executed directly from a checkout.
-from galgame2voice.utils.precision import (  # noqa: E402
-    read_precision_cache,
-    write_precision_cache,
-    write_sovits_yaml_config,
-    resolve_initial_device_and_half,
-)
-from galgame2voice.utils.hardware import get_gpu_vram_status  # noqa: E402
-from galgame2voice.services.sovits_installation import find_engine_python, read_sovits_directory  # noqa: E402
-from galgame2voice.utils.windows_runtime import kernel32  # noqa: E402
+try:
+    from galgame2voice.utils.precision import (  # noqa: E402
+        read_precision_cache,
+        write_precision_cache,
+        write_sovits_yaml_config,
+        resolve_initial_device_and_half,
+    )
+    from galgame2voice.utils.hardware import get_gpu_vram_status  # noqa: E402
+    from galgame2voice.services.sovits_installation import find_engine_python, read_sovits_directory  # noqa: E402
+    from galgame2voice.services.engine_runtime import EngineLaunch, prepare_engine_entrypoint  # noqa: E402
+    from galgame2voice.services.engine_recovery import ENGINE_LOG_START  # noqa: E402
+    from galgame2voice.config import get_settings  # noqa: E402
+    from galgame2voice.utils.windows_runtime import kernel32  # noqa: E402
+    from scripts.launcher_address import browser_hosts  # noqa: E402
+except ImportError as exc:
+    # Config imports Pydantic before main() can run the ordinary dependency
+    # check. Give source-checkout users a recovery path, but keep missing local
+    # modules and frozen/imported launcher failures visible to their callers.
+    if (__name__ != "__main__" or getattr(sys, "frozen", False)
+            or exc.name not in {"pydantic", "pydantic_settings"}):
+        raise
+    print(f"[错误] 当前 Python 环境的运行依赖缺少或版本不兼容：{exc.name}。")
+    print("请在项目目录打开终端，运行：uv sync --frozen")
+    print("如果没有 uv，可先确认此 Python 有 pip，再运行：")
+    _print_python_recovery_command(["-m", "pip", "install", "-r", str(PROJECT_ROOT / "requirements.txt")])
+    print("如提示没有 pip，可先运行：")
+    _print_python_recovery_command(["-m", "ensurepip", "--upgrade"])
+    sys.exit(1)
 
 # Ensure runtime directories
 for d in ["logs", "data", "audio"]:
@@ -53,7 +88,27 @@ if sys.platform == "win32":
         pass
 
 _SPAWNED_SOVITS_PROC = None
+_SPAWNED_SOVITS_STARTED_AT: float | None = None
+_SPAWNED_SOVITS_LAUNCH: EngineLaunch | None = None
 _WINDOWS_JOB_HANDLE = None
+
+
+def get_managed_engine_launch(endpoint: Any) -> EngineLaunch | None:
+    """Match a launch to its owned process and endpoint, including an exited process."""
+    launch = _SPAWNED_SOVITS_LAUNCH
+    if (endpoint is None or not endpoint.is_local or launch is None
+            or launch.process is not _SPAWNED_SOVITS_PROC
+            or (endpoint.host, endpoint.port) != (launch.host, launch.port)):
+        return None
+    return launch
+
+
+def get_managed_engine_precision(endpoint: Any) -> str | None:
+    """Return launch precision only for the live owned process at this endpoint."""
+    launch = get_managed_engine_launch(endpoint)
+    if launch is None or launch.process.poll() is not None:
+        return None
+    return "CPU" if launch.device == "cpu" else "FP16" if launch.is_half else "FP32"
 
 
 def setup_windows_job_object():
@@ -492,19 +547,23 @@ def build_gpt_sovits_env(sovits_dir: Path, is_half: bool = False) -> dict[str, s
     env["all_proxy"] = ""
     env["ALL_PROXY"] = ""
 
-    # Ensure GPT-SoVITS uses its own self-contained TEMP directory
-    # Bypasses Windows user Temp ACL / permission constraints
-    sovits_temp = sovits_dir / "TEMP"
-    try:
-        sovits_temp.mkdir(parents=True, exist_ok=True)
-        if sys.platform == "win32":
-            import ctypes
-            ctypes.windll.kernel32.SetFileAttributesW(str(sovits_temp), 0x80)
-        env["TEMP"] = str(sovits_temp)
-        env["TMP"] = str(sovits_temp)
-        env["TMPDIR"] = str(sovits_temp)
-    except Exception:
+    # Numba otherwise probes __pycache__ inside the engine's bundled libraries.
+    # On read-only Windows installs Python 3.9 can retry those temporary-file
+    # writes for a very long time, before GPT-SoVITS has printed any progress.
+    cache_dir = PROJECT_ROOT / "data" / "engine_cache" / "numba"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryFile(dir=cache_dir):
         pass
+    env["NUMBA_CACHE_DIR"] = str(cache_dir)
+
+    # Native dependencies also create temporary files during import. An existing
+    # engine/TEMP directory is not proof that the engine can write there.
+    sovits_temp = cache_dir.parent / "temp"
+    sovits_temp.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryFile(dir=sovits_temp):
+        pass
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        env[name] = str(sovits_temp)
 
     return env
 
@@ -556,21 +615,34 @@ def check_python_environment() -> bool:
                     [sys.executable, "-m", "pip", "install", "-r", str(req_file)],
                     check=True,
                 )
-                print("[OK] 运行依赖自动安装成功。")
             except Exception as e:
                 print("\n" + "=" * 60)
                 print(f"[错误] 核心运行依赖安装失败: {e}")
                 print("请在命令行手动执行安装:")
-                print(f"    {sys.executable} -m pip install -r requirements.txt")
-                if sys.platform == "win32":
-                    print("    或使用 Windows 自带的 Python 引导器:")
-                    print("    py -m pip install -r requirements.txt")
+                _print_python_recovery_command(["-m", "pip", "install", "-r", str(req_file)])
+                print("如提示没有 pip，可先运行：")
+                _print_python_recovery_command(["-m", "ensurepip", "--upgrade"])
                 print("=" * 60 + "\n")
                 return False
+            importlib.invalidate_caches()
+            still_missing = []
+            for mod_name, pkg_name in core_deps:
+                if pkg_name not in missing:
+                    continue
+                try:
+                    __import__(mod_name)
+                except ImportError:
+                    still_missing.append(pkg_name)
+            if still_missing:
+                print(f"[错误] 安装命令已结束，但当前 Python 仍无法加载: {', '.join(still_missing)}")
+                print("请检查 pip 安装位置及 PIP_TARGET、PIP_PREFIX；也可在项目目录运行 uv sync --frozen。")
+                return False
+            print("[OK] 运行依赖自动安装成功。")
         else:
             print("\n" + "=" * 60)
             print(f"[错误] 缺少核心运行库: {', '.join(missing)}")
-            print("请手动运行: pip install " + " ".join(missing))
+            print("请手动运行：")
+            _print_python_recovery_command(["-m", "pip", "install", *missing])
             print("=" * 60 + "\n")
             return False
 
@@ -679,7 +751,11 @@ def _spawn_sovits_process(
         print("             请下载官方完整集成包 (含 runtime 目录) 或手动安装其 requirements。")
         python_exe = Path(sys.executable)
 
-    synced_yaml = write_sovits_yaml_config(sovits_dir, is_half, device=device)
+    runtime_dir = PROJECT_ROOT / "data" / "engine_cache"
+    entrypoint = prepare_engine_entrypoint(sovits_dir, runtime_dir / "bootstrap")
+    synced_yaml = write_sovits_yaml_config(
+        sovits_dir, is_half, device=device, output_path=runtime_dir / "tts_infer.yaml",
+    )
     config_arg = "GPT_SoVITS/configs/tts_infer.yaml"
     if synced_yaml:
         try:
@@ -690,7 +766,8 @@ def _spawn_sovits_process(
     cmd = [
         str(python_exe),
         "-I",
-        "api_v2.py",
+        "-u",
+        str(entrypoint),
         "-a", host,
         "-p", str(port),
         "-c", config_arg,
@@ -706,9 +783,11 @@ def _spawn_sovits_process(
             log_file.rename(old_file)
     except OSError:
         pass
-    log_fp = open(log_file, "a", encoding="utf-8")
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     env = build_gpt_sovits_env(sovits_dir, is_half=is_half)
+    log_fp = open(log_file, "a", encoding="utf-8")
+    log_fp.write(f"\n{ENGINE_LOG_START}\n")
+    log_fp.flush()
     extra_popen_kwargs = {}
     if sys.platform != "win32":
         extra_popen_kwargs["start_new_session"] = True
@@ -725,8 +804,10 @@ def _spawn_sovits_process(
         )
     finally:
         log_fp.close()
-    global _SPAWNED_SOVITS_PROC
+    global _SPAWNED_SOVITS_PROC, _SPAWNED_SOVITS_STARTED_AT, _SPAWNED_SOVITS_LAUNCH
     _SPAWNED_SOVITS_PROC = proc
+    _SPAWNED_SOVITS_STARTED_AT = time.monotonic()
+    _SPAWNED_SOVITS_LAUNCH = EngineLaunch(proc, host, port, device, is_half, _SPAWNED_SOVITS_STARTED_AT)
     if sys.platform == "win32" and not _WINDOWS_JOB_HANDLE:
         setup_windows_job_object()
     assigned = assign_process_to_job(proc)
@@ -952,7 +1033,9 @@ def ensure_gpt_sovits_running(
         precision_source = "cli"
         print("      [推理精度] 已指定 --fp32 单精度模式运行。")
     else:
-        device, is_half, precision_source = resolve_initial_device_and_half(PROJECT_ROOT, sovits_dir)
+        device, is_half, precision_source = resolve_initial_device_and_half(
+            PROJECT_ROOT, sovits_dir, db_path=get_settings().db_path,
+        )
         if device == "cpu":
             prec_str = "CPU 稳定模式"
         else:
@@ -996,24 +1079,37 @@ def ensure_gpt_sovits_running(
 
 
 
-def find_available_port(preferred_port: int = 8080, host: str = "127.0.0.1") -> int:
-    """Finds a bindable TCP port starting from preferred_port with graceful fallbacks."""
+def reserve_available_socket(preferred_port: int = 8080, host: str = "127.0.0.1") -> socket.socket:
+    """Bind and retain a listening socket until the server takes ownership."""
     candidates = [preferred_port, 8081, 8082, 8085, 8088, 8888, 18080, 28080]
     seen = set()
     unique_candidates = [p for p in candidates if not (p in seen or seen.add(p))]
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
 
-    for p in unique_candidates:
+    for p in [*unique_candidates, 0]:
+        listener = None
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                s.bind((host, p))
-                return p
+            listener = socket.socket(family, socket.SOCK_STREAM)
+            # Windows SO_REUSEADDR can bind over an existing listener that
+            # also enabled reuse, so it cannot establish availability.
+            option = socket.SO_EXCLUSIVEADDRUSE if sys.platform == "win32" else socket.SO_REUSEADDR
+            listener.setsockopt(socket.SOL_SOCKET, option, 1)
+            listener.bind((host, p))
+            listener.listen(2048)
+            return listener
         except OSError:
-            continue
+            if listener is not None:
+                listener.close()
+            if p == 0:
+                raise
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((host, 0))
-        return s.getsockname()[1]
+    raise RuntimeError("Could not reserve a listening port")
+
+
+def find_available_port(preferred_port: int = 8080, host: str = "127.0.0.1") -> int:
+    """Compatibility helper: report a port without keeping it reserved."""
+    with reserve_available_socket(preferred_port, host) as listener:
+        return listener.getsockname()[1]
 
 
 def auto_open_browser(port: int = 8080, host: str = "127.0.0.1"):
@@ -1021,23 +1117,35 @@ def auto_open_browser(port: int = 8080, host: str = "127.0.0.1"):
     import http.client
 
     def _runner():
-        probe_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
-        display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+        probe_host, display_host = browser_hosts(host)
         url = f"http://{display_host}:{port}/"
+        expected_app = get_settings().app_name
+        deadline = time.monotonic() + 60.0
         # Fast local probe directly via raw loopback socket bypassing OS proxy delay
-        for _ in range(30):
-            time.sleep(0.3)
+        while time.monotonic() < deadline:
+            time.sleep(min(0.3, max(0.0, deadline - time.monotonic())))
+            conn = None
+            ready = False
             try:
                 conn = http.client.HTTPConnection(probe_host, port, timeout=0.2)
                 conn.request("GET", "/api/health")
                 resp = conn.getresponse()
                 if resp.status == 200:
+                    health = json.loads(resp.read(4096))
+                    ready = isinstance(health, dict) and health.get("app") == expected_app and health.get("status") == "ok"
+            except (OSError, ValueError, http.client.HTTPException):
+                pass
+            finally:
+                if conn is not None:
                     conn.close()
-                    webbrowser.open(url)
-                    break
-                conn.close()
-            except Exception:
-                continue
+            if ready:
+                try:
+                    if not webbrowser.open(url):
+                        print(f"[提示] 未能自动打开浏览器，请手动访问：{url}")
+                except Exception:
+                    print(f"[提示] 未能自动打开浏览器，请手动访问：{url}")
+                return
+        print(f"[提示] 页面尚未确认就绪，请查看启动窗口；服务就绪后可手动访问：{url}")
 
     t = threading.Thread(target=_runner, daemon=True, name="browser-launcher")
     t.start()
@@ -1147,6 +1255,7 @@ def main(args: list[str] | None = None):
     setup_signal_handlers()
     atexit.register(cleanup_subprocesses)
 
+    listener = None
     try:
         # Step 1: GPT-SoVITS
         if getattr(parsed, "no_engine", False):
@@ -1162,8 +1271,9 @@ def main(args: list[str] | None = None):
         # Step 2: Determine & Probe Port
         preferred_port = parsed.port
         bind_host = parsed.host
-        active_port = find_available_port(preferred_port, host=bind_host)
-        if active_port != preferred_port:
+        listener = reserve_available_socket(preferred_port, host=bind_host)
+        active_port = listener.getsockname()[1]
+        if preferred_port != 0 and active_port != preferred_port:
             print(f"[提示] 默认端口 {preferred_port} 无法绑定 (可能被系统代理或其他程序占用)，已自动切换至可用端口: {active_port}")
 
         # Save active port & PID for clean shutdown and downstream configuration
@@ -1182,7 +1292,7 @@ def main(args: list[str] | None = None):
             write_instance_address(PROJECT_ROOT, bind_host, active_port)
 
         # Step 3: Auto Open Browser
-        display_host = "127.0.0.1" if bind_host in ("0.0.0.0", "::") else bind_host
+        _, display_host = browser_hosts(bind_host)
         print(f"[2/2] 正在启动 Galgame2Voice 伴侣服务 ({bind_host}:{active_port})...")
         if not parsed.no_browser:
             auto_open_browser(active_port, host=bind_host)
@@ -1192,7 +1302,11 @@ def main(args: list[str] | None = None):
         print("      关闭此窗口即可退出并释放资源。")
         try:
             import uvicorn
-            uvicorn.run("galgame2voice.main:app", host=bind_host, port=active_port, log_level="info")
+            config = uvicorn.Config("galgame2voice.main:app", host=bind_host, port=active_port, log_level="info")
+            server = uvicorn.Server(config)
+            server.run(sockets=[listener])
+            if not server.started:
+                raise SystemExit(3)
         except KeyboardInterrupt:
             print("\n[提示] 服务已正常停止，正在释放资源...")
         except SystemExit as exc:
@@ -1206,6 +1320,8 @@ def main(args: list[str] | None = None):
             print(f"\n[错误] 服务运行异常: {e}")
             sys.exit(1)
     finally:
+        if listener is not None:
+            listener.close()
         cleanup_subprocesses()
     sys.exit(0)
 

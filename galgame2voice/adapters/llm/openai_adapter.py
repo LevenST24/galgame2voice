@@ -253,6 +253,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         client = create_async_client(timeout=timeout_s)
         try:
             for attempt in range(max_retries + 1):
+                if attempt:
+                    await assert_llm_url_safe(url, allow_private=allow_private)
                 try:
                     resp = await client.post(url, json=payload, headers=headers)
                 except TRANSIENT_NETWORK_EXCEPTIONS as exc:
@@ -391,6 +393,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         await assert_llm_url_safe(url, allow_private=allow_private)
 
         for attempt in range(max_retries + 1):
+            if attempt:
+                await assert_llm_url_safe(url, allow_private=allow_private)
             client = create_async_client(timeout=timeout_s)
             stream_ctx = None
             try:

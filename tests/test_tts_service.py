@@ -141,6 +141,8 @@ async def test_populate_voice_profile_opts_async_duration(tmp_path):
     mock_ctx.prompt_lang = "ja"
     mock_ctx.text_lang = "ja"
     mock_ctx.profile_id = 1
+    mock_ctx.gpt_weights_path = str(tmp_path / "test.ckpt")
+    mock_ctx.sovits_weights_path = str(tmp_path / "test.pth")
     mock_ctx.get_emotion_ref.return_value = None
 
     with patch("galgame2voice.services.voice_resolver.get_voice_resolver") as mock_get_res:

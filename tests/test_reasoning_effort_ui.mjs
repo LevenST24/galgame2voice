@@ -17,6 +17,18 @@ const { needsModelSettings } = await import('../frontend/src/ui.js');
 const { mountAdv } = await import('../frontend/src/adv/adv_app.js');
 const { DEFAULT_SESSION_SETTINGS } = await import('../frontend/src/store.js');
 
+test('provider transport diagnostics show the connection problem in the title', () => {
+  const guide = '无法与模型服务建立连接。请检查网络、代理和服务地址。';
+  const result = formatProviderDiagnostic('gemini', '网络连接失败 (Connection Failed)', guide);
+  assert.equal(result.title, '网络连接失败');
+  assert.equal(result.guidance, guide);
+});
+
+test('provider DNS diagnostics do not collapse into a generic diagnostic heading', () => {
+  const result = formatProviderDiagnostic('gemini', '服务器域名解析失败 (DNS Error)', '请检查服务地址或 DNS 设置。');
+  assert.equal(result.title, '服务器域名解析失败');
+});
+
 function setup(t, options = {}) {
   const d = fakeDocument();
   globalThis.document = d;
@@ -196,7 +208,7 @@ test('empty_reply travels through SSE and conversation to a retryable inline fai
   assert.equal(user.failed, undefined);
 });
 
-async function setupProviderFooter(t) {
+async function setupProviderFooter(t, { confirmActivation = true } = {}) {
   const settings = await import('../frontend/src/controllers/global_settings.js');
   const previousDocument = globalThis.document, previousFetch = globalThis.fetch;
   const d = fakeDocument();
@@ -206,7 +218,7 @@ async function setupProviderFooter(t) {
   d.body.appendChild(toastRoot);
   const dom = Object.fromEntries(['gProvider', 'gProviderActivate', 'gTgSave', 'gApiKey',
     'gBaseUrl', 'gChatModel', 'gChatModelSelect', 'gReasoningEffort', 'gCustomName',
-    'gCustomNameField'].map(key => [key, d.createElement('input')]));
+    'gCustomNameField', 'gBtnResetBaseUrl', 'gUserNickname'].map(key => [key, d.createElement('input')]));
   const calls = [];
   let providers = [{ id: 'openai', name: 'OpenAI', api_key: '****',
     api_base_url: 'https://api.openai.com/v1', chat_model: 'gpt-test', is_active: true }];
@@ -220,7 +232,7 @@ async function setupProviderFooter(t) {
     if (url === '/api/providers') {
       if (options.method === 'POST') {
         providers = [{ ...JSON.parse(options.body), api_key: '****' }];
-        return response({ provider: providers[0] });
+        return response({ provider: { ...providers[0], is_active: confirmActivation } });
       }
       return response({ providers, presets: BUILTIN_PRESETS });
     }
@@ -259,11 +271,61 @@ test('footer saves an edited API key and activates the model', async t => {
   await h.save();
   assert.equal(h.writes().length, 1, 'footer must save the edited model via POST /api/providers');
   assert.equal(h.writes()[0].body.api_key, 'synthetic-footer-key');
-  assert.equal(h.calls.filter(c => c.url === '/api/providers/openai/activate').length, 1);
+  assert.equal(h.calls.filter(c => c.url === '/api/providers/openai/activate').length, 0);
   assert.ok(h.calls.some(c => c.url === '/api/config' && c.method === 'POST'));
   assert.ok(h.messages().some(msg => /全局配置.*模型.*保存.*启用/.test(msg)));
   await h.save();
   assert.equal(h.writes().length, 1, 'successful save must clear pending model edits');
+});
+
+test('provider confirmation does not activate an atomically saved model twice', async t => {
+  const h = await setupProviderFooter(t);
+  h.edit('gApiKey', 'synthetic-confirmed-key');
+  h.fail('/api/providers/openai/activate');
+  await h.settings.saveGlobalConfig();
+  assert.equal(h.calls.filter(call => call.url.endsWith('/activate')).length, 0);
+  assert.equal(h.writes().length, 1);
+  assert.ok(h.calls.some(call => call.url === '/api/config' && call.method === 'POST'));
+  assert.ok(h.messages().some(message => /全局配置和模型设置已保存/.test(message)));
+  assert.equal(h.dom.gApiKey.value, '');
+});
+
+test('provider confirmation verifies a lost non-secret save without resending it', async t => {
+  const h = await setupProviderFooter(t);
+  const fetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/providers/openai') {
+      const listed = await (await fetch('/api/providers')).json();
+      return { ok: true, status: 200, json: async () => ({ provider: listed.providers[0] }) };
+    }
+    const result = await fetch(url, options);
+    if (url === '/api/providers' && options.method === 'POST') throw new TypeError('Failed to fetch');
+    return result;
+  };
+  h.edit('gChatModel', 'saved-before-disconnect');
+  await h.settings.saveGlobalConfig();
+  assert.equal(h.writes().length, 1);
+  assert.ok(h.messages().some(message => /全局配置和模型设置已保存/.test(message)));
+  assert.equal(h.settings.getCurrentActiveProvider().chat_model, 'saved-before-disconnect');
+  await h.settings.saveGlobalConfig();
+  assert.equal(h.writes().length, 1);
+});
+
+test('provider confirmation retains a new key when the write outcome is unknown', async t => {
+  const h = await setupProviderFooter(t);
+  const fetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    const result = await fetch(url, options);
+    if (url === '/api/providers' && options.method === 'POST') throw new TypeError('Failed to fetch');
+    return result;
+  };
+  h.edit('gApiKey', 'synthetic-unknown-key');
+  await h.settings.saveGlobalConfig();
+  assert.equal(h.writes().length, 1);
+  assert.equal(h.dom.gApiKey.value, 'synthetic-unknown-key');
+  assert.equal(h.dom.gTgSave.disabled, false);
+  assert.ok(h.messages().some(message => /保存结果尚未确认.*输入已保留/.test(message)));
+  assert.ok(!h.calls.some(call => call.url === '/api/config' && call.method === 'POST'));
 });
 
 test('footer leaves an untouched or programmatically filled model alone', async t => {
@@ -308,24 +370,204 @@ test('footer tracks input and change on every model field', async t => {
   }
 });
 
-test('switching providers and reloading providers clear model edits', async t => {
-  for (const reset of ['switch', 'reload']) await t.test(reset, async t => {
+test('switching providers clears model edits', async t => {
     const h = await setupProviderFooter(t);
     h.edit('gApiKey', 'discarded-key');
-    if (reset === 'reload') await h.settings.loadProviders();
-    else {
-      h.dom.gProvider.value = 'gemini';
-      h.dom.gProvider.dispatchEvent({ type: 'change' });
-    }
+    h.dom.gProvider.value = 'gemini';
+    h.dom.gProvider.dispatchEvent({ type: 'change' });
     h.calls.length = 0;
     await h.save();
     assert.equal(h.calls.filter(c => c.url.startsWith('/api/providers')).length, 0);
+});
+
+function holdModelRequest(t, matches) {
+  const fetch = globalThis.fetch;
+  let entered, release, held = false;
+  const started = new Promise(resolve => { entered = resolve; });
+  const waiting = new Promise(resolve => { release = resolve; });
+  globalThis.fetch = async (url, options = {}) => {
+    if (!held && matches(url, options)) {
+      held = true; entered(); await waiting;
+    }
+    return fetch(url, options);
+  };
+  t.after(release);
+  return { started, release };
+}
+
+test('model draft survives edits during save, activation and list refresh', async t => {
+  for (const phase of ['save', 'activate', 'refresh']) await t.test(phase, { timeout: 3000 }, async t => {
+    const h = await setupProviderFooter(t, { confirmActivation: phase !== 'activate' });
+    h.edit('gChatModel', 'submitted-model');
+    const gate = holdModelRequest(t, (url, options) => phase === 'save'
+      ? url === '/api/providers' && options.method === 'POST'
+      : phase === 'activate' ? url.endsWith('/activate') : url === '/api/providers' && !options.method);
+    const saving = h.settings.saveGlobalConfig();
+    await gate.started;
+    h.edit('gChatModel', 'new-unsaved-model');
+    h.edit('gApiKey', 'synthetic-new-unsaved-key');
+    h.dom.gApiKey.type = 'text';
+    h.edit('gBaseUrl', 'https://new-draft.test/v1');
+    h.edit('gReasoningEffort', 'high', 'change');
+    gate.release(); await saving;
+    assert.equal(h.dom.gChatModel.value, 'new-unsaved-model');
+    assert.equal(h.dom.gApiKey.value, 'synthetic-new-unsaved-key');
+    assert.equal(h.dom.gApiKey.type, 'text', 'refresh must preserve the draft input visibility');
+    assert.equal(h.dom.gBaseUrl.value, 'https://new-draft.test/v1');
+    assert.equal(h.dom.gReasoningEffort.value, 'high');
+    assert.ok(h.messages().some(message => /当前修改尚未保存/.test(message)));
+    await h.settings.saveGlobalConfig();
+    assert.equal(h.writes().length, 2);
+    assert.equal(h.writes()[1].body.chat_model, 'new-unsaved-model');
+    assert.equal(h.writes()[1].body.api_key, 'synthetic-new-unsaved-key');
+    assert.equal(h.writes()[1].body.api_base_url, 'https://new-draft.test/v1');
+    assert.equal(h.writes()[1].body.reasoning_effort, 'high');
   });
 });
 
-test('footer reports save and activation request failures and allows retry', async t => {
+test('model draft survives save-and-activate button refresh', { timeout: 3000 }, async t => {
+  const h = await setupProviderFooter(t);
+  h.edit('gChatModel', 'submitted-model');
+  const gate = holdModelRequest(t, (url, options) => url === '/api/providers' && options.method === 'POST');
+  const saving = h.settings.handleActivateProvider();
+  await gate.started;
+  h.edit('gChatModel', 'next-model');
+  gate.release(); await saving;
+  assert.equal(h.dom.gChatModel.value, 'next-model');
+  assert.ok(h.messages().some(message => /当前修改尚未保存/.test(message)));
+  await h.settings.saveGlobalConfig();
+  assert.equal(h.writes().at(-1).body.chat_model, 'next-model');
+});
+
+test('model draft provider switch is preserved while the previous model saves', { timeout: 3000 }, async t => {
+  const h = await setupProviderFooter(t);
+  h.edit('gChatModel', 'submitted-model');
+  const gate = holdModelRequest(t, (url, options) => url === '/api/providers' && options.method === 'POST');
+  const saving = h.settings.saveGlobalConfig();
+  await gate.started;
+  h.dom.gProvider.value = 'gemini'; h.dom.gProvider.dispatchEvent({ type: 'change' });
+  h.edit('gApiKey', 'synthetic-gemini-key'); h.edit('gChatModel', 'gemini-draft');
+  gate.release(); await saving;
+  assert.equal(h.dom.gProvider.value, 'gemini');
+  assert.equal(h.dom.gChatModel.value, 'gemini-draft');
+  assert.equal(h.dom.gApiKey.value, 'synthetic-gemini-key');
+  await h.settings.saveGlobalConfig();
+  assert.equal(h.writes().at(-1).body.id, 'gemini');
+  assert.equal(h.writes().at(-1).body.chat_model, 'gemini-draft');
+});
+
+test('model draft is retained when reopening or refreshing the provider form', async t => {
+  const h = await setupProviderFooter(t);
+  h.edit('gApiKey', 'synthetic-pending-key');
+  await h.settings.loadProviders();
+  assert.equal(h.dom.gApiKey.value, 'synthetic-pending-key');
+  await h.settings.saveGlobalConfig();
+  assert.equal(h.writes()[0].body.api_key, 'synthetic-pending-key');
+});
+
+test('a failed provider refresh keeps the cached configuration but reports uncertainty until recovery', async t => {
+  const h = await setupProviderFooter(t);
+  const originalFetch = globalThis.fetch;
+  const active = h.settings.getCurrentActiveProvider();
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/providers' && !options.method) throw new TypeError('synthetic connection failure');
+    return originalFetch(url, options);
+  };
+  await h.settings.loadProviders();
+  assert.equal(h.settings.hasProviderReadError(), true);
+  assert.equal(h.settings.getCurrentActiveProvider(), active, 'failed reads must not discard the last known provider');
+  globalThis.fetch = originalFetch;
+  await h.settings.loadProviders();
+  assert.equal(h.settings.hasProviderReadError(), false);
+  assert.equal(h.settings.getCurrentActiveProvider().id, active.id);
+});
+
+test('model draft typed during a provider refresh is retained', { timeout: 3000 }, async t => {
+  const h = await setupProviderFooter(t);
+  const gate = holdModelRequest(t, (url, options) => url === '/api/providers' && !options.method);
+  const loading = h.settings.loadProviders();
+  await gate.started;
+  h.edit('gChatModel', 'typed-during-refresh');
+  gate.release(); await loading;
+  assert.equal(h.dom.gChatModel.value, 'typed-during-refresh');
+  await h.settings.saveGlobalConfig();
+  assert.equal(h.writes()[0].body.chat_model, 'typed-during-refresh');
+});
+
+test('model draft reset-to-default URL participates in footer saving', async t => {
+  const h = await setupProviderFooter(t);
+  h.edit('gBaseUrl', 'https://custom-base.test/v1');
+  await h.settings.saveGlobalConfig();
+  h.dom.gBtnResetBaseUrl.click();
+  await h.settings.saveGlobalConfig();
+  assert.equal(h.writes().length, 2);
+  assert.equal(h.writes()[1].body.api_base_url, 'https://api.openai.com/v1');
+});
+
+test('model draft ignores a stale provider response after a newer save', { timeout: 3000 }, async t => {
+  const h = await setupProviderFooter(t);
+  const fetch = globalThis.fetch;
+  let release, entered, first = true;
+  const started = new Promise(resolve => { entered = resolve; });
+  const blocked = new Promise(resolve => { release = resolve; });
+  t.after(release);
+  globalThis.fetch = async (url, options = {}) => {
+    const response = await fetch(url, options);
+    if (first && url === '/api/providers' && !options.method) {
+      first = false; entered(); await blocked;
+    }
+    return response;
+  };
+  const oldRefresh = h.settings.loadProviders(); await started;
+  h.edit('gChatModel', 'newer-saved-model');
+  await h.settings.saveGlobalConfig();
+  release(); await oldRefresh;
+  assert.equal(h.settings.getCurrentActiveProvider().chat_model, 'newer-saved-model');
+  assert.equal(h.dom.gChatModel.value, 'newer-saved-model');
+});
+
+test('model draft save buttons stay busy together and recover', { timeout: 3000 }, async t => {
+  const h = await setupProviderFooter(t);
+  h.edit('gChatModel', 'submitted-model');
+  const gate = holdModelRequest(t, (url, options) => url === '/api/providers' && options.method === 'POST');
+  const saving = h.settings.handleActivateProvider(); await gate.started;
+  const during = [h.dom.gProviderActivate.disabled, h.dom.gTgSave.disabled];
+  gate.release(); await saving;
+  assert.deepEqual(during, [true, true]);
+  assert.equal(h.dom.gProviderActivate.disabled, false);
+  assert.equal(h.dom.gTgSave.disabled, false);
+});
+
+test('model draft reports partial success when the global config fails', async t => {
+  const h = await setupProviderFooter(t);
+  h.edit('gChatModel', 'saved-model');
+  h.fail('/api/config');
+  await h.settings.saveGlobalConfig();
+  assert.ok(h.messages().some(message => /模型设置已保存并启用.*全局配置.*失败/.test(message)));
+  h.fail('');
+  await h.settings.saveGlobalConfig();
+  assert.equal(h.writes().length, 1, 'retrying global config must not repeat an already saved model write');
+});
+
+test('model draft global edits made during model saving wait for the next save', { timeout: 3000 }, async t => {
+  const h = await setupProviderFooter(t);
+  h.edit('gChatModel', 'submitted-model'); h.edit('gUserNickname', 'submitted-name');
+  const gate = holdModelRequest(t, (url, options) => url === '/api/providers' && options.method === 'POST');
+  const saving = h.settings.saveGlobalConfig(); await gate.started;
+  h.edit('gUserNickname', 'new-unsaved-name');
+  gate.release(); await saving;
+  const configs = () => h.calls.filter(call => call.method === 'POST' && call.url === '/api/config');
+  assert.equal(configs()[0].body.user_nickname, 'submitted-name');
+  assert.equal(h.dom.gUserNickname.value, 'new-unsaved-name');
+  assert.ok(h.messages().some(message => /当前修改尚未保存/.test(message)));
+  await h.settings.saveGlobalConfig();
+  assert.equal(configs().at(-1).body.user_nickname, 'new-unsaved-name');
+  assert.equal(h.writes().length, 1);
+});
+
+test('footer reports save or unconfirmed activation failures and allows retry', async t => {
   for (const url of ['/api/providers', '/api/providers/openai/activate']) await t.test(url, async t => {
-    const h = await setupProviderFooter(t);
+    const h = await setupProviderFooter(t, { confirmActivation: !url.endsWith('/activate') });
     h.edit('gApiKey', 'synthetic-retry-key');
     h.fail(url);
     await h.save();

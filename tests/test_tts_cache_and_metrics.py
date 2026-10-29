@@ -182,11 +182,10 @@ class TestTtsCacheLifecycleAndPerformance:
         assert mock_client.call_count == 1
 
         # Corrupt cache file by truncating to 0 bytes
-        cache_key, _, _ = mgr.compute_cache_key(text)
-        cache_file = mgr.cache_dir / f"{cache_key}.wav"
-        if cache_file.exists():
-            cache_file.write_bytes(b"")
-        path.write_bytes(b"")
+        cache_key = path.stem
+        cache_file = path
+        assert cache_file.is_file()
+        cache_file.write_bytes(b"")
         # In M2 two-tier architecture, evict from Tier 1 memory cache to test Tier 2 disk corruption recovery
         mgr._mem_cache_discard(cache_key)
 

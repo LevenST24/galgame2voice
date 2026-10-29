@@ -6,8 +6,8 @@ mutex locking, and atomic rollback on failure.
 
 import asyncio
 import logging
-import os
 import uuid
+from contextlib import aclosing
 from typing import Any, AsyncGenerator
 
 
@@ -24,65 +24,36 @@ from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
     get_gpt_sovits_client,
 )
-from galgame2voice.utils.async_tasks import drain_background_tasks
+from galgame2voice.utils.async_tasks import await_protected, drain_background_tasks
+from galgame2voice.services.voice_state import persist_active_voice_profile
 from galgame2voice.utils.hardware import (
     get_system_memory_status,
     get_gpu_vram_status,
     release_system_memory,
 )
 
+from galgame2voice.services.voice_resources import (
+    VoiceResourceGuard,
+    InsufficientMemoryError as InsufficientMemoryError,
+    _MIN_FREE_MEMORY_RATIO as _MIN_FREE_MEMORY_RATIO,
+    _MIN_FREE_MEMORY_FLOOR_GB as _MIN_FREE_MEMORY_FLOOR_GB,
+    _MIN_FREE_MEMORY_CEILING_GB as _MIN_FREE_MEMORY_CEILING_GB,
+    _MIN_FREE_VRAM_FLOOR_GB as _MIN_FREE_VRAM_FLOOR_GB,
+)
+
 logger = logging.getLogger("galgame2voice.services.voice_manager")
 
 
-# GPT-SoVITS rejects symbol-only text ("。") with HTTP 400 "请输入有效文本",
-# which leaves the prompt cache cold, so the probe has to be a real word.
+# GPT-SoVITS rejects symbol-only probe text.
 WARMUP_PROBE_TEXT = "はい。"
 
 
-class InsufficientMemoryError(RuntimeError):
-    """Raised when free memory is too low to safely load new model weights."""
-
-
-# 切换权重时新旧模型会短暂同时驻留内存（GPT约155MB + SoVITS约172MB = 约330MB，极端过渡期约660MB）；
-# 默认安全阈值：总内存的 6% 或最低 0.8GB，并设有 1.5GB 安全上限（大内存机器不会被百分比过度拦截）。
-# 16GB 设备所需空闲仅约 0.96GB，只要空闲内存大于 1GB 即可丝滑切换。
-_MIN_FREE_MEMORY_RATIO = 0.06
-_MIN_FREE_MEMORY_FLOOR_GB = 0.8
-_MIN_FREE_MEMORY_CEILING_GB = 1.5
-_MIN_FREE_VRAM_FLOOR_GB = 0.45
-
-
 def _get_switch_min_free_memory_gb() -> float:
-    try:
-        val = os.getenv("GALGAME2VOICE_MIN_FREE_MEM_GB")
-        if val is not None:
-            return float(val)
-    except (ValueError, TypeError):
-        pass
-    total_gb, _ = get_system_memory_status()
-    if total_gb:
-        scaled = round(total_gb * _MIN_FREE_MEMORY_RATIO, 2)
-        return min(_MIN_FREE_MEMORY_CEILING_GB, max(_MIN_FREE_MEMORY_FLOOR_GB, scaled))
-    return _MIN_FREE_MEMORY_FLOOR_GB
+    return VoiceResourceGuard(memory_status=get_system_memory_status).minimum_memory_gb()
 
 
 def _get_switch_min_free_vram_gb() -> float:
-    try:
-        val = os.getenv("GALGAME2VOICE_MIN_FREE_VRAM_GB")
-        if val is not None:
-            return float(val)
-    except (ValueError, TypeError):
-        pass
-    return _MIN_FREE_VRAM_FLOOR_GB
-
-
-def _safe_invalidate_resolver(profile_id: int | None = None) -> None:
-    """Safely invalidates the voice resolver cache without raising exceptions."""
-    try:
-        from galgame2voice.services.voice_resolver import get_voice_resolver
-        get_voice_resolver().invalidate(profile_id)
-    except Exception as exc:
-        logger.debug("Failed invalidating voice resolver cache: %s", exc)
+    return VoiceResourceGuard.minimum_vram_gb()
 
 
 class VoiceManager:
@@ -220,7 +191,18 @@ class VoiceManager:
         if not active_prof or not profile:
             return False
 
-        return self._extract_profile_identity(active_prof) == self._extract_profile_identity(profile)
+        if self._extract_profile_identity(active_prof) != self._extract_profile_identity(profile):
+            return False
+        if not self.client.models_unchanged():
+            return False
+        from galgame2voice.services.audio_identity import SourceFile
+        for field, current in (("gpt_weights_path", self.client.current_gpt_weights),
+                               ("sovits_weights_path", self.client.current_sovits_weights)):
+            expected = self._resolve_profile_field(profile, field)
+            if (isinstance(current, str) and current and isinstance(expected, str) and expected
+                    and SourceFile.capture(current).path != SourceFile.capture(expected).path):
+                return False
+        return True
 
     async def switch_profile(
         self,
@@ -230,10 +212,11 @@ class VoiceManager:
         force: bool = False,
     ) -> bool:
         """
-        Atomically switches GPT-SoVITS weights to target voice profile.
+        Switches GPT-SoVITS weights, then confirms the saved default selection.
         If target is an int ID or string ID/name, looks up profile from SQLite DB.
         On success, updates SQLite active profile if persist=True.
-        On failure, automatically rolls back weights and preserves prior state.
+        Model-load failure rolls back weights. Persistence failure is reported
+        separately and keeps the known loaded models available for a retry.
         Serialized with self._switch_lock.
         """
         if _already_locked:
@@ -251,39 +234,14 @@ class VoiceManager:
         return await self.switch_profile(target, persist=persist, force=force)
 
     def _check_vram_guard(self, min_free_vram_gb: float | None = 0.45) -> None:
-        """
-        Verifies discrete GPU VRAM safety floor before switching models.
-        If discrete NVIDIA CUDA GPU is detected and free VRAM < floor,
-        attempts release_system_memory() and re-checks.
-        If still below floor, raises InsufficientMemoryError.
-        Skips cleanly if no CUDA GPU is detected (e.g. CPU or MPS mode).
-        """
-        _, free_vram = get_gpu_vram_status()
-        if free_vram is None:
-            return
-
-        threshold = min_free_vram_gb if min_free_vram_gb is not None else _get_switch_min_free_vram_gb()
-        if free_vram < threshold:
-            release_system_memory()
-            _, free_vram = get_gpu_vram_status()
-            if free_vram is not None and free_vram < threshold:
-                raise InsufficientMemoryError(
-                    f"显卡可用显存不足（{free_vram:.2f} GB < {threshold:.2f} GB 安全阈值），"
-                    "加载新模型权重存在 CUDA OOM 崩溃风险。请关闭占用显存的应用或清理后重试。"
-                )
+        """Apply the shared VRAM policy with this manager's hardware probes."""
+        VoiceResourceGuard(gpu_status=get_gpu_vram_status, release=release_system_memory).check_vram(min_free_vram_gb)
 
     async def warmup_current_profile(self) -> bool:
-        """
-        Asynchronously warms up current voice profile model weights and GPT-SoVITS prompt cache.
-        Sends weights and a lightweight 1-word/short probe so the first turn is fully hot.
-        Non-blocking, resilient against network errors or engine offline states.
-        """
+        """Warm the current selection in the low-priority worker, after engine ACK."""
+        profile = None
         try:
-            profile = self.active_profile
-            if not profile:
-                profile = await self.get_active_profile()
-                if profile:
-                    self.active_profile = profile
+            profile = self.active_profile or await self.get_active_profile()
             if not profile:
                 logger.debug("Warm-up skipped: no active voice profile found.")
                 return False
@@ -298,37 +256,41 @@ class VoiceManager:
                 logger.debug("Warm-up skipped: GPT-SoVITS engine unreachable.")
                 return False
 
-            # Ensure weights and reference audio are set
-            ok = await self.client.switch_voice_profile(profile, force=False)
-            if not ok:
-                logger.debug("Warm-up skipped: weight switch to profile '%s' failed.", getattr(profile, "name", "unknown"))
-                return False
-
-            # Probe synthesis to warm up HuBERT, STFT, and RoBERTa prompt_cache via LOW priority scheduling
-            opts = await self._resolve_active_options({
-                "voice_profile_id": getattr(profile, "id", None),
-                "ref_audio_path": getattr(profile, "ref_audio_path", ""),
-                "prompt_text": getattr(profile, "prompt_text", ""),
-                "prompt_lang": getattr(profile, "prompt_lang", "ja"),
-                "text_lang": getattr(profile, "text_lang", "ja"),
-            })
-            try:
-                from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
-                scheduler = get_tts_scheduler()
-                await asyncio.wait_for(
-                    scheduler.schedule(
-                        lambda: self.client.synthesize(WARMUP_PROBE_TEXT, options=opts),
-                        priority=TtsPriority.LOW,
-                        task_id=f"warmup_{getattr(profile, 'id', 'default')}",
-                    ),
-                    timeout=15.0,
-                )
+            async def prepare_and_probe():
+                nonlocal profile
+                # Queueing and the health check may outlive a manual switch.
+                # Select only after taking its lock; never replay a stale target.
+                async with self.switch_lock:
+                    profile = self.active_profile or await self.get_active_profile()
+                    if not profile:
+                        return False
+                    if not await asyncio.to_thread(self.is_active_profile, profile):
+                        await asyncio.to_thread(self._check_switch_memory_guard, False)
+                    if not await self.client.switch_voice_profile(profile, force=False):
+                        logger.debug("Warm-up model load failed for '%s'.", getattr(profile, "name", "unknown"))
+                        return False
+                    opts = await self._resolve_active_options({
+                        "voice_profile_id": getattr(profile, "id", None),
+                        "ref_audio_path": getattr(profile, "ref_audio_path", ""),
+                        "prompt_text": getattr(profile, "prompt_text", ""),
+                        "prompt_lang": getattr(profile, "prompt_lang", "ja"),
+                        "text_lang": getattr(profile, "text_lang", "ja"),
+                    })
+                    await asyncio.wait_for(self.client.synthesize(WARMUP_PROBE_TEXT, options=opts), timeout=15.0)
                 logger.info("GPT-SoVITS prompt audio cache warm-up succeeded for profile '%s'.", getattr(profile, "name", "unknown"))
                 return True
-            except Exception as probe_err:
-                prof_name = getattr(profile, "name", "unknown")
-                logger.warning("Lightweight probe during warm-up for profile '%s' failed or timed out: %s", prof_name, probe_err)
-                return False
+
+            from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
+            # Loading weights retains the client's 120s per-model deadlines;
+            # the 15s probe limit must not cancel a normal cold model load.
+            return await asyncio.wait_for(
+                get_tts_scheduler().schedule(
+                    prepare_and_probe,
+                    priority=TtsPriority.LOW,
+                    task_id=f"warmup_{getattr(profile, 'id', 'default')}_{uuid.uuid4().hex}",
+                ),
+                timeout=600.0,
+            )
         except Exception as exc:
             prof_name = getattr(profile, "name", "unknown")
             logger.warning("Voice profile '%s' warm-up encountered error: %s", prof_name, exc)
@@ -360,17 +322,9 @@ class VoiceManager:
         return target
 
     def _check_switch_memory_guard(self, force: bool) -> None:
-        """Memory precheck: verifies free RAM/VRAM to prevent engine OOM crash."""
-        if not force and not os.getenv("GALGAME2VOICE_SKIP_MEM_CHECK"):
-            release_system_memory()
-            _, free_gb = get_system_memory_status()
-            min_free_gb = _get_switch_min_free_memory_gb()
-            if free_gb is not None and free_gb < min_free_gb:
-                raise InsufficientMemoryError(
-                    f"系统空闲内存不足（{free_gb:.1f} GB < {min_free_gb:.1f} GB），"
-                    "加载新模型权重可能导致语音引擎崩溃。请关闭占内存的程序后重试。"
-                )
-            self._check_vram_guard()
+        """Keep manual and per-inference model loads on the same resource policy."""
+        VoiceResourceGuard(memory_status=get_system_memory_status, gpu_status=get_gpu_vram_status,
+                           release=release_system_memory).check(force=force)
 
     async def _persist_active_switch_profile(self, profile_obj: Any) -> None:
         """Persists the newly active voice profile ID into SQLite settings."""
@@ -381,12 +335,7 @@ class VoiceManager:
             profile_id = profile_obj["id"]
 
         if profile_id:
-            try:
-                async with get_db(self.db_path) as conn:
-                    await crud.set_active_voice_profile(conn, profile_id)
-                    logger.info("Persisted active voice profile ID %d in settings", profile_id)
-            except Exception as exc:
-                logger.warning("Could not persist active voice profile ID %d to DB: %s", profile_id, exc)
+            await persist_active_voice_profile(profile_id, db_path=self.db_path)
 
     async def _execute_switch(
         self,
@@ -402,22 +351,23 @@ class VoiceManager:
         # Memory precheck: new and old weights briefly co-reside during a switch; loading
         # with too little free memory OOM-crashes the engine. Sits here (not in the HTTP
         # layer) so every call path — REST, Telegram, auto-bind — gets the same guard.
-        self._check_switch_memory_guard(force)
+        await asyncio.to_thread(self._check_switch_memory_guard, force)
 
         # 2. Execute 3-step atomic model switch with auto-rollback
-        release_system_memory()
+        await asyncio.to_thread(release_system_memory)
         success = await self.client.switch_voice_profile(profile_obj, force=force)
-        release_system_memory()
+
+        async def finalize():
+            await asyncio.to_thread(release_system_memory)
+            # Once the engine confirmed a switch, cancellation must not leave
+            # its saved selection behind merely because cleanup is still slow.
+            if success and persist:
+                await self._persist_active_switch_profile(profile_obj)
+
+        await await_protected(finalize())
         if not success:
             logger.error("Failed to switch GPT-SoVITS model weights for target: %s", target)
             return False
-
-        # 3. Update Persistence in SQLite (under switch lock)
-        if persist:
-            await self._persist_active_switch_profile(profile_obj)
-
-        # Invalidate in-memory voice resolver cache
-        _safe_invalidate_resolver()
 
         # Trigger non-blocking background warm-up of newly activated voice profile
         try:
@@ -432,26 +382,11 @@ class VoiceManager:
     # ========================================================================
 
     async def _resolve_active_options(self, options: dict[str, Any] | None) -> dict[str, Any]:
+        """Normalize legacy selection; TtsService resolves the actual snapshot."""
         opts = dict(options or {})
-        if not opts.get("ref_audio_path") and not opts.get("refer_audio_path") and not self.client.current_refer_audio:
-            target_profile = None
-            profile_id = opts.get("voice_profile_id") or opts.get("profile_id")
-            if profile_id is not None:
-                try:
-                    target_profile = await self.get_profile(int(profile_id))
-                except Exception as exc:
-                    logger.debug("Could not resolve voice_profile_id %s: %s", profile_id, exc)
-            if not target_profile:
-                try:
-                    target_profile = await self.get_active_profile()
-                except Exception as exc:
-                    logger.debug("Could not auto-populate active profile options: %s", exc)
-            if target_profile:
-                opts.setdefault("voice_profile_id", target_profile.id)
-                opts.setdefault("ref_audio_path", target_profile.ref_audio_path)
-                opts.setdefault("prompt_text", target_profile.prompt_text)
-                opts.setdefault("prompt_lang", target_profile.prompt_lang)
-                opts.setdefault("text_lang", target_profile.text_lang)
+        legacy_id = opts.pop("profile_id", None)
+        if opts.get("voice_profile_id") is None and legacy_id is not None:
+            opts["voice_profile_id"] = legacy_id
         return opts
 
     async def synthesize(
@@ -462,35 +397,7 @@ class VoiceManager:
     ) -> bytes:
         """Synthesizes text into complete audio bytes using active weights, persistent cache and inference mutex."""
         opts = await self._resolve_active_options(options)
-        if getattr(self, "tts_service", None) is not None:
-            return await self.tts_service.synthesize(text, options=opts, use_cache=use_cache)
-        return await self.client.synthesize(text, options=opts)
-
-    def _schedule_stream_cache_put(
-        self,
-        cache_mgr: Any,
-        cache_key: str,
-        text: str,
-        clean_text: str,
-        vpid: Any,
-        params_hash: str,
-        audio_bytes: bytes,
-    ) -> None:
-        """Schedules asynchronous population of the TTS cache for a completed stream."""
-        async def _async_cache_put() -> None:
-            try:
-                await cache_mgr.put(
-                    cache_key=cache_key,
-                    text=text,
-                    clean_text=clean_text,
-                    voice_profile_id=vpid,
-                    params_hash=params_hash,
-                    audio_bytes=audio_bytes,
-                )
-            except Exception as put_exc:
-                logger.debug("Failed to asynchronously cache streamed TTS: %s", put_exc)
-
-        self._spawn_background(_async_cache_put())
+        return await self.tts_service.synthesize(text, options=opts, use_cache=use_cache)
 
     async def stream_tts(
         self,
@@ -499,87 +406,14 @@ class VoiceManager:
         chunk_size: int = 4096,
         use_cache: bool = True,
     ) -> AsyncGenerator[bytes, None]:
-        """
-        Streams synthesized audio in binary chunks using priority scheduling and persistent cache.
-        1. First checks TTS cache (tts_cache_manager.stream_cached(cache_key)). If cached, yields from cache directly with zero GPU overhead.
-        2. If cache miss, routes through tts_scheduler.schedule_stream(...).
-        3. While streaming generated chunks, if caching is enabled, collects chunks and asynchronously puts into tts_cache_manager when complete.
-        """
+        """Use the same cache, identity, scheduling and cancellation path as TtsService."""
         opts = await self._resolve_active_options(options)
-
         effective_use_cache = bool(opts.get("use_cache", use_cache))
-
-        from galgame2voice.services.tts_cache_manager import get_tts_cache_manager
-        cache_mgr = (
-            getattr(getattr(self, "tts_service", None), "cache_manager", None)
-            or get_tts_cache_manager(db_path=self.db_path)
-        )
-
-        cache_key = ""
-        clean_text = ""
-        params_hash = ""
-        if effective_use_cache and cache_mgr is not None:
-            try:
-                cache_key, clean_text, params_hash = cache_mgr.compute_cache_key(text, options=opts)
-            except Exception as exc:
-                logger.debug("Failed to compute cache key in stream_tts: %s", exc)
-
-        # 1. First check TTS cache (tts_cache_manager.stream_cached(cache_key))
-        if effective_use_cache and cache_key and cache_mgr is not None:
-            is_cached = False
-            try:
-                async for chunk in cache_mgr.stream_cached(cache_key, chunk_size=chunk_size):
-                    is_cached = True
-                    yield chunk
-            except Exception as exc:
-                logger.warning("Error reading from TTS stream cache for key %s: %s", cache_key, exc)
-
-            if is_cached:
-                logger.debug("TTS Cache HIT (stream) for key %s ('%s')", cache_key[:12], text[:20])
-                return
-
-        # 2. If cache miss, route through tts_scheduler.schedule_stream(...)
-        from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
-        scheduler = get_tts_scheduler()
-        priority = TtsPriority.from_options(opts)
-
-        gen_id = opts.get("_generation_id")
-        task_id = opts.get("_task_id") or (
-            f"{gen_id}_{cache_key[:8]}_{uuid.uuid4().hex[:4]}" if gen_id and cache_key else None
-        )
-
-        def _client_stream_fn() -> AsyncGenerator[bytes, None]:
-            return self.client.stream_tts(text, options=opts, chunk_size=chunk_size)
-
-        collected_chunks: list[bytes] = []
-        completed_normally = False
-        try:
-            async for chunk in scheduler.schedule_stream(
-                stream_fn=_client_stream_fn,
-                priority=priority,
-                generation_id=gen_id,
-                task_id=task_id,
-            ):
-                if effective_use_cache and cache_key:
-                    collected_chunks.append(chunk)
+        async with aclosing(self.tts_service.stream_tts(
+            text, options=opts, chunk_size=chunk_size, use_cache=effective_use_cache,
+        )) as stream:
+            async for chunk in stream:
                 yield chunk
-            completed_normally = True
-        finally:
-            # 3. While streaming generated chunks, if caching is enabled, collect chunks
-            # and asynchronously put into tts_cache_manager when complete.
-            if completed_normally and effective_use_cache and cache_key and collected_chunks and cache_mgr is not None:
-                full_bytes = b"".join(collected_chunks)
-                if full_bytes:
-                    vpid = opts.get("voice_profile_id", 1)
-                    self._schedule_stream_cache_put(
-                        cache_mgr=cache_mgr,
-                        cache_key=cache_key,
-                        text=text,
-                        clean_text=clean_text,
-                        vpid=vpid,
-                        params_hash=params_hash,
-                        audio_bytes=full_bytes,
-                    )
 
     # ========================================================================
     # Voice Profile Database CRUD Operations
@@ -604,7 +438,6 @@ class VoiceManager:
         """Creates a new voice profile in database."""
         async with get_db(self.db_path) as conn:
             res = await crud.create_voice_profile(conn, profile)
-        _safe_invalidate_resolver(res.id if res else None)
         return res
 
     async def update_profile(
@@ -613,14 +446,12 @@ class VoiceManager:
         """Updates an existing voice profile in database."""
         async with get_db(self.db_path) as conn:
             res = await crud.update_voice_profile(conn, profile_id, updates)
-        _safe_invalidate_resolver(profile_id)
         return res
 
     async def delete_profile(self, profile_id: int) -> bool:
         """Deletes a voice profile from database."""
         async with get_db(self.db_path) as conn:
             res = await crud.delete_voice_profile(conn, profile_id)
-        _safe_invalidate_resolver(profile_id)
         return res
 
 

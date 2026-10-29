@@ -352,6 +352,7 @@ class TestTtsServiceProsodySplitDefaults:
 
         mock_client.synthesize = AsyncMock(side_effect=_mock_synth)
         mock_cache = MagicMock()
+        mock_cache.db_path = None
         mock_cache.compute_cache_key.return_value = ("key123", "clean", "hash")
         mock_cache.get = AsyncMock(return_value=None)
         mock_cache.put = AsyncMock(return_value=("/audio/test.wav", tmp_path / "test.wav", 8))
@@ -374,6 +375,7 @@ class TestTtsServiceProsodySplitDefaults:
 
         mock_client.synthesize = AsyncMock(side_effect=_mock_synth)
         mock_cache = MagicMock()
+        mock_cache.db_path = None
         mock_cache.compute_cache_key.return_value = ("key123", "clean", "hash")
         mock_cache.get = AsyncMock(return_value=None)
         mock_cache.put = AsyncMock(return_value=("/audio/test.wav", tmp_path / "test.wav", 8))

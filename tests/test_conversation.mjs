@@ -3,6 +3,117 @@ import { test } from 'node:test';
 import { createConversation } from '../frontend/src/conversation.js';
 import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
 
+function presentationEvents(app) {
+  const events = [];
+  for (const type of ['line', 'line_audio', 'done', 'error', 'cancelled']) {
+    app.conversation.on(type, event => events.push({ type, ...event }));
+  }
+  return events;
+}
+
+const finalLine = (index, status = 'ready') => ({ index, zh: `终稿第${index}句`, ja: `最終${index}。`,
+  emotion: 'gentle', act: {}, audio: { status, chunks: status === 'ready' ? [{ index: 0, audio_url: `/audio/final${index}.wav` }] : [] } });
+
+test('final reply: whole-reply format reaches the stage without changing stored line identity', async () => {
+  const app = setup(); app.session.settings.advReplyFormat = 'legacy';
+  const events = presentationEvents(app);
+  app.conversation.send('旧格式');
+  const request = app.stream.requests[0];
+  assert.equal(request.reply_format, 'old');
+  await request.onEnd('终稿中文', { japanese: '最終の日本語。', total_audio_url: '/audio/whole.wav' });
+  assert.deepEqual(events.map(event => event.type), ['line', 'line_audio', 'done']);
+  assert.equal(events[0].line.zh, '终稿中文');
+  assert.equal(events[0].line.ja, '最終の日本語。');
+  assert.equal(events[1].status, 'ready');
+  assert.deepEqual(events[1].chunks.map(chunk => chunk.audio_url), ['/audio/whole.wav']);
+  const stored = app.session.messages.at(-1);
+  assert.equal(stored.lines, undefined, 'presentation line zero is not a server history line');
+  assert.equal(events.at(-1).message, stored);
+});
+
+test('final reply: terminal-only structured lines are delivered in order before completion', async () => {
+  const app = setup(); const events = presentationEvents(app);
+  app.conversation.send('终稿给出台词');
+  await app.stream.requests[0].onEnd('', { lines: [finalLine(1), finalLine(0)] });
+  assert.deepEqual(events.filter(event => event.type === 'line').map(event => event.line.index), [0, 1]);
+  assert.deepEqual(events.filter(event => event.type === 'line_audio').map(event => event.line), [0, 1]);
+  assert.equal(events.at(-1).type, 'done');
+  assert.equal(app.session.messages.at(-1).lines.length, 2);
+});
+
+test('final reply: completes missing lines without replaying an already announced line or audio', async () => {
+  const app = setup(); const events = presentationEvents(app);
+  app.conversation.send('部分事件已收到');
+  const request = app.stream.requests[0];
+  await request.event('line', finalLine(0));
+  await request.event('line_audio', { line: 0, ...finalLine(0).audio });
+  await request.onEnd('', { lines: [finalLine(0), finalLine(1)] });
+  assert.deepEqual(events.filter(event => event.type === 'line').map(event => event.line.index), [0, 1]);
+  assert.deepEqual(events.filter(event => event.type === 'line_audio').map(event => event.line), [0, 1]);
+});
+
+test('final reply: terminal audio releases a line whose earlier audio event was absent', async () => {
+  const app = setup(); const events = presentationEvents(app);
+  app.conversation.send('等待音频');
+  const request = app.stream.requests[0];
+  await request.event('line', finalLine(0));
+  await request.onEnd('', { lines: [finalLine(0)] });
+  assert.equal(events.filter(event => event.type === 'line').length, 1);
+  assert.equal(events.filter(event => event.type === 'line_audio').length, 1);
+  assert.equal(events.find(event => event.type === 'line_audio').status, 'ready');
+});
+
+test('final reply: a pending audio result at stream completion becomes an explicit failure', async () => {
+  const app = setup(); const events = presentationEvents(app);
+  app.conversation.send('没有音频');
+  const request = app.stream.requests[0];
+  await request.event('line', finalLine(0));
+  await request.onEnd('', { lines: [finalLine(0, 'pending')] });
+  assert.equal(events.find(event => event.type === 'line_audio')?.status, 'failed');
+});
+
+test('final reply: Japanese-only whole reply is saved and presented', async () => {
+  const app = setup(); const events = presentationEvents(app);
+  app.conversation.send('只有日文');
+  await app.stream.requests[0].onEnd('', { japanese: '日本語だけの回答。' });
+  assert.equal(app.session.messages.at(-1).role, 'assistant');
+  assert.equal(app.session.messages.at(-1).japanese, '日本語だけの回答。');
+  assert.equal(events.find(event => event.type === 'line')?.line.ja, '日本語だけの回答。');
+});
+
+test('final reply: presentation keeps duplicate audio URLs in their sentence positions', async () => {
+  const app = setup(); const events = presentationEvents(app);
+  app.conversation.send('重复句');
+  const request = app.stream.requests[0];
+  await request.event('audio_chunk', { audio_url: '/audio/same.wav', sentence: 'はい。' });
+  await request.event('audio_chunk', { audio_url: '/audio/same.wav', sentence: 'はい。' });
+  await request.onEnd('是的。是的。');
+  const audio = events.find(event => event.type === 'line_audio');
+  assert.deepEqual(audio?.chunks.map(chunk => chunk.audio_url), ['/audio/same.wav', '/audio/same.wav']);
+  assert.deepEqual(audio.chunks.map(chunk => chunk.sentence), ['はい。', 'はい。']);
+});
+
+test('final reply: failure does not start playback of a partial legacy reply', async () => {
+  const app = setup(); const events = presentationEvents(app);
+  app.conversation.send('中断');
+  const request = app.stream.requests[0];
+  await request.onChunk('已收到的部分');
+  await request.onEnd('', { error: '模拟连接中断' });
+  assert.deepEqual(events.map(event => event.type), ['error']);
+  assert.equal(app.session.messages.at(-1).content, '已收到的部分');
+});
+
+test('final reply: listeners cannot start another request before final presentation is settled', async () => {
+  const app = setup();
+  const attempts = [];
+  app.conversation.on('line', () => attempts.push(app.conversation.send('不能抢先发出')));
+  app.conversation.send('终稿');
+  await app.stream.requests[0].onEnd('终稿内容');
+  assert.deepEqual(attempts, [false]);
+  assert.equal(app.stream.requests.length, 1);
+  assert.equal(app.conversation.busy, false);
+});
+
 function setup({ voiceMode = false } = {}) {
   const session = { id: 's', title: '新对话', settings: { temperature: 0.7, voiceProfileId: 3 }, messages: [] };
   const state = { activeId: 's', global: { voiceMode, ttsPreset: 'balanced' } };
@@ -47,6 +158,28 @@ test('send explicitly reports acceptance and busy includes loading/deleting', ()
   h.setDeleting(false); assert.equal(h.conversation.busy, false);
   assert.equal(h.conversation.send('问题'), true); assert.equal(h.conversation.send('忙碌'), false);
   h.conversation.stop();
+});
+
+test('one failing UI listener cannot block the request, other listeners or saving the reply', async t => {
+  const h = setup();
+  const errors = [], seen = [];
+  t.mock.method(console, 'error', (...args) => errors.push(args));
+  for (const type of ['turnstart', 'text', 'line', 'line_audio', 'done']) {
+    h.conversation.on(type, () => { throw new Error(`synthetic ${type} failure`); });
+    h.conversation.on(type, () => seen.push(type));
+  }
+  assert.equal(h.conversation.send('测试请求'), true);
+  assert.equal(h.stream.requests.length, 1);
+  const request = h.stream.requests[0];
+  await request.onChunk('已收到');
+  await request.event('line', finalLine(0));
+  await request.event('line_audio', { line: 0, ...finalLine(0).audio });
+  await request.onEnd('已收到', { lines: [finalLine(0)] });
+  assert.deepEqual(seen, ['turnstart', 'text', 'line', 'line_audio', 'done']);
+  assert.equal(errors.length, seen.length);
+  assert.equal(h.conversation.busy, false);
+  assert.equal(h.session.messages.at(-1).content, '已收到');
+  assert.equal(h.stream.requests.length, 1, 'a UI error must not resend the request');
 });
 
 test('canRetry is pure and matches retry eligibility, including partial failure', async () => {

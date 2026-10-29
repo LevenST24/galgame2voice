@@ -434,7 +434,7 @@ const models = {
   assert.deepEqual(saves.map(s => [s.id, s.voice_profile_id]).sort(), [['first', null], ['second', null]]); passed++;
 }
 {
-  // A binding found dead (404) is cleared on the server too.
+  // A missing binding stays explicit until the user chooses a replacement.
   const { first } = setup();
   first.settings.voiceProfileId = 9;
   const saves = [];
@@ -445,8 +445,8 @@ const models = {
     return response({});
   };
   await ensureSessionVoice(first, { silent: true }); await tick();
-  assert.equal(first.settings.voiceProfileId, null);
-  assert.deepEqual(saves.map(s => [s.id, s.voice_profile_id]), [['first', null]]); passed++;
+  assert.equal(first.settings.voiceProfileId, 9);
+  assert.deepEqual(saves, [], 'a read-only missing-profile check cannot clear the server binding'); passed++;
 }
 {
   // A character created without a persona still saves its session settings cleanly.

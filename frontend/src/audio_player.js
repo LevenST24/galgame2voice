@@ -10,7 +10,7 @@
  * 6. 与 CacheStorage / memory blob 缓存无缝衔接，极速秒开。
  */
 
-import { loadAudioBlob } from './cache.js';
+import { loadAudioBuffer } from './cache.js';
 import { withAudioDeadline } from './audio_request.js';
 
 export class StreamAudioController {
@@ -72,9 +72,10 @@ export class StreamAudioController {
 
   /**
    * 初始化 AudioContext 与 MasterGainNode。可安全重复调用。
+   * 单句播放禁用隐式 resume，由已登记的播放任务负责限时唤醒与取消。
    * @returns {AudioContext|null}
    */
-  ensureContext() {
+  ensureContext({ resumeIfSuspended = true } = {}) {
     if (!this.ctx) {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextClass) {
@@ -102,7 +103,7 @@ export class StreamAudioController {
         this.masterGain.connect(this.ctx.destination);
       }
     }
-    if (this.ctx.state === 'suspended' && !this.isPaused) {
+    if (resumeIfSuspended && this.ctx.state === 'suspended' && !this.isPaused) {
       this.ctx.resume().catch(() => {});
     }
     return this.ctx;
@@ -259,13 +260,10 @@ export class StreamAudioController {
 
     try {
       const ctx = this.ctx;
-      const audioBuffer = await withAudioDeadline(async signal => {
-        if (!ctx) throw new Error('当前浏览器无法播放语音，请使用新版 Chrome 或 Edge。');
-        const audioBlob = blob || await loadAudioBlob(url, { signal, timeoutMs: this.fetchTimeoutMs });
-        const arrayBuffer = await audioBlob.arrayBuffer();
-        if (signal.aborted) throw new DOMException('播放已取消', 'AbortError');
-        return ctx.decodeAudioData(arrayBuffer);
-      }, { signal: this.abortController?.signal, timeoutMs: this.fetchTimeoutMs });
+      if (!ctx) throw new Error('当前浏览器无法播放语音，请使用新版 Chrome 或 Edge。');
+      const audioBuffer = await loadAudioBuffer(buffer => ctx.decodeAudioData(buffer), {
+        url, blob, signal: this.abortController?.signal, timeoutMs: this.fetchTimeoutMs,
+      });
       if (sessionId !== this.currentSessionId) return;
 
       item.audioBuffer = audioBuffer;
@@ -330,20 +328,8 @@ export class StreamAudioController {
       return 'failed';
     }
 
-    const ctx = this.ensureContext();
+    const ctx = this.ensureContext({ resumeIfSuspended: false });
     if (!ctx) return 'failed';
-    if (ctx.state === 'suspended' && !this.isPaused) {
-      try {
-        await Promise.race([
-          Promise.resolve(ctx.resume()),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('AudioContext resume timeout')), 1500)),
-        ]);
-      } catch (_) {}
-      if (ctx.state === 'suspended') {
-        return 'failed';
-      }
-    }
-
     const abortController = new AbortController();
     const lineGain = ctx.createGain();
     lineGain.gain.setValueAtTime(1.0, ctx.currentTime);
@@ -399,6 +385,22 @@ export class StreamAudioController {
       totalChunks: chunks.length,
     };
     this._linePlayState = lineState;
+
+    // Register ownership before the first await. A stop/session change must
+    // cancel preparation even while the browser is waiting for an audio gesture.
+    if (ctx.state === 'suspended' && !this.isPaused) {
+      try {
+        await withAudioDeadline(() => ctx.resume(), { signal: abortController.signal, timeoutMs: 1500 });
+      } catch (_) {}
+      if (lineState.settled) return linePromise;
+      if (ctx.state !== 'running') {
+        lineState.resolve('failed');
+        if (ctx.state === 'suspended') {
+          this._reportError(new Error('浏览器尚未允许播放语音，请在 LOG 里再点一次「语音」。文字聊天可继续使用。'));
+        }
+        return linePromise;
+      }
+    }
 
     for (let i = 0; i < chunks.length; i++) {
       const c = chunks[i];
@@ -511,13 +513,10 @@ export class StreamAudioController {
       }
       (async () => {
         try {
-          const audioBuffer = await withAudioDeadline(async (signal) => {
-            if (!ctx) throw new Error('Web Audio not supported');
-            const audioBlob = item.blob || await loadAudioBlob(item.url, { signal, timeoutMs: self.fetchTimeoutMs });
-            const arrayBuffer = await audioBlob.arrayBuffer();
-            if (signal.aborted) throw new DOMException('播放已取消', 'AbortError');
-            return ctx.decodeAudioData(arrayBuffer);
-          }, { signal: abortController.signal, timeoutMs: self.fetchTimeoutMs });
+          if (!ctx) throw new Error('Web Audio not supported');
+          const audioBuffer = await loadAudioBuffer(buffer => ctx.decodeAudioData(buffer), {
+            url: item.url, blob: item.blob, signal: abortController.signal, timeoutMs: self.fetchTimeoutMs,
+          });
 
           if (lineState.settled) return;
           item.audioBuffer = audioBuffer;
@@ -525,6 +524,7 @@ export class StreamAudioController {
           scheduleLineNext();
         } catch (err) {
           if (lineState.settled) return;
+          if (err.code === 'AUDIO_DECODE_FAILED') self._reportError(err);
           item.status = 'failed';
           scheduleLineNext();
         }

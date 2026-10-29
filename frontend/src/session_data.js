@@ -17,7 +17,7 @@ export function pickSettings(value, defaults) {
   for (const key of Object.keys(defaults)) {
     const candidate = value[key];
     if (key.startsWith('adv')) {
-      if (validAdvSetting(key, candidate)) result[key] = candidate;
+      if (validAdvSetting(key, candidate)) result[key] = key === 'advPlayerName' && candidate === 'Player' ? '我' : candidate;
     } else if (key === 'voiceProfileId') {
       if (candidate === null || (Number.isInteger(candidate) && candidate > 0)) result[key] = candidate;
     } else if (typeof candidate === typeof defaults[key] &&
@@ -84,6 +84,9 @@ export function normalizeLines(lines) {
         ? item.audio.chunks.filter(c => c && typeof c === 'object' && !Array.isArray(c)).map(c => ({ ...c }))
         : [];
       audio = { status, chunks };
+      if (Number.isSafeInteger(item.audio.generated_at) && item.audio.generated_at >= 0) audio.generated_at = item.audio.generated_at;
+      if (Number.isSafeInteger(item.audio.voice_profile_id) && item.audio.voice_profile_id > 0) audio.voice_profile_id = item.audio.voice_profile_id;
+      if (typeof item.audio.voice_name === 'string' && item.audio.voice_name.length <= 100) audio.voice_name = item.audio.voice_name;
     }
 
     result.push({

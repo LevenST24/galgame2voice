@@ -26,6 +26,7 @@ except ImportError:
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
 from galgame2voice.database.models import SettingsUpdate
+from galgame2voice.services.voice_state import ActiveVoicePersistenceError, persist_active_voice_profile
 from galgame2voice.utils.logger import sanitize_error_detail
 
 logger = logging.getLogger("galgame2voice.telegram_bot.console_menus")
@@ -758,14 +759,14 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
             switched = await vm.switch_active_profile(profile_id)
             if not switched:
                 warning_note = "（语音引擎离线）"
-        except InsufficientMemoryError:
+        except (InsufficientMemoryError,ActiveVoicePersistenceError):
             raise
         except Exception as sw_err:
             logger.debug("VoiceManager weight switch skipped: %s", sw_err)
             warning_note = "（语音引擎离线）"
 
+        await persist_active_voice_profile(profile_id,db_path=ctx.db_path)
         async with get_db(ctx.db_path) as conn:
-            await crud.set_active_voice_profile(conn, profile_id)
             profile = await crud.get_voice_profile(conn, profile_id)
             if profile:
                 char_name = profile.name

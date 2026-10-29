@@ -13,12 +13,17 @@ from typing import Any
 
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.logger import sanitize_error_detail
-from galgame2voice.services.gpt_sovits_client import clean_japanese_parentheses
+from galgame2voice.services.gpt_sovits_client import SWITCH_TIMEOUT, TTS_TIMEOUT, clean_japanese_parentheses
+from galgame2voice.utils.async_tasks import cancel_and_drain
 from galgame2voice.utils.profiler import ChatTurnProfiler
 
 logger = logging.getLogger("galgame2voice.services.chat_pipelines.tts_pipeline")
 
 _VOCAL_RE = re.compile(r'[\w\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]')
+
+# Two model-weight switches, inference, and a minute for queue/IO overhead.
+# The same bound is advertised over HTTP; it is an end-to-end sentence budget.
+TTS_JOB_TIMEOUT_SECONDS = 2 * SWITCH_TIMEOUT.read + TTS_TIMEOUT.read + 60.0
 
 
 def _get_profile_attr(profile: Any, key: str, default: Any = None) -> Any:
@@ -65,16 +70,8 @@ class TtsStreamPipeline:
             if char_name:
                 opts.setdefault("character_name", char_name)
 
-            opts.setdefault("prompt_lang", _get_profile_attr(active_profile, "prompt_lang") or "ja")
-            opts.setdefault("text_lang", _get_profile_attr(active_profile, "text_lang") or "ja")
-
-            ref_path = _get_profile_attr(active_profile, "ref_audio_path")
-            if ref_path:
-                opts.setdefault("ref_audio_path", ref_path)
-
-            prompt_text = _get_profile_attr(active_profile, "prompt_text")
-            if prompt_text:
-                opts.setdefault("prompt_text", prompt_text)
+            # The turn's profile may predate an edit. The TTS resolver supplies
+            # reference, transcript, languages and weights from one snapshot.
 
         user_split = opts.get("text_split_method") or opts.get("cut_option") or opts.get("how_to_cut")
         if not user_split:
@@ -102,11 +99,18 @@ class TtsStreamPipeline:
             options["profiler"] = profiler
 
         try:
-            audio_url, local_path, _ = await self.tts_service.synthesize_to_file(
+            synthesis = asyncio.create_task(self.tts_service.synthesize_to_file(
                 sentence,
                 options=options,
                 filename_prefix=f"chunk_{chunk_index}",
-            )
+            ))
+            try:
+                done, _ = await asyncio.wait({synthesis}, timeout=TTS_JOB_TIMEOUT_SECONDS)
+                if synthesis not in done:
+                    raise asyncio.TimeoutError()
+                audio_url, local_path, _ = synthesis.result()
+            finally:
+                await cancel_and_drain((synthesis,))
             is_cached = "/audio/cache/" in str(audio_url)
             if profiler:
                 profiler.record_tts_inference(chunk_index, cached=is_cached)
@@ -123,6 +127,9 @@ class TtsStreamPipeline:
         except asyncio.CancelledError:
             logger.info("TTS synthesis cancelled for chunk %d (generation %s)", chunk_index, self.generation_id)
             raise
+        except asyncio.TimeoutError:
+            logger.warning("Voice job exceeded its budget (chunk %d, generation %s).", chunk_index, self.generation_id)
+            return None, "本句等待语音超时，文字已保留；请检查语音引擎，稍后可在 LOG 重新生成。"
         except Exception as exc:
             logger.warning(
                 "Failed to synthesize audio chunk %d for sentence '%s': %s",

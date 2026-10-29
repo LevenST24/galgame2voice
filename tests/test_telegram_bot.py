@@ -563,10 +563,11 @@ class TestTelegramBotRealModules:
     @pytest.mark.asyncio
     async def test_telegram_bot_set_voice_already_active_guard(self, temp_db_path):
         """Tapping the already-active voice profile is a no-op toast; other profiles still switch."""
-        from galgame2voice.database.session import get_db
+        from galgame2voice.database.session import get_db, init_db
         from galgame2voice.database import crud
         from galgame2voice.database.models import VoiceProfileCreate
 
+        await init_db(temp_db_path)
         handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=temp_db_path)
 
         async with get_db(temp_db_path) as conn:

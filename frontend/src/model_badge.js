@@ -1,4 +1,9 @@
-export function getModelStatus({ getCurrentActiveProvider, getActive, getVoiceProfiles, haveProvidersLoaded }) {
+export function getModelStatus({ getCurrentActiveProvider, getActive, getVoiceProfiles, haveProvidersLoaded,
+  hasProviderReadError = () => false }) {
+  if (hasProviderReadError()) {
+    return { label: '模型配置暂时无法读取', title: '请检查本机服务连接，然后打开「设置中心 → 对话模型」重试',
+      state: 'error', readFailed: true };
+  }
   const activeProvider = getCurrentActiveProvider();
   const s = getActive();
   const profiles = getVoiceProfiles();
@@ -14,11 +19,11 @@ export function getModelStatus({ getCurrentActiveProvider, getActive, getVoicePr
     const mName = activeProvider.chat_model || '';
     modelText = missingKey ? `${pName} · 未填写 API Key` : mName ? `${pName} · ${mName}` : pName;
   }
-  const label = boundProfile?.name ? `${modelText} · 🎙️ ${boundProfile.name}` : modelText;
+  const label = activeProvider ? (missingKey ? '未填写 API Key' : activeProvider.chat_model || activeProvider.name || '活跃模型') : modelText;
   const title = !activeProvider
-    ? '点击在「全局设置 → 对话模型」中配置模型'
+    ? '点击在「设置中心 → 对话模型」中配置模型'
     : missingKey
-      ? `「${activeProvider.name || activeProvider.id}」尚未填写 API Key，发送消息前请点击这里配置`
-      : `当前模型：${modelText}${boundProfile?.name ? ` | 当前角色：${boundProfile.name}` : ''}（点击配置模型）`;
+      ? `「${activeProvider.name || activeProvider.id}」尚未填写 API Key${boundProfile?.name ? `；当前音色：${boundProfile.name}` : ''}，发送消息前请点击这里配置`
+      : `当前模型：${modelText}${boundProfile?.name ? ` | 当前音色：${boundProfile.name}` : ''}（点击配置模型）`;
   return { label, title, state: activeProvider && !missingKey ? 'ok' : 'error' };
 }

@@ -12,9 +12,10 @@ import sys
 import time
 from typing import Any
 import aiosqlite
-from fastapi import APIRouter, HTTPException, Query, status, Response
+from fastapi import APIRouter, HTTPException, Query, status, Response, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.requests import ClientDisconnect
 
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
@@ -30,12 +31,15 @@ from galgame2voice.services.gpt_sovits_client import (
     SLICING_METHODS,
 )
 from galgame2voice.routers.common import (
+    persist_active_voice_profile_or_raise,
     switch_voice_profile_or_raise,
     validate_positive_profile_id,
 )
 from galgame2voice.services.character_manager import get_character_work
 from galgame2voice.services.voice_manager import get_voice_manager
+from galgame2voice.routers.line_audio import router as line_audio_router
 from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.async_tasks import await_protected, cancel_and_drain
 from galgame2voice.utils.path_guard import (
     PathTraversalError,
     contains_traversal_payload,
@@ -49,6 +53,7 @@ from galgame2voice.utils.path_guard import (
 
 logger = logging.getLogger("galgame2voice.routers.voice")
 router = APIRouter(prefix="/api/voice", tags=["Voice Profiles & TTS"])
+router.include_router(line_audio_router)
 
 
 # ============================================================================
@@ -136,7 +141,7 @@ async def create_voice_profile(req: VoiceProfileCreateRequest) -> dict[str, Any]
 
     if not req.name.strip():
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=422,
             detail="Profile name cannot be empty",
         )
 
@@ -331,26 +336,11 @@ async def switch_voice(req: VoiceSwitchRequest) -> dict[str, Any]:
                 )
             profile = verified_profile
 
-        active_prof = manager.active_profile
-        if active_prof is None and not req.force:
-            try:
-                active_prof = await manager.get_active_profile()
-                if active_prof:
-                    manager.active_profile = active_prof
-            except Exception as exc:
-                logger.debug("Failed retrieving active profile: %s", exc)
-
-        is_already_active = manager.is_active_profile(profile, force=req.force)
+        # A saved default is not proof that the engine has loaded its models.
+        is_already_active = await asyncio.to_thread(manager.is_active_profile, profile, force=req.force)
 
         if is_already_active:
-            # Sync SQLite persistence under the lock to ensure DB reflects active profile
-            try:
-                async with get_db() as conn:
-                    if not await crud.set_active_voice_profile(conn, profile.id):
-                        raise RuntimeError("Database rejected the active voice profile update")
-            except Exception as exc:
-                logger.error("Failed syncing active voice profile %s to settings: %s", profile.id, exc)
-                raise HTTPException(status_code=500, detail="Failed to persist active voice profile") from exc
+            await persist_active_voice_profile_or_raise(profile.id)
         else:
             await switch_voice_profile_or_raise(manager, profile, force=req.force)
 
@@ -408,16 +398,74 @@ async def _ensure_voice_profile_available(manager: Any, options: dict[str, Any])
                 )
 
 
+async def _stream_with_first_chunk(stream: Any, first: bytes | None):
+    """Deliver the prefetched chunk and close the owned stream on every exit."""
+    try:
+        if first is not None:
+            yield first
+        async for chunk in stream:
+            yield chunk
+    finally:
+        await stream.aclose()
+
+
+async def _prefetch_connected(stream: Any, request: Request) -> bytes | None:
+    async def watch_disconnect():
+        while (await request.receive())["type"] != "http.disconnect":
+            pass
+
+    first = asyncio.create_task(anext(stream, None))
+    watcher = asyncio.create_task(watch_disconnect())
+    try:
+        done, _ = await asyncio.wait((first, watcher), return_when=asyncio.FIRST_COMPLETED)
+        if watcher in done:
+            await watcher
+            raise HTTPException(499, "连接已关闭，语音生成已取消。")
+        return await first
+    finally:
+        await cancel_and_drain((first, watcher))
+
+
+class _OwnedAudioStreamResponse(StreamingResponse):
+    def __init__(self, stream: Any, first: bytes | None):
+        self._owned_stream = stream
+        super().__init__(_stream_with_first_chunk(stream, first), media_type="audio/wav")
+
+    async def __call__(self, scope, receive, send):
+        sender = asyncio.create_task(self.stream_response(send))
+        watcher = asyncio.create_task(self.listen_for_disconnect(receive))
+        try:
+            done, _ = await asyncio.wait((sender, watcher), return_when=asyncio.FIRST_COMPLETED)
+            if sender in done:
+                try:
+                    await sender
+                except OSError as exc:
+                    raise ClientDisconnect() from exc
+            else:
+                await watcher
+        finally:
+            async def close_owned():
+                try:
+                    await self.body_iterator.aclose()
+                finally:
+                    await self._owned_stream.aclose()
+
+            try:
+                await cancel_and_drain((sender, watcher))
+            finally:
+                await await_protected(close_owned())
+
+
 @router.post(
     "/synthesize",
     summary="Synthesize Text to Speech",
     description="Synthesizes text into WAV audio using active voice profile and specified parameters.",
 )
-async def synthesize_speech(req: SynthesizeRequest) -> Response:
+async def synthesize_speech(req: SynthesizeRequest, request: Request) -> Response:
     cleaned_text = normalize_japanese_for_tts(req.text)
     if not cleaned_text:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=422,
             detail="Text is empty after cleaning stage directions",
         )
 
@@ -425,7 +473,7 @@ async def synthesize_speech(req: SynthesizeRequest) -> Response:
     try:
         validate_user_tts_options(options)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     _validate_synthesize_ref_audio(options)
     manager = get_voice_manager()
@@ -433,16 +481,22 @@ async def synthesize_speech(req: SynthesizeRequest) -> Response:
 
     try:
         if req.stream:
-            return StreamingResponse(
-                manager.stream_tts(cleaned_text, options=options),
-                media_type="audio/wav",
-            )
+            stream = manager.stream_tts(cleaned_text, options=options)
+            try:
+                # Resolve the selected voice before committing an HTTP 200.
+                first = await _prefetch_connected(stream, request)
+            except BaseException:
+                await await_protected(stream.aclose())
+                raise
+            return _OwnedAudioStreamResponse(stream, first)
         else:
             audio_bytes = await manager.synthesize(cleaned_text, options=options)
             return Response(content=audio_bytes, media_type="audio/wav")
 
+    except HTTPException:
+        raise
     except ValueError as val_err:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=sanitize_error_detail(val_err)) from val_err
+        raise HTTPException(status_code=422, detail=sanitize_error_detail(val_err)) from val_err
     except Exception as exc:
         logger.error("Synthesis error: %s", exc, exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error_detail(exc)) from exc

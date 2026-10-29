@@ -173,6 +173,10 @@ async def update_settings(conn: aiosqlite.Connection, updates: SettingsUpdate) -
                 prov_id = str(update_dict["active_provider_id"]).strip()
                 await conn.execute("UPDATE providers SET is_active = 0;")
                 await conn.execute("UPDATE providers SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?;", (prov_id,))
+            if "active_voice_profile_id" in update_dict:
+                from galgame2voice.database.crud_modules.voice_profiles import invalidate_profiles_after_commit
+
+                await invalidate_profiles_after_commit(conn)
 
     return await get_settings(conn, mask=True)
 

@@ -8,11 +8,8 @@ Unit tests for enterprise telemetry, hardware utilities, CLI flags, and static c
 """
 
 import sys
-import subprocess
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 import pytest
-import httpx
 from httpx import AsyncClient, ASGITransport
 
 from galgame2voice.main import create_app
@@ -213,7 +210,8 @@ class TestSystemStatusHardwareTelemetry:
         health_mod._gpu_telemetry_cache = None
 
         call_count = [0]
-        def mock_detect():
+        def mock_detect(*, allow_torch_import):
+            assert allow_torch_import is False
             call_count[0] += 1
             return True, "Mock RTX 5000", 1
 

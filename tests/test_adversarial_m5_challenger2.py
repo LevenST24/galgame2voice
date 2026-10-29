@@ -153,7 +153,10 @@ class TestNetworkTimeoutsAndErrorRecovery:
             assert resp.status_code == 200
             data = resp.json()
             assert data["success"] is False
-            assert "ConnectError" in data["message"] or "Connection" in data["message"] or "error" in data["message"].lower() or "502" in data["message"]
+            # The API returns Chinese recovery guidance, not necessarily the raw
+            # English exception name or a particular proxy's HTTP status code.
+            assert data["error"] and data["diagnostic"]
+            assert any(term in data["diagnostic"] for term in ("连接", "端口", "网络"))
 
             # 2. Host with unreachable keyword
             resp2 = await client.post("/api/providers/test", json={

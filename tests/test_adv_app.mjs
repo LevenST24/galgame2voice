@@ -102,7 +102,16 @@ test('line → audio wait → per-line voice and typewriter → click reveal →
   assert.equal(h.audio.stopped.length, 0, 'completing reveal retains voice');
   h.done(); assert.equal(h.app.player.state, 'waiting_advance', 'done never skips unread text');
   h.app.action('advance'); assert.equal(h.app.player.state, 'input');
-  assert.equal(h.app.stage.stage.querySelector('.adv-name-text').textContent, 'Player');
+  assert.equal(h.app.stage.stage.querySelector('.adv-name-text').textContent, '我');
+});
+
+test('the audio start notification reaches the sentence player before revealing', t => {
+  const h = setup(t, { startNotification: true }); h.start(); h.line(); h.audioEvent();
+  assert.equal(h.app.player.state, 'waiting_audio');
+  h.clock.tick(2000);
+  assert.equal(h.app.player.state, 'waiting_audio');
+  h.audio.played[0].opts.onStart();
+  assert.equal(h.app.player.state, 'revealing');
 });
 
 test('the audio start notification reaches the sentence player before revealing', t => {
@@ -625,6 +634,34 @@ test('stage pointerdown ignores overlay elements and select controls without foc
   h.app.stage.overlay.appendChild(overlayChild);
   h.app.stage.stage.dispatchEvent({ type: 'pointerdown', target: overlayChild });
   assert.notEqual(h.doc.activeElement, h.app.stage.stage);
+});
+
+test('changing character after a voice selection failure retains explicit retry without sending', t => {
+  const h = setup(t); h.start();
+  h.controller.busy = false;
+  const user = h.sessions[0].messages.at(-1);
+  user.failed = { error: '所选音色已不存在', code: 'VOICE_PROFILE_NOT_FOUND' };
+  h.emit('error', { originId: h.sessions[0].id, error: user.failed.error, code: user.failed.code });
+  h.switchCharacter(2);
+  assert.equal(h.app.player.state, 'error');
+  assert.equal(h.controller.retried.length, 0);
+  const retry = h.app.stage.stage.querySelectorAll('.adv-error-btn').find(button => button.textContent === '重新发送');
+  assert.ok(retry);
+  retry.click();
+  assert.deepEqual(h.controller.retried, [user]);
+  assert.equal(h.sessions[0].messages.filter(message => message.role === 'user').length, 1);
+});
+
+test('a new input draft takes priority over recovery of an earlier voice selection failure', t => {
+  const h = setup(t); h.start(); h.controller.busy = false;
+  const user = h.sessions[0].messages.at(-1);
+  user.failed = { error: '所选音色已不存在', code: 'VOICE_PROFILE_NOT_FOUND' };
+  h.emit('error', { originId: h.sessions[0].id, error: user.failed.error, code: user.failed.code });
+  h.app.action('input'); h.app.textbox.setDraft('这条新草稿需要保留');
+  h.switchCharacter(2);
+  assert.equal(h.app.player.state, 'input');
+  assert.equal(h.app.textbox.draft, '这条新草稿需要保留');
+  assert.equal(h.controller.retried.length, 0);
 });
 
 test('sending moves keyboard focus from the hidden input or retry button to the stage', t => {

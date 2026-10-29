@@ -16,6 +16,8 @@ from typing import AsyncGenerator
 
 import aiosqlite
 
+from galgame2voice.database.commit_hooks import callback_mark, discard_callbacks, notify_committed
+
 logger = logging.getLogger("galgame2voice.database.session")
 
 
@@ -170,6 +172,7 @@ class _ImmediateTransactionContext:
         "_prev_depth",
         "_nested",
         "_sp_id",
+        "_callback_mark",
     )
 
     def __init__(
@@ -186,6 +189,7 @@ class _ImmediateTransactionContext:
         self._prev_depth: int = 0
         self._nested: bool = False
         self._sp_id: str | None = None
+        self._callback_mark = 0
 
     async def __aenter__(self) -> aiosqlite.Connection:
         conn = self.conn
@@ -199,6 +203,7 @@ class _ImmediateTransactionContext:
         try:
             depth = getattr(conn, "_imm_tx_depth", 0)
             self._prev_depth = depth
+            self._callback_mark = callback_mark(conn)
             is_in_tx = (
                 getattr(conn, "in_transaction", False)
                 or getattr(getattr(conn, "_conn", None), "in_transaction", False)
@@ -293,12 +298,14 @@ class _ImmediateTransactionContext:
                         if exc is not None:
                             await _run_uncancellable(conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};"))
                             await _run_uncancellable(conn.execute(f"RELEASE SAVEPOINT {sp_id};"))
+                            discard_callbacks(conn, self._callback_mark)
                             if cancelled:
                                 raise asyncio.CancelledError() from exc
                             raise exc
                         if cancelled:
                             raise asyncio.CancelledError()
                     else:
+                        discard_callbacks(conn, self._callback_mark)
                         _, _, c1 = await _run_uncancellable(conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};"))
                         _, _, c2 = await _run_uncancellable(conn.execute(f"RELEASE SAVEPOINT {sp_id};"))
                         if (c1 or c2) and exc_type is not asyncio.CancelledError:
@@ -327,6 +334,7 @@ class _ImmediateTransactionContext:
                                     raise asyncio.CancelledError() from exc2
                                 raise exc2
                             tx_committed = True
+                            notify_committed(conn)
                             if c1 or c2:
                                 raise asyncio.CancelledError()
                         else:
@@ -336,10 +344,12 @@ class _ImmediateTransactionContext:
                                     raise asyncio.CancelledError() from exc
                                 raise exc
                             tx_committed = True
+                            notify_committed(conn)
                             if cancelled:
                                 raise asyncio.CancelledError()
                     except BaseException:
                         if not tx_committed:
+                            discard_callbacks(conn, self._callback_mark)
                             if sp_id and not sp_released:
                                 await _run_uncancellable(conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};"))
                                 await _run_uncancellable(conn.execute(f"RELEASE SAVEPOINT {sp_id};"))
@@ -347,6 +357,7 @@ class _ImmediateTransactionContext:
                                 await _run_uncancellable(conn.rollback())
                         raise
                 else:
+                    discard_callbacks(conn, self._callback_mark)
                     if sp_id:
                         _, _, c1 = await _run_uncancellable(conn.execute(f"ROLLBACK TO SAVEPOINT {sp_id};"))
                         _, _, c2 = await _run_uncancellable(conn.execute(f"RELEASE SAVEPOINT {sp_id};"))

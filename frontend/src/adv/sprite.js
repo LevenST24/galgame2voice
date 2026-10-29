@@ -276,7 +276,6 @@ export function createSpriteView({
 
   // Build face slot DOM
   faceSlot.style.overflow = 'hidden';
-  faceSlot.style.position = 'relative';
 
   const faceImgA = documentObj.createElement('img');
   faceImgA.className = 'adv-face-buffer is-hidden';

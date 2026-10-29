@@ -13,6 +13,7 @@ import {
   DEFAULT_SESSION_SETTINGS,
 } from './store.js';
 import { createConversation } from './conversation.js';
+import { createLineAudioRecovery } from './controllers/line_audio_recovery.js';
 import { mountAdv } from './adv/adv_app.js';
 import { getModelStatus } from './model_badge.js';
 import { audioStore } from './voice.js';
@@ -24,17 +25,19 @@ import { showTitle } from './adv/title_hook.js';
 import { createPortraitCache } from './adv/portrait_cache.js';
 
 import { initAuthInterceptor } from './auth.js';
+import { createSettingsCenter } from './controllers/settings_center.js';
 import { initSessionBackup } from './controllers/session_backup.js';
 import { requestJson } from './api.js';
 import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSessions, fetchSessionHistoryPage, earliestServerMessageId } from './session_api.js';
 import { serverTimestamp, normalizeLines, pickSettings } from './session_data.js';
-import { openModal, closeModal, hasOpenModal, initSettingsUi, onModalChange } from './settings_ui.js';
+import { openModal, closeModal, closeAllModals, hasOpenModal, initSettingsUi, onModalChange } from './settings_ui.js';
 
 // Modular controllers
 import { initUpdateManager, loadSystemVersionInfo } from './controllers/update_manager.js';
 import {
   initVoiceSettings,
   openSessionSettings,
+  cancelSessionSettingsLoad,
   fetchVoiceProfiles,
   ensureSessionVoice,
   getVoiceProfiles,
@@ -47,6 +50,7 @@ import {
   loadProviders,
   getCurrentActiveProvider,
   haveProvidersLoaded,
+  hasProviderReadError,
 } from './controllers/global_settings.js';
 import {
   initAudioPlayerUi,
@@ -69,13 +73,14 @@ const appDependencies = {
   fetchAndCacheAudio, streamAudioController, getCurrentVoice, stopCurrentVoice,
   clearMicTimers, renderSessionList,
   showToast, autoTitle, fetchSessionHistoryPage, earliestServerMessageId,
-  getCurrentActiveProvider, getVoiceProfiles, haveProvidersLoaded,
+  getCurrentActiveProvider, getVoiceProfiles, haveProvidersLoaded, hasProviderReadError,
   showTitle,
 };
 
 export function mapBackendMessage(bm) {
   const msg = {
     id: `m_${bm.id}`,
+    ...(Number.isSafeInteger(bm.id) && bm.id > 0 ? { serverMessageId: bm.id } : {}),
     role: bm.role,
     content: bm.content_chinese,
     japanese: bm.content_japanese || '',
@@ -96,7 +101,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     fetchAndCacheAudio, streamAudioController, getCurrentVoice, stopCurrentVoice,
     clearMicTimers, renderSessionList,
     showToast, autoTitle, fetchSessionHistoryPage, earliestServerMessageId,
-    getCurrentActiveProvider, getVoiceProfiles, haveProvidersLoaded,
+    getCurrentActiveProvider, getVoiceProfiles, haveProvidersLoaded, hasProviderReadError,
     showTitle: showTitleScreen,
   } = { ...appDependencies, ...callbacks };
   if (initialize) {
@@ -279,6 +284,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   });
 
   const closeDrawer = () => advApp?.closeDrawer();
+  const regenerateLineAudio = createLineAudioRecovery({
+    getSession: getActive, getVoiceProfiles, saveState, isSessionDeleting,
+  });
 
   /* ---------- 渲染与状态栏 ---------- */
   function updateBadge() {
@@ -304,25 +312,40 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           return { id, name: profile?.name || '角色', work: profile?.work ?? null };
         },
         getModelStatus: () => {
-          const model = getModelStatus({ getCurrentActiveProvider, getActive, getVoiceProfiles, haveProvidersLoaded });
+          const model = getModelStatus({ getCurrentActiveProvider, getActive, getVoiceProfiles, haveProvidersLoaded, hasProviderReadError });
           return { ...model, state: conversation.busy ? 'busy' : model.state };
         },
         loadPortrait: (id, options) => portraits.get(id, options),
-        saveSettings: patch => {
+        saveSettings: (patch, { confirm = false } = {}) => {
           const session = getActive();
+          if (!session) throw new Error('当前没有可保存的会话。');
+          ++_syncSessionsGen;
           session.settings = pickSettings({ ...session.settings, ...patch }, DEFAULT_SESSION_SETTINGS);
-          saveState(); persistSession(session).catch(() => {});
+          saveState();
+          const confirmation = persistSession(session);
+          if (confirm) return confirmation;
+          confirmation.catch(error => showToast(`当前页面已应用显示设置，但本机服务尚未确认保存：${error.message}`, 'error'));
         },
+        onSettingsSaveError: (error, origin) => showToast(`会话「${origin?.title || '原会话'}」的聊天体验尚未确认保存：${error?.message || error}。请重新打开聊天体验并保存。`, 'error'),
         toggleVoice: () => toggleVoiceMode(),
         stopOtherVoice: stopCurrentVoice,
         onMic: () => toggleMic(),
         cancelMic,
         onSettings: openSessionSettings,
+        ...(document.getElementById('gp-experience') ? {
+          readingSettingsContainer: document.getElementById('gp-experience'),
+          onOpenReadingSettings: () => openGlobalSettings('experience'),
+          onReadingSettingsClose: () => settingsCenter?.experienceClosed(),
+        } : {}),
         onModelSettings: () => openGlobalSettings('models'),
+        onOpenSettings: () => openGlobalSettings(),
+        onHome: () => returnHome(),
         onNewSession: newChat,
         loadOlderHistory: session => loadOlderSessionHistory(session),
         playUserVoice: (msg, ctl) => playVoice(msg, ctl),
         playLegacyVoice: (msg, ctl) => playVoice(msg, ctl),
+        regenerateLineAudio,
+        getRecoveryVoice: () => getVoiceProfiles().find(profile => profile.id === getActive()?.settings?.voiceProfileId) || null,
         subscribeOverlay: onModalChange,
         closeOverlay: () => document.querySelector('.overlay.active [data-close]')?.click(),
       });
@@ -466,7 +489,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
 
   function ensureHomeEntryVoice(session) {
     const want = session?.settings?.voiceProfileId;
-    if (want && getActiveProfileId() !== want) ensureSessionVoice(session);
+    // The saved active ID does not prove that weights finished loading (or
+    // survived an engine restart). The switch endpoint checks actual readiness.
+    if (want) ensureSessionVoice(session, { silent: getActiveProfileId() === want });
   }
 
   async function switchSession(id, { focusInput = true, enterFromHome = false } = {}) {
@@ -589,7 +614,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       // Sample all model fields together after the engine request. Providers may
       // finish loading while it is pending; never mix that flag with an old model.
       syncAdv();
-      const model = getModelStatus({ getCurrentActiveProvider, getActive, getVoiceProfiles, haveProvidersLoaded });
+      const model = getModelStatus({ getCurrentActiveProvider, getActive, getVoiceProfiles, haveProvidersLoaded, hasProviderReadError });
       return { model, modelLoaded: haveProvidersLoaded(), hasModel: Boolean(getCurrentActiveProvider()), engine };
     },
     voiceEnabled: () => state.global.voiceMode,
@@ -601,17 +626,30 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     subscribeSettings: listener => onModalChange(open => { if (!open) listener(); }),
   });
   Object.assign(advActions, actions);
+  function returnHome() {
+    interruptAll();
+    cancelSessionSettingsLoad();
+    closeAllModals();
+    advApp?.prepareHome();
+    return showTitleScreen(actions);
+  }
   const app = { sendMessage, retryFailedMessage, loadOlderSessionHistory, fullRender, updateControls, conversation,
-    switchSession, syncAdv, actions, get adv() { return advApp; } };
+    switchSession, syncAdv, actions, returnHome, get adv() { return advApp; } };
+  let settingsCenter = null;
   if (!initialize) return app;
 
   dom.newChatBtn?.addEventListener('click', newChat);
 
   /* ---------- 初始化控制器 ---------- */
   initUpdateManager(dom);
+  settingsCenter = createSettingsCenter({ dom, openCenter: openGlobalSettings,
+    getExperience: () => advApp?.configPanel, getSession: getActive, loadSession: openSessionSettings,
+    cancelSession: cancelSessionSettingsLoad });
+  const settingsOpen = el => settingsCenter ? settingsCenter.open(el) : openModal(el);
+  const settingsClose = el => settingsCenter ? settingsCenter.close(el) : closeModal(el);
   initVoiceSettings(dom, {
-    openModal,
-    closeModal,
+    openModal: settingsOpen,
+    closeModal: settingsClose,
     renderSidebar,
     renderHeader,
     onOpenSessionSettings: openSessionSettings,
@@ -620,10 +658,12 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     invalidateSessionSync: () => { ++_syncSessionsGen; },
   });
   initGlobalSettings(dom, {
+    ...(settingsCenter ? { onSettingsTabChange: name => settingsCenter.select(name) } : {}),
     onOpenSessionSettings: openSessionSettings,
+    onOpenReadingSettings: () => advApp?.action('reading_settings'),
     onSovitsDirectorySaved: invalidateScannedModels,
-    openModal,
-    closeModal,
+    openModal: settingsOpen,
+    closeModal: settingsClose,
     loadSystemVersionInfo,
     fetchVoiceProfiles,
     getVoiceProfiles,
@@ -643,6 +683,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   if (dom.globalSettingsBtn) {
     dom.globalSettingsBtn.addEventListener('click', () => openGlobalSettings());
   }
+  document.querySelectorAll('[data-home]').forEach(button => button.addEventListener('click', returnHome));
+  document.querySelectorAll('[data-settings-center]').forEach(button => button.addEventListener('click', () => {
+    closeAllModals(); openGlobalSettings();
+  }));
   /* ---------- 启动同步与渲染 ---------- */
   loadState();
   initSessionBackup({

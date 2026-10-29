@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, immediate_transaction
-from galgame2voice.routers.common import switch_voice_profile_or_raise, validate_user_id
+from galgame2voice.routers.common import persist_active_voice_profile_or_raise, switch_voice_profile_or_raise, validate_user_id
 from galgame2voice.security.media_urls import (
     get_media_signing_key,
     sign_media_url,
@@ -573,10 +573,9 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
 
     async with get_db() as conn:
         async with immediate_transaction(conn):
-            await conn.execute(
-                "UPDATE voice_profiles SET system_prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
-                (text, character_id),
-            )
+            from galgame2voice.database.models import VoiceProfileUpdate
+
+            await crud.update_voice_profile(conn, character_id, VoiceProfileUpdate(system_prompt=text))
 
     logger.info("System prompt updated for character %s (%d chars)", prof.name, len(text))
     return {
@@ -589,51 +588,33 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
 
 
 async def _resolve_profile_by_name(conn: aiosqlite.Connection, char_name: str) -> Any | None:
-    """Resolves a voice profile by character name using exact, flexible, or package-synced match."""
+    """Use the same identity rules for switching as for package reconciliation."""
+    from galgame2voice.services.character_identity import (
+        AmbiguousProfileName,
+        resolve_profile_for_query,
+    )
+
     cm = get_character_manager()
-    pkg = cm.get_character(char_name)
 
-    candidate_names: list[str] = []
-    if pkg:
-        candidate_names.extend([pkg.name, pkg.id])
-    candidate_names.append(char_name)
-
-    # 1. Exact name match in DB
-    for c_name in candidate_names:
-        profile = await crud.get_voice_profile_by_name(conn, c_name)
-        if profile:
-            return profile
-
-    # 2. Flexible matching against existing DB voice profiles
-    profiles = await crud.list_voice_profiles(conn)
-    for p in profiles:
-        for c_name in candidate_names:
-            if p.name.lower() == c_name.lower():
-                return p
-
-    if pkg:
-        for p in profiles:
-            if p.name.startswith(pkg.name) or pkg.name.startswith(p.name):
-                return p
-            if pkg.id.lower() in p.name.lower() or pkg.name in p.name:
-                return p
-
-    for p in profiles:
-        if p.name.startswith(char_name) or char_name in p.name:
-            return p
-
-    # 3. If still not found but package exists on disk, sync with DB and retry
-    if pkg:
-        await cm.sync_with_db(conn)
-        profile = await crud.get_voice_profile_by_name(conn, pkg.name)
-        if profile:
-            return profile
+    async def find_profile() -> tuple[Any | None, Any | None]:
         profiles = await crud.list_voice_profiles(conn)
-        for p in profiles:
-            if p.name.startswith(pkg.name) or pkg.name in p.name:
-                return p
+        try:
+            matched, pkg, conflicting = resolve_profile_for_query(profiles, char_name, manager=cm)
+        except AmbiguousProfileName as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
-    return None
+        if conflicting:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"角色“{char_name}”匹配到多个角色包；请使用唯一的角色 ID。",
+            )
+        return matched, pkg
+
+    profile, pkg = await find_profile()
+    if profile is None and pkg is not None:
+        await cm.sync_with_db(conn)
+        profile, _ = await find_profile()
+    return profile
 
 
 async def _lookup_character_profile(
@@ -694,14 +675,10 @@ async def switch_character(req: CharacterSwitchRequest) -> dict[str, Any]:
                 )
             profile = verified_profile
 
-        is_already_active = manager.is_active_profile(profile, force=req.force)
+        is_already_active = await asyncio.to_thread(manager.is_active_profile, profile, force=req.force)
 
         if is_already_active:
-            try:
-                async with get_db() as conn:
-                    await crud.set_active_voice_profile(conn, profile.id)
-            except Exception as exc:
-                logger.debug("Failed syncing active character to settings: %s", exc)
+            await persist_active_voice_profile_or_raise(profile.id)
         else:
             await switch_voice_profile_or_raise(manager, profile, force=req.force)
 
