@@ -71,7 +71,7 @@ from galgame2voice.services.chat_pipelines import (
 from galgame2voice.services.chat_pipelines.acting_menu import get_recent_pose, sanitize_act
 from galgame2voice.services.chat_pipelines.context_builder import build_chat_context
 from galgame2voice.services.chat_pipelines.line_builder import build_lines
-from galgame2voice.services.chat_pipelines.turn_persistence import require_user_turn
+from galgame2voice.services.chat_pipelines.turn_persistence import TurnUnavailableError, require_user_turn
 from galgame2voice.services.chat_pipelines.turn_ownership import serialize_stream_turn, serialize_sync_turn
 from galgame2voice.utils.audio_concat import concat_wav_files
 
@@ -383,8 +383,12 @@ class ChatService:
         voice_profile_id: int | None,
         tts_options: dict[str, Any] | None,
         character_name: str | None,
+        require_existing_session: bool = False,
     ) -> tuple[Any, Any, Any | None, str, int | None]:
         """Atomically initializes session, records user message, and resolves voice profile & user identifiers."""
+        # The caller holds an immediate transaction, so deletion cannot race this check and insertion.
+        if require_existing_session and await crud.get_session(conn, session_id) is None:
+            raise TurnUnavailableError("对话已被删除，请重新选择对话后再发送。")
         sess_obj = await crud.get_or_create_session(conn, session_id)
         user_msg = await crud.add_message(conn, MessageCreate(
             session_id=session_id,
@@ -519,6 +523,7 @@ class ChatService:
         voice_profile_id: int | None = None,
         reply_format: str = "old",
         outfit: str | None = None,
+        _require_existing_session: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         Asynchronously streams bilingual SSE events:
@@ -552,7 +557,8 @@ class ChatService:
                         user_id,
                         profile_id,
                     ) = await self._init_turn_session_and_message(
-                        conn, session_id, prompt, voice_profile_id, tts_options, character_name
+                        conn, session_id, prompt, voice_profile_id, tts_options, character_name,
+                        _require_existing_session,
                     )
 
                 # Extract user memory facts and init character affection in a TRUE background task (off TTFT path)
@@ -716,6 +722,7 @@ class ChatService:
         voice_profile_id: int | None = None,
         reply_format: str = "old",
         outfit: str | None = None,
+        _require_existing_session: bool = False,
     ) -> dict[str, Any]:
         """
         Synchronous non-streaming bilingual completion and TTS synthesis.
@@ -740,7 +747,8 @@ class ChatService:
                         user_id,
                         profile_id,
                     ) = await self._init_turn_session_and_message(
-                        conn, session_id, prompt, voice_profile_id, tts_options, character_name
+                        conn, session_id, prompt, voice_profile_id, tts_options, character_name,
+                        _require_existing_session,
                     )
                     await crud.get_or_create_character_affection(
                         conn, user_id=user_id, character_id=profile_id or 1
