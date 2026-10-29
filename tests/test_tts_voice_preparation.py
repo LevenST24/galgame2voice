@@ -94,6 +94,15 @@ async def render(stack, mode):
     return b''.join([chunk async for chunk in stack.service.stream_tts('こんにちは', options=options, use_cache=False)])
 
 
+async def test_deleted_selected_voice_reports_missing_instead_of_unavailable(stack):
+    async with get_db(stack.db) as conn:
+        assert await crud.delete_voice_profile(conn, stack.profiles[1].id)
+
+    with pytest.raises(ValueError, match='所选音色已不存在.*角色与会话'):
+        await stack.service.synthesize('こんにちは', options={'voice_profile_id': stack.profiles[1].id}, use_cache=False)
+    assert stack.engine.calls == []
+
+
 @pytest.mark.parametrize('mode', ['bytes', 'file', 'stream'])
 @pytest.mark.parametrize('implicit', [False, True])
 async def test_unavailable_profile_database_never_reuses_engine_voice(stack, monkeypatch, mode, implicit):

@@ -677,6 +677,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     sendMessage,
     isBusy: () => conversation.busy,
     resolveJapanese,
+    onOpenSessionSettings: openSessionSettings,
     onOpenEngineStatus: () => openGlobalSettings('dashboard'),
   });
 

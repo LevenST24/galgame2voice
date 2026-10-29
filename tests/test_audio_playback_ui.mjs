@@ -67,6 +67,26 @@ test('confirmed missing audio regenerates once, using the initiating voice', asy
   assert.equal(synthesized.length, 1); assert.equal(synthesized[0].voice_profile_id, 1);
   assert.deepEqual(msg.audioUrls, ['msg_expired']);
 });
+test('a deleted selected voice directs the user to session settings', async () => {
+  const toasts = [];
+  const root = { querySelectorAll: () => [], appendChild: el => toasts.push(el) };
+  globalThis.document = {
+    getElementById: id => id === 'toastRoot' ? root : null,
+    createElement: () => ({ dataset: {}, children: [], append(...children) { this.children.push(...children); },
+      addEventListener(_event, callback) { this.click = callback; }, remove() {}, classList: { add() {} } }),
+  };
+  let opened = false;
+  initAudioPlayerUi({}, { onOpenSessionSettings: () => { opened = true; }, onOpenEngineStatus: () => assert.fail('wrong action') });
+  globalThis.fetch = async () => Response.json({ detail: '所选音色已不存在，请在角色与会话中重新选择音色。' }, { status: 422 });
+  await synthesizeAiVoice({ id: 'missing', role: 'assistant', japanese: 'こんにちは' }, control());
+  const toast = toasts[0];
+  clearTimeout(toast._timer);
+  assert.match(toast.dataset.msg, /音色已不存在.*角色与会话/);
+  assert.doesNotMatch(toast.dataset.msg, /GPT-SoVITS/);
+  assert.equal(toast.children[1].textContent, '角色与会话');
+  toast.children[1].click({ stopPropagation() {} });
+  assert.equal(opened, true);
+});
 test('translation completing after cancellation cannot synthesize with the next character', async () => {
   const gate = deferred(); initAudioPlayerUi({}, { resolveJapanese: () => gate.promise });
   const pending = synthesizeAiVoice({ id: 'translate', role: 'assistant' }, control());
