@@ -439,15 +439,15 @@ class TestPhase4DeepEdgeCases:
             assert "".join(tokens) == "RecoveredStream"
             assert attempt_count == 2
 
-    def test_release_packaging_includes_bundled_reference_audios(self):
+    def test_release_packaging_excludes_local_reference_audios(self):
         from pathlib import Path
         from scripts.package_release import should_include
 
-        # Bundled character reference audios must be included
-        assert should_include(Path("audio/references/natsume/gentle.ogg")) is True
-        assert should_include(Path("audio/references/natsume/cool.ogg")) is True
-        assert should_include(Path("audio/nat002_032.ogg")) is True
-        assert should_include(Path("audio/.keep")) is True
+        # Runtime placeholders are generated; local audio is never copied.
+        assert should_include(Path("audio/references/natsume/gentle.ogg")) is False
+        assert should_include(Path("audio/references/natsume/cool.ogg")) is False
+        assert should_include(Path("audio/nat002_032.ogg")) is False
+        assert should_include(Path("audio/.keep")) is False
 
         # Transient generated wav chunks and cache files must be excluded
         assert should_include(Path("audio/cache/some_cache.wav")) is False

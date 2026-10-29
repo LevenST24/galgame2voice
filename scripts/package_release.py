@@ -1,215 +1,149 @@
-"""
-Galgame2Voice Release Packaging Script.
-Bundles the application into a distributable ZIP package ready for distribution or GitHub Releases.
-Exclusions are name/extension rules only (EXCLUDE_DIRS, EXCLUDE_EXTENSIONS, EXCLUDE_EXACT_FILES and
-the logs/, audio/, data/*.db, data/*.txt branches in should_include), so they cover `.env`, the live
-`galgame2voice.db`, caches, logs and weight blobs. Secrets are explicitly excluded: `.master_key`
-(the fallback credential-encryption key) and `.console_token` (plaintext console token) are in
-EXCLUDE_EXACT_FILES wherever they appear, and the whole `data/backups/` tree (database copies,
-pre-update zips) never ships.
-"""
+"""Build a source release from explicit program paths, excluding all local runtime data."""
 
-import os
-import re
-import sys
-import zipfile
 import hashlib
+import os
 from pathlib import Path
+import re
+import stat
+import sys
+import tempfile
+import zipfile
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def read_project_version() -> str:
-    """Single source of truth for the release version: pyproject.toml.
-
-    Falls back to a regex parse on Python < 3.11 where tomllib is unavailable.
-    """
+    """Single source of truth for the release version: pyproject.toml."""
     pyproject = PROJECT_ROOT / "pyproject.toml"
     try:
         import tomllib
 
-        with open(pyproject, "rb") as f:
-            return str(tomllib.load(f)["project"]["version"])
+        with open(pyproject, "rb") as handle:
+            return str(tomllib.load(handle)["project"]["version"])
     except Exception:
         pass
-    match = re.search(
-        r'^version\s*=\s*"([^"]+)"',
-        pyproject.read_text(encoding="utf-8"),
-        re.MULTILINE,
-    )
+    match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(encoding="utf-8"), re.MULTILINE)
     if match:
         return match.group(1)
     raise RuntimeError(f"Could not determine version from {pyproject}")
 
-# Files and directories strictly excluded from release bundles
+
+# Adding a new distributable root/file type requires an explicit decision here.
+# Assets, saved configuration, engine caches and workspace tooling are not inputs.
+ROOT_FILES = {
+    "README.md", "使用说明.md", "LICENSE", "SECURITY.md", "CHANGELOG.md", "AGENTS.md",
+    "pyproject.toml", "uv.lock", "requirements.txt", "requirements-dev.txt", "pytest.ini",
+    "启动.bat", "run.sh", "Dockerfile", "docker-compose.yml",
+    ".env.example", ".dockerignore", ".gitignore", ".gitattributes",
+}
+SOURCE_ROOTS = {"galgame2voice", "frontend", "scripts", "docs", "tests"}
 EXCLUDE_DIRS = {
-    "backgrounds",
-    ".local",
-    "_scratch",
-    ".mypy_cache",
-    ".pytest_basetemp",
-    ".git",
-    ".github",
-    ".venv",
-    "venv",
-    "ENV",
-    "env",
-    "__pycache__",
-    ".pytest_cache",
-    ".ruff_cache",
-    "node_modules",
-    "temp_audio",
-    "temp_cache_mem",
-    "temp_test",
-    "tmp_check",
-    ".agents",
-    "dist",
-    "build",
-    "galgame2voice.egg-info",
+    "data", "audio", "logs", "characters", "backgrounds", "skins", "models",
+    "node_modules", "__pycache__", "dist", "build", "venv", "env", "ENV",
+    "temp_audio", "temp_cache_mem", "temp_test", "tmp_check",
 }
-
-EXCLUDE_EXTENSIONS = {
-    ".pyc",
-    ".pyo",
-    ".pyd",
-    ".db",
-    ".db-journal",
-    ".db-wal",
-    ".db-shm",
-    ".log",
-    ".pid",
-    ".bin",
-    ".safetensors",
-    ".onnx",
-    ".pt",
-    ".gguf",
-    ".zip",
-    ".7z",
-    ".rar",
-    ".tar",
-    ".gz",
-    ".tgz",
-    ".xz",
-    ".sha256",
-}
-
-EXCLUDE_EXACT_FILES = {
-    ".env",
-    ".master_key",
-    ".console_token",
-    "galgame2voice.db",
-    "galgame2voice.pid",
-    "gptsovits.pid",
-}
+PUBLIC_ASSET_TYPES = {".js", ".css", ".svg", ".woff", ".woff2"}
+CODE_TYPES = {".py", ".js", ".mjs", ".css", ".html", ".md"}
 
 
 def should_include(rel_path: Path) -> bool:
+    """Pure manifest decision; never inspect model sizes or follow filesystem links."""
     parts = rel_path.parts
-    # Check directory exclusions
-    for p in parts[:-1]:
-        if p in EXCLUDE_DIRS:
-            return False
+    if not parts or rel_path.is_absolute() or rel_path.drive or ".." in parts:
+        return False
+    if len(parts) == 1:
+        return parts[0] in ROOT_FILES
+    if parts[0] not in SOURCE_ROOTS:
+        return False
+    if any(part.startswith(".") or part in EXCLUDE_DIRS
+           or part.startswith(("pytest-of-", "g2v_cap_")) for part in parts):
+        return False
     filename = parts[-1]
-    if filename in EXCLUDE_DIRS or filename in EXCLUDE_EXACT_FILES:
+    if filename.startswith(("_probe_", "temp_", "debug_", "scratch_")):
         return False
-    if any(p.startswith(("pytest-of-", "g2v_cap_")) for p in parts):
-        return False
-    if any(filename.endswith(ext) for ext in EXCLUDE_EXTENSIONS):
-        return False
+    suffix = rel_path.suffix.lower()
+    root = parts[0]
+    if root == "galgame2voice":
+        if len(parts) > 2 and parts[1] == "static":
+            return (parts[2:] == ("index.html",)
+                    or (parts[2] == "assets" and suffix in PUBLIC_ASSET_TYPES))
+        return suffix == ".py"
+    if root == "scripts":
+        return suffix == ".py" or parts[1:] == ("dev_standins_replies.json",)
+    if root == "docs":
+        return suffix == ".md" or (parts[1] == "licenses" and suffix == ".txt")
+    if root == "frontend":
+        return (suffix in CODE_TYPES
+                or (len(parts) == 2 and filename in ("package.json", "package-lock.json"))
+                or (parts[1] == "src" and suffix in PUBLIC_ASSET_TYPES))
+    return suffix in {".py", ".js", ".mjs", ".json"}
 
-    # Don't bundle frontend source node_modules if inside frontend
-    if "node_modules" in parts:
-        return False
 
-    # Exclude dynamic runtime files inside data/
-    if len(parts) >= 2 and parts[0] == "data":
-        # Runtime backups (database copies, pre-update zips) must never ship:
-        # they contain credential ciphertext decryptable with the data-dir key.
-        if parts[1] == "backups":
-            return False
-        if filename.endswith(".db") or filename.endswith(".txt"):
-            return False
+def _is_link(path: Path) -> bool:
+    """Junctions/reparse points must also be pruned on Windows."""
+    info = path.lstat()
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
 
-    # Exclude dynamic runtime files inside logs/ and audio/
-    if len(parts) >= 2:
-        if parts[0] == "logs":
-            return False
-        if parts[0] == "audio":
-            # Exclude dynamic generated wav files and caches, but preserve bundled character reference audios
-            if "references" in parts or filename.endswith(".ogg") or filename.endswith(".keep"):
-                return True
-            return False
 
-    # Ensure characters/ folder is bundled with manifests, prompts, and reference audios,
-    # while excluding large .ckpt / .pth binary model weights.
-    if len(parts) >= 2 and parts[0] == "characters":
-        if filename.endswith(".ckpt") or filename.endswith(".pth"):
-            abs_p = PROJECT_ROOT / rel_path
-            try:
-                if abs_p.is_file() and abs_p.stat().st_size > 1024 * 1024:
-                    return False
-                elif not abs_p.is_file():
-                    return False
-            except Exception:
-                return False
-        return True
-
-    return True
+def _iter_release_files():
+    for root, dirs, files in os.walk(PROJECT_ROOT, followlinks=False):
+        folder = Path(root)
+        dirs[:] = sorted(name for name in dirs
+                         if not name.startswith(".") and name not in EXCLUDE_DIRS
+                         and not _is_link(folder / name)
+                         and ((folder == PROJECT_ROOT and name in SOURCE_ROOTS)
+                              or folder != PROJECT_ROOT))
+        for filename in sorted(files):
+            source = folder / filename
+            relative = source.relative_to(PROJECT_ROOT)
+            if should_include(relative) and not _is_link(source) and source.is_file():
+                yield source, relative
 
 
 def build_release_zip(version: str | None = None) -> Path:
-    """Build the distributable ZIP. Defaults to the pyproject.toml version."""
-    if not version:
-        version = read_project_version()
+    """Write a complete archive and checksum before replacing an earlier build."""
+    version = read_project_version() if version is None else version
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", version):
+        raise ValueError("Release version must be a filename-safe identifier")
     static_dir = PROJECT_ROOT / "galgame2voice" / "static"
-    if not (static_dir / "index.html").exists():
-        print("[ERROR] galgame2voice/static/index.html is missing! Build the frontend first.")
-        sys.exit(1)
+    if not (static_dir / "index.html").is_file():
+        raise RuntimeError("galgame2voice/static/index.html is missing; build the frontend first")
 
     dist_dir = PROJECT_ROOT / "dist"
     dist_dir.mkdir(parents=True, exist_ok=True)
-
-    zip_filename = dist_dir / f"galgame2voice-v{version}.zip"
-    print(f"[1/3] Packaging project files into {zip_filename.name}...")
-
-    total_files = 0
-    with zipfile.ZipFile(zip_filename, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Walk all project files
-        for root, dirs, files in os.walk(PROJECT_ROOT):
-            # Prune excluded dirs in place
-            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
-
-            for file in files:
-                abs_path = Path(root) / file
-                rel_path = abs_path.relative_to(PROJECT_ROOT)
-
-                if should_include(rel_path):
-                    # Write file into the zip under the versioned top-level folder galgame2voice-v<version>
-                    archive_name = Path(f"galgame2voice-v{version}") / rel_path
-                    zf.write(abs_path, str(archive_name))
-                    total_files += 1
-
-        # Add empty placeholder runtime directories
-        for empty_dir in ["logs", "data", "audio", "characters"]:
-            zf.writestr(f"galgame2voice-v{version}/{empty_dir}/.keep", "")
-
-    file_size_mb = zip_filename.stat().st_size / (1024 * 1024)
-    print(f"      [OK] Packaged {total_files} files ({file_size_mb:.2f} MB)")
-
-    print("[2/3] Calculating SHA-256 checksum...")
-    sha256 = hashlib.sha256(zip_filename.read_bytes()).hexdigest()
-    checksum_file = zip_filename.with_suffix(".zip.sha256")
-    checksum_file.write_text(f"{sha256}  {zip_filename.name}\n", encoding="utf-8")
-    print(f"      [OK] SHA-256: {sha256}")
-
-    print("[3/3] Release package ready!")
-    print(f"      Archive:  {zip_filename}")
-    print(f"      Checksum: {checksum_file}")
-    return zip_filename
+    archive = dist_dir / f"galgame2voice-v{version}.zip"
+    checksum = archive.with_suffix(".zip.sha256")
+    with tempfile.NamedTemporaryFile(dir=dist_dir, prefix=".g2v-", suffix=".zip", delete=False) as handle:
+        pending = Path(handle.name)
+    pending_checksum = pending.with_suffix(".sha256")
+    total = 0
+    included = set()
+    try:
+        with zipfile.ZipFile(pending, "w", zipfile.ZIP_DEFLATED) as bundle:
+            for source, relative in _iter_release_files():
+                bundle.write(source, f"galgame2voice-v{version}/{relative.as_posix()}")
+                included.add(relative.as_posix())
+                total += 1
+            if "galgame2voice/static/index.html" not in included:
+                raise RuntimeError("Frontend entrypoint must be a regular file inside the project")
+            for name in ("logs", "data", "audio", "characters"):
+                bundle.writestr(f"galgame2voice-v{version}/{name}/.keep", "")
+        digest = hashlib.sha256()
+        with pending.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        pending_checksum.write_text(f"{digest.hexdigest()}  {archive.name}\n", encoding="utf-8")
+        pending.replace(archive)
+        pending_checksum.replace(checksum)
+    finally:
+        pending.unlink(missing_ok=True)
+        pending_checksum.unlink(missing_ok=True)
+    print(f"Source release: {archive} ({total} files, {archive.stat().st_size / 1048576:.2f} MB)")
+    print(f"Checksum: {checksum}")
+    return archive
 
 
 if __name__ == "__main__":
-    v: str | None = None
-    if len(sys.argv) > 1:
-        v = sys.argv[1].lstrip("v")
-    build_release_zip(v)
+    build_release_zip(sys.argv[1].lstrip("v") if len(sys.argv) > 1 else None)
