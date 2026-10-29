@@ -11,6 +11,7 @@ Empirically tests and challenges:
 """
 
 import os
+import json
 import re
 import sys
 import time
@@ -18,6 +19,7 @@ import socket
 import subprocess
 from pathlib import Path
 import pytest
+import psutil
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
@@ -32,79 +34,92 @@ class TestProcessTreeTermination:
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows taskkill testing requires Windows OS")
     @pytest.mark.requires_process_termination
-    def test_nested_process_tree_termination(self):
+    def test_nested_process_tree_termination(self, tmp_path):
         """
         Empirically test that `taskkill /f /t /pid <root_pid>` kills the entire
         hierarchy (Parent -> Child -> Grandchild) and releases all bound ports.
         """
-        port1 = 28181
-        port2 = 28182
-
-        # Script creates child process, and child creates grandchild
-        worker_code = f"""
-import subprocess, time, sys, socket, textwrap
-
-s1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s1.bind(('127.0.0.1', {port1}))
-s1.listen(1)
-
-child_code = '''
-import subprocess, time, sys, socket
-s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s2.bind(('127.0.0.1', {port2}))
-s2.listen(1)
-p_grand = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
-while True:
-    time.sleep(0.5)
-'''
-
-p_child = subprocess.Popen([sys.executable, '-c', textwrap.dedent(child_code)])
+        ready_path = tmp_path / "owned-tree-ready.json"
+        child_code = f"""
+import json, subprocess, time, sys, socket
+from pathlib import Path
+listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+listener.bind(('127.0.0.1', 0))
+listener.listen(1)
+grandchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+ready = Path({str(ready_path)!r})
+temporary = ready.with_suffix('.tmp')
+temporary.write_text(json.dumps({{'ports': [int(sys.argv[1]), listener.getsockname()[1]],
+                                'grandchild': grandchild.pid}}), encoding='utf-8')
+temporary.replace(ready)
 while True:
     time.sleep(0.5)
 """
-        # Launch parent process
-        parent = subprocess.Popen([sys.executable, "-c", worker_code])
-        parent_pid = parent.pid
+        worker_code = f"""
+import subprocess, time, sys, socket
+listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+listener.bind(('127.0.0.1', 0))
+listener.listen(1)
+child = subprocess.Popen([sys.executable, '-c', {child_code!r}, str(listener.getsockname()[1])])
+while True:
+    time.sleep(0.5)
+"""
+        parent = subprocess.Popen([sys.executable, "-c", worker_code],
+                                  creationflags=subprocess.CREATE_NO_WINDOW)
+        root = psutil.Process(parent.pid)
+        root_created = root.create_time()
+        owned = {(root.pid, root_created)}
 
-        # Wait for sockets to be ready
-        def is_port_listening(p):
+        def running(identity):
+            try:
+                process = psutil.Process(identity[0])
+                return process.create_time() == identity[1] and process.is_running()
+            except psutil.NoSuchProcess:
+                return False
+
+        def is_port_listening(port):
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                return s.connect_ex(("127.0.0.1", p)) == 0
+                s.settimeout(0.2)
+                return s.connect_ex(("127.0.0.1", port)) == 0
 
-        ready = False
-        for _ in range(60):
-            if is_port_listening(port1) and is_port_listening(port2):
-                ready = True
-                break
-            time.sleep(0.1)
-
-        assert ready, f"Failed to start nested process tree on ports {port1}, {port2}"
-
-        # Now execute `taskkill /f /t /pid <parent_pid>`
-        kill_result = subprocess.run(
-            f"taskkill /f /t /pid {parent_pid}",
-            shell=True,
-            capture_output=True,
-            text=True
-        )
-        assert kill_result.returncode == 0, f"taskkill failed: {kill_result.stderr}"
-
-        # Verify both ports are freed and processes are dead within 10s
-        freed = False
-        t_free_start = time.perf_counter()
-        while time.perf_counter() - t_free_start < 10.0:
-            if not is_port_listening(port1) and not is_port_listening(port2):
-                freed = True
-                break
-            time.sleep(0.1)
-
-        assert freed, f"Ports ({port1}, {port2}) were not released by tree kill within 10s!"
-
-        # Verify parent process is no longer running
-        parent.poll()
-        assert parent.returncode is not None
+        try:
+            deadline = time.monotonic() + 10
+            while not ready_path.is_file() and time.monotonic() < deadline:
+                assert parent.poll() is None, "The owned parent exited before readiness"
+                time.sleep(0.05)
+            assert ready_path.is_file(), "The owned process tree did not report readiness"
+            ready = json.loads(ready_path.read_text(encoding="utf-8"))
+            descendants = root.children(recursive=True)
+            owned.update((process.pid, process.create_time()) for process in descendants)
+            assert ready["grandchild"] in {pid for pid, _ in owned}
+            assert all(is_port_listening(port) for port in ready["ports"])
+            result = subprocess.run(["taskkill", "/f", "/t", "/pid", str(parent.pid)],
+                                    capture_output=True, text=True, timeout=10)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and any(running(identity) for identity in owned):
+                time.sleep(0.05)
+            # Windows can report "no running instance" for an already-exited
+            # descendant and return 255 despite cleaning the complete tree.
+            # Accept that only if every captured process and listener is gone.
+            survivors = [identity for identity in owned if running(identity)]
+            assert not survivors, f"Owned processes survived taskkill: {survivors}; {result.stderr}"
+            assert not any(is_port_listening(port) for port in ready["ports"]), result.stderr
+            parent.wait(timeout=5)
+        finally:
+            if running((root.pid, root_created)):
+                owned.update((process.pid, process.create_time()) for process in root.children(recursive=True))
+            # Clean only this test's process identities, even after setup/assertion failure.
+            for identity in owned:
+                if running(identity):
+                    try:
+                        psutil.Process(identity[0]).kill()
+                    except psutil.NoSuchProcess:
+                        pass
+            try:
+                parent.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                parent.kill()
+                parent.wait(timeout=5)
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows taskkill testing requires Windows OS")
     def test_taskkill_invalid_or_dead_pid_resilience(self):

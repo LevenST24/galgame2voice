@@ -325,12 +325,12 @@ def test_build_gpt_sovits_env_fp32_default(tmp_path):
 # 6. Release Packaging Bundling Tests
 # ============================================================================
 
-def test_package_release_includes_character_assets(tmp_path):
-    # Manifest, prompts, and audio files under characters/ MUST be included
-    assert pr.should_include(Path("characters/四季夏目/manifest.json")) is True
-    assert pr.should_include(Path("characters/四季夏目/system_prompt.txt")) is True
-    assert pr.should_include(Path("characters/四季夏目/refs/gentle.ogg")) is True
-    assert pr.should_include(Path("characters/四季夏目/refs/cool.ogg")) is True
+def test_package_release_excludes_local_character_assets(tmp_path):
+    # Character packages are installed separately, including manifests and prompts.
+    assert pr.should_include(Path("characters/四季夏目/manifest.json")) is False
+    assert pr.should_include(Path("characters/四季夏目/system_prompt.txt")) is False
+    assert pr.should_include(Path("characters/四季夏目/refs/gentle.ogg")) is False
+    assert pr.should_include(Path("characters/四季夏目/refs/cool.ogg")) is False
 
     # Large binary weights and user archives must be excluded
     assert pr.should_include(Path("characters/四季夏目/huge_weights.ckpt")) is False
