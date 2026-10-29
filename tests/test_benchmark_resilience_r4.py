@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 import psutil
 
@@ -313,10 +314,40 @@ class TestR1GptSovitsWarmup:
         assert "/set_refer_audio" in endpoints_called
         assert "/tts" in endpoints_called
 
-        # Verify probe text was lightweight punctuation
+        # Verify the probe is a short real word
         tts_calls = [c for c in mock_gpt_sovits.call_history if c["endpoint"] == "/tts"]
         assert len(tts_calls) >= 1
-        assert tts_calls[-1]["payload"].get("text") == "。"
+        assert tts_calls[-1]["payload"].get("text") == "はい。"
+
+    @pytest.mark.asyncio
+    async def test_r1_warmup_probe_passes_the_engine_text_check(self, temp_db_path, mock_gpt_sovits):
+        """GPT-SoVITS answers symbol-only text with 400 "请输入有效文本"; the probe must not be rejected."""
+        async with get_db(temp_db_path) as conn:
+            profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
+                name="WarmupChar",
+                gpt_weights_path="weights/warmup.ckpt",
+                sovits_weights_path="weights/warmup.pth",
+                ref_audio_path="ref/warmup.wav",
+                prompt_text="テストプロンプトです。",
+                prompt_lang="ja",
+                text_lang="ja",
+                is_default=True,
+            ))
+
+        mock_handle = mock_gpt_sovits.handle_request
+
+        async def engine_text_check(method, path, json_data=None, params=None):
+            text = (json_data or params or {}).get("text")
+            if path == "/tts" and text is not None and not re.sub(r"\W+", "", text):
+                return httpx.Response(status_code=400, json={"message": "tts failed", "Exception": "请输入有效文本"})
+            return await mock_handle(method, path, json_data=json_data, params=params)
+
+        mock_gpt_sovits.handle_request = engine_text_check
+        client = GptSovitsClient(server=mock_gpt_sovits)
+        vm = VoiceManager(gpt_sovits_client_or_server=client, db_path=temp_db_path)
+        vm.active_profile = profile
+
+        assert await vm.warmup_current_profile() is True
 
     @pytest.mark.asyncio
     async def test_r1_warmup_current_profile_offline_resilience(self, temp_db_path, mock_gpt_sovits):
