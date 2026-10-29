@@ -298,18 +298,12 @@ test('reduced motion leaves nothing in the textbox transitioning, so entering ch
   assert.match(reduced, /\.adv-stage \.adv-layer-textbox \* \{ transition: none !important; \}/);
 });
 
-test('home layout anchors the excerpt and contains mobile pills, full-width primary and scrollable recents', () => {
+test('home layout anchors the excerpt', () => {
   const css = readFileSync(new URL('../frontend/src/adv/title.css', import.meta.url), 'utf8');
   assert.match(css, /\.home-excerpt\.is-reading\s*\{[^}]*top:\s*calc\(330 \* var\(--u\)\)/);
   assert.match(css, /\.home-notice\s*\{[^}]*bottom:\s*100%/);
   assert.match(css, /\.home-step-mark\s*\{[^}]*border-radius:\s*50%/);
   assert.match(css, /\.home-step\s*\{[^}]*border-top:/);
-  assert.match(css, /\.adv-stage\.is-portrait \.home-pill-text\s*\{\s*display:\s*none/);
-  assert.match(css, /\.adv-stage\.is-portrait \.home-pill-short\s*\{\s*display:\s*inline/);
-  assert.match(css, /\.adv-stage\.is-portrait \.home-primary\s*\{[^}]*min-width:\s*0/);
-  assert.match(css, /\.adv-stage\.is-portrait \.home-recents\s*\{[^}]*overflow-x:\s*auto/);
-  assert.match(css, /\.adv-stage\.is-portrait \.home-recents\s*\{[^}]*scrollbar-width:\s*thin;[^}]*scrollbar-color:\s*#ffffff26 #0d0f18/);
-  assert.match(css, /\.adv-stage\.is-portrait \.adv-title-screen::before\s*\{[^}]*flex:\s*1 0 30dvh/);
 });
 test('formatHomeTime covers calendar days including year boundary and invalid dates', () => {
   const fmt = d => formatHomeTime(d, NOW);

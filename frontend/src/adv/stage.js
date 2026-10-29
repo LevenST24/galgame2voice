@@ -20,17 +20,12 @@
  * @param {(event: MouseEvent) => void} [options.onLetterboxClick]
  * @returns {object} { shell, stage, background, sprite, fx, textbox, quickmenu, overlay, destroy }
  */
-export function createStage(root, { onLetterboxClick, matchMedia = query => globalThis.matchMedia?.(query) } = {}) {
+export function createStage(root, { onLetterboxClick } = {}) {
   const shell = document.createElement('div');
   shell.className = 'adv-shell';
 
   const stage = document.createElement('div');
   stage.className = 'adv-stage';
-  const portrait = matchMedia('(orientation: portrait)');
-  const rotate = () => stage.classList.toggle('is-portrait', Boolean(portrait?.matches));
-  rotate();
-  if (portrait?.addEventListener) portrait.addEventListener('change', rotate);
-  else portrait?.addListener?.(rotate);
   stage.setAttribute('role', 'region');
   stage.setAttribute('aria-label', 'ADV 舞台');
 
@@ -95,8 +90,6 @@ export function createStage(root, { onLetterboxClick, matchMedia = query => glob
   shell.addEventListener('click', handleShellClick);
 
   function destroy() {
-    if (portrait?.removeEventListener) portrait.removeEventListener('change', rotate);
-    else portrait?.removeListener?.(rotate);
     stage.removeEventListener('pointerdown', handleStagePointerDown);
     shell.removeEventListener('click', handleShellClick);
     if (shell.parentNode) {
