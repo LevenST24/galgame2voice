@@ -377,6 +377,7 @@ class TtsService:
             if cache_key:
                 cached = await self.cache_manager.get(cache_key, record_miss=False)
                 if cached is not None:
+                    await self._validate_queued_cache_identity(opts)
                     return cached[0]
             logger.debug("TTS Cache MISS for key %s ('%s'), invoking GPU synthesis", cache_key[:12] if cache_key else "none", text[:20])
             audio_bytes = await self.client.synthesize(text, options=opts)
@@ -412,6 +413,10 @@ class TtsService:
             generation_id=gen_id,
             task_id=task_id,
         )
+
+    async def _validate_queued_cache_identity(self, opts: dict[str, Any]) -> None:
+        """Recheck the pinned sources before delivering a queued cache hit."""
+        await asyncio.to_thread(opts["_audio_identity"].validate_sources, opts, self.client)
 
     async def _write_ephemeral_audio_file(
         self,
@@ -457,6 +462,7 @@ class TtsService:
             async def _do_synth_file() -> tuple[str, Path, int]:
                 cached = await self.cache_manager.get_file(cache_key, record_miss=False)
                 if cached is not None:
+                    await self._validate_queued_cache_identity(opts)
                     return cached
                 audio_b = await self.client.synthesize(text, options=opts)
                 if audio_b and cache_key:
@@ -561,6 +567,7 @@ class TtsService:
                 )) as cached_stream:
                     first_chunk = await anext(cached_stream, None)
                     if first_chunk is not None:
+                        await self._validate_queued_cache_identity(opts)
                         reused_cached_audio = True
                         yield first_chunk
                         async for chunk in cached_stream:
