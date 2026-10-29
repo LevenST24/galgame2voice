@@ -192,3 +192,46 @@ async def test_failed_inference_does_not_poison_queued_request(synthesis_stack):
     assert isinstance(results[0], RuntimeError)
     assert results[1][1].read_bytes() == audio
     assert client.synthesize.await_count == 2
+
+
+@pytest.mark.parametrize("mode", ["bytes", "file", "stream"])
+@pytest.mark.parametrize("changed", ["gpt", "sovits", "reference", "endpoint"])
+async def test_queued_cache_hit_revalidates_sources(synthesis_stack, tmp_path, mode, changed):
+    service, scheduler, cache, client, audio, started, release = synthesis_stack
+    files = {name: tmp_path / name for name in ("gpt", "sovits", "reference")}
+    for path in files.values():
+        path.write_bytes(b"old")
+    client.base_url = "http://engine-one"
+    opts = {
+        "_pre_resolved": True,
+        "gpt_weights_path": str(files["gpt"]),
+        "sovits_weights_path": str(files["sovits"]),
+        "ref_audio_path": str(files["reference"]),
+    }
+
+    async def consume_stream():
+        return b"".join([chunk async for chunk in service.stream_tts("hello", options=opts)])
+
+    first = asyncio.create_task(service.synthesize("hello", options=opts))
+    second = None
+    try:
+        await asyncio.wait_for(started.wait(), 3)
+        if mode == "stream":
+            second = asyncio.create_task(consume_stream())
+        else:
+            method = service.synthesize if mode == "bytes" else service.synthesize_to_file
+            second = asyncio.create_task(method("hello", options=opts))
+        await _wait_queued(scheduler, 1)
+        if changed == "endpoint":
+            client.base_url = "http://engine-two"
+        else:
+            files[changed].write_bytes(b"replacement contents")
+        release.set()
+        assert await first == audio
+        message = "语音引擎地址已改变" if changed == "endpoint" else "音色文件在等待合成期间发生变化"
+        with pytest.raises(ValueError, match=message):
+            await asyncio.wait_for(second, 5)
+        client.synthesize.assert_awaited_once()
+    finally:
+        release.set()
+        await asyncio.gather(first, *([second] if second else []), return_exceptions=True)

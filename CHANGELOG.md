@@ -23,6 +23,7 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ### Fixed
 
+- 修复语音请求排队期间模型或参考文件变化后，可能返回旧缓存音频的问题；现在会提示重新选择音色。
 - 导入包含逐句台词的聊天备份时，逐句数据以前没有存入数据库，换浏览器或重新加载历史后会丢失；现在会一同保存。
 
 - 修复打开玩家输入框时，上一句的点击等待图标仍显示的问题。
