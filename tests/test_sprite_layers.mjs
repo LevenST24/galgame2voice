@@ -172,7 +172,7 @@ function setup({ random = () => 0 } = {}) {
   return {
     doc, clock, view, model, images, decodes, mode, status, spriteLayer, fxLayer, faceSlot, LayerImage, flush,
     created: () => created,
-    stageBuffers: () => layerBuffers(spriteLayer.children[0]),
+    stageBuffers: () => layerBuffers(spriteLayer.children[0].children[0]),
     faceBuffers: () => layerBuffers(faceSlot),
     active() {
       const visible = list => list.find(el => el.classList.contains('is-visible'));
@@ -188,7 +188,7 @@ function setup({ random = () => 0 } = {}) {
 
 test('layered packs draw in div containers and never put children in an img', async () => {
   const h = setup();
-  const motion = h.spriteLayer.children[0];
+  const motion = h.spriteLayer.children[0].children[0];
   assert.deepEqual(motion.children.map(el => el.tagName), ['IMG', 'IMG'], 'whole-image DOM until a layered pack draws');
   assert.deepEqual(h.faceSlot.children.map(el => el.tagName), ['IMG', 'IMG']);
   assert.ok(h.model?.isV3, 'the normalized v3 payload reaches the renderer');
@@ -553,11 +553,11 @@ test('source fx layers replace the SVG mark and follow the acting gate', async (
   const { stage, face } = h.active();
   assert.ok(painted(stage).includes('fx_sweat'));
   assert.ok(painted(face).includes('fx_sweat'));
-  assert.equal(h.fxLayer.children.length, 0, 'no SVG mark next to source fx');
+  assert.equal(h.fxLayer.children[0].children.length, 0, 'no SVG mark next to source fx');
   await h.commit(v3('smile', { fx: 'sweat' }));
   assert.ok(!painted(h.active().stage).includes('fx_sweat'), 'the gate limits a repeated fx');
   await h.commit(v3('plain', { fx: 'heart' }));
-  assert.equal(h.fxLayer.children.length, 1, 'without source layers the SVG mark draws');
+  assert.equal(h.fxLayer.children[0].children.length, 1, 'without source layers the SVG mark draws');
   assert.ok(!painted(h.active().stage).includes('fx_sweat'));
 });
 

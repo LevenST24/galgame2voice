@@ -1001,3 +1001,10 @@ Questions requiring prototype/measurement evidence, with safe defaults already s
 
 Future multi-speaker generation needs an explicit speaker/kind protocol version; crop identity already works independently of stage visibility.
 Source analysis establishes assets/layouts/static frequency; browser quality, latency, IME, and model compliance require phase evidence.
+
+
+## 站位
+
+站位是会话内临时状态，不写入会话；横向五档，远近四档。以角色清单取景为基准，站位与一次性动作分别变换，头像裁切保持同步，头部特效跟随站位。横向按舞台宽度的 12% 一档，远近缩放依次为 0.84、1、1.12、1.24；根据脸部取景约束位置，变换时长 650ms。减少动态效果时直接到位。
+
+模型可选用 move 指示 approach、retreat、closeup、left、right、center；没有指示时，自动导演在至少三句间隔后依据情绪低概率移动，长期停留时逐步回归常态。切换会话重新初始化。

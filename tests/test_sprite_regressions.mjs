@@ -69,9 +69,9 @@ function setup(t) {
     for (const load of selected) error ? load.reject(new Error('bad image')) : load.resolve();
   };
   const flush = () => { const q = [...frames.values()]; frames.clear(); q.forEach(cb => cb()); };
-  const buffers = () => [...spriteLayer.children[0].children, ...faceSlot.children];
+  const buffers = () => [...spriteLayer.children[0].children[0].children, ...faceSlot.children];
   const snapshot = () => buffers().map(el => ({ src: el.src, style: { ...el.style }, classes: el.className }));
-  const visible = () => [spriteLayer.children[0]?.children || [], faceSlot.children].map(els =>
+  const visible = () => [spriteLayer.children[0]?.children[0]?.children || [], faceSlot.children].map(els =>
     els.filter(el => el.classList.contains('is-visible')).map(el => el.src));
   const commit = async (id, options = {}, fx = null) => {
     const pending = view.apply(input(id, fx), options);
@@ -187,12 +187,12 @@ test('reduced-motion classes are set immediately and removed on all three contai
 for (const flag of ['skipping', 'reducedMotion', 'suppressActing', 'hidden']) {
   test(`${flag} immediately stops motion and fx even when the next decode fails`, async t => {
     const h = setup(t); await h.commit('base', { motion: 'sigh' }, 'heart');
-    assert.ok(h.spriteLayer.children[0].classList.contains('adv-motion-sigh'));
-    assert.equal(h.fxLayer.children.length, 1);
+    assert.ok(h.spriteLayer.children[0].children[0].classList.contains('adv-motion-sigh'));
+    assert.equal(h.fxLayer.children[0].children.length, 1);
     if (flag === 'hidden') h.doc.hidden = true;
     const pending = h.view.apply(h.input('slow'), flag === 'hidden' ? {} : { [flag]: true });
-    assert.equal(h.spriteLayer.children[0].classList.contains('adv-motion-sigh'), false);
-    assert.equal(h.fxLayer.children.length, 0);
+    assert.equal(h.spriteLayer.children[0].children[0].classList.contains('adv-motion-sigh'), false);
+    assert.equal(h.fxLayer.children[0].children.length, 0);
     h.finish('slow', 0, true); await tick(); await pending;
   });
 }
@@ -201,24 +201,24 @@ test('document visibility is checked again in the commit frame', async t => {
   const h = setup(t);
   const pending = h.view.apply(h.input('1', 'heart'), { motion: 'nod' });
   h.finish('1'); await tick(); h.doc.hidden = true; h.flush(); await pending;
-  assert.equal(h.spriteLayer.children[0].classList.contains('adv-motion-nod'), false);
-  assert.equal(h.fxLayer.children.length, 0);
+  assert.equal(h.spriteLayer.children[0].children[0].classList.contains('adv-motion-nod'), false);
+  assert.equal(h.fxLayer.children[0].children.length, 0);
 });
 
 test('renderer gates each committed line using injected time, including a rejected intervening motion', async t => {
   const h = setup(t);
   await h.commit('1', { motion: 'nod' }, 'sweat');
   h.setTime(1000); await h.commit('2', { motion: 'bounce' }, 'sweat');
-  assert.equal(h.spriteLayer.children[0].classList.contains('adv-motion-bounce'), false);
-  assert.equal(h.fxLayer.children.length, 0);
+  assert.equal(h.spriteLayer.children[0].children[0].classList.contains('adv-motion-bounce'), false);
+  assert.equal(h.fxLayer.children[0].children.length, 0);
   h.setTime(3000); await h.commit('3', { motion: 'nod' }, 'sweat');
-  assert.equal(h.spriteLayer.children[0].classList.contains('adv-motion-nod'), true);
-  assert.equal(h.fxLayer.children.length, 1);
+  assert.equal(h.spriteLayer.children[0].children[0].classList.contains('adv-motion-nod'), true);
+  assert.equal(h.fxLayer.children[0].children.length, 1);
   h.setTime(6000); await h.commit('4', { motion: 'nod' });
-  assert.equal(h.spriteLayer.children[0].classList.contains('adv-motion-nod'), false);
+  assert.equal(h.spriteLayer.children[0].children[0].classList.contains('adv-motion-nod'), false);
   h.setTime(7000); await h.commit('5');
   h.setTime(9000); await h.commit('6', { motion: 'nod' });
-  assert.equal(h.spriteLayer.children[0].classList.contains('adv-motion-nod'), true, 'a line without motion breaks consecutive repetition');
+  assert.equal(h.spriteLayer.children[0].children[0].classList.contains('adv-motion-nod'), true, 'a line without motion breaks consecutive repetition');
 });
 
 test('gate tracks preceding line rather than preceding accepted motion', () => {
@@ -311,8 +311,8 @@ test('player suspension cancels pending apply and acting while retaining stage a
   assert.equal(old.value.stale, true);
   assert.deepEqual(h.visible()[0], ['/base']);
   assert.deepEqual(h.visible()[1], []);
-  assert.equal(h.fxLayer.children.length, 0);
-  assert.equal(h.spriteLayer.children[0].classList.contains('adv-motion-sigh'), false);
+  assert.equal(h.fxLayer.children[0].children.length, 0);
+  assert.equal(h.spriteLayer.children[0].children[0].classList.contains('adv-motion-sigh'), false);
   h.finish('slow'); await tick(); h.flush();
   assert.equal(h.view.getLastCommitted().faceUrl, '/base');
 });

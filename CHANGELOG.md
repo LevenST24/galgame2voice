@@ -6,6 +6,9 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- ADV 人物可随台词与情绪改变站位和远近，支持减少动态效果。
+
 ### Removed
 - 移除手机竖屏专用布局：竖向窗口（包括手机竖着拿）改为显示等比缩小的横屏舞台，上下留黑边；横过来就是完整画面。
 

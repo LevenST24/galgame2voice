@@ -9,7 +9,7 @@ from galgame2voice.services.chat_pipelines.acting_menu import (
     build_acting_menu,
     sanitize_act,
 )
-from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS
+from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS, MOVES
 
 LOGGER_NAME = "galgame2voice.services.chat_pipelines.acting_menu"
 
@@ -70,6 +70,7 @@ class TestBuildActingMenu:
             "poses": [],
             "blush": True,
             "motions": list(MOTIONS),
+            "moves": list(MOVES),
             "fx": list(FX),
         }
 
@@ -272,3 +273,18 @@ class TestSanitizeAct:
         assert sanitize_act({"fx": value}, MENU, line_index=0, character="测试") == {
             "fx": value
         }
+
+
+def test_moves_are_advertised_scanned_and_sanitized():
+    from galgame2voice.services.chat_pipelines.line_scanner import validate_line
+    from galgame2voice.services.chat_pipelines.reply_contract import render_lines_contract
+
+    menu = build_acting_menu(portrait_payload())
+    assert menu["moves"] == list(MOVES)
+    assert "只在人物真的移动时使用" in render_lines_contract(menu)
+    for move in MOVES:
+        line, _ = validate_line({"zh": "你好", "emotion": "happy", "act": {"move": move}})
+        assert sanitize_act(line.act, menu, line_index=0, character="test")["move"] == move
+    line, issues = validate_line({"zh": "你好", "emotion": "happy", "act": {"move": "fly"}})
+    assert "move" not in line.act and issues
+    assert sanitize_act({"move": []}, menu, line_index=0, character="test") == {}

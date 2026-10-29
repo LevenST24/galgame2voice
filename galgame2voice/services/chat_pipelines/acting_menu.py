@@ -12,12 +12,12 @@ from typing import Any
 
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db
-from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS
+from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS, MOVES
 
 logger = logging.getLogger(__name__)
 
 FACE_LIMIT = 40
-ACT_FIELDS = ("face", "pose", "motion", "blush", "fx")
+ACT_FIELDS = ("face", "pose", "motion", "blush", "fx", "move")
 
 
 async def get_recent_pose(db_path: str | Path, session_id: str) -> str | None:
@@ -143,6 +143,7 @@ def build_acting_menu(portrait: dict | None, outfit: str | None = None) -> dict 
             "pose_names": {pid: poses_meta[pid]["name"] for pid in poses},
             "blush": any(look_blush.values()),
             "motions": list(MOTIONS),
+            "moves": list(MOVES),
             "fx": list(FX),
             "default_pose": default_look_pose,
             "look_faces": look_faces,
@@ -196,6 +197,7 @@ def build_acting_menu(portrait: dict | None, outfit: str | None = None) -> dict 
         "poses": [],
         "blush": blush,
         "motions": list(MOTIONS),
+        "moves": list(MOVES),
         "fx": list(FX),
     }
 
@@ -279,7 +281,7 @@ def sanitize_act(
             clean["face"] = val
 
     # 4. Validate motion, blush, fx
-    for field in ("motion", "blush", "fx"):
+    for field in ("motion", "blush", "fx", "move"):
         if field not in act:
             continue
         value = act[field]
@@ -288,6 +290,11 @@ def sanitize_act(
                 clean["motion"] = value
             else:
                 _log_drop(character, line_index, field, value, "motion not allowed")
+        elif field == "move":
+            if isinstance(value, str) and value in MOVES:
+                clean["move"] = value
+            else:
+                _log_drop(character, line_index, field, value, "move not allowed")
         elif field == "blush":
             if not isinstance(value, bool):
                 _log_drop(character, line_index, field, value, "blush must be a boolean")
