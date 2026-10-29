@@ -293,7 +293,8 @@ export async function loadSessionVoiceSelect(session, { preserveDraft = false } 
     const active = voiceProfiles.find((p) => p.id === activeProfileId);
     if (_dom.sVoiceActive) {
       _dom.sVoiceActive.textContent = active ? `当前加载：${active.name}`
-        : (!voiceProfiles.length ? '首次使用：请选择模型权重和参考音频，创建会话音色。' : '');
+        : (!voiceProfiles.length && !session?.settings?.voiceProfileId
+          ? '首次使用：请选择模型权重和参考音频，创建会话音色。' : '');
     }
     const sortedProfiles = active ? [active, ...voiceProfiles.filter((p) => p !== active)] : voiceProfiles;
     for (const p of sortedProfiles) {
@@ -306,20 +307,21 @@ export async function loadSessionVoiceSelect(session, { preserveDraft = false } 
     customOpt.value = '__custom__';
     customOpt.textContent = '＋ 新建自定义音色（选择 ckpt / pth / 参考音频）…';
     _dom.sVoice.appendChild(customOpt);
+    const selection = keepDraft ? draftSelection : String(session?.settings?.voiceProfileId || '');
+    if (selection && selection !== '__custom__'
+        && !voiceProfiles.some(p => String(p.id) === selection)) {
+      const missingOpt = document.createElement('option');
+      missingOpt.value = selection;
+      missingOpt.textContent = keepDraft ? '原角色已不可用（人设草稿已保留，请重新选择角色）' : '原角色已不可用，请重新选择角色';
+      missingOpt.disabled = true;
+      _dom.sVoice.appendChild(missingOpt);
+    }
     if (keepDraft) {
-      if (draftSelection && draftSelection !== '__custom__'
-          && !voiceProfiles.some(p => String(p.id) === draftSelection)) {
-        const missingOpt = document.createElement('option');
-        missingOpt.value = draftSelection;
-        missingOpt.textContent = '原角色已不可用（人设草稿已保留，请重新选择角色）';
-        missingOpt.disabled = true;
-        _dom.sVoice.appendChild(missingOpt);
-      }
       _dom.sVoice.value = draftSelection;
-    } else if (!voiceProfiles.length) {
-      _dom.sVoice.value = '__custom__';
     } else if (session?.settings?.voiceProfileId) {
       _dom.sVoice.value = String(session.settings.voiceProfileId);
+    } else if (!voiceProfiles.length) {
+      _dom.sVoice.value = '__custom__';
     }
     const selVal = _dom.sVoice.value;
     const selectedId = selVal && selVal !== '__custom__' ? Number(selVal) : null;
@@ -594,8 +596,11 @@ async function handleSaveSessionSettings() {
       ? Number(_dom.sVoice.value)
       : null;
     if (voiceListUnavailable) profileId = s.settings?.voiceProfileId ?? null;
+    const missingBinding = !voiceListUnavailable && profileId === s.settings?.voiceProfileId
+      && profileId && !voiceProfiles.some(p => p.id === profileId)
+      && _promptOwnerId === profileId && (_dom.sSystem?.value || '').trim() === _promptBaseline.trim();
     if (!voiceListUnavailable && profileId
-        && (_promptOwnerId !== profileId || !voiceProfiles.some(p => p.id === profileId))) {
+        && !missingBinding && (_promptOwnerId !== profileId || !voiceProfiles.some(p => p.id === profileId))) {
       showToast('人设草稿与当前角色不一致，已保留编辑内容。请重新选择对应角色后再保存。', 'error');
       return;
     }
@@ -619,7 +624,9 @@ async function handleSaveSessionSettings() {
     saveState();
 
     // 人设提示词属于角色、不属于会话：写回角色包 manifest.json，DB 镜像由后端刷新
-    const { note: promptNote, confirmed: promptConfirmed } = voiceListUnavailable
+    const { note: promptNote, confirmed: promptConfirmed } = missingBinding
+      ? { note: '；原角色已不可用，音色绑定已保留，请重新选择角色', confirmed: true }
+      : voiceListUnavailable
       ? { note: '；角色列表未能加载，角色绑定与人设保持不变', confirmed: false }
       : await saveCharacterPrompt(profileId, editor);
 
