@@ -137,3 +137,21 @@ async def test_failed_delete_keeps_both_history_and_audio(tmp_path, monkeypatch)
             await crud.delete_session(conn, "s_keep")
         assert len(await crud.get_recent_messages(conn, session_id="s_keep")) == 1
         assert audio.read_bytes() == b"original"
+
+@pytest.mark.asyncio
+async def test_imported_lines_round_trip_through_history_and_export(tmp_path, monkeypatch):
+    db = tmp_path / "import-lines.db"
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
+    await init_db(db)
+    lines = [{"index": 0, "zh": "你好", "ja": "こんにちは", "emotion": "happy",
+              "act": {"face": "smile"}, "audio": {"status": "skipped", "chunks": []}}]
+    payload = {"sessions": [{"id": "s_import_lines", "title": "逐句", "messages": [
+        {"role": "assistant", "content": "你好", "japanese": "こんにちは", "lines": lines}
+    ]}]}
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+        response = await client.post("/api/chat/import", json=payload)
+        assert response.status_code == 200, response.text
+        history = (await client.get("/api/chat/history?session_id=s_import_lines")).json()
+        assert history["messages"][0]["lines"] == lines
+        backup = (await client.get("/api/chat/export")).json()
+        assert backup["sessions"][0]["messages"][0]["lines"] == lines

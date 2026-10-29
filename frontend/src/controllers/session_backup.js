@@ -78,7 +78,7 @@ export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => fa
       const payload = { sessions: incoming.sessions.map(session => ({ id: session.id, title: session.title,
         settings: session.settings, created_at: session.createdAt, updated_at: session.updatedAt,
         messages: session.messages.map(message => ({ role: message.role,
-          content: message.content, japanese: message.japanese || '', ts: message.ts })) })) };
+          content: message.content, japanese: message.japanese || '', ts: message.ts, lines: message.lines })) })) };
       await requestJson('/api/chat/import', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload) }, { timeoutMs: 60000 });
       const result = applySessionImport(incoming);
