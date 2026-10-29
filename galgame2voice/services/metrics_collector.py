@@ -6,17 +6,21 @@ Employs a dual-tier architecture: an in-memory ring buffer for instant UI querie
 and SQLite persistent storage for long-term historical analytics.
 """
 
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime, timezone
 import logging
 from typing import Any
 from pathlib import Path
+from itertools import repeat
 
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path
 from galgame2voice.services.tts_cache_manager import get_tts_cache_manager
 
 logger = logging.getLogger("galgame2voice.services.metrics_collector")
+
+# Limit temporary memory independently of the length of the whole context.
+_TOKEN_COUNT_CHUNK_SIZE = 2048
 
 # USD Pricing per 1,000,000 Tokens (Input / Output)
 DEFAULT_MODEL_KEY = "default"
@@ -136,17 +140,26 @@ class MetricsCollector:
 
         cjk_count = 0
         non_cjk_chars = 0
-        for ch in text:
-            code = ord(ch)
-            if (
-                0x4E00 <= code <= 0x9FFF
-                or 0x3040 <= code <= 0x309F
-                or 0x30A0 <= code <= 0x30FF
-                or 0x3400 <= code <= 0x4DBF
-            ):
-                cjk_count += 1
-            elif not ch.isspace():
-                non_cjk_chars += 1
+        for offset in range(0, len(text), _TOKEN_COUNT_CHUNK_SIZE):
+            chunk = text[offset:offset + _TOKEN_COUNT_CHUNK_SIZE]
+            sample = chunk[:256]
+            # A mostly unique chunk gains little from a frequency table. Keep
+            # this branch local to the chunk so later repetitive text is fast.
+            if len(sample) == 256 and len(set(sample)) >= 128:
+                counts = zip(chunk, repeat(1))
+            else:
+                counts = Counter(chunk).items()
+            for ch, count in counts:
+                code = ord(ch)
+                if (
+                    0x4E00 <= code <= 0x9FFF
+                    or 0x3040 <= code <= 0x309F
+                    or 0x30A0 <= code <= 0x30FF
+                    or 0x3400 <= code <= 0x4DBF
+                ):
+                    cjk_count += count
+                elif not ch.isspace():
+                    non_cjk_chars += count
 
         estimated = int(cjk_count * 1.1 + (non_cjk_chars / 3.5) + 1)
         return max(1, estimated)
