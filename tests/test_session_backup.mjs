@@ -184,4 +184,15 @@ function uiFixture() {
   assert.equal(request.sessions[0].messages[0].content, 'Original message');
   assert.equal(elements.get('gImportChats').disabled, false); passed++;
 }
+{
+  const data = saved();
+  const lines = [{ index: 0, zh: '你好', ja: 'こんにちは', emotion: 'happy', act: { face: 'smile' }, audio: { status: 'skipped', chunks: [] } }];
+  data.sessions[0].messages.push({ id: 'm_reply', role: 'assistant', content: '你好', japanese: 'こんにちは', ts: 2, lines });
+  storage(data); loadState();
+  const { fileInput } = uiFixture();
+  let request;
+  globalThis.fetch = async (_url, options) => { request = JSON.parse(options.body); return { ok: true, json: async () => ({ status: 'ok' }) }; };
+  await fileInput.handlers.change();
+  assert.deepEqual(request.sessions[0].messages[1].lines, lines); passed++;
+}
 console.log(`Session backup and recovery: ${passed} scenarios passed`);
