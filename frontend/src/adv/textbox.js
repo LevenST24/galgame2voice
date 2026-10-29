@@ -621,9 +621,6 @@ export function createTextbox(container, opts = {}) {
         measurerEl.textContent = displayCandidate;
         const rect = measurerEl.getBoundingClientRect();
         const colRect = textColumnEl.getBoundingClientRect?.() || {};
-        if (container.closest?.('.is-portrait') && colRect.width > 0) {
-          return rect.height <= primaryTextEl.getBoundingClientRect().height;
-        }
         if (rect.width > 0 && colRect.width > 0) {
           return rect.width <= colRect.width;
         }
@@ -640,9 +637,6 @@ export function createTextbox(container, opts = {}) {
         subMeasurerEl.textContent = displayCandidate;
         const rect = subMeasurerEl.getBoundingClientRect();
         const colRect = textColumnEl.getBoundingClientRect?.() || {};
-        if (container.closest?.('.is-portrait') && colRect.width > 0) {
-          return rect.height <= subtitleTextEl.getBoundingClientRect().height;
-        }
         if (rect.width > 0 && colRect.width > 0) {
           return rect.width <= colRect.width;
         }
