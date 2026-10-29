@@ -14,6 +14,7 @@ from galgame2voice.database.models import (
     VoiceProfileUpdate,
 )
 from galgame2voice.database.session import immediate_transaction
+from galgame2voice.database.commit_hooks import after_commit
 
 logger = logging.getLogger("galgame2voice.database.crud_modules.voice_profiles")
 
@@ -41,6 +42,25 @@ def _row_to_voice_profile(row: aiosqlite.Row | None) -> VoiceProfileResponse | N
     d = dict(row)
     d["is_default"] = bool(d.get("is_default", 0))
     return VoiceProfileResponse(**d)
+
+
+async def invalidate_profiles_after_commit(conn: aiosqlite.Connection) -> None:
+    """A profile/settings/package write invalidates all selectors in its DB."""
+    db_path = getattr(conn, "_db_path", None)
+    if db_path is None:
+        cursor = await conn.execute("PRAGMA database_list;")
+        rows = await cursor.fetchall()
+        db_path = next((row[2] for row in rows if row[1] == "main"), None)
+    path = str(db_path) if db_path else None
+
+    def invalidate() -> None:
+        from galgame2voice.services import voice_resolver
+
+        resolver = voice_resolver._GLOBAL_VOICE_RESOLVER
+        if resolver is not None:
+            resolver.invalidate(db_path=path)
+
+    after_commit(conn, invalidate, key=("voice_profiles", path))
 
 
 async def list_voice_profiles(conn: aiosqlite.Connection) -> list[VoiceProfileResponse]:
@@ -119,6 +139,7 @@ async def create_voice_profile(conn: aiosqlite.Connection, profile: VoiceProfile
             profile.system_prompt, 1 if profile.is_default else 0
         ))
         new_id = cursor.lastrowid
+        await invalidate_profiles_after_commit(conn)
     res = await get_voice_profile(conn, new_id)
     if res is None:
         raise RuntimeError(f"Failed to retrieve created voice profile {new_id}")
@@ -153,6 +174,7 @@ async def update_voice_profile(conn: aiosqlite.Connection, profile_id: int, upda
             if up_dict.get("is_default"):
                 await conn.execute("UPDATE voice_profiles SET is_default = 0 WHERE id != ?;", (profile_id,))
             await conn.execute(query, tuple(values))
+            await invalidate_profiles_after_commit(conn)
 
     return await get_voice_profile(conn, profile_id)
 
@@ -161,12 +183,24 @@ async def set_active_voice_profile(conn: aiosqlite.Connection, profile_id: int) 
     """Sets the active voice profile ID in the settings table."""
     try:
         async with immediate_transaction(conn):
-            await conn.execute("UPDATE settings SET active_voice_profile_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1;", (profile_id,))
+            cursor = await conn.execute(
+                "UPDATE settings SET active_voice_profile_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1;",
+                (profile_id,),
+            )
+            if not cursor.rowcount:
+                return False
+            await invalidate_profiles_after_commit(conn)
         return True
     except Exception:
         try:
             async with immediate_transaction(conn):
-                await conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('active_voice_profile_id', ?);", (str(profile_id),))
+                cursor = await conn.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES ('active_voice_profile_id', ?);",
+                    (str(profile_id),),
+                )
+                if not cursor.rowcount:
+                    return False
+                await invalidate_profiles_after_commit(conn)
             return True
         except Exception:
             return False
@@ -176,4 +210,6 @@ async def delete_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> b
     """Deletes a voice profile record by its ID."""
     async with immediate_transaction(conn):
         cursor = await conn.execute("DELETE FROM voice_profiles WHERE id = ?;", (profile_id,))
+        if cursor.rowcount:
+            await invalidate_profiles_after_commit(conn)
     return cursor.rowcount > 0

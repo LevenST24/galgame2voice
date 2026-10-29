@@ -306,7 +306,7 @@ class TtsScheduler:
         Awaits and returns the result once executed.
         """
         self._ensure_worker()
-        tid = task_id or f"tts_{uuid.uuid4().hex[:12]}"
+        tid = task_id or f"tts_{uuid.uuid4().hex}"
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
 
@@ -335,11 +335,14 @@ class TtsScheduler:
         """Assigns sequence number and adds task to priority queue under scheduler lock."""
         assert self._lock is not None and self._queue is not None
         async with self._lock:
-            self._seq += 1
-            task.seq = self._seq
-            self._tasks_by_id[task.task_id] = task
-            if task.generation_id:
-                self._tasks_by_gen.setdefault(task.generation_id, set()).add(task.task_id)
+            with self._sync_lock:
+                if task.task_id in self._tasks_by_id:
+                    raise ValueError("语音任务标识已占用，请重试。")
+                self._seq += 1
+                task.seq = self._seq
+                self._tasks_by_id[task.task_id] = task
+                if task.generation_id:
+                    self._tasks_by_gen.setdefault(task.generation_id, set()).add(task.task_id)
             await self._queue.put(task)
 
     async def schedule_stream(
@@ -355,7 +358,7 @@ class TtsScheduler:
         buffer (asyncio.Queue) to the caller.
         """
         self._ensure_worker()
-        tid = task_id or f"stream_{uuid.uuid4().hex[:12]}"
+        tid = task_id or f"stream_{uuid.uuid4().hex}"
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
         # Stream errors reach the caller through the chunk queue, rather than
@@ -465,10 +468,12 @@ class TtsScheduler:
         with self._sync_lock:
             task_ids = self._tasks_by_gen.pop(generation_id, set())
             for tid in task_ids:
-                task = self._tasks_by_id.pop(tid, None)
-                if task and not task.future.done():
-                    self._cancel_scheduled_task(task)
-                    cancelled_count += 1
+                task = self._tasks_by_id.get(tid)
+                if task is not None and task.generation_id == generation_id:
+                    self._tasks_by_id.pop(tid)
+                    if not task.future.done():
+                        self._cancel_scheduled_task(task)
+                        cancelled_count += 1
         if cancelled_count > 0:
             logger.info("TtsScheduler: Cancelled %d pending tasks for stale generation %s", cancelled_count, generation_id)
         return cancelled_count
@@ -534,11 +539,21 @@ class TtsScheduler:
                 self._queue.task_done()
 
     def _cleanup_task_tracking(self, task: ScheduledTtsTask) -> None:
-        self._tasks_by_id.pop(task.task_id, None)
-        if task.generation_id and task.generation_id in self._tasks_by_gen:
-            self._tasks_by_gen[task.generation_id].discard(task.task_id)
-            if not self._tasks_by_gen[task.generation_id]:
-                self._tasks_by_gen.pop(task.generation_id, None)
+        # Cancellation releases an ID before its old execution finishes cleanup.
+        # Retire only this owner, preserving a replacement and its generation.
+        with self._sync_lock:
+            current = self._tasks_by_id.get(task.task_id)
+            if current is task:
+                self._tasks_by_id.pop(task.task_id)
+            replacement_in_generation = (
+                current is not None and current is not task and current.generation_id == task.generation_id
+            )
+            if task.generation_id and not replacement_in_generation:
+                generation = self._tasks_by_gen.get(task.generation_id)
+                if generation is not None:
+                    generation.discard(task.task_id)
+                    if not generation:
+                        self._tasks_by_gen.pop(task.generation_id)
 
     async def aclose(self) -> None:
         """Cancels all jobs, wakes stream readers, and drains the worker and queue."""

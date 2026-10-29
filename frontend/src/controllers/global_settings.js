@@ -1,8 +1,6 @@
 // Global Settings Controller: LLM Providers, Hardware Telemetry, Telegram, Audio Cache
 import {
   fetchProviders,
-  saveProvider,
-  activateProvider as apiActivateProvider,
   testProviderConnection,
   getErrorMessage,
   requestJson,
@@ -13,10 +11,12 @@ import { showToast } from '../ui.js';
 import { clearMemAudioCache } from '../cache.js';
 import { initEngineDirectory } from './engine_directory.js';
 import { waitForEngine } from './engine_recovery.js';
-import { saveConfirmedConfig } from './config_recovery.js';
-import { initSettingsTabs } from '../settings_ui.js';
+import { runSettingsMutation, saveConfirmedConfig } from './config_recovery.js';
+import { saveConfirmedProvider, activateConfirmedProvider } from './provider_recovery.js';
+import { initSettingsTabs, onModalChange } from '../settings_ui.js';
 
 const $ = (id) => document.getElementById(id);
+const UNCONFIRMED_RESTART_MESSAGE = '重启请求结果未确认；当前引擎已在线。计算方式以「启动计算方式」显示的状态为准。';
 
 let _dom = {};
 let _callbacks = {};
@@ -24,7 +24,14 @@ let cachedProviders = [];
 let cachedPresets = [];
 let currentActiveProvider = null;
 let providersLoaded = false;
+let providerReadError = false;
 let providerDirty = false;
+let providerRevision = 0;
+let providerLoad = 0;
+let providerSaving = false;
+let configSaving = false;
+const dirtyProviderFields = new Set();
+const PROVIDER_FIELDS = ['gApiKey', 'gBaseUrl', 'gChatModel', 'gChatModelSelect', 'gReasoningEffort', 'gCustomName'];
 let engineDirectory = null;
 let configDirty = false;
 let configRevision = 0;
@@ -37,6 +44,14 @@ const dirtyConfigFields = new Set();
 const RESET_CONFIG_FIELDS = ['gParamSpeed', 'gParamTopK', 'gParamTopP', 'gParamTemp', 'gParamSliceMethod',
   'gPrecision', 'gAudioRetention'];
 let restarting = false;
+let precisionRevision = 0;
+let engineStatusRevision = 0;
+let engineRestartUnconfirmed = false;
+let telemetryTimer = null;
+let telemetryGeneration = 0;
+let telemetryActive = false;
+let telemetryController = null;
+let unsubscribeTelemetry = null;
 let privateEndpointRevision = 0;
 let privateEndpointSaved = false;
 let privateEndpointSaving = false;
@@ -54,10 +69,37 @@ export function haveProvidersLoaded() {
   return providersLoaded;
 }
 
+export function hasProviderReadError() {
+  return providerReadError;
+}
+
+function markProviderDirty(field) {
+  providerDirty = true;
+  providerRevision += 1;
+  dirtyProviderFields.add(field);
+  if (field === 'gChatModelSelect') dirtyProviderFields.add('gChatModel');
+}
+
+function updateSaveButtons() {
+  const busy = providerSaving || configSaving;
+  if (_dom.gProviderActivate) _dom.gProviderActivate.disabled = busy;
+  if (_dom.gTgSave) _dom.gTgSave.disabled = busy;
+}
+
 export function initGlobalSettings(dom, callbacks = {}) {
+  unsubscribeTelemetry?.();
+  stopTelemetryRefresh();
   _dom = dom;
   _callbacks = callbacks;
+  engineStatusRevision += 1;
+  engineRestartUnconfirmed = false;
+  precisionRevision += 1;
   providerDirty = false;
+  providerRevision += 1;
+  providerLoad += 1;
+  dirtyProviderFields.clear();
+  providerSaving = configSaving = false;
+  updateSaveButtons();
   configDirty = false;
   configRevision = 0;
   configLoad = 0;
@@ -75,12 +117,32 @@ export function initGlobalSettings(dom, callbacks = {}) {
     });
   });
   engineDirectory = initEngineDirectory(dom, showToast, () => _callbacks.onSovitsDirectorySaved?.());
+  const telemetryDocument = document;
+  const syncTelemetryVisibility = () => {
+    if (settingsVisible() && !telemetryDocument.hidden) startTelemetryRefresh();
+    else stopTelemetryRefresh();
+  };
+  const unsubscribeModal = onModalChange(syncTelemetryVisibility);
+  telemetryDocument.addEventListener?.('visibilitychange', syncTelemetryVisibility);
+  unsubscribeTelemetry = () => {
+    unsubscribeModal();
+    telemetryDocument.removeEventListener?.('visibilitychange', syncTelemetryVisibility);
+  };
 
   // 选项卡切换
-  initSettingsTabs(_dom.gTabs);
-  $('gOpenSessionSettings')?.addEventListener('click', () => {
+  initSettingsTabs(_dom.gTabs, name => _callbacks.onSettingsTabChange?.(name));
+  for (const id of ['gOpenSessionSettings', 'gOpenCharacterSettings']) $(id)?.addEventListener('click', () => {
+    if (_callbacks.onSettingsTabChange) {
+      if (id === 'gOpenSessionSettings') _dom.gTabs?.querySelector('[data-gtab="session"]')?.click();
+      return;
+    }
     _callbacks.closeModal?.(_dom.globalModal);
     _callbacks.onOpenSessionSettings?.();
+  });
+  $('gOpenChatExperience')?.addEventListener('click', () => {
+    if (_callbacks.onSettingsTabChange) return;
+    _callbacks.closeModal?.(_dom.globalModal);
+    _callbacks.onOpenReadingSettings?.();
   });
 
   // 推理参数滑块数值联动
@@ -138,13 +200,11 @@ export function initGlobalSettings(dom, callbacks = {}) {
   // 精度下拉菜单自动保存
   if (_dom.gPrecision) {
     _dom.gPrecision.addEventListener('change', async () => {
+      const revision = ++precisionRevision;
       const val = _dom.gPrecision.value;
       try {
-        await requestJson('/api/config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ inference_precision: val }),
-        });
+        await saveConfirmedConfig({ inference_precision: val });
+        if (revision !== precisionRevision) return;
         const labelMap = {
           auto: '自动判定 (Auto)',
           fp16: 'FP16 半精度',
@@ -154,6 +214,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
         showToast(`已保存推理设置: ${labelMap[val] || val}。请点击【重启 SoVITS 引擎】应用。`, 'info');
         fetchSystemTelemetry();
       } catch (err) {
+        if (revision !== precisionRevision) return;
         showToast(`推理设置尚未保存：${err.message}。当前选择已保留。`, 'error');
       }
     });
@@ -187,6 +248,10 @@ export function initGlobalSettings(dom, callbacks = {}) {
   if (diagVoiceChip) {
     diagVoiceChip.style.cursor = 'pointer';
     diagVoiceChip.addEventListener('click', () => {
+      if (_callbacks.onSettingsTabChange) {
+        _dom.gTabs?.querySelector('[data-gtab="session"]')?.click();
+        return;
+      }
       _callbacks.closeModal?.(_dom.globalModal);
       _callbacks.onOpenSessionSettings?.();
     });
@@ -203,10 +268,8 @@ export function initGlobalSettings(dom, callbacks = {}) {
   if (_dom.gChatModelSelect) _dom.gChatModelSelect.addEventListener('change', onChatModelSelectChange);
   if (_dom.gProviderTest) _dom.gProviderTest.addEventListener('click', handleProviderTest);
   if (_dom.gProviderActivate) _dom.gProviderActivate.addEventListener('click', handleActivateProvider);
-  for (const field of ['gApiKey', 'gBaseUrl', 'gChatModel', 'gChatModelSelect', 'gReasoningEffort', 'gCustomName']) {
-    for (const event of ['input', 'change']) _dom[field]?.addEventListener(event, () => {
-      providerDirty = true;
-    });
+  for (const field of PROVIDER_FIELDS) {
+    for (const event of ['input', 'change']) _dom[field]?.addEventListener(event, () => markProviderDirty(field));
   }
 
   // 恢复默认参数
@@ -254,10 +317,13 @@ export function openGlobalSettings(tabName = null) {
   if (typeof tabName === 'string' && tabName && _dom.gTabs) {
     const tabBtn = _dom.gTabs.querySelector(`[data-gtab="${tabName}"]`);
     if (tabBtn) tabBtn.click();
+  } else {
+    _callbacks.onSettingsTabChange?.(_dom.gTabs?.querySelector('.active')?.dataset.gtab);
   }
   loadProviders();
   loadGlobalConfig();
-  fetchSystemTelemetry();
+  if (settingsVisible()) startTelemetryRefresh();
+  else if (!document.hidden) fetchSystemTelemetry();
   if (_callbacks.loadSystemVersionInfo) {
     _callbacks.loadSystemVersionInfo(false).catch(() => {});
   }
@@ -269,17 +335,49 @@ export function openGlobalSettings(tabName = null) {
   }
 }
 
-export async function loadProviders() {
-  const previousOptions = _dom.gProvider?.innerHTML;
-  if (_dom.gProvider) _dom.gProvider.innerHTML = '<option value="">加载模型列表…</option>';
+function settingsVisible() {
+  return _dom.globalModal && !_dom.globalModal.hidden && !_dom.globalModal.classList.contains('hidden');
+}
+
+function stopTelemetryRefresh() {
+  clearTimeout(telemetryTimer);
+  telemetryTimer = null;
+  telemetryActive = false;
+  telemetryController?.abort();
+  telemetryController = null;
+  telemetryGeneration += 1;
+  engineStatusRevision += 1;
+}
+
+function startTelemetryRefresh() {
+  if (telemetryActive || document.hidden || !settingsVisible()) return;
+  telemetryActive = true;
+  const generation = ++telemetryGeneration;
+  const refresh = async () => {
+    // Restart owns its own readiness polling. Status refreshes never restart or
+    // reconfigure the engine, and closed dialogs do not leave timers behind.
+    if (!restarting && !document.hidden) await fetchSystemTelemetry();
+    if (generation !== telemetryGeneration) return;
+    if (!settingsVisible()) { stopTelemetryRefresh(); return; }
+    telemetryTimer = setTimeout(refresh, 5000);
+  };
+  refresh();
+}
+
+export async function loadProviders({ formRevision = providerRevision } = {}) {
+  const load = ++providerLoad;
+  const hadOptions = Boolean(_dom.gProvider?.children.length);
+  if (_dom.gProvider && !hadOptions) _dom.gProvider.innerHTML = '<option value="">加载模型列表…</option>';
   try {
     const data = await fetchProviders();
+    if (load !== providerLoad) return;
     cachedProviders = data && data.providers ? data.providers : [];
     cachedPresets = data && data.presets && data.presets.length ? data.presets : BUILTIN_PRESETS;
 
     const active = cachedProviders.find((p) => p.is_active);
     currentActiveProvider = active || null;
     providersLoaded = true;
+    providerReadError = false;
     if (_callbacks.updateBadge) _callbacks.updateBadge();
 
     const presetOrder = ['gemini', 'openai', 'anthropic', 'deepseek', 'xai', 'siliconflow', 'glm', 'qwen', 'custom'];
@@ -326,6 +424,8 @@ export async function loadProviders() {
       ? [items.find((i) => i.id === active.id) || active, ...items.filter((i) => i.id !== active.id)]
       : items;
 
+    const keepDraft = providerDirty || providerRevision !== formRevision;
+    const selection = keepDraft ? _dom.gProvider?.value : null;
     if (_dom.gProvider) {
       _dom.gProvider.innerHTML = '';
       sorted.forEach((p) => {
@@ -340,17 +440,19 @@ export async function loadProviders() {
       customOpt.textContent = '＋ 自定义模型 / 接口…';
       if (!active && !sorted.length) customOpt.selected = true;
       _dom.gProvider.appendChild(customOpt);
+      if (selection && [..._dom.gProvider.children].some(option => option.value === selection)) {
+        _dom.gProvider.value = selection;
+      }
     }
 
-    onProviderChange();
+    renderLoadedProvider(keepDraft);
   } catch (e) {
+    if (load !== providerLoad) return;
     console.error('Failed to load providers:', e);
-    if (!providersLoaded) {
-      providersLoaded = true;
-      if (_callbacks.updateBadge) _callbacks.updateBadge();
-    }
-    if (cachedProviders.length || _dom.gApiKey?.value || _dom.gBaseUrl?.value) {
-      if (_dom.gProvider) _dom.gProvider.innerHTML = previousOptions;
+    providersLoaded = true;
+    providerReadError = true;
+    if (_callbacks.updateBadge) _callbacks.updateBadge();
+    if (hadOptions) {
       showToast(`列表暂时无法刷新，当前输入已保留：${e.message}`, 'error');
       return;
     }
@@ -368,13 +470,30 @@ export async function loadProviders() {
       _dom.gProvider.appendChild(customOpt);
     }
     showToast(`提供商列表加载异常: ${e.message || e}`, 'error');
-    onProviderChange();
+    renderLoadedProvider(providerDirty || providerRevision !== formRevision);
   }
 }
 
 export function onProviderChange() {
   providerDirty = false;
+  providerRevision += 1;
+  dirtyProviderFields.clear();
+  renderProviderForm();
+}
+
+function renderLoadedProvider(keepDraft) {
+  renderProviderForm(keepDraft);
+  if (!keepDraft) {
+    providerDirty = false;
+    dirtyProviderFields.clear();
+  }
+}
+
+function renderProviderForm(keepDraft = false) {
   if (!_dom.gProvider) return;
+  const fill = (field, apply) => {
+    if (_dom[field] && !(keepDraft && dirtyProviderFields.has(field))) apply(_dom[field]);
+  };
   const pid = _dom.gProvider.value;
   const isCustom = pid === 'custom' || pid === '__custom__';
   const realId = isCustom ? 'custom' : pid;
@@ -385,9 +504,7 @@ export function onProviderChange() {
   // 1. 自定义提供商名称字段显隐
   if (_dom.gCustomNameField) {
     _dom.gCustomNameField.classList.toggle('hidden', !isCustom);
-    if (_dom.gCustomName) {
-      _dom.gCustomName.value = isCustom ? stored?.name || '自定义模型' : '';
-    }
+    fill('gCustomName', el => { el.value = isCustom ? stored?.name || '自定义模型' : ''; });
   }
 
   // 2. 当前生效状态徽标与描述文本
@@ -407,14 +524,12 @@ export function onProviderChange() {
   }
 
   // 3. API Key 状态与脱敏占位符处理
-  if (_dom.gApiKey) {
-    _dom.gApiKey.value = '';
-    _dom.gApiKey.type = 'password';
-  }
-  if (_dom.gBtnToggleKeyText) {
+  const keepKey = keepDraft && dirtyProviderFields.has('gApiKey');
+  fill('gApiKey', el => { el.value = ''; el.type = 'password'; });
+  if (_dom.gBtnToggleKeyText && !keepKey) {
     _dom.gBtnToggleKeyText.textContent = '显示';
   }
-  if (_dom.gIconKeyEye) {
+  if (_dom.gIconKeyEye && !keepKey) {
     const use = _dom.gIconKeyEye.querySelector('use');
     if (use) use.setAttribute('href', '#i-eye');
   }
@@ -442,22 +557,23 @@ export function onProviderChange() {
   // 4. Base URL 填充与一键恢复默认
   const defaultUrl = preset?.default_base_url || (isCustom ? 'http://127.0.0.1:11434/v1' : 'https://api.openai.com/v1');
   const currentUrl = stored?.api_base_url || defaultUrl;
-  if (_dom.gBaseUrl) {
-    _dom.gBaseUrl.value = currentUrl;
-    _dom.gBaseUrl.placeholder = defaultUrl;
-  }
+  fill('gBaseUrl', el => { el.value = currentUrl; el.placeholder = defaultUrl; });
   if (_dom.gBtnResetBaseUrl) {
     _dom.gBtnResetBaseUrl.textContent = '重置为默认';
     _dom.gBtnResetBaseUrl.title = `恢复官方默认端点: ${defaultUrl}`;
     _dom.gBtnResetBaseUrl.onclick = () => {
-      if (_dom.gBaseUrl) _dom.gBaseUrl.value = defaultUrl;
+      if (_dom.gBaseUrl) {
+        _dom.gBaseUrl.value = defaultUrl;
+        markProviderDirty('gBaseUrl');
+      }
       showToast(`已恢复官方默认 Base URL: ${defaultUrl}`, 'info');
     };
   }
 
   // 5. 对话模型选择
   const presetModels = preset?.preset_models || (stored?.chat_model ? [stored.chat_model] : []);
-  if (_dom.gChatModelSelect) {
+  const keepModelSelect = keepDraft && dirtyProviderFields.has('gChatModelSelect');
+  if (_dom.gChatModelSelect && !keepModelSelect) {
     _dom.gChatModelSelect.innerHTML = '';
     const placeholderOpt = document.createElement('option');
     placeholderOpt.value = '';
@@ -475,11 +591,10 @@ export function onProviderChange() {
     _dom.gChatModelSelect.appendChild(customModelOpt);
   }
 
-  const currentModel = stored?.chat_model || preset?.default_chat_model || presetModels[0] || '';
-  if (_dom.gChatModel) {
-    _dom.gChatModel.value = currentModel;
-  }
-  if (_dom.gChatModelSelect) {
+  const currentModel = keepDraft && dirtyProviderFields.has('gChatModel') ? _dom.gChatModel.value
+    : stored?.chat_model || preset?.default_chat_model || presetModels[0] || '';
+  fill('gChatModel', el => { el.value = currentModel; });
+  if (_dom.gChatModelSelect && !keepModelSelect) {
     if (presetModels.includes(currentModel)) {
       _dom.gChatModelSelect.value = currentModel;
     } else if (currentModel) {
@@ -490,9 +605,7 @@ export function onProviderChange() {
   }
 
   // 6. 思考强度设置
-  if (_dom.gReasoningEffort) {
-    _dom.gReasoningEffort.value = stored ? (stored.reasoning_effort || '') : (preset?.default_reasoning_effort || '');
-  }
+  fill('gReasoningEffort', el => { el.value = stored ? (stored.reasoning_effort || '') : (preset?.default_reasoning_effort || ''); });
 
   // 7. 诊断输出框重置
   if (_dom.gProviderTestResult) {
@@ -635,8 +748,11 @@ export async function handleActivateProvider() {
 // The footer save reuses this; it reports success itself and must say the rest was not saved either.
 async function saveAndActivateProvider({ fromFooter = false } = {}) {
   if (!_dom.gProviderActivate || !_dom.gProvider) return false;
+  if (providerSaving || configSaving && !fromFooter) return false;
   if (connectionPreferencePending()) return false;
-  _dom.gProviderActivate.disabled = true;
+  const savedRevision = providerRevision;
+  providerSaving = true;
+  updateSaveButtons();
   const origHtml = _dom.gProviderActivate.innerHTML;
   _dom.gProviderActivate.innerHTML =
     '<svg class="icon" style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-check"></use></svg><span>保存并启用中…</span>';
@@ -680,51 +796,84 @@ async function saveAndActivateProvider({ fromFooter = false } = {}) {
       payload.api_key = apiKey;
     }
 
-    await saveProvider(payload);
-
-    const actResult = await apiActivateProvider(pid);
-    const active = actResult.active_provider;
+    const saved = await saveConfirmedProvider(payload);
+    // is_active is committed with the fields by POST /providers. A second
+    // activation can fail after success, or overwrite a later tab's selection.
+    const active = saved?.provider?.id === pid && saved.provider.is_active === true
+      ? saved.provider : (await activateConfirmedProvider(payload)).active_provider;
 
     currentActiveProvider = active || { name: payload.name, chat_model: chatModel };
     if (_callbacks.updateBadge) _callbacks.updateBadge();
 
-    providerDirty = false;
-    if (!fromFooter) showToast(`已成功保存并启用：${payload.name} · ${chatModel}`, 'success');
-    await loadProviders();
+    if (savedRevision === providerRevision) {
+      providerDirty = false;
+      dirtyProviderFields.clear();
+    }
+    await loadProviders({ formRevision: savedRevision });
+    if (!fromFooter) showToast(`已成功保存并启用：${payload.name} · ${chatModel}${providerDirty ? '；当前修改尚未保存。' : ''}`, 'success');
     return true;
   } catch (e) {
     console.error('Failed to activate provider:', e);
-    showToast(`模型设置未保存或启用失败：${e.message || e}${fromFooter ? '；其他设置也还没有保存' : ''}`, 'error');
+    const message = e.code === 'PROVIDER_UNCONFIRMED' ? e.message : `模型设置未保存或启用失败：${e.message || e}`;
+    showToast(`${message}${fromFooter ? '；其他设置也还没有保存' : ''}`, 'error');
     return false;
   } finally {
-    _dom.gProviderActivate.disabled = false;
+    providerSaving = false;
+    updateSaveButtons();
     _dom.gProviderActivate.innerHTML = origHtml;
   }
 }
 
+function renderEngineStatus(status) {
+  const ready = status.state === 'ready' && status.ready === true;
+  const loading = status.state === 'starting' || status.state === 'loading_slow';
+  const checking = status.state === 'checking';
+  if (_dom.gDashSovitsBadge) {
+    _dom.gDashSovitsBadge.className = `badge-status-pill badge-pill-${ready ? 'green' : loading || checking ? 'yellow' : 'red'}`;
+    _dom.gDashSovitsBadge.textContent = ready ? '在线' : status.state === 'loading_slow' ? '加载较慢'
+      : loading ? '启动中' : checking ? '待确认' : status.state === 'failed' ? '启动失败' : '离线';
+  }
+  if (_dom.gDashSovitsStatus) {
+    _dom.gDashSovitsStatus.textContent = ready && engineRestartUnconfirmed && !status.message?.includes('重启请求结果未确认')
+      ? UNCONFIRMED_RESTART_MESSAGE
+      : status.message;
+  }
+  if (_dom.gDashSovitsUrl && status.base_url) _dom.gDashSovitsUrl.textContent = status.base_url;
+}
+
 export async function fetchSystemTelemetry() {
+  if (document.hidden || (_dom.globalModal && !settingsVisible())) return;
+  telemetryController?.abort();
+  const controller = new AbortController();
+  telemetryController = controller;
+  const revision = ++engineStatusRevision;
+  const current = () => telemetryController === controller && !controller.signal.aborted && revision === engineStatusRevision;
   try {
-    const [statusRes, cacheRes] = await Promise.all([
-      requestJson('/api/system/status', {}, { timeoutMs: 15000 }).catch(() => null),
-      requestJson('/api/cache/stats', {}, { timeoutMs: 15000 }).catch(() => null),
-    ]);
-    if (statusRes) {
-      const data = statusRes;
+    let statusRes = null, engineRes = null;
+    const renderStatus = data => {
+      if (!current() || !data) return;
       // 1. GPT-SoVITS
-      if (data.gpt_sovits && _dom.gDashSovitsStatus) {
+      if (data.gpt_sovits && _dom.gDashSovitsStatus && revision === engineStatusRevision && !restarting) {
         const isOnline = data.gpt_sovits.status === 'reachable';
-        _dom.gDashSovitsBadge.className = `badge-status-pill ${isOnline ? 'badge-pill-green' : 'badge-pill-red'}`;
-        _dom.gDashSovitsBadge.textContent = isOnline ? '在线' : '离线';
-        _dom.gDashSovitsStatus.textContent = isOnline ? `运行正常 (${data.gpt_sovits.latency_ms || 0}ms)` : '服务未响应（可点下方配置或重启）';
-        _dom.gDashSovitsUrl.textContent = data.gpt_sovits.base_url || 'http://127.0.0.1:9880';
+        renderEngineStatus(engineRes?.state ? engineRes : {
+          state: isOnline ? 'ready' : 'unavailable', ready: isOnline,
+          message: isOnline ? `运行正常 (${data.gpt_sovits.latency_ms || 0}ms)` : '服务未响应（可点下方配置或重启）',
+        });
+        if (_dom.gDashSovitsUrl) _dom.gDashSovitsUrl.textContent = engineRes?.base_url || data.gpt_sovits.base_url || 'http://127.0.0.1:9880';
       }
       // 2. Precision & GPU
-      if (data.hardware) {
-        const prec = (data.hardware.inference_precision || '').toUpperCase();
+      if (data.hardware && revision === engineStatusRevision && !restarting) {
+        const prec = data.hardware.precision_source === 'managed_launch'
+          ? (data.hardware.inference_precision || '').toUpperCase() : '';
         const isCpu = prec === 'CPU';
         const isFp16 = prec === 'FP16';
+        const known = isCpu || isFp16 || prec === 'FP32';
+        const labels = { CPU: 'CPU 模式', FP16: 'FP16 半精度', FP32: 'FP32 单精度' };
         if (_dom.gDashPrecisionBadge) {
-          if (isCpu) {
+          if (!known) {
+            _dom.gDashPrecisionBadge.className = 'badge-status-pill badge-pill-yellow';
+            _dom.gDashPrecisionBadge.textContent = '待确认';
+          } else if (isCpu) {
             _dom.gDashPrecisionBadge.className = 'badge-status-pill badge-pill-yellow';
             _dom.gDashPrecisionBadge.textContent = 'CPU';
           } else if (isFp16) {
@@ -736,16 +885,12 @@ export async function fetchSystemTelemetry() {
           }
         }
         if (_dom.gDashPrecisionVal) {
-          if (isCpu) {
-            _dom.gDashPrecisionVal.textContent = 'CPU 模式';
-          } else if (isFp16) {
-            _dom.gDashPrecisionVal.textContent = 'FP16 半精度';
-          } else {
-            _dom.gDashPrecisionVal.textContent = 'FP32 单精度';
-          }
+          _dom.gDashPrecisionVal.textContent = labels[prec] || '计算方式待确认';
         }
         if (_dom.gBtnTogglePrecisionText) {
-          if (isCpu) {
+          if (!known) {
+            _dom.gBtnTogglePrecisionText.textContent = '按已保存设置启动';
+          } else if (isCpu) {
             _dom.gBtnTogglePrecisionText.textContent = '切为 GPU(FP16)';
           } else if (isFp16) {
             _dom.gBtnTogglePrecisionText.textContent = '切为 FP32 重启';
@@ -754,7 +899,11 @@ export async function fetchSystemTelemetry() {
           }
         }
         if (_dom.gDashDeviceVal) {
-          if (isCpu) {
+          if (!known) {
+            _dom.gDashDeviceVal.textContent = '启动配置待确认；外部引擎请在对应程序中查看。';
+          } else if (data.hardware.precision_pending_restart === true) {
+            _dom.gDashDeviceVal.textContent = `已保存：${labels[data.hardware.next_inference_precision] || '新的计算方式'}；重启引擎后生效。`;
+          } else if (isCpu) {
             _dom.gDashDeviceVal.textContent = '免显存占用 · 依托物理大内存';
           } else {
             _dom.gDashDeviceVal.textContent = data.hardware.gpu_name ? data.hardware.gpu_name : '硬件加速中';
@@ -784,17 +933,39 @@ export async function fetchSystemTelemetry() {
         const s = sec % 60;
         _dom.gDashUptimeVal.textContent = `PID: ${data.app.pid || '-'} · 运行: ${h}h ${m}m ${s}s`;
       }
-    }
-    if (!statusRes && _dom.gDashSovitsStatus) {
-      _dom.gDashSovitsStatus.textContent = '无法刷新状态，请保留启动窗口；若已关闭，请重新双击启动。';
-      if (_dom.gDashSovitsBadge) _dom.gDashSovitsBadge.textContent = '待检查';
-    }
-    if (cacheRes && _dom.gDashCacheVal) {
-      const cData = cacheRes;
-      _dom.gDashCacheVal.textContent = `${cData.total_entries || 0} 个文件 · ${(cData.total_size_mb || 0).toFixed(1)} MB`;
+    };
+    const options = { signal: controller.signal };
+    const statusRead = requestJson('/api/system/status', options, { timeoutMs: 15000 }).catch(() => null).then(data => {
+      statusRes = data;
+      renderStatus(data);
+    });
+    const cacheRead = requestJson('/api/cache/stats', options, { timeoutMs: 15000 }).catch(() => null).then(data => {
+      if (current() && data && _dom.gDashCacheVal) {
+        _dom.gDashCacheVal.textContent = `${data.total_entries || 0} 个文件 · ${(data.total_size_mb || 0).toFixed(1)} MB`;
+      }
+    });
+    const engineRead = requestJson('/api/system/engine-status', options, { timeoutMs: 10000 }).catch(() => null).then(data => {
+      engineRes = data;
+      if (current() && data?.state && !restarting) {
+        renderEngineStatus(data);
+      }
+    });
+    await Promise.all([statusRead, cacheRead, engineRead]);
+    if (!statusRes && revision === engineStatusRevision && !restarting && _dom.gDashSovitsStatus) {
+      if (engineRes?.state) renderEngineStatus(engineRes);
+      else {
+        _dom.gDashSovitsStatus.textContent = '无法刷新状态，请保留启动窗口；若已关闭，请重新双击启动。';
+        if (_dom.gDashSovitsBadge) {
+          _dom.gDashSovitsBadge.textContent = '待检查';
+          _dom.gDashSovitsBadge.className = 'badge-status-pill badge-pill-yellow';
+        }
+      }
     }
   } catch (e) {
-    console.warn('Failed to fetch telemetry:', e);
+    if (!controller.signal.aborted) console.warn('Failed to fetch telemetry:', e);
+  } finally {
+    if (telemetryController === controller) telemetryController = null;
+    controller.abort();
   }
 }
 
@@ -915,15 +1086,18 @@ export async function loadGlobalConfig() {
 }
 
 export async function saveGlobalConfig() {
+  if (configSaving || providerSaving) return;
   if (!configLoaded) {
     showToast('还没有读取到当前配置，保存会用默认值覆盖已有设置。正在重新读取，请稍后再保存。', 'error');
     loadGlobalConfig();
     return;
   }
-  if (_dom.gTgSave) _dom.gTgSave.disabled = true;
+  configSaving = true;
+  updateSaveButtons();
+  let modelSaved = false;
+  let modelResult;
   try {
     const saveModel = providerDirty;
-    if (saveModel && !await saveAndActivateProvider({ fromFooter: true })) return;
     const savedRevision = configRevision;
     const payload = {
       gpt_sovits_url: _dom.gParamSovitsUrl ? _dom.gParamSovitsUrl.value.trim() || 'http://127.0.0.1:9880' : undefined,
@@ -948,7 +1122,21 @@ export async function saveGlobalConfig() {
     const token = _dom.gTgToken ? _dom.gTgToken.value.trim() : '';
     if (token) payload.telegram_bot_token = token;
 
-    await saveConfirmedConfig(payload);
+    // Start the provider save now so it captures this click's model draft, but
+    // reserve the config write before later autosaves can overtake it.
+    modelResult = saveModel ? saveAndActivateProvider({ fromFooter: true }).then(saved => {
+      modelSaved = saved;
+      return saved;
+    }) : Promise.resolve(true);
+    // The earlier config write can fail and skip this queued callback while
+    // the independent provider request is already in flight.
+    modelResult.catch(() => {});
+    const saved = await runSettingsMutation(async save => {
+      if (saveModel && !await modelResult) return false;
+      await save(payload);
+      return true;
+    });
+    if (!saved) return;
     if (savedRevision === configRevision) {
       configDirty = false;
       dirtyConfigFields.clear();
@@ -961,15 +1149,17 @@ export async function saveGlobalConfig() {
       saveGlobal({ autoTranslate: _dom.gAutoTranslate.value === 'auto' });
     }
 
-    showToast(configDirty
+    showToast(configDirty || providerDirty
       ? (saveModel ? '模型设置已保存并启用，之前的全局配置已保存；当前修改尚未保存。' : '之前的配置已保存；当前修改尚未保存。')
       : (saveModel ? '全局配置和模型设置已保存，模型已启用。' : '全局配置已保存'), 'success');
     loadGlobalConfig();
     fetchSystemTelemetry();
   } catch (e) {
-    showToast(`保存失败: ${e.message || e}`, 'error');
+    if (modelResult) await modelResult.catch(() => false);
+    showToast(`${modelSaved ? '模型设置已保存并启用；全局配置保存失败' : '保存失败'}: ${e.message || e}`, 'error');
   } finally {
-    if (_dom.gTgSave) _dom.gTgSave.disabled = false;
+    configSaving = false;
+    updateSaveButtons();
   }
 }
 
@@ -1000,6 +1190,8 @@ export async function testTelegram() {
 export async function handleRestartSovits(precision) {
   if (restarting) return;
   restarting = true;
+  engineStatusRevision += 1;
+  renderEngineStatus({ state: 'starting', ready: false, message: '正在确认设置并准备语音引擎；文字聊天可继续使用。' });
   if (_dom.gBtnRestartSovits) {
     _dom.gBtnRestartSovits.disabled = true;
     _dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>正在准备引擎…</span>';
@@ -1009,20 +1201,40 @@ export async function handleRestartSovits(precision) {
     const payload = {};
     // Before the config loads, the dropdown shows its default; the engine keeps its saved precision.
     const selected = typeof precision === 'string' ? precision : (configLoaded ? _dom.gPrecision?.value : '');
+    const revision = precisionRevision;
     if (selected) payload.precision = selected;
-    const data = await requestJson('/api/system/restart_sovits', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (_dom.gPrecision && selected) _dom.gPrecision.value = selected;
-    showToast(data.message || '引擎开始加载，请稍候。', 'info');
-    const result = await waitForEngine({ onProgress: (status) => {
-      if (_dom.gDashSovitsStatus) _dom.gDashSovitsStatus.textContent = status.message;
-      if (_dom.gBtnRestartSovits) _dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>正在加载模型…</span>';
+    let sent = false;
+    let acknowledged = true;
+    let data;
+    try {
+      data = await runSettingsMutation(() => {
+        sent = true;
+        return requestJson('/api/system/restart_sovits', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+        });
+      });
+    } catch (error) {
+      if (!sent || error.name === 'AbortError' || (error.status && error.status < 500)) throw error;
+      acknowledged = false;
+      engineRestartUnconfirmed = true;
+      data = { message: '重启请求结果未确认，正在核对当前引擎状态；请稍候，无需再次点击重启。' };
+      renderEngineStatus({ state: 'checking', ready: false, message: data.message });
+    }
+    if (acknowledged) engineRestartUnconfirmed = false;
+    if (acknowledged && _dom.gPrecision && selected && revision === precisionRevision) _dom.gPrecision.value = selected;
+    // The card and busy button already explain recovery. One final toast avoids
+    // covering the card with stacked progress messages on a narrow screen.
+    if (acknowledged) showToast(data.message || '引擎开始加载，请稍候。', 'info');
+    let result = await waitForEngine({ onProgress: (status) => {
+      renderEngineStatus(status);
+      if (_dom.gBtnRestartSovits) _dom.gBtnRestartSovits.innerHTML = `<svg class="icon"><use href="#i-play"></use></svg><span>${status.ready ? '引擎已就绪' : status.state === 'checking' ? '正在核对状态…' : status.state === 'loading_slow' ? '加载时间较长…' : '正在加载模型…'}</span>`;
     } });
-    showToast(result.message, result.ready ? 'success' : 'info');
+    if (!acknowledged && result.ready) result = { ...result, message: UNCONFIRMED_RESTART_MESSAGE };
+    renderEngineStatus(result);
+    showToast(result.message, result.ready && acknowledged ? 'success' : 'info');
   } catch (err) {
+    const unconfirmed = err.code === 'CONFIG_WRITE_SKIPPED' || [401, 403, 404, 429].includes(err.status);
+    renderEngineStatus({ state: err.engineState || (unconfirmed ? 'checking' : 'failed'), ready: false, message: err.message });
     const needDir = /引擎目录|选择文件夹|api_v2\.py|运行环境/i.test(err.message || '');
     showToast(err.message, 'error', needDir ? {
       actionLabel: '选择引擎文件夹',
@@ -1044,7 +1256,11 @@ export async function handleRestartSovits(precision) {
 }
 
 async function handleTogglePrecision() {
-  const badgeText = _dom.gDashPrecisionBadge ? _dom.gDashPrecisionBadge.textContent.trim().toUpperCase() : 'FP16';
+  const badgeText = _dom.gDashPrecisionBadge?.textContent.trim().toUpperCase();
+  if (!['CPU', 'FP16', 'FP32'].includes(badgeText)) {
+    await handleRestartSovits();
+    return;
+  }
   let targetPrec = 'fp16';
   if (badgeText === 'FP16') {
     targetPrec = 'fp32';

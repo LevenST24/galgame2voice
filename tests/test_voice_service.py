@@ -19,8 +19,20 @@ from galgame2voice.services.tts_cache_manager import get_tts_cache_manager
 
 
 @pytest.fixture
-def mock_client():
+async def mock_client(temp_db_path):
     """Mock GptSovitsClient with controllable stream_tts."""
+    from galgame2voice.database import crud
+    from galgame2voice.database.models import VoiceProfileCreate
+    from galgame2voice.database.session import get_db
+
+    # Stream/cache tests select a real profile in the isolated DB; an absent ID
+    # is a selection error rather than an instruction to borrow engine defaults.
+    async with get_db(temp_db_path) as conn:
+        profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
+            name="流式测试音色", gpt_weights_path="models/mock.ckpt", sovits_weights_path="models/mock.pth",
+            ref_audio_path="ref/test.wav", prompt_text="テスト", prompt_lang="ja",
+        ))
+    assert profile.id == 1
     client = AsyncMock(spec=GptSovitsClient)
     client.current_refer_audio = "ref/test.wav"
     client.is_healthy = AsyncMock(return_value=True)
@@ -65,7 +77,9 @@ async def test_stream_tts_cache_miss_routes_scheduler_and_populates_cache(temp_d
     await asyncio.sleep(0.1)
 
     # Verify cache key exists in cache_mgr
-    cache_key, _, _ = cache_mgr.compute_cache_key(text, options=options)
+    resolved = await vm.tts_service._populate_voice_profile_opts(dict(options))
+    resolved = vm.tts_service._sanitize_dynamic_voice_options(resolved, text=text)
+    cache_key, _, _ = cache_mgr.compute_cache_key(text, options=resolved)
     cached_entry = await cache_mgr.get(cache_key)
     assert cached_entry is not None
     assert cached_entry[0] == full_miss_audio
@@ -101,7 +115,9 @@ async def test_stream_tts_cache_disabled(temp_db_path, mock_client, tmp_path):
     assert mock_client.get_stream_calls() == 1
 
     await asyncio.sleep(0.05)
-    cache_key, _, _ = cache_mgr.compute_cache_key(text, options=options)
+    resolved = await vm.tts_service._populate_voice_profile_opts(dict(options))
+    resolved = vm.tts_service._sanitize_dynamic_voice_options(resolved, text=text)
+    cache_key, _, _ = cache_mgr.compute_cache_key(text, options=resolved)
     assert await cache_mgr.get(cache_key) is None
 
 
@@ -124,7 +140,9 @@ async def test_stream_tts_aborted_not_cached(temp_db_path, mock_client, tmp_path
     # Wait for any potential background task
     await asyncio.sleep(0.08)
 
-    cache_key, _, _ = cache_mgr.compute_cache_key(text, options=options)
+    resolved = await vm.tts_service._populate_voice_profile_opts(dict(options))
+    resolved = vm.tts_service._sanitize_dynamic_voice_options(resolved, text=text)
+    cache_key, _, _ = cache_mgr.compute_cache_key(text, options=resolved)
     # The cache should be empty because stream didn't finish normally!
     assert await cache_mgr.get(cache_key) is None
 

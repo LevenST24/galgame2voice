@@ -84,12 +84,12 @@ export function createQuickMenu(container, { onAction } = {}) {
     background: '<svg viewBox="0 0 24 24"><path d="M21 4H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H3V6h18v12zM8.5 14.5L11 11l3.5 4.5 2-2.5L20 18H4l4.5-3.5z" fill="currentColor"/><circle cx="8" cy="8.5" r="1.8" fill="currentColor"/></svg>',
   };
 
-  const btnAuto = makeButton({ id: 'auto', action: 'auto', label: 'AUTO', title: '自动播放 (A / F6)', isToggle: true, iconSvg: icons.auto });
-  const btnSkip = makeButton({ id: 'skip', action: 'skip', label: 'SKIP', title: '快进模式 (F / F7 / 按住Ctrl)', isToggle: true, iconSvg: icons.skip });
-  const btnLog = makeButton({ id: 'log', action: 'log', label: 'LOG', title: '历史台词 (R / F5 / 滚轮向上)', isToggle: false, iconSvg: icons.log });
-  const btnVoice = makeButton({ id: 'voice', action: 'replay_voice', label: 'VOICE', title: '语音重播 (F9)', isToggle: false, iconSvg: icons.voice });
-  const btnHide = makeButton({ id: 'hide', action: 'hide', label: 'HIDE', title: '隐藏窗口 (H / 右键)', isToggle: false, iconSvg: icons.hide });
-  const btnConfig = makeButton({ id: 'config', action: 'config', label: 'CONFIG', title: '设置 (F8)', isToggle: false, iconSvg: icons.config });
+  const btnAuto = makeButton({ id: 'auto', action: 'auto', label: '自动', title: '自动播放 (A / F6)', isToggle: true, iconSvg: icons.auto });
+  const btnSkip = makeButton({ id: 'skip', action: 'skip', label: '快进', title: '快进模式 (F / F7 / 按住Ctrl)', isToggle: true, iconSvg: icons.skip });
+  const btnLog = makeButton({ id: 'log', action: 'log', label: '记录', title: '历史台词 (R / F5 / 滚轮向上)', isToggle: false, iconSvg: icons.log });
+  const btnVoice = makeButton({ id: 'voice', action: 'replay_voice', label: '重播', title: '语音重播 (F9)', isToggle: false, iconSvg: icons.voice });
+  const btnHide = makeButton({ id: 'hide', action: 'hide', label: '隐藏', title: '隐藏窗口 (H / 右键)', isToggle: false, iconSvg: icons.hide });
+  const btnConfig = makeButton({ id: 'config', action: 'config', label: '设置', title: '设置中心 (F8)', isToggle: false, iconSvg: icons.config });
   const btnBackground = makeButton({ id: 'background', action: 'background', label: '背景', title: '舞台背景与时间', isToggle: false, iconSvg: icons.background });
 
   // Model status indicator point

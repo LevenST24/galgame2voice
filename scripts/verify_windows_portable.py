@@ -34,6 +34,10 @@ def verify_archive(archive: Path, project_root: Path = PROJECT_ROOT) -> dict:
             if relative.name.casefold() in {".env", ".master_key", ".console_token"} or relative.suffix.lower() in {".db", ".ckpt", ".pth"}:
                 raise ValueError(f"User data or model included in release: {name}")
         files = {info.filename for info in bundle.infolist() if not info.is_dir()}
+        ffmpeg_binaries = {name for name in files if PurePosixPath(name).name.lower().startswith("ffmpeg")
+                           and PurePosixPath(name).suffix.lower() == ".exe"}
+        if ffmpeg_binaries != {PREFIX + "tools/ffmpeg.exe"}:
+            raise ValueError("FFmpeg must be bundled exactly once, at tools/ffmpeg.exe")
         required = {"Galgame2Voice.exe", "启动.bat", "数据恢复.bat", "tools/ffmpeg.exe", "LICENSE", "使用说明.md"}
         if missing := {PREFIX + name for name in required} - files:
             raise ValueError(f"Required portable files missing: {sorted(missing)}")

@@ -125,10 +125,12 @@ def write_sovits_yaml_config(
     sovits_dir: str | Path | None,
     is_half: bool,
     device: str | None = None,
+    *,
+    output_path: Path | None = None,
 ) -> Path | None:
     """
-    Physically synchronizes custom.is_half and custom.device in tts_infer.yaml on disk.
-    This YAML is the channel the launcher hands to api_v2.py via -c, so it is written here;
+    Synchronizes custom.is_half and custom.device, optionally into a writable copy.
+    This YAML is the channel the launcher hands to api_v2.py via -c;
     scripts/run_server.py additionally exports the same resolved is_half into the engine
     child process environment (build_gpt_sovits_env), keeping both channels in agreement.
     """
@@ -157,10 +159,14 @@ def write_sovits_yaml_config(
                 else:
                     content = f"custom:\n  device: {dev_target}\n" + content
 
-        yaml_path.write_text(content, encoding="utf-8")
-        logger.info("Synchronized %s with is_half=%s, device=%s", yaml_path, is_half, device)
-        return yaml_path
+        target = output_path or yaml_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        logger.info("Synchronized %s with is_half=%s, device=%s", target, is_half, device)
+        return target
     except Exception as e:
+        if output_path is not None:
+            raise RuntimeError("无法准备语音引擎配置副本。请确认 G2V 数据目录可写，并检查 data/engine_cache/tts_infer.yaml 是否被其他程序占用。") from e
         logger.warning(
             "Failed to write config to %s: %s. "
             "The engine will use its existing config. "
@@ -177,9 +183,9 @@ def write_sovits_yaml_is_half(sovits_dir: str | Path | None, is_half: bool) -> P
     return write_sovits_yaml_config(sovits_dir, is_half=is_half)
 
 
-def read_db_precision(project_root: Path) -> str | None:
+def read_db_precision(project_root: Path, *, db_path: Path | None = None) -> str | None:
     """Reads inference_precision ('auto' | 'fp16' | 'fp32' | 'cpu') from SQLite settings table."""
-    db_path = project_root / "data" / "galgame2voice.db"
+    db_path = db_path if db_path is not None else project_root / "data" / "galgame2voice.db"
     if not db_path.is_file():
         return None
     try:
@@ -199,6 +205,9 @@ def resolve_initial_device_and_half(
     project_root: Path,
     sovits_dir: Path,
     environ: dict[str, str] | None = None,
+    *,
+    db_path: Path | None = None,
+    gpu_available: bool | None = None,
 ) -> tuple[str, bool, str]:
     """
     Decides the initial device ('cuda' | 'cpu') and is_half setting for engine launch.
@@ -206,6 +215,8 @@ def resolve_initial_device_and_half(
     verified cache > existing YAML setting > hardware default. CLI flags are resolved by the
     caller before this function is reached, so they never appear as a source here.
     Returns (device, is_half, source) where source is "env" | "db" | "cache" | "yaml" | "default".
+    gpu_available reuses an existing measurement for the hardware default only;
+    omitting it keeps the engine launcher's full detection behavior.
     """
     env = environ if environ is not None else os.environ
     override = str(env.get(_PRECISION_ENV_VAR, "")).strip().lower()
@@ -219,7 +230,7 @@ def resolve_initial_device_and_half(
         return DEVICE_CUDA, False, "env"
 
     # User configured setting in SQLite database
-    db_prec = read_db_precision(project_root)
+    db_prec = read_db_precision(project_root, db_path=db_path)
     if db_prec == DEVICE_CPU:
         return DEVICE_CPU, False, "db"
     if db_prec in ("fp32", "float32"):
@@ -250,11 +261,14 @@ def resolve_initial_device_and_half(
         return DEVICE_CUDA, False, "yaml"
 
     # Default fallback: check discrete GPU availability
-    try:
-        from galgame2voice.utils.hardware import detect_gpu_capability
-        has_gpu, _, _ = detect_gpu_capability()
-    except Exception:
-        has_gpu = True
+    if gpu_available is not None:
+        has_gpu = gpu_available
+    else:
+        try:
+            from galgame2voice.utils.hardware import detect_gpu_capability
+            has_gpu, _, _ = detect_gpu_capability()
+        except Exception:
+            has_gpu = True
 
     if not has_gpu:
         return DEVICE_CPU, False, "default"

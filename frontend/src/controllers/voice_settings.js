@@ -3,11 +3,9 @@ import { state, saveState, getActive, DEFAULT_SESSION_SETTINGS } from '../store.
 import { showToast } from '../ui.js';
 import { requestJson } from '../api.js';
 import { persistSession } from '../session_api.js';
-import { createAdvSettings } from '../adv/settings.js';
 
 let _dom = {};
 let _callbacks = {};
-let advSettings = { load() {}, read: () => ({}), snapshot: () => '' };
 let voiceProfiles = [];
 // 面板里人设框的初始值与对应角色，用于换角色时判断"有未保存的编辑"
 let _promptBaseline = '';
@@ -19,6 +17,8 @@ let scannedModels = null;
 let pendingScan = null;
 let scanRevision = 0;
 let sessionVoiceRevision = 0;
+let voiceSwitchTail = Promise.resolve();
+let activeProfileRevision = 0;
 let voiceSelectRevision = 0;
 // Value of the only option left when the voice list fails to load. It is not a choice:
 // saving keeps the session's binding instead of treating it as "no character".
@@ -34,8 +34,10 @@ export function invalidateScannedModels() {
 export function initVoiceSettings(dom, callbacks = {}) {
   _dom = dom;
   _callbacks = callbacks;
-  advSettings = createAdvSettings(_dom.sessionModal?.querySelector('.modal-body'), DEFAULT_SESSION_SETTINGS);
   editorRevision += 1;
+  sessionVoiceRevision += 1;
+  profilesRevision += 1;
+  activeProfileRevision += 1;
 
   if (_dom.sVoice) {
     _dom.sVoice.addEventListener('change', syncSystemPromptToSelectedVoice);
@@ -82,7 +84,6 @@ export function initVoiceSettings(dom, callbacks = {}) {
       _dom.sTtsTopK.value = DEFAULT_SESSION_SETTINGS.ttsTopK;
       _dom.sTtsTopP.value = DEFAULT_SESSION_SETTINGS.ttsTopP;
       _dom.sTtsTemp.value = DEFAULT_SESSION_SETTINGS.ttsTemperature;
-      advSettings.load(DEFAULT_SESSION_SETTINGS);
       syncRangeLabels();
     });
   }
@@ -107,6 +108,8 @@ export function getActiveProfileId() {
 export function getVoiceProfiles() {
   return voiceProfiles;
 }
+
+export function cancelSessionSettingsLoad() { editorRevision += 1; }
 
 export async function openSessionSettings() {
   const s = getActive();
@@ -134,10 +137,11 @@ export async function openSessionSettings() {
   if (_dom.sTtsTopK) _dom.sTtsTopK.value = s.settings.ttsTopK;
   if (_dom.sTtsTopP) _dom.sTtsTopP.value = s.settings.ttsTopP;
   if (_dom.sTtsTemp) _dom.sTtsTemp.value = s.settings.ttsTemperature;
-  advSettings.load(s.settings);
   syncRangeLabels();
-  loadSessionVoiceSelect(s);
   if (_callbacks.openModal) _callbacks.openModal(_dom.sessionModal);
+  // Opening the shared center starts a background catalog refresh. Start the
+  // editor's own read afterwards so its render uses the newest catalog owner.
+  loadSessionVoiceSelect(s);
 }
 
 export function syncRangeLabels() {
@@ -172,20 +176,33 @@ export function syncRangeLabels() {
 
 export async function fetchVoiceProfiles() {
   const revision = ++profilesRevision;
+  const activeRevision = activeProfileRevision;
   const data = await requestJson('/api/voice/profiles');
   if (revision === profilesRevision) {
     voiceProfiles = data.profiles || [];
-    activeProfileId = data.active_profile_id;
+    // A catalog response may predate a completed switch. Keep its catalog,
+    // but never publish that earlier active ID over the switch acknowledgement.
+    if (activeRevision === activeProfileRevision) activeProfileId = data.active_profile_id;
   }
   return data;
 }
 
-export async function ensureSessionVoice(session, { silent = false } = {}) {
+export function ensureSessionVoice(session, options = {}) {
   const revision = ++sessionVoiceRevision;
   const want = session?.settings?.voiceProfileId;
   const isCurrent = () => revision === sessionVoiceRevision
     && (!session?.id || getActive()?.id === session.id)
     && session?.settings?.voiceProfileId === want;
+  // Ignoring an old response only protects the UI; its server write still
+  // happens. Send switches in order, skipping choices superseded while queued.
+  const task = voiceSwitchTail.then(() => {
+    if (isCurrent()) return applySessionVoice(session, options, want, isCurrent);
+  });
+  voiceSwitchTail = task.catch(() => {});
+  return task;
+}
+
+async function applySessionVoice(session, { silent = false }, want, isCurrent) {
   if (activeProfileId === null) {
     try {
       await fetchVoiceProfiles();
@@ -195,13 +212,18 @@ export async function ensureSessionVoice(session, { silent = false } = {}) {
   }
   if (!want) return;
   try {
-    if (activeProfileId === null) await fetchVoiceProfiles();
     if (!isCurrent()) return;
-    const data = await requestJson('/api/voice/switch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ profile_id: want }),
-    }, { timeoutMs: 120000 });
+    activeProfileRevision += 1;
+    let data;
+    try {
+      data = await requestJson('/api/voice/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile_id: want }),
+      }, { timeoutMs: 120000 });
+    } finally {
+      activeProfileRevision += 1;
+    }
     if (!isCurrent()) return;
     activeProfileId = want;
     // 换人后若面板正开着且人设框没有未保存编辑，就跟着换成新角色的那一份
@@ -214,19 +236,26 @@ export async function ensureSessionVoice(session, { silent = false } = {}) {
     if (!silent && !_callbacks.isHomeOpen?.()) showToast(`已切换音色：${data.profile || want}`, 'success');
   } catch (e) {
     if (!isCurrent()) return;
+    if (e.data?.detail?.error_code === 'VOICE_PROFILE_SAVE_FAILED') {
+      // The models may be loaded even when the saved default is unconfirmed.
+      // Older list reads cannot turn that uncertainty back into a known ID.
+      activeProfileRevision += 1;
+      activeProfileId = null;
+      _callbacks.renderHeader?.();
+      showToast(e.message, 'error', _callbacks.onOpenSessionSettings ? {
+        actionLabel: '重新选择音色',
+        onAction: () => _callbacks.onOpenSessionSettings(),
+      } : null);
+      return;
+    }
     if (e.status === 404) {
       try {
         await fetchVoiceProfiles();
         if (!isCurrent()) return;
         if (!voiceProfiles.some(profile => profile.id === want)
           && session?.settings?.voiceProfileId === want) {
-          session.settings.voiceProfileId = null;
-          _callbacks.invalidateSessionSync?.();
-          saveState();
-          // The server copy still names the deleted voice; the next sync would restore it.
-          if (state.sessions.includes(session)) persistSession(session).catch(() => {});
           _callbacks.renderHeader?.();
-          showToast('这个会话绑定的音色已被删除，已解除失效绑定。文字聊天可继续；请在「会话设置」选择或创建新音色。', 'info', _callbacks.onOpenSessionSettings ? {
+          showToast('这个会话绑定的音色已被删除，原选择已保留。请在「角色与会话」选择新音色，或明确选择“跟随后端当前音色”。', 'info', _callbacks.onOpenSessionSettings ? {
             actionLabel: '选择音色',
             onAction: () => _callbacks.onOpenSessionSettings(),
           } : null);
@@ -401,8 +430,8 @@ async function refreshScanOptions(revision, dom) {
       if (!isCurrent()) return;
       scannedModels = models;
     }
-    fill(dom.sCvGpt, scannedModels.gpt_weights || [], '（未扫描到 .ckpt 文件；请先在「全局设置 → 语音服务」选择引擎目录）');
-    fill(dom.sCvSovits, scannedModels.sovits_weights || [], '（未扫描到 .pth 文件；请先在「全局设置 → 语音服务」选择引擎目录）');
+    fill(dom.sCvGpt, scannedModels.gpt_weights || [], '（未扫描到 .ckpt 文件；请先在「设置中心 → 语音服务」选择引擎目录）');
+    fill(dom.sCvSovits, scannedModels.sovits_weights || [], '（未扫描到 .pth 文件；请先在「设置中心 → 语音服务」选择引擎目录）');
     fill(dom.sCvRef, scannedModels.audio_files || [], '（未扫描到音频文件；参考音频为必选项，无法创建自定义音色）');
   } catch (e) {
     if (!isCurrent()) return;
@@ -475,7 +504,7 @@ export async function createCustomVoice() {
         ensureSessionVoice(origin);
       }
     }
-    const binding = state.sessions.includes(origin) ? `，已绑定到「${origin.title}」` : '，可在会话设置中选择';
+    const binding = state.sessions.includes(origin) ? `，已绑定到「${origin.title}」` : '，可在“角色与会话”中选择';
     showToast(`音色「${data.name}」已创建${binding}${note}`, note ? 'info' : 'success');
   } catch (e) {
     showToast(`音色创建失败: ${e.message || e}`, 'error');
@@ -542,7 +571,7 @@ const EDITOR_FIELDS = [
   'sAiAdaptiveVoice', 'sAdvReplyFormat', 'sTtsSpeed', 'sTtsTopK', 'sTtsTopP', 'sTtsTemp',
   'sCvName', 'sCvGpt', 'sCvSovits', 'sCvRef', 'sCvPromptText', 'sCvLang',
 ];
-const editorSnapshot = () => JSON.stringify([EDITOR_FIELDS.map(key => _dom[key]?.value), advSettings.snapshot()]);
+const editorSnapshot = () => JSON.stringify(EDITOR_FIELDS.map(key => _dom[key]?.value));
 
 async function handleSaveSessionSettings() {
   if (_dom.sSave?.disabled) return;
@@ -553,9 +582,6 @@ async function handleSaveSessionSettings() {
   const sameEditor = () => getActive() === s && editor === editorRevision;
   if (_dom.sSave) _dom.sSave.disabled = true;
   try {
-    let advValues;
-    try { advValues = advSettings.read(); }
-    catch (error) { showToast(error.message, 'error'); return; }
     if (_dom.sVoice.value === '__custom__') {
       showToast('请先点击「创建并绑定」完成新音色的创建，再保存会话参数。填写的内容已保留。', 'info');
       return;
@@ -574,7 +600,6 @@ async function handleSaveSessionSettings() {
     }
     s.settings = {
       ...s.settings,
-      ...advValues,
       voiceProfileId: profileId,
       temperature: Number(_dom.sTemp.value),
       topP: Number(_dom.sTopP.value),

@@ -46,14 +46,14 @@ test('home suppresses startup failure by result-time state, including requests s
   assert.deepEqual(h.requests, [1]); assert.equal(h.toasts.children.length, 0);
 });
 
-test('home preview success is silent; continuing the previewed session does not switch again', async t => {
+test('home preview success is silent; entering chat verifies the engine without another success toast', async t => {
   const h = await homeVoiceFixture(t, { status: 200 }); h.home.open(); await tick();
   const preview = h.app.actions.previewSession('home_2'); await tick(); await h.finish(); await preview;
   assert.equal(getActiveProfileId(), 2); assert.equal(h.toasts.children.length, 0);
   await h.home.refresh();
   h.home.element.querySelector('.home-continue').click(); await tick();
   assert.equal(h.stage.classList.contains('is-home'), false);
-  assert.deepEqual(h.requests, [2]); assert.equal(h.toasts.children.length, 0);
+  assert.deepEqual(h.requests, [2, 2]); assert.equal(h.toasts.children.length, 0);
 });
 
 test('continuing the same session after silent home failure retries once and reports the failure in ADV', async t => {
@@ -81,21 +81,21 @@ for (const entry of ['startNew', 'startNewWith']) test(`home ${entry} switches a
   assert.equal(h.toasts.children.length, 1);
 });
 
-test('home entry skips switching when voice is already active or session is unbound', async t => {
+test('home entry verifies a saved active voice and skips an unbound session', async t => {
   const h = await homeVoiceFixture(t, { status: 200 }); h.home.open(); await tick();
   const pending = ensureSessionVoice(storedActive()); await tick(); await h.finish(); await pending;
   h.home.close(); h.app.actions.startNew(); await tick();
-  assert.deepEqual(h.requests, [1]);
+  assert.deepEqual(h.requests, [1, 1]);
   storedActive().settings.voiceProfileId = null;
   await h.app.actions.loadSession(storedActive().id); await tick();
-  assert.deepEqual(h.requests, [1]); assert.equal(h.toasts.children.length, 0);
+  assert.deepEqual(h.requests, [1, 1]); assert.equal(h.toasts.children.length, 0);
 });
 
-test('home still reports a confirmed deleted voice binding and clears it', async t => {
+test('home reports a confirmed deleted voice while preserving the explicit binding', async t => {
   const h = await homeVoiceFixture(t, { status: 404 }); h.home.open(); await tick();
   await ensureSessionVoice(storedActive());
-  assert.equal(storedActive().settings.voiceProfileId, null);
-  assert.equal(h.toasts.children.length, 1); assert.match(h.toasts.children[0].dataset.msg, /音色已被删除，已解除失效绑定/);
+  assert.equal(storedActive().settings.voiceProfileId, 1);
+  assert.equal(h.toasts.children.length, 1); assert.match(h.toasts.children[0].dataset.msg, /音色已被删除，原选择已保留/);
 });
 
 for (const status of [200, 502]) test(`ADV drawer switches keep notifications after leaving home: ${status}`, async t => {
@@ -316,14 +316,18 @@ test('real startup wiring silences both startup switches and all-session entry r
       ...actions, getStatus: async () => ({ modelLoaded: true, hasModel: true, model: { state: 'ok' }, engine: { state: 'unavailable' } }),
     } }); home.open();
   } });
-  t.after(() => {
+  t.after(async () => {
+    defer = false;
+    for (const finish of pending) finish(); await tick();
     home?.destroy(); app.conversation.stop(); app.adv.unmount();
     for (const toast of toasts.children) clearTimeout(toast._timer);
     delete globalThis.document; delete globalThis.location;
   });
   await app.ready; await tick();
-  assert.deepEqual(switches, [1, 1]);
+  assert.deepEqual(switches, [1], 'startup retries wait for the in-flight model load');
+  defer = false;
   for (const finish of pending) finish(); await tick();
+  assert.deepEqual(switches, [1, 1]);
   assert.equal(toasts.children.length, 0);
   assert.deepEqual(app.actions.listCharacters(), [{ id: 1, name: '甲', work: 'a' }]);
   assert.deepEqual(app.actions.getBackgrounds(), [{ key: 'a/room', name: '房间', work: 'a' }]);

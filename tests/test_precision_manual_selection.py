@@ -101,7 +101,8 @@ class TestPrecisionAPI:
             assert "hardware" in data
             hw = data["hardware"]
             assert "inference_precision" in hw
-            assert hw["inference_precision"] in ("FP16", "FP32")
+            assert hw["inference_precision"] is None
+            assert hw["precision_source"] == "unknown"
             assert "configured_precision" in hw
 
     async def test_restart_sovits_endpoint_missing_sovits_dir(self, tmp_path, monkeypatch):

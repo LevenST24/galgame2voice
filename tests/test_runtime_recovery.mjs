@@ -4,7 +4,7 @@ import { streamChat } from '../frontend/src/ai.js';
 import { waitForEngine } from '../frontend/src/controllers/engine_recovery.js';
 import { saveConfirmedConfig } from '../frontend/src/controllers/config_recovery.js';
 import { ensureSessionVoice, initVoiceSettings } from '../frontend/src/controllers/voice_settings.js';
-import { initGlobalSettings, loadGlobalConfig, saveGlobalConfig, handleRestartSovits, savePrivateEndpointPreference, handleProviderTest, handleActivateProvider } from '../frontend/src/controllers/global_settings.js';
+import { initGlobalSettings, loadGlobalConfig, saveGlobalConfig, handleRestartSovits, fetchSystemTelemetry, savePrivateEndpointPreference, handleProviderTest, handleActivateProvider } from '../frontend/src/controllers/global_settings.js';
 import { renderSystemVersionUI, initUpdateManager, handleCheckUpdate, handleApplyUpdate } from '../frontend/src/controllers/update_manager.js';
 import { formatUpdateStatus } from '../frontend/src/settings.js';
 
@@ -128,7 +128,7 @@ globalThis.document = { getElementById: () => null };
     ? response({ profiles: [], active_profile_id: null }) : response({ detail: 'Profile not found' }, 404);
   const session = { settings: { voiceProfileId: 999 } };
   await ensureSessionVoice(session);
-  assert.equal(session.settings.voiceProfileId, null); passed++;
+  assert.equal(session.settings.voiceProfileId, 999, 'a missing selection cannot silently become the global default'); passed++;
 }
 {
   initVoiceSettings({});
@@ -148,6 +148,89 @@ function element(value = '') {
     change(name = 'input') { listeners[name]?.forEach(handler => handler({ target: this })); } };
 }
 const cfg = (speed) => ({ status: 'ok', settings: { speed_factor: speed } });
+{
+  // An unconfirmed mode must start from saved preferences instead of forcing CUDA/FP16.
+  const dom = { gDashPrecisionBadge: element(), gBtnTogglePrecision: element() };
+  dom.gDashPrecisionBadge.textContent = '待确认';
+  initGlobalSettings(dom);
+  const bodies = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url.endsWith('/restart_sovits')) { bodies.push(JSON.parse(options.body)); return response({ status: 'starting' }); }
+    if (url.endsWith('/engine-status')) return response({ state: 'ready', ready: true, message: '已就绪' });
+    return response({});
+  };
+  dom.gBtnTogglePrecision.change('click');
+  for (let i = 0; i < 3; i++) await tick();
+  assert.deepEqual(bodies, [{}]); passed++;
+}
+for (const known of [true, false]) {
+  const dom = { gDashPrecisionBadge: element(), gDashPrecisionVal: element(), gDashDeviceVal: element(),
+    gBtnTogglePrecisionText: element() };
+  initGlobalSettings(dom);
+  globalThis.fetch = async url => response(url.endsWith('/system/status') ? { hardware: {
+    inference_precision: known ? 'FP16' : null, precision_source: known ? 'managed_launch' : 'unknown',
+    configured_precision: 'cpu', next_inference_precision: 'CPU', precision_pending_restart: known ? true : null,
+  } } : {});
+  await fetchSystemTelemetry();
+  assert.equal(dom.gDashPrecisionBadge.textContent, known ? 'FP16' : '待确认');
+  if (known) {
+    assert.match(dom.gDashPrecisionVal.textContent, /FP16/);
+    assert.match(dom.gDashDeviceVal.textContent, /CPU.*重启/);
+  } else {
+    assert.match(dom.gDashPrecisionVal.textContent, /待确认/);
+    assert.match(dom.gDashDeviceVal.textContent, /外部引擎/);
+    assert.match(dom.gBtnTogglePrecisionText.textContent, /已保存/);
+  }
+  passed++;
+}
+{
+  // A reachable app with a still-loading engine must not show a red offline badge.
+  const dom = { gDashSovitsBadge: element(), gDashSovitsStatus: element(), gDashSovitsUrl: element() };
+  initGlobalSettings(dom);
+  globalThis.fetch = async url => response(url.endsWith('/engine-status')
+    ? { state: 'starting', ready: false, message: '引擎正在加载模型' }
+    : { gpt_sovits: { status: 'unreachable', base_url: 'http://127.0.0.1:9872' } });
+  await fetchSystemTelemetry();
+  assert.equal(dom.gDashSovitsBadge.textContent, '启动中');
+  assert.match(dom.gDashSovitsBadge.className, /yellow/);
+  assert.equal(dom.gDashSovitsStatus.textContent, '引擎正在加载模型'); passed++;
+}
+{
+  const dom = { gDashSovitsBadge: element(), gDashSovitsStatus: element(), gDashSovitsUrl: element() };
+  initGlobalSettings(dom);
+  globalThis.fetch = async url => response(url.endsWith('/engine-status')
+    ? { state: 'loading_slow', ready: false, message: '引擎加载时间较长，请查看引擎日志' }
+    : { gpt_sovits: { status: 'unreachable' } });
+  await fetchSystemTelemetry();
+  assert.equal(dom.gDashSovitsBadge.textContent, '加载较慢');
+  assert.match(dom.gDashSovitsStatus.textContent, /时间较长/); passed++;
+}
+{
+  // A periodic status request that started before a restart must not overwrite progress.
+  const dom = { gDashSovitsBadge: element(), gDashSovitsStatus: element(), gDashSovitsUrl: element(),
+    gBtnRestartSovits: element(), gBtnTogglePrecision: element() };
+  initGlobalSettings(dom);
+  let finishOld, finishOldEngine, finishRestart, finishPoll;
+  let polls = 0, telemetryRequests = 0;
+  globalThis.fetch = url => {
+    if (url.endsWith('/system/status')) return ++telemetryRequests === 1
+      ? new Promise(resolve => { finishOld = resolve; }) : Promise.resolve(response({}));
+    if (url.endsWith('/restart_sovits')) return new Promise(resolve => { finishRestart = resolve; });
+    if (url.endsWith('/engine-status') && polls < 2) return new Promise(resolve => {
+      if (++polls === 1) finishOldEngine = resolve;
+      else finishPoll = resolve;
+    });
+    return Promise.resolve(response({}));
+  };
+  const refresh = fetchSystemTelemetry();
+  const restart = handleRestartSovits();
+  finishRestart(response({ status: 'starting' })); await tick();
+  finishOld(response({ gpt_sovits: { status: 'unreachable' } }));
+  finishOldEngine(response({ state: 'unavailable', ready: false })); await refresh;
+  assert.equal(dom.gDashSovitsBadge.textContent, '启动中');
+  finishPoll(response({ state: 'failed', ready: false, message: '请重新选择引擎目录' }));
+  await restart; await tick(); passed++;
+}
 {
   const methods = [];
   globalThis.fetch = async (_url, options) => {

@@ -36,7 +36,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     button.setAttribute('aria-expanded', 'false');
     wrap.appendChild(button); tools.appendChild(wrap); pills[kind] = { wrap, button, dot, text };
   }
-  tools.appendChild(btn('home-gear', '⚙', () => actions.openSettings?.(), '全局设置'));
+  tools.appendChild(btn('home-gear', '⚙', () => actions.openSettings?.(), '设置中心'));
   screen.appendChild(top);
   const pane = el('section', 'home-excerpt'); screen.appendChild(pane);
   const recents = el('section', 'home-recents'); screen.appendChild(recents);
@@ -55,7 +55,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   let recentOrder = [];
   let status = { modelLoaded: false, engine: {} }, textOnly = false, draft = null;
   let popup = null, popupButton = null, dropdown = null, dropdownButton = null;
-  let timer = null, unsubscribe = null, revision = 0, previewRevision = 0, polling = false;
+  let timer = null, unsubscribe = null, revision = 0, previewRevision = 0, polling = null;
   let playing = false, playRevision = 0, listenButton = null, rendered = '';
   const failedAudio = new Set();
   const disposers = [];
@@ -113,7 +113,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       : engine.message || '语音服务未连接，可以先用文字聊天';
   }
   function renderStatus() {
-    const states = { chat: !status.modelLoaded ? ['warn', '对话 检查中'] : chatOK() ? ['ok', '对话 可用'] : ['bad', '对话 未设置'],
+    const states = { chat: !status.modelLoaded ? ['warn', '对话 检查中'] : status.model?.readFailed ? ['warn', '对话 状态未确认'] : chatOK() ? ['ok', '对话 可用'] : ['bad', '对话 未设置'],
       voice: status.engine?.state === 'ready' ? ['ok', '语音 可用'] : status.engine?.state === 'starting' ? ['warn', '语音 启动中'] : ['bad', '语音 未连接'] };
     for (const [kind, [color, text]] of Object.entries(states)) {
       pills[kind].dot.className = `home-dot ${color}`; pills[kind].text.textContent = text;
@@ -144,7 +144,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   }
   function renderPane(force = false) {
     const session = main();
-    const firstUse = status.modelLoaded && !chatOK();
+    const firstUse = status.modelLoaded && !status.model?.readFailed && !chatOK();
     const signature = JSON.stringify([mode, session, firstUse, status.engine?.state, textOnly,
       canReplayLine(session?.excerpt?.line, session?.excerpt, actions.voiceEnabled?.() ?? true, now().getTime())]);
     if (!force && rendered === signature) return;
@@ -181,7 +181,12 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     // replaces its visual excerpt (also used by portable initialization smoke).
     const excerpt = main()?.excerpt;
     if (excerpt?.zh) { const greeting = el('blockquote', 'home-greeting', excerpt.zh); greeting.hidden = true; pane.appendChild(greeting); }
-    add(pane, el('p', 'home-label', '第一次使用'), el('h1', 'home-first-title', '先做三件小事，就能开始聊天'));
+    const heading = el('div', 'home-first-heading');
+    heading.appendChild(el('p', 'home-label', '第一次使用'));
+    if (main()?.hasUserMessages) {
+      heading.appendChild(btn('home-link home-existing', '查看已有对话 →', () => enter()));
+    }
+    add(pane, heading, el('h1', 'home-first-title', '先做三件小事，就能开始聊天'));
     const done = [chatOK(), status.engine?.state === 'ready' || textOnly, Boolean(main()?.settings?.voiceProfileId)];
     const labels = ['连接对话模型', '连接语音引擎', '选一个角色'];
     const descriptions = ['让她能用文字回答你', '让她用自己的声音念出日语台词', '从已安装的角色里挑一位'];
@@ -326,8 +331,9 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     prev.disabled = page === 0; next.disabled = page >= count - 1;
   }
   async function refresh() {
-    if (!opened || polling) return;
-    polling = true; const token = revision;
+    if (!opened || polling?.revision === revision) return;
+    const token = revision, request = { revision: token };
+    polling = request;
     try {
       const result = await actions.getStatus?.();
       if (!opened || token !== revision) return;
@@ -341,7 +347,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
         if (session) updateAvatar(button.querySelector('.home-avatar'), session);
       }
       setStageHome(true);
-    } finally { polling = false; }
+    } finally { if (polling === request) polling = null; }
   }
   function schedule() {
     timer = clock.setTimeout(() => { timer = null; refresh().catch(() => {}); if (opened) schedule(); }, 5000);
@@ -350,7 +356,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   function setStageHome(on) {
     stage?.classList.toggle('is-home', on);
     const controls = [...(stage?.querySelectorAll('.adv-layer-textbox, .adv-layer-quickmenu, .adv-app-tools, .adv-art-status') || []),
-      ...[...root.children].filter(node => node !== screen)];
+      ...[...root.children].filter(node => node !== screen && !node.classList.contains('adv-config-overlay'))];
     for (const layer of controls) {
       if (on) { if (!stageControls.has(layer)) stageControls.set(layer, layer.inert); layer.inert = true; }
       else layer.inert = stageControls.get(layer) ?? false;

@@ -14,15 +14,18 @@ from anyio import CancelScope
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
+from starlette.requests import ClientDisconnect
 
 from galgame2voice.services.chat_service import ChatService
+from galgame2voice.services.chat_pipelines.tts_pipeline import TTS_JOB_TIMEOUT_SECONDS
 from galgame2voice.services.chat_backup import export_chat_backup, import_timestamp, validate_adv_settings
 from galgame2voice.services.gpt_sovits_client import validate_user_tts_options
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path, immediate_transaction
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.sse import format_sse_frame
-from galgame2voice.utils.error_diagnostics import EmptyReplyError
+from galgame2voice.utils.error_diagnostics import ConfigurationSelectionError, EmptyReplyError, chat_error_payload
+from galgame2voice.utils.async_tasks import await_protected, cancel_and_drain
 
 logger = logging.getLogger("galgame2voice.routers.chat")
 
@@ -98,6 +101,33 @@ class ChatRequest(BaseModel):
 
 class ChatStreamingResponse(StreamingResponse):
     """Own the SSE iterator even when ASGI send fails after a yielded chunk."""
+
+    def __init__(self, content: Any, *, cancel_event: asyncio.Event, **kwargs: Any) -> None:
+        self.cancel_event = cancel_event
+        super().__init__(content, **kwargs)
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        # One response-owned listener consumes ASGI receive in all protocol
+        # versions; it also covers disconnects while the next event is pending.
+        sender = asyncio.create_task(self.stream_response(send))
+        watcher = asyncio.create_task(self.listen_for_disconnect(receive))
+        try:
+            done, _ = await asyncio.wait((sender, watcher), return_when=asyncio.FIRST_COMPLETED)
+            if sender in done:
+                try:
+                    await sender
+                except OSError as exc:
+                    raise ClientDisconnect() from exc
+            else:
+                await watcher
+        finally:
+            self.cancel_event.set()
+            try:
+                await cancel_and_drain((sender, watcher))
+            finally:
+                close = getattr(self.body_iterator, "aclose", None)
+                if close is not None:
+                    await await_protected(close())
 
     async def stream_response(self, send: Any) -> None:
         try:
@@ -194,24 +224,6 @@ async def chat_stream_endpoint(req: ChatRequest, request: Request) -> StreamingR
     tts_opts = _resolve_request_tts_options(req)
 
     cancel_event = asyncio.Event()
-    disconnect_task: asyncio.Task | None = None
-
-    if request is not None:
-        async def _client_disconnect_watcher() -> None:
-            try:
-                while not cancel_event.is_set():
-                    if await request.is_disconnected():
-                        logger.info("SSE client disconnected for session %s (detected via request.is_disconnected)", req.session_id)
-                        cancel_event.set()
-                        break
-                    await asyncio.sleep(0.5)
-            except asyncio.CancelledError:
-                pass
-            except Exception as ex:
-                logger.debug("Client disconnect watcher exception: %s", ex)
-
-        disconnect_task = asyncio.create_task(_client_disconnect_watcher())
-
     service = get_chat_service()
     event_gen = service.stream_chat(
         prompt=req.prompt.strip(),
@@ -234,12 +246,15 @@ async def chat_stream_endpoint(req: ChatRequest, request: Request) -> StreamingR
     )
 
     return ChatStreamingResponse(
-        sse_event_formatter(event_gen, cancel_event=cancel_event, cleanup_task=disconnect_task),
+        sse_event_formatter(event_gen, cancel_event=cancel_event),
+        cancel_event=cancel_event,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "X-G2V-Progress-Policy": "1",
+            "X-G2V-Voice-Job-Timeout-Ms": str(round(TTS_JOB_TIMEOUT_SECONDS * 1000)),
         },
     )
 
@@ -279,6 +294,8 @@ async def chat_sync_endpoint(req: ChatRequest) -> dict[str, Any]:
         )
     except HTTPException:
         raise
+    except ConfigurationSelectionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=chat_error_payload(exc)) from exc
     except EmptyReplyError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -329,6 +346,8 @@ async def legacy_get_chat(
         )
     except HTTPException:
         raise
+    except ConfigurationSelectionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=chat_error_payload(exc)) from exc
     except EmptyReplyError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

@@ -255,42 +255,66 @@ def validate_voice_profile_paths(
         validate_path_containment(ref_audio_path, allowed_roots=roots)
 
 
+def _resolve_package_audio_file(pkg: object, filename: str) -> Path | None:
+    folder = getattr(pkg, "folder", None)
+    if folder is not None:
+        ref_cand = Path(folder) / "refs" / filename
+        if ref_cand.is_file():
+            return ref_cand
+    manifest = getattr(pkg, "manifest", None)
+    for emo in (getattr(manifest, "emotions", None) or {}).values():
+        if Path(emo.audio).name == filename:
+            resolve_fn = getattr(pkg, "resolve_audio_path", None)
+            resolved = resolve_fn(emo.audio) if callable(resolve_fn) else None
+            if resolved and resolved.is_file():
+                return resolved
+    pkg_id = str(getattr(pkg, "id", "")).lower()
+    pkg_name = str(getattr(pkg, "name", ""))
+    if filename == "nat002_032.ogg" and ("natsume" in pkg_id or "夏目" in pkg_name) and folder is not None:
+        ref_cand = Path(folder) / "refs" / "gentle.ogg"
+        if ref_cand.is_file():
+            return ref_cand
+    return None
+
+
 def _search_character_packages_for_audio(raw: str, filename: str) -> Path | None:
-    """Inspects installed character packages for matching reference audio file."""
+    """Resolve a legacy reference only when package ownership is unambiguous."""
     try:
         from galgame2voice.services.character_manager import get_character_manager
         mgr = get_character_manager()
-        # Normalize to lowercase path segments; character attribution must
-        # match a complete path segment exactly (substring matching would
-        # let a crafted path like "foo/<char_id>evil/x.ogg" impersonate a
-        # character package).
-        segments = [seg for seg in raw.lower().replace("\\", "/").split("/") if seg]
-        seg_set = set(segments)
-        for pkg in mgr.get_available_characters():
-            # If path references this character by ID, name, or alias as an
-            # exact path segment, or starts with refs/
-            is_match = (
-                pkg.id.lower() in seg_set
-                or pkg.name.lower() in seg_set
-                or any(a.lower() in seg_set for a in (getattr(pkg.manifest, "aliases", None) or []))
-                or (segments and segments[0] == "refs")
-                or segments == ["audio", "nat002_032.ogg"]
-            )
-            if not is_match:
-                continue
+        raw_segments = [seg for seg in raw.replace("\\", "/").split("/") if seg]
+        lower_segments = [seg.lower() for seg in raw_segments]
+        reserved_segments = {"audio", "references", "characters", "refs"}
 
-            ref_cand = pkg.folder / "refs" / filename
-            if ref_cand.is_file():
-                return ref_cand
-            for emo in (getattr(pkg.manifest, "emotions", None) or {}).values():
-                if Path(emo.audio).name == filename:
-                    resolved = pkg.resolve_audio_path(emo.audio)
-                    if resolved and resolved.is_file():
-                        return resolved
-            if filename == "nat002_032.ogg" and ("natsume" in pkg.id.lower() or "夏目" in pkg.name):
-                ref_cand = pkg.folder / "refs" / "gentle.ogg"
-                if ref_cand.is_file():
-                    return ref_cand
+        matched_packages: dict[str, object] = {}
+        if hasattr(mgr, "get_character"):
+            for seg in raw_segments[:-1]:
+                if seg.lower() in reserved_segments:
+                    continue
+                pkg = mgr.get_character(seg)
+                if pkg is not None and getattr(pkg, "is_valid", True):
+                    matched_packages[str(pkg.id)] = pkg
+
+        if lower_segments == ["audio", "nat002_032.ogg"]:
+            for pkg in mgr.get_available_characters():
+                if "natsume" in pkg.id.lower() or "夏目" in pkg.name:
+                    matched_packages[str(pkg.id)] = pkg
+
+        if len(matched_packages) == 1:
+            return _resolve_package_audio_file(next(iter(matched_packages.values())), filename)
+        if len(matched_packages) > 1:
+            return None
+
+        if lower_segments and lower_segments[0] == "refs":
+            available = list(mgr.get_available_characters())
+            if len(available) == 1:
+                return _resolve_package_audio_file(available[0], filename)
+            defaults = [
+                pkg for pkg in available
+                if getattr(getattr(pkg, "manifest", None), "is_default", False)
+            ]
+            if len(defaults) == 1:
+                return _resolve_package_audio_file(defaults[0], filename)
     except (AttributeError, KeyError, OSError):
         pass
     return None

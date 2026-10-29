@@ -6,7 +6,7 @@ import { DEFAULT_SESSION_SETTINGS as defaults, DEFAULT_GLOBAL, state, loadState,
 import { createAdvSettings } from '../frontend/src/adv/settings.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
 
-const expected = { advPlayerName: 'Player', advPrimaryLanguage: 'zh', advSubtitleLanguage: 'ja',
+const expected = { advPlayerName: '我', advPrimaryLanguage: 'zh', advSubtitleLanguage: 'ja',
   advWindowOpacity: 75, advTextIntervalMs: 30, advInterruptVoice: true, advAutoBaseMs: 1500,
   advAutoPerCharMs: 45, advAutoMode: 'voice-priority', advOutfit: '', advBlink: true, advLipSync: true };
 const custom = { advPlayerName: '旅行者', advPrimaryLanguage: 'ja', advSubtitleLanguage: 'zh',
@@ -60,7 +60,7 @@ test('language collision, none subtitle, numeric endpoints and forty grapheme na
   }
   const name = '👩‍💻'.repeat(40);
   assert.equal(pickSettings({ advPlayerName: name }, defaults).advPlayerName, name);
-  assert.equal(pickSettings({ advPlayerName: name + 'a' }, defaults).advPlayerName, 'Player');
+  assert.equal(pickSettings({ advPlayerName: name + 'a' }, defaults).advPlayerName, '我');
 });
 
 test('store reload, browser backup/import and switching keep each session settings isolated', () => {
@@ -71,7 +71,7 @@ test('store reload, browser backup/import and switching keep each session settin
   const second = createSession('default'); assert.equal(getActive(), second);
   assert.equal(second.settings.advEnabled, undefined); state.activeId = first.id; saveState();
   loadState(); for (const [key, value] of Object.entries(settings)) assert.equal(getActive().settings[key], value, key);
-  state.activeId = second.id; assert.equal(getActive().settings.advPlayerName, 'Player');
+  state.activeId = second.id; assert.equal(getActive().settings.advPlayerName, '我');
   assert.equal(getActive().settings.advBackground, ''); assert.equal(getActive().settings.advBgTime, 'auto');
   const incoming = prepareSessionImport(exportSessionData()); applySessionImport(incoming);
   const restored = state.sessions.find(session => session.id.startsWith('s_import_') && session.title === first.title);

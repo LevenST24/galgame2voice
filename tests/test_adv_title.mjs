@@ -289,7 +289,7 @@ test('Escape closes popover then dropdown then draft/list; composing keys ignore
 test('home CSS uses transparent interactive overlay, framing-based movement, clamping and reduced motion', () => {
   const css = readFileSync(new URL('../frontend/src/adv/title.css', import.meta.url), 'utf8');
   assert.match(css, /pointer-events:\s*auto/); assert.match(css, /1380 - var\(--sprite-cx/);
-  assert.match(css, /-webkit-line-clamp:\s*3/); assert.match(css, /prefers-reduced-motion/);
+  assert.match(css, /-webkit-line-clamp:\s*2/); assert.match(css, /prefers-reduced-motion/);
   assert.doesNotMatch(css, /adv-title-menu|adv-title-cloud/);
 });
 test('reduced motion leaves nothing in the textbox transitioning, so entering chat can focus the input', () => {
@@ -340,6 +340,39 @@ test('onboarding keeps the actual new-session greeting in the DOM for portable s
   assert.equal(h.q('.home-greeting').textContent, greeting);
 });
 
+test('unavailable model does not prevent opening an existing conversation', async t => {
+  const session = snapshot('a');
+  const h = await fixture(t, { sessions: [session], status: {
+    modelLoaded: true, hasModel: false, model: { state: 'error', label: '未配置对话模型' },
+    engine: { state: 'unavailable' },
+  } });
+  assert.ok(h.q('.home-first-title'), 'model configuration guidance remains available');
+  assert.ok(h.q('.home-existing'), 'existing conversation remains accessible');
+  h.q('.home-existing').click();
+  assert.deepEqual(h.calls.at(-1), ['load', 'a']);
+  assert.equal(h.ui.isOpen, false);
+});
+
+test('model read failure is uncertain and does not replace existing chat with onboarding', async t => {
+  const h = await fixture(t, { sessions: [snapshot('a')], status: {
+    modelLoaded: true, hasModel: false,
+    model: { state: 'error', readFailed: true, label: '模型配置暂时无法读取' },
+    engine: { state: 'unavailable' },
+  } });
+  assert.ok(!h.q('.home-first-title'), 'a read error must not be treated as a first-time setup');
+  assert.match(textTree(h.q('.home-pill')), /状态未确认/);
+  assert.equal(h.q('.home-dot').className, 'home-dot warn');
+  assert.ok(h.q('.home-continue'));
+});
+
+test('first use without a user conversation does not offer an existing chat', async t => {
+  const session = { ...snapshot('a'), hasUserMessages: false };
+  const h = await fixture(t, { sessions: [session], status: {
+    modelLoaded: true, hasModel: false, model: { state: 'error' }, engine: { state: 'unavailable' },
+  } });
+  assert.equal(h.q('.home-existing'), null);
+});
+
 test('preview of an older active session puts it back into the clicked recent slot', async t => {
   const h = await fixture(t, { active: 'h' });
   assert.deepEqual(h.ui.element.querySelectorAll('.home-recent').map(n => n.dataset.session), ['a','b','c']);
@@ -361,6 +394,38 @@ test('closing home stops active replay; late playback/status completions cannot 
   h.ui.refresh(); h.ui.close(); assert.equal(h.calls.at(-1), 'stop');
   h.finish('ended'); resolveStatus({ modelLoaded: true, model: { state: 'error' } }); await microtasks();
   assert.equal(h.ui.isOpen, false); assert.equal(h.ui.element.hidden, true); assert.equal(h.clock.timers.size, 0);
+});
+
+test('reopening home starts a fresh status request while the old one is pending', async t => {
+  const h = await fixture(t);
+  const pending = [];
+  h.actions.getStatus = () => new Promise(resolve => pending.push(resolve));
+  h.ui.refresh();
+  h.ui.close();
+  h.ui.open();
+  assert.equal(pending.length, 2, 'a previous opening must not block the new status check');
+  pending[1]({ modelLoaded: true, hasModel: true, model: { state: 'ok' }, engine: { state: 'ready' } });
+  await microtasks();
+  assert.match(textTree(h.q('.home-pill')), /对话 可用/);
+  pending[0]({ modelLoaded: true, hasModel: false, model: { state: 'error' }, engine: { state: 'failed' } });
+  await microtasks();
+  assert.match(textTree(h.q('.home-pill')), /对话 可用/, 'old results must not replace current status');
+});
+
+test('an old status request cannot clear the new opening\'s in-flight check', async t => {
+  const h = await fixture(t);
+  const pending = [];
+  h.actions.getStatus = () => new Promise(resolve => pending.push(resolve));
+  h.ui.refresh();
+  h.ui.close();
+  h.ui.open();
+  assert.equal(pending.length, 2);
+  pending[0]({ modelLoaded: true, hasModel: false, model: { state: 'error' } });
+  await microtasks();
+  h.ui.refresh();
+  assert.equal(pending.length, 2, 'the current request remains the only in-flight check');
+  pending[1]({ modelLoaded: true, hasModel: true, model: { state: 'ok' } });
+  await microtasks();
 });
 test('avatar crop uses manifest faceRect with fallback and no real artwork', async t => {
   const h = await fixture(t, { actions: { getAvatar: async () => ({ rect: { x: 200, y: 100, width: 400, height: 360 },

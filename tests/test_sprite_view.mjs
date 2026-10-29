@@ -205,6 +205,7 @@ test('nothing is visible before decode', async () => {
 
 test('stage and crop swap in one frame with the same revision', async () => {
   const { view, spriteLayer, faceSlot, flushRaf, waitForRaf, imageOptions } = setupView();
+  assert.notEqual(faceSlot.style.position, 'relative');
   const model = createTestModel();
   view.setModel(model);
 

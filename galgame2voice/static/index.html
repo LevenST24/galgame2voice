@@ -7,8 +7,8 @@
   <title>Gal2Voice · AI 多会话对话</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
 
-  <script type="module" crossorigin src="/static/assets/index-51YaB5IK.js"></script>
-  <link rel="stylesheet" crossorigin href="/static/assets/index-CJt3Gak-.css">
+  <script type="module" crossorigin src="/static/assets/index-C3CKbyL9.js"></script>
+  <link rel="stylesheet" crossorigin href="/static/assets/index-Skqi1XQu.css">
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -123,8 +123,8 @@
 
       <footer class="sidebar-foot">
         <span class="foot-text">聊天记录保存在本机</span>
-        <button class="foot-settings" id="globalSettingsBtn" title="全局设置" aria-label="全局设置">
-          <svg class="icon"><use href="#i-gear"></use></svg><span>全局设置</span>
+        <button class="foot-settings" id="globalSettingsBtn" title="设置中心" aria-label="设置中心">
+          <svg class="icon"><use href="#i-gear"></use></svg><span>设置中心</span>
         </button>
       </footer>
     </aside>
@@ -132,15 +132,24 @@
 
   <!-- 全局设置中心（系统诊断 / 语音推理 / 大模型与STT / Telegram / 记忆与人设） -->
   <div class="overlay hidden" id="globalModal">
-    <div class="modal modal-lg" role="dialog" aria-modal="true" aria-label="全局设置">
+    <div class="modal modal-lg" role="dialog" aria-modal="true" aria-label="设置中心">
       <header class="modal-head">
         <div>
-          <h2>全局设置</h2>
-          <span class="modal-sub">管理模型、语音服务与聊天备份</span>
+          <h2>设置中心</h2>
+          <span class="modal-sub">角色、播放体验与服务配置，都在这里</span>
         </div>
-        <button class="icon-btn" data-close aria-label="关闭"><svg class="icon"><use href="#i-x"></use></svg></button>
+        <div class="settings-header-actions">
+          <button type="button" class="btn ghost" data-home>返回开始页</button>
+          <button class="icon-btn" data-close aria-label="关闭设置"><svg class="icon"><use href="#i-x"></use></svg></button>
+        </div>
       </header>
       <div class="modal-tabs" id="gTabs">
+        <button type="button" class="modal-tab-btn" data-gtab="session" id="gOpenCharacterSettings">
+          <svg class="icon"><use href="#i-portrait"></use></svg><span>角色与会话</span>
+        </button>
+        <button type="button" class="modal-tab-btn" data-gtab="experience" id="gOpenChatExperience">
+          <svg class="icon"><use href="#i-sliders"></use></svg><span>聊天体验</span>
+        </button>
         <button type="button" class="modal-tab-btn active" data-gtab="dashboard">
           <svg class="icon"><use href="#i-activity"></use></svg>
           <span>运行状态</span>
@@ -159,7 +168,7 @@
         </button>
         <button type="button" class="modal-tab-btn" data-gtab="memory">
           <svg class="icon"><use href="#i-quill"></use></svg>
-          <span>角色与记忆</span>
+          <span>长期记忆</span>
         </button>
         <button type="button" class="modal-tab-btn" data-gtab="update">
           <svg class="icon"><use href="#i-refresh"></use></svg>
@@ -167,6 +176,8 @@
         </button>
       </div>
       <div class="modal-body">
+        <div class="gtab-panel hidden" id="gp-session"></div>
+        <div class="gtab-panel hidden" id="gp-experience"></div>
         <!-- 选项卡 1: 系统状态看板 -->
         <div class="gtab-panel" id="gp-dashboard">
           <div class="settings-intro"><h3>运行状态</h3><p>查看服务是否就绪。语音引擎离线时，可先检查语音服务中的引擎目录和地址。</p></div>
@@ -199,18 +210,18 @@
               <div class="status-card-head">
                 <span class="status-card-title">
                   <span class="card-icon-dot">⚡</span>
-                  <span>推理计算精度</span>
+                  <span>启动计算方式</span>
                 </span>
-                <span id="gDashPrecisionBadge" class="badge-status-pill badge-pill-indigo">FP16</span>
+                <span id="gDashPrecisionBadge" class="badge-status-pill badge-pill-yellow">待确认</span>
               </div>
               <div class="status-card-body">
-                <div class="status-card-main" id="gDashPrecisionVal">⚡ FP16 半精度</div>
-                <div class="status-card-sub" id="gDashDeviceVal">硬件加速中</div>
+                <div class="status-card-main" id="gDashPrecisionVal">计算方式待确认</div>
+                <div class="status-card-sub" id="gDashDeviceVal">正在读取引擎状态…</div>
               </div>
               <div class="status-card-act" style="display: flex; gap: 6px;">
                 <button type="button" class="btn-card-action" id="gBtnTogglePrecision" title="按 FP16 → FP32 → CPU 循环切换精度并重启">
                   <svg class="icon"><use href="#i-refresh"></use></svg>
-                  <span id="gBtnTogglePrecisionText">切换为 FP32 重启</span>
+                  <span id="gBtnTogglePrecisionText">按已保存设置启动</span>
                 </button>
                 <button type="button" class="btn-card-action" id="gBtnGoPrecision" title="调整详细参数">
                   <svg class="icon"><use href="#i-sliders"></use></svg>
@@ -608,7 +619,7 @@
       <footer class="modal-foot">
         <button type="button" class="btn ghost danger" id="gResetBtn">恢复默认</button>
         <span class="foot-spacer"></span>
-        <button type="button" class="btn ghost" data-close>关闭</button>
+        <button type="button" class="btn ghost" data-close>关闭设置</button>
         <button type="button" class="btn primary" id="gTgSave">保存全局配置</button>
       </footer>
     </div>
@@ -618,9 +629,9 @@
 
   <!-- 会话设置 -->
   <div class="overlay hidden" id="sessionModal">
-    <div class="modal" role="dialog" aria-modal="true" aria-label="会话设置">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="角色与会话">
       <header class="modal-head">
-        <h2>会话设置 <span class="modal-sub" id="smTitle"></span></h2>
+        <h2>角色与会话 <span class="modal-sub" id="smTitle"></span></h2>
         <button class="icon-btn" data-close aria-label="关闭"><svg class="icon"><use href="#i-x"></use></svg></button>
       </header>
       <div class="modal-body">
@@ -737,11 +748,13 @@
           <input type="range" id="sTtsTemp" min="0" max="2" step="0.05" value="1" />
         </div>
         </div></details>
-        <p class="modal-note">高级参数只对当前会话生效。角色人设会写回角色包；对话模型在「全局设置」中配置。</p>
+        <p class="modal-note">高级参数只对当前会话生效。角色人设会写回角色包；对话模型在「设置中心」中配置，文字和播放选项在「聊天体验」中调整。</p>
       </div>
       <footer class="modal-foot">
         <button class="btn ghost" id="sReset">恢复默认</button>
+        <button type="button" class="btn ghost" data-home>返回首页</button>
         <span class="foot-spacer"></span>
+        <button type="button" class="btn ghost" data-settings-center>设置中心</button>
         <button class="btn ghost" data-close>取消</button>
         <button class="btn primary" id="sSave">保存</button>
       </footer>

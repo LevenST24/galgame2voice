@@ -4,6 +4,8 @@ import asyncio
 import os
 from pathlib import Path
 import re
+import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -13,6 +15,7 @@ import pytest
 from galgame2voice.config import get_settings
 from galgame2voice.routers import health
 from galgame2voice.services.engine_recovery import engine_failure_message
+from galgame2voice.services.engine_runtime import EngineLaunch
 from galgame2voice.services.sovits_endpoint import parse_sovits_endpoint
 from scripts import run_server
 
@@ -27,6 +30,7 @@ def engine(tmp_path, monkeypatch):
     (directory / "api_v2.py").write_text("# test marker, never run")
     (root / "data" / "sovits_dir.txt").write_text(str(directory))
     monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", None)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", None)
     monkeypatch.setattr(run_server, "is_port_in_use", lambda *args: False)
     async def resolve():
         return parse_sovits_endpoint("http://127.0.0.1:19230", source="db")
@@ -41,7 +45,7 @@ def engine(tmp_path, monkeypatch):
     ("RuntimeError: CUDA out of memory", "CPU"),
     ("ModuleNotFoundError: no module named torch", "runtime"),
     ("DLL load failed", "runtime"),
-    ("FileNotFoundError: private-file.ckpt", "会话设置"),
+    ("FileNotFoundError: private-file.ckpt", "角色与会话"),
     ("PermissionError: access is denied", "文档"),
     ("Unexpected internal exception sk-secret-value", "文字聊天"),
 ])
@@ -52,6 +56,12 @@ def test_engine_log_guidance_hides_raw_errors(tmp_path, log, keyword):
     assert keyword in message
     assert "sk-secret-value" not in message
     assert "private-file.ckpt" not in message
+
+
+def test_engine_failure_ignores_errors_from_previous_launch(tmp_path):
+    log = tmp_path / "engine.log"
+    log.write_text("CUDA out of memory\n=== Galgame2Voice engine start ===\nFileNotFoundError: missing.ckpt\n")
+    assert "缺少模型或配置文件" in engine_failure_message(log)
 
 
 @pytest.mark.asyncio
@@ -158,12 +168,81 @@ async def test_status_uses_reachability_and_process_liveness(engine, monkeypatch
     proc = MagicMock()
     proc.poll.return_value = poll
     monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", EngineLaunch(proc, "127.0.0.1", 19230, "cpu", False))
     async def probe(*args):
         return SimpleNamespace(status="reachable" if reachable else "unreachable")
     monkeypatch.setattr(health, "_probe_gpt_sovits", probe)
     result = await health.engine_status_endpoint()
     assert result["state"] == state
     assert result["ready"] == reachable
+
+
+@pytest.mark.asyncio
+async def test_live_but_unresponsive_engine_does_not_claim_loading_forever(engine, monkeypatch):
+    proc = MagicMock()
+    proc.poll.return_value = None
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", EngineLaunch(proc, "127.0.0.1", 19230, "cpu", False, 10.0))
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 10.0, raising=False)
+    monkeypatch.setattr(run_server.time, "monotonic", lambda: 250.0)
+
+    async def probe(*args):
+        return SimpleNamespace(status="unreachable")
+
+    monkeypatch.setattr(health, "_probe_gpt_sovits", probe)
+    result = await health.engine_status_endpoint()
+    assert result["state"] == "loading_slow"
+    assert result["ready"] is False
+    assert "尚未确认就绪" in result["message"]
+    assert "gpt_sovits.log" in result["message"]
+
+
+@pytest.mark.requires_piped_subprocess
+def test_engine_startup_output_is_visible_before_process_exit(engine, monkeypatch):
+    root, directory = engine
+    (root / "logs").mkdir()
+    (directory / "api_v2.py").write_text("import time\nprint('engine-started')\ntime.sleep(20)\n")
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", root)
+    monkeypatch.setattr(run_server, "find_engine_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(run_server, "write_sovits_yaml_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_server, "build_gpt_sovits_env", lambda *args, **kwargs: os.environ.copy())
+    monkeypatch.setattr(run_server, "setup_windows_job_object", lambda: None)
+    monkeypatch.setattr(run_server, "assign_process_to_job", lambda _: False)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", None)
+    proc = run_server._spawn_sovits_process(directory, "127.0.0.1", 19230, False)
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if "engine-started" in (root / "logs/gpt_sovits.log").read_text(encoding="utf-8"):
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("Engine startup output stayed buffered while the process was alive")
+        assert proc.poll() is None
+        assert run_server._SPAWNED_SOVITS_STARTED_AT is not None
+        assert run_server._SPAWNED_SOVITS_LAUNCH.process is proc
+        assert run_server._SPAWNED_SOVITS_LAUNCH.port == 19230
+        assert run_server._SPAWNED_SOVITS_LAUNCH.started_at == run_server._SPAWNED_SOVITS_STARTED_AT
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+def test_engine_numba_cache_uses_writable_application_data(engine, monkeypatch):
+    root, directory = engine
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", root)
+    monkeypatch.delenv("NUMBA_CACHE_DIR", raising=False)
+    environment = run_server.build_gpt_sovits_env(directory)
+    cache = Path(environment["NUMBA_CACHE_DIR"])
+    assert cache.is_relative_to(root / "data")
+    assert not cache.is_relative_to(directory)
+    assert cache.is_dir()
+    (cache / "write-probe").write_text("ok")
+    for key in ("TEMP", "TMP", "TMPDIR"):
+        temporary = Path(environment[key])
+        assert temporary.is_relative_to(root / "data")
+        assert not temporary.is_relative_to(directory)
+        assert temporary.is_dir()
 
 
 def test_failed_application_startup_keeps_nonzero_exit(engine, monkeypatch):
@@ -176,14 +255,16 @@ def test_failed_application_startup_keeps_nonzero_exit(engine, monkeypatch):
     monkeypatch.setattr(run_server.atexit, "register", lambda *args: None)
     monkeypatch.setattr(run_server, "check_python_environment", lambda: True)
     monkeypatch.setattr(run_server, "run_hardware_diagnostics", lambda: {})
-    monkeypatch.setattr(run_server, "find_available_port", lambda *args, **kwargs: 18080)
     for key in ("GALGAME_PORT", "PORT", "GALGAME_HOST", "HOST"):
         monkeypatch.setenv(key, os.environ.get(key, ""))
     def failed(*args, **kwargs):
         raise SystemExit(3)
-    monkeypatch.setattr(uvicorn, "run", failed)
+    monkeypatch.setattr(uvicorn, "Config", MagicMock())
+    server = MagicMock()
+    server.run.side_effect = failed
+    monkeypatch.setattr(uvicorn, "Server", lambda config: server)
     with pytest.raises(SystemExit) as error:
-        run_server.main(["--no-engine", "--no-browser", "--host", "127.0.0.1", "--port", "18080"])
+        run_server.main(["--no-engine", "--no-browser", "--host", "127.0.0.1", "--port", "0"])
     assert error.value.code == 3
 
 
@@ -191,7 +272,7 @@ def test_engine_guidance_quotes_only_names_the_settings_page_shows():
     """Guidance tells the user which tab, button or option to use, quoting its name in 「」.
 
     The tab was renamed from 语音与推理 to 语音服务, and messages kept the old name. Each
-    quoted name (each step of 「全局设置 → 语音服务」) must be text the page shows.
+    quoted name (each step of 「设置中心 → 语音服务」) must be text the page shows.
     """
     repo = Path(__file__).resolve().parents[1]
     page = re.sub(r"<!--.*?-->", " ", (repo / "frontend" / "index.html").read_text(encoding="utf-8"), flags=re.S)

@@ -1,8 +1,42 @@
 # Galgame2Voice Test Infrastructure & 4-Tier Opaque-Box Strategy
 
+Committed voice cache/transaction ownership and the isolated regression cases are
+documented in [VOICE_CONTEXTS.md](VOICE_CONTEXTS.md).
+
+Audio file/model identity and engine-state recovery are documented in
+[AUDIO_IDENTITY.md](AUDIO_IDENTITY.md). Runtime fixtures close both local and
+global VoiceManager background-job owners before closing their scheduler, then
+flush every database/cache scope. `tests/test_runtime_service_cleanup.py` verifies
+local ownership in a separate pytest process; process exit alone is not counted
+as an explicit service cleanup.
+
+Character identity and reconciliation rules, including the isolated synthetic
+regression suite, are documented in [CHARACTER_IDENTITY.md](CHARACTER_IDENTITY.md).
+Run `uv run pytest -q tests/test_character_identity.py tests/test_character_rescan.py`
+for the focused check. These tests do not require installed character assets;
+asset-dependent skips do not verify real portraits or GPU synthesis.
+
+### Database setup for HTTP and voice-switch tests
+
+`ASGITransport(app=...)` does not run application lifespan initialization.
+The shared database fixtures create an isolated schema, but tests that confirm a
+saved setting must also call `init_db()` on that database to create its singleton
+settings record. A zero-row `UPDATE` is a rejected save, not successful setup.
+Use `isolate_test_database` for both HTTP routes and their `VoiceManager`; a
+second `temp_db_path` is suitable only when the test intentionally covers a
+separate database. Persistence-error tests assert `VOICE_PROFILE_SAVE_FAILED`,
+the target profile ID and actionable Chinese guidance rather than a former
+English message. See `tests/test_deployment_boundaries.py` and
+`tests/test_m3_resilience_regression.py` for initialized, shared-database cases.
+
 ## 1. Executive Summary & Testing Philosophy
 
-Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice streaming server designed for 24/7 continuous operation under extreme concurrency. To ensure absolute engineering resilience, zero information leakage, sub-millisecond memory latency, and bulletproof fault tolerance, the testing framework adheres strictly to an **Opaque-Box Testing Strategy** across four distinct operational tiers.
+Galgame2Voice is a local AI character-chat and TTS streaming application. Its
+tests exercise public behavior, persistence, cancellation, recovery and resource
+boundaries across four operational tiers, using isolated synthetic fixtures in
+ordinary CI. Timing results apply to the measured setup. Real character assets,
+GPU/model behavior, external Telegram delivery and prolonged operation require
+separate acceptance evidence; a passing suite does not establish those outcomes.
 
 ### Core Testing Tenets:
 1. **Opaque-Box Contract Verification**: Tests evaluate system behaviors solely through public APIs, HTTP/SSE protocols, exported service interfaces, and CLI boundaries without depending on internal implementation quirks.
@@ -280,6 +314,11 @@ tracer rather than the cache. Skipping under `--cov` is the only outcome that
 does not turn the coverage job into a false alarm; without `--cov` the marker is
 inert and the benchmark runs normally.
 
+The coverage guard checks whether `cov_source` is non-empty and `--no-cov` is
+absent. pytest-cov may return an empty list when no coverage was requested;
+checking only for `None` incorrectly skips every timing case. This is covered by
+`tests/test_test_markers.py`, including plain pytest, `--cov`, and `--no-cov`.
+
 ### Unit tests must not reach the real ffmpeg
 
 `tests/conftest.py` installs an autouse guard that makes ffmpeg discovery fail
@@ -429,6 +468,11 @@ variables, and three `zip()` calls whose silent truncation would have corrupted
 fallback secret cipher.
 
 ### Test assertions must not pin source text
+
+Windows 进程树验收只使用本次创建的进程身份和动态分配的端口。子进程写出就绪
+文件后再检查监听，所有探测设置超时，失败路径也清理自己创建的进程。`taskkill /T`
+可能因为某个子进程已退出而返回 255；只有已捕获的进程全部结束且监听端口释放，
+才算清理成功，不能单凭命令退出码判断结果。
 
 Assert the property, not its spelling. `test_health_polling_bounded` used to
 assert `"for i in range(240)"`, which fails the moment the loop counter is

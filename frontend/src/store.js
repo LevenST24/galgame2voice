@@ -37,7 +37,7 @@ export const DEFAULT_SESSION_SETTINGS = {
   ttsTopK: 15,
   ttsTopP: 1.0,
   ttsTemperature: 1.0,
-  advPlayerName: 'Player',
+  advPlayerName: '我',
   advPrimaryLanguage: 'zh',
   advSubtitleLanguage: 'ja',
   advWindowOpacity: 75,
@@ -69,11 +69,12 @@ export const state = {
 
 // LOG and the title screen show it as plain text, so no Markdown.
 export const GREETING =
-  '欢迎使用 Gal2Voice。\n\n支持语音输入与朗读回复：轮到你时，在文本框里打字后回车发送，或者点文本框里的麦克风说话。回复会一句一句显示并配上语音，点击画面推进。快捷菜单 CONFIG 面板的底部可以打开会话与角色设置（音色、人设、采样参数）和对话模型设置。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。';
+  '欢迎使用 Gal2Voice。\n\n轮到你时，在文本框里打字后回车发送，或点麦克风说话。默认语音同步模式会等本句声音开始再出字，AUTO 等说完再翻句；点击画面也可先看文字。\n\n首页齿轮和聊天菜单的设置按钮都打开同一个设置中心：“角色与会话”选择音色和人设，“聊天体验”调整字幕与播放方式，“对话模型”配置模型。窗口顶部可关闭设置或返回开始页。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。';
 
 // Greetings that sessions created by earlier versions still carry.
 export const LEGACY_GREETINGS = [
-  '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。右上角`会话设置`可绑定角色音色并配置人设与采样参数，侧边栏底部齿轮可切换对话模型。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
+  '欢迎使用 Gal2Voice。\n\n支持语音输入与朗读回复：轮到你时，在文本框里打字后回车发送，或者点文本框里的麦克风说话。回复会一句一句显示并配上语音，点击画面推进。快捷菜单 CONFIG 面板的底部可以打开会话与角色设置（音色、人设、采样参数）和对话模型设置。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
+  '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。设置中心的“角色与会话”可绑定角色音色并配置人设与采样参数，“对话模型”可切换模型；各设置页都可以返回首页。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
 ];
 
 export function uid(prefix = 'id') {
@@ -84,7 +85,7 @@ const now = () => Date.now();
 
 export function saveState() {
   if (damagedRaw !== null) {
-    reportStorage(false, '原会话记录无法读取，已保留原内容。请在「全局设置 → 备份与更新」导出原始记录，再恢复本地保存。');
+    reportStorage(false, '原会话记录无法读取，已保留原内容。请在「设置中心 → 备份与更新」导出原始记录，再恢复本地保存。');
     return false;
   }
   try {
@@ -112,7 +113,7 @@ export function saveState() {
     return true;
   } catch (e) {
     console.warn('保存会话失败', e);
-    reportStorage(false, '浏览器未能保存聊天记录。请先在「全局设置 → 备份与更新」导出聊天备份，再检查浏览器存储权限或清理不需要的会话；关闭网页前请完成备份。');
+    reportStorage(false, '浏览器未能保存聊天记录。请先在「设置中心 → 备份与更新」导出聊天备份，再检查浏览器存储权限或清理不需要的会话；关闭网页前请完成备份。');
     return false;
   }
 }

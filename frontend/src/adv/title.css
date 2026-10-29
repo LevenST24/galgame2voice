@@ -28,11 +28,15 @@
 .adv-title-screen .home-excerpt { position: absolute; left: calc(150 * var(--u)); top: calc(330 * var(--u)); width: calc(880 * var(--u)); max-height: calc(580 * var(--u)); overflow: visible; }
 .adv-title-screen .home-excerpt.is-reading { top: calc(330 * var(--u)); max-height: none; }
 .adv-title-screen .home-label { color: var(--home-accent); font-size: calc(22 * var(--u)); font-weight: 600; letter-spacing: .3em; margin-bottom: calc(18 * var(--u)); }
+.adv-title-screen .home-first-heading { display: flex; align-items: center; justify-content: space-between; gap: calc(20 * var(--u)); margin-bottom: calc(18 * var(--u)); }
+.adv-title-screen .home-first-heading .home-label { margin-bottom: 0; }
 .adv-title-screen .home-meta { color: #ffffffcc; font-size: calc(28 * var(--u)); margin-bottom: calc(12 * var(--u)); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .home-meta b { color: white; }
 .adv-title-screen .home-you { color: #ffffff99; font-size: calc(26 * var(--u)); line-height: 1.4; margin-bottom: calc(26 * var(--u)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.adv-title-screen .home-quote { padding-left: calc(28 * var(--u)); border-left: calc(3 * var(--u)) solid var(--home-accent); font-family: "Songti SC", "SimSun", serif; font-size: calc(54 * var(--u)); font-weight: 500; line-height: 1.45; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; text-shadow: 0 2px 18px #0008; }
-.adv-title-screen .home-ja { margin-top: calc(14 * var(--u)); padding-left: calc(32 * var(--u)); font-family: "Yu Mincho", "SimSun", serif; font-size: calc(30 * var(--u)); line-height: 1.5; color: #ffffffb8; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+/* Keep the desktop excerpt inside its reading area, above actions and recents.
+   The full line stays in the DOM and conversation history. */
+.adv-title-screen .home-quote { padding-left: calc(28 * var(--u)); border-left: calc(3 * var(--u)) solid var(--home-accent); font-family: "Songti SC", "SimSun", serif; font-size: calc(54 * var(--u)); font-weight: 500; line-height: 1.45; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; text-shadow: 0 2px 18px #0008; }
+.adv-title-screen .home-ja { margin-top: calc(14 * var(--u)); padding-left: calc(32 * var(--u)); font-family: "Yu Mincho", "SimSun", serif; font-size: calc(30 * var(--u)); line-height: 1.5; color: #ffffffb8; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
 .adv-title-screen .home-actions { display: flex; align-items: center; flex-wrap: wrap; gap: calc(36 * var(--u)); margin-top: calc(48 * var(--u)); }
 .adv-title-screen .home-primary { border: 0; border-radius: 999px; background: #fff; color: #12141f; font-size: calc(30 * var(--u)); font-weight: 700; padding: calc(19 * var(--u)) calc(46 * var(--u)); min-width: calc(240 * var(--u)); box-shadow: 0 calc(8 * var(--u)) calc(30 * var(--u)) #0005; }
 .adv-title-screen .home-primary:hover { background: #fff4f0; }
@@ -80,7 +84,9 @@
 .adv-stage .adv-layer-textbox, .adv-stage .adv-layer-quickmenu { transition: opacity 300ms ease; }
 .adv-stage.is-home .adv-layer-textbox, .adv-stage.is-home .adv-layer-quickmenu,
 .adv-stage.is-home .adv-app-tools, .adv-stage.is-home .adv-art-status,
-.adv-stage.is-home .adv-layer-overlay > :not(.adv-title-screen) { opacity: 0; visibility: hidden; pointer-events: none; }
+.adv-stage.is-home .adv-layer-overlay > :not(.adv-title-screen):not(.adv-config-overlay) { opacity: 0; visibility: hidden; pointer-events: none; }
+.adv-stage:not(.is-home) .adv-layer-quickmenu,
+.adv-stage:not(.is-home) .adv-layer-quickmenu * { visibility: visible; }
 @media (prefers-reduced-motion: reduce) {
   .adv-stage .adv-layer-sprite, .adv-stage .adv-layer-fx, .adv-stage .adv-layer-textbox, .adv-stage .adv-layer-quickmenu { transition: none !important; }
   /* styles.css gives every element a 0.01ms transition here; the input would then still inherit

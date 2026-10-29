@@ -256,7 +256,16 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   z-index: 2;
 }
 .foot-spacer { flex: 1; }
-
+.settings-shortcuts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.settings-shortcuts .btn { min-height: 36px; padding: 6px 12px; }
+.settings-header-actions, .settings-page-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.settings-page-actions[hidden], #gExperienceSave[hidden], .modal-foot .btn[hidden] { display: none; }
+.settings-session-editor > .modal {
+  display: block; width: auto; max-height: none; border: 0; border-radius: 0;
+  box-shadow: none; background: none; overflow: visible;
+}
+.settings-session-editor > .modal > .modal-body { padding: 0; overflow: visible; }
+.settings-session-editor :is(.modal-head, .modal-foot)[hidden] { display: none; }
 .field { display: flex; flex-direction: column; gap: 7px; }
 .field > label {
   font-size: 12px; font-weight: 600;
@@ -460,8 +469,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 @keyframes riseIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 .animate-in { animation: riseIn 0.4s var(--ease) both; animation-delay: calc(var(--i, 0) * 40ms); }
 
-@media (max-width: 820px) { .si-del { opacity: 1; } .radio-cards { grid-template-columns: 1fr; } }
-
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
@@ -542,11 +549,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 12px;
-}
-@media (max-width: 580px) {
-  .status-cards-grid {
-    grid-template-columns: 1fr;
-  }
 }
 .status-card-box {
   background: #ffffff;
@@ -1159,22 +1161,3 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 .modal-tabs { scrollbar-width: thin; scrollbar-color: var(--brand-line) transparent; }
 .modal-tabs::-webkit-scrollbar { width: 4px; height: 4px; }
 .modal-tabs::-webkit-scrollbar-thumb { background: var(--brand-line); border-radius: 4px; }
-@media (max-width: 620px) {
-  .overlay { padding: 12px; }
-  .modal, .modal-lg { width: 100%; max-height: calc(100dvh - 24px); }
-  .modal-lg { display: flex; height: min(720px, calc(100dvh - 24px)); }
-  .modal-head { padding: 16px; gap: 8px; }
-  .modal-body { padding: 16px; }
-  .modal-foot { padding: 12px 16px; gap: 8px; flex-wrap: wrap; }
-  .modal-foot .btn { padding-inline: 12px; }
-  .modal-tabs { flex-direction: row; padding: 8px; overflow-x: auto; overflow-y: hidden; border-right: 0; border-bottom: 1px solid var(--line); }
-  .modal-tab-btn { padding: 9px 10px; }
-  .modal-tab-btn .icon { display: none; }
-  .field-row-2 { grid-template-columns: minmax(0, 1fr); }
-  .input-action-row { flex-wrap: wrap; }
-  #gSovitsDirectory { flex-basis: 100%; }
-  .provider-desc-banner { align-items: flex-start; flex-direction: column; padding: 12px; }
-  .diag-banner { align-items: flex-start; flex-direction: column; }
-  .update-meta-grid { grid-template-columns: minmax(0, 1fr); }
-  .update-card-title-row, .update-actions-bar { flex-wrap: wrap; }
-}

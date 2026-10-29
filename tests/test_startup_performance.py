@@ -89,7 +89,7 @@ async def test_voice_manager_switch_profile_forwards_force():
 
 
 @pytest.mark.asyncio
-async def test_lifespan_preseeds_active_voice_profile(tmp_path, monkeypatch, mock_gpt_sovits):
+async def test_lifespan_queues_default_warmup_without_claiming_models_loaded(tmp_path, monkeypatch, mock_gpt_sovits):
     from galgame2voice.config import get_settings
     from galgame2voice.database import crud
     from galgame2voice.main import lifespan
@@ -126,10 +126,14 @@ async def test_lifespan_preseeds_active_voice_profile(tmp_path, monkeypatch, moc
     assert expected_profile is not None, "test database must contain a seeded voice"
 
     async with lifespan(create_app()):
-        assert vm.active_profile is not None
-        assert vm.active_profile.id == expected_profile.id
-        assert client.current_gpt_weights == expected_profile.gpt_weights_path
-        assert client.current_sovits_weights == expected_profile.sovits_weights_path
+        await asyncio.sleep(0)
+        vm.warmup_current_profile.assert_awaited_once()
+        assert vm.active_profile is None
+        assert client.current_gpt_weights is None
+        assert client.current_sovits_weights is None
+        async with get_db(settings.db_path) as conn:
+            saved_profile = await crud.get_active_voice_profile(conn)
+        assert saved_profile.id == expected_profile.id
 
 
 async def test_lifespan_drains_resources_when_serving_context_raises(monkeypatch):

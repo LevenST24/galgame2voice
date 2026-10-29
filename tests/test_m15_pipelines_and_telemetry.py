@@ -227,6 +227,8 @@ async def test_voice_manager_warmup_uses_low_priority():
     mock_client.switch_voice_profile = AsyncMock(return_value=True)
     mock_client.synthesize = AsyncMock(return_value=b"RIFF...")
     mock_client.current_refer_audio = "dummy.wav"
+    mock_client.current_gpt_weights = None
+    mock_client.current_sovits_weights = None
 
     mock_profile = MagicMock()
     mock_profile.id = 99

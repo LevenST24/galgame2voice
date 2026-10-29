@@ -54,7 +54,7 @@ export function createBacklog(container, deps = {}) {
 
   const titleEl = doc.createElement('span');
   titleEl.className = 'adv-log-title';
-  titleEl.textContent = 'LOG';
+  titleEl.textContent = '对话记录';
 
   const closeBtn = doc.createElement('button');
   closeBtn.type = 'button';
@@ -83,11 +83,18 @@ export function createBacklog(container, deps = {}) {
   let destroyed = false;
   let replaySequence = 0;
   let activeReplayButton = null;
+  let activeRegeneration = null;
   const failedAudio = new Set();
   const audioKey = line => JSON.stringify(line?.audio?.chunks || []);
 
   function stopReplay() {
     ++replaySequence;
+    if (activeRegeneration) {
+      const pending = activeRegeneration;
+      activeRegeneration = null;
+      pending.controller.abort();
+      pending.refresh();
+    }
     activeReplayButton?.classList.remove('is-playing');
     activeReplayButton = null;
     deps.stopOtherVoice?.();
@@ -115,7 +122,7 @@ export function createBacklog(container, deps = {}) {
     const hasPlayableChunks = Array.isArray(chunks) && chunks.length > 0 && (status === 'ready' || status === 'failed');
     const voiceOn = isVoiceEnabled();
     const now = getNow();
-    const msgTs = msg?.ts ?? now;
+    const msgTs = line.audio?.generated_at ?? msg?.ts ?? now;
     const isExpired = (now - msgTs) > SEVEN_DAYS_MS;
 
     const unavailable = failedAudio.has(audioKey(line));
@@ -174,7 +181,69 @@ export function createBacklog(container, deps = {}) {
     replayBtn.className = 'adv-log-replay-btn';
     replayBtn.textContent = '语音';
 
+    const regenerateBtn = doc.createElement('button');
+    regenerateBtn.type = 'button';
+    regenerateBtn.className = 'adv-log-regenerate-btn';
+    function refreshRepairButton() {
+      const generating = activeRegeneration?.button === regenerateBtn;
+      const needsRepair = replayBtn.disabled && isVoiceEnabled();
+      regenerateBtn.hidden = !deps.regenerateLineAudio || (!generating && !needsRepair);
+      const voice = deps.getRecoveryVoice?.();
+      regenerateBtn.textContent = generating ? '取消生成' : voice ? '用当前音色重新生成' : '选择音色';
+      regenerateBtn.title = generating ? '取消本次语音生成' : voice ? `使用「${voice.name}」重新生成这一句` : '先为当前会话选择音色';
+      regenerateBtn.setAttribute('aria-label', regenerateBtn.title);
+      regenerateBtn.disabled = !generating && (Boolean(deps.controller?.busy)
+        || !(deps.getSession?.()?.messages || []).includes(msg)
+        || !line.ja?.trim() || !/[\p{L}\p{N}]/u.test(line.ja) || line.ja.length > 2000);
+      if (regenerateBtn.disabled && !generating) {
+        regenerateBtn.title = deps.controller?.busy ? '请等待当前回复完成后再重新生成'
+          : !line.ja?.trim() || !/[\p{L}\p{N}]/u.test(line.ja) ? '这句缺少可配音的日文台词'
+          : line.ja.length > 2000 ? '这句台词过长，暂时无法单句重新生成' : '请等待历史记录保存完成';
+        regenerateBtn.setAttribute('aria-label', regenerateBtn.title);
+      }
+      if (generating) regenerateBtn.setAttribute('aria-busy', 'true');
+      else regenerateBtn.removeAttribute('aria-busy');
+    }
+    function refreshAudioState() {
+      updateReplayButtonState(replayBtn, line, msg, statusSpan);
+      refreshRepairButton();
+    }
+
     updateReplayButtonState(replayBtn, line, msg, statusSpan);
+    refreshRepairButton();
+
+    regenerateBtn.onclick = async e => {
+      e.stopPropagation();
+      if (destroyed) return;
+      if (activeRegeneration?.button === regenerateBtn) { stopReplay(); return; }
+      refreshRepairButton();
+      if (regenerateBtn.disabled || regenerateBtn.hidden) return;
+      if (!deps.getRecoveryVoice?.()) { deps.onChooseVoice?.(); return; }
+      stopReplay();
+      const sequence = replaySequence, controller = new AbortController();
+      const pending = { controller, button: regenerateBtn, refresh: refreshAudioState };
+      activeRegeneration = pending;
+      refreshAudioState();
+      statusSpan.hidden = false; statusSpan.textContent = '正在生成这句语音…';
+      let feedback = '';
+      try {
+        const result = await deps.regenerateLineAudio({ messageId: msg.id, lineIndex: line.index, signal: controller.signal });
+        if (destroyed || controller.signal.aborted || sequence !== replaySequence) return;
+        line = { ...line, audio: structuredClone(result.audio) };
+        feedback = result.saved === false ? '语音已生成，但本地保存失败，请先备份聊天。'
+          : result.persisted === false ? '语音已生成，修复记录保存在本浏览器；点语音播放。' : '语音已生成，点语音播放。';
+      } catch (error) {
+        if (destroyed || controller.signal.aborted || sequence !== replaySequence || error.name === 'AbortError') return;
+        feedback = /[\u3400-\u9fff]/.test(error.message || '') ? error.message : '这句语音未能生成，原音频已保留，请检查语音服务后再试。';
+      } finally {
+        if (activeRegeneration === pending) {
+          activeRegeneration = null;
+          for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
+          refreshAudioState();
+          if (feedback && !destroyed) { statusSpan.hidden = false; statusSpan.textContent = feedback; }
+        }
+      }
+    };
 
     replayBtn.onclick = async (e) => {
       e.stopPropagation();
@@ -211,8 +280,8 @@ export function createBacklog(container, deps = {}) {
       }
     };
 
-    rightControls.appendChild(statusSpan);
     rightControls.appendChild(replayBtn);
+    rightControls.appendChild(regenerateBtn);
 
     header.appendChild(speakerEl);
     header.appendChild(rightControls);
@@ -234,15 +303,17 @@ export function createBacklog(container, deps = {}) {
       textWrap.appendChild(subtitleEl);
     }
 
+    textWrap.appendChild(statusSpan);
+
     entryEl.appendChild(header);
     entryEl.appendChild(textWrap);
 
     entryEl._updateLineAudio = (status, chunks) => {
       // The controller owns stored history; the view keeps its own audio snapshot.
       line = { ...line, audio: { status, chunks: chunks || [] } };
-      updateReplayButtonState(replayBtn, line, msg, statusSpan);
+      refreshAudioState();
     };
-    entryEl._refreshAudioState = () => updateReplayButtonState(replayBtn, line, msg, statusSpan);
+    entryEl._refreshAudioState = refreshAudioState;
 
     return entryEl;
   }
@@ -315,7 +386,7 @@ export function createBacklog(container, deps = {}) {
 
     const speakerEl = doc.createElement('span');
     speakerEl.className = 'adv-log-speaker';
-    speakerEl.textContent = settings.advPlayerName || 'Player';
+    speakerEl.textContent = settings.advPlayerName || '我';
 
     header.appendChild(speakerEl);
 

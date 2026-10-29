@@ -101,7 +101,7 @@ def test_crud_auto_heal_has_no_shutil_or_yuzusoft_strings():
 
 @pytest.mark.asyncio
 async def test_crud_auto_heal_objective_validation(tmp_path, monkeypatch):
-    """Verifies objective path validation repairs missing/unportable paths and keeps valid paths."""
+    """Missing or empty references are left for package repair; startup never picks a voice."""
     # The "valid" profile points at the bundled reference audio, and audio/* is
     # git-ignored, so a fresh clone has no such file. Materialise an isolated
     # project root instead: the test then measures the healing rules rather than
@@ -133,12 +133,12 @@ async def test_crud_auto_heal_objective_validation(tmp_path, monkeypatch):
         await conn.commit()
 
         healed = await crud.auto_heal_voice_profiles(conn)
-        assert healed == 2
+        assert healed == 0
 
         cur = await conn.execute("SELECT id, ref_audio_path FROM voice_profiles ORDER BY id;")
         rows = await cur.fetchall()
-        assert "gentle.ogg" in rows[0]["ref_audio_path"]
-        assert "gentle.ogg" in rows[1]["ref_audio_path"]
+        assert rows[0]["ref_audio_path"] == "audio/does_not_exist.wav"
+        assert rows[1]["ref_audio_path"] == ""
         assert rows[2]["ref_audio_path"] == "audio/references/natsume/gentle.ogg"
 
 

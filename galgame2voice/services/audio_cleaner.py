@@ -16,6 +16,7 @@ import aiosqlite
 
 from galgame2voice.database.session import get_db, immediate_transaction
 import galgame2voice.database.crud as crud
+from galgame2voice.services.audio_artifacts import is_repair_audio_name
 
 logger = logging.getLogger("galgame2voice.services.audio_cleaner")
 
@@ -95,7 +96,8 @@ def _scan_and_clean(
             # Target ephemeral synthesized audio files (e.g. chunk_*.wav, full_*.wav)
             if f.is_file() and f.suffix.lower() in (".wav", ".mp3", ".opus"):
                 try:
-                    if f.stat().st_mtime < cutoff:
+                    retention_cutoff = cache_cutoff if is_repair_audio_name(f.name) else cutoff
+                    if f.stat().st_mtime < retention_cutoff:
                         f.unlink(missing_ok=True)
                         cleaned += 1
                 except Exception as e:
@@ -240,7 +242,7 @@ async def _run_audio_cleanup_cycle(audio_dir: Path) -> None:
         logger.info("Audio cleanup removed %d expired/orphan audio files.", total_cleaned)
         try:
             from galgame2voice.utils.hardware import release_system_memory
-            release_system_memory()
+            await asyncio.to_thread(release_system_memory)
         except Exception as mem_err:
             logger.debug("Failed releasing system memory during audio cleanup: %s", mem_err)
 

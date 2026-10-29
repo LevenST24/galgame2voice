@@ -340,7 +340,7 @@ class TestDatabaseSchemaMigrations:
             assert row[0] == "你好夏目"
 
     @pytest.mark.asyncio
-    async def test_auto_heal_preserves_bundled_paths_and_repairs_missing(self, temp_db_path):
+    async def test_auto_heal_preserves_bundled_and_missing_paths(self, temp_db_path):
         from galgame2voice.database.crud import auto_heal_voice_profiles
 
         # 1. Initialize schema
@@ -359,7 +359,7 @@ class TestDatabaseSchemaMigrations:
 
             # Run auto-healing
             healed = await auto_heal_voice_profiles(conn)
-            assert healed >= 1
+            assert healed == 0
 
             cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE name = 'Bundled Voice';")
             row = await cur.fetchone()
@@ -367,7 +367,7 @@ class TestDatabaseSchemaMigrations:
 
             cur = await conn.execute("SELECT ref_audio_path FROM voice_profiles WHERE name = 'Broken Voice';")
             row = await cur.fetchone()
-            assert "gentle.ogg" in row[0] or "nat002_032.ogg" in row[0]
+            assert row[0] == "audio/non_existent_file.ogg"
 
 
 # ============================================================================

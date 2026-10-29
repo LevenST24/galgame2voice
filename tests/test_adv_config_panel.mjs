@@ -323,7 +323,7 @@ test('saving persists through pickSettings and survives session switch, reload, 
 
   // Session switch: switch to session 1, verify defaults, switch back, verify custom
   h.switchSession(1);
-  assert.equal(h.active.settings.advPlayerName, 'Player');
+  assert.equal(h.active.settings.advPlayerName, '我');
   assert.equal(h.active.settings.advWindowOpacity, 75);
 
   h.switchSession(0);
@@ -366,7 +366,7 @@ test('invalid input blocks saving and displays field error', t => {
   assert.equal(h.app.configPanel.isOpen, true, 'saving should be blocked');
   assert.equal(errs.advPlayerName.hidden, false);
   assert.match(errs.advPlayerName.textContent, /ADV 设置无效/);
-  assert.equal(h.active.settings.advPlayerName, 'Player', 'store must remain unchanged');
+  assert.equal(h.active.settings.advPlayerName, '我', 'store must remain unchanged');
 
   // B. Player name > 40 graphemes
   c.advPlayerName.value = '🌸'.repeat(41);
@@ -496,11 +496,15 @@ test('global voice-mode toggle and model/session settings navigation buttons', t
   const btnModels = h.app.configPanel.element.querySelector('#cfg-btn-models');
   btnModels.click();
   assert.equal(h.calls.models, 1);
+  assert.equal(h.app.configPanel.isOpen, false);
+  h.app.action('settings');
 
   // Session settings button
   const btnSession = h.app.configPanel.element.querySelector('#cfg-btn-session');
   btnSession.click();
   assert.equal(h.calls.settings, 1);
+  assert.equal(h.app.configPanel.isOpen, false);
+  h.app.action('settings');
 
   // Voice mode toggle
   const voiceBtn = h.app.configPanel.element.querySelector('#cfg-voiceMode');

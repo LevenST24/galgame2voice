@@ -8,6 +8,7 @@ and idempotent synchronization with SQLite voice_profiles persistence.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -31,6 +32,12 @@ from galgame2voice.utils.path_guard import to_project_relative_path
 from galgame2voice.services.character_package import (
     CharacterPackage,
     _AUDIO_PROBE_CACHE,
+)
+from galgame2voice.services.character_identity import (
+    AmbiguousProfileName,
+    CharacterIndex,
+    identity_key,
+    select_profile,
 )
 
 logger = logging.getLogger("galgame2voice.services.character_manager")
@@ -56,7 +63,8 @@ class CharacterManager:
             self.characters_dir = settings.characters_dir.resolve()
 
         self._packages: dict[str, CharacterPackage] = {}
-        self._name_index: dict[str, str] = {}  # Normalized name/alias -> id
+        self._identity_index = CharacterIndex()
+        self._default_id: str | None = None
         self._discovered = False
         self._discovery_lock = threading.RLock()
         self._catalog_lock = threading.Lock()
@@ -86,11 +94,10 @@ class CharacterManager:
     def _discover_characters(self, characters_dir: Path | None) -> list[CharacterPackage]:
         target_dir = Path(characters_dir).resolve() if characters_dir else self.characters_dir
         packages: dict[str, CharacterPackage] = {}
-        name_index: dict[str, str] = {}
 
         if not target_dir.exists() or not target_dir.is_dir():
             logger.debug("Characters directory does not exist: %s", target_dir)
-            self._publish_catalog(target_dir, packages, name_index)
+            self._publish_catalog(target_dir, packages, None)
             return []
 
         discovered: list[CharacterPackage] = []
@@ -104,8 +111,9 @@ class CharacterManager:
                 continue
 
             pkg = self._load_and_validate_package(item, manifest_path)
+            if pkg.id in packages:
+                raise ValueError(f"角色包 ID 重复：{pkg.id}；请修改 manifest.json 中的 id。")
             packages[pkg.id] = pkg
-            self._register_aliases(pkg, name_index)
             if pkg.is_valid:
                 discovered.append(pkg)
             else:
@@ -115,28 +123,31 @@ class CharacterManager:
                 )
 
         logger.info("Discovered %d valid character package(s) in %s", len(discovered), target_dir)
+        default_id = None
         if discovered:
             discovered_sorted = sorted(
                 discovered,
                 key=lambda p: (
                     0 if getattr(p.manifest, "is_default", False) else 1,
-                    p.name
+                    p.name, p.id
                 )
             )
-            name_index["default"] = discovered_sorted[0].id
-        self._publish_catalog(target_dir, packages, name_index)
+            default_id = discovered_sorted[0].id
+        self._publish_catalog(target_dir, packages, default_id)
         return discovered
 
     def _publish_catalog(
         self,
         characters_dir: Path,
         packages: dict[str, CharacterPackage],
-        name_index: dict[str, str],
+        default_id: str | None,
     ) -> None:
+        identity_index = CharacterIndex(packages.values())
         with self._catalog_lock:
             self.characters_dir = characters_dir
             self._packages = packages
-            self._name_index = name_index
+            self._identity_index = identity_index
+            self._default_id = default_id
             self._discovered = True
 
     def _load_and_validate_package(self, folder: Path, manifest_path: Path) -> CharacterPackage:
@@ -280,71 +291,28 @@ class CharacterManager:
                 if not self._discovered:
                     self.discover_characters()
 
-    @staticmethod
-    def _register_aliases(pkg: CharacterPackage, name_index: dict[str, str]) -> None:
-        """Registers alias keys for quick lookup by ID, name, or keywords."""
-        pid = pkg.id
-        name_index[pid.lower()] = pid
-        name_index[pkg.name.lower()] = pid
-
-        # Specific alias indexing for known character strings
-        for token in [pkg.name, pkg.id]:
-            cleaned = "".join(token.lower().replace("(", "").replace(")", "").replace("-", "").split())
-            name_index[cleaned] = pid
-
-        # Register manifest-defined aliases if present
-        manifest_aliases = getattr(pkg.manifest, "aliases", None) or []
-        for alias in manifest_aliases:
-            if alias:
-                name_index[alias.lower()] = pid
-                name_index["".join(alias.lower().split())] = pid
-
     def get_character(self, id_or_name: str) -> CharacterPackage | None:
         """Looks up a character package by ID or name/alias."""
         if not id_or_name or not id_or_name.strip():
             return None
         self._ensure_discovered()
         with self._catalog_lock:
-            packages, name_index = self._packages, self._name_index
-        cleaned = id_or_name.strip().lower()
-        cleaned_spaceless = "".join(cleaned.split())
+            index, packages, default_id = self._identity_index, self._packages, self._default_id
+        if identity_key(id_or_name) == "default":
+            return packages.get(default_id) if default_id else None
+        return index.resolve(id_or_name)
 
-        # Direct ID match
-        if id_or_name in packages:
-            return packages[id_or_name]
+    def is_conflicting(self, id_or_name: str) -> bool:
+        """Returns True if the identifier matches multiple conflicting character packages."""
+        if not id_or_name or not id_or_name.strip():
+            return False
+        self._ensure_discovered()
+        with self._catalog_lock:
+            index = self._identity_index
+        return index.is_conflicting(id_or_name)
 
-        # Alias index match
-        if cleaned in name_index:
-            pkg_id = name_index[cleaned]
-            return packages.get(pkg_id)
-
-        if cleaned_spaceless in name_index:
-            pkg_id = name_index[cleaned_spaceless]
-            return packages.get(pkg_id)
-
-        # Check stripping parenthetical suffixes e.g. "四季夏目 (Shiki Natsume)" -> "四季夏目"
-        if "(" in cleaned:
-            base_cleaned = cleaned.split("(")[0].strip()
-            if base_cleaned in name_index:
-                return packages.get(name_index[base_cleaned])
-            inside_paren = cleaned.split("(", 1)[1].rstrip(")").strip()
-            if inside_paren in name_index:
-                return packages.get(name_index[inside_paren])
-
-        # Fuzzy substring match
-        for pkg in packages.values():
-            pkg_id_lower = pkg.id.lower()
-            pkg_name_lower = pkg.name.lower()
-            pkg_name_spaceless = "".join(pkg_name_lower.split())
-            if (
-                cleaned in pkg_id_lower
-                or cleaned in pkg_name_lower
-                or (cleaned_spaceless and (cleaned_spaceless in pkg_id_lower or cleaned_spaceless in pkg_name_spaceless))
-                or (len(pkg_id_lower) >= 2 and pkg_id_lower in cleaned)
-                or (len(pkg_name_lower) >= 2 and pkg_name_lower in cleaned)
-            ):
-                return pkg
-        return None
+    is_conflicting_identity = is_conflicting
+    resolve_identity = get_character
 
     def get_default_character(self) -> CharacterPackage | None:
         """Returns the default character package, or None if none installed."""
@@ -470,84 +438,45 @@ class CharacterManager:
 
     @staticmethod
     def _weight_needs_healing(w_path: str) -> bool:
-        """Determines if a model weight path is empty, machine-specific, or non-existent."""
+        """Check actual files using the same bases as the engine path resolver."""
+        from galgame2voice.utils.path_guard import resolve_weight_file_path
+
         if not w_path:
             return True
-        norm_w = w_path.replace("/", "\\")
-        if norm_w.startswith(("E:", "E:\\")):
-            return True
-        return not Path(w_path).exists()
+        path = Path(resolve_weight_file_path(w_path))
+        if not path.is_absolute():
+            path = get_settings().project_root / path
+        return not path.is_file()
 
     @staticmethod
     def _is_cross_character_audio(current_ref: str, pkg: CharacterPackage) -> bool:
         """Determines if the referenced audio path belongs to a different character package."""
         if not current_ref:
             return False
-        norm_ref = current_ref.replace("\\", "/").lower()
-        is_natsume = (pkg.id.lower() in ("natsume", "shiki_natsume") or "夏目" in pkg.name)
-        if not is_natsume and "natsume" in norm_ref:
-            return True
-        if "characters/" in current_ref.replace("\\", "/"):
-            ref_char_part = current_ref.replace("\\", "/").split("characters/")[1].split("/")[0]
-            if ref_char_part and ref_char_part.lower() != pkg.id.lower() and ref_char_part != pkg.name:
-                return True
-        return False
-
-    async def _prune_ghost_profiles(self, conn: aiosqlite.Connection) -> int:
-        """Prunes ghost voice_profile records whose package directory under characters/ no longer exists."""
-        pruned_count = 0
-        cur_all = await conn.execute("SELECT id, name, gpt_weights_path, ref_audio_path FROM voice_profiles;")
-        all_profiles = await cur_all.fetchall()
-        for prof in all_profiles:
-            p_id = prof["id"]
-            p_name = prof["name"]
-            p_gpt = prof["gpt_weights_path"] or ""
-            p_ref = prof["ref_audio_path"] or ""
-
-            is_ghost = False
-            for path_cand in (p_gpt, p_ref):
-                norm_cand = path_cand.replace("\\", "/")
-                if norm_cand.startswith("characters/"):
-                    parts = norm_cand.split("/")
-                    if len(parts) >= 2:
-                        sub_folder = parts[1]
-                        if not (self.characters_dir / sub_folder).exists():
-                            is_ghost = True
-                            break
-
-            if not is_ghost and p_name.lower() in ("kazari",) and not (self.characters_dir / p_name).exists():
-                is_ghost = True
-
-            if is_ghost:
-                logger.info("Pruning ghost voice_profile record id=%s name='%s'", p_id, p_name)
-                await conn.execute("DELETE FROM voice_profiles WHERE id = ?;", (p_id,))
-                pruned_count += 1
-        return pruned_count
+        path = Path(current_ref.replace("\\", "/"))
+        if not path.is_absolute():
+            path = get_settings().project_root / path
+        try:
+            relative = path.resolve().relative_to(pkg.folder.parent)
+        except (OSError, ValueError):
+            return False
+        return bool(relative.parts and Path(relative.parts[0]) != Path(pkg.folder.name))
 
     @staticmethod
     async def _find_existing_profile_row(
         conn: aiosqlite.Connection,
         char_name: str,
         aliases: list[str] | None,
+        *,
+        package: CharacterPackage | None = None,
+        index: CharacterIndex | None = None,
     ) -> Any | None:
         """Queries an existing voice_profile row by character name or configured aliases."""
-        cursor = await conn.execute(
-            "SELECT * FROM voice_profiles WHERE name = ? OR name LIKE ? OR name LIKE ? LIMIT 1;",
-            (char_name, f"{char_name}%", f"%{char_name}%" if len(char_name) >= 3 else char_name),
-        )
-        existing_row = await cursor.fetchone()
-        if not existing_row and aliases:
-            for alias in aliases:
-                if not alias:
-                    continue
-                cur_alias = await conn.execute(
-                    "SELECT * FROM voice_profiles WHERE name = ? OR name LIKE ? LIMIT 1;",
-                    (alias, f"%{alias}%"),
-                )
-                existing_row = await cur_alias.fetchone()
-                if existing_row:
-                    break
-        return existing_row
+        cursor = await conn.execute("SELECT * FROM voice_profiles ORDER BY id;")
+        rows = await cursor.fetchall()
+        if index is not None and package is not None:
+            rows = [row for row in rows if index.resolve(row["name"]) is package]
+        return select_profile(rows, char_name, aliases or ())
 
     @staticmethod
     def _resolve_package_profile_defaults(pkg: CharacterPackage) -> dict[str, Any]:
@@ -580,13 +509,13 @@ class CharacterManager:
         }
 
     @classmethod
-    def _build_profile_update_fields(
+    def _build_profile_updates(
         cls,
         existing_row: Any,
         pkg: CharacterPackage,
         defaults: dict[str, Any],
-    ) -> tuple[list[str], list[Any]]:
-        """Constructs SQL update expressions and bound parameters for an existing profile."""
+    ) -> dict[str, Any]:
+        """Compute changed values; the profile repository owns their SQL writes."""
         manifest = pkg.manifest
         ref_audio_str = defaults["ref_audio_str"]
         prompt_text = defaults["prompt_text"]
@@ -601,48 +530,59 @@ class CharacterManager:
         current_prompt = existing_row["prompt_text"] or ""
         current_sys = existing_row["system_prompt"] or ""
 
-        update_fields: list[str] = []
-        params: list[Any] = []
+        updates: dict[str, Any] = {}
 
+        current_reference = cls._resolve_profile_reference(current_ref, pkg) if current_ref else None
         ref_needs_update = (
             not current_ref
-            or not Path(current_ref).exists()
+            or current_reference is None
             or cls._is_cross_character_audio(current_ref, pkg)
         )
 
         if ref_needs_update and ref_audio_str:
-            update_fields.append("ref_audio_path = ?")
-            params.append(ref_audio_str)
+            updates["ref_audio_path"] = ref_audio_str
+        elif current_reference is not None:
+            # Qualify package-relative audio so runtime lookup cannot choose an
+            # identically named file from another package. Keep its transcript.
+            updates["ref_audio_path"] = to_project_relative_path(current_reference)
 
         if (not current_prompt.strip() or ref_needs_update) and prompt_text:
-            update_fields.append("prompt_text = ?")
-            params.append(prompt_text)
+            updates["prompt_text"] = prompt_text
             if prompt_lang:
-                update_fields.append("prompt_lang = ?")
-                params.append(prompt_lang)
+                updates["prompt_lang"] = prompt_lang
 
         if gpt_weights and cls._weight_needs_healing(current_gpt):
-            update_fields.append("gpt_weights_path = ?")
-            params.append(gpt_weights)
+            updates["gpt_weights_path"] = gpt_weights
 
         if sovits_weights and cls._weight_needs_healing(current_sovits):
-            update_fields.append("sovits_weights_path = ?")
-            params.append(sovits_weights)
+            updates["sovits_weights_path"] = sovits_weights
 
         # 角色包是人设提示词的唯一权威源，DB 只是运行时读的镜像：
         # 不一致就覆盖，否则包里的更新永远进不了聊天链路。
         # 包内为空时保留 DB 值，避免同步把设定抹掉。
         if system_prompt and system_prompt != current_sys:
-            update_fields.append("system_prompt = ?")
-            params.append(system_prompt)
+            updates["system_prompt"] = system_prompt
 
         char_desc = manifest.description or ""
         current_desc = existing_row["description"] or ""
         if char_desc and not current_desc.strip():
-            update_fields.append("description = ?")
-            params.append(char_desc)
+            updates["description"] = char_desc
 
-        return update_fields, params
+        # A rescan with identical values must not rewrite the row/timestamp.
+        return {column: value for column, value in updates.items() if existing_row[column] != value}
+
+    @staticmethod
+    def _resolve_profile_reference(value: str, pkg: CharacterPackage) -> Path | None:
+        """Resolve explicit paths, never another package's same-named audio."""
+        path = Path(value.strip().strip("\"'").replace("\\", "/"))
+        if path.is_absolute():
+            return path if path.is_file() else None
+        settings = get_settings()
+        for base in (settings.project_root, settings.audio_dir, pkg.folder):
+            candidate = base / path
+            if candidate.is_file():
+                return candidate
+        return None
 
     @classmethod
     async def _update_existing_profile(
@@ -653,12 +593,12 @@ class CharacterManager:
         defaults: dict[str, Any],
     ) -> bool:
         """Idempotently updates existing voice_profile row with healed paths and prompt updates."""
-        update_fields, params = cls._build_profile_update_fields(existing_row, pkg, defaults)
-        if update_fields:
-            update_fields.append("updated_at = CURRENT_TIMESTAMP")
-            params.append(existing_row["id"])
-            query = f"UPDATE voice_profiles SET {', '.join(update_fields)} WHERE id = ?;"
-            await conn.execute(query, tuple(params))
+        updates = await asyncio.to_thread(cls._build_profile_updates, existing_row, pkg, defaults)
+        if updates:
+            from galgame2voice.database.crud_modules.voice_profiles import update_voice_profile
+            from galgame2voice.database.models import VoiceProfileUpdate
+
+            await update_voice_profile(conn, existing_row["id"], VoiceProfileUpdate(**updates))
             return True
         return False
 
@@ -671,40 +611,28 @@ class CharacterManager:
         is_default_val: int,
     ) -> None:
         """Inserts a new voice_profile record from character package manifest and defaults."""
-        await conn.execute(
-            """
-            INSERT INTO voice_profiles (
-                name, description, gpt_weights_path, sovits_weights_path,
-                ref_audio_path, prompt_text, prompt_lang, text_lang,
-                system_prompt, is_default
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            (
-                char_name,
-                manifest.description,
-                defaults["gpt_weights"],
-                defaults["sovits_weights"],
-                defaults["ref_audio_str"],
-                defaults["prompt_text"],
-                defaults["prompt_lang"],
-                defaults["prompt_lang"],
-                defaults["system_prompt"],
-                is_default_val,
-            ),
-        )
+        from galgame2voice.database.crud_modules.voice_profiles import create_voice_profile
+        from galgame2voice.database.models import VoiceProfileCreate
+
+        await create_voice_profile(conn, VoiceProfileCreate(
+            name=char_name, description=manifest.description,
+            gpt_weights_path=defaults["gpt_weights"], sovits_weights_path=defaults["sovits_weights"],
+            ref_audio_path=defaults["ref_audio_str"], prompt_text=defaults["prompt_text"],
+            prompt_lang=defaults["prompt_lang"], text_lang=defaults["prompt_lang"],
+            system_prompt=defaults["system_prompt"], is_default=bool(is_default_val),
+        ))
 
     async def sync_with_db(self, conn: aiosqlite.Connection) -> int:
         """
         Idempotently syncs/upserts discovered character packages into SQLite voice_profiles
         table without mutating or corrupting existing user configurations or settings.
-        Returns the count of synced/updated profiles plus pruned ghost profiles.
+        Returns the count of synced/updated profiles. Missing packages never imply deletion.
         """
         self._ensure_discovered()
 
-        valid_pkgs = self.get_available_characters()
-        if not valid_pkgs:
-            return 0
-
+        with self._catalog_lock:
+            valid_pkgs = [pkg for pkg in self._packages.values() if pkg.is_valid]
+            index = self._identity_index
         # Deterministic default order: prioritize packages marked with is_default=True, then by name
         def _pkg_sort_key(p: CharacterPackage) -> tuple[int, str]:
             is_def = getattr(p.manifest, "is_default", False)
@@ -719,10 +647,7 @@ class CharacterManager:
             count_row = await cur.fetchone()
             existing_count = count_row[0] if count_row else 0
 
-            # 1. Prune ghost profiles whose package directory under characters/ no longer exists
-            pruned_count = await self._prune_ghost_profiles(conn)
-            synced_count = pruned_count
-            existing_count = max(0, existing_count - pruned_count)
+            synced_count = 0
 
             # Check if an active default already exists
             cur_def = await conn.execute("SELECT COUNT(*) FROM voice_profiles WHERE is_default = 1;")
@@ -732,8 +657,17 @@ class CharacterManager:
             for pkg in valid_pkgs:
                 manifest = pkg.manifest
                 char_name = manifest.name
-                existing_row = await self._find_existing_profile_row(conn, char_name, getattr(manifest, "aliases", None))
-                defaults = self._resolve_package_profile_defaults(pkg)
+                if index.resolve(char_name) is not pkg:
+                    logger.warning("角色名称存在冲突，保留现有配置并跳过同步：%s (%s)", char_name, pkg.id)
+                    continue
+                try:
+                    existing_row = await self._find_existing_profile_row(
+                        conn, char_name, [pkg.id, *manifest.aliases], package=pkg, index=index,
+                    )
+                except AmbiguousProfileName as exc:
+                    logger.warning("%s", exc)
+                    continue
+                defaults = await asyncio.to_thread(self._resolve_package_profile_defaults, pkg)
 
                 if existing_row:
                     if await self._update_existing_profile(conn, existing_row, pkg, defaults):
@@ -747,6 +681,11 @@ class CharacterManager:
                     await self._insert_new_profile(conn, char_name, manifest, defaults, is_default_val)
                     existing_count += 1
                     synced_count += 1
+
+            from galgame2voice.database.crud_modules.voice_profiles import invalidate_profiles_after_commit
+
+            # A new catalog may change emotion references without a DB row delta.
+            await invalidate_profiles_after_commit(conn)
 
         return synced_count
 

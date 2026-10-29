@@ -42,7 +42,9 @@ Removed compatibility IDs: `backdrop`, `menuBtn`, `chatTitle`, `modelBadge`, `ba
   首页以外的会话抽屉切换与删除行为保持原样。
 - 左侧显示角色名（无绑定角色则显示会话标题）、日期、最近一条有文字的助手消息的最后一句中文、
   同句日语以及该助手消息之前最近的用户消息。没有 `lines` 的旧消息保留完整 `content`。
-  中文最多三行，CSS 截断，DOM 保留全文。引导卡期间也保留实际会话开场白，兼容便携版 DOM 冒烟。
+  首页中文最多两行、同句日语最多一行，保持按钮与底部最近会话之间的留白；
+  CSS 截断，DOM 与聊天记录保留全文。
+  引导卡期间也保留实际会话开场白，兼容便携版 DOM 冒烟。
   「试听这句」与 LOG 共用 `canReplayLine`、`StreamAudioController.playLine/stopLine`，
   包括七天过期、语音开关及部分音频失败的判定；切换或离开首页时停止试听。
 - 底部「最近还聊过」排除主角，最多显示三个会话。圆形头像复用舞台清单缓存、
@@ -144,7 +146,7 @@ Center the stage and letterbox unused viewport space in black.
 Inputs and IME candidate geometry must use their actual layout coordinates.
 The shell owns letterbox hit testing; clicks there do not advance the dialogue.
 Fullscreen recomputes the same rule; resizing preserves line/page/input state.
-P8 may change phone composition, but retains logical art coordinates internally.
+The stage retains logical art coordinates internally.
 
 ### 2.2 Layers, framing, and background
 
@@ -334,6 +336,12 @@ An overlay suspends progression; closing it restores the same line/page.
 | Stop / error / session change | Cancel owned timers/sources; retain delivered history; reject stale events. |
 
 An audio wait timeout is a presentation fallback, not a synthetic server terminal.
+In voice-priority AUTO mode, this text preview must not advance past a sentence
+whose audio is still being generated. Resume AUTO after playback, an explicit
+skipped/failed audio event, turn completion without audio, or disabling voice.
+Manual advance remains available. When the audio adapter supplies a start
+notification, begin the typewriter only after download/decode and scheduling of
+the first source, with stale notifications rejected on interruption.
 Do not let an SSE heartbeat extend it or the request's meaningful-progress deadline.
 `done` means generation/audio metadata settled, not that the user read every line.
 Server completion must not force the line player directly into input.
@@ -817,8 +825,9 @@ enters git, Docker contexts/images, source zips, or ordinary portable releases.
 The repository ships original CSS/SVG interface art and synthetic test fixtures only.
 Do not reproduce game text or ship its logo, UI bitmaps, sprite sheets, or screenshots.
 Update ignore rules and add archive-content regression checks in the relevant phase.
-`scripts/package_release.py` must exclude these three folders entirely, not merely
-model weights: the plan identified its current character-image packaging gap.
+`scripts/package_release.py` selects explicit program paths and excludes these three
+folders entirely, not merely model weights. Archive-content regressions cover local
+assets, reference audio, private configuration, and linked directories.
 Document local installation separately; absence of assets remains a supported mode.
 
 P3 signs sprite/layer/skin images; P6 uses the same facility for backgrounds.
@@ -997,7 +1006,7 @@ Questions requiring prototype/measurement evidence, with safe defaults already s
 5. P5: which source blend types need preprocessing? Reject unsupported layers until local comparisons prove equivalence.
 6. P6: should clock boundaries or background size become preferences? Ship fixed boundaries and fit-to-stage first.
 7. P7: which title prototype and local/original thumbnail art are selected? Store session references, not extracted thumbnails in git.
-8. P8: what decoded-image budget suits actual portable/phone devices? Tune the initial caps from memory/frame measurements.
+8. P8: what decoded-image budget suits actual portable devices? Tune the initial caps from memory/frame measurements.
 
 Future multi-speaker generation needs an explicit speaker/kind protocol version; crop identity already works independently of stage visibility.
 Source analysis establishes assets/layouts/static frequency; browser quality, latency, IME, and model compliance require phase evidence.

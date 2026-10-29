@@ -347,6 +347,106 @@ async def test_real_response_disconnect_preserves_partial_history(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_chat_response_start_failure_cleans_up_disconnect_monitor(monkeypatch):
+    from fastapi import FastAPI
+
+    captured = {}
+
+    async def source(**kwargs):
+        yield {"event": "text", "data": {"delta_chinese": "synthetic"}}
+
+    def stream_chat(**kwargs):
+        captured["cancel_event"] = kwargs["cancel_event"]
+        return source(**kwargs)
+
+    monkeypatch.setattr(chat_router, "get_chat_service", lambda: SimpleNamespace(stream_chat=stream_chat))
+    app = FastAPI()
+    app.include_router(chat_router.router)
+    body_sent = False
+
+    async def receive():
+        nonlocal body_sent
+        if not body_sent:
+            body_sent = True
+            return {"type": "http.request", "body": b'{"prompt":"synthetic"}', "more_body": False}
+        await asyncio.Event().wait()
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            raise OSError("synthetic disconnected socket")
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1", "method": "POST", "scheme": "http",
+        "path": "/api/chat/stream", "raw_path": b"/api/chat/stream",
+        "query_string": b"", "headers": [(b"content-type", b"application/json")],
+        "client": ("127.0.0.1", 12345), "server": ("127.0.0.1", 8000), "root_path": "",
+    }
+    before = set(asyncio.all_tasks())
+    try:
+        with pytest.raises(ClientDisconnect):
+            await app(scope, receive, send)
+        await asyncio.sleep(0)
+        assert captured["cancel_event"].is_set()
+        new_tasks = asyncio.all_tasks() - before
+        assert not [t for t in new_tasks if "disconnect_watcher" in t.get_coro().__qualname__]
+    finally:
+        new_tasks = asyncio.all_tasks() - before
+        for task in new_tasks:
+            task.cancel()
+        await asyncio.gather(*new_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
+async def test_chat_receive_disconnect_while_waiting_for_next_event(monkeypatch, spec_version):
+    from fastapi import FastAPI
+
+    body_read = False
+    first_sent, disconnected, source_closed = (asyncio.Event() for _ in range(3))
+
+    async def source(**kwargs):
+        try:
+            yield {"event": "text", "data": {"delta_chinese": "synthetic"}}
+            await asyncio.Event().wait()
+        finally:
+            source_closed.set()
+
+    monkeypatch.setattr(chat_router, "get_chat_service", lambda: SimpleNamespace(stream_chat=source))
+    app = FastAPI()
+    app.include_router(chat_router.router)
+
+    async def receive():
+        nonlocal body_read
+        if not body_read:
+            body_read = True
+            return {"type": "http.request", "body": b'{"prompt":"synthetic"}', "more_body": False}
+        await disconnected.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("body"):
+            first_sent.set()
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0", "spec_version": spec_version},
+        "http_version": "1.1", "method": "POST", "scheme": "http",
+        "path": "/api/chat/stream", "raw_path": b"/api/chat/stream",
+        "query_string": b"", "headers": [(b"content-type", b"application/json")],
+        "client": ("127.0.0.1", 12345), "server": ("127.0.0.1", 8000), "root_path": "",
+    }
+    task = asyncio.create_task(app(scope, receive, send))
+    try:
+        await asyncio.wait_for(first_sent.wait(), 3)
+        disconnected.set()
+        await asyncio.wait_for(task, 3)
+        assert source_closed.is_set()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["resolving-provider", "waiting-for-first-token"])
 async def test_request_scope_cancel_before_reply_prunes_only_its_user_message(tmp_path, phase):
     database = tmp_path / "empty-reply.db"

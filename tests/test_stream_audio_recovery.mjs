@@ -31,6 +31,148 @@ afterEach(async () => {
   clearMemAudioCache(); delete globalThis.caches;
 });
 
+test('line start notification waits for audio data and fires once for the first scheduled source', async () => {
+  const p = player({ fetchTimeoutMs: 500 });
+  const input = deferred();
+  const started = deferred();
+  let starts = 0;
+  globalThis.fetch = async () => { await input.promise; return new Response(blob()); };
+  const pending = p.playLine(0, ['/notify-0.wav', '/notify-1.wav'], { onStart: () => { starts++; started.resolve(); } });
+  await tick();
+  assert.equal(starts, 0);
+  input.resolve();
+  await tick();
+  p.ctx.currentTime = 1;
+  let deadline;
+  try { await Promise.race([started.promise, new Promise((_, reject) => {
+    deadline = setTimeout(() => reject(new Error('No line start notification')), 1000);
+  })]); } finally { clearTimeout(deadline); }
+  assert.equal(starts, 1);
+  assert.equal(p.ctx.sources.length, 2);
+  p.ctx.sources.forEach(source => source.finish());
+  assert.equal(await pending, 'ended');
+});
+
+for (const state of ['running', 'suspended', 'interrupted']) {
+  test(`line text waits for the audio clock while its context is ${state}`, async () => {
+    const p = player({ fetchTimeoutMs: 500 });
+    const started = deferred();
+    let starts = 0;
+    const pending = p.playLine(0, ['/clock-gated.wav'], { onStart: () => { starts++; started.resolve(); } });
+    await tick();
+    assert.equal(p.ctx.sources.length, 1);
+    p.ctx.state = state;
+    await tick(50);
+    assert.equal(starts, 0, 'elapsed wall time is not evidence that sound has started');
+    p.ctx.state = 'running';
+    p.ctx.currentTime = p.ctx.sources[0].time / 2;
+    await tick(30);
+    assert.equal(starts, 0, 'resuming before the scheduled audio time cannot release text');
+    p.ctx.currentTime = p.ctx.sources[0].time;
+    let deadline;
+    try {
+      await Promise.race([started.promise, new Promise((_, reject) => {
+        deadline = setTimeout(() => reject(new Error('Audio clock reached playback without a start notification')), 1000);
+      })]);
+    } finally { clearTimeout(deadline); }
+    assert.equal(starts, 1);
+    p.ctx.sources[0].finish();
+    assert.equal(await pending, 'ended');
+  });
+}
+
+test('interrupt cancels a line start notification that has not reached its scheduled time', async () => {
+  const p = player(); p.currentBufferLeadSec = 0.12;
+  let starts = 0;
+  const pending = p.playLine(0, ['/notify-interrupted.wav'], { onStart: () => { starts++; } });
+  await tick(5);
+  assert.equal(p.ctx.sources.length, 1);
+  p.stopLine({ fadeMs: 0 });
+  assert.equal(await pending, 'interrupted');
+  await tick(140);
+  assert.equal(starts, 0);
+});
+
+for (const action of ['stopLine', 'interrupt', 'startSession', 'close']) {
+  test(`${action} cancels line preparation before AudioContext resume completes`, async () => {
+    const p = player({ fetchTimeoutMs: 500 });
+    const context = p.ctx;
+    const resumed = deferred();
+    context.state = 'suspended';
+    context.resume = async () => { await resumed.promise; if (context.state !== 'closed') context.state = 'running'; };
+    const fetched = [];
+    globalThis.fetch = async url => { fetched.push(url); return new Response(blob()); };
+    const pending = p.playLine(0, ['/old-unlock.wav']);
+    await tick();
+    if (action === 'startSession') p.startSession('next-message');
+    else if (action === 'stopLine') p.stopLine({ fadeMs: 0 });
+    else if (action === 'interrupt') p.interrupt(0);
+    else await p.close();
+    resumed.resolve(); await tick(5);
+    context.sources.forEach(source => source.finish());
+    assert.equal(await pending, 'interrupted');
+    assert.deepEqual(fetched, [], 'a cancelled preparation must not start downloading after resume');
+    assert.equal(context.sources.length, 0);
+  });
+}
+
+test('a newer line wins when AudioContext resume calls complete out of order', async () => {
+  const p = player({ fetchTimeoutMs: 500 });
+  const firstResume = deferred(), nextResume = deferred();
+  const context = p.ctx; context.state = 'suspended';
+  let resumes = 0;
+  context.resume = async () => {
+    await (++resumes === 1 ? firstResume.promise : nextResume.promise);
+    context.state = 'running';
+  };
+  const fetched = [];
+  globalThis.fetch = async url => { fetched.push(url); return new Response(blob()); };
+  const old = p.playLine(0, ['/old-unlock.wav']);
+  const current = p.playLine(1, ['/current-unlock.wav']);
+  nextResume.resolve(); await tick(5);
+  firstResume.resolve(); await tick(5);
+  context.sources.forEach(source => source.finish());
+  assert.equal(await old, 'interrupted');
+  assert.equal(await current, 'ended');
+  assert.deepEqual(fetched, ['/current-unlock.wav']);
+  assert.equal(resumes, 2, 'each owned preparation makes one bounded resume attempt');
+});
+
+test('stopping a line releases its caller even when AudioContext resume never resolves', async () => {
+  const p = player(); p.ctx.state = 'suspended';
+  p.ctx.resume = () => new Promise(() => {});
+  let outcome;
+  const pending = p.playLine(0, ['/never-unlocked.wav']).then(value => { outcome = value; });
+  p.stopLine({ fadeMs: 0 }); await tick();
+  assert.equal(outcome, 'interrupted');
+  await pending;
+  assert.equal(p._linePlayState, null);
+  assert.equal(p.ctx.sources.length, 0);
+});
+
+test('a refused line playback reports a browser recovery hint without fetching audio', async () => {
+  const errors = [], fetched = [];
+  const p = player({ onError: error => errors.push(error) }); p.ctx.state = 'suspended';
+  p.ctx.resume = async () => { throw new Error('gesture required'); };
+  globalThis.fetch = async url => { fetched.push(url); return new Response(blob()); };
+  assert.equal(await p.playLine(0, ['/blocked-line.wav']), 'failed');
+  assert.equal(p._linePlayState, null);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /浏览器.*LOG.*语音/);
+  assert.deepEqual(fetched, []);
+});
+
+test('an unresolved line resume reaches its deadline and clears playback ownership', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const p = player(); p.ctx.state = 'suspended';
+  p.ctx.resume = () => new Promise(() => {});
+  const pending = p.playLine(0, ['/never-unlocked.wav']);
+  t.mock.timers.tick(1500);
+  assert.equal(await pending, 'failed');
+  assert.equal(p._linePlayState, null);
+  assert.equal(p.ctx.sources.length, 0);
+});
+
 for (const stage of ['headers', 'body', 'decode']) {
   test(`a stalled ${stage} skips the failed head and plays the next chunk`, async () => {
     const errors = [];

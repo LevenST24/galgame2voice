@@ -16,6 +16,7 @@ from anyio import CancelScope
 
 from galgame2voice.adapters.base import configured_reasoning_effort
 from galgame2voice.database import crud
+from galgame2voice.database.commit_hooks import after_commit
 from galgame2voice.database.models import MessageCreate
 from galgame2voice.database.session import get_db, immediate_transaction
 from galgame2voice.services.affection_service import AffectionService
@@ -39,6 +40,7 @@ from .line_builder import LineAligner
 from .llm_pipeline import LlmStreamPipeline
 from .text_pipeline import TextSegmentationPipeline
 from .tts_pipeline import TtsStreamPipeline
+from .turn_persistence import TurnUnavailableError, require_user_turn
 
 logger = logging.getLogger("galgame2voice.services.chat_pipelines.stream_coordinator")
 
@@ -216,6 +218,7 @@ class StreamCoordinator:
             self.reasoning_effort = configured_reasoning_effort(self.adapter)
 
         self.persisted_assistant: bool = False
+        self.persisted_message_id: int | None = None
         self.acting_menu = acting_menu if acting_menu is not None else getattr(messages, "menu", None)
         self.character_name = (
             character_name
@@ -386,12 +389,19 @@ class StreamCoordinator:
                         chunk_index,
                         sentence,
                     )
+                    if not await self._put_with_cancel(event_queue, {
+                        "event": "voice_job", "data": {"index": chunk_index, "status": "started"},
+                    }, cancel_event, run.shutdown_event):
+                        break
                     chunk_data, err_str = await tts_pipe.synthesize_chunk(
                         sentence=sentence,
                         chunk_index=chunk_index,
                         options=chunk_opts,
                         profiler=run.profiler,
                     )
+                    await self._put_with_cancel(event_queue, {
+                        "event": "voice_job", "data": {"index": chunk_index, "status": "finished"},
+                    }, cancel_event, run.shutdown_event)
                     # Chinese may have completed while synthesis was awaiting.
                     L = self._attribute_chunk(run, chunk_index)
                     if err_str:
@@ -824,18 +834,26 @@ class StreamCoordinator:
         """Persist the interrupted turn once, before its stream teardown finishes."""
         try:
             async with get_db(self.db_path) as conn:
-                await crud.add_message(conn, MessageCreate(
-                    session_id=self.session_id,
-                    role="assistant",
-                    content_chinese=partial_ch,
-                    content_japanese=partial_ja,
-                    lines=lines,
-                    audio_url="",
-                    latency_ms=int((time.perf_counter() - t_start) * 1000),
-                ))
-            self.persisted_assistant = True
+                async with immediate_transaction(conn):
+                    await require_user_turn(conn, self.session_id, getattr(self.user_msg, "id", None))
+                    stored_message = await crud.add_message(conn, MessageCreate(
+                        session_id=self.session_id,
+                        role="assistant",
+                        content_chinese=partial_ch,
+                        content_japanese=partial_ja,
+                        lines=lines,
+                        audio_url="",
+                        latency_ms=int((time.perf_counter() - t_start) * 1000),
+                    ))
+                    after_commit(conn, lambda: self._mark_persisted(stored_message.id))
+        except TurnUnavailableError:
+            logger.info("Discarded partial reply for deleted or cleared session %s", self.session_id)
         except Exception as persist_err:
             logger.warning("Failed to persist partial assistant message: %s", persist_err)
+
+    def _mark_persisted(self, message_id: int) -> None:
+        self.persisted_assistant = True
+        self.persisted_message_id = message_id
 
     async def _prune_orphaned_user_message(self) -> None:
         """Prunes orphaned user message when no meaningful assistant response was generated."""
@@ -955,7 +973,8 @@ class StreamCoordinator:
         if has_meaningful_content:
             async with get_db(self.db_path) as conn:
                 async with immediate_transaction(conn):
-                    await crud.add_message(conn, MessageCreate(
+                    await require_user_turn(conn, self.session_id, getattr(self.user_msg, "id", None))
+                    stored_message = await crud.add_message(conn, MessageCreate(
                         session_id=self.session_id,
                         role="assistant",
                         content_chinese=full_chinese,
@@ -964,7 +983,7 @@ class StreamCoordinator:
                         audio_url=total_audio_url,
                         latency_ms=total_latency,
                     ))
-            self.persisted_assistant = True
+                    after_commit(conn, lambda: self._mark_persisted(stored_message.id))
         else:
             await self._prune_orphaned_user_message()
         return has_meaningful_content
@@ -1081,6 +1100,7 @@ class StreamCoordinator:
                 "chunks": clean_chunks,
                 "latency_ms": total_latency,
                 "tts_params": final_tts_params,
+                **({"message_id": self.persisted_message_id} if self.persisted_message_id is not None else {}),
                 "telemetry": run.profiler.to_dict(),
             }
         }
@@ -1177,6 +1197,8 @@ class StreamCoordinator:
             async for event in self._finalize_success(run):
                 yield event
 
+        except TurnUnavailableError:
+            logger.info("Discarded reply for deleted or cleared session %s", self.session_id)
         except Exception as exc:
             logger.error("Error in stream_chat pipeline: %s", exc, exc_info=True)
             safe_err = sanitize_error_detail(exc)

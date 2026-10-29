@@ -131,7 +131,12 @@ async def test_already_active_voice_reports_persistence_failure(tmp_path, monkey
     with pytest.raises(HTTPException) as result:
         await voice.switch_voice(voice.VoiceSwitchRequest(profile_id=profile.id))
     assert result.value.status_code == 500
-    assert result.value.detail == "Failed to persist active voice profile"
+    detail = result.value.detail
+    assert detail["error_code"] == "VOICE_PROFILE_SAVE_FAILED"
+    assert detail["voice_profile_id"] == profile.id
+    assert "数据目录是否可写" in detail["message"] and "重试" in detail["message"]
+    assert "write failed" not in detail["message"]
+    update.assert_awaited_once()
 
 
 def test_source_release_never_copies_private_workspace_archives(tmp_path, monkeypatch):

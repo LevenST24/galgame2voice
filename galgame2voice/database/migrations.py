@@ -10,7 +10,7 @@ import os
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import NamedTuple
 import aiosqlite
 
 from galgame2voice.database.session import (
@@ -639,95 +639,40 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     await conn.commit()
 
 
-async def auto_heal_voice_profiles(conn: aiosqlite.Connection, char_mgr: Any | None = None) -> int:
+async def auto_heal_voice_profiles(conn: aiosqlite.Connection) -> int:
     """
-    Scans voice_profiles table and auto-heals any missing or invalid reference audio paths.
-    If ref_audio_path points to a non-existent file or an unresolvable path,
-    it automatically updates the path to a verified existing bundled reference audio file.
-    Returns the number of healed profiles.
+    Make existing in-project audio references portable without changing identity.
+
+    Missing files are repaired by CharacterManager.sync_with_db only after a
+    unique package/profile match. Schema initialization cannot select a voice.
     """
     from galgame2voice.config import get_settings
-    settings = get_settings()
-    project_root = settings.project_root
 
-    char_gentle = project_root / "characters" / "四季夏目" / "refs" / "gentle.ogg"
-    bundled_nat = project_root / "audio" / "nat002_032.ogg"
-    bundled_gentle = project_root / "audio" / "references" / "natsume" / "gentle.ogg"
-
-    default_ref_path = "audio/references/natsume/gentle.ogg"
-    if not bundled_gentle.is_file():
-        if char_gentle.is_file():
-            default_ref_path = "characters/四季夏目/refs/gentle.ogg"
-        elif bundled_nat.is_file():
-            default_ref_path = "audio/nat002_032.ogg"
-
-    if char_mgr is not None:
-        try:
-            def_pkg = char_mgr.get_default_character()
-            if def_pkg and getattr(def_pkg, "manifest", None):
-                emotions = getattr(def_pkg.manifest, "emotions", None) or {}
-                cand_emo = emotions.get("gentle") or (next(iter(emotions.values())) if emotions else None)
-                if cand_emo and getattr(cand_emo, "audio", None):
-                    folder = getattr(def_pkg, "folder_path", None) or getattr(def_pkg, "folder", None)
-                    if folder:
-                        cand = folder / cand_emo.audio
-                        if cand.is_file():
-                            default_ref_path = cand.resolve().relative_to(project_root.resolve()).as_posix()
-            else:
-                default_ref_path = ""
-        except Exception:
-            default_ref_path = ""
-
+    project_root = get_settings().project_root
     cursor = await conn.execute("SELECT id, name, ref_audio_path FROM voice_profiles;")
     rows = await cursor.fetchall()
-    healed_count = 0
 
-    for row in rows:
-        p_id = row["id"]
-        ref_path = str(row["ref_audio_path"] or "").strip()
-        needs_healing = False
-        new_ref_path = default_ref_path
-
-        if not ref_path:
-            needs_healing = True
-        else:
-            p = Path(ref_path)
-            file_exists = False
+    def canonical_paths() -> list[tuple[str, int]]:
+        changes = []
+        root = project_root.resolve()
+        for row in rows:
+            raw = str(row["ref_audio_path"] or "")
+            path = Path(raw)
             try:
-                root_resolved = project_root.resolve()
-                audio_dir_resolved = settings.audio_dir.resolve()
-                if p.is_absolute():
-                    if await asyncio.to_thread(p.is_file):
-                        resolved = await asyncio.to_thread(p.resolve)
-                        if resolved.is_relative_to(root_resolved):
-                            rel_posix = resolved.relative_to(root_resolved).as_posix()
-                            if rel_posix != ref_path:
-                                new_ref_path = rel_posix
-                                needs_healing = True
-                            file_exists = True
-                        elif resolved.is_relative_to(audio_dir_resolved):
-                            file_exists = True
-                    # Machine-specific absolute paths outside project root or audio_dir
-                    # do not resolve cleanly and are healed for cross-machine portability.
-                else:
-                    from galgame2voice.utils.path_guard import resolve_existing_audio_path
-                    if resolve_existing_audio_path(ref_path) is not None:
-                        file_exists = True
-            except Exception:
-                file_exists = False
+                if path.is_absolute() and path.is_file():
+                    relative = path.resolve().relative_to(root).as_posix()
+                    if relative != raw:
+                        changes.append((relative, row["id"]))
+            except (OSError, ValueError):
+                # External user audio remains an absolute path; missing audio
+                # retains its original value for diagnostics/package repair.
+                continue
+        return changes
 
-            if not file_exists:
-                needs_healing = True
-
-        if needs_healing and new_ref_path:
-            logger.info(
-                "Auto-healing voice profile %d ('%s'): invalid ref_audio_path '%s' -> '%s'",
-                p_id, row["name"], ref_path, new_ref_path
-            )
-            await conn.execute(
-                "UPDATE voice_profiles SET ref_audio_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
-                (new_ref_path, p_id)
-            )
-            healed_count += 1
-
-    return healed_count
+    changes = await asyncio.to_thread(canonical_paths)
+    if changes:
+        await conn.executemany(
+            "UPDATE voice_profiles SET ref_audio_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+            changes,
+        )
+    return len(changes)

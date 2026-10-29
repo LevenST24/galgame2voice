@@ -202,9 +202,10 @@ def _invalidate_host_cache(url: Optional[str]) -> None:
 
 async def assert_llm_url_safe(url: str, allow_private: bool = False) -> None:
     """
-    Validates the target URL before making outbound LLM or STT requests.
-    Defends against DNS Rebinding attacks where an approved domain subsequently resolves
-    to internal or loopback IP addresses.
+    Re-resolve and validate the target before an outbound LLM or STT request.
+
+    This detects a change visible at validation time; it does not pin the
+    address used by the transport or a proxy, so DNS rebinding remains possible.
     """
     import asyncio
     _invalidate_host_cache(url)

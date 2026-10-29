@@ -407,8 +407,8 @@
 
 /* Footer */
 .adv-config-footer {
-  height: calc(80 * var(--u));
-  padding: 0 calc(40 * var(--u));
+  min-height: calc(80 * var(--u));
+  padding: calc(12 * var(--u)) calc(40 * var(--u));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -426,13 +426,21 @@
   display: none !important;
 }
 
+.adv-config-footer-status.is-info {
+  color: #818cf8;
+}
+
 .adv-config-footer-buttons {
   display: flex;
+  flex-wrap: wrap;
   gap: calc(16 * var(--u));
   margin-left: auto;
 }
 
 .adv-config-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: calc(1 * var(--u)) solid rgba(255, 255, 255, 0.2);
+  color: #cbd5e1;
   padding: calc(10 * var(--u)) calc(26 * var(--u));
   font-size: calc(15 * var(--u));
   font-weight: 500;
@@ -469,3 +477,41 @@
   outline: calc(2 * var(--u)) solid #ffffff;
   outline-offset: calc(2 * var(--u));
 }
+
+/* Settings-center page: use the center's scrolling, sizing and light palette. */
+.adv-config-overlay.is-embedded {
+  --u: 1px;
+  position: static;
+  display: block;
+  width: auto;
+  height: auto;
+  background: none;
+  color: var(--text);
+}
+.is-embedded .adv-config-dialog {
+  width: 100%; height: auto; border: 0; border-radius: 0;
+  background: none; box-shadow: none; color: inherit; overflow: visible;
+}
+.is-embedded :is(.adv-config-header, .adv-config-backdrop, .adv-config-footer, .adv-config-nav-group) { display: none; }
+.is-embedded .adv-config-body {
+  display: flex; flex-direction: column; gap: 16px; padding: 0; overflow: visible;
+}
+.is-embedded .adv-config-group {
+  padding: 16px; background: var(--panel-soft); border-color: var(--line); gap: 16px;
+}
+.is-embedded .adv-config-group-title { color: var(--text); font-size: 15px; border-color: var(--line); }
+.is-embedded .adv-config-row-main { flex-wrap: wrap; gap: 8px; }
+.is-embedded .adv-config-label { color: var(--text-2); font-size: 14px; min-width: 120px; }
+.is-embedded :is(.adv-config-hint, .adv-config-sublabel, .adv-config-sample-label) { color: var(--text-3); }
+.is-embedded .adv-config-control { flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 8px; }
+.is-embedded :is(.adv-config-input, .adv-config-select) {
+  min-width: 0; max-width: 100%; height: 40px; color: var(--text);
+  background: var(--panel); border-color: var(--line);
+}
+.is-embedded :is(.adv-config-control-dual, .adv-config-select-wrap) { flex-wrap: wrap; }
+.is-embedded .adv-config-slider { width: min(170px, 42vw); background: var(--brand-line); }
+.is-embedded .adv-config-val { min-width: 58px; color: var(--brand); }
+.is-embedded .adv-config-sample-box { background: var(--panel); border-color: var(--line); }
+.is-embedded .adv-config-sample-text { color: var(--text); }
+.is-embedded .adv-config-btn-toggle { color: var(--text); border-color: var(--line); background: var(--panel); min-height: 40px; }
+.is-embedded .adv-config-btn-toggle[aria-pressed="true"] { color: var(--brand); background: var(--panel); }

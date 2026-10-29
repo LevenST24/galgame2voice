@@ -45,6 +45,15 @@ class EmptyReplyError(ValueError):
         self.stopped_on_length = stopped_on_length
 
 
+class ConfigurationSelectionError(ValueError):
+    """A requested identity is missing or ambiguous, before any inference."""
+
+    def __init__(self, message: str, *, error_code: str, status_code: int = 404):
+        super().__init__(message)
+        self.error_code = error_code
+        self.status_code = status_code
+
+
 def format_provider_error(
     provider_id: str | None = None,
     status_code: int | None = None,
@@ -75,6 +84,8 @@ def chat_error_payload(
     sentence with the next step, plus a stable `error_code` the console uses to offer
     the matching settings page.
     """
+    if isinstance(exc, ConfigurationSelectionError):
+        return {"error": str(exc), "error_code": exc.error_code, "status_code": exc.status_code}
     if isinstance(exc, EmptyReplyError):
         return {
             "error": str(exc),
@@ -114,7 +125,7 @@ def _diagnose_local_configuration(
         return DiagnosticResult(
             error_code="PRIVATE_ENDPOINT_BLOCKED",
             message="模型地址指向本机或局域网，当前未允许连接",
-            guidance="如果这是你信任的本地模型（如 Ollama、LM Studio），请在「全局设置 → 对话模型」开启「允许私网 LLM 端点」后重试；否则请改用服务商提供的公网地址。",
+            guidance="如果这是你信任的本地模型（如 Ollama、LM Studio），请在「设置中心 → 对话模型」开启「允许私网 LLM 端点」后重试；否则请改用服务商提供的公网地址。",
             raw_error=sanitized_raw,
         )
     auth_failure = any(kw in raw_lower for kw in ("authentication", "unauthorized", "api key", "401"))
@@ -123,7 +134,7 @@ def _diagnose_local_configuration(
         return DiagnosticResult(
             error_code="API_KEY_MISSING",
             message=f"尚未填写{f'「{name}」的' if name else ''} API Key",
-            guidance="请打开「全局设置 → 对话模型」填写密钥后重试；使用 Ollama、LM Studio 等本地模型时，请选择「自定义 / 本地模型」。",
+            guidance="请打开「设置中心 → 对话模型」填写密钥后重试；使用 Ollama、LM Studio 等本地模型时，请选择「自定义 / 本地模型」。",
             raw_error=sanitized_raw,
         )
     return None
@@ -184,11 +195,9 @@ def _diagnose_transport_fault(
         )
 
     if (
-        "connecterror" in exc_type
-        or "10061" in raw_lower
+        "10061" in raw_lower
         or "connection refused" in raw_lower
         or "refused" in raw_lower
-        or (status_code in (502, 503) and ("connect" in raw_lower or not raw_lower))
     ):
         return DiagnosticResult(
             error_code="CONNECTION_REFUSED",
@@ -208,6 +217,21 @@ def _diagnose_transport_fault(
             error_code="DNS_ERROR",
             message="服务器域名解析失败 (DNS Error)",
             guidance="无法解析 Base URL 的服务器域名，请检查网址拼写、主机名或本地网络 DNS 设置。",
+            status_code=status_code or 502,
+            raw_error=sanitized_raw,
+        )
+
+    # ConnectError also covers TLS failures and other connection setup errors.
+    # Its type alone cannot establish that a particular port refused the request.
+    if (
+        "connecterror" in exc_type
+        or "connecterror" in raw_lower
+        or (status_code in (502, 503) and ("connect" in raw_lower or not raw_lower))
+    ):
+        return DiagnosticResult(
+            error_code="NETWORK_CONNECTION_FAILED",
+            message="网络连接失败 (Connection Failed)",
+            guidance="无法与模型服务建立连接。请检查网络、代理和服务地址；若使用本机代理，请确认程序启动时已配置相应代理。",
             status_code=status_code or 502,
             raw_error=sanitized_raw,
         )

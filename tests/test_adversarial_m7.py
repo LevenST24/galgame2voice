@@ -198,7 +198,7 @@ class TestFullLifecycleCrossModuleE2E:
         """
         # Step 1: Create VoiceManager and TTSService linked to mock GPT-SoVITS
         voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
-        tts_service = TtsService(client=voice_manager.client)
+        tts_service = voice_manager.tts_service
 
         # Step 2: Add and activate SiliconFlow provider
         async with aiosqlite.connect(m7_db_path) as conn:
@@ -246,7 +246,7 @@ class TestFullLifecycleCrossModuleE2E:
                 async for event in chat_service.stream_chat(
                     prompt=f"User turn {turn}",
                     session_id="lifecycle_session_001",
-                    character_name="四季夏目",
+                    character_name="Natsume",
                 ):
                     events.append(event)
 
@@ -279,7 +279,7 @@ class TestFullLifecycleCrossModuleE2E:
         seamlessly updates TTS weights and character persona without breaking session history.
         """
         voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
-        tts_service = TtsService(client=voice_manager.client)
+        tts_service = voice_manager.tts_service
         chat_service = ChatService(tts_service=tts_service, db_path=m7_db_path)
 
         # Create Profile B
@@ -326,7 +326,7 @@ class TestFullLifecycleCrossModuleE2E:
         leaves the session in a recoverable state, and allows subsequent turns to succeed.
         """
         voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
-        tts_service = TtsService(client=voice_manager.client)
+        tts_service = voice_manager.tts_service
         chat_service = ChatService(tts_service=tts_service, db_path=m7_db_path)
 
         failing_adapter = CustomMockLLMAdapter(provider_config={}, fail_after_tokens=0)
@@ -371,7 +371,7 @@ class TestMultiTurnSseStreamingStress:
         Validates no deadlocks, isolated session states, monotonic chunk indexing, and 100% completion.
         """
         voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
-        tts_service = TtsService(client=voice_manager.client)
+        tts_service = voice_manager.tts_service
         chat_service = ChatService(tts_service=tts_service, db_path=m7_db_path)
 
         async def run_client(client_id: int):
@@ -407,7 +407,7 @@ class TestMultiTurnSseStreamingStress:
         Verifies prompt resource cleanup, no hung tasks, and immediate availability for subsequent requests.
         """
         voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
-        tts_service = TtsService(client=voice_manager.client)
+        tts_service = voice_manager.tts_service
         chat_service = ChatService(tts_service=tts_service, db_path=m7_db_path)
 
         def cancellation_adapter(*args, **kwargs):
@@ -560,7 +560,7 @@ class TestConcurrentWebAndTelegramLoad:
         All sharing the same SQLite DB, GptSovitsClient, and VoiceManager.
         """
         voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
-        tts_service = TtsService(client=voice_manager.client)
+        tts_service = voice_manager.tts_service
         chat_service = ChatService(tts_service=tts_service, db_path=m7_db_path)
 
         mock_adapter = CustomMockLLMAdapter(provider_config={}, custom_tokens=[
@@ -896,7 +896,7 @@ class TestOriginalRequestAcceptanceCriteria:
         Frontend Web Audio player receives initial audio chunks.
         """
         voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
-        tts_service = TtsService(client=voice_manager.client)
+        tts_service = voice_manager.tts_service
         chat_service = ChatService(tts_service=tts_service, db_path=m7_db_path)
 
         mock_adapter = CustomMockLLMAdapter(provider_config={}, custom_tokens=[

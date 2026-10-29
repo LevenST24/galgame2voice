@@ -305,13 +305,14 @@ class TestBatchScriptHardening:
         # Generic drive globbing covers D:/C: installations of any version.
         assert "GPT-SoVITS*" in content
 
-    def test_health_polling_bounded(self):
-        """Verify run_server.py readiness wait uses bounded loops (no infinite spin)."""
+    def test_engine_readiness_polling_bounded(self):
+        """The GPT-SoVITS readiness worker has a bounded polling loop."""
         content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
         # Assert the bound, not the loop variable's name: whether the counter is
         # called `i` or `_` says nothing about whether the wait terminates.
         assert "in range(240)" in content  # 120s bounded GPT-SoVITS readiness wait
-        assert "in range(30)" in content   # 9s bounded browser-open wait
+        # Browser readiness uses a monotonic deadline and is checked by the
+        # behavioral timeout tests in test_browser_autostart.py.
 
 
 # ============================================================================

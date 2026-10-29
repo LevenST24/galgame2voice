@@ -10,27 +10,21 @@ Covers:
 
 import asyncio
 import os
-import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
-from typing import Dict, Any
 from unittest.mock import patch, AsyncMock
 
 import httpx
+import psutil
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
-from galgame2voice.config import Settings, get_settings
+from galgame2voice.config import get_settings
 from galgame2voice.main import create_app
 from galgame2voice.routers.health import (
     _probe_gpt_sovits,
-    _get_dir_metrics,
-    _get_process_memory_mb,
     GptSovitsTelemetry,
 )
 
@@ -295,9 +289,11 @@ class TestProcessTerminationAndLifespan:
             assert settings.audio_dir.exists()
             assert settings.logs_dir.exists()
 
-    def test_subprocess_server_spawn_and_terminate(self):
+    def test_subprocess_server_spawn_and_terminate(self, tmp_path):
         """Simulate spawning real uvicorn worker process and sending termination signal."""
-        test_port = 18095
+        with socket.socket() as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            test_port = reservation.getsockname()[1]
         cmd = [
             sys.executable,
             "-m",
@@ -308,45 +304,51 @@ class TestProcessTerminationAndLifespan:
             "--port",
             str(test_port),
         ]
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(PROJECT_ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+        log_path = tmp_path / "subprocess-server.log"
+        with log_path.open("w", encoding="utf-8") as server_log:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(PROJECT_ROOT),
+                stdout=server_log,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
 
-        try:
-            # Wait for server to become responsive with direct loopback connection
-            online = False
-            t0 = time.perf_counter()
-            with httpx.Client(trust_env=False, timeout=15.0) as client:
-                while time.perf_counter() - t0 < 30.0:
-                    time.sleep(0.5)
-                    try:
-                        r = client.get(f"http://127.0.0.1:{test_port}/api/health")
-                        if r.status_code == 200:
-                            online = True
-                            break
-                    except Exception:
-                        pass
-
-                assert online, "Subprocess server failed to start within 30.0 seconds"
-
-                # Query system status
-                r_sys = client.get(f"http://127.0.0.1:{test_port}/api/system/status")
-                assert r_sys.status_code == 200
-                data = r_sys.json()
-                assert data["app"]["name"] == "galgame2voice"
-                assert isinstance(data["app"]["pid"], int) and data["app"]["pid"] > 0
-
-        finally:
-            # Send termination signal
-            proc.terminate()
             try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+                # Wait for our server, without depending on the host proxy.
+                online = False
+                t0 = time.perf_counter()
+                with httpx.Client(trust_env=False, timeout=15.0) as client:
+                    while time.perf_counter() - t0 < 30.0:
+                        assert proc.poll() is None, log_path.read_text(encoding="utf-8")
+                        time.sleep(0.5)
+                        try:
+                            r = client.get(f"http://127.0.0.1:{test_port}/api/health")
+                            if r.status_code == 200:
+                                online = True
+                                break
+                        except httpx.RequestError:
+                            pass
 
-            assert proc.poll() is not None, "Process did not terminate cleanly"
+                    assert online, log_path.read_text(encoding="utf-8")
+
+                    # A different server on this port must not satisfy the test.
+                    r_sys = client.get(f"http://127.0.0.1:{test_port}/api/system/status")
+                    assert r_sys.status_code == 200
+                    data = r_sys.json()
+                    assert data["app"]["name"] == "galgame2voice"
+                    # Windows venv python.exe can redirect to a child interpreter.
+                    owned_pids = {proc.pid, *(child.pid for child in psutil.Process(proc.pid).children(recursive=True))}
+                    assert data["app"]["pid"] in owned_pids
+
+            finally:
+                # Terminate only the process owned by this test.
+                if proc.poll() is None:
+                    proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+
+                assert proc.poll() is not None, "Process did not terminate cleanly"

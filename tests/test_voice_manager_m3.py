@@ -4,8 +4,6 @@ Transactional Weight Switching with Auto-Rollback, and FastAPI Voice API Router.
 """
 
 import asyncio
-import io
-import json
 import pytest
 from httpx import AsyncClient, ASGITransport
 import aiosqlite
@@ -19,17 +17,11 @@ from galgame2voice.services.gpt_sovits_client import (
 )
 from galgame2voice.services.voice_manager import (
     VoiceManager,
-    get_voice_manager,
     set_voice_manager,
 )
 from galgame2voice.services.tts_service import TtsService
-from galgame2voice.database.models import (
-    VoiceProfileCreate,
-    VoiceProfileUpdate,
-    VoiceProfileResponse,
-)
+from galgame2voice.database.session import init_db
 from galgame2voice.main import create_app
-from tests.conftest import MockGptSovitsServer
 
 
 # ============================================================================
@@ -256,6 +248,8 @@ class TestVoiceManagerPersistenceM3:
 
     @pytest.mark.asyncio
     async def test_switch_profile_by_db_id(self, temp_db_path, mock_gpt_sovits, sample_voice_profile):
+        # A schema-only fixture has no singleton settings row; production init does.
+        await init_db(temp_db_path)
         manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
 
         # Insert voice profile into database
@@ -328,9 +322,10 @@ class TestVoiceRouterEndpointsM3:
     """Test suite for /api/voice/* endpoints on the production FastAPI application."""
 
     @pytest.mark.asyncio
-    async def test_voice_profiles_crud_and_switch_api(self, temp_db_path, mock_gpt_sovits, sample_voice_profile):
+    async def test_voice_profiles_crud_and_switch_api(self, isolate_test_database, mock_gpt_sovits, sample_voice_profile):
+        await init_db(isolate_test_database)
         # Configure VoiceManager singleton with mock server
-        manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
+        manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=isolate_test_database)
         set_voice_manager(manager)
 
         app = create_app()

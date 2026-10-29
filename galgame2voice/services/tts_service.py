@@ -42,8 +42,38 @@ from galgame2voice.utils.prosody import (
 )
 from galgame2voice.services.tts_cache_manager import get_tts_cache_manager, TtsCacheManager
 from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
+from galgame2voice.services.character_identity import AmbiguousProfileName
+from galgame2voice.services.voice_resolver import VoiceContextChangedError, VoiceContextUnavailableError
+from galgame2voice.services.audio_identity import VoicePreparation, bind_audio_options
+from galgame2voice.services.audio_artifacts import discard_new_audio_file, write_new_audio_file
 
 logger = logging.getLogger("galgame2voice.services.tts_service")
+
+
+class VoiceReferenceMissingError(ValueError):
+    """A resolved voice has no reference audio and must not borrow another voice."""
+
+
+class VoiceModelMissingError(ValueError):
+    """A resolved voice lacks weights and cannot use an unrelated engine model."""
+
+
+def _require_voice_reference(opts: dict[str, Any]) -> None:
+    if not opts.get("ref_audio_path"):
+        raise VoiceReferenceMissingError(
+            "当前音色缺少参考音频，请在设置中心的角色与会话中重新选择音色，"
+            "或创建包含参考音频的自定义音色。"
+        )
+
+
+def _require_voice_models(opts: dict[str, Any]) -> None:
+    for field in ("gpt_weights_path", "sovits_weights_path"):
+        value = opts.get(field)
+        if not isinstance(value, (str, Path)) or not str(value).strip():
+            raise VoiceModelMissingError(
+                "当前音色的模型权重缺少 GPT 或 SoVITS 路径，"
+                "请在设置中心的角色与会话中补全模型路径后重试。"
+            )
 
 
 # Backward compatibility aliases pointing to the thread-safe AudioSpecCache singleton.
@@ -98,10 +128,10 @@ class TtsService:
         self.client = client or get_gpt_sovits_client()
         self.audio_dir = Path(audio_dir or settings.audio_dir)
         self.audio_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path = db_path
+        self.db_path = db_path or (cache_manager.db_path if cache_manager is not None else None)
         self.cache_manager = cache_manager or get_tts_cache_manager(
             cache_dir=self.audio_dir / "cache",
-            db_path=db_path or settings.db_path,
+            db_path=self.db_path or settings.db_path,
         )
 
     @staticmethod
@@ -136,7 +166,6 @@ class TtsService:
         fallback_ref_audio: str | None,
         fallback_prompt_text: str | None,
         fallback_prompt_lang: str | None,
-        has_explicit_voice: bool,
     ) -> None:
         """Validates user-provided reference audio or falls back to profile default reference."""
         user_ref = opts.get("ref_audio_path") or opts.get("refer_audio_path")
@@ -163,16 +192,41 @@ class TtsService:
                 opts["ref_audio_path"] = str(fallback_ref_audio) if fallback_ref_audio else ""
                 opts["prompt_text"] = fallback_prompt_text
                 opts["prompt_lang"] = fallback_prompt_lang
+            elif "prompt_text" not in opts and not opts.get("refer_text"):
+                # Fill an omitted transcript from this same resolved profile,
+                # not from whatever voice happens to be loaded in the engine.
+                opts["prompt_text"] = fallback_prompt_text
         else:
-            if has_explicit_voice or not getattr(self.client, "current_refer_audio", None):
-                opts.setdefault("ref_audio_path", str(fallback_ref_audio) if fallback_ref_audio else "")
-                opts.setdefault("prompt_text", fallback_prompt_text)
-                opts.setdefault("prompt_lang", fallback_prompt_lang)
+            opts["ref_audio_path"] = str(fallback_ref_audio) if fallback_ref_audio else ""
+            opts.setdefault("prompt_text", fallback_prompt_text)
+            if not opts.get("prompt_lang"):
+                opts["prompt_lang"] = fallback_prompt_lang
 
     async def _populate_voice_profile_opts(self, opts: dict[str, Any]) -> dict[str, Any]:
         """Auto-populates active voice profile parameters, applying dynamic emotion reference audios if available."""
-        if opts.get("_pre_resolved"):
-            return opts
+        # Preserve explicit aliases before defaults from the profile are added.
+        for canonical, aliases in (
+            ("ref_audio_path", ("refer_audio_path",)),
+            ("prompt_text", ("refer_text",)),
+            ("prompt_lang", ("prompt_language", "refer_language")),
+            ("text_lang", ("text_language",)),
+        ):
+            if not opts.get(canonical):
+                for alias in aliases:
+                    if opts.get(alias):
+                        opts[canonical] = opts[alias]
+                        break
+        # A pre-resolved reference is not necessarily a pre-resolved model.
+        has_selector = bool(opts.get("voice_profile_id") or opts.get("character_name"))
+        has_models = "gpt_weights_path" in opts and "sovits_weights_path" in opts
+        opts.pop("_audio_identity", None)
+        opts.pop('_voice_preparation', None)
+        resolved_name = None
+        if opts.get("_pre_resolved") and (has_models or not has_selector):
+            if has_selector:
+                _require_voice_reference(opts)
+                _require_voice_models(opts)
+            return await bind_audio_options(opts, self.client)
 
         # If user explicitly supplied all required reference audio options and no adaptive emotion override is needed,
         # completely bypass SQLite to keep the TTS critical path in-memory (TTFA < 1s).
@@ -183,32 +237,44 @@ class TtsService:
         )
         ai_adaptive = opts.get("ai_adaptive_voice", opts.get("aiAdaptiveVoice", True))
         emotion = opts.get("emotion")
-        if has_full_ref and not (ai_adaptive and emotion):
-            return opts
+        if has_full_ref and not has_selector and not (ai_adaptive and emotion):
+            return await bind_audio_options(opts, self.client)
 
         try:
-            # Lazy import avoids circular import with voice_resolver; profile resolution is best-effort
+            # Only implicit/default voice resolution is best-effort. An explicit
+            # selector must never silently borrow the engine's current voice.
             from galgame2voice.services.voice_resolver import get_voice_resolver
             resolver = get_voice_resolver()
 
             prof_id = opts.get("voice_profile_id")
             char_name_opt = opts.get("character_name")
-            has_explicit_voice = bool(prof_id or char_name_opt)
-
             ctx = await resolver.resolve_context(
                 db_path=self.db_path,
                 profile_id=int(prof_id) if prof_id is not None else None,
                 character_name=str(char_name_opt) if char_name_opt else None,
             )
 
+            if ctx is None and has_selector:
+                raise ValueError("所选音色已不存在，请在角色与会话中重新选择音色。")
+
             if ctx:
                 opts.setdefault("voice_profile_id", ctx.profile_id or 1)
-                opts.setdefault("prompt_lang", ctx.prompt_lang)
-                opts.setdefault("text_lang", ctx.text_lang)
+                opts.setdefault("gpt_weights_path", ctx.gpt_weights_path)
+                opts.setdefault("sovits_weights_path", ctx.sovits_weights_path)
+                if not opts.get("prompt_lang"):
+                    opts["prompt_lang"] = ctx.prompt_lang
+                if not opts.get("text_lang"):
+                    opts["text_lang"] = ctx.text_lang
 
                 fallback_ref_audio = str(ctx.ref_audio_path) if ctx.ref_audio_path is not None else None
                 fallback_prompt_text = ctx.prompt_text
                 fallback_prompt_lang = ctx.prompt_lang
+
+                # An empty transcript in a resolved profile is still part of
+                # that profile; do not borrow the engine's previous voice text.
+                if opts.get("prompt_text") is None and opts.get("refer_text") is None:
+                    opts["prompt_text"] = fallback_prompt_text or ""
+                opts["_profile_prompt_resolved"] = True
 
                 resolved_emo = ctx.get_emotion_ref(str(emotion)) if (ai_adaptive and emotion) else None
                 if resolved_emo:
@@ -221,10 +287,23 @@ class TtsService:
                         fallback_ref_audio=fallback_ref_audio,
                         fallback_prompt_text=fallback_prompt_text,
                         fallback_prompt_lang=fallback_prompt_lang,
-                        has_explicit_voice=has_explicit_voice,
                     )
+                _require_voice_reference(opts)
+                # A selected profile must not borrow either model from the
+                # engine's previous voice. Explicit complete overrides remain valid.
+                _require_voice_models(opts)
+                resolved_name = ctx.name
+        except (AmbiguousProfileName, VoiceContextChangedError, VoiceContextUnavailableError,
+                VoiceReferenceMissingError, VoiceModelMissingError):
+            raise
         except Exception as exc:
+            if has_selector:
+                raise ValueError("所选音色暂时无法读取，请在角色与会话中重新选择音色后重试。") from exc
             logger.debug("Could not auto-populate active profile options in TtsService: %s", exc)
+        opts = await bind_audio_options(opts, self.client)
+        identity = opts['_audio_identity']
+        if resolved_name is not None and identity.gpt.path and identity.sovits.path:
+            opts['_voice_preparation'] = VoicePreparation(resolved_name)
         return opts
 
     def _sanitize_dynamic_voice_options(self, opts: dict[str, Any], text: str | None = None) -> dict[str, Any]:
@@ -318,7 +397,7 @@ class TtsService:
         scheduler = get_tts_scheduler()
         priority = TtsPriority.from_options(opts)
         gen_id = opts.get("_generation_id")
-        task_id = f"{gen_id}_{cache_key[:8]}_{uuid.uuid4().hex[:4]}" if gen_id and cache_key else None
+        task_id = f"{gen_id}_{cache_key[:8]}_{uuid.uuid4().hex}" if gen_id and cache_key else None
 
         if cache_key:
             return await scheduler.schedule(
@@ -342,7 +421,7 @@ class TtsService:
         """Writes audio bytes to a new file in audio_dir and returns (url_path, local_file_path, byte_count)."""
         filename = f"{filename_prefix}_{uuid.uuid4().hex[:12]}.wav"
         file_path = self.audio_dir / filename
-        await asyncio.to_thread(file_path.write_bytes, audio_bytes)
+        await write_new_audio_file(file_path, audio_bytes)
         url_path = f"/audio/{filename}"
         return url_path, file_path, len(audio_bytes)
 
@@ -372,7 +451,7 @@ class TtsService:
                 logger.debug("TTS Cache HIT (file) for key %s -> %s", cache_key[:12], cached[0])
                 return cached
 
-            task_id = f"{gen_id}_{cache_key[:8]}_{uuid.uuid4().hex[:4]}" if gen_id else None
+            task_id = f"{gen_id}_{cache_key[:8]}_{uuid.uuid4().hex}" if gen_id else None
 
             # A preceding bytes/file job may populate the shared cache while queued.
             async def _do_synth_file() -> tuple[str, Path, int]:
@@ -402,15 +481,34 @@ class TtsService:
             )
 
         # Ephemeral non-cached file write (when use_cache=False)
+        owned_file = None
+        abandoned = False
         async def _do_ephemeral_file() -> tuple[str, Path, int]:
+            nonlocal owned_file
             audio_bytes = await self.client.synthesize(text, options=opts)
-            return await self._write_ephemeral_audio_file(audio_bytes, filename_prefix)
+            if abandoned:
+                raise asyncio.CancelledError()
+            result = await self._write_ephemeral_audio_file(audio_bytes, filename_prefix)
+            owned_file = result[1]
+            if abandoned:
+                await discard_new_audio_file(owned_file)
+                raise asyncio.CancelledError()
+            return result
 
-        return await scheduler.schedule(
-            _do_ephemeral_file,
-            priority=priority,
-            generation_id=gen_id,
-        )
+        try:
+            return await scheduler.schedule(
+                _do_ephemeral_file,
+                priority=priority,
+                generation_id=gen_id,
+            )
+        except BaseException:
+            # A completed job can lose its recipient while its result is being
+            # delivered. This path owns only unique, uncached files; shared cache
+            # and cache-fallback results retain their existing lifetime.
+            abandoned = True
+            if owned_file is not None:
+                await discard_new_audio_file(owned_file)
+            raise
 
     async def stream_tts(
         self,
@@ -450,9 +548,24 @@ class TtsService:
         collected_chunks = []
         upstream_complete = False
         completed_normally = False
+        reused_cached_audio = False
 
         async def _stream_upstream() -> AsyncGenerator[bytes, None]:
-            nonlocal upstream_complete
+            nonlocal upstream_complete, reused_cached_audio
+            # A preceding bytes/file job may have filled the cache while this
+            # stream waited for the worker. Recheck without counting a second
+            # miss, and keep replay bounded and read-only.
+            if use_cache and cache_key:
+                async with aclosing(self.cache_manager.stream_cached(
+                    cache_key, chunk_size=chunk_size, record_miss=False,
+                )) as cached_stream:
+                    first_chunk = await anext(cached_stream, None)
+                    if first_chunk is not None:
+                        reused_cached_audio = True
+                        yield first_chunk
+                        async for chunk in cached_stream:
+                            yield chunk
+                        return
             async with aclosing(self.client.stream_tts(text, options=opts, chunk_size=chunk_size)) as upstream:
                 async for chunk in upstream:
                     yield chunk
@@ -466,7 +579,7 @@ class TtsService:
                 task_id=task_id,
             )) as scheduled_stream:
                 async for chunk in scheduled_stream:
-                    if use_cache and cache_key:
+                    if use_cache and cache_key and not reused_cached_audio:
                         collected_chunks.append(chunk)
                     yield chunk
             # A cancelled generation ends the scheduled stream without raising;

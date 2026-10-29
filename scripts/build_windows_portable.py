@@ -79,6 +79,9 @@ def build_portable() -> Path:
         "--collect-submodules", "uvicorn", "--hidden-import", "scripts.run_server",
         "--hidden-import", "tkinter", "--hidden-import", "anyio._backends._asyncio",
         "--exclude-module", "pytest", "--exclude-module", "torch",
+        # Frozen runtime uses tools/ffmpeg.exe; the source-only fallback would
+        # otherwise make PyInstaller include the same 87 MB binary a second time.
+        "--exclude-module", "imageio_ffmpeg",
         str(PROJECT_ROOT / "scripts" / "desktop_entry.py"),
     ]
     subprocess.run(command, cwd=PROJECT_ROOT, check=True)

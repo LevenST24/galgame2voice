@@ -272,7 +272,7 @@ test('LOG: entries for lines, legacy and user messages, and subtitle settings', 
 
   // Entry 0: User message
   assert.ok(entries[0].classList.contains('is-user'));
-  assert.equal(entries[0].querySelector('.adv-log-speaker').textContent, 'Player');
+  assert.equal(entries[0].querySelector('.adv-log-speaker').textContent, '我');
   assert.equal(entries[0].querySelector('.adv-log-primary').textContent, '用户第一句话');
 
   // Entry 1: Assistant line 0

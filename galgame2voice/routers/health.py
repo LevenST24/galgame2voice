@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from galgame2voice import __version__
 from galgame2voice.services.engine_recovery import engine_failure_message
+from galgame2voice.services.telemetry_jobs import TelemetryJobs, default_telemetry_jobs
 from galgame2voice.services.sovits_installation import find_engine_python
 from galgame2voice.config import get_settings
 from galgame2voice.database.session import get_db
@@ -39,16 +40,15 @@ from galgame2voice.services.sovits_endpoint import (
     resolve_effective_sovits_endpoint,
 )
 from galgame2voice.utils.logger import sanitize_error_detail
+from galgame2voice.utils.async_tasks import cancel_and_drain, gather_owned
 from galgame2voice.utils.hardware import (
     detect_gpu_capability,
     get_system_memory_status,
 )
 from galgame2voice.utils.precision import (
-    read_precision_cache,
     read_db_precision,
     resolve_initial_device_and_half,
     write_precision_cache,
-    write_sovits_yaml_config,
 )
 
 logger = logging.getLogger("galgame2voice.routers.health")
@@ -86,7 +86,9 @@ async def _resolve_sovits_endpoint_best_effort() -> SovitsEndpoint | None:
 # Directory metrics are cached: the settings console re-requests status on demand,
 # and scanning thousands of cache files each time would freeze the event loop.
 _DIR_METRICS_TTL_SECONDS = 15.0
+_DIR_METRICS_MAX_ENTRIES = 64
 _dir_metrics_cache: dict[str, tuple[float, tuple[int, float]]] = {}
+_dir_metrics_cache_lock = threading.Lock()
 
 
 class HealthResponse(BaseModel):
@@ -152,7 +154,10 @@ class HardwareTelemetry(BaseModel):
     gpu_available: bool
     gpu_name: str
     fp32_forced: bool
-    inference_precision: str = "FP32"
+    inference_precision: str | None = Field(default=None, description="Precision passed to this managed engine at launch; unknown for external engines")
+    precision_source: str = "unknown"
+    next_inference_precision: str | None = None
+    precision_pending_restart: bool | None = None
     configured_precision: str = "auto"
     system_memory_gb: float | None = None
     system_memory_avail_gb: float | None = None
@@ -223,7 +228,7 @@ async def _probe_gpt_sovits(base_url: str) -> GptSovitsTelemetry:
         safe_err = sanitize_error_detail(raw_err) if raw_err else None
         return GptSovitsTelemetry(
             status="reachable" if reachable else "unreachable",
-            base_url=client.base_url,
+            base_url=result.get("url") or target,
             latency_ms=latency,
             error=safe_err,
         )
@@ -257,18 +262,31 @@ def _scan_dir_sync(directory: Path) -> tuple[int, float]:
     return count, round(total_bytes / (1024 * 1024), 2)
 
 
-async def _get_dir_metrics_cached(directory: Path) -> tuple[int, float]:
+async def _get_dir_metrics_cached(directory: Path, owner: TelemetryJobs | None = None) -> tuple[int, float]:
     """TTL-cached directory metrics computed off the event loop."""
-    key = str(directory)
+    absolute = Path(directory)
+    if not absolute.is_absolute():
+        absolute = await asyncio.to_thread(absolute.absolute)
+    key = os.path.normcase(str(absolute))
     now = time.monotonic()
-    cached = _dir_metrics_cache.get(key)
-    if cached is not None:
-        stamp, value = cached
-        if now - stamp < _DIR_METRICS_TTL_SECONDS:
-            return value
-    value = await asyncio.to_thread(_scan_dir_sync, directory)
-    _dir_metrics_cache[key] = (now, value)
-    return value
+    with _dir_metrics_cache_lock:
+        cached = _dir_metrics_cache.get(key)
+        if cached is not None:
+            stamp, value = cached
+            if now - stamp < _DIR_METRICS_TTL_SECONDS:
+                _dir_metrics_cache.pop(key)
+                _dir_metrics_cache[key] = cached
+                return value
+
+    async def collect():
+        value = await asyncio.to_thread(_scan_dir_sync, absolute)
+        with _dir_metrics_cache_lock:
+            _dir_metrics_cache[key] = (time.monotonic(), value)
+            while len(_dir_metrics_cache) > _DIR_METRICS_MAX_ENTRIES:
+                _dir_metrics_cache.pop(next(iter(_dir_metrics_cache)))
+        return value
+
+    return await (owner or default_telemetry_jobs).run(("directory", key), collect)
 
 
 # Backward-compatible sync alias (kept for existing tooling/tests).
@@ -337,34 +355,38 @@ def _get_gpu_telemetry_cached() -> tuple[bool, str]:
         stamp, val = _gpu_telemetry_cache
         if now - stamp < _GPU_METRICS_TTL_SECONDS:
             return val
-    gpu_avail, gpu_name, _ = detect_gpu_capability()
+    gpu_avail, gpu_name, _ = detect_gpu_capability(allow_torch_import=False)
     val = (gpu_avail, gpu_name or "N/A")
-    _gpu_telemetry_cache = (now, val)
+    _gpu_telemetry_cache = (time.monotonic(), val)
     return val
 
 
-def _engine_fp32_forced() -> bool:
-    """True when the calibration store has verified this device needs FP32."""
-    cached = read_precision_cache(get_settings().project_root)
-    return bool(cached and cached.get("is_half") is False)
-
-
-def _collect_hardware_telemetry_sync() -> HardwareTelemetry:
+def _collect_hardware_telemetry_sync(
+    endpoint: SovitsEndpoint | None = None, gpu_snapshot: tuple[bool, str] | None = None,
+) -> HardwareTelemetry:
     """Collects GPU capability and host RAM telemetry synchronously."""
     total_ram, avail_ram = get_system_memory_status()
-    gpu_avail, gpu_name = _get_gpu_telemetry_cached()
-    project_root = get_settings().project_root
+    gpu_avail, gpu_name = gpu_snapshot if gpu_snapshot is not None else _get_gpu_telemetry_cached()
+    settings = get_settings()
+    project_root = settings.project_root
     sovits_dir = read_sovits_directory(project_root) or project_root
 
-    device, is_half, _ = resolve_initial_device_and_half(project_root, sovits_dir)
-    if device == "cpu":
-        active_prec = "CPU"
-    else:
-        active_prec = "FP16" if is_half else "FP32"
+    device, is_half, source = resolve_initial_device_and_half(
+        project_root, sovits_dir, db_path=settings.db_path, gpu_available=gpu_avail,
+    )
+    next_prec = "CPU" if device == "cpu" else "FP16" if is_half else "FP32"
+    if source == "default" and gpu_name == "N/A":
+        # A failed native inventory does not prove CPU-only hardware. Explicit
+        # env/DB/cache/YAML choices still have a known next launch mode.
+        next_prec = None
+    from scripts import run_server
+    active_prec = run_server.get_managed_engine_precision(endpoint)
 
-    cfg_prec = read_db_precision(project_root) or "auto"
+    cfg_prec = read_db_precision(project_root, db_path=settings.db_path) or "auto"
     env_prec = os.environ.get("GPT_SOVITS_PRECISION", "").strip().lower()
-    if env_prec in ("fp16", "half", "true", "1"):
+    if env_prec == "cpu" or os.environ.get("GPT_SOVITS_DEVICE", "").strip().lower() == "cpu":
+        cfg_prec = "cpu"
+    elif env_prec in ("fp16", "half", "true", "1"):
         cfg_prec = "fp16"
     elif env_prec in ("fp32", "float32", "false", "0"):
         cfg_prec = "fp32"
@@ -372,8 +394,11 @@ def _collect_hardware_telemetry_sync() -> HardwareTelemetry:
     return HardwareTelemetry(
         gpu_available=gpu_avail,
         gpu_name=gpu_name,
-        fp32_forced=_engine_fp32_forced(),
+        fp32_forced=active_prec == "FP32",
         inference_precision=active_prec,
+        precision_source="managed_launch" if active_prec else "unknown",
+        next_inference_precision=next_prec,
+        precision_pending_restart=(active_prec != next_prec) if active_prec and next_prec else None,
         configured_precision=cfg_prec,
         system_memory_gb=total_ram,
         system_memory_avail_gb=avail_ram,
@@ -425,6 +450,13 @@ async def _collect_telegram_telemetry(db_path: Path) -> TelegramTelemetry:
     )
 
 
+async def _collect_hardware_telemetry(endpoint: SovitsEndpoint | None, owner: TelemetryJobs) -> HardwareTelemetry:
+    # Physical GPU identity can be shared, while configuration and managed-engine
+    # precision are sampled afresh for each request after the slow probe finishes.
+    gpu = await owner.run(("gpu",), lambda: asyncio.to_thread(_get_gpu_telemetry_cached))
+    return await asyncio.to_thread(_collect_hardware_telemetry_sync, endpoint, gpu)
+
+
 @router.get(
     "/api/system/status",
     response_model=SystemStatusResponse,
@@ -432,6 +464,29 @@ async def _collect_telegram_telemetry(db_path: Path) -> TelegramTelemetry:
     dependencies=[Depends(require_auth)],
 )
 async def system_status(request: Request) -> SystemStatusResponse:
+    owner = getattr(request.app.state, "telemetry_jobs", None)
+    if owner is None:
+        owner = request.app.state.telemetry_jobs = TelemetryJobs()
+
+    async def disconnected():
+        while True:
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(0.1)
+
+    operation = asyncio.create_task(_collect_system_status(request, owner))
+    watcher = asyncio.create_task(disconnected())
+    try:
+        done, _ = await asyncio.wait({operation, watcher}, return_when=asyncio.FIRST_COMPLETED)
+        if watcher in done:
+            await watcher
+            raise HTTPException(499, "状态读取已取消。")
+        return await operation
+    finally:
+        await cancel_and_drain((operation, watcher))
+
+
+async def _collect_system_status(request: Request, owner: TelemetryJobs) -> SystemStatusResponse:
     """
     Deep diagnostic telemetry endpoint for Web Management Console.
     Inspects DB state, GPT-SoVITS latency, storage sizes, memory usage, and hardware telemetry.
@@ -453,21 +508,21 @@ async def system_status(request: Request) -> SystemStatusResponse:
             sovits_endpoint.base_url if sovits_endpoint else await get_effective_sovits_url()
         )
     )
-    audio_metrics_task = asyncio.create_task(_get_dir_metrics_cached(settings.audio_dir))
-    data_metrics_task = asyncio.create_task(_get_dir_metrics_cached(settings.data_dir))
+    audio_metrics_task = asyncio.create_task(_get_dir_metrics_cached(settings.audio_dir, owner))
+    data_metrics_task = asyncio.create_task(_get_dir_metrics_cached(settings.data_dir, owner))
     memory_task = asyncio.create_task(asyncio.to_thread(_get_process_memory_mb))
-    hardware_task = asyncio.create_task(asyncio.to_thread(_collect_hardware_telemetry_sync))
+    hardware_task = asyncio.create_task(_collect_hardware_telemetry(sovits_endpoint, owner))
+    database_exists_task = asyncio.create_task(asyncio.to_thread(settings.db_path.exists))
 
-    gpt_probe = await gpt_probe_task
+    tasks = [gpt_probe_task, audio_metrics_task, data_metrics_task, memory_task, hardware_task, database_exists_task]
+    results = await gather_owned(tasks)
+    gpt_probe, (audio_count, audio_size_mb), (_, data_size_mb), memory_mb, hardware_telemetry, database_exists = results
     if sovits_endpoint is not None:
         gpt_probe.source = sovits_endpoint.source
-    audio_count, audio_size_mb = await audio_metrics_task
-    _, data_size_mb = await data_metrics_task
-    hardware_telemetry = await hardware_task
 
     # 2. Database Status Check (Normalized Relative Path)
     db_telemetry = DatabaseTelemetry(
-        status="connected" if settings.db_path.exists() else "initializing",
+        status="connected" if database_exists else "initializing",
         wal_mode=True,
         path=_resolve_rel_db_path(settings.db_path, settings.project_root, settings.data_dir_name),
     )
@@ -487,7 +542,7 @@ async def system_status(request: Request) -> SystemStatusResponse:
         start_time=start_time_iso,
         python_version=sys.version.split()[0],
         pid=os.getpid(),
-        memory_usage_mb=await memory_task,
+        memory_usage_mb=memory_mb,
     )
 
     # 5. Telegram Status
@@ -547,11 +602,15 @@ async def _apply_sovits_precision_config(
         cache_file = project_root / "data" / "precision.json"
         await asyncio.to_thread(cache_file.unlink, missing_ok=True)
         await _update_inference_precision_setting("auto")
-        device, is_half, source = await asyncio.to_thread(resolve_initial_device_and_half, project_root, sovits_dir)
+        device, is_half, source = await asyncio.to_thread(
+            resolve_initial_device_and_half, project_root, sovits_dir, db_path=get_settings().db_path,
+        )
     else:
-        device, is_half, source = await asyncio.to_thread(resolve_initial_device_and_half, project_root, sovits_dir)
+        device, is_half, source = await asyncio.to_thread(
+            resolve_initial_device_and_half, project_root, sovits_dir, db_path=get_settings().db_path,
+        )
 
-    await asyncio.to_thread(write_sovits_yaml_config, sovits_dir, is_half=is_half, device=device)
+    # The launcher prepares its writable config copy immediately before spawning.
     return device, is_half, source
 
 
@@ -586,7 +645,7 @@ def _resolve_sovits_directory(project_root: Path) -> Path:
     if not sovits_dir_file.exists():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="尚未选择语音引擎目录。请在「全局设置 → 语音服务」点击「选择文件夹」，选择完整解压的引擎包并保存。",
+            detail="尚未选择语音引擎目录。请在「设置中心 → 语音服务」点击「选择文件夹」，选择完整解压的引擎包并保存。",
         )
     try:
         sovits_dir = read_sovits_directory(project_root)
@@ -601,6 +660,16 @@ def _resolve_sovits_directory(project_root: Path) -> Path:
 
 
 _engine_restart_lock = threading.Lock()
+_engine_restart_target: str | None = None
+
+
+def _engine_state(endpoint: SovitsEndpoint, state: str, message: str) -> dict[str, Any]:
+    return {"state": state, "ready": state == "ready", "message": message,
+            "base_url": endpoint.base_url, "source": endpoint.source}
+
+
+def _restarting_endpoint(endpoint: SovitsEndpoint) -> bool:
+    return _engine_restart_lock.locked() and _engine_restart_target == endpoint.base_url
 
 
 @router.get("/api/system/engine-status", dependencies=[Depends(require_auth)])
@@ -609,20 +678,33 @@ async def engine_status_endpoint() -> dict[str, Any]:
         endpoint = await resolve_effective_sovits_endpoint()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="语音引擎服务地址无效。请在「语音服务」检查并保存服务地址。") from exc
-    if _engine_restart_lock.locked():
-        return {"state": "starting", "ready": False, "message": "引擎正在重启，请等待当前操作完成。"}
+    if _restarting_endpoint(endpoint):
+        return _engine_state(endpoint, "starting", "引擎正在重启，请等待当前操作完成。")
     from scripts import run_server
-    proc = run_server._SPAWNED_SOVITS_PROC
+    before_launch = run_server.get_managed_engine_launch(endpoint)
     telemetry = await _probe_gpt_sovits(endpoint.base_url)
+    if _restarting_endpoint(endpoint):
+        return _engine_state(endpoint, "starting", "引擎正在重启，请等待当前操作完成。")
+    launch = run_server.get_managed_engine_launch(endpoint)
+    if launch is not before_launch:
+        return _engine_state(endpoint, "checking", "引擎进程已变更，正在重新核对服务状态。请稍候，无需再次重启。")
     if telemetry.status == "reachable":
-        return {"state": "ready", "ready": True, "message": "语音引擎已就绪。可在会话设置中选择音色。"}
-    if endpoint.is_local and proc is not None and proc.poll() is not None:
+        return _engine_state(endpoint, "ready", "语音引擎已就绪。可在“角色与会话”中选择音色。")
+    if launch is not None and launch.process.poll() is not None:
         message = await asyncio.to_thread(engine_failure_message, get_settings().project_root / "logs" / "gpt_sovits.log")
-        return {"state": "failed", "ready": False, "message": message}
-    if endpoint.is_local and proc is not None:
-        return {"state": "starting", "ready": False, "message": "引擎正在加载模型，请稍候；文字聊天可继续使用。"}
-    return {"state": "unavailable", "ready": False,
-            "message": "语音引擎尚未就绪。请在「语音服务」选择引擎目录后启动，或检查已配置的远端引擎地址。文字聊天可继续使用。"}
+        if _restarting_endpoint(endpoint):
+            return _engine_state(endpoint, "starting", "引擎正在重启，请等待当前操作完成。")
+        if launch is not run_server.get_managed_engine_launch(endpoint):
+            return _engine_state(endpoint, "checking", "引擎进程已变更，正在重新核对服务状态。请稍候，无需再次重启。")
+        return _engine_state(endpoint, "failed", message)
+    if launch is not None:
+        started_at = launch.started_at
+        if started_at is not None and run_server.time.monotonic() - started_at >= 180:
+            return _engine_state(endpoint, "loading_slow",
+                                 "引擎加载时间较长，尚未确认就绪。无需反复重启；请点击「刷新状态」稍后检查，若持续没有进展，可提供 logs/gpt_sovits.log 排查。文字聊天可继续使用。")
+        return _engine_state(endpoint, "starting", "引擎正在加载模型，请稍候；文字聊天可继续使用。")
+    return _engine_state(endpoint, "unavailable",
+                         "语音引擎尚未就绪。请在「语音服务」选择引擎目录后启动，或检查已配置的远端引擎地址。文字聊天可继续使用。")
 
 
 @router.post(
@@ -638,6 +720,7 @@ async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -
     Only a local (loopback) effective endpoint may be restarted by this host;
     a remote endpoint returns 409 and is never touched.
     """
+    global _engine_restart_target
     try:
         endpoint = await resolve_effective_sovits_endpoint()
     except ValueError as exc:
@@ -661,9 +744,12 @@ async def restart_sovits_endpoint(payload: RestartSovitsPayload | None = None) -
 
     if not _engine_restart_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="语音引擎正在启动或重启，请等待当前操作完成，勿重复点击。")
+    _engine_restart_target = endpoint.base_url
     task = asyncio.create_task(_restart_local_engine(endpoint, payload))
 
     def release(completed):
+        global _engine_restart_target
+        _engine_restart_target = None
         _engine_restart_lock.release()
         if not completed.cancelled():
             completed.exception()  # A disconnected browser must not leave an unobserved failure.
@@ -690,11 +776,22 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
     from scripts import run_server
     owned = run_server._SPAWNED_SOVITS_PROC
     live_owned = owned is not None and owned.poll() is None
-    if not live_owned and await asyncio.to_thread(run_server.is_port_in_use, endpoint.port, endpoint.host):
+    owns_endpoint = live_owned and run_server.get_managed_engine_launch(endpoint) is not None
+    if not owns_endpoint and await asyncio.to_thread(run_server.is_port_in_use, endpoint.port, endpoint.host):
         raise HTTPException(status_code=409, detail="语音引擎已在其他窗口运行，可直接使用。若需重启，请先关闭该引擎窗口，再在「运行状态」点击「重启 SoVITS 引擎」。")
     # Determine precision and device target only after validation and ownership checks.
     req_prec = str(payload.precision).strip().lower() if (payload and payload.precision) else None
     device, is_half, source = await _apply_sovits_precision_config(settings.project_root, sovits_dir, req_prec)
+
+    from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client
+
+    client = get_gpt_sovits_client()
+    client_endpoint = parse_sovits_endpoint(client.base_url, source="runtime")
+    if (client_endpoint.base_url == endpoint.base_url
+            or live_owned and run_server.get_managed_engine_launch(client_endpoint) is not None):
+        # Validate first, then invalidate before terminating or launching a
+        # process. A failed spawn cannot restore the stopped engine's models.
+        client.invalidate_model_state()
 
     if live_owned:
         await asyncio.to_thread(run_server.terminate_process_tree, owned.pid)

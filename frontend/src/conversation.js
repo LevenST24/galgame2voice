@@ -14,6 +14,19 @@
 import { streamChat } from './ai.js';
 import { normalizeLines } from './session_data.js';
 
+// A whole-reply response has no server-side line identity. Expose one line to
+// the live presenter without adding synthetic lines to persisted history.
+function wholeReplyLine(message, meta) {
+  const chunks = message.audioUrls.map((url, index) => ({
+    ...message.audioChunks[index], index, audio_url: url,
+  }));
+  return {
+    index: 0, zh: message.content, ja: message.japanese,
+    emotion: typeof meta.emotion === 'string' ? meta.emotion : '', act: {},
+    audio: { status: meta.audioError ? 'failed' : chunks.length ? 'ready' : 'skipped', chunks },
+  };
+}
+
 export function createConversation({
   state, getActive, getSession, addMessage, uid, saveState, persistSession,
   isSessionDeleting, audioStore, putCachedAudioBlob, fetchAndCacheAudio,
@@ -26,7 +39,13 @@ export function createConversation({
   let cancelStream = null;
   let turn = null;
   const emit = (type, event) => {
-    for (const fn of [...(listeners.get(type) || [])]) fn(event);
+    for (const fn of [...(listeners.get(type) || [])]) {
+      try {
+        fn(event);
+      } catch (error) {
+        console.error('[conversation] event listener failed:', type, error);
+      }
+    }
   };
   const on = (type, fn) => {
     if (!listeners.has(type)) listeners.set(type, new Set());
@@ -80,6 +99,7 @@ export function createConversation({
       originId,
       bufferedChunksByLine: new Map(),
       linesByLineIndex: new Map(),
+      announcedLineAudio: new Set(),
       hasReceivedLineEvents: false,
       settled: false,
     };
@@ -126,6 +146,7 @@ export function createConversation({
           }
           emit('line', { messageId: assistantMessage.id, line: lineRecord });
         } else if (type === 'line_audio') {
+          current.announcedLineAudio.add(payload.line);
           const lineRecord = current.linesByLineIndex.get(payload.line);
           const chunks = Array.isArray(payload.chunks) ? payload.chunks : (lineRecord?.audio?.chunks || []);
           if (lineRecord) {
@@ -184,10 +205,11 @@ export function createConversation({
         id: uid('m'), role: 'assistant', content: textToSave,
         japanese: meta.japanese || '', audioUrls, audioChunks: meta.chunks || [],
         ts: Date.now(), ttsParams: meta.ttsParams || null,
+        ...(Number.isSafeInteger(meta.messageId) && meta.messageId > 0 ? { serverMessageId: meta.messageId } : {}),
       };
 
       if (Array.isArray(meta.lines)) {
-        message.lines = normalizeLines(meta.lines);
+        message.lines = normalizeLines(meta.lines).sort((a, b) => a.index - b.index);
         assistantMessage.lines = message.lines;
       } else if (current.hasReceivedLineEvents && assistantMessage.lines) {
         message.lines = assistantMessage.lines;
@@ -206,7 +228,7 @@ export function createConversation({
         if (!message.content) message.content = message.lines.map(line => line.zh).join('');
         if (!message.japanese) message.japanese = message.lines.map(line => line.ja).join('');
       }
-      const stored = Boolean((lastFull && textToSave) || meaningfulLines);
+      const stored = Boolean(textToSave || message.japanese.trim() || meaningfulLines);
       if (!cancelled && !error && !textToSave && !message.japanese.trim() && !meaningfulLines) {
         error = '模型这次没有返回任何内容';
         errorCode = 'empty_reply';
@@ -218,6 +240,25 @@ export function createConversation({
       }
       const failedInline = Boolean(error && !stored && origin?.messages.includes(userMessage));
       if (failedInline) userMessage.failed = { error, code: errorCode };
+      if (!cancelled && !error && stored) {
+        const finalLines = message.lines?.length ? message.lines
+          : current.hasReceivedLineEvents ? [] : [wholeReplyLine(message, meta)];
+        for (const line of finalLines) {
+          const announced = current.linesByLineIndex.get(line.index);
+          if (announced) announced.audio = line.audio;
+          else {
+            current.linesByLineIndex.set(line.index, line);
+            emit('line', { messageId: assistantMessage.id, line });
+          }
+          // Completion fills missing events; it never replays an already
+          // delivered audio result while its download or playback is active.
+          if (!current.announcedLineAudio.has(line.index)) {
+            current.announcedLineAudio.add(line.index);
+            emit('line_audio', { messageId: assistantMessage.id, line: line.index,
+              status: line.audio.status, chunks: line.audio.chunks });
+          }
+        }
+      }
       saveState();
       busy = false;
       emit(error ? 'error' : cancelled ? 'cancelled' : 'done', {

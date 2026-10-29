@@ -1,12 +1,15 @@
 """Exercise the actual release ZIP with no Python/FFmpeg in the child's PATH."""
 
 import argparse
+import errno
 from contextlib import closing
+from html.parser import HTMLParser
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
@@ -20,18 +23,41 @@ import wave
 import zipfile
 
 
+class _PortableUiProbe(HTMLParser):
+    """Observe the DOM created by JavaScript, rather than copy in index.html."""
+
+    def __init__(self):
+        super().__init__()
+        self.root = self.stage = self.home = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        classes = set(attrs.get("class", "").split())
+        visible = "hidden" not in attrs and "hidden" not in classes
+        if attrs.get("id") == "advRoot":
+            self.root = visible
+        if {"adv-stage", "is-home"} <= classes and visible:
+            self.stage = True
+        if "adv-title-screen" in classes and visible:
+            self.home = True
+
+
 def check_browser(browser: Path, base_url: str, env: dict[str, str], root: Path, scratch: Path) -> None:
     # The host may already isolate child processes. This browser
     # only visits our temporary loopback fixture with fake data.
     timeout = 60
     for attempt in (1, 2):
         try:
-            rendered = subprocess.run([
-                str(browser), "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-sync",
-                "--no-proxy-server",
-                "--disable-background-networking", "--dump-dom", "--virtual-time-budget=5000",
-                f"--user-data-dir={root / f'browser-profile-{attempt}'}", base_url,
-            ], env=env, capture_output=True, timeout=timeout, creationflags=subprocess.CREATE_NO_WINDOW)
+            # Keep Chrome cache paths short even when the app fixture exercises a
+            # Unicode/spaces install path. No existing browser profile is used.
+            with tempfile.TemporaryDirectory(prefix="g2v-browser-", dir=scratch.parent,
+                                             ignore_cleanup_errors=True) as profile:
+                rendered = subprocess.run([
+                    str(browser), "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-sync",
+                    "--no-proxy-server",
+                    "--disable-background-networking", "--dump-dom", "--virtual-time-budget=5000",
+                    f"--user-data-dir={profile}", base_url,
+                ], env=env, capture_output=True, timeout=timeout, creationflags=subprocess.CREATE_NO_WINDOW)
         except subprocess.TimeoutExpired as failure:
             (scratch / f"browser-attempt-{attempt}-stdout.log").write_bytes(failure.stdout or b"")
             (scratch / f"browser-attempt-{attempt}-stderr.log").write_bytes(failure.stderr or b"")
@@ -42,7 +68,9 @@ def check_browser(browser: Path, base_url: str, env: dict[str, str], root: Path,
                     f"diagnostics saved in {scratch}"
                 ) from failure
             continue
-        if rendered.returncode or "支持语音输入与朗读回复" not in rendered.stdout.decode("utf-8", errors="replace"):
+        page = _PortableUiProbe()
+        page.feed(rendered.stdout.decode("utf-8", errors="replace"))
+        if rendered.returncode or not (page.root and page.stage and page.home):
             (scratch / "browser-rendered.html").write_bytes(rendered.stdout)
             (scratch / "browser-errors.log").write_bytes(rendered.stderr)
             print(f"Browser exit status: {rendered.returncode}; diagnostics saved in {scratch}")
@@ -124,7 +152,17 @@ def smoke_test(archive: Path, scratch: Path, *, skip_browser: bool = False) -> N
             "-c:a", "libopus", str(root / "converted.ogg"),
         ], env=env, check=True, capture_output=True, timeout=15)
         with socket.socket() as reservation:
-            reservation.bind(("127.0.0.1", 0))
+            # Windows may assign port 0 from a range containing ports Chromium
+            # refuses. Keep the temporary app on an unused high loopback port.
+            for _ in range(50):
+                try:
+                    reservation.bind(("127.0.0.1", 20000 + secrets.randbelow(10000)))
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EADDRINUSE, 10048):
+                        raise
+            else:
+                raise RuntimeError("Could not reserve a high loopback port for portable smoke")
             port = reservation.getsockname()[1]
         base_url = f"http://127.0.0.1:{port}"
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))

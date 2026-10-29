@@ -60,10 +60,14 @@ export function createConfigPanel(container, {
   toggleVoice,
   onModelSettings,
   onSessionSettings,
+  onOpenSettings,
+  onReturnHome,
   onPreview,
   onRevert,
   onOpen,
   onClose,
+  onSaveError,
+  embedded = false,
   clock = {
     now: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
     setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
@@ -86,13 +90,19 @@ export function createConfigPanel(container, {
   let baselineVoiceMode = true;
   let draftVoiceMode = true;
   let sampleTimer = null;
+  let saving = null;
+  let editorRevision = 0;
 
   // Root overlay
   const overlay = doc.createElement('div');
   overlay.className = 'adv-config-overlay';
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-modal', 'true');
-  overlay.setAttribute('aria-label', 'ADV 系统设置');
+  overlay.setAttribute('aria-label', '聊天体验');
+  if (embedded) {
+    overlay.classList.add('is-embedded');
+    for (const attribute of ['role', 'aria-modal', 'aria-label']) overlay.removeAttribute(attribute);
+  }
   overlay.hidden = true;
   overlay.setAttribute('hidden', '');
 
@@ -119,11 +129,11 @@ export function createConfigPanel(container, {
 
   const title = doc.createElement('h2');
   title.className = 'adv-config-title';
-  title.textContent = 'CONFIG';
+  title.textContent = '聊天体验';
 
   const subtitle = doc.createElement('span');
   subtitle.className = 'adv-config-subtitle';
-  subtitle.textContent = '系统环境设定';
+  subtitle.textContent = '文字、字幕、自动播放与立绘';
 
   titleGroup.appendChild(title);
   titleGroup.appendChild(subtitle);
@@ -375,13 +385,13 @@ export function createConfigPanel(container, {
   const autoModeSelect = doc.createElement('select');
   autoModeSelect.id = 'cfg-advAutoMode';
   autoModeSelect.className = 'adv-config-select';
-  for (const [v, text] of [['voice-priority', '语音优先'], ['normal', '通常']]) {
+  for (const [v, text] of [['voice-priority', '语音同步（推荐）'], ['normal', '按阅读速度']]) {
     const opt = doc.createElement('option');
     opt.value = v; opt.textContent = text;
     autoModeSelect.appendChild(opt);
   }
   controls.advAutoMode = autoModeSelect;
-  const rowAutoMode = makeRow('advAutoMode', 'AUTO 模式', '语音优先等待配音播放完成；通常仅依据字数', autoModeSelect, { valSuffix: undefined });
+  const rowAutoMode = makeRow('advAutoMode', '文字与语音', '语音同步从声音开始时出字，AUTO 等说完再翻句；点击仍可先看文字', autoModeSelect, { valSuffix: undefined });
   groupPlay.appendChild(rowAutoMode);
 
   // advAutoBaseMs
@@ -491,18 +501,28 @@ export function createConfigPanel(container, {
   const globalError = doc.createElement('div');
   globalError.className = 'adv-config-footer-status';
   globalError.id = 'cfg-global-error';
+  globalError.setAttribute('aria-live', 'polite');
   globalError.hidden = true;
   globalError.setAttribute('hidden', '');
   footer.appendChild(globalError);
 
   const footerBtns = doc.createElement('div');
   footerBtns.className = 'adv-config-footer-buttons';
+  for (const [id, label, callback] of [
+    ['cfg-btn-home', '返回首页', onReturnHome], ['cfg-btn-center', '设置中心', onOpenSettings],
+  ]) {
+    if (!callback) continue;
+    const button = doc.createElement('button'); button.type = 'button'; button.id = id;
+    button.className = 'adv-config-btn'; button.textContent = label;
+    listen(button, 'click', () => { close({ revert: true }); callback(); });
+    footerBtns.appendChild(button);
+  }
 
   const btnCancel = doc.createElement('button');
   btnCancel.type = 'button';
   btnCancel.className = 'adv-config-btn adv-config-btn-cancel';
   btnCancel.dataset.action = 'cancel';
-  btnCancel.textContent = '取消 (Esc)';
+  btnCancel.textContent = '关闭 (Esc)';
   listen(btnCancel, 'click', () => close({ revert: true }));
 
   const btnSave = doc.createElement('button');
@@ -635,6 +655,7 @@ export function createConfigPanel(container, {
 
   // Keyboard navigation & Focus trapping
   listen(dialog, 'keydown', (e) => {
+    if (embedded) return; // The shared settings dialog owns Escape and focus.
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
@@ -675,6 +696,7 @@ export function createConfigPanel(container, {
       globalError.hidden = true;
       globalError.setAttribute('hidden', '');
       globalError.textContent = '';
+      globalError.classList.remove('is-info');
     }
   }
 
@@ -696,6 +718,7 @@ export function createConfigPanel(container, {
       globalError.hidden = true;
       globalError.setAttribute('hidden', '');
       globalError.textContent = '';
+      globalError.classList.remove('is-info');
     }
   }
 
@@ -781,14 +804,14 @@ export function createConfigPanel(container, {
   }
 
   listen(doc, 'focusin', () => {
-    if (!isOpen) return;
+    if (!isOpen || embedded) return;
     if (!dialog.contains(doc.activeElement)) {
       focusFirstControl();
     }
   });
 
   listen(doc, 'keydown', (e) => {
-    if (!isOpen) return;
+    if (!isOpen || embedded) return;
     if (e.key === 'Tab' && !dialog.contains(doc.activeElement)) {
       e.preventDefault();
       focusFirstControl();
@@ -797,6 +820,7 @@ export function createConfigPanel(container, {
 
   function open() {
     if (isOpen) return;
+    editorRevision++;
     isOpen = true;
     savedFocus = doc.activeElement;
 
@@ -812,11 +836,12 @@ export function createConfigPanel(container, {
     overlay.removeAttribute('hidden');
     onOpen?.();
 
-    focusFirstControl();
+    if (!embedded) focusFirstControl();
   }
 
   function close({ revert = false } = {}) {
     if (!isOpen) return;
+    editorRevision++;
 
     if (sampleTimer !== null) {
       clock.clearTimeout(sampleTimer);
@@ -835,12 +860,14 @@ export function createConfigPanel(container, {
     isOpen = false;
     onClose?.();
 
-    if (savedFocus?.isConnected && typeof savedFocus.focus === 'function') {
+    if (!embedded && savedFocus?.isConnected && typeof savedFocus.focus === 'function') {
       savedFocus.focus();
     }
   }
 
   function save() {
+    if (saving) return saving;
+    if (!isOpen) return false;
     clearAllErrors();
     let hasError = false;
     let firstInvalid = null;
@@ -875,21 +902,55 @@ export function createConfigPanel(container, {
       return false;
     }
 
-    // Persist through the store path (main.js saveSettings)
-    saveSettings?.(values);
-
-    // Sync global voiceMode if toggled
-    if (draftVoiceMode !== Boolean(voiceEnabled?.())) {
-      toggleVoice?.();
-    }
-
-    close({ revert: false });
-    return true;
+    const origin = getSession?.();
+    const revision = editorRevision;
+    const ownsEditor = () => isOpen && revision === editorRevision && getSession?.() === origin;
+    const snapshot = () => JSON.stringify([CONFIG_PANEL_FIELDS.map(key => controls[key].value), draftVoiceMode]);
+    const submitted = snapshot();
+    const status = (message, info = false) => {
+      globalError.hidden = false;
+      globalError.removeAttribute('hidden');
+      globalError.classList.toggle('is-info', info);
+      globalError.textContent = message;
+      globalError.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    };
+    const failed = error => {
+      if (ownsEditor()) status(`保存尚未确认：${error?.message || error || '请稍后重试'}。编辑内容已保留，可再次保存。`);
+      else onSaveError?.(error, origin);
+      return false;
+    };
+    const confirmed = result => {
+      if (result === false) return failed(new Error('未能确认设置已保存'));
+      if (ownsEditor()) {
+        if (snapshot() === submitted) close({ revert: false });
+        else status('本次提交已保存；保存期间新增的修改已保留，请再次保存。', true);
+      }
+      return true;
+    };
+    try {
+      const result = saveSettings?.(values);
+      if (result === false) return failed(new Error('未能确认设置已保存'));
+      // The application applies the local snapshot before starting its write.
+      // Closing during confirmation must not revert those submitted values.
+      baseline = pickSettings(origin?.settings, DEFAULT_SESSION_SETTINGS);
+      if (draftVoiceMode !== Boolean(voiceEnabled?.())) toggleVoice?.();
+      baselineVoiceMode = Boolean(voiceEnabled?.());
+      if (!result || typeof result.then !== 'function') return confirmed(result);
+      btnSave.disabled = true;
+      btnSave.textContent = '正在保存…';
+      saving = Promise.resolve(result).then(confirmed, failed).finally(() => {
+        saving = null;
+        btnSave.disabled = false;
+        btnSave.textContent = '保存设置';
+      });
+      return saving;
+    } catch (error) { return failed(error); }
   }
 
   if (container) {
     container.appendChild(overlay);
   }
+  if (embedded) body.appendChild(globalError);
 
   return {
     open,
@@ -900,11 +961,14 @@ export function createConfigPanel(container, {
     focusFirstControl,
     getFirstControl,
     get isOpen() { return isOpen; },
+    get saving() { return saving !== null; },
     get element() { return overlay; },
     get controls() { return controls; },
     get errorElements() { return errorEls; },
     get valElements() { return valEls; },
     destroy() {
+      editorRevision++;
+      isOpen = false;
       for (const off of disposers.splice(0)) off();
       if (sampleTimer !== null) {
         clock.clearTimeout(sampleTimer);

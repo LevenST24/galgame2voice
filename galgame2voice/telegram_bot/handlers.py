@@ -24,6 +24,7 @@ except ImportError:
     InlineKeyboardMarkup = Any
 
 from galgame2voice.database.session import get_db, immediate_transaction
+from galgame2voice.services.voice_state import ActiveVoicePersistenceError, persist_active_voice_profile
 from galgame2voice.services.chat_pipelines.acting_menu import get_recent_pose, sanitize_act
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate, CharacterAffectionUpdate
@@ -372,31 +373,24 @@ class TelegramBotHandlers:
         query_str: str,
         profiles: list[Any],
     ) -> Any | None:
-        """Matches character profile by numeric ID, exact name, or CharacterManager flexible aliases."""
+        """Matches character profile by numeric ID, exact name, or CharacterIndex resolution."""
         if query_str.isdigit():
             matched = await crud.get_voice_profile(conn, int(query_str))
             if matched:
                 return matched
 
-        matched = await crud.get_voice_profile_by_name(conn, query_str)
-        if matched:
-            return matched
-
         try:
-            from galgame2voice.services.character_manager import get_character_manager
-            cm = get_character_manager()
-            pkg = cm.get_character(query_str)
-            candidate_names = []
-            if pkg:
-                candidate_names.extend([pkg.name, pkg.id])
-            candidate_names.append(query_str)
+            from galgame2voice.services.character_identity import (
+                AmbiguousProfileName,
+                resolve_profile_for_query,
+            )
 
-            for p in profiles:
-                p_low = p.name.lower()
-                for c_name in candidate_names:
-                    c_low = c_name.lower()
-                    if c_low in p_low or p_low in c_low:
-                        return p
+            matched, _, conflicting = resolve_profile_for_query(profiles, query_str)
+            if conflicting:
+                return None
+            return matched
+        except AmbiguousProfileName:
+            return None
         except Exception as cm_err:
             logger.debug("CharacterManager flexible lookup failed: %s", cm_err)
 
@@ -413,15 +407,16 @@ class TelegramBotHandlers:
                 switched = await vm.switch_active_profile(profile_id)
                 if not switched:
                     warning_note = "\n⚠️ 提示：GPT-SoVITS 语音引擎当前处于离线状态，已为您激活对话人设与好感档案。"
-            except InsufficientMemoryError:
+            except (InsufficientMemoryError,ActiveVoicePersistenceError):
                 raise
             except Exception as sw_err:
                 logger.debug("VoiceManager weight switch skipped: %s", sw_err)
                 warning_note = "\n⚠️ 提示：GPT-SoVITS 语音引擎当前处于离线状态，已为您激活对话人设与好感档案。"
 
-            async with get_db(self.db_path) as conn:
-                await crud.set_active_voice_profile(conn, profile_id)
+            await persist_active_voice_profile(profile_id,db_path=self.db_path)
             return None, warning_note
+        except ActiveVoicePersistenceError as error:
+            return str(error),''
         except InsufficientMemoryError as mem_err:
             return f"系统内存或显存不足，无法加载该角色模型: {mem_err}", ""
         except Exception as exc:
