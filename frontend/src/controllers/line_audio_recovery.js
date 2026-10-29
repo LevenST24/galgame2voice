@@ -1,6 +1,9 @@
 import { requestJson } from '../api.js';
 import { normalizeLines } from '../session_data.js';
 
+// Match the chat TTS job budget: model preparation, inference and queue/IO allowance.
+const REPAIR_TIMEOUT_MS = 600000;
+
 /** One explicit click sends one synthesis request; never replay a lost POST. */
 export function createLineAudioRecovery({ getSession, getVoiceProfiles, saveState, isSessionDeleting = () => false, request = requestJson }) {
   return async ({ messageId, lineIndex, signal }) => {
@@ -30,7 +33,7 @@ export function createLineAudioRecovery({ getSession, getVoiceProfiles, saveStat
     try {
       result = await request('/api/voice/regenerate-line', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal,
-      }, { timeoutMs: 60000 });
+      }, { timeoutMs: REPAIR_TIMEOUT_MS });
     } catch (error) {
       checkCurrent();
       if (error.code === 'REQUEST_TIMEOUT') throw new Error('语音生成结果尚未确认，原音频已保留。请先检查运行状态，再决定是否重试。');
