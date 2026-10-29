@@ -1219,8 +1219,10 @@ class StreamCoordinator:
             async for event in self._finalize_success(run):
                 yield event
 
-        except TurnUnavailableError:
+        except TurnUnavailableError as exc:
             logger.info("Discarded reply for deleted or cleared session %s", self.session_id)
+            if not run.error_seen and not (run.cancel_event and run.cancel_event.is_set()):
+                yield {"event": "error", "data": {"error": str(exc), "error_code": "turn_unavailable"}}
         except Exception as exc:
             logger.error("Error in stream_chat pipeline: %s", exc, exc_info=True)
             safe_err = sanitize_error_detail(exc)
