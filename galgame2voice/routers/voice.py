@@ -35,7 +35,7 @@ from galgame2voice.routers.common import (
     switch_voice_profile_or_raise,
     validate_positive_profile_id,
 )
-from galgame2voice.services.character_manager import get_character_work
+from galgame2voice.services.character_manager import get_character_manager, get_character_work
 from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.routers.line_audio import router as line_audio_router
 from galgame2voice.utils.logger import sanitize_error_detail
@@ -124,6 +124,7 @@ async def list_voice_profiles() -> dict[str, Any]:
                 for p in profiles
             ],
             "active_profile_id": active.id if active else (profiles[0].id if profiles else None),
+            "catalog_warning": get_character_manager().catalog_warning,
         }
 
 

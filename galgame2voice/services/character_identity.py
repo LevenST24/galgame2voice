@@ -28,6 +28,10 @@ class AmbiguousProfileName(ValueError):
     """Several stored profiles match equally well; none may be overwritten."""
 
 
+class DuplicateCharacterId(ValueError):
+    """A scan contains packages with the same normalized ID."""
+
+
 def _profile_name(row: Any) -> str:
     if isinstance(row, dict):
         return str(row.get("name", ""))
@@ -76,7 +80,7 @@ class CharacterIndex:
         for package in pkg_list:
             key = identity_key(package.id)
             if key in seen_ids:
-                raise ValueError(f"角色包 ID 重复：{package.id}；请修改 manifest.json 中的 id。")
+                raise DuplicateCharacterId(f"角色包 ID 重复：{package.id}；请修改 manifest.json 中的 id，然后重新扫描角色包。")
             seen_ids.add(key)
 
         self._valid_tables = self._build_tables(

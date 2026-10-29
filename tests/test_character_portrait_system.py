@@ -181,10 +181,11 @@ def _patch_manager(monkeypatch, packages):
     by_name = {pkg.manifest.name: pkg for pkg in packages}
 
     def fake_manager():
-        return SimpleNamespace(get_character=lambda name: by_name.get(name))
+        return SimpleNamespace(get_character=lambda name: by_name.get(name), catalog_warning=None)
 
     monkeypatch.setattr(characters_router, "get_character_manager", fake_manager)
     monkeypatch.setattr(character_manager_module, "get_character_manager", fake_manager)
+    monkeypatch.setattr("galgame2voice.routers.voice.get_character_manager", fake_manager)
 
 
 async def _make_profile(name, weights):

@@ -36,6 +36,7 @@ from galgame2voice.services.character_package import (
 from galgame2voice.services.character_identity import (
     AmbiguousProfileName,
     CharacterIndex,
+    DuplicateCharacterId,
     identity_key,
     select_profile,
 )
@@ -66,6 +67,7 @@ class CharacterManager:
         self._identity_index = CharacterIndex()
         self._default_id: str | None = None
         self._discovered = False
+        self._catalog_warning: str | None = None
         self._discovery_lock = threading.RLock()
         self._catalog_lock = threading.Lock()
 
@@ -89,7 +91,14 @@ class CharacterManager:
         # Serialize writers, but keep readers on the last complete catalog while
         # file and audio validation run. A failed scan leaves it intact.
         with self._discovery_lock:
-            return self._discover_characters(characters_dir)
+            try:
+                return self._discover_characters(characters_dir)
+            except DuplicateCharacterId as exc:
+                with self._catalog_lock:
+                    if not self._discovered:
+                        self._discovered = True
+                        self._catalog_warning = str(exc)
+                raise
 
     def _discover_characters(self, characters_dir: Path | None) -> list[CharacterPackage]:
         target_dir = Path(characters_dir).resolve() if characters_dir else self.characters_dir
@@ -112,7 +121,7 @@ class CharacterManager:
 
             pkg = self._load_and_validate_package(item, manifest_path)
             if pkg.id in packages:
-                raise ValueError(f"角色包 ID 重复：{pkg.id}；请修改 manifest.json 中的 id。")
+                raise DuplicateCharacterId(f"角色包 ID 重复：{pkg.id}；请修改 manifest.json 中的 id，然后重新扫描角色包。")
             packages[pkg.id] = pkg
             if pkg.is_valid:
                 discovered.append(pkg)
@@ -149,6 +158,7 @@ class CharacterManager:
             self._identity_index = identity_index
             self._default_id = default_id
             self._discovered = True
+            self._catalog_warning = None
 
     def _load_and_validate_package(self, folder: Path, manifest_path: Path) -> CharacterPackage:
         """Loads and thoroughly validates a single character package folder."""
@@ -289,7 +299,16 @@ class CharacterManager:
         if not self._discovered:
             with self._discovery_lock:
                 if not self._discovered:
-                    self.discover_characters()
+                    try:
+                        self.discover_characters()
+                    except DuplicateCharacterId:
+                        pass  # The cold-start empty catalog and warning are now published.
+
+    @property
+    def catalog_warning(self) -> str | None:
+        # Read-only: the voice list must not start a scan just to report one.
+        with self._catalog_lock:
+            return self._catalog_warning
 
     def get_character(self, id_or_name: str) -> CharacterPackage | None:
         """Looks up a character package by ID or name/alias."""
