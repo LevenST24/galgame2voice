@@ -97,6 +97,73 @@ async def test_connection_refused_then_healthy_fallback_still_requires_model_rel
         await old_pool.aclose()
 
 
+def _install_health_transport(client, handler):
+    """Point health probes at a one-off transport. Caller closes the previous pool."""
+    old_pool = client._client
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return old_pool
+
+
+@pytest.mark.asyncio
+async def test_one_control_protocol_error_keeps_loaded_weights(loaded_engine):
+    """A single stale connection is not an engine restart."""
+    client, engine, profile = loaded_engine
+    gpt, sovits = client.current_gpt_weights, client.current_sovits_weights
+    assert gpt and sovits and client.models_unchanged()
+    attempts = 0
+    original = engine.request
+
+    async def flaky_control(request):
+        nonlocal attempts
+        if request.method == "GET" and request.url.path == "/control":
+            attempts += 1
+            if attempts == 1:
+                raise httpx.RemoteProtocolError("Synthetic stale connection", request=request)
+            return httpx.Response(400, json={"status": "running"})
+        return await original(request)
+
+    old_pool = _install_health_transport(client, flaky_control)
+    try:
+        result = await client.check_health()
+        assert result["connected"] is True
+        assert client.models_unchanged()
+        assert client.current_gpt_weights == gpt
+        assert client.current_sovits_weights == sovits
+        assert client.active_profile is profile
+        assert result["http_status"] == 400
+        assert result["current_gpt_weights"] == gpt
+        assert result["current_sovits_weights"] == sovits
+        assert attempts == 2
+    finally:
+        await old_pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_two_consecutive_connection_errors_still_clear_loaded_weights(loaded_engine):
+    """Two connection failures in a row still mean the engine restarted."""
+    client, engine, profile = loaded_engine
+    assert client.active_profile is profile
+    assert client.current_gpt_weights and client.models_unchanged()
+    original = engine.request
+
+    async def engine_gone(request):
+        if request.method == "GET" and request.url.path in {"/control", "/"}:
+            raise httpx.RemoteProtocolError("Synthetic engine restart", request=request)
+        return await original(request)
+
+    old_pool = _install_health_transport(client, engine_gone)
+    try:
+        result = await client.check_health()
+        assert result["connected"] is False
+        assert result["status"] == "unreachable"
+        assert not client.models_unchanged()
+        assert client.current_gpt_weights is None
+        assert client.current_sovits_weights is None
+        assert client.active_profile is None
+    finally:
+        await old_pool.aclose()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error", [httpx.ReadTimeout, httpx.PoolTimeout, None])
 async def test_busy_or_slow_health_check_does_not_reload_large_models(loaded_engine, error):
