@@ -233,9 +233,6 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     gParamTemp: $('gParamTemp'),
     gParamTempVal: $('gParamTempVal'),
     gTgChatId: $('gTgChatId'),
-    gMemoryEnabled: $('gMemoryEnabled'),
-    gUserNickname: $('gUserNickname'),
-    gDefaultSystemPrompt: $('gDefaultSystemPrompt'),
     gResetBtn: $('gResetBtn'),
     // 系统版本与更新
     gDashVersionBadge: $('gDashVersionBadge'),

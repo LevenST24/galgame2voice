@@ -218,7 +218,7 @@ async function setupProviderFooter(t, { confirmActivation = true } = {}) {
   d.body.appendChild(toastRoot);
   const dom = Object.fromEntries(['gProvider', 'gProviderActivate', 'gTgSave', 'gApiKey',
     'gBaseUrl', 'gChatModel', 'gChatModelSelect', 'gReasoningEffort', 'gCustomName',
-    'gCustomNameField', 'gBtnResetBaseUrl', 'gUserNickname'].map(key => [key, d.createElement('input')]));
+    'gCustomNameField', 'gBtnResetBaseUrl', 'gTgChatId'].map(key => [key, d.createElement('input')]));
   const calls = [];
   let providers = [{ id: 'openai', name: 'OpenAI', api_key: '****',
     api_base_url: 'https://api.openai.com/v1', chat_model: 'gpt-test', is_active: true }];
@@ -551,17 +551,17 @@ test('model draft reports partial success when the global config fails', async t
 
 test('model draft global edits made during model saving wait for the next save', { timeout: 3000 }, async t => {
   const h = await setupProviderFooter(t);
-  h.edit('gChatModel', 'submitted-model'); h.edit('gUserNickname', 'submitted-name');
+  h.edit('gChatModel', 'submitted-model'); h.edit('gTgChatId', 'submitted-name');
   const gate = holdModelRequest(t, (url, options) => url === '/api/providers' && options.method === 'POST');
   const saving = h.settings.saveGlobalConfig(); await gate.started;
-  h.edit('gUserNickname', 'new-unsaved-name');
+  h.edit('gTgChatId', 'new-unsaved-name');
   gate.release(); await saving;
   const configs = () => h.calls.filter(call => call.method === 'POST' && call.url === '/api/config');
-  assert.equal(configs()[0].body.user_nickname, 'submitted-name');
-  assert.equal(h.dom.gUserNickname.value, 'new-unsaved-name');
+  assert.equal(configs()[0].body.telegram_chat_id, 'submitted-name');
+  assert.equal(h.dom.gTgChatId.value, 'new-unsaved-name');
   assert.ok(h.messages().some(message => /当前修改尚未保存/.test(message)));
   await h.settings.saveGlobalConfig();
-  assert.equal(configs().at(-1).body.user_nickname, 'new-unsaved-name');
+  assert.equal(configs().at(-1).body.telegram_chat_id, 'new-unsaved-name');
   assert.equal(h.writes().length, 1);
 });
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { fakeDocument } from './helpers/adv_dom.mjs';
 import { requestJson, getErrorMessage } from '../frontend/src/request.js';
 import { streamChat } from '../frontend/src/ai.js';
 import { waitForEngine } from '../frontend/src/controllers/engine_recovery.js';
@@ -480,5 +481,123 @@ for (const allowed of [true, false]) {
   renderSystemVersionUI({ current_branch: 'main', current_version: 'abc', has_update: true, behind_count: 2 });
   assert.equal(dom.gBtnApplyUpdate.disabled, false);
   assert.match(dom.gBtnApplyUpdateText.textContent, /2 个新提交/); passed++;
+}
+{
+  // Retired memory, nickname, and persona controls used to ride along on every global save.
+  // GET /api/config returns SettingsResponse and never contains those keys, so a lost POST
+  // could not confirm. saveGlobalConfig must ignore them, accept the readback, and clear the draft.
+  const previousDocument = globalThis.document;
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  const toastRoot = doc.createElement('div');
+  toastRoot.id = 'toastRoot';
+  doc.body.appendChild(toastRoot);
+  const control = (tag, value, checked = false) => {
+    const el = doc.createElement(tag);
+    el.value = value;
+    el.checked = checked;
+    return el;
+  };
+  const dom = {
+    gParamSovitsUrl: control('input', 'http://127.0.0.1:9880'),
+    gPrecision: control('select', 'auto'),
+    gParamSliceMethod: control('select', 'cut5'),
+    gParamSpeed: control('input', '1'),
+    gParamTopK: control('input', '15'),
+    gParamTopP: control('input', '1'),
+    gParamTemp: control('input', '1'),
+    gParamFragmentInterval: control('input', '0.3'),
+    gAudioRetention: control('input', '30'),
+    gTgEnabled: control('input', '', false),
+    gTgToken: control('input', ''),
+    gTgChatId: control('input', ''),
+    gTgProxyHost: control('input', '127.0.0.1'),
+    gTgProxyPort: control('input', '10809'),
+    gTgProxyEnabled: control('input', '', false),
+    gMemoryEnabled: control('input', '', true),
+    gUserNickname: control('input', ''),
+    gDefaultSystemPrompt: control('textarea', ''),
+    gTgSave: control('button', ''),
+  };
+  const persisted = (speed) => ({
+    active_provider_id: 'deepseek',
+    active_voice_profile_id: null,
+    gpt_sovits_url: 'http://127.0.0.1:9880',
+    audio_output_dir: 'audio',
+    audio_retention_minutes: 30,
+    audio_cleanup_interval_sec: 600,
+    speed_factor: speed,
+    temperature: 1,
+    top_k: 15,
+    top_p: 1,
+    seed: -1,
+    batch_size: 1,
+    text_split_method: 'cut5',
+    fragment_interval: 0.3,
+    telegram_bot_username: 'galgame2voice_bot',
+    telegram_proxy_host: '127.0.0.1',
+    telegram_proxy_port: 10809,
+    telegram_proxy_enabled: false,
+    telegram_enabled: false,
+    telegram_admin_ids: '',
+    allow_private_llm_endpoints: false,
+    console_url: '',
+    max_history_messages: 10,
+    inference_precision: 'auto',
+    stt_engine: 'browser',
+    telegram_chat_id: '',
+    telegram_bot_token: '',
+    console_token: '',
+    updated_at: null,
+  });
+  try {
+    for (const kind of ['disconnect', 'timeout']) {
+      initGlobalSettings(dom);
+      const posts = [];
+      let configGets = 0;
+      for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+      toastRoot.replaceChildren();
+      globalThis.fetch = async (url, options = {}) => {
+        const method = options.method || 'GET';
+        if (String(url).includes('/api/config')) {
+          if (method === 'POST') {
+            posts.push(JSON.parse(options.body));
+            if (kind === 'timeout') {
+              const error = new Error('等待服务响应超时。请打开「运行状态」检查；保存结果可能尚未确认，请刷新配置后再决定是否重试。');
+              error.code = 'REQUEST_TIMEOUT';
+              throw error;
+            }
+            throw new TypeError('Failed to fetch');
+          }
+          configGets += 1;
+          const speed = configGets === 1 ? 1 : configGets === 2 ? 1.8 : 1;
+          return response({ status: 'ok', settings: persisted(speed), active_provider: null });
+        }
+        return response({});
+      };
+      await loadGlobalConfig();
+      dom.gParamSpeed.value = '1.8';
+      dom.gParamSpeed.dispatchEvent({ type: 'input' });
+      await saveGlobalConfig();
+      await tick();
+      const messages = [...toastRoot.children].map(node => node.textContent);
+      const detail = `${kind}: toasts=[${messages.join(' | ')}] gets=${configGets} posted=${JSON.stringify(posts[0])}`;
+      assert.equal(posts.length, 1, detail);
+      assert.ok(configGets >= 2, detail);
+      assert.ok(messages.includes('全局配置已保存'), detail);
+      assert.equal(messages.some(message => message.includes('保存失败')), false, detail);
+      assert.equal(messages.some(message => message.includes('尚未保存')), false, detail);
+      assert.equal(Number(dom.gParamSpeed.value), 1, detail);
+      assert.equal(dom.gTgSave.disabled, false, detail);
+      assert.equal(Object.hasOwn(posts[0], 'memory_enabled'), false, detail);
+      assert.equal(Object.hasOwn(posts[0], 'user_nickname'), false, detail);
+      assert.equal(Object.hasOwn(posts[0], 'system_prompt'), false, detail);
+      assert.equal(posts[0].speed_factor, 1.8, detail);
+      passed++;
+    }
+  } finally {
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    globalThis.document = previousDocument;
+  }
 }
 console.log(`Runtime recovery: ${passed} scenarios passed`);
