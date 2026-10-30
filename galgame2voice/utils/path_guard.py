@@ -284,7 +284,8 @@ def _search_character_packages_for_audio(raw: str, filename: str) -> Path | None
         mgr = get_character_manager()
         raw_segments = [seg for seg in raw.replace("\\", "/").split("/") if seg]
         lower_segments = [seg.lower() for seg in raw_segments]
-        reserved_segments = {"audio", "references", "characters", "refs"}
+        # "default" is a common folder name (C:/Users/Default), not the default package.
+        reserved_segments = {"audio", "references", "characters", "refs", "default"}
 
         matched_packages: dict[str, object] = {}
         if hasattr(mgr, "get_character"):
