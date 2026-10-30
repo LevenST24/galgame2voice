@@ -7,8 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.services.chat_service import ChatService
+from galgame2voice.services.chat_pipelines.turn_persistence import TurnUnavailableError
 
 
 @pytest.fixture
@@ -59,6 +61,44 @@ async def concurrent_chat(tmp_path):
     )
     release_a.set()
     await service.aclose()
+
+
+@pytest.mark.parametrize("mode", ["sync", "stream"])
+async def test_first_turn_creates_session(concurrent_chat, mode):
+    stack = concurrent_chat
+    await asyncio.wait_for(stack.run(mode, "B", "new"), 10)
+    assert await stack.rows("new") == [("user", "B"), ("assistant", "answer to B")]
+
+
+@pytest.mark.parametrize("second_mode", ["sync", "stream"])
+async def test_queued_turn_does_not_recreate_deleted_session(concurrent_chat, second_mode):
+    stack = concurrent_chat
+    first = asyncio.create_task(stack.run("sync", "A", "shared"))
+    second = None
+    try:
+        await asyncio.wait_for(stack.entered["A"].wait(), 5)
+        second = asyncio.create_task(stack.run(second_mode, "B", "shared"))
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(stack.entered["B"].wait(), 0.3)
+        async with get_db(stack.service.db_path) as conn:
+            assert await crud.delete_session(conn, "shared")
+        stack.release_a.set()
+        _, result = await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), 10)
+        if second_mode == "sync":
+            assert isinstance(result, TurnUnavailableError)
+            assert "对话已被删除" in str(result)
+        else:
+            assert any(event["event"] == "error" and "对话已被删除" in event["data"]["error"] for event in result)
+        async with get_db(stack.service.db_path) as conn:
+            assert await crud.get_session(conn, "shared") is None
+        assert await stack.rows("shared") == []
+        assert not stack.entered["B"].is_set()
+    finally:
+        stack.release_a.set()
+        for task in (first, second):
+            if task and not task.done():
+                task.cancel()
+        await asyncio.gather(*(task for task in (first, second) if task), return_exceptions=True)
 
 
 @pytest.mark.parametrize("first_mode,second_mode", [

@@ -14,11 +14,18 @@ _locks: WeakValueDictionary = WeakValueDictionary()
 _KEEPALIVE_SECONDS = 5.0
 
 
+class _TurnLock(asyncio.Lock):
+    def __init__(self):
+        super().__init__()
+        # Count reservations before scheduling stream lock acquisition as a task.
+        self.requests = 0
+
+
 def _turn_lock(db_path, session_id):
     key = (asyncio.get_running_loop(), os.path.normcase(os.path.realpath(os.path.abspath(os.fspath(db_path)))), session_id)
     lock = _locks.get(key)
     if lock is None:
-        lock = asyncio.Lock()
+        lock = _TurnLock()
         _locks[key] = lock
     return lock
 
@@ -31,8 +38,14 @@ def session_turn(db_path, session_id):
 def serialize_sync_turn(func):
     @wraps(func)
     async def wrapped(self, prompt, session_id="default", *args, **kwargs):
-        async with session_turn(self.db_path, session_id):
-            return await func(self, prompt, session_id, *args, **kwargs)
+        lock = session_turn(self.db_path, session_id)
+        queued = lock.requests > 0
+        lock.requests += 1
+        try:
+            async with lock:
+                return await func(self, prompt, session_id, *args, _require_existing_session=queued, **kwargs)
+        finally:
+            lock.requests -= 1
     return wrapped
 
 
@@ -46,6 +59,8 @@ def serialize_stream_turn(func):
         if cancel_event is not None and cancel_event.is_set():
             return
         lock = _turn_lock(self.db_path, session_id)
+        queued = lock.requests > 0
+        lock.requests += 1
         acquire = asyncio.create_task(lock.acquire())
         cancelled = asyncio.create_task(cancel_event.wait()) if cancel_event is not None else None
         tasks = (acquire, cancelled) if cancelled is not None else (acquire,)
@@ -59,7 +74,7 @@ def serialize_stream_turn(func):
                     await acquire
                     break
                 yield SseKeepAlive()
-            inner = func(self, prompt, session_id, *args, **kwargs)
+            inner = func(self, prompt, session_id, *args, _require_existing_session=queued, **kwargs)
             async for event in inner:
                 yield event
         finally:
@@ -72,5 +87,6 @@ def serialize_stream_turn(func):
                 finally:
                     if acquire.done() and not acquire.cancelled() and acquire.exception() is None and acquire.result():
                         lock.release()
+                    lock.requests -= 1
 
     return wrapped
