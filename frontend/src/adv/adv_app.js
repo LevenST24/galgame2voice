@@ -413,6 +413,22 @@ export function mountAdv(dom, deps) {
     if (savedFocus?.isConnected) savedFocus.focus();
     syncControls();
   }
+  // A finished reply stores new line objects. Repair writes those, while this
+  // turn's stage line and the player's audio table still hold the earlier ones.
+  function adoptRepairedLineAudio(messageId, lineIndex, audio) {
+    const sameTurn = messageId === turnId || messageId === storedTurnId
+      || (liveMessage != null && messageId === liveMessage.id);
+    if (!sameTurn || !audio || !Number.isInteger(lineIndex) || turnId == null) return;
+    const stageLine = turnLines.find(line => line.index === lineIndex);
+    if (stageLine) stageLine.audio = audio;
+    if (currentLine?.index === lineIndex) currentLine.audio = audio;
+    player.setLineAudio(turnId, lineIndex, audio);
+  }
+  const regenerateLineAudio = deps.regenerateLineAudio && (async request => {
+    const result = await deps.regenerateLineAudio(request);
+    adoptRepairedLineAudio(request.messageId, request.lineIndex, result.audio);
+    return result;
+  });
   function openLog() {
     closeBgPanel();
     closeDrawer();
@@ -441,7 +457,7 @@ export function mountAdv(dom, deps) {
       playUserVoice: (msg, ctl) => (deps.playUserVoice || deps.playVoice)?.(msg, ctl),
       stopOtherVoice: () => deps.stopOtherVoice?.(),
       playLegacyVoice: (msg, ctl) => deps.playLegacyVoice?.(msg, ctl),
-      regenerateLineAudio: deps.regenerateLineAudio,
+      regenerateLineAudio,
       getRecoveryVoice: () => deps.getRecoveryVoice?.(),
       onChooseVoice: () => { closeLog(); deps.onSettings?.(); },
       wallNow: () => deps.wallNow?.() ?? Date.now(),
