@@ -540,3 +540,38 @@ async def test_voice_resolver_finds_profile_by_character_query(project, isolate_
         await resolver.resolve_context(
             db_path=isolate_test_database, profile_id=None, character_name="shared",
         )
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duplicate_id", ["ann", "ＡＮＮ"])
+async def test_duplicate_id_cold_start_keeps_profiles_and_reports_conflict(
+    project, isolate_test_database, monkeypatch, duplicate_id,
+):
+    from galgame2voice.routers import characters, voice
+    from galgame2voice.services import character_manager
+
+    install(project, "ann", "Ann", folder="first")
+    second = install(project, duplicate_id, "Ann Copy", folder="second")
+    manager = CharacterManager(project / "characters")
+    monkeypatch.setattr(character_manager, "get_character_manager", lambda: manager)
+    monkeypatch.setattr(characters, "get_character_manager", lambda: manager)
+    monkeypatch.setattr(voice, "get_character_manager", lambda: manager)
+    async with aiosqlite.connect(isolate_test_database) as conn:
+        conn.row_factory = aiosqlite.Row
+        await profile(conn, "Saved")
+        await conn.commit()
+
+    with pytest.raises(ValueError, match="角色包 ID 重复"):
+        manager.discover_characters()
+    result = await characters.list_characters(user_id="default_user")
+    voices = await voice.list_voice_profiles()
+    assert any(p["name"] == "Saved" for p in result["characters"])
+    assert any(p["name"] == "Saved" for p in voices["profiles"])
+    assert "角色包 ID 重复" in result["catalog_warning"]
+    assert voices["catalog_warning"] == result["catalog_warning"]
+    assert manager.get_character("ann") is None
+
+    (second / "manifest.json").unlink()
+    manager.discover_characters()
+    assert manager.get_character("ann").name == "Ann"
+    assert (await characters.list_characters(user_id="default_user"))["catalog_warning"] is None
+    assert (await voice.list_voice_profiles())["catalog_warning"] is None

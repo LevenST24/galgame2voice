@@ -180,6 +180,7 @@ export async function fetchVoiceProfiles() {
   const data = await requestJson('/api/voice/profiles');
   if (revision === profilesRevision) {
     voiceProfiles = data.profiles || [];
+    if (data.catalog_warning) showToast(data.catalog_warning, 'error');
     // A catalog response may predate a completed switch. Keep its catalog,
     // but never publish that earlier active ID over the switch acknowledgement.
     if (activeRevision === activeProfileRevision) activeProfileId = data.active_profile_id;

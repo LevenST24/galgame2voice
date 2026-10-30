@@ -191,6 +191,7 @@ async def list_characters(
                 "characters": results,
                 "active_character_id": active_id,
                 "total": len(results),
+                "catalog_warning": get_character_manager().catalog_warning,
             }
         except Exception as exc:
             safe_err = sanitize_error_detail(exc)
