@@ -147,3 +147,23 @@ async def test_parenthesized_variant_keeps_its_own_identity(project, isolate_tes
         assert "v2-ref.wav" in kept["ref_audio_path"].replace("\\", "/")
         assert recreated["id"] != variant_id
         assert "gentle.wav" in recreated["ref_audio_path"].replace("\\", "/")
+
+
+async def test_unreadable_character_catalog_keeps_the_voice_usable(project, isolate_test_database, monkeypatch):
+    """A failing package lookup leaves the voice on its own resources instead of blocking TTS."""
+    _install_anna(project)
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        scanned = await client.post("/api/characters/rescan")
+        assert scanned.status_code == 200, scanned.text
+        anna = _profile_by_name((await client.get("/api/voice/profiles")).json(), "安娜")
+
+    def unreadable(self, *args, **kwargs):
+        raise OSError("characters/ cannot be read")
+
+    monkeypatch.setattr(CharacterManager, "resolve_identity", unreadable)
+    monkeypatch.setattr(CharacterManager, "get_character", unreadable)
+    context = await VoiceProfileResolver().resolve_context(db_path=isolate_test_database, profile_id=anna["id"])
+    assert context is not None
+    assert context.profile_id == anna["id"]
+    assert context.name == "安娜"

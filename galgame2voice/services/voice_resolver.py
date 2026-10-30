@@ -215,8 +215,14 @@ class VoiceProfileResolver:
         from galgame2voice.services.character_manager import get_character_manager
 
         manager = get_character_manager()
-        if manager.resolve_identity(_extract_field(raw, "name", "") or "") is None:
-            return None  # No package claims this name, so no profile list is needed.
+        name = _extract_field(raw, "name", "") or ""
+        try:
+            if manager.resolve_identity(name) is None:
+                return None  # No package claims this name, so no profile list is needed.
+        except Exception as exc:
+            # Same as _build_context: an unreadable catalog leaves the voice without package resources.
+            logger.debug("Failed looking up character package for '%s': %s", name, exc)
+            return None
         async with get_db(db_path) as conn:
             profiles = await crud.list_voice_profiles(conn)
         return owned_package_for_profile(raw, profiles, manager)
