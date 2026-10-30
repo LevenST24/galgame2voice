@@ -132,8 +132,12 @@ export function mountAdv(dom, deps) {
     enterInput(options) { textbox.enterInput(options); sprite.suspend(); },
     showError(error) {
       sprite.suspend();
+      // Saved partial lines are not resent from here. 继续 only leaves the error.
+      const retry = controller.canRetry(failedUser)
+        ? [{ label: '重新发送', run: () => controller.retry(failedUser) }]
+        : [{ label: '继续', run: () => player.dismissError() }];
       textbox.showError({ message: String(error?.message || error || '回复失败'), actions: [
-        ...(controller.canRetry(failedUser) ? [{ label: '重新发送', run: () => controller.retry(failedUser) }] : []),
+        ...retry,
         { label: '去设置', run: () => openErrorSettings(error) },
       ] });
     },
