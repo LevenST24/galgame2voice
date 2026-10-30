@@ -192,14 +192,14 @@ async def test_update_during_reference_preparation_reloads_profile(tmp_path, mon
     started, release = threading.Event(), threading.Event()
     calls = 0
 
-    def slow_build(raw):
+    def slow_build(raw, *args):
         nonlocal calls
         calls += 1
         if calls == 1:
             started.set()
             if not release.wait(5):
                 raise TimeoutError("test did not release reference preparation")
-        return build(raw)
+        return build(raw, *args)
 
     monkeypatch.setattr(resolver, "_build_context", slow_build)
     task = asyncio.create_task(resolver.resolve_context(str(path), profile_id=row.id))
@@ -299,9 +299,9 @@ async def test_context_filesystem_work_runs_off_the_event_loop(tmp_path, monkeyp
     build = resolver._build_context
     threads = []
 
-    def capture(raw):
+    def capture(raw, *args):
         threads.append(threading.get_ident())
-        return build(raw)
+        return build(raw, *args)
 
     monkeypatch.setattr(resolver, "_build_context", capture)
     loop_thread = threading.get_ident()

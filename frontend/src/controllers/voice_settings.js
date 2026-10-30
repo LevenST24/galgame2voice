@@ -651,7 +651,7 @@ async function handleSaveSessionSettings() {
   }
 }
 
-/** 写回角色包；失败时保留面板中的编辑内容，供用户检查和重试。 */
+/** 保存当前音色的人设；属于角色包时由接口写回 manifest。失败时保留面板中的编辑内容。 */
 async function saveCharacterPrompt(profileId, editor) {
   const result = (note = '', confirmed = true) => ({ note, confirmed });
   if (!_dom.sSystem) return result();
@@ -667,7 +667,7 @@ async function saveCharacterPrompt(profileId, editor) {
   if (text === (prof.system_prompt || '').trim()) return result();
   if (!text) return result('；人设提示词不能为空，未改动角色包', false);
   try {
-    await requestJson(`/api/characters/${profileId}/system-prompt`, {
+    const saved = await requestJson(`/api/characters/${profileId}/system-prompt`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ system_prompt: text }),
@@ -680,7 +680,9 @@ async function saveCharacterPrompt(profileId, editor) {
     if (editor === editorRevision && _promptOwnerId === profileId) {
       _promptBaseline = text;
     }
-    return result(`；已写回角色包「${prof.name}」`);
+    return result(saved?.manifest_path
+      ? `；已写回角色包「${prof.name}」`
+      : `；已保存音色「${prof.name}」的人设`);
   } catch (e) {
     return result(`；人设写入角色包失败：${e.message || e}`, false);
   }

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from weakref import WeakValueDictionary
 
-from galgame2voice.services.character_identity import AmbiguousProfileName
+from galgame2voice.services.character_identity import AmbiguousProfileName, owned_package_for_profile
 
 from galgame2voice.utils.path_guard import resolve_weight_file_path, resolve_existing_audio_path
 from galgame2voice.utils.audio_spec import (
@@ -26,6 +26,8 @@ from galgame2voice.services.gpt_sovits_client import probe_audio_duration_second
 from galgame2voice.services.emotion_references import resolve_emotion_reference
 
 logger = logging.getLogger("galgame2voice.services.voice_resolver")
+
+_PACKAGE_UNSET = object()
 
 class VoiceContextChangedError(RuntimeError):
     """A stable committed voice snapshot could not be obtained in time."""
@@ -171,7 +173,10 @@ class VoiceProfileResolver:
                 generation = (self._generation, scope_generation.value)
                 try:
                     raw_profile = await self._fetch_raw_profile(db_path, profile_id, character_name)
-                    context = await asyncio.to_thread(self._build_context, raw_profile) if raw_profile is not None else None
+                    context = None
+                    if raw_profile is not None:
+                        package = await self._package_for_profile(db_path, raw_profile)
+                        context = await asyncio.to_thread(self._build_context, raw_profile, package)
                 except AmbiguousProfileName:
                     if generation != (self._generation, scope_generation.value):
                         continue
@@ -203,11 +208,26 @@ class VoiceProfileResolver:
         async with get_db(db_path) as conn:
             return await select_voice_profile(conn, profile_id, character_name)
 
-    def _build_context(self, raw: Any) -> ResolvedVoiceContext:
-        """Constructs a validated ResolvedVoiceContext from a raw DB model or dict."""
+    async def _package_for_profile(self, db_path: str | None, raw: Any) -> Any | None:
+        """Package resources belong to the profile the package owns, not a lookalike name."""
+        from galgame2voice.database import crud
+        from galgame2voice.database.session import get_db
+        from galgame2voice.services.character_manager import get_character_manager
+
+        manager = get_character_manager()
+        if manager.resolve_identity(_extract_field(raw, "name", "") or "") is None:
+            return None  # No package claims this name, so no profile list is needed.
+        async with get_db(db_path) as conn:
+            profiles = await crud.list_voice_profiles(conn)
+        return owned_package_for_profile(raw, profiles, manager)
+
+    def _build_context(self, raw: Any, package: Any = _PACKAGE_UNSET) -> ResolvedVoiceContext:
+        """Constructs a validated ResolvedVoiceContext from a raw DB model or dict.
+
+        ``package`` is the package that owns this profile (None for a separate voice).
+        """
         pid = _extract_field(raw, "id", None)
         name = (_extract_field(raw, "name", "Default") or "Default").strip()
-        clean_name = name.split("(")[0].strip() or name
 
         gpt_path = _extract_field(raw, "gpt_weights_path", "") or ""
         sovits_path = _extract_field(raw, "sovits_weights_path", "") or ""
@@ -225,7 +245,7 @@ class VoiceProfileResolver:
         try:
             from galgame2voice.services.character_manager import CharacterManager, get_character_manager
             mgr = get_character_manager()
-            pkg = mgr.get_character(name)
+            pkg = mgr.get_character(name) if package is _PACKAGE_UNSET else package
             is_conflicting = bool(
                 pkg is None
                 and getattr(mgr, "_identity_index", None)
@@ -262,8 +282,8 @@ class VoiceProfileResolver:
             if resolved_ref is not None:
                 ref_audio = str(resolved_ref.resolve())
 
-        display_name = pkg.name if (pkg and pkg.is_valid) else (name if is_conflicting else clean_name)
-        emotion_target = pkg.id if (pkg and pkg.is_valid) else ("" if is_conflicting else clean_name)
+        display_name = pkg.name if (pkg and pkg.is_valid) else name
+        emotion_target = pkg.id if (pkg and pkg.is_valid) else ""
 
         # Pre-resolve known emotion references for this character
         emotions_map: dict[str, dict[str, str]] = {}

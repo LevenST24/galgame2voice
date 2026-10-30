@@ -24,6 +24,12 @@ def _bilingual_parts(value: str) -> tuple[str, ...]:
     return match.groups() if match else ()
 
 
+def _is_bilingual_label(value: str, known_keys: set[str]) -> bool:
+    """Both parenthetical parts are identities of one package."""
+    parts = _bilingual_parts(value)
+    return len(parts) == 2 and all(part in known_keys for part in parts)
+
+
 class AmbiguousProfileName(ValueError):
     """Several stored profiles match equally well; none may be overwritten."""
 
@@ -53,14 +59,11 @@ def select_profile(rows: Iterable[Any], name: str, aliases: Iterable[str]) -> An
             rank = 0
         elif key in secondary:
             rank = 1
+        elif _is_bilingual_label(row_name, {primary, *secondary}):
+            # An unknown suffix is a different voice, not a partial label.
+            rank = 2
         else:
-            parts = _bilingual_parts(row_name)
-            if primary in parts:
-                rank = 2
-            elif secondary.intersection(parts):
-                rank = 3
-            else:
-                continue
+            continue
         matches.append((rank, row))
     if not matches:
         return None
@@ -132,20 +135,27 @@ class CharacterIndex:
                 found = table[key]
                 return found, found is None
         parts = _bilingual_parts(query)
-        if not parts:
+        if len(parts) != 2:
             return None, False
-        candidates: set[CharacterPackage] = set()
+        # Both sides must name one package. An unknown suffix is not a label,
+        # even when the other side matches a package on its own.
+        located: list[CharacterPackage | None] = []
         for part in parts:
+            found_part: CharacterPackage | None = None
+            present = False
             for table in tables:
                 if part in table:
-                    found = table[part]
-                    if found is None:
-                        return None, True
-                    candidates.add(found)
+                    present = True
+                    found_part = table[part]
                     break
-        if len(candidates) == 1:
-            return candidates.pop(), False
-        return None, len(candidates) > 1
+            if not present:
+                return None, False
+            located.append(found_part)
+        if any(item is None for item in located):
+            return None, True
+        if located[0] is located[1]:
+            return located[0], False
+        return None, True
 
     def _lookup(self, query: str) -> tuple[CharacterPackage | None, bool]:
         pkg, conflicting = self._lookup_tables(self._valid_tables, query)
@@ -162,6 +172,58 @@ class CharacterIndex:
         return pkg
 
 
+def _profile_id(row: Any) -> int | None:
+    if isinstance(row, dict):
+        value = row.get("id")
+    else:
+        try:
+            value = row["id"]
+        except (KeyError, TypeError, IndexError):
+            value = getattr(row, "id", None)
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _same_profile(left: Any, right: Any) -> bool:
+    left_id = _profile_id(left)
+    right_id = _profile_id(right)
+    if left_id is not None and right_id is not None:
+        return left_id == right_id
+    return identity_key(_profile_name(left)) == identity_key(_profile_name(right))
+
+
+def _manager_resolve(manager: Any, name: str) -> Any | None:
+    if hasattr(manager, "resolve_identity"):
+        return manager.resolve_identity(name)
+    if hasattr(manager, "get_character"):
+        return manager.get_character(name)
+    return None
+
+
+def owned_package_for_profile(profile: Any, profiles: Iterable[Any], manager: Any) -> Any | None:
+    """Return the package whose profile this row is, or None for a separate voice."""
+    name = _profile_name(profile)
+    if not name.strip() or manager is None:
+        return None
+    package = _manager_resolve(manager, name)
+    if package is None:
+        return None
+    aliases = [package.id, *getattr(package.manifest, "aliases", ())]
+    candidates = [
+        row for row in profiles
+        if _manager_resolve(manager, _profile_name(row)) is package
+    ]
+    try:
+        owned = select_profile(candidates, package.name, aliases)
+    except AmbiguousProfileName:
+        return None
+    if owned is None or not _same_profile(owned, profile):
+        return None
+    return package
+
+
 def resolve_profile_for_query(
     profiles: Iterable[Any],
     query: str,
@@ -176,27 +238,29 @@ def resolve_profile_for_query(
         from galgame2voice.services.character_manager import get_character_manager
         manager = get_character_manager()
 
-    def _resolve_pkg(name: str) -> CharacterPackage | None:
-        if hasattr(manager, "resolve_identity"):
-            return manager.resolve_identity(name)
-        if hasattr(manager, "get_character"):
-            return manager.get_character(name)
-        return None
-
     def _is_conflicting(name: str) -> bool:
         if hasattr(manager, "is_conflicting_identity"):
             return manager.is_conflicting_identity(name)
         idx = getattr(manager, "_identity_index", None)
         return bool(idx and idx.is_conflicting(name))
 
-    pkg = _resolve_pkg(clean_query)
+    rows = list(profiles)
+    query_key = identity_key(clean_query)
+    exact = [row for row in rows if identity_key(_profile_name(row)) == query_key]
+    if len(exact) > 1:
+        raise AmbiguousProfileName(f"角色“{clean_query}”匹配到多个音色配置；请为它们设置不同名称。")
+    if len(exact) == 1:
+        # A stored profile with this exact name is not replaced by the package.
+        return exact[0], owned_package_for_profile(exact[0], rows, manager), False
+
+    pkg = _manager_resolve(manager, clean_query)
     if pkg is None and _is_conflicting(clean_query):
         return None, None, True
 
     candidates = [
-        p for p in profiles
-        if _resolve_pkg(_profile_name(p)) is pkg
-        and (pkg is not None or not _is_conflicting(_profile_name(p)))
+        row for row in rows
+        if _manager_resolve(manager, _profile_name(row)) is pkg
+        and (pkg is not None or not _is_conflicting(_profile_name(row)))
     ]
     matched = select_profile(
         candidates,
