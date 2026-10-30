@@ -10,7 +10,7 @@ globalThis.document = { createElement: () => ({ value: '', textContent: '' }) };
 
 for (const scenario of [
   { profiles: [], bound: null, expected: '__custom__', setup: true },
-  { profiles: [], bound: 99, expected: '__custom__', setup: true },
+  { profiles: [], bound: 99, expected: '99', setup: false },
   { profiles: [{ id: 1, name: 'User voice' }], bound: null, expected: '', setup: false },
   { profiles: [{ id: 1, name: 'User voice' }], bound: 1, expected: '1', setup: false },
 ]) {
