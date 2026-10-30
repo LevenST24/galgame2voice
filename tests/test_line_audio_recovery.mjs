@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createLineAudioRecovery } from '../frontend/src/controllers/line_audio_recovery.js';
+import { requestJson } from '../frontend/src/request.js';
 import { createBacklog } from '../frontend/src/adv/backlog.js';
 import { canReplayLine } from '../frontend/src/adv/replay.js';
 import { normalizeLines } from '../frontend/src/session_data.js';
@@ -69,6 +70,31 @@ test('an uncertain POST is never automatically repeated', async () => {
   const f = fixture(() => { const error = new Error('timeout'); error.code = 'REQUEST_TIMEOUT'; throw error; });
   await assert.rejects(f.recover({ messageId: f.message.id, lineIndex: 1 }), /结果尚未确认.*原音频/);
   assert.equal(f.calls.length, 1); assert.equal(f.saves, 0);
+});
+
+test('a slow repair can finish beyond the old 60 second deadline', async () => {
+  const realTimer = globalThis.setTimeout, realFetch = globalThis.fetch;
+  const f = fixture(); let deadline, aborted = false, posts = 0;
+  globalThis.setTimeout = (fn, ms, ...args) => {
+    deadline = ms;
+    return realTimer(fn, ms === 60000 ? 10 : ms, ...args);
+  };
+  globalThis.fetch = (_url, options) => new Promise((resolve, reject) => {
+    posts++;
+    options.signal.addEventListener('abort', () => { aborted = true; reject(new DOMException('aborted', 'AbortError')); });
+    realTimer(() => resolve(new Response(JSON.stringify(f.reply), { headers: { 'Content-Type': 'application/json' } })), 40);
+  });
+  const recover = createLineAudioRecovery({ getSession: () => f.session, getVoiceProfiles: () => [{ id: 7 }],
+    saveState: () => true, request: requestJson });
+  try {
+    await recover({ messageId: f.message.id, lineIndex: 1 });
+    assert.equal(deadline, 600000);
+    assert.equal(aborted, false);
+    assert.equal(posts, 1);
+    assert.equal(f.message.lines[1].audio.status, 'ready');
+  } finally {
+    globalThis.setTimeout = realTimer; globalThis.fetch = realFetch;
+  }
 });
 
 test('a mismatched repair response preserves the old reference', async () => {
