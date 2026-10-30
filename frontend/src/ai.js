@@ -15,6 +15,7 @@ const streamClosedMessage = receivedReply => (receivedReply
 function isReplyProgress(event, data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
   const text = value => typeof value === 'string' && value.trim().length > 0;
+  if (event === 'progress') return text(data.stage);
   if (event === 'text' || event === 'message') return text(data.delta_chinese);
   if (event === 'line') return Number.isInteger(data.index) && data.index >= 0 && (text(data.zh) || text(data.ja));
   if (event === 'audio_chunk') return text(data.audio_url);
