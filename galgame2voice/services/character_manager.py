@@ -587,6 +587,11 @@ class CharacterManager:
         if char_desc and not current_desc.strip():
             updates["description"] = char_desc
 
+        # A row found through an alias or the package id belongs to a renamed
+        # package: keep its id (sessions, affection) and take the current name.
+        # select_profile prefers an exact-name row, so no other row holds this name.
+        updates["name"] = manifest.name
+
         # A rescan with identical values must not rewrite the row/timestamp.
         return {column: value for column, value in updates.items() if existing_row[column] != value}
 
