@@ -6,6 +6,7 @@ import { createBacklog } from '../frontend/src/adv/backlog.js';
 import { canReplayLine } from '../frontend/src/adv/replay.js';
 import { normalizeLines } from '../frontend/src/session_data.js';
 import { createConversation } from '../frontend/src/conversation.js';
+import { state, loadState, saveState } from '../frontend/src/store.js';
 import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
 import { fakeDocument, microtasks } from './helpers/adv_dom.mjs';
 
@@ -153,6 +154,133 @@ test('a browser-only imported ID is not mistaken for a server message number', a
   const f = fixture(); delete f.message.serverMessageId; f.message.id = 'm_42';
   await f.recover({ messageId: f.message.id, lineIndex: 1 });
   assert.equal(JSON.parse(f.calls[0][1].body).message_id, null);
+});
+
+test('a server-persisted LOG repair does not suggest exporting a chat backup when local save fails', async (t) => {
+  const storage = new Map();
+  const previousStorage = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem: key => (storage.has(key) ? storage.get(key) : null),
+    setItem: (key, value) => { storage.set(key, String(value)); },
+    removeItem: key => { storage.delete(key); },
+  };
+  const doc = fakeDocument();
+  const root = doc.createElement('div');
+  doc.body.appendChild(root);
+  const logs = [];
+  t.after(() => {
+    for (const log of logs) log.destroy();
+    globalThis.localStorage = previousStorage;
+  });
+
+  const session = {
+    id: 's_sync',
+    title: '持久会话',
+    createdAt: 1000,
+    updatedAt: 1000,
+    settings: { voiceProfileId: 1 },
+    messages: [{
+      id: 'm_1',
+      serverMessageId: 42,
+      role: 'assistant',
+      content: '你好',
+      japanese: 'こんにちは',
+      ts: Date.now(),
+      lines: [{ index: 0, zh: '你好', ja: 'こんにちは', emotion: 'gentle', act: {}, audio: { status: 'failed', chunks: [] } }],
+    }],
+  };
+  storage.set('gal2voice.chat.v1', JSON.stringify({
+    sessions: [session], activeId: session.id, global: { voiceMode: true },
+  }));
+  loadState();
+  const loaded = state.sessions.find(item => item.id === session.id);
+  const diverged = JSON.parse(storage.get('gal2voice.chat.v1'));
+  diverged.global.voiceMode = false;
+  storage.set('gal2voice.chat.v1', JSON.stringify(diverged));
+  assert.equal(saveState(), false);
+
+  const calls = [];
+  const repairReply = body => ({
+    session_id: body.session_id,
+    message_id: body.message_id,
+    line_index: body.line_index,
+    voice_profile_id: body.voice_profile_id,
+    persisted: body.message_id !== null,
+    audio: {
+      status: 'ready',
+      generated_at: Date.now(),
+      voice_profile_id: body.voice_profile_id,
+      voice_name: '角色A',
+      chunks: [{ index: 0, line: body.line_index, audio_url: '/audio/repair_persisted01.wav', sentence: body.text }],
+    },
+  });
+  const recover = createLineAudioRecovery({
+    getSession: () => loaded,
+    getVoiceProfiles: () => [{ id: 1, name: '角色A' }],
+    saveState,
+    request: async (url, options) => {
+      calls.push({ url, body: JSON.parse(options.body) });
+      return repairReply(calls.at(-1).body);
+    },
+  });
+  const openLog = current => {
+    const log = createBacklog(root, {
+      getSession: () => current,
+      getSettings: () => current.settings,
+      getCharacter: () => ({ id: 1, name: '角色A' }),
+      getRecoveryVoice: () => ({ id: 1, name: '角色A' }),
+      regenerateLineAudio: recover,
+      voiceEnabled: () => true,
+      audio: { stopLine() {}, async playLine() { return 'ended'; } },
+    });
+    logs.push(log);
+    return log;
+  };
+
+  const persistedLog = openLog(loaded);
+  await persistedLog.element.querySelector('.adv-log-regenerate-btn').onclick({ stopPropagation() {} });
+  const persistedStatus = persistedLog.element.querySelector('.adv-log-audio-status').textContent;
+  assert.equal(calls[0].url, '/api/voice/regenerate-line');
+  assert.equal(calls[0].body.message_id, 42);
+  assert.equal(loaded.messages[0].lines[0].audio.chunks[0].audio_url, '/audio/repair_persisted01.wav');
+  assert.equal(storage.get('gal2voice.chat.v1').includes('/audio/repair_persisted01.wav'), false);
+  assert.equal(persistedStatus, '语音已生成并保存到服务端；本地缓存未更新');
+  assert.doesNotMatch(persistedStatus, /备份|导出/);
+
+  const browserOnly = {
+    id: 's_browser',
+    settings: { voiceProfileId: 1 },
+    messages: [{
+      id: 'm_local',
+      role: 'assistant',
+      content: '仅浏览器',
+      ts: Date.now(),
+      lines: [{ index: 0, zh: '仅浏览器', ja: 'ブラウザだけ', emotion: 'gentle', act: {}, audio: { status: 'failed', chunks: [] } }],
+    }],
+  };
+  const browserRecover = createLineAudioRecovery({
+    getSession: () => browserOnly,
+    getVoiceProfiles: () => [{ id: 1, name: '角色A' }],
+    saveState: () => false,
+    request: async (url, options) => {
+      calls.push({ url, body: JSON.parse(options.body) });
+      return repairReply(calls.at(-1).body);
+    },
+  });
+  const browserLogLive = createBacklog(root, {
+    getSession: () => browserOnly,
+    getSettings: () => browserOnly.settings,
+    getCharacter: () => ({ id: 1, name: '角色A' }),
+    getRecoveryVoice: () => ({ id: 1, name: '角色A' }),
+    regenerateLineAudio: browserRecover,
+    voiceEnabled: () => true,
+    audio: { stopLine() {}, async playLine() { return 'ended'; } },
+  });
+  logs.push(browserLogLive);
+  await browserLogLive.element.querySelector('.adv-log-regenerate-btn').onclick({ stopPropagation() {} });
+  const browserStatus = browserLogLive.element.querySelector('.adv-log-audio-status').textContent;
+  assert.equal(calls.at(-1).body.message_id, null);
+  assert.equal(browserStatus, '语音已生成，但本地保存失败，请先备份聊天。');
 });
 
 test('a completed SSE reply carries its real database ID into a subsequent repair', async () => {
