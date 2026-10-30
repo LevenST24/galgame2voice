@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mountAdv } from '../frontend/src/adv/adv_app.js';
+import { createConversation } from '../frontend/src/conversation.js';
 import { DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
 import { fakeDocument, fakeClock, Element, microtasks } from './helpers/adv_dom.mjs';
 
@@ -454,9 +455,13 @@ test('stale replay cannot resume a different turn behind a dialog', async t => {
 
 test('partial failure exposes its reason and settings without an unsupported retry', t => {
   const h = setup(t); h.start(); h.line(); h.done('error');
-  const actions = h.app.stage.stage.querySelector('.adv-error-actions').children;
-  assert.deepEqual(actions.map(node => node.textContent), ['去设置']);
+  const actions = [...h.app.stage.stage.querySelector('.adv-error-actions').children];
+  assert.deepEqual(actions.map(node => node.textContent), ['继续', '去设置']);
   assert.equal(h.app.stage.stage.querySelector('.adv-error-message').textContent, '测试故障');
+  actions[0].click();
+  assert.equal(h.app.player.state, 'input');
+  assert.equal(h.controller.retried.length, 0);
+  assert.equal(h.app.stage.stage.querySelector('.adv-player-input-wrap').classList.contains('is-hidden'), false);
 });
 
 for (const [code, opened] of [['PROVIDER_ERROR', 'models'], ['OPENAI_RATE_LIMIT', 'settings']]) {
@@ -778,3 +783,147 @@ test('temporary hold-skip is cleared when playback stops skip or player toggles 
   h.app.stage.stage.dispatchEvent({ type: 'blur' });
   assert.equal(h.app.player.skip, true);
 });
+
+// One delivered line, then the real chat stream stalls or closes. The stage
+// must not offer an in-place resend, and it must not stay locked on the error.
+for (const failure of ['idle_timeout', 'dropped_stream']) {
+  test(`partial reply after ${failure} returns to input from the error, including after settings`, async (t) => {
+    const doc = fakeDocument();
+    globalThis.document = doc;
+    const realSetTimeout = globalThis.setTimeout;
+    if (failure === 'idle_timeout') {
+      globalThis.setTimeout = (fn, ms, ...args) => realSetTimeout(fn, ms >= 100000 ? 20 : ms, ...args);
+    }
+    const clock = fakeClock();
+    let seq = 0;
+    let setOverlay = () => {};
+    const requests = [];
+    const session = {
+      id: 's_partial',
+      title: '对话',
+      settings: { ...DEFAULT_SESSION_SETTINGS, advEnabled: true, advTextIntervalMs: 0 },
+      messages: [],
+    };
+    const linePayload = `event: line\ndata: ${JSON.stringify({
+      index: 0, zh: '先收到的半截回复。', ja: '最初の文。', emotion: 'gentle', act: {},
+    })}\n\n`;
+    const lineBytes = new TextEncoder().encode(linePayload);
+    const controller = createConversation({
+      state: { global: { voiceOut: false } },
+      getActive: () => session,
+      getSession: id => (id === session.id ? session : null),
+      addMessage: (role, content) => {
+        const msg = { id: `m_${++seq}`, role, content, ts: Date.now() };
+        session.messages.push(msg);
+        return msg;
+      },
+      uid: prefix => `${prefix}_${++seq}`,
+      saveState: () => true,
+      persistSession: async () => {},
+      isSessionDeleting: () => false,
+      audioStore: new Map(),
+      putCachedAudioBlob: () => {},
+      fetchAndCacheAudio: async () => {},
+      audioPlayer: { isPlaying: false },
+      getCurrentVoice: () => null,
+      stopCurrentVoice: () => {},
+      fetch: async (url, opts) => {
+        requests.push({ url, body: opts?.body });
+        const first = requests.length === 1;
+        return new Response(new ReadableStream({
+          start(ctrl) {
+            if (first) ctrl.enqueue(lineBytes);
+            if (!first || failure === 'dropped_stream') ctrl.close();
+            else opts?.signal?.addEventListener('abort', () => {
+              try { ctrl.close(); } catch { /* The timeout already won the race. */ }
+            }, { once: true });
+          },
+        }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      },
+    });
+    const dom = Object.fromEntries(['root', 'sidebar', 'messages', 'input', 'micBtn']
+      .map(key => [key, doc.createElement(key === 'input' ? 'textarea' : 'div')]));
+    for (const el of Object.values(dom)) doc.body.appendChild(el);
+    class Image extends Element { constructor() { super('img', doc); } decode() { return Promise.resolve(); } }
+    const openSettings = () => setOverlay(true);
+    const app = mountAdv(dom, {
+      controller,
+      audio: { playLine: async () => 'ended', stopLine() {} },
+      clock,
+      getSession: () => session,
+      voiceEnabled: () => false,
+      getCharacter: () => ({ id: 1, name: '角色A' }),
+      ImageClass: Image,
+      loadPortrait: async () => null,
+      fetchBackgrounds: async () => ({ backgrounds: [] }),
+      raf: () => 1,
+      cancelRaf: () => {},
+      matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+      viewport: doc.createElement('div'),
+      onSettings: openSettings,
+      onModelSettings: openSettings,
+      subscribeOverlay: fn => { setOverlay = fn; return () => {}; },
+    });
+    t.after(() => {
+      globalThis.setTimeout = realSetTimeout;
+      controller.stop();
+      app.unmount();
+      delete globalThis.document;
+    });
+
+    assert.equal(controller.send('你好'), true);
+    await new Promise(resolve => realSetTimeout(resolve, failure === 'idle_timeout' ? 80 : 30));
+    await microtasks();
+
+    const stage = app.stage.stage;
+    const message = stage.querySelector('.adv-error-message')?.textContent || '';
+    const labels = [...stage.querySelectorAll('.adv-error-btn')].map(button => button.textContent);
+    assert.deepEqual({
+      labels,
+      promisesResend: /重新发送/.test(message),
+      keepsLog: /已收到的台词保留在 LOG/.test(message),
+    }, {
+      labels: ['继续', '去设置'],
+      promisesResend: false,
+      keepsLog: true,
+    });
+    assert.match(message, failure === 'idle_timeout' ? /回复等待超时/ : /回复连接提前结束/);
+    assert.equal(controller.canRetry(session.messages.find(item => item.role === 'user')), false);
+    assert.equal(session.messages.find(item => item.role === 'assistant')?.lines?.[0]?.zh, '先收到的半截回复。');
+
+    stage.querySelectorAll('.adv-error-btn').find(button => button.textContent === '去设置').click();
+    assert.equal(app.player.state, 'suspended');
+    setOverlay(false);
+    assert.equal(app.player.state, 'error');
+    const returned = [...stage.querySelectorAll('.adv-error-btn')].map(button => button.textContent);
+    assert.deepEqual(returned, ['继续', '去设置']);
+    stage.querySelectorAll('.adv-error-btn').find(button => button.textContent === '继续').click();
+
+    assert.equal(app.player.state, 'input');
+    assert.equal(stage.querySelector('.adv-error-wrap').classList.contains('is-hidden'), true);
+    const inputWrap = stage.querySelector('.adv-player-input-wrap');
+    const input = app.textbox.inputElement;
+    const send = stage.querySelector('.adv-player-send-btn');
+    assert.equal(inputWrap.classList.contains('is-hidden'), false);
+    assert.equal(input.disabled, false);
+    assert.equal(send.disabled, false);
+    app.action('log');
+    const logged = [...app.backlog.element.querySelectorAll('.adv-log-primary')].map(el => el.textContent);
+    assert.ok(logged.includes('先收到的半截回复。'));
+    app.action('close_overlay');
+    assert.equal(inputWrap.classList.contains('is-hidden'), false);
+    globalThis.setTimeout = realSetTimeout;
+    input.value = '接着说';
+    input.dispatchEvent({ type: 'input' });
+    assert.equal(app.textbox.draft, '接着说');
+    input.dispatchEvent({ type: 'keydown', key: 'Enter' });
+    assert.deepEqual(session.messages.filter(item => item.role === 'user').map(item => item.content), ['你好', '接着说']);
+    await microtasks();
+    assert.equal(requests.at(-1).url, '/api/chat/stream');
+    assert.equal(JSON.parse(requests.at(-1).body).prompt, '接着说');
+    controller.stop();
+    await microtasks();
+    assert.equal(session.messages.filter(item => item.role === 'assistant').length, 1);
+    assert.equal(session.messages.find(item => item.role === 'user').failed, undefined);
+  });
+}

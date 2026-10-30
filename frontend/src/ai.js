@@ -2,8 +2,15 @@
 // SSE 事件：text（增量中文）→ audio_chunk（逐句 GPT-SoVITS 音频 URL）→ done / error
 import { getErrorMessage, connectionMessage } from './request.js';
 
-const IDLE_TIMEOUT_MESSAGE = '回复等待超时，已保留收到的内容。请在「设置中心」检查网络、模型与语音服务，稍后重新发送上一条消息。';
 const MAX_VOICE_WAIT_MS = 600000;
+const KEPT_LINES = '已收到的台词保留在 LOG 里。';
+// Received reply text is saved with the turn. Do not tell the user to resend it.
+const idleTimeoutMessage = receivedReply => (receivedReply
+  ? `回复等待超时，${KEPT_LINES}请在「设置中心」检查网络、模型与语音服务。`
+  : '回复等待超时，已保留收到的内容。请在「设置中心」检查网络、模型与语音服务，稍后重新发送上一条消息。');
+const streamClosedMessage = receivedReply => (receivedReply
+  ? `回复连接提前结束，${KEPT_LINES}请检查服务与网络。`
+  : '回复连接提前结束，已保留收到的内容。请检查服务与网络，稍后重新发送上一条消息。');
 
 function isReplyProgress(event, data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
@@ -34,6 +41,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
   let timedOut = false;
   let audioError = null;
   let errorCode = null;
+  let receivedReply = false;
   // Old servers cannot announce slow voice work. Keep a finite compatibility
   // window while retaining the original transport idle timeout per read.
   let progressPolicy = false;
@@ -55,7 +63,7 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
   const idleTimeoutError = () => {
     timedOut = true;
     errorCode = 'stream_idle_timeout';
-    return new Error(IDLE_TIMEOUT_MESSAGE);
+    return new Error(idleTimeoutMessage(receivedReply));
   };
   const withDeadline = async (operation) => {
     if (controller.signal.aborted) throw new DOMException('操作已取消', 'AbortError');
@@ -214,7 +222,10 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
           // Transport heartbeats and partial/malformed frames do not prove
           // that the model or an audio job has made progress.
           if (currentEvent === 'voice_job') updateVoiceJob(json);
-          if (isReplyProgress(currentEvent, json)) progressDeadline = performance.now() + progressBudget();
+          if (isReplyProgress(currentEvent, json)) {
+            if (currentEvent === 'text' || currentEvent === 'message' || currentEvent === 'line') receivedReply = true;
+            progressDeadline = performance.now() + progressBudget();
+          }
           if (currentEvent === 'text' || currentEvent === 'message') {
             const delta = json.delta_chinese || '';
             if (delta) {
@@ -251,7 +262,10 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             console.warn('[streamChat] audio chunk error:', json.error, json.sentence);
           } else if (currentEvent === 'error') {
             errorCode = typeof json.error_code === 'string' ? json.error_code : null;
-            finish(false, getErrorMessage(json, '对话暂时未完成，请检查「设置中心」中的模型地址、密钥与模型名称，再重新发送消息。'));
+            const fallback = receivedReply
+              ? `对话暂时未完成，${KEPT_LINES}请检查「设置中心」中的模型地址、密钥与模型名称。`
+              : '对话暂时未完成，请检查「设置中心」中的模型地址、密钥与模型名称，再重新发送消息。';
+            finish(false, getErrorMessage(json, fallback));
             return;
           } else if (currentEvent === 'done') {
             doneMeta = json;
@@ -292,10 +306,10 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
         }
         if (done) break;
       }
-      finish(false, '回复连接提前结束，已保留收到的内容。请检查服务与网络，稍后重新发送上一条消息。');
+      finish(false, streamClosedMessage(receivedReply));
     } catch (err) {
       if (timedOut) {
-        finish(false, IDLE_TIMEOUT_MESSAGE);
+        finish(false, idleTimeoutMessage(receivedReply));
         return;
       }
       if (err && err.name === 'AbortError' && !timedOut) {

@@ -104,6 +104,9 @@ test('timeout after partial text preserves the received reply despite continuing
   assert.equal(h.ends.length, 1);
   assert.equal(h.ends[0].text, '已收到的文字');
   assert.match(h.ends[0].error, /超时/);
+  // The partial text is saved with the turn, so the copy must not ask for a resend.
+  assert.match(h.ends[0].error, /已收到的台词保留在 LOG/);
+  assert.doesNotMatch(h.ends[0].error, /重新发送/);
   assert.equal(h.ends[0].errorCode, 'stream_idle_timeout');
 });
 
