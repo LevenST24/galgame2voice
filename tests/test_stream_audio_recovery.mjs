@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { test, afterEach } from 'node:test';
-import { StreamAudioController } from '../frontend/src/audio_player.js';
+import { StreamAudioController, streamAudioController } from '../frontend/src/audio_player.js';
+import { initAudioPlayerUi, playAiVoice } from '../frontend/src/controllers/audio_player_ui.js';
+import { createBacklog } from '../frontend/src/adv/backlog.js';
 import { clearMemAudioCache, loadAudioBlob, putCachedAudioBlob } from '../frontend/src/cache.js';
 import { streamChat } from '../frontend/src/ai.js';
+import { fakeDocument } from './helpers/adv_dom.mjs';
 
 const tick = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -335,4 +338,138 @@ test('continuous multi-character session switching during long chunk streams iso
   assert.equal(p.isPlaying, false);
   assert.equal(p.activeSources.length, 0);
   assert.ok(p.getStats().chunksPlayed >= 48);
+});
+
+const DECODE_FAILURE_TOAST = '这句语音无法解码，原有内容已保留。请检查语音服务后重试，文字聊天仍可继续。';
+const OTHER_PLAYBACK_TOAST = '部分语音暂时无法播放，已跳过并保留文字。可稍后在 LOG 里再点「语音」重试；若反复失败，请打开「运行状态」检查服务。';
+
+function gainNode() {
+  return {
+    gain: { value: 1, setValueAtTime() {}, cancelScheduledValues() {}, linearRampToValueAtTime() {} },
+    connect() {},
+    disconnect() {},
+  };
+}
+
+function audioContextClass({ failDecode }) {
+  return class {
+    state = 'running';
+    currentTime = 0;
+    destination = {};
+    createGain() { return gainNode(); }
+    createAnalyser() {
+      return { fftSize: 256, smoothingTimeConstant: 0.6, frequencyBinCount: 128, connect() {}, disconnect() {} };
+    }
+    createBufferSource() {
+      const source = { buffer: null, connect() {}, disconnect() {}, start() {}, stop() {}, onended: null };
+      return source;
+    }
+    async decodeAudioData() {
+      if (failDecode) throw new DOMException('Unable to decode audio data', 'EncodingError');
+      return { duration: 1 };
+    }
+    async resume() { this.state = 'running'; }
+    async suspend() { this.state = 'suspended'; }
+    async close() { this.state = 'closed'; }
+  };
+}
+
+test('decode failure shows its own notice while other playback errors keep the LOG retry notice', async () => {
+  const previous = {
+    window: globalThis.window,
+    fetch: globalThis.fetch,
+    document: globalThis.document,
+  };
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  const toastRoot = doc.createElement('div');
+  toastRoot.id = 'toastRoot';
+  doc.body.appendChild(toastRoot);
+  const fetches = [];
+  globalThis.fetch = async url => {
+    fetches.push(String(url));
+    if (String(url).includes('down.wav')) return new Response('unavailable', { status: 500 });
+    return new Response(new Uint8Array([0, 1, 2, 3]), { status: 200, headers: { 'Content-Type': 'audio/wav' } });
+  };
+  globalThis.window = { AudioContext: audioContextClass({ failDecode: true }) };
+  clearMemAudioCache();
+  initAudioPlayerUi({}, {});
+
+  const root = doc.createElement('div');
+  doc.body.appendChild(root);
+  const session = {
+    id: 's_decode',
+    messages: [{
+      id: 'm_decode',
+      role: 'assistant',
+      ts: Date.now(),
+      lines: [{
+        index: 0,
+        zh: '你好',
+        ja: 'こんにちは',
+        audio: {
+          status: 'ready',
+          generated_at: Date.now(),
+          chunks: [{ index: 0, line: 0, audio_url: '/audio/corrupt.wav', sentence: 'こんにちは' }],
+        },
+      }],
+    }],
+  };
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => ({}),
+    voiceEnabled: () => true,
+    audio: streamAudioController,
+    regenerateLineAudio: async () => {},
+  });
+
+  const clearToasts = () => {
+    for (const toast of toastRoot.querySelectorAll('.toast')) {
+      clearTimeout(toast._timer);
+      toast.remove();
+    }
+  };
+
+  try {
+    const replayBtn = log.element.querySelector('.adv-log-replay-btn');
+    assert.equal(replayBtn.disabled, false);
+    await replayBtn.onclick({ stopPropagation() {} });
+    const decodeToast = toastRoot.querySelector('.toast')?.dataset?.msg || '';
+    assert.equal(fetches.filter(url => url.includes('corrupt.wav')).length, 2);
+    assert.equal(replayBtn.disabled, true);
+    assert.equal(log.element.querySelector('.adv-log-audio-status').textContent, '语音已过期或不可用');
+    assert.equal(decodeToast, DECODE_FAILURE_TOAST);
+    assert.doesNotMatch(decodeToast, /再点「语音」重试/);
+
+    clearToasts();
+    await streamAudioController.close();
+    globalThis.window = { AudioContext: audioContextClass({ failDecode: false }) };
+    initAudioPlayerUi({}, {});
+    const message = {
+      id: 'm_other',
+      role: 'assistant',
+      audioUrls: ['/audio/ok.wav', '/audio/down.wav'],
+    };
+    await playAiVoice(message, { setLoading() {}, setPlaying() {}, setProgress() {} });
+    let otherToast = '';
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      otherToast = toastRoot.querySelector('.toast')?.dataset?.msg || '';
+      if (otherToast) break;
+      await tick(10);
+    }
+    assert.equal(otherToast, OTHER_PLAYBACK_TOAST);
+    assert.match(otherToast, /再点「语音」重试/);
+  } finally {
+    clearToasts();
+    log.destroy();
+    streamAudioController.onError = null;
+    streamAudioController.onQueueEmpty = null;
+    await streamAudioController.close();
+    clearMemAudioCache();
+    globalThis.window = previous.window;
+    globalThis.fetch = previous.fetch;
+    if (previous.document === undefined) delete globalThis.document;
+    else globalThis.document = previous.document;
+  }
 });
