@@ -183,3 +183,48 @@ test('the old-server compatibility window also expires despite a continuous hear
   assert.equal(h.ends.length, 1);
   assert.equal(h.ends[0].errorCode, 'stream_idle_timeout');
 });
+
+test('reasoning progress renews the idle budget and the reply text still arrives', async t => {
+  const h = await setup(t);
+  for (let i = 0; i < 4; i++) {
+    await h.tick(80);
+    if (h.ends.length) break;
+    await h.event('progress', { stage: 'thinking' });
+    assert.equal(h.chunks.length, 0);
+  }
+  if (!h.ends.length) {
+    await h.tick(80);
+    await h.event('text', { delta_chinese: '想完了' });
+    await h.event('done', { chinese: '想完了', japanese: 'はい' });
+  }
+  const end = h.ends.at(-1) || {};
+  assert.equal(end.error ?? null, null,
+    `思考进度没有续上等待时间，用户看到 ${end.error}（${end.errorCode}）`);
+  assert.equal(end.text, '想完了');
+  assert.equal(end.japanese, 'はい');
+  assert.deepEqual(h.chunks, ['想完了']);
+});
+
+test('a later progress stage uses the same idle renewal as thinking', async t => {
+  const h = await setup(t);
+  await h.tick(80);
+  await h.event('progress', { stage: 'queued' });
+  await h.tick(80);
+  if (!h.ends.length) {
+    await h.event('text', { delta_chinese: '排到了' });
+    await h.event('done', { chinese: '排到了' });
+  }
+  const end = h.ends.at(-1) || {};
+  assert.equal(end.error ?? null, null, `${end.errorCode || ''} ${end.error || ''}`);
+  assert.equal(end.text, '排到了');
+});
+
+test('a progress event without a stage cannot renew the reply budget', async t => {
+  const h = await setup(t);
+  await h.tick(25); await h.event('progress', {});
+  await h.tick(25); await h.event('progress', { stage: '' });
+  await h.tick(25); await h.event('progress', { stage: '   ' });
+  await h.tick(25);
+  assert.equal(h.ends.length, 1);
+  assert.equal(h.ends[0].errorCode, 'stream_idle_timeout');
+});

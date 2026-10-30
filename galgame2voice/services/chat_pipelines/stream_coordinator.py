@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Callable
 from anyio import CancelScope
 
-from galgame2voice.adapters.base import configured_reasoning_effort
+from galgame2voice.adapters.base import (
+    bind_stream_progress_hook,
+    configured_reasoning_effort,
+    reset_stream_progress_hook,
+)
 from galgame2voice.database import crud
 from galgame2voice.database.commit_hooks import after_commit
 from galgame2voice.database.models import MessageCreate
@@ -47,6 +51,10 @@ logger = logging.getLogger("galgame2voice.services.chat_pipelines.stream_coordin
 # Internal sentinels marking pipeline completion or cancellation
 _SENTINEL = object()
 _CANCEL_SENTINEL = object()
+
+# Reasoning deltas can arrive many times a second. One frame per few seconds
+# renews the client's 120s idle budget. The thinking text is not included.
+REPLY_PROGRESS_MIN_INTERVAL_SECONDS = 5.0
 
 
 def _consume_background_failure(task: asyncio.Task) -> None:
@@ -139,6 +147,7 @@ class _StreamRun:
         self.profiler: ChatTurnProfiler = ChatTurnProfiler(turn_id=str(session_id))
 
         self.ttft_ms: float = 0.0
+        self.last_progress_at: float = float("-inf")
         self.tts_first_chunk_ms: float = 0.0
         self.tts_cached_chunks: int = 0
         self.tts_generated_chunks: int = 0
@@ -149,7 +158,7 @@ class StreamCoordinator:
     """
     Coordinates end-to-end streaming dialogue execution:
       - Worker and producer tasks (LLM token streaming & TTS synthesis)
-      - Event queue pumping (text, audio_chunk, audio_chunk_error, done, error, SseKeepAlive)
+      - Event queue pumping (text, progress, audio_chunk, audio_chunk_error, done, error, SseKeepAlive)
       - Cancellation handling, timeout monitoring, and graceful task reaping
       - Multi-chunk WAV concatenation and atomic DB message persistence
     """
@@ -692,6 +701,17 @@ class StreamCoordinator:
             result.append(line_copy)
         return result
 
+    def _note_reply_progress(self, run: _StreamRun, stage: str) -> None:
+        """Queues one generic in-progress frame, at most once per few seconds."""
+        now = time.monotonic()
+        if now - run.last_progress_at < REPLY_PROGRESS_MIN_INTERVAL_SECONDS:
+            return
+        try:
+            run.event_queue.put_nowait({"event": "progress", "data": {"stage": stage}})
+        except asyncio.QueueFull:
+            return
+        run.last_progress_at = now
+
     async def _llm_producer(self, run: _StreamRun) -> None:
         """Producer task streaming LLM tokens, extracting sentences, and feeding TTS and event queues."""
         cancel_event = run.cancel_event
@@ -701,6 +721,7 @@ class StreamCoordinator:
         event_queue = run.event_queue
         tts_queue = run.tts_queue
         t_start = run.t_start
+        hook_token = bind_stream_progress_hook(lambda stage: self._note_reply_progress(run, stage))
         try:
             async for token in llm_pipe.stream_tokens():
                 if cancel_event and cancel_event.is_set():
@@ -759,6 +780,7 @@ class StreamCoordinator:
             )
             await self._put_with_cancel(event_queue, {"event": "error", "data": payload}, cancel_event, run.shutdown_event)
         finally:
+            reset_stream_progress_hook(hook_token)
             await self._put_with_cancel(tts_queue, None, cancel_event, run.shutdown_event)
             await self._put_with_cancel(event_queue, _SENTINEL, cancel_event, run.shutdown_event)
 

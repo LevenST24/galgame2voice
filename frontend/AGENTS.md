@@ -86,6 +86,7 @@
 | `line_audio` | `{ "line": 0, "status": "ready"\|"skipped"\|"failed", "chunks": [...] }` | 某句台词的语音最终状态，按台词顺序发出。`skipped` 表示这句没有生成语音（例如只有省略号），前端直接出字、不等语音；`failed` 另带 `error`。 |
 | `audio_chunk` | `{ "line": 0, "index": 0, "audio_url": "...", "sentence": "...", "emotion": "..." }` | GPT-SoVITS 合成的单个音频片段到达，用于预热和播放队列。能对应到台词时才带 `line`。 |
 | `audio_chunk_error` | `{ "line": 0, "index": 0, "sentence": "...", "error": "..." }` | 单句音频合成异常提示，文字流继续推进，不打断整体对话。能对应到台词时才带 `line`。 |
+| `progress` | `{ "stage": "thinking" }` | 回复仍在进行的进展信号，目前只在模型输出思考内容时发送，不含思考正文；同一回复每 5 秒最多一条，客户端用它续期进展预算。 |
 | `voice_job` | `{ "index": 0, "status": "started"\|"finished" }` | 单个语音任务的有界等待阶段，需配合 HTTP 进展策略头；重复公告不续期。 |
 | `error` | `{ "error": "...", "error_code": "..." }` | 生成过程中断的错误事件，附带结构化错误码与中文指引。 |
 | `done` | `{ "chinese": "...", "japanese": "...", "chunks": [...], "lines": [...], "message_id": 42 }` | 本轮对话生成结束，携带最终完整文本、音频切片与行元数据。历史成功提交后才提供 `message_id`，前端保存为 `serverMessageId`，不得从浏览器消息 ID 推断数据库 ID。 |

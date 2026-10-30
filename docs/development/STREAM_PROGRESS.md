@@ -8,6 +8,11 @@ HTTP 读取和回复进展是不同的等待。每次网络读取仍有原有的
 音频任务续期 120 秒的进展预算。空文字、未知事件、错误 JSON 和半包不续期。
 这不是整轮回复的总时限；持续有进展的长回复可以继续。
 
+推理模型只输出思考内容（OpenAI 兼容流的 `delta.reasoning_content` / `delta.reasoning`，
+Anthropic 的 `thinking_delta`）时没有文字增量。服务端为此发送 `progress {stage: "thinking"}`，
+同一回复每 5 秒最多一条，不含思考正文；客户端把 `stage` 非空的 `progress` 计为进展。
+思考正文不进入台词、语音或记录。
+
 语音合成可合法等待比两分钟更久。后端在每个可配音任务前发送
 `voice_job {index, status: "started"}`，完成后发送同索引的 `finished`。任务开始后有
 固定的独立等待预算，普通文字进展不能把它缩短，重复开始或完成公告不能再次续期。

@@ -4,6 +4,7 @@ Base abstract interfaces and common data models for LLM and STT adapters in galg
 
 from abc import ABC, abstractmethod
 import asyncio
+from contextvars import ContextVar, Token
 import datetime
 import email.utils
 import json
@@ -14,6 +15,12 @@ import httpx
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("galgame2voice.adapters.base")
+
+# The chat producer installs this for one reply. Reasoning text never leaves the parser.
+_stream_progress_hook: ContextVar[Callable[[str], None] | None] = ContextVar(
+    "g2v_stream_progress_hook",
+    default=None,
+)
 
 # HTTP status codes that indicate transient failure and can be retried with exponential backoff
 TRANSIENT_STATUS_CODES: set[int] = {408, 429, 500, 502, 503, 504}
@@ -121,13 +128,59 @@ def extract_stream_token(chunk: dict[str, Any]) -> str | None:
     return None
 
 
+def bind_stream_progress_hook(hook: Callable[[str], None] | None) -> Token[Callable[[str], None] | None]:
+    """Installs the per-reply progress hook seen by parse_sse_lines on this task."""
+    return _stream_progress_hook.set(hook)
+
+
+def reset_stream_progress_hook(token: Token[Callable[[str], None] | None]) -> None:
+    """Restores the progress hook that was current before bind_stream_progress_hook."""
+    _stream_progress_hook.reset(token)
+
+
+def _has_reasoning_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _progress_stage(chunk: dict[str, Any]) -> str | None:
+    """Returns a progress stage for model thinking, without the thinking text."""
+    choices = chunk.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        delta = choices[0].get("delta")
+        if isinstance(delta, dict) and (
+            _has_reasoning_text(delta.get("reasoning_content")) or _has_reasoning_text(delta.get("reasoning"))
+        ):
+            return "thinking"
+    if chunk.get("type") == "content_block_delta":
+        delta = chunk.get("delta")
+        if (
+            isinstance(delta, dict)
+            and delta.get("type") == "thinking_delta"
+            and _has_reasoning_text(delta.get("thinking"))
+        ):
+            return "thinking"
+    return None
+
+
+def _notify_stream_progress(chunk: dict[str, Any]) -> None:
+    stage = _progress_stage(chunk)
+    if stage is None:
+        return
+    hook = _stream_progress_hook.get()
+    if hook is not None:
+        hook(stage)
+
+
 def _parse_and_extract_token(text: str, on_chunk: Callable[[dict[str, Any]], None] | None = None) -> tuple[bool, str | None]:
     """Attempts to decode JSON and extract token. Returns (is_valid_json, token)."""
     try:
         chunk = json.loads(text)
         if on_chunk and isinstance(chunk, dict):
             on_chunk(chunk)
-        return True, extract_stream_token(chunk)
+        token = extract_stream_token(chunk)
+        if isinstance(chunk, dict):
+            _notify_stream_progress(chunk)
+        return True, token
     except (json.JSONDecodeError, TypeError):
         return False, None
 
