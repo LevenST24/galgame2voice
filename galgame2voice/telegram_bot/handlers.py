@@ -24,7 +24,11 @@ except ImportError:
     InlineKeyboardMarkup = Any
 
 from galgame2voice.database.session import get_db, immediate_transaction
-from galgame2voice.services.voice_state import ActiveVoicePersistenceError, persist_active_voice_profile
+from galgame2voice.services.voice_state import (
+    ActiveVoicePersistenceError,
+    VoiceProfileRemoved,
+    persist_active_voice_profile,
+)
 from galgame2voice.services.chat_pipelines.acting_menu import get_recent_pose, sanitize_act
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate, CharacterAffectionUpdate
@@ -407,7 +411,7 @@ class TelegramBotHandlers:
                 switched = await vm.switch_active_profile(profile_id)
                 if not switched:
                     warning_note = "\n⚠️ 提示：GPT-SoVITS 语音引擎当前处于离线状态，已为您激活对话人设与好感档案。"
-            except (InsufficientMemoryError,ActiveVoicePersistenceError):
+            except (InsufficientMemoryError, ActiveVoicePersistenceError, VoiceProfileRemoved):
                 raise
             except Exception as sw_err:
                 logger.debug("VoiceManager weight switch skipped: %s", sw_err)
@@ -415,6 +419,8 @@ class TelegramBotHandlers:
 
             await persist_active_voice_profile(profile_id,db_path=self.db_path)
             return None, warning_note
+        except VoiceProfileRemoved as error:
+            return str(error), ""
         except ActiveVoicePersistenceError as error:
             return str(error),''
         except InsufficientMemoryError as mem_err:

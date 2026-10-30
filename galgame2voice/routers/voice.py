@@ -249,6 +249,13 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate) -> dict
 )
 async def delete_voice_profile(profile_id: int) -> dict[str, Any]:
     validate_positive_profile_id(profile_id)
+    # Refuse only the voice whose weights are loading. Do not take switch_lock:
+    # that wait would last as long as the model load.
+    if get_voice_manager().switching_profile_id == profile_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="这个音色正在加载，请稍后再删除",
+        )
     async with get_db() as conn:
         try:
             success = await crud.delete_voice_profile(conn, profile_id)

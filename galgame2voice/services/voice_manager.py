@@ -25,7 +25,7 @@ from galgame2voice.services.gpt_sovits_client import (
     get_gpt_sovits_client,
 )
 from galgame2voice.utils.async_tasks import await_protected, drain_background_tasks
-from galgame2voice.services.voice_state import persist_active_voice_profile
+from galgame2voice.services.voice_state import VoiceProfileRemoved, persist_active_voice_profile
 from galgame2voice.utils.hardware import (
     get_system_memory_status,
     get_gpu_vram_status,
@@ -88,6 +88,7 @@ class VoiceManager:
         self.tts_service = TtsService(client=self.client, db_path=self.db_path)
 
         self._switch_lock = asyncio.Lock()
+        self._switching_profile_id: int | None = None
         self._bg_tasks: set[asyncio.Task] = set()
 
     def _spawn_background(self, coro: Any) -> asyncio.Task:
@@ -129,6 +130,11 @@ class VoiceManager:
     def switch_lock(self) -> asyncio.Lock:
         """Lock for serializing voice profile switch transactions and state persistence."""
         return self._switch_lock
+
+    @property
+    def switching_profile_id(self) -> int | None:
+        """Voice whose weights are loading now. Read without waiting for the switch lock."""
+        return self._switching_profile_id
 
     @property
     def server(self) -> Any | None:
@@ -353,18 +359,31 @@ class VoiceManager:
         # layer) so every call path — REST, Telegram, auto-bind — gets the same guard.
         await asyncio.to_thread(self._check_switch_memory_guard, force)
 
-        # 2. Execute 3-step atomic model switch with auto-rollback
+        # 2. Execute 3-step atomic model switch with auto-rollback.
+        # The id is published before the slow load and cleared only after commit or
+        # rollback, so a delete can refuse this voice without waiting on the lock.
         await asyncio.to_thread(release_system_memory)
-        success = await self.client.switch_voice_profile(profile_obj, force=force)
+        tracked_id = _stored_profile_id(profile_obj)
+        try:
+            if tracked_id is not None:
+                self._switching_profile_id = tracked_id
+            previous = self.client.active_profile
+            success = await self.client.switch_voice_profile(profile_obj, force=force)
 
-        async def finalize():
-            await asyncio.to_thread(release_system_memory)
-            # Once the engine confirmed a switch, cancellation must not leave
-            # its saved selection behind merely because cleanup is still slow.
-            if success and persist:
-                await self._persist_active_switch_profile(profile_obj)
+            async def finalize():
+                await asyncio.to_thread(release_system_memory)
+                # Once the engine confirmed a switch, cancellation must not leave
+                # its saved selection behind merely because cleanup is still slow.
+                if success and tracked_id is not None and await self.get_profile(tracked_id) is None:
+                    await self._restore_loaded_profile(previous, tracked_id)
+                    raise VoiceProfileRemoved(tracked_id)
+                if success and persist:
+                    await self._persist_active_switch_profile(profile_obj)
 
-        await await_protected(finalize())
+            await await_protected(finalize())
+        finally:
+            if tracked_id is not None and self._switching_profile_id == tracked_id:
+                self._switching_profile_id = None
         if not success:
             logger.error("Failed to switch GPT-SoVITS model weights for target: %s", target)
             return False
@@ -376,6 +395,15 @@ class VoiceManager:
             logger.debug("Could not schedule warm-up task on profile switch: %s", warmup_err)
 
         return True
+
+    async def _restore_loaded_profile(self, previous: Any, removed_id: int) -> None:
+        """Put the engine back on the voice it had before a removed profile was loaded."""
+        previous_id = getattr(previous, "id", None)
+        if previous is not None and previous_id != removed_id:
+            if await self.client.switch_voice_profile(previous, force=True):
+                return
+        if getattr(self.client.active_profile, "id", None) == removed_id:
+            self.client.active_profile = None
 
     # ========================================================================
     # Synthesis & Streaming
@@ -460,6 +488,15 @@ class VoiceManager:
 # ============================================================================
 
 _global_voice_manager: VoiceManager | None = None
+
+
+def _stored_profile_id(profile_obj: Any) -> int | None:
+    """Database voice rows are the only targets a concurrent delete can remove."""
+    if isinstance(profile_obj, (VoiceProfileResponse, VoiceProfileInDB)):
+        profile_id = profile_obj.id
+        if isinstance(profile_id, int) and profile_id >= 1:
+            return profile_id
+    return None
 
 
 def get_voice_manager() -> VoiceManager:

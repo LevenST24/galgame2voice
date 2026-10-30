@@ -19,6 +19,14 @@ class ActiveVoicePersistenceError(RuntimeError):
         )
 
 
+class VoiceProfileRemoved(Exception):
+    """The voice row disappeared after its models loaded and before it was saved."""
+
+    def __init__(self, profile_id: int):
+        self.profile_id = profile_id
+        super().__init__("所选音色已不存在，请在角色与会话中重新选择音色。")
+
+
 async def persist_active_voice_profile(profile_id: int, db_path: str | None = None) -> None:
     """Raise on rejected/failed writes; loaded models remain available for retry."""
     try:
