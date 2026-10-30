@@ -266,6 +266,61 @@ test('status colors/text, explanations, settings tabs, polling and disposal with
   h.ui.close(); const count = h.calls.length; h.clock.tick(20000); await microtasks(); h.notify();
   assert.equal(h.calls.length, count); assert.equal(h.clock.timers.size, 0);
 });
+
+const SLOW_ENGINE = '引擎加载时间较长，尚未确认就绪。无需反复重启；请点击「刷新状态」稍后检查。文字聊天可继续使用。';
+const CHECKING_ENGINE = '引擎进程已变更，正在重新核对服务状态。请稍候，无需再次重启。';
+const readyModel = { model: { state: 'ok', label: '测试模型' }, modelLoaded: true, hasModel: true };
+function voicePill(h) { return h.ui.element.querySelectorAll('.home-pill')[1]; }
+
+test('a slow managed load stays a loading label on the home pill', async t => {
+  const h = await fixture(t, { status: { ...readyModel, engine: { state: 'loading_slow', message: SLOW_ENGINE, base_url: 'http://127.0.0.1:9880' } } });
+  const voice = voicePill(h);
+  voice.click();
+  const dot = voice.querySelector('.home-dot').className;
+  const label = textTree(voice);
+  const notice = h.q('.home-notice')?.textContent || '';
+  assert.ok(
+    dot === 'home-dot warn' && /语音 加载较慢/.test(label) && !/未连接/.test(label)
+      && /加载较慢/.test(notice) && !/未连接/.test(notice)
+      && /无需反复重启/.test(textTree(h.q('.home-popover'))),
+    `home treats loading_slow as disconnected\npill=${dot} ${label}\nnotice=${notice}\npopover=${textTree(h.q('.home-popover') || h.ui.element)}`,
+  );
+});
+
+test('leaving home open flips a slow load off the starting pill into a warning', async t => {
+  const h = await fixture(t, { status: { ...readyModel, engine: { state: 'starting', message: '引擎正在加载模型，请稍候；文字聊天可继续使用。' } } });
+  const voice = voicePill(h);
+  assert.match(textTree(voice), /语音 启动中/);
+  const startingNotice = h.q('.home-notice')?.textContent || '';
+  h.setStatus({ ...readyModel, engine: { state: 'loading_slow', message: SLOW_ENGINE, base_url: 'http://127.0.0.1:9880' } });
+  h.clock.tick(5000);
+  await microtasks();
+  const label = textTree(voice);
+  const dot = voice.querySelector('.home-dot').className;
+  const notice = h.q('.home-notice')?.textContent || '';
+  assert.ok(
+    dot === 'home-dot warn' && /语音 加载较慢/.test(label) && !/未连接/.test(label)
+      && /加载较慢/.test(notice) && !/未连接/.test(notice)
+      && /启动/.test(startingNotice) && !/未连接/.test(startingNotice),
+    `poll replaced 启动中 with a failure\nstartingNotice=${startingNotice}\npill=${dot} ${label}\nnotice=${notice}`,
+  );
+});
+
+test('home shows an in-flight launch change as unconfirmed, not disconnected', async t => {
+  const h = await fixture(t, { status: { ...readyModel, engine: { state: 'checking', message: CHECKING_ENGINE, base_url: 'http://127.0.0.1:9880' } } });
+  const voice = voicePill(h);
+  voice.click();
+  const dot = voice.querySelector('.home-dot').className;
+  const label = textTree(voice);
+  const notice = h.q('.home-notice')?.textContent || '';
+  assert.ok(
+    dot === 'home-dot warn' && /语音 待确认/.test(label) && !/未连接/.test(label)
+      && /核对/.test(notice) && !/未连接/.test(notice)
+      && /无需再次重启/.test(textTree(h.q('.home-popover'))),
+    `home treats checking as disconnected\npill=${dot} ${label}\nnotice=${notice}\npopover=${textTree(h.q('.home-popover') || h.ui.element)}`,
+  );
+});
+
 test('all sessions paginate, show image/title/last line/time, return and load via nested spans', async t => {
   const h = await fixture(t); h.q('.home-all').click(); assert.equal(h.ui.loadScreen.hidden, false);
   assert.equal(h.ui.element.querySelectorAll('.adv-title-slot').length, 6); assert.equal(h.q('.adv-title-thumb-image').src, '/fake.webp');
