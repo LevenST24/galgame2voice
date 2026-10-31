@@ -78,7 +78,8 @@ export function initAudioPlayerUi(dom, callbacks = {}) {
 
   streamAudioController.onError = (error) => {
     const isBrowserBlock = Boolean(error.message?.includes('浏览器'));
-    showToast(isBrowserBlock ? error.message
+    const isDecodeFailure = error.code === 'AUDIO_DECODE_FAILED';
+    showToast(isDecodeFailure || isBrowserBlock ? error.message
       : '部分语音暂时无法播放，已跳过并保留文字。可稍后在 LOG 里再点「语音」重试；若反复失败，请打开「运行状态」检查服务。', 'info', (!isBrowserBlock && _callbacks.onOpenEngineStatus) ? {
         actionLabel: '检查运行状态',
         onAction: () => _callbacks.onOpenEngineStatus(),
