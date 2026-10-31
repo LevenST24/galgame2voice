@@ -97,6 +97,7 @@ ENDPOINT_TTS = "/tts"
 PARAM_WEIGHTS_PATH = "weights_path"
 PARAM_REFER_AUDIO_PATH = "refer_audio_path"
 PARAM_STREAMING_MODE = "streaming_mode"
+STREAM_SILENCE_PRE_BUFFER_MAX_BYTES = 131072  # 128 KiB (~2.05s of 32kHz 16-bit mono audio)
 
 
 class GptSovitsClient:
@@ -885,7 +886,7 @@ class GptSovitsClient:
                         total_bytes_streamed += len(pre_buffer)
                         yield bytes(pre_buffer)
                         pre_buffer.clear()
-                    elif len(pre_buffer) >= 32768:
+                    elif len(pre_buffer) >= STREAM_SILENCE_PRE_BUFFER_MAX_BYTES:
                         raise RuntimeError(SILENT_AUDIO_ERROR)
                 else:
                     total_bytes_streamed += len(item)
@@ -1001,6 +1002,7 @@ __all__ = [
     "REFERENCE_AUDIO_MAX_SECONDS",
     "resolve_reference_audio_path",
     "SILENT_AUDIO_ERROR",
+    "STREAM_SILENCE_PRE_BUFFER_MAX_BYTES",
     "wav_peak_amplitude",
     "is_silent_audio",
     "wav_is_silent",
