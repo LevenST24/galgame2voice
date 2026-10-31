@@ -266,6 +266,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   };
 
   let _syncSessionsGen = 0;
+  const sessionsBehindServer = new Set();
   let advApp = null;
   let syncingAdv = false;
   // Home opens after the startup sync; a voice result that arrives earlier belongs to it too.
@@ -420,20 +421,51 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
 
   /* ---------- 会话操作 ---------- */
   async function loadSessionHistory(session) {
-    if (!session || (session.messages && session.messages.length > 0)) return;
+    if (!session) return;
+    const isBehind = sessionsBehindServer.has(session.id);
+    if (!isBehind && session.messages && session.messages.length > 0) return;
+    const initialCount = session.messages ? session.messages.length : 0;
     try {
       const data = await fetchSessionHistoryPage(session.id, { limit: 100 });
       // A reply typed while history was loading, or a deleted session, wins over the old response.
-      if (getSession(session.id) !== session || session.messages?.length) return;
+      if (getSession(session.id) !== session || (session.messages ? session.messages.length : 0) !== initialCount) return;
       if (Array.isArray(data.messages) && data.messages.length > 0) {
-        session.messages = data.messages.map(mapBackendMessage);
+        const incoming = data.messages.map(mapBackendMessage);
+        if (session.messages && session.messages.length > 0) {
+          const usedIndices = new Set();
+          for (let i = session.messages.length - 1; i >= 0; i--) {
+            const localMsg = session.messages[i];
+            if (localMsg && localMsg.role === 'user') {
+              for (let j = incoming.length - 1; j >= 0; j--) {
+                if (usedIndices.has(j)) continue;
+                const serverMsg = incoming[j];
+                if (serverMsg.role === 'user' && serverMsg.content === localMsg.content) {
+                  usedIndices.add(j);
+                  if (localMsg.voiceKey) {
+                    serverMsg.voiceKey = localMsg.voiceKey;
+                    if (localMsg.dur !== undefined) {
+                      serverMsg.dur = localMsg.dur;
+                    }
+                    if (audioStore && audioStore.has(localMsg.id)) {
+                      audioStore.set(serverMsg.id, audioStore.get(localMsg.id));
+                    }
+                  }
+                  break;
+                }
+              }
+            }
+          }
+        }
+        session.messages = incoming;
         session.hasMoreHistory = Boolean(data.has_more);
         session.oldestMessageId = Number.isInteger(data.oldest_id) ? data.oldest_id : earliestServerMessageId(session.messages);
         autoTitle(session);
+        sessionsBehindServer.delete(session.id);
         saveState();
       } else {
         session.hasMoreHistory = false;
         session.oldestMessageId = null;
+        sessionsBehindServer.delete(session.id);
       }
     } catch (e) {
       console.debug('Failed to load session history:', e);
@@ -496,7 +528,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     closeDrawer();
     if (id === state.activeId) {
       const current = getActive();
-      if (current && !current.messages?.length) {
+      if (current && (!current.messages?.length || sessionsBehindServer.has(current.id))) {
         await loadSessionHistory(current);
       }
       if (getActive() === current) {
@@ -514,7 +546,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     fullRender();
     if (enterFromHome) ensureHomeEntryVoice(s);
     else ensureSessionVoice(s);
-    if (s && (!s.messages || s.messages.length === 0)) {
+    if (s && (!s.messages || s.messages.length === 0 || sessionsBehindServer.has(s.id))) {
       await loadSessionHistory(s);
       if (getActive() !== s) return;
       fullRender();
@@ -539,6 +571,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       updateControls();
       return;
     }
+    sessionsBehindServer.delete(id);
     const sess = getSession(id);
     if (sess) {
       for (const m of sess.messages) {
@@ -597,6 +630,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   const actions = createTitleActions({
     getSessions: () => state.sessions, getProfiles: getVoiceProfiles,
     getActiveId: () => state.activeId,
+    isBehindServer: id => sessionsBehindServer.has(id),
     startNew: selection => newChat(selection, { enterFromHome: true }),
     loadSession: id => switchSession(id, { enterFromHome: true }),
     previewSession: id => switchSession(id, { focusInput: false }),
@@ -721,9 +755,9 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
             if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
             if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = pickSettings({ ...local.settings, ...bs.settings }, DEFAULT_SESSION_SETTINGS);
             if (typeof bs.message_count === 'number' && bs.message_count > (local.messages ? local.messages.length : 0)) {
-              local.messages = [];
-              local.hasMoreHistory = false;
-              local.oldestMessageId = null;
+              sessionsBehindServer.add(local.id);
+            } else {
+              sessionsBehindServer.delete(local.id);
             }
             // 人设提示词是角色级数据，会话里残留的旧副本一律丢弃
             delete local.settings.systemPrompt;
@@ -761,7 +795,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         persistSession(s).catch(() => {});
       }
       const curActive = getActive();
-      if (curActive && (!curActive.messages || curActive.messages.length === 0)) {
+      if (curActive && (!curActive.messages || curActive.messages.length === 0 || sessionsBehindServer.has(curActive.id))) {
         await loadSessionHistory(curActive);
       }
       if (isStale()) return;
