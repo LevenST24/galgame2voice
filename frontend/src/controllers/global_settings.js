@@ -57,8 +57,7 @@ let privateEndpointSaved = false;
 let privateEndpointSaving = false;
 const CONFIG_FIELDS = ['gParamSovitsUrl', 'gPrecision', 'gParamSliceMethod', 'gParamSpeed', 'gParamTopK',
   'gParamTopP', 'gParamTemp', 'gParamFragmentInterval', 'gAudioRetention', 'gTgEnabled',
-  'gTgToken', 'gTgChatId', 'gTgProxyHost', 'gTgProxyPort', 'gTgProxyEnabled', 'gMemoryEnabled',
-  'gUserNickname', 'gDefaultSystemPrompt'];
+  'gTgToken', 'gTgChatId', 'gTgProxyHost', 'gTgProxyPort', 'gTgProxyEnabled'];
 
 export function getCurrentActiveProvider() {
   return currentActiveProvider;
@@ -1072,11 +1071,6 @@ export async function loadGlobalConfig() {
     fill('gTgProxyHost', (el) => { el.value = s.telegram_proxy_host || ''; });
     fill('gTgProxyPort', (el) => { el.value = s.telegram_proxy_port || ''; });
     fill('gTgProxyEnabled', (el) => { el.checked = Boolean(s.telegram_proxy_enabled); });
-
-    // 记忆与人设
-    fill('gMemoryEnabled', (el) => { el.checked = s.memory_enabled !== false; });
-    fill('gUserNickname', (el) => { el.value = s.user_nickname || ''; });
-    fill('gDefaultSystemPrompt', (el) => { el.value = s.system_prompt || ''; });
     configLoaded = true;
   } catch (e) {
     if (load !== configLoad) return;
@@ -1115,9 +1109,6 @@ export async function saveGlobalConfig() {
       telegram_proxy_enabled: _dom.gTgProxyEnabled ? _dom.gTgProxyEnabled.checked : false,
       telegram_proxy_host: _dom.gTgProxyHost ? _dom.gTgProxyHost.value.trim() || '127.0.0.1' : '127.0.0.1',
       telegram_proxy_port: _dom.gTgProxyPort ? Number(_dom.gTgProxyPort.value) || 10809 : 10809,
-      memory_enabled: _dom.gMemoryEnabled ? _dom.gMemoryEnabled.checked : true,
-      user_nickname: _dom.gUserNickname ? _dom.gUserNickname.value.trim() : undefined,
-      system_prompt: _dom.gDefaultSystemPrompt ? _dom.gDefaultSystemPrompt.value.trim() || undefined : undefined,
     };
     const token = _dom.gTgToken ? _dom.gTgToken.value.trim() : '';
     if (token) payload.telegram_bot_token = token;
