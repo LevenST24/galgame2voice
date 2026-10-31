@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { state, loadState, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
-import { initVoiceSettings, createCustomVoice, loadSessionVoiceSelect, handleRescanCharacters, populateScanOptions, invalidateScannedModels, ensureSessionVoice } from '../frontend/src/controllers/voice_settings.js';
+import { initVoiceSettings, createCustomVoice, loadSessionVoiceSelect, handleRescanCharacters, populateScanOptions, invalidateScannedModels, ensureSessionVoice, deleteVoiceProfile } from '../frontend/src/controllers/voice_settings.js';
 import { persistSession } from '../frontend/src/session_api.js';
 import { openSessionSettings } from '../frontend/src/controllers/voice_settings.js';
 
@@ -512,6 +512,95 @@ const models = {
   } finally {
     for (const child of toastRoot.children) clearTimeout(child._timer);
     globalThis.document.getElementById = getElementById;
+  }
+}
+{
+  const { dom } = setup();
+  const toastRoot = element();
+  toastRoot.id = 'toastRoot';
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
+    createElement: () => element(),
+  };
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => errors.push(args);
+  globalThis.fetch = async () => response({ detail: 'Internal engine error 500' }, 500);
+  try {
+    await createCustomVoice();
+    assert.equal(toastRoot.children.length, 1);
+    const toast = toastRoot.children[0];
+    assert.equal(toast.dataset.msg, '音色创建失败：当前输入已保留，请检查参考音频与模型文件后重试');
+    assert.doesNotMatch(toast.dataset.msg, /Internal engine error|500/);
+    assert.ok(errors.length > 0);
+    passed++;
+  } finally {
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    console.error = originalError;
+    globalThis.document = previousDocument;
+  }
+}
+{
+  const { dom } = setup();
+  const toastRoot = element();
+  toastRoot.id = 'toastRoot';
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
+    createElement: () => element(),
+  };
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => errors.push(args);
+  globalThis.fetch = async () => response({ detail: 'Filesystem permission denied' }, 500);
+  try {
+    await handleRescanCharacters();
+    assert.equal(toastRoot.children.length, 1);
+    const toast = toastRoot.children[0];
+    assert.equal(toast.dataset.msg, '扫描角色包失败：现有角色包列表保持不变，请检查角色包目录后重试');
+    assert.doesNotMatch(toast.dataset.msg, /permission denied|Filesystem/);
+    assert.ok(errors.length > 0);
+    passed++;
+  } finally {
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    console.error = originalError;
+    globalThis.document = previousDocument;
+  }
+}
+{
+  const { dom } = setup();
+  const toastRoot = element();
+  toastRoot.id = 'toastRoot';
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
+    createElement: () => element(),
+  };
+  globalThis.window = { confirm: () => true };
+  dom.sVoiceDelete = element();
+  dom.sVoice.value = '2';
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') return response({ profiles: [{ id: 1, name: 'A' }, { id: 2, name: 'B' }], active_profile_id: 1 });
+    if (url === '/api/voice/profiles/2' && options.method === 'DELETE') return response({ detail: 'SQLite disk I/O error' }, 500);
+    return response({});
+  };
+  await loadSessionVoiceSelect();
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => errors.push(args);
+  try {
+    await deleteVoiceProfile();
+    assert.equal(toastRoot.children.length, 1);
+    const toast = toastRoot.children[0];
+    assert.equal(toast.dataset.msg, '音色删除失败：该音色已被保留，请稍后重试；若仍失败，请打开「运行状态」检查服务');
+    assert.doesNotMatch(toast.dataset.msg, /disk I\/O|SQLite/);
+    assert.ok(errors.length > 0);
+    passed++;
+  } finally {
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    console.error = originalError;
+    globalThis.document = previousDocument;
   }
 }
 console.log(`Voice settings recovery: ${passed} scenarios passed`);
