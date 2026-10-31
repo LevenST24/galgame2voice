@@ -538,8 +538,8 @@ def _write_manifest_system_prompt(manifest_path: Path, text: str) -> None:
 @router.put(
     "/{character_id}/system-prompt",
     summary="Update Character System Prompt",
-    description="Writes the persona prompt back into the character package manifest.json "
-                "(the single source of truth) and refreshes the database mirror.",
+    description="Saves the persona prompt on this voice profile. When the profile belongs "
+                "to a character package, also writes that package's manifest.json.",
 )
 async def update_character_system_prompt(character_id: int, req: SystemPromptUpdate) -> dict[str, Any]:
     text = req.system_prompt.strip()
@@ -549,28 +549,25 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
             detail="人设提示词不能为空",
         )
 
+    from galgame2voice.services.character_identity import owned_package_for_profile
+
     async with get_db() as conn:
         prof = await _get_voice_profile_or_404(conn, character_id)
+        profiles = await crud.list_voice_profiles(conn)
 
     mgr = get_character_manager()
-    pkg = mgr.get_character(prof.name)
-    if pkg is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="角色包目录不存在，无法写回人设提示词；请先确认 characters/ 下的角色包完整",
-        )
-
-    manifest_path = pkg.folder / "manifest.json"
-    if not manifest_path.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"角色包缺少 manifest.json: {manifest_path}",
-        )
-
-    _write_manifest_system_prompt(manifest_path, text)
-
-    # 内存里的角色包缓存也要刷新，否则本进程后续仍读到旧人设
-    mgr.discover_characters()
+    pkg = owned_package_for_profile(prof, profiles, mgr)
+    manifest_path: Path | None = None
+    if pkg is not None:
+        manifest_path = pkg.folder / "manifest.json"
+        if not manifest_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"角色包缺少 manifest.json: {manifest_path}",
+            )
+        _write_manifest_system_prompt(manifest_path, text)
+        # 内存里的角色包缓存也要刷新，否则本进程后续仍读到旧人设
+        mgr.discover_characters()
 
     async with get_db() as conn:
         async with immediate_transaction(conn):
@@ -584,7 +581,7 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
         "name": prof.name,
         "system_prompt": text,
         "length": len(text),
-        "manifest_path": str(manifest_path),
+        "manifest_path": str(manifest_path) if manifest_path is not None else None,
     }
 
 

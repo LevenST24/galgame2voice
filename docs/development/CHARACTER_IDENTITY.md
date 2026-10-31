@@ -13,8 +13,11 @@ consumers use `CharacterManager.get_character` and the matching rules in
   as a fallback when no valid package claims that identity.
 - Unicode compatibility normalization, case folding and whitespace normalization
   allow full-width parentheses and spaced names without substring matching.
-- A legacy bilingual label such as `安娜 (Anna)` is accepted only when its known
-  parts identify the same package. Conflicting parts or shared aliases are ambiguous.
+- A legacy bilingual label such as `安娜 (Anna)` matches a package only when both
+  parts identify that same package (its ID, display name, or a declared alias),
+  or the whole label is itself a declared alias. An unrecognized suffix is a
+  different profile. A stored profile whose normalized name equals the query is
+  that profile. Conflicting parts or shared aliases are ambiguous.
 - Duplicate normalized package IDs reject the new scan. The previously published
   catalog remains available. A missing directory can publish an empty catalog.
 - SQL `%` and `_` are literal name characters, never matching patterns.

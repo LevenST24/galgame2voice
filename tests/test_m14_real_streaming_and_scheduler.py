@@ -249,7 +249,10 @@ async def test_voice_profile_resolver_caching_and_invalidation(tmp_path):
     mock_profile.ref_audio_path = "nonexistent.wav"
     mock_profile.prompt_text = "デフォルトプロンプト"
 
-    with patch("galgame2voice.database.crud.get_voice_profile", new_callable=AsyncMock) as mock_get_db:
+    with (
+        patch("galgame2voice.database.crud.get_voice_profile", new_callable=AsyncMock) as mock_get_db,
+        patch("galgame2voice.database.crud.list_voice_profiles", new_callable=AsyncMock, return_value=[mock_profile]),
+    ):
         mock_get_db.return_value = mock_profile
 
         ctx1 = await resolver.resolve_context(db_path, profile_id=42)
