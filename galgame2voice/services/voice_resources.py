@@ -48,7 +48,7 @@ class VoiceResourceGuard:
             pass
         return _MIN_FREE_VRAM_FLOOR_GB
 
-    def check_vram(self, minimum_gb: float | None = _MIN_FREE_VRAM_FLOOR_GB) -> None:
+    def check_vram(self, minimum_gb: float | None = None) -> None:
         _, free_gb = self.gpu_status()
         if free_gb is None:
             return
