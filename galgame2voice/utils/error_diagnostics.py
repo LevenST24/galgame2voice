@@ -57,7 +57,7 @@ class ConfigurationSelectionError(ValueError):
 def format_provider_error(
     provider_id: str | None = None,
     status_code: int | None = None,
-    raw_error: str | None = None,
+    raw_error: Exception | str | None = None,
     api_key_configured: bool | None = None,
 ) -> dict[str, Any]:
     """
@@ -68,7 +68,7 @@ def format_provider_error(
         exc_or_msg=raw_error,
         provider_id=provider_id,
         status_code=status_code,
-        raw_body=raw_error,
+        raw_body=str(raw_error) if not isinstance(raw_error, BaseException) else None,
         api_key_configured=api_key_configured,
     )
     return diag.to_dict()
@@ -140,10 +140,22 @@ def _diagnose_local_configuration(
     return None
 
 
+def _unwrap_exception_chain(exc: BaseException) -> list[BaseException]:
+    """Traverses __cause__ and __context__ to collect all chained exceptions."""
+    chain: list[BaseException] = []
+    curr: BaseException | None = exc
+    visited: set[int] = set()
+    while curr is not None and id(curr) not in visited:
+        visited.add(id(curr))
+        chain.append(curr)
+        curr = curr.__cause__ or curr.__context__
+    return chain
+
+
 def _extract_status_code(status_code: int | None, raw_lower: str) -> int | None:
     if status_code is not None:
         return status_code
-    for code in (401, 403, 429, 404, 400, 408, 502, 503, 504):
+    for code in (401, 403, 429, 404, 400, 408, 502, 503, 504, 529):
         if f"({code})" in raw_lower or f" {code} " in raw_lower or f"http {code}" in raw_lower or f"status {code}" in raw_lower:
             return code
     return None
@@ -179,13 +191,40 @@ def _diagnose_transport_fault(
     raw_lower: str,
     status_code: int | None,
     sanitized_raw: str,
+    exc_chain: list[BaseException] | None = None,
 ) -> DiagnosticResult | None:
-    if (
+    exc_chain = exc_chain or []
+    chain_types = [type(e).__name__.lower() for e in exc_chain]
+
+    is_timeout = (
         "timeout" in exc_type
+        or any("timeout" in t for t in chain_types)
         or "timeouterror" in raw_lower
         or "timed out" in raw_lower
+        or "readtimeout" in raw_lower
+        or "connecttimeout" in raw_lower
         or status_code in (408, 504)
-    ):
+    )
+
+    if is_timeout:
+        is_read_timeout = (
+            any("readtimeout" in t for t in chain_types)
+            or "readtimeout" in raw_lower
+            or "read timeout" in raw_lower
+            or "reading stream" in raw_lower
+            or "read operation timed out" in raw_lower
+        )
+        is_local = any(h in raw_lower for h in ("127.0.0.1", "localhost", "::1"))
+
+        if is_local and is_read_timeout:
+            return DiagnosticResult(
+                error_code="NETWORK_TIMEOUT",
+                message="本机模型响应超时 (Read Timeout)",
+                guidance="本机模型响应太慢或仍在加载。本地服务（如 Ollama / LM Studio）在首次加载模型权重到显存或生成长文本时耗时较长，请检查本地推理服务运行状态，或调大超时时间后重试。",
+                status_code=status_code or 408,
+                raw_error=sanitized_raw,
+            )
+
         return DiagnosticResult(
             error_code="NETWORK_TIMEOUT",
             message="网络连接超时 (Request Timeout)",
@@ -211,6 +250,7 @@ def _diagnose_transport_fault(
         "getaddrinfo failed" in raw_lower
         or "dns" in raw_lower
         or "resolutionerror" in exc_type
+        or any("resolutionerror" in t for t in chain_types)
         or "nodename nor servname provided" in raw_lower
     ):
         return DiagnosticResult(
@@ -225,6 +265,7 @@ def _diagnose_transport_fault(
     # Its type alone cannot establish that a particular port refused the request.
     if (
         "connecterror" in exc_type
+        or any("connecterror" in t for t in chain_types)
         or "connecterror" in raw_lower
         or (status_code in (502, 503) and ("connect" in raw_lower or not raw_lower))
     ):
@@ -239,33 +280,96 @@ def _diagnose_transport_fault(
     return None
 
 
+def _diagnose_overload(
+    raw_lower: str,
+    status_code: int | None,
+    sanitized_raw: str,
+) -> DiagnosticResult | None:
+    is_overload = (
+        status_code in (503, 529)
+        or any(kw in raw_lower for kw in (
+            "overloaded",
+            "overload",
+            "过载",
+            "繁忙",
+            "temporarily unavailable",
+            "service unavailable",
+            "capacity",
+        ))
+    )
+    if not is_overload:
+        return None
+
+    code = status_code or 503
+    name = "Overloaded" if code == 529 else "Service Unavailable"
+    return DiagnosticResult(
+        error_code="SERVER_OVERLOADED",
+        message=f"服务暂时繁忙 ({code} {name})",
+        guidance="模型服务当前过载或暂时繁忙，请稍后重试。通常无需修改配置。",
+        status_code=code,
+        raw_error=sanitized_raw,
+    )
+
+
 def _diagnose_model_not_found(
     raw_lower: str,
     status_code: int | None,
     sanitized_raw: str,
 ) -> DiagnosticResult | None:
-    if "bot token" not in raw_lower and (
-        status_code == 404
-        or any(
-            kw in raw_lower
-            for kw in (
-                "model not found",
-                "model_not_found",
-                "does not exist",
-                "the model",
-                "unknown model",
-                "no such model",
-            )
+    if "bot token" in raw_lower:
+        return None
+
+    has_model_keyword = "model" in raw_lower or "模型" in raw_lower
+    has_not_found_keyword = any(
+        kw in raw_lower
+        for kw in (
+            "not found",
+            "not_found",
+            "does not exist",
+            "unknown model",
+            "no such model",
+            "不存在",
+            "找不到",
+            "未找到",
+            "无此模型",
         )
-    ):
-        return DiagnosticResult(
-            error_code="MODEL_NOT_FOUND",
-            message="指定的模型名称不存在 (404 Model Not Found)",
-            guidance="提供商无法识别填写的模型名称。请从官方推荐预设列表下拉选择（如 xAI 选 grok-3 / grok-3-mini，DeepSeek 选 deepseek-chat），或核对自定义模型拼写无误。",
-            status_code=status_code or 404,
-            raw_error=sanitized_raw,
-        )
-    return None
+    )
+
+    is_model_not_found = (
+        "model_not_found" in raw_lower
+        or "model not found" in raw_lower
+        or "unknown model" in raw_lower
+        or "no such model" in raw_lower
+        or (has_model_keyword and has_not_found_keyword)
+    )
+
+    if not is_model_not_found:
+        return None
+
+    return DiagnosticResult(
+        error_code="MODEL_NOT_FOUND",
+        message=f"指定的模型名称不存在 ({status_code or 404} Model Not Found)",
+        guidance="提供商无法识别填写的模型名称。请从官方推荐预设列表下拉选择（如 xAI 选 grok-3 / grok-3-mini，DeepSeek 选 deepseek-chat），或核对自定义模型拼写无误。",
+        status_code=status_code or 404,
+        raw_error=sanitized_raw,
+    )
+
+
+def _diagnose_endpoint_not_found(
+    raw_lower: str,
+    status_code: int | None,
+    sanitized_raw: str,
+) -> DiagnosticResult | None:
+    if status_code != 404 and " 404 " not in raw_lower and "status 404" not in raw_lower and "(404)" not in raw_lower:
+        return None
+
+    return DiagnosticResult(
+        error_code="ENDPOINT_NOT_FOUND",
+        message="接口地址未找到 (404 Not Found)",
+        guidance="提供商未找到请求的接口路径。请检查 Base URL 地址配置（特别是路径部分，例如是否缺少或多写了 /v1 等后缀）。",
+        status_code=404,
+        raw_error=sanitized_raw,
+    )
 
 
 def _diagnose_gemini(
@@ -515,15 +619,29 @@ def diagnose_llm_error(
     """
     p_id = (provider_id or "").strip().lower()
 
-    # Extract exception type name if provided
-    exc_type = ""
-    if isinstance(exc_or_msg, Exception):
-        exc_type = type(exc_or_msg).__name__.lower()
-        msg_str = str(exc_or_msg)
-    else:
-        msg_str = str(exc_or_msg or "")
+    exc_chain = _unwrap_exception_chain(exc_or_msg) if isinstance(exc_or_msg, BaseException) else []
+    exc_type = type(exc_or_msg).__name__.lower() if isinstance(exc_or_msg, BaseException) else ""
 
-    raw_combined = f"{msg_str} {raw_body or ''}".strip()
+    chain_parts: list[str] = []
+    for e in exc_chain:
+        t_name = type(e).__name__
+        s_val = str(e).strip()
+        if s_val:
+            chain_parts.append(f"{t_name}: {s_val}")
+        else:
+            chain_parts.append(t_name)
+        try:
+            req = getattr(e, "request", None)
+            if req is not None and getattr(req, "url", None) is not None:
+                chain_parts.append(str(req.url))
+        except Exception:
+            pass
+
+    if not exc_chain and exc_or_msg:
+        chain_parts.append(str(exc_or_msg))
+
+    chain_str = " | ".join(chain_parts) if chain_parts else ""
+    raw_combined = f"{chain_str} {raw_body or ''}".strip()
     raw_lower = raw_combined.lower()
     sanitized_raw = MaskingFilter.sanitize(raw_combined)[:300] if raw_combined else ""
 
@@ -532,8 +650,10 @@ def diagnose_llm_error(
     return (
         _diagnose_local_configuration(raw_lower, sanitized_raw, p_id, api_key_configured)
         or _diagnose_unsupported_parameter(raw_lower, status_code, sanitized_raw)
-        or _diagnose_transport_fault(exc_type, raw_lower, status_code, sanitized_raw)
+        or _diagnose_transport_fault(exc_type, raw_lower, status_code, sanitized_raw, exc_chain=exc_chain)
+        or _diagnose_overload(raw_lower, status_code, sanitized_raw)
         or _diagnose_model_not_found(raw_lower, status_code, sanitized_raw)
+        or _diagnose_endpoint_not_found(raw_lower, status_code, sanitized_raw)
         or _diagnose_provider_specific(p_id, raw_lower, status_code, sanitized_raw)
         or _diagnose_generic_http(raw_lower, status_code, sanitized_raw)
         or _diagnose_final_fallback(status_code, sanitized_raw)
