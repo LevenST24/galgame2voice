@@ -41,14 +41,35 @@ def make_layout_server(handler):
     raise RuntimeError("Could not bind a high loopback port for browser tests")
 
 
+# Read at call time so a test can shorten it.
+CHROME_DUMP_TIMEOUT_MS = 35_000
+
+
+def _with_dump_timeout(command):
+    # --virtual-time-budget stops the clock while a request is pending, so a request
+    # that never finished kept --dump-dom from returning until the 40 s timeout below.
+    # --timeout is wall-clock: Chrome dumps what it has and exits. A ready page exits sooner.
+    return [*command, f"--timeout={CHROME_DUMP_TIMEOUT_MS}"] if "--dump-dom" in command else command
+
+
 def run_layout_browser(command):
-    # Chrome's own cache filenames can exceed Windows MAX_PATH when a browser
-    # profile sits under a long source-snapshot/pytest directory.
-    with tempfile.TemporaryDirectory(prefix="g2v-browser-", dir=os.environ.get("G2V_BROWSER_PROFILE_ROOT") or SYSTEM_TEMP,
-                                     ignore_cleanup_errors=True) as profile:
-        command = [f"--user-data-dir={profile}" if item.startswith("--user-data-dir=") else item for item in command]
-        return subprocess.run(command, capture_output=True, timeout=40,
-                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    def launch():
+        # Chrome's own cache filenames can exceed Windows MAX_PATH when a browser
+        # profile sits under a long source-snapshot/pytest directory.
+        with tempfile.TemporaryDirectory(prefix="g2v-browser-", dir=os.environ.get("G2V_BROWSER_PROFILE_ROOT") or SYSTEM_TEMP,
+                                         ignore_cleanup_errors=True) as profile:
+            launched = [f"--user-data-dir={profile}" if item.startswith("--user-data-dir=") else item for item in command]
+            return subprocess.run(_with_dump_timeout(launched), capture_output=True, timeout=40,
+                                  creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+
+    result = launch()
+    # Under load the virtual-time budget can run out while Chrome is still on about:blank:
+    # CI's blank screenshots are about 6 KB, the size of an about:blank capture, and the
+    # dump has no result node. Retry such a dump once with a fresh profile.
+    if (result.returncode == 0 and any(item.startswith("--virtual-time-budget=") for item in command)
+            and not re.search(rb'<pre id="[^"]*result"', result.stdout)):
+        result = launch()
+    return result
 
 
 PAGE = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
@@ -141,6 +162,61 @@ def test_layout_server_queues_a_burst_of_browser_connections():
             client.close()
         server.server_close()
     assert len(clients) == 12
+
+
+BLANK_DUMP = b"<html><head></head><body></body></html>"
+RESULT_DUMP = b'<pre id="engine-result">{}</pre>'
+
+
+@pytest.mark.parametrize("dumps,launches", [
+    ([RESULT_DUMP], 1),
+    ([BLANK_DUMP, RESULT_DUMP], 2),
+    ([BLANK_DUMP, BLANK_DUMP, RESULT_DUMP], 2),
+])
+def test_run_layout_browser_retries_a_blank_virtual_time_dump_once(monkeypatch, dumps, launches):
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, dumps[len(commands) - 1], b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run_layout_browser(["chrome", "--virtual-time-budget=5000", "--dump-dom", "http://127.0.0.1:9/"])
+    assert len(commands) == launches
+
+
+@pytest.mark.requires_piped_subprocess
+def test_run_layout_browser_dumps_a_page_whose_request_never_finishes(tmp_path, monkeypatch):
+    browser = browser_path()
+    if not browser:
+        pytest.skip("The dump timeout needs an installed Chromium browser")
+    monkeypatch.setitem(globals(), "CHROME_DUMP_TIMEOUT_MS", 2000)
+    release = threading.Event()
+
+    class HangingHandler(LayoutHandler):
+        def do_GET(self):
+            if self.path != "/hang":
+                return super().do_GET()
+            release.wait(60)  # Outlasts run_layout_browser's 40 s timeout: no answer while Chrome runs.
+            self.send_error(404)
+
+    page = b'<!doctype html><pre id="layout-result">painted</pre><img src="/hang">'
+    server = make_layout_server(partial(HangingHandler, page=page))
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        result = run_layout_browser([
+            browser, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-sync",
+            "--no-default-browser-check", "--no-proxy-server", "--disable-background-networking", "--disable-extensions",
+            f"--user-data-dir={tmp_path/'browser'}", "--virtual-time-budget=5000", "--dump-dom",
+            f"http://127.0.0.1:{server.server_port}/",
+        ])
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
+    assert result.returncode == 0 and b'<pre id="layout-result">painted</pre>' in result.stdout
 
 
 @pytest.mark.requires_piped_subprocess
