@@ -114,7 +114,11 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   }
   function renderStatus() {
     const states = { chat: !status.modelLoaded ? ['warn', '对话 检查中'] : status.model?.readFailed ? ['warn', '对话 状态未确认'] : chatOK() ? ['ok', '对话 可用'] : ['bad', '对话 未设置'],
-      voice: status.engine?.state === 'ready' ? ['ok', '语音 可用'] : status.engine?.state === 'starting' ? ['warn', '语音 启动中'] : ['bad', '语音 未连接'] };
+      voice: status.engine?.state === 'ready' ? ['ok', '语音 可用']
+        : status.engine?.state === 'starting' ? ['warn', '语音 启动中']
+        : status.engine?.state === 'loading_slow' ? ['warn', '语音 加载较慢']
+        : status.engine?.state === 'checking' ? ['warn', '语音 待确认']
+        : ['bad', '语音 未连接'] };
     for (const [kind, [color, text]] of Object.entries(states)) {
       pills[kind].dot.className = `home-dot ${color}`; pills[kind].text.textContent = text;
       pills[kind].button.setAttribute('aria-label', text);
@@ -155,7 +159,13 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     if (mode === 'new') renderDraft();
     else if (firstUse) renderFirst();
     else {
-      if (status.engine?.state !== 'ready') pane.appendChild(el('p', 'home-notice', '语音引擎未连接，可以先用文字聊天'));
+      const engineState = status.engine?.state;
+      const notice = engineState === 'ready' ? ''
+        : engineState === 'starting' ? '语音引擎正在启动，可以先用文字聊天'
+        : engineState === 'loading_slow' ? '语音引擎加载较慢，可以先用文字聊天'
+        : engineState === 'checking' ? '正在核对语音引擎，可以先用文字聊天'
+        : '语音引擎未连接，可以先用文字聊天';
+      if (notice) pane.appendChild(el('p', 'home-notice', notice));
       pane.appendChild(el('p', 'home-label', '继续这一页'));
       const meta = el('p', 'home-meta');
       add(meta, el('b', '', session?.characterName || session?.title || '新对话'),
