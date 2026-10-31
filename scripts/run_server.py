@@ -933,22 +933,43 @@ def _calibrate_precision_after_ready(
 
     def restart(new_is_half: bool):
         global _SPAWNED_SOVITS_PROC
-        old = _SPAWNED_SOVITS_PROC
-        if old is not None:
-            try:
-                terminate_process_tree(old.pid)
-            except Exception:
-                pass
-        # Wait for the old engine to release the port before relaunching.
-        for _ in range(20):
-            time.sleep(0.5)
-            if not is_port_in_use(port, host):
-                break
+        from galgame2voice.routers import health
+        from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client
+        from galgame2voice.services.sovits_endpoint import parse_sovits_endpoint
+
+        target_url = parse_sovits_endpoint(f"http://{host}:{port}", source="runtime").base_url
+        health._engine_restart_lock.acquire()
         try:
-            return _spawn_sovits_process(sovits_dir, host, port, new_is_half, device=device)
-        except Exception as exc:
-            print(f"      [WARN] 引擎重启失败: {exc}")
-            return None
+            health._engine_restart_target = target_url
+            try:
+                get_gpt_sovits_client().invalidate_model_state()
+            except Exception as exc:
+                print(f"      [WARN] 作废客户端音色状态失败: {exc}")
+
+            old = _SPAWNED_SOVITS_PROC
+            if old is not None:
+                try:
+                    terminate_process_tree(old.pid)
+                except Exception:
+                    pass
+            # Wait for the old engine to release the port before relaunching.
+            port_released = False
+            for _ in range(20):
+                time.sleep(0.5)
+                if not is_port_in_use(port, host):
+                    port_released = True
+                    break
+            if not port_released:
+                print(f"      [WARN] 旧 GPT-SoVITS 进程未在 10 秒内释放端口 {port}，取消拉起新进程。")
+                return None
+            try:
+                return _spawn_sovits_process(sovits_dir, host, port, new_is_half, device=device)
+            except Exception as exc:
+                print(f"      [WARN] 引擎重启失败: {exc}")
+                return None
+        finally:
+            health._engine_restart_target = None
+            health._engine_restart_lock.release()
 
     # Give the model a moment to finish loading weights after port bind.
     time.sleep(2.0)

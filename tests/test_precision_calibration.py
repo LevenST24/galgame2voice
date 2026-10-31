@@ -5,16 +5,25 @@ Evidence-based precision calibration tests:
    fake probe + fake restart — no real engine or GPU needed.
 """
 
+import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
+from galgame2voice.config import get_settings
+from galgame2voice.routers import health
+from galgame2voice.services.engine_runtime import EngineLaunch
+from galgame2voice.services.gpt_sovits_client import GptSovitsClient
+from galgame2voice.services.sovits_endpoint import parse_sovits_endpoint
 from galgame2voice.utils.precision import (
     read_precision_cache,
     resolve_initial_is_half,
     write_precision_cache,
 )
+from scripts import run_server
 
 
 class TestPrecisionStore:
@@ -289,3 +298,172 @@ class TestYamlPrecisionSync:
         assert dev3 == "cpu"
         assert half3 is False
         assert src3 == "cache"
+
+
+class TestSilenceCalibrationRestart:
+    HOST = "127.0.0.1"
+    PORT = 19231
+    GPT = r"C:\voice\gpt.ckpt"
+    SOVITS = r"C:\voice\sovits.pth"
+    REFER = r"C:\voice\ref.wav"
+
+    @classmethod
+    def _install_owned_engine(cls, tmp_path, monkeypatch):
+        import threading
+
+        monkeypatch.setattr(health, "_engine_restart_lock", threading.Lock())
+        monkeypatch.setattr(health, "_engine_restart_target", None)
+        monkeypatch.setattr(get_settings(), "project_root", tmp_path)
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "logs" / "gpt_sovits.log").write_text(
+            "=== Galgame2Voice engine start ===\nengine ready\n", encoding="utf-8"
+        )
+        engine = tmp_path / "engine"
+        engine.mkdir(parents=True, exist_ok=True)
+        (engine / "api_v2.py").write_text("# synthetic entrypoint, never executed\n", encoding="utf-8")
+        proc = MagicMock(pid=4242)
+        proc.poll.return_value = None
+        monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
+        monkeypatch.setattr(
+            run_server,
+            "_SPAWNED_SOVITS_LAUNCH",
+            EngineLaunch(proc, cls.HOST, cls.PORT, "cuda", True, started_at=1.0),
+        )
+        monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
+        monkeypatch.setattr(run_server.time, "sleep", lambda *_args, **_kwargs: None)
+        return proc, engine
+
+    @classmethod
+    def _remember_replacement(cls, is_half):
+        replacement = MagicMock(pid=4243)
+        replacement.poll.return_value = None
+
+        def spawn(*_args, **_kwargs):
+            run_server._SPAWNED_SOVITS_PROC = replacement
+            run_server._SPAWNED_SOVITS_LAUNCH = EngineLaunch(
+                replacement, cls.HOST, cls.PORT, "cuda", is_half, started_at=2.0
+            )
+            return replacement
+
+        return spawn
+
+    @classmethod
+    def _loaded_client(cls):
+        client = GptSovitsClient(base_url=f"http://{cls.HOST}:{cls.PORT}")
+        client.current_gpt_weights = cls.GPT
+        client.current_sovits_weights = cls.SOVITS
+        client.current_refer_audio = cls.REFER
+        client.current_refer_text = "テスト"
+        client.current_refer_language = "ja"
+        client._model_state_uncertain = False
+        client._loaded_gpt_source = None
+        client._loaded_sovits_source = None
+        return client
+
+    def test_silence_calibration_gap_stays_starting(self, tmp_path, monkeypatch):
+        proc, engine = self._install_owned_engine(tmp_path, monkeypatch)
+        endpoint = parse_sovits_endpoint(f"http://{self.HOST}:{self.PORT}", source="db")
+        seen = {}
+
+        async def resolve():
+            return endpoint
+
+        async def probe(*_args, **_kwargs):
+            return SimpleNamespace(status="unreachable")
+
+        def terminate(pid, timeout=2.0):
+            assert pid == proc.pid
+            proc.poll.return_value = 1
+
+        def port_in_use(*_args, **_kwargs):
+            seen["status"] = asyncio.run(health.engine_status_endpoint())
+            return False
+
+        monkeypatch.setattr(health, "resolve_effective_sovits_endpoint", resolve)
+        monkeypatch.setattr(health, "_probe_gpt_sovits", probe)
+        monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
+        monkeypatch.setattr(run_server, "is_port_in_use", port_in_use)
+        monkeypatch.setattr(run_server, "_probe_synth_peak", lambda *_a, **_k: 0.0)
+        monkeypatch.setattr(run_server, "_spawn_sovits_process", self._remember_replacement(False))
+        run_server._calibrate_precision_after_ready(
+            engine, self.HOST, self.PORT, True, "default", device="cuda"
+        )
+        assert seen.get("status") is not None
+        assert seen["status"]["state"] == "starting", seen["status"]
+        assert seen["status"]["state"] != "failed", seen["status"]
+
+    def test_silence_calibration_reloads_weights_on_the_replacement(self, tmp_path, monkeypatch):
+        proc, engine = self._install_owned_engine(tmp_path, monkeypatch)
+        client = self._loaded_client()
+        monkeypatch.setattr(
+            "galgame2voice.services.gpt_sovits_client._global_gpt_sovits_client", client
+        )
+        monkeypatch.setattr(
+            "galgame2voice.services.gpt_sovits_client.get_gpt_sovits_client", lambda: client
+        )
+        peaks = iter((0.0, 0.5))
+
+        def terminate(pid, timeout=2.0):
+            assert pid == proc.pid
+            proc.poll.return_value = 1
+
+        monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
+        monkeypatch.setattr(run_server, "is_port_in_use", lambda *_a, **_k: False)
+        monkeypatch.setattr(run_server, "_probe_synth_peak", lambda *_a, **_k: next(peaks))
+        monkeypatch.setattr(run_server, "_spawn_sovits_process", self._remember_replacement(False))
+        run_server._calibrate_precision_after_ready(
+            engine, self.HOST, self.PORT, True, "default", device="cuda"
+        )
+        calls = []
+
+        class _Server:
+            async def handle_request(self, method, path, json_data=None, params=None):
+                calls.append(path)
+                return httpx.Response(200, text='{"ok": true}')
+
+        client.server = _Server()
+        switched = asyncio.run(
+            client.switch_voice_profile({
+                "name": "heroine",
+                "gpt_weights_path": self.GPT,
+                "sovits_weights_path": self.SOVITS,
+                "refer_audio_path": self.REFER,
+                "refer_text": "テスト",
+                "refer_language": "ja",
+            })
+        )
+        assert "/set_gpt_weights" in calls, {
+            "switched": switched,
+            "requests": calls,
+            "current_gpt_weights": client.current_gpt_weights,
+            "uncertain": client._model_state_uncertain,
+        }
+        assert "/set_sovits_weights" in calls, {
+            "switched": switched,
+            "requests": calls,
+            "current_sovits_weights": client.current_sovits_weights,
+            "uncertain": client._model_state_uncertain,
+        }
+
+    def test_silence_calibration_does_not_spawn_while_the_port_is_busy(self, tmp_path, monkeypatch):
+        proc, engine = self._install_owned_engine(tmp_path, monkeypatch)
+        spawned = []
+
+        def terminate(pid, timeout=2.0):
+            assert pid == proc.pid
+            proc.poll.return_value = 1
+
+        def spawn(*args, **kwargs):
+            spawned.append((args, kwargs))
+            return self._remember_replacement(False)()
+
+        monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
+        monkeypatch.setattr(run_server, "is_port_in_use", lambda *_a, **_k: True)
+        monkeypatch.setattr(run_server, "_probe_synth_peak", lambda *_a, **_k: 0.0)
+        monkeypatch.setattr(run_server, "_spawn_sovits_process", spawn)
+        run_server._calibrate_precision_after_ready(
+            engine, self.HOST, self.PORT, True, "default", device="cuda"
+        )
+        assert spawned == [], spawned
+
