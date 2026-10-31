@@ -538,8 +538,13 @@ export async function handleRescanCharacters() {
     if (_dom.sVoice?.value === '__custom__') {
       await populateScanOptions();
     }
-    const count = res?.discovered_count ?? 0;
-    showToast(count > 0 ? `已扫描并同步 ${count} 个角色包` : '已完成扫描（未发现新的角色包文件夹）', 'success');
+    // The server names each rejected folder and why; the voice list shows the same notice.
+    if (res?.catalog_warning) {
+      showToast(res.catalog_warning, 'error');
+    } else {
+      const count = res?.discovered_count ?? 0;
+      showToast(count > 0 ? `已扫描并同步 ${count} 个角色包` : '已完成扫描（未发现新的角色包文件夹）', 'success');
+    }
   } catch (e) {
     showToast(`扫描角色包失败: ${e.message || e}`, 'error');
   } finally {

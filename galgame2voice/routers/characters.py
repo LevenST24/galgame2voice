@@ -235,6 +235,8 @@ async def rescan_character_packages(request: Request) -> dict[str, Any]:
             "total_profiles": len(profiles),
             "active_profile_id": active.id if active else (profiles[0].id if profiles else None),
             "characters": [p.name for p in discovered],
+            # Rejected folders and why, the same notice the voice list shows.
+            "catalog_warning": char_mgr.catalog_warning,
         }
     except Exception as exc:
         safe_err = sanitize_error_detail(exc)

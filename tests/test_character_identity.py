@@ -26,14 +26,14 @@ def project(tmp_path, monkeypatch):
     return tmp_path
 
 
-def install(root, package_id, name, aliases=(), folder=None):
+def install(root, package_id, name, aliases=(), folder=None, seconds=4):
     package = root / "characters" / (folder or package_id)
     package.mkdir(parents=True)
     with wave.open(str(package / "gentle.wav"), "wb") as audio:
         audio.setnchannels(1)
         audio.setsampwidth(2)
         audio.setframerate(8000)
-        audio.writeframes(b"\x01\x00" * 8000 * 4)
+        audio.writeframes(b"\x01\x00" * 8000 * seconds)
     (package / "gpt.ckpt").write_bytes(b"x" * 5000)
     (package / "sovits.pth").write_bytes(b"x" * 5000)
     (package / "manifest.json").write_text(json.dumps({
@@ -784,3 +784,45 @@ async def test_overlapping_persona_saves_keep_manifest_and_database_together(
                 task.cancel()
         CharacterManager.reset_instance()
 
+
+async def _rescan_and_list(project, monkeypatch):
+    from httpx import ASGITransport, AsyncClient
+
+    from galgame2voice.main import create_app
+    from galgame2voice.routers import characters, voice
+    from galgame2voice.services import character_manager
+
+    manager = CharacterManager(project / "characters")
+    for module in (character_manager, characters, voice):
+        monkeypatch.setattr(module, "get_character_manager", lambda: manager)
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+        scan = await client.post("/api/characters/rescan")
+        listed = await client.get("/api/voice/profiles")
+    assert scan.status_code == 200 and listed.status_code == 200
+    return scan.json(), listed.json()
+
+
+@pytest.mark.asyncio
+async def test_rescan_names_a_rejected_package_and_why(project, isolate_test_database, monkeypatch):
+    install(project, "valid_char", "有效角色")
+    install(project, "broken_char", "坏掉的角色", folder="broken_folder", seconds=1)
+
+    scan, listed = await _rescan_and_list(project, monkeypatch)
+
+    assert scan["characters"] == ["有效角色"]
+    warning = scan["catalog_warning"]
+    assert warning.startswith("角色包「broken_folder（坏掉的角色）」不合格：")
+    assert "1.00 秒，不在 3 到 10 秒范围内" in warning
+    assert listed["catalog_warning"] == warning
+
+
+@pytest.mark.asyncio
+async def test_rescan_lists_three_rejected_packages_and_the_total(project, isolate_test_database, monkeypatch):
+    for index in range(4):
+        install(project, f"short_{index}", f"短音频{index}", seconds=1)
+
+    scan, _listed = await _rescan_and_list(project, monkeypatch)
+
+    warning = scan["catalog_warning"]
+    assert [f"short_{index}（" in warning for index in range(4)] == [True, True, True, False]
+    assert warning.endswith("另有 1 个角色包不合格（共 4 个）。")

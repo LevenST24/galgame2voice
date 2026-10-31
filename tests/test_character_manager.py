@@ -159,7 +159,7 @@ def test_character_manager_duration_validation(tmp_path):
     assert pkg.is_valid is False
     assert any("too_short" in err for err in pkg.validation_errors)
     assert any("too_long" in err for err in pkg.validation_errors)
-    assert any("not found" in err for err in pkg.validation_errors)
+    assert any("不存在" in err for err in pkg.validation_errors)
 
 
 # ============================================================================
@@ -388,7 +388,7 @@ def test_character_manager_path_traversal_rejection(tmp_path):
     pkg = mgr.get_character("bad_traversal")
     assert pkg is not None
     assert pkg.is_valid is False
-    assert any("traversal" in err.lower() for err in pkg.validation_errors)
+    assert any("路径穿越" in err for err in pkg.validation_errors)
 
 
 @pytest.mark.requires_character_assets
@@ -556,7 +556,7 @@ def test_character_manager_rejects_duplicate_audio_md5(tmp_path):
     pkg = mgr.get_character("dup_char")
     assert pkg is not None
     assert pkg.is_valid is False
-    assert any("duplicate" in err.lower() for err in pkg.validation_errors)
+    assert any("重复" in err for err in pkg.validation_errors)
 
 
 @pytest.mark.requires_character_assets

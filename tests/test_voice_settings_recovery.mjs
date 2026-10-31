@@ -12,13 +12,15 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 function element(value = '') {
   const listeners = {};
   return { value, disabled: false, textContent: '', children: [], style: { setProperty() {} },
+    dataset: {},
     get innerHTML() { return this.html || ''; },
     set innerHTML(html) { this.html = html; this.children = []; },
     addEventListener: (name, handler) => { (listeners[name] ||= []).push(handler); },
     async fire(name) { for (const handler of listeners[name] || []) await handler(); },
     async click() { if (!this.disabled) await this.fire('click'); },
     appendChild(child) { this.children.push(child); }, querySelectorAll: () => [],
-    classList: { contains: () => false, toggle() {} } };
+    remove() {},
+    classList: { contains: () => false, toggle() {}, add() {}, remove() {} } };
 }
 function setup(callbacks = {}) {
   loadState();
@@ -487,5 +489,29 @@ const models = {
     assert.equal(dom.sAdvReplyFormat.value, 'lines');
   }
   passed++;
+}
+{
+  // A rescan that rejected a package shows the server's notice, once, instead of the success toast.
+  setup();
+  const toastRoot = element();
+  toastRoot.querySelectorAll = () => toastRoot.children;
+  const getElementById = globalThis.document.getElementById;
+  globalThis.document.getElementById = id => (id === 'toastRoot' ? toastRoot : null);
+  const warning = "角色包「broken_folder（坏掉的角色）」不合格：情感 'gentle' 的参考音频时长 1.00 秒，不在 3 到 10 秒范围内: gentle.wav。";
+  try {
+    globalThis.fetch = async (url) => {
+      if (url === '/api/characters/rescan') return response({ status: 'ok', discovered_count: 1, catalog_warning: warning });
+      if (url === '/api/voice/profiles') {
+        return response({ profiles: [{ id: 1, name: '有效角色' }], active_profile_id: 1, catalog_warning: warning });
+      }
+      return response({});
+    };
+    await handleRescanCharacters();
+    assert.deepEqual(toastRoot.children.map(toast => [toast.className, toast.dataset.msg]), [['toast toast-error', warning]]);
+    passed++;
+  } finally {
+    for (const child of toastRoot.children) clearTimeout(child._timer);
+    globalThis.document.getElementById = getElementById;
+  }
 }
 console.log(`Voice settings recovery: ${passed} scenarios passed`);
