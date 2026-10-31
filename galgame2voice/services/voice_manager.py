@@ -173,8 +173,8 @@ class VoiceManager:
         return val
 
     @staticmethod
-    def _extract_profile_identity(p: Any) -> tuple[Any, Any, Any, Any, Any]:
-        """Extracts canonical (id, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text) tuple."""
+    def _extract_profile_identity(p: Any) -> tuple[Any, ...]:
+        """Extracts (id, weights, reference, prompt text, prompt language, text language)."""
         resolve = VoiceManager._resolve_profile_field
         return (
             resolve(p, "id"),
@@ -182,13 +182,16 @@ class VoiceManager:
             resolve(p, "sovits_weights_path"),
             resolve(p, "ref_audio_path", "refer_audio_path"),
             resolve(p, "prompt_text", "refer_text"),
+            resolve(p, "prompt_lang", "refer_language"),
+            resolve(p, "text_lang", "text_language"),
         )
 
     def is_active_profile(self, profile: Any, force: bool = False) -> bool:
         """
         Check if the given profile matches the currently active voice profile.
         Uses canonical fallback-chain semantics: attribute access, then
-        refer_audio_path/refer_text legacy aliases, then dict-key fallback.
+        refer_audio_path/refer_text/refer_language/text_language legacy aliases,
+        then dict-key fallback.
         """
         if force:
             return False
