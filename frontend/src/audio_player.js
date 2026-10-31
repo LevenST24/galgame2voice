@@ -13,6 +13,15 @@
 import { loadAudioBuffer } from './cache.js';
 import { withAudioDeadline } from './audio_request.js';
 
+// 整句没有开声时，只有确认丢失或损坏才返回 'failed'。超时和连接问题下次还能再点。
+function loadFailureOutcome(errors) {
+  const confirmed = errors.some(error =>
+    error?.code === 'AUDIO_DECODE_FAILED' || error?.status === 404 || error?.status === 410);
+  if (confirmed || errors.length === 0) return 'failed';
+  if (errors.every(error => error?.code === 'AUDIO_TIMEOUT')) return 'timeout';
+  return 'network';
+}
+
 export class StreamAudioController {
   constructor(options = {}) {
     this.crossFadeMs = options.crossFadeMs || 0.012; // 12ms micro-fade 消除瞬态爆音
@@ -317,7 +326,8 @@ export class StreamAudioController {
    * @param {Object} [options]
    * @param {string} [options.msgId]
    * @param {() => void} [options.onStart] 首个切片进入排定播放时刻时触发一次
-   * @returns {Promise<'ended'|'interrupted'|'failed'|'blocked'>}
+   * @returns {Promise<'ended'|'interrupted'|'failed'|'timeout'|'network'|'blocked'>}
+   * `'timeout'` 与 `'network'` 表示这次没有播出声音，且还不能确定文件已损坏或丢失。
    */
   async playLine(lineIndex, chunks, { msgId = null, onStart = null } = {}) {
     if (this._linePlayState) {
@@ -381,6 +391,7 @@ export class StreamAudioController {
       },
       queue: [],
       activeSources: [],
+      errors: [],
       playedCount: 0,
       totalChunks: chunks.length,
     };
@@ -425,7 +436,7 @@ export class StreamAudioController {
         if (lineState.playedCount > 0) {
           lineState.resolve('ended');
         } else {
-          lineState.resolve('failed');
+          lineState.resolve(loadFailureOutcome(lineState.errors));
         }
       }
     }
@@ -525,6 +536,7 @@ export class StreamAudioController {
         } catch (err) {
           if (lineState.settled) return;
           if (err.code === 'AUDIO_DECODE_FAILED') self._reportError(err);
+          lineState.errors.push(err);
           item.status = 'failed';
           scheduleLineNext();
         }

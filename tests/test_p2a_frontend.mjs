@@ -287,7 +287,7 @@ test('AudioPlayer: every terminal path disconnects its line gain exactly once', 
     const gain = player.ctx.createdGains.at(-1); await tick(10);
     if (outcome === 'ended') player.ctx.createdSources.at(-1).finish();
     if (outcome === 'stop' || outcome === 'fade') player.stopLine({ fadeMs: outcome === 'fade' ? 1 : 0 });
-    assert.equal(await promise, ['stop', 'fade'].includes(outcome) ? 'interrupted' : ['decode', 'fetch'].includes(outcome) ? 'failed' : 'ended');
+    assert.equal(await promise, ['stop', 'fade'].includes(outcome) ? 'interrupted' : ['decode', 'fetch'].includes(outcome) ? 'network' : 'ended');
     if (outcome === 'fade') await new Promise(resolve => setTimeout(resolve, 30));
     player.stopLine({ fadeMs: 0 });
     assert.equal(gain.connections.size, 0, outcome); assert.equal(gain.disconnects, 1, outcome);
@@ -358,12 +358,12 @@ test('AudioPlayer: playLine failed if no chunk can play', async () => {
   const rEmpty = await player.playLine(0, []);
   assert.equal(rEmpty, 'failed');
 
-  // Network failure for all chunks
+  // Network failure for all chunks. The file is not confirmed gone, so the attempt is retryable.
   globalThis.fetch = async () => { throw new TypeError('Network error'); };
   const pFailed = player.playLine(0, [{ audio_url: '/audio/fail.wav', index: 0 }]);
   await tick(10);
   const rFailed = await pFailed;
-  assert.equal(rFailed, 'failed');
+  assert.equal(rFailed, 'network');
   await player.close();
 });
 

@@ -89,7 +89,12 @@ export function createBacklog(container, deps = {}) {
   const regenerationFeedback = new Map();
   const regenerationKey = (messageId, lineIndex) => `${messageId}:${lineIndex}`;
   const failedAudio = new Set();
+  const loadNotes = new Map();
   const audioKey = line => JSON.stringify(line?.audio?.chunks || []);
+  const loadRetryText = {
+    timeout: '音频加载超时，请稍后在 LOG 里再点「语音」重试。',
+    network: '音频加载失败，请稍后在 LOG 里再点「语音」重试。',
+  };
 
   function stopReplay({ feedback } = {}) {
     ++replaySequence;
@@ -132,8 +137,9 @@ export function createBacklog(container, deps = {}) {
     const isExpired = (now - msgTs) > SEVEN_DAYS_MS;
 
     const unavailable = failedAudio.has(audioKey(line));
-    statusSpan.hidden = !unavailable;
-    statusSpan.textContent = unavailable ? '语音已过期或不可用' : '';
+    const retryText = unavailable ? '' : (loadNotes.get(audioKey(line)) || '');
+    statusSpan.hidden = !unavailable && !retryText;
+    statusSpan.textContent = unavailable ? '语音已过期或不可用' : retryText;
     if (unavailable) {
       btn.disabled = true;
       btn.title = '语音已过期或不可用';
@@ -265,11 +271,15 @@ export function createBacklog(container, deps = {}) {
     replayBtn.onclick = async (e) => {
       e.stopPropagation();
       if (destroyed) return;
+      const key = audioKey(line);
+      const hadRetryNote = loadNotes.delete(key);
       updateReplayButtonState(replayBtn, line, msg, statusSpan);
+      if (hadRetryNote) {
+        for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
+      }
       if (replayBtn.disabled) return;
       stopReplay();
       const thisReplay = replaySequence;
-      const key = audioKey(line);
       activeReplayButton = replayBtn;
 
       replayBtn.classList.add('is-playing');
@@ -291,7 +301,13 @@ export function createBacklog(container, deps = {}) {
         activeReplayButton = null;
         if (result === 'failed') {
           failedAudio.add(key);
+          loadNotes.delete(key);
           regenerationFeedback.delete(lineKey);
+        } else if (loadRetryText[result]) {
+          loadNotes.set(key, loadRetryText[result]);
+          regenerationFeedback.delete(lineKey);
+        }
+        if (result === 'failed' || loadRetryText[result]) {
           updateReplayButtonState(replayBtn, line, msg, statusSpan);
           for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
         }
