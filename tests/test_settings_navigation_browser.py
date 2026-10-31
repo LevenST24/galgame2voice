@@ -26,7 +26,12 @@ globalThis.fetch=async (url,options={})=>{
 await import('/frontend/src/main.js');
 const wait=()=>new Promise(resolve=>setTimeout(resolve,150));
 const visible=el=>el && !el.hidden && !el.classList.contains('hidden');
+// Under reduced motion styles.css gives every element a 0.01ms transition, and a
+// transition only advances when Chrome paints. A loaded runner can fire many
+// timers before the next frame, so finish transitions before hit-testing.
+const settle=()=>document.getAnimations().forEach(a=>{if(a instanceof CSSTransition)a.finish();});
 const click=selector=>{
+  settle();
   const el=document.querySelector(selector);if(!el)throw new Error('Missing '+selector);
   const r=el.getBoundingClientRect(),hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
   if(el.disabled || el.closest('[inert]') || r.width<=0 || r.height<=0 || !el.contains(hit))

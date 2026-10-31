@@ -86,7 +86,7 @@ parent.document.body.append(output);
 """
 
 
-def render_engine_case(tmp_path, width, height, script, virtual_ms=14000):
+def render_engine_case(tmp_path, width, height, script, virtual_ms=14000, browser_args=()):
     browser = browser_path()
     if not browser:
         pytest.skip("Settings rendering needs an installed Chromium browser")
@@ -102,7 +102,7 @@ def render_engine_case(tmp_path, width, height, script, virtual_ms=14000):
             browser, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-sync",
             "--no-default-browser-check", "--no-proxy-server", "--disable-background-networking", "--disable-extensions",
             "--force-device-scale-factor=1", f"--user-data-dir={tmp_path/'browser'}",
-            f"--window-size={max(width+100,600)},{height+100}", f"--virtual-time-budget={virtual_ms}",
+            f"--window-size={max(width+100,600)},{height+100}", f"--virtual-time-budget={virtual_ms}", *browser_args,
             "--dump-dom", f"--screenshot={tmp_path/'engine-status.png'}", f"http://127.0.0.1:{server.server_port}/",
         ])
     finally:

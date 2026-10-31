@@ -10,15 +10,9 @@ SCRIPT = NAVIGATION_SCRIPT.split("const state={};")[0] + """
 const state={left:0,right:innerWidth,viewport:innerWidth,overflow:0};
 try {
   await wait(); await wait();
-  click('.home-continue');
-  // The home fade lasts 300 ms; wait for the toolbar to become visible instead
-  // of assuming two 150 ms timers coincide with the end of the CSS transition.
-  for (let i=0; i<20; i++) {
-    const button=document.querySelector('[data-action="sessions"]');
-    if (button && getComputedStyle(button).visibility === 'visible') break;
-    await wait();
-  }
-  click('[data-action="sessions"]'); await wait();
+  // Let home finish fading in, then leave it and open the drawer in one task:
+  // a loaded runner can fire many timers before Chrome paints the next frame.
+  settle(); click('.home-continue'); click('[data-action="sessions"]'); await wait();
   const drawer=document.querySelector('.adv-drawer');
   const rect=drawer.getBoundingClientRect();
   state.drawerVisible=rect.width>0 && rect.left>=0 && rect.right<=innerWidth;
@@ -37,9 +31,12 @@ output.textContent=JSON.stringify(state);parent.document.body.append(output);
 
 @pytest.mark.requires_piped_subprocess
 @pytest.mark.parametrize("width,height", [(1280, 900)])
-def test_conversation_drawer_and_settings_are_reachable(tmp_path, width, height):
-    state = render_engine_case(tmp_path, width, height, SCRIPT, 7000)
-    assert "error" not in state, state
+# Without a flag Chrome follows the OS animation setting, so pin both modes.
+@pytest.mark.parametrize("browser_args", [("--force-prefers-no-reduced-motion",), ("--force-prefers-reduced-motion",)],
+                         ids=["motion", "reduced-motion"])
+def test_conversation_drawer_and_settings_are_reachable(tmp_path, width, height, browser_args):
+    state = render_engine_case(tmp_path, width, height, SCRIPT, 7000, browser_args)
+    assert "error" not in state, state["error"]  # pytest truncates the whole state in CI logs
     assert state["drawerVisible"] and state["drawerClosed"] and state["settingsOpen"], state
     assert state["overflow"] == 0
     assert {"自动", "快进", "记录", "重播", "隐藏", "设置"}.issubset(state["labels"])
