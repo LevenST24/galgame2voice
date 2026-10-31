@@ -207,7 +207,6 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     gCustomModel: $('gCustomModel'),
     gPreset: $('gPreset'),
     gPrecision: $('gPrecision'),
-    gAutoTranslate: $('gAutoTranslate'),
     gStatus: $('gStatus'),
     gAudioRetention: $('gAudioRetention'),
     gTgEnabled: $('gTgEnabled'),

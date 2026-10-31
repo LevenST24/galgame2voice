@@ -349,9 +349,6 @@ export function openGlobalSettings(tabName = null) {
   if (_dom.gPreset) {
     _dom.gPreset.value = state.global.ttsPreset || '';
   }
-  if (_dom.gAutoTranslate) {
-    _dom.gAutoTranslate.value = state.global.autoTranslate ? 'auto' : 'manual';
-  }
 }
 
 export async function savePrivateEndpointPreference() {
@@ -541,9 +538,6 @@ export async function saveGlobalConfig() {
 
     if (_dom.gPreset) {
       saveGlobal({ ttsPreset: _dom.gPreset.value });
-    }
-    if (_dom.gAutoTranslate) {
-      saveGlobal({ autoTranslate: _dom.gAutoTranslate.value === 'auto' });
     }
 
     const currentProviderDirty = targetProviderController?.isProviderDirty() ?? false;
