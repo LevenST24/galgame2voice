@@ -210,6 +210,23 @@ async def get_voice_profile(profile_id: int) -> dict[str, Any]:
 async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate) -> dict[str, Any]:
     validate_positive_profile_id(profile_id)
 
+    # Blank text is not a request to clear the field; saving it would erase the profile.
+    if req.name is not None and not req.name.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="音色名称不能为空",
+        )
+    if req.gpt_weights_path is not None and not req.gpt_weights_path.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="GPT 权重路径不能为空",
+        )
+    if req.sovits_weights_path is not None and not req.sovits_weights_path.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="SoVITS 权重路径不能为空",
+        )
+
     try:
         validate_voice_profile_paths(
             gpt_weights_path=req.gpt_weights_path.strip() if req.gpt_weights_path else None,
