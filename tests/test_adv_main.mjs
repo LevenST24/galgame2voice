@@ -4,6 +4,7 @@ import test from 'node:test';
 import { setup } from './helpers/adv_main.mjs';
 import { tick } from './helpers/chat_stream.mjs';
 import { state as storedState, getActive as storedActive, getSession as storedSession, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL } from '../frontend/src/store.js';
+import { serverTimestamp } from '../frontend/src/session_data.js';
 import { initVoiceSettings, ensureSessionVoice, getVoiceProfiles, fetchVoiceProfiles, getActiveProfileId } from '../frontend/src/controllers/voice_settings.js';
 import { createTitleScreen } from '../frontend/src/adv/title.js';
 import { initApp } from '../frontend/src/main.js';
@@ -1792,6 +1793,118 @@ test('startup sync keeps the cached failed question when it is retried while his
   assert.equal(storedActive().messages.at(-1), question);
 });
 
+function storedSessionSnapshot(session) {
+  return { sessions: [session], activeId: session.id, global: { ...DEFAULT_GLOBAL } };
+}
 
+// Real startup: localStorage, then initApp's default boot sync against the session list.
+async function bootSessionSync(t, { session, server }) {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  const calls = [];
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+    fetch: async (url, options = {}) => {
+      const target = String(url);
+      calls.push({ url: target, method: options.method || 'GET', body: options.body });
+      if (target.includes('/api/chat/sessions') && (options.method || 'GET') === 'POST') {
+        return Response.json({ status: 'ok' });
+      }
+      if (target.includes('/api/chat/sessions')) {
+        return Response.json({ sessions: [server], has_more: false, count: 1 });
+      }
+      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
+      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+      return Response.json({});
+    },
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch { /* already gone */ }
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+  const live = storedState.sessions.find(item => item.id === session.id);
+  const stored = JSON.parse(storage.get('gal2voice.chat.v1')).sessions[0];
+  const saves = calls.filter(call => call.method === 'POST' && call.url.includes('/api/chat/sessions'))
+    .map(call => JSON.parse(call.body));
+  return { live, stored, saves };
+}
 
+test('startup sync keeps newer local session settings and posts them', async t => {
+  const session = {
+    id: 's_settings_local', title: '晚上的对话', createdAt: 1_700_000_000_000, updatedAt: 1_800_000_000_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '小明', advWindowOpacity: 40, temperature: 0.2 },
+    messages: [{ id: 'm_keep', role: 'user', content: '只改了设置', ts: 1 }],
+  };
+  const server = {
+    id: session.id, title: session.title, voice_profile_id: null,
+    created_at: '2024-01-01 00:00:00', updated_at: '2024-01-01 00:00:01',
+    message_count: 1, last_message: '只改了设置',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '我', advWindowOpacity: 75, temperature: 0.7 },
+  };
+  const { live, stored, saves } = await bootSessionSync(t, { session, server });
+  assert.equal(live.settings.advPlayerName, '小明');
+  assert.equal(live.settings.advWindowOpacity, 40);
+  assert.equal(live.settings.temperature, 0.2);
+  assert.equal(live.updatedAt, 1_800_000_000_000);
+  assert.equal(stored.settings.advPlayerName, '小明');
+  assert.equal(stored.settings.advWindowOpacity, 40);
+  assert.equal(stored.settings.temperature, 0.2);
+  assert.equal(stored.updatedAt, 1_800_000_000_000);
+  assert.equal(saves.length, 1);
+  assert.equal(saves[0].id, session.id);
+  assert.equal(saves[0].settings.advPlayerName, '小明');
+  assert.equal(saves[0].settings.advWindowOpacity, 40);
+  assert.equal(saves[0].settings.temperature, 0.2);
+});
 
+test('startup sync applies newer server session settings', async t => {
+  const session = {
+    id: 's_settings_server', title: '晚上的对话', createdAt: 1_700_000_000_000, updatedAt: 1_700_000_000_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '我', advWindowOpacity: 75, temperature: 0.7 },
+    messages: [{ id: 'm_keep', role: 'user', content: '只改了设置', ts: 1 }],
+  };
+  const server = {
+    id: session.id, title: session.title, voice_profile_id: null,
+    created_at: '2024-01-01 00:00:00', updated_at: '2024-06-01 00:00:02',
+    message_count: 1, last_message: '只改了设置',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '小明', advWindowOpacity: 40, temperature: 0.2 },
+  };
+  const { live, stored, saves } = await bootSessionSync(t, { session, server });
+  const serverUpdatedAt = serverTimestamp(server.updated_at);
+  assert.equal(live.settings.advPlayerName, '小明');
+  assert.equal(live.settings.advWindowOpacity, 40);
+  assert.equal(live.settings.temperature, 0.2);
+  assert.equal(live.updatedAt, serverUpdatedAt);
+  assert.equal(stored.settings.advPlayerName, '小明');
+  assert.equal(stored.settings.advWindowOpacity, 40);
+  assert.equal(stored.settings.temperature, 0.2);
+  assert.equal(stored.updatedAt, serverUpdatedAt);
+  assert.equal(saves.length, 0);
+});

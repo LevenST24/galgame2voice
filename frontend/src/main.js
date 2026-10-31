@@ -807,6 +807,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     try {
       const backendSessions = await fetchAllSessions();
       if (isStale()) return;
+      // 保存失败时本机已经留下更新的一份。刷新后不要用更旧的服务端设置盖掉它。
+      const newerLocalSessions = [];
       if (backendSessions.length > 0) {
         const existingMap = new Map(state.sessions.map((s) => [s.id, s]));
         const merged = [];
@@ -815,9 +817,14 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           if (local) {
             local.lastLine = bs.last_message || '';
             if (bs.title && (local.title === '新对话' || !local.title)) local.title = bs.title;
-            local.updatedAt = serverTimestamp(bs.updated_at, local.updatedAt);
-            if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
-            if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = pickSettings({ ...local.settings, ...bs.settings }, DEFAULT_SESSION_SETTINGS);
+            const serverUpdatedAt = serverTimestamp(bs.updated_at, local.updatedAt);
+            if (local.updatedAt > serverUpdatedAt) {
+              newerLocalSessions.push(local);
+            } else {
+              local.updatedAt = serverUpdatedAt;
+              if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
+              if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = pickSettings({ ...local.settings, ...bs.settings }, DEFAULT_SESSION_SETTINGS);
+            }
             const lastMsg = local.messages ? local.messages[local.messages.length - 1] : null;
             const hasUnsentFailed = Boolean(
               lastMsg &&
@@ -874,6 +881,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       }
       if (isStale()) return;
       saveState();
+      for (const session of newerLocalSessions) persistSession(session).catch(() => {});
       fullRender();
       ensureSessionVoice(getActive(), { silent: true });
       if (window.innerWidth > 820) advApp?.textbox.inputElement?.focus();
