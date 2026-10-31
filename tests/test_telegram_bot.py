@@ -443,7 +443,7 @@ class TestTelegramBotRealModules:
         async with get_db(temp_db_path) as conn:
             await crud.create_voice_profile(conn, VoiceProfileCreate(
                 name="Telegram test voice", gpt_weights_path="test.ckpt", sovits_weights_path="test.pth",
-                is_default=True,
+                ref_audio_path="ref/test.wav", prompt_text="テスト", is_default=True,
             ))
         handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=temp_db_path)
         client = MockBotClient()
@@ -544,14 +544,21 @@ class TestTelegramBotRealModules:
         await handlers.handle_callback_query(cb_model_custom, DummyContext())
         assert "已激活大模型" in (cb_model_custom.callback_query.answer_text or "")
 
-        # Test Voice Profile switch (profile 1 is the seeded default active
-        # profile -> already-active guard answers without switching)
+        # The no-op toast applies only after the engine has loaded this voice.
+        from galgame2voice.services.voice_manager import VoiceManager, set_voice_manager
+        from tests.conftest import MockGptSovitsServer
+
+        async with get_db(temp_db_path) as conn:
+            loaded_voice = await crud.get_voice_profile(conn, 1)
+        loaded_engine = VoiceManager(MockGptSovitsServer(), db_path=temp_db_path)
+        assert await loaded_engine.client.switch_voice_profile(loaded_voice) is True
+        set_voice_manager(loaded_engine)
+
         cb_voice = CallbackUpdate("set_voice_1")
         await handlers.handle_callback_query(cb_voice, DummyContext())
         assert "已经是当前音色" in (cb_voice.callback_query.answer_text or "")
 
-        # Test Character switch callback (profile 1 is already active from the
-        # voice switch above -> already-active guard answers without switching)
+        # Character button uses the same handler. The engine still has this voice.
         cb_char = CallbackUpdate("set_char_1")
         await handlers.handle_callback_query(cb_char, DummyContext())
         assert "已经是当前音色" in (cb_char.callback_query.answer_text or "")
@@ -561,11 +568,13 @@ class TestTelegramBotRealModules:
         assert "清空" in (cb_reset.callback_query.answer_text or "")
 
     @pytest.mark.asyncio
-    async def test_telegram_bot_set_voice_already_active_guard(self, temp_db_path):
-        """Tapping the already-active voice profile is a no-op toast; other profiles still switch."""
+    async def test_telegram_bot_set_voice_already_active_guard(self, temp_db_path, monkeypatch):
+        """Tapping a voice the engine has already loaded is a no-op toast; other profiles still switch."""
         from galgame2voice.database.session import get_db, init_db
         from galgame2voice.database import crud
         from galgame2voice.database.models import VoiceProfileCreate
+        from galgame2voice.services.voice_manager import VoiceManager, set_voice_manager
+        from tests.conftest import MockGptSovitsServer
 
         await init_db(temp_db_path)
         handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=temp_db_path)
@@ -597,6 +606,15 @@ class TestTelegramBotRealModules:
             )
             await crud.set_active_voice_profile(conn, active_p.id)
 
+        engine = VoiceManager(MockGptSovitsServer(), db_path=temp_db_path)
+        monkeypatch.setattr(engine, "_check_switch_memory_guard", lambda force: None)
+        async def _skip_warmup():
+            return True
+        engine.warmup_current_profile = _skip_warmup
+        monkeypatch.setattr("galgame2voice.services.voice_manager.release_system_memory", lambda: None)
+        assert await engine.client.switch_voice_profile(active_p) is True
+        set_voice_manager(engine)
+
         class MockQuery:
             def __init__(self, data):
                 self.data = data
@@ -617,7 +635,7 @@ class TestTelegramBotRealModules:
             def __init__(self):
                 self.bot = MockBotClient()
 
-        # Tapping the already-active profile -> no-op toast, no switch
+        # Engine already has this voice -> no-op toast, no switch
         cb_same = CallbackUpdate(f"set_voice_{active_p.id}")
         await handlers.handle_callback_query(cb_same, DummyContext())
         assert "已经是当前音色" in (cb_same.callback_query.answer_text or "")
