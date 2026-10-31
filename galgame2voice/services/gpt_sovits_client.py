@@ -284,7 +284,8 @@ class GptSovitsClient:
         """
         Probes GPT-SoVITS reachability via GET /control (api_v2 control endpoint returns 400 when active).
         HTTP 200/400 proves the engine is alive and listening; other codes / network errors are unreachable.
-        Dispatches through the mock server when one is configured (tests).
+        One connection error is retried on the same path; only a second consecutive connection
+        error forgets loaded models. Dispatches through the mock server when one is configured (tests).
         """
         base_url = self.base_url
         generation = self._endpoint_generation
@@ -292,18 +293,27 @@ class GptSovitsClient:
         try:
             mocked = self.server is not None and hasattr(self.server, "handle_request")
             client = None if mocked else self._get_http_client()
+            connection_errors = (httpx.NetworkError, httpx.ConnectTimeout, httpx.RemoteProtocolError)
 
             async def probe(path: str) -> httpx.Response:
-                try:
+                async def once() -> httpx.Response:
                     if mocked:
                         return await self.server.handle_request("GET", path)
                     return await client.get(f"{base_url}{path}", timeout=HEALTH_TIMEOUT)
-                except (httpx.NetworkError, httpx.ConnectTimeout, httpx.RemoteProtocolError):
-                    # A failed/broken connection may bridge an engine restart.
-                    # A slow response/pool wait or HTTP 503 proves no such change.
-                    # Never erase a later model confirmation or another URL.
-                    self._observe_connection_loss(generation, revision)
-                    raise
+
+                try:
+                    return await once()
+                except connection_errors:
+                    # A single broken keep-alive or a stalled proxy hop is not an
+                    # engine restart. httpx drops that connection; retry this path once.
+                    try:
+                        return await once()
+                    except connection_errors:
+                        # Two failures in a row may bridge a restart.
+                        # A slow response, pool wait, or HTTP 503 does not.
+                        # Never erase a later model confirmation or another URL.
+                        self._observe_connection_loss(generation, revision)
+                        raise
 
             try:
                 resp = await probe(ENDPOINT_CONTROL)
