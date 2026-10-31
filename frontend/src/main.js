@@ -93,6 +93,21 @@ export function mapBackendMessage(bm) {
   return msg;
 }
 
+export function extractServerId(msg) {
+  if (!msg) return null;
+  if (Number.isSafeInteger(msg.serverMessageId) && msg.serverMessageId > 0) {
+    return msg.serverMessageId;
+  }
+  if (typeof msg.id === 'string') {
+    const match = /^m_(\d+)$/.exec(msg.id);
+    if (match) {
+      const parsed = Number(match[1]);
+      if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+    }
+  }
+  return null;
+}
+
 // 可注入存储、流和渲染器，测试无需启动鉴权或麦克风。
 export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = {}) {
   const {
@@ -433,14 +448,51 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         const incoming = data.messages.map(mapBackendMessage);
         if (session.messages && session.messages.length > 0) {
           const usedIndices = new Set();
+          const pairedLocal = new Set();
+
+          // 1. 本地消息有已知服务端 ID（serverMessageId 或 m_<数字> 形式的 id）时，只和同 ID 的服务端消息配对。
+          const incomingById = new Map();
+          for (let j = 0; j < incoming.length; j++) {
+            const sid = extractServerId(incoming[j]);
+            if (sid !== null) {
+              incomingById.set(sid, j);
+            }
+          }
+
+          for (let i = 0; i < session.messages.length; i++) {
+            const localMsg = session.messages[i];
+            const sid = extractServerId(localMsg);
+            if (sid !== null && incomingById.has(sid)) {
+              const j = incomingById.get(sid);
+              if (!usedIndices.has(j)) {
+                const serverMsg = incoming[j];
+                if (serverMsg.role === localMsg.role) {
+                  usedIndices.add(j);
+                  pairedLocal.add(localMsg);
+                  if (localMsg.voiceKey) {
+                    serverMsg.voiceKey = localMsg.voiceKey;
+                    if (localMsg.dur !== undefined) {
+                      serverMsg.dur = localMsg.dur;
+                    }
+                    if (audioStore && audioStore.has(localMsg.id)) {
+                      audioStore.set(serverMsg.id, audioStore.get(localMsg.id));
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // 2. 没有已知 ID 的本地用户消息才按正文配对，而且只配给没被 ID 占用的服务端用户消息，保持从后往前的顺序。
           for (let i = session.messages.length - 1; i >= 0; i--) {
             const localMsg = session.messages[i];
-            if (localMsg && localMsg.role === 'user') {
+            if (localMsg && localMsg.role === 'user' && extractServerId(localMsg) === null) {
               for (let j = incoming.length - 1; j >= 0; j--) {
                 if (usedIndices.has(j)) continue;
                 const serverMsg = incoming[j];
                 if (serverMsg.role === 'user' && serverMsg.content === localMsg.content) {
                   usedIndices.add(j);
+                  pairedLocal.add(localMsg);
                   if (localMsg.voiceKey) {
                     serverMsg.voiceKey = localMsg.voiceKey;
                     if (localMsg.dur !== undefined) {
@@ -454,6 +506,12 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
                 }
               }
             }
+          }
+
+          // 3. 本地最后一条是带 failed 的用户消息，且没有配上任何服务端消息时，把它原样（保留 failed）接到新列表末尾。
+          const lastLocalMsg = session.messages[session.messages.length - 1];
+          if (lastLocalMsg && lastLocalMsg.role === 'user' && lastLocalMsg.failed && !pairedLocal.has(lastLocalMsg)) {
+            incoming.push(lastLocalMsg);
           }
         }
         session.messages = incoming;
@@ -754,7 +812,17 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
             local.updatedAt = serverTimestamp(bs.updated_at, local.updatedAt);
             if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
             if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = pickSettings({ ...local.settings, ...bs.settings }, DEFAULT_SESSION_SETTINGS);
-            if (typeof bs.message_count === 'number' && bs.message_count > (local.messages ? local.messages.length : 0)) {
+            const lastMsg = local.messages ? local.messages[local.messages.length - 1] : null;
+            const hasUnsentFailed = Boolean(
+              lastMsg &&
+              lastMsg.role === 'user' &&
+              lastMsg.failed &&
+              extractServerId(lastMsg) === null
+            );
+            const localCount = local.messages
+              ? (local.messages.length - (hasUnsentFailed ? 1 : 0))
+              : 0;
+            if (typeof bs.message_count === 'number' && bs.message_count > localCount) {
               sessionsBehindServer.add(local.id);
             } else {
               sessionsBehindServer.delete(local.id);

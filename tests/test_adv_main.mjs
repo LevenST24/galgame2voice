@@ -1130,5 +1130,496 @@ test('title screen excerpt presents server last_message when multi-turn session 
   assert.ok(homeQuote.includes('第二答'), `首页台词应包含服务端回复「第二答」，实际为: "${homeQuote}"`);
 });
 
+test('startup sync preserves voiceKey on message with matching server ID when server has duplicate text', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const session = {
+    id: 's_voice_id_pair',
+    title: '录音按ID配对',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_100_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      {
+        id: 'm_10',
+        serverMessageId: 10,
+        role: 'user',
+        content: '今天去哪',
+        voiceKey: 'user_m_10',
+        dur: 2.5,
+        ts: 1_700_000_100_000,
+      },
+      {
+        id: 'm_11',
+        serverMessageId: 11,
+        role: 'assistant',
+        content: '去公园吧',
+        ts: 1_700_000_150_000,
+      },
+    ],
+  };
+  const server = {
+    id: session.id,
+    title: session.title,
+    voice_profile_id: null,
+    created_at: '2024-06-01 00:00:00',
+    updated_at: '2024-06-01 00:00:03',
+    message_count: 4,
+    last_message: '不是刚去过公园吗',
+    settings: { ...session.settings },
+  };
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+    sessions: [session],
+    activeId: session.id,
+    global: { ...DEFAULT_GLOBAL },
+  })]]);
+
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+  };
+
+  globalThis.window.fetch = async (url) => {
+    const target = String(url);
+    if (target.includes('/api/chat/sessions')) {
+      return Response.json({ sessions: [server], has_more: false, count: 1 });
+    }
+    if (target.includes('/api/chat/history')) {
+      return Response.json({
+        session_id: session.id,
+        has_more: false,
+        oldest_id: 10,
+        count: 4,
+        messages: [
+          { id: 10, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
+          { id: 11, role: 'assistant', content_chinese: '去公园吧', content_japanese: '', created_at: '2024-06-01 00:00:01' },
+          { id: 12, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:02' },
+          { id: 13, role: 'assistant', content_chinese: '不是刚去过公园吗', content_japanese: '', created_at: '2024-06-01 00:00:03' },
+        ],
+      });
+    }
+    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+    if (target.includes('/api/providers')) return Response.json({
+      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
+      active_provider: 'p1',
+    });
+    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+    return Response.json({});
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  const app = initApp({
+    dom: { advRoot: root },
+    renderSessionList() {},
+  });
+
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  const activeSession = storedActive();
+  assert.equal(activeSession.messages.length, 4);
+  const msg10 = activeSession.messages.find(m => m.id === 'm_10');
+  const msg12 = activeSession.messages.find(m => m.id === 'm_12');
+  assert.equal(msg10?.voiceKey, 'user_m_10', '服务端 ID 为 10 的消息应保留 voiceKey');
+  assert.equal(msg10?.dur, 2.5);
+  assert.equal(msg12?.voiceKey, undefined, '后续同文的服务端 ID 12 不应被错误配上 voiceKey');
+});
+
+test('startup sync retains unsent failed user message at the end of session history and keeps retry available', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const session = {
+    id: 's_failed_retained',
+    title: '失败消息保留',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_100_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_1', serverMessageId: 1, role: 'user', content: '第一问', ts: 1_700_000_050_000 },
+      { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '第一答', ts: 1_700_000_080_000 },
+      {
+        id: 'm_local_failed',
+        role: 'user',
+        content: '失败的问题',
+        failed: { error: '网络连接失败', code: 'NETWORK_ERROR' },
+        ts: 1_700_000_100_000,
+      },
+    ],
+  };
+  const server = {
+    id: session.id,
+    title: session.title,
+    voice_profile_id: null,
+    created_at: '2024-06-01 00:00:00',
+    updated_at: '2024-06-01 00:00:03',
+    message_count: 4,
+    last_message: '第二答',
+    settings: { ...session.settings },
+  };
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+    sessions: [session],
+    activeId: session.id,
+    global: { ...DEFAULT_GLOBAL },
+  })]]);
+
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+  };
+
+  globalThis.window.fetch = async (url) => {
+    const target = String(url);
+    if (target.includes('/api/chat/sessions')) {
+      return Response.json({ sessions: [server], has_more: false, count: 1 });
+    }
+    if (target.includes('/api/chat/history')) {
+      return Response.json({
+        session_id: session.id,
+        has_more: false,
+        oldest_id: 1,
+        count: 4,
+        messages: [
+          { id: 1, role: 'user', content_chinese: '第一问', content_japanese: '', created_at: '2024-06-01 00:00:00' },
+          { id: 2, role: 'assistant', content_chinese: '第一答', content_japanese: '', created_at: '2024-06-01 00:00:01' },
+          { id: 3, role: 'user', content_chinese: '第二问', content_japanese: '', created_at: '2024-06-01 00:00:02' },
+          { id: 4, role: 'assistant', content_chinese: '第二答', content_japanese: '', created_at: '2024-06-01 00:00:03' },
+        ],
+      });
+    }
+    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+    if (target.includes('/api/providers')) return Response.json({
+      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
+      active_provider: 'p1',
+    });
+    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+    return Response.json({});
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  const app = initApp({
+    dom: { advRoot: root },
+    renderSessionList() {},
+  });
+
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  const activeSession = storedActive();
+  // 1. 刷新后失败问题仍是最后一条、带 failed
+  assert.equal(activeSession.messages.length, 5, '会话应包含服务端4条加本地末尾失败的1条');
+  const lastMsg = activeSession.messages[4];
+  assert.equal(lastMsg.id, 'm_local_failed');
+  assert.equal(lastMsg.role, 'user');
+  assert.equal(lastMsg.content, '失败的问题');
+  assert.deepEqual(lastMsg.failed, { error: '网络连接失败', code: 'NETWORK_ERROR' });
+
+  // 2. 存下来的状态里也在
+  const storedJson = JSON.parse(storage.get('gal2voice.chat.v1'));
+  const storedSessionData = storedJson.sessions.find(s => s.id === session.id);
+  assert.equal(storedSessionData.messages.length, 5);
+  assert.equal(storedSessionData.messages[4].id, 'm_local_failed');
+  assert.deepEqual(storedSessionData.messages[4].failed, { error: '网络连接失败', code: 'NETWORK_ERROR' });
+
+  // 3. 重试入口可用
+  assert.equal(app.conversation.canRetry(lastMsg), true, '末尾失败问题的重试入口应可用');
+});
+
+test('startup sync pulls history and retains failed question at end when server adds message after retention', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const session = {
+    id: 's_failed_retained_more',
+    title: '失败消息保留后服务端再多一条',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_100_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_1', serverMessageId: 1, role: 'user', content: '第一问', ts: 1_700_000_050_000 },
+      { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '第一答', ts: 1_700_000_080_000 },
+      { id: 'm_3', serverMessageId: 3, role: 'user', content: '第二问', ts: 1_700_000_085_000 },
+      { id: 'm_4', serverMessageId: 4, role: 'assistant', content: '第二答', ts: 1_700_000_090_000 },
+      {
+        id: 'm_local_failed',
+        role: 'user',
+        content: '失败的问题',
+        failed: { error: '网络连接失败', code: 'NETWORK_ERROR' },
+        ts: 1_700_000_100_000,
+      },
+    ],
+  };
+  const server = {
+    id: session.id,
+    title: session.title,
+    voice_profile_id: null,
+    created_at: '2024-06-01 00:00:00',
+    updated_at: '2024-06-01 00:00:04',
+    message_count: 5,
+    last_message: '第三问',
+    settings: { ...session.settings },
+  };
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+    sessions: [session],
+    activeId: session.id,
+    global: { ...DEFAULT_GLOBAL },
+  })]]);
+
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+  };
+
+  globalThis.window.fetch = async (url) => {
+    const target = String(url);
+    if (target.includes('/api/chat/sessions')) {
+      return Response.json({ sessions: [server], has_more: false, count: 1 });
+    }
+    if (target.includes('/api/chat/history')) {
+      return Response.json({
+        session_id: session.id,
+        has_more: false,
+        oldest_id: 1,
+        count: 5,
+        messages: [
+          { id: 1, role: 'user', content_chinese: '第一问', content_japanese: '', created_at: '2024-06-01 00:00:00' },
+          { id: 2, role: 'assistant', content_chinese: '第一答', content_japanese: '', created_at: '2024-06-01 00:00:01' },
+          { id: 3, role: 'user', content_chinese: '第二问', content_japanese: '', created_at: '2024-06-01 00:00:02' },
+          { id: 4, role: 'assistant', content_chinese: '第二答', content_japanese: '', created_at: '2024-06-01 00:00:03' },
+          { id: 5, role: 'user', content_chinese: '第三问', content_japanese: '', created_at: '2024-06-01 00:00:04' },
+        ],
+      });
+    }
+    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+    if (target.includes('/api/providers')) return Response.json({
+      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
+      active_provider: 'p1',
+    });
+    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+    return Response.json({});
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  const app = initApp({
+    dom: { advRoot: root },
+    renderSessionList() {},
+  });
+
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  const activeSession = storedActive();
+  // 1. 保留失败提问之后服务端再多 1 条，刷新仍会拉历史且失败提问仍在末尾
+  assert.equal(activeSession.messages.length, 6, '会话应包含服务端5条加本地末尾失败的1条');
+  const msg5 = activeSession.messages[4];
+  assert.equal(msg5.serverMessageId, 5);
+  assert.equal(msg5.content, '第三问');
+  const lastMsg = activeSession.messages[5];
+  assert.equal(lastMsg.id, 'm_local_failed');
+  assert.equal(lastMsg.role, 'user');
+  assert.equal(lastMsg.content, '失败的问题');
+  assert.deepEqual(lastMsg.failed, { error: '网络连接失败', code: 'NETWORK_ERROR' });
+
+  // 2. 存下来的状态里也在
+  const storedJson = JSON.parse(storage.get('gal2voice.chat.v1'));
+  const storedSessionData = storedJson.sessions.find(s => s.id === session.id);
+  assert.equal(storedSessionData.messages.length, 6);
+  assert.equal(storedSessionData.messages[5].id, 'm_local_failed');
+  assert.deepEqual(storedSessionData.messages[5].failed, { error: '网络连接失败', code: 'NETWORK_ERROR' });
+
+  // 3. 重试入口可用
+  assert.equal(app.conversation.canRetry(lastMsg), true, '末尾失败问题的重试入口应可用');
+});
+
+test('startup sync discards interrupted partial assistant reply and retains complete server reply without duplication', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const session = {
+    id: 's_interrupted_assistant',
+    title: '打断的半截回复',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_100_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_1', serverMessageId: 1, role: 'user', content: '今天去哪', ts: 1_700_000_050_000 },
+      { id: 'm_stream_interrupted', role: 'assistant', content: '去公园', ts: 1_700_000_080_000 },
+    ],
+  };
+  const server = {
+    id: session.id,
+    title: session.title,
+    voice_profile_id: null,
+    created_at: '2024-06-01 00:00:00',
+    updated_at: '2024-06-01 00:00:03',
+    message_count: 4,
+    last_message: '明天下午两点',
+    settings: { ...session.settings },
+  };
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+    sessions: [session],
+    activeId: session.id,
+    global: { ...DEFAULT_GLOBAL },
+  })]]);
+
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+  };
+
+  globalThis.window.fetch = async (url) => {
+    const target = String(url);
+    if (target.includes('/api/chat/sessions')) {
+      return Response.json({ sessions: [server], has_more: false, count: 1 });
+    }
+    if (target.includes('/api/chat/history')) {
+      return Response.json({
+        session_id: session.id,
+        has_more: false,
+        oldest_id: 1,
+        count: 4,
+        messages: [
+          { id: 1, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
+          { id: 2, role: 'assistant', content_chinese: '去公园散步吧，天气很好。', content_japanese: '', created_at: '2024-06-01 00:00:01' },
+          { id: 3, role: 'user', content_chinese: '什么时候去', content_japanese: '', created_at: '2024-06-01 00:00:02' },
+          { id: 4, role: 'assistant', content_chinese: '明天下午两点', content_japanese: '', created_at: '2024-06-01 00:00:03' },
+        ],
+      });
+    }
+    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+    if (target.includes('/api/providers')) return Response.json({
+      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
+      active_provider: 'p1',
+    });
+    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+    return Response.json({});
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  const app = initApp({
+    dom: { advRoot: root },
+    renderSessionList() {},
+  });
+
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  const activeSession = storedActive();
+  assert.equal(activeSession.messages.length, 4);
+  assert.equal(activeSession.messages[1].content, '去公园散步吧，天气很好。');
+  const interruptedExists = activeSession.messages.some(m => m.id === 'm_stream_interrupted' || m.content === '去公园');
+  assert.equal(interruptedExists, false, '被打断的半截助手回复不应与服务端完整回复同时出现');
+});
+
+
 
 
