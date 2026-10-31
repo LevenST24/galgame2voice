@@ -3,6 +3,8 @@ Integration and API tests for Memory and Affection REST endpoints (/api/memory, 
 and chat integration.
 """
 
+import asyncio
+
 import pytest
 from httpx import AsyncClient, ASGITransport
 from galgame2voice.main import create_app
@@ -143,7 +145,9 @@ class TestAffectionApi:
 class TestChatServiceMemoryAffectionIntegration:
     async def test_chat_sync_affection_and_fact_recording(self, client, monkeypatch):
         from galgame2voice.adapters.base import LLMResponse
+        from galgame2voice.routers.chat import get_chat_service
         from galgame2voice.services.chat_service import ChatService
+        from galgame2voice.services.memory_service import MemoryService
 
         class MockSyncAdapter:
             async def chat(self, messages, model=None, **kwargs):
@@ -155,6 +159,16 @@ class TestChatServiceMemoryAffectionIntegration:
             return MockSyncAdapter(), "mock-model"
 
         monkeypatch.setattr(ChatService, "_get_active_llm_adapter", _mock_get_adapter)
+
+        # Fact extraction runs in a background task after the reply is sent. Delay it the way a
+        # busy runner can, so the test has to wait for it.
+        extract = MemoryService.process_user_message
+
+        async def _slow_extract(self_ms, **kwargs):
+            await asyncio.sleep(0.2)
+            return await extract(self_ms, **kwargs)
+
+        monkeypatch.setattr(MemoryService, "process_user_message", _slow_extract)
 
         # 1. First chat turn: user declares name
         res1 = await client.post("/api/chat", json={
@@ -168,7 +182,8 @@ class TestChatServiceMemoryAffectionIntegration:
         assert data1["affection"]["score"] >= 1
         assert data1["affection"]["level"] == 1
 
-        # Verify fact memory was recorded
+        # Verify fact memory was recorded once the background extraction has finished
+        await get_chat_service().aclose()
         res_mems = await client.get("/api/memory?user_id=default_user")
         assert res_mems.status_code == 200
         mems = res_mems.json()
