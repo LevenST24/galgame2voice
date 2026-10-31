@@ -74,7 +74,18 @@ export const GREETING =
 export const LEGACY_GREETINGS = [
   '欢迎使用 Gal2Voice。\n\n支持语音输入与朗读回复：轮到你时，在文本框里打字后回车发送，或者点文本框里的麦克风说话。回复会一句一句显示并配上语音，点击画面推进。快捷菜单 CONFIG 面板的底部可以打开会话与角色设置（音色、人设、采样参数）和对话模型设置。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
   '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。设置中心的“角色与会话”可绑定角色音色并配置人设与采样参数，“对话模型”可切换模型；各设置页都可以返回首页。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
+  '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。右上角`会话设置`可配置专属人设与采样参数，侧边栏底部齿轮可切换音色与对话模型。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
+  '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。右上角`会话设置`可绑定角色音色并配置人设与采样参数，侧边栏底部齿轮可切换对话模型。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
 ];
+
+export function refreshLegacyGreeting(session) {
+  if (!session || !Array.isArray(session.messages) || session.messages.length === 0) return session;
+  const firstAssistant = session.messages.find((m) => m && m.role === 'assistant');
+  if (firstAssistant && LEGACY_GREETINGS.includes(firstAssistant.content)) {
+    firstAssistant.content = GREETING;
+  }
+  return session;
+}
 
 export function uid(prefix = 'id') {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -168,6 +179,7 @@ export function loadState() {
   } catch (e) {
     console.warn('读取本地会话失败', e);
   }
+  for (const session of state.sessions) refreshLegacyGreeting(session);
   if (!state.sessions.length) makeStarterSession();
   if (!state.sessions.some((s) => s.id === state.activeId)) {
     state.activeId = state.sessions[0]?.id ?? null;
@@ -208,6 +220,7 @@ export function prepareSessionImport(raw) {
   incoming.sessions.forEach((session, index) => {
     session.id = `s_import_${fileKey}_${index}`;
     session.settings.voiceProfileId = null;
+    refreshLegacyGreeting(session);
   });
   return incoming;
 }
@@ -260,11 +273,12 @@ export function getActive() {
     state.activeId = state.sessions[0]?.id ?? null;
     s = state.sessions[0] ?? null;
   }
-  return s;
+  return refreshLegacyGreeting(s);
 }
 
 export function getSession(id) {
-  return state.sessions.find((s) => s.id === id) ?? null;
+  const s = state.sessions.find((s) => s.id === id) ?? null;
+  return refreshLegacyGreeting(s);
 }
 
 export function saveGlobal(patch) {
