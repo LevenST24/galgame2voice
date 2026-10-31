@@ -395,11 +395,14 @@ def _collect_synthesize_options(req: SynthesizeRequest) -> dict[str, Any]:
 
 
 def _validate_synthesize_ref_audio(options: dict[str, Any]) -> None:
-    """Validates reference audio path if present in options."""
+    """Validates a reference audio path against the same roots as profile creation."""
     ref_audio = options.get("ref_audio_path") or options.get("refer_audio_path")
     if ref_audio:
         try:
-            safe_resolve_audio_path(ref_audio)
+            safe_resolve_audio_path(
+                ref_audio,
+                allowed_roots=get_authorized_roots(include_sovits=True),
+            )
         except PathTraversalError as pte:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
