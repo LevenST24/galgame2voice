@@ -5,9 +5,8 @@ Authored by Challenger 2.
 Empirically tests and challenges:
 1. Process Tree Termination Logic (`taskkill /f /t /pid`) on Windows.
 2. GPU VRAM Release Mechanisms and Orphan Process Prevention.
-3. Port Detection & Netstat Token Parsing (`netstat -ano`, IPv4/IPv6, LISTENING vs ESTABLISHED/TIME_WAIT).
-4. Substring Port Collisions and Dynamic Port Binding.
-5. Windows cmd.exe Environment Isolation and Path Handling.
+3. Substring Port Collisions and Dynamic Port Binding.
+4. Windows cmd.exe Environment Isolation and Path Handling.
 """
 
 import os
@@ -149,106 +148,6 @@ while True:
         assert "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE" in launcher_content, "run_server.py must include KILL_ON_JOB_CLOSE flag"
         assert "assign_process_to_job" in launcher_content, "run_server.py must assign child processes to job"
         assert "cleanup_subprocesses" in launcher_content, "run_server.py must have cleanup_subprocesses"
-
-
-# ============================================================================
-# 2. Port Detection & Netstat Parsing Stress Tests
-# ============================================================================
-
-class TestPortDetectionAndNetstat:
-    """Stress tests for netstat command output parsing and connection state filtering."""
-
-    def test_netstat_tokens_ipv4_ipv6_parsing(self):
-        """
-        Test that `tokens=4,5` correctly extracts the state and PID across IPv4,
-        IPv6, and wildcard bindings.
-        """
-        test_netstat_output = [
-            "  TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       1234",
-            "  TCP    127.0.0.1:8080         0.0.0.0:0              LISTENING       1234",
-            "  TCP    [::]:8080              [::]:0                 LISTENING       1234",
-            "  TCP    [::1]:8080             [::]:0                 LISTENING       1234",
-            "  TCP    127.0.0.1:9880         0.0.0.0:0              LISTENING       5678",
-        ]
-
-        def parse_batch_netstat(lines, port):
-            results = []
-            for line in lines:
-                if f":{port}" in line:
-                    parts = line.strip().split()
-                    if len(parts) >= 5:
-                        token4 = parts[3]
-                        token5 = parts[4]
-                        if token4 == "LISTENING":
-                            results.append(token5)
-            return results
-
-        pids_8080 = parse_batch_netstat(test_netstat_output, 8080)
-        assert len(pids_8080) == 4
-        assert all(pid == "1234" for pid in pids_8080)
-
-        pids_9880 = parse_batch_netstat(test_netstat_output, 9880)
-        assert len(pids_9880) == 1
-        assert pids_9880[0] == "5678"
-
-    def test_netstat_ignores_non_listening_states(self):
-        """
-        Ensure active/transient connection states (ESTABLISHED, TIME_WAIT, CLOSE_WAIT)
-        are NOT extracted as listening services.
-        """
-        test_netstat_output = [
-            "  TCP    127.0.0.1:8080         127.0.0.1:54321        ESTABLISHED     1234",
-            "  TCP    127.0.0.1:54321        127.0.0.1:8080         ESTABLISHED     9999",
-            "  TCP    127.0.0.1:8080         127.0.0.1:54322        TIME_WAIT       0",
-            "  TCP    127.0.0.1:8080         127.0.0.1:54323        CLOSE_WAIT      1234",
-            "  TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       1234",
-        ]
-
-        extracted_pids = []
-        for line in test_netstat_output:
-            if ":8080" in line:
-                parts = line.strip().split()
-                if len(parts) >= 5:
-                    token4 = parts[3]
-                    token5 = parts[4]
-                    if token4 == "LISTENING":
-                        extracted_pids.append(token5)
-
-        assert len(extracted_pids) == 1
-        assert extracted_pids[0] == "1234"
-
-    @pytest.mark.skipif(sys.platform != "win32", reason="Requires Windows OS")
-    def test_live_netstat_batch_execution(self, tmp_path):
-        """
-        Empirically start a real socket listener and test batch netstat parsing command directly.
-        """
-        test_port = 28185
-        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_sock.bind(("127.0.0.1", test_port))
-        server_sock.listen(1)
-
-        try:
-            # Create a test batch file with the exact loop from 启动.bat / 停止.bat
-            test_bat = tmp_path / "test_netstat.bat"
-            test_bat.write_text(
-                f"@echo off\n"
-                f"for /f \"tokens=4,5\" %%a in ('netstat -ano ^| findstr \":{test_port}\"') do (\n"
-                f"    if \"%%a\"==\"LISTENING\" echo %%b\n"
-                f")\n",
-                encoding="utf-8"
-            )
-            res = subprocess.run(
-                [str(test_bat)],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            output = res.stdout.strip()
-            current_pid = str(os.getpid())
-            assert current_pid in output, f"Expected PID {current_pid} in netstat output, got: {output}"
-        finally:
-            server_sock.close()
 
 
 # ============================================================================

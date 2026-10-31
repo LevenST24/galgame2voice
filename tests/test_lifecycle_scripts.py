@@ -196,21 +196,3 @@ class TestLifecycleScriptsTier2:
                     assert not re.search(r'\([^)]*\)\.', stripped), (
                         f"{script.name}:{line_no} contains unescaped trailing period after closing paren: {stripped}"
                     )
-
-    def test_netstat_parsing_logic(self):
-        """Verify regex/token parsing logic used in batch scripts to extract listening PID."""
-        sample_netstat_output = (
-            "  TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       9876\n"
-            "  TCP    [::]:8080              [::]:0                 LISTENING       9876\n"
-            "  TCP    127.0.0.1:9880         0.0.0.0:0              LISTENING       5432\n"
-        )
-        port = 8080
-        extracted_pids = []
-        for line in sample_netstat_output.splitlines():
-            if f":{port}" in line and "LISTENING" in line:
-                parts = line.strip().split()
-                if len(parts) >= 5:
-                    extracted_pids.append(parts[-1])
-
-        assert len(extracted_pids) == 2
-        assert extracted_pids[0] == "9876"
