@@ -28,7 +28,7 @@ import { initAuthInterceptor } from './auth.js';
 import { createSettingsCenter } from './controllers/settings_center.js';
 import { initSessionBackup } from './controllers/session_backup.js';
 import { requestJson } from './api.js';
-import { persistSession, deletePersistedSession, isSessionDeleting, isSessionWriting, fetchAllSessions, fetchSessionHistoryPage, earliestServerMessageId } from './session_api.js';
+import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSessions, fetchSessionHistoryPage, earliestServerMessageId } from './session_api.js';
 import { serverTimestamp, normalizeLines, pickSettings } from './session_data.js';
 import { openModal, closeModal, closeAllModals, hasOpenModal, initSettingsUi, onModalChange } from './settings_ui.js';
 
@@ -334,11 +334,12 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           if (!session) throw new Error('当前没有可保存的会话。');
           ++_syncSessionsGen;
           session.settings = pickSettings({ ...session.settings, ...patch }, DEFAULT_SESSION_SETTINGS);
-          session.hasUnconfirmedSettings = true;
+          const version = (session.unconfirmedSettingsVersion || 0) + 1;
+          session.unconfirmedSettingsVersion = version;
           saveState();
           const confirmation = persistSession(session).then((res) => {
-            if (!isSessionWriting(session.id)) {
-              delete session.hasUnconfirmedSettings;
+            if (session.unconfirmedSettingsVersion === version) {
+              delete session.unconfirmedSettingsVersion;
               saveState();
             }
             return res;
@@ -825,7 +826,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
             local.lastLine = bs.last_message || '';
             if (bs.title && (local.title === '新对话' || !local.title)) local.title = bs.title;
             const serverUpdatedAt = serverTimestamp(bs.updated_at, local.updatedAt);
-            if (local.hasUnconfirmedSettings) {
+            if (local.unconfirmedSettingsVersion) {
               unconfirmedLocalSessions.push(local);
             } else {
               local.updatedAt = serverUpdatedAt;
@@ -889,9 +890,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       if (isStale()) return;
       saveState();
       for (const session of unconfirmedLocalSessions) {
+        const version = session.unconfirmedSettingsVersion;
         persistSession(session).then(() => {
-          if (!isSessionWriting(session.id)) {
-            delete session.hasUnconfirmedSettings;
+          if (session.unconfirmedSettingsVersion === version) {
+            delete session.unconfirmedSettingsVersion;
             saveState();
           }
         }).catch(() => {});

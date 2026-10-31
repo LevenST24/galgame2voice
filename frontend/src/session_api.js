@@ -5,7 +5,6 @@ const deletions = new Map();
 const deleted = new Set();
 
 export const isSessionDeleting = id => deletions.has(id);
-export const isSessionWriting = id => writes.has(id);
 
 // Serialize before yielding so later UI edits cannot change an in-flight save.
 export function persistSession(session) {

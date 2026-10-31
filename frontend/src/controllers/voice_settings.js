@@ -2,7 +2,7 @@
 import { state, saveState, getActive, DEFAULT_SESSION_SETTINGS } from '../store.js';
 import { showToast } from '../ui.js';
 import { requestJson } from '../api.js';
-import { persistSession, isSessionWriting } from '../session_api.js';
+import { persistSession } from '../session_api.js';
 
 let _dom = {};
 let _callbacks = {};
@@ -494,12 +494,13 @@ export async function createCustomVoice() {
     if (origin && state.sessions.includes(origin)) {
       _callbacks.invalidateSessionSync?.();
       origin.settings.voiceProfileId = profileId;
-      origin.hasUnconfirmedSettings = true;
+      const version = (origin.unconfirmedSettingsVersion || 0) + 1;
+      origin.unconfirmedSettingsVersion = version;
       saveState();
       try {
         await persistSession(origin);
-        if (!isSessionWriting(origin.id)) {
-          delete origin.hasUnconfirmedSettings;
+        if (origin.unconfirmedSettingsVersion === version) {
+          delete origin.unconfirmedSettingsVersion;
           saveState();
         }
       }
@@ -559,18 +560,22 @@ export async function deleteVoiceProfile() {
   try {
     await requestJson(`/api/voice/profiles/${id}`, { method: 'DELETE' });
     const cleared = state.sessions.filter(sess => sess.settings?.voiceProfileId === id);
+    const sessionVersions = new Map();
     for (const sess of cleared) {
       sess.settings.voiceProfileId = null;
-      sess.hasUnconfirmedSettings = true;
+      const version = (sess.unconfirmedSettingsVersion || 0) + 1;
+      sess.unconfirmedSettingsVersion = version;
+      sessionVersions.set(sess, version);
     }
     if (cleared.length) {
       _callbacks.invalidateSessionSync?.();
       saveState();
       // The server copies still name the deleted voice; the next sync would restore them.
       for (const sess of cleared) {
+        const version = sessionVersions.get(sess);
         persistSession(sess).then(() => {
-          if (!isSessionWriting(sess.id)) {
-            delete sess.hasUnconfirmedSettings;
+          if (sess.unconfirmedSettingsVersion === version) {
+            delete sess.unconfirmedSettingsVersion;
             saveState();
           }
         }).catch(() => {});
@@ -638,7 +643,8 @@ async function handleSaveSessionSettings() {
       ttsTemperature: Number(_dom.sTtsTemp.value),
     };
     s.updatedAt = Date.now();
-    s.hasUnconfirmedSettings = true;
+    const version = (s.unconfirmedSettingsVersion || 0) + 1;
+    s.unconfirmedSettingsVersion = version;
     saveState();
 
     // 人设提示词属于角色、不属于会话：写回角色包 manifest.json，DB 镜像由后端刷新
@@ -653,8 +659,8 @@ async function handleSaveSessionSettings() {
       // The session may have been deleted while its character prompt was saving.
       if (state.sessions.includes(s)) {
         await persistSession(s);
-        if (!isSessionWriting(s.id)) {
-          delete s.hasUnconfirmedSettings;
+        if (s.unconfirmedSettingsVersion === version) {
+          delete s.unconfirmedSettingsVersion;
           saveState();
         }
       }
