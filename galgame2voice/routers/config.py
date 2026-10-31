@@ -3,6 +3,7 @@ Configuration and Settings Router for galgame2voice.
 Provides REST endpoints for global system configuration.
 """
 
+import asyncio
 import logging
 from typing import Any
 
@@ -120,12 +121,16 @@ async def _apply_sovits_url_update(new_sovits_url: str | None) -> dict[str, Any]
     """
     if not new_sovits_url:
         return None
+    endpoint = None
     try:
+        from galgame2voice.config import get_settings
         from galgame2voice.services.sovits_endpoint import (
-            resolve_effective_sovits_endpoint,
+            parse_sovits_endpoint,
+            resolve_sovits_url,
         )
 
-        endpoint = await resolve_effective_sovits_endpoint()
+        settings_url = get_settings().gpt_sovits_base_url
+        endpoint = resolve_sovits_url(db_url=new_sovits_url, settings_url=settings_url)
         target_url, source = endpoint.base_url, endpoint.source
     except Exception as exc:
         logger.warning(
@@ -133,6 +138,10 @@ async def _apply_sovits_url_update(new_sovits_url: str | None) -> dict[str, Any]
             exc,
         )
         target_url, source = str(new_sovits_url), None
+        try:
+            endpoint = parse_sovits_endpoint(target_url, source="saved")
+        except Exception:
+            endpoint = None
     try:
         from galgame2voice.services.gpt_sovits_client import reload_gpt_sovits_client_base_url
         await reload_gpt_sovits_client_base_url(target_url)
@@ -140,6 +149,47 @@ async def _apply_sovits_url_update(new_sovits_url: str | None) -> dict[str, Any]
     except Exception as exc:
         logger.error("Failed to hot-apply GPT-SoVITS URL '%s': %s", target_url, exc)
         return None
+
+    if endpoint is not None and not endpoint.is_local:
+        try:
+            from scripts import run_server
+
+            proc = getattr(run_server, "_SPAWNED_SOVITS_PROC", None)
+            if proc is not None:
+                if proc.poll() is None:
+                    pid = getattr(proc, "pid", None)
+                    if pid:
+                        logger.info(
+                            "Effective GPT-SoVITS endpoint is remote (%s); stopping owned local engine (PID %s) to free resources",
+                            target_url,
+                            pid,
+                        )
+                        try:
+                            await asyncio.to_thread(run_server.terminate_process_tree, pid)
+                            if hasattr(proc, "wait"):
+                                await asyncio.to_thread(proc.wait, timeout=3)
+                        except Exception as stop_exc:
+                            logger.warning(
+                                "Failed while terminating owned local GPT-SoVITS process (PID %s): %s",
+                                pid,
+                                stop_exc,
+                            )
+                if proc.poll() is not None:
+                    run_server._SPAWNED_SOVITS_PROC = None
+                    run_server._SPAWNED_SOVITS_LAUNCH = None
+                    run_server._SPAWNED_SOVITS_STARTED_AT = None
+                    try:
+                        (run_server.PROJECT_ROOT / "gptsovits.pid").unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                else:
+                    logger.warning(
+                        "Owned local GPT-SoVITS process (PID %s) is still running after termination attempt; retaining management references",
+                        getattr(proc, "pid", None),
+                    )
+        except Exception as exc:
+            logger.warning("Failed to clean up owned local GPT-SoVITS process state: %s", exc)
+
     return {"base_url": target_url, "source": source}
 
 
