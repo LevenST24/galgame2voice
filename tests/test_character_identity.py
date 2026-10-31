@@ -1,15 +1,21 @@
 """Character lookup and reconciliation must never borrow another identity."""
 
+import asyncio
 import json
+import shutil
+from contextlib import asynccontextmanager
 from pathlib import Path
 import wave
 
 import aiosqlite
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
 from galgame2voice.database.models import VoiceProfileCreate
+from galgame2voice.main import create_app
+from galgame2voice.routers import characters
 from galgame2voice.services.character_manager import CharacterManager
 
 
@@ -645,4 +651,136 @@ async def test_missing_reference_under_default_directory_does_not_borrow_default
     legacy_ref_resolved = resolve_existing_audio_path("refs/gentle.wav")
     assert legacy_ref_resolved is not None
     assert legacy_ref_resolved == pkg_dir / "gentle.wav"
+
+
+def _profile_named(payload: dict, name: str) -> dict:
+    matches = [row for row in payload["profiles"] if row["name"] == name]
+    assert len(matches) == 1, payload
+    return matches[0]
+
+
+@pytest.mark.asyncio
+async def test_failed_persona_save_keeps_the_old_manifest_and_reports_the_duplicate(
+    project, isolate_test_database,
+):
+    """A duplicate package id must not keep the persona the failed save just wrote."""
+    CharacterManager.reset_instance()
+    try:
+        folder = install(project, "ann", "Ann")
+        original_manifest = (folder / "manifest.json").read_text(encoding="utf-8")
+        edited = "NEW PERSONA THAT THE FAILURE MUST NOT KEEP"
+        app = create_app()
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test", timeout=30.0) as client:
+            scanned = await client.post("/api/characters/rescan")
+            assert scanned.status_code == 200, scanned.text
+            ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
+            original_prompt = ann["system_prompt"]
+
+            second = install(project, "ann", "Ann Copy", folder="second")
+            saved = await client.put(
+                f"/api/characters/{ann['id']}/system-prompt",
+                json={"system_prompt": edited},
+            )
+            body = saved.json()
+            detail = body.get("detail") if isinstance(body, dict) else ""
+            if not isinstance(detail, str):
+                detail = saved.text
+            on_disk = (folder / "manifest.json").read_text(encoding="utf-8")
+            profiles = (await client.get("/api/voice/profiles")).json()
+            ann_after = _profile_named(profiles, "Ann")
+            warning = profiles.get("catalog_warning")
+
+            shutil.rmtree(second)
+            recovered_scan = await client.post("/api/characters/rescan")
+            assert recovered_scan.status_code == 200, recovered_scan.text
+            recovered = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
+
+        problems = []
+        if not 400 <= saved.status_code < 500:
+            problems.append(f"status {saved.status_code} body {saved.text}")
+        if "角色包 ID 重复" not in detail:
+            problems.append(f"user-visible error is {detail!r}")
+        if on_disk != original_manifest:
+            problems.append(f"failed save rewrote manifest to {on_disk!r} (db still {ann_after['system_prompt']!r})")
+        if ann_after["system_prompt"] != original_prompt:
+            problems.append(f"database changed to {ann_after['system_prompt']!r}")
+        if not warning:
+            problems.append(f"voice list catalog_warning stayed empty after the failed save ({warning!r})")
+        elif "角色包 ID 重复" not in warning:
+            problems.append(f"catalog_warning does not name the duplicate ({warning!r})")
+        if recovered["system_prompt"] != original_prompt:
+            problems.append(
+                f"after the duplicate folder is removed, sync stores the failed text {recovered['system_prompt']!r}"
+            )
+        assert not problems, "\n".join(problems)
+    finally:
+        CharacterManager.reset_instance()
+
+
+@pytest.mark.asyncio
+async def test_overlapping_persona_saves_keep_manifest_and_database_together(
+    project, isolate_test_database, monkeypatch,
+):
+    """Two saves must not leave the manifest on one text and the database on the other."""
+    CharacterManager.reset_instance()
+    first = second = None
+    release = asyncio.Event()
+    try:
+        folder = install(project, "ann", "Ann")
+        app = create_app()
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test", timeout=30.0) as client:
+            scanned = await client.post("/api/characters/rescan")
+            assert scanned.status_code == 200, scanned.text
+            ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
+
+            # 第一次保存停在写数据库的那次 get_db（本请求里的第二次进入）。
+            # 锁会让第二次保存一直等到第一次整段结束，所以第二次用超时等待，避免死锁。
+            started = asyncio.Event()
+            calls = {"n": 0}
+            real_get_db = characters.get_db
+
+            @asynccontextmanager
+            async def gating_get_db(*args, **kwargs):
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    started.set()
+                    await release.wait()
+                async with real_get_db(*args, **kwargs) as conn:
+                    yield conn
+
+            monkeypatch.setattr(characters, "get_db", gating_get_db)
+            first = asyncio.create_task(client.put(
+                f"/api/characters/{ann['id']}/system-prompt",
+                json={"system_prompt": "PROMPT-A"},
+            ))
+            await asyncio.wait_for(started.wait(), timeout=10)
+            second = asyncio.create_task(client.put(
+                f"/api/characters/{ann['id']}/system-prompt",
+                json={"system_prompt": "PROMPT-B"},
+            ))
+            await asyncio.wait({second}, timeout=3)
+            release.set()
+            first_response, second_response = await asyncio.wait_for(asyncio.gather(first, second), timeout=10)
+
+            on_disk = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))["system_prompt"]
+            in_db = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")["system_prompt"]
+            synced = await client.post("/api/characters/rescan")
+            assert synced.status_code == 200, synced.text
+            after_sync = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")["system_prompt"]
+
+        assert first_response.status_code == 200, first_response.text
+        assert second_response.status_code == 200, second_response.text
+        assert on_disk == in_db == after_sync == "PROMPT-B", (
+            f"both saves returned success A={first_response.json().get('system_prompt')!r} "
+            f"B={second_response.json().get('system_prompt')!r}, but manifest={on_disk!r} "
+            f"db={in_db!r}; a later sync makes the chat persona {after_sync!r}"
+        )
+    finally:
+        release.set()
+        for task in (first, second):
+            if task is not None and not task.done():
+                task.cancel()
+        CharacterManager.reset_instance()
 

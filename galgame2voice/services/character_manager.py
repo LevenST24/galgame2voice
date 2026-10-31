@@ -95,9 +95,11 @@ class CharacterManager:
                 return self._discover_characters(characters_dir)
             except DuplicateCharacterId as exc:
                 with self._catalog_lock:
+                    # 热扫描（保存人设、重新扫描）和冷启动一样留下警告。
+                    # 已发布的角色目录保持不变，只补上这次失败的说明。
+                    self._catalog_warning = str(exc)
                     if not self._discovered:
                         self._discovered = True
-                        self._catalog_warning = str(exc)
                 raise
 
     def _discover_characters(self, characters_dir: Path | None) -> list[CharacterPackage]:

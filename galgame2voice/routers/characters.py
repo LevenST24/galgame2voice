@@ -39,6 +39,10 @@ logger = logging.getLogger("galgame2voice.routers.characters")
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 media_router = APIRouter(prefix="/api/media", tags=["media"])
 
+# 同一进程里所有保存人设请求共用这一把锁。后来的保存要等前一次
+# 写完 manifest、重新扫描并写完数据库之后才开始，避免磁盘和数据库各留一份。
+_persona_save_lock = asyncio.Lock()
+
 
 async def _get_voice_profile_or_404(conn: aiosqlite.Connection, character_id: int) -> Any:
     """Fetches voice profile by ID or raises 404 HTTPException if not found."""
@@ -508,6 +512,17 @@ class SystemPromptUpdate(BaseModel):
     )
 
 
+def _restore_manifest(manifest_path: Path, original: bytes) -> None:
+    """Put manifest.json back to the bytes read before this save."""
+    tmp_path = manifest_path.with_name("manifest.json.tmp")
+    try:
+        tmp_path.write_bytes(original)
+        os.replace(tmp_path, manifest_path)
+    except OSError:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def _write_manifest_system_prompt(manifest_path: Path, text: str) -> None:
     """Safely updates system_prompt in manifest.json using atomic temp file replacement."""
     try:
@@ -549,7 +564,10 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
             detail="人设提示词不能为空",
         )
 
-    from galgame2voice.services.character_identity import owned_package_for_profile
+    from galgame2voice.services.character_identity import (
+        DuplicateCharacterId,
+        owned_package_for_profile,
+    )
 
     async with get_db() as conn:
         prof = await _get_voice_profile_or_404(conn, character_id)
@@ -558,22 +576,34 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
     mgr = get_character_manager()
     pkg = owned_package_for_profile(prof, profiles, mgr)
     manifest_path: Path | None = None
-    if pkg is not None:
-        manifest_path = pkg.folder / "manifest.json"
-        if not manifest_path.is_file():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"角色包缺少 manifest.json: {manifest_path}",
-            )
-        _write_manifest_system_prompt(manifest_path, text)
-        # 内存里的角色包缓存也要刷新，否则本进程后续仍读到旧人设
-        mgr.discover_characters()
+    async with _persona_save_lock:
+        if pkg is not None:
+            manifest_path = pkg.folder / "manifest.json"
+            if not manifest_path.is_file():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"角色包缺少 manifest.json: {manifest_path}",
+                )
+            original_manifest = manifest_path.read_bytes()
+            _write_manifest_system_prompt(manifest_path, text)
+            try:
+                # 内存里的角色包缓存也要刷新，否则本进程后续仍读到旧人设
+                mgr.discover_characters()
+            except DuplicateCharacterId as exc:
+                _restore_manifest(manifest_path, original_manifest)
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=str(exc),
+                ) from exc
+            except Exception:
+                _restore_manifest(manifest_path, original_manifest)
+                raise
 
-    async with get_db() as conn:
-        async with immediate_transaction(conn):
-            from galgame2voice.database.models import VoiceProfileUpdate
+        async with get_db() as conn:
+            async with immediate_transaction(conn):
+                from galgame2voice.database.models import VoiceProfileUpdate
 
-            await crud.update_voice_profile(conn, character_id, VoiceProfileUpdate(system_prompt=text))
+                await crud.update_voice_profile(conn, character_id, VoiceProfileUpdate(system_prompt=text))
 
     logger.info("System prompt updated for character %s (%d chars)", prof.name, len(text))
     return {
