@@ -144,18 +144,29 @@ async def _clean_lru_cache_from_db(
 
 
 def _unlink_expired_cache_files(cache_dir: Path, rows: list, protected_audio_names: set[str] | None = None) -> list[str]:
-    """Run disk work off the event loop and retain failed entries for the next cycle."""
+    """Run disk work off the event loop and retain failed entries for the next cycle.
+
+    put/get read cache_dir/{cache_key}.wav. An absolute file_path from before the
+    project directory moved fails the cache-root check; that row deletes the live
+    file instead, and never a file that still exists outside the current cache.
+    A live file that is locked stays indexed for the next cycle.
+    """
     unlinked_keys: list[str] = []
     cache_root = cache_dir.resolve()
+    protected = protected_audio_names or ()
     for r in rows:
         key = r[0]
         raw_path = r[1]
         f = Path(raw_path) if raw_path else (cache_dir / f"{key}.wav")
         if not f.is_absolute():
             f = cache_dir / f.name
-        if f.name.lower() in (protected_audio_names or ()):
-            continue
         try:
+            try:
+                f.resolve().relative_to(cache_root)
+            except ValueError:
+                f = cache_dir / f"{key}.wav"
+            if f.name.lower() in protected:
+                continue
             f.resolve().relative_to(cache_root)
             f.unlink(missing_ok=True)
         except (OSError, ValueError) as e:
