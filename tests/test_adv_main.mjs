@@ -1620,6 +1620,178 @@ test('startup sync discards interrupted partial assistant reply and retains comp
   assert.equal(interruptedExists, false, '被打断的半截助手回复不应与服务端完整回复同时出现');
 });
 
+test('startup sync keeps the cached failed question when it is retried while history is still loading', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const session = {
+    id: 's_retry_during_history',
+    title: '历史未返回时重试',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_100_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 1 },
+    messages: [
+      { id: 'm_1', serverMessageId: 1, role: 'user', content: '第一问', ts: 1_700_000_050_000 },
+      { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '第一答', ts: 1_700_000_080_000 },
+      {
+        id: 'm_local_failed',
+        role: 'user',
+        content: '失败的问题',
+        failed: { error: '网络连接失败', code: 'NETWORK_ERROR' },
+        ts: 1_700_000_100_000,
+      },
+    ],
+  };
+  const server = {
+    id: session.id,
+    title: session.title,
+    voice_profile_id: 1,
+    created_at: '2024-06-01 00:00:00',
+    updated_at: '2024-06-01 00:00:03',
+    message_count: 4,
+    last_message: '第二答',
+    settings: { ...session.settings },
+  };
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+    sessions: [session],
+    activeId: session.id,
+    global: { ...DEFAULT_GLOBAL },
+  })]]);
+
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+  };
+
+  let releaseHistory = () => {};
+  const historyGate = new Promise(resolve => {
+    releaseHistory = () => { releaseHistory = () => {}; resolve(); };
+  });
+  let markHistoryHung;
+  const historyHung = new Promise(resolve => { markHistoryHung = resolve; });
+  const streamRequests = [];
+  const encoder = new TextEncoder();
+
+  globalThis.window.fetch = async (url, options = {}) => {
+    const target = String(url);
+    if (target.includes('/api/chat/sessions')) {
+      return Response.json({ sessions: [server], has_more: false, count: 1 });
+    }
+    if (target.includes('/api/chat/history')) {
+      markHistoryHung();
+      await historyGate;
+      return Response.json({
+        session_id: session.id,
+        has_more: false,
+        oldest_id: 1,
+        count: 4,
+        messages: [
+          { id: 1, role: 'user', content_chinese: '第一问', content_japanese: '', created_at: '2024-06-01 00:00:00' },
+          { id: 2, role: 'assistant', content_chinese: '第一答', content_japanese: '', created_at: '2024-06-01 00:00:01' },
+          { id: 3, role: 'user', content_chinese: '第二问', content_japanese: '', created_at: '2024-06-01 00:00:02' },
+          { id: 4, role: 'assistant', content_chinese: '第二答', content_japanese: '', created_at: '2024-06-01 00:00:03' },
+        ],
+      });
+    }
+    if (target.includes('/api/chat/stream')) {
+      let output;
+      let started = false;
+      const body = new ReadableStream({
+        start(controller) { output = controller; started = true; },
+        cancel() { try { output?.close(); } catch { /* already closed */ } },
+      });
+      options.signal?.addEventListener('abort', () => {
+        try { output?.close(); } catch { /* already closed */ }
+      }, { once: true });
+      const request = {
+        url: target,
+        prompt: JSON.parse(options.body).prompt,
+        async event(type, payload) {
+          for (let i = 0; i < 10 && !started; i++) await tick();
+          output.enqueue(encoder.encode(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`));
+          await tick();
+        },
+      };
+      streamRequests.push(request);
+      return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
+    }
+    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+    if (target.includes('/api/providers')) return Response.json({
+      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
+      active_provider: 'p1',
+    });
+    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+    return Response.json({});
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  let app;
+  t.after(async () => {
+    releaseHistory();
+    try { app?.conversation.stop(); app?.adv?.unmount(); } catch { /* already stopped */ }
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  app = initApp({
+    dom: { advRoot: root },
+    renderSessionList() {},
+  });
+
+  await historyHung;
+  await tick();
+
+  const question = storedActive().messages.at(-1);
+  assert.equal(question.id, 'm_local_failed');
+  app.adv.action('log');
+  const retryBtn = [...doc.querySelectorAll('.adv-error-btn')].find(button => button.textContent === '重新发送');
+  assert.ok(retryBtn, '历史还在加载时，缓存里的失败问题应能从记录里重试');
+  retryBtn.click();
+  for (let i = 0; i < 5 && streamRequests.length === 0; i++) await tick();
+  assert.equal(streamRequests.length, 1, '重试应向 /api/chat/stream 发出请求');
+  assert.equal(streamRequests[0].prompt, '失败的问题');
+  assert.equal(question.failed, undefined, '重试会清掉失败标记，但问题本身还在');
+  assert.equal(storedActive().messages.at(-1), question);
+
+  releaseHistory();
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  const activeSession = storedActive();
+  assert.equal(activeSession.messages.length, 3, '加载期间重试后，过期的历史不应替换本地消息');
+  assert.equal(activeSession.messages.at(-1), question, '正在重试的问题应仍是原来那一条');
+  assert.equal(activeSession.messages.some(m => m.content === '第二问' || m.content === '第二答'), false);
+  const storedJson = JSON.parse(storage.get('gal2voice.chat.v1'));
+  const storedSessionData = storedJson.sessions.find(s => s.id === session.id);
+  assert.equal(storedSessionData.messages.length, 3);
+  assert.equal(storedSessionData.messages.at(-1).id, 'm_local_failed');
+  assert.equal(app.conversation.busy, true, '重试应仍在生成回复');
+  await streamRequests[0].event('line', { index: 0, zh: '重试后的回复', ja: '', emotion: 'gentle', act: {} });
+  assert.equal(app.adv.player.state, 'waiting_audio', '放行过期历史后，重试的台词应继续显示');
+  assert.equal(storedActive().messages.at(-1), question);
+});
+
 
 
 

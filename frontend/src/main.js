@@ -440,10 +440,16 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     const isBehind = sessionsBehindServer.has(session.id);
     if (!isBehind && session.messages && session.messages.length > 0) return;
     const initialCount = session.messages ? session.messages.length : 0;
+    // A retry already in flight cleared `failed` without adding a message. Another
+    // load, including the home preview after startup, must not replace it.
+    if (conversation.busy && getActive() === session) return;
+    // beforeSend bumps this when a message is sent or retried during the request.
+    const historyGen = _syncSessionsGen;
     try {
       const data = await fetchSessionHistoryPage(session.id, { limit: 100 });
-      // A reply typed while history was loading, or a deleted session, wins over the old response.
-      if (getSession(session.id) !== session || (session.messages ? session.messages.length : 0) !== initialCount) return;
+      // That attempt, a reply typed while history was loading, or a deleted session
+      // wins. The session stays behind so the next open refetches.
+      if (historyGen !== _syncSessionsGen || getSession(session.id) !== session || (session.messages ? session.messages.length : 0) !== initialCount) return;
       if (Array.isArray(data.messages) && data.messages.length > 0) {
         const incoming = data.messages.map(mapBackendMessage);
         if (session.messages && session.messages.length > 0) {
