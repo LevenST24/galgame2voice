@@ -35,6 +35,12 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
       title = '请求受限或额度不足 (429)';
     } else if (lower.includes('403')) {
       title = '访问受限或权限不足 (403)';
+    } else if (lower.includes('503') || lower.includes('529') || /overload|过载|繁忙/.test(lower)) {
+      title = '服务暂时繁忙 (503/529)';
+    } else if (lower.includes('404') || ((lower.includes('model') || lower.includes('模型')) && /not found|not_found|does not exist|不存在|找不到|未找到|no such model|unknown model/.test(lower))) {
+      title = /model|模型/.test(lower) && !/404 not found|page not found|endpoint|路径/.test(lower)
+        ? '模型名称不存在 (HTTP 404)'
+        : '接口地址未找到 (HTTP 404)';
     }
     return {
       title,
@@ -93,10 +99,18 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
       guidance = 'HTTP 429 Too Many Requests：该提供商触发了并发频率上限或账户余额不足，请前往对应服务商控制台查看账户账单与配额。';
     }
   }
+  // 3.5. 503/529 服务过载或繁忙
+  else if (lower.includes('503') || lower.includes('529') || /overload|过载|繁忙/.test(lower)) {
+    title = '服务暂时繁忙 (HTTP 503/529)';
+    guidance = '模型服务当前过载或暂时繁忙，请稍后重试。通常无需修改配置。';
+  }
   // 4. 404 模型不存在或路径错误
   else if (lower.includes('404') || lower.includes('not found') || lower.includes('model not found')) {
-    title = '模型不存在或端点路径错误 (HTTP 404)';
-    guidance = '目标模型或端点不存在：请检查 Chat Model 模型名称拼写（如 grok-3、deepseek-chat），并确认 Base URL 是否包含正确的 /v1 路径后缀。';
+    const isModel = /model|模型/.test(lower) && !/404 not found|page not found|endpoint|路径/.test(lower);
+    title = isModel ? '模型名称不存在 (HTTP 404)' : '接口地址未找到 (HTTP 404)';
+    guidance = isModel
+      ? '目标模型不存在：请检查 Chat Model 模型名称拼写（如 grok-3、deepseek-chat）。'
+      : '目标端点路径不存在：请检查 Base URL 是否包含正确的 /v1 等路径后缀。';
   }
   // 5. 网络超时 / 无法建立连接
   else if (

@@ -470,7 +470,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
     def _diagnose_failure(
         provider_id: str | None,
         status_code: int,
-        raw_error: str,
+        raw_error: Exception | str,
     ) -> tuple[dict[str, Any], str]:
         from galgame2voice.utils.error_diagnostics import format_provider_error
         diag = format_provider_error(
@@ -594,7 +594,7 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
             except Exception as exc:
                 latency_ms = round((time.perf_counter() - t0) * 1000, 2)
                 status_code_num = 504 if "timeout" in type(exc).__name__.lower() else 502
-                diag, diag_guide = self._diagnose_failure(provider_id, status_code_num, str(exc))
+                diag, diag_guide = self._diagnose_failure(provider_id, status_code_num, exc)
                 return TestResult(
                     success=False,
                     message=f"Connection error: {type(exc).__name__} - {sanitize_error_detail(exc)}",
