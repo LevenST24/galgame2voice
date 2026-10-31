@@ -51,7 +51,12 @@ def _describe_hang(exc, command, seconds):
             f"stderr tail: {stderr or '(empty)'}")
 
 
-def run_layout_browser(command):
+def run_layout_browser(command, reset=None):
+    """Runs Chrome once more after a hang or a blank virtual-time dump.
+
+    A test whose server keeps state between requests (posted results, events the page sets)
+    passes `reset` to clear it, so the second run does not start from what the first one left.
+    """
     def launch():
         # Chrome's own cache filenames can exceed Windows MAX_PATH when a browser
         # profile sits under a long source-snapshot/pytest directory.
@@ -61,6 +66,11 @@ def run_layout_browser(command):
             return subprocess.run(launched, capture_output=True, timeout=40,
                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
 
+    def relaunch():
+        if reset:
+            reset()
+        return launch()
+
     started = time.monotonic()
     try:
         result = launch()
@@ -69,13 +79,13 @@ def run_layout_browser(command):
         # image hold in test_stream_progress_browser. The cause is not known: report what
         # Chrome had produced, then start it once more.
         warnings.warn(_describe_hang(exc, command, time.monotonic() - started), stacklevel=2)
-        return launch()
+        return relaunch()
     # Under load the virtual-time budget can run out while Chrome is still on about:blank:
     # CI's blank screenshots are about 6 KB, the size of an about:blank capture, and the
     # dump has no result node. Retry such a dump once with a fresh profile.
     if (result.returncode == 0 and any(item.startswith("--virtual-time-budget=") for item in command)
             and not re.search(rb'<pre id="[^"]*result"', result.stdout)):
-        result = launch()
+        result = relaunch()
     return result
 
 
@@ -181,15 +191,16 @@ RESULT_DUMP = b'<pre id="engine-result">{}</pre>'
     ([BLANK_DUMP, BLANK_DUMP, RESULT_DUMP], 2),
 ])
 def test_run_layout_browser_retries_a_blank_virtual_time_dump_once(monkeypatch, dumps, launches):
-    commands = []
+    steps = []
 
     def fake_run(command, **kwargs):
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 0, dumps[len(commands) - 1], b"")
+        steps.append("launch")
+        return subprocess.CompletedProcess(command, 0, dumps[steps.count("launch") - 1], b"")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    run_layout_browser(["chrome", "--virtual-time-budget=5000", "--dump-dom", "http://127.0.0.1:9/"])
-    assert len(commands) == launches
+    run_layout_browser(["chrome", "--virtual-time-budget=5000", "--dump-dom", "http://127.0.0.1:9/"],
+                       reset=lambda: steps.append("reset"))
+    assert steps == ["launch", "reset", "launch"][:2 * launches - 1]
 
 
 def test_run_layout_browser_reports_and_retries_a_hung_chrome_once(tmp_path, monkeypatch):
@@ -197,8 +208,10 @@ def test_run_layout_browser_reports_and_retries_a_hung_chrome_once(tmp_path, mon
     command = ["chrome", "--dump-dom", f"--screenshot={screenshot}", "http://127.0.0.1:9/"]
     outcomes = [subprocess.TimeoutExpired(command, 40, b"partial", b"[ERROR:gpu] stuck\n"),
                 subprocess.CompletedProcess(command, 0, RESULT_DUMP, b"")]
+    steps = []
 
     def fake_run(command, **kwargs):
+        steps.append("launch")
         outcome = outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -206,7 +219,9 @@ def test_run_layout_browser_reports_and_retries_a_hung_chrome_once(tmp_path, mon
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.warns(UserWarning, match=r"stdout 7 bytes, screenshot missing, stderr tail: \[ERROR:gpu\] stuck"):
-        assert run_layout_browser(command).stdout == RESULT_DUMP
+        assert run_layout_browser(command, reset=lambda: steps.append("reset")).stdout == RESULT_DUMP
+    # The state the first run left on the server is cleared before Chrome starts again.
+    assert steps == ["launch", "reset", "launch"]
 
     # A second hang is not retried again.
     outcomes[:] = [subprocess.TimeoutExpired(command, 40), subprocess.TimeoutExpired(command, 40)]

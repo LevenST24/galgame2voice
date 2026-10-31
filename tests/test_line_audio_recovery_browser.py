@@ -123,7 +123,7 @@ def test_log_line_repair_is_reachable_and_owned(tmp_path, width, height, mode):
             "--no-first-run", "--disable-sync", "--no-proxy-server", "--disable-background-networking", "--disable-extensions",
             f"--user-data-dir={tmp_path/'browser'}", f"--window-size={max(600,width+100)},{height+100}",
             "--dump-dom", f"--screenshot={tmp_path/'line-repair.png'}", f"http://127.0.0.1:{server.server_port}/",
-        ])
+        ], reset=lambda: (ready.clear(), result.clear()))
     finally:
         ready.set()
         server.shutdown()

@@ -80,7 +80,7 @@ def test_native_audio_clock_gates_text_start_and_cancellation(tmp_path, mode):
             "--mute-audio", "--autoplay-policy=no-user-gesture-required", "--no-default-browser-check",
             "--no-proxy-server", "--disable-background-networking", "--disable-extensions",
             f"--user-data-dir={tmp_path/'browser'}", "--dump-dom", f"http://127.0.0.1:{server.server_port}/",
-        ])
+        ], reset=lambda: (ready.clear(), result.clear()))
     finally:
         ready.set()
         server.shutdown()
