@@ -239,7 +239,7 @@ class VoiceManager:
         """Alias for switch_profile to preserve backwards compatibility."""
         return await self.switch_profile(target, persist=persist, force=force)
 
-    def _check_vram_guard(self, min_free_vram_gb: float | None = 0.45) -> None:
+    def _check_vram_guard(self, min_free_vram_gb: float | None = None) -> None:
         """Apply the shared VRAM policy with this manager's hardware probes."""
         VoiceResourceGuard(gpu_status=get_gpu_vram_status, release=release_system_memory).check_vram(min_free_vram_gb)
 
