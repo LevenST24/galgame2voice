@@ -514,3 +514,50 @@ async def test_saving_remote_url_keeps_replacement_published_during_wait(monkeyp
     assert run_server._SPAWNED_SOVITS_STARTED_AT == 2.0
     assert pid_file.read_text(encoding="utf-8") == "5252"
     assert replacement.poll() is None
+
+
+@pytest.mark.asyncio
+async def test_remote_cleanup_skips_when_a_later_save_switched_back_to_local(monkeypatch):
+    """A remote save waiting on the restart lock leaves the engine alone once a later save chose a local URL."""
+    from galgame2voice.routers import health
+
+    proc = MagicMock(pid=3333)
+    proc.poll.return_value = None
+    launch = EngineLaunch(proc, HOST, PORT, "cuda", True, started_at=1.0)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", launch)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
+
+    inner = threading.Lock()
+    cleanup_waiting = threading.Event()
+
+    class _RestartLock:
+        def acquire(self, blocking=True, timeout=-1):
+            if blocking and inner.locked():
+                cleanup_waiting.set()
+            if timeout is None or timeout < 0:
+                return inner.acquire(blocking)
+            return inner.acquire(blocking, timeout)
+
+        def release(self):
+            inner.release()
+
+        def locked(self):
+            return inner.locked()
+
+    monkeypatch.setattr(health, "_engine_restart_lock", _RestartLock())
+    killed = []
+    monkeypatch.setattr(run_server, "terminate_process_tree", lambda pid, timeout=2.0: killed.append(pid))
+
+    inner.acquire()
+    try:
+        remote_save = asyncio.create_task(_apply_sovits_url_update(REMOTE_URL))
+        assert await asyncio.to_thread(cleanup_waiting.wait, 5), "remote cleanup did not wait for the restart lock"
+        await _apply_sovits_url_update(LOCAL_URL)
+    finally:
+        inner.release()
+    await asyncio.wait_for(remote_save, 5)
+
+    assert killed == []
+    assert run_server._SPAWNED_SOVITS_PROC is proc
+    assert run_server._SPAWNED_SOVITS_LAUNCH is launch

@@ -153,6 +153,7 @@ async def _apply_sovits_url_update(new_sovits_url: str | None) -> dict[str, Any]
     if endpoint is not None and not endpoint.is_local:
         try:
             from galgame2voice.routers import health
+            from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client
             from scripts import run_server
 
             def _stop_owned_local_engine() -> None:
@@ -161,6 +162,10 @@ async def _apply_sovits_url_update(new_sovits_url: str | None) -> dict[str, Any]
                 # on the event loop and releases it only after that loop continues.
                 health._engine_restart_lock.acquire()
                 try:
+                    # A later save may have switched the endpoint while this one waited.
+                    # The client holds the latest applied URL, so only that save decides.
+                    if get_gpt_sovits_client().base_url != str(target_url).strip().rstrip("/"):
+                        return
                     proc = run_server._SPAWNED_SOVITS_PROC
                     if proc is None:
                         return
