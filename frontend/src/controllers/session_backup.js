@@ -88,7 +88,15 @@ export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => fa
         actionLabel: '打开备份设置',
         onAction: () => onOpenBackupTab(),
       } : null);
-    } catch (error) { showToast(error.message, 'error'); }
+    } catch (error) {
+      // A multi-session file is one transaction: any existing id rolls the whole import back.
+      const message = error.code === 'REQUEST_TIMEOUT'
+        ? '导入结果未确认，请刷新页面查看会话是否已经导入；再次导入同一个文件不会重复写入。'
+        : error.status === 409
+          ? '导入的会话已存在，整份备份这次都没有写入。请刷新页面查看。'
+          : error.message;
+      showToast(message, 'error');
+    }
     finally { button.disabled = false; }
   });
 }

@@ -181,6 +181,21 @@ export function exportSessionData() {
     ...portableSnapshot(normalizeSnapshot(snapshot(), DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL)) }, null, 2);
 }
 
+// The same backup file gets the same ids, so the server's "session exists" check (409)
+// stops a retried import instead of inserting a second copy.
+function importSessionId(session, index) {
+  const text = `${index}:${JSON.stringify(session)}`;
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return `s_import_${[h2, h1].map(h => (h >>> 0).toString(16).padStart(8, '0')).join('')}`;
+}
+
 export function prepareSessionImport(raw) {
   let parsed;
   try { parsed = JSON.parse(raw); } catch { throw new Error('无法读取 JSON，请选择之前导出的聊天备份文件。'); }
@@ -190,11 +205,10 @@ export function prepareSessionImport(raw) {
   const incoming = portableSnapshot(normalizeSnapshot(parsed, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL));
   if (incoming.sessions.length === 0) throw new Error('备份中没有聊天会话，当前记录未修改。');
   if (incoming.sessions.length > 10000) throw new Error('单份备份超过 10000 个会话，请先导出较小的备份再导入。');
-  // New IDs protect both browser and server records from replacement.
-  for (const session of incoming.sessions) {
-    session.id = uid('s_import');
+  incoming.sessions.forEach((session, index) => {
+    session.id = importSessionId(session, index);
     session.settings.voiceProfileId = null;
-  }
+  });
   return incoming;
 }
 
