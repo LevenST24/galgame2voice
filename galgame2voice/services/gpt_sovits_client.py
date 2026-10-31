@@ -138,11 +138,32 @@ class GptSovitsClient:
         self.current_refer_text: str | None = None
         self.current_refer_language: str | None = None
 
-        # In-flight request tracking for hot URL swaps: the old connection
-        # pool is closed once in-flight requests drain or the grace period
-        # expires, whichever comes first (read timeout is up to 300s).
-        self._inflight_requests = 0
+        # In-flight request tracking for hot URL swaps: each connection
+        # pool tracks its own in-flight requests so old pools can close as
+        # soon as their own requests drain, rather than waiting for new traffic.
+        self._inflight_by_client: dict[Any, int] = {}
         self._close_task: asyncio.Task | None = None
+
+    @property
+    def _inflight_requests(self) -> int:
+        return sum(self._inflight_by_client.values())
+
+    def _inc_inflight(self, client: Any) -> None:
+        if client is not None:
+            self._inflight_by_client[client] = self._inflight_by_client.get(client, 0) + 1
+
+    def _dec_inflight(self, client: Any) -> None:
+        if client is not None:
+            current = self._inflight_by_client.get(client, 0)
+            if current <= 1:
+                self._inflight_by_client.pop(client, None)
+            else:
+                self._inflight_by_client[client] = current - 1
+
+    def _get_inflight(self, client: Any) -> int:
+        if client is None:
+            return 0
+        return self._inflight_by_client.get(client, 0)
 
     # ------------------------------------------------------------------
     # Connection pool lifecycle
@@ -228,9 +249,9 @@ class GptSovitsClient:
                     # loop built this singleton, and this client is shared across
                     # loops in tests; a 0.25s poll for at most `grace` seconds is
                     # cheaper than that coupling.
-                    while self._inflight_requests > 0 and loop.time() < deadline:  # noqa: ASYNC110
+                    while self._get_inflight(old_client) > 0 and loop.time() < deadline:  # noqa: ASYNC110
                         await asyncio.sleep(0.25)
-                    force_closed = self._inflight_requests > 0
+                    force_closed = self._get_inflight(old_client) > 0
                 except asyncio.CancelledError:
                     force_closed = True
                 except Exception as wait_err:
@@ -240,12 +261,14 @@ class GptSovitsClient:
                         "Force-closing stale GPT-SoVITS connection pool after %.0fs grace: "
                         "%d request(s) still in flight; their streams may be interrupted.",
                         grace,
-                        self._inflight_requests,
+                        self._get_inflight(old_client),
                     )
                 try:
                     await old_client.aclose()
                 except Exception as close_err:
                     logger.debug("Non-critical: error closing old GPT-SoVITS client: %s", close_err)
+                finally:
+                    self._inflight_by_client.pop(old_client, None)
 
             # Keep a strong reference so the task cannot be garbage collected.
             if self._close_task is not None and not self._close_task.done():
@@ -259,6 +282,7 @@ class GptSovitsClient:
         json_data: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         timeout: httpx.Timeout | None = None,
+        client: httpx.AsyncClient | None = None,
     ) -> httpx.Response:
         """Internal HTTP request dispatcher supporting mock server or pooled httpx."""
         generation = self._endpoint_generation
@@ -268,8 +292,8 @@ class GptSovitsClient:
                 return await self.server.handle_request(method, path, json_data=json_data, params=params)
 
             url = f"{self.base_url}{path}"
-            client = self._get_http_client()
-            return await client.request(
+            http_client = client if client is not None else self._get_http_client()
+            return await http_client.request(
                 method, url, json=json_data, params=params, timeout=timeout
             )
         except (httpx.NetworkError, httpx.ConnectTimeout, httpx.RemoteProtocolError):
@@ -710,11 +734,12 @@ class GptSovitsClient:
                 try:
                     await self._validate_audio_options(opts)
                     t_synth_start = time.perf_counter()
-                    self._inflight_requests += 1
+                    req_client = None if (self.server is not None and hasattr(self.server, "handle_request")) else self._get_http_client()
+                    self._inc_inflight(req_client)
                     try:
-                        resp = await self._request("POST", ENDPOINT_TTS, json_data=payload)
+                        resp = await self._request("POST", ENDPOINT_TTS, json_data=payload, client=req_client)
                     finally:
-                        self._inflight_requests -= 1
+                        self._dec_inflight(req_client)
                     elapsed_s = time.perf_counter() - t_synth_start
                     if resp.status_code != 200:
                         raise RuntimeError(f"TTS synthesis failed with status {resp.status_code}: {resp.text[:300]}")
@@ -781,7 +806,7 @@ class GptSovitsClient:
                     await self._validate_audio_options(options)
                 generation = self._endpoint_generation
                 revision = self._model_state_revision
-                self._inflight_requests += 1
+                self._inc_inflight(client)
                 try:
                     async with client.stream("POST", url, json=payload, timeout=TTS_TIMEOUT) as resp:
                         if resp.status_code != 200:
@@ -801,7 +826,7 @@ class GptSovitsClient:
                     self._observe_connection_loss(generation, revision)
                     raise
                 finally:
-                    self._inflight_requests -= 1
+                    self._dec_inflight(client)
         except asyncio.CancelledError:
             # The consumer has gone away: enqueueing an error or EOF into its
             # full buffer would prevent cancellation from ever completing.
