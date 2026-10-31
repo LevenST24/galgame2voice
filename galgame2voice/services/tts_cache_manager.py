@@ -841,6 +841,8 @@ class TtsCacheManager:
         Performs LRU pruning of cache files when limits are exceeded.
         Drains up to 10 batches of 200 entries to satisfy limits under burst writes.
         Verifies disk removal prior to database deletion to prevent orphaned ghost files.
+        Only deletes cache_dir/{cache_key}.wav. A stored absolute path from before
+        the project directory moved is not unlinked, including when that file is gone.
         Returns number of pruned entries.
         """
         limit_mb = max_mb or self.max_cache_mb
@@ -870,6 +872,7 @@ class TtsCacheManager:
 
                     target_bytes = int(limit_bytes * 0.8)
                     target_files = int(limit_entries * 0.8)
+                    cache_root = self.cache_dir.resolve()
 
                     for _ in range(10):
                         if total_bytes <= target_bytes and total_files <= target_files:
@@ -882,7 +885,14 @@ class TtsCacheManager:
                             if total_bytes <= target_bytes and total_files <= target_files:
                                 break
 
-                            unlink_ok = await self._try_unlink_cache_file(Path(entry.file_path))
+                            # put/get use this path. entry.file_path may still point
+                            # at the cache directory from before the project was moved.
+                            cache_file = self.cache_dir / f"{entry.cache_key}.wav"
+                            try:
+                                cache_file.resolve().relative_to(cache_root)
+                            except (OSError, ValueError):
+                                continue
+                            unlink_ok = await self._try_unlink_cache_file(cache_file)
                             if unlink_ok:
                                 await crud.delete_tts_cache_entry(conn, entry.cache_key)
                                 async with self._lock:
