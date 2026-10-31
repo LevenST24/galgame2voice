@@ -93,6 +93,21 @@ export function mapBackendMessage(bm) {
   return msg;
 }
 
+export function extractServerId(msg) {
+  if (!msg) return null;
+  if (Number.isSafeInteger(msg.serverMessageId) && msg.serverMessageId > 0) {
+    return msg.serverMessageId;
+  }
+  if (typeof msg.id === 'string') {
+    const match = /^m_(\d+)$/.exec(msg.id);
+    if (match) {
+      const parsed = Number(match[1]);
+      if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+    }
+  }
+  return null;
+}
+
 // 可注入存储、流和渲染器，测试无需启动鉴权或麦克风。
 export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = {}) {
   const {
@@ -266,6 +281,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   };
 
   let _syncSessionsGen = 0;
+  const sessionsBehindServer = new Set();
   let advApp = null;
   let syncingAdv = false;
   // Home opens after the startup sync; a voice result that arrives earlier belongs to it too.
@@ -420,20 +436,100 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
 
   /* ---------- 会话操作 ---------- */
   async function loadSessionHistory(session) {
-    if (!session || (session.messages && session.messages.length > 0)) return;
+    if (!session) return;
+    const isBehind = sessionsBehindServer.has(session.id);
+    if (!isBehind && session.messages && session.messages.length > 0) return;
+    const initialCount = session.messages ? session.messages.length : 0;
+    // A retry already in flight cleared `failed` without adding a message. Another
+    // load, including the home preview after startup, must not replace it.
+    if (conversation.busy && getActive() === session) return;
+    // beforeSend bumps this when a message is sent or retried during the request.
+    const historyGen = _syncSessionsGen;
     try {
       const data = await fetchSessionHistoryPage(session.id, { limit: 100 });
-      // A reply typed while history was loading, or a deleted session, wins over the old response.
-      if (getSession(session.id) !== session || session.messages?.length) return;
+      // That attempt, a reply typed while history was loading, or a deleted session
+      // wins. The session stays behind so the next open refetches.
+      if (historyGen !== _syncSessionsGen || getSession(session.id) !== session || (session.messages ? session.messages.length : 0) !== initialCount) return;
       if (Array.isArray(data.messages) && data.messages.length > 0) {
-        session.messages = data.messages.map(mapBackendMessage);
+        const incoming = data.messages.map(mapBackendMessage);
+        if (session.messages && session.messages.length > 0) {
+          const usedIndices = new Set();
+          const pairedLocal = new Set();
+
+          // 1. 本地消息有已知服务端 ID（serverMessageId 或 m_<数字> 形式的 id）时，只和同 ID 的服务端消息配对。
+          const incomingById = new Map();
+          for (let j = 0; j < incoming.length; j++) {
+            const sid = extractServerId(incoming[j]);
+            if (sid !== null) {
+              incomingById.set(sid, j);
+            }
+          }
+
+          for (let i = 0; i < session.messages.length; i++) {
+            const localMsg = session.messages[i];
+            const sid = extractServerId(localMsg);
+            if (sid !== null && incomingById.has(sid)) {
+              const j = incomingById.get(sid);
+              if (!usedIndices.has(j)) {
+                const serverMsg = incoming[j];
+                if (serverMsg.role === localMsg.role) {
+                  usedIndices.add(j);
+                  pairedLocal.add(localMsg);
+                  if (localMsg.voiceKey) {
+                    serverMsg.voiceKey = localMsg.voiceKey;
+                    if (localMsg.dur !== undefined) {
+                      serverMsg.dur = localMsg.dur;
+                    }
+                    if (audioStore && audioStore.has(localMsg.id)) {
+                      audioStore.set(serverMsg.id, audioStore.get(localMsg.id));
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // 2. 没有已知 ID 的本地用户消息才按正文配对，而且只配给没被 ID 占用的服务端用户消息，保持从后往前的顺序。
+          for (let i = session.messages.length - 1; i >= 0; i--) {
+            const localMsg = session.messages[i];
+            if (localMsg && localMsg.role === 'user' && extractServerId(localMsg) === null) {
+              for (let j = incoming.length - 1; j >= 0; j--) {
+                if (usedIndices.has(j)) continue;
+                const serverMsg = incoming[j];
+                if (serverMsg.role === 'user' && serverMsg.content === localMsg.content) {
+                  usedIndices.add(j);
+                  pairedLocal.add(localMsg);
+                  if (localMsg.voiceKey) {
+                    serverMsg.voiceKey = localMsg.voiceKey;
+                    if (localMsg.dur !== undefined) {
+                      serverMsg.dur = localMsg.dur;
+                    }
+                    if (audioStore && audioStore.has(localMsg.id)) {
+                      audioStore.set(serverMsg.id, audioStore.get(localMsg.id));
+                    }
+                  }
+                  break;
+                }
+              }
+            }
+          }
+
+          // 3. 本地最后一条是带 failed 的用户消息，且没有配上任何服务端消息时，把它原样（保留 failed）接到新列表末尾。
+          const lastLocalMsg = session.messages[session.messages.length - 1];
+          if (lastLocalMsg && lastLocalMsg.role === 'user' && lastLocalMsg.failed && !pairedLocal.has(lastLocalMsg)) {
+            incoming.push(lastLocalMsg);
+          }
+        }
+        session.messages = incoming;
         session.hasMoreHistory = Boolean(data.has_more);
         session.oldestMessageId = Number.isInteger(data.oldest_id) ? data.oldest_id : earliestServerMessageId(session.messages);
         autoTitle(session);
+        sessionsBehindServer.delete(session.id);
         saveState();
       } else {
         session.hasMoreHistory = false;
         session.oldestMessageId = null;
+        sessionsBehindServer.delete(session.id);
       }
     } catch (e) {
       console.debug('Failed to load session history:', e);
@@ -496,7 +592,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     closeDrawer();
     if (id === state.activeId) {
       const current = getActive();
-      if (current && !current.messages?.length) {
+      if (current && (!current.messages?.length || sessionsBehindServer.has(current.id))) {
         await loadSessionHistory(current);
       }
       if (getActive() === current) {
@@ -514,7 +610,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     fullRender();
     if (enterFromHome) ensureHomeEntryVoice(s);
     else ensureSessionVoice(s);
-    if (s && (!s.messages || s.messages.length === 0)) {
+    if (s && (!s.messages || s.messages.length === 0 || sessionsBehindServer.has(s.id))) {
       await loadSessionHistory(s);
       if (getActive() !== s) return;
       fullRender();
@@ -539,6 +635,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       updateControls();
       return;
     }
+    sessionsBehindServer.delete(id);
     const sess = getSession(id);
     if (sess) {
       for (const m of sess.messages) {
@@ -597,6 +694,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   const actions = createTitleActions({
     getSessions: () => state.sessions, getProfiles: getVoiceProfiles,
     getActiveId: () => state.activeId,
+    isBehindServer: id => sessionsBehindServer.has(id),
     startNew: selection => newChat(selection, { enterFromHome: true }),
     loadSession: id => switchSession(id, { enterFromHome: true }),
     previewSession: id => switchSession(id, { focusInput: false }),
@@ -720,12 +818,20 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
             local.updatedAt = serverTimestamp(bs.updated_at, local.updatedAt);
             if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
             if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = pickSettings({ ...local.settings, ...bs.settings }, DEFAULT_SESSION_SETTINGS);
-            if (typeof bs.message_count === 'number' && local.messages && local.messages.length > 0 && bs.message_count > local.messages.length) {
-              const oldest = earliestServerMessageId(local.messages);
-              if (oldest && oldest > 1) {
-                local.hasMoreHistory = true;
-                local.oldestMessageId = oldest;
-              }
+            const lastMsg = local.messages ? local.messages[local.messages.length - 1] : null;
+            const hasUnsentFailed = Boolean(
+              lastMsg &&
+              lastMsg.role === 'user' &&
+              lastMsg.failed &&
+              extractServerId(lastMsg) === null
+            );
+            const localCount = local.messages
+              ? (local.messages.length - (hasUnsentFailed ? 1 : 0))
+              : 0;
+            if (typeof bs.message_count === 'number' && bs.message_count > localCount) {
+              sessionsBehindServer.add(local.id);
+            } else {
+              sessionsBehindServer.delete(local.id);
             }
             // 人设提示词是角色级数据，会话里残留的旧副本一律丢弃
             delete local.settings.systemPrompt;
@@ -763,7 +869,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         persistSession(s).catch(() => {});
       }
       const curActive = getActive();
-      if (curActive && (!curActive.messages || curActive.messages.length === 0)) {
+      if (curActive && (!curActive.messages || curActive.messages.length === 0 || sessionsBehindServer.has(curActive.id))) {
         await loadSessionHistory(curActive);
       }
       if (isStale()) return;

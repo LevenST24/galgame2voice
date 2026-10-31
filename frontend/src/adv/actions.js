@@ -21,7 +21,8 @@ export function createTitleActions({ getSessions, getProfiles, getActiveId = () 
   startNew, loadSession, previewSession = loadSession, openCharacters, openSettings,
   getBackgroundUrl = () => '', getStatus = () => ({}), getBackgrounds = () => [],
   getAvatar = async () => null, playExcerpt = async () => 'ended', stopExcerpt = () => {},
-  subscribeSettings = () => () => {}, voiceEnabled = () => true }) {
+  subscribeSettings = () => () => {}, voiceEnabled = () => true,
+  isBehindServer = () => false }) {
   function listSessions() {
     const profiles = getProfiles();
     return [...getSessions()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).map(session => {
@@ -29,9 +30,15 @@ export function createTitleActions({ getSessions, getProfiles, getActiveId = () 
       const settings = { ...session.settings };
       const profile = profiles.find(p => p.id === settings.voiceProfileId);
       const last = session.messages?.at(-1);
+      const behind = Boolean(isBehindServer?.(session.id));
+      const lastLine = (behind && session.lastLine) || excerpt.zh || last?.lines?.at(-1)?.zh || last?.lines?.at(-1)?.ja || last?.content || session.lastLine || '';
+      const lastUser = session.messages?.findLast ? session.messages.findLast(m => m.role === 'user') : null;
       return { id: session.id, title: session.title || '新对话', characterName: profile?.name || '',
-        lastLine: excerpt.zh || last?.lines?.at(-1)?.zh || last?.lines?.at(-1)?.ja || last?.content || session.lastLine || '',
-        excerpt, settings, hasUserMessages: Boolean(session.messages?.some(m => m.role === 'user')), updatedAt: session.updatedAt || 0,
+        lastLine,
+        excerpt: (behind && session.lastLine)
+          ? { zh: session.lastLine, ja: '', user: lastUser?.content || (last?.role === 'user' ? last.content : ''), messageId: null, ts: session.updatedAt, line: null }
+          : excerpt,
+        settings, hasUserMessages: Boolean(session.messages?.some(m => m.role === 'user')), updatedAt: session.updatedAt || 0,
         get background() { return getBackgroundUrl(settings.advBackground || '', settings.advBgTime, profile?.work || null) || ''; },
       };
     });
