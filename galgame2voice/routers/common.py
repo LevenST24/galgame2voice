@@ -6,7 +6,11 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from galgame2voice.services.voice_manager import InsufficientMemoryError
-from galgame2voice.services.voice_state import ActiveVoicePersistenceError, persist_active_voice_profile
+from galgame2voice.services.voice_state import (
+    ActiveVoicePersistenceError,
+    VoiceProfileRemoved,
+    persist_active_voice_profile,
+)
 
 __all__ = [
     "validate_user_id",
@@ -59,10 +63,13 @@ async def persist_active_voice_profile_or_raise(profile_id: int) -> None:
 async def switch_voice_profile_or_raise(manager: Any, profile: Any, force: bool = False) -> None:
     """
     Switches active voice profile via VoiceManager under its lock, translating
-    failures to HTTP errors (503 memory, 502 load, 500 unconfirmed persistence).
+    failures to HTTP errors (503 memory, 502 load, 500 unconfirmed persistence,
+    404 when the voice row is gone before it can be saved).
     """
     try:
         success = await manager.switch_profile(profile, persist=True, _already_locked=True, force=force)
+    except VoiceProfileRemoved as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except ActiveVoicePersistenceError as error:
         raise _voice_persistence_http_error(error) from error
     except InsufficientMemoryError as mem_err:

@@ -70,6 +70,7 @@ async def test_voice_manager_switch_profile_forwards_force():
     mock_client = MagicMock(spec=GptSovitsClient)
     mock_client.switch_voice_profile = AsyncMock(return_value=True)
     mock_client.lock = asyncio.Lock()
+    mock_client.active_profile = None  # an instance attribute, so spec= leaves it out
     vm = VoiceManager()
     vm.client = mock_client
 

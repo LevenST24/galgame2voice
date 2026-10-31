@@ -611,3 +611,131 @@ async def test_voice_switch_concurrent_deletion_returns_404_under_lock(
         assert res.status_code == 404
         assert "not found" in res.json()["detail"].lower()
 
+
+def _voice_payload(name: str, *, is_default: bool = False) -> dict:
+    return {
+        "name": name,
+        "gpt_weights_path": f"weights/{name}.ckpt",
+        "sovits_weights_path": f"weights/{name}.pth",
+        "refer_audio_path": f"ref/{name}.wav",
+        "refer_text": "テスト音声です",
+        "is_default": is_default,
+    }
+
+
+async def _saved_active_voice_id() -> int | None:
+    from galgame2voice.database.session import get_db
+
+    async with get_db() as conn:
+        cursor = await conn.execute("SELECT active_voice_profile_id FROM settings WHERE id = 1;")
+        row = await cursor.fetchone()
+    return None if row is None else row[0]
+
+
+async def _three_voices(client: AsyncClient) -> tuple[int, int, int]:
+    """Default role, the voice already in use, and the voice about to be loaded."""
+    created = []
+    for name, is_default in (("default-role", True), ("in-use", False), ("just-created", False)):
+        response = await client.post("/api/voice/profiles", json=_voice_payload(name, is_default=is_default))
+        assert response.status_code == 201, response.text
+        created.append(response.json()["id"])
+    return created[0], created[1], created[2]
+
+
+def _hold_target_weight_load(server, target_name: str):
+    """Pause the stand-in engine on the target voice's weight load."""
+    started, release = asyncio.Event(), asyncio.Event()
+    original = server.handle_request
+
+    async def handle_request(method, path, json_data=None, params=None):
+        weights = (params or json_data or {}).get("weights_path", "")
+        if path == "/set_gpt_weights" and target_name in str(weights):
+            started.set()
+            await release.wait()
+        return await original(method, path, json_data=json_data, params=params)
+
+    server.handle_request = handle_request
+    return started, release
+
+
+@pytest.mark.parametrize(
+    "endpoint,field",
+    [("/api/voice/switch", "profile_id"), ("/api/characters/switch", "character_id")],
+)
+async def test_deleting_a_voice_while_it_is_loading_returns_conflict_and_keeps_it(
+    temp_db_path, mock_gpt_sovits, endpoint, field,
+):
+    """A delete during model load is refused immediately; the voice row stays."""
+    manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
+    set_voice_manager(manager)
+    started, release = _hold_target_weight_load(mock_gpt_sovits, "just-created")
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        _default_id, in_use, target = await _three_voices(client)
+        enabled = await client.post(endpoint, json={field: in_use})
+        assert enabled.status_code == 200, enabled.text
+        assert manager.client.active_profile.id == in_use
+
+        pending = asyncio.create_task(client.post(endpoint, json={field: target}))
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            deleted = await asyncio.wait_for(client.delete(f"/api/voice/profiles/{target}"), 2)
+            assert not pending.done()
+            assert deleted.status_code == 409, deleted.text
+            assert "正在加载" in deleted.json()["detail"]
+            still_there = await client.get(f"/api/voice/profiles/{target}")
+            assert still_there.status_code == 200, still_there.text
+            listed = await client.get("/api/voice/profiles")
+            assert listed.json()["active_profile_id"] == in_use
+            release.set()
+            result = await asyncio.wait_for(pending, 5)
+        finally:
+            release.set()
+            if not pending.done():
+                await asyncio.wait_for(pending, 5)
+        assert result.status_code == 200, result.text
+        assert manager.client.active_profile.id == target
+        assert (await client.get("/api/voice/profiles")).json()["active_profile_id"] == target
+
+
+@pytest.mark.parametrize(
+    "endpoint,field",
+    [("/api/voice/switch", "profile_id"), ("/api/characters/switch", "character_id")],
+)
+async def test_voice_removed_during_load_is_not_committed_as_the_enabled_voice(
+    temp_db_path, mock_gpt_sovits, endpoint, field,
+):
+    """A row deleted under the load, bypassing the delete API, must not become current."""
+    from galgame2voice.database import crud
+    from galgame2voice.database.session import get_db
+
+    manager = VoiceManager(gpt_sovits_client_or_server=mock_gpt_sovits, db_path=temp_db_path)
+    set_voice_manager(manager)
+    started, release = _hold_target_weight_load(mock_gpt_sovits, "just-created")
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        default_id, in_use, target = await _three_voices(client)
+        enabled = await client.post(endpoint, json={field: in_use})
+        assert enabled.status_code == 200, enabled.text
+
+        pending = asyncio.create_task(client.post(endpoint, json={field: target}))
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            async with get_db() as conn:
+                assert await crud.delete_voice_profile(conn, target)
+            release.set()
+            result = await asyncio.wait_for(pending, 5)
+        finally:
+            release.set()
+            if not pending.done():
+                await asyncio.wait_for(pending, 5)
+        assert result.status_code == 404, result.text
+        assert "已不存在" in result.json()["detail"]
+        assert manager.client.active_profile.id == in_use
+        assert mock_gpt_sovits.current_gpt_weights.endswith("in-use.ckpt")
+        listed = (await client.get("/api/voice/profiles")).json()
+        assert listed["active_profile_id"] == in_use
+        assert listed["active_profile_id"] != default_id
+        assert await _saved_active_voice_id() == in_use
+        assert (await client.get(f"/api/voice/profiles/{target}")).status_code == 404
+
