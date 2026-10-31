@@ -155,7 +155,7 @@ test('a refused line playback reports a browser recovery hint without fetching a
   const p = player({ onError: error => errors.push(error) }); p.ctx.state = 'suspended';
   p.ctx.resume = async () => { throw new Error('gesture required'); };
   globalThis.fetch = async url => { fetched.push(url); return new Response(blob()); };
-  assert.equal(await p.playLine(0, ['/blocked-line.wav']), 'failed');
+  assert.equal(await p.playLine(0, ['/blocked-line.wav']), 'blocked');
   assert.equal(p._linePlayState, null);
   assert.equal(errors.length, 1);
   assert.match(errors[0].message, /浏览器.*LOG.*语音/);
@@ -168,7 +168,7 @@ test('an unresolved line resume reaches its deadline and clears playback ownersh
   p.ctx.resume = () => new Promise(() => {});
   const pending = p.playLine(0, ['/never-unlocked.wav']);
   t.mock.timers.tick(1500);
-  assert.equal(await pending, 'failed');
+  assert.equal(await pending, 'blocked');
   assert.equal(p._linePlayState, null);
   assert.equal(p.ctx.sources.length, 0);
 });

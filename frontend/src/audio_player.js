@@ -317,7 +317,7 @@ export class StreamAudioController {
    * @param {Object} [options]
    * @param {string} [options.msgId]
    * @param {() => void} [options.onStart] 首个切片进入排定播放时刻时触发一次
-   * @returns {Promise<'ended'|'interrupted'|'failed'>}
+   * @returns {Promise<'ended'|'interrupted'|'failed'|'blocked'>}
    */
   async playLine(lineIndex, chunks, { msgId = null, onStart = null } = {}) {
     if (this._linePlayState) {
@@ -394,7 +394,7 @@ export class StreamAudioController {
       } catch (_) {}
       if (lineState.settled) return linePromise;
       if (ctx.state !== 'running') {
-        lineState.resolve('failed');
+        lineState.resolve(ctx.state === 'suspended' ? 'blocked' : 'failed');
         if (ctx.state === 'suspended') {
           this._reportError(new Error('浏览器尚未允许播放语音，请在 LOG 里再点一次「语音」。文字聊天可继续使用。'));
         }
