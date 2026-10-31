@@ -3,7 +3,7 @@ import test from 'node:test';
 // Import before installing a document: don't auto-boot authentication or devices.
 import { setup } from './helpers/adv_main.mjs';
 import { tick } from './helpers/chat_stream.mjs';
-import { state as storedState, getActive as storedActive, getSession as storedSession, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
+import { state as storedState, getActive as storedActive, getSession as storedSession, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL } from '../frontend/src/store.js';
 import { initVoiceSettings, ensureSessionVoice, getVoiceProfiles, fetchVoiceProfiles, getActiveProfileId } from '../frontend/src/controllers/voice_settings.js';
 import { createTitleScreen } from '../frontend/src/adv/title.js';
 import { initApp } from '../frontend/src/main.js';
@@ -384,3 +384,273 @@ test('a startup voice switch that fails before home opens stays quiet', async t 
   assert.deepEqual(switches, [1, 1]); assert.equal(home.isOpen, true);
   assert.equal(toasts.children.length, 0);
 });
+
+test('startup sync reloads session history when server has more messages than local copy (refresh keeps server reply)', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const session = {
+    id: 's_refresh',
+    title: '晚上的对话',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_100_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [{ id: 'm_local_user', role: 'user', content: '今天去哪', ts: 1_700_000_100_000 }],
+  };
+  const server = {
+    id: session.id,
+    title: session.title,
+    voice_profile_id: null,
+    created_at: '2024-06-01 00:00:00',
+    updated_at: '2024-06-01 00:00:02',
+    message_count: 2,
+    last_message: '去江边走走吧',
+    settings: { ...session.settings },
+  };
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+    sessions: [session],
+    activeId: session.id,
+    global: { ...DEFAULT_GLOBAL },
+  })]]);
+
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+  };
+
+  const calls = [];
+  globalThis.window.fetch = async (url, options = {}) => {
+    const target = String(url);
+    calls.push({ url: target, method: options.method || 'GET', body: options.body });
+    if (target.includes('/api/chat/sessions')) {
+      return Response.json({ sessions: [server], has_more: false, count: 1 });
+    }
+    if (target.includes('/api/chat/history')) {
+      return Response.json({
+        session_id: session.id,
+        has_more: false,
+        oldest_id: 10,
+        count: 2,
+        messages: [
+          { id: 10, role: 'user', content_chinese: '今天去哪', content_japanese: '', created_at: '2024-06-01 00:00:00' },
+          { id: 11, role: 'assistant', content_chinese: '去江边走走吧', content_japanese: '海辺へ', created_at: '2024-06-01 00:00:02' },
+        ],
+      });
+    }
+    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+    if (target.includes('/api/providers')) return Response.json({
+      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
+      active_provider: 'p1',
+    });
+    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+    return Response.json({});
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  const app = initApp({
+    dom: { advRoot: root },
+    renderSessionList() {},
+  });
+
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  // 1. 断言首页最后一句包含服务端已保存的回复
+  const homeQuote = doc.querySelector('.home-quote')?.textContent || '';
+  assert.ok(homeQuote.includes('去江边走走吧'), `首页最后一句应包含「去江边走走吧」，实际为: "${homeQuote}"`);
+
+  // 2. 点击「接着聊 →」进入对话
+  const continueBtn = doc.querySelector('.home-continue');
+  assert.ok(continueBtn, '应存在继续对话按钮');
+  continueBtn.click();
+  for (let i = 0; i < 5; i++) await tick();
+
+  // 3. 断言活动对话包含服务端已保存的回复
+  const activeSession = storedActive();
+  const shownContents = activeSession.messages.map(m => m.content);
+  assert.deepEqual(shownContents, ['今天去哪', '去江边走走吧'], '对话消息列表应包含服务端回复');
+
+  // 4. 打开 LOG，断言 LOG 包含两句
+  app.adv.action('log');
+  for (let i = 0; i < 5; i++) await tick();
+  const logEntries = [...doc.querySelectorAll('.adv-log-primary')].map(el => el.textContent).join(' ');
+  assert.ok(logEntries.includes('今天去哪') && logEntries.includes('去江边走走吧'),
+    `LOG 历史应包含用户和助手两句，实际为: "${logEntries}"`);
+
+  // 5. 断言 localStorage 中也是两句且包含服务端回复
+  const storedJson = JSON.parse(storage.get('gal2voice.chat.v1'));
+  const storedSession = storedJson.sessions.find(s => s.id === session.id);
+  assert.equal(storedSession.messages.length, 2, 'localStorage 里应包含两条消息');
+  assert.equal(storedSession.messages[0].content, '今天去哪');
+  assert.equal(storedSession.messages[1].content, '去江边走走吧');
+});
+
+test('startup sync resets messages of non-active session when server has more messages and loads on switch', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const activeSession = {
+    id: 's_active',
+    title: '当前会话',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_100_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_1', role: 'user', content: '你好' },
+      { id: 'm_2', role: 'assistant', content: '你好呀' },
+    ],
+  };
+  const otherSession = {
+    id: 's_other',
+    title: '另一个对话',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_200_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [{ id: 'm_local_user2', role: 'user', content: '晚饭吃什么', ts: 1_700_000_200_000 }],
+  };
+
+  const serverSessions = [
+    {
+      id: activeSession.id,
+      title: activeSession.title,
+      voice_profile_id: null,
+      created_at: '2024-06-01 00:00:00',
+      updated_at: '2024-06-01 00:00:01',
+      message_count: 2,
+      last_message: '你好呀',
+      settings: { ...activeSession.settings },
+    },
+    {
+      id: otherSession.id,
+      title: otherSession.title,
+      voice_profile_id: null,
+      created_at: '2024-06-01 00:00:00',
+      updated_at: '2024-06-01 00:00:03',
+      message_count: 2,
+      last_message: '吃拉面吧',
+      settings: { ...otherSession.settings },
+    },
+  ];
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+    sessions: [activeSession, otherSession],
+    activeId: activeSession.id,
+    global: { ...DEFAULT_GLOBAL },
+  })]]);
+
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+  };
+
+  globalThis.window.fetch = async (url) => {
+    const target = String(url);
+    if (target.includes('/api/chat/sessions')) {
+      return Response.json({ sessions: serverSessions, has_more: false, count: 2 });
+    }
+    if (target.includes('/api/chat/history') && target.includes('session_id=s_other')) {
+      return Response.json({
+        session_id: otherSession.id,
+        has_more: false,
+        oldest_id: 20,
+        count: 2,
+        messages: [
+          { id: 20, role: 'user', content_chinese: '晚饭吃什么', content_japanese: '', created_at: '2024-06-01 00:00:02' },
+          { id: 21, role: 'assistant', content_chinese: '吃拉面吧', content_japanese: 'ラーメン', created_at: '2024-06-01 00:00:03' },
+        ],
+      });
+    }
+    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+    if (target.includes('/api/providers')) return Response.json({
+      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
+      active_provider: 'p1',
+    });
+    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+    return Response.json({});
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  const app = initApp({
+    dom: { advRoot: root },
+    renderSessionList() {},
+  });
+
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  // 1. 验证 actions.listSessions() 中 s_other 的 lastLine 来自服务端
+  const sessionsList = app.actions.listSessions();
+  const listedOther = sessionsList.find(s => s.id === otherSession.id);
+  assert.equal(listedOther.lastLine, '吃拉面吧', '非活动会话在未切换时应展示服务端的 lastLine');
+
+  // 2. 切换到 s_other
+  await app.actions.loadSession(otherSession.id);
+  for (let i = 0; i < 5; i++) await tick();
+
+  // 3. 断言切换后成功加载历史
+  const loadedOther = storedSession(otherSession.id);
+  assert.equal(loadedOther.messages.length, 2, '切换后应拉取并保存完整消息');
+  assert.equal(loadedOther.messages[0].content, '晚饭吃什么');
+  assert.equal(loadedOther.messages[1].content, '吃拉面吧');
+
+  // 4. 断言 localStorage 也是两句
+  const storedJson = JSON.parse(storage.get('gal2voice.chat.v1'));
+  const storedOther = storedJson.sessions.find(s => s.id === otherSession.id);
+  assert.equal(storedOther.messages.length, 2, 'localStorage 里 s_other 应包含两条消息');
+  assert.equal(storedOther.messages[1].content, '吃拉面吧');
+});
+
+

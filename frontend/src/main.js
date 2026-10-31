@@ -720,12 +720,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
             local.updatedAt = serverTimestamp(bs.updated_at, local.updatedAt);
             if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
             if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = pickSettings({ ...local.settings, ...bs.settings }, DEFAULT_SESSION_SETTINGS);
-            if (typeof bs.message_count === 'number' && local.messages && local.messages.length > 0 && bs.message_count > local.messages.length) {
-              const oldest = earliestServerMessageId(local.messages);
-              if (oldest && oldest > 1) {
-                local.hasMoreHistory = true;
-                local.oldestMessageId = oldest;
-              }
+            if (typeof bs.message_count === 'number' && bs.message_count > (local.messages ? local.messages.length : 0)) {
+              local.messages = [];
+              local.hasMoreHistory = false;
+              local.oldestMessageId = null;
             }
             // 人设提示词是角色级数据，会话里残留的旧副本一律丢弃
             delete local.settings.systemPrompt;
