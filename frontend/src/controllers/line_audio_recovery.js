@@ -5,7 +5,20 @@ import { normalizeLines } from '../session_data.js';
 const REPAIR_TIMEOUT_MS = 600000;
 
 /** One explicit click sends one synthesis request; never replay a lost POST. */
-export function createLineAudioRecovery({ getSession, getVoiceProfiles, saveState, isSessionDeleting = () => false, request = requestJson }) {
+export function createLineAudioRecovery({
+  getSession,
+  getVoiceProfiles,
+  saveState,
+  isSessionDeleting = () => false,
+  request = requestJson,
+  fetchHistory,
+}) {
+  const fetchHistoryFn = fetchHistory || ((sessionId, opts) => {
+    const params = new URLSearchParams({ session_id: sessionId, limit: String(opts?.limit ?? 1) });
+    if (Number.isInteger(opts?.beforeId) && opts.beforeId > 0) params.set('before_id', String(opts.beforeId));
+    return request(`/api/chat/history?${params.toString()}`, { signal: opts?.signal });
+  });
+
   return async ({ messageId, lineIndex, signal }) => {
     const session = getSession();
     const message = session?.messages?.find(item => item.id === messageId && item.role === 'assistant');
@@ -37,6 +50,30 @@ export function createLineAudioRecovery({ getSession, getVoiceProfiles, saveStat
     } catch (error) {
       checkCurrent();
       if (error.code === 'REQUEST_TIMEOUT') throw new Error('语音生成结果尚未确认，原音频已保留。请先检查运行状态，再决定是否重试。');
+      if (error.status === 409 && serverId !== null) {
+        try {
+          const history = await fetchHistoryFn(session.id, { beforeId: serverId + 1, limit: 1, signal });
+          checkCurrent();
+          const remoteMessage = (history?.messages || []).find(item => item.id === serverId || item.serverMessageId === serverId);
+          const remoteLine = remoteMessage?.lines?.find(item => item.index === lineIndex);
+          if (remoteLine && remoteLine.ja === text && remoteLine.audio?.status === 'ready') {
+            const normalized = normalizeLines([{ ...line, audio: remoteLine.audio }])?.[0]?.audio;
+            if (normalized?.status === 'ready' && Array.isArray(normalized.chunks) && normalized.chunks.length > 0) {
+              line.audio = normalized;
+              message.audioChunks = message.lines.flatMap(item => (item.audio?.chunks || []).map(chunk => ({
+                url: chunk.audio_url, sentence: chunk.sentence, emotion: item.emotion, line: item.index,
+              }))).map((chunk, index) => ({ ...chunk, index }));
+              message.audioUrls = message.audioChunks.map(chunk => chunk.url);
+              const saved = saveState();
+              return { audio: normalized, persisted: true, saved: saved !== false, remoteUpdated: true };
+            }
+          }
+        } catch (fetchError) {
+          if (fetchError?.name === 'AbortError' || signal?.aborted) {
+            throw (fetchError?.name === 'AbortError' ? fetchError : new DOMException('操作已取消', 'AbortError'));
+          }
+        }
+      }
       throw error;
     }
     checkCurrent();

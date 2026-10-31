@@ -55,7 +55,7 @@ export async function fetchAllSessions() {
   }
 }
 
-export async function fetchSessionHistoryPage(sessionId, { limit = 100, beforeId = null } = {}) {
+export async function fetchSessionHistoryPage(sessionId, { limit = 100, beforeId = null, signal = null } = {}) {
   const params = new URLSearchParams({
     session_id: sessionId,
     limit: String(limit),
@@ -63,7 +63,7 @@ export async function fetchSessionHistoryPage(sessionId, { limit = 100, beforeId
   if (Number.isInteger(beforeId) && beforeId > 0) {
     params.set('before_id', String(beforeId));
   }
-  return requestJson(`/api/chat/history?${params.toString()}`);
+  return requestJson(`/api/chat/history?${params.toString()}`, { signal });
 }
 
 export function earliestServerMessageId(messages) {
