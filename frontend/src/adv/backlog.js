@@ -16,6 +16,8 @@
  */
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+// A double-click's second hit lands on the button that just became「取消生成」.
+const REGENERATE_CANCEL_GRACE_MS = 500;
 
 export function resolveLogTexts(lineOrMsg, settings = {}) {
   const primaryLang = settings.advPrimaryLanguage || 'zh';
@@ -89,12 +91,13 @@ export function createBacklog(container, deps = {}) {
   const failedAudio = new Set();
   const audioKey = line => JSON.stringify(line?.audio?.chunks || []);
 
-  function stopReplay() {
+  function stopReplay({ feedback } = {}) {
     ++replaySequence;
     if (activeRegeneration) {
       const pending = activeRegeneration;
       activeRegeneration = null;
-      regenerationFeedback.delete(pending.key);
+      if (feedback) regenerationFeedback.set(pending.key, feedback);
+      else regenerationFeedback.delete(pending.key);
       pending.controller.abort();
       for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
     }
@@ -223,13 +226,17 @@ export function createBacklog(container, deps = {}) {
     regenerateBtn.onclick = async e => {
       e.stopPropagation();
       if (destroyed) return;
-      if (activeRegeneration?.key === lineKey) { stopReplay(); return; }
+      if (activeRegeneration?.key === lineKey) {
+        if (getNow() - activeRegeneration.startedAt < REGENERATE_CANCEL_GRACE_MS) return;
+        stopReplay({ feedback: '已取消本次生成，原音频已保留。' });
+        return;
+      }
       refreshRepairButton();
       if (regenerateBtn.disabled || regenerateBtn.hidden) return;
       if (!deps.getRecoveryVoice?.()) { deps.onChooseVoice?.(); return; }
       stopReplay();
       const sequence = replaySequence, controller = new AbortController();
-      const pending = { key: lineKey, controller };
+      const pending = { key: lineKey, controller, startedAt: getNow() };
       activeRegeneration = pending;
       regenerationFeedback.set(lineKey, '正在生成这句语音…');
       refreshAudioState();
