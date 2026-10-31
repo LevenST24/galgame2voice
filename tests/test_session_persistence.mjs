@@ -3,7 +3,7 @@ import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSess
 import { mergeChatBackup, exportCompleteChatBackup } from '../frontend/src/chat_backup.js';
 import { pickSettings, serverTimestamp } from '../frontend/src/session_data.js';
 import { streamChat } from '../frontend/src/ai.js';
-import { GREETING, LEGACY_GREETINGS } from '../frontend/src/store.js';
+import { GREETING, LEGACY_GREETINGS, loadState } from '../frontend/src/store.js';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const response = data => ({ ok: true, json: async () => data });
@@ -183,5 +183,69 @@ const backup = sessions => ({ format: 'galgame2voice.chat', version: 1, sessions
     ['s_legacy', 'old', undefined], ['s_old', 'lines', undefined],
     ['s_lines', 'lines', 'casual'], ['s_unset', 'lines', undefined],
   ]); passed++;
+}
+
+// The export button calls exportCompleteChatBackup, which reads /api/chat/export
+// and the in-memory browser snapshot. A prefix must not drop the newer settings.
+function installChatStorage(session) {
+  const values = new Map([['gal2voice.chat.v1', JSON.stringify({
+    sessions: [session], activeId: session.id, global: {},
+  })]]);
+  globalThis.localStorage = {
+    getItem: key => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: key => values.delete(key),
+  };
+}
+const prefixMessages = [
+  { id: 'm_10', role: 'user', content: '今天去哪', japanese: '', ts: 1_700_000_000_000, lines: null },
+  { id: 'm_11', role: 'assistant', content: '去江边走走吧', japanese: '海辺へ', ts: 1_700_000_002_000, lines: null },
+];
+async function exportPrefix(localSettings, localUpdatedAt) {
+  installChatStorage({
+    id: 's_backup', title: '晚上的对话', createdAt: 1_700_000_000_000, updatedAt: localUpdatedAt,
+    settings: localSettings,
+    messages: [{ id: 'm_local_user', role: 'user', content: '今天去哪', ts: 1_700_000_000_000 }],
+  });
+  loadState();
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    return response({
+      format: 'galgame2voice.chat', version: 1, exportedAt: '2024-06-01T00:00:02.000Z',
+      activeId: 's_backup', global: {},
+      sessions: [{
+        id: 's_backup', title: '晚上的对话', createdAt: 1_700_000_000_000, updatedAt: 1_700_000_500_000,
+        settings: { advPlayerName: '小明', advWindowOpacity: 40, voiceProfileId: 3 },
+        messages: prefixMessages,
+      }],
+    });
+  };
+  const result = await exportCompleteChatBackup();
+  assert.deepEqual(calls, ['/api/chat/export']);
+  const exported = JSON.parse(result.content).sessions[0];
+  return { result, exported };
+}
+{
+  // complete export keeps newer server settings when local messages are only a prefix
+  const { result, exported } = await exportPrefix(
+    { advPlayerName: '旧名', advWindowOpacity: 80, voiceProfileId: null }, 1_700_000_100_000);
+  assert.equal(result.browserCopies, 0);
+  assert.deepEqual(exported.messages.map(message => message.content), ['今天去哪', '去江边走走吧']);
+  assert.equal(exported.settings.advPlayerName, '小明');
+  assert.equal(exported.settings.advWindowOpacity, 40);
+  assert.equal(exported.settings.voiceProfileId, 3);
+  passed++;
+}
+{
+  // complete export keeps newer local settings when the browser copy was saved later
+  const { result, exported } = await exportPrefix(
+    { advPlayerName: '新名', advWindowOpacity: 30, voiceProfileId: 8 }, 1_700_000_900_000);
+  assert.equal(result.browserCopies, 0);
+  assert.deepEqual(exported.messages.map(message => message.content), ['今天去哪', '去江边走走吧']);
+  assert.equal(exported.settings.advPlayerName, '新名');
+  assert.equal(exported.settings.advWindowOpacity, 30);
+  assert.equal(exported.settings.voiceProfileId, 8);
+  passed++;
 }
 console.log(`Session persistence and complete backups: ${passed} scenarios passed`);
