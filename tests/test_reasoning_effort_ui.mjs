@@ -29,6 +29,18 @@ test('provider DNS diagnostics do not collapse into a generic diagnostic heading
   assert.equal(result.title, '服务器域名解析失败');
 });
 
+test('provider overload and endpoint 404 diagnostics show specific titles', () => {
+  const overload = formatProviderDiagnostic('openai', 'API returned status 503', '模型服务当前过载或暂时繁忙，请稍后重试。通常无需修改配置。');
+  assert.equal(overload.title, '服务暂时繁忙 (503/529)');
+  assert.ok(overload.guidance.includes('稍后重试'));
+
+  const endpoint404 = formatProviderDiagnostic('custom', 'API returned status 404: <html>Not Found</html>', '提供商未找到请求的接口路径。请检查 Base URL 地址配置。');
+  assert.equal(endpoint404.title, '接口地址未找到 (HTTP 404)');
+
+  const model404 = formatProviderDiagnostic('openai', 'The model does not exist', '提供商无法识别填写的模型名称。');
+  assert.equal(model404.title, '模型名称不存在 (HTTP 404)');
+});
+
 function setup(t, options = {}) {
   const d = fakeDocument();
   globalThis.document = d;
