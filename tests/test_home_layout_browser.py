@@ -14,6 +14,8 @@ import socket
 import subprocess
 import threading
 import tempfile
+import time
+import warnings
 
 import pytest
 
@@ -41,14 +43,50 @@ def make_layout_server(handler):
     raise RuntimeError("Could not bind a high loopback port for browser tests")
 
 
-def run_layout_browser(command):
-    # Chrome's own cache filenames can exceed Windows MAX_PATH when a browser
-    # profile sits under a long source-snapshot/pytest directory.
-    with tempfile.TemporaryDirectory(prefix="g2v-browser-", dir=os.environ.get("G2V_BROWSER_PROFILE_ROOT") or SYSTEM_TEMP,
-                                     ignore_cleanup_errors=True) as profile:
-        command = [f"--user-data-dir={profile}" if item.startswith("--user-data-dir=") else item for item in command]
-        return subprocess.run(command, capture_output=True, timeout=40,
-                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+def _describe_hang(exc, command, seconds):
+    screenshot = next((item.split("=", 1)[1] for item in command if item.startswith("--screenshot=")), None)
+    stderr = (exc.stderr or b"").decode("utf-8", "replace").strip()[-400:]
+    return (f"Chrome was still running after {exc.timeout} s (returned after {seconds:.0f} s) and was started again: "
+            f"stdout {len(exc.stdout or b'')} bytes, screenshot {'written' if screenshot and os.path.exists(screenshot) else 'missing'}, "
+            f"stderr tail: {stderr or '(empty)'}")
+
+
+def run_layout_browser(command, reset=None):
+    """Runs Chrome once more after a hang or a blank virtual-time dump.
+
+    A test whose server keeps state between requests (posted results, events the page sets)
+    passes `reset` to clear it, so the second run does not start from what the first one left.
+    """
+    def launch():
+        # Chrome's own cache filenames can exceed Windows MAX_PATH when a browser
+        # profile sits under a long source-snapshot/pytest directory.
+        with tempfile.TemporaryDirectory(prefix="g2v-browser-", dir=os.environ.get("G2V_BROWSER_PROFILE_ROOT") or SYSTEM_TEMP,
+                                         ignore_cleanup_errors=True) as profile:
+            launched = [f"--user-data-dir={profile}" if item.startswith("--user-data-dir=") else item for item in command]
+            return subprocess.run(launched, capture_output=True, timeout=40,
+                                  creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+
+    def relaunch():
+        if reset:
+            reset()
+        return launch()
+
+    started = time.monotonic()
+    try:
+        result = launch()
+    except subprocess.TimeoutExpired as exc:
+        # Windows CI sometimes keeps Chrome running for the whole 40 s, even past the 20 s
+        # image hold in test_stream_progress_browser. The cause is not known: report what
+        # Chrome had produced, then start it once more.
+        warnings.warn(_describe_hang(exc, command, time.monotonic() - started), stacklevel=2)
+        return relaunch()
+    # Under load the virtual-time budget can run out while Chrome is still on about:blank:
+    # CI's blank screenshots are about 6 KB, the size of an about:blank capture, and the
+    # dump has no result node. Retry such a dump once with a fresh profile.
+    if (result.returncode == 0 and any(item.startswith("--virtual-time-budget=") for item in command)
+            and not re.search(rb'<pre id="[^"]*result"', result.stdout)):
+        result = relaunch()
+    return result
 
 
 PAGE = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
@@ -141,6 +179,55 @@ def test_layout_server_queues_a_burst_of_browser_connections():
             client.close()
         server.server_close()
     assert len(clients) == 12
+
+
+BLANK_DUMP = b"<html><head></head><body></body></html>"
+RESULT_DUMP = b'<pre id="engine-result">{}</pre>'
+
+
+@pytest.mark.parametrize("dumps,launches", [
+    ([RESULT_DUMP], 1),
+    ([BLANK_DUMP, RESULT_DUMP], 2),
+    ([BLANK_DUMP, BLANK_DUMP, RESULT_DUMP], 2),
+])
+def test_run_layout_browser_retries_a_blank_virtual_time_dump_once(monkeypatch, dumps, launches):
+    steps = []
+
+    def fake_run(command, **kwargs):
+        steps.append("launch")
+        return subprocess.CompletedProcess(command, 0, dumps[steps.count("launch") - 1], b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run_layout_browser(["chrome", "--virtual-time-budget=5000", "--dump-dom", "http://127.0.0.1:9/"],
+                       reset=lambda: steps.append("reset"))
+    assert steps == ["launch", "reset", "launch"][:2 * launches - 1]
+
+
+def test_run_layout_browser_reports_and_retries_a_hung_chrome_once(tmp_path, monkeypatch):
+    screenshot = tmp_path / "shot.png"
+    command = ["chrome", "--dump-dom", f"--screenshot={screenshot}", "http://127.0.0.1:9/"]
+    outcomes = [subprocess.TimeoutExpired(command, 40, b"partial", b"[ERROR:gpu] stuck\n"),
+                subprocess.CompletedProcess(command, 0, RESULT_DUMP, b"")]
+    steps = []
+
+    def fake_run(command, **kwargs):
+        steps.append("launch")
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.warns(UserWarning, match=r"stdout 7 bytes, screenshot missing, stderr tail: \[ERROR:gpu\] stuck"):
+        assert run_layout_browser(command, reset=lambda: steps.append("reset")).stdout == RESULT_DUMP
+    # The state the first run left on the server is cleared before Chrome starts again.
+    assert steps == ["launch", "reset", "launch"]
+
+    # A second hang is not retried again.
+    outcomes[:] = [subprocess.TimeoutExpired(command, 40), subprocess.TimeoutExpired(command, 40)]
+    with pytest.warns(UserWarning), pytest.raises(subprocess.TimeoutExpired):
+        run_layout_browser(command)
+    assert outcomes == []
 
 
 @pytest.mark.requires_piped_subprocess

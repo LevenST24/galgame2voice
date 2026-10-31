@@ -113,7 +113,7 @@ def test_slow_diagnostics_do_not_hold_engine_readiness_or_survive_close(tmp_path
             "--no-proxy-server", "--disable-background-networking", "--disable-extensions", "--force-device-scale-factor=1",
             f"--user-data-dir={tmp_path/'browser'}", f"--window-size={max(600,width+100)},{height+100}",
             "--dump-dom", f"--screenshot={tmp_path/'telemetry.png'}", f"http://127.0.0.1:{server.server_port}/",
-        ])
+        ], reset=lambda: (ready.clear(), release.clear(), result.clear()))
     finally:
         ready.set()
         release.set()

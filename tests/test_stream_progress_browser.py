@@ -117,7 +117,7 @@ def test_native_fetch_uses_progress_budget_and_releases_the_connection(tmp_path,
             "--no-proxy-server", "--disable-background-networking", "--disable-extensions",
             f"--user-data-dir={tmp_path/'browser'}", "--window-size=1280,900", "--dump-dom",
             f"--screenshot={tmp_path/'stream-progress.png'}", f"http://127.0.0.1:{server.server_port}/",
-        ])
+        ], reset=lambda: (page_ready.clear(), disconnected.clear()))
     finally:
         page_ready.set()
         server.shutdown()
