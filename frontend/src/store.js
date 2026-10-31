@@ -68,10 +68,11 @@ export const state = {
 
 // LOG and the title screen show it as plain text, so no Markdown.
 export const GREETING =
-  '欢迎使用 Gal2Voice。\n\n轮到你时，在文本框里打字后回车发送，或点麦克风说话。默认语音同步模式会等本句声音开始再出字，AUTO 等说完再翻句；点击画面也可先看文字。\n\n首页齿轮和聊天菜单的设置按钮都打开同一个设置中心：“角色与会话”选择音色和人设，“聊天体验”调整字幕与播放方式，“对话模型”配置模型。窗口顶部可关闭设置或返回开始页。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。';
+  '欢迎使用 Gal2Voice。\n\n轮到你时，在文本框里打字后回车发送，或点麦克风说话。默认语音同步模式会等本句声音开始再出字，AUTO 等说完再翻句；点击画面也可先看文字。\n\n首页齿轮和聊天菜单的设置按钮都打开同一个设置中心：“角色与会话”选择音色和人设，“聊天体验”调整字幕与播放方式，“对话模型”配置模型。窗口顶部可关闭设置或返回首页。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。';
 
 // Greetings that sessions created by earlier versions still carry.
 export const LEGACY_GREETINGS = [
+  '欢迎使用 Gal2Voice。\n\n轮到你时，在文本框里打字后回车发送，或点麦克风说话。默认语音同步模式会等本句声音开始再出字，AUTO 等说完再翻句；点击画面也可先看文字。\n\n首页齿轮和聊天菜单的设置按钮都打开同一个设置中心：“角色与会话”选择音色和人设，“聊天体验”调整字幕与播放方式，“对话模型”配置模型。窗口顶部可关闭设置或返回开始页。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
   '欢迎使用 Gal2Voice。\n\n支持语音输入与朗读回复：轮到你时，在文本框里打字后回车发送，或者点文本框里的麦克风说话。回复会一句一句显示并配上语音，点击画面推进。快捷菜单 CONFIG 面板的底部可以打开会话与角色设置（音色、人设、采样参数）和对话模型设置。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
   '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。设置中心的“角色与会话”可绑定角色音色并配置人设与采样参数，“对话模型”可切换模型；各设置页都可以返回首页。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
   '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。右上角`会话设置`可配置专属人设与采样参数，侧边栏底部齿轮可切换音色与对话模型。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
@@ -211,7 +212,7 @@ export function prepareSessionImport(raw) {
   let parsed;
   try { parsed = JSON.parse(raw); } catch { throw new Error('无法读取 JSON，请选择之前导出的聊天备份文件。'); }
   if (parsed?.format !== 'galgame2voice.chat' || parsed.version !== 1) {
-    throw new Error('备份格式或版本不受支持，请选择 Galgame2Voice 导出的聊天备份。');
+    throw new Error('备份格式或版本不受支持，请选择由 Gal2Voice 导出的聊天备份文件。');
   }
   const incoming = portableSnapshot(normalizeSnapshot(parsed, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL));
   if (incoming.sessions.length === 0) throw new Error('备份中没有聊天会话，当前记录未修改。');

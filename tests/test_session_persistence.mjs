@@ -164,7 +164,7 @@ const backup = sessions => ({ format: 'galgame2voice.chat', version: 1, sessions
   // LOG and the title screen print the greeting as plain text, and the old chat layout is gone.
   assert.doesNotMatch(GREETING, /\*\*|顶栏|侧边栏|右上角/);
   assert.match(GREETING, /设置中心/);
-  assert.match(GREETING, /返回开始页/);
+  assert.match(GREETING, /返回首页/);
   assert.doesNotMatch(GREETING, /CONFIG 面板的底部/);
   // A session that still holds an older greeting is not exported as an extra browser copy.
   for (const greeting of [GREETING, ...LEGACY_GREETINGS]) {
@@ -172,6 +172,25 @@ const backup = sessions => ({ format: 'galgame2voice.chat', version: 1, sessions
     const result = mergeChatBackup(backup([session('greeted', [message(1)])]), local);
     assert.equal(result.browserCopies, 0);
   }
+  passed++;
+}
+{
+  // Sessions created before wording unification containing "返回开始页" must be recognized as legacy greetings
+  // so exportCompleteChatBackup / mergeChatBackup does not treat them as extra local messages, avoids creating
+  // an unwanted browser copy, and preserves newer local session settings.
+  const legacyGreetingWithReturnStart =
+    '欢迎使用 Gal2Voice。\n\n轮到你时，在文本框里打字后回车发送，或点麦克风说话。默认语音同步模式会等本句声音开始再出字，AUTO 等说完再翻句；点击画面也可先看文字。\n\n首页齿轮和聊天菜单的设置按钮都打开同一个设置中心：“角色与会话”选择音色和人设，“聊天体验”调整字幕与播放方式，“对话模型”配置模型。窗口顶部可关闭设置或返回开始页。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。';
+  assert.ok(LEGACY_GREETINGS.includes(legacyGreetingWithReturnStart));
+  const localSession = session('greeted', [{ ...message(0, legacyGreetingWithReturnStart), role: 'assistant', noVoice: true }, message(1)]);
+  localSession.settings = { ...localSession.settings, advPlayerName: '新名' };
+  localSession.updatedAt = 200;
+  const serverSession = session('greeted', [message(1)]);
+  serverSession.settings = { ...serverSession.settings, advPlayerName: '旧名' };
+  serverSession.updatedAt = 100;
+  const result = mergeChatBackup(backup([serverSession]), backup([localSession]));
+  assert.equal(result.browserCopies, 0);
+  const parsed = JSON.parse(result.content);
+  assert.equal(parsed.sessions[0].settings.advPlayerName, '新名');
   passed++;
 }
 {

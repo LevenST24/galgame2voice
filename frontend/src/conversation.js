@@ -249,7 +249,7 @@ export function createConversation({
       }
       const stored = Boolean(textToSave || message.japanese.trim() || meaningfulLines);
       if (!cancelled && !error && !textToSave && !message.japanese.trim() && !meaningfulLines) {
-        error = '模型这次没有返回任何内容';
+        error = '模型这次没有返回内容。请点「重新发送」再试；仍失败请检查「对话模型」设置。';
         errorCode = 'empty_reply';
       }
       const origin = getSession(originId);

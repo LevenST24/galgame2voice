@@ -208,7 +208,7 @@ export async function handleApplyUpdate() {
 
   if (_dom.gUpdateProgressBox) _dom.gUpdateProgressBox.classList.remove('hidden');
   if (_dom.gUpdateSpinner) _dom.gUpdateSpinner.classList.remove('hidden');
-  if (_dom.gUpdateProgressTitle) _dom.gUpdateProgressTitle.textContent = isPending ? '正在执行静态产物编译与部署，请稍候...' : '正在执行 git pull 与资源构建，请稍候...';
+  if (_dom.gUpdateProgressTitle) _dom.gUpdateProgressTitle.textContent = isPending ? '正在执行静态产物编译与部署，请稍候…' : '正在下载并安装更新，请稍候…';
   if (_dom.gBtnReloadPage) _dom.gBtnReloadPage.classList.add('hidden');
   if (_dom.gUpdateLogOutput) _dom.gUpdateLogOutput.textContent = isPending ? '>>> 开始重试前端构建并部署...\n' : '>>> 开始拉取 GitHub 最新版本...\n';
 

@@ -385,7 +385,7 @@ export function createConfigPanel(container, {
   const autoModeSelect = doc.createElement('select');
   autoModeSelect.id = 'cfg-advAutoMode';
   autoModeSelect.className = 'adv-config-select';
-  for (const [v, text] of [['voice-priority', '语音同步（推荐）'], ['normal', '按阅读速度']]) {
+  for (const [v, text] of [['voice-priority', ADV_LABELS['voice-priority']], ['normal', ADV_LABELS.normal]]) {
     const opt = doc.createElement('option');
     opt.value = v; opt.textContent = text;
     autoModeSelect.appendChild(opt);

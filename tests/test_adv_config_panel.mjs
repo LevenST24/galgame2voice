@@ -365,7 +365,7 @@ test('invalid input blocks saving and displays field error', t => {
   saveBtn.click();
   assert.equal(h.app.configPanel.isOpen, true, 'saving should be blocked');
   assert.equal(errs.advPlayerName.hidden, false);
-  assert.match(errs.advPlayerName.textContent, /ADV 设置无效/);
+  assert.match(errs.advPlayerName.textContent, /填写有误/);
   assert.equal(h.active.settings.advPlayerName, '我', 'store must remain unchanged');
 
   // B. Player name > 40 graphemes
@@ -534,7 +534,7 @@ test('old modal createAdvSettings continues working and shares validation rules'
 
   // Invalid value throws /ADV/
   container.querySelector('#s-advWindowOpacity').value = '200';
-  assert.throws(() => oldUi.read(), /ADV/);
+  assert.throws(() => oldUi.read(), /填写有误/);
 });
 
 // ---------------------------------------------------------------------------

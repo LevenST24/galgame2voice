@@ -772,9 +772,9 @@ export function mountAdv(dom, deps) {
     liveMessage = null;
     if (isEmptyDone) {
       if (failedUser && !failedUser.failed) {
-        failedUser.failed = { error: '模型这次没有返回任何内容', code: 'empty_reply' };
+        failedUser.failed = { error: '模型这次没有返回内容。请点「重新发送」再试；仍失败请检查「对话模型」设置。', code: 'empty_reply' };
       }
-      player.settle(turnId, { kind: 'error', error: { message: '模型这次没有返回任何内容', code: 'empty_reply' } });
+      player.settle(turnId, { kind: 'error', error: { message: '模型这次没有返回内容。请点「重新发送」再试；仍失败请检查「对话模型」设置。', code: 'empty_reply' } });
       syncControls();
       return;
     }

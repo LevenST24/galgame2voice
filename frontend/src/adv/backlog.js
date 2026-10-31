@@ -265,8 +265,8 @@ export function createBacklog(container, deps = {}) {
             ? '这一句已在另一网页修好；本地缓存未更新'
             : '这一句已在另一网页修好，已更新')
           : result.persisted === true && result.saved === false
-          ? '语音已生成并保存到服务端；本地缓存未更新'
-          : result.saved === false ? '语音已生成，但本地保存失败，请先备份聊天。'
+          ? '语音已生成；浏览器记录未更新，点语音播放。'
+          : result.saved === false ? '语音已生成，但保存失败。请到「设置中心 → 备份与更新」导出聊天备份。'
           : result.persisted === false ? '语音已生成，修复记录保存在本浏览器；点语音播放。' : '语音已生成，点语音播放。';
       } catch (error) {
         if (destroyed || controller.signal.aborted || activeRegeneration !== pending || error.name === 'AbortError') return;

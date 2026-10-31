@@ -475,7 +475,7 @@ export async function loadGlobalConfig() {
       el.value = s.fragment_interval !== undefined ? s.fragment_interval : 0.3;
     });
     fill('gAudioRetention', (el) => { el.value = s.audio_retention_minutes || 30; });
-    if (targetDom.gDashRetentionVal) targetDom.gDashRetentionVal.textContent = `保留时长: ${s.audio_retention_minutes || 30} 分钟`;
+    if (targetDom.gDashRetentionVal) targetDom.gDashRetentionVal.textContent = `保留时长：${s.audio_retention_minutes || 30} 分钟`;
 
     // Telegram
     telegramController?.fillTelegramConfig(s, dirtyConfigFields);

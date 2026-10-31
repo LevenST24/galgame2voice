@@ -116,7 +116,7 @@ test('formatProviderDiagnostic intercepts 400 parameter errors before API key er
 test('needsModelSettings considers empty_reply a model setting issue', () => {
   assert.equal(needsModelSettings('任何信息', 'empty_reply'), true);
   assert.equal(needsModelSettings('模型把生成长度用完了，却没有写出回复', null), true);
-  assert.equal(needsModelSettings('模型这次没有返回任何内容', null), true);
+  assert.equal(needsModelSettings('模型这次没有返回内容。请点「重新发送」再试；仍失败请检查「对话模型」设置。', null), true);
 });
 
 test('ADV textbox displays empty_reply with 重新发送 and 去设置 actions', t => {

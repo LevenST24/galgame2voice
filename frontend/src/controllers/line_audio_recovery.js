@@ -165,7 +165,7 @@ export function createLineAudioRecovery({
     if (!normalized || result?.session_id !== session.id || result?.message_id !== serverId
         || result?.persisted !== (serverId !== null) || result?.line_index !== lineIndex
         || result?.voice_profile_id !== profileId) {
-      throw new Error('服务返回的单句音频不完整，原音频记录已保留，请重新打开 LOG 检查。');
+      throw new Error('这句语音生成不完整，原音频记录已保留，请稍后重新生成这一句。');
     }
     return applyAudio(normalized, result.persisted, false);
   };

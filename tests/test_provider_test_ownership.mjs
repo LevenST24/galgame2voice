@@ -393,7 +393,7 @@ test('normal current test success renders result box, latency, and success toast
   assert.equal(dom.gTestResultTitle.textContent, '连通性测试通过');
   assert.equal(dom.gTestResultLatency.textContent, '耗时 45ms');
   assert.match(dom.gTestResultBody.textContent, /2 个可用模型/);
-  assert.ok(toasts.some(msg => /连通性测试成功.*45ms/.test(msg)));
+  assert.ok(toasts.some(msg => /连通性测试成功.*45 ms/.test(msg)));
 });
 
 test('normal current test failure renders error title, guidance, and error toast', async t => {

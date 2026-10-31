@@ -109,8 +109,8 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   function explanation(kind) {
     if (kind === 'chat') return status.model?.label || '正在读取模型配置…';
     const engine = status.engine || {};
-    return engine.state === 'ready' ? `语音服务已连接${engine.base_url || engine.address ? ` · ${engine.base_url || engine.address}` : ''}`
-      : engine.message || '语音服务未连接，可以先用文字聊天';
+    return engine.state === 'ready' ? `语音引擎已连接${engine.base_url || engine.address ? ` · ${engine.base_url || engine.address}` : ''}`
+      : engine.message || '语音引擎未连接，可以先用文字聊天';
   }
   function renderStatus() {
     const states = { chat: !status.modelLoaded ? ['warn', '对话 检查中'] : status.model?.readFailed ? ['warn', '对话 状态未确认'] : chatOK() ? ['ok', '对话 可用'] : ['bad', '对话 未设置'],
@@ -230,11 +230,11 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     const places = [['', '默认背景'], ...(own.length ? own : backgrounds).map(b => [b.key, b.name || b.key])];
     // A place the list cannot show (another work, the plain sky) would start a different scene than the label says.
     if (backgrounds.length && !places.some(([key]) => key === draft.advBackground)) draft.advBackground = '';
-    const times = [['auto', '跟随时间'], ['day', '白天'], ['evening', '傍晚'], ['night', '夜晚']];
+    const times = [['auto', '自动（跟随时间）'], ['day', '白天'], ['evening', '傍晚'], ['night', '夜晚']];
     for (const [prefix, key, choices] of [['和 ', 'voiceProfileId', chars], ['，在 ', 'advBackground', places], ['，', 'advBgTime', times]]) {
       sentence.appendChild(el('span', '', prefix));
       const wrap = el('span', 'home-pick-wrap');
-      const fallback = key === 'voiceProfileId' ? '选择角色' : key === 'advBackground' ? '默认背景' : '跟随时间';
+      const fallback = key === 'voiceProfileId' ? '选择角色' : key === 'advBackground' ? '默认背景' : '自动（跟随时间）';
       const button = btn(`home-pick home-pick-${key}`, `${choices.find(c => c[0] === draft[key])?.[1] || fallback} ▾`, () => {
         const same = dropdownButton === button; closePopup(); closeDropdown(); if (same) return;
         dropdownButton = button; button.setAttribute('aria-expanded', 'true');

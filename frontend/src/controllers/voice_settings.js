@@ -267,7 +267,7 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
     if (_callbacks.isHomeOpen?.()) return;
     console.error('音色切换失败:', e);
     showToast('音色切换失败：请打开「运行状态」确认语音引擎正常后重试', 'error', _callbacks.onOpenEngineStatus ? {
-      actionLabel: '检查语音状态',
+      actionLabel: '检查运行状态',
       onAction: () => _callbacks.onOpenEngineStatus(),
     } : null);
   }
@@ -313,7 +313,7 @@ export async function loadSessionVoiceSelect(session, { preserveDraft = false } 
         && !voiceProfiles.some(p => String(p.id) === selection)) {
       const missingOpt = document.createElement('option');
       missingOpt.value = selection;
-      missingOpt.textContent = keepDraft ? '原角色已不可用（人设草稿已保留，请重新选择角色）' : '原角色已不可用，请重新选择角色';
+      missingOpt.textContent = keepDraft ? '原音色已不可用（人设草稿已保留，请重新选择音色）' : '原音色已不可用，请重新选择音色';
       missingOpt.disabled = true;
       _dom.sVoice.appendChild(missingOpt);
     }
@@ -340,7 +340,7 @@ export async function loadSessionVoiceSelect(session, { preserveDraft = false } 
   } catch (e) {
     if (!isCurrent()) return;
     if (!preserveDraft) {
-      _dom.sVoice.innerHTML = `<option value="${VOICE_LIST_UNAVAILABLE}">加载失败（后端未启动？）</option>`;
+      _dom.sVoice.innerHTML = `<option value="${VOICE_LIST_UNAVAILABLE}">加载失败，请先启动程序后重新打开此面板</option>`;
       _dom.sVoice.value = VOICE_LIST_UNAVAILABLE;
     } else {
       // Let the rescan report a failed refresh rather than claiming success.
@@ -465,11 +465,11 @@ export async function createCustomVoice() {
     return;
   }
   if (!refPath) {
-    showToast('必须选择参考音频：没有声音样本，合成音色会严重失真', 'error');
+    showToast('必须选择参考音频：没有参考音频，合成出的音色会严重失真。', 'error');
     return;
   }
   if (!promptText) {
-    showToast('必须填写参考音频里说的话：SoVITS V3/V4 模型留空会直接导致合成失败（400）', 'error');
+    showToast('必须填写参考音频里说的话，留空将无法合成语音。', 'error');
     return;
   }
   _dom.sCvCreate.disabled = true;
@@ -668,7 +668,7 @@ async function handleSaveSessionSettings() {
 
     // 人设提示词属于角色、不属于会话：写回角色包 manifest.json，DB 镜像由后端刷新
     const { note: promptNote, confirmed: promptConfirmed } = missingBinding
-      ? { note: '；原角色已不可用，音色绑定已保留，请重新选择角色', confirmed: true }
+      ? { note: '；原音色已不可用，音色绑定已保留，请重新选择音色', confirmed: true }
       : voiceListUnavailable
       ? { note: '；角色列表未能加载，角色绑定与人设保持不变', confirmed: false }
       : await saveCharacterPrompt(profileId, editor);
@@ -734,8 +734,8 @@ async function saveCharacterPrompt(profileId, editor) {
       _promptBaseline = text;
     }
     return result(saved?.manifest_path
-      ? `；已写回角色包「${prof.name}」`
-      : `；已保存音色「${prof.name}」的人设`);
+      ? `；人设已写回角色包「${prof.name}」`
+      : `；人设已保存至音色「${prof.name}」`);
   } catch (e) {
     return result(`；人设写入角色包失败：${e.message || e}`, false);
   }

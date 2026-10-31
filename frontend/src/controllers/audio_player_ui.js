@@ -153,7 +153,7 @@ export function playSingleAudio(getAudio, msgId, ctl, { objectUrl = null } = {})
         } catch (_) {}
         objectUrl = null;
       }
-      showToast('音频暂时无法播放，请在 LOG 里再点一次「语音」或「播放录音」重试；若仍失败，请检查浏览器声音权限。', 'info');
+      showToast('音频暂时无法播放，请在「对话记录」中再点一次「语音」或「播放录音」重试；若仍失败，请确认浏览器没有静音本页。', 'info');
     };
   };
   attach();
@@ -286,7 +286,7 @@ export async function synthesizeAiVoice(msg, ctl) {
         ctl.setPlaying(false);
       }
       currentVoice = null;
-      showToast('该消息缺少日文配音原文，点消息下的「翻译」取到日文后再播', 'info');
+      showToast('该消息缺少日文原文，暂时无法播放语音。', 'info');
       return;
     }
 
@@ -498,7 +498,7 @@ export async function playUserVoice(msg, ctl) {
     }
     if (!request.current()) return;
     if (!rec) {
-      showToast('该条录音缓存已清理，无法播放', 'info');
+      showToast('该条录音缓存已过期或被清理，无法播放。', 'info');
       return;
     }
     playSingleAudio(() => new Audio(rec.url), msg.id, ctl);

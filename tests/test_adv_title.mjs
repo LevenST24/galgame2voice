@@ -179,7 +179,7 @@ test('draft lists/defaults, selection arguments and cancel without mutation', as
   let opts = open('voiceProfileId'); assert.deepEqual(opts.map(textTree), ['角色甲','角色乙']); assert.equal(opts[0].getAttribute('aria-pressed'), 'true');
   opts[1].children[0].click();
   opts = open('advBackground'); assert.deepEqual(opts.map(textTree), ['默认背景','海边','房间']); assert.equal(opts[1].getAttribute('aria-pressed'), 'true'); opts[2].click();
-  opts = open('advBgTime'); assert.deepEqual(opts.map(textTree), ['跟随时间','白天','傍晚','夜晚']); assert.equal(opts[3].getAttribute('aria-pressed'), 'true'); opts[1].click();
+  opts = open('advBgTime'); assert.deepEqual(opts.map(textTree), ['自动（跟随时间）','白天','傍晚','夜晚']); assert.equal(opts[3].getAttribute('aria-pressed'), 'true'); opts[1].click();
   h.q('.home-start').click(); assert.deepEqual(h.calls.at(-1), ['newWith', { voiceProfileId: 8, advBackground: 'w/room', advBgTime: 'day' }]);
   assert.equal(h.sessions[0].settings.voiceProfileId, 7);
   h.ui.open(); await microtasks(); h.q('.home-new').click(); h.q('.home-cancel').click(); assert.ok(h.q('.home-continue'));
@@ -251,7 +251,7 @@ test('status colors/text, explanations, settings tabs, polling and disposal with
   const pills = h.ui.element.querySelectorAll('.home-pill');
   pills[0].children[1].click(); assert.match(textTree(h.q('.home-popover')), /测试模型/);
   h.q('.home-popover').querySelector('button').click(); assert.deepEqual(h.calls.at(-1), ['settings','models']);
-  pills[1].click(); assert.match(textTree(h.q('.home-popover')), /语音服务已连接.*127.0.0.1:9880/);
+  pills[1].click(); assert.match(textTree(h.q('.home-popover')), /语音引擎已连接.*127.0.0.1:9880/);
   h.q('.home-popover').querySelector('button').click(); assert.deepEqual(h.calls.at(-1), ['settings','inference']);
   h.setStatus({ modelLoaded: false, model: { state: 'error' }, engine: { state: 'starting' } });
   h.clock.tick(4999); await microtasks(); assert.equal(h.calls.filter(c => c === 'status').length, 1);

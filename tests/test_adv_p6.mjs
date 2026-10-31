@@ -401,7 +401,7 @@ test('bg panel: a tile click previews at once and saves both settings', t => {
   assert.equal(tiles.length, LIST.length + 2, '自动 and 无（天空） tiles plus every background');
   assert.ok(tiles.every(tile => tile.tagName === 'BUTTON'));
   assert.equal(tiles[0].dataset.background, '');
-  assert.equal(h.nameOf(tiles[0]), '自动（本作）');
+  assert.equal(h.nameOf(tiles[0]), '自动（当前角色默认）');
   assert.equal(tiles[0].getAttribute('aria-pressed'), 'true', 'an unset session is on 自动');
   assert.equal(tiles[1].dataset.background, 'none');
   assert.equal(h.nameOf(tiles[1]), '无（天空）');
@@ -444,7 +444,7 @@ test('bg panel: a tile click previews at once and saves both settings', t => {
 test('bg panel: labels, time choices and the stored key when it opens', t => {
   const h = setupPanel(t, { selection: { id: 'cafe/beach', time: 'night' } });
   h.panel.open();
-  assert.deepEqual(h.times().map(button => button.textContent), ['自动', '白天', '傍晚', '夜晚']);
+  assert.deepEqual(h.times().map(button => button.textContent), ['自动（跟随时间）', '白天', '傍晚', '夜晚']);
   assert.deepEqual(h.times().map(button => button.dataset.time), BG_TIME_CHOICES);
   assert.equal(h.times()[3].getAttribute('aria-pressed'), 'true');
   assert.equal(h.tiles()[3].getAttribute('aria-pressed'), 'true');

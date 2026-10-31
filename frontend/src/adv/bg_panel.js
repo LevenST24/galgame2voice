@@ -9,11 +9,11 @@
 
 import { BG_AUTO, BG_NONE, effectiveBackgroundKey, normalizeBackgroundSelection, resolveVariant, timeOfDay } from './background.js';
 
-const TIMES = [['auto', '自动'], ['day', '白天'], ['evening', '傍晚'], ['night', '夜晚']];
+const TIMES = [['auto', '自动（跟随时间）'], ['day', '白天'], ['evening', '傍晚'], ['night', '夜晚']];
 const SKY_ID = BG_NONE;
 const SKY_NAME = '无（天空）';
 const AUTO_ID = BG_AUTO;
-const AUTO_NAME = '自动（本作）';
+const AUTO_NAME = '自动（当前角色默认）';
 
 export function createBgPanel(container, {
   getList = () => [],

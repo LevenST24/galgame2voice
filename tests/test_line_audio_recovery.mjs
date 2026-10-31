@@ -244,7 +244,7 @@ test('a server-persisted LOG repair does not suggest exporting a chat backup whe
   assert.equal(calls[0].body.message_id, 42);
   assert.equal(loaded.messages[0].lines[0].audio.chunks[0].audio_url, '/audio/repair_persisted01.wav');
   assert.equal(storage.get('gal2voice.chat.v1').includes('/audio/repair_persisted01.wav'), false);
-  assert.equal(persistedStatus, '语音已生成并保存到服务端；本地缓存未更新');
+  assert.equal(persistedStatus, '语音已生成；浏览器记录未更新，点语音播放。');
   assert.doesNotMatch(persistedStatus, /备份|导出/);
 
   const browserOnly = {
@@ -280,7 +280,7 @@ test('a server-persisted LOG repair does not suggest exporting a chat backup whe
   await browserLogLive.element.querySelector('.adv-log-regenerate-btn').onclick({ stopPropagation() {} });
   const browserStatus = browserLogLive.element.querySelector('.adv-log-audio-status').textContent;
   assert.equal(calls.at(-1).body.message_id, null);
-  assert.equal(browserStatus, '语音已生成，但本地保存失败，请先备份聊天。');
+  assert.equal(browserStatus, '语音已生成，但保存失败。请到「设置中心 → 备份与更新」导出聊天备份。');
 });
 
 test('a completed SSE reply carries its real database ID into a subsequent repair', async () => {
