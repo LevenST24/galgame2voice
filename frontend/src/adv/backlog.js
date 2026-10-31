@@ -238,7 +238,9 @@ export function createBacklog(container, deps = {}) {
         const result = await deps.regenerateLineAudio({ messageId: msg.id, lineIndex: line.index, signal: controller.signal });
         if (destroyed || controller.signal.aborted || sequence !== replaySequence) return;
         line = { ...line, audio: structuredClone(result.audio) };
-        feedback = result.saved === false ? '语音已生成，但本地保存失败，请先备份聊天。'
+        feedback = result.persisted === true && result.saved === false
+          ? '语音已生成并保存到服务端；本地缓存未更新'
+          : result.saved === false ? '语音已生成，但本地保存失败，请先备份聊天。'
           : result.persisted === false ? '语音已生成，修复记录保存在本浏览器；点语音播放。' : '语音已生成，点语音播放。';
       } catch (error) {
         if (destroyed || controller.signal.aborted || sequence !== replaySequence || error.name === 'AbortError') return;
