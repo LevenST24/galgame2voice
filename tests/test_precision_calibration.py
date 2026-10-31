@@ -7,6 +7,7 @@ Evidence-based precision calibration tests:
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -466,4 +467,248 @@ class TestSilenceCalibrationRestart:
             engine, self.HOST, self.PORT, True, "default", device="cuda"
         )
         assert spawned == [], spawned
+
+
+class TestReadinessMonitorCalibration:
+    def test_port_opening_after_120s_triggers_calibration(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(run_server.time, "sleep", lambda *_args, **_kwargs: None)
+        endpoint = parse_sovits_endpoint("http://127.0.0.1:19231", source="db")
+        monkeypatch.setattr(
+            "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync",
+            lambda: endpoint,
+        )
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        monkeypatch.setattr(run_server, "find_gpt_sovits_directory", lambda: engine)
+        monkeypatch.setattr(
+            run_server,
+            "resolve_initial_device_and_half",
+            lambda *_a, **_k: ("cuda", True, "default"),
+        )
+        proc = MagicMock()
+        proc.poll.return_value = None
+        monkeypatch.setattr(run_server, "_spawn_sovits_process", lambda *_a, **_k: proc)
+
+        # First call before spawn is tick 0 (returns False).
+        # Ticks 1..240 return False; tick 241+ (i.e. > 240 iterations = 120s) returns True.
+        ticks = 0
+
+        def fake_is_port_in_use(port, host):
+            nonlocal ticks
+            if ticks == 0:
+                ticks += 1
+                return False
+            current = ticks
+            ticks += 1
+            return current >= 250
+
+        monkeypatch.setattr(run_server, "is_port_in_use", fake_is_port_in_use)
+
+        calibrated = []
+        monkeypatch.setattr(
+            run_server,
+            "_calibrate_precision_after_ready",
+            lambda *args, **kwargs: calibrated.append((args, kwargs)),
+        )
+
+        created = []
+        real_thread = threading.Thread
+
+        def capture(*args, **kwargs):
+            thread = real_thread(*args, **kwargs)
+            created.append(thread)
+            return thread
+
+        monkeypatch.setattr(run_server.threading, "Thread", capture)
+
+        run_server.ensure_gpt_sovits_running()
+        assert len(created) == 1
+        created[0].join(timeout=5)
+        assert not created[0].is_alive()
+        assert len(calibrated) == 1, "readiness watcher gave up without calibrating"
+        assert calibrated[0][0][0] == engine
+        assert calibrated[0][0][1] == "127.0.0.1"
+        assert calibrated[0][0][2] == 19231
+        assert calibrated[0][0][3] is True
+        assert calibrated[0][0][4] == "default"
+
+    def test_child_process_exit_stops_monitor_without_calibration(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(run_server.time, "sleep", lambda *_args, **_kwargs: None)
+        endpoint = parse_sovits_endpoint("http://127.0.0.1:19231", source="db")
+        monkeypatch.setattr(
+            "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync",
+            lambda: endpoint,
+        )
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        monkeypatch.setattr(run_server, "find_gpt_sovits_directory", lambda: engine)
+        monkeypatch.setattr(
+            run_server,
+            "resolve_initial_device_and_half",
+            lambda *_a, **_k: ("cuda", True, "default"),
+        )
+
+        ticks = 0
+        proc = MagicMock()
+        proc.returncode = 1
+
+        def fake_poll():
+            nonlocal ticks
+            return 1 if ticks >= 10 else None
+
+        proc.poll.side_effect = fake_poll
+        monkeypatch.setattr(run_server, "_spawn_sovits_process", lambda *_a, **_k: proc)
+
+        def fake_is_port_in_use(port, host):
+            nonlocal ticks
+            ticks += 1
+            return False
+
+        monkeypatch.setattr(run_server, "is_port_in_use", fake_is_port_in_use)
+
+        calibrated = []
+        monkeypatch.setattr(
+            run_server,
+            "_calibrate_precision_after_ready",
+            lambda *args, **kwargs: calibrated.append((args, kwargs)),
+        )
+
+        created = []
+        real_thread = threading.Thread
+
+        def capture(*args, **kwargs):
+            thread = real_thread(*args, **kwargs)
+            created.append(thread)
+            return thread
+
+        monkeypatch.setattr(run_server.threading, "Thread", capture)
+
+        run_server.ensure_gpt_sovits_running()
+        assert len(created) == 1
+        created[0].join(timeout=5)
+        assert not created[0].is_alive()
+        assert calibrated == [], "calibration should not trigger if child process exited"
+
+    def test_child_process_exit_with_port_busy_does_not_calibrate(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(run_server.time, "sleep", lambda *_args, **_kwargs: None)
+        endpoint = parse_sovits_endpoint("http://127.0.0.1:19231", source="db")
+        monkeypatch.setattr(
+            "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync",
+            lambda: endpoint,
+        )
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        monkeypatch.setattr(run_server, "find_gpt_sovits_directory", lambda: engine)
+        monkeypatch.setattr(
+            run_server,
+            "resolve_initial_device_and_half",
+            lambda *_a, **_k: ("cuda", True, "default"),
+        )
+
+        step = 0
+
+        def fake_sleep(*args, **kwargs):
+            nonlocal step
+            step += 1
+
+        monkeypatch.setattr(run_server.time, "sleep", fake_sleep)
+
+        proc = MagicMock()
+        proc.returncode = 1
+
+        def fake_poll():
+            return 1 if step >= 5 else None
+
+        proc.poll.side_effect = fake_poll
+        monkeypatch.setattr(run_server, "_spawn_sovits_process", lambda *_a, **_k: proc)
+
+        # Port is occupied at step >= 5 (when child process has already crashed).
+        # Readiness monitor must check proc.poll() first and abort without calibrating.
+        def fake_is_port_in_use(port, host):
+            return step >= 5
+
+        monkeypatch.setattr(run_server, "is_port_in_use", fake_is_port_in_use)
+
+        calibrated = []
+        monkeypatch.setattr(
+            run_server,
+            "_calibrate_precision_after_ready",
+            lambda *args, **kwargs: calibrated.append((args, kwargs)),
+        )
+
+        created = []
+        real_thread = threading.Thread
+
+        def capture(*args, **kwargs):
+            thread = real_thread(*args, **kwargs)
+            created.append(thread)
+            return thread
+
+        monkeypatch.setattr(run_server.threading, "Thread", capture)
+
+        run_server.ensure_gpt_sovits_running()
+        assert len(created) == 1
+        created[0].join(timeout=5)
+        assert not created[0].is_alive()
+        assert calibrated == [], "calibration must not trigger if child process died even if port is busy"
+
+    def test_slow_loading_hint_printed_once_past_120s(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(run_server.time, "sleep", lambda *_args, **_kwargs: None)
+        endpoint = parse_sovits_endpoint("http://127.0.0.1:19231", source="db")
+        monkeypatch.setattr(
+            "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync",
+            lambda: endpoint,
+        )
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        monkeypatch.setattr(run_server, "find_gpt_sovits_directory", lambda: engine)
+        monkeypatch.setattr(
+            run_server,
+            "resolve_initial_device_and_half",
+            lambda *_a, **_k: ("cuda", True, "default"),
+        )
+        proc = MagicMock()
+        proc.poll.return_value = None
+        monkeypatch.setattr(run_server, "_spawn_sovits_process", lambda *_a, **_k: proc)
+
+        ticks = 0
+
+        def fake_is_port_in_use(port, host):
+            nonlocal ticks
+            if ticks == 0:
+                ticks += 1
+                return False
+            current = ticks
+            ticks += 1
+            return current >= 260
+
+        monkeypatch.setattr(run_server, "is_port_in_use", fake_is_port_in_use)
+        monkeypatch.setattr(
+            run_server,
+            "_calibrate_precision_after_ready",
+            lambda *args, **kwargs: None,
+        )
+
+        created = []
+        real_thread = threading.Thread
+
+        def capture(*args, **kwargs):
+            thread = real_thread(*args, **kwargs)
+            created.append(thread)
+            return thread
+
+        monkeypatch.setattr(run_server.threading, "Thread", capture)
+
+        run_server.ensure_gpt_sovits_running()
+        assert len(created) == 1
+        created[0].join(timeout=5)
+        assert not created[0].is_alive()
+
+        captured = capsys.readouterr()
+        assert captured.out.count("GPT-SoVITS 模型仍在后台加载中") == 1
+
 

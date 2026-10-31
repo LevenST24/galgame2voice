@@ -205,11 +205,10 @@ class TestBatchScriptHardening:
         assert "GPT-SoVITS*" in content
 
     def test_engine_readiness_polling_bounded(self):
-        """The GPT-SoVITS readiness worker has a bounded polling loop."""
+        """The GPT-SoVITS readiness worker waits while the child process is alive."""
         content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
-        # Assert the bound, not the loop variable's name: whether the counter is
-        # called `i` or `_` says nothing about whether the wait terminates.
-        assert "in range(240)" in content  # 120s bounded GPT-SoVITS readiness wait
+        # Polling terminates when the child process exits or the port becomes ready.
+        assert "proc.poll() is None" in content
         # Browser readiness uses a monotonic deadline and is checked by the
         # behavioral timeout tests in test_browser_autostart.py.
 
