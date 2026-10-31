@@ -2,7 +2,7 @@
 import { state, saveState, getActive, DEFAULT_SESSION_SETTINGS } from '../store.js';
 import { showToast } from '../ui.js';
 import { requestJson } from '../api.js';
-import { persistSession } from '../session_api.js';
+import { persistSession, isSessionWriting } from '../session_api.js';
 
 let _dom = {};
 let _callbacks = {};
@@ -494,8 +494,15 @@ export async function createCustomVoice() {
     if (origin && state.sessions.includes(origin)) {
       _callbacks.invalidateSessionSync?.();
       origin.settings.voiceProfileId = profileId;
+      origin.hasUnconfirmedSettings = true;
       saveState();
-      try { await persistSession(origin); }
+      try {
+        await persistSession(origin);
+        if (!isSessionWriting(origin.id)) {
+          delete origin.hasUnconfirmedSettings;
+          saveState();
+        }
+      }
       catch (e) { note = `；会话绑定尚未同步到本机服务：${e.message}`; }
     }
     invalidateScannedModels();
@@ -552,12 +559,22 @@ export async function deleteVoiceProfile() {
   try {
     await requestJson(`/api/voice/profiles/${id}`, { method: 'DELETE' });
     const cleared = state.sessions.filter(sess => sess.settings?.voiceProfileId === id);
-    for (const sess of cleared) sess.settings.voiceProfileId = null;
+    for (const sess of cleared) {
+      sess.settings.voiceProfileId = null;
+      sess.hasUnconfirmedSettings = true;
+    }
     if (cleared.length) {
       _callbacks.invalidateSessionSync?.();
       saveState();
       // The server copies still name the deleted voice; the next sync would restore them.
-      for (const sess of cleared) persistSession(sess).catch(() => {});
+      for (const sess of cleared) {
+        persistSession(sess).then(() => {
+          if (!isSessionWriting(sess.id)) {
+            delete sess.hasUnconfirmedSettings;
+            saveState();
+          }
+        }).catch(() => {});
+      }
     }
     await loadSessionVoiceSelect(getActive());
     ensureSessionVoice(getActive(), { silent: true });
@@ -621,6 +638,7 @@ async function handleSaveSessionSettings() {
       ttsTemperature: Number(_dom.sTtsTemp.value),
     };
     s.updatedAt = Date.now();
+    s.hasUnconfirmedSettings = true;
     saveState();
 
     // 人设提示词属于角色、不属于会话：写回角色包 manifest.json，DB 镜像由后端刷新
@@ -633,7 +651,13 @@ async function handleSaveSessionSettings() {
     let syncNote = '';
     try {
       // The session may have been deleted while its character prompt was saving.
-      if (state.sessions.includes(s)) await persistSession(s);
+      if (state.sessions.includes(s)) {
+        await persistSession(s);
+        if (!isSessionWriting(s.id)) {
+          delete s.hasUnconfirmedSettings;
+          saveState();
+        }
+      }
     } catch (err) {
       syncNote = `；本机服务尚未确认保存：${err.message}`;
     }

@@ -28,7 +28,7 @@ import { initAuthInterceptor } from './auth.js';
 import { createSettingsCenter } from './controllers/settings_center.js';
 import { initSessionBackup } from './controllers/session_backup.js';
 import { requestJson } from './api.js';
-import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSessions, fetchSessionHistoryPage, earliestServerMessageId } from './session_api.js';
+import { persistSession, deletePersistedSession, isSessionDeleting, isSessionWriting, fetchAllSessions, fetchSessionHistoryPage, earliestServerMessageId } from './session_api.js';
 import { serverTimestamp, normalizeLines, pickSettings } from './session_data.js';
 import { openModal, closeModal, closeAllModals, hasOpenModal, initSettingsUi, onModalChange } from './settings_ui.js';
 
@@ -334,8 +334,15 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           if (!session) throw new Error('当前没有可保存的会话。');
           ++_syncSessionsGen;
           session.settings = pickSettings({ ...session.settings, ...patch }, DEFAULT_SESSION_SETTINGS);
+          session.hasUnconfirmedSettings = true;
           saveState();
-          const confirmation = persistSession(session);
+          const confirmation = persistSession(session).then((res) => {
+            if (!isSessionWriting(session.id)) {
+              delete session.hasUnconfirmedSettings;
+              saveState();
+            }
+            return res;
+          });
           if (confirm) return confirmation;
           confirmation.catch(error => showToast(`当前页面已应用显示设置，但本机服务尚未确认保存：${error.message}`, 'error'));
         },
@@ -807,8 +814,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     try {
       const backendSessions = await fetchAllSessions();
       if (isStale()) return;
-      // 保存失败时本机已经留下更新的一份。刷新后不要用更旧的服务端设置盖掉它。
-      const newerLocalSessions = [];
+      // 保存设置尚未确认时本机已记录标记。刷新后保留本机设置并补发，不要用服务端旧设置盖掉它。
+      const unconfirmedLocalSessions = [];
       if (backendSessions.length > 0) {
         const existingMap = new Map(state.sessions.map((s) => [s.id, s]));
         const merged = [];
@@ -818,8 +825,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
             local.lastLine = bs.last_message || '';
             if (bs.title && (local.title === '新对话' || !local.title)) local.title = bs.title;
             const serverUpdatedAt = serverTimestamp(bs.updated_at, local.updatedAt);
-            if (local.updatedAt > serverUpdatedAt) {
-              newerLocalSessions.push(local);
+            if (local.hasUnconfirmedSettings) {
+              unconfirmedLocalSessions.push(local);
             } else {
               local.updatedAt = serverUpdatedAt;
               if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
@@ -881,7 +888,14 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       }
       if (isStale()) return;
       saveState();
-      for (const session of newerLocalSessions) persistSession(session).catch(() => {});
+      for (const session of unconfirmedLocalSessions) {
+        persistSession(session).then(() => {
+          if (!isSessionWriting(session.id)) {
+            delete session.hasUnconfirmedSettings;
+            saveState();
+          }
+        }).catch(() => {});
+      }
       fullRender();
       ensureSessionVoice(getActive(), { silent: true });
       if (window.innerWidth > 820) advApp?.textbox.inputElement?.focus();

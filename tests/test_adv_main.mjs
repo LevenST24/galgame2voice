@@ -1798,7 +1798,7 @@ function storedSessionSnapshot(session) {
 }
 
 // Real startup: localStorage, then initApp's default boot sync against the session list.
-async function bootSessionSync(t, { session, server }) {
+async function bootSessionSync(t, { session, server, postHandler = null }) {
   const doc = fakeDocument();
   globalThis.document = doc;
   doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
@@ -1825,6 +1825,7 @@ async function bootSessionSync(t, { session, server }) {
       const target = String(url);
       calls.push({ url: target, method: options.method || 'GET', body: options.body });
       if (target.includes('/api/chat/sessions') && (options.method || 'GET') === 'POST') {
+        if (postHandler) return postHandler(options);
         return Response.json({ status: 'ok' });
       }
       if (target.includes('/api/chat/sessions')) {
@@ -1859,6 +1860,7 @@ async function bootSessionSync(t, { session, server }) {
 test('startup sync keeps newer local session settings and posts them', async t => {
   const session = {
     id: 's_settings_local', title: '晚上的对话', createdAt: 1_700_000_000_000, updatedAt: 1_800_000_000_000,
+    hasUnconfirmedSettings: true,
     settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '小明', advWindowOpacity: 40, temperature: 0.2 },
     messages: [{ id: 'm_keep', role: 'user', content: '只改了设置', ts: 1 }],
   };
@@ -1873,10 +1875,12 @@ test('startup sync keeps newer local session settings and posts them', async t =
   assert.equal(live.settings.advWindowOpacity, 40);
   assert.equal(live.settings.temperature, 0.2);
   assert.equal(live.updatedAt, 1_800_000_000_000);
+  assert.equal(live.hasUnconfirmedSettings, undefined, '补发成功后内存中的未确认标记必须清除');
   assert.equal(stored.settings.advPlayerName, '小明');
   assert.equal(stored.settings.advWindowOpacity, 40);
   assert.equal(stored.settings.temperature, 0.2);
   assert.equal(stored.updatedAt, 1_800_000_000_000);
+  assert.equal(stored.hasUnconfirmedSettings, undefined, '补发成功后 localStorage 中的未确认标记必须清除');
   assert.equal(saves.length, 1);
   assert.equal(saves[0].id, session.id);
   assert.equal(saves[0].settings.advPlayerName, '小明');
@@ -1908,3 +1912,59 @@ test('startup sync applies newer server session settings', async t => {
   assert.equal(stored.updatedAt, serverUpdatedAt);
   assert.equal(saves.length, 0);
 });
+
+test('startup sync applies server session settings when local session has newer reply timestamp but no unconfirmed settings', async t => {
+  const session = {
+    id: 's_reply_newer_than_server', title: '晚上的对话', createdAt: 1_700_000_000_000,
+    updatedAt: 1_800_000_000_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '我', advWindowOpacity: 75, temperature: 0.7 },
+    messages: [
+      { id: 'm_user', role: 'user', content: '你好', ts: 1_700_000_000_000 },
+      { id: 'm_assistant', role: 'assistant', content: '你好！', ts: 1_800_000_000_000 },
+    ],
+  };
+  const server = {
+    id: session.id, title: session.title, voice_profile_id: null,
+    created_at: '2024-01-01 00:00:00',
+    updated_at: '2024-01-01 00:00:01',
+    message_count: 2, last_message: '你好！',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '小明', advWindowOpacity: 40, temperature: 0.2 },
+  };
+  const { live, stored, saves } = await bootSessionSync(t, { session, server });
+  const serverUpdatedAt = serverTimestamp(server.updated_at);
+  assert.equal(live.settings.advPlayerName, '小明', '服务端新设置必须胜出');
+  assert.equal(live.settings.advWindowOpacity, 40);
+  assert.equal(live.settings.temperature, 0.2);
+  assert.equal(live.updatedAt, serverUpdatedAt);
+  assert.equal(stored.settings.advPlayerName, '小明', 'localStorage 必须更新为服务端新设置');
+  assert.equal(stored.settings.advWindowOpacity, 40);
+  assert.equal(stored.settings.temperature, 0.2);
+  assert.equal(stored.updatedAt, serverUpdatedAt);
+  assert.equal(saves.length, 0, '严禁把本机旧设置补发覆盖到服务端');
+});
+
+test('startup sync retains unconfirmed settings flag in storage when follow-up post fails', async t => {
+  const session = {
+    id: 's_settings_fail', title: '晚上的对话', createdAt: 1_700_000_000_000, updatedAt: 1_800_000_000_000,
+    hasUnconfirmedSettings: true,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '小明', advWindowOpacity: 40, temperature: 0.2 },
+    messages: [{ id: 'm_keep', role: 'user', content: '只改了设置', ts: 1 }],
+  };
+  const server = {
+    id: session.id, title: session.title, voice_profile_id: null,
+    created_at: '2024-01-01 00:00:00', updated_at: '2024-01-01 00:00:01',
+    message_count: 1, last_message: '只改了设置',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '我', advWindowOpacity: 75, temperature: 0.7 },
+  };
+  const { live, stored, saves } = await bootSessionSync(t, {
+    session,
+    server,
+    postHandler: () => Response.json({ message: '服务不可用' }, { status: 503 }),
+  });
+  assert.equal(live.settings.advPlayerName, '小明', '补发失败时仍保留本地设置');
+  assert.equal(live.hasUnconfirmedSettings, true, '补发失败后内存中保留未确认标记');
+  assert.equal(stored.settings.advPlayerName, '小明', '补发失败时 localStorage 仍保留本地设置');
+  assert.equal(stored.hasUnconfirmedSettings, true, '补发失败后 localStorage 中保留未确认标记，以便下次启动重试');
+  assert.equal(saves.length, 1);
+});
+

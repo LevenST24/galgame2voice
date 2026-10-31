@@ -126,11 +126,13 @@ export function normalizeSnapshot(data, sessionDefaults, globalDefaults) {
       }
       return normalizedMsg;
     });
-    return {
+    const normalizedSession = {
       id: session.id, title: session.title, messages,
       createdAt: timestamp(session.createdAt), updatedAt: timestamp(session.updatedAt),
       settings: pickSettings(session.settings, sessionDefaults),
     };
+    if (session.hasUnconfirmedSettings) normalizedSession.hasUnconfirmedSettings = true;
+    return normalizedSession;
   });
   return {
     sessions,
@@ -144,21 +146,27 @@ export function portableSnapshot(snapshot) {
     ...snapshot,
     // Generated audio is a separate cache. Browser recording blobs cannot be
     // restored from JSON, and URLs from other installations may be stale.
-    sessions: snapshot.sessions.map(session => ({ ...session, messages: session.messages.map(message => {
-      const result = { id: message.id, role: message.role, content: message.content, ts: message.ts };
-      if (typeof message.japanese === 'string') result.japanese = message.japanese;
-      if (message.noVoice) result.noVoice = true;
-      if (Array.isArray(message.lines)) {
-        result.lines = message.lines.map(line => ({
-          index: line.index,
-          zh: line.zh,
-          ja: line.ja,
-          emotion: line.emotion,
-          act: { ...(line.act || {}) },
-          audio: { status: 'skipped', chunks: [] },
-        }));
-      }
-      return result;
-    }) })),
+    sessions: snapshot.sessions.map(session => {
+      const { hasUnconfirmedSettings: _dropped, ...rest } = session;
+      return {
+        ...rest,
+        messages: session.messages.map(message => {
+          const result = { id: message.id, role: message.role, content: message.content, ts: message.ts };
+          if (typeof message.japanese === 'string') result.japanese = message.japanese;
+          if (message.noVoice) result.noVoice = true;
+          if (Array.isArray(message.lines)) {
+            result.lines = message.lines.map(line => ({
+              index: line.index,
+              zh: line.zh,
+              ja: line.ja,
+              emotion: line.emotion,
+              act: { ...(line.act || {}) },
+              audio: { status: 'skipped', chunks: [] },
+            }));
+          }
+          return result;
+        }),
+      };
+    }),
   };
 }
