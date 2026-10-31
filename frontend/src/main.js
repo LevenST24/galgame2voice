@@ -3,6 +3,8 @@ import {
   state,
   loadState,
   saveState,
+  storageChangedByAnotherPage,
+  getStorageStatus,
   createSession,
   deleteSession,
   getSession,
@@ -337,6 +339,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           const version = (session.unconfirmedSettingsVersion || 0) + 1;
           session.unconfirmedSettingsVersion = version;
           saveState();
+          if (storageChangedByAnotherPage()) {
+            if (confirm) return Promise.reject(new Error(getStorageStatus().message));
+            return;
+          }
           const confirmation = persistSession(session).then((res) => {
             if (session.unconfirmedSettingsVersion === version) {
               delete session.unconfirmedSettingsVersion;
@@ -695,7 +701,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     if (enterFromHome) ensureHomeEntryVoice(s);
     else ensureSessionVoice(s);
     advApp?.textbox.inputElement?.focus();
-    persistSession(s).catch(() => {});
+    if (!storageChangedByAnotherPage()) persistSession(s).catch(() => {});
     return s;
   }
 
@@ -881,7 +887,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         }
       } else if (state.sessions.length === 0) {
         const s = createSession('新对话');
-        persistSession(s).catch(() => {});
+        if (!storageChangedByAnotherPage()) persistSession(s).catch(() => {});
       }
       const curActive = getActive();
       if (curActive && (!curActive.messages || curActive.messages.length === 0 || sessionsBehindServer.has(curActive.id))) {
@@ -889,7 +895,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       }
       if (isStale()) return;
       saveState();
-      for (const session of unconfirmedLocalSessions) {
+      for (const session of storageChangedByAnotherPage() ? [] : unconfirmedLocalSessions) {
         const version = session.unconfirmedSettingsVersion;
         persistSession(session).then(() => {
           if (session.unconfirmedSettingsVersion === version) {
