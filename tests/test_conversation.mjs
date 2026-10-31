@@ -401,3 +401,16 @@ test('a partial error stays in history and a switched session receives no autopl
   assert.deepEqual(app.audio, []);
   assert.deepEqual(app.cached, ['/audio/later.wav']);
 });
+
+
+test('removed turn error code reports the deleted or cleared conversation after partial text', async () => {
+  const app = setup(); const events = presentationEvents(app);
+  app.conversation.send('提问');
+  const request = app.stream.requests[0];
+  await request.onChunk('部分回复');
+  await request.event('error', { error_code: 'turn_unavailable' });
+  const failure = events.find(event => event.type === 'error');
+  assert.equal(failure.kind, 'turn_unavailable');
+  assert.equal(failure.error, '对话已被删除或清空，本次回复未保存。');
+  assert.equal(events.some(event => event.type === 'done'), false);
+});

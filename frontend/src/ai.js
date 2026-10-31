@@ -266,7 +266,9 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
             const fallback = receivedReply
               ? `对话暂时未完成，${KEPT_LINES}请检查「设置中心」中的模型地址、密钥与模型名称。`
               : '对话暂时未完成，请检查「设置中心」中的模型地址、密钥与模型名称，再重新发送消息。';
-            finish(false, getErrorMessage(json, fallback));
+            finish(false, errorCode === 'turn_unavailable'
+              ? '对话已被删除或清空，本次回复未保存。'
+              : getErrorMessage(json, fallback));
             return;
           } else if (currentEvent === 'done') {
             doneMeta = json;

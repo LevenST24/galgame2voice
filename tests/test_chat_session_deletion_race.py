@@ -105,3 +105,50 @@ async def test_sync_reply_does_not_write_after_turn_is_removed(tmp_path, change)
             operation.cancel()
         await asyncio.gather(operation, return_exceptions=True)
         await service.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["clear", "delete", "recreate"])
+async def test_removed_stream_turn_reports_error(tmp_path, change):
+    database = tmp_path / "stream.db"
+    await init_db(database)
+    release = asyncio.Event()
+
+    async def tokens(*args, **kwargs):
+        yield '{"chinese":"Partial'
+        await release.wait()
+        yield ' answer","japanese":""}'
+
+    service = ChatService(db_path=database)
+    service._get_active_llm_adapter = AsyncMock(return_value=(
+        SimpleNamespace(stream_chat=tokens, api_key="synthetic"), "test", "custom",
+    ))
+    service._extract_memory_safe = AsyncMock()
+    stream = service.stream_chat("Question", session_id="s")
+    try:
+        assert (await asyncio.wait_for(stream.__anext__(), 5))["event"] == "text"
+        async with get_db(database) as conn:
+            if change == "clear":
+                assert await crud.clear_session_messages(conn, "s")
+            else:
+                assert await crud.delete_session(conn, "s")
+                if change == "recreate":
+                    await crud.add_message(conn, MessageCreate(
+                        session_id="s", role="user", content_chinese="New conversation",
+                    ))
+        release.set()
+        events = [event async for event in stream]
+        errors = [event["data"] for event in events if event["event"] == "error"]
+        assert errors == [{"error": "对话已被删除或清空，本次回复未保存。", "error_code": "turn_unavailable"}]
+        assert not any(event["event"] == "done" for event in events)
+        async with get_db(database) as conn:
+            rows = await (await conn.execute(
+                "SELECT role, content_chinese FROM messages WHERE session_id = ? ORDER BY id", ("s",)
+            )).fetchall()
+        assert [(row[0], row[1]) for row in rows] == (
+            [("user", "New conversation")] if change == "recreate" else []
+        )
+    finally:
+        release.set()
+        await stream.aclose()
+        await service.aclose()
