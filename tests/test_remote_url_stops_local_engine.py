@@ -1,6 +1,8 @@
 """Tests for terminating the owned local engine when switching to a remote GPT-SoVITS endpoint."""
 
+import asyncio
 import subprocess
+import threading
 from unittest.mock import MagicMock
 
 from httpx import ASGITransport, AsyncClient
@@ -363,3 +365,152 @@ async def test_saving_remote_url_cleans_records_if_process_exits_after_wait_time
     assert run_server._SPAWNED_SOVITS_LAUNCH is None
     assert run_server._SPAWNED_SOVITS_STARTED_AT is None
     assert not pid_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_saving_remote_url_waits_for_restart_lock_then_stops_current_engine(monkeypatch, tmp_path):
+    """Cleanup waits out a restart that holds the engine lock, then stops the process that restart published."""
+    from galgame2voice.routers import health
+
+    pid_file = tmp_path / "gptsovits.pid"
+    pid_file.write_text("1111", encoding="utf-8")
+
+    old = MagicMock(pid=1111)
+    old.poll.return_value = None
+    new = MagicMock(pid=2222)
+    new.poll.return_value = None
+    old_launch = EngineLaunch(old, HOST, PORT, "cuda", True, started_at=1.0)
+    new_launch = EngineLaunch(new, HOST, PORT, "cuda", False, started_at=2.0)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", old)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", old_launch)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
+
+    inner = threading.Lock()
+    cleanup_waiting = threading.Event()
+    stop_holder = threading.Event()
+    held = threading.Event()
+    published = threading.Event()
+    loop_blocked = threading.Event()
+    progress = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    class _RestartLock:
+        def acquire(self, blocking=True, timeout=-1):
+            if blocking and inner.locked():
+                cleanup_waiting.set()
+            if timeout is None or timeout < 0:
+                return inner.acquire(blocking)
+            return inner.acquire(blocking, timeout)
+
+        def release(self):
+            inner.release()
+
+        def locked(self):
+            return inner.locked()
+
+    monkeypatch.setattr(health, "_engine_restart_lock", _RestartLock())
+
+    killed = []
+
+    def terminate(pid, timeout=2.0):
+        killed.append(pid)
+        if pid == new.pid:
+            new.poll.return_value = 0
+        elif pid == old.pid:
+            old.poll.return_value = 0
+
+    monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
+
+    def hold_restart_lock():
+        if not inner.acquire(blocking=False):
+            return
+        held.set()
+        try:
+            while not cleanup_waiting.wait(0.05):
+                if stop_holder.is_set():
+                    return
+            if stop_holder.is_set():
+                return
+            loop.call_soon_threadsafe(progress.set)
+            if not progress.wait(2):
+                loop_blocked.set()
+                return
+            run_server._SPAWNED_SOVITS_PROC = new
+            run_server._SPAWNED_SOVITS_LAUNCH = new_launch
+            run_server._SPAWNED_SOVITS_STARTED_AT = 2.0
+            pid_file.write_text("2222", encoding="utf-8")
+            published.set()
+        finally:
+            inner.release()
+
+    holder = threading.Thread(target=hold_restart_lock, name="restart-lock-holder")
+    holder.start()
+    assert held.wait(2), "restart lock holder did not start"
+
+    app = create_app()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
+    finally:
+        stop_holder.set()
+        holder.join(timeout=5)
+
+    assert not holder.is_alive()
+    assert cleanup_waiting.is_set(), "saving a remote URL did not wait for the restart lock"
+    assert not loop_blocked.is_set(), "cleanup blocked the event loop while waiting for the restart lock"
+    assert published.is_set(), "restart finished publishing before cleanup observed the lock"
+    assert resp.status_code == 200
+    assert killed == [2222]
+    assert run_server._SPAWNED_SOVITS_PROC is None
+    assert run_server._SPAWNED_SOVITS_LAUNCH is None
+    assert run_server._SPAWNED_SOVITS_STARTED_AT is None
+    assert not pid_file.exists()
+    assert not inner.locked()
+
+
+@pytest.mark.asyncio
+async def test_saving_remote_url_keeps_replacement_published_during_wait(monkeypatch, tmp_path):
+    """A process published while the old engine is stopping keeps its record and pid file."""
+    pid_file = tmp_path / "gptsovits.pid"
+    pid_file.write_text("4242", encoding="utf-8")
+
+    old = MagicMock(pid=4242)
+    old.poll.return_value = None
+    replacement = MagicMock(pid=5252)
+    replacement.poll.return_value = None
+    replacement_launch = EngineLaunch(replacement, HOST, PORT, "cuda", False, started_at=2.0)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", old)
+    monkeypatch.setattr(
+        run_server,
+        "_SPAWNED_SOVITS_LAUNCH",
+        EngineLaunch(old, HOST, PORT, "cuda", True, started_at=1.0),
+    )
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
+
+    killed = []
+
+    def terminate(pid, timeout=2.0):
+        killed.append(pid)
+
+    def wait_and_publish(timeout=None):
+        old.poll.return_value = 0
+        run_server._SPAWNED_SOVITS_PROC = replacement
+        run_server._SPAWNED_SOVITS_LAUNCH = replacement_launch
+        run_server._SPAWNED_SOVITS_STARTED_AT = 2.0
+        pid_file.write_text("5252", encoding="utf-8")
+        return 0
+
+    old.wait.side_effect = wait_and_publish
+    monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
+
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/config", json={"gpt_sovits_url": REMOTE_URL})
+
+    assert resp.status_code == 200
+    assert killed == [4242]
+    assert run_server._SPAWNED_SOVITS_PROC is replacement
+    assert run_server._SPAWNED_SOVITS_LAUNCH is replacement_launch
+    assert run_server._SPAWNED_SOVITS_STARTED_AT == 2.0
+    assert pid_file.read_text(encoding="utf-8") == "5252"
+    assert replacement.poll() is None
