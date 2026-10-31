@@ -1,15 +1,13 @@
 """
 Adversarial Empirical Verification Suite for Milestone 1 (M1 Challenger 2).
 Covers:
-1. Abnormal port states and conflict detection in scripts & server.
-2. Stale PID recovery, PID corruption, and process lookup safety.
-3. Non-standard HTTP methods & fuzzing on /api/health and /status.
-4. CORS header validation under various origins and credentials modes.
-5. Process termination simulation & graceful lifespan shutdown.
+1. Stale PID recovery, PID corruption, and process lookup safety.
+2. Non-standard HTTP methods & fuzzing on /api/health and /status.
+3. CORS header validation under various origins and credentials modes.
+4. Process termination simulation & graceful lifespan shutdown.
 """
 
 import asyncio
-import os
 import socket
 import subprocess
 import sys
@@ -200,11 +198,11 @@ class TestCorsSecurityAndHeaders:
 
 
 # ============================================================================
-# 3. Batch Lifecycle Scripts, Stale PID Recovery & Port Conflict
+# 3. Batch Lifecycle Scripts & Stale PID Recovery
 # ============================================================================
 
 class TestLifecycleAdversarialAndPid:
-    """Adversarial stress-testing of Windows batch script logic, PID recovery, and port conflicts."""
+    """Adversarial stress-testing of Windows batch script logic and PID recovery."""
 
     def test_stale_pid_recovery_in_launcher(self, tmp_path, monkeypatch):
         """Verify launcher cleanup_subprocesses gracefully handles non-existent stale PID without hanging."""
@@ -236,36 +234,6 @@ class TestLifecycleAdversarialAndPid:
         pid_file.write_text("", encoding="utf-8")
         cleanup_subprocesses()
         assert not pid_file.exists()
-
-    # Exercises the Windows `netstat -ano` output format (LISTENING + PID column), not app code.
-    @pytest.mark.skipif(sys.platform != "win32", reason="Windows netstat output format")
-    def test_port_collision_detection_logic(self):
-        """Verify that when a port is actively occupied, port scanning identifies the collision."""
-        # Find an open port and bind a temporary server socket to occupy it
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(("127.0.0.1", 0))
-        sock.listen(1)
-        occupied_port = sock.getsockname()[1]
-
-        try:
-            # Check netstat command output detection for occupied_port
-            netstat_proc = subprocess.run(
-                ["netstat", "-ano"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            matching_lines = [
-                line for line in netstat_proc.stdout.splitlines()
-                if f":{occupied_port}" in line and "LISTENING" in line
-            ]
-            assert len(matching_lines) > 0, f"Expected occupied port {occupied_port} in netstat output"
-            # Extract PID
-            parts = matching_lines[0].strip().split()
-            detected_pid = int(parts[-1])
-            assert detected_pid == os.getpid()
-        finally:
-            sock.close()
 
 
 # ============================================================================
