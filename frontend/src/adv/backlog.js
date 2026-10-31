@@ -84,6 +84,8 @@ export function createBacklog(container, deps = {}) {
   let replaySequence = 0;
   let activeReplayButton = null;
   let activeRegeneration = null;
+  const regenerationFeedback = new Map();
+  const regenerationKey = (messageId, lineIndex) => `${messageId}:${lineIndex}`;
   const failedAudio = new Set();
   const audioKey = line => JSON.stringify(line?.audio?.chunks || []);
 
@@ -92,8 +94,9 @@ export function createBacklog(container, deps = {}) {
     if (activeRegeneration) {
       const pending = activeRegeneration;
       activeRegeneration = null;
+      regenerationFeedback.delete(pending.key);
       pending.controller.abort();
-      pending.refresh();
+      for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
     }
     activeReplayButton?.classList.remove('is-playing');
     activeReplayButton = null;
@@ -184,8 +187,9 @@ export function createBacklog(container, deps = {}) {
     const regenerateBtn = doc.createElement('button');
     regenerateBtn.type = 'button';
     regenerateBtn.className = 'adv-log-regenerate-btn';
+    const lineKey = regenerationKey(msg.id, line.index);
     function refreshRepairButton() {
-      const generating = activeRegeneration?.button === regenerateBtn;
+      const generating = activeRegeneration?.key === lineKey;
       const needsRepair = replayBtn.disabled && isVoiceEnabled();
       regenerateBtn.hidden = !deps.regenerateLineAudio || (!generating && !needsRepair);
       const voice = deps.getRecoveryVoice?.();
@@ -207,24 +211,28 @@ export function createBacklog(container, deps = {}) {
     function refreshAudioState() {
       updateReplayButtonState(replayBtn, line, msg, statusSpan);
       refreshRepairButton();
+      const note = regenerationFeedback.get(lineKey);
+      if (note) {
+        statusSpan.hidden = false;
+        statusSpan.textContent = note;
+      }
     }
 
-    updateReplayButtonState(replayBtn, line, msg, statusSpan);
-    refreshRepairButton();
+    refreshAudioState();
 
     regenerateBtn.onclick = async e => {
       e.stopPropagation();
       if (destroyed) return;
-      if (activeRegeneration?.button === regenerateBtn) { stopReplay(); return; }
+      if (activeRegeneration?.key === lineKey) { stopReplay(); return; }
       refreshRepairButton();
       if (regenerateBtn.disabled || regenerateBtn.hidden) return;
       if (!deps.getRecoveryVoice?.()) { deps.onChooseVoice?.(); return; }
       stopReplay();
       const sequence = replaySequence, controller = new AbortController();
-      const pending = { controller, button: regenerateBtn, refresh: refreshAudioState };
+      const pending = { key: lineKey, controller };
       activeRegeneration = pending;
+      regenerationFeedback.set(lineKey, '正在生成这句语音…');
       refreshAudioState();
-      statusSpan.hidden = false; statusSpan.textContent = '正在生成这句语音…';
       let feedback = '';
       try {
         const result = await deps.regenerateLineAudio({ messageId: msg.id, lineIndex: line.index, signal: controller.signal });
@@ -238,9 +246,9 @@ export function createBacklog(container, deps = {}) {
       } finally {
         if (activeRegeneration === pending) {
           activeRegeneration = null;
+          if (feedback) regenerationFeedback.set(lineKey, feedback);
+          else regenerationFeedback.delete(lineKey);
           for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
-          refreshAudioState();
-          if (feedback && !destroyed) { statusSpan.hidden = false; statusSpan.textContent = feedback; }
         }
       }
     };
@@ -274,6 +282,7 @@ export function createBacklog(container, deps = {}) {
         activeReplayButton = null;
         if (result === 'failed') {
           failedAudio.add(key);
+          regenerationFeedback.delete(lineKey);
           updateReplayButtonState(replayBtn, line, msg, statusSpan);
           for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
         }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mountAdv } from '../frontend/src/adv/adv_app.js';
 import { createBacklog, resolveLogTexts } from '../frontend/src/adv/backlog.js';
+import { createLineAudioRecovery } from '../frontend/src/controllers/line_audio_recovery.js';
 import { decide, createShortcuts } from '../frontend/src/adv/shortcuts.js';
 import { createConversation } from '../frontend/src/conversation.js';
 import { createLinePlayer } from '../frontend/src/adv/line_player.js';
@@ -992,4 +993,118 @@ test('LOG disables the current replay button if a load fails across done reconci
   const button = h.app.backlog.element.querySelector('.adv-log-replay-btn');
   assert.equal(button.disabled, true);
   assert.equal(button.getAttribute('aria-label'), '语音已过期或不可用');
+});
+
+test('LOG re-render during line regeneration keeps cancel and shows the result on the rebuilt entry', async t => {
+  const doc = fakeDocument();
+  const root = doc.createElement('div');
+  doc.body.appendChild(root);
+  const session = {
+    id: 's_regen',
+    settings: { voiceProfileId: 7 },
+    messages: [{
+      id: 'm_1',
+      role: 'assistant',
+      ts: Date.now(),
+      lines: [0, 1].map(index => ({
+        index,
+        zh: index === 0 ? '第一句' : '早上好',
+        ja: index === 0 ? 'いち。' : 'おはよう。',
+        emotion: 'neutral',
+        act: {},
+        audio: { status: 'failed', chunks: [] },
+      })),
+    }],
+  };
+  const calls = [];
+  let pendingRequest = null;
+  const recover = createLineAudioRecovery({
+    getSession: () => session,
+    getVoiceProfiles: () => [{ id: 7, name: '角色A' }],
+    saveState: () => true,
+    request: (url, options) => {
+      calls.push(url);
+      let settle;
+      const promise = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+      options.signal.addEventListener('abort', () => {
+        settle.reject(new DOMException('操作已取消', 'AbortError'));
+      });
+      pendingRequest = { ...settle, signal: options.signal };
+      return promise;
+    },
+  });
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => session.settings,
+    getCharacter: () => ({ id: 7, name: '角色A' }),
+    getRecoveryVoice: () => ({ id: 7, name: '角色A' }),
+    voiceEnabled: () => true,
+    audio: { stopLine() {}, async playLine() { return 'ended'; } },
+    regenerateLineAudio: recover,
+  });
+  t.after(() => log.destroy());
+
+  const entry = lineIndex => [...log.element.querySelectorAll('.adv-log-entry')]
+    .find(el => el.dataset.lineIndex === String(lineIndex));
+  const button = lineIndex => entry(lineIndex).querySelector('.adv-log-regenerate-btn');
+  const status = lineIndex => entry(lineIndex).querySelector('.adv-log-audio-status');
+  const click = node => node.onclick({ stopPropagation() {} });
+
+  const inflight = click(button(1));
+  await microtasks();
+  assert.equal(calls[0], '/api/voice/regenerate-line');
+  assert.equal(button(1).textContent, '取消生成');
+
+  log.renderAll();
+  assert.equal(button(1).textContent, '取消生成', 'rebuilt entry must still offer cancel');
+  assert.equal(button(0).textContent, '用当前音色重新生成');
+  assert.equal(status(1).hidden, false);
+  assert.equal(status(1).textContent, '正在生成这句语音…');
+
+  const signal = pendingRequest.signal;
+  click(button(1));
+  assert.equal(signal.aborted, true);
+  assert.equal(calls.length, 1, 'cancel must not post a second repair');
+  assert.equal(button(1).textContent, '用当前音色重新生成');
+  assert.equal(status(1).textContent, '');
+  await inflight;
+  assert.equal(session.messages[0].lines[1].audio.status, 'failed');
+  assert.equal(status(1).textContent, '');
+
+  const failed = click(button(1));
+  await microtasks();
+  assert.equal(calls.length, 2);
+  log.renderAll();
+  pendingRequest.reject(new Error('语音引擎未就绪，请打开运行状态检查'));
+  await failed;
+  assert.equal(status(1).textContent, '语音引擎未就绪，请打开运行状态检查');
+  assert.equal(status(1).hidden, false);
+  assert.equal(button(1).textContent, '用当前音色重新生成');
+  assert.equal(status(0).textContent, '');
+  log.renderAll();
+  assert.equal(status(1).textContent, '语音引擎未就绪，请打开运行状态检查');
+  assert.equal(button(1).textContent, '用当前音色重新生成');
+
+  const completed = click(button(1));
+  await microtasks();
+  log.renderAll();
+  pendingRequest.resolve({
+    session_id: session.id,
+    message_id: null,
+    line_index: 1,
+    voice_profile_id: 7,
+    persisted: false,
+    audio: {
+      status: 'ready',
+      generated_at: Date.now(),
+      voice_profile_id: 7,
+      chunks: [{ index: 0, line: 1, audio_url: '/audio/repair_after_render.wav', sentence: 'おはよう。' }],
+    },
+  });
+  await completed;
+  assert.equal(status(1).textContent, '语音已生成，修复记录保存在本浏览器；点语音播放。');
+  assert.equal(entry(1).querySelector('.adv-log-replay-btn').disabled, false);
+  log.renderAll();
+  assert.equal(status(1).textContent, '语音已生成，修复记录保存在本浏览器；点语音播放。');
+  assert.equal(entry(1).querySelector('.adv-log-replay-btn').disabled, false);
 });
