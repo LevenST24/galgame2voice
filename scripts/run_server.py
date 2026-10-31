@@ -1074,20 +1074,26 @@ def ensure_gpt_sovits_running(
     try:
         proc = _spawn_sovits_process(sovits_dir, sovits_host, sovits_port, is_half, device=device)
 
-        # Non-blocking parallel readiness monitor (bounded: 120s, engine logs written to gpt_sovits.log)
-        print("      [..] GPT-SoVITS 正在后台加载模型 (最长 120 秒，伴侣服务先行启动)...")
+        # Non-blocking parallel readiness monitor (engine logs written to gpt_sovits.log)
+        print("      [..] GPT-SoVITS 正在后台加载模型 (伴侣服务先行启动)...")
 
         def _wait_for_sovits_readiness_worker():
-            for _ in range(240):
+            slow_hint_printed = False
+            ticks = 0
+            while proc is not None and proc.poll() is None:
                 time.sleep(0.5)
+                ticks += 1
+                if proc.poll() is not None:
+                    break
                 if is_port_in_use(sovits_port, sovits_host):
                     print(f"\n      [OK] GPT-SoVITS 语音引擎已就绪 (http://{sovits_host}:{sovits_port}/)")
                     _calibrate_precision_after_ready(sovits_dir, sovits_host, sovits_port, is_half, precision_source, device=device)
                     return
-                if proc and proc.poll() is not None:
-                    print(f"\n      [WARN] GPT-SoVITS 异常退出 (退出码: {proc.returncode})，详见 logs/gpt_sovits.log")
-                    return
-            print("\n      [提示] GPT-SoVITS 模型仍在后台加载中 (详见 logs/gpt_sovits.log)")
+                if not slow_hint_printed and ticks >= 240:
+                    print("\n      [提示] GPT-SoVITS 模型仍在后台加载中 (详见 logs/gpt_sovits.log)")
+                    slow_hint_printed = True
+            if proc is not None and proc.poll() is not None:
+                print(f"\n      [WARN] GPT-SoVITS 异常退出 (退出码: {proc.returncode})，详见 logs/gpt_sovits.log")
 
         monitor_thread = threading.Thread(
             target=_wait_for_sovits_readiness_worker,
