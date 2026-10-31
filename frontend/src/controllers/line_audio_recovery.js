@@ -9,7 +9,17 @@ export function createLineAudioRecovery({ getSession, getVoiceProfiles, saveStat
   return async ({ messageId, lineIndex, signal }) => {
     const session = getSession();
     const message = session?.messages?.find(item => item.id === messageId && item.role === 'assistant');
-    const line = message?.lines?.find(item => item.index === lineIndex);
+    const hadNoLines = !Array.isArray(message?.lines) || message.lines.length === 0;
+    const line = hadNoLines && lineIndex === 0 && message
+      ? {
+        index: 0,
+        zh: message.content || '',
+        ja: message.japanese || '',
+        emotion: 'neutral',
+        act: {},
+        audio: { status: 'skipped', chunks: [] },
+      }
+      : message?.lines?.find(item => item.index === lineIndex);
     const profileId = session?.settings?.voiceProfileId;
     const profile = getVoiceProfiles().find(item => item.id === profileId);
     if (!profile) throw new Error('请先在角色与会话中选择当前音色，再重新生成这句语音。');
@@ -17,8 +27,9 @@ export function createLineAudioRecovery({ getSession, getVoiceProfiles, saveStat
     if (line.ja.length > 2000) throw new Error('这句台词过长，暂时无法单句重新生成，原记录未修改。');
     const text = line.ja, settings = { ...session.settings }, previousAudio = line.audio;
     const current = () => !signal?.aborted && getSession() === session && !isSessionDeleting(session.id)
-      && session.messages.includes(message) && message.lines.includes(line)
-      && line.ja === text && line.audio === previousAudio && session.settings.voiceProfileId === profileId;
+      && session.messages.includes(message)
+      && (hadNoLines || (message.lines?.includes(line) && line.audio === previousAudio))
+      && line.ja === text && session.settings.voiceProfileId === profileId;
     const checkCurrent = () => { if (!current()) throw new DOMException('操作已取消', 'AbortError'); };
     checkCurrent();
     const serverId = Number.isSafeInteger(message.serverMessageId) && message.serverMessageId > 0
@@ -48,6 +59,9 @@ export function createLineAudioRecovery({ getSession, getVoiceProfiles, saveStat
           && typeof chunk.audio_url === 'string' && chunk.audio_url.startsWith('/audio/repair_'))
         || !Number.isSafeInteger(normalized.generated_at) || normalized.voice_profile_id !== profileId) {
       throw new Error('服务返回的单句音频不完整，原音频记录已保留，请重新打开 LOG 检查。');
+    }
+    if (hadNoLines) {
+      message.lines = [line];
     }
     line.audio = normalized;
     message.audioChunks = message.lines.flatMap(item => (item.audio?.chunks || []).map(chunk => ({
