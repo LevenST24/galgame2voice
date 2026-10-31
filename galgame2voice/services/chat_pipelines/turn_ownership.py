@@ -6,7 +6,6 @@ from inspect import signature
 import os
 from weakref import WeakValueDictionary
 
-from galgame2voice.services.chat_pipelines.stream_coordinator import SseKeepAlive
 from galgame2voice.utils.async_tasks import await_protected, cancel_and_drain
 
 
@@ -73,7 +72,8 @@ def serialize_stream_turn(func):
                 if acquire in done:
                     await acquire
                     break
-                yield SseKeepAlive()
+                # Keep-alive comments do not refresh the client's reply budget.
+                yield {"event": "progress", "data": {"stage": "queued"}}
             inner = func(self, prompt, session_id, *args, _require_existing_session=queued, **kwargs)
             async for event in inner:
                 yield event

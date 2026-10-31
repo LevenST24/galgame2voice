@@ -9,6 +9,7 @@ import pytest
 
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
+from galgame2voice.routers.chat import ChatRequest, chat_stream_endpoint, set_chat_service
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.chat_pipelines.turn_persistence import TurnUnavailableError
 
@@ -238,17 +239,69 @@ async def test_waiting_stream_stops_when_cancel_event_is_set(concurrent_chat):
         await stream.aclose()
 
 
-async def test_waiting_stream_sends_keepalive_and_closes_owned_waiter(concurrent_chat):
-    from galgame2voice.services.chat_pipelines.stream_coordinator import SseKeepAlive
+def _sse_frame(frame):
+    if frame.lstrip().startswith(":"):
+        return ":keep-alive", None
+    name = "message"
+    data = None
+    for line in frame.splitlines():
+        if line.startswith("event:"):
+            name = line.split(":", 1)[1].strip()
+        elif line.startswith("data:"):
+            data = json.loads(line.split(":", 1)[1].strip())
+    return name, data
 
+
+async def test_queued_stream_reports_progress_before_taking_the_lock(concurrent_chat, monkeypatch):
+    """The second /api/chat/stream on a busy session must report queued progress before it runs."""
+    monkeypatch.setattr(
+        "galgame2voice.services.chat_pipelines.turn_ownership._KEEPALIVE_SECONDS",
+        0.05,
+    )
+    stack = concurrent_chat
+    set_chat_service(stack.service)
+    first = asyncio.create_task(stack.run("sync", "A", "shared"))
+    response = None
+    try:
+        await asyncio.wait_for(stack.entered["A"].wait(), 5)
+        response = await chat_stream_endpoint(ChatRequest(prompt="B", session_id="shared"), None)
+        iterator = response.body_iterator
+        frame = await asyncio.wait_for(iterator.__anext__(), 2)
+        name, data = _sse_frame(frame)
+        assert name == "progress" and data == {"stage": "queued"}, frame
+        assert "answer to" not in frame
+        assert not stack.entered["B"].is_set()
+        stack.release_a.set()
+        rest = [chunk async for chunk in iterator]
+        events = [_sse_frame(chunk) for chunk in rest]
+        text = "".join(
+            item.get("delta_chinese", "")
+            for event_name, item in events
+            if event_name == "text" and isinstance(item, dict)
+        )
+        done = [item for event_name, item in events if event_name == "done" and isinstance(item, dict)]
+        assert "answer to B" in text
+        assert done and done[-1]["chinese"] == "answer to B"
+        assert all(event_name != "error" for event_name, _item in events)
+    finally:
+        set_chat_service(None)
+        stack.release_a.set()
+        if not first.done():
+            first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        if response is not None:
+            await response.body_iterator.aclose()
+
+
+async def test_waiting_stream_sends_queued_progress_and_closes_owned_waiter(concurrent_chat):
     stack = concurrent_chat
     first = asyncio.create_task(stack.run("sync", "A", "shared"))
     stream = stack.service.stream_chat("B", session_id="shared")
     try:
         await asyncio.wait_for(stack.entered["A"].wait(), 5)
         event = await asyncio.wait_for(stream.__anext__(), 7)
-        assert isinstance(event, SseKeepAlive)
-        assert str(event) == ": keep-alive\n\n"
+        assert event.get("event") == "progress"
+        assert event.get("data") == {"stage": "queued"}
         assert not stack.entered["B"].is_set()
         # Let the waiter potentially acquire ownership while the generator is
         # suspended at its heartbeat, then close without resuming the stream.
