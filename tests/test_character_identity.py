@@ -575,3 +575,74 @@ async def test_duplicate_id_cold_start_keeps_profiles_and_reports_conflict(
     assert manager.get_character("ann").name == "Ann"
     assert (await characters.list_characters(user_id="default_user"))["catalog_warning"] is None
     assert (await voice.list_voice_profiles())["catalog_warning"] is None
+
+
+@pytest.mark.asyncio
+async def test_missing_reference_under_default_directory_does_not_borrow_default_package(
+    project, isolate_test_database, monkeypatch
+):
+    from galgame2voice.services import character_manager
+    from galgame2voice.services.voice_resolver import VoiceProfileResolver
+    from galgame2voice.services.tts_service import TtsService, VoiceReferenceMissingError
+    from galgame2voice.utils.path_guard import resolve_existing_audio_path
+
+    # Install a valid default character package containing gentle.wav
+    pkg_dir = install(project, "natsume", "四季夏目")
+    manager = catalog(project)
+    monkeypatch.setattr(character_manager, "get_character_manager", lambda: manager)
+    CharacterManager._instance = manager
+
+    async with aiosqlite.connect(isolate_test_database) as conn:
+        conn.row_factory = aiosqlite.Row
+        await manager.sync_with_db(conn)
+        bob = await profile(
+            conn,
+            "Bob",
+            gpt_weights_path=str(pkg_dir / "gpt.ckpt"),
+            sovits_weights_path=str(pkg_dir / "sovits.pth"),
+            ref_audio_path="audio/default/gentle.wav",
+            prompt_text="Bob custom transcript",
+        )
+        alice = await profile(
+            conn,
+            "Alice",
+            gpt_weights_path=str(pkg_dir / "gpt.ckpt"),
+            sovits_weights_path=str(pkg_dir / "sovits.pth"),
+            ref_audio_path="",
+            prompt_text="Alice custom transcript",
+        )
+        await conn.commit()
+
+    # 1. resolve_existing_audio_path must return None for missing audio with default directory segment
+    rel_resolved = resolve_existing_audio_path("audio/default/gentle.wav")
+    win_resolved = resolve_existing_audio_path(r"C:\Users\Default\voices\gentle.wav")
+    chars_default_resolved = resolve_existing_audio_path("characters/default/gentle.wav")
+    assert rel_resolved is None
+    assert win_resolved is None
+    assert chars_default_resolved is None
+
+    # 2. Voice resolution flow: Bob's context must not borrow Natsume's gentle.wav
+    resolver = VoiceProfileResolver()
+    ctx = await resolver.resolve_context(isolate_test_database, profile_id=bob.id)
+    assert ctx is not None
+    assert ctx.ref_audio_path == "audio/default/gentle.wav"
+    assert "natsume" not in ctx.ref_audio_path
+
+    # 3. Real voice resolution & TTS options flow: custom voice referencing missing audio gets VoiceReferenceMissingError
+    class RealEngineClient:
+        base_url = "http://127.0.0.1:9880"
+
+    service = TtsService(client=RealEngineClient(), audio_dir=project / "audio", db_path=isolate_test_database)
+    with pytest.raises(VoiceReferenceMissingError, match="缺少参考音频"):
+        await service._populate_voice_profile_opts({"voice_profile_id": alice.id, "ref_audio_path": "audio/default/gentle.wav"})
+
+    # 4. Normal character package path segment elsewhere can still be found by fallback search
+    normal_resolved = resolve_existing_audio_path("external/relocated/characters/natsume/gentle.wav")
+    assert normal_resolved is not None
+    assert normal_resolved == pkg_dir / "gentle.wav"
+
+    # 5. Legacy refs/ paths still resolve to the only package (refs/ is a separate rule)
+    legacy_ref_resolved = resolve_existing_audio_path("refs/gentle.wav")
+    assert legacy_ref_resolved is not None
+    assert legacy_ref_resolved == pkg_dir / "gentle.wav"
+
