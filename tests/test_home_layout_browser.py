@@ -43,17 +43,6 @@ def make_layout_server(handler):
     raise RuntimeError("Could not bind a high loopback port for browser tests")
 
 
-# Read at call time so a test can shorten it.
-CHROME_DUMP_TIMEOUT_MS = 35_000
-
-
-def _with_dump_timeout(command):
-    # --virtual-time-budget stops the clock while a request is pending, so a request
-    # that never finished kept --dump-dom from returning until the 40 s timeout below.
-    # --timeout is wall-clock: Chrome dumps what it has and exits. A ready page exits sooner.
-    return [*command, f"--timeout={CHROME_DUMP_TIMEOUT_MS}"] if "--dump-dom" in command else command
-
-
 def _describe_hang(exc, command, seconds):
     screenshot = next((item.split("=", 1)[1] for item in command if item.startswith("--screenshot=")), None)
     stderr = (exc.stderr or b"").decode("utf-8", "replace").strip()[-400:]
@@ -69,16 +58,16 @@ def run_layout_browser(command):
         with tempfile.TemporaryDirectory(prefix="g2v-browser-", dir=os.environ.get("G2V_BROWSER_PROFILE_ROOT") or SYSTEM_TEMP,
                                          ignore_cleanup_errors=True) as profile:
             launched = [f"--user-data-dir={profile}" if item.startswith("--user-data-dir=") else item for item in command]
-            return subprocess.run(_with_dump_timeout(launched), capture_output=True, timeout=40,
+            return subprocess.run(launched, capture_output=True, timeout=40,
                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
 
     started = time.monotonic()
     try:
         result = launch()
     except subprocess.TimeoutExpired as exc:
-        # Windows CI has also kept Chrome running for the whole 40 s despite its own
-        # --timeout, and past the 20 s image hold in test_stream_progress_browser. The
-        # cause is not known: report what Chrome had produced, then start it once more.
+        # Windows CI sometimes keeps Chrome running for the whole 40 s, even past the 20 s
+        # image hold in test_stream_progress_browser. The cause is not known: report what
+        # Chrome had produced, then start it once more.
         warnings.warn(_describe_hang(exc, command, time.monotonic() - started), stacklevel=2)
         return launch()
     # Under load the virtual-time budget can run out while Chrome is still on about:blank:
@@ -224,40 +213,6 @@ def test_run_layout_browser_reports_and_retries_a_hung_chrome_once(tmp_path, mon
     with pytest.warns(UserWarning), pytest.raises(subprocess.TimeoutExpired):
         run_layout_browser(command)
     assert outcomes == []
-
-
-@pytest.mark.requires_piped_subprocess
-def test_run_layout_browser_dumps_a_page_whose_request_never_finishes(tmp_path, monkeypatch):
-    browser = browser_path()
-    if not browser:
-        pytest.skip("The dump timeout needs an installed Chromium browser")
-    monkeypatch.setitem(globals(), "CHROME_DUMP_TIMEOUT_MS", 2000)
-    release = threading.Event()
-
-    class HangingHandler(LayoutHandler):
-        def do_GET(self):
-            if self.path != "/hang":
-                return super().do_GET()
-            release.wait(60)  # Outlasts run_layout_browser's 40 s timeout: no answer while Chrome runs.
-            self.send_error(404)
-
-    page = b'<!doctype html><pre id="layout-result">painted</pre><img src="/hang">'
-    server = make_layout_server(partial(HangingHandler, page=page))
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        result = run_layout_browser([
-            browser, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-sync",
-            "--no-default-browser-check", "--no-proxy-server", "--disable-background-networking", "--disable-extensions",
-            f"--user-data-dir={tmp_path/'browser'}", "--virtual-time-budget=5000", "--dump-dom",
-            f"http://127.0.0.1:{server.server_port}/",
-        ])
-    finally:
-        release.set()
-        server.shutdown()
-        server.server_close()
-        worker.join(timeout=2)
-    assert result.returncode == 0 and b'<pre id="layout-result">painted</pre>' in result.stdout
 
 
 @pytest.mark.requires_piped_subprocess
