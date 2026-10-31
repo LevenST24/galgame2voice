@@ -11,8 +11,9 @@ Provides rich inline keyboard menus and callback processing for:
 - Performance & Latency Metrics Dashboard and Audio Cache Cleanup
 """
 
-from dataclasses import dataclass
+import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Any, Callable
 
 try:
@@ -739,9 +740,13 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
             await ctx.query.answer("⚠️ 无效的角色音色 ID", show_alert=True)
         return
     profile_id = int(raw_id)
-    # Already-active guard: same source of truth as build_voice_menu's
-    # "(当前)" marker. Fail-open: on any DB error, fall through to switch.
+    # The menu's "(当前)" marker is only the saved selection. A restart or an
+    # offline switch leaves that id set while the engine has no weights.
+    # Skip only when VoiceManager.is_active_profile says they are loaded,
+    # the same check as POST /api/voice/switch. Fail-open: on a lookup error,
+    # fall through and load.
     _active_id = None
+    _db_active = None
     try:
         async with get_db(ctx.db_path) as conn:
             _db_active = await crud.get_active_voice_profile(conn)
@@ -750,9 +755,17 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
     except Exception as exc:
         logger.debug("Failed getting active voice profile in _handle_set_voice: %s", exc)
     if _active_id is not None and profile_id == _active_id:
-        if hasattr(ctx.query, "answer"):
-            await ctx.query.answer("已经是当前音色，无需切换")
-        return
+        engine_loaded = False
+        try:
+            from galgame2voice.services.voice_manager import get_voice_manager
+
+            engine_loaded = await asyncio.to_thread(get_voice_manager().is_active_profile, _db_active)
+        except Exception as exc:
+            logger.debug("Failed checking loaded voice profile in _handle_set_voice: %s", exc)
+        if engine_loaded:
+            if hasattr(ctx.query, "answer"):
+                await ctx.query.answer("已经是当前音色，无需切换")
+            return
     char_name = "目标角色"
     err_msg = None
     warning_note = ""
