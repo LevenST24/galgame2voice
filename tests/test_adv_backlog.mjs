@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mountAdv } from '../frontend/src/adv/adv_app.js';
 import { createBacklog, resolveLogTexts } from '../frontend/src/adv/backlog.js';
+import { StreamAudioController } from '../frontend/src/audio_player.js';
 import { createLineAudioRecovery } from '../frontend/src/controllers/line_audio_recovery.js';
 import { decide, createShortcuts } from '../frontend/src/adv/shortcuts.js';
 import { createConversation } from '../frontend/src/conversation.js';
@@ -80,7 +81,7 @@ function setupApp(t, options = {}) {
     },
   };
 
-  const audio = {
+  const audio = options.audio || {
     played: [],
     stopped: [],
     playLine(index, chunks, opts) {
@@ -149,6 +150,8 @@ function setupApp(t, options = {}) {
     stopOtherVoice: () => {
       calls.stoppedOther++;
     },
+    regenerateLineAudio: options.regenerateLineAudio,
+    getRecoveryVoice: options.getRecoveryVoice,
     wallNow: () => wallTime,
     subscribeOverlay: (fn) => {
       overlayChange = fn;
@@ -1018,6 +1021,7 @@ test('LOG re-render during line regeneration keeps cancel and shows the result o
   };
   const calls = [];
   let pendingRequest = null;
+  let now = Date.now();
   const recover = createLineAudioRecovery({
     getSession: () => session,
     getVoiceProfiles: () => [{ id: 7, name: '角色A' }],
@@ -1041,6 +1045,7 @@ test('LOG re-render during line regeneration keeps cancel and shows the result o
     voiceEnabled: () => true,
     audio: { stopLine() {}, async playLine() { return 'ended'; } },
     regenerateLineAudio: recover,
+    wallNow: () => now,
   });
   t.after(() => log.destroy());
 
@@ -1062,14 +1067,15 @@ test('LOG re-render during line regeneration keeps cancel and shows the result o
   assert.equal(status(1).textContent, '正在生成这句语音…');
 
   const signal = pendingRequest.signal;
+  now += 500;
   click(button(1));
   assert.equal(signal.aborted, true);
   assert.equal(calls.length, 1, 'cancel must not post a second repair');
   assert.equal(button(1).textContent, '用当前音色重新生成');
-  assert.equal(status(1).textContent, '');
+  assert.equal(status(1).textContent, '已取消本次生成，原音频已保留。');
   await inflight;
   assert.equal(session.messages[0].lines[1].audio.status, 'failed');
-  assert.equal(status(1).textContent, '');
+  assert.equal(status(1).textContent, '已取消本次生成，原音频已保留。');
 
   const failed = click(button(1));
   await microtasks();
@@ -1107,4 +1113,109 @@ test('LOG re-render during line regeneration keeps cancel and shows the result o
   log.renderAll();
   assert.equal(status(1).textContent, '语音已生成，修复记录保存在本浏览器；点语音播放。');
   assert.equal(entry(1).querySelector('.adv-log-replay-btn').disabled, false);
+});
+
+class LineRegenAudioContext {
+  state = 'running';
+  currentTime = 0;
+  destination = {};
+  createGain() {
+    return {
+      gain: { value: 1, setValueAtTime() {}, cancelScheduledValues() {}, linearRampToValueAtTime() {} },
+      connect() {}, disconnect() {},
+    };
+  }
+  createBufferSource() {
+    return { connect() {}, disconnect() {}, start() {}, stop() {} };
+  }
+  async decodeAudioData() { return { duration: 1 }; }
+  async resume() { this.state = 'running'; }
+  async close() { this.state = 'closed'; }
+}
+
+test('double-clicking 用当前音色重新生成 does not cancel, and 取消生成 says the old audio was kept', async t => {
+  const realFetch = globalThis.fetch;
+  const realWindow = globalThis.window;
+  const posts = [];
+  let repair = null;
+  globalThis.window = { AudioContext: LineRegenAudioContext };
+  globalThis.fetch = (url, options = {}) => {
+    const path = String(url);
+    if (path.includes('/api/voice/regenerate-line')) {
+      posts.push(path);
+      return new Promise((resolve, reject) => {
+        const fail = () => reject(new DOMException('操作已取消', 'AbortError'));
+        if (options.signal?.aborted) fail();
+        else options.signal?.addEventListener('abort', fail, { once: true });
+        repair = { resolve, signal: options.signal };
+      });
+    }
+    if (path.includes('/api/backgrounds')) {
+      return Promise.resolve(Response.json({ backgrounds: [], works: [] }));
+    }
+    return Promise.reject(new TypeError(`unexpected ${path}`));
+  };
+  const player = new StreamAudioController();
+  let session = null;
+  const recover = createLineAudioRecovery({
+    getSession: () => session,
+    getVoiceProfiles: () => [{ id: 7, name: '角色A' }],
+    saveState: () => true,
+  });
+  const h = setupApp(t, {
+    audio: player,
+    regenerateLineAudio: recover,
+    getRecoveryVoice: () => ({ id: 7, name: '角色A' }),
+  });
+  t.after(async () => {
+    globalThis.fetch = realFetch;
+    if (realWindow === undefined) delete globalThis.window;
+    else globalThis.window = realWindow;
+    await player.close();
+  });
+
+  session = h.active();
+  session.settings.voiceProfileId = 7;
+  const originalAudio = { status: 'failed', chunks: [] };
+  session.messages = [{
+    id: 'm_double',
+    serverMessageId: 42,
+    role: 'assistant',
+    ts: h.getWallTime(),
+    lines: [{
+      index: 0, zh: '早上好', ja: 'おはよう。', emotion: 'neutral', act: {},
+      audio: originalAudio,
+    }],
+  }];
+  h.app.action('log');
+  const button = () => h.app.backlog.element.querySelector('.adv-log-regenerate-btn');
+  const status = () => h.app.backlog.element.querySelector('.adv-log-audio-status');
+  assert.equal(button().textContent, '用当前音色重新生成');
+  assert.equal(h.audio, player);
+
+  const sameButton = button();
+  sameButton.click();
+  sameButton.click();
+  await microtasks();
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].includes('/api/voice/regenerate-line'), true);
+  assert.equal(repair.signal.aborted, false,
+    `second click aborted the repair; status="${status().textContent}" button="${button().textContent}"`);
+  assert.equal(button().textContent, '取消生成');
+  assert.equal(status().textContent, '正在生成这句语音…');
+  assert.equal(session.messages[0].lines[0].audio, originalAudio);
+
+  h.setWallTime(h.getWallTime() + 500);
+  button().click();
+  await microtasks();
+  assert.equal(repair.signal.aborted, true);
+  assert.equal(posts.length, 1, 'cancel must not post a second repair');
+  assert.equal(button().textContent, '用当前音色重新生成');
+  assert.equal(status().textContent, '已取消本次生成，原音频已保留。');
+  assert.equal(status().hidden, false);
+  assert.equal(session.messages[0].lines[0].audio, originalAudio);
+  assert.equal(session.messages[0].lines[0].audio.status, 'failed');
+  h.app.backlog.renderAll();
+  assert.equal(status().textContent, '已取消本次生成，原音频已保留。');
+  assert.equal(button().textContent, '用当前音色重新生成');
 });
