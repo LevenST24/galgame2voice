@@ -921,7 +921,7 @@ class ChatService:
                 where_clause = "session_id = ? AND " if sid else ""
                 query = f"""
                     SELECT content_japanese FROM messages
-                    WHERE {where_clause}role = 'assistant' AND content_japanese != ''
+                    WHERE {where_clause}role = 'assistant' AND content_japanese != '' AND content_chinese != ''
                       AND (content_chinese = ? OR ? LIKE '%' || content_chinese || '%' OR content_chinese LIKE '%' || ? || '%')
                     ORDER BY id DESC LIMIT 1
                 """
