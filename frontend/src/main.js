@@ -301,6 +301,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   const closeDrawer = () => advApp?.closeDrawer();
   const regenerateLineAudio = createLineAudioRecovery({
     getSession: getActive, getVoiceProfiles, saveState, isSessionDeleting,
+    fetchHistory: (sessionId, opts) => fetchSessionHistoryPage(sessionId, opts),
   });
 
   /* ---------- 渲染与状态栏 ---------- */

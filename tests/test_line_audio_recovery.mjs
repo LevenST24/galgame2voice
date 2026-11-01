@@ -7,6 +7,9 @@ import { canReplayLine } from '../frontend/src/adv/replay.js';
 import { normalizeLines } from '../frontend/src/session_data.js';
 import { createConversation } from '../frontend/src/conversation.js';
 import { state, loadState, saveState } from '../frontend/src/store.js';
+import { mountAdv } from '../frontend/src/adv/adv_app.js';
+import { StreamAudioController } from '../frontend/src/audio_player.js';
+import { fetchSessionHistoryPage } from '../frontend/src/session_api.js';
 import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
 import { fakeDocument, microtasks } from './helpers/adv_dom.mjs';
 
@@ -304,3 +307,310 @@ test('a completed SSE reply carries its real database ID into a subsequent repai
   await f.recover({ messageId: message.id, lineIndex: 1 });
   assert.equal(JSON.parse(f.calls[0][1].body).message_id, 88);
 });
+
+test('when another tab already repaired a line, receiving 409 fetches the latest audio and updates LOG without asking to reopen', async t => {
+  const doc = fakeDocument();
+  const root = doc.createElement('div');
+  doc.body.appendChild(root);
+
+  const prevFetch = globalThis.fetch;
+  const prevWindow = globalThis.window;
+  const prevDoc = globalThis.document;
+
+  let activeCtx = null;
+  class AudioContextMock {
+    constructor() {
+      this.state = 'running';
+      this.currentTime = 0;
+      this.destination = {};
+      this.sources = [];
+      activeCtx = this;
+    }
+    createGain() {
+      return {
+        gain: { value: 1, setValueAtTime() {}, cancelScheduledValues() {}, linearRampToValueAtTime() {} },
+        connect() {},
+        disconnect() {},
+      };
+    }
+    createBufferSource() {
+      const source = {
+        connect() {},
+        disconnect() {},
+        start(time) {
+          this.time = time;
+          setTimeout(() => this.onended?.(), 0);
+        },
+        stop() {},
+        finish() {
+          this.onended?.();
+        },
+      };
+      this.sources.push(source);
+      return source;
+    }
+    async decodeAudioData() {
+      return { duration: 1 };
+    }
+    async suspend() {
+      this.state = 'suspended';
+    }
+    async resume() {
+      this.state = 'running';
+    }
+    async close() {
+      this.state = 'closed';
+    }
+  }
+
+  globalThis.window = {
+    AudioContext: AudioContextMock,
+    document: doc,
+  };
+  globalThis.document = doc;
+
+  const serverRepairedAudio = {
+    status: 'ready',
+    generated_at: Date.now(),
+    voice_profile_id: 7,
+    voice_name: '当前角色',
+    chunks: [{ index: 0, line: 1, audio_url: '/audio/repair_tab1.wav', sentence: '日本語1。' }],
+  };
+
+  const message = {
+    id: 'm_local_2',
+    serverMessageId: 42,
+    role: 'assistant',
+    content: '原中文',
+    japanese: '全文日文',
+    ts: Date.now() - 3600000,
+    lines: [0, 1].map(index => ({
+      index, zh: `原中文${index}`, ja: `日本語${index}。`, emotion: 'neutral', act: {},
+      audio: { status: 'failed', chunks: [] },
+    })),
+  };
+  const session = { id: 'session_tab_sync', settings: { voiceProfileId: 7 }, messages: [message] };
+
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    const urlStr = String(url);
+    if (urlStr.endsWith('/api/voice/regenerate-line')) {
+      const errorResponse = { detail: '这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。' };
+      return new Response(JSON.stringify(errorResponse), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (urlStr.includes('/api/chat/history')) {
+      return new Response(JSON.stringify({
+        session_id: session.id,
+        count: 1,
+        has_more: false,
+        oldest_id: 42,
+        messages: [{
+          id: 42,
+          role: 'assistant',
+          content_chinese: '原中文',
+          content_japanese: '全文日文',
+          lines: [
+            { index: 0, zh: '原中文0', ja: '日本語0。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } },
+            { index: 1, zh: '原中文1', ja: '日本語1。', emotion: 'neutral', act: {}, audio: serverRepairedAudio },
+          ],
+        }],
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (urlStr === '/audio/repair_tab1.wav') {
+      return new Response(new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/wav' }));
+    }
+    throw new Error(`Unexpected request: ${urlStr}`);
+  };
+
+  const audio = new StreamAudioController({ fetchTimeoutMs: 1000 });
+  const recover = createLineAudioRecovery({
+    getSession: () => session,
+    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
+    saveState: () => true,
+    isSessionDeleting: () => false,
+    fetchHistory: (sessionId, opts) => fetchSessionHistoryPage(sessionId, opts),
+  });
+
+  const app = mountAdv({ root }, {
+    controller: { busy: false, isSessionDeleting: () => false, on: () => () => {} },
+    audio,
+    getSession: () => session,
+    getSettings: () => session.settings,
+    getCharacter: () => ({ id: 7, name: '当前角色' }),
+    getRecoveryVoice: () => ({ id: 7, name: '当前角色' }),
+    regenerateLineAudio: recover,
+    voiceEnabled: () => true,
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+  });
+
+  t.after(async () => {
+    app.unmount();
+    await audio.close();
+    globalThis.fetch = prevFetch;
+    globalThis.window = prevWindow;
+    globalThis.document = prevDoc;
+  });
+
+  app.action('log');
+  const log1 = app.backlog;
+  assert.ok(log1, 'backlog opened by advApp');
+
+  const entries1 = log1.element.querySelectorAll('.adv-log-entry');
+  const regenBtn1 = entries1[1].querySelector('.adv-log-regenerate-btn');
+  const replayBtn1 = entries1[1].querySelector('.adv-log-replay-btn');
+  const statusSpan1 = entries1[1].querySelector('.adv-log-audio-status');
+
+  assert.equal(replayBtn1.disabled, true);
+  assert.equal(regenBtn1.hidden, false);
+
+  await regenBtn1.onclick({ stopPropagation() {} });
+
+  assert.equal(statusSpan1.textContent, '这一句已在另一网页修好，已更新');
+  assert.equal(replayBtn1.disabled, false);
+  assert.equal(regenBtn1.hidden, true);
+  assert.equal(message.lines[1].audio.status, 'ready');
+  assert.equal(message.lines[1].audio.chunks[0].audio_url, '/audio/repair_tab1.wav');
+
+  await replayBtn1.onclick({ stopPropagation() {} });
+  await microtasks();
+  assert.equal(activeCtx.sources.length, 1);
+
+  app.action('close_overlay');
+  assert.equal(app.backlog, null);
+
+  app.action('log');
+  const log2 = app.backlog;
+  assert.ok(log2);
+  const entries2 = log2.element.querySelectorAll('.adv-log-entry');
+  const regenBtn2 = entries2[1].querySelector('.adv-log-regenerate-btn');
+  const replayBtn2 = entries2[1].querySelector('.adv-log-replay-btn');
+
+  assert.equal(replayBtn2.disabled, false);
+  assert.equal(regenBtn2.hidden, true);
+  await replayBtn2.onclick({ stopPropagation() {} });
+  await microtasks();
+  assert.equal(activeCtx.sources.length, 2);
+});
+
+test('409 when server line text changed does not overwrite and surfaces the 409 error', async () => {
+  const message = {
+    id: 'm_local_text_change',
+    serverMessageId: 42,
+    role: 'assistant',
+    content: '原中文',
+    japanese: '全文日文',
+    ts: Date.now(),
+    lines: [{ index: 0, zh: '原中文', ja: '日本語古い。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } }],
+  };
+  const session = { id: 'session_edge', settings: { voiceProfileId: 7 }, messages: [message] };
+
+  const recover = createLineAudioRecovery({
+    getSession: () => session,
+    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
+    saveState: () => true,
+    request: async (url) => {
+      if (url === '/api/voice/regenerate-line') {
+        const err = new Error('这句台词内容已变化，原音频未修改，请重新打开 LOG 后再试。');
+        err.status = 409;
+        throw err;
+      }
+      if (url.startsWith('/api/chat/history')) {
+        return {
+          messages: [{
+            id: 42,
+            lines: [{ index: 0, zh: '原中文', ja: '日本語新しい。', audio: { status: 'ready', chunks: [{ audio_url: '/audio/test.wav' }] } }],
+          }],
+        };
+      }
+      throw new Error(`Unexpected ${url}`);
+    },
+  });
+
+  await assert.rejects(
+    recover({ messageId: message.id, lineIndex: 0 }),
+    /这句台词内容已变化/
+  );
+  assert.equal(message.lines[0].audio.status, 'failed');
+});
+
+test('409 when history fetch fails falls back to the original 409 error', async () => {
+  const message = {
+    id: 'm_local_fetch_fail',
+    serverMessageId: 42,
+    role: 'assistant',
+    content: '原中文',
+    japanese: '全文日文',
+    ts: Date.now(),
+    lines: [{ index: 0, zh: '原中文', ja: '日本語。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } }],
+  };
+  const session = { id: 'session_fetch_fail', settings: { voiceProfileId: 7 }, messages: [message] };
+
+  const recover = createLineAudioRecovery({
+    getSession: () => session,
+    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
+    saveState: () => true,
+    request: async (url) => {
+      if (url === '/api/voice/regenerate-line') {
+        const err = new Error('这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。');
+        err.status = 409;
+        throw err;
+      }
+      if (url.startsWith('/api/chat/history')) {
+        throw new Error('网络断开');
+      }
+      throw new Error(`Unexpected ${url}`);
+    },
+  });
+
+  await assert.rejects(
+    recover({ messageId: message.id, lineIndex: 0 }),
+    /这句已有其他音频修复结果/
+  );
+  assert.equal(message.lines[0].audio.status, 'failed');
+});
+
+test('409 when aborted during history fetch throws AbortError', async () => {
+  const message = {
+    id: 'm_local_abort_edge',
+    serverMessageId: 42,
+    role: 'assistant',
+    content: '原中文',
+    japanese: '全文日文',
+    ts: Date.now(),
+    lines: [{ index: 0, zh: '原中文', ja: '日本語。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } }],
+  };
+  const session = { id: 'session_abort_edge', settings: { voiceProfileId: 7 }, messages: [message] };
+  const controller = new AbortController();
+
+  const recover = createLineAudioRecovery({
+    getSession: () => session,
+    getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
+    saveState: () => true,
+    request: async (url) => {
+      if (url === '/api/voice/regenerate-line') {
+        const err = new Error('这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。');
+        err.status = 409;
+        throw err;
+      }
+      if (url.startsWith('/api/chat/history')) {
+        controller.abort();
+        throw new DOMException('操作已取消', 'AbortError');
+      }
+      throw new Error(`Unexpected ${url}`);
+    },
+  });
+
+  await assert.rejects(
+    recover({ messageId: message.id, lineIndex: 0, signal: controller.signal }),
+    { name: 'AbortError' }
+  );
+  assert.equal(message.lines[0].audio.status, 'failed');
+});
+
+
