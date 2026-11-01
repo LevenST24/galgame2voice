@@ -1,6 +1,7 @@
 import { requestJson } from '../api.js';
 import { showToast } from '../ui.js';
 import { exportCompleteChatBackup } from '../chat_backup.js';
+import { forgetDeletedSessions } from '../session_api.js';
 import { exportSessionData, prepareSessionImport, applySessionImport, getStorageStatus,
   onStorageStatus, getDamagedSessionData, resumeLocalSaving } from '../store.js';
 
@@ -81,6 +82,7 @@ export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => fa
           content: message.content, japanese: message.japanese || '', ts: message.ts, lines: message.lines })) })) };
       await requestJson('/api/chat/import', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload) }, { timeoutMs: 60000 });
+      forgetDeletedSessions(incoming.sessions.map(session => session.id));
       const result = applySessionImport(incoming);
       onImport?.();
       showToast(`已导入 ${result.count} 个会话，原有会话保留。请在会话设置中重新选择音色。`, 'success');
@@ -88,7 +90,15 @@ export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => fa
         actionLabel: '打开备份设置',
         onAction: () => onOpenBackupTab(),
       } : null);
-    } catch (error) { showToast(error.message, 'error'); }
+    } catch (error) {
+      // A multi-session file is one transaction: any existing id rolls the whole import back.
+      const message = error.code === 'REQUEST_TIMEOUT'
+        ? '导入结果未确认，请刷新页面查看会话是否已经导入；再次导入同一个文件不会重复写入。'
+        : error.status === 409
+          ? '导入的会话已存在，整份备份这次都没有写入。请刷新页面查看。'
+          : error.message;
+      showToast(message, 'error');
+    }
     finally { button.disabled = false; }
   });
 }
