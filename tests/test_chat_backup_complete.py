@@ -155,3 +155,132 @@ async def test_imported_lines_round_trip_through_history_and_export(tmp_path, mo
         assert history["messages"][0]["lines"] == lines
         backup = (await client.get("/api/chat/export")).json()
         assert backup["sessions"][0]["messages"][0]["lines"] == lines
+
+
+@pytest.mark.asyncio
+async def test_import_sanitizes_invalid_act_values_without_dropping_lines(tmp_path, monkeypatch):
+    db = tmp_path / "import-invalid-act.db"
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
+    await init_db(db)
+    imported_lines = [
+        {
+            "index": 0,
+            "zh": "早上好。",
+            "ja": "おはよう。",
+            "emotion": "happy",
+            "act": {
+                "face": "smile",
+                "pose": "stand",
+                "motion": "wave",
+                "blush": True,
+                "fx": "sparkle",
+                "extra": "ignored",
+            },
+            "audio": {"status": "skipped", "chunks": []},
+        },
+        {
+            "index": 1,
+            "zh": "今天天气真好。",
+            "ja": "いい天気だね。",
+            "emotion": "gentle",
+            "act": {"face": None, "motion": ""},
+            "audio": {"status": "skipped", "chunks": []},
+        },
+        {
+            "index": 2,
+            "zh": "我们出发吧。",
+            "ja": "出かけよう。",
+            "emotion": "cool",
+            "act": {
+                "face": "",
+                "pose": 42,
+                "motion": "nod",
+                "blush": False,
+                "fx": "unknown_fx",
+            },
+            "audio": {"status": "skipped", "chunks": []},
+        },
+        {
+            "index": 3,
+            "zh": "请多指教。",
+            "ja": "よろしくね。",
+            "emotion": "shy",
+            "act": {"face": 123, "pose": None, "motion": None, "blush": 0, "fx": ""},
+            "audio": {"status": "skipped", "chunks": []},
+        },
+        {
+            "index": 4,
+            "zh": "走吧。",
+            "ja": "行こう。",
+            "emotion": "happy",
+            "act": {"face": "wink", "pose": "", "motion": [], "blush": None, "fx": None},
+            "audio": {"status": "skipped", "chunks": []},
+        },
+    ]
+    expected_lines = [
+        {
+            "index": 0,
+            "zh": "早上好。",
+            "ja": "おはよう。",
+            "emotion": "happy",
+            "act": {"face": "smile", "pose": "stand", "blush": True, "fx": "sparkle"},
+            "audio": {"status": "skipped", "chunks": []},
+        },
+        {
+            "index": 1,
+            "zh": "今天天气真好。",
+            "ja": "いい天気だね。",
+            "emotion": "gentle",
+            "act": {},
+            "audio": {"status": "skipped", "chunks": []},
+        },
+        {
+            "index": 2,
+            "zh": "我们出发吧。",
+            "ja": "出かけよう。",
+            "emotion": "cool",
+            "act": {"motion": "nod", "blush": False},
+            "audio": {"status": "skipped", "chunks": []},
+        },
+        {
+            "index": 3,
+            "zh": "请多指教。",
+            "ja": "よろしくね。",
+            "emotion": "shy",
+            "act": {},
+            "audio": {"status": "skipped", "chunks": []},
+        },
+        {
+            "index": 4,
+            "zh": "走吧。",
+            "ja": "行こう。",
+            "emotion": "happy",
+            "act": {"face": "wink"},
+            "audio": {"status": "skipped", "chunks": []},
+        },
+    ]
+    payload = {
+        "sessions": [
+            {
+                "id": "s_import_invalid_act",
+                "title": "非标准演出导入",
+                "messages": [
+                    {"role": "user", "content": "你好"},
+                    {
+                        "role": "assistant",
+                        "content": "早上好。今天天气真好。我们出发吧。请多指教。走吧。",
+                        "japanese": "おはよう。いい天気だね。出かけよう。よろしくね。行こう。",
+                        "lines": imported_lines,
+                    },
+                ],
+            }
+        ]
+    }
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+        response = await client.post("/api/chat/import", json=payload)
+        assert response.status_code == 200, response.text
+        history = (await client.get("/api/chat/history", params={"session_id": "s_import_invalid_act"})).json()
+        assert history["messages"][1]["lines"] == expected_lines
+        backup = (await client.get("/api/chat/export")).json()
+        session = next(s for s in backup["sessions"] if s["id"] == "s_import_invalid_act")
+        assert session["messages"][1]["lines"] == expected_lines
