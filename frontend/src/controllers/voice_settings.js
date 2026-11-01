@@ -1,5 +1,5 @@
 // Voice Settings & Session Profile Controller
-import { state, saveState, getActive, DEFAULT_SESSION_SETTINGS } from '../store.js';
+import { state, saveState, storageChangedByAnotherPage, getActive, DEFAULT_SESSION_SETTINGS } from '../store.js';
 import { showToast } from '../ui.js';
 import { requestJson } from '../api.js';
 import { persistSession } from '../session_api.js';
@@ -497,14 +497,18 @@ export async function createCustomVoice() {
       const version = (origin.unconfirmedSettingsVersion || 0) + 1;
       origin.unconfirmedSettingsVersion = version;
       saveState();
-      try {
-        await persistSession(origin);
-        if (origin.unconfirmedSettingsVersion === version) {
-          delete origin.unconfirmedSettingsVersion;
-          saveState();
+      if (storageChangedByAnotherPage()) {
+        note = '；当前网页已暂停保存，会话绑定未提交到本机服务';
+      } else {
+        try {
+          await persistSession(origin);
+          if (origin.unconfirmedSettingsVersion === version) {
+            delete origin.unconfirmedSettingsVersion;
+            saveState();
+          }
         }
+        catch (e) { note = `；会话绑定尚未同步到本机服务：${e.message}`; }
       }
-      catch (e) { note = `；会话绑定尚未同步到本机服务：${e.message}`; }
     }
     invalidateScannedModels();
     if (getActive() === origin && state.sessions.includes(origin)) {
@@ -567,23 +571,29 @@ export async function deleteVoiceProfile() {
       sess.unconfirmedSettingsVersion = version;
       sessionVersions.set(sess, version);
     }
+    let bindingNote = '';
     if (cleared.length) {
       _callbacks.invalidateSessionSync?.();
       saveState();
-      // The server copies still name the deleted voice; the next sync would restore them.
-      for (const sess of cleared) {
-        const version = sessionVersions.get(sess);
-        persistSession(sess).then(() => {
-          if (sess.unconfirmedSettingsVersion === version) {
-            delete sess.unconfirmedSettingsVersion;
-            saveState();
-          }
-        }).catch(() => {});
+      if (storageChangedByAnotherPage()) {
+        bindingNote = '；当前网页已暂停保存，解除绑定未提交到本机服务';
+      } else {
+        // The server copies still name the deleted voice; the next sync would restore them.
+        for (const sess of cleared) {
+          const version = sessionVersions.get(sess);
+          persistSession(sess).then(() => {
+            if (sess.unconfirmedSettingsVersion === version) {
+              delete sess.unconfirmedSettingsVersion;
+              saveState();
+            }
+          }).catch(() => {});
+        }
+        bindingNote = `，并解除了 ${cleared.length} 个会话的绑定`;
       }
     }
     await loadSessionVoiceSelect(getActive());
     ensureSessionVoice(getActive(), { silent: true });
-    showToast(`音色「${p ? p.name : id}」已删除${cleared.length ? `，并解除了 ${cleared.length} 个会话的绑定` : ''}`, 'success');
+    showToast(`音色「${p ? p.name : id}」已删除${bindingNote}`, bindingNote.startsWith('；') ? 'info' : 'success');
   } catch (e) {
     showToast(`删除失败: ${e.message || e}`, 'error');
   } finally {
@@ -655,17 +665,21 @@ async function handleSaveSessionSettings() {
       : await saveCharacterPrompt(profileId, editor);
 
     let syncNote = '';
-    try {
-      // The session may have been deleted while its character prompt was saving.
-      if (state.sessions.includes(s)) {
-        await persistSession(s);
-        if (s.unconfirmedSettingsVersion === version) {
-          delete s.unconfirmedSettingsVersion;
-          saveState();
+    if (storageChangedByAnotherPage()) {
+      syncNote = '；当前网页已暂停保存，设置未提交到本机服务';
+    } else {
+      try {
+        // The session may have been deleted while its character prompt was saving.
+        if (state.sessions.includes(s)) {
+          await persistSession(s);
+          if (s.unconfirmedSettingsVersion === version) {
+            delete s.unconfirmedSettingsVersion;
+            saveState();
+          }
         }
+      } catch (err) {
+        syncNote = `；本机服务尚未确认保存：${err.message}`;
       }
-    } catch (err) {
-      syncNote = `；本机服务尚未确认保存：${err.message}`;
     }
 
     if (sameEditor() && editorSnapshot() === submitted && promptConfirmed && !syncNote && _callbacks.closeModal) {

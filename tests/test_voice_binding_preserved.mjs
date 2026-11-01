@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { state, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
+import { state, loadState, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
 import { initVoiceSettings, loadSessionVoiceSelect } from '../frontend/src/controllers/voice_settings.js';
 
 function element(value = '') {
@@ -27,7 +27,13 @@ function select() {
 for (const profiles of [[{ id: 1, name: '其他角色' }], []]) {
   test(`deleted binding remains selected until an explicit choice (${profiles.length} available)`, async () => {
     globalThis.document = { getElementById() { return null; }, createElement() { return element(); } };
-    globalThis.localStorage = { getItem() { return null; }, setItem() {} };
+    const stored = new Map();
+    globalThis.localStorage = {
+      getItem: key => stored.get(key) ?? null,
+      setItem: (key, value) => stored.set(key, value),
+      removeItem: key => stored.delete(key),
+    };
+    loadState();
     const session = { id: 's', title: 'S', settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 99 }, messages: [] };
     state.sessions = [session]; state.activeId = session.id;
     const fields = { sVoice: '', sSystem: '', sSave: '', sTemp: '.7', sTopP: '1', sMaxTokens: '1024',

@@ -13,6 +13,7 @@
  */
 import { streamChat } from './ai.js';
 import { normalizeLines } from './session_data.js';
+import { storageChangedByAnotherPage } from './store.js';
 
 // A whole-reply response has no server-side line identity. Expose one line to
 // the live presenter without adding synthetic lines to persisted history.
@@ -82,7 +83,8 @@ export function createConversation({
     } else {
       const prevTitle = session.title;
       userMessage = addMessage('user', text);
-      if (session.title !== prevTitle) persistSession(session).catch(() => {});
+      // addMessage 已经写过本地。另一网页改过记录时，本页内存是旧的，不能提交整份会话。
+      if (session.title !== prevTitle && !storageChangedByAnotherPage()) persistSession(session).catch(() => {});
       if (voiceMeta && userMessage) {
         audioStore.set(userMessage.id, { url: voiceMeta.url, dur: voiceMeta.dur });
         userMessage.dur = voiceMeta.dur;

@@ -83,17 +83,26 @@ export function uid(prefix = 'id') {
 
 const now = () => Date.now();
 
+// 只表示另一网页写过 gal2voice.chat.v1。原记录损坏或这次写入失败都不是这个情况。
+export function storageChangedByAnotherPage() {
+  try {
+    return localStorage.getItem(STORAGE_KEY) !== lastStoredRaw;
+  } catch {
+    return false;
+  }
+}
+
 export function saveState() {
   if (damagedRaw !== null) {
     reportStorage(false, '原会话记录无法读取，已保留原内容。请在「设置中心 → 备份与更新」导出原始记录，再恢复本地保存。');
     return false;
   }
   try {
-    const previous = localStorage.getItem(STORAGE_KEY);
-    if (previous !== lastStoredRaw) {
+    if (storageChangedByAnotherPage()) {
       reportStorage(false, '另一网页已修改聊天记录。为避免覆盖，当前网页暂停保存；请先导出当前聊天备份，再刷新后导入需要保留的记录。');
       return false;
     }
+    const previous = localStorage.getItem(STORAGE_KEY);
     const next = JSON.stringify(snapshot());
     try { localStorage.setItem(STORAGE_KEY, next); }
     catch (error) {
