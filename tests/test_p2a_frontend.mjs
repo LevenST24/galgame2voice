@@ -590,3 +590,37 @@ test('Persistence: mapBackendMessage with and without lines', () => {
   assert.equal(msgWithout.id, 'm_43');
   assert.equal(msgWithout.lines, undefined);
 });
+
+test('Persistence: normalizeSnapshot preserves unconfirmedSettingsVersion and portableSnapshot strips it', () => {
+  const rawData = {
+    sessions: [
+      {
+        id: 's_unconfirmed',
+        title: '未确认设置会话',
+        createdAt: 1000,
+        updatedAt: 2000,
+        unconfirmedSettingsVersion: 3,
+        settings: {},
+        messages: [{ id: 'm_1', role: 'user', content: '测试', ts: 1000 }],
+      },
+      {
+        id: 's_confirmed',
+        title: '已确认设置会话',
+        createdAt: 1000,
+        updatedAt: 2000,
+        settings: {},
+        messages: [{ id: 'm_2', role: 'user', content: '测试', ts: 1000 }],
+      },
+    ],
+    activeId: 's_unconfirmed',
+    global: {},
+  };
+
+  const normalized = normalizeSnapshot(rawData, {}, {});
+  assert.equal(normalized.sessions[0].unconfirmedSettingsVersion, 3, 'normalizeSnapshot 应保留未确认设置版本号');
+  assert.equal(normalized.sessions[1].unconfirmedSettingsVersion, undefined, '无标记会话保持 undefined');
+
+  const portable = portableSnapshot(normalized);
+  assert.equal(portable.sessions[0].unconfirmedSettingsVersion, undefined, 'portableSnapshot 应剥除未确认设置版本号');
+  assert.equal(portable.sessions[1].unconfirmedSettingsVersion, undefined);
+});

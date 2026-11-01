@@ -4,7 +4,8 @@ import test from 'node:test';
 import { setup } from './helpers/adv_main.mjs';
 import { tick } from './helpers/chat_stream.mjs';
 import { state as storedState, getActive as storedActive, getSession as storedSession, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL } from '../frontend/src/store.js';
-import { initVoiceSettings, ensureSessionVoice, getVoiceProfiles, fetchVoiceProfiles, getActiveProfileId } from '../frontend/src/controllers/voice_settings.js';
+import { serverTimestamp } from '../frontend/src/session_data.js';
+import { initVoiceSettings, ensureSessionVoice, getVoiceProfiles, fetchVoiceProfiles, getActiveProfileId, openSessionSettings } from '../frontend/src/controllers/voice_settings.js';
 import { createTitleScreen } from '../frontend/src/adv/title.js';
 import { initApp } from '../frontend/src/main.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
@@ -1792,6 +1793,354 @@ test('startup sync keeps the cached failed question when it is retried while his
   assert.equal(storedActive().messages.at(-1), question);
 });
 
+function storedSessionSnapshot(session) {
+  return { sessions: [session], activeId: session.id, global: { ...DEFAULT_GLOBAL } };
+}
 
+// Real startup: localStorage, then initApp's default boot sync against the session list.
+async function bootSessionSync(t, { session, server, postHandler = null }) {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  const calls = [];
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+    fetch: async (url, options = {}) => {
+      const target = String(url);
+      calls.push({ url: target, method: options.method || 'GET', body: options.body });
+      if (target.includes('/api/chat/sessions') && (options.method || 'GET') === 'POST') {
+        if (postHandler) return postHandler(options);
+        return Response.json({ status: 'ok' });
+      }
+      if (target.includes('/api/chat/sessions')) {
+        return Response.json({ sessions: [server], has_more: false, count: 1 });
+      }
+      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
+      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+      return Response.json({});
+    },
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch { /* already gone */ }
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+  const live = storedState.sessions.find(item => item.id === session.id);
+  const stored = JSON.parse(storage.get('gal2voice.chat.v1')).sessions[0];
+  const saves = calls.filter(call => call.method === 'POST' && call.url.includes('/api/chat/sessions'))
+    .map(call => JSON.parse(call.body));
+  return { live, stored, saves };
+}
 
+test('startup sync keeps newer local session settings and posts them', async t => {
+  const session = {
+    id: 's_settings_local', title: '晚上的对话', createdAt: 1_700_000_000_000, updatedAt: 1_800_000_000_000,
+    unconfirmedSettingsVersion: 1,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '小明', advWindowOpacity: 40, temperature: 0.2 },
+    messages: [{ id: 'm_keep', role: 'user', content: '只改了设置', ts: 1 }],
+  };
+  const server = {
+    id: session.id, title: session.title, voice_profile_id: null,
+    created_at: '2024-01-01 00:00:00', updated_at: '2024-01-01 00:00:01',
+    message_count: 1, last_message: '只改了设置',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '我', advWindowOpacity: 75, temperature: 0.7 },
+  };
+  const { live, stored, saves } = await bootSessionSync(t, { session, server });
+  assert.equal(live.settings.advPlayerName, '小明');
+  assert.equal(live.settings.advWindowOpacity, 40);
+  assert.equal(live.settings.temperature, 0.2);
+  assert.equal(live.updatedAt, 1_800_000_000_000);
+  assert.equal(live.unconfirmedSettingsVersion, undefined, '补发成功后内存中的未确认标记必须清除');
+  assert.equal(stored.settings.advPlayerName, '小明');
+  assert.equal(stored.settings.advWindowOpacity, 40);
+  assert.equal(stored.settings.temperature, 0.2);
+  assert.equal(stored.updatedAt, 1_800_000_000_000);
+  assert.equal(stored.unconfirmedSettingsVersion, undefined, '补发成功后 localStorage 中的未确认标记必须清除');
+  assert.equal(saves.length, 1);
+  assert.equal(saves[0].id, session.id);
+  assert.equal(saves[0].settings.advPlayerName, '小明');
+  assert.equal(saves[0].settings.advWindowOpacity, 40);
+  assert.equal(saves[0].settings.temperature, 0.2);
+});
+
+test('startup sync applies newer server session settings', async t => {
+  const session = {
+    id: 's_settings_server', title: '晚上的对话', createdAt: 1_700_000_000_000, updatedAt: 1_700_000_000_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '我', advWindowOpacity: 75, temperature: 0.7 },
+    messages: [{ id: 'm_keep', role: 'user', content: '只改了设置', ts: 1 }],
+  };
+  const server = {
+    id: session.id, title: session.title, voice_profile_id: null,
+    created_at: '2024-01-01 00:00:00', updated_at: '2024-06-01 00:00:02',
+    message_count: 1, last_message: '只改了设置',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '小明', advWindowOpacity: 40, temperature: 0.2 },
+  };
+  const { live, stored, saves } = await bootSessionSync(t, { session, server });
+  const serverUpdatedAt = serverTimestamp(server.updated_at);
+  assert.equal(live.settings.advPlayerName, '小明');
+  assert.equal(live.settings.advWindowOpacity, 40);
+  assert.equal(live.settings.temperature, 0.2);
+  assert.equal(live.updatedAt, serverUpdatedAt);
+  assert.equal(stored.settings.advPlayerName, '小明');
+  assert.equal(stored.settings.advWindowOpacity, 40);
+  assert.equal(stored.settings.temperature, 0.2);
+  assert.equal(stored.updatedAt, serverUpdatedAt);
+  assert.equal(saves.length, 0);
+});
+
+test('startup sync applies server session settings when local session has newer reply timestamp but no unconfirmed settings', async t => {
+  const session = {
+    id: 's_reply_newer_than_server', title: '晚上的对话', createdAt: 1_700_000_000_000,
+    updatedAt: 1_800_000_000_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '我', advWindowOpacity: 75, temperature: 0.7 },
+    messages: [
+      { id: 'm_user', role: 'user', content: '你好', ts: 1_700_000_000_000 },
+      { id: 'm_assistant', role: 'assistant', content: '你好！', ts: 1_800_000_000_000 },
+    ],
+  };
+  const server = {
+    id: session.id, title: session.title, voice_profile_id: null,
+    created_at: '2024-01-01 00:00:00',
+    updated_at: '2024-01-01 00:00:01',
+    message_count: 2, last_message: '你好！',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '小明', advWindowOpacity: 40, temperature: 0.2 },
+  };
+  const { live, stored, saves } = await bootSessionSync(t, { session, server });
+  const serverUpdatedAt = serverTimestamp(server.updated_at);
+  assert.equal(live.settings.advPlayerName, '小明', '服务端新设置必须胜出');
+  assert.equal(live.settings.advWindowOpacity, 40);
+  assert.equal(live.settings.temperature, 0.2);
+  assert.equal(live.updatedAt, serverUpdatedAt);
+  assert.equal(stored.settings.advPlayerName, '小明', 'localStorage 必须更新为服务端新设置');
+  assert.equal(stored.settings.advWindowOpacity, 40);
+  assert.equal(stored.settings.temperature, 0.2);
+  assert.equal(stored.updatedAt, serverUpdatedAt);
+  assert.equal(saves.length, 0, '严禁把本机旧设置补发覆盖到服务端');
+});
+
+test('startup sync retains unconfirmed settings flag in storage when follow-up post fails', async t => {
+  const session = {
+    id: 's_settings_fail', title: '晚上的对话', createdAt: 1_700_000_000_000, updatedAt: 1_800_000_000_000,
+    unconfirmedSettingsVersion: 1,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '小明', advWindowOpacity: 40, temperature: 0.2 },
+    messages: [{ id: 'm_keep', role: 'user', content: '只改了设置', ts: 1 }],
+  };
+  const server = {
+    id: session.id, title: session.title, voice_profile_id: null,
+    created_at: '2024-01-01 00:00:00', updated_at: '2024-01-01 00:00:01',
+    message_count: 1, last_message: '只改了设置',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advPlayerName: '我', advWindowOpacity: 75, temperature: 0.7 },
+  };
+  const { live, stored, saves } = await bootSessionSync(t, {
+    session,
+    server,
+    postHandler: () => Response.json({ message: '服务不可用' }, { status: 503 }),
+  });
+  assert.equal(live.settings.advPlayerName, '小明', '补发失败时仍保留本地设置');
+  assert.equal(live.unconfirmedSettingsVersion, 1, '补发失败后内存中保留未确认标记');
+  assert.equal(stored.settings.advPlayerName, '小明', '补发失败时 localStorage 仍保留本地设置');
+  assert.equal(stored.unconfirmedSettingsVersion, 1, '补发失败后 localStorage 中保留未确认标记，以便下次启动重试');
+  assert.equal(saves.length, 1);
+});
+
+test('startup sync unconfirmed version is preserved and newer settings kept if edited while in-flight boot post resolves', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const session = {
+    id: 's_version_race',
+    title: '对话',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_800_000_000_000,
+    unconfirmedSettingsVersion: 1,
+    settings: {
+      ...DEFAULT_SESSION_SETTINGS,
+      voiceProfileId: 101,
+      advPlayerName: '小明',
+      temperature: 0.2,
+    },
+    messages: [{ id: 'm_1', role: 'user', content: '测试', ts: 1 }],
+  };
+
+  const server = {
+    id: session.id,
+    title: session.title,
+    voice_profile_id: 101,
+    created_at: '2024-01-01 00:00:00',
+    updated_at: '2024-01-01 00:00:01',
+    message_count: 1,
+    last_message: '测试',
+    settings: {
+      ...DEFAULT_SESSION_SETTINGS,
+      voiceProfileId: 101,
+      advPlayerName: '我',
+      temperature: 0.7,
+    },
+  };
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+
+  let resolveBootPost;
+  const bootPostPromise = new Promise(resolve => { resolveBootPost = resolve; });
+  let resolvePromptPut;
+  const promptPutPromise = new Promise(resolve => { resolvePromptPut = resolve; });
+
+  const calls = [];
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+    fetch: async (url, options = {}) => {
+      const target = String(url);
+      calls.push({ url: target, method: options.method || 'GET', body: options.body });
+      if (target.includes('/api/chat/sessions') && (options.method || 'GET') === 'POST') {
+        await bootPostPromise;
+        return Response.json({ status: 'ok' });
+      }
+      if (target.includes('/api/chat/sessions')) {
+        return Response.json({ sessions: [server], has_more: false, count: 1 });
+      }
+      if (target.includes('/api/characters/101/system-prompt') && (options.method || 'GET') === 'PUT') {
+        await promptPutPromise;
+        return Response.json({ status: 'ok', manifest_path: 'characters/alice/manifest.json' });
+      }
+      if (target.includes('/api/voice/profiles')) {
+        return Response.json({
+          profiles: [{ id: 101, name: 'Alice', system_prompt: 'old prompt' }],
+          active_profile_id: 101,
+        });
+      }
+      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
+      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+      return Response.json({});
+    },
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  const dom = {
+    advRoot: root,
+    sVoice: doc.createElement('select'),
+    sSave: doc.createElement('button'),
+    sSystem: doc.createElement('textarea'),
+    sTemp: doc.createElement('input'),
+    sTopP: doc.createElement('input'),
+    sFreq: doc.createElement('input'),
+    sPres: doc.createElement('input'),
+    sCtx: doc.createElement('input'),
+    sMaxTokens: doc.createElement('input'),
+    sAiAdaptiveVoice: doc.createElement('select'),
+    sAdvReplyFormat: doc.createElement('select'),
+    sTtsSpeed: doc.createElement('input'),
+    sTtsTopK: doc.createElement('input'),
+    sTtsTopP: doc.createElement('input'),
+    sTtsTemp: doc.createElement('input'),
+    sessionModal: doc.createElement('div'),
+  };
+
+  const app = initApp({ dom, renderSessionList() {} });
+  let app2;
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    try { app2?.conversation.stop(); app2?.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  await tick();
+
+  // 此时启动补发的 POST 还在挂起中；用户在设置里保存新参数并改动角色提示词
+  await fetchVoiceProfiles();
+  await openSessionSettings();
+  dom.sVoice.value = '101';
+  dom.sTemp.value = '0.9';
+  dom.sSystem.value = 'new prompt text';
+  dom.sSave.click();
+  await tick();
+
+  // handleSaveSessionSettings 正在 await saveCharacterPrompt
+  // 此时旧的启动补发 POST 返回
+  resolveBootPost();
+  await tick();
+  await tick();
+
+  const live = storedState.sessions.find(item => item.id === session.id);
+  const stored = JSON.parse(storage.get('gal2voice.chat.v1')).sessions[0];
+
+  assert.equal(live.unconfirmedSettingsVersion, 2, '旧补发返回不得清除更新的未确认版本');
+  assert.equal(stored.unconfirmedSettingsVersion, 2, 'localStorage 必须保留未确认版本 2');
+
+  // 此时模拟刷新页面：从 localStorage 恢复会话并再次执行启动同步
+  globalThis.window.fetch = async (url, options = {}) => {
+    const target = String(url);
+    if (target.includes('/api/chat/sessions') && (options.method || 'GET') === 'POST') {
+      return Response.json({ status: 'ok' });
+    }
+    if (target.includes('/api/chat/sessions')) {
+      return Response.json({ sessions: [server], has_more: false, count: 1 });
+    }
+    if (target.includes('/api/voice/profiles')) {
+      return Response.json({
+        profiles: [{ id: 101, name: 'Alice', system_prompt: 'old prompt' }],
+        active_profile_id: 101,
+      });
+    }
+    if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
+    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+    return Response.json({});
+  };
+  app2 = initApp({ dom, renderSessionList() {} });
+  await app2.ready;
+  await tick();
+
+  const refreshedLive = storedState.sessions.find(item => item.id === session.id);
+  assert.equal(refreshedLive.settings.temperature, 0.9, '刷新后启动同步必须保留本机新保存的参数');
+
+  // 释放挂起的人设请求
+  resolvePromptPut();
+  await tick();
+});
 

@@ -334,8 +334,16 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           if (!session) throw new Error('当前没有可保存的会话。');
           ++_syncSessionsGen;
           session.settings = pickSettings({ ...session.settings, ...patch }, DEFAULT_SESSION_SETTINGS);
+          const version = (session.unconfirmedSettingsVersion || 0) + 1;
+          session.unconfirmedSettingsVersion = version;
           saveState();
-          const confirmation = persistSession(session);
+          const confirmation = persistSession(session).then((res) => {
+            if (session.unconfirmedSettingsVersion === version) {
+              delete session.unconfirmedSettingsVersion;
+              saveState();
+            }
+            return res;
+          });
           if (confirm) return confirmation;
           confirmation.catch(error => showToast(`当前页面已应用显示设置，但本机服务尚未确认保存：${error.message}`, 'error'));
         },
@@ -807,6 +815,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     try {
       const backendSessions = await fetchAllSessions();
       if (isStale()) return;
+      // 保存设置尚未确认时本机已记录标记。刷新后保留本机设置并补发，不要用服务端旧设置盖掉它。
+      const unconfirmedLocalSessions = [];
       if (backendSessions.length > 0) {
         const existingMap = new Map(state.sessions.map((s) => [s.id, s]));
         const merged = [];
@@ -815,9 +825,14 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           if (local) {
             local.lastLine = bs.last_message || '';
             if (bs.title && (local.title === '新对话' || !local.title)) local.title = bs.title;
-            local.updatedAt = serverTimestamp(bs.updated_at, local.updatedAt);
-            if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
-            if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = pickSettings({ ...local.settings, ...bs.settings }, DEFAULT_SESSION_SETTINGS);
+            const serverUpdatedAt = serverTimestamp(bs.updated_at, local.updatedAt);
+            if (local.unconfirmedSettingsVersion) {
+              unconfirmedLocalSessions.push(local);
+            } else {
+              local.updatedAt = serverUpdatedAt;
+              if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
+              if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = pickSettings({ ...local.settings, ...bs.settings }, DEFAULT_SESSION_SETTINGS);
+            }
             const lastMsg = local.messages ? local.messages[local.messages.length - 1] : null;
             const hasUnsentFailed = Boolean(
               lastMsg &&
@@ -874,6 +889,15 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       }
       if (isStale()) return;
       saveState();
+      for (const session of unconfirmedLocalSessions) {
+        const version = session.unconfirmedSettingsVersion;
+        persistSession(session).then(() => {
+          if (session.unconfirmedSettingsVersion === version) {
+            delete session.unconfirmedSettingsVersion;
+            saveState();
+          }
+        }).catch(() => {});
+      }
       fullRender();
       ensureSessionVoice(getActive(), { silent: true });
       if (window.innerWidth > 820) advApp?.textbox.inputElement?.focus();
