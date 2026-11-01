@@ -130,16 +130,18 @@ export function createBacklog(container, deps = {}) {
     network: '音频加载失败，请稍后在 LOG 里再点「语音」重试。',
   };
 
-  function stopReplay({ feedback } = {}) {
+  function cancelRegeneration({ feedback } = {}) {
+    if (!activeRegeneration) return;
+    const pending = activeRegeneration;
+    activeRegeneration = null;
+    if (feedback) regenerationFeedback.set(pending.key, feedback);
+    else regenerationFeedback.delete(pending.key);
+    pending.controller.abort();
+    for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
+  }
+
+  function stopReplay() {
     ++replaySequence;
-    if (activeRegeneration) {
-      const pending = activeRegeneration;
-      activeRegeneration = null;
-      if (feedback) regenerationFeedback.set(pending.key, feedback);
-      else regenerationFeedback.delete(pending.key);
-      pending.controller.abort();
-      for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
-    }
     activeReplayButton?.classList.remove('is-playing');
     activeReplayButton = null;
     deps.stopOtherVoice?.();
@@ -241,14 +243,14 @@ export function createBacklog(container, deps = {}) {
       if (destroyed) return;
       if (activeRegeneration?.key === lineKey) {
         if (getNow() - activeRegeneration.startedAt < REGENERATE_CANCEL_GRACE_MS) return;
-        stopReplay({ feedback: '已取消本次生成，原音频已保留。' });
+        cancelRegeneration({ feedback: '已取消本次生成，原音频已保留。' });
         return;
       }
       refreshRepairButton();
       if (regenerateBtn.disabled || regenerateBtn.hidden) return;
       if (!deps.getRecoveryVoice?.()) { deps.onChooseVoice?.(); return; }
-      stopReplay();
-      const sequence = replaySequence, controller = new AbortController();
+      cancelRegeneration();
+      const controller = new AbortController();
       const pending = { key: lineKey, controller, startedAt: getNow() };
       activeRegeneration = pending;
       regenerationFeedback.set(lineKey, '正在生成这句语音…');
@@ -256,7 +258,7 @@ export function createBacklog(container, deps = {}) {
       let feedback = '';
       try {
         const result = await deps.regenerateLineAudio({ messageId: msg.id, lineIndex, signal: controller.signal });
-        if (destroyed || controller.signal.aborted || sequence !== replaySequence) return;
+        if (destroyed || controller.signal.aborted || activeRegeneration !== pending) return;
         onSuccess(result);
         feedback = result.remoteUpdated
           ? (result.saved === false
@@ -267,7 +269,7 @@ export function createBacklog(container, deps = {}) {
           : result.saved === false ? '语音已生成，但本地保存失败，请先备份聊天。'
           : result.persisted === false ? '语音已生成，修复记录保存在本浏览器；点语音播放。' : '语音已生成，点语音播放。';
       } catch (error) {
-        if (destroyed || controller.signal.aborted || sequence !== replaySequence || error.name === 'AbortError') return;
+        if (destroyed || controller.signal.aborted || activeRegeneration !== pending || error.name === 'AbortError') return;
         feedback = /[\u3400-\u9fff]/.test(error.message || '') ? error.message : '这句语音未能生成，原音频已保留，请检查语音服务后再试。';
       } finally {
         if (activeRegeneration === pending) {
@@ -757,6 +759,7 @@ export function createBacklog(container, deps = {}) {
 
   // Close handlers
   function handleClose() {
+    cancelRegeneration();
     stopReplay();
     deps.onClose?.();
   }
@@ -902,6 +905,7 @@ export function createBacklog(container, deps = {}) {
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      cancelRegeneration();
       stopReplay();
       for (const off of disposers.splice(0)) off();
       overlayEl.remove();
