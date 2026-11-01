@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.requests import ClientDisconnect
 
 from galgame2voice.services.chat_service import ChatService
+from galgame2voice.services.chat_pipelines.line_scanner import FX, MOTIONS
 from galgame2voice.services.chat_pipelines.tts_pipeline import TTS_JOB_TIMEOUT_SECONDS
 from galgame2voice.services.chat_backup import export_chat_backup, import_timestamp, validate_adv_settings
 from galgame2voice.services.gpt_sovits_client import validate_user_tts_options
@@ -391,6 +392,20 @@ class SessionUpsertRequest(BaseModel):
 
 
 ALLOWED_ACT_KEYS = frozenset({"face", "pose", "motion", "blush", "fx"})
+_ALLOWED_ACT_MOTIONS = frozenset(MOTIONS)
+_ALLOWED_ACT_FX = frozenset(FX)
+
+
+def _valid_imported_act_item(key: Any, val: Any) -> bool:
+    if key in ("face", "pose"):
+        return isinstance(val, str) and bool(val)
+    if key == "motion":
+        return isinstance(val, str) and val in _ALLOWED_ACT_MOTIONS
+    if key == "fx":
+        return isinstance(val, str) and val in _ALLOWED_ACT_FX
+    if key == "blush":
+        return isinstance(val, bool)
+    return False
 
 
 class ImportedLine(BaseModel):
@@ -406,7 +421,7 @@ class ImportedLine(BaseModel):
     def filter_act_keys(cls, v: Any) -> dict[str, Any]:
         if not isinstance(v, dict):
             return {}
-        return {k: val for k, val in v.items() if k in ALLOWED_ACT_KEYS}
+        return {k: val for k, val in v.items() if k in ALLOWED_ACT_KEYS and _valid_imported_act_item(k, val)}
 
     def to_persisted_dict(self) -> dict[str, Any]:
         return {
