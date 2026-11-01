@@ -92,7 +92,7 @@ def audit_characters(
         cname = cdir.name
         manifest_path = cdir / "manifest.json"
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         except Exception as exc:
             errors.append(f"[{cname}] Failed to parse manifest.json: {exc}")
             continue

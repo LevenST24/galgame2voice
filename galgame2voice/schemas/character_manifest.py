@@ -121,7 +121,7 @@ def validate_character_package(character_dir: Path) -> tuple[bool, list[str]]:
         return False, [f"缺少 manifest.json 配置文件: {manifest_path}"]
 
     try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         return False, [manifest_json_error(exc)]
 

@@ -826,3 +826,87 @@ async def test_rescan_lists_three_rejected_packages_and_the_total(project, isola
     warning = scan["catalog_warning"]
     assert [f"short_{index}（" in warning for index in range(4)] == [True, True, True, False]
     assert warning.endswith("另有 1 个角色包不合格（共 4 个）。")
+
+
+@pytest.mark.asyncio
+async def test_rescan_and_validation_accept_utf8_bom_manifest_and_system_prompt(
+    project, isolate_test_database, monkeypatch,
+):
+    from galgame2voice.schemas.character_manifest import validate_character_package
+    from scripts.tools.character_packager import cmd_install, cmd_pack, cmd_validate
+
+    folder = install(project, "bom_char", "天音")
+    manifest_path = folder / "manifest.json"
+    manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_data["system_prompt"] = ""
+    manifest_path.write_text(
+        json.dumps(manifest_data, ensure_ascii=False, indent=2),
+        encoding="utf-8-sig",
+    )
+    prompt_txt_path = folder / "system_prompt.txt"
+    prompt_txt_path.write_text("记事本保存的初始人设", encoding="utf-8-sig")
+
+    assert manifest_path.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert prompt_txt_path.read_bytes().startswith(b"\xef\xbb\xbf")
+
+    scan, listed = await _rescan_and_list(project, monkeypatch)
+    assert scan["characters"] == ["天音"]
+    assert scan["catalog_warning"] is None
+    assert listed["catalog_warning"] is None
+    assert _profile_named(listed, "天音")["system_prompt"] == "记事本保存的初始人设"
+
+    is_valid, errors = validate_character_package(folder)
+    assert is_valid is True, errors
+    assert errors == []
+
+    out_zip = project / "bom_char.zip"
+    install_target = project / "installed_chars"
+    assert cmd_validate(folder) == 0
+    assert cmd_pack(folder, out_zip) == 0
+    assert cmd_install(out_zip, install_target) == 0
+    assert (install_target / "天音" / "manifest.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_saving_persona_on_utf8_bom_manifest_succeeds_and_writes_utf8_without_bom(
+    project, isolate_test_database,
+):
+    CharacterManager.reset_instance()
+    try:
+        folder = install(project, "ann", "Ann")
+        manifest_path = folder / "manifest.json"
+        app = create_app()
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test", timeout=30.0) as client:
+            scanned = await client.post("/api/characters/rescan")
+            assert scanned.status_code == 200, scanned.text
+            ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
+
+            original_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_path.write_text(
+                json.dumps(original_data, ensure_ascii=False, indent=2),
+                encoding="utf-8-sig",
+            )
+            assert manifest_path.read_bytes().startswith(b"\xef\xbb\xbf")
+
+            updated_prompt = "记事本保存后通过界面更新的人设"
+            saved = await client.put(
+                f"/api/characters/{ann['id']}/system-prompt",
+                json={"system_prompt": updated_prompt},
+            )
+            assert saved.status_code == 200, saved.text
+
+            raw_bytes = manifest_path.read_bytes()
+            assert not raw_bytes.startswith(b"\xef\xbb\xbf")
+            written_data = json.loads(raw_bytes.decode("utf-8"))
+            assert written_data == {**original_data, "system_prompt": updated_prompt}
+
+            profiles_after = (await client.get("/api/voice/profiles")).json()
+            assert _profile_named(profiles_after, "Ann")["system_prompt"] == updated_prompt
+
+            rescanned = await client.post("/api/characters/rescan")
+            assert rescanned.status_code == 200, rescanned.text
+            assert rescanned.json()["catalog_warning"] is None
+            assert rescanned.json()["characters"] == ["Ann"]
+    finally:
+        CharacterManager.reset_instance()

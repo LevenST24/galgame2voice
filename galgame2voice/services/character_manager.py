@@ -201,7 +201,7 @@ class CharacterManager:
         errors: list[str] = []
 
         try:
-            raw_text = manifest_path.read_text(encoding="utf-8")
+            raw_text = manifest_path.read_text(encoding="utf-8-sig")
             raw_json = json.loads(raw_text)
         except Exception as exc:
             return self._rejected_manifest(folder, manifest_json_error(exc))
@@ -216,7 +216,7 @@ class CharacterManager:
         prompt_txt_path = folder / "system_prompt.txt"
         if not system_prompt and prompt_txt_path.is_file():
             try:
-                system_prompt = prompt_txt_path.read_text(encoding="utf-8").strip()
+                system_prompt = prompt_txt_path.read_text(encoding="utf-8-sig").strip()
             except Exception as exc:
                 errors.append(f"无法读取 system_prompt.txt：{exc}")
 
