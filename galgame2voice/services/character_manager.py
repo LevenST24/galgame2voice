@@ -459,21 +459,26 @@ class CharacterManager:
         emotion: str | None,
     ) -> tuple[Any | None, Path | None, str]:
         """Resolves target emotion config and valid audio path with gentle/first fallback."""
-        target_cfg = emotions.get(canonical_emo)
-        matched_emo = canonical_emo
-        if target_cfg is None and emotion:
-            target_cfg = emotions.get(str(emotion).strip().lower())
-            if target_cfg:
-                matched_emo = str(emotion).strip().lower()
+        raw_key = str(emotion).strip().lower() if emotion else ""
+        target_cfg = None
+        matched_emo = ""
 
-        if target_cfg is None:
-            if "gentle" in emotions:
-                target_cfg = emotions["gentle"]
-                matched_emo = "gentle"
-            else:
-                first_key = next(iter(emotions))
-                target_cfg = emotions[first_key]
-                matched_emo = first_key
+        # 1. Exact match in character package manifest
+        if raw_key and raw_key in emotions:
+            target_cfg = emotions[raw_key]
+            matched_emo = raw_key
+        # 2. Canonical archetype match via synonyms
+        elif canonical_emo and canonical_emo in emotions:
+            target_cfg = emotions[canonical_emo]
+            matched_emo = canonical_emo
+        # 3. Fallback to gentle or first available emotion
+        elif "gentle" in emotions:
+            target_cfg = emotions["gentle"]
+            matched_emo = "gentle"
+        elif emotions:
+            first_key = next(iter(emotions))
+            target_cfg = emotions[first_key]
+            matched_emo = first_key
 
         resolved_audio = pkg.resolve_audio_path(target_cfg.audio)
         if resolved_audio is None or not resolved_audio.is_file():
