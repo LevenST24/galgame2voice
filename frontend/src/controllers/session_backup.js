@@ -1,6 +1,7 @@
 import { requestJson } from '../api.js';
 import { showToast } from '../ui.js';
 import { exportCompleteChatBackup } from '../chat_backup.js';
+import { forgetDeletedSessions } from '../session_api.js';
 import { exportSessionData, prepareSessionImport, applySessionImport, getStorageStatus,
   onStorageStatus, getDamagedSessionData, resumeLocalSaving } from '../store.js';
 
@@ -81,6 +82,7 @@ export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => fa
           content: message.content, japanese: message.japanese || '', ts: message.ts, lines: message.lines })) })) };
       await requestJson('/api/chat/import', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload) }, { timeoutMs: 60000 });
+      forgetDeletedSessions(incoming.sessions.map(session => session.id));
       const result = applySessionImport(incoming);
       onImport?.();
       showToast(`已导入 ${result.count} 个会话，原有会话保留。请在会话设置中重新选择音色。`, 'success');

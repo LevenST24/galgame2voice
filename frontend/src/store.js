@@ -181,10 +181,10 @@ export function exportSessionData() {
     ...portableSnapshot(normalizeSnapshot(snapshot(), DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL)) }, null, 2);
 }
 
-// The same backup file gets the same ids, so the server's "session exists" check (409)
-// stops a retried import instead of inserting a second copy.
-function importSessionId(session, index) {
-  const text = `${index}:${JSON.stringify(session)}`;
+// Ids come from the raw text of the chosen file (before parsing fills in missing times) plus the
+// session's position, so retrying the same file sends the same ids and the server's "session
+// exists" check (409) stops a second copy. A different file never reuses an id.
+function importFileKey(text) {
   let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
   for (let i = 0; i < text.length; i++) {
     const ch = text.charCodeAt(i);
@@ -193,7 +193,7 @@ function importSessionId(session, index) {
   }
   h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return `s_import_${[h2, h1].map(h => (h >>> 0).toString(16).padStart(8, '0')).join('')}`;
+  return [h2, h1].map(h => (h >>> 0).toString(16).padStart(8, '0')).join('');
 }
 
 export function prepareSessionImport(raw) {
@@ -205,8 +205,9 @@ export function prepareSessionImport(raw) {
   const incoming = portableSnapshot(normalizeSnapshot(parsed, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL));
   if (incoming.sessions.length === 0) throw new Error('备份中没有聊天会话，当前记录未修改。');
   if (incoming.sessions.length > 10000) throw new Error('单份备份超过 10000 个会话，请先导出较小的备份再导入。');
+  const fileKey = importFileKey(raw);
   incoming.sessions.forEach((session, index) => {
-    session.id = importSessionId(session, index);
+    session.id = `s_import_${fileKey}_${index}`;
     session.settings.voiceProfileId = null;
   });
   return incoming;

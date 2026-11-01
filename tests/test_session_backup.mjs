@@ -218,9 +218,8 @@ function importDom() {
   globalThis.document = doc;
   let imported = 0;
   initSessionBackup({ onImport: () => imported++, isBusy: () => false });
-  const file = { size: retryBackup.length, text: async () => retryBackup };
-  const choose = async () => {
-    input.files = [file];
+  const choose = async (text = retryBackup) => {
+    input.files = [{ size: text.length, text: async () => text }];
     const listeners = [...(input.listeners.get('change') || [])];
     assert.equal(listeners.length, 1);
     await Promise.all(listeners.map((listener) => listener({ type: 'change' })));
@@ -286,6 +285,106 @@ function importDom() {
   assert.equal(imported(), 0);
   assert.equal(JSON.stringify(state.sessions), before);
   assert.ok(toasts.some((message) => message.includes('已存在') && message.includes('没有写入')));
+  passed++;
+}
+// A fake server that only replaces the network: the real route rule is "any existing id rolls back the whole batch".
+function importServer() {
+  const ids = new Set();
+  const calls = { persisted: [], deleted: [] };
+  const state_ = { loseNextResponse: false };
+  globalThis.fetch = async (url, options = {}) => {
+    const target = String(url);
+    if (target === '/api/chat/import' && options.method === 'POST') {
+      const sessions = JSON.parse(options.body).sessions;
+      if (sessions.some((item) => ids.has(item.id))) {
+        return { ok: false, status: 409, json: async () => ({ detail: '导入的会话已存在' }) };
+      }
+      for (const item of sessions) ids.add(item.id);
+      if (state_.loseNextResponse) {
+        state_.loseNextResponse = false;
+        const error = new Error('等待服务响应超时。');
+        error.code = 'REQUEST_TIMEOUT';
+        throw error;
+      }
+      return { ok: true, status: 200, json: async () => ({ status: 'ok', count: sessions.length }) };
+    }
+    if (target === '/api/chat/sessions' && options.method === 'POST') {
+      calls.persisted.push(JSON.parse(options.body).id);
+      return { ok: true, status: 200, json: async () => ({ status: 'ok' }) };
+    }
+    if (target.startsWith('/api/chat/sessions/') && options.method === 'DELETE') {
+      const id = decodeURIComponent(target.slice('/api/chat/sessions/'.length));
+      ids.delete(id);
+      calls.deleted.push(id);
+      return { ok: true, status: 200, json: async () => ({ status: 'ok' }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  return { ids, calls, state: state_ };
+}
+
+const backupOf = (sessions) => JSON.stringify({ format: 'galgame2voice.chat', version: 1, global: {}, sessions });
+const sessionOf = (id, texts) => ({
+  id, title: id, createdAt: 1, updatedAt: 2, settings: {},
+  messages: texts.map((content, index) => ({ id: `${id}_m${index}`, role: 'user', content, ts: index + 1 })),
+});
+
+// importing a newer backup where only one session grew is not blocked by the older import
+{
+  storage(saved()); loadState();
+  const server = importServer();
+  const { choose, toastText, clearToasts, imported } = importDom();
+  await choose(backupOf([sessionOf('s_a', ['甲']), sessionOf('s_b', ['乙'])]));
+  await choose(backupOf([sessionOf('s_a', ['甲']), sessionOf('s_b', ['乙', '乙又说了一句'])]));
+  const toasts = toastText();
+  clearToasts();
+  assert.equal(imported(), 2, `较新的备份应能导入；提示：${toasts.join(' | ')}`);
+  assert.equal(server.ids.size, 4);
+  assert.ok(state.sessions.some((session) => session.messages.some((message) => message.content === '乙又说了一句')));
+  passed++;
+}
+
+// the same backup file lacking timestamps, imported again after a lost response, adds nothing twice
+{
+  storage(saved()); loadState();
+  const server = importServer();
+  const { choose, clearToasts, imported } = importDom();
+  const noTimes = backupOf([{ id: 's_t', title: '没有时间的对话', settings: {}, messages: [{ id: 'm_t', role: 'user', content: '你好' }] }]);
+  const realNow = Date.now;
+  let clock = 1_000_000;
+  Date.now = () => (clock += 1000);
+  try {
+    server.state.loseNextResponse = true;
+    await choose(noTimes);
+    await choose(noTimes);
+  } finally { Date.now = realNow; }
+  clearToasts();
+  assert.equal(server.ids.size, 1, '同一个文件重试后，服务端只应有一份会话');
+  assert.equal(imported(), 0);
+  assert.equal(state.sessions.filter((session) => session.title === '没有时间的对话').length, 0);
+  passed++;
+}
+
+// deleting an imported session and importing the same file again must leave it saveable
+{
+  storage(saved()); loadState();
+  const server = importServer();
+  const { choose, clearToasts, imported } = importDom();
+  const { deletePersistedSession, persistSession } = await import('../frontend/src/session_api.js');
+  const { deleteSession, getSession } = await import('../frontend/src/store.js');
+  const text = backupOf([sessionOf('s_d', ['要删的对话'])]);
+  await choose(text);
+  const first = state.sessions[0];
+  assert.ok(first.id.startsWith('s_import_'));
+  await deletePersistedSession(first.id);
+  deleteSession(first.id);
+  await choose(text);
+  clearToasts();
+  assert.equal(imported(), 2);
+  const restored = getSession(first.id);
+  assert.ok(restored, '再次导入后应恢复这个会话');
+  await persistSession(restored);
+  assert.deepEqual(server.calls.persisted, [first.id]);
   passed++;
 }
 console.log(`Session backup and recovery: ${passed} scenarios passed`);

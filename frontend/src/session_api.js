@@ -40,6 +40,11 @@ export function deletePersistedSession(id) {
   return removal;
 }
 
+// A confirmed import brings these ids back on the server, so an earlier deletion no longer applies.
+export function forgetDeletedSessions(ids) {
+  for (const id of ids) deleted.delete(id);
+}
+
 export async function fetchAllSessions() {
   const sessions = [];
   for (let offset = 0; ; offset += 200) {
