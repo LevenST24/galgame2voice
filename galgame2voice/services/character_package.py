@@ -54,12 +54,15 @@ class CharacterPackage:
         manifest: CharacterManifest,
         system_prompt: str = "",
         validation_errors: list[str] | None = None,
+        *,
+        has_manifest: bool = True,
     ) -> None:
         self.folder_path = folder_path.resolve()
         self.manifest = manifest
         self.system_prompt = system_prompt or manifest.system_prompt or ""
         self.validation_errors: list[str] = validation_errors or []
         self.is_valid: bool = not self.validation_errors
+        self.has_manifest: bool = has_manifest
 
     @property
     def id(self) -> str:

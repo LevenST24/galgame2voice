@@ -21,6 +21,7 @@ from galgame2voice.utils.audio_spec import (
 
 # A work id is the background pack folder name; characters declare which work they belong to.
 CHARACTER_WORK_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+CHARACTER_IDENTITY_MAX_LENGTH = 100
 
 
 def clean_character_work(value: object) -> str | None:
@@ -49,8 +50,8 @@ class EmotionConfig(BaseModel):
 
 class CharacterManifest(BaseModel):
     """Validated schema for character package manifest.json."""
-    id: str = Field(..., min_length=1, max_length=100, description="Unique machine-readable character identifier")
-    name: str = Field(..., min_length=1, max_length=100, description="Display name of the character")
+    id: str = Field(..., min_length=1, max_length=CHARACTER_IDENTITY_MAX_LENGTH, description="Unique machine-readable character identifier")
+    name: str = Field(..., min_length=1, max_length=CHARACTER_IDENTITY_MAX_LENGTH, description="Display name of the character")
     version: str = Field(default="1.0.0", description="Character package semantic version")
     description: str = Field(default="", description="Character background or lore description")
     system_prompt: str | None = Field(default="", description="Personality prompt template")
@@ -156,6 +157,7 @@ __all__ = [
     "EmotionConfig",
     "CharacterManifest",
     "CharacterManifestV2",
+    "CHARACTER_IDENTITY_MAX_LENGTH",
     "CHARACTER_WORK_RE",
     "clean_character_work",
     "emotion_audio_duration_error",

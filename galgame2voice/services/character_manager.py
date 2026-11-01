@@ -19,6 +19,7 @@ from typing import Any
 import aiosqlite
 from galgame2voice.config import get_settings
 from galgame2voice.schemas.character_manifest import (
+    CHARACTER_IDENTITY_MAX_LENGTH,
     CharacterManifest,
     EmotionConfig,
     VoiceParamsConfig,
@@ -61,7 +62,8 @@ def format_invalid_package_warning(invalid_packages: list[CharacterPackage]) -> 
     items = []
     for pkg in invalid_packages[:3]:
         folder = pkg.folder.name
-        label = f"{folder}（{pkg.name}）" if pkg.name and pkg.name != folder else folder
+        show_name = getattr(pkg, "has_manifest", True) and pkg.name and pkg.name != folder
+        label = f"{folder}（{pkg.name}）" if show_name else folder
         items.append(f"角色包「{label}」不合格：{'；'.join(pkg.validation_errors)}。")
     if len(invalid_packages) > 3:
         items.append(f"另有 {len(invalid_packages) - 3} 个角色包不合格（共 {len(invalid_packages)} 个）。")
@@ -189,11 +191,21 @@ class CharacterManager:
 
     @staticmethod
     def _rejected_manifest(folder: Path, reason: str) -> CharacterPackage:
-        dummy_manifest = CharacterManifest(id=folder.name, name=folder.name)
+        raw_name = folder.name
+        limit = CHARACTER_IDENTITY_MAX_LENGTH
+        if len(raw_name) > limit:
+            digest = hashlib.sha1(raw_name.encode("utf-8", errors="surrogatepass")).hexdigest()[:8]
+            fallback_id = f"{raw_name[:limit - 9]}_{digest}"
+            fallback_name = raw_name[:limit]
+        else:
+            fallback_id = raw_name
+            fallback_name = raw_name
+        dummy_manifest = CharacterManifest(id=fallback_id, name=fallback_name)
         return CharacterPackage(
             folder_path=folder,
             manifest=dummy_manifest,
             validation_errors=[reason],
+            has_manifest=False,
         )
 
     def _load_and_validate_package(self, folder: Path, manifest_path: Path) -> CharacterPackage:
