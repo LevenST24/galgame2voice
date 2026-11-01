@@ -566,3 +566,60 @@ async def test_stream_matches_offline_when_late_cue_changes_reply_emotion(coordi
     finally:
         release.set()
         await asyncio.wait_for(stream.aclose(), 2)
+
+
+@pytest.mark.asyncio
+async def test_overlong_fallback_unit_preserves_lifecycle_and_persisted_lines(coordinator_factory):
+    coordinator, _, database = coordinator_factory(
+        zh="长句。早安。",
+        ja=f"{'あ' * 10005}。おはよう。",
+    )
+    events = [event async for event in coordinator]
+    lines, audio = assert_lifecycle(events)
+    assert [(line["zh"], line["ja"]) for line in lines] == [
+        ("长句。", "あ" * 10000),
+        ("", "あ" * 5 + "。"),
+        ("早安。", "おはよう。"),
+    ]
+    assert [item["status"] for item in audio] == ["ready", "skipped", "ready"]
+    assert audio[2]["chunks"][0]["sentence"] == "おはよう。"
+    assert audio[2]["chunks"][0]["line"] == 2
+    async with get_db(database) as conn:
+        history = await crud.get_recent_messages(conn, "lines")
+        assert history[-1].lines == events[-1]["data"]["lines"]
+
+
+@pytest.mark.asyncio
+async def test_overlong_tail_sentences_keep_their_audio_on_the_line_holding_them(coordinator_factory):
+    sentence = "あ" * 3000 + "。"
+    coordinator, _, database = coordinator_factory(zh="总结。", ja=sentence * 4)
+    events = [event async for event in coordinator]
+    lines, audio = assert_lifecycle(events)
+    assert [(line["zh"], line["ja"]) for line in lines] == [("总结。", sentence * 3), ("", sentence)]
+    assert [item["status"] for item in audio] == ["ready", "ready"]
+    assert [chunk["sentence"] for chunk in audio[0]["chunks"]] == [sentence] * 3
+    assert [chunk["sentence"] for chunk in audio[1]["chunks"]] == [sentence]
+    assert audio[1]["chunks"][0]["line"] == 1
+    async with get_db(database) as conn:
+        history = await crud.get_recent_messages(conn, "lines")
+        assert history[-1].lines == events[-1]["data"]["lines"]
+
+
+@pytest.mark.asyncio
+async def test_overlong_chinese_sentence_keeps_following_translation_aligned(coordinator_factory):
+    coordinator, _, database = coordinator_factory(
+        zh=f"{'哈' * 10005}。早安。",
+        ja=f"{'あ' * 10005}。おはよう。",
+    )
+    events = [event async for event in coordinator]
+    lines, audio = assert_lifecycle(events)
+    assert [(line["zh"], line["ja"]) for line in lines] == [
+        ("哈" * 10000, "あ" * 10000),
+        ("哈" * 5 + "。", "あ" * 5 + "。"),
+        ("早安。", "おはよう。"),
+    ]
+    assert [item["status"] for item in audio] == ["ready", "skipped", "ready"]
+    assert audio[2]["chunks"][0]["sentence"] == "おはよう。"
+    async with get_db(database) as conn:
+        history = await crud.get_recent_messages(conn, "lines")
+        assert history[-1].lines == events[-1]["data"]["lines"]
