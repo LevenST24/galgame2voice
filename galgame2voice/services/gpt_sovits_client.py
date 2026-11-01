@@ -296,8 +296,11 @@ class GptSovitsClient:
 
             url = f"{self.base_url}{path}"
             http_client = client if client is not None else self._get_http_client()
+            # An explicit None would disable every timeout; fall back to the
+            # pooled client's TTS_TIMEOUT instead.
             return await http_client.request(
-                method, url, json=json_data, params=params, timeout=timeout
+                method, url, json=json_data, params=params,
+                timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
             )
         except (httpx.NetworkError, httpx.ConnectTimeout, httpx.RemoteProtocolError):
             self._observe_connection_loss(generation, revision)
