@@ -14,6 +14,10 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from galgame2voice.services.tts_service import TtsService
+from galgame2voice.utils.audio_spec import (
+    REFERENCE_AUDIO_MAX_SECONDS,
+    REFERENCE_AUDIO_MIN_SECONDS,
+)
 
 # A work id is the background pack folder name; characters declare which work they belong to.
 CHARACTER_WORK_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
@@ -71,6 +75,33 @@ class CharacterManifestV2(CharacterManifest):
     default_emotion: str | None = Field(default="gentle", description="Default emotion identifier")
 
 
+def manifest_json_error(exc: Exception) -> str:
+    return f"manifest.json JSON 解析错误: {exc}"
+
+
+def manifest_schema_error(exc: Exception) -> str:
+    return f"manifest.json 结构验证失败: {exc}"
+
+
+def no_emotions_error() -> str:
+    return "未定义任何 emotions 情感参考音频配置"
+
+
+def emotion_audio_missing_error(emotion: str, audio: str) -> str:
+    return f"情感 '{emotion}' 的参考音频不存在: {audio}"
+
+
+def emotion_audio_unreadable_error(emotion: str, audio: str) -> str:
+    return f"情感 '{emotion}' 的音频文件无法读取或时长未知: {audio}"
+
+
+def emotion_audio_duration_error(emotion: str, duration: float, audio: str) -> str:
+    return (
+        f"情感 '{emotion}' 的参考音频时长 {duration:.2f} 秒，不在 "
+        f"{REFERENCE_AUDIO_MIN_SECONDS:g} 到 {REFERENCE_AUDIO_MAX_SECONDS:g} 秒范围内: {audio}"
+    )
+
+
 def validate_character_package(character_dir: Path) -> tuple[bool, list[str]]:
     """
     Validates a character package directory on disk:
@@ -92,20 +123,20 @@ def validate_character_package(character_dir: Path) -> tuple[bool, list[str]]:
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception as exc:
-        return False, [f"manifest.json JSON 解析错误: {exc}"]
+        return False, [manifest_json_error(exc)]
 
     try:
         manifest = CharacterManifestV2.model_validate(data)
     except Exception as exc:
-        return False, [f"manifest.json 结构验证失败: {exc}"]
+        return False, [manifest_schema_error(exc)]
 
     if not manifest.emotions:
-        errors.append("未定义任何 emotions 情感参考音频配置")
+        errors.append(no_emotions_error())
 
     for emo_key, emo in manifest.emotions.items():
         ref_path = char_dir / emo.audio
         if not ref_path.is_file():
-            errors.append(f"情感 '{emo_key}' 的参考音频不存在: {emo.audio}")
+            errors.append(emotion_audio_missing_error(emo_key, emo.audio))
             continue
 
         try:
@@ -113,11 +144,9 @@ def validate_character_package(character_dir: Path) -> tuple[bool, list[str]]:
         except Exception:
             duration = None
         if duration is None or duration <= 0.0:
-            errors.append(f"情感 '{emo_key}' 的音频文件无法读取或时长未知: {emo.audio}")
-        elif duration < 3.0 or duration > 10.0:
-            errors.append(
-                f"情感 '{emo_key}' 音频时长 ({duration:.2f}s) 超出标准范围 [3.0s, 10.0s]: {emo.audio}"
-            )
+            errors.append(emotion_audio_unreadable_error(emo_key, emo.audio))
+        elif not (REFERENCE_AUDIO_MIN_SECONDS <= duration <= REFERENCE_AUDIO_MAX_SECONDS):
+            errors.append(emotion_audio_duration_error(emo_key, duration, emo.audio))
 
     return not errors, errors
 
@@ -129,5 +158,11 @@ __all__ = [
     "CharacterManifestV2",
     "CHARACTER_WORK_RE",
     "clean_character_work",
+    "emotion_audio_duration_error",
+    "emotion_audio_missing_error",
+    "emotion_audio_unreadable_error",
+    "manifest_json_error",
+    "manifest_schema_error",
+    "no_emotions_error",
     "validate_character_package",
 ]

@@ -23,6 +23,12 @@ from galgame2voice.schemas.character_manifest import (
     EmotionConfig,
     VoiceParamsConfig,
     clean_character_work,
+    emotion_audio_duration_error,
+    emotion_audio_missing_error,
+    emotion_audio_unreadable_error,
+    manifest_json_error,
+    manifest_schema_error,
+    no_emotions_error,
 )
 from galgame2voice.utils.audio_spec import (
     REFERENCE_AUDIO_MIN_SECONDS,
@@ -47,6 +53,20 @@ logger = logging.getLogger("galgame2voice.services.character_manager")
 # ============================================================================
 # Character Manager Service
 # ============================================================================
+
+def format_invalid_package_warning(invalid_packages: list[CharacterPackage]) -> str | None:
+    """Chinese notice for rejected packages: the first three with their reasons, then the total."""
+    if not invalid_packages:
+        return None
+    items = []
+    for pkg in invalid_packages[:3]:
+        folder = pkg.folder.name
+        label = f"{folder}（{pkg.name}）" if pkg.name and pkg.name != folder else folder
+        items.append(f"角色包「{label}」不合格：{'；'.join(pkg.validation_errors)}。")
+    if len(invalid_packages) > 3:
+        items.append(f"另有 {len(invalid_packages) - 3} 个角色包不合格（共 {len(invalid_packages)} 个）。")
+    return "".join(items)
+
 
 class CharacterManager:
     """
@@ -108,10 +128,11 @@ class CharacterManager:
 
         if not target_dir.exists() or not target_dir.is_dir():
             logger.debug("Characters directory does not exist: %s", target_dir)
-            self._publish_catalog(target_dir, packages, None)
+            self._publish_catalog(target_dir, packages, None, [])
             return []
 
         discovered: list[CharacterPackage] = []
+        invalid: list[CharacterPackage] = []
 
         for item in target_dir.iterdir():
             if not item.is_dir():
@@ -128,11 +149,13 @@ class CharacterManager:
             if pkg.is_valid:
                 discovered.append(pkg)
             else:
+                invalid.append(pkg)
                 logger.warning(
                     "Character package '%s' at %s failed validation: %s",
                     pkg.id, item, "; ".join(pkg.validation_errors)
                 )
 
+        invalid.sort(key=lambda pkg: pkg.folder.name)
         logger.info("Discovered %d valid character package(s) in %s", len(discovered), target_dir)
         default_id = None
         if discovered:
@@ -144,7 +167,7 @@ class CharacterManager:
                 )
             )
             default_id = discovered_sorted[0].id
-        self._publish_catalog(target_dir, packages, default_id)
+        self._publish_catalog(target_dir, packages, default_id, invalid)
         return discovered
 
     def _publish_catalog(
@@ -152,15 +175,26 @@ class CharacterManager:
         characters_dir: Path,
         packages: dict[str, CharacterPackage],
         default_id: str | None,
+        invalid_packages: list[CharacterPackage],
     ) -> None:
         identity_index = CharacterIndex(packages.values())
+        catalog_warning = format_invalid_package_warning(invalid_packages)
         with self._catalog_lock:
             self.characters_dir = characters_dir
             self._packages = packages
             self._identity_index = identity_index
             self._default_id = default_id
             self._discovered = True
-            self._catalog_warning = None
+            self._catalog_warning = catalog_warning
+
+    @staticmethod
+    def _rejected_manifest(folder: Path, reason: str) -> CharacterPackage:
+        dummy_manifest = CharacterManifest(id=folder.name, name=folder.name)
+        return CharacterPackage(
+            folder_path=folder,
+            manifest=dummy_manifest,
+            validation_errors=[reason],
+        )
 
     def _load_and_validate_package(self, folder: Path, manifest_path: Path) -> CharacterPackage:
         """Loads and thoroughly validates a single character package folder."""
@@ -169,14 +203,13 @@ class CharacterManager:
         try:
             raw_text = manifest_path.read_text(encoding="utf-8")
             raw_json = json.loads(raw_text)
+        except Exception as exc:
+            return self._rejected_manifest(folder, manifest_json_error(exc))
+
+        try:
             manifest = CharacterManifest.model_validate(raw_json)
         except Exception as exc:
-            dummy_manifest = CharacterManifest(id=folder.name, name=folder.name)
-            return CharacterPackage(
-                folder_path=folder,
-                manifest=dummy_manifest,
-                validation_errors=[f"Invalid manifest.json schema: {exc}"]
-            )
+            return self._rejected_manifest(folder, manifest_schema_error(exc))
 
         # Resolve system prompt: prefer manifest.system_prompt, fallback to system_prompt.txt
         system_prompt = manifest.system_prompt or ""
@@ -185,18 +218,18 @@ class CharacterManager:
             try:
                 system_prompt = prompt_txt_path.read_text(encoding="utf-8").strip()
             except Exception as exc:
-                errors.append(f"Failed to read system_prompt.txt: {exc}")
+                errors.append(f"无法读取 system_prompt.txt：{exc}")
 
         # Validate emotions and reference audio files
         if not manifest.emotions:
-            errors.append("Manifest contains no emotions definitions")
+            errors.append(no_emotions_error())
         else:
             from galgame2voice.utils.path_guard import contains_traversal_payload
 
             for wf in ("gpt_weights", "sovits_weights"):
                 wval = getattr(manifest, wf, None)
                 if wval and contains_traversal_payload(str(wval)):
-                    errors.append(f"Security error: '{wf}' contains path traversal payload: '{wval}'")
+                    errors.append(f"安全错误：「{wf}」包含路径穿越：{wval}")
 
             pkg_container = CharacterPackage(
                 folder_path=folder,
@@ -256,19 +289,19 @@ class CharacterManager:
         for emo_name, emo_cfg in manifest.emotions.items():
             audio_rel = emo_cfg.audio
             if contains_traversal_payload(audio_rel):
-                errors.append(f"Security error: Emotion '{emo_name}' audio path contains directory traversal: '{audio_rel}'")
+                errors.append(f"安全错误：情感 '{emo_name}' 的音频路径包含路径穿越：{audio_rel}")
                 continue
 
             resolved_audio = pkg_container.resolve_audio_path(audio_rel)
             if not resolved_audio or not resolved_audio.is_file():
-                errors.append(f"Emotion '{emo_name}' audio file not found: '{audio_rel}'")
+                errors.append(emotion_audio_missing_error(emo_name, audio_rel))
                 continue
 
             # Check duplicate resolved physical path
             canonical_path = resolved_audio.resolve()
             if canonical_path in seen_audio_paths:
                 errors.append(
-                    f"Duplicate audio path detected: emotion '{emo_name}' resolves to the same file as '{seen_audio_paths[canonical_path]}': '{audio_rel}'"
+                    f"情感 '{emo_name}' 与 '{seen_audio_paths[canonical_path]}' 指向同一个音频文件：{audio_rel}"
                 )
             else:
                 seen_audio_paths[canonical_path] = emo_name
@@ -276,25 +309,21 @@ class CharacterManager:
             # Check duplicate MD5 hash across emotions in package and validate duration
             file_hash, duration, read_err = cls._probe_audio_file(resolved_audio, canonical_path)
             if read_err is not None:
-                errors.append(f"Failed to read audio file '{audio_rel}' for MD5 verification: {read_err}")
+                errors.append(f"无法读取音频文件 '{audio_rel}'：{read_err}")
                 continue
 
             if file_hash in seen_audio_hashes:
                 errors.append(
-                    f"Duplicate audio MD5 detected: emotion '{emo_name}' audio '{audio_rel}' has identical MD5 hash ({file_hash[:8]}) to emotion '{seen_audio_hashes[file_hash]}'"
+                    f"情感 '{emo_name}' 的音频 '{audio_rel}' 与情感 '{seen_audio_hashes[file_hash]}' 内容重复"
                 )
             else:
                 seen_audio_hashes[file_hash] = emo_name
 
             # Validate duration: must be in [3.0s, 10.0s]
             if duration is None:
-                # Could not determine duration (unsupported or corrupted audio)
-                errors.append(f"Emotion '{emo_name}' audio '{audio_rel}' could not be decoded or probed for duration")
+                errors.append(emotion_audio_unreadable_error(emo_name, audio_rel))
             elif not (REFERENCE_AUDIO_MIN_SECONDS <= duration <= REFERENCE_AUDIO_MAX_SECONDS):
-                errors.append(
-                    f"Emotion '{emo_name}' audio '{audio_rel}' duration {duration:.2f}s "
-                    f"is out of required [3.0s, 10.0s] range"
-                )
+                errors.append(emotion_audio_duration_error(emo_name, duration, audio_rel))
 
     def _ensure_discovered(self) -> None:
         """Ensures character packages have been discovered at least once."""

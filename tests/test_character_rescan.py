@@ -103,6 +103,8 @@ async def test_rescans_serialize_scan_and_db_sync_per_app(monkeypatch):
     events = []
 
     class Manager:
+        catalog_warning = None
+
         def discover_characters(self):
             events.append("scan")
             return []
