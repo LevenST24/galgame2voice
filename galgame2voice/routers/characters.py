@@ -528,7 +528,7 @@ def _restore_manifest(manifest_path: Path, original: bytes) -> None:
 def _write_manifest_system_prompt(manifest_path: Path, text: str) -> None:
     """Safely updates system_prompt in manifest.json using atomic temp file replacement."""
     try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         safe_err = sanitize_error_detail(exc)
         raise HTTPException(

@@ -65,7 +65,7 @@ def cmd_validate(character_dir: Path) -> int:
     is_valid, errors = validate_character_package(char_dir)
     if is_valid:
         manifest_path = char_dir / "manifest.json"
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         name = data.get("name", "Unknown")
         emotions_count = len(data.get("emotions", {}))
         print("[OK] 角色包验证通过!")
@@ -133,7 +133,7 @@ def cmd_install(zip_path: Path, target_dir: Path, force: bool = False) -> int:
             print("[ERROR] 压缩包内缺少根目录 manifest.json", file=sys.stderr)
             return 1
 
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         char_name = data.get("name") or data.get("id") or "unnamed_character"
 
         if not force:
