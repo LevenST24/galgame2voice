@@ -23,7 +23,10 @@ from galgame2voice.utils.audio_spec import (
     REFERENCE_AUDIO_MIN_SECONDS,
 )
 from galgame2voice.services.gpt_sovits_client import probe_audio_duration_seconds
-from galgame2voice.services.emotion_references import resolve_emotion_reference
+from galgame2voice.services.emotion_references import (
+    EMOTION_SYNONYMS,
+    resolve_emotion_reference,
+)
 
 logger = logging.getLogger("galgame2voice.services.voice_resolver")
 
@@ -38,6 +41,13 @@ class VoiceContextUnavailableError(ValueError):
 
 
 DEFAULT_EMOTION_KEYS: tuple[str, ...] = (
+    "gentle",
+    "shy",
+    "happy",
+    "tsundere",
+    "cool",
+    "sad",
+    "angry",
     "joy",
     "anger",
     "sorrow",
@@ -46,9 +56,7 @@ DEFAULT_EMOTION_KEYS: tuple[str, ...] = (
     "fear",
     "shyness",
     "neutral",
-    "tsundere",
     "yandere",
-    "gentle",
 )
 
 
@@ -70,7 +78,9 @@ class ResolvedVoiceContext:
         """Returns pre-validated emotion reference audio options if available."""
         if not emotion:
             return None
-        return self.emotions.get(str(emotion).strip().lower())
+        cleaned = str(emotion).strip().lower()
+        canonical = EMOTION_SYNONYMS.get(cleaned, cleaned)
+        return self.emotions.get(canonical) or self.emotions.get(cleaned)
 
 
 def _extract_field(raw: Any, key: str, default: Any = "") -> Any:
@@ -294,17 +304,37 @@ class VoiceProfileResolver:
         # Pre-resolve known emotion references for this character
         emotions_map: dict[str, dict[str, str]] = {}
         if emotion_target:
-            for emo_name in DEFAULT_EMOTION_KEYS:
+            keys_to_query: list[str] = list(DEFAULT_EMOTION_KEYS)
+            if pkg and getattr(pkg, "manifest", None) and getattr(pkg.manifest, "emotions", None):
+                for k in pkg.manifest.emotions:
+                    if k not in keys_to_query:
+                        keys_to_query.append(k)
+
+            for emo_name in keys_to_query:
+                raw_cand = str(emo_name).strip().lower()
+                canonical_cand = EMOTION_SYNONYMS.get(raw_cand, raw_cand)
+                if canonical_cand in emotions_map:
+                    continue
+
                 ref = resolve_emotion_reference(emotion_target, emo_name)
-                if ref:
-                    cand_audio = ref["ref_audio_path"]
-                    cand_dur = probe_audio_duration_seconds(cand_audio)
-                    if cand_dur is not None and REFERENCE_AUDIO_MIN_SECONDS <= cand_dur <= REFERENCE_AUDIO_MAX_SECONDS:
-                        emotions_map[emo_name] = {
-                            "ref_audio_path": cand_audio,
-                            "prompt_text": ref["prompt_text"],
-                            "prompt_lang": ref["prompt_lang"],
-                        }
+                if not ref:
+                    continue
+
+                canonical_key = ref.get("emotion") or emo_name
+                canonical_key = str(canonical_key).strip().lower()
+                canonical_key = EMOTION_SYNONYMS.get(canonical_key, canonical_key)
+
+                if canonical_key in emotions_map:
+                    continue
+
+                cand_audio = ref["ref_audio_path"]
+                cand_dur = probe_audio_duration_seconds(cand_audio)
+                if cand_dur is not None and REFERENCE_AUDIO_MIN_SECONDS <= cand_dur <= REFERENCE_AUDIO_MAX_SECONDS:
+                    emotions_map[canonical_key] = {
+                        "ref_audio_path": cand_audio,
+                        "prompt_text": ref["prompt_text"],
+                        "prompt_lang": ref["prompt_lang"],
+                    }
 
         return ResolvedVoiceContext(
             profile_id=pid,
