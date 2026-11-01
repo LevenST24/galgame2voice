@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { state, loadState, saveState, getStorageStatus, getDamagedSessionData, resumeLocalSaving,
-  exportSessionData, prepareSessionImport, applySessionImport } from '../frontend/src/store.js';
+  exportSessionData, prepareSessionImport, applySessionImport,
+  DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL } from '../frontend/src/store.js';
+import { normalizeSnapshot } from '../frontend/src/session_data.js';
 import { initSessionBackup } from '../frontend/src/controllers/session_backup.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
 
@@ -496,4 +498,109 @@ const sessionOf = (id, texts) => ({
   passed++;
 }
 
+// normalizeSnapshot and loadState/exportSessionData must not pollute global settings with advSubtitleLanguage
+{
+  // 1. normalizeSnapshot directly:
+  // global without advSubtitleLanguage
+  const snap1 = normalizeSnapshot(
+    { sessions: [], global: { voiceMode: true, autoTranslate: false } },
+    DEFAULT_SESSION_SETTINGS,
+    DEFAULT_GLOBAL
+  );
+  assert.equal('advSubtitleLanguage' in snap1.global, false, 'global without advSubtitleLanguage should not have it added');
+  assert.equal(snap1.global.advSubtitleLanguage, undefined);
+
+  // global with existing polluted advSubtitleLanguage should be cleaned
+  const snap2 = normalizeSnapshot(
+    { sessions: [], global: { voiceMode: true, advSubtitleLanguage: 'zh' } },
+    DEFAULT_SESSION_SETTINGS,
+    DEFAULT_GLOBAL
+  );
+  assert.equal('advSubtitleLanguage' in snap2.global, false, 'global with polluted advSubtitleLanguage should have it stripped');
+  assert.equal(snap2.global.advSubtitleLanguage, undefined);
+
+  // session settings with identical primary and subtitle languages are still resolved
+  const snap3 = normalizeSnapshot(
+    {
+      sessions: [{
+        id: 's_conflict_zh',
+        title: '冲突zh',
+        createdAt: 1,
+        updatedAt: 2,
+        settings: { advPrimaryLanguage: 'zh', advSubtitleLanguage: 'zh' },
+        messages: [],
+      }],
+      global: { voiceMode: true },
+    },
+    DEFAULT_SESSION_SETTINGS,
+    DEFAULT_GLOBAL
+  );
+  assert.equal(snap3.sessions[0].settings.advSubtitleLanguage, 'ja', 'session zh/zh conflict should resolve subtitle to ja');
+
+  const snap4 = normalizeSnapshot(
+    {
+      sessions: [{
+        id: 's_conflict_ja',
+        title: '冲突ja',
+        createdAt: 1,
+        updatedAt: 2,
+        settings: { advPrimaryLanguage: 'ja', advSubtitleLanguage: 'ja' },
+        messages: [],
+      }],
+      global: { voiceMode: true },
+    },
+    DEFAULT_SESSION_SETTINGS,
+    DEFAULT_GLOBAL
+  );
+  assert.equal(snap4.sessions[0].settings.advSubtitleLanguage, 'zh', 'session ja/ja conflict should resolve subtitle to zh');
+
+  // 2. Real wiring through storage(), loadState() and exportSessionData()
+  storage({
+    sessions: [{
+      id: 's_wire',
+      title: '真实链路',
+      createdAt: 1,
+      updatedAt: 2,
+      settings: { advPrimaryLanguage: 'zh', advSubtitleLanguage: 'zh' },
+      messages: [{ id: 'm_wire', role: 'user', content: 'test', ts: 1 }],
+    }],
+    activeId: 's_wire',
+    global: { voiceMode: true, advSubtitleLanguage: 'zh' },
+  });
+  loadState();
+
+  assert.equal('advSubtitleLanguage' in state.global, false, 'state.global should not contain advSubtitleLanguage');
+  assert.equal(state.global.advSubtitleLanguage, undefined);
+  assert.equal(state.sessions[0].settings.advSubtitleLanguage, 'ja');
+
+  // Verify localStorage rewritten by saveState in loadState is also clean
+  const storedJson = JSON.parse(globalThis.localStorage.getItem(KEY));
+  assert.equal('advSubtitleLanguage' in storedJson.global, false, 'stored global in localStorage should not contain advSubtitleLanguage');
+  assert.equal(storedJson.global.advSubtitleLanguage, undefined);
+
+  const exported = JSON.parse(exportSessionData());
+  assert.equal('advSubtitleLanguage' in exported.global, false, 'exported.global should not contain advSubtitleLanguage');
+  assert.equal(exported.global.advSubtitleLanguage, undefined);
+  assert.equal(exported.sessions[0].settings.advSubtitleLanguage, 'ja');
+
+  // 3. prepareSessionImport strips polluted advSubtitleLanguage from imported backup
+  const importedSnapshot = prepareSessionImport(JSON.stringify({
+    format: 'galgame2voice.chat',
+    version: 1,
+    sessions: [{
+      id: 's_polluted_import',
+      title: '污染备份导入',
+      createdAt: 1,
+      updatedAt: 2,
+      settings: { advPrimaryLanguage: 'zh', advSubtitleLanguage: 'zh' },
+      messages: [{ id: 'm_imp', role: 'user', content: '导入测试', ts: 1 }],
+    }],
+    global: { voiceMode: true, advSubtitleLanguage: 'zh' },
+  }));
+  assert.equal('advSubtitleLanguage' in importedSnapshot.global, false, 'prepareSessionImport should strip advSubtitleLanguage from global');
+  assert.equal(importedSnapshot.global.advSubtitleLanguage, undefined);
+  assert.equal(importedSnapshot.sessions[0].settings.advSubtitleLanguage, 'ja');
+
+  passed++;
+}
 console.log(`Session backup and recovery: ${passed} scenarios passed`);
