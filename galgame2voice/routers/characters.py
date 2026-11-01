@@ -590,7 +590,7 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
             _write_manifest_system_prompt(manifest_path, text)
             try:
                 # 内存里的角色包缓存也要刷新，否则本进程后续仍读到旧人设
-                mgr.discover_characters()
+                await asyncio.to_thread(mgr.discover_characters)
             except DuplicateCharacterId as exc:
                 _restore_manifest(manifest_path, original_manifest)
                 raise HTTPException(

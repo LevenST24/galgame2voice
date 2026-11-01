@@ -3,6 +3,7 @@
 import asyncio
 import json
 import shutil
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 import wave
@@ -909,4 +910,83 @@ async def test_saving_persona_on_utf8_bom_manifest_succeeds_and_writes_utf8_with
             assert rescanned.json()["catalog_warning"] is None
             assert rescanned.json()["characters"] == ["Ann"]
     finally:
+        CharacterManager.reset_instance()
+
+
+@pytest.mark.asyncio
+async def test_persona_save_character_scan_does_not_block_other_requests(
+    project, isolate_test_database, monkeypatch,
+):
+    """A lightweight request completes while a persona save is scanning character packages."""
+    from galgame2voice.services.tts_service import TtsService
+
+    CharacterManager.reset_instance()
+    save_task = None
+    scan_entered = threading.Event()
+    release_scan = threading.Event()
+    try:
+        ann_folder = install(project, "ann", "Ann")
+        app = create_app()
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test", timeout=30.0) as client:
+            scanned = await client.post("/api/characters/rescan")
+            assert scanned.status_code == 200, scanned.text
+            ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
+
+            # Drop an uncached character package so the save's rescan probes its audio.
+            install(project, "bella", "Bella")
+
+            real_get_audio_duration = TtsService.get_audio_duration
+            events: list[str] = []
+            released_while_scanning: list[bool] = []
+
+            def slow_get_audio_duration(path):
+                events.append("scan-start")
+                scan_entered.set()
+                released_while_scanning.append(release_scan.wait(timeout=1.5))
+                duration = real_get_audio_duration(path)
+                events.append("scan-end")
+                return duration
+
+            monkeypatch.setattr(TtsService, "get_audio_duration", staticmethod(slow_get_audio_duration))
+
+            updated_prompt = "Updated persona while other requests stay responsive"
+            save_task = asyncio.create_task(
+                client.put(
+                    f"/api/characters/{ann['id']}/system-prompt",
+                    json={"system_prompt": updated_prompt},
+                )
+            )
+            assert await asyncio.to_thread(scan_entered.wait, 5.0), "persona save did not enter character scan"
+
+            listed = await client.get("/api/characters")
+            assert listed.status_code == 200, listed.text
+            events.append("light-request-done")
+            release_scan.set()
+
+            save_response = await asyncio.wait_for(save_task, timeout=10.0)
+            detail = await client.get(f"/api/characters/{ann['id']}")
+            assert detail.status_code == 200, detail.text
+
+        assert events == ["scan-start", "light-request-done", "scan-end"]
+        assert released_while_scanning == [True]
+        assert [c["name"] for c in listed.json()["characters"]] == ["Ann"]
+
+        assert save_response.status_code == 200, save_response.text
+        assert save_response.json() == {
+            "character_id": ann["id"],
+            "name": "Ann",
+            "system_prompt": updated_prompt,
+            "length": len(updated_prompt),
+            "manifest_path": str(ann_folder / "manifest.json"),
+        }
+        on_disk = json.loads((ann_folder / "manifest.json").read_text(encoding="utf-8"))["system_prompt"]
+        assert on_disk == updated_prompt
+        assert detail.json()["system_prompt"] == updated_prompt
+        mgr_pkg = characters.get_character_manager().get_character("Ann")
+        assert mgr_pkg is not None and mgr_pkg.system_prompt == updated_prompt
+    finally:
+        release_scan.set()
+        if save_task is not None and not save_task.done():
+            save_task.cancel()
         CharacterManager.reset_instance()
