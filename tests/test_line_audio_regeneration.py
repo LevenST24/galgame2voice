@@ -416,3 +416,81 @@ async def test_empty_repair_does_not_leave_a_dead_audio_file(repair):
     response = await repair.client.post("/api/voice/regenerate-line", json=repair.body)
     assert response.status_code == 502
     assert not list((repair.root / "audio").glob("repair_*.wav"))
+
+
+@pytest.mark.parametrize(
+    ("raw_reply", "expected_zh", "expected_ja"),
+    [
+        (
+            f"中文：早安。今天有很多话要说。\n日文：おはよう。{'あ' * 10005}。",
+            "早安。今天有很多话要说。",
+            f"おはよう。{'あ' * 10005}。",
+        ),
+        (
+            f"中文：今天有很多话要说。早安。\n日文：{'あ' * 6000}、{'い' * 5000}。おはよう。",
+            "今天有很多话要说。早安。",
+            f"{'あ' * 6000}、{'い' * 5000}。おはよう。",
+        ),
+    ],
+    ids=["tail_overlong", "comma_overlong"],
+)
+async def test_fallback_reply_with_overlong_line_keeps_lines_json_and_regenerates_short_line(
+    repair, raw_reply, expected_zh, expected_ja,
+):
+    async def tokens(*args, **kwargs):
+        for pos in range(0, len(raw_reply), 1024):
+            yield raw_reply[pos:pos + 1024]
+
+    session_id = "fallback-overlong-turn"
+    chat = ChatService(tts_service=repair.service, db_path=repair.db)
+    chat._get_active_llm_adapter = AsyncMock(
+        return_value=(SimpleNamespace(stream_chat=tokens, api_key="synthetic"), "synthetic", "custom")
+    )
+    chat._extract_memory_safe = AsyncMock()
+    try:
+        events = [
+            event
+            async for event in chat.stream_chat(
+                "问题",
+                session_id=session_id,
+                reply_format="lines",
+                tts_options={"voice_profile_id": repair.profiles[0].id},
+            )
+        ]
+    finally:
+        await chat.aclose()
+
+    done = next(event["data"] for event in events if event["event"] == "done")
+    assert done["reply_format"] == "unknown"
+    assert isinstance(done["message_id"], int)
+
+    async with get_db(repair.db) as conn:
+        row = await (
+            await conn.execute(
+                "SELECT lines_json FROM messages WHERE id=? AND session_id=?",
+                (done["message_id"], session_id),
+            )
+        ).fetchone()
+    assert row is not None and row["lines_json"] is not None
+    stored_lines = json.loads(row["lines_json"])
+    assert len(stored_lines) >= 3
+    assert all(len(line["zh"]) <= 10000 and len(line["ja"]) <= 10000 for line in stored_lines)
+    assert "".join(line["zh"] for line in stored_lines) == expected_zh
+    assert "".join(line["ja"] for line in stored_lines) == expected_ja
+
+    short_line = next(line for line in stored_lines if line["ja"] == "おはよう。")
+    repair.engine.calls.clear()
+    response = await repair.client.post(
+        "/api/voice/regenerate-line",
+        json={
+            "session_id": session_id,
+            "message_id": done["message_id"],
+            "line_index": short_line["index"],
+            "text": "おはよう。",
+            "voice_profile_id": repair.profiles[1].id,
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["persisted"] is True
+    assert payload["audio"]["voice_profile_id"] == repair.profiles[1].id

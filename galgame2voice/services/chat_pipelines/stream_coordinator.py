@@ -473,9 +473,8 @@ class StreamCoordinator:
         line = run.chunk_line_map.get(chunk_index)
         if line is not None or not run.aligner.has_chinese:
             return line
-        m = len(run.aligner.chinese_sentences or [])
         sentence_index = run.chunk_s_map[chunk_index]
-        line = sentence_index if m == 0 else min(sentence_index, m - 1)
+        line = run.aligner.line_index_for_japanese_sentence(sentence_index, run.parser.japanese_extracted)
         run.chunk_line_map[chunk_index] = line
         result = run.chunk_results[chunk_index]
         state = self._line_audio_state(run, line)
@@ -615,7 +614,7 @@ class StreamCoordinator:
         m = len(run.aligner.chinese_sentences or [])
         for line in run.lines:
             idx = line["index"]
-            if is_final_step or m == 0 or idx < m - 1:
+            if is_final_step or m == 0 or idx < run.aligner.non_tail_line_count:
                 self._line_audio_state(run, idx)["sealed"] = True
 
         await self._try_emit_line_audio(run)

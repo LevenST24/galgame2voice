@@ -24,6 +24,56 @@ from typing import Any
 from galgame2voice.services.emotion_classifier import classify_emotion, detect_emotion_cue
 from galgame2voice.utils.text_splitter import split_japanese_sentences
 
+MAX_LINE_LENGTH = 10000
+_TERMINAL_PUNCT = frozenset("。！？!?\r\n")
+_COMMA_PUNCT = frozenset("，、,")
+_CLOSING_MARKS = frozenset("」』\"'”’）)】]")
+
+
+def _find_split_end(text: str, start: int, limit: int, punct: frozenset[str]) -> int | None:
+    """Return slice end inside (start, limit] right after the last matching punctuation."""
+    for idx in range(limit - 1, start - 1, -1):
+        if text[idx] in punct:
+            end = idx + 1
+            while end < limit and text[end] in _CLOSING_MARKS:
+                end += 1
+            return end
+    return None
+
+
+def split_overlong_text(text: str, max_length: int = MAX_LINE_LENGTH) -> list[str]:
+    """Split text exceeding max_length by terminal punctuation, comma, or hard limit."""
+    if max_length <= 0:
+        raise ValueError("max_length must be positive")
+    if not text:
+        return []
+    if len(text) <= max_length:
+        return [text]
+
+    parts: list[str] = []
+    pos = 0
+    total = len(text)
+    while total - pos > max_length:
+        limit = pos + max_length
+        cut = (
+            _find_split_end(text, pos, limit, _TERMINAL_PUNCT)
+            or _find_split_end(text, pos, limit, _COMMA_PUNCT)
+            or limit
+        )
+        parts.append(text[pos:cut])
+        pos = cut
+    if pos < total:
+        parts.append(text[pos:])
+    return parts
+
+
+def _unit_line_count(zh: str, ja: str) -> int:
+    if not zh and not ja:
+        return 0
+    zh_count = len(split_overlong_text(zh)) if zh else 0
+    ja_count = len(split_overlong_text(ja)) if ja else 0
+    return max(zh_count, ja_count, 1)
+
 
 def split_chinese_sentences(text: str) -> list[str]:
     """Keep punctuation and quoted speech together, including nested quotes."""
@@ -40,10 +90,10 @@ def split_chinese_sentences(text: str) -> list[str]:
         if not quotes and char in "。！？!?\r\n":
             sentence = "".join(current).strip()
             if sentence:
-                sentences.append(sentence)
+                sentences.extend(split_overlong_text(sentence))
             current = []
     if sentence := "".join(current).strip():
-        sentences.append(sentence)
+        sentences.extend(split_overlong_text(sentence))
     return sentences
 
 
@@ -76,6 +126,9 @@ class LineAligner:
         self.chinese = ""
         self.chinese_sentences: list[str] | None = None
         self.emitted_lines: list[dict[str, Any]] = []
+        self.emitted_units = 0
+        self.non_tail_line_count = 0
+        self._finalized = False
 
     def set_chinese(self, chinese: str) -> None:
         """Set Chinese text once complete and split into sentences."""
@@ -86,8 +139,49 @@ class LineAligner:
     def has_chinese(self) -> bool:
         return self.chinese_sentences is not None
 
+    def _emit_unit(
+        self,
+        zh: str,
+        ja: str,
+        out: list[dict[str, Any]],
+        *,
+        is_tail: bool = False,
+    ) -> None:
+        zh_parts = split_overlong_text(zh) if zh else []
+        ja_parts = split_overlong_text(ja) if ja else []
+        count = max(len(zh_parts), len(ja_parts), 1 if (zh or ja) else 0)
+        for part_idx in range(count):
+            line = make_line(
+                len(self.emitted_lines),
+                zh_parts[part_idx] if part_idx < len(zh_parts) else "",
+                ja_parts[part_idx] if part_idx < len(ja_parts) else "",
+                self.default_emotion,
+            )
+            self.emitted_lines.append(line)
+            out.append(line)
+        self.emitted_units += 1
+        if not is_tail:
+            self.non_tail_line_count = len(self.emitted_lines)
+
+    def line_index_for_japanese_sentence(self, sentence_index: int, japanese: str) -> int:
+        """Return the first emitted line index corresponding to a strict Japanese sentence index."""
+        z_sentences = self.chinese_sentences or []
+        m = len(z_sentences)
+        target_unit = sentence_index if m == 0 else min(sentence_index, m - 1)
+        if target_unit <= 0:
+            return 0
+        j_sentences = split_japanese_sentences(japanese)
+        line_idx = 0
+        for unit_idx in range(target_unit):
+            zh_unit = z_sentences[unit_idx] if unit_idx < m else ""
+            ja_unit = j_sentences[unit_idx] if unit_idx < len(j_sentences) else ""
+            line_idx += _unit_line_count(zh_unit, ja_unit)
+        return line_idx
+
     def feed_japanese(self, japanese: str, *, final: bool = False) -> list[dict[str, Any]]:
         """Feed current Japanese text and return newly frozen lines."""
+        if self._finalized:
+            return []
         # A caller may supply stable declared reply metadata for online output.
         # Otherwise the whole-reply fallback is only known at finalization.
         if not self.default_emotion:
@@ -108,46 +202,39 @@ class LineAligner:
 
         if m == 0:
             limit = n if final else max(0, n - 1)
-            while len(self.emitted_lines) < limit:
-                i = len(self.emitted_lines)
-                line = make_line(i, "", j_sentences[i], self.default_emotion)
-                self.emitted_lines.append(line)
-                new_lines.append(line)
+            while self.emitted_units < limit:
+                i = self.emitted_units
+                self._emit_unit("", j_sentences[i], new_lines)
+            if final:
+                self._finalized = True
             return new_lines
 
         if n == 0:
             if not final:
                 return []
-            while len(self.emitted_lines) < m:
-                i = len(self.emitted_lines)
-                line = make_line(i, z_sentences[i], "", self.default_emotion)
-                self.emitted_lines.append(line)
-                new_lines.append(line)
+            while self.emitted_units < m:
+                i = self.emitted_units
+                self._emit_unit(z_sentences[i], "", new_lines)
+            self._finalized = True
             return new_lines
 
-        # Both present: exactly k = min(m, n) lines eventually
-        # Online freezing: line i (i < m - 1) is frozen once n > i + 1
-        while len(self.emitted_lines) < m - 1 and n > len(self.emitted_lines) + 1:
-            i = len(self.emitted_lines)
-            line = make_line(i, z_sentences[i], j_sentences[i], self.default_emotion)
-            self.emitted_lines.append(line)
-            new_lines.append(line)
+        # Both present: exactly k = min(m, n) alignment units eventually
+        # Online freezing: unit i (i < m - 1) is frozen once n > i + 1
+        while self.emitted_units < m - 1 and n > self.emitted_units + 1:
+            i = self.emitted_units
+            self._emit_unit(z_sentences[i], j_sentences[i], new_lines)
 
         if final:
             k = min(m, n)
-            while len(self.emitted_lines) < k - 1:
-                i = len(self.emitted_lines)
-                line = make_line(i, z_sentences[i], j_sentences[i], self.default_emotion)
-                self.emitted_lines.append(line)
-                new_lines.append(line)
+            while self.emitted_units < k - 1:
+                i = self.emitted_units
+                self._emit_unit(z_sentences[i], j_sentences[i], new_lines)
 
-            if len(self.emitted_lines) == k - 1:
-                i = k - 1
+            if self.emitted_units == k - 1:
                 zh_tail = "".join(z_sentences[k - 1:])
                 ja_tail = "".join(j_sentences[k - 1:])
-                line = make_line(i, zh_tail, ja_tail, self.default_emotion)
-                self.emitted_lines.append(line)
-                new_lines.append(line)
+                self._emit_unit(zh_tail, ja_tail, new_lines, is_tail=True)
+            self._finalized = True
 
         return new_lines
 

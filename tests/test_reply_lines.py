@@ -7,11 +7,12 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from galgame2voice.database import crud
-from galgame2voice.database.models import MessageCreate
+from galgame2voice.database.models import MessageCreate, decode_lines
 from galgame2voice.database.migrations import CURRENT_SCHEMA_VERSION
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 from galgame2voice.services.chat_pipelines.line_builder import (
+    MAX_LINE_LENGTH,
     LineAligner,
     build_lines,
     split_chinese_sentences,
@@ -204,3 +205,56 @@ async def test_session_manager_stores_assistant_lines(tmp_path):
     result = await manager.add_turn("manager", "assistant", "你好！", "こんにちは！")
     history = await manager.get_history("manager")
     assert result.lines == history[0].lines == build_lines("你好！", "こんにちは！", "gentle", with_audio=True)
+
+
+def test_overlong_sentences_split_by_punct_comma_or_hard_limit():
+    unclosed_quote_zh = f"「早安。{'哈' * 6000}，{'嘿' * 5000}。"
+    zh_parts = split_chinese_sentences(unclosed_quote_zh)
+    assert zh_parts == ["「早安。", f"{'哈' * 6000}，", f"{'嘿' * 5000}。"]
+    assert "".join(zh_parts) == unclosed_quote_zh
+
+    comma_ja = f"{'あ' * 6000}、{'い' * 5000}。"
+    comma_lines = build_lines("早安。长句。", f"おはよう。{comma_ja}", "gentle", with_audio=True)
+    assert [(line["zh"], line["ja"]) for line in comma_lines] == [
+        ("早安。", "おはよう。"),
+        ("长句。", f"{'あ' * 6000}、"),
+        ("", f"{'い' * 5000}。"),
+    ]
+    assert decode_lines(comma_lines) == comma_lines
+
+    hard_ja = f"{'あ' * 10005}。"
+    hard_lines = build_lines("早安。长句。", f"おはよう。{hard_ja}", "gentle", with_audio=True)
+    assert [(line["zh"], line["ja"]) for line in hard_lines] == [
+        ("早安。", "おはよう。"),
+        ("长句。", "あ" * MAX_LINE_LENGTH),
+        ("", "あ" * 5 + "。"),
+    ]
+    assert decode_lines(hard_lines) == hard_lines
+
+    exact_lines = build_lines("哈" * MAX_LINE_LENGTH, "あ" * MAX_LINE_LENGTH, "gentle", with_audio=True)
+    assert len(exact_lines) == 1
+    assert decode_lines(exact_lines) == exact_lines
+
+
+def test_overlong_tail_merge_and_online_offline_equivalence():
+    tail_ja = "".join(["あ" * 3000 + "。" for _ in range(4)])
+    tail_lines = build_lines("总结。", tail_ja, "gentle", with_audio=True)
+    assert [(line["zh"], line["ja"]) for line in tail_lines] == [
+        ("总结。", ("あ" * 3000 + "。") * 3),
+        ("", "あ" * 3000 + "。"),
+    ]
+    assert decode_lines(tail_lines) == tail_lines
+
+    zh = "长句。早安。"
+    ja = f"{'あ' * 10005}。おはよう。"
+    offline = build_lines(zh, ja, "gentle")
+    aligner = LineAligner(default_emotion="gentle")
+    aligner.set_chinese(zh)
+    online = []
+    pos = 0
+    while pos < len(ja):
+        pos = min(len(ja), pos + 97)
+        online.extend(aligner.feed_japanese(ja[:pos], final=(pos == len(ja))))
+    assert online == offline
+    assert online[-1]["index"] == 2
+    assert online[-1]["zh"] == "早安。" and online[-1]["ja"] == "おはよう。"

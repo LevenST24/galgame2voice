@@ -566,3 +566,24 @@ async def test_stream_matches_offline_when_late_cue_changes_reply_emotion(coordi
     finally:
         release.set()
         await asyncio.wait_for(stream.aclose(), 2)
+
+
+@pytest.mark.asyncio
+async def test_overlong_fallback_unit_preserves_lifecycle_and_persisted_lines(coordinator_factory):
+    coordinator, _, database = coordinator_factory(
+        zh="长句。早安。",
+        ja=f"{'あ' * 10005}。おはよう。",
+    )
+    events = [event async for event in coordinator]
+    lines, audio = assert_lifecycle(events)
+    assert [(line["zh"], line["ja"]) for line in lines] == [
+        ("长句。", "あ" * 10000),
+        ("", "あ" * 5 + "。"),
+        ("早安。", "おはよう。"),
+    ]
+    assert [item["status"] for item in audio] == ["ready", "skipped", "ready"]
+    assert audio[2]["chunks"][0]["sentence"] == "おはよう。"
+    assert audio[2]["chunks"][0]["line"] == 2
+    async with get_db(database) as conn:
+        history = await crud.get_recent_messages(conn, "lines")
+        assert history[-1].lines == events[-1]["data"]["lines"]
