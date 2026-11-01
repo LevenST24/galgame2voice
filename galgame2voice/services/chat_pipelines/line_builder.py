@@ -90,10 +90,10 @@ def split_chinese_sentences(text: str) -> list[str]:
         if not quotes and char in "。！？!?\r\n":
             sentence = "".join(current).strip()
             if sentence:
-                sentences.extend(split_overlong_text(sentence))
+                sentences.append(sentence)
             current = []
     if sentence := "".join(current).strip():
-        sentences.extend(split_overlong_text(sentence))
+        sentences.append(sentence)
     return sentences
 
 
@@ -164,18 +164,27 @@ class LineAligner:
             self.non_tail_line_count = len(self.emitted_lines)
 
     def line_index_for_japanese_sentence(self, sentence_index: int, japanese: str) -> int:
-        """Return the first emitted line index corresponding to a strict Japanese sentence index."""
+        """Return the emitted line holding the start of a strict Japanese sentence.
+
+        Sentences beyond the last Chinese sentence are merged into the tail unit,
+        which may be cut into several lines; map each to the line holding its start.
+        """
         z_sentences = self.chinese_sentences or []
         m = len(z_sentences)
         target_unit = sentence_index if m == 0 else min(sentence_index, m - 1)
-        if target_unit <= 0:
-            return 0
         j_sentences = split_japanese_sentences(japanese)
         line_idx = 0
         for unit_idx in range(target_unit):
             zh_unit = z_sentences[unit_idx] if unit_idx < m else ""
             ja_unit = j_sentences[unit_idx] if unit_idx < len(j_sentences) else ""
             line_idx += _unit_line_count(zh_unit, ja_unit)
+        if sentence_index > target_unit:
+            offset = len("".join(j_sentences[target_unit:sentence_index]))
+            end = 0
+            for part_idx, part in enumerate(split_overlong_text("".join(j_sentences[target_unit:]))):
+                end += len(part)
+                if offset < end:
+                    return line_idx + part_idx
         return line_idx
 
     def feed_japanese(self, japanese: str, *, final: bool = False) -> list[dict[str, Any]]:

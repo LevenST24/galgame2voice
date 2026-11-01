@@ -209,9 +209,14 @@ async def test_session_manager_stores_assistant_lines(tmp_path):
 
 def test_overlong_sentences_split_by_punct_comma_or_hard_limit():
     unclosed_quote_zh = f"「早安。{'哈' * 6000}，{'嘿' * 5000}。"
-    zh_parts = split_chinese_sentences(unclosed_quote_zh)
-    assert zh_parts == ["「早安。", f"{'哈' * 6000}，", f"{'嘿' * 5000}。"]
-    assert "".join(zh_parts) == unclosed_quote_zh
+    assert split_chinese_sentences(unclosed_quote_zh) == [unclosed_quote_zh]
+    quote_lines = build_lines(unclosed_quote_zh, "おはよう。", "gentle", with_audio=True)
+    assert [(line["zh"], line["ja"]) for line in quote_lines] == [
+        ("「早安。", "おはよう。"),
+        (f"{'哈' * 6000}，", ""),
+        (f"{'嘿' * 5000}。", ""),
+    ]
+    assert decode_lines(quote_lines) == quote_lines
 
     comma_ja = f"{'あ' * 6000}、{'い' * 5000}。"
     comma_lines = build_lines("早安。长句。", f"おはよう。{comma_ja}", "gentle", with_audio=True)
@@ -258,3 +263,36 @@ def test_overlong_tail_merge_and_online_offline_equivalence():
     assert online == offline
     assert online[-1]["index"] == 2
     assert online[-1]["zh"] == "早安。" and online[-1]["ja"] == "おはよう。"
+
+
+def test_overlong_chinese_sentence_does_not_shift_translation_alignment():
+    zh = f"{'哈' * 10005}。早安。"
+    ja = f"{'あ' * 10005}。おはよう。"
+    assert split_chinese_sentences(zh) == [f"{'哈' * 10005}。", "早安。"]
+    expected = [
+        ("哈" * MAX_LINE_LENGTH, "あ" * MAX_LINE_LENGTH),
+        ("哈" * 5 + "。", "あ" * 5 + "。"),
+        ("早安。", "おはよう。"),
+    ]
+    offline = build_lines(zh, ja, "gentle", with_audio=True)
+    assert [(line["zh"], line["ja"]) for line in offline] == expected
+    assert decode_lines(offline) == offline
+
+    aligner = LineAligner(default_emotion="gentle")
+    aligner.set_chinese(zh)
+    online = []
+    pos = 0
+    while pos < len(ja):
+        pos = min(len(ja), pos + 97)
+        online.extend(aligner.feed_japanese(ja[:pos], final=(pos == len(ja))))
+    assert [(line["zh"], line["ja"]) for line in online] == expected
+
+
+def test_tail_sentences_map_to_the_line_holding_their_start():
+    sentence = "あ" * 3000 + "。"
+    ja = sentence * 4
+    aligner = LineAligner(default_emotion="gentle")
+    aligner.set_chinese("总结。")
+    lines = aligner.feed_japanese(ja, final=True)
+    assert [line["ja"] for line in lines] == [sentence * 3, sentence]
+    assert [aligner.line_index_for_japanese_sentence(i, ja) for i in range(4)] == [0, 0, 0, 1]
