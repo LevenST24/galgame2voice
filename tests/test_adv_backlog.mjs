@@ -7,6 +7,7 @@ import { createLineAudioRecovery } from '../frontend/src/controllers/line_audio_
 import { decide, createShortcuts } from '../frontend/src/adv/shortcuts.js';
 import { createConversation } from '../frontend/src/conversation.js';
 import { createLinePlayer } from '../frontend/src/adv/line_player.js';
+import { clearMemAudioCache } from '../frontend/src/cache.js';
 import { DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
 import { fakeDocument, fakeClock, Element, microtasks } from './helpers/adv_dom.mjs';
 import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
@@ -1218,4 +1219,154 @@ test('double-clicking 用当前音色重新生成 does not cancel, and 取消生
   h.app.backlog.renderAll();
   assert.equal(status().textContent, '已取消本次生成，原音频已保留。');
   assert.equal(button().textContent, '用当前音色重新生成');
+});
+
+test('a fresh LOG line stays replayable when loading fails and disables only confirmed loss', async (t) => {
+  const previousWindow = globalThis.window;
+  const previousFetch = globalThis.fetch;
+  let lastFetched = '';
+  let networkAttempts = 0;
+  class AudioContextMock {
+    state = 'running';
+    currentTime = 0;
+    destination = {};
+    sources = [];
+    createGain() {
+      return {
+        gain: { value: 1, setValueAtTime() {}, cancelScheduledValues() {}, linearRampToValueAtTime() {} },
+        connect() {}, disconnect() {},
+      };
+    }
+    createBufferSource() {
+      const source = { done: false, connect() {}, disconnect() {}, start() {}, stop() {}, onended: null };
+      this.sources.push(source);
+      return source;
+    }
+    async decodeAudioData() {
+      if (String(lastFetched).includes('fresh-bad')) throw new DOMException('Unable to decode audio data', 'EncodingError');
+      return { duration: 1 };
+    }
+    async resume() { this.state = 'running'; }
+    async close() { this.state = 'closed'; }
+  }
+  globalThis.window = { AudioContext: AudioContextMock };
+  const player = new StreamAudioController({ fetchTimeoutMs: 40 });
+  t.after(async () => {
+    await player.close();
+    clearMemAudioCache();
+    globalThis.window = previousWindow;
+    globalThis.fetch = previousFetch;
+  });
+  globalThis.fetch = async (url, options) => {
+    const target = String(url);
+    lastFetched = target;
+    if (target.includes('fresh-net')) {
+      networkAttempts += 1;
+      if (networkAttempts === 1) throw new TypeError('failed to fetch');
+      return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'Content-Type': 'audio/wav' } });
+    }
+    if (target.includes('fresh-slow')) {
+      await new Promise((_, reject) => {
+        const abort = () => reject(new DOMException('播放已取消', 'AbortError'));
+        if (options?.signal?.aborted) abort();
+        else options?.signal?.addEventListener('abort', abort, { once: true });
+      });
+    }
+    if (target.includes('fresh-404')) return new Response('', { status: 404 });
+    if (target.includes('fresh-410')) return new Response('', { status: 410 });
+    if (target.includes('fresh-500')) return new Response('', { status: 500 });
+    if (target.includes('fresh-bad')) return new Response(new Uint8Array([9, 9, 9]), { status: 200, headers: { 'Content-Type': 'audio/wav' } });
+    return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'Content-Type': 'audio/wav' } });
+  };
+  const h = setupApp(t, {
+    audio: player,
+    regenerateLineAudio: async () => { throw new Error('regenerate should stay unused'); },
+    getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
+  });
+  const now = h.getWallTime();
+  const voiced = (index, zh, url) => ({
+    index,
+    zh,
+    ja: 'あたらしいせりふ',
+    audio: { status: 'ready', generated_at: now, chunks: [{ index: 0, audio_url: url, sentence: 'あたらしいせりふ' }] },
+  });
+  h.active().messages = [{
+    id: 'fresh',
+    role: 'assistant',
+    ts: now,
+    lines: [
+      voiced(0, '网络', '/audio/fresh-net.wav'),
+      voiced(1, '超时', '/audio/fresh-slow.wav'),
+      voiced(2, '丢失', '/audio/fresh-404.wav'),
+      voiced(3, '撤销', '/audio/fresh-410.wav'),
+      voiced(4, '损坏', '/audio/fresh-bad.wav'),
+      voiced(5, '服务', '/audio/fresh-500.wav'),
+    ],
+  }];
+  h.app.action('log');
+
+  const entry = (label) => {
+    const found = [...h.app.backlog.element.querySelectorAll('.adv-log-entry.is-assistant')]
+      .find(node => node.querySelector('.adv-log-primary').textContent === label);
+    assert.ok(found, label);
+    return found;
+  };
+  const replay = async (label) => {
+    const button = entry(label).querySelector('.adv-log-replay-btn');
+    await button.onclick({ stopPropagation() {} });
+    return entry(label);
+  };
+  const replayUntilSound = async (label) => {
+    const button = entry(label).querySelector('.adv-log-replay-btn');
+    const pending = button.onclick({ stopPropagation() {} });
+    const deadline = Date.now() + 1000;
+    let source;
+    while (Date.now() < deadline) {
+      source = player.ctx?.sources?.find(item => !item.done && typeof item.onended === 'function');
+      if (source) break;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.ok(source, `${label} did not start playback`);
+    source.done = true;
+    source.onended();
+    await pending;
+    return entry(label);
+  };
+
+  const network = await replay('网络');
+  const networkButton = network.querySelector('.adv-log-replay-btn');
+  const networkStatus = network.querySelector('.adv-log-audio-status');
+  assert.equal(networkButton.disabled, false, `label="${networkButton.getAttribute('aria-label')}" status="${networkStatus.textContent}"`);
+  assert.equal(networkStatus.hidden, false);
+  assert.equal(networkStatus.textContent, '音频加载失败，请稍后在 LOG 里再点「语音」重试。');
+  assert.equal(network.querySelector('.adv-log-regenerate-btn').hidden, true);
+  h.app.backlog.renderAll();
+  assert.equal(entry('网络').querySelector('.adv-log-replay-btn').disabled, false);
+  assert.equal(entry('网络').querySelector('.adv-log-audio-status').textContent, '音频加载失败，请稍后在 LOG 里再点「语音」重试。');
+
+  const retried = await replayUntilSound('网络');
+  assert.equal(networkAttempts, 2);
+  assert.equal(retried.querySelector('.adv-log-replay-btn').disabled, false);
+  assert.equal(retried.querySelector('.adv-log-audio-status').textContent, '');
+  assert.equal(retried.querySelector('.adv-log-audio-status').hidden, true);
+
+  const timedOut = await replay('超时');
+  const timeoutButton = timedOut.querySelector('.adv-log-replay-btn');
+  assert.equal(timeoutButton.disabled, false, `label="${timeoutButton.getAttribute('aria-label')}" status="${timedOut.querySelector('.adv-log-audio-status').textContent}"`);
+  assert.equal(timedOut.querySelector('.adv-log-audio-status').textContent, '音频加载超时，请稍后在 LOG 里再点「语音」重试。');
+  assert.equal(timedOut.querySelector('.adv-log-regenerate-btn').hidden, true);
+
+  const unavailable = await replay('服务');
+  assert.equal(unavailable.querySelector('.adv-log-replay-btn').disabled, false);
+  assert.equal(unavailable.querySelector('.adv-log-audio-status').textContent, '音频加载失败，请稍后在 LOG 里再点「语音」重试。');
+
+  for (const label of ['丢失', '撤销', '损坏']) {
+    const gone = await replay(label);
+    const button = gone.querySelector('.adv-log-replay-btn');
+    assert.equal(button.disabled, true, label);
+    assert.equal(button.getAttribute('aria-label'), '语音已过期或不可用');
+    assert.equal(gone.querySelector('.adv-log-audio-status').textContent, '语音已过期或不可用');
+    assert.equal(gone.querySelector('.adv-log-regenerate-btn').hidden, false);
+    assert.equal(gone.querySelector('.adv-log-regenerate-btn').textContent, '用当前音色重新生成');
+  }
 });

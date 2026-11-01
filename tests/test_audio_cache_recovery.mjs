@@ -236,7 +236,7 @@ test('the original deadline includes the failed decode and the recovery decode',
   const pending = p.playLine(0, [url]); await firstStarted.promise;
   t.mock.timers.tick(400); first.reject(bad()); await secondStarted.promise;
   t.mock.timers.tick(100);
-  assert.equal(await pending, 'failed');
+  assert.equal(await pending, 'timeout');
   assert.equal(fetched.length, 1);
   assert.equal(p._linePlayState, null, 'the recovery must finish within the original 500ms budget');
   second.resolve({ duration: 1 });
