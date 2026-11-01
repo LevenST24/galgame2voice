@@ -8,7 +8,8 @@ import { decide, createShortcuts } from '../frontend/src/adv/shortcuts.js';
 import { createConversation } from '../frontend/src/conversation.js';
 import { createLinePlayer } from '../frontend/src/adv/line_player.js';
 import { clearMemAudioCache } from '../frontend/src/cache.js';
-import { DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
+import { DEFAULT_SESSION_SETTINGS, state } from '../frontend/src/store.js';
+import { playVoice, initAudioPlayerUi, stopCurrentVoice } from '../frontend/src/controllers/audio_player_ui.js';
 import { fakeDocument, fakeClock, Element, microtasks } from './helpers/adv_dom.mjs';
 import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
 
@@ -1370,3 +1371,188 @@ test('a fresh LOG line stays replayable when loading fails and disables only con
     assert.equal(gone.querySelector('.adv-log-regenerate-btn').textContent, '用当前音色重新生成');
   }
 });
+
+test('legacy LOG voice aborts a slow engine at 16s and an eight-day line cannot be regenerated', async t => {
+  const origDocument = globalThis.document;
+  const origFetch = globalThis.fetch;
+  const origAudio = globalThis.Audio;
+  const origLocalStorage = globalThis.localStorage;
+  t.after(() => {
+    globalThis.document = origDocument;
+    globalThis.fetch = origFetch;
+    globalThis.Audio = origAudio;
+    globalThis.localStorage = origLocalStorage;
+    stopCurrentVoice();
+  });
+  globalThis.localStorage = { getItem: () => null, setItem() {} };
+
+  const now = 1700000000000;
+  const doc = fakeDocument();
+  const root = doc.createElement('div');
+  const toastRoot = doc.createElement('div');
+  toastRoot.id = 'toastRoot';
+  doc.body.appendChild(root);
+  doc.body.appendChild(toastRoot);
+  globalThis.document = doc;
+  globalThis.Audio = class {
+    async play() {}
+    pause() {}
+  };
+
+  let voiceOn = true;
+  const session = {
+    id: 's_legacy_test',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 1 },
+    messages: [
+      { id: 'm_legacy_8d', role: 'assistant', content: '八天前的旧回复', japanese: '昔の返答です。', ts: now - 8 * 24 * 3600 * 1000 },
+      { id: 'm_line_8d', role: 'assistant', ts: now - 8 * 24 * 3600 * 1000, lines: [{ index: 0, zh: '八天前的分句回复', ja: '新しい返答です。', emotion: 'neutral', act: {}, audio: { status: 'failed', chunks: [] } }] },
+      { id: 'm_today', role: 'assistant', content: '今日中文', japanese: '今日の返答です。', ts: now },
+    ],
+  };
+  state.sessions = [session];
+  state.activeId = session.id;
+
+  initAudioPlayerUi({}, {});
+
+  const repairCalls = [];
+  let repairResolver = null;
+  let repairRejecter = null;
+  const recover = createLineAudioRecovery({
+    getSession: () => session,
+    getVoiceProfiles: () => [{ id: 1, name: '测试音色' }],
+    saveState: () => true,
+    request: async (url, options) => {
+      repairCalls.push({ url, body: JSON.parse(options.body), signal: options.signal });
+      if (repairRejecter) {
+        const rej = repairRejecter;
+        repairRejecter = null;
+        throw rej;
+      }
+      if (repairResolver) {
+        return new Promise((resolve, reject) => {
+          const onAbort = () => reject(new DOMException('操作已取消', 'AbortError'));
+          options.signal?.addEventListener('abort', onAbort, { once: true });
+          repairResolver = val => {
+            options.signal?.removeEventListener('abort', onAbort);
+            resolve(val);
+          };
+        });
+      }
+      return {
+        session_id: session.id,
+        message_id: null,
+        line_index: 0,
+        voice_profile_id: 1,
+        persisted: false,
+        audio: {
+          status: 'ready',
+          generated_at: now,
+          voice_profile_id: 1,
+          chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_legacy.wav', sentence: '昔の返答です。' }],
+        },
+      };
+    },
+  });
+
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => session.settings,
+    getCharacter: () => ({ name: '测试角色' }),
+    getRecoveryVoice: () => ({ id: 1, name: '测试音色' }),
+    voiceEnabled: () => voiceOn,
+    wallNow: () => now,
+    audio: { stopLine() {} },
+    regenerateLineAudio: recover,
+    playLegacyVoice: (msg, ctl) => playVoice(msg, ctl),
+  });
+  t.after(() => log.destroy());
+
+  const entries = () => [...log.element.querySelectorAll('.adv-log-entry')];
+  const legacy8dEntry = entries().find(el => el.dataset.msgId === 'm_legacy_8d');
+  const line8dEntry = entries().find(el => el.dataset.msgId === 'm_line_8d');
+  const todayEntry = entries().find(el => el.dataset.msgId === 'm_today');
+
+  const legacyReplayBtn = legacy8dEntry.querySelector('.adv-log-replay-btn');
+  const legacyLabel = legacyReplayBtn?.getAttribute('aria-label');
+  const legacyRepairBtn = legacy8dEntry.querySelector('.adv-log-regenerate-btn');
+  const legacyRepair = legacyRepairBtn && !legacyRepairBtn.hidden ? legacyRepairBtn.textContent : 'none';
+  const lineRepairBtn = line8dEntry.querySelector('.adv-log-regenerate-btn');
+  const lineRepair = lineRepairBtn && !lineRepairBtn.hidden ? lineRepairBtn.textContent : 'none';
+
+  // Assert legacy 8d entry has "语音文件已过期" aria-label (not "语音已关闭或过期")
+  assert.equal(legacyLabel, '语音文件已过期', `legacyLabel="${legacyLabel}" should be "语音文件已过期"`);
+  assert.equal(legacyReplayBtn.getAttribute('aria-disabled'), 'true');
+  assert.equal(legacyReplayBtn.disabled, true);
+  // Assert legacy 8d entry has regenerate button like line 8d entry
+  assert.equal(legacyRepair, '用当前音色重新生成', `legacyRepair="${legacyRepair}" lineRepair="${lineRepair}"`);
+  // Assert statusSpan is located in adv-log-text-wrap
+  const textWrap = legacy8dEntry.querySelector('.adv-log-text-wrap');
+  const statusSpan = textWrap?.querySelector('.adv-log-audio-status');
+  assert.ok(statusSpan, 'statusSpan should be located in textWrap');
+  assert.equal(statusSpan.parentNode, textWrap);
+  assert.equal(statusSpan.hidden, true);
+
+  // Test Cancel Lifecycle: start regeneration then cancel
+  repairResolver = () => {};
+  legacyRepairBtn.onclick({ stopPropagation() {} });
+  await microtasks();
+  assert.equal(legacyRepairBtn.textContent, '取消生成');
+  assert.equal(statusSpan.hidden, false);
+  assert.equal(statusSpan.textContent, '正在生成这句语音…');
+
+  // Second click cancels generation
+  legacyRepairBtn.onclick({ stopPropagation() {} });
+  await microtasks();
+  assert.equal(legacyRepairBtn.textContent, '用当前音色重新生成');
+  assert.equal(statusSpan.hidden, true);
+  assert.equal(statusSpan.textContent, '');
+  repairResolver = null;
+
+  // Test Error preservation: backend error (e.g. 404 from stored legacy message)
+  const err404 = new Error('这句历史台词已不存在，请刷新聊天记录后再试。');
+  err404.status = 404;
+  repairRejecter = err404;
+  legacyRepairBtn.onclick({ stopPropagation() {} });
+  await microtasks();
+  assert.equal(statusSpan.hidden, false);
+  assert.equal(statusSpan.textContent, '这句历史台词已不存在，请刷新聊天记录后再试。');
+  assert.equal(session.messages.find(m => m.id === 'm_legacy_8d').lines, undefined);
+  repairRejecter = null;
+
+  // Regenerate legacy message successfully and verify it becomes playable
+  await legacyRepairBtn.onclick({ stopPropagation() {} });
+  await microtasks();
+  assert.equal(legacy8dEntry.querySelector('.adv-log-replay-btn').disabled, false);
+  assert.equal(legacy8dEntry.querySelector('.adv-log-replay-btn').getAttribute('aria-label'), '播放语音');
+  assert.equal(legacy8dEntry.querySelector('.adv-log-replay-btn').getAttribute('aria-disabled'), null);
+  assert.equal(legacyRepairBtn.hidden, true);
+
+  // Verify slow engine does not abort at 16s
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let synthSignal;
+  let synthGateResolve;
+  const synthGate = new Promise(resolve => { synthGateResolve = resolve; });
+  globalThis.fetch = async (url, options) => {
+    if (url.includes('/api/voice/synthesize')) {
+      synthSignal = options.signal;
+      return synthGate;
+    }
+    return new Response(new Blob(['audio']));
+  };
+
+  const todayBtn = todayEntry.querySelector('.adv-log-replay-btn');
+  todayBtn.click();
+  await microtasks();
+
+  // Advance time past 16s (to 20s)
+  t.mock.timers.tick(20000);
+  await microtasks();
+
+  const toasts = [...toastRoot.querySelectorAll('.toast')].map(t => t.dataset.msg);
+  const aborted = synthSignal?.aborted === true;
+  assert.equal(aborted, false, `aborted=${aborted} toast="${toasts[0] || ''}" should not abort at 16s`);
+
+  synthGateResolve(new Response(new Blob(['audio'], { type: 'audio/wav' })));
+  await microtasks();
+});
+

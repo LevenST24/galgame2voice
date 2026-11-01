@@ -304,3 +304,46 @@ test('a completed SSE reply carries its real database ID into a subsequent repai
   await f.recover({ messageId: message.id, lineIndex: 1 });
   assert.equal(JSON.parse(f.calls[0][1].body).message_id, 88);
 });
+
+test('legacy message without lines can be regenerated as line 0, and failure preserves original state without TypeError', async () => {
+  const legacyMessage = { id: 'm_legacy', role: 'assistant', content: '旧回复内容', japanese: '昔の返答です。', ts: Date.now() - 8 * 86400000 };
+  const session = { id: 's_legacy', settings: { voiceProfileId: 5 }, messages: [legacyMessage] };
+  let saved = 0;
+  let fail = true;
+  const recover = createLineAudioRecovery({
+    getSession: () => session,
+    getVoiceProfiles: () => [{ id: 5, name: '角色5' }],
+    saveState: () => { saved++; return true; },
+    request: async (url, options) => {
+      if (fail) {
+        const error = new Error('这句历史台词已不存在，请刷新聊天记录后再试。');
+        error.status = 404;
+        throw error;
+      }
+      return {
+        session_id: session.id, message_id: null, line_index: 0, voice_profile_id: 5, persisted: false,
+        audio: {
+          status: 'ready', generated_at: Date.now(), voice_profile_id: 5,
+          chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_legacy_test.wav', sentence: '昔の返答です。' }],
+        },
+      };
+    },
+  });
+
+  // When request fails with 404, error is preserved and message.lines is not created
+  await assert.rejects(
+    recover({ messageId: legacyMessage.id, lineIndex: 0 }),
+    err => err.message === '这句历史台词已不存在，请刷新聊天记录后再试。' && err.name !== 'TypeError'
+  );
+  assert.equal(legacyMessage.lines, undefined);
+  assert.equal(saved, 0);
+
+  // When request succeeds, message.lines is created with 1 line and audioChunks populated
+  fail = false;
+  const res = await recover({ messageId: legacyMessage.id, lineIndex: 0 });
+  assert.equal(res.audio.status, 'ready');
+  assert.equal(legacyMessage.lines.length, 1);
+  assert.equal(legacyMessage.lines[0].ja, '昔の返答です。');
+  assert.equal(legacyMessage.audioUrls.length, 1);
+  assert.equal(saved, 1);
+});

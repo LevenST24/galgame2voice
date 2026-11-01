@@ -219,6 +219,9 @@ export function playSingleAudio(getAudio, msgId, ctl, { objectUrl = null } = {})
   }
 }
 
+// Match the chat TTS and line repair budget: model preparation, inference and queue/IO allowance.
+const SYNTHESIS_TIMEOUT_MS = 600000;
+
 export async function synthesizeAiVoice(msg, ctl) {
   stopCurrentVoice();
   const revision = voiceRevision;
@@ -233,7 +236,7 @@ export async function synthesizeAiVoice(msg, ctl) {
   const timeoutTimer = setTimeout(() => {
     isTimeout = true;
     abortCtrl.abort();
-  }, 16000);
+  }, SYNTHESIS_TIMEOUT_MS);
 
   currentVoice = {
     msgId: msg.id,
@@ -339,7 +342,7 @@ export async function synthesizeAiVoice(msg, ctl) {
         throw error;
       }
       return res.blob();
-    }, { signal: abortCtrl.signal, timeoutMs: 16000 });
+    }, { signal: abortCtrl.signal, timeoutMs: SYNTHESIS_TIMEOUT_MS });
     if (cancelled || paused || abortCtrl.signal.aborted || revision !== voiceRevision) {
       return;
     }
@@ -367,7 +370,7 @@ export async function synthesizeAiVoice(msg, ctl) {
       onAction: () => _callbacks.onOpenEngineStatus(),
     } : null;
     if (isTimeout || e.code === 'AUDIO_TIMEOUT') {
-      showToast('语音合成超时（16s），请检查 GPT-SoVITS 服务是否正常运行', 'error', engineAction);
+      showToast('语音合成超时，请检查 GPT-SoVITS 服务是否正常运行', 'error', engineAction);
     } else if (cancelled || (e && e.name === 'AbortError')) {
       return;
     } else if (e.status === 422 && e.message?.includes('所选音色已不存在')) {
