@@ -34,7 +34,8 @@ export function mergeChatBackup(serverData, localData) {
       server.sessions.push(session);
       byId.set(session.id, session);
     } else if (containsLocalMessages(stored.messages, session.messages)) {
-      stored.settings = session.settings;
+      // These lines are already in the database. Keep the settings saved later, including the voice binding.
+      if (session.updatedAt > stored.updatedAt) stored.settings = session.settings;
       if (session.title && session.title !== '新对话') stored.title = session.title;
     } else {
       // A partial reply or an offline edit cannot safely replace database history.
