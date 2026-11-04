@@ -112,10 +112,7 @@ jobs:
           GALGAME2VOICE_RATE_LIMIT_DISABLED: '1'
 
   dependency-audit:
-    # Deliberately non-blocking: the point is visibility into known CVEs, and a
-    # red X on every unrelated PR would just train people to ignore it. Promote
-    # to a required check once the current findings are triaged.
-    continue-on-error: true
+    # Required check: Python and frontend dependency audit failures block merges.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

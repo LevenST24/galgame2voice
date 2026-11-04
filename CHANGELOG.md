@@ -6,12 +6,16 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-11-04
+
 ### Added
 
 - ADV 人物可随台词与情绪改变站位和远近，支持减少动态效果。
 
 ### Changed
 
+- 依赖审计发现问题时会阻断 CI 与合并，不再把整个审计作业设置为允许失败；保持原有审计命令与阈值。
+- LOG 浏览器回归改为有界等待界面可达状态，覆盖普通动画、减少动态效果与延迟初始化，并完整显示失败原因。
 - 统一聊天舞台、记录与设置等界面的夜色视觉风格，提升浅色背景下的台词可读性。
 - 将玩家默认名改为“我”，并兼容旧会话中的默认名“Player”。
 - 重新整理对话记录界面，限制阅读宽度、改善中日文及语音操作的层级，并提高运行状态卡片的可读性。
@@ -22,6 +26,8 @@ All notable changes to galgame2voice are documented here. The format follows
 - 移除手机竖屏专用布局，竖向窗口显示等比缩小的横屏舞台。
 
 ### Fixed
+
+- 修复自适应音色在按情绪匹配参考音频时，未按规范情绪名与同义词映射导致无法匹配对应音频并回退到默认参考，以及角色包清单自定义情绪可能被覆盖的问题；现在支持通过情绪规范名、同义词及角色包清单自定义键值精确解析情绪参考音频。
 
 - 修复 Telegram 机器人在语音转录、大模型生成或排队期间收到 /reset 指令或控制台清空按钮时，重置响应后旧回复仍继续发送、孤儿入库、误增好感度并触发后台语音合成，且旧转录可能阻塞新轮次或穿透报错的问题；现在会话重置会立即作废并取消当前成员正在转录、生成与排队中的旧轮次，旧回复、音频与记录不再回流。
 - 修复流式回复被中断或提前取消时，已完整合成但尚未发送 SSE 事件的语音行在保存快照时被误标为 failed 的问题：已就绪行正确保存为 ready，未合成完成或出错的语音行仍保留为 failed。
@@ -622,6 +628,8 @@ First tagged release. The single source of truth for the version is
   assets, no network/GPU) are unrelated to this release; the failure set is
   byte-identical before and after these changes.
 
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.1.1...HEAD
+[3.1.1]: https://github.com/LevenST24/galgame2voice/releases/tag/v3.1.1
 [3.1.0]: https://github.com/LevenST24/galgame2voice/releases/tag/v3.1.0
 [3.0.0]: https://github.com/LevenST24/galgame2voice/releases/tag/v3.0.0
 [2.0.0]: https://github.com/LevenST24/galgame2voice/releases/tag/v2.0.0

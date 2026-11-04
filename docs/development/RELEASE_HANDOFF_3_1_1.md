@@ -1,6 +1,6 @@
 # Galgame2Voice v3.1.1 发布交接文档 (Release Handoff)
 
-本文档为 Galgame2Voice v3.1.1 发布节点（自 `origin/main` `ee56fa0` 起的所有已验收工作）提供仓库原生、可执行的交接说明。
+本文档说明 Galgame2Voice v3.1.1 发布节点的架构、兼容性和验收边界。后续工作按 [TODO.md](TODO.md) 中的优先级与验收标准推进。
 
 > [!IMPORTANT]
 > **维护者合并策略 (Maintainer Merge Policy)**
@@ -17,8 +17,8 @@
 
 ## 1. 范围与交付概览
 
-- **代码范围**：自基线提交 `ee56fa0` 以来的全部已验收特性与修复（包含累计 16 项独立缺陷修复与 1 项冻结回复持久化工程门禁）。
-- **发布产物**：Windows x64 便携版发布包（本地验证大小：58,447,742 字节，约 58.45 MB），包含完整 Python 运行时与 FFmpeg，不包含个人角色模型、私有数据或真实凭据。
+- **代码范围**：PR #288 收口的已验收特性与修复，以及正式发布前经 CI 验证的情绪参考音频映射修复；具体提交以版本标签为准。
+- **发布产物**：Windows x64 便携版，包含 Python 运行时与 FFmpeg，不包含个人角色模型、私有数据或真实凭据。下述 58,447,742 字节是上一轮本地候选的验证记录，最终文件和大小以 [GitHub Release](https://github.com/LevenST24/galgame2voice/releases/tag/v3.1.1) 的附件为准。
 - **静态资源**：前端入口经 Vite 构建生成并同步部署在 `galgame2voice/static/`，当前产物入口文件为 `index-BUiKa_Vm.js`，样式为 `index-Skqi1XQu.css`。
 
 ---
@@ -158,11 +158,22 @@ uv run --frozen --extra desktop python scripts/smoke_windows_turn_reply.py --arc
 - **Telegram 真实网络**：未进行跨公网 Telegram Bot 真实长轮询与网络通信测试。
 - **视觉素材**：未加载与测试真实第三方大型人物立绘或头像素材（使用空角色/替身素材验证）。
 
+### 5.3 正式发布前的情绪映射增量验收
+
+- 在 PR #288 主分支上，`test_emotion_ref_keys.py` 的原 5 项回归全部失败；适配修复并补充无 `gentle` 时的参考文件丢失回退用例后，6 项全部通过。
+- 13 个语音、角色身份和参考归属相关测试文件最终共 274 项通过、16 项素材测试排除；测试创建的调度器、缓存和客户端在 `finally` 中关闭，关闭异常不会被吞掉。
+- 最终 Windows 附件必须来自正式发布工作流，并通过该附件的 verify、真实 EXE smoke 和 Chrome 业务恢复验收；不能以旧本地候选的通过结果代替。最终 CI、工作流与下载链接记录在 [v3.1.1 Release](https://github.com/LevenST24/galgame2voice/releases/tag/v3.1.1) 中。
+
+### 5.4 LOG 浏览器验收的就绪等待
+
+- `tests/test_interface_browser.py` 保留真实命中测试，改为有上限地等待首页按钮、LOG 入口与关闭按钮可达，并固定普通/减少动态效果两种模式；350ms 的受控初始化延迟可复现原固定等待过早点击，修正后通过。
+- 独立运行该文件最终 5 项通过。失败断言直接展示 `state.error`，避免整份状态被 pytest 截断后丢失诊断。此前主分支一次 CI 的具体错误未完整记录，不能断定与受控延迟完全相同；最终发布仍须以新提交的完整 CI 为准。
+
 ---
 
 ## 6. 既有未合并 PR 关系说明 (PR #284, #286, #287)
 
-当前仓库中尚有如下 3 个处于开启（OPEN）状态的独立分支 PR，**均不属于本次 v3.1.1 合并范围**：
+在 PR #288 合并时，下列 3 个独立 PR 尚未合并。正式发布前将 #286 的情绪映射修复适配到新主分支；#284 和 #287 继续由 [TODO.md](TODO.md) 跟踪，不能随着版本发布自动标记完成。
 
 1. [**PR #284 (Draft)**: `fix(adv): offer voice regeneration on legacy LOG replies`](https://github.com/LevenST24/galgame2voice/pull/284)
    - 分支：`fix/legacy-reply-regenerate`
@@ -170,11 +181,12 @@ uv run --frozen --extra desktop python scripts/smoke_windows_turn_reply.py --arc
 2. [**PR #286**: `fix(voice): match adaptive emotion references by canonical emotion`](https://github.com/LevenST24/galgame2voice/pull/286)
    - 分支：`fix/emotion-ref-keys`
    - 范围：通过规范情绪名/同义词映射自适应情绪参考音频，并支持自定义情绪标签。
+   - 集成方式：保留 #288 后的新参考归属与缓存逻辑，在最新主分支上适配修复并重新验证；最终 CI 与集成 PR 链接记录在 Release 说明中。
 3. [**PR #287**: `fix(adv): pick up a line repaired in another tab`](https://github.com/LevenST24/galgame2voice/pull/287)
    - 分支：`fix/two-tab-repair-sync`
    - 范围：处理 LOG 语音在另一标签页已修复时的 409 冲突并重新读取服务端音频（非设置双标签页）。
 
 > [!NOTE]
 > **后续维护者指引**：
-> - 本次 v3.1.1 候选虽然修改了部分相同文件，但**并未证明**上述 PR 所针对的具体问题已被解决；**严禁将它们标记为已废弃或已被替代**。
+> - #288 本身没有验证上述三个问题。#286 的后续集成需有独立回归与 CI；#284/#287 的具体问题仍待处理，不能标记为已被本次发布替代。
 > - 后续维护者需对上述 PR 的有效性进行独立评估。在未来的合并流程中，必须基于合入后的最新 `main` 分支分别执行 rebase，保留其有效改动，解决潜在的代码重叠（如 `frontend/src/controllers/line_audio_recovery.js`、`frontend/src/main.js`、`frontend/src/session_api.js`、`frontend/src/adv/backlog.js` 或 `galgame2voice/services/voice_resolver.py`、`galgame2voice/services/character_manager.py`），重新构建并部署前端静态产物，且在 CI 完全通过后方可合入。
