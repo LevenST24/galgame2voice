@@ -150,9 +150,12 @@ import {createStage} from '/frontend/src/adv/stage.js';
 import {createBacklog} from '/frontend/src/adv/backlog.js';
 import {createLineAudioRecovery} from '/frontend/src/controllers/line_audio_recovery.js';
 import {StreamAudioController} from '/frontend/src/audio_player.js';
+import {putCachedAudioBlob} from '/frontend/src/cache.js';
 
 const nativeFetch = globalThis.fetch.bind(globalThis);
 const tab = new URLSearchParams(location.search).get('tab') || '1';
+const warmCache = __WARM_CACHE__;
+const base64Wav = '__WAV_B64__';
 const result = { tab: Number(tab) };
 const session = {
   id: 'tab-sync-session',
@@ -182,6 +185,13 @@ const until = async check => {
 
 const player = new StreamAudioController({ fetchTimeoutMs: 5000 });
 player.startSession('tab-sync-player-' + tab);
+const playOutcomes = [];
+const originalPlayLine = player.playLine.bind(player);
+player.playLine = async (...args) => {
+  const outcome = await originalPlayLine(...args);
+  playOutcomes.push(outcome);
+  return outcome;
+};
 let log;
 try {
   const stage = createStage(document.getElementById('fixture-root'));
@@ -230,9 +240,17 @@ try {
   result.statusText = statusSpan.textContent;
   result.saves = saves;
 
+  if (warmCache && result.audioUrl) {
+    const raw = atob(base64Wav);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    const wavBlob = new Blob([bytes], { type: 'audio/wav' });
+    await putCachedAudioBlob(result.audioUrl, wavBlob);
+  }
+
   click('.adv-log-replay-btn');
-  await until(() => !replayBtn.classList.contains('is-playing'));
-  result.played = player._linePlayState === null;
+  await until(() => playOutcomes.length === 1 && !replayBtn.classList.contains('is-playing'));
+  result.playOutcome = playOutcomes[0];
 
   log.destroy();
   log = createBacklog(stage.overlay, {
@@ -418,8 +436,9 @@ class TwoTabRecoveryHandler(AudioRecoveryHandler):
 
 
 @pytest.mark.requires_piped_subprocess
-@pytest.mark.parametrize("width,height", [(1280, 900)])
-def test_two_tab_repair_sync_via_409(tmp_path, width, height):
+@pytest.mark.parametrize("warm_cache", [False, True], ids=["cold_cache", "warm_cache"])
+def test_two_tab_repair_sync_via_409(tmp_path, warm_cache):
+    width, height = 1280, 900
     executable = browser_path()
     if not executable:
         pytest.skip("Two-tab repair sync needs an installed Chromium browser")
@@ -430,11 +449,16 @@ def test_two_tab_repair_sync_via_409(tmp_path, width, height):
         audio.setframerate(8000)
         audio.writeframes(b"\x20\x03" * 800)
     wav_bytes = output.getvalue()
+    b64_wav = base64.b64encode(wav_bytes).decode("ascii")
+
+    script = (TWO_TAB_SCRIPT
+              .replace("__WARM_CACHE__", "true" if warm_cache else "false")
+              .replace("__WAV_B64__", b64_wav))
 
     case = ('<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/frontend/src/styles.css">'
             '<link rel="stylesheet" href="/frontend/src/adv/adv.css"><link rel="stylesheet" href="/frontend/src/adv/app.css">'
             '<body><div id="fixture-root"></div>'
-            f'<script type="module">{TWO_TAB_SCRIPT}</script></body>').encode("utf-8")
+            f'<script type="module">{script}</script></body>').encode("utf-8")
 
     ready = threading.Event()
     barrier_event = threading.Event()
@@ -465,7 +489,7 @@ def test_two_tab_repair_sync_via_409(tmp_path, width, height):
     worker.start()
 
     try:
-        browser_dir = tmp_path / "browser_twotab"
+        browser_dir = tmp_path / f"browser_twotab_{'warm' if warm_cache else 'cold'}"
         ready.clear()
         browser_proc = run_layout_browser([
             executable, "--headless", "--no-sandbox", "--disable-gpu", "--disable-popup-blocking",
@@ -495,7 +519,7 @@ def test_two_tab_repair_sync_via_409(tmp_path, width, height):
             assert res["audioUrl"] == "/audio/repair_browser.wav", res
             assert res["replayEnabled"] is True, res
             assert res["regenHidden"] is True, res
-            assert res["played"] is True, res
+            assert res["playOutcome"] == "ended", res
             assert res["saves"] == 1, res
             assert res["reopenReplayEnabled"] is True, res
             assert res["reopenRegenHidden"] is True, res
@@ -514,7 +538,16 @@ def test_two_tab_repair_sync_via_409(tmp_path, width, height):
         assert len(regen_posts) == 2, f"Expected 2 posts total, got {len(regen_posts)}"
         assert len(history_gets) == 1, f"Expected 1 history GET from losing tab, got {len(history_gets)}"
         assert "before_id=43" in history_gets[0] and "session_id=tab-sync-session" in history_gets[0]
-        assert len(audio_gets) == 2, f"Expected 2 audio plays, got {len(audio_gets)}"
+
+        # Audio fetch network requests:
+        # In warm cache mode, pre-cached blobs serve playback so zero network audio GETs are made.
+        # In cold cache mode, 1 or 2 network audio GETs are legitimate due to shared browser Cache Storage.
+        if warm_cache:
+            assert len(audio_gets) == 0, f"Expected 0 audio GETs for warm cache, got {len(audio_gets)}: {audio_gets}"
+        else:
+            assert 1 <= len(audio_gets) <= 2, f"Expected 1 or 2 audio GETs for cold cache, got {len(audio_gets)}: {audio_gets}"
+            for path in audio_gets:
+                assert path.split("?")[0] == "/audio/repair_browser.wav", path
     finally:
         ready.set()
         barrier_event.set()
