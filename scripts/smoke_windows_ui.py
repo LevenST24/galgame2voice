@@ -388,6 +388,57 @@ def build_acceptance_script(target_session_id: str, prompt_text: str, repair_aud
 }})()"""
 
 
+def wait_for_initial_navigation(
+    client: Any,
+    base_url: str,
+    timeout: float = 15.0,
+    poll_interval: float = 0.05,
+) -> dict[str, Any]:
+    """Navigates to base_url and polls read-only document URL and readyState until ready."""
+    client.send_command("Page.enable")
+    client.send_command("Runtime.enable")
+    client.send_command("Page.navigate", {"url": base_url})
+
+    deadline = time.monotonic() + timeout
+    target_norm = base_url.rstrip("/")
+    last_state: dict[str, Any] = {}
+
+    read_expr = (
+        "(() => ({ url: String(document.URL || location.href), "
+        "readyState: String(document.readyState) }))()"
+    )
+
+    while time.monotonic() < deadline:
+        try:
+            resp = client.send_command(
+                "Runtime.evaluate",
+                {"expression": read_expr, "returnByValue": True},
+            )
+            val = resp.get("result", {}).get("value")
+            if isinstance(val, dict):
+                last_state = val
+                cur_url = str(val.get("url", "")).rstrip("/")
+                ready_state = str(val.get("readyState", ""))
+                if cur_url == target_norm and ready_state in ("interactive", "complete"):
+                    return val
+        except RuntimeError as exc:
+            err_msg = str(exc)
+            # Tolerate only concrete initial-context messages during navigation
+            transient_messages = (
+                "Execution context was destroyed",
+                "Cannot find context with specified id",
+            )
+            if any(msg in err_msg for msg in transient_messages):
+                pass
+            else:
+                raise
+        time.sleep(poll_interval)
+
+    raise TimeoutError(
+        f"Timed out waiting for initial navigation to {base_url} after {timeout:.1f}s (last state: {last_state})"
+    )
+
+
 def run_browser_ui_acceptance(
     base_url: str,
     scratch: Path,
@@ -418,7 +469,7 @@ def run_browser_ui_acceptance(
         "--remote-debugging-port=0",
         "--remote-allow-origins=*",
         f"--user-data-dir={profile_dir}",
-        base_url,
+        "about:blank",
     ]
 
     proc = subprocess.Popen(
@@ -451,7 +502,7 @@ def run_browser_ui_acceptance(
             raise RuntimeError(f"Could not locate active page target in CDP targets: {targets}")
 
         client = make_cdp_client(target["webSocketDebuggerUrl"])
-        client.send_command("Runtime.enable")
+        wait_for_initial_navigation(client, base_url, timeout=min(15.0, timeout))
 
         js_code = build_acceptance_script(target_session_id, prompt_text, repair_audio_url)
         eval_resp = client.send_command(

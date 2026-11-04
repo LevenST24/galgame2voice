@@ -10,6 +10,8 @@ import socket
 import subprocess
 import sys
 import threading
+import time
+from typing import Any
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -26,6 +28,7 @@ from scripts.smoke_windows_ui import (  # noqa: E402
     find_browser,
     run_browser_ui_acceptance,
     stop_browser_process,
+    wait_for_initial_navigation,
 )
 
 
@@ -309,6 +312,226 @@ class TestSmokeWindowsUi(unittest.TestCase):
         )
         self.assertEqual(res_import.returncode, 0, f"Import resolution failed: {res_import.stderr}")
         self.assertIn("IMPORT_RESOLVED", res_import.stdout)
+
+    def _run_with_mocked_driver(self, mock_client: MagicMock, timeout: float = 5.0) -> dict[str, Any]:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scratch = Path(tmp_dir)
+
+            def fake_popen(*args: Any, **kwargs: Any) -> MagicMock:
+                proc = MagicMock()
+                proc.poll.return_value = None
+                proc.pid = 9999
+                profile = scratch / "ui_profile"
+                profile.mkdir(parents=True, exist_ok=True)
+                (profile / "DevToolsActivePort").write_text("9222\n/devtools/browser/fake", encoding="utf-8")
+                return proc
+
+            def fake_urlopen(url: str, *args: Any, **kwargs: Any) -> MagicMock:
+                mock_resp = MagicMock()
+                mock_resp.read.return_value = json.dumps([
+                    {"type": "page", "webSocketDebuggerUrl": "ws://127.0.0.1:9222/page/fake"}
+                ]).encode("utf-8")
+                mock_resp.__enter__.return_value = mock_resp
+                return mock_resp
+
+            with patch("scripts.smoke_windows_ui.find_browser", return_value=Path("C:/dummy/chrome.exe")), \
+                 patch("scripts.smoke_windows_ui.subprocess.Popen", side_effect=fake_popen), \
+                 patch("scripts.smoke_windows_ui.make_cdp_client", return_value=mock_client), \
+                 patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                return run_browser_ui_acceptance(
+                    base_url="http://127.0.0.1:8000",
+                    scratch=scratch,
+                    target_session_id="test_session",
+                    prompt_text="test_prompt",
+                    repair_audio_url="/api/audio/test.wav",
+                    timeout=timeout,
+                )
+
+    def test_initial_navigation_tolerates_context_destroyed_and_runs_acceptance_once(self) -> None:
+        mock_client = MagicMock()
+        eval_calls: list[str] = []
+
+        def mock_send(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            if method == "Runtime.evaluate":
+                expr = (params or {}).get("expression", "")
+                eval_calls.append(expr)
+                if len(eval_calls) == 1:
+                    # Initial context destroyed during navigation polling
+                    raise RuntimeError(
+                        "CDP command Runtime.evaluate failed: {'code': -32000, 'message': 'Execution context was destroyed.'}"
+                    )
+                elif len(eval_calls) == 2:
+                    # Next poll: ready
+                    return {"result": {"value": {"url": "http://127.0.0.1:8000/", "readyState": "complete"}}}
+                else:
+                    # Business acceptance script
+                    return {"result": {"value": {"ok": True, "steps": {"mock": True}}}}
+            return {}
+
+        mock_client.send_command.side_effect = mock_send
+        res = self._run_with_mocked_driver(mock_client)
+        self.assertEqual(res, {"ok": True, "steps": {"mock": True}})
+        # Exactly 3 evaluate calls: 2 for readiness polling, 1 for acceptance script
+        self.assertEqual(len(eval_calls), 3)
+        self.assertIn("document.URL", eval_calls[0])
+        self.assertIn("document.URL", eval_calls[1])
+        self.assertIn("adv-stage", eval_calls[2])
+
+    def test_initial_navigation_non_transient_error_propagates_immediately(self) -> None:
+        mock_client = MagicMock()
+        eval_calls: list[str] = []
+
+        def mock_send(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            if method == "Runtime.evaluate":
+                expr = (params or {}).get("expression", "")
+                eval_calls.append(expr)
+                # Generic -32000 with non-transient message must not be retried
+                raise RuntimeError(
+                    "CDP command Runtime.evaluate failed: {'code': -32000, 'message': 'No target with given id found'}"
+                )
+            return {}
+
+        mock_client.send_command.side_effect = mock_send
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_with_mocked_driver(mock_client, timeout=5.0)
+        self.assertIn("No target with given id found", str(ctx.exception))
+        # Fails immediately on 1st evaluate without retry loop and never runs acceptance
+        self.assertEqual(len(eval_calls), 1)
+        self.assertIn("document.URL", eval_calls[0])
+
+    def test_initial_navigation_wrong_url_or_never_ready_times_out_without_acceptance(self) -> None:
+        def make_sender(bad_val: dict[str, Any], calls: list[str]) -> Any:
+            def mock_send(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+                if method == "Runtime.evaluate":
+                    expr = (params or {}).get("expression", "")
+                    calls.append(expr)
+                    return {"result": {"value": bad_val}}
+                return {}
+            return mock_send
+
+        for bad_val in (
+            {"url": "about:blank", "readyState": "complete"},
+            {"url": "http://127.0.0.1:8000/unexpected", "readyState": "complete"},
+            {"url": "http://127.0.0.1:8000/", "readyState": "loading"},
+        ):
+            with self.subTest(bad_val=bad_val):
+                mock_client = MagicMock()
+                eval_calls: list[str] = []
+                mock_client.send_command.side_effect = make_sender(bad_val, eval_calls)
+                with self.assertRaises(TimeoutError) as ctx:
+                    self._run_with_mocked_driver(mock_client, timeout=0.15)
+                self.assertIn("Timed out waiting for initial navigation", str(ctx.exception))
+                # Acceptance script was NEVER evaluated
+                self.assertTrue(all("adv-stage" not in expr for expr in eval_calls))
+
+    def test_business_context_destroyed_propagates_and_executes_once(self) -> None:
+        mock_client = MagicMock()
+        eval_calls: list[str] = []
+
+        def mock_send(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            if method == "Runtime.evaluate":
+                expr = (params or {}).get("expression", "")
+                eval_calls.append(expr)
+                if "document.URL" in expr:
+                    # Navigation polling succeeds
+                    return {"result": {"value": {"url": "http://127.0.0.1:8000/", "readyState": "complete"}}}
+                else:
+                    # Business phase context destroyed
+                    raise RuntimeError(
+                        "CDP command Runtime.evaluate failed: {'code': -32000, 'message': 'Execution context was destroyed.'}"
+                    )
+            return {}
+
+        mock_client.send_command.side_effect = mock_send
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_with_mocked_driver(mock_client, timeout=5.0)
+        self.assertIn("Execution context was destroyed", str(ctx.exception))
+        # Business acceptance script was executed exactly once (no replay/retry!)
+        business_calls = [expr for expr in eval_calls if "adv-stage" in expr]
+        self.assertEqual(len(business_calls), 1)
+
+    def test_real_browser_synthetic_navigation_proof(self) -> None:
+        browser_exe = find_browser()
+        if not browser_exe:
+            self.skipTest("No supported browser found on host")
+
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        import tempfile
+
+        class _SynthServer(HTTPServer):
+            def handle_error(self, request: Any, client_address: Any) -> None:
+                pass
+
+        class _SynthHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(b"<!doctype html><html><head><title>Synth</title></head><body><h1>Synthetic Ready</h1></body></html>")
+
+            def log_message(self, format: str, *args: Any) -> None:
+                pass
+
+        server = _SynthServer(("127.0.0.1", 0), _SynthHandler)
+        port = server.server_port
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            profile_dir = Path(tmp_dir) / "profile"
+            profile_dir.mkdir()
+
+            cmd = [
+                str(browser_exe),
+                "--headless",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--no-first-run",
+                "--disable-sync",
+                "--no-proxy-server",
+                "--disable-background-networking",
+                "--disable-extensions",
+                "--remote-debugging-port=0",
+                "--remote-allow-origins=*",
+                f"--user-data-dir={profile_dir}",
+                "about:blank",
+            ]
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            client = None
+            try:
+                port_file = profile_dir / "DevToolsActivePort"
+                cdp_port = None
+                for _ in range(100):
+                    if port_file.is_file():
+                        try:
+                            cdp_port = int(port_file.read_text(encoding="utf-8").splitlines()[0])
+                            break
+                        except Exception:
+                            pass
+                    time.sleep(0.05)
+                self.assertIsNotNone(cdp_port, "DevToolsActivePort not exposed")
+
+                import urllib.request
+                with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/list", timeout=5) as res:
+                    targets = json.load(res)
+                target = next((t for t in targets if t.get("type") == "page"), None)
+                self.assertIsNotNone(target)
+
+                client = SimpleCdpClient(target["webSocketDebuggerUrl"])
+                base_url = f"http://127.0.0.1:{port}"
+                ready_state = wait_for_initial_navigation(client, base_url, timeout=10.0)
+                self.assertEqual(ready_state["url"].rstrip("/"), base_url)
+                self.assertIn(ready_state["readyState"], ("interactive", "complete"))
+            finally:
+                if client:
+                    client.close()
+                stop_browser_process(proc)
+                server.shutdown()
+                server.server_close()
+
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 # Galgame2Voice v3.1.1 发布交接文档 (Release Handoff)
 
+> v3.1.1 现作为历史代码标签保留，未发布 GitHub Release 附件。其正式发布验收两次遇到浏览器初始导航竞争；正式交付按 [v3.1.2 交接](RELEASE_HANDOFF_3_1_2.md) 执行，下文的本地候选数据仍是历史证据。
+
 本文档说明 Galgame2Voice v3.1.1 发布节点的架构、兼容性和验收边界。后续工作按 [TODO.md](TODO.md) 中的优先级与验收标准推进。
 
 > [!IMPORTANT]
@@ -18,7 +20,7 @@
 ## 1. 范围与交付概览
 
 - **代码范围**：PR #288 收口的已验收特性与修复，以及正式发布前经 CI 验证的情绪参考音频映射修复；具体提交以版本标签为准。
-- **发布产物**：Windows x64 便携版，包含 Python 运行时与 FFmpeg，不包含个人角色模型、私有数据或真实凭据。下述 58,447,742 字节是上一轮本地候选的验证记录，最终文件和大小以 [GitHub Release](https://github.com/LevenST24/galgame2voice/releases/tag/v3.1.1) 的附件为准。
+- **发布产物**：Windows x64 便携版，包含 Python 运行时与 FFmpeg，不包含个人角色模型、私有数据或真实凭据。下述 58,447,742 字节是上一轮本地候选的验证记录，最终文件和大小以 [GitHub Release](https://github.com/LevenST24/galgame2voice/releases/tag/v3.1.2) 的附件为准。
 - **静态资源**：前端入口经 Vite 构建生成并同步部署在 `galgame2voice/static/`，当前产物入口文件为 `index-BUiKa_Vm.js`，样式为 `index-Skqi1XQu.css`。
 
 ---
@@ -162,7 +164,7 @@ uv run --frozen --extra desktop python scripts/smoke_windows_turn_reply.py --arc
 
 - 在 PR #288 主分支上，`test_emotion_ref_keys.py` 的原 5 项回归全部失败；适配修复并补充无 `gentle` 时的参考文件丢失回退用例后，6 项全部通过。
 - 13 个语音、角色身份和参考归属相关测试文件最终共 274 项通过、16 项素材测试排除；测试创建的调度器、缓存和客户端在 `finally` 中关闭，关闭异常不会被吞掉。
-- 最终 Windows 附件必须来自正式发布工作流，并通过该附件的 verify、真实 EXE smoke 和 Chrome 业务恢复验收；不能以旧本地候选的通过结果代替。最终 CI、工作流与下载链接记录在 [v3.1.1 Release](https://github.com/LevenST24/galgame2voice/releases/tag/v3.1.1) 中。
+- 最终 Windows 附件必须来自正式发布工作流，并通过该附件的 verify、真实 EXE smoke 和 Chrome 业务恢复验收；不能以旧本地候选的通过结果代替。最终 CI、工作流与下载链接记录在 [v3.1.1 Release](https://github.com/LevenST24/galgame2voice/releases/tag/v3.1.2) 中。
 
 ### 5.4 LOG 浏览器验收的就绪等待
 
