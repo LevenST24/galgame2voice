@@ -9,12 +9,13 @@
   - 证据：[`voice_resolver.py`](../../galgame2voice/services/voice_resolver.py) 的 `DEFAULT_EMOTION_KEYS` 使用旧别名，`get_emotion_ref` 直接按输入取键，预解析字典也用查询别名存储；标准 `happy`、`sad` 等输入因此可能退回默认音频。`character_manager.py::_select_emotion_config` 优先规范名，也可能遮住清单中的自定义精确键。
   - 工作：适配 [PR #286](https://github.com/LevenST24/galgame2voice/pull/286) 至当前主分支，保留新加入的参考音频归属、路径与提示文本/语言约束。
   - 验收：标准情绪、别名、自定义清单键分别命中正确参考；缺失或无效参考安全回退；同一角色的音频、提示文本、语言一起变化；通过真实 TTS 请求边界的合成桩断言。真实听感另行验收。
-  - 本次收口：原代码的 5 项回归全部失败；适配后加上无 `gentle` 时的真实回退身份用例，6 项通过，13 个相关测试文件共 274 项通过、16 项素材测试排除。最终合并与发布验证见 v3.1.1 Release 的运行链接。
+  - 本次收口：原代码的 5 项回归全部失败；适配后加上无 `gentle` 时的真实回退身份用例，6 项通过，13 个相关测试文件共 274 项通过、16 项素材测试排除。最终合并与发布验证见 v3.1.2 Release 的运行链接。
 
-- [ ] **T02 / P1：接收另一个标签页已经完成的单句语音修复。**
-  - 证据：[`line_audio_recovery.js`](../../frontend/src/controllers/line_audio_recovery.js) 的请求异常路径直接重抛 409，未重新查询已提交音频。重新打开 LOG 仍可能读取本页旧内存。[PR #287](https://github.com/LevenST24/galgame2voice/pull/287) 提供了修复方向。
+- [x] **T02 / P1：接收另一个标签页已经完成的单句语音修复。**
+  - 修复前证据：[`line_audio_recovery.js`](../../frontend/src/controllers/line_audio_recovery.js) 的请求异常路径直接重抛 409，未重新查询已提交音频。重新打开 LOG 仍可能读取本页旧内存。[PR #287](https://github.com/LevenST24/galgame2voice/pull/287) 提供了修复方向。
   - 工作：遇到 409 后只读查询服务端；核对会话、消息、行文本和当前操作归属，确认后更新本地记录。不要自动重发合成 POST。
-  - 验收：两标签页修复同一句，后到的一页可获取先提交的结果；切换会话、取消、文本变化、查询失败均不覆盖其他记录；刷新后音频仍存在。需要补真实浏览器的双标签页验证。
+  - 验收：两标签页修复同一句，后到的一页可获取先提交的结果；切换会话、取消、文本变化、查询失败均不覆盖其他记录；刷新后音频仍存在。
+  - 本次收口：409 发生且消息已持久化时，只读发起 1 次消息历史 GET，严格校验会话标识、助手消息 id 与角色、行文本、就绪单 chunk 音频及音色，更新台词并同步元数据，在 LOG 提示「这一句已在另一网页修好，已更新」（本地缓存失败时提示未更新）并直接允许播放；若远端数据不可用或拉取失败则保留原音频与原始 409 错误，若本地归属变更或操作取消则抛出 AbortError 中止。前端 42 个单测用例全部通过；通过 Chromium 隔离运行器执行双标签页经服务端屏障同步的真实浏览器回归，断言一页直接修复（200）、另一页 409 后拉取远端音频并播放，未二次发起合成 POST（注：浏览器测试在桩服务上验证前端并发同步，后端 CAS 由独立集成测试覆盖；真实 GPU 与听感未验证）。
 
 - [ ] **T03 / P1：补齐旧格式聊天记录的语音恢复流程。**
   - 证据：[`backlog.js`](../../frontend/src/adv/backlog.js) 的 `renderAssistantLegacyEntry` 与现代分句走不同路径；[`audio_player_ui.js`](../../frontend/src/controllers/audio_player_ui.js) 仍有 16 秒合成等待。缺少 `lines_json` 的历史数据库消息也不满足当前持久化修复条件。
