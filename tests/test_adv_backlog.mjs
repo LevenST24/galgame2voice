@@ -33,6 +33,34 @@ test('LOG replays legacy assistant audio and failed player recordings through th
   log.renderAll(); assert.equal(log.element.querySelector('.adv-log-replay-btn').disabled, true);
 });
 
+test('LOG provides explicit repair action for legacy assistant message when audio is expired or missing', t => {
+  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+  const now = Date.now();
+  const session = { id: 'legacy_repair', settings: { voiceProfileId: 1 }, messages: [
+    { id: 'm_legacy', role: 'assistant', content: '旧格式中文', japanese: '日本語。', ts: now - 8 * 86400000, audioUrls: ['/audio/cache/old.wav'] },
+  ] };
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => DEFAULT_SESSION_SETTINGS,
+    getCharacter: () => ({ name: '角色' }),
+    voiceEnabled: () => true,
+    wallNow: () => now,
+    playLegacyVoice: () => {},
+    getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
+    regenerateLineAudio: async () => {},
+  });
+  t.after(() => log.destroy());
+  const entry = log.element.querySelector('.adv-log-entry.is-legacy');
+  assert.ok(entry, 'legacy entry should be rendered');
+  const replayBtn = entry.querySelector('.adv-log-replay-btn');
+  assert.equal(replayBtn.disabled, true, 'replay button should be disabled when expired');
+  const regenerateBtn = entry.querySelector('.adv-log-regenerate-btn');
+  assert.ok(regenerateBtn, 'regenerate button should exist for legacy entry');
+  assert.equal(regenerateBtn.hidden, false, 'regenerate button should not be hidden');
+  assert.equal(regenerateBtn.textContent, '用当前音色重新生成');
+});
+
+
 function setupApp(t, options = {}) {
   const doc = fakeDocument();
   globalThis.document = doc;
@@ -1369,4 +1397,259 @@ test('a fresh LOG line stays replayable when loading fails and disables only con
     assert.equal(gone.querySelector('.adv-log-regenerate-btn').hidden, false);
     assert.equal(gone.querySelector('.adv-log-regenerate-btn').textContent, '用当前音色重新生成');
   }
+});
+
+test('LOG legacy repair lifecycle: repair success enables replay button, updates status, and plays canonical audio', async t => {
+  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+  const now = Date.now();
+  const session = { id: 'legacy_flow', settings: { voiceProfileId: 1 }, messages: [
+    { id: 'm_leg', serverMessageId: 99, role: 'assistant', content: '旧版中文', japanese: '旧版日本語。', ts: now - 8 * 86400000, audioUrls: ['/audio/cache/old.wav'] },
+  ] };
+  const played = [];
+  const repairResult = {
+    persisted: true,
+    saved: true,
+    audio: { status: 'ready', generated_at: now, voice_profile_id: 1, voice_name: '测试音色',
+      chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_leg.wav', sentence: '旧版日本語。' }] },
+    line: { index: 0, zh: '旧版中文', ja: '旧版日本語。', emotion: 'neutral', act: {},
+      audio: { status: 'ready', generated_at: now, voice_profile_id: 1, voice_name: '测试音色',
+        chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_leg.wav', sentence: '旧版日本語。' }] } },
+  };
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => DEFAULT_SESSION_SETTINGS,
+    getCharacter: () => ({ name: '角色' }),
+    voiceEnabled: () => true,
+    wallNow: () => now,
+    getRecoveryVoice: () => ({ id: 1, name: '测试音色' }),
+    regenerateLineAudio: async () => {
+      session.messages[0].lines = [repairResult.line];
+      return repairResult;
+    },
+    audio: {
+      stopLine() {},
+      async playLine(index, chunks) {
+        played.push({ index, chunks });
+        return 'ended';
+      },
+    },
+  });
+  t.after(() => log.destroy());
+
+  const entry = log.element.querySelector('.adv-log-entry.is-legacy');
+  assert.ok(entry);
+  const replayBtn = entry.querySelector('.adv-log-replay-btn');
+  const regenBtn = entry.querySelector('.adv-log-regenerate-btn');
+  const statusSpan = entry.querySelector('.adv-log-audio-status');
+
+  assert.equal(replayBtn.disabled, true);
+  assert.equal(regenBtn.hidden, false);
+  assert.equal(regenBtn.textContent, '用当前音色重新生成');
+
+  await regenBtn.onclick({ stopPropagation() {} });
+  assert.equal(replayBtn.disabled, false);
+  assert.equal(regenBtn.hidden, true);
+  assert.equal(statusSpan.textContent, '语音已生成，点语音播放。');
+
+  await replayBtn.onclick({ stopPropagation() {} });
+  assert.equal(played.length, 1);
+  assert.equal(played[0].index, 0);
+  assert.equal(played[0].chunks[0].audio_url, '/audio/repair_leg.wav');
+});
+
+test('LOG legacy repair double-click grace ignores rapid click, and delayed second click cancels with notice', async t => {
+  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+  let now = 8 * 86400000 + 1000;
+  const session = { id: 'legacy_cancel', settings: { voiceProfileId: 1 }, messages: [
+    { id: 'm_cancel', role: 'assistant', content: '旧版中文', japanese: '旧版日本語。', ts: 1000, audioUrls: ['/audio/cache/old.wav'] },
+  ] };
+  let signalRef;
+  let resolveGate;
+  const gatePromise = new Promise(r => { resolveGate = r; });
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => DEFAULT_SESSION_SETTINGS,
+    getCharacter: () => ({ name: '角色' }),
+    voiceEnabled: () => true,
+    wallNow: () => now,
+    getRecoveryVoice: () => ({ id: 1, name: '测试音色' }),
+    regenerateLineAudio: async ({ signal }) => {
+      signalRef = signal;
+      return gatePromise;
+    },
+  });
+  t.after(() => log.destroy());
+
+  const entry = log.element.querySelector('.adv-log-entry.is-legacy');
+  const regenBtn = entry.querySelector('.adv-log-regenerate-btn');
+  const statusSpan = entry.querySelector('.adv-log-audio-status');
+
+  const pending = regenBtn.onclick({ stopPropagation() {} });
+  await microtasks();
+  assert.equal(regenBtn.textContent, '取消生成');
+  assert.equal(statusSpan.textContent, '正在生成这句语音…');
+
+  // Rapid second click (<500ms) is ignored
+  now += 200;
+  await regenBtn.onclick({ stopPropagation() {} });
+  assert.equal(signalRef.aborted, false);
+  assert.equal(regenBtn.textContent, '取消生成');
+
+  // Second click after grace window (>=500ms) cancels
+  now += 350;
+  await regenBtn.onclick({ stopPropagation() {} });
+  assert.equal(signalRef.aborted, true);
+  assert.equal(statusSpan.textContent, '已取消本次生成，原音频已保留。');
+  assert.equal(session.messages[0].lines, undefined);
+});
+
+test('LOG legacy repair validation and guidance: missing voice, missing japanese, overlong japanese', t => {
+  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+  const now = Date.now();
+  let chosen = 0;
+  let voice = null;
+  const session = { id: 'legacy_val', settings: { voiceProfileId: null }, messages: [
+    { id: 'm_no_voice', role: 'assistant', content: '中文', japanese: '日本語。', ts: now - 8 * 86400000 },
+    { id: 'm_no_ja', role: 'assistant', content: '中文', japanese: '   ', ts: now - 8 * 86400000 },
+    { id: 'm_overlong', role: 'assistant', content: '中文', japanese: 'あ'.repeat(2001), ts: now - 8 * 86400000 },
+  ] };
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => DEFAULT_SESSION_SETTINGS,
+    getCharacter: () => ({ name: '角色' }),
+    voiceEnabled: () => true,
+    wallNow: () => now,
+    getRecoveryVoice: () => voice,
+    onChooseVoice: () => { chosen++; },
+    regenerateLineAudio: async () => {},
+  });
+  t.after(() => log.destroy());
+
+  const entries = log.element.querySelectorAll('.adv-log-entry.is-legacy');
+
+  // Entry 0: No voice selected
+  const btn0 = entries[0].querySelector('.adv-log-regenerate-btn');
+  assert.equal(btn0.textContent, '选择音色');
+  btn0.onclick({ stopPropagation() {} });
+  assert.equal(chosen, 1);
+
+  // Now provide voice
+  voice = { id: 1, name: '测试音色' };
+  log.renderAll();
+  const refreshedEntries = log.element.querySelectorAll('.adv-log-entry.is-legacy');
+
+  // Entry 1: Missing Japanese
+  const btn1 = refreshedEntries[1].querySelector('.adv-log-regenerate-btn');
+  assert.equal(btn1.disabled, true);
+  assert.equal(btn1.title, '这句缺少可配音的日文台词');
+
+  // Entry 2: Overlong Japanese (>2000)
+  const btn2 = refreshedEntries[2].querySelector('.adv-log-regenerate-btn');
+  assert.equal(btn2.disabled, true);
+  assert.equal(btn2.title, '这句台词过长，暂时无法单句重新生成');
+});
+
+test('LOG legacy repaired line playback outcomes: retryable network and timeout remain replayable; only confirmed failed disables replay', async t => {
+  for (const outcome of ['ended', 'failed', 'network', 'timeout']) {
+    const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+    const message = { id: `m_rep_${outcome}`, serverMessageId: 42, role: 'assistant', content: '旧中文', japanese: 'こんにちは。',
+      ts: Date.now() - 9 * 86400000, audioUrls: ['/audio/old.wav'] };
+    const session = { id: `sess_${outcome}`, settings: { voiceProfileId: 7 }, messages: [message] };
+    const audio = { status: 'ready', generated_at: Date.now(), voice_profile_id: 7,
+      chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_probe.wav', sentence: message.japanese }] };
+    const canonical = { index: 0, zh: message.content, ja: message.japanese, emotion: 'neutral', act: {}, audio };
+    const log = createBacklog(root, {
+      getSession: () => session, getSettings: () => ({ voiceEnabled: true }), voiceEnabled: () => true,
+      getRecoveryVoice: () => ({ id: 7, name: '当前音色' }), playLegacyVoice() {},
+      audio: { stopLine() {}, async playLine() { return outcome; } },
+      regenerateLineAudio: async () => { message.lines = [canonical]; return { line: canonical, audio, persisted: true, saved: true }; },
+    });
+    t.after(() => log.destroy());
+
+    await log.element.querySelector('.adv-log-regenerate-btn').onclick({ stopPropagation() {} });
+    const replay = log.element.querySelector('.adv-log-replay-btn');
+    assert.equal(replay.disabled, false, 'validated repair should be playable');
+    await replay.onclick({ stopPropagation() {} });
+    assert.equal(replay.disabled, outcome === 'failed', `${outcome} must preserve retryable playback unless confirmed unusable`);
+    const statusSpan = log.element.querySelector('.adv-log-audio-status');
+    if (outcome === 'network') {
+      assert.equal(statusSpan.textContent, '音频加载失败，请稍后在 LOG 里再点「语音」重试。');
+    } else if (outcome === 'timeout') {
+      assert.equal(statusSpan.textContent, '音频加载超时，请稍后在 LOG 里再点「语音」重试。');
+    } else if (outcome === 'failed') {
+      assert.equal(statusSpan.textContent, '语音已过期或不可用');
+    }
+  }
+});
+
+test('LOG chunk-only legacy audio remains playable when fresh, and confirmed failure exposes repair action', async t => {
+  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+  const now = Date.now();
+  const message = { id: 'm_chunk_fresh', role: 'assistant', content: '旧中文', japanese: 'こんにちは。', ts: now,
+    audioChunks: [{ index: 0, url: '/audio/fresh-chunk.wav', sentence: 'こんにちは。' }] };
+  const session = { id: 'chunk-fresh-session', settings: { voiceProfileId: 7 }, messages: [message] };
+  let playLineCalled = false;
+  let playOutcome = 'failed';
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => ({ voiceEnabled: true }),
+    voiceEnabled: () => true,
+    wallNow: () => now,
+    getRecoveryVoice: () => ({ id: 7, name: '当前音色' }),
+    audio: {
+      stopLine() {},
+      async playLine(index, chunks) {
+        playLineCalled = true;
+        assert.equal(index, 0);
+        assert.equal(chunks[0].url, '/audio/fresh-chunk.wav');
+        return playOutcome;
+      },
+    },
+    regenerateLineAudio: async () => {},
+  });
+  t.after(() => log.destroy());
+
+  const replay = log.element.querySelector('.adv-log-replay-btn');
+  const regenBtn = log.element.querySelector('.adv-log-regenerate-btn');
+  assert.equal(replay.disabled, false, 'fresh chunk-only legacy audio should be playable initially');
+  assert.equal(regenBtn.hidden, true, 'repair button should be hidden while replay is enabled');
+
+  // Trigger playback which returns confirmed 'failed' (e.g. 404 from server)
+  await replay.onclick({ stopPropagation() {} });
+  assert.equal(playLineCalled, true);
+  assert.equal(replay.disabled, true, 'confirmed playback failure disables replay');
+  assert.equal(regenBtn.hidden, false, 'repair button becomes visible after confirmed failure');
+  assert.equal(regenBtn.textContent, '用当前音色重新生成');
+});
+
+test('LOG assistant message with explicit empty lines array preserves text and audio but hides repair button', t => {
+  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+  const now = Date.now();
+  const message = {
+    id: 'm_explicit_empty',
+    role: 'assistant',
+    content: '显式空数组台词',
+    japanese: 'セリフ。',
+    ts: now - 8 * 86400000,
+    lines: [],
+    audioUrls: ['/audio/old.wav'],
+  };
+  const session = { id: 'empty-lines-sess', settings: { voiceProfileId: 7 }, messages: [message] };
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => ({ voiceEnabled: true }),
+    voiceEnabled: () => true,
+    getRecoveryVoice: () => ({ id: 7, name: '当前音色' }),
+    regenerateLineAudio: async () => {},
+  });
+  t.after(() => log.destroy());
+
+  const entry = log.element.querySelector('.adv-log-entry.is-legacy');
+  assert.ok(entry, 'entry is rendered');
+  const primary = entry.querySelector('.adv-log-primary');
+  assert.equal(primary.textContent, '显式空数组台词');
+  const replay = entry.querySelector('.adv-log-replay-btn');
+  assert.equal(replay.disabled, true, 'expired replay is disabled');
+  const regenBtn = entry.querySelector('.adv-log-regenerate-btn');
+  assert.equal(regenBtn.hidden, true, 'repair button must be hidden for explicit empty lines array');
 });

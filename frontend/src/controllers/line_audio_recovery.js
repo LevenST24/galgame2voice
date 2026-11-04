@@ -21,16 +21,34 @@ export function createLineAudioRecovery({
     return request(`/api/chat/history?${params.toString()}`, { signal: opts?.signal });
   });
 
-  return async ({ messageId, lineIndex, signal }) => {
+  return async ({ messageId, lineIndex = 0, signal }) => {
     const session = getSession();
     const message = session?.messages?.find(item => item.id === messageId && item.role === 'assistant');
-    const line = message?.lines?.find(item => item.index === lineIndex);
+    const isLegacy = message?.lines == null;
+    let line = null, text = '';
+    const originalLines = message?.lines;
+    const originalContent = message?.content;
+    const originalJapanese = message?.japanese;
+    const originalAudioUrls = message?.audioUrls;
+    const originalAudioChunks = message?.audioChunks;
+    let previousAudio = null;
+
+    if (isLegacy) {
+      if (lineIndex !== 0) throw new Error('这句缺少日文台词，原记录未修改。');
+      text = message?.japanese || '';
+    } else {
+      line = message.lines.find(item => item.index === lineIndex);
+      if (!line) throw new Error('这句缺少日文台词，原记录未修改。');
+      text = line.ja;
+      previousAudio = line.audio;
+    }
+
     const profileId = session?.settings?.voiceProfileId;
     const profile = getVoiceProfiles().find(item => item.id === profileId);
     if (!profile) throw new Error('请先在角色与会话中选择当前音色，再重新生成这句语音。');
-    if (!line || !line.ja?.trim()) throw new Error('这句缺少日文台词，原记录未修改。');
-    if (line.ja.length > 2000) throw new Error('这句台词过长，暂时无法单句重新生成，原记录未修改。');
-    const text = line.ja, settings = { ...session.settings }, previousAudio = line.audio;
+    if (!text?.trim()) throw new Error('这句缺少日文台词，原记录未修改。');
+    if (text.length > 2000) throw new Error('这句台词过长，暂时无法单句重新生成，原记录未修改。');
+    const settings = { ...session.settings };
     const turnUserId = Number.isSafeInteger(message?.serverUserMessageId) && message.serverUserMessageId > 0
       ? message.serverUserMessageId : null;
     const turnConflict = Boolean(message?.turnConflict);
@@ -38,8 +56,13 @@ export function createLineAudioRecovery({
     let serverId = Number.isSafeInteger(message.serverMessageId) && message.serverMessageId > 0
       ? message.serverMessageId : null;
     const current = () => !signal?.aborted && getSession() === session && !isSessionDeleting(session.id)
-      && session.messages.includes(message) && message.lines.includes(line)
-      && line.ja === text && line.audio === previousAudio && session.settings.voiceProfileId === profileId
+      && session.messages.includes(message)
+      && message.lines === originalLines
+      && (isLegacy
+        ? message.content === originalContent && message.japanese === originalJapanese
+          && message.audioUrls === originalAudioUrls && message.audioChunks === originalAudioChunks
+        : message.lines.includes(line) && line.ja === text && line.audio === previousAudio)
+      && session.settings.voiceProfileId === profileId
       && (message.serverUserMessageId ?? null) === turnUserId && Boolean(message.turnConflict) === turnConflict
       && (Number.isSafeInteger(message.serverMessageId) && message.serverMessageId > 0 ? message.serverMessageId : null) === serverId;
     const checkCurrent = () => { if (!current()) throw new DOMException('操作已取消', 'AbortError'); };
@@ -60,14 +83,18 @@ export function createLineAudioRecovery({
       serverId = identity.messageId;
       saveState();
     }
+    const emotion = (isLegacy ? 'neutral' : line.emotion) || 'neutral';
     const body = {
       session_id: session.id, message_id: serverId, line_index: lineIndex, text,
-      voice_profile_id: profileId, emotion: line.emotion || 'neutral', ai_adaptive_voice: settings.aiAdaptiveVoice !== false,
+      voice_profile_id: profileId, emotion, ai_adaptive_voice: settings.aiAdaptiveVoice !== false,
       options: { speed_factor: settings.ttsSpeed ?? 1, temperature: settings.ttsTemperature ?? 1,
         top_k: settings.ttsTopK ?? 15, top_p: settings.ttsTopP ?? 1 },
     };
     const validateAudio = (candidateAudio) => {
-      const normalized = normalizeLines([{ ...line, audio: candidateAudio }])?.[0]?.audio;
+      const sampleLine = isLegacy
+        ? { index: 0, zh: message.content || '', ja: text, emotion: 'neutral', act: {}, audio: candidateAudio }
+        : { ...line, audio: candidateAudio };
+      const normalized = normalizeLines([sampleLine])?.[0]?.audio;
       if (normalized?.status === 'ready' && normalized.chunks?.length === 1
           && normalized.chunks.every(chunk => chunk.line === lineIndex && chunk.sentence === text
             && typeof chunk.audio_url === 'string' && chunk.audio_url.startsWith('/audio/repair_'))
@@ -77,13 +104,27 @@ export function createLineAudioRecovery({
       return null;
     };
     const applyAudio = (audioToApply, persisted, remoteUpdated = false) => {
-      line.audio = audioToApply;
+      let canonicalLine;
+      if (isLegacy) {
+        canonicalLine = {
+          index: 0,
+          zh: message.content || '',
+          ja: text,
+          emotion: 'neutral',
+          act: {},
+          audio: audioToApply,
+        };
+        message.lines = [canonicalLine];
+      } else {
+        line.audio = audioToApply;
+        canonicalLine = line;
+      }
       message.audioChunks = message.lines.flatMap(item => (item.audio?.chunks || []).map(chunk => ({
         url: chunk.audio_url, sentence: chunk.sentence, emotion: item.emotion, line: item.index,
       }))).map((chunk, index) => ({ ...chunk, index }));
       message.audioUrls = message.audioChunks.map(chunk => chunk.url);
       const saved = saveState();
-      const output = { audio: audioToApply, persisted, saved: saved !== false };
+      const output = { audio: audioToApply, persisted, saved: saved !== false, line: canonicalLine };
       if (remoteUpdated) output.remoteUpdated = true;
       return output;
     };

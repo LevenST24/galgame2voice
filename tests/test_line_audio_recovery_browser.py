@@ -81,18 +81,72 @@ await nativeFetch('/result',{method:'POST',body:JSON.stringify(result)});
 
 
 class LineRecoveryHandler(AudioRecoveryHandler):
-    def __init__(self, *args, case, **kwargs):
+    def __init__(self, *args, case, wav_bytes=None, shared_requests=None, **kwargs):
         self.case = case
+        self.wav_bytes = wav_bytes or b""
+        self.shared_requests = shared_requests if shared_requests is not None else {}
         super().__init__(*args, **kwargs)
 
     def do_GET(self):
-        if self.path == "/case":
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/case":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(self.case)
+        elif parsed.path == "/audio/missing_legacy.wav":
+            if "missing_audio_gets" in self.shared_requests:
+                self.shared_requests["missing_audio_gets"].append(self.path)
+            self.send_error(404, "Audio file not found on disk")
+        elif parsed.path == "/audio/repair_browser.wav":
+            if "repair_audio_gets" in self.shared_requests:
+                self.shared_requests["repair_audio_gets"].append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(len(self.wav_bytes)))
+            self.end_headers()
+            self.wfile.write(self.wav_bytes)
         else:
             super().do_GET()
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/voice/regenerate-line":
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            if "regen_posts" in self.shared_requests:
+                self.shared_requests["regen_posts"].append(body)
+            audio = {
+                "status": "ready",
+                "generated_at": int(time.time() * 1000),
+                "voice_profile_id": 7,
+                "voice_name": "当前测试音色",
+                "chunks": [{
+                    "index": 0,
+                    "line": 0,
+                    "audio_url": "/audio/repair_browser.wav",
+                    "sentence": body.get("text", "こんにちは。"),
+                }],
+            }
+            resp_bytes = json.dumps({
+                "session_id": body.get("session_id", "repair-browser-legacy"),
+                "message_id": body.get("message_id", 42),
+                "line_index": 0,
+                "voice_profile_id": 7,
+                "audio": audio,
+                "persisted": True,
+            }, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(resp_bytes)))
+            self.end_headers()
+            self.wfile.write(resp_bytes)
+        elif parsed.path == "/api/voice/synthesize":
+            if "transient_synth_posts" in self.shared_requests:
+                self.shared_requests["transient_synth_posts"].append(self.path)
+            self.send_error(500, "Unexpected transient synthesize call")
+        else:
+            super().do_POST()
 
 
 @pytest.mark.requires_piped_subprocess
@@ -554,3 +608,297 @@ def test_two_tab_repair_sync_via_409(tmp_path, warm_cache):
         server.shutdown()
         server.server_close()
         worker.join(timeout=2)
+
+
+LEGACY_SCRIPT = """
+import {createStage} from '/frontend/src/adv/stage.js';
+import {createBacklog} from '/frontend/src/adv/backlog.js';
+import {createLineAudioRecovery} from '/frontend/src/controllers/line_audio_recovery.js';
+import {StreamAudioController} from '/frontend/src/audio_player.js';
+
+const mode = __MODE__;
+const nativeFetch = globalThis.fetch.bind(globalThis);
+const isMissingFile = mode === 'missing_file';
+const result = {};
+const oldTime = isMissingFile ? Date.now() - 1000 : Date.now() - 9 * 86400000;
+const audioUrls = isMissingFile ? ['/audio/missing_legacy.wav'] : ['/audio/cache/old.wav'];
+const session = {
+  id: 'repair-browser-legacy',
+  settings: { voiceProfileId: 7 },
+  messages: [{
+    id: 'm_42',
+    serverMessageId: 42,
+    role: 'assistant',
+    content: '原始旧版中文',
+    japanese: 'こんにちは。',
+    ts: oldTime,
+    audioUrls,
+  }],
+};
+
+const posts = [];
+let saves = 0, requestSignal, release;
+const stubResponse = {
+  session_id: session.id,
+  message_id: 42,
+  line_index: 0,
+  voice_profile_id: 7,
+  persisted: true,
+  audio: {
+    status: 'ready',
+    generated_at: Date.now(),
+    voice_profile_id: 7,
+    voice_name: '当前测试音色',
+    chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_browser.wav', sentence: 'こんにちは。' }],
+  },
+};
+const wav = new Blob([Uint8Array.from(atob(__WAV__), c => c.charCodeAt(0))], { type: 'audio/wav' });
+
+if (!isMissingFile) {
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/regenerate-line') {
+      posts.push(JSON.parse(options.body));
+      requestSignal = options.signal;
+      if (mode === 'cancel' || mode === 'late_change') await new Promise(resolve => { release = resolve; });
+      return Response.json(stubResponse);
+    }
+    if (url === '/audio/repair_browser.wav') {
+      return new Response(wav);
+    }
+    throw new Error('Unexpected request ' + url);
+  };
+}
+
+const wait = () => new Promise(resolve => setTimeout(resolve, 20));
+const until = async check => {
+  for (let i = 0; i < 200; i++) {
+    if (check()) return;
+    await wait();
+  }
+  throw new Error('Condition did not finish');
+};
+
+const player = new StreamAudioController({ fetchTimeoutMs: 3000 });
+player.startSession('browser-legacy-repair');
+
+const outcomes = [];
+const origPlayLine = player.playLine.bind(player);
+player.playLine = async function(...args) {
+  const outcome = await origPlayLine(...args);
+  outcomes.push(outcome);
+  return outcome;
+};
+
+let log;
+try {
+  const stage = createStage(document.getElementById('fixture-root'));
+  const recover = createLineAudioRecovery({
+    getSession: () => session,
+    getVoiceProfiles: () => [{ id: 7, name: '当前测试音色' }],
+    saveState: () => { saves++; return true; },
+  });
+
+  const makeBacklog = () => createBacklog(stage.overlay, {
+    getSession: () => session,
+    getSettings: () => session.settings,
+    getCharacter: () => ({ id: 7, name: '当前测试音色' }),
+    getRecoveryVoice: () => ({ id: 7, name: '当前测试音色' }),
+    voiceEnabled: () => true,
+    regenerateLineAudio: recover,
+    audio: player,
+    onClose: () => log.destroy(),
+  });
+
+  log = makeBacklog();
+  await document.fonts.ready; await wait();
+
+  const click = selector => {
+    const el = document.querySelector(selector), r = el?.getBoundingClientRect();
+    const hit = r && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    if (!el || el.disabled || el.hidden || el.closest('[inert]') || !r.width || !r.height || !el.contains(hit))
+      throw new Error('Unreachable control ' + selector + ' hit=' + hit?.className);
+    el.click();
+  };
+
+  result.isLegacyEntry = Boolean(document.querySelector('.adv-log-entry.is-legacy'));
+
+  if (isMissingFile) {
+    const replay = document.querySelector('.adv-log-replay-btn');
+    const regen = document.querySelector('.adv-log-regenerate-btn');
+    result.initialReplayEnabled = !replay.disabled;
+    result.initialRegenHidden = regen.hidden;
+
+    click('.adv-log-replay-btn');
+    await until(() => outcomes.length === 1 && replay.disabled && !regen.hidden);
+    result.post404ReplayDisabled = replay.disabled;
+    result.post404RegenReachable = !regen.hidden && !regen.disabled;
+    result.namedVoice = regen.title;
+
+    click('.adv-log-regenerate-btn');
+    await until(() => Array.isArray(session.messages[0].lines) && session.messages[0].lines[0].audio.status === 'ready');
+    await wait();
+    result.repairedReplayEnabled = !replay.disabled;
+    result.repairedRegenHidden = regen.hidden;
+
+    click('.adv-log-replay-btn');
+    await until(() => outcomes.length === 2 && !replay.classList.contains('is-playing'));
+
+    log.destroy();
+    log = makeBacklog();
+    await wait();
+    const reopenedReplay = document.querySelector('.adv-log-replay-btn');
+    const reopenedRegen = document.querySelector('.adv-log-regenerate-btn');
+    result.reopenedPlayable = !reopenedReplay.disabled;
+    result.reopenedRegenHidden = reopenedRegen.hidden;
+
+    click('.adv-log-replay-btn');
+    await until(() => outcomes.length === 3 && !reopenedReplay.classList.contains('is-playing'));
+
+    result.outcomes = outcomes;
+    result.historyTimestamp = session.messages[0].ts;
+    result.originalTimestamp = oldTime;
+    result.saves = saves;
+    result.canonicalLine = session.messages[0].lines[0];
+  } else {
+    result.namedVoice = document.querySelector('.adv-log-regenerate-btn').title;
+    click('.adv-log-regenerate-btn');
+    await until(() => posts.length === 1);
+    if (mode === 'cancel') {
+      click('.adv-log-close-btn');
+      await until(() => requestSignal.aborted);
+      release(); await wait(); await wait();
+      result.cancelled = requestSignal.aborted;
+      result.linesUndefined = session.messages[0].lines === undefined;
+      result.noWrites = saves === 0;
+    } else if (mode === 'late_change') {
+      session.settings.voiceProfileId = 99;
+      release(); await wait(); await wait();
+      result.linesUndefined = session.messages[0].lines === undefined;
+      result.noWrites = saves === 0;
+    } else {
+      await until(() => Array.isArray(session.messages[0].lines) && session.messages[0].lines[0].audio.status === 'ready');
+      await wait();
+      const replay = document.querySelector('.adv-log-replay-btn');
+      result.replayEnabled = !replay.disabled;
+      click('.adv-log-replay-btn');
+      await until(() => outcomes.length === 1 && !replay.classList.contains('is-playing'));
+      result.outcomes = outcomes;
+      result.played = outcomes[0] === 'ended';
+      result.historyTimestamp = session.messages[0].ts;
+      result.originalTimestamp = oldTime;
+      result.saves = saves;
+      result.canonicalLine = session.messages[0].lines[0];
+      log.destroy();
+      log = makeBacklog();
+      await wait();
+      const reopenedReplay = document.querySelector('.adv-log-replay-btn');
+      result.reopenedPlayable = !reopenedReplay.disabled;
+    }
+    result.posts = posts;
+  }
+} catch (error) {
+  result.error = String(error.stack || error);
+} finally {
+  if (mode === 'cancel' || mode === 'late_change') log?.destroy();
+  await player.close();
+}
+const output = document.createElement('pre');
+output.id = 'line-recovery-result';
+output.hidden = true;
+output.textContent = JSON.stringify(result);
+parent.document.body.append(output);
+await nativeFetch('/result', { method: 'POST', body: JSON.stringify(result) });
+"""
+
+
+@pytest.mark.requires_piped_subprocess
+@pytest.mark.parametrize("width,height", [(1280, 900)])
+@pytest.mark.parametrize("mode", ["success", "cancel", "late_change", "missing_file"])
+def test_legacy_log_reply_repair_in_chromium(tmp_path, width, height, mode):
+    executable = browser_path()
+    if not executable:
+        pytest.skip("LOG repair needs an installed Chromium browser")
+    output = io.BytesIO()
+    with wave.open(output, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(8000)
+        audio.writeframes(b"\x20\x03" * 800)
+    wav_bytes = output.getvalue()
+    script = LEGACY_SCRIPT.replace("__MODE__", json.dumps(mode)).replace("__WAV__", json.dumps(base64.b64encode(wav_bytes).decode()))
+    case = ('<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/frontend/src/styles.css">'
+            '<link rel="stylesheet" href="/frontend/src/adv/adv.css"><link rel="stylesheet" href="/frontend/src/adv/app.css">'
+            '<body><div id="fixture-root"></div>'
+            f'<script type="module">{script}</script></body>').encode()
+    page = (f'<body style="margin:0"><iframe src="/case" style="border:0;width:{width}px;height:{height}px"></iframe>'
+            '<img src="/hold-image" hidden></body>').encode()
+    ready, result = threading.Event(), {}
+    shared_requests = {
+        "missing_audio_gets": [],
+        "repair_audio_gets": [],
+        "regen_posts": [],
+        "transient_synth_posts": [],
+    }
+    server = make_layout_server(partial(
+        LineRecoveryHandler,
+        page=page,
+        case=case,
+        ready=ready,
+        result=result,
+        wav_bytes=wav_bytes,
+        shared_requests=shared_requests,
+    ))
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        rendered = run_layout_browser([
+            executable, "--headless", "--no-sandbox", "--disable-gpu", "--mute-audio", "--autoplay-policy=no-user-gesture-required",
+            "--no-first-run", "--disable-sync", "--no-proxy-server", "--disable-background-networking", "--disable-extensions",
+            f"--user-data-dir={tmp_path/'browser'}", f"--window-size={max(600,width+100)},{height+100}",
+            "--dump-dom", f"--screenshot={tmp_path/'legacy-line-repair.png'}", f"http://127.0.0.1:{server.server_port}/",
+        ], reset=lambda: (ready.clear(), result.clear()))
+    finally:
+        ready.set()
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
+    (tmp_path / "rendered.html").write_bytes(rendered.stdout)
+    (tmp_path / "browser.log").write_bytes(rendered.stderr)
+    assert rendered.returncode == 0 and result and "error" not in result, result or rendered.stderr[-1000:]
+    assert result["isLegacyEntry"] is True
+    assert "当前测试音色" in result["namedVoice"]
+    if mode == "cancel":
+        assert result["cancelled"] and result["linesUndefined"] and result["noWrites"]
+        assert len(result["posts"]) == 1 and result["posts"][0]["voice_profile_id"] == 7
+    elif mode == "late_change":
+        assert result["linesUndefined"] and result["noWrites"]
+        assert len(result["posts"]) == 1 and result["posts"][0]["voice_profile_id"] == 7
+    elif mode == "missing_file":
+        assert result["initialReplayEnabled"] is True
+        assert result["initialRegenHidden"] is True
+        assert result["post404ReplayDisabled"] is True
+        assert result["post404RegenReachable"] is True
+        assert result["repairedReplayEnabled"] is True
+        assert result["repairedRegenHidden"] is True
+        assert result["reopenedPlayable"] is True
+        assert result["reopenedRegenHidden"] is True
+        assert result["outcomes"] == ["failed", "ended", "ended"]
+        assert shared_requests["missing_audio_gets"] == ["/audio/missing_legacy.wav"]
+        assert len(shared_requests["regen_posts"]) == 1
+        assert shared_requests["regen_posts"][0]["line_index"] == 0
+        assert shared_requests["regen_posts"][0]["message_id"] == 42
+        assert shared_requests["regen_posts"][0]["text"] == "こんにちは。"
+        assert len(shared_requests["transient_synth_posts"]) == 0
+        assert len(shared_requests["repair_audio_gets"]) >= 1
+        assert result["historyTimestamp"] == result["originalTimestamp"] and result["saves"] == 1
+        canonical = result["canonicalLine"]
+        assert canonical["index"] == 0 and canonical["ja"] == "こんにちは。" and canonical["zh"] == "原始旧版中文"
+        assert canonical["audio"]["status"] == "ready"
+    else:
+        assert result["replayEnabled"] and result["played"]
+        assert result["outcomes"] == ["ended"]
+        assert result["historyTimestamp"] == result["originalTimestamp"] and result["saves"] == 1
+        assert result["reopenedPlayable"] is True
+        canonical = result["canonicalLine"]
+        assert canonical["index"] == 0 and canonical["ja"] == "こんにちは。" and canonical["zh"] == "原始旧版中文"
+        assert canonical["audio"]["status"] == "ready"
