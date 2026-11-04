@@ -32,6 +32,9 @@ let providerSaving = false;
 let configSaving = false;
 const dirtyProviderFields = new Set();
 const PROVIDER_FIELDS = ['gApiKey', 'gBaseUrl', 'gChatModel', 'gChatModelSelect', 'gReasoningEffort', 'gCustomName'];
+let providerTestRevision = 0;
+let providerTestController = null;
+let providerTestInitialHtml = null;
 let engineDirectory = null;
 let configDirty = false;
 let configRevision = 0;
@@ -72,11 +75,41 @@ export function hasProviderReadError() {
   return providerReadError;
 }
 
+function invalidateActiveProviderTest() {
+  providerTestRevision += 1;
+  if (providerTestController) {
+    providerTestController.abort();
+    providerTestController = null;
+  }
+  if (_dom.gProviderTest) {
+    _dom.gProviderTest.disabled = false;
+    if (providerTestInitialHtml) _dom.gProviderTest.innerHTML = providerTestInitialHtml;
+  }
+}
+
+function isProviderTestCurrent(revision, snapshot) {
+  if (revision !== providerTestRevision) return false;
+  if (!settingsVisible()) return false;
+  if (!_dom.gProvider || _dom.gProvider.value !== snapshot.rawPid) return false;
+  if ((_dom.gBaseUrl?.value.trim() || '') !== snapshot.baseUrl) return false;
+  if ((_dom.gChatModel?.value.trim() || '') !== snapshot.chatModel) return false;
+  if ((_dom.gApiKey?.value.trim() || '') !== snapshot.apiKey) return false;
+  if ((_dom.gReasoningEffort?.value || '') !== snapshot.reasoningEffort) return false;
+  return true;
+}
+
 function markProviderDirty(field) {
   providerDirty = true;
   providerRevision += 1;
   dirtyProviderFields.add(field);
   if (field === 'gChatModelSelect') dirtyProviderFields.add('gChatModel');
+  if (PROVIDER_FIELDS.includes(field)) {
+    invalidateActiveProviderTest();
+    if (_dom.gProviderTestResult) {
+      _dom.gProviderTestResult.className = 'test-result-box hidden';
+      if (_dom.gTestResultBody) _dom.gTestResultBody.textContent = '';
+    }
+  }
 }
 
 function updateSaveButtons() {
@@ -97,6 +130,8 @@ export function initGlobalSettings(dom, callbacks = {}) {
   providerRevision += 1;
   providerLoad += 1;
   dirtyProviderFields.clear();
+  providerTestInitialHtml = dom.gProviderTest?.innerHTML || '<svg class="icon" style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-activity"></use></svg><span>测试连通性</span>';
+  invalidateActiveProviderTest();
   providerSaving = configSaving = false;
   updateSaveButtons();
   configDirty = false;
@@ -119,7 +154,10 @@ export function initGlobalSettings(dom, callbacks = {}) {
   const telemetryDocument = document;
   const syncTelemetryVisibility = () => {
     if (settingsVisible() && !telemetryDocument.hidden) startTelemetryRefresh();
-    else stopTelemetryRefresh();
+    else {
+      stopTelemetryRefresh();
+      invalidateActiveProviderTest();
+    }
   };
   const unsubscribeModal = onModalChange(syncTelemetryVisibility);
   telemetryDocument.addEventListener?.('visibilitychange', syncTelemetryVisibility);
@@ -312,6 +350,11 @@ export function initGlobalSettings(dom, callbacks = {}) {
 }
 
 export function openGlobalSettings(tabName = null) {
+  invalidateActiveProviderTest();
+  if (_dom.gProviderTestResult) {
+    _dom.gProviderTestResult.className = 'test-result-box hidden';
+    if (_dom.gTestResultBody) _dom.gTestResultBody.textContent = '';
+  }
   if (_callbacks.openModal) _callbacks.openModal(_dom.globalModal);
   if (typeof tabName === 'string' && tabName && _dom.gTabs) {
     const tabBtn = _dom.gTabs.querySelector(`[data-gtab="${tabName}"]`);
@@ -474,6 +517,7 @@ export async function loadProviders({ formRevision = providerRevision } = {}) {
 }
 
 export function onProviderChange() {
+  invalidateActiveProviderTest();
   providerDirty = false;
   providerRevision += 1;
   dirtyProviderFields.clear();
@@ -674,29 +718,49 @@ function connectionPreferencePending() {
 export async function handleProviderTest() {
   if (!_dom.gProviderTest || !_dom.gProvider) return;
   if (connectionPreferencePending()) return;
+
+  invalidateActiveProviderTest();
+  const revision = ++providerTestRevision;
+  const controller = new AbortController();
+  providerTestController = controller;
+
+  const rawPid = _dom.gProvider.value;
+  const pid = rawPid === '__custom__' ? 'custom' : rawPid;
+  const baseUrl = _dom.gBaseUrl ? _dom.gBaseUrl.value.trim() : '';
+  const chatModel = _dom.gChatModel ? _dom.gChatModel.value.trim() : '';
+  const apiKey = _dom.gApiKey ? _dom.gApiKey.value.trim() : '';
+  const reasoningEffort = _dom.gReasoningEffort ? _dom.gReasoningEffort.value : '';
+
+  const snapshot = {
+    rawPid,
+    pid,
+    baseUrl,
+    chatModel,
+    apiKey,
+    reasoningEffort,
+  };
+
   _dom.gProviderTest.disabled = true;
-  const origHtml = _dom.gProviderTest.innerHTML;
+  if (!providerTestInitialHtml && _dom.gProviderTest.innerHTML && !_dom.gProviderTest.innerHTML.includes('测试中')) {
+    providerTestInitialHtml = _dom.gProviderTest.innerHTML;
+  }
   _dom.gProviderTest.innerHTML =
     '<svg class="icon" style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-activity"></use></svg><span>测试中…</span>';
 
+  const payload = {
+    id: pid,
+    api_base_url: baseUrl,
+    chat_model: chatModel,
+    reasoning_effort: reasoningEffort || null,
+  };
+  if (apiKey && !apiKey.includes('****')) {
+    payload.api_key = apiKey;
+  }
+
   try {
-    const pid = _dom.gProvider.value === '__custom__' ? 'custom' : _dom.gProvider.value;
-    const baseUrl = _dom.gBaseUrl ? _dom.gBaseUrl.value.trim() : '';
-    const chatModel = _dom.gChatModel ? _dom.gChatModel.value.trim() : '';
-    const apiKey = _dom.gApiKey ? _dom.gApiKey.value.trim() : '';
-    const reasoningEffort = _dom.gReasoningEffort ? _dom.gReasoningEffort.value : null;
+    const data = await testProviderConnection(payload, { signal: controller.signal });
 
-    const payload = {
-      id: pid,
-      api_base_url: baseUrl,
-      chat_model: chatModel,
-      reasoning_effort: reasoningEffort || null,
-    };
-    if (apiKey && !apiKey.includes('****')) {
-      payload.api_key = apiKey;
-    }
-
-    const data = await testProviderConnection(payload);
+    if (!isProviderTestCurrent(revision, snapshot)) return;
 
     if (_dom.gProviderTestResult) _dom.gProviderTestResult.classList.remove('hidden');
 
@@ -726,6 +790,10 @@ export async function handleProviderTest() {
       if (_dom.gTestResultBody) _dom.gTestResultBody.textContent = diag.guidance;
     }
   } catch (e) {
+    if (e.name === 'AbortError' || controller.signal.aborted) {
+      return;
+    }
+    if (!isProviderTestCurrent(revision, snapshot)) return;
     showToast(`测试请求异常: ${e.message || e}`, 'error');
     if (_dom.gProviderTestResult) {
       _dom.gProviderTestResult.className = 'test-result-box test-result-error';
@@ -735,8 +803,13 @@ export async function handleProviderTest() {
       if (_dom.gTestResultBody) _dom.gTestResultBody.textContent = `请求发送失败: ${e.message || e}`;
     }
   } finally {
-    _dom.gProviderTest.disabled = false;
-    _dom.gProviderTest.innerHTML = origHtml;
+    if (revision === providerTestRevision) {
+      if (providerTestController === controller) providerTestController = null;
+      if (_dom.gProviderTest) {
+        _dom.gProviderTest.disabled = false;
+        if (providerTestInitialHtml) _dom.gProviderTest.innerHTML = providerTestInitialHtml;
+      }
+    }
   }
 }
 
@@ -1086,6 +1159,12 @@ export async function saveGlobalConfig() {
     loadGlobalConfig();
     return;
   }
+  const tgEnabled = _dom.gTgEnabled ? _dom.gTgEnabled.checked : false;
+  if (tgEnabled && _dom.gTgChatId && !_dom.gTgChatId.value.trim()) {
+    showToast('填写允许访问的用户ID，或先关闭Telegram再保存', 'error');
+    updateSaveButtons();
+    return;
+  }
   configSaving = true;
   updateSaveButtons();
   let modelSaved = false;
@@ -1104,8 +1183,8 @@ export async function saveGlobalConfig() {
       fragment_interval: _dom.gParamFragmentInterval ? Number(_dom.gParamFragmentInterval.value) || 0.3 : undefined,
       audio_retention_minutes: _dom.gAudioRetention ? Math.max(1, Number(_dom.gAudioRetention.value) || 30) : 30,
       telegram_enabled: _dom.gTgEnabled ? _dom.gTgEnabled.checked : false,
-      telegram_chat_id: _dom.gTgChatId ? _dom.gTgChatId.value.trim() || undefined : undefined,
-      telegram_admin_ids: _dom.gTgChatId ? _dom.gTgChatId.value.trim() || undefined : undefined,
+      telegram_chat_id: _dom.gTgChatId ? _dom.gTgChatId.value.trim() : undefined,
+      telegram_admin_ids: _dom.gTgChatId ? _dom.gTgChatId.value.trim() : undefined,
       telegram_proxy_enabled: _dom.gTgProxyEnabled ? _dom.gTgProxyEnabled.checked : false,
       telegram_proxy_host: _dom.gTgProxyHost ? _dom.gTgProxyHost.value.trim() || '127.0.0.1' : '127.0.0.1',
       telegram_proxy_port: _dom.gTgProxyPort ? Number(_dom.gTgProxyPort.value) || 10809 : 10809,

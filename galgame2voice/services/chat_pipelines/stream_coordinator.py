@@ -152,6 +152,7 @@ class _StreamRun:
         self.tts_cached_chunks: int = 0
         self.tts_generated_chunks: int = 0
         self.error_seen: bool = False
+        self.truncation_error: BaseException | None = None
 
 
 class StreamCoordinator:
@@ -683,12 +684,14 @@ class StreamCoordinator:
             idx = line["index"]
             state = run.line_audio_states.get(idx)
             if state is not None:
-                if state["emitted"]:
+                if state.get("emitted"):
                     status = state["status"]
+                elif state.get("sealed") and state.get("pending", 0) == 0 and not state.get("errors"):
+                    status = "ready" if state.get("chunks") else "skipped"
                 elif mark_unfinished_failed:
                     status = "failed"
                 else:
-                    status = "failed" if state["errors"] else ("ready" if state["chunks"] else "skipped")
+                    status = "failed" if state.get("errors") else ("ready" if state.get("chunks") else "skipped")
                 chunks = list(state.get("chunks", []))
             else:
                 status = "failed" if mark_unfinished_failed else "skipped"
@@ -761,6 +764,8 @@ class StreamCoordinator:
             if not (cancel_event and cancel_event.is_set()):
                 await self._queue_sentences(run, rem_sentences, final=True)
         except Exception as exc:
+            if getattr(exc, "is_truncation", False):
+                run.truncation_error = exc
             logger.error("LLM Producer error: %s", exc)
             try:
                 p_ch, p_ja, _, _, _ = text_pipe.finalize()
@@ -865,6 +870,7 @@ class StreamCoordinator:
                         lines=lines,
                         audio_url="",
                         latency_ms=int((time.perf_counter() - t_start) * 1000),
+                        reply_to_message_id=getattr(self.user_msg, "id", None),
                     ))
                     after_commit(conn, lambda: self._mark_persisted(stored_message.id))
         except TurnUnavailableError:
@@ -906,9 +912,13 @@ class StreamCoordinator:
         snapshot_lines = self._snapshot_lines_with_audio(run, mark_unfinished_failed=True)
         run.persisted_lines = snapshot_lines or None
 
-        if is_cancelled:
-            partial_ch = run.final_result.get("chinese") or run.parser.chinese_extracted
-            partial_ja = run.final_result.get("japanese") or run.parser.japanese_extracted
+        partial_ch = run.final_result.get("chinese") or run.parser.chinese_extracted
+        partial_ja = run.final_result.get("japanese") or run.parser.japanese_extracted
+        has_partial = _has_meaningful_text(partial_ch, partial_ja) or bool(snapshot_lines)
+
+        if is_cancelled or (getattr(run, "truncation_error", None) is not None and has_partial):
+            if not self.persisted_assistant and self.user_msg is not None and has_partial:
+                await self._persist_partial_message(partial_ch, partial_ja, run.t_start, lines=snapshot_lines)
             yield {
                 "event": "done",
                 "data": {
@@ -917,6 +927,7 @@ class StreamCoordinator:
                     "japanese": partial_ja or "",
                     "lines": snapshot_lines,
                     "reply_format": run.parser.line_scanner.format,
+                    **({"message_id": self.persisted_message_id} if self.persisted_message_id is not None else {}),
                 },
             }
 
@@ -1003,6 +1014,7 @@ class StreamCoordinator:
                         lines=lines,
                         audio_url=total_audio_url,
                         latency_ms=total_latency,
+                        reply_to_message_id=getattr(self.user_msg, "id", None),
                     ))
                     after_commit(conn, lambda: self._mark_persisted(stored_message.id))
         else:
@@ -1192,6 +1204,14 @@ class StreamCoordinator:
         run = self._init_stream_run()
 
         try:
+            if getattr(self.user_msg, "id", None) is not None:
+                yield {
+                    "event": "turn_started",
+                    "data": {
+                        "session_id": self.session_id,
+                        "user_message_id": self.user_msg.id,
+                    },
+                }
             run.current_pose = await get_recent_pose(self.db_path, self.session_id)
             self._start_subtasks(run)
 

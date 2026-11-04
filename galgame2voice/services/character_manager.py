@@ -564,6 +564,7 @@ class CharacterManager:
         existing_row: Any,
         pkg: CharacterPackage,
         defaults: dict[str, Any],
+        known_other_packages: Any = None,
     ) -> dict[str, Any]:
         """Compute changed values; the profile repository owns their SQL writes."""
         manifest = pkg.manifest
@@ -582,21 +583,29 @@ class CharacterManager:
 
         updates: dict[str, Any] = {}
 
-        current_reference = cls._resolve_profile_reference(current_ref, pkg) if current_ref else None
-        ref_needs_update = (
-            not current_ref
-            or current_reference is None
-            or cls._is_cross_character_audio(current_ref, pkg)
-        )
+        from galgame2voice.services.reference_origin import ReferenceOrigin, classify_reference_origin
+        origin = classify_reference_origin(current_ref, pkg, known_other_packages=known_other_packages)
+
+        ref_needs_update = False
+        if origin in (ReferenceOrigin.EMPTY, ReferenceOrigin.CROSS_PACKAGE):
+            ref_needs_update = True
+        elif origin == ReferenceOrigin.PACKAGE_OWNED:
+            current_reference = cls._resolve_profile_reference(current_ref, pkg)
+            if current_reference is None:
+                ref_needs_update = True
+            else:
+                updates["ref_audio_path"] = to_project_relative_path(current_reference)
+        else:  # ReferenceOrigin.EXTERNAL_OR_CUSTOM
+            ref_needs_update = False
 
         if ref_needs_update and ref_audio_str:
             updates["ref_audio_path"] = ref_audio_str
-        elif current_reference is not None:
-            # Qualify package-relative audio so runtime lookup cannot choose an
-            # identically named file from another package. Keep its transcript.
-            updates["ref_audio_path"] = to_project_relative_path(current_reference)
 
-        if (not current_prompt.strip() or ref_needs_update) and prompt_text:
+        if ref_needs_update and prompt_text:
+            updates["prompt_text"] = prompt_text
+            if prompt_lang:
+                updates["prompt_lang"] = prompt_lang
+        elif origin != ReferenceOrigin.EXTERNAL_OR_CUSTOM and not current_prompt.strip() and prompt_text:
             updates["prompt_text"] = prompt_text
             if prompt_lang:
                 updates["prompt_lang"] = prompt_lang
@@ -627,16 +636,44 @@ class CharacterManager:
         return {column: value for column, value in updates.items() if existing_row[column] != value}
 
     @staticmethod
-    def _resolve_profile_reference(value: str, pkg: CharacterPackage) -> Path | None:
+    def _resolve_profile_reference(
+        value: str,
+        pkg: CharacterPackage,
+        other_folders: set[Path] | None = None,
+    ) -> Path | None:
         """Resolve explicit paths, never another package's same-named audio."""
-        path = Path(value.strip().strip("\"'").replace("\\", "/"))
-        if path.is_absolute():
-            return path if path.is_file() else None
+        clean = value.strip().strip("\"'").replace("\\", "/")
+        if not clean:
+            return None
+        path = Path(clean)
         settings = get_settings()
-        for base in (settings.project_root, settings.audio_dir, pkg.folder):
-            candidate = base / path
-            if candidate.is_file():
-                return candidate
+
+        candidates: list[Path] = []
+        if path.is_absolute():
+            candidates.append(path)
+        else:
+            candidates.extend([pkg.folder / path, settings.project_root / path, settings.audio_dir / path])
+
+        if other_folders is None:
+            try:
+                mgr = CharacterManager.get_instance()
+                other_folders = {
+                    Path(other.folder).resolve()
+                    for other in mgr.get_available_characters()
+                    if getattr(other, "folder", None) and getattr(other, "id", None) != getattr(pkg, "id", None)
+                }
+            except Exception:
+                other_folders = set()
+
+        for cand in candidates:
+            try:
+                resolved = cand.resolve()
+                if resolved.is_file():
+                    if other_folders and any(resolved == of or resolved.is_relative_to(of) for of in other_folders):
+                        continue
+                    return resolved
+            except (OSError, ValueError):
+                pass
         return None
 
     @classmethod
@@ -646,9 +683,10 @@ class CharacterManager:
         existing_row: Any,
         pkg: CharacterPackage,
         defaults: dict[str, Any],
+        known_other_packages: Any = None,
     ) -> bool:
         """Idempotently updates existing voice_profile row with healed paths and prompt updates."""
-        updates = await asyncio.to_thread(cls._build_profile_updates, existing_row, pkg, defaults)
+        updates = await asyncio.to_thread(cls._build_profile_updates, existing_row, pkg, defaults, known_other_packages)
         if updates:
             from galgame2voice.database.crud_modules.voice_profiles import update_voice_profile
             from galgame2voice.database.models import VoiceProfileUpdate
@@ -725,7 +763,8 @@ class CharacterManager:
                 defaults = await asyncio.to_thread(self._resolve_package_profile_defaults, pkg)
 
                 if existing_row:
-                    if await self._update_existing_profile(conn, existing_row, pkg, defaults):
+                    other_pkgs = [p for p in valid_pkgs if p is not pkg]
+                    if await self._update_existing_profile(conn, existing_row, pkg, defaults, known_other_packages=other_pkgs):
                         synced_count += 1
                 else:
                     is_default_val = 0

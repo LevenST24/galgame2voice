@@ -21,6 +21,7 @@ from galgame2voice.adapters.base import (
     calculate_backoff_delay,
     parse_sse_lines,
     aclose_stream_context,
+    validate_stream_completion,
 )
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.http_client import create_async_client
@@ -448,10 +449,29 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 raise RuntimeError(f"API returned status {response.status_code}: {error_body.decode('utf-8', errors='ignore')}")
 
             yielded_any = False
+            saw_done = False
+            local_finish_reason: str | None = None
+
+            def _on_done() -> None:
+                nonlocal saw_done
+                saw_done = True
+
+            def _on_chunk(chunk: dict[str, Any]) -> None:
+                nonlocal local_finish_reason
+                self._record_finish_reason(chunk)
+                choices = chunk.get("choices")
+                if isinstance(choices, list) and choices and isinstance(choices[0], dict) and choices[0].get("finish_reason"):
+                    local_finish_reason = choices[0]["finish_reason"]
             try:
-                async for token in parse_sse_lines(response.aiter_lines(), self._record_finish_reason):
+                async for token in parse_sse_lines(response.aiter_lines(), _on_chunk, _on_done):
                     yielded_any = True
                     yield token
+
+                validate_stream_completion(
+                    yielded_any=yielded_any,
+                    saw_terminal=saw_done,
+                    finish_reason=local_finish_reason,
+                )
                 return
             except TRANSIENT_NETWORK_EXCEPTIONS as exc:
                 if not yielded_any and attempt < max_retries:

@@ -464,6 +464,10 @@ class TestR2InterruptAndCancellationTiming:
         )
 
         # Wait until producer starts and yields first token
+        metadata_event = await gen.__anext__()
+        assert metadata_event.get("event") == "turn_started"
+        assert metadata_event.get("data", {}).get("session_id") == "cancel_timing_session"
+        assert isinstance(metadata_event.get("data", {}).get("user_message_id"), int) and metadata_event["data"]["user_message_id"] > 0
         first_event = await gen.__anext__()
         assert first_event is not None
         assert adapter.started_event.is_set()

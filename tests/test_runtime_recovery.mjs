@@ -600,4 +600,214 @@ for (const allowed of [true, false]) {
     globalThis.document = previousDocument;
   }
 }
+{
+  const previousDocument = globalThis.document;
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  const toastRoot = doc.createElement('div');
+  toastRoot.id = 'toastRoot';
+  doc.body.appendChild(toastRoot);
+  const control = (tag, value, checked = false) => {
+    const el = doc.createElement(tag);
+    el.value = value;
+    el.checked = checked;
+    return el;
+  };
+  const makeDom = (includeChatId = true) => {
+    const dom = {
+      gParamSovitsUrl: control('input', 'http://127.0.0.1:9880'),
+      gPrecision: control('select', 'auto'),
+      gParamSliceMethod: control('select', 'cut5'),
+      gParamSpeed: control('input', '1'),
+      gParamTopK: control('input', '15'),
+      gParamTopP: control('input', '1'),
+      gParamTemp: control('input', '1'),
+      gParamFragmentInterval: control('input', '0.3'),
+      gAudioRetention: control('input', '30'),
+      gTgEnabled: control('input', '', false),
+      gTgToken: control('input', ''),
+      gTgProxyHost: control('input', '127.0.0.1'),
+      gTgProxyPort: control('input', '10809'),
+      gTgProxyEnabled: control('input', '', false),
+      gTgSave: control('button', ''),
+    };
+    if (includeChatId) {
+      dom.gTgChatId = control('input', '');
+    }
+    return dom;
+  };
+
+  const createServerSettings = (initial = {}) => ({
+    gpt_sovits_url: 'http://127.0.0.1:9880',
+    speed_factor: 1,
+    audio_retention_minutes: 30,
+    inference_precision: 'auto',
+    text_split_method: 'cut5',
+    fragment_interval: 0.3,
+    telegram_enabled: false,
+    telegram_chat_id: '',
+    telegram_admin_ids: '',
+    telegram_bot_token: '123456:ABC-DEF',
+    telegram_proxy_enabled: false,
+    telegram_proxy_host: '127.0.0.1',
+    telegram_proxy_port: 10809,
+    ...initial,
+  });
+
+  try {
+    // 1. 已有非空 -> 禁用清空写空与刷新保持空
+    {
+      const dom = makeDom(true);
+      initGlobalSettings(dom);
+      const posts = [];
+      let serverSettings = createServerSettings({
+        telegram_enabled: false,
+        telegram_chat_id: '111222333',
+        telegram_admin_ids: '111222333',
+      });
+      globalThis.fetch = async (url, options = {}) => {
+        const method = options.method || 'GET';
+        if (String(url).includes('/api/config')) {
+          if (method === 'POST') {
+            const body = JSON.parse(options.body);
+            posts.push(body);
+            for (const [k, v] of Object.entries(body)) {
+              if (v !== undefined) serverSettings[k] = v;
+            }
+            return response({ status: 'ok', settings: { ...serverSettings } });
+          }
+          return response({ status: 'ok', settings: { ...serverSettings }, active_provider: null });
+        }
+        return response({});
+      };
+      await loadGlobalConfig();
+      assert.equal(dom.gTgChatId.value, '111222333');
+      dom.gTgChatId.value = '';
+      dom.gTgChatId.dispatchEvent({ type: 'input' });
+      await saveGlobalConfig();
+      await tick();
+      assert.equal(posts.length, 1);
+      assert.equal(posts[0].telegram_chat_id, '');
+      assert.equal(posts[0].telegram_admin_ids, '');
+      assert.equal(posts[0].telegram_enabled, false);
+      assert.equal(dom.gTgChatId.value, '');
+      assert.equal(dom.gTgSave.disabled, false);
+      passed++;
+    }
+
+    // 2. 启用清空拒绝且草稿保持
+    {
+      for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+      toastRoot.replaceChildren();
+      const dom = makeDom(true);
+      initGlobalSettings(dom);
+      const posts = [];
+      let serverSettings = createServerSettings({
+        telegram_enabled: true,
+        telegram_chat_id: '111222333',
+        telegram_admin_ids: '111222333',
+      });
+      globalThis.fetch = async (url, options = {}) => {
+        const method = options.method || 'GET';
+        if (String(url).includes('/api/config')) {
+          if (method === 'POST') {
+            const body = JSON.parse(options.body);
+            posts.push(body);
+            return response({ status: 'ok', settings: { ...serverSettings } });
+          }
+          return response({ status: 'ok', settings: { ...serverSettings }, active_provider: null });
+        }
+        return response({});
+      };
+      await loadGlobalConfig();
+      assert.equal(dom.gTgChatId.value, '111222333');
+      assert.equal(dom.gTgEnabled.checked, true);
+      dom.gTgChatId.value = '   ';
+      dom.gTgChatId.dispatchEvent({ type: 'input' });
+      await saveGlobalConfig();
+      await tick();
+      assert.equal(posts.length, 0, 'save must be blocked with no POST request');
+      assert.equal(dom.gTgChatId.value, '   ', 'draft value must be preserved without refilling old value');
+      assert.equal(dom.gTgSave.disabled, false, 'save button must be restored to operable');
+      const messages = [...toastRoot.children].map(node => node.textContent);
+      assert.ok(messages.some(m => m.includes('填写允许访问的用户ID，或先关闭Telegram再保存')), `expected rejection toast, got: ${messages.join(' | ')}`);
+      assert.equal(messages.some(m => m.includes('已保存')), false, 'must not report success on blocked save');
+      passed++;
+    }
+
+    // 3. 有效ID替换正常且两字段同步
+    {
+      for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+      toastRoot.replaceChildren();
+      const dom = makeDom(true);
+      initGlobalSettings(dom);
+      const posts = [];
+      let serverSettings = createServerSettings({
+        telegram_enabled: true,
+        telegram_chat_id: '111222333',
+        telegram_admin_ids: '111222333',
+      });
+      globalThis.fetch = async (url, options = {}) => {
+        const method = options.method || 'GET';
+        if (String(url).includes('/api/config')) {
+          if (method === 'POST') {
+            const body = JSON.parse(options.body);
+            posts.push(body);
+            for (const [k, v] of Object.entries(body)) {
+              if (v !== undefined) serverSettings[k] = v;
+            }
+            return response({ status: 'ok', settings: { ...serverSettings } });
+          }
+          return response({ status: 'ok', settings: { ...serverSettings }, active_provider: null });
+        }
+        return response({});
+      };
+      await loadGlobalConfig();
+      dom.gTgChatId.value = '999888';
+      dom.gTgChatId.dispatchEvent({ type: 'input' });
+      await saveGlobalConfig();
+      await tick();
+      assert.equal(posts.length, 1);
+      assert.equal(posts[0].telegram_chat_id, '999888');
+      assert.equal(posts[0].telegram_admin_ids, '999888');
+      assert.equal(dom.gTgChatId.value, '999888');
+      assert.equal(dom.gTgSave.disabled, false);
+      passed++;
+    }
+
+    // 4. 控件不存在时仍保持省略语义（不写回空或覆盖）
+    {
+      const dom = makeDom(false);
+      initGlobalSettings(dom);
+      const posts = [];
+      let serverSettings = createServerSettings({
+        telegram_enabled: false,
+        telegram_chat_id: '111222333',
+        telegram_admin_ids: '111222333',
+      });
+      globalThis.fetch = async (url, options = {}) => {
+        const method = options.method || 'GET';
+        if (String(url).includes('/api/config')) {
+          if (method === 'POST') {
+            const body = JSON.parse(options.body);
+            posts.push(body);
+            return response({ status: 'ok', settings: { ...serverSettings } });
+          }
+          return response({ status: 'ok', settings: { ...serverSettings }, active_provider: null });
+        }
+        return response({});
+      };
+      await loadGlobalConfig();
+      await saveGlobalConfig();
+      await tick();
+      assert.equal(posts.length, 1);
+      assert.equal(Object.hasOwn(posts[0], 'telegram_chat_id'), false);
+      assert.equal(Object.hasOwn(posts[0], 'telegram_admin_ids'), false);
+      passed++;
+    }
+  } finally {
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    globalThis.document = previousDocument;
+  }
+}
 console.log(`Runtime recovery: ${passed} scenarios passed`);

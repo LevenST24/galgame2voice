@@ -25,11 +25,16 @@ class SourceFile:
     revision: tuple[int, ...] | None
 
     @classmethod
-    def capture(cls, value: Any, *, audio: bool = False) -> "SourceFile":
+    def capture(cls, value: Any, *, audio: bool = False, profile_resolved: bool = False) -> "SourceFile":
         raw = _path_text(value)
         if not raw:
+
             return cls("", None)
-        resolved = resolve_existing_audio_path(raw) if audio else resolve_weight_file_path(raw)
+        resolved = (
+            resolve_existing_audio_path(raw, allow_package_search=not profile_resolved)
+            if audio
+            else resolve_weight_file_path(raw)
+        )
         path = Path(resolved or raw)
         if not path.is_absolute():
             path = get_settings().project_root / path
@@ -40,6 +45,7 @@ class SourceFile:
         except OSError:
             # An external engine can own files unavailable on the application host.
             revision = None
+
         return cls(canonical, revision)
 
     def fingerprint(self) -> tuple[str, tuple[int, ...] | None]:
@@ -61,10 +67,16 @@ class AudioIdentity:
 
     @classmethod
     def capture(cls, options: dict[str, Any]) -> "AudioIdentity":
+        profile_resolved = bool(options.get("_profile_prompt_resolved"))
+
         return cls(
             SourceFile.capture(options.get("gpt_weights_path")),
             SourceFile.capture(options.get("sovits_weights_path")),
-            SourceFile.capture(options.get("ref_audio_path") or options.get("refer_audio_path"), audio=True),
+            SourceFile.capture(
+                options.get("ref_audio_path") or options.get("refer_audio_path"),
+                audio=True,
+                profile_resolved=profile_resolved,
+            ),
             str(options.get("_engine_url") or "").rstrip("/"),
         )
 

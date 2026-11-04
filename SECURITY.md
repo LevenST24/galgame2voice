@@ -75,7 +75,7 @@ Please report vulnerabilities privately through GitHub's private vulnerability r
   解密凭据。这主要防止直接打开数据库时误看到明文，不提供对数据卷失窃的保护。
   如需将密钥与数据库分离，请用独立的 secret 注入上述密钥环境变量，并使用足够随机的密钥。
   备份应妥善保护数据库和原密钥；Windows DPAPI 数据还依赖原 Windows 用户上下文。
-- Docker 默认启用鉴权并通过 `python -m galgame2voice.main` 启动；真实监听地址和启动安全检查
+- Docker 默认启用鉴权并通过 `scripts/run_container.py` 启动；真实监听地址和启动安全检查
   都读取 `Settings.host`。将其设为非回环地址且关闭鉴权时，服务拒绝启动。
 - 文件浏览 API 仅列出项目、数据、音频和已配置/发现的 GPT-SoVITS 目录，拒绝解析后的越界路径。
   外部模型目录需通过 `GPT_SOVITS_DIR` 或 `data/sovits_dir.txt` 声明。

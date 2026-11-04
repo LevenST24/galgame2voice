@@ -19,7 +19,7 @@
 - `src/main.js`：应用入口，协调会话同步、鉴权拦截、全局与会话设置控制器，并将 `conversation` 控制器挂载至 ADV 舞台。
 - `src/store.js`：前端状态管理与 `localStorage` 持久化（Key: `gal2voice.chat.v1`，包含会话列表 `sessions`、活跃会话 `activeId` 及全局设置 `global`）。
 - `src/conversation.js`：无 DOM 依赖的会话生命周期控制器，管理单轮回复状态机（`turnstart`、`text`、`line`、`line_audio`、`audio_chunk`、`done`、`cancelled`、`error`），控制发送、停止（`stop`）与行内重试（`retry`）。
-  终稿补齐缺失的台词和音频事件；旧格式整段回复的临时展示索引不作为历史行身份。见 `docs/development/FINAL_REPLY.md`。
+  解析流式 `turn_started` 并记录 `serverUserMessageId`（该 ID 为用户行 ID 绝非助手 ID，同轮多不同 ID 记为 `turnConflict` 拒绝认领）；终稿补齐缺失的台词和音频事件；旧格式整段回复的临时展示索引不作为历史行身份。见 `docs/development/FINAL_REPLY.md` 与 `docs/development/TURN_REPLY_IDENTITY.md`。
 - `src/ai.js`：底层流式客户端，通过 `fetch` 发起 POST `/api/chat/stream` 并解析 Server-Sent Events (SSE)。
   网络保活与回复进展分开计算，`voice_job` 使用后端公告的固定语音任务预算；详见 `docs/development/STREAM_PROGRESS.md`。
 - `src/session_api.js`：与后端 SQLite 同步会话列表及历史分页（`/api/chat/sessions`、`/api/chat/history`）。
@@ -66,7 +66,7 @@
 - `engine_recovery.js`：`waitForEngine`，轮询 `/api/system/engine-status` 直到引擎就绪（默认最多 3 分钟，含单次读取和间隔）。短暂读取故障显示待确认并继续 GET，明确失败、鉴权拒绝和取消立即停止；不自动重发重启 POST。
 - `config_recovery.js`：`saveConfirmedConfig`，保存全局配置；响应丢失时用一次 GET 核对是否已经写入，不重发写请求。`runSettingsMutation` 按同一页面的操作顺序协调配置保存和重启，未确认的写入阻止当前排队的后续操作。
 - `provider_recovery.js`：模型保存或启用响应丢失后的只读核对；新 Key 不以脱敏值确认，未知结果保留草稿；已确认启用的保存不再发第二次启用请求。
-- `line_audio_recovery.js`：LOG 单句语音重建，仅使用会话明确绑定的音色；每次点击发送一个 POST，不自动重试或播放。核对会话、台词、音色及操作所有权后更新本地音频；仅可信的 `serverMessageId` 允许服务端更新历史。
+- `line_audio_recovery.js`：LOG 单句语音重建，仅使用会话明确绑定的音色；每次点击发送一个 POST，不自动重试或播放。核对会话、台词、音色及操作所有权后更新本地音频；若已有 `serverMessageId` 直接提交；若仅有 `serverUserMessageId` 则发起有界只读查询（GET `/api/chat/turn-reply`，10 秒内最多 3 次，处理 5 类状态及回显核验）精确解析服务端助手编号；冲突、删除或未解析时不向服务端发送 null，旧 browser-only 记录保留本地修复能力。详见 `docs/development/TURN_REPLY_IDENTITY.md`。
 
 ### 5. 共享界面工具 (`src/`)
 - `ui.js`：会话列表渲染（`renderSessionList`，「会话」抽屉里用）与提示条（`showToast`）。
@@ -81,6 +81,7 @@
 
 | 事件名 | 载荷内容 | 说明 |
 | :--- | :--- | :--- |
+| `turn_started` | `{ "session_id": "...", "user_message_id": 123 }` | 用户行提交后、首句台词前发出，携带会话与用户行 ID。该 ID 仅记录当前轮次的用户消息身份（`serverUserMessageId`），绝非助手回复 ID。 |
 | `text` | `{ "delta_chinese": "...", "emotion": "..." }` | 中文增量文本片断，用于流式累加展示。 |
 | `line` | `{ "index": 0, "zh": "...", "ja": "...", "emotion": "...", "act": {} }` | 单句台词解析就绪事件，包含对齐的文本与演出标记。 |
 | `line_audio` | `{ "line": 0, "status": "ready"\|"skipped"\|"failed", "chunks": [...] }` | 某句台词的语音最终状态，按台词顺序发出。`skipped` 表示这句没有生成语音（例如只有省略号），前端直接出字、不等语音；`failed` 另带 `error`。 |
@@ -89,7 +90,7 @@
 | `progress` | `{ "stage": "thinking" \| "queued" }` | 回复仍在进行的进展信号。`thinking` 在模型输出思考内容时发送，不含思考正文，同一回复每 5 秒最多一条。`queued` 在同一会话的后一条回复等待会话锁时发送，间隔同样是 5 秒，不含台词。客户端用它续期进展预算。 |
 | `voice_job` | `{ "index": 0, "status": "started"\|"finished" }` | 单个语音任务的有界等待阶段，需配合 HTTP 进展策略头；重复公告不续期。 |
 | `error` | `{ "error": "...", "error_code": "..." }` | 生成过程中断的错误事件，附带结构化错误码与中文指引。 |
-| `done` | `{ "chinese": "...", "japanese": "...", "chunks": [...], "lines": [...], "message_id": 42 }` | 本轮对话生成结束，携带最终完整文本、音频切片与行元数据。历史成功提交后才提供 `message_id`，前端保存为 `serverMessageId`，不得从浏览器消息 ID 推断数据库 ID。 |
+| `done` | `{ "chinese": "...", "japanese": "...", "chunks": [...], "lines": [...], "message_id": 42 }` | 本轮对话生成结束，携带最终完整文本、音频切片与行元数据。历史成功提交后才提供 `message_id`，前端保存为 `serverMessageId`，不得从浏览器消息 ID 推断数据库 ID。正常完成路径不产生额外 GET 查询。 |
 
 ---
 

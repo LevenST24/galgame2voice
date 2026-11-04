@@ -291,8 +291,8 @@ def test_preflight_python_and_deps_check():
 
 
 @pytest.mark.asyncio
-async def test_tts_service_duration_fallback_missing_file(tmp_path, fallback_voice):
-    """Verifies that non-existent reference audio automatically falls back to default reference."""
+async def test_tts_service_preserves_missing_explicit_reference(tmp_path, fallback_voice):
+    """Verifies explicit unknown reference audio is preserved (can belong to remote backend; dur None does not fall back to default)."""
     missing_file = tmp_path / "absolutely_missing_reference.wav"
     dur = TtsService.get_audio_duration(missing_file)
     assert dur is None
@@ -301,9 +301,9 @@ async def test_tts_service_duration_fallback_missing_file(tmp_path, fallback_voi
     opts = {"ref_audio_path": str(missing_file), "ai_adaptive_voice": False}
     populated = await tts._populate_voice_profile_opts(opts)
 
-    # Must fall back to default profile reference audio
-    assert populated["ref_audio_path"] != str(missing_file)
-    assert populated["ref_audio_path"] == str(fallback_voice)
+    # Missing explicit reference is preserved without falling back to default reference
+    assert populated["ref_audio_path"] == str(missing_file)
+    assert populated["ref_audio_path"] != str(fallback_voice)
 
 
 @pytest.mark.asyncio

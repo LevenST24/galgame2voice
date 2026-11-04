@@ -6,6 +6,8 @@ backward-compatible synchronous chat endpoints (/api/chat, /ai/chat).
 
 import asyncio
 import json
+import sqlite3
+import aiosqlite
 import logging
 import time
 from typing import Any, AsyncGenerator, Literal
@@ -596,6 +598,51 @@ async def delete_chat_session_by_id(session_id: str) -> dict[str, Any]:
             "session_id": clean_id,
             "success": success,
         }
+
+
+@router.get("/api/chat/turn-reply", summary="Query assistant reply status for a committed user message")
+async def get_turn_reply(
+    session_id: str = Query(..., min_length=1, max_length=SESSION_ID_MAX_LENGTH, description="Conversation session ID"),
+    user_message_id: int = Query(..., ge=1, description="Committed user message ID"),
+) -> dict[str, Any]:
+    """
+    Look up the assistant reply linked to a specific user message in a session.
+    Returns HTTP 200 JSON with session_id, user_message_id, and status:
+      - ready: includes message_id (assistant message ID)
+      - pending: user message exists, but reply is not yet committed
+      - gone: user message deleted/cleared or does not exist in this session
+      - ambiguous: multiple matching replies exist (never return an arbitrary ID)
+      - unavailable: database busy/locked (can retry)
+    """
+    clean_session_id = (session_id or "").strip()
+    if not clean_session_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="会话编号不能为空。",
+        )
+
+    service = get_chat_service()
+    db_path = getattr(service, "db_path", None) or get_database_path()
+    try:
+        async with aiosqlite.connect(db_path, timeout=0.0) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA busy_timeout = 0;")
+            return await crud.lookup_turn_reply(conn, clean_session_id, user_message_id)
+    except (sqlite3.OperationalError, aiosqlite.OperationalError) as exc:
+        err_msg = str(exc).lower()
+        if "busy" in err_msg or "locked" in err_msg:
+            return {
+                "session_id": clean_session_id,
+                "user_message_id": user_message_id,
+                "status": "unavailable",
+            }
+        if "no such table" in err_msg:
+            return {
+                "session_id": clean_session_id,
+                "user_message_id": user_message_id,
+                "status": "gone",
+            }
+        raise
 
 
 @router.get("/api/chat/history", summary="Get session message history")

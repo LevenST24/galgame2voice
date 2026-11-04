@@ -164,42 +164,89 @@ class TtsService:
         """
         return await async_get_audio_duration(path)
 
+    @staticmethod
+    def _resolve_explicit_ref_file(
+        ref_audio: str | Path | None,
+        pkg: Any | None = None,
+        other_folders: set[Path] | None = None,
+    ) -> Path | None:
+        """Resolves reference audio from explicit locations only (absolute, project_root, audio_dir, or pkg.folder).
+
+        Never falls back to fuzzy/legacy searches across other character packages.
+        """
+        raw = str(ref_audio or "").strip().strip("\"'")
+        if not raw:
+            return None
+        try:
+            p = Path(raw)
+            settings = get_settings()
+            bases: list[Path] = []
+            if p.is_absolute():
+                bases.append(p)
+            else:
+                bases.extend([settings.project_root / p, Path(settings.audio_dir) / p])
+                if pkg is not None and getattr(pkg, "folder", None):
+                    bases.append(Path(pkg.folder) / p)
+
+            if other_folders is None:
+                try:
+                    from galgame2voice.services.character_manager import get_character_manager
+                    mgr = get_character_manager()
+                    if hasattr(mgr, "get_available_characters"):
+                        pkg_id = getattr(pkg, "id", None)
+                        other_folders = {
+                            Path(other.folder).resolve()
+                            for other in mgr.get_available_characters()
+                            if getattr(other, "folder", None) and getattr(other, "id", None) != pkg_id
+                        }
+                except Exception:
+                    other_folders = set()
+
+            for cand_path in bases:
+                cand = cand_path.resolve()
+                if cand.is_file():
+                    if other_folders and any(cand == of or cand.is_relative_to(of) for of in other_folders):
+                        continue
+                    return cand
+        except (OSError, ValueError):
+            pass
+        return None
+
     async def _resolve_fallback_ref_audio(
         self,
         opts: dict[str, Any],
         fallback_ref_audio: str | None,
         fallback_prompt_text: str | None,
         fallback_prompt_lang: str | None,
+        pkg: Any | None = None,
     ) -> None:
         """Validates user-provided reference audio or falls back to profile default reference."""
         user_ref = opts.get("ref_audio_path") or opts.get("refer_audio_path")
         if user_ref:
-            file_exists = resolve_existing_audio_path(user_ref) is not None
-            dur = await self.async_get_audio_duration(user_ref)
-            is_mock_client = (
-                getattr(self.client, "_mock_return_value", None) is not None
-                or type(self.client).__name__ == "MagicMock"
-                or getattr(self.client, "server", None) is not None
-            )
+            resolved_file = self._resolve_explicit_ref_file(user_ref, pkg)
+            dur = await self.async_get_audio_duration(resolved_file) if resolved_file is not None else None
             needs_fallback = False
             if dur is not None and not (REFERENCE_AUDIO_MIN_SECONDS <= dur <= REFERENCE_AUDIO_MAX_SECONDS):
-                needs_fallback = True
-            elif not is_mock_client and not file_exists:
                 needs_fallback = True
 
             if needs_fallback:
                 logger.warning(
-                    "Reference audio '%s' is invalid (exists: %s, duration: %s, required: [3.0, 10.0]s). "
+                    "Reference audio '%s' is invalid (exists: True, duration: %s, required: [3.0, 10.0]s). "
                     "Falling back to default reference audio: %s",
-                    user_ref, file_exists, dur, fallback_ref_audio
+                    user_ref, dur, fallback_ref_audio
                 )
                 opts["ref_audio_path"] = str(fallback_ref_audio) if fallback_ref_audio else ""
                 opts["prompt_text"] = fallback_prompt_text
                 opts["prompt_lang"] = fallback_prompt_lang
-            elif "prompt_text" not in opts and not opts.get("refer_text"):
-                # Fill an omitted transcript from this same resolved profile,
-                # not from whatever voice happens to be loaded in the engine.
-                opts["prompt_text"] = fallback_prompt_text
+            else:
+                if resolved_file is not None:
+                    opts["ref_audio_path"] = str(resolved_file.resolve())
+                    if "refer_audio_path" in opts:
+                        opts["refer_audio_path"] = opts["ref_audio_path"]
+                if "prompt_text" not in opts and not opts.get("refer_text"):
+                    # Fill an omitted transcript from this same resolved profile,
+                    # not from whatever voice happens to be loaded in the engine.
+                    opts["prompt_text"] = fallback_prompt_text
         else:
             opts["ref_audio_path"] = str(fallback_ref_audio) if fallback_ref_audio else ""
             opts.setdefault("prompt_text", fallback_prompt_text)
@@ -215,7 +262,12 @@ class TtsService:
             ("prompt_lang", ("prompt_language", "refer_language")),
             ("text_lang", ("text_language",)),
         ):
-            if not opts.get(canonical):
+            should_merge_alias = (
+                (canonical not in opts or opts[canonical] is None)
+                if canonical == "prompt_text"
+                else not opts.get(canonical)
+            )
+            if should_merge_alias:
                 for alias in aliases:
                     if opts.get(alias):
                         opts[canonical] = opts[alias]
@@ -286,11 +338,16 @@ class TtsService:
                     opts["prompt_text"] = resolved_emo["prompt_text"]
                     opts["prompt_lang"] = resolved_emo["prompt_lang"]
                 else:
+                    from galgame2voice.services.character_manager import get_character_manager
+                    mgr = get_character_manager()
+                    ctx_name = getattr(ctx, "name", None)
+                    pkg = mgr.get_character(ctx_name) if (ctx and isinstance(ctx_name, str) and ctx_name.strip()) else None
                     await self._resolve_fallback_ref_audio(
                         opts=opts,
                         fallback_ref_audio=fallback_ref_audio,
                         fallback_prompt_text=fallback_prompt_text,
                         fallback_prompt_lang=fallback_prompt_lang,
+                        pkg=pkg,
                     )
                 _require_voice_reference(opts)
                 # A selected profile must not borrow either model from the

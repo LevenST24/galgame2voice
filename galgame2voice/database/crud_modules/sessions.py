@@ -32,6 +32,7 @@ __all__ = [
     "clear_session_messages",
     "add_message",
     "delete_message",
+    "lookup_turn_reply",
     "get_recent_messages",
     "count_session_messages",
 ]
@@ -253,13 +254,14 @@ async def add_message(conn: aiosqlite.Connection, msg: MessageCreate) -> Message
     await get_or_create_session(conn, msg.session_id)
     async with immediate_transaction(conn):
         cursor = await conn.execute("""
-            INSERT INTO messages (session_id, role, content_chinese, content_japanese, audio_url, latency_ms, lines_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (session_id, role, content_chinese, content_japanese, audio_url, latency_ms, lines_json, reply_to_message_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *;
         """, (
             msg.session_id, msg.role, msg.content_chinese,
             msg.content_japanese, msg.audio_url, msg.latency_ms,
             json.dumps(msg.lines, ensure_ascii=False) if msg.lines is not None else None,
+            getattr(msg, "reply_to_message_id", None),
         ))
         row = await cursor.fetchone()
         if not row and cursor.lastrowid:
@@ -310,3 +312,80 @@ async def delete_message(conn: aiosqlite.Connection, message_id: int) -> None:
     """Deletes a message by its ID."""
     async with immediate_transaction(conn):
         await conn.execute("DELETE FROM messages WHERE id = ?;", (message_id,))
+
+
+async def lookup_turn_reply(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    user_message_id: int,
+) -> dict[str, Any]:
+    """
+    Consistent read-only snapshot query for assistant reply linked to a specific user message.
+    Uses a single SQL statement (LEFT JOIN) to guarantee an atomic snapshot across user and
+    assistant rows, avoiding intermediate state anomalies (such as returning 'pending' during
+    an atomic clear/delete of user and reply rows).
+
+    Returns a dict with session_id, user_message_id, and status:
+      - ready: user exists, exactly 1 matching assistant reply found -> includes message_id
+      - pending: user exists, but no matching assistant reply committed yet
+      - gone: user does not exist in this session (e.g. deleted, cleared, or wrong session)
+      - ambiguous: multiple matching assistant replies exist (never arbitrarily pick one)
+      - unavailable: database busy/locked
+    """
+    conn.row_factory = aiosqlite.Row
+    query = """
+        SELECT
+            u.id AS user_id,
+            a.id AS assistant_id
+        FROM messages u
+        LEFT JOIN messages a ON (
+            a.session_id = u.session_id
+            AND a.role = 'assistant'
+            AND a.reply_to_message_id = u.id
+        )
+        WHERE u.session_id = ? AND u.id = ? AND u.role = 'user'
+        ORDER BY a.id ASC;
+    """
+    try:
+        cur = await conn.execute(query, (session_id, user_message_id))
+        rows = await cur.fetchall()
+    except (sqlite3.OperationalError, aiosqlite.OperationalError) as exc:
+        err_msg = str(exc).lower()
+        if "busy" in err_msg or "locked" in err_msg:
+            return {"session_id": session_id, "user_message_id": user_message_id, "status": "unavailable"}
+        if "no such table" in err_msg:
+            return {"session_id": session_id, "user_message_id": user_message_id, "status": "gone"}
+        if "no such column" in err_msg:
+            # Fallback for old schema without reply_to_message_id
+            try:
+                cur_user = await conn.execute(
+                    "SELECT id FROM messages WHERE session_id = ? AND id = ? AND role = 'user';",
+                    (session_id, user_message_id),
+                )
+                user_row = await cur_user.fetchone()
+                return {
+                    "session_id": session_id,
+                    "user_message_id": user_message_id,
+                    "status": "pending" if user_row else "gone",
+                }
+            except (sqlite3.OperationalError, aiosqlite.OperationalError) as fallback_exc:
+                if "busy" in str(fallback_exc).lower() or "locked" in str(fallback_exc).lower():
+                    return {"session_id": session_id, "user_message_id": user_message_id, "status": "unavailable"}
+                return {"session_id": session_id, "user_message_id": user_message_id, "status": "gone"}
+        raise
+
+    if not rows:
+        return {"session_id": session_id, "user_message_id": user_message_id, "status": "gone"}
+
+    assistant_ids = [r["assistant_id"] for r in rows if r["assistant_id"] is not None]
+    if not assistant_ids:
+        return {"session_id": session_id, "user_message_id": user_message_id, "status": "pending"}
+    elif len(assistant_ids) == 1:
+        return {
+            "session_id": session_id,
+            "user_message_id": user_message_id,
+            "status": "ready",
+            "message_id": int(assistant_ids[0]),
+        }
+    else:
+        return {"session_id": session_id, "user_message_id": user_message_id, "status": "ambiguous"}

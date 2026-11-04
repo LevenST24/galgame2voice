@@ -291,7 +291,7 @@ function importDom() {
 function importServer() {
   const ids = new Set();
   const calls = { persisted: [], deleted: [] };
-  const state_ = { loseNextResponse: false };
+  const state_ = { loseNextResponse: false, delayDelete: false, releaseDelete: null, delayImport: false, releaseImport: null };
   globalThis.fetch = async (url, options = {}) => {
     const target = String(url);
     if (target === '/api/chat/import' && options.method === 'POST') {
@@ -300,6 +300,9 @@ function importServer() {
         return { ok: false, status: 409, json: async () => ({ detail: '导入的会话已存在' }) };
       }
       for (const item of sessions) ids.add(item.id);
+      if (state_.delayImport) {
+        await new Promise((resolve) => { state_.releaseImport = resolve; });
+      }
       if (state_.loseNextResponse) {
         state_.loseNextResponse = false;
         const error = new Error('等待服务响应超时。');
@@ -316,6 +319,9 @@ function importServer() {
       const id = decodeURIComponent(target.slice('/api/chat/sessions/'.length));
       ids.delete(id);
       calls.deleted.push(id);
+      if (state_.delayDelete) {
+        await new Promise((resolve) => { state_.releaseDelete = resolve; });
+      }
       return { ok: true, status: 200, json: async () => ({ status: 'ok' }) };
     }
     return { ok: true, status: 200, json: async () => ({}) };
@@ -387,4 +393,107 @@ const sessionOf = (id, texts) => ({
   assert.deepEqual(server.calls.persisted, [first.id]);
   passed++;
 }
+// deleting with delayed server ack must not let concurrent re-import lose the restored session or be deleted later
+{
+  storage(saved()); loadState();
+  const server = importServer();
+  const { choose, toastText, clearToasts, imported } = importDom();
+  const { deletePersistedSession, persistSession } = await import('../frontend/src/session_api.js');
+  const { deleteSession, getSession } = await import('../frontend/src/store.js');
+  const text = backupOf([sessionOf('s_race', ['竞态测试对话'])]);
+  await choose(text);
+  assert.equal(imported(), 1);
+  const target = state.sessions[0];
+  assert.ok(target.id.startsWith('s_import_'));
+  const unrelated = state.sessions.find(s => s.id !== target.id);
+  assert.ok(unrelated, '应有无关会话A');
+
+  // 服务器端已接收DELETE并删除了ID，但响应延迟返回
+  server.state.delayDelete = true;
+  const removal = deletePersistedSession(target.id);
+  const lateDelete = removal.then(() => deleteSession(target.id));
+
+  // 此时尝试重新导入同一备份：必须互斥拒绝，不能伪成功写入并随后被迟到回执销毁
+  await choose(text);
+  const toasts = toastText();
+  assert.equal(imported(), 1, '挂起删除期间重导不能提示成功');
+  assert.ok(toasts.some(t => t.includes('正在保存或删除') || t.includes('正在删除')), `应提示正在删除或保存：${toasts.join(' | ')}`);
+
+  // 释放旧删除回执，删除流程正常收尾
+  server.state.releaseDelete();
+  await lateDelete;
+  assert.equal(getSession(target.id), null, '正常删除收尾后原对象应已被清除');
+
+  // 删除彻底完成后重导：必须成功，本地仅有1份，且能够正常 persistSession
+  clearToasts();
+  await choose(text);
+  assert.equal(imported(), 2, '删除彻底完成后重导应成功');
+  const restored = getSession(target.id);
+  assert.ok(restored, '重导后会话应恢复');
+  assert.equal(state.sessions.filter(s => s.id === target.id).length, 1, '不应有同ID重复会话');
+  await persistSession(restored);
+  assert.ok(server.calls.persisted.includes(target.id), '恢复后的会话必须能够保存');
+  assert.ok(getSession(unrelated.id), '无关会话A应完好保留');
+  passed++;
+}
+
+// reverse interleaving: deletion and persistence are rejected while import is in-flight, released after import
+{
+  storage(saved()); loadState();
+  const server = importServer();
+  const { choose, clearToasts, imported } = importDom();
+  const { deletePersistedSession, persistSession } = await import('../frontend/src/session_api.js');
+  const { getSession } = await import('../frontend/src/store.js');
+  const text = backupOf([sessionOf('s_rev', ['反向交错测试'])]);
+
+  server.state.delayImport = true;
+  const importPromise = choose(text);
+
+  await Promise.resolve();
+  const incoming = prepareSessionImport(text);
+  const targetId = incoming.sessions[0].id;
+
+  await assert.rejects(
+    deletePersistedSession(targetId),
+    (err) => err.message === '该对话正在导入中，请稍后重试。',
+    '导入未结束前删除应被明确拒绝',
+  );
+
+  await assert.rejects(
+    persistSession({ id: targetId, title: '尝试提前保存', settings: {} }),
+    (err) => err.message === '该对话正在导入中，请稍后重试。',
+    '导入未结束前保存应被明确拒绝',
+  );
+
+  server.state.releaseImport();
+  await importPromise;
+  clearToasts();
+  assert.equal(imported(), 1);
+  const importedSession = getSession(targetId);
+  assert.ok(importedSession, '导入成功后会话应存在');
+
+  await persistSession(importedSession);
+  assert.ok(server.calls.persisted.includes(targetId), '导入完成后应能正常保存');
+  passed++;
+}
+
+// failed or timed out import releases reservation without permanently blocking subsequent operations
+{
+  storage(saved()); loadState();
+  const server = importServer();
+  const { choose, clearToasts } = importDom();
+  const { deletePersistedSession } = await import('../frontend/src/session_api.js');
+  const text = backupOf([sessionOf('s_fail_release', ['失败释放测试'])]);
+  const incoming = prepareSessionImport(text);
+  const targetId = incoming.sessions[0].id;
+
+  server.state.loseNextResponse = true;
+  await choose(text);
+  clearToasts();
+
+  await deletePersistedSession(targetId);
+  assert.ok(server.calls.deleted.includes(targetId), '异常结束后预约应已释放，删除可正常发起');
+  passed++;
+}
+
 console.log(`Session backup and recovery: ${passed} scenarios passed`);

@@ -1,7 +1,7 @@
 import { requestJson } from '../api.js';
 import { showToast } from '../ui.js';
 import { exportCompleteChatBackup } from '../chat_backup.js';
-import { forgetDeletedSessions } from '../session_api.js';
+import { forgetDeletedSessions, reserveSessionImport } from '../session_api.js';
 import { exportSessionData, prepareSessionImport, applySessionImport, getStorageStatus,
   onStorageStatus, getDamagedSessionData, resumeLocalSaving } from '../store.js';
 
@@ -72,10 +72,12 @@ export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => fa
     input.value = '';
     if (!file) return;
     button.disabled = true;
+    let releaseImport = null;
     try {
       if (file.size > 20 * 1024 * 1024) throw new Error('备份超过 20 MB，请拆分后再导入。');
       const incoming = prepareSessionImport(await file.text());
       if (isBusy()) throw new Error('当前回复正在生成，请停止或等待完成后再导入。');
+      releaseImport = reserveSessionImport(incoming.sessions.map(session => session.id));
       const payload = { sessions: incoming.sessions.map(session => ({ id: session.id, title: session.title,
         settings: session.settings, created_at: session.createdAt, updated_at: session.updatedAt,
         messages: session.messages.map(message => ({ role: message.role,
@@ -99,6 +101,9 @@ export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => fa
           : error.message;
       showToast(message, 'error');
     }
-    finally { button.disabled = false; }
+    finally {
+      releaseImport?.();
+      button.disabled = false;
+    }
   });
 }

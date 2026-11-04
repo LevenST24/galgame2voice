@@ -48,6 +48,7 @@ from galgame2voice.database.crud_modules.providers import (
 from galgame2voice.database.crud_modules.sessions import (
     add_message,
     delete_message,
+    lookup_turn_reply,
     clear_session_messages,
     count_session_messages,
     delete_session,
@@ -158,6 +159,7 @@ __all__ = [
     "clear_session_messages",
     "add_message",
     "delete_message",
+    "lookup_turn_reply",
     "get_recent_messages",
     "count_session_messages",
     # Memory & Affection

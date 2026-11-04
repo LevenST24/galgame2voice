@@ -45,6 +45,30 @@ class EmptyReplyError(ValueError):
         self.stopped_on_length = stopped_on_length
 
 
+class StreamIncompleteError(RuntimeError):
+    """Raised when an SSE stream ends abruptly without any terminal signal ([DONE] or finish_reason)."""
+
+    is_truncation: bool = True
+
+    def __init__(self, message: str = "上游模型连接意外中断，回复未能完整结束。可以重新发送尝试重试。"):
+        super().__init__(message)
+
+
+class StreamTruncatedError(RuntimeError):
+    """Raised when an SSE stream is truncated by length/max_tokens limit."""
+
+    is_truncation: bool = True
+
+    def __init__(
+        self,
+        message: str = "模型输出达到最大长度限制，回复未能完整生成。建议调大「最大生成长度」或降低「思考强度」。",
+        *,
+        stopped_on_length: bool = True,
+    ):
+        super().__init__(message)
+        self.stopped_on_length = stopped_on_length
+
+
 class ConfigurationSelectionError(ValueError):
     """A requested identity is missing or ambiguous, before any inference."""
 
@@ -91,6 +115,20 @@ def chat_error_payload(
             "error": str(exc),
             "error_code": "empty_reply",
             "kind": "empty_reply",
+            "status_code": 200,
+        }
+    if isinstance(exc, StreamIncompleteError):
+        return {
+            "error": str(exc),
+            "diagnostic": str(exc),
+            "error_code": "stream_incomplete",
+            "status_code": 200,
+        }
+    if isinstance(exc, StreamTruncatedError):
+        return {
+            "error": str(exc),
+            "diagnostic": str(exc),
+            "error_code": "stream_truncated_on_length",
             "status_code": 200,
         }
     diag = diagnose_llm_error(exc, provider_id=provider_id, api_key_configured=api_key_configured)

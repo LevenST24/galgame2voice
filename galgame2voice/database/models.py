@@ -332,6 +332,7 @@ class MessageBase(BaseModel):
     audio_url: str = ""
     latency_ms: int = 0
     lines: list[dict[str, Any]] | None = None
+    reply_to_message_id: int | None = None
 
     @model_validator(mode="before")
     @classmethod

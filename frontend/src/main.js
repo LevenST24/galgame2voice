@@ -30,7 +30,7 @@ import { initAuthInterceptor } from './auth.js';
 import { createSettingsCenter } from './controllers/settings_center.js';
 import { initSessionBackup } from './controllers/session_backup.js';
 import { requestJson } from './api.js';
-import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSessions, fetchSessionHistoryPage, earliestServerMessageId } from './session_api.js';
+import { persistSession, deletePersistedSession, isSessionDeleting, isSessionImporting, fetchAllSessions, fetchSessionHistoryPage, earliestServerMessageId } from './session_api.js';
 import { serverTimestamp, normalizeLines, pickSettings } from './session_data.js';
 import { openModal, closeModal, closeAllModals, hasOpenModal, initSettingsUi, onModalChange } from './settings_ui.js';
 
@@ -633,7 +633,10 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
   }
 
   async function handleDelete(id) {
-    if (isSessionDeleting(id)) return;
+    if (isSessionDeleting(id) || isSessionImporting(id)) {
+      if (isSessionImporting(id)) showToast('该对话正在导入中，请稍后重试。', 'info');
+      return;
+    }
     ++_syncSessionsGen;
     if (id === state.activeId || conversation.busy) {
       interruptAll();
@@ -649,6 +652,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       updateControls();
       return;
     }
+    if (isSessionImporting(id)) return;
     sessionsBehindServer.delete(id);
     const sess = getSession(id);
     if (sess) {

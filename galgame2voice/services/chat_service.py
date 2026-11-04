@@ -865,6 +865,7 @@ class ChatService:
                             lines=lines,
                             audio_url=audio_url,
                             latency_ms=latency_ms,
+                            reply_to_message_id=getattr(user_msg, "id", None),
                         ))
                         after_commit(conn, mark_assistant_persisted)
 

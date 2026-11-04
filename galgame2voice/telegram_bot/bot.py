@@ -226,10 +226,16 @@ class TelegramBotManager:
 
             logger.info("Stopping Telegram Bot service...")
             self.is_running = False
-            # Cancel all active voice tasks and wait for clean exit
-            active_tasks = [t for t in self.handlers.user_tasks.values() if not t.done()]
+            # Cancel all active voice tasks and active chat turns, then wait for clean exit
+            active_voice_tasks = [t for t in self.handlers.user_tasks.values() if not t.done()]
+            active_chat_tasks = (
+                self.handlers.cancel_all_chat_turns()
+                if hasattr(self.handlers, "cancel_all_chat_turns")
+                else []
+            )
             for task_key in list(self.handlers.user_tasks.keys()):
                 self.handlers.cancel_user_task(task_key)
+            active_tasks = [t for t in (*active_voice_tasks, *active_chat_tasks) if not t.done()]
             if active_tasks:
                 try:
                     await asyncio.gather(*active_tasks, return_exceptions=True)

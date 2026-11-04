@@ -15,9 +15,11 @@ export const fetchSystemVersion = (checkRemote = true) => requestJson(`/api/syst
 export const checkSystemUpdate = () => requestJson('/api/system/update/check', {}, { timeoutMs: 60000 });
 export const applySystemUpdate = (payload = {}) => requestJson('/api/system/update/apply', post(payload), { timeoutMs: 120000 });
 
-export async function testProviderConnection(payload) {
+export async function testProviderConnection(payload, { signal = null } = {}) {
   try {
-    return await requestJson('/api/providers/test', post(payload), { timeoutMs: 60000 });
+    const options = post(payload);
+    if (signal) options.signal = signal;
+    return await requestJson('/api/providers/test', options, { timeoutMs: 60000 });
   } catch (error) {
     if (!error.status) throw error;
     return { success: false, message: error.message, error: error.message,

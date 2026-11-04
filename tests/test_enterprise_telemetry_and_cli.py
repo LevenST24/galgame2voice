@@ -7,6 +7,7 @@ Unit tests for enterprise telemetry, hardware utilities, CLI flags, and static c
 5. HTTP static asset Cache-Control immutable caching and 404/method guards.
 """
 
+import os
 import sys
 from pathlib import Path
 import pytest
@@ -232,6 +233,17 @@ class TestSystemStatusHardwareTelemetry:
 # ============================================================================
 
 class TestServerLauncherCLI:
+    @pytest.fixture(autouse=True)
+    def _isolate_launcher_cli_env(self, monkeypatch):
+        for key in (
+            "GALGAME2VOICE_PORT", "PORT", "GALGAME_PORT",
+            "GALGAME2VOICE_HOST", "HOST", "GALGAME_HOST",
+            "GALGAME_NO_BROWSER",
+        ):
+            if key not in os.environ:
+                monkeypatch.setenv(key, "")
+            monkeypatch.delenv(key)
+
     def test_parse_args_defaults(self):
         args = rs.parse_args([])
         assert args.host == "127.0.0.1"
@@ -254,6 +266,31 @@ class TestServerLauncherCLI:
         assert args.port == 9999
         assert args.host == "0.0.0.0"
         assert args.no_browser is True
+
+    def test_parse_args_env_alias_precedence(self, monkeypatch):
+        # GALGAME2VOICE_PORT takes precedence over PORT and GALGAME_PORT
+        monkeypatch.setenv("GALGAME_PORT", "9999")
+        monkeypatch.setenv("PORT", "8888")
+        monkeypatch.setenv("GALGAME2VOICE_PORT", "7777")
+        args = rs.parse_args([])
+        assert args.port == 7777
+
+        # PORT takes precedence over GALGAME_PORT when GALGAME2VOICE_PORT is unset
+        monkeypatch.delenv("GALGAME2VOICE_PORT")
+        args = rs.parse_args([])
+        assert args.port == 8888
+
+        # GALGAME2VOICE_HOST takes precedence over HOST and GALGAME_HOST
+        monkeypatch.setenv("GALGAME_HOST", "192.168.1.1")
+        monkeypatch.setenv("HOST", "10.0.0.1")
+        monkeypatch.setenv("GALGAME2VOICE_HOST", "172.16.0.1")
+        args = rs.parse_args([])
+        assert args.host == "172.16.0.1"
+
+        # HOST takes precedence over GALGAME_HOST when GALGAME2VOICE_HOST is unset
+        monkeypatch.delenv("GALGAME2VOICE_HOST")
+        args = rs.parse_args([])
+        assert args.host == "10.0.0.1"
 
     def test_main_check_only_success(self, monkeypatch):
         monkeypatch.setattr(rs, "check_python_environment", lambda: True)

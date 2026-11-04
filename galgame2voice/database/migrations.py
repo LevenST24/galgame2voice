@@ -554,7 +554,12 @@ async def run_schema_migrations(conn: aiosqlite.Connection) -> int:
 
     # Additive reply metadata: keep user_version compatible with older builds.
     await _add_column_if_missing(conn, "messages", "lines_json", "TEXT DEFAULT NULL")
+    await _add_column_if_missing(conn, "messages", "reply_to_message_id", "INTEGER DEFAULT NULL")
     await _add_column_if_missing(conn, "providers", "reasoning_effort", "TEXT DEFAULT NULL")
+    try:
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session_reply_to ON messages(session_id, reply_to_message_id);")
+    except Exception as exc:
+        logger.debug("idx_messages_session_reply_to index creation skipped: %s", exc)
     return current_version
 
 
@@ -578,10 +583,12 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
     await _add_column_if_missing(conn, "sessions", "settings_json", "TEXT DEFAULT NULL")
 
     # Composite query index for recent message history retrieval
+    await _add_column_if_missing(conn, "messages", "reply_to_message_id", "INTEGER DEFAULT NULL")
     try:
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session_id_desc ON messages(session_id, id DESC);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session_reply_to ON messages(session_id, reply_to_message_id);")
     except Exception as exc:
-        logger.debug("idx_messages_session_id_desc index creation skipped: %s", exc)
+        logger.debug("composite messages index creation skipped: %s", exc)
 
     # 4. Transparent migration: encrypt existing plaintext credentials at rest
     try:

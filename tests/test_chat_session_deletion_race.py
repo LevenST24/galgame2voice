@@ -33,6 +33,10 @@ async def test_deleted_session_is_not_resurrected_by_stream(tmp_path, finish, re
     service._extract_memory_safe = AsyncMock()
     stream = service.stream_chat("Original question", session_id="deleted")
     try:
+        started = await asyncio.wait_for(stream.__anext__(), 5)
+        assert started["event"] == "turn_started"
+        assert started["data"]["session_id"] == "deleted"
+        assert isinstance(started["data"]["user_message_id"], int) and started["data"]["user_message_id"] > 0
         assert (await asyncio.wait_for(stream.__anext__(), 5))["event"] == "text"
         async with get_db(database) as conn:
             assert await crud.delete_session(conn, "deleted")
@@ -126,6 +130,10 @@ async def test_removed_stream_turn_reports_error(tmp_path, change):
     service._extract_memory_safe = AsyncMock()
     stream = service.stream_chat("Question", session_id="s")
     try:
+        started = await asyncio.wait_for(stream.__anext__(), 5)
+        assert started["event"] == "turn_started"
+        assert started["data"]["session_id"] == "s"
+        assert isinstance(started["data"]["user_message_id"], int) and started["data"]["user_message_id"] > 0
         assert (await asyncio.wait_for(stream.__anext__(), 5))["event"] == "text"
         async with get_db(database) as conn:
             if change == "clear":
