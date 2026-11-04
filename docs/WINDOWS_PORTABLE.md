@@ -33,18 +33,19 @@
 - `data`：数据库、设置和凭据。备份时保留整个目录。
 - `audio`：生成的语音和缓存。
 - `characters`：用户导入的角色包。
+- `backgrounds`：用户导入或自定义的背景图包（若存在）。
 - `logs`：遇到问题时查看启动与引擎日志。
 - `_internal`：程序自带的运行环境，请勿删除或单独移动。
 - `tools/ffmpeg.exe`：自带的音频转换工具。
 
-更新时先关闭程序，将新包解压到新目录，再复制旧目录的 `data`、`audio`、`characters`。
+更新时先关闭程序，将新包解压到新目录，再复制旧目录的 `data`、`audio`、`characters` 与 `backgrounds`（若存在）。
 如果自行创建过 `.env`，也应复制该文件；它可能包含服务地址与个人设置。不要用新包的 `.env.example` 覆盖它。
 Windows 凭据使用 DPAPI，换 Windows 用户或另一台电脑时，原加密凭据可能无法读取，需要重新填写。
 网页会话也会保存在浏览器中。换浏览器或端口前，可在“设置中心 → 备份与更新”导出完整聊天备份，再导入到新网页；导入会新增会话，现有会话不会被覆盖。
 
 ## 数据备份与恢复
 
-- 聊天备份 JSON 包含文字消息和会话设置；导入后的历史也会存入本机数据库，可继续用作模型上下文。音频录音、角色文件和服务密钥不包含在 JSON 中，仍需保留 `data`、`audio`、`characters`。
+- 聊天备份 JSON 包含文字消息和会话设置；导入后的历史也会存入本机数据库，可继续用作模型上下文。音频录音、角色文件和服务密钥不包含在 JSON 中，仍需保留 `data`、`audio`、`characters` 与 `backgrounds`（若存在）。
 - “导出完整聊天备份”会读取数据库中的完整记录，包括未打开的对话和较早消息。当前网页与数据库不一致的文字会另存为“浏览器副本”，两份都保留；导入保留原消息时间。建议等当前回复完成后导出。
 - 服务连接不上时，可先点“仅导出浏览器记录”保留网页里的文字；此文件不包含尚未加载的数据库历史，服务恢复后应再导出完整备份。
 - 单份聊天 JSON 上限为 20 MB、10000 个会话、50000 条消息（每个会话至多 10000 条）、1000 万文字字符。超出时不会截断导出；关闭程序后备份整个 `data` 文件夹，并另存浏览器记录。
@@ -88,11 +89,71 @@ Windows 凭据使用 DPAPI，换 Windows 用户或另一台电脑时，原加密
 ```powershell
 uv sync --frozen --extra desktop
 uv run --frozen --extra desktop python scripts/build_windows_portable.py
-uv run --frozen --extra desktop python scripts/verify_windows_portable.py dist/galgame2voice-v3.1.0-windows-x64.zip
-uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/galgame2voice-v3.1.0-windows-x64.zip
+uv run --frozen --extra desktop python scripts/verify_windows_portable.py dist/galgame2voice-v3.1.1-windows-x64.zip
+uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/galgame2voice-v3.1.1-windows-x64.zip
 ```
 
 前端修改后应先在 `frontend` 目录执行 `npm ci` 和 `npm run deploy`。
 产物位于 `dist/galgame2voice-v<版本>-windows-x64.zip`，校验文件与其同目录。
 上面的冒烟验证会在中文、空格路径解压真实产物，隐藏系统 Python/FFmpeg，检查网页、文件选择器运行库、音频转换和凭据保存。
 便携版使用下载新版发布包的方式更新；网页内的 Git 更新适用于源码安装。
+
+## 维护者发布验收
+
+便携发布包自带 Python 3.12 运行环境与 FFmpeg，但不包含用户 API Key、模型权重或游戏角色。面向发布归档时，建议在完成旧构建校验（`verify_windows_portable.py`）与基础冒烟（`smoke_windows_portable.py`）之后，执行包外业务验收脚本 `scripts/smoke_windows_turn_reply.py`。
+
+> **边界说明**：
+> - 基础冒烟在未检测到可用浏览器时会自动跳过无头首页检查；**跳过不代表 UI 交互验收通过**。
+> - 新增验收脚本将在临时目录真实解压便携 EXE，接入合成替身桩（`scripts/dev_standins.py`），检查“收到首句台词后关闭流 → 按真实用户消息 ID 解析助手 ID → 唯一单句修复 POST 持久化 → 同目录冷重启服务 → 历史分页/音频文件/WAV 格式与只读 SQLite 一致性”。
+> - 本验收仅使用临时合成数据覆盖离线业务契约，**没有真实 GPU 模型推理、真人听感或全界面 LOG 交互证明**；脚本为独立维护工具，**不可声称完整业务已全量验收或 CI 已通过**。
+
+### PowerShell 验收调用示例
+
+在 Windows 维护者环境中执行以下脚本，自动完成动态发现、校验核对与独立沙箱验收：
+
+```powershell
+# 1. 动态定位唯一发布包并读取同源 SHA-256 校验和
+$archives = Get-ChildItem -Path "dist/*-windows-x64.zip" -File
+if ($archives.Count -ne 1) {
+    throw "预期 dist/ 下存在唯一的 Windows 发布包，实际找到 $($archives.Count) 个。"
+}
+$archivePath = $archives[0].FullName
+$shaFile = "$archivePath.sha256"
+if (-not (Test-Path $shaFile)) {
+    throw "未找到对应的校验和文件: $shaFile"
+}
+$expectedSha = (Get-Content -Path $shaFile -Raw).Trim().Split()[0]
+
+# 2. 在系统临时目录生成 GUID 独占沙箱目录
+$scratchDir = Join-Path $env:TEMP ("g2v-release-gate-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $scratchDir -Force | Out-Null
+
+try {
+    # 3. 校验包结构与基础启动冒烟
+    uv run --frozen --extra desktop python scripts/verify_windows_portable.py $archivePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "verify_windows_portable 校验未通过 (退出码: $LASTEXITCODE)"
+    }
+
+    uv run --frozen --extra desktop python scripts/smoke_windows_portable.py $archivePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "smoke_windows_portable 冒烟未通过 (退出码: $LASTEXITCODE)"
+    }
+
+    # 4. 执行端到端业务验收（使用 --no-dev 保证纯净运行）
+    uv run --frozen --extra desktop --no-dev python scripts/smoke_windows_turn_reply.py `
+        --archive $archivePath `
+        --expected-sha $expectedSha `
+        --scratch $scratchDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "smoke_windows_turn_reply 业务验收未通过 (退出码: $LASTEXITCODE)"
+    }
+
+    Write-Host "便携包发布验收全部通过。"
+}
+finally {
+    # 失败时请保留沙箱内的 result.json 与合成服务日志以供定位
+    # 切勿删除真实用户 data 目录重试，严禁向外上传解压安装树、私有数据库或密钥
+    Write-Host "验收临时目录: $scratchDir"
+}
+```

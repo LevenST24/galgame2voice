@@ -20,8 +20,13 @@ def test_chosen_port_cannot_be_taken_before_uvicorn_starts(tmp_path, monkeypatch
     monkeypatch.setattr(run_server, "setup_signal_handlers", lambda: None)
     monkeypatch.setattr(run_server, "cleanup_subprocesses", lambda: None)
     monkeypatch.setattr(run_server.atexit, "register", lambda *args: None)
-    for key in ("GALGAME_PORT", "PORT", "GALGAME_HOST", "HOST"):
-        monkeypatch.setenv(key, os.environ.get(key, ""))
+    for key in (
+        "GALGAME2VOICE_PORT", "PORT", "GALGAME_PORT",
+        "GALGAME2VOICE_HOST", "HOST", "GALGAME_HOST",
+    ):
+        if key not in os.environ:
+            monkeypatch.setenv(key, "")
+        monkeypatch.delenv(key)
     checked = []
 
     def assert_reserved():
@@ -58,8 +63,13 @@ def test_port_is_released_if_server_startup_fails(tmp_path, monkeypatch, raises)
     monkeypatch.setattr(run_server, "setup_signal_handlers", lambda: None)
     monkeypatch.setattr(run_server, "cleanup_subprocesses", lambda: None)
     monkeypatch.setattr(run_server.atexit, "register", lambda *args: None)
-    for key in ("GALGAME_PORT", "PORT", "GALGAME_HOST", "HOST"):
-        monkeypatch.setenv(key, os.environ.get(key, ""))
+    for key in (
+        "GALGAME2VOICE_PORT", "PORT", "GALGAME_PORT",
+        "GALGAME2VOICE_HOST", "HOST", "GALGAME_HOST",
+    ):
+        if key not in os.environ:
+            monkeypatch.setenv(key, "")
+        monkeypatch.delenv(key)
     ports = []
 
     def fail_startup(*, sockets):

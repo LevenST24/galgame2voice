@@ -13,11 +13,13 @@ Single shared async client with:
 import asyncio
 import logging
 import os
+from pathlib import Path
 import time
 from typing import Any, AsyncGenerator
 
 import httpx
 
+from galgame2voice.config import get_settings
 from galgame2voice.services.audio_identity import SourceFile, VoicePreparation, bind_audio_options
 from galgame2voice.services.voice_resources import VoiceResourceGuard
 from galgame2voice.utils.path_guard import resolve_existing_audio_path
@@ -614,9 +616,39 @@ class GptSovitsClient:
     # Synthesis Endpoints (/tts)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _resolve_payload_ref_audio(ref_audio: str) -> str:
+    @classmethod
+    def _resolve_payload_ref_audio(cls, ref_audio: str, *, profile_resolved: bool = False) -> str:
         """Resolves reference audio path to absolute path checking project root fallback."""
+        if not ref_audio:
+            return ""
+        if profile_resolved:
+            raw = str(ref_audio).strip().strip("'\"")
+            if not raw:
+                return ""
+            try:
+                p = Path(raw)
+                if p.is_absolute():
+                    if p.is_file():
+                        return str(_safe_resolve_path(p))
+                    return raw
+
+                settings = get_settings()
+                char_dir = getattr(settings, "characters_dir", None)
+                if char_dir is None and hasattr(settings, "project_root"):
+                    char_dir = settings.project_root / "characters"
+
+                bases = [settings.project_root, Path(settings.audio_dir)]
+                if char_dir is not None:
+                    bases.append(Path(char_dir))
+
+                for base in bases:
+                    cand = base / p
+                    if cand.is_file():
+                        return str(_safe_resolve_path(cand))
+            except (OSError, ValueError):
+                pass
+            return raw
+
         found = resolve_existing_audio_path(ref_audio)
         if found is not None:
             return str(_safe_resolve_path(found))
@@ -625,12 +657,27 @@ class GptSovitsClient:
     def _build_tts_payload(self, text: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
         """Builds standardized GPT-SoVITS official /tts request payload."""
         resolved = resolve_tts_options(options)
-        ref_audio = resolved.get("ref_audio_path") or self.current_refer_audio or ""
-        if (options or {}).get("_profile_prompt_resolved") and (options or {}).get("prompt_text") is not None:
+        is_profile_resolved = bool((options or {}).get("_profile_prompt_resolved"))
+        if is_profile_resolved:
+            ref_audio = resolved.get("ref_audio_path") or ""
+        else:
+            ref_audio = resolved.get("ref_audio_path") or self.current_refer_audio or ""
+
+        if is_profile_resolved and (options or {}).get("prompt_text") is not None:
             ref_text = resolved.get("prompt_text", "")
         else:
             ref_text = resolved.get("prompt_text") or self.current_refer_text or ""
-        ref_lang = resolved.get("prompt_lang") or self.current_refer_language or "ja"
+
+        has_explicit_lang = any(
+            (options or {}).get(k) is not None
+            for k in ("prompt_lang", "prompt_language", "refer_language")
+        )
+        if not is_profile_resolved and not has_explicit_lang and self.current_refer_language:
+            ref_lang = self.current_refer_language
+        elif is_profile_resolved and (options or {}).get("prompt_lang") is not None:
+            ref_lang = (options or {}).get("prompt_lang") or resolved.get("prompt_lang") or "ja"
+        else:
+            ref_lang = resolved.get("prompt_lang") or self.current_refer_language or "ja"
 
         if not ref_audio:
             raise ValueError(
@@ -646,7 +693,7 @@ class GptSovitsClient:
                 reason,
             )
 
-        ref_audio = self._resolve_payload_ref_audio(ref_audio)
+        ref_audio = self._resolve_payload_ref_audio(ref_audio, profile_resolved=is_profile_resolved)
         norm_text = normalize_dialogue_prosody(text) or text
 
         # Latency-driven dynamic batch size calculation

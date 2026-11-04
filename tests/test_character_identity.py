@@ -283,8 +283,19 @@ async def test_sync_does_not_borrow_a_bare_reference_from_another_package(projec
         original = await profile(conn, "Ann", ref_audio_path="refs/gentle.wav", prompt_text="Old reference")
         await manager.sync_with_db(conn)
         updated = await crud.get_voice_profile(conn, original.id)
-        assert updated.ref_audio_path == "characters/ann/gentle.wav"
-        assert updated.prompt_text == "Ann"
+        # Revised contract: unknown explicit reference without local file is preserved as external reference,
+        # retaining original ref_audio_path, prompt_text, and prompt_lang, and must not borrow Bella.
+        assert updated.ref_audio_path == "refs/gentle.wav"
+        assert updated.prompt_text == "Old reference"
+        assert "bella" not in updated.ref_audio_path.lower()
+
+    # Verify persistence with a fresh DB connection and verify rescan idempotency
+    async with aiosqlite.connect(isolate_test_database) as fresh_conn:
+        fresh_conn.row_factory = aiosqlite.Row
+        reloaded = await crud.get_voice_profile(fresh_conn, original.id)
+        assert reloaded.ref_audio_path == "refs/gentle.wav"
+        assert reloaded.prompt_text == "Old reference"
+        assert await manager.sync_with_db(fresh_conn) == 0
 
 
 @pytest.mark.asyncio
@@ -527,7 +538,7 @@ async def test_voice_resolver_finds_profile_by_character_query(project, isolate_
     async with aiosqlite.connect(isolate_test_database) as conn:
         conn.row_factory = aiosqlite.Row
         p_ann = await profile(conn, "Ann")
-        p_bella = await profile(conn, "Bella")
+        await profile(conn, "Bella")
 
     resolver = VoiceProfileResolver()
 
@@ -590,7 +601,7 @@ async def test_missing_reference_under_default_directory_does_not_borrow_default
 ):
     from galgame2voice.services import character_manager
     from galgame2voice.services.voice_resolver import VoiceProfileResolver
-    from galgame2voice.services.tts_service import TtsService, VoiceReferenceMissingError
+    from galgame2voice.services.tts_service import TtsService
     from galgame2voice.utils.path_guard import resolve_existing_audio_path
 
     # Install a valid default character package containing gentle.wav
@@ -635,13 +646,23 @@ async def test_missing_reference_under_default_directory_does_not_borrow_default
     assert ctx.ref_audio_path == "audio/default/gentle.wav"
     assert "natsume" not in ctx.ref_audio_path
 
-    # 3. Real voice resolution & TTS options flow: custom voice referencing missing audio gets VoiceReferenceMissingError
+    # 3. Real voice resolution & TTS options flow: under the external reference contract,
+    # explicit non-local reference audio/default/gentle.wav is preserved along with Alice's context,
+    # without borrowing Natsume or engine old references (contract revised from old VoiceReferenceMissingError).
     class RealEngineClient:
         base_url = "http://127.0.0.1:9880"
+        current_refer_audio = "engine/old_ref.wav"
+        current_refer_text = "engine old prompt"
 
     service = TtsService(client=RealEngineClient(), audio_dir=project / "audio", db_path=isolate_test_database)
-    with pytest.raises(VoiceReferenceMissingError, match="缺少参考音频"):
-        await service._populate_voice_profile_opts({"voice_profile_id": alice.id, "ref_audio_path": "audio/default/gentle.wav"})
+    populated = await service._populate_voice_profile_opts(
+        {"voice_profile_id": alice.id, "ref_audio_path": "audio/default/gentle.wav"}
+    )
+    assert populated["ref_audio_path"] == "audio/default/gentle.wav"
+    assert populated["prompt_text"] == "Alice custom transcript"
+    assert "natsume" not in populated["ref_audio_path"].lower()
+    assert populated["ref_audio_path"] != "engine/old_ref.wav"
+    assert populated["prompt_text"] != "engine old prompt"
 
     # 4. Normal character package path segment elsewhere can still be found by fallback search
     normal_resolved = resolve_existing_audio_path("external/relocated/characters/natsume/gentle.wav")

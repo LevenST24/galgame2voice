@@ -321,7 +321,11 @@ def _search_character_packages_for_audio(raw: str, filename: str) -> Path | None
     return None
 
 
-def resolve_existing_audio_path(path: str | Path) -> Path | None:
+def resolve_existing_audio_path(
+    path: str | Path,
+    *,
+    allow_package_search: bool = True,
+) -> Path | None:
     """
     Resolves a reference audio path across canonical bases and installed packages in order:
     absolute path, project_root-relative, audio_dir-relative, characters_dir-relative,
@@ -329,6 +333,11 @@ def resolve_existing_audio_path(path: str | Path) -> Path | None:
     Returns the first existing file, or None if it cannot be resolved.
     Does not enforce containment: reference audio legitimately lives in
     external directories (e.g. game voice packs on another drive).
+
+    :param allow_package_search: If True (default), allows fallback heuristic search
+        across installed character packages for legacy audio paths. If False, only
+        disables legacy package guessing while leaving all explicit canonical locations
+        (absolute paths, project_root, audio_dir, characters_dir) fully functional.
     """
     raw = str(path or "").strip().strip("\"'")
     if not raw:
@@ -350,6 +359,9 @@ def resolve_existing_audio_path(path: str | Path) -> Path | None:
             cand = base / p
             if cand.is_file():
                 return cand
+
+        if not allow_package_search:
+            return None
 
         # Check if an installed character package contains this reference file
         return _search_character_packages_for_audio(raw, p.name)

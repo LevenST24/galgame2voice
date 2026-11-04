@@ -1179,6 +1179,31 @@ def auto_open_browser(port: int = 8080, host: str = "127.0.0.1"):
 
 
 
+def sync_runtime_address(*, host: str | None = None, port: int | None = None) -> None:
+    """Synchronize runtime host/port across all environment aliases and clear Settings cache.
+
+    Pydantic Settings configures AliasChoices("GALGAME2VOICE_HOST", "HOST", "GALGAME_HOST")
+    and AliasChoices("GALGAME2VOICE_PORT", "PORT", "GALGAME_PORT"). To guarantee that
+    all Settings consumers and lifespan security guards reflect the actual binding,
+    every alias must be set and the lru_cache cleared.
+    """
+    if host is not None:
+        canonical_host = str(host).strip()
+        os.environ["GALGAME2VOICE_HOST"] = canonical_host
+        os.environ["HOST"] = canonical_host
+        os.environ["GALGAME_HOST"] = canonical_host
+    if port is not None:
+        canonical_port = str(port).strip()
+        os.environ["GALGAME2VOICE_PORT"] = canonical_port
+        os.environ["PORT"] = canonical_port
+        os.environ["GALGAME_PORT"] = canonical_port
+    try:
+        from galgame2voice.config import get_settings
+        get_settings.cache_clear()
+    except Exception:
+        pass
+
+
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     """Parses CLI flags for the Galgame2Voice server launcher."""
     parser = argparse.ArgumentParser(
@@ -1186,12 +1211,18 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     env_port = 8080
-    if os.environ.get("GALGAME_PORT"):
+    env_port_str = os.environ.get("GALGAME2VOICE_PORT") or os.environ.get("PORT") or os.environ.get("GALGAME_PORT")
+    if env_port_str:
         try:
-            env_port = int(os.environ["GALGAME_PORT"])
+            env_port = int(env_port_str)
         except ValueError:
             pass
-    env_host = os.environ.get("GALGAME_HOST", "127.0.0.1")
+    env_host = (
+        os.environ.get("GALGAME2VOICE_HOST")
+        or os.environ.get("HOST")
+        or os.environ.get("GALGAME_HOST")
+        or "127.0.0.1"
+    )
     env_no_browser = os.environ.get("GALGAME_NO_BROWSER", "").lower() in ("1", "true", "yes")
 
     parser.add_argument(
@@ -1258,6 +1289,10 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
 def main(args: list[str] | None = None):
     parsed = parse_args(args)
 
+    # Immediately synchronize the requested host/port across all environment aliases
+    # and clear any early-cached Settings before any diagnostic or engine setup runs.
+    sync_runtime_address(host=parsed.host, port=parsed.port)
+
     if getattr(parsed, "profile", False):
         os.environ["GALGAME2VOICE_PROFILE"] = "1"
         print("[性能追踪] 已启用 --profile 实时延迟瀑布图分析模式 (GALGAME2VOICE_PROFILE=1)")
@@ -1303,11 +1338,8 @@ def main(args: list[str] | None = None):
         if preferred_port != 0 and active_port != preferred_port:
             print(f"[提示] 默认端口 {preferred_port} 无法绑定 (可能被系统代理或其他程序占用)，已自动切换至可用端口: {active_port}")
 
-        # Save active port & PID for clean shutdown and downstream configuration
-        os.environ["GALGAME_PORT"] = str(active_port)
-        os.environ["PORT"] = str(active_port)
-        os.environ["GALGAME_HOST"] = bind_host
-        os.environ["HOST"] = bind_host
+        # Synchronize active port and host across all aliases and clear Settings cache
+        sync_runtime_address(host=bind_host, port=active_port)
         try:
             (PROJECT_ROOT / "data" / "active_port.txt").write_text(str(active_port), encoding="utf-8")
             (PROJECT_ROOT / "galgame2voice.pid").write_text(str(os.getpid()), encoding="utf-8")

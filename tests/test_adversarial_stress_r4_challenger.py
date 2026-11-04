@@ -460,40 +460,75 @@ class TestConcurrentCancellationStorm:
                 session_id=f"storm_sess_{idx}",
                 cancel_event=cancel_events[idx],
             )
-            # Wait for first event
+            # 1. Verify turn_started metadata event
+            metadata = await gen.__anext__()
+            assert metadata.get("event") == "turn_started"
+            assert metadata.get("data", {}).get("session_id") == f"storm_sess_{idx}"
+            user_msg_id = metadata.get("data", {}).get("user_message_id")
+            assert isinstance(user_msg_id, int) and user_msg_id > 0
+
+            # 2. Consume original text event and assert status/payload
             first = await gen.__anext__()
+            assert first is not None
+            assert first.get("event") == "text"
+            assert adapter.started_event.is_set()
+
+            # 3. Producer is actively generating; set started barrier
             started_events[idx].set()
             # Wait until all concurrent streams have started before draining further
             await all_started.wait()
             # Wait for cancel
-            events = [first]
+            events = [metadata, first]
             async for ev in gen:
                 events.append(ev)
             return events
 
         tasks = [asyncio.create_task(run_one(i)) for i in range(num_concurrent)]
-        await asyncio.gather(*(se.wait() for se in started_events))
 
-        # Trigger all cancellations at once
-        t0 = time.perf_counter()
-        for ce in cancel_events:
-            ce.set()
-        all_started.set()
+        async def _wait_barrier():
+            await asyncio.gather(*(se.wait() for se in started_events))
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        t_done = time.perf_counter()
-        total_latency_ms = (t_done - t0) * 1000.0
+        barrier_task = asyncio.create_task(_wait_barrier())
+        try:
+            await asyncio.wait(
+                [barrier_task, *tasks],
+                timeout=5.0,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in tasks:
+                if t.done() and t.exception() is not None:
+                    raise t.exception()
+            if not barrier_task.done():
+                await asyncio.wait_for(barrier_task, timeout=0.1)
 
-        for idx, res in enumerate(results):
-            assert not isinstance(res, Exception), f"Stream {idx} raised exception: {res}"
-            assert any(e.get("event") == "done" and e.get("data", {}).get("truncated") is True for e in res)
+            # Trigger all cancellations at once
+            t0 = time.perf_counter()
+            for ce in cancel_events:
+                ce.set()
+            all_started.set()
 
-        # A busy CI runner has taken 105 ms here.
-        assert total_latency_ms < 500.0, f"Simultaneous {num_concurrent}-cancellation latency was {total_latency_ms:.2f}ms >= 500ms"
-        assert not client.lock.locked()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            t_done = time.perf_counter()
+            total_latency_ms = (t_done - t0) * 1000.0
 
-        await chat_service.aclose()
-        assert len([t for t in chat_service._bg_tasks if not t.done()]) == 0
+            for idx, res in enumerate(results):
+                assert not isinstance(res, Exception), f"Stream {idx} raised exception: {res}"
+                assert any(e.get("event") == "done" and e.get("data", {}).get("truncated") is True for e in res)
+
+            # A busy CI runner has taken 105 ms here.
+            assert total_latency_ms < 500.0, f"Simultaneous {num_concurrent}-cancellation latency was {total_latency_ms:.2f}ms >= 500ms"
+            assert not client.lock.locked()
+        finally:
+            all_started.set()
+            if barrier_task is not None and not barrier_task.done():
+                barrier_task.cancel()
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(barrier_task, *tasks, return_exceptions=True)
+            await chat_service.aclose()
+            await client.aclose()
+            assert len([t for t in chat_service._bg_tasks if not t.done()]) == 0
 
 
 class TestParserChaosAndRecovery:

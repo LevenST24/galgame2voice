@@ -104,6 +104,8 @@ export function createConversation({
       announcedLineAudio: new Set(),
       hasReceivedLineEvents: false,
       settled: false,
+      serverUserMessageId: null,
+      turnConflict: false,
     };
     turn = current;
     busy = true;
@@ -122,7 +124,19 @@ export function createConversation({
       },
       onEvent: (type, payload) => {
         if (turn !== current || current.settled) return;
-        if (type === 'line') {
+        if (type === 'turn_started') {
+          if (payload && payload.session_id === current.originId
+              && Number.isSafeInteger(payload.user_message_id) && payload.user_message_id > 0) {
+            if (current.serverUserMessageId === null && !current.turnConflict) {
+              current.serverUserMessageId = payload.user_message_id;
+              assistantMessage.serverUserMessageId = payload.user_message_id;
+            } else if (current.serverUserMessageId !== null && current.serverUserMessageId !== payload.user_message_id) {
+              current.turnConflict = true;
+              assistantMessage.turnConflict = true;
+            }
+          }
+          emit('turn_started', payload);
+        } else if (type === 'line') {
           if (!Number.isInteger(payload?.index) || payload.index < 0) return;
           current.hasReceivedLineEvents = true;
           if (!assistantMessage.lines) assistantMessage.lines = [];
@@ -208,6 +222,9 @@ export function createConversation({
         japanese: meta.japanese || '', audioUrls, audioChunks: meta.chunks || [],
         ts: Date.now(), ttsParams: meta.ttsParams || null,
         ...(Number.isSafeInteger(meta.messageId) && meta.messageId > 0 ? { serverMessageId: meta.messageId } : {}),
+        ...(Number.isSafeInteger(current.serverUserMessageId) && current.serverUserMessageId > 0
+          ? { serverUserMessageId: current.serverUserMessageId } : {}),
+        ...(current.turnConflict ? { turnConflict: true } : {}),
       };
 
       if (Array.isArray(meta.lines)) {

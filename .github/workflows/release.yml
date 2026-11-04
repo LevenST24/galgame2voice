@@ -72,6 +72,12 @@ jobs:
           python-version: "3.12"
       - name: Install locked portable-build dependencies
         run: uv sync --frozen --extra desktop --no-dev
+      - name: Run portable smoke transport tests
+        run: |
+          uv run --frozen --extra desktop --no-dev python tests/test_smoke_windows_http.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv run --frozen --extra desktop --no-dev python tests/test_smoke_windows_ui.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
@@ -84,10 +90,46 @@ jobs:
         run: uv run --frozen --extra desktop --no-dev python scripts/build_windows_portable.py
       - name: Test the extracted portable application
         run: |
-          $archive = Get-ChildItem -LiteralPath dist -Filter '*-windows-x64.zip' | Select-Object -First 1
+          $archives = @(Get-ChildItem -LiteralPath dist -Filter '*-windows-x64.zip')
+          if ($archives.Count -ne 1) {
+            throw "Expected exactly 1 Windows portable ZIP in dist, found $($archives.Count)"
+          }
+          $archive = $archives[0]
           uv run --frozen --extra desktop --no-dev python scripts/verify_windows_portable.py $archive.FullName
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           uv run --frozen --extra desktop --no-dev python scripts/smoke_windows_portable.py $archive.FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test turn-reply business recovery
+        timeout-minutes: 5
+        run: |
+          $archives = @(Get-ChildItem -LiteralPath dist -Filter '*-windows-x64.zip')
+          if ($archives.Count -ne 1) {
+            throw "Expected exactly 1 Windows portable ZIP in dist, found $($archives.Count)"
+          }
+          $archive = $archives[0]
+          $shaFile = "$($archive.FullName).sha256"
+          if (-not (Test-Path -LiteralPath $shaFile)) {
+            throw "Expected checksum file missing: $shaFile"
+          }
+          $shaContent = (Get-Content -LiteralPath $shaFile -Raw).Trim()
+          $expectedSha = ($shaContent -split '\s+')[0].ToLowerInvariant()
+          if ($expectedSha -notmatch '^[0-9a-f]{64}$') {
+            throw "Invalid SHA-256 in $($shaFile): $expectedSha"
+          }
+          $scratch = Join-Path $env:RUNNER_TEMP "smoke-turn-reply-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          uv run --frozen --extra desktop --no-dev python scripts/smoke_windows_turn_reply.py --archive $archive.FullName --expected-sha $expectedSha --scratch $scratch --with-browser-ui
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload turn-reply smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-portable-turn-reply-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/smoke-turn-reply-${{ github.run_id }}-${{ github.run_attempt }}/result.json
+            ${{ runner.temp }}/smoke-turn-reply-${{ github.run_id }}-${{ github.run_attempt }}/*.log
+            ${{ runner.temp }}/smoke-turn-reply-${{ github.run_id }}-${{ github.run_attempt }}/browser_ui/*.png
+            ${{ runner.temp }}/smoke-turn-reply-${{ github.run_id }}-${{ github.run_attempt }}/browser_ui/*.log
       - name: Upload Windows portable package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

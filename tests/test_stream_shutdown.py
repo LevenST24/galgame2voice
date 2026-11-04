@@ -37,6 +37,8 @@ async def test_partial_reply_is_persisted_exactly_once(tmp_path, ending):
     cancel = asyncio.Event()
     stream = service.stream_chat("问题", session_id="partial", cancel_event=cancel)
     try:
+        started = await asyncio.wait_for(stream.__anext__(), 2)
+        assert started["event"] == "turn_started"
         first = await asyncio.wait_for(stream.__anext__(), 2)
         assert first["event"] == "text"
         if ending == "cancel":
@@ -92,6 +94,7 @@ async def test_stop_waits_for_upstream_finally_without_cancelling_it_twice(tmp_p
     stream = service.stream_chat("问题", session_id="cleanup", cancel_event=cancel)
     consumer = None
     try:
+        assert (await asyncio.wait_for(stream.__anext__(), 2))["event"] == "turn_started"
         assert (await asyncio.wait_for(stream.__anext__(), 2))["event"] == "text"
         cancel.set()
         consumer = asyncio.create_task(_consume(stream))

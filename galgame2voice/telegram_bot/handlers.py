@@ -9,6 +9,9 @@ Implements:
 """
 
 import asyncio
+import contextlib
+import contextvars
+from dataclasses import dataclass
 import functools
 from io import BytesIO
 import logging
@@ -24,6 +27,7 @@ except ImportError:
     InlineKeyboardMarkup = Any
 
 from galgame2voice.database.session import get_db, immediate_transaction
+from galgame2voice.services.chat_pipelines.turn_persistence import TurnUnavailableError, require_user_turn
 from galgame2voice.services.voice_state import (
     ActiveVoicePersistenceError,
     VoiceProfileRemoved,
@@ -89,6 +93,101 @@ def _authorized_command(label: str) -> Callable[[CommandCallback], CommandCallba
     return decorator
 
 
+@dataclass
+class TurnHandle:
+    session_id: str
+    epoch: int
+    task: asyncio.Task | None = None
+    _cancelled: bool = False
+
+    def is_valid(self, current_epoch: int) -> bool:
+        return (not self._cancelled) and (self.epoch == current_epoch)
+
+
+_current_turn: contextvars.ContextVar[TurnHandle | None] = contextvars.ContextVar(
+    "telegram_current_turn", default=None
+)
+
+
+class TelegramTurnCoordinator:
+    """
+    Coordinates turn lifecycle, serialisation, and reset invalidation for Telegram chat sessions.
+    - Serializes turns per session key so messages from the same member are executed in arrival order.
+    - /reset immediately increments the session epoch and cancels the active task, invalidating both
+      the active turn and any queued turns waiting for the session lock.
+    - Stale or cancelled turns never send Telegram text, persist into SQLite, alter affection, or trigger TTS.
+    """
+
+    def __init__(self, session_locks: weakref.WeakValueDictionary[str, asyncio.Lock] | None = None) -> None:
+        self._epochs: dict[str, int] = {}
+        self._active_turns: dict[str, TurnHandle] = {}
+        self._session_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+            session_locks if session_locks is not None else weakref.WeakValueDictionary()
+        )
+
+    def get_epoch(self, session_id: str) -> int:
+        return self._epochs.get(session_id, 0)
+
+    def prepare_turn(self, session_id: str) -> TurnHandle:
+        """Captures the current epoch when a message arrives (before queuing on session lock)."""
+        return TurnHandle(session_id=session_id, epoch=self.get_epoch(session_id))
+
+    def is_turn_valid(self, turn: TurnHandle | None) -> bool:
+        """Checks if a turn is still valid (not cancelled and matches current session epoch)."""
+        if turn is None:
+            return True
+        return turn.is_valid(self.get_epoch(turn.session_id))
+
+    @contextlib.contextmanager
+    def activate_turn(self, turn: TurnHandle):
+        """Context manager registering the active turn/task and ensuring cleanup in finally.
+        Supports reentrant/nested activation so outer handlers (e.g. handle_voice_message)
+        retain ownership across multi-stage pipelines without premature cleanup."""
+        current_active = self._active_turns.get(turn.session_id)
+        if current_active is turn:
+            yield turn
+            return
+
+        turn.task = asyncio.current_task()
+        self._active_turns[turn.session_id] = turn
+        try:
+            yield turn
+        finally:
+            if self._active_turns.get(turn.session_id) is turn:
+                self._active_turns.pop(turn.session_id, None)
+
+    def reset_session(self, session_id: str) -> None:
+        """
+        Invalidates active and queued turns for session_id:
+        1. Bumps the session epoch so all queued turns (with old epoch) are invalidated upon acquiring lock.
+        2. Cancels active task (if any) and marks active turn as cancelled.
+        """
+        self._epochs[session_id] = self._epochs.get(session_id, 0) + 1
+        active = self._active_turns.pop(session_id, None)
+        if active is not None:
+            active._cancelled = True
+            if active.task is not None and not active.task.done():
+                active.task.cancel()
+                logger.info(
+                    "Cancelled active chat turn for session %s (epoch bumped to %d)",
+                    session_id,
+                    self._epochs[session_id],
+                )
+
+    def cancel_all(self) -> list[asyncio.Task]:
+        """Cancels all active chat tasks across all sessions (used during bot shutdown)."""
+        tasks: list[asyncio.Task] = []
+        for session_id in list(self._active_turns.keys()):
+            self._epochs[session_id] = self._epochs.get(session_id, 0) + 1
+            active = self._active_turns.pop(session_id, None)
+            if active is not None:
+                active._cancelled = True
+                if active.task is not None and not active.task.done():
+                    active.task.cancel()
+                    tasks.append(active.task)
+        return tasks
+
+
 class TelegramBotHandlers:
     """
     Coordinates message handling, voice note processing, per-user background task tracking,
@@ -111,6 +210,7 @@ class TelegramBotHandlers:
         # One lock per session key. Chat messages are handled non-blocking (see bot.py), so
         # this keeps one session's turns sequential and in arrival order.
         self._session_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+        self.turn_coordinator = TelegramTurnCoordinator(self._session_locks)
         # Telegram user IDs allowed to use the bot; empty set = fail-closed (nobody authorized)
         self.admin_ids: set = set(admin_ids or [])
 
@@ -162,6 +262,29 @@ class TelegramBotHandlers:
         if task and not task.done():
             task.cancel()
             logger.info("Cancelled ongoing voice synthesis task for session %s", key)
+
+    async def reset_session(self, chat_id: int, user_id: int = 0) -> None:
+        """
+        Unified reset entrypoint:
+        1. Invalidates active & queued chat turns for this member's session.
+        2. Cancels any active background voice synthesis for this member.
+        3. Clears messages in SQLite database (with fallback to SessionManager).
+        """
+        session_id = resolve_session_key(chat_id, user_id)
+        self.turn_coordinator.reset_session(session_id)
+        self.cancel_user_task(chat_id, user_id)
+
+        try:
+            async with get_db(self.db_path) as conn:
+                await crud.clear_session_messages(conn, session_id)
+        except Exception as exc:
+            logger.warning("Could not clear session %s via crud: %s; using SessionManager", session_id, exc)
+            if hasattr(self, "chat_service") and hasattr(self.chat_service, "session_manager"):
+                await self.chat_service.session_manager.clear_session(session_id)
+
+    def cancel_all_chat_turns(self) -> list[asyncio.Task]:
+        """Cancels all active chat turns across all sessions."""
+        return self.turn_coordinator.cancel_all()
 
     async def build_main_console(self, chat_id: int, user_id: int = 0) -> tuple[str, Any]:
         """Constructs the rich text and inline keyboard for the Telegram Interactive Console."""
@@ -316,15 +439,7 @@ class TelegramBotHandlers:
         """Handler for /reset command."""
         chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
         user_id = resolve_effective_user_id(update)
-        session_id = resolve_session_key(chat_id, user_id)
-        self.cancel_user_task(chat_id, user_id)
-
-        try:
-            async with get_db(self.db_path) as conn:
-                await crud.clear_session_messages(conn, session_id)
-        except Exception as exc:
-            logger.warning("Could not clear session %s via crud: %s; using SessionManager", session_id, exc)
-            await self.chat_service.session_manager.clear_session(session_id)
+        await self.reset_session(chat_id, user_id)
 
         reply = "已清空当前对话上下文！"
         await self._safe_send_message(update, context, reply)
@@ -709,18 +824,23 @@ class TelegramBotHandlers:
         display_chinese: str,
         japanese: str,
         lines: list[dict[str, Any]] | None = None,
+        user_msg_id: int | None = None,
     ) -> None:
         """Persists assistant reply to DB and triggers affection progression."""
         async with get_db(self.db_path) as conn:
-            await crud.add_message(conn, MessageCreate(
-                session_id=session_id,
-                role="assistant",
-                content_chinese=display_chinese,
-                content_japanese=japanese,
-                lines=lines if lines is not None else build_lines(display_chinese, japanese, with_audio=True),
-                audio_url="",
-                latency_ms=0,
-            ))
+            async with immediate_transaction(conn):
+                if user_msg_id is not None:
+                    await require_user_turn(conn, session_id, user_msg_id)
+                await crud.add_message(conn, MessageCreate(
+                    session_id=session_id,
+                    role="assistant",
+                    content_chinese=display_chinese,
+                    content_japanese=japanese,
+                    lines=lines if lines is not None else build_lines(display_chinese, japanese, with_audio=True),
+                    audio_url="",
+                    latency_ms=0,
+                    reply_to_message_id=user_msg_id,
+                ))
             try:
                 if hasattr(self.chat_service, "affection_service"):
                     await self.chat_service.affection_service.handle_turn_affection(
@@ -732,7 +852,13 @@ class TelegramBotHandlers:
             except Exception as aff_err:
                 logger.debug("Telegram non-critical affection update exception: %s", aff_err)
 
-    async def process_text_chat(self, chat_id: int, text: str, bot: Any, user_id: int = 0) -> asyncio.Task:
+    async def process_text_chat(
+        self,
+        chat_id: int,
+        text: str,
+        bot: Any,
+        user_id: int = 0,
+    ) -> asyncio.Task:
         """
         Executes immediate text reply, immediately persists assistant turn to DB,
         extracts long-term memory facts, updates character affection state,
@@ -744,98 +870,137 @@ class TelegramBotHandlers:
         # 1. Cancel this member's previous pending voice task, never another member's
         self.cancel_user_task(chat_id, effective_user_id)
 
-        user_msg_id: int | None = None
-        try:
-            # 2. Query ChatService / LLM Adapter for bilingual response
-            adapter, model_name, profile_id, messages, user_msg_id, char_name = await self._setup_user_chat_turn(
-                session_id=session_id,
-                effective_user_id=effective_user_id,
-                text=text,
-            )
+        turn = _current_turn.get()
+        if turn is None or turn.session_id != session_id:
+            turn = self.turn_coordinator.prepare_turn(session_id)
 
-            current_pose = await get_recent_pose(self.db_path, session_id)
+        async def _noop() -> None:
+            pass
 
-            # Send typing chat action so Telegram shows "typing..." in status bar
-            if bot and hasattr(bot, "send_chat_action"):
-                try:
-                    await bot.send_chat_action(chat_id=chat_id, action="typing")
-                except Exception as action_err:
-                    logger.debug("Failed sending typing chat action for chat_id=%d: %s", chat_id, action_err)
-
-            chat_kwargs = {"model": model_name}
-            effort = configured_reasoning_effort(adapter)
-            if effort is not None:
-                chat_kwargs["reasoning_effort"] = effort
-            llm_response = await adapter.chat(messages, **chat_kwargs)
-            raw_text = llm_response.content
-
-            chinese, japanese, parser = StreamingBilingualParser.parse_full_text(raw_text)
-
-            if not chinese.strip():
-                chinese = japanese
-            display_chinese = strip_stage_directions(chinese).strip() or chinese
-            if not display_chinese.strip():
-                # Nothing to send, save or voice; report it like any failed reply.
-                stopped_on_length = bool(
-                    getattr(parser, "lines_truncated", False)
-                    or getattr(adapter, "last_finish_reason", None) in ("length", "MAX_TOKENS", "max_tokens")
-                )
-                msg = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
-                raise ValueError(msg)
-            dynamic_tts = parser.get_dynamic_tts_options(sentence_text=japanese)
-
-            # 3. Send text reply immediately
-            await bot.send_message(chat_id=chat_id, text=display_chinese)
-
-            # 4. Immediately persist assistant message to DB & process affection progression
-            lines = (
-                parser.normalized_lines(with_audio=True)
-                if parser.line_scanner.format == "lines"
-                else build_lines(display_chinese, japanese, with_audio=True)
-            )
-            acting_menu = getattr(messages, "menu", None)
-            if lines:
-                for line in lines:
-                    line["act"] = sanitize_act(
-                        line.get("act"),
-                        acting_menu,
-                        line_index=line.get("index", 0),
-                        character=char_name,
-                        current_pose=current_pose,
-                    )
-                    if "pose" in line["act"]:
-                        current_pose = line["act"]["pose"]
-
-            await self._persist_assistant_chat_turn(
-                session_id=session_id,
-                effective_user_id=effective_user_id,
-                profile_id=profile_id,
-                user_text=text,
-                display_chinese=display_chinese,
-                japanese=japanese,
-                lines=lines,
-            )
-
-            # 5. Schedule background voice synthesis task
-            return self._spawn_background_voice_task(chat_id, bot, japanese, dynamic_tts, task_key=session_id)
-
-        except Exception as exc:
-            if user_msg_id is not None:
-                await self._prune_orphaned_user_message(user_msg_id, context_label="process_text_chat")
-            logger.error("Error generating LLM reply for chat_id=%d: %s", chat_id, exc, exc_info=True)
-            safe_err = sanitize_error_detail(exc)
-            err_detail = f": {safe_err}" if safe_err else ""
+        with self.turn_coordinator.activate_turn(turn):
+            user_msg_id: int | None = None
             try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=f"抱歉，大模型生成回复失败{err_detail}\n请在管理控制台检查当前模型提供商配置或 API Key。"
-                )
-            except Exception as send_err:
-                logger.error("Failed to send error notification to Telegram chat_id=%d: %s", chat_id, send_err)
+                if not self.turn_coordinator.is_turn_valid(turn):
+                    logger.info("Chat turn for session %s was invalidated before start", session_id)
+                    return asyncio.create_task(_noop())
 
-            # Return a pending no-op task so callers still get a Task to track
-            async def _noop() -> None: pass
-            return asyncio.create_task(_noop())
+                # 2. Query ChatService / LLM Adapter for bilingual response
+                adapter, model_name, profile_id, messages, user_msg_id, char_name = await self._setup_user_chat_turn(
+                    session_id=session_id,
+                    effective_user_id=effective_user_id,
+                    text=text,
+                )
+
+                if not self.turn_coordinator.is_turn_valid(turn):
+                    logger.info("Chat turn for session %s invalidated after setup", session_id)
+                    await self._prune_orphaned_user_message(user_msg_id, context_label="invalidated_after_setup")
+                    return asyncio.create_task(_noop())
+
+                current_pose = await get_recent_pose(self.db_path, session_id)
+
+                # Send typing chat action so Telegram shows "typing..." in status bar
+                if bot and hasattr(bot, "send_chat_action"):
+                    try:
+                        await bot.send_chat_action(chat_id=chat_id, action="typing")
+                    except Exception as action_err:
+                        logger.debug("Failed sending typing chat action for chat_id=%d: %s", chat_id, action_err)
+
+                chat_kwargs = {"model": model_name}
+                effort = configured_reasoning_effort(adapter)
+                if effort is not None:
+                    chat_kwargs["reasoning_effort"] = effort
+                llm_response = await adapter.chat(messages, **chat_kwargs)
+
+                # Ownership check: if turn was invalidated while waiting for LLM, drop reply immediately
+                if not self.turn_coordinator.is_turn_valid(turn):
+                    logger.info("Dropping stale LLM reply for invalidated turn in session %s", session_id)
+                    await self._prune_orphaned_user_message(user_msg_id, context_label="invalidated_turn")
+                    return asyncio.create_task(_noop())
+
+                raw_text = llm_response.content
+
+                chinese, japanese, parser = StreamingBilingualParser.parse_full_text(raw_text)
+
+                if not chinese.strip():
+                    chinese = japanese
+                display_chinese = strip_stage_directions(chinese).strip() or chinese
+                if not display_chinese.strip():
+                    stopped_on_length = bool(
+                        getattr(parser, "lines_truncated", False)
+                        or getattr(adapter, "last_finish_reason", None) in ("length", "MAX_TOKENS", "max_tokens")
+                    )
+                    msg = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
+                    raise ValueError(msg)
+                dynamic_tts = parser.get_dynamic_tts_options(sentence_text=japanese)
+
+                # Final ownership check before sending to Telegram
+                if not self.turn_coordinator.is_turn_valid(turn):
+                    logger.info("Dropping stale LLM reply before send for session %s", session_id)
+                    await self._prune_orphaned_user_message(user_msg_id, context_label="invalidated_before_send")
+                    return asyncio.create_task(_noop())
+
+                # 3. Send text reply immediately
+                await bot.send_message(chat_id=chat_id, text=display_chinese)
+
+                # 4. Immediately persist assistant message to DB & process affection progression
+                lines = (
+                    parser.normalized_lines(with_audio=True)
+                    if parser.line_scanner.format == "lines"
+                    else build_lines(display_chinese, japanese, with_audio=True)
+                )
+                acting_menu = getattr(messages, "menu", None)
+                if lines:
+                    for line in lines:
+                        line["act"] = sanitize_act(
+                            line.get("act"),
+                            acting_menu,
+                            line_index=line.get("index", 0),
+                            character=char_name,
+                            current_pose=current_pose,
+                        )
+                        if "pose" in line["act"]:
+                            current_pose = line["act"]["pose"]
+
+                await self._persist_assistant_chat_turn(
+                    session_id=session_id,
+                    effective_user_id=effective_user_id,
+                    profile_id=profile_id,
+                    user_text=text,
+                    display_chinese=display_chinese,
+                    japanese=japanese,
+                    lines=lines,
+                    user_msg_id=user_msg_id,
+                )
+
+                # 5. Schedule background voice synthesis task
+                return self._spawn_background_voice_task(chat_id, bot, japanese, dynamic_tts, task_key=session_id)
+
+            except (asyncio.CancelledError, TurnUnavailableError) as cancel_err:
+                logger.info("Chat turn aborted for session %s: %s", session_id, type(cancel_err).__name__)
+                if user_msg_id is not None:
+                    try:
+                        await asyncio.shield(
+                            self._prune_orphaned_user_message(user_msg_id, context_label="cancelled_chat")
+                        )
+                    except Exception as prune_err:
+                        logger.debug("Failed pruning user message on cancel: %s", prune_err)
+                return asyncio.create_task(_noop())
+            except Exception as exc:
+                if user_msg_id is not None:
+                    await self._prune_orphaned_user_message(user_msg_id, context_label="process_text_chat")
+                logger.error("Error generating LLM reply for chat_id=%d: %s", chat_id, exc, exc_info=True)
+                safe_err = sanitize_error_detail(exc)
+                err_detail = f": {safe_err}" if safe_err else ""
+                if self.turn_coordinator.is_turn_valid(turn):
+                    try:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=f"抱歉，大模型生成回复失败{err_detail}\n请在管理控制台检查当前模型提供商配置或 API Key。"
+                        )
+                    except Exception as send_err:
+                        logger.error("Failed to send error notification to Telegram chat_id=%d: %s", chat_id, send_err)
+
+                return asyncio.create_task(_noop())
 
     async def handle_text_message(self, update: Any, context: Any) -> asyncio.Task | None:
         """Handler for normal text messages."""
@@ -848,8 +1013,21 @@ class TelegramBotHandlers:
         if text.startswith("/"):
             return None
         user_id = resolve_effective_user_id(update)
-        async with self._session_lock(resolve_session_key(chat_id, user_id)):
-            return await self.process_text_chat(chat_id, text, context.bot, user_id=user_id)
+        session_key = resolve_session_key(chat_id, user_id)
+        turn = self.turn_coordinator.prepare_turn(session_key)
+        try:
+            async with self._session_lock(session_key):
+                if not self.turn_coordinator.is_turn_valid(turn):
+                    logger.info("Queued turn for session %s invalidated before acquiring lock", session_key)
+                    return None
+                token = _current_turn.set(turn)
+                try:
+                    return await self.process_text_chat(chat_id, text, context.bot, user_id=user_id)
+                finally:
+                    _current_turn.reset(token)
+        except asyncio.CancelledError:
+            logger.info("Text message handling cancelled for session %s", session_key)
+            return None
 
     @staticmethod
     async def _download_tg_file_bytes(tg_file: Any) -> bytes:
@@ -881,19 +1059,43 @@ class TelegramBotHandlers:
             )
             return None
 
-        # Held across transcription too, so a text sent right after a voice note waits for it.
-        async with self._session_lock(resolve_session_key(chat_id, resolve_effective_user_id(update))):
-            return await self._process_voice_note(update, context, chat_id, voice)
+        user_id = resolve_effective_user_id(update)
+        session_key = resolve_session_key(chat_id, user_id)
+        turn = self.turn_coordinator.prepare_turn(session_key)
+        try:
+            # Held across transcription too, so a text sent right after a voice note waits for it.
+            async with self._session_lock(session_key):
+                if not self.turn_coordinator.is_turn_valid(turn):
+                    logger.info("Queued voice turn for session %s invalidated before acquiring lock", session_key)
+                    return None
+                with self.turn_coordinator.activate_turn(turn):
+                    token = _current_turn.set(turn)
+                    try:
+                        return await self._process_voice_note(update, context, chat_id, voice)
+                    finally:
+                        _current_turn.reset(token)
+        except asyncio.CancelledError:
+            logger.info("Voice message handling cancelled for session %s", session_key)
+            return None
 
-    async def _process_voice_note(self, update: Any, context: Any, chat_id: int, voice: Any) -> asyncio.Task | None:
+    async def _process_voice_note(
+        self, update: Any, context: Any, chat_id: int, voice: Any
+    ) -> asyncio.Task | None:
         """Downloads, converts and transcribes a voice note, then runs it as a chat turn."""
+        turn = _current_turn.get()
         try:
             # 1. Download voice file bytes
             tg_file = await context.bot.get_file(voice.file_id)
             ogg_bytes = await self._download_tg_file_bytes(tg_file)
 
+            if not self.turn_coordinator.is_turn_valid(turn):
+                return None
+
             # 2. Convert OGG to 16kHz mono WAV
             wav_bytes = await convert_ogg_to_wav(bytes(ogg_bytes))
+
+            if not self.turn_coordinator.is_turn_valid(turn):
+                return None
 
             # 3. Transcribe via active STT adapter (with the provider's configured stt_model)
             async with get_db(self.db_path) as conn:
@@ -904,28 +1106,41 @@ class TelegramBotHandlers:
                 stt_adapter = get_stt_adapter(active_prov)
             except SpeechRecognitionUnsupportedError as unsupported:
                 logger.info("Voice note from chat_id=%d not transcribed: %s", chat_id, unsupported)
-                await update.message.reply_text(STT_UNSUPPORTED_REPLY)
+                if self.turn_coordinator.is_turn_valid(turn):
+                    await update.message.reply_text(STT_UNSUPPORTED_REPLY)
                 return None
 
             transcribed_text = await stt_adapter.transcribe(wav_bytes, filename="voice.wav")
+            if not self.turn_coordinator.is_turn_valid(turn):
+                logger.info("Voice turn invalidated during STT for chat_id=%d", chat_id)
+                return None
+
             if not transcribed_text or not transcribed_text.strip():
-                await update.message.reply_text("抱歉，未能从语音中识别出有效内容。")
+                if self.turn_coordinator.is_turn_valid(turn):
+                    await update.message.reply_text("抱歉，未能从语音中识别出有效内容。")
                 return None
 
             # 4. Forward to text chat pipeline
-            return await self.process_text_chat(chat_id, transcribed_text.strip(), context.bot, user_id=resolve_effective_user_id(update))
+            return await self.process_text_chat(
+                chat_id,
+                transcribed_text.strip(),
+                context.bot,
+                user_id=resolve_effective_user_id(update),
+            )
 
         except ValueError as val_err:
             logger.warning("Corrupted or unreadable voice file for chat_id=%d: %s", chat_id, val_err)
             if hasattr(update, "message") and update.message:
-                await update.message.reply_text(
-                    f"抱歉，语音解析失败，请重试！（原因：{sanitize_error_detail(val_err)}）"
-                )
+                if self.turn_coordinator.is_turn_valid(turn):
+                    await update.message.reply_text(
+                        f"抱歉，语音解析失败，请重试！（原因：{sanitize_error_detail(val_err)}）"
+                    )
             return None
         except Exception as exc:
             logger.error("Error processing voice message for chat_id=%d: %s", chat_id, exc, exc_info=True)
             if hasattr(update, "message") and update.message:
-                await update.message.reply_text("抱歉，语音处理出错，请重试！")
+                if self.turn_coordinator.is_turn_valid(turn):
+                    await update.message.reply_text("抱歉，语音处理出错，请重试！")
             return None
 
 

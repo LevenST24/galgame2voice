@@ -683,6 +683,7 @@ class _CallbackContext:
     db_path: str | None
     session_key_fn: Callable[[int, int], str]
     cancel_task: Callable[[int, int], None]
+    reset_session: Callable[[int, int], Any] | None = None
 
 
 async def _render_menu(
@@ -1067,14 +1068,17 @@ async def _handle_affection_menu(ctx: _CallbackContext) -> None:
 
 
 async def _handle_reset_session(ctx: _CallbackContext) -> None:
-    session_id = ctx.session_key_fn(ctx.chat_id, ctx.user_id)
-    # Only the member who pressed the button loses their pending voice note.
-    ctx.cancel_task(ctx.chat_id, ctx.user_id)
-    try:
-        async with get_db(ctx.db_path) as conn:
-            await crud.clear_session_messages(conn, session_id)
-    except Exception as exc:
-        logger.warning("Could not clear session %s: %s", session_id, exc)
+    if ctx.reset_session is not None:
+        await ctx.reset_session(ctx.chat_id, ctx.user_id)
+    else:
+        session_id = ctx.session_key_fn(ctx.chat_id, ctx.user_id)
+        # Only the member who pressed the button loses their pending voice note.
+        ctx.cancel_task(ctx.chat_id, ctx.user_id)
+        try:
+            async with get_db(ctx.db_path) as conn:
+                await crud.clear_session_messages(conn, session_id)
+        except Exception as exc:
+            logger.warning("Could not clear session %s: %s", session_id, exc)
     if hasattr(ctx.query, "answer"):
         await ctx.query.answer("🗑️ 当前会话记忆已清空！", show_alert=True)
     await _return_to_main_console(ctx)
@@ -1203,9 +1207,29 @@ async def route_callback_query(
             return handlers._session_key(cid, uid)
         return resolve_session_key(cid, uid)
 
+    async def reset_session_fn(cid: int, uid: int = 0) -> None:
+        if handlers and hasattr(handlers, "reset_session"):
+            await handlers.reset_session(cid, uid)
+        else:
+            cancel_task(cid, uid)
+            sid = session_key_fn(cid, uid)
+            try:
+                async with get_db(actual_db_path) as conn:
+                    await crud.clear_session_messages(conn, sid)
+            except Exception as exc:
+                logger.warning("Could not clear session %s: %s", sid, exc)
+
     try:
-        ctx = _CallbackContext(data=data, query=query, chat_id=chat_id, user_id=user_id,
-                               db_path=actual_db_path, session_key_fn=session_key_fn, cancel_task=cancel_task)
+        ctx = _CallbackContext(
+            data=data,
+            query=query,
+            chat_id=chat_id,
+            user_id=user_id,
+            db_path=actual_db_path,
+            session_key_fn=session_key_fn,
+            cancel_task=cancel_task,
+            reset_session=reset_session_fn,
+        )
         handler = _EXACT_CALLBACK_HANDLERS.get(data)
         if handler is None:
             for prefixes, prefix_handler in _PREFIX_CALLBACK_HANDLERS:

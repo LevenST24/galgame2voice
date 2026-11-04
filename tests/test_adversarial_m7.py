@@ -337,9 +337,12 @@ class TestFullLifecycleCrossModuleE2E:
             async for event in chat_service.stream_chat("Fail prompt", session_id="recovery_session"):
                 events.append(event)
 
-            assert len(events) == 1
-            assert events[0]["event"] == "error"
-            assert "Simulated adapter failure" in events[0]["data"]["error"]
+            assert len(events) == 2
+            assert events[0]["event"] == "turn_started"
+            assert events[0]["data"]["session_id"] == "recovery_session"
+            assert isinstance(events[0]["data"]["user_message_id"], int) and events[0]["data"]["user_message_id"] > 0
+            assert events[1]["event"] == "error"
+            assert "Simulated adapter failure" in events[1]["data"]["error"]
 
         # Turn 2: Working adapter recovers session
         working_adapter = CustomMockLLMAdapter(provider_config={}, custom_tokens=[

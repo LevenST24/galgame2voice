@@ -124,6 +124,15 @@ export function normalizeSnapshot(data, sessionDefaults, globalDefaults) {
       } else {
         delete normalizedMsg.lines;
       }
+      if (!Number.isSafeInteger(normalizedMsg.serverUserMessageId) || normalizedMsg.serverUserMessageId <= 0) {
+        delete normalizedMsg.serverUserMessageId;
+      }
+      if (!Number.isSafeInteger(normalizedMsg.serverMessageId) || normalizedMsg.serverMessageId <= 0) {
+        delete normalizedMsg.serverMessageId;
+      }
+      if (normalizedMsg.turnConflict !== true) {
+        delete normalizedMsg.turnConflict;
+      }
       return normalizedMsg;
     });
     const normalizedSession = {

@@ -15,8 +15,9 @@ npm --prefix frontend run deploy
 uv run --frozen --extra dev pytest -q
 uv run --frozen --extra dev ruff check galgame2voice scripts
 uv run --frozen --extra desktop python scripts/build_windows_portable.py
-uv run --frozen --extra desktop python scripts/verify_windows_portable.py dist/galgame2voice-v3.1.0-windows-x64.zip
-uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/galgame2voice-v3.1.0-windows-x64.zip
+uv run --frozen --extra desktop python scripts/verify_windows_portable.py dist/galgame2voice-v3.1.1-windows-x64.zip
+uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/galgame2voice-v3.1.1-windows-x64.zip
+uv run --frozen --extra desktop python scripts/smoke_windows_turn_reply.py --archive dist/galgame2voice-v3.1.1-windows-x64.zip --expected-sha <sha256> --scratch .local/smoke-turn-reply --with-browser-ui
 ```
 
 `verify_windows_portable.py` 检查校验和、必需运行文件、空用户目录、模型和凭据排除，以及 ZIP、已部署网页和 Vite 产物的一致性。
@@ -39,11 +40,15 @@ uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/ga
 | 本机服务中断 | 保存、导出或删除失败时保留内容；服务恢复后能重试。 |
 | 小窗口 | 设置可滚动、按钮可操作；立绘和快捷菜单不遮住文本框；竖向窗口使用 16:9 舞台并能输入和推进。 |
 
-浏览器可单独通过应用内 Browser 验证；在这种情况下 smoke 可以使用 `--skip-browser`，但应在记录中注明同一 ZIP 的浏览器验收结果。
+浏览器验收可由 smoke 脚本传入 `--with-browser-ui` 在受控重启后对真实运行程序全自动执行（验证设置中心单对话框与 Tab 切换、LOG 历史与修复音频链接、界面导出备份）；亦可单独通过应用内 Browser 手动验证。在这种情况下 smoke 可以使用 `--skip-browser`，但应在记录中注明同一 ZIP 的浏览器验收结果。
 
 ## 记录边界
 
-- 保存最终 ZIP 的字节数、SHA-256、完整测试收尾行、验收截图和失败诊断。
+- 保存 ZIP 字节数、测试结果、截图与诊断；保留标准构建自动生成的校验文件，无需另行计算。
 - 使用合成 LLM/TTS 上游，能检查打包程序的请求、流式处理、存储和故障反馈，不能证明真实模型质量、显存占用或人脸部件的对齐。
 - 实际语音引擎和真实角色资源需要单独验收。未执行的项目应注明未验证。
 - 构建成功、API 返回 200 或浏览器启动成功，都不能替代完整流程验收。
+
+## 节点交接与发布指引
+
+有关 v3.1.1 版本的详细交接范围、核心模块架构、数据库增量迁移、远端 CI 状态及未合并 PR 边界，请参阅 [RELEASE_HANDOFF_3_1_1.md](RELEASE_HANDOFF_3_1_1.md)。

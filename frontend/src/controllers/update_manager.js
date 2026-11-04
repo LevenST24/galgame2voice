@@ -70,6 +70,9 @@ export function renderSystemVersionUI(data) {
     if (portable) {
       _dom.gDashVersionBadge.className = 'badge-status-pill badge-pill-gray';
       _dom.gDashVersionBadge.textContent = '便携版';
+    } else if (data.build_pending) {
+      _dom.gDashVersionBadge.className = 'badge-status-pill badge-pill-yellow';
+      _dom.gDashVersionBadge.textContent = '待补部署';
     } else if (data.has_update) {
       _dom.gDashVersionBadge.className = 'badge-status-pill badge-pill-indigo';
       _dom.gDashVersionBadge.textContent = `有更新 (${data.behind_count})`;
@@ -99,13 +102,13 @@ export function renderSystemVersionUI(data) {
 
   // 更新提示框
   if (_dom.gUpdateNoticeBox) {
-    if (portable || data.has_update || data.error || (data.commits_log && data.commits_log.length > 0)) {
+    if (portable || data.has_update || data.error || data.build_pending || (data.commits_log && data.commits_log.length > 0)) {
       _dom.gUpdateNoticeBox.classList.remove('hidden');
     }
     if (_dom.gUpdateNoticeTitle) _dom.gUpdateNoticeTitle.textContent = statusInfo.title;
     if (_dom.gUpdateNoticeDesc) _dom.gUpdateNoticeDesc.textContent = statusInfo.desc;
     if (_dom.gUpdateNoticeIcon) {
-      _dom.gUpdateNoticeIcon.textContent = portable ? '📦' : data.has_update ? '🚀' : (data.error ? '⚠️' : '✅');
+      _dom.gUpdateNoticeIcon.textContent = portable ? '📦' : (data.build_pending ? '⚠️' : (data.has_update ? '🚀' : (data.error ? '⚠️' : '✅')));
     }
   }
 
@@ -124,7 +127,12 @@ export function renderSystemVersionUI(data) {
   if (_dom.gBtnApplyUpdate) {
     _dom.gBtnApplyUpdate.disabled = !statusInfo.canUpdate;
     _dom.gBtnApplyUpdate.classList.remove('hidden');
-    if (statusInfo.hasUpdate) {
+    if (data.build_pending) {
+      _dom.gBtnApplyUpdate.className = 'btn primary';
+      if (_dom.gBtnApplyUpdateText) {
+        _dom.gBtnApplyUpdateText.textContent = '重试前端构建并更新';
+      }
+    } else if (statusInfo.hasUpdate) {
       _dom.gBtnApplyUpdate.className = 'btn primary';
       if (_dom.gBtnApplyUpdateText) {
         _dom.gBtnApplyUpdateText.textContent = `一键拉取并更新 (${data.behind_count} 个新提交)`;
@@ -158,6 +166,9 @@ export async function handleCheckUpdate() {
     const data = await loadSystemVersionInfo(true);
     if (data && data.has_update) {
       showToast(`检测到新版本可用！落后 ${data.behind_count} 个提交`, 'info');
+    } else if (data && data.build_pending) {
+      showToast('当前存在未完成的前端构建，请点击重试', 'warning');
+      if (_dom.gUpdateNoticeBox) _dom.gUpdateNoticeBox.classList.remove('hidden');
     } else if (data && !data.error) {
       showToast('当前已是最新版本', 'success');
       if (_dom.gUpdateNoticeBox) _dom.gUpdateNoticeBox.classList.remove('hidden');
@@ -177,8 +188,11 @@ export async function handleApplyUpdate() {
     showToast(formatUpdateStatus(currentVersionData).desc, 'info');
     return;
   }
+  const isPending = currentVersionData && currentVersionData.build_pending;
   const isLatest = currentVersionData && !currentVersionData.has_update;
-  const promptText = isLatest
+  const promptText = isPending
+    ? '检测到前端静态产物待补建。确定立即重试前端编译与部署吗？'
+    : isLatest
     ? '当前本地版本已是最新。确定要从 GitHub 重新拉取吗？（前端文件无变更时将跳过静态产物构建）'
     : '确定要从 GitHub 拉取最新版本吗？\n拉取后系统会在检测到前端文件变更时自动构建静态资源，并同步角色包。';
 
@@ -188,13 +202,13 @@ export async function handleApplyUpdate() {
 
   if (_dom.gBtnApplyUpdate) _dom.gBtnApplyUpdate.disabled = true;
   if (_dom.gBtnCheckUpdate) _dom.gBtnCheckUpdate.disabled = true;
-  if (_dom.gBtnApplyUpdateText) _dom.gBtnApplyUpdateText.textContent = '正在拉取并更新...';
+  if (_dom.gBtnApplyUpdateText) _dom.gBtnApplyUpdateText.textContent = isPending ? '正在重新编译部署...' : '正在拉取并更新...';
 
   if (_dom.gUpdateProgressBox) _dom.gUpdateProgressBox.classList.remove('hidden');
   if (_dom.gUpdateSpinner) _dom.gUpdateSpinner.classList.remove('hidden');
-  if (_dom.gUpdateProgressTitle) _dom.gUpdateProgressTitle.textContent = '正在执行 git pull 与资源构建，请稍候...';
+  if (_dom.gUpdateProgressTitle) _dom.gUpdateProgressTitle.textContent = isPending ? '正在执行静态产物编译与部署，请稍候...' : '正在执行 git pull 与资源构建，请稍候...';
   if (_dom.gBtnReloadPage) _dom.gBtnReloadPage.classList.add('hidden');
-  if (_dom.gUpdateLogOutput) _dom.gUpdateLogOutput.textContent = '>>> 开始拉取 GitHub 最新版本...\n';
+  if (_dom.gUpdateLogOutput) _dom.gUpdateLogOutput.textContent = isPending ? '>>> 开始重试前端构建并部署...\n' : '>>> 开始拉取 GitHub 最新版本...\n';
 
   try {
     const result = await applySystemUpdate();
@@ -215,10 +229,15 @@ export async function handleApplyUpdate() {
       await loadSystemVersionInfo(false);
     } else {
       if (_dom.gUpdateProgressTitle) {
-        _dom.gUpdateProgressTitle.textContent = '更新中断，请根据下方诊断信息处理:';
+        _dom.gUpdateProgressTitle.textContent = result.build_pending
+          ? '更新未完成：前端构建失败，请根据下方诊断排查后重试。'
+          : '更新中断，请根据下方诊断信息处理:';
       }
       if (_dom.gUpdateSpinner) _dom.gUpdateSpinner.classList.add('hidden');
-      showToast(`更新失败: ${result.error || '详见下方输出'}`, 'error');
+      if (_dom.gBtnReloadPage) _dom.gBtnReloadPage.classList.add('hidden');
+      showToast(`更新未完成: ${result.error || '详见下方输出'}`, 'error');
+
+      await loadSystemVersionInfo(false);
     }
   } catch (err) {
     if (_dom.gUpdateProgressTitle) {
@@ -232,6 +251,10 @@ export async function handleApplyUpdate() {
   } finally {
     if (_dom.gBtnApplyUpdate) _dom.gBtnApplyUpdate.disabled = false;
     if (_dom.gBtnCheckUpdate) _dom.gBtnCheckUpdate.disabled = false;
-    if (_dom.gBtnApplyUpdateText) _dom.gBtnApplyUpdateText.textContent = '一键拉取并更新';
+    if (currentVersionData) {
+      renderSystemVersionUI(currentVersionData);
+    } else if (_dom.gBtnApplyUpdateText) {
+      _dom.gBtnApplyUpdateText.textContent = '一键拉取并更新';
+    }
   }
 }

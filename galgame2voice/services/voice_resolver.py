@@ -10,14 +10,16 @@ import asyncio
 from collections import OrderedDict
 import logging
 import os
+from pathlib import Path
 import time
 from dataclasses import dataclass, field
 from typing import Any
 from weakref import WeakValueDictionary
 
+from galgame2voice.config import get_settings
 from galgame2voice.services.character_identity import AmbiguousProfileName, owned_package_for_profile
 
-from galgame2voice.utils.path_guard import resolve_weight_file_path, resolve_existing_audio_path
+from galgame2voice.utils.path_guard import resolve_weight_file_path
 from galgame2voice.utils.audio_spec import (
     REFERENCE_AUDIO_MAX_SECONDS,
     REFERENCE_AUDIO_MIN_SECONDS,
@@ -98,6 +100,54 @@ class _CacheEntry:
 @dataclass
 class _ScopeGeneration:
     value: int = 0
+
+
+def _resolve_explicit_audio_path(
+    ref_audio: str,
+    pkg: Any | None = None,
+    other_folders: set[Path] | None = None,
+) -> Path | None:
+    """Resolves an audio path from explicit locations only (absolute, project_root, audio_dir, or pkg.folder).
+
+    Never falls back to fuzzy/legacy searches across other character packages.
+    """
+    raw = str(ref_audio or "").strip().strip("\"'")
+    if not raw:
+        return None
+    try:
+        p = Path(raw)
+        settings = get_settings()
+        bases: list[Path] = []
+        if p.is_absolute():
+            bases.append(p)
+        else:
+            bases.extend([settings.project_root / p, Path(settings.audio_dir) / p])
+            if pkg is not None and getattr(pkg, "folder", None):
+                bases.append(Path(pkg.folder) / p)
+
+        if other_folders is None and pkg is not None:
+            try:
+                from galgame2voice.services.character_manager import get_character_manager
+                mgr = get_character_manager()
+                if hasattr(mgr, "get_available_characters"):
+                    pkg_id = getattr(pkg, "id", None)
+                    other_folders = {
+                        Path(other.folder).resolve()
+                        for other in mgr.get_available_characters()
+                        if getattr(other, "folder", None) and getattr(other, "id", None) != pkg_id
+                    }
+            except Exception:
+                other_folders = set()
+
+        for cand_path in bases:
+            cand = cand_path.resolve()
+            if cand.is_file():
+                if other_folders and any(cand == of or cand.is_relative_to(of) for of in other_folders):
+                    continue
+                return cand
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 class VoiceProfileResolver:
@@ -248,6 +298,7 @@ class VoiceProfileResolver:
 
         pkg = None
         is_conflicting = False
+        other_packages: list[Any] = []
         try:
             from galgame2voice.services.character_manager import CharacterManager, get_character_manager
             mgr = get_character_manager()
@@ -257,36 +308,65 @@ class VoiceProfileResolver:
                 and getattr(mgr, "_identity_index", None)
                 and mgr._identity_index.is_conflicting(name)
             )
+            if hasattr(mgr, "get_available_characters"):
+                other_packages = [p for p in mgr.get_available_characters() if p is not pkg]
         except Exception as exc:
             logger.debug("Failed looking up character package for '%s': %s", name, exc)
 
         if pkg is not None and pkg.is_valid:
-            is_cross_char = bool(ref_audio and CharacterManager._is_cross_character_audio(ref_audio, pkg))
-            own_ref = (
-                CharacterManager._resolve_profile_reference(ref_audio, pkg)
-                if ref_audio and not is_cross_char
-                else None
-            )
-            if own_ref is None and ref_audio and not is_cross_char:
-                cand = resolve_existing_audio_path(ref_audio)
-                if cand is not None and not CharacterManager._is_cross_character_audio(str(cand), pkg):
-                    own_ref = cand
+            from galgame2voice.services.reference_origin import ReferenceOrigin, classify_reference_origin
+            origin = classify_reference_origin(ref_audio, pkg, known_other_packages=other_packages)
+            other_folders_set = {
+                Path(other.folder).resolve() for other in other_packages if getattr(other, "folder", None)
+            }
+            if origin in (ReferenceOrigin.EMPTY, ReferenceOrigin.CROSS_PACKAGE):
+                ref_audio = ""
+                if origin == ReferenceOrigin.CROSS_PACKAGE:
+                    prompt_text = ""
+                if pkg.manifest and pkg.manifest.emotions:
+                    candidate_emotions = []
+                    gentle_emo = pkg.manifest.emotions.get("gentle")
+                    if gentle_emo:
+                        candidate_emotions.append(gentle_emo)
+                    for emo_key, emo_val in pkg.manifest.emotions.items():
+                        if emo_key != "gentle":
+                            candidate_emotions.append(emo_val)
 
-            if own_ref is not None:
-                ref_audio = str(own_ref.resolve())
-            elif pkg.manifest and pkg.manifest.emotions:
-                emo = pkg.manifest.emotions.get("gentle") or next(iter(pkg.manifest.emotions.values()), None)
-                if emo:
-                    found_path = pkg.resolve_audio_path(emo.audio)
-                    if found_path and found_path.is_file():
-                        ref_audio = str(found_path.resolve())
-                        if not prompt_text or is_cross_char:
+                    for emo in candidate_emotions:
+                        found_path = pkg.resolve_audio_path(emo.audio)
+                        if found_path and found_path.is_file():
+                            ref_audio = str(found_path.resolve())
                             prompt_text = emo.text
                             prompt_lang = emo.lang
+                            break
+            elif origin == ReferenceOrigin.PACKAGE_OWNED:
+                own_ref = CharacterManager._resolve_profile_reference(ref_audio, pkg, other_folders=other_folders_set)
+                if own_ref is not None:
+                    ref_audio = str(own_ref.resolve())
+                elif pkg.manifest and pkg.manifest.emotions:
+                    candidate_emotions = []
+                    gentle_emo = pkg.manifest.emotions.get("gentle")
+                    if gentle_emo:
+                        candidate_emotions.append(gentle_emo)
+                    for emo_key, emo_val in pkg.manifest.emotions.items():
+                        if emo_key != "gentle":
+                            candidate_emotions.append(emo_val)
+
+                    for emo in candidate_emotions:
+                        found_path = pkg.resolve_audio_path(emo.audio)
+                        if found_path and found_path.is_file():
+                            ref_audio = str(found_path.resolve())
+                            prompt_text = emo.text
+                            prompt_lang = emo.lang
+                            break
+            else:  # ReferenceOrigin.EXTERNAL_OR_CUSTOM
+                cand = _resolve_explicit_audio_path(ref_audio, pkg, other_folders=other_folders_set)
+                if cand is not None:
+                    ref_audio = str(cand.resolve())
         elif not is_conflicting:
-            resolved_ref = resolve_existing_audio_path(ref_audio)
-            if resolved_ref is not None:
-                ref_audio = str(resolved_ref.resolve())
+            cand = _resolve_explicit_audio_path(ref_audio, None)
+            if cand is not None:
+                ref_audio = str(cand.resolve())
 
         display_name = pkg.name if (pkg and pkg.is_valid) else name
         emotion_target = pkg.id if (pkg and pkg.is_valid) else ""

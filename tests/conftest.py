@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from typing import AsyncGenerator, Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional
 import pytest
 import httpx
 
@@ -559,11 +559,13 @@ CREATE TABLE IF NOT EXISTS messages (
     audio_url TEXT NOT NULL DEFAULT '',
     latency_ms INTEGER NOT NULL DEFAULT 0,
     lines_json TEXT DEFAULT NULL,
+    reply_to_message_id INTEGER DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_session_created ON messages(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_session_reply_to ON messages(session_id, reply_to_message_id);
 
 CREATE TABLE IF NOT EXISTS session_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -659,10 +661,15 @@ def _clear_settings_cache():
     a stale object resolved before its own ``monkeypatch.setenv`` ran.
     """
     from galgame2voice.config import get_settings
+    from galgame2voice.services.character_manager import CharacterManager
 
     get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
+    CharacterManager.reset_instance()
+    try:
+        yield
+    finally:
+        CharacterManager.reset_instance()
+        get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -733,7 +740,14 @@ def isolate_test_database(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 async def isolate_runtime_services(monkeypatch, isolate_test_database):
     """Singletons must use this test's paths and release their background jobs."""
-    from galgame2voice.services import gpt_sovits_client, tts_cache_manager, tts_scheduler, voice_manager, voice_resolver
+    from galgame2voice.services import (
+        character_manager,
+        gpt_sovits_client,
+        tts_cache_manager,
+        tts_scheduler,
+        voice_manager,
+        voice_resolver,
+    )
     owners = set()
     spawn = voice_manager.VoiceManager._spawn_background
     def track_background_owner(manager, coro):
@@ -746,19 +760,24 @@ async def isolate_runtime_services(monkeypatch, isolate_test_database):
     monkeypatch.setattr(voice_manager, "_global_voice_manager", None)
     monkeypatch.setattr(gpt_sovits_client, "_global_gpt_sovits_client", None)
     monkeypatch.setattr(voice_resolver, "_GLOBAL_VOICE_RESOLVER", None)
-    yield
-    manager = voice_manager._global_voice_manager
-    if isinstance(manager, voice_manager.VoiceManager):
-        owners.add(manager)
-    # Close producers before the scheduler they use. Local test-created managers
-    # can own warmups even when they were never installed as the global manager.
-    for owner in owners:
-        await owner.aclose()
-    scheduler = tts_scheduler._GLOBAL_TTS_SCHEDULER
-    if isinstance(scheduler, tts_scheduler.TtsScheduler):
-        await scheduler.aclose()
-    await tts_cache_manager.close_tts_cache_managers()
-    await gpt_sovits_client.close_gpt_sovits_client()
+    character_manager.CharacterManager.reset_instance()
+    try:
+        yield
+    finally:
+        character_manager.CharacterManager.reset_instance()
+        manager = voice_manager._global_voice_manager
+        if isinstance(manager, voice_manager.VoiceManager):
+            owners.add(manager)
+        # Close producers before the scheduler they use. Local test-created managers
+        # can own warmups even when they were never installed as the global manager.
+        for owner in owners:
+            await owner.aclose()
+        scheduler = tts_scheduler._GLOBAL_TTS_SCHEDULER
+        if isinstance(scheduler, tts_scheduler.TtsScheduler):
+            await scheduler.aclose()
+        await tts_cache_manager.close_tts_cache_managers()
+        await gpt_sovits_client.close_gpt_sovits_client()
+        character_manager.CharacterManager.reset_instance()
 
 
 @pytest.fixture(autouse=True)

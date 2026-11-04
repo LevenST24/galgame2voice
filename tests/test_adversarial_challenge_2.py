@@ -214,6 +214,8 @@ class TestLlmRetryEdgeCases:
         sse_body = (
             'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Claude"}}\n\n'
             'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": " Response"}}\n\n'
+            'data: {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}\n\n'
+            'data: {"type": "message_stop"}\n\n'
         )
         # 1. Test 429 recovery
         transport_429 = MockTransportWithFailures([429], success_content=sse_body, is_stream=True, retry_after="0.01")

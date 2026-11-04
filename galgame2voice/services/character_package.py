@@ -29,7 +29,7 @@ def _resolve_pointer_file_target(target_file: Path) -> str | None:
     try:
         if target_file.stat().st_size >= 4096:
             return None
-        content = target_file.read_text(encoding="utf-8").strip()
+        content = target_file.read_text(encoding="utf-8-sig").strip()
         if not content or not content.endswith((".ckpt", ".pth")):
             return None
         if contains_traversal_payload(content):

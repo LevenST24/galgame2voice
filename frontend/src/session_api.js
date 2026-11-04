@@ -3,11 +3,32 @@ import { requestJson } from './api.js';
 const writes = new Map();
 const deletions = new Map();
 const deleted = new Set();
+const importing = new Set();
+const deletionTokens = new Map();
 
 export const isSessionDeleting = id => deletions.has(id);
+export const isSessionImporting = id => importing.has(id);
+
+export function reserveSessionImport(ids) {
+  for (const id of ids) {
+    if (deletions.has(id) || writes.has(id) || importing.has(id)) {
+      throw new Error('有对话正在保存或删除中，请稍后重试。');
+    }
+  }
+  for (const id of ids) importing.add(id);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    for (const id of ids) importing.delete(id);
+  };
+}
 
 // Serialize before yielding so later UI edits cannot change an in-flight save.
 export function persistSession(session) {
+  if (importing.has(session.id)) {
+    return Promise.reject(new Error('该对话正在导入中，请稍后重试。'));
+  }
   if (deletions.has(session.id) || deleted.has(session.id)) {
     return Promise.reject(new Error('该对话正在删除或已删除，请新建对话后保存。'));
   }
@@ -27,22 +48,30 @@ export function persistSession(session) {
 }
 
 export function deletePersistedSession(id) {
+  if (importing.has(id)) {
+    return Promise.reject(new Error('该对话正在导入中，请稍后重试。'));
+  }
   if (deletions.has(id)) return deletions.get(id);
+  const token = Symbol();
+  deletionTokens.set(id, token);
   // Let earlier saves finish first; a delayed upsert must not recreate a deletion.
   const removal = (writes.get(id) || Promise.resolve()).catch(() => {}).then(async () => {
     const result = await requestJson(`/api/chat/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    deleted.add(id);
+    if (deletionTokens.get(id) === token && !importing.has(id)) deleted.add(id);
     return result;
   });
   deletions.set(id, removal);
-  const cleanup = () => { deletions.delete(id); };
+  const cleanup = () => { if (deletions.get(id) === removal) deletions.delete(id); if (deletionTokens.get(id) === token) deletionTokens.delete(id); };
   removal.then(cleanup, cleanup);
   return removal;
 }
 
 // A confirmed import brings these ids back on the server, so an earlier deletion no longer applies.
 export function forgetDeletedSessions(ids) {
-  for (const id of ids) deleted.delete(id);
+  for (const id of ids) {
+    deleted.delete(id);
+    deletionTokens.delete(id);
+  }
 }
 
 export async function fetchAllSessions() {

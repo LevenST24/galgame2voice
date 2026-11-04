@@ -69,7 +69,12 @@ async def test_streamed_empty_reply_earns_no_affection(tmp_path):
     service = _service(database, EMPTY_REPLY)
     service.affection_service.handle_turn_affection = AsyncMock()
     events = await _stream_turn(service)
-    assert events == [{"event": "error", "data": chat_error_payload(EmptyReplyError())}]
+    assert len(events) == 2
+    assert events[0].get("event") == "turn_started"
+    assert events[0].get("data", {}).get("session_id") == "affection"
+    user_msg_id = events[0].get("data", {}).get("user_message_id")
+    assert isinstance(user_msg_id, int) and user_msg_id > 0
+    assert events[1:] == [{"event": "error", "data": chat_error_payload(EmptyReplyError())}]
     service.affection_service.handle_turn_affection.assert_not_awaited()
     assert await _state(database) == ((0, 0), [])
 

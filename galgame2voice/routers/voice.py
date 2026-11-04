@@ -143,7 +143,17 @@ async def create_voice_profile(req: VoiceProfileCreateRequest) -> dict[str, Any]
     if not req.name.strip():
         raise HTTPException(
             status_code=422,
-            detail="Profile name cannot be empty",
+            detail="音色名称不能为空",
+        )
+    if not req.gpt_weights_path.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="GPT 权重路径不能为空",
+        )
+    if not req.sovits_weights_path.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="SoVITS 权重路径不能为空",
         )
 
     try:

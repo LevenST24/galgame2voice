@@ -3,7 +3,7 @@
 import hashlib
 import importlib.metadata
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
@@ -28,7 +28,8 @@ def copy_runtime_licenses(destination: Path) -> None:
             if source.is_file():
                 folder = destination / f"{name}-{distribution.version}"
                 folder.mkdir(exist_ok=True)
-                shutil.copy2(source, folder / relative.name)
+                leaf_name = PurePosixPath(str(relative).replace("\\", "/")).name
+                shutil.copy2(source, folder / leaf_name)
     for source in Path(sys.base_prefix).glob("LICENSE*"):
         if source.is_file():
             shutil.copy2(source, destination / f"Python-{source.name}")

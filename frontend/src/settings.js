@@ -243,7 +243,7 @@ export function formatUpdateStatus(data) {
     return {
       badgeClass: 'badge-pill-gray', badgeText: 'Windows 便携版',
       title: '通过新版便携包更新',
-      desc: '关闭程序，将新版完整发布包解压到新目录，再复制旧目录的 data、audio、characters；如有个人 .env 也应复制。详细步骤见程序文件夹中的「使用说明.md」。',
+      desc: '关闭程序，将新版完整发布包解压到新目录，再复制旧目录的 data、audio、characters 与 backgrounds（若存在）；如有个人 .env 也应复制。详细步骤见程序文件夹中的「使用说明.md」。',
       canUpdate: false, hasUpdate: false,
     };
   }
@@ -254,6 +254,28 @@ export function formatUpdateStatus(data) {
       badgeText: '检查受阻',
       title: '无法获取远程更新',
       desc: data.error,
+      canUpdate: true,
+      hasUpdate: false,
+    };
+  }
+
+  if (data.build_pending && data.has_update && data.behind_count > 0) {
+    return {
+      badgeClass: 'badge-pill-indigo',
+      badgeText: `待补构建 (落后 ${data.behind_count})`,
+      title: `发现新版本可用且存在待补建产物 (落后 ${data.behind_count} 个提交)`,
+      desc: `远程最新版本为 ${data.latest_version}，本地存在未完成的前端静态构建。点击下方按钮即可拉取并重新部署。`,
+      canUpdate: true,
+      hasUpdate: true,
+    };
+  }
+
+  if (data.build_pending) {
+    return {
+      badgeClass: 'badge-pill-yellow',
+      badgeText: '待补部署',
+      title: '更新未完成：前端静态产物待构建',
+      desc: '上次更新已拉取最新代码，但前端静态产物本地构建未成功。请确保 Node.js 与 npm 环境正常后点击下方重试构建。',
       canUpdate: true,
       hasUpdate: false,
     };

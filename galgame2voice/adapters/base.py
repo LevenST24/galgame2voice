@@ -212,7 +212,11 @@ def _flush_sse_data_buffer(data_buffer: list[str], on_chunk: Callable[[dict[str,
     return None, False
 
 
-async def parse_sse_lines(lines_iter: AsyncIterator[str], on_chunk: Callable[[dict[str, Any]], None] | None = None) -> AsyncIterator[str]:
+async def parse_sse_lines(
+    lines_iter: AsyncIterator[str],
+    on_chunk: Callable[[dict[str, Any]], None] | None = None,
+    on_done: Callable[[], None] | None = None,
+) -> AsyncIterator[str]:
     """
     Asynchronously parses Server-Sent Events (SSE) lines into text tokens.
     Guarantees resilience against:
@@ -231,6 +235,8 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str], on_chunk: Callable[[di
         if not stripped:
             # Blank line: event boundary per SSE standard
             token, is_done = _flush_sse_data_buffer(data_buffer, on_chunk)
+            if is_done and on_done:
+                on_done()
             if is_done:
                 break
             if token:
@@ -245,6 +251,8 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str], on_chunk: Callable[[di
 
         if data_str is not None:
             if data_str.strip() == "[DONE]":
+                if on_done:
+                    on_done()
                 break
 
             if data_buffer:
@@ -278,7 +286,9 @@ async def parse_sse_lines(lines_iter: AsyncIterator[str], on_chunk: Callable[[di
                     data_buffer.append(data_str)
 
     # Flush any trailing buffer
-    token, _ = _flush_sse_data_buffer(data_buffer, on_chunk)
+    token, is_done = _flush_sse_data_buffer(data_buffer, on_chunk)
+    if is_done and on_done:
+        on_done()
     if token:
         yield token
 
@@ -295,6 +305,31 @@ async def aclose_stream_context(stream_ctx: Any = None, client: Any = None) -> N
             await client.aclose()
         except Exception as exc:
             logger.debug("Failed closing client: %s", exc)
+
+
+def validate_stream_completion(
+    *,
+    yielded_any: bool,
+    saw_terminal: bool,
+    finish_reason: str | None,
+    length_reasons: tuple[str, ...] = ("length", "MAX_TOKENS", "max_tokens"),
+) -> None:
+    """
+    Validates that a streaming LLM response completed cleanly.
+    Raises StreamTruncatedError if length limit was reached after yielding tokens.
+    Raises StreamIncompleteError if the stream ended abruptly without any terminal signal.
+    """
+    if yielded_any and finish_reason in length_reasons:
+        from galgame2voice.utils.error_diagnostics import StreamTruncatedError
+
+        raise StreamTruncatedError(
+            "模型输出达到最大长度限制，回复未能完整生成。建议调大「最大生成长度」或降低「思考强度」。",
+            stopped_on_length=True,
+        )
+    if not saw_terminal and not finish_reason:
+        from galgame2voice.utils.error_diagnostics import StreamIncompleteError
+
+        raise StreamIncompleteError("上游模型连接意外中断，回复未能完整结束。可以重新发送尝试重试。")
 
 
 
@@ -363,6 +398,7 @@ class BaseLLMAdapter(ABC):
         self.base_url = str(base_url).rstrip("/") if base_url else ""
         self.extra_config: dict[str, Any] = kwargs
         self.reasoning_effort: str | None = kwargs.get("reasoning_effort")
+        self.last_finish_reason: str | None = None
 
     @abstractmethod
     async def chat(

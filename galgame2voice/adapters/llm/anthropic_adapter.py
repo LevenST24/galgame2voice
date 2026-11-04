@@ -7,7 +7,7 @@ system parameter separation, content_block_delta streaming, and exponential back
 import asyncio
 import logging
 import time
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, AsyncIterator
 
 from galgame2voice.adapters.base import (
     BaseLLMAdapter,
@@ -20,6 +20,7 @@ from galgame2voice.adapters.base import (
     calculate_backoff_delay,
     parse_sse_lines,
     aclose_stream_context,
+    validate_stream_completion,
 )
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.http_client import create_async_client
@@ -68,6 +69,50 @@ class AnthropicAdapter(BaseLLMAdapter):
         # BaseLLMAdapter stores extra kwargs in extra_config; set these explicitly.
         self.default_model = default_model
         self.custom_headers = custom_headers or {}
+        self.last_finish_reason: str | None = None
+
+    def _record_finish_reason(self, chunk: dict[str, Any]) -> str | None:
+        chunk_type = chunk.get("type")
+        reason = None
+        if chunk_type == "message_delta":
+            delta = chunk.get("delta")
+            if isinstance(delta, dict) and delta.get("stop_reason"):
+                reason = str(delta["stop_reason"])
+        elif chunk.get("stop_reason"):
+            reason = str(chunk["stop_reason"])
+        if reason:
+            self.last_finish_reason = reason
+        return reason
+
+    async def _consume_sse_stream(
+        self,
+        lines_iter: AsyncIterator[str],
+    ) -> AsyncGenerator[str, None]:
+        saw_terminal = False
+        local_finish_reason: str | None = None
+
+        def _on_done() -> None:
+            nonlocal saw_terminal
+            saw_terminal = True
+
+        def _on_chunk(chunk: dict[str, Any]) -> None:
+            nonlocal local_finish_reason, saw_terminal
+            if chunk.get("type") == "message_stop":
+                saw_terminal = True
+            reason = self._record_finish_reason(chunk)
+            if reason:
+                local_finish_reason = reason
+
+        yielded_any = False
+        async for token in parse_sse_lines(lines_iter, _on_chunk, _on_done):
+            yielded_any = True
+            yield token
+
+        validate_stream_completion(
+            yielded_any=yielded_any,
+            saw_terminal=saw_terminal,
+            finish_reason=local_finish_reason,
+        )
 
     def _get_headers(self) -> dict[str, str]:
         headers = {
@@ -157,6 +202,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         **kwargs: Any,
     ) -> LLMResponse:
         """Executes non-streaming chat completion via Anthropic /messages endpoint with exponential retries."""
+        self.last_finish_reason = None
         url = f"{self.base_url}/messages" if not self.base_url.endswith("/messages") else self.base_url
         payload = self._prepare_anthropic_payload(
             messages, model=model, temperature=temperature, stream=False, **kwargs
@@ -185,6 +231,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                 if resp.status_code != 200:
                     raise RuntimeError(f"Anthropic API returned {resp.status_code}: {resp.text}")
                 data = resp.json()
+                self._record_finish_reason(data)
                 return LLMResponse(content=_extract_content_text(data), usage=None)
 
         allow_private = bool(self.extra_config.get("allow_private", False))
@@ -228,6 +275,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                     raise RuntimeError(f"Anthropic API error ({resp.status_code}): {resp.text}")
 
                 data = resp.json()
+                self._record_finish_reason(data)
                 return LLMResponse(content=_extract_content_text(data), usage=None)
             raise RuntimeError("Max retries exceeded without a response")
         finally:
@@ -241,6 +289,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
         """Streams token chunks from Anthropic SSE /messages stream with connection resilience."""
+        self.last_finish_reason = None
         url = f"{self.base_url}/messages" if not self.base_url.endswith("/messages") else self.base_url
         payload = self._prepare_anthropic_payload(
             messages, model=model, temperature=temperature, stream=True, **kwargs
@@ -273,7 +322,7 @@ class AnthropicAdapter(BaseLLMAdapter):
                     for line in text.split("\n"):
                         yield line
 
-                async for token in parse_sse_lines(_mock_lines_iter()):
+                async for token in self._consume_sse_stream(_mock_lines_iter()):
                     yield token
                 return
 
@@ -336,7 +385,7 @@ class AnthropicAdapter(BaseLLMAdapter):
 
             yielded_any = False
             try:
-                async for token in parse_sse_lines(response.aiter_lines()):
+                async for token in self._consume_sse_stream(response.aiter_lines()):
                     yielded_any = True
                     yield token
                 return
