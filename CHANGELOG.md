@@ -6,6 +6,12 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-11-04
+
+### Fixed
+
+- 修复 Windows 便携版浏览器验收在初始页面尚未完成导航时执行脚本、因 CDP 上下文被销毁而失败的问题；先有界确认目标页面就绪，再执行一次完整业务验收，就绪阶段的重试不会重放业务操作。
+
 ## [3.1.1] - 2026-11-04
 
 ### Added
@@ -628,7 +634,8 @@ First tagged release. The single source of truth for the version is
   assets, no network/GPU) are unrelated to this release; the failure set is
   byte-identical before and after these changes.
 
-[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.1.1...HEAD
+[Unreleased]: https://github.com/LevenST24/galgame2voice/compare/v3.1.2...HEAD
+[3.1.2]: https://github.com/LevenST24/galgame2voice/releases/tag/v3.1.2
 [3.1.1]: https://github.com/LevenST24/galgame2voice/releases/tag/v3.1.1
 [3.1.0]: https://github.com/LevenST24/galgame2voice/releases/tag/v3.1.0
 [3.0.0]: https://github.com/LevenST24/galgame2voice/releases/tag/v3.0.0
