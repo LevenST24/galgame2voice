@@ -654,3 +654,170 @@ for (const change of lateChangeCases) {
     assert.equal(message.lines[0].audio.status, 'failed');
   });
 }
+
+function legacyFixture(request, { saveResult = true, fetchHistory } = {}) {
+  const old = Date.now() - 9 * 86400000;
+  const message = { id: 'm_legacy_42', serverMessageId: 42, role: 'assistant', content: '旧版中文', japanese: '旧版日本語。', ts: old, audioUrls: ['/audio/old.wav'] };
+  const session = { id: 'session_legacy', settings: { voiceProfileId: 7 }, messages: [message] };
+  let current = session, saves = 0, deleting = false;
+  const calls = [];
+  const reply = { session_id: session.id, message_id: 42, line_index: 0, voice_profile_id: 7, persisted: true,
+    audio: { status: 'ready', generated_at: Date.now(), voice_profile_id: 7, voice_name: '当前角色',
+      chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_legacy.wav', sentence: '旧版日本語。' }] } };
+  const recover = createLineAudioRecovery({
+    getSession: () => current, getVoiceProfiles: () => [{ id: 7, name: '当前角色' }],
+    saveState: () => { saves++; return saveResult; }, isSessionDeleting: () => deleting,
+    fetchHistory,
+    request: async (...args) => {
+      calls.push(args); const body = JSON.parse(args[1].body);
+      return request ? request(reply, body, args[1].signal) : { ...structuredClone(reply), message_id: body.message_id, persisted: body.message_id !== null };
+    }
+  });
+  return { recover, session, message, calls, reply, get saves() { return saves; },
+    switchSession: () => { current = { ...session }; }, deleteSession: () => { deleting = true; } };
+}
+
+test('legacy reply explicit repair installs canonical line 0, flattens audio, saves state and keeps original timestamps', async () => {
+  const f = legacyFixture();
+  const originalTs = f.message.ts;
+  const result = await f.recover({ messageId: f.message.id, lineIndex: 0 });
+  assert.equal(f.calls.length, 1);
+  const [url, options] = f.calls[0];
+  const body = JSON.parse(options.body);
+  assert.equal(url, '/api/voice/regenerate-line');
+  assert.equal(body.line_index, 0);
+  assert.equal(body.text, '旧版日本語。');
+  assert.equal(body.message_id, 42);
+  assert.equal(body.voice_profile_id, 7);
+
+  assert.equal(f.message.ts, originalTs, 'original timestamp must be preserved');
+  assert.equal(f.message.content, '旧版中文');
+  assert.equal(f.message.japanese, '旧版日本語。');
+  assert.equal(Array.isArray(f.message.lines), true);
+  assert.equal(f.message.lines.length, 1);
+  assert.equal(f.message.lines[0].index, 0);
+  assert.equal(f.message.lines[0].zh, '旧版中文');
+  assert.equal(f.message.lines[0].ja, '旧版日本語。');
+  assert.deepEqual(f.message.lines[0].audio, result.audio);
+  assert.equal(f.message.audioUrls[0], '/audio/repair_legacy.wav');
+  assert.equal(canReplayLine(f.message.lines[0], f.message, true), true);
+  assert.equal(f.saves, 1);
+});
+
+for (const change of ['session', 'profile', 'late_lines', 'content', 'japanese', 'audio', 'deletion', 'abort', 'turnConflict', 'serverMessageId', 'serverUserMessageId']) {
+  test(`legacy repair after ${change} discards late result and leaves lines undefined`, async () => {
+    const gate = deferred();
+    let controller = new AbortController();
+    const f = legacyFixture((reply, body, signal) => gate.promise);
+
+    const pending = f.recover({ messageId: f.message.id, lineIndex: 0, signal: controller.signal });
+    await tick();
+
+    if (change === 'abort') controller.abort();
+    if (change === 'session') f.switchSession();
+    if (change === 'profile') f.session.settings.voiceProfileId = 99;
+    if (change === 'late_lines') f.message.lines = [{ index: 0, zh: '并发写入', ja: '遅い。', emotion: 'neutral', act: {}, audio: { status: 'ready', chunks: [] } }];
+    if (change === 'content') f.message.content = '新中文内容';
+    if (change === 'japanese') f.message.japanese = '新日本語台詞。';
+    if (change === 'audio') f.message.audioUrls = ['/audio/concurrent.wav'];
+    if (change === 'deletion') f.deleteSession();
+    if (change === 'turnConflict') f.message.turnConflict = true;
+    if (change === 'serverMessageId') f.message.serverMessageId = 999;
+    if (change === 'serverUserMessageId') f.message.serverUserMessageId = 888;
+
+    gate.resolve(f.reply);
+    await assert.rejects(pending, { name: 'AbortError' });
+    assert.equal(f.saves, 0);
+    if (change !== 'late_lines') {
+      assert.equal(f.message.lines, undefined);
+    }
+  });
+}
+
+test('legacy repair validates preconditions: wrong index, empty japanese, overlong japanese, explicit empty lines', async () => {
+  const f = legacyFixture();
+
+  // 1. wrong lineIndex > 0
+  await assert.rejects(f.recover({ messageId: f.message.id, lineIndex: 1 }), /这句缺少日文台词/);
+
+  // 2. empty japanese
+  f.message.japanese = '   ';
+  await assert.rejects(f.recover({ messageId: f.message.id, lineIndex: 0 }), /这句缺少日文台词/);
+
+  // 3. overlong japanese > 2000
+  f.message.japanese = 'あ'.repeat(2001);
+  await assert.rejects(f.recover({ messageId: f.message.id, lineIndex: 0 }), /这句台词过长/);
+
+  // 4. explicit empty array is not treated as legacy
+  f.message.japanese = '日本語。';
+  f.message.lines = [];
+  await assert.rejects(f.recover({ messageId: f.message.id, lineIndex: 0 }), /这句缺少日文台词/);
+});
+
+test('when another tab already repaired legacy line, receiving 409 fetches remote line 0 and updates local message', async () => {
+  const remoteAudio = {
+    status: 'ready',
+    generated_at: Date.now(),
+    voice_profile_id: 7,
+    voice_name: '当前角色',
+    chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_remote_legacy.wav', sentence: '旧版日本語。' }],
+  };
+  const historyResponse = {
+    session_id: 'session_legacy',
+    count: 1,
+    messages: [{
+      id: 42,
+      role: 'assistant',
+      content: '旧版中文',
+      japanese: '旧版日本語。',
+      lines: [{
+        index: 0,
+        zh: '旧版中文',
+        ja: '旧版日本語。',
+        emotion: 'neutral',
+        act: {},
+        audio: remoteAudio,
+      }],
+    }],
+  };
+  const f = legacyFixture(
+    () => {
+      const err = new Error('HTTP 409');
+      err.status = 409;
+      throw err;
+    },
+    { fetchHistory: async () => historyResponse }
+  );
+
+  const result = await f.recover({ messageId: f.message.id, lineIndex: 0 });
+  assert.equal(result.remoteUpdated, true);
+  assert.equal(result.persisted, true);
+  assert.equal(f.message.lines.length, 1);
+  assert.equal(f.message.lines[0].audio.chunks[0].audio_url, '/audio/repair_remote_legacy.wav');
+  assert.equal(f.message.audioUrls[0], '/audio/repair_remote_legacy.wav');
+  assert.equal(f.saves, 1);
+});
+
+test('legacy repair 409 history fetch abort or failure preserves original error and keeps lines undefined', async () => {
+  const f = legacyFixture(
+    () => {
+      const err = new Error('HTTP 409');
+      err.status = 409;
+      throw err;
+    },
+    { fetchHistory: async () => { throw new Error('网络异常'); } }
+  );
+
+  await assert.rejects(f.recover({ messageId: f.message.id, lineIndex: 0 }), /HTTP 409/);
+  assert.equal(f.message.lines, undefined);
+  assert.equal(f.saves, 0);
+});
+
+test('legacy repair saveState failure surfaces saved: false while installing canonical line', async () => {
+  const f = legacyFixture(null, { saveResult: false });
+  const result = await f.recover({ messageId: f.message.id, lineIndex: 0 });
+  assert.equal(result.saved, false);
+  assert.equal(result.persisted, true);
+  assert.equal(f.message.lines.length, 1);
+  assert.equal(f.message.lines[0].audio.status, 'ready');
+});

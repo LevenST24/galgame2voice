@@ -91,6 +91,40 @@ export function createBacklog(container, deps = {}) {
   const failedAudio = new Set();
   const loadNotes = new Map();
   const audioKey = line => JSON.stringify(line?.audio?.chunks || []);
+
+  function extractLegacyChunks(msg) {
+    if (Array.isArray(msg?.audioChunks) && msg.audioChunks.length > 0) {
+      return msg.audioChunks.map((c, i) => {
+        const url = typeof c === 'string' ? c : (c?.url || c?.audio_url || '');
+        const sentence = typeof c === 'object' ? (c?.sentence || msg.japanese || '') : (msg.japanese || '');
+        return { index: i, url, audio_url: url, sentence };
+      }).filter(c => Boolean(c.url));
+    }
+    if (Array.isArray(msg?.audioUrls) && msg.audioUrls.length > 0) {
+      return msg.audioUrls.map((url, i) => ({
+        index: i,
+        url: typeof url === 'string' ? url : (url?.url || url?.audio_url || ''),
+        audio_url: typeof url === 'string' ? url : (url?.audio_url || url?.url || ''),
+        sentence: i === 0 ? (msg.japanese || '') : '',
+      })).filter(c => Boolean(c.url));
+    }
+    if (msg?.audio_url) {
+      return [{
+        index: 0,
+        url: msg.audio_url,
+        audio_url: msg.audio_url,
+        sentence: msg.japanese || '',
+      }];
+    }
+    if (Array.isArray(msg?.audio?.chunks) && msg.audio.chunks.length > 0) {
+      return msg.audio.chunks.map((c, i) => {
+        const url = typeof c === 'string' ? c : (c?.audio_url || c?.url || '');
+        const sentence = typeof c === 'object' ? (c?.sentence || msg.japanese || '') : (msg.japanese || '');
+        return { index: i, url, audio_url: url, sentence };
+      }).filter(c => Boolean(c.url));
+    }
+    return [];
+  }
   const loadRetryText = {
     timeout: '音频加载超时，请稍后在 LOG 里再点「语音」重试。',
     network: '音频加载失败，请稍后在 LOG 里再点「语音」重试。',
@@ -133,11 +167,11 @@ export function createBacklog(container, deps = {}) {
     const hasPlayableChunks = Array.isArray(chunks) && chunks.length > 0 && (status === 'ready' || status === 'failed');
     const voiceOn = isVoiceEnabled();
     const now = getNow();
-    const msgTs = line.audio?.generated_at ?? msg?.ts ?? now;
+    const msgTs = line?.audio?.generated_at ?? msg?.ts ?? now;
     const isExpired = (now - msgTs) > SEVEN_DAYS_MS;
 
-    const unavailable = failedAudio.has(audioKey(line));
-    const retryText = unavailable ? '' : (loadNotes.get(audioKey(line)) || '');
+    const unavailable = line ? failedAudio.has(audioKey(line)) : false;
+    const retryText = unavailable ? '' : (line ? (loadNotes.get(audioKey(line)) || '') : '');
     statusSpan.hidden = !unavailable && !retryText;
     statusSpan.textContent = unavailable ? '语音已过期或不可用' : retryText;
     if (unavailable) {
@@ -168,6 +202,86 @@ export function createBacklog(container, deps = {}) {
     }
   }
 
+  function bindRegenerateControl({
+    msg,
+    lineIndex,
+    getText,
+    replayBtn,
+    regenerateBtn,
+    refreshAudioState,
+    onSuccess,
+  }) {
+    const lineKey = regenerationKey(msg.id, lineIndex);
+
+    function refreshRepairButton() {
+      const generating = activeRegeneration?.key === lineKey;
+      const isExplicitEmpty = Array.isArray(msg.lines) && msg.lines.length === 0;
+      const needsRepair = !isExplicitEmpty && replayBtn.disabled && isVoiceEnabled();
+      regenerateBtn.hidden = !deps.regenerateLineAudio || (!generating && !needsRepair);
+      const voice = deps.getRecoveryVoice?.();
+      regenerateBtn.textContent = generating ? '取消生成' : voice ? '用当前音色重新生成' : '选择音色';
+      regenerateBtn.title = generating ? '取消本次语音生成' : voice ? `使用「${voice.name}」重新生成这一句` : '先为当前会话选择音色';
+      regenerateBtn.setAttribute('aria-label', regenerateBtn.title);
+      const text = getText();
+      regenerateBtn.disabled = !generating && (isExplicitEmpty || Boolean(deps.controller?.busy)
+        || !(deps.getSession?.()?.messages || []).includes(msg)
+        || !text?.trim() || !/[\p{L}\p{N}]/u.test(text) || text.length > 2000);
+      if (regenerateBtn.disabled && !generating) {
+        regenerateBtn.title = deps.controller?.busy ? '请等待当前回复完成后再重新生成'
+          : !text?.trim() || !/[\p{L}\p{N}]/u.test(text) ? '这句缺少可配音的日文台词'
+          : text.length > 2000 ? '这句台词过长，暂时无法单句重新生成' : '请等待历史记录保存完成';
+        regenerateBtn.setAttribute('aria-label', regenerateBtn.title);
+      }
+      if (generating) regenerateBtn.setAttribute('aria-busy', 'true');
+      else regenerateBtn.removeAttribute('aria-busy');
+    }
+
+    regenerateBtn.onclick = async e => {
+      e.stopPropagation();
+      if (destroyed) return;
+      if (activeRegeneration?.key === lineKey) {
+        if (getNow() - activeRegeneration.startedAt < REGENERATE_CANCEL_GRACE_MS) return;
+        stopReplay({ feedback: '已取消本次生成，原音频已保留。' });
+        return;
+      }
+      refreshRepairButton();
+      if (regenerateBtn.disabled || regenerateBtn.hidden) return;
+      if (!deps.getRecoveryVoice?.()) { deps.onChooseVoice?.(); return; }
+      stopReplay();
+      const sequence = replaySequence, controller = new AbortController();
+      const pending = { key: lineKey, controller, startedAt: getNow() };
+      activeRegeneration = pending;
+      regenerationFeedback.set(lineKey, '正在生成这句语音…');
+      refreshAudioState();
+      let feedback = '';
+      try {
+        const result = await deps.regenerateLineAudio({ messageId: msg.id, lineIndex, signal: controller.signal });
+        if (destroyed || controller.signal.aborted || sequence !== replaySequence) return;
+        onSuccess(result);
+        feedback = result.remoteUpdated
+          ? (result.saved === false
+            ? '这一句已在另一网页修好；本地缓存未更新'
+            : '这一句已在另一网页修好，已更新')
+          : result.persisted === true && result.saved === false
+          ? '语音已生成并保存到服务端；本地缓存未更新'
+          : result.saved === false ? '语音已生成，但本地保存失败，请先备份聊天。'
+          : result.persisted === false ? '语音已生成，修复记录保存在本浏览器；点语音播放。' : '语音已生成，点语音播放。';
+      } catch (error) {
+        if (destroyed || controller.signal.aborted || sequence !== replaySequence || error.name === 'AbortError') return;
+        feedback = /[\u3400-\u9fff]/.test(error.message || '') ? error.message : '这句语音未能生成，原音频已保留，请检查语音服务后再试。';
+      } finally {
+        if (activeRegeneration === pending) {
+          activeRegeneration = null;
+          if (feedback) regenerationFeedback.set(lineKey, feedback);
+          else regenerationFeedback.delete(lineKey);
+          for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
+        }
+      }
+    };
+
+    return { lineKey, refreshRepairButton };
+  }
+
   function renderAssistantLineEntry(line, msg, settings) {
     const entryEl = doc.createElement('div');
     entryEl.className = 'adv-log-entry is-assistant';
@@ -196,27 +310,7 @@ export function createBacklog(container, deps = {}) {
     const regenerateBtn = doc.createElement('button');
     regenerateBtn.type = 'button';
     regenerateBtn.className = 'adv-log-regenerate-btn';
-    const lineKey = regenerationKey(msg.id, line.index);
-    function refreshRepairButton() {
-      const generating = activeRegeneration?.key === lineKey;
-      const needsRepair = replayBtn.disabled && isVoiceEnabled();
-      regenerateBtn.hidden = !deps.regenerateLineAudio || (!generating && !needsRepair);
-      const voice = deps.getRecoveryVoice?.();
-      regenerateBtn.textContent = generating ? '取消生成' : voice ? '用当前音色重新生成' : '选择音色';
-      regenerateBtn.title = generating ? '取消本次语音生成' : voice ? `使用「${voice.name}」重新生成这一句` : '先为当前会话选择音色';
-      regenerateBtn.setAttribute('aria-label', regenerateBtn.title);
-      regenerateBtn.disabled = !generating && (Boolean(deps.controller?.busy)
-        || !(deps.getSession?.()?.messages || []).includes(msg)
-        || !line.ja?.trim() || !/[\p{L}\p{N}]/u.test(line.ja) || line.ja.length > 2000);
-      if (regenerateBtn.disabled && !generating) {
-        regenerateBtn.title = deps.controller?.busy ? '请等待当前回复完成后再重新生成'
-          : !line.ja?.trim() || !/[\p{L}\p{N}]/u.test(line.ja) ? '这句缺少可配音的日文台词'
-          : line.ja.length > 2000 ? '这句台词过长，暂时无法单句重新生成' : '请等待历史记录保存完成';
-        regenerateBtn.setAttribute('aria-label', regenerateBtn.title);
-      }
-      if (generating) regenerateBtn.setAttribute('aria-busy', 'true');
-      else regenerateBtn.removeAttribute('aria-busy');
-    }
+
     function refreshAudioState() {
       updateReplayButtonState(replayBtn, line, msg, statusSpan);
       refreshRepairButton();
@@ -227,50 +321,19 @@ export function createBacklog(container, deps = {}) {
       }
     }
 
-    refreshAudioState();
-
-    regenerateBtn.onclick = async e => {
-      e.stopPropagation();
-      if (destroyed) return;
-      if (activeRegeneration?.key === lineKey) {
-        if (getNow() - activeRegeneration.startedAt < REGENERATE_CANCEL_GRACE_MS) return;
-        stopReplay({ feedback: '已取消本次生成，原音频已保留。' });
-        return;
-      }
-      refreshRepairButton();
-      if (regenerateBtn.disabled || regenerateBtn.hidden) return;
-      if (!deps.getRecoveryVoice?.()) { deps.onChooseVoice?.(); return; }
-      stopReplay();
-      const sequence = replaySequence, controller = new AbortController();
-      const pending = { key: lineKey, controller, startedAt: getNow() };
-      activeRegeneration = pending;
-      regenerationFeedback.set(lineKey, '正在生成这句语音…');
-      refreshAudioState();
-      let feedback = '';
-      try {
-        const result = await deps.regenerateLineAudio({ messageId: msg.id, lineIndex: line.index, signal: controller.signal });
-        if (destroyed || controller.signal.aborted || sequence !== replaySequence) return;
+    const { lineKey, refreshRepairButton } = bindRegenerateControl({
+      msg,
+      lineIndex: line.index,
+      getText: () => line.ja,
+      replayBtn,
+      regenerateBtn,
+      refreshAudioState,
+      onSuccess: result => {
         line = { ...line, audio: structuredClone(result.audio) };
-        feedback = result.remoteUpdated
-          ? (result.saved === false
-            ? '这一句已在另一网页修好；本地缓存未更新'
-            : '这一句已在另一网页修好，已更新')
-          : result.persisted === true && result.saved === false
-          ? '语音已生成并保存到服务端；本地缓存未更新'
-          : result.saved === false ? '语音已生成，但本地保存失败，请先备份聊天。'
-          : result.persisted === false ? '语音已生成，修复记录保存在本浏览器；点语音播放。' : '语音已生成，点语音播放。';
-      } catch (error) {
-        if (destroyed || controller.signal.aborted || sequence !== replaySequence || error.name === 'AbortError') return;
-        feedback = /[\u3400-\u9fff]/.test(error.message || '') ? error.message : '这句语音未能生成，原音频已保留，请检查语音服务后再试。';
-      } finally {
-        if (activeRegeneration === pending) {
-          activeRegeneration = null;
-          if (feedback) regenerationFeedback.set(lineKey, feedback);
-          else regenerationFeedback.delete(lineKey);
-          for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
-        }
-      }
-    };
+      },
+    });
+
+    refreshAudioState();
 
     replayBtn.onclick = async (e) => {
       e.stopPropagation();
@@ -368,28 +431,144 @@ export function createBacklog(container, deps = {}) {
     speakerEl.className = 'adv-log-speaker';
     speakerEl.textContent = deps.getCharacter?.()?.name || '角色';
 
-    header.appendChild(speakerEl);
+    const rightControls = doc.createElement('div');
+    rightControls.className = 'adv-log-entry-controls';
 
-    if (deps.playLegacyVoice) {
-      const button = doc.createElement('button');
-      button.type = 'button'; button.className = 'adv-log-replay-btn'; button.textContent = '语音';
-      button.disabled = !isVoiceEnabled() || getNow() - (msg.ts ?? getNow()) > SEVEN_DAYS_MS;
-      button.setAttribute('aria-label', button.disabled ? '语音已关闭或过期' : '播放语音');
-      button.onclick = event => {
-        event.stopPropagation();
-        if (destroyed || button.disabled) return;
-        stopReplay();
-        const sequence = replaySequence;
-        activeReplayButton = button;
-        deps.playLegacyVoice(msg, {
-          setPlaying: playing => {
-            if (!destroyed && sequence === replaySequence) button.classList.toggle('is-playing', Boolean(playing));
-          },
-          setProgress() {}, setLoading() {},
-        });
-      };
-      header.appendChild(button);
+    const statusSpan = doc.createElement('span');
+    statusSpan.className = 'adv-log-audio-status';
+    statusSpan.hidden = true;
+
+    const replayBtn = doc.createElement('button');
+    replayBtn.type = 'button';
+    replayBtn.className = 'adv-log-replay-btn';
+    replayBtn.textContent = '语音';
+
+    const regenerateBtn = doc.createElement('button');
+    regenerateBtn.type = 'button';
+    regenerateBtn.className = 'adv-log-regenerate-btn';
+
+    let repairedLine = Array.isArray(msg.lines) && msg.lines.length > 0 ? msg.lines[0] : null;
+
+    const { lineKey, refreshRepairButton } = bindRegenerateControl({
+      msg,
+      lineIndex: 0,
+      getText: () => msg.japanese,
+      replayBtn,
+      regenerateBtn,
+      refreshAudioState,
+      onSuccess: result => {
+        repairedLine = result.line || msg.lines?.[0] || {
+          index: 0,
+          zh: msg.content || '',
+          ja: msg.japanese || '',
+          emotion: 'neutral',
+          act: {},
+          audio: structuredClone(result.audio),
+        };
+        entryEl.dataset.lineIndex = '0';
+      },
+    });
+
+    function getTargetLine() {
+      if (repairedLine) return repairedLine;
+      const chunks = extractLegacyChunks(msg);
+      if (chunks.length > 0) {
+        return {
+          index: 0,
+          zh: msg.content || '',
+          ja: msg.japanese || '',
+          emotion: 'neutral',
+          act: {},
+          audio: { status: 'ready', chunks },
+        };
+      }
+      return null;
     }
+
+    function refreshAudioState() {
+      if (!repairedLine && Array.isArray(msg.lines) && msg.lines.length > 0) {
+        repairedLine = msg.lines[0];
+        entryEl.dataset.lineIndex = '0';
+      }
+      const targetLine = getTargetLine();
+      updateReplayButtonState(replayBtn, targetLine, msg, statusSpan);
+      refreshRepairButton();
+      const note = regenerationFeedback.get(lineKey);
+      if (note) {
+        statusSpan.hidden = false;
+        statusSpan.textContent = note;
+      }
+    }
+
+    refreshAudioState();
+
+    replayBtn.onclick = async event => {
+      event.stopPropagation();
+      if (destroyed || replayBtn.disabled) return;
+      const targetLine = getTargetLine();
+      if (!targetLine) return;
+
+      const key = audioKey(targetLine);
+      const hadRetryNote = loadNotes.delete(key);
+      updateReplayButtonState(replayBtn, targetLine, msg, statusSpan);
+      if (hadRetryNote) {
+        for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
+      }
+      if (replayBtn.disabled) return;
+
+      stopReplay();
+      const thisReplay = replaySequence;
+      activeReplayButton = replayBtn;
+      replayBtn.classList.add('is-playing');
+
+      let result;
+      try {
+        if (deps.audio?.playLine) {
+          result = await deps.audio.playLine(targetLine.index, targetLine.audio.chunks, { msgId: msg.id });
+        } else if (deps.voice?.play) {
+          result = await deps.voice.play(targetLine.index, targetLine.audio.chunks);
+        } else if (deps.playLegacyVoice && !repairedLine) {
+          result = await new Promise(resolve => {
+            deps.playLegacyVoice(msg, {
+              setPlaying: playing => {
+                if (!destroyed && thisReplay === replaySequence) {
+                  replayBtn.classList.toggle('is-playing', Boolean(playing));
+                  if (!playing) resolve('ended');
+                }
+              },
+              setProgress() {},
+              setLoading() {},
+            });
+          });
+        } else {
+          result = 'ended';
+        }
+      } catch {
+        result = 'failed';
+      }
+
+      if (!destroyed && replaySequence === thisReplay) {
+        replayBtn.classList.remove('is-playing');
+        activeReplayButton = null;
+        if (result === 'failed') {
+          failedAudio.add(key);
+          loadNotes.delete(key);
+          regenerationFeedback.delete(lineKey);
+        } else if (loadRetryText[result]) {
+          loadNotes.set(key, loadRetryText[result]);
+          regenerationFeedback.delete(lineKey);
+        }
+        if (result === 'failed' || loadRetryText[result]) {
+          updateReplayButtonState(replayBtn, targetLine, msg, statusSpan);
+          for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
+        }
+      }
+    };
+
+    header.appendChild(speakerEl);
+    rightControls.appendChild(replayBtn);
+    rightControls.appendChild(regenerateBtn);
+    header.appendChild(rightControls);
 
     const textWrap = doc.createElement('div');
     textWrap.className = 'adv-log-text-wrap';
@@ -409,8 +588,19 @@ export function createBacklog(container, deps = {}) {
       textWrap.appendChild(subtitleEl);
     }
 
+    textWrap.appendChild(statusSpan);
+
     entryEl.appendChild(header);
     entryEl.appendChild(textWrap);
+
+    entryEl._updateLineAudio = (status, chunks) => {
+      if (repairedLine) {
+        repairedLine = { ...repairedLine, audio: { status, chunks: chunks || [] } };
+      }
+      refreshAudioState();
+    };
+    entryEl._refreshAudioState = refreshAudioState;
+
     return entryEl;
   }
 

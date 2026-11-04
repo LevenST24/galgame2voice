@@ -8,10 +8,10 @@ import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from galgame2voice.database import crud
-from galgame2voice.database.models import TtsOptions, decode_lines
+from galgame2voice.database.models import ReplyLineRecord, TtsOptions
 from galgame2voice.database.session import get_db, get_database_path, immediate_transaction
 from galgame2voice.services.gpt_sovits_client import normalize_japanese_for_tts
 from galgame2voice.services.tts_service import VoiceModelMissingError, VoiceReferenceMissingError
@@ -37,16 +37,55 @@ class LineAudioRequest(BaseModel):
 
 async def _stored_line(conn, req: LineAudioRequest):
     row = await (await conn.execute(
-        "SELECT role, lines_json FROM messages WHERE id=? AND session_id=?",
+        "SELECT role, lines_json, audio_url, content_chinese, content_japanese FROM messages WHERE id=? AND session_id=?",
         (req.message_id, req.session_id),
     )).fetchone()
-    lines = decode_lines(row["lines_json"]) if row and row["role"] == "assistant" else None
-    line = next((line for line in lines or [] if line["index"] == req.line_index), None)
+    if not row or row["role"] != "assistant":
+        raise HTTPException(404, "这句历史台词已不存在，请刷新聊天记录后再试。")
+
+    raw_lines = row["lines_json"]
+    if raw_lines is None:
+        if req.line_index != 0:
+            raise HTTPException(404, "这句历史台词已不存在，请刷新聊天记录后再试。")
+        stored_ja = row["content_japanese"] or ""
+        if stored_ja != req.text:
+            raise HTTPException(409, "这句台词内容已变化，原音频未修改，请重新打开 LOG 后再试。")
+        line = {
+            "index": 0,
+            "zh": row["content_chinese"] or "",
+            "ja": stored_ja,
+            "emotion": "neutral",
+            "act": {},
+            "audio": {"status": "skipped", "chunks": []},
+        }
+        try:
+            validated = ReplyLineRecord.model_validate(line)
+            line = validated.model_dump(exclude_unset=True)
+        except ValidationError as exc:
+            raise HTTPException(422, "这句历史台词超出单句规格，无法生成规范台词记录，原音频与文字已保留。") from exc
+        legacy_snapshot = {
+            "content_chinese": row["content_chinese"] or "",
+            "content_japanese": stored_ja,
+            "audio_url": row["audio_url"] or "",
+        }
+        return [line], line, legacy_snapshot
+
+    try:
+        parsed = json.loads(raw_lines) if isinstance(raw_lines, str) else raw_lines
+        if not isinstance(parsed, list):
+            raise HTTPException(422, "历史台词数据损坏，原记录未修改。")
+        lines = [ReplyLineRecord.model_validate(item).model_dump(exclude_unset=True) for item in parsed]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(422, "历史台词数据损坏，原记录未修改。") from exc
+
+    line = next((item for item in lines if item["index"] == req.line_index), None)
     if line is None:
         raise HTTPException(404, "这句历史台词已不存在，请刷新聊天记录后再试。")
     if line["ja"] != req.text:
         raise HTTPException(409, "这句台词内容已变化，原音频未修改，请重新打开 LOG 后再试。")
-    return lines, line
+    return lines, line, None
 
 
 async def _synthesize_connected(request: Request, service, text, options):
@@ -89,8 +128,9 @@ async def regenerate_line(req: LineAudioRequest, request: Request, manager: Anno
         if not profile:
             raise HTTPException(404, "所选音色已不存在，请在角色与会话中重新选择。")
         previous_audio = None
+        legacy_snapshot = None
         if req.message_id is not None:
-            _, line = await _stored_line(conn, req)
+            _, line, legacy_snapshot = await _stored_line(conn, req)
             previous_audio = copy.deepcopy(line["audio"])
 
     options = req.options.model_dump(exclude_unset=True) if req.options else {}
@@ -123,17 +163,49 @@ async def regenerate_line(req: LineAudioRequest, request: Request, manager: Anno
         if req.message_id is not None:
             async with get_db(db_path) as conn:
                 async with immediate_transaction(conn):
-                    lines, line = await _stored_line(conn, req)
-                    if line["audio"] != previous_audio:
-                        raise HTTPException(409, "这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。")
-                    if await request.is_disconnected():
-                        raise HTTPException(499, "语音生成已取消，原音频与文字已保留。")
-                    line["audio"] = audio
-                    # From this point a cancellation may race a durable commit.
-                    # Keep the file even if the response cannot confirm the write.
-                    write_started = True
-                    await conn.execute("UPDATE messages SET lines_json=?, audio_url='' WHERE id=? AND session_id=?",
-                                       (json.dumps(lines, ensure_ascii=False), req.message_id, req.session_id))
+                    if legacy_snapshot is not None:
+                        row = await (await conn.execute(
+                            "SELECT role, lines_json, audio_url, content_chinese, content_japanese FROM messages WHERE id=? AND session_id=?",
+                            (req.message_id, req.session_id),
+                        )).fetchone()
+                        if not row or row["role"] != "assistant":
+                            raise HTTPException(404, "这句历史台词已不存在，请刷新聊天记录后再试。")
+                        zh = row["content_chinese"] or ""
+                        ja = row["content_japanese"] or ""
+                        if ja != req.text or zh != legacy_snapshot["content_chinese"]:
+                            raise HTTPException(409, "这句台词内容已变化，原音频未修改，请重新打开 LOG 后再试。")
+                        if row["lines_json"] is not None or (row["audio_url"] or "") != legacy_snapshot["audio_url"]:
+                            raise HTTPException(409, "这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。")
+                        if await request.is_disconnected():
+                            raise HTTPException(499, "语音生成已取消，原音频与文字已保留。")
+                        line = {
+                            "index": 0,
+                            "zh": zh,
+                            "ja": ja,
+                            "emotion": "neutral",
+                            "act": {},
+                            "audio": audio,
+                        }
+                        try:
+                            validated = ReplyLineRecord.model_validate(line)
+                            lines = [validated.model_dump(exclude_unset=True)]
+                        except ValidationError as exc:
+                            raise HTTPException(422, "这句历史台词超出单句规格，无法生成规范台词记录，原音频与文字已保留。") from exc
+                        write_started = True
+                        await conn.execute("UPDATE messages SET lines_json=?, audio_url='' WHERE id=? AND session_id=?",
+                                           (json.dumps(lines, ensure_ascii=False), req.message_id, req.session_id))
+                    else:
+                        lines, line, _ = await _stored_line(conn, req)
+                        if line["audio"] != previous_audio:
+                            raise HTTPException(409, "这句已有其他音频修复结果，未覆盖现有音频，请重新打开 LOG 检查。")
+                        if await request.is_disconnected():
+                            raise HTTPException(499, "语音生成已取消，原音频与文字已保留。")
+                        line["audio"] = audio
+                        # From this point a cancellation may race a durable commit.
+                        # Keep the file even if the response cannot confirm the write.
+                        write_started = True
+                        await conn.execute("UPDATE messages SET lines_json=?, audio_url='' WHERE id=? AND session_id=?",
+                                           (json.dumps(lines, ensure_ascii=False), req.message_id, req.session_id))
         published = True
         return {"session_id": req.session_id, "message_id": req.message_id, "line_index": req.line_index,
                 "voice_profile_id": req.voice_profile_id, "audio": audio, "persisted": req.message_id is not None}
