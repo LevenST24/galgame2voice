@@ -46,15 +46,26 @@ def test_conversation_drawer_and_settings_are_reachable(tmp_path, width, height,
 
 HISTORY_SCRIPT = NAVIGATION_SCRIPT.split("const state={};")[0] + """
 const state={left:0,right:innerWidth,viewport:innerWidth,overflow:0};
+const until=async pred=>{for(let i=0;i<20&&!pred();i++){await wait();settle();}};
+const ready=sel=>{
+  const el=document.querySelector(sel);if(!el||el.disabled||el.closest('[inert]'))return false;
+  const r=el.getBoundingClientRect();if(r.width<=0||r.height<=0)return false;
+  const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+  return Boolean(el.contains(hit));
+};
 try {
-  await wait();await wait();click('.home-continue');await wait();await wait();
-  click('.adv-qm-btn-log');await wait();
+  await until(()=>ready('.home-continue'));
+  click('.home-continue');
+  await until(()=>ready('.adv-qm-btn-log'));
+  click('.adv-qm-btn-log');
+  await until(()=>document.querySelector('.adv-log-overlay') && ready('.adv-log-close-btn'));
   const panel=document.querySelector('.adv-log-overlay'),r=panel.getBoundingClientRect();
   state.title=panel.querySelector('.adv-log-title').textContent;
   state.entries=[...panel.querySelectorAll('.adv-log-entry')].map(e=>e.textContent);
   state.textWidths=[...panel.querySelectorAll('.adv-log-text-wrap')].map(e=>e.getBoundingClientRect().width);
   state.panelWidth=r.width;state.panelVisible=r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight;
-  click('.adv-log-close-btn');await wait();
+  click('.adv-log-close-btn');
+  await until(()=>!document.querySelector('.adv-log-overlay'));
   state.closed=!document.querySelector('.adv-log-overlay');
   state.overflow=document.documentElement.scrollWidth-innerWidth;
 } catch(error) {state.error=String(error.stack||error);}
@@ -65,9 +76,12 @@ output.textContent=JSON.stringify(state);parent.document.body.append(output);
 
 @pytest.mark.requires_piped_subprocess
 @pytest.mark.parametrize("width,height", [(1280, 900)])
-def test_history_is_readable_and_can_be_closed(tmp_path, width, height):
-    state = render_engine_case(tmp_path, width, height, HISTORY_SCRIPT, 7000)
-    assert "error" not in state, state
+# Without a flag Chrome follows the OS animation setting, so pin both modes.
+@pytest.mark.parametrize("browser_args", [("--force-prefers-no-reduced-motion",), ("--force-prefers-reduced-motion",)],
+                         ids=["motion", "reduced-motion"])
+def test_history_is_readable_and_can_be_closed(tmp_path, width, height, browser_args):
+    state = render_engine_case(tmp_path, width, height, HISTORY_SCRIPT, 7000, browser_args)
+    assert "error" not in state, state["error"]
     assert state["title"] == "对话记录"
     assert len(state["entries"]) == 2
     assert state["panelVisible"] and state["closed"] and state["overflow"] == 0
@@ -75,3 +89,15 @@ def test_history_is_readable_and_can_be_closed(tmp_path, width, height):
         assert len(state["textWidths"]) == 2 and all(0 < w <= 840 for w in state["textWidths"])
 
 
+@pytest.mark.requires_piped_subprocess
+@pytest.mark.parametrize("width,height", [(1280, 900)])
+def test_history_tolerates_delayed_session_bootstrap(tmp_path, width, height):
+    delayed_script = HISTORY_SCRIPT.replace(
+        "if(path==='/api/chat/sessions')",
+        "await new Promise(r=>setTimeout(r,350));if(path==='/api/chat/sessions')",
+    )
+    state = render_engine_case(tmp_path, width, height, delayed_script, 7000)
+    assert "error" not in state, state["error"]
+    assert state["title"] == "对话记录"
+    assert len(state["entries"]) == 2
+    assert state["panelVisible"] and state["closed"]

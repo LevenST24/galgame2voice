@@ -164,6 +164,11 @@ uv run --frozen --extra desktop python scripts/smoke_windows_turn_reply.py --arc
 - 13 个语音、角色身份和参考归属相关测试文件最终共 274 项通过、16 项素材测试排除；测试创建的调度器、缓存和客户端在 `finally` 中关闭，关闭异常不会被吞掉。
 - 最终 Windows 附件必须来自正式发布工作流，并通过该附件的 verify、真实 EXE smoke 和 Chrome 业务恢复验收；不能以旧本地候选的通过结果代替。最终 CI、工作流与下载链接记录在 [v3.1.1 Release](https://github.com/LevenST24/galgame2voice/releases/tag/v3.1.1) 中。
 
+### 5.4 LOG 浏览器验收的就绪等待
+
+- `tests/test_interface_browser.py` 保留真实命中测试，改为有上限地等待首页按钮、LOG 入口与关闭按钮可达，并固定普通/减少动态效果两种模式；350ms 的受控初始化延迟可复现原固定等待过早点击，修正后通过。
+- 独立运行该文件最终 5 项通过。失败断言直接展示 `state.error`，避免整份状态被 pytest 截断后丢失诊断。此前主分支一次 CI 的具体错误未完整记录，不能断定与受控延迟完全相同；最终发布仍须以新提交的完整 CI 为准。
+
 ---
 
 ## 6. 既有未合并 PR 关系说明 (PR #284, #286, #287)
