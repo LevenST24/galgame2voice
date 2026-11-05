@@ -261,3 +261,48 @@ def test_model_discovery_deduplicates_paths_across_slash_styles(tmp_path, monkey
         voice._scan_cache.clear()
 
 
+@pytest.mark.asyncio
+async def test_model_discovery_excludes_tts_audio_cache_and_preserves_user_reference(tmp_path, monkeypatch):
+    from httpx import ASGITransport, AsyncClient
+    from galgame2voice.main import create_app
+    from galgame2voice.routers import voice
+
+    project_root = tmp_path / "portable_app"
+    data_dir = project_root / "data"
+    data_dir.mkdir(parents=True)
+    user_wav = data_dir / "user_reference.wav"
+    user_wav.write_bytes(b"user voice reference")
+
+    cache_dir = project_root / "audio" / "cache"
+    cache_dir.mkdir(parents=True)
+    for i in range(55):
+        (cache_dir / f"cached_{i:04d}.wav").write_bytes(b"cached audio")
+
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(project_root))
+    get_settings.cache_clear()
+    monkeypatch.setattr(voice, "_discover_gpt_sovits_roots", lambda: [])
+    voice._scan_cache.clear()
+
+    try:
+        # 1. Direct sync scan
+        result_sync = voice._scan_models_sync()
+        audio_paths_sync = [item["path"] for item in result_sync["audio_files"]]
+        assert str(user_wav) in audio_paths_sync
+        assert not any("cached" in Path(p).name for p in audio_paths_sync)
+        assert audio_paths_sync == [str(user_wav)]
+
+        # 2. Via HTTP API route GET /api/voice/scan-models
+        voice._scan_cache.clear()
+        async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+            response = await client.get("/api/voice/scan-models")
+            assert response.status_code == 200
+            payload = response.json()
+            audio_paths_api = [item["path"] for item in payload["audio_files"]]
+            assert str(user_wav) in audio_paths_api
+            assert not any("cached" in Path(p).name for p in audio_paths_api)
+            assert audio_paths_api == [str(user_wav)]
+    finally:
+        get_settings.cache_clear()
+        voice._scan_cache.clear()
+
+

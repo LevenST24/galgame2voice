@@ -746,6 +746,7 @@ _SCAN_EXCLUDED_DIRS = frozenset({
     "pretrained_models",
     "g2pwmodel",
     "uvr5_weights",
+    "cache",
 })
 
 
