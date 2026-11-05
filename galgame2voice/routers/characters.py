@@ -525,6 +525,19 @@ def _restore_manifest(manifest_path: Path, original: bytes) -> None:
         raise
 
 
+async def _rollback_manifest_and_cache(
+    manifest_path: Path,
+    original: bytes,
+    mgr: Any,
+) -> None:
+    """Put manifest.json back to the bytes read before this save and refresh cache."""
+    _restore_manifest(manifest_path, original)
+    try:
+        await asyncio.to_thread(mgr.discover_characters)
+    except Exception as exc:
+        logger.warning("回滚角色包后刷新内存缓存失败: %s", exc)
+
+
 def _write_manifest_system_prompt(manifest_path: Path, text: str) -> None:
     """Safely updates system_prompt in manifest.json using atomic temp file replacement."""
     try:
@@ -578,6 +591,8 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
     mgr = get_character_manager()
     pkg = owned_package_for_profile(prof, profiles, mgr)
     manifest_path: Path | None = None
+    original_manifest: bytes | None = None
+
     async with _persona_save_lock:
         if pkg is not None:
             manifest_path = pkg.folder / "manifest.json"
@@ -587,25 +602,44 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
                     detail=f"角色包缺少 manifest.json: {manifest_path}",
                 )
             original_manifest = manifest_path.read_bytes()
-            _write_manifest_system_prompt(manifest_path, text)
             try:
+                _write_manifest_system_prompt(manifest_path, text)
                 # 内存里的角色包缓存也要刷新，否则本进程后续仍读到旧人设
                 await asyncio.to_thread(mgr.discover_characters)
             except DuplicateCharacterId as exc:
-                _restore_manifest(manifest_path, original_manifest)
+                await _rollback_manifest_and_cache(manifest_path, original_manifest, mgr)
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=str(exc),
                 ) from exc
             except Exception:
-                _restore_manifest(manifest_path, original_manifest)
+                await _rollback_manifest_and_cache(manifest_path, original_manifest, mgr)
                 raise
 
-        async with get_db() as conn:
-            async with immediate_transaction(conn):
-                from galgame2voice.database.models import VoiceProfileUpdate
+        try:
+            async with get_db() as conn:
+                async with immediate_transaction(conn):
+                    from galgame2voice.database.models import VoiceProfileUpdate
 
-                await crud.update_voice_profile(conn, character_id, VoiceProfileUpdate(system_prompt=text))
+                    updated = await crud.update_voice_profile(
+                        conn, character_id, VoiceProfileUpdate(system_prompt=text)
+                    )
+                    if updated is None:
+                        raise HTTPException(
+                            status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"Character with ID {character_id} not found",
+                        )
+        except Exception as exc:
+            if original_manifest is not None and manifest_path is not None:
+                await _rollback_manifest_and_cache(manifest_path, original_manifest, mgr)
+            if isinstance(exc, HTTPException):
+                raise
+            safe_err = sanitize_error_detail(exc)
+            rollback_suffix = "，已回滚角色包修改" if original_manifest is not None else ""
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"人设保存到数据库失败{rollback_suffix}: {safe_err}",
+            ) from exc
 
     logger.info("System prompt updated for character %s (%d chars)", prof.name, len(text))
     return {

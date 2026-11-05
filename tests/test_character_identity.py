@@ -1064,3 +1064,119 @@ async def test_rescan_reports_long_folder_with_corrupt_manifest(project, isolate
             assert f"角色包「{second_long_folder}」不合格：manifest.json 结构验证失败:" in warning2
     finally:
         CharacterManager.reset_instance()
+
+
+@pytest.fixture
+async def ann_package(project, isolate_test_database):
+    CharacterManager.reset_instance()
+    try:
+        folder = install(project, "ann", "Ann")
+        manifest_path = folder / "manifest.json"
+        original_manifest_text = manifest_path.read_text(encoding="utf-8")
+        original_prompt = json.loads(original_manifest_text)["system_prompt"]
+
+        app = create_app()
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test", timeout=30.0) as client:
+            scanned = await client.post("/api/characters/rescan")
+            assert scanned.status_code == 200, scanned.text
+            ann = _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")
+            yield client, ann, manifest_path, original_prompt
+    finally:
+        CharacterManager.reset_instance()
+
+
+@pytest.mark.asyncio
+async def test_update_persona_db_failure_restores_manifest_and_cache(ann_package, monkeypatch):
+    import sqlite3
+
+    client, ann, manifest_path, original_prompt = ann_package
+
+    async def fail_update_voice_profile(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr("galgame2voice.routers.characters.crud.update_voice_profile", fail_update_voice_profile)
+
+    response = await client.put(
+        f"/api/characters/{ann['id']}/system-prompt",
+        json={"system_prompt": "新的人设内容：保存时写库失败应当回滚"},
+    )
+
+    assert response.status_code == 500, response.text
+    body = response.json()
+    assert "人设保存到数据库失败，已回滚角色包修改" in body["detail"]
+    assert "database is locked" in body["detail"]
+
+    # 1. Disk manifest.json must be restored to original
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["system_prompt"] == original_prompt
+
+    # 2. In-memory CharacterManager cache must be restored to original
+    mgr_pkg = characters.get_character_manager().get_character("Ann")
+    assert mgr_pkg is not None
+    assert mgr_pkg.system_prompt == original_prompt
+
+    # 3. Database profile must retain the original system_prompt
+    monkeypatch.undo()
+    assert _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")["system_prompt"] == original_prompt
+
+    # 4. Subsequent rescan must continue to see the original system prompt
+    assert (await client.post("/api/characters/rescan")).status_code == 200
+    assert _profile_named((await client.get("/api/voice/profiles")).json(), "Ann")["system_prompt"] == original_prompt
+
+
+@pytest.mark.asyncio
+async def test_update_persona_db_not_found_restores_manifest(ann_package, monkeypatch):
+    client, ann, manifest_path, original_prompt = ann_package
+
+    async def return_none_update_voice_profile(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("galgame2voice.routers.characters.crud.update_voice_profile", return_none_update_voice_profile)
+
+    response = await client.put(
+        f"/api/characters/{ann['id']}/system-prompt",
+        json={"system_prompt": "新的人设内容：更新返回None应当回滚"},
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == f"Character with ID {ann['id']} not found"
+
+    # Disk manifest.json and in-memory cache must be restored
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["system_prompt"] == original_prompt
+    mgr_pkg = characters.get_character_manager().get_character("Ann")
+    assert mgr_pkg is not None
+    assert mgr_pkg.system_prompt == original_prompt
+
+
+@pytest.mark.asyncio
+async def test_update_persona_db_failure_standalone_profile(
+    project, isolate_test_database, monkeypatch,
+):
+    import sqlite3
+
+    CharacterManager.reset_instance()
+    try:
+        app = create_app()
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test", timeout=30.0) as client:
+            async with characters.get_db() as conn:
+                created = await profile(conn, "CustomStandalone", system_prompt="Old Standalone Persona")
+
+            async def fail_update_voice_profile(*args, **kwargs):
+                raise sqlite3.OperationalError("database is locked")
+
+            monkeypatch.setattr("galgame2voice.routers.characters.crud.update_voice_profile", fail_update_voice_profile)
+
+            response = await client.put(
+                f"/api/characters/{created.id}/system-prompt",
+                json={"system_prompt": "New Standalone Persona"},
+            )
+
+            assert response.status_code == 500, response.text
+            assert "人设保存到数据库失败" in response.json()["detail"]
+            assert "已回滚角色包修改" not in response.json()["detail"]
+    finally:
+        CharacterManager.reset_instance()
+
+
+
