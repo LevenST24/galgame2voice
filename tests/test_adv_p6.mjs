@@ -540,6 +540,186 @@ test('bg panel: Esc, the close button and the backdrop all end the panel', t => 
   assert.equal(h.saves.length, 0, 'closing without choosing saves nothing');
 });
 
+test('bg panel: Tab and Shift+Tab trap focus across buttons when querySelectorAll returns a DOM NodeList', t => {
+  class FakeNodeList {
+    constructor(elements) {
+      this.elements = elements;
+      this.length = elements.length;
+      elements.forEach((el, i) => { this[i] = el; });
+    }
+    item(index) { return this.elements[index] ?? null; }
+    forEach(cb, thisArg) { this.elements.forEach(cb, thisArg); }
+    [Symbol.iterator]() { return this.elements[Symbol.iterator](); }
+  }
+
+  const h = setupPanel(t);
+  const doc = h.doc;
+  const dialog = h.panel.dialog;
+
+  const origQSA = dialog.querySelectorAll;
+  dialog.querySelectorAll = function(selector) {
+    const list = origQSA.call(this, selector);
+    return new FakeNodeList(list);
+  };
+
+  h.panel.open();
+
+  const buttons = [...dialog.querySelectorAll('button')].filter(node => !node.disabled && node.tabIndex >= 0);
+  assert.ok(buttons.length >= 2, 'Dialog should have multiple focusable buttons');
+  const first = buttons[0];
+  const last = buttons[buttons.length - 1];
+
+  // 1. When focus is at the last button, pressing Tab cycles focus to the first button
+  last.focus();
+  assert.equal(doc.activeElement, last);
+  const tabEvent = {
+    type: 'keydown',
+    key: 'Tab',
+    shiftKey: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  dialog.dispatchEvent(tabEvent);
+  assert.equal(tabEvent.defaultPrevented, true, 'Tab on last button must call preventDefault');
+  assert.equal(doc.activeElement, first, 'Tab on last button must wrap focus to first button');
+
+  // 2. When focus is at the first button, pressing Shift+Tab cycles focus to the last button
+  first.focus();
+  assert.equal(doc.activeElement, first);
+  const shiftTabEvent = {
+    type: 'keydown',
+    key: 'Tab',
+    shiftKey: true,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  dialog.dispatchEvent(shiftTabEvent);
+  assert.equal(shiftTabEvent.defaultPrevented, true, 'Shift+Tab on first button must call preventDefault');
+  assert.equal(doc.activeElement, last, 'Shift+Tab on first button must wrap focus to last button');
+
+  // 3. When focus is outside the dialog, Tab focuses first and Shift+Tab focuses last
+  doc.activeElement = doc.body;
+  const outsideTabEvent = {
+    type: 'keydown',
+    key: 'Tab',
+    shiftKey: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  dialog.dispatchEvent(outsideTabEvent);
+  assert.equal(outsideTabEvent.defaultPrevented, true);
+  assert.equal(doc.activeElement, first);
+
+  doc.activeElement = doc.body;
+  const outsideShiftTabEvent = {
+    type: 'keydown',
+    key: 'Tab',
+    shiftKey: true,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  dialog.dispatchEvent(outsideShiftTabEvent);
+  assert.equal(outsideShiftTabEvent.defaultPrevented, true);
+  assert.equal(doc.activeElement, last);
+
+  // 4. Tab key on an intermediate button or forward from first button does NOT call preventDefault
+  const intermediate = buttons[1];
+  intermediate.focus();
+  const intermediateTabEvent = {
+    type: 'keydown',
+    key: 'Tab',
+    shiftKey: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  dialog.dispatchEvent(intermediateTabEvent);
+  assert.equal(intermediateTabEvent.defaultPrevented ?? false, false, 'Tab on intermediate button must not preventDefault');
+  assert.equal(doc.activeElement, intermediate);
+
+  const intermediateShiftTabEvent = {
+    type: 'keydown',
+    key: 'Tab',
+    shiftKey: true,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  dialog.dispatchEvent(intermediateShiftTabEvent);
+  assert.equal(intermediateShiftTabEvent.defaultPrevented ?? false, false, 'Shift+Tab on intermediate button must not preventDefault');
+
+  // Forward Tab on first button does not call preventDefault
+  first.focus();
+  const firstForwardTab = {
+    type: 'keydown',
+    key: 'Tab',
+    shiftKey: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  dialog.dispatchEvent(firstForwardTab);
+  assert.equal(firstForwardTab.defaultPrevented ?? false, false, 'Forward Tab on first button must not preventDefault');
+
+  // Backward Shift+Tab on last button does not call preventDefault
+  last.focus();
+  const lastBackwardTab = {
+    type: 'keydown',
+    key: 'Tab',
+    shiftKey: true,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  dialog.dispatchEvent(lastBackwardTab);
+  assert.equal(lastBackwardTab.defaultPrevented ?? false, false, 'Backward Shift+Tab on last button must not preventDefault');
+
+  // 5. Disabled buttons and negative tabIndex buttons are ignored by focus trap
+  first.disabled = true;
+  last.tabIndex = -1;
+  const activeFocusable = [...dialog.querySelectorAll('button')].filter(node => !node.disabled && node.tabIndex >= 0);
+  const newFirst = activeFocusable[0];
+  const newLast = activeFocusable[activeFocusable.length - 1];
+  assert.notEqual(newFirst, first, 'Disabled first button must be excluded');
+  assert.notEqual(newLast, last, 'tabIndex=-1 last button must be excluded');
+
+  newLast.focus();
+  const wrapTabEvent = {
+    type: 'keydown',
+    key: 'Tab',
+    shiftKey: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  dialog.dispatchEvent(wrapTabEvent);
+  assert.equal(wrapTabEvent.defaultPrevented, true);
+  assert.equal(doc.activeElement, newFirst, 'Tab on new last button must wrap to new first button');
+
+  newFirst.focus();
+  const wrapShiftTabEvent = {
+    type: 'keydown',
+    key: 'Tab',
+    shiftKey: true,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  dialog.dispatchEvent(wrapShiftTabEvent);
+  assert.equal(wrapShiftTabEvent.defaultPrevented, true);
+  assert.equal(doc.activeElement, newLast, 'Shift+Tab on new first button must wrap to new last button');
+
+  // Restore state
+  first.disabled = false;
+  last.tabIndex = 0;
+
+  // 6. Non-Tab keys (except Escape) do not trigger trap or call preventDefault
+  const arrowEvent = {
+    type: 'keydown',
+    key: 'ArrowDown',
+    shiftKey: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  dialog.dispatchEvent(arrowEvent);
+  assert.equal(arrowEvent.defaultPrevented ?? false, false);
+});
+
+
 test('bg panel: an empty or failed list still offers 自动 and the sky', t => {
   const h = setupPanel(t, { list: [] });
   h.panel.open();

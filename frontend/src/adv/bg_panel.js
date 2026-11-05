@@ -266,7 +266,7 @@ export function createBgPanel(container, {
       return;
     }
     if (event.key !== 'Tab') return;
-    const focusable = dialog.querySelectorAll('button').filter(node => !node.disabled && node.tabIndex >= 0);
+    const focusable = [...dialog.querySelectorAll('button')].filter(node => !node.disabled && node.tabIndex >= 0);
     if (!focusable.length) return;
     const first = focusable[0], last = focusable.at(-1);
     if (!dialog.contains(doc.activeElement) ||
