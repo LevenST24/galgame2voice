@@ -36,11 +36,13 @@ class LayoutServer(ThreadingHTTPServer):
 def make_layout_server(handler):
     # Windows can allocate port 0 from a range containing browser-blocked ports.
     # Bind an unused high loopback port for this isolated, source-only fixture.
+    # A port another process holds exclusively, or one in a reserved range, fails with
+    # WinError 10013 (errno EACCES) instead of EADDRINUSE: try another one too.
     for _ in range(50):
         try:
             return LayoutServer(("127.0.0.1", 20000 + secrets.randbelow(10000)), handler)
         except OSError as exc:
-            if exc.errno not in (errno.EADDRINUSE, 10048):
+            if exc.errno not in (errno.EADDRINUSE, 10048, errno.EACCES):
                 raise
     raise RuntimeError("Could not bind a high loopback port for browser tests")
 
@@ -215,6 +217,22 @@ def test_layout_server_queues_a_burst_of_browser_connections():
             client.close()
         server.server_close()
     assert len(clients) == 12
+
+
+def test_make_layout_server_retries_exclusive_port_permission_error(monkeypatch):
+    calls = []
+    sentinel_server = object()
+
+    def fake_layout_server(server_address, handler):
+        calls.append(server_address)
+        if len(calls) == 1:
+            raise PermissionError(errno.EACCES, "Permission denied", None, 10013)
+        return sentinel_server
+
+    monkeypatch.setattr(sys.modules[__name__], "LayoutServer", fake_layout_server)
+    server = make_layout_server(BaseHTTPRequestHandler)
+    assert server is sentinel_server
+    assert len(calls) == 2
 
 
 BLANK_DUMP = b"<html><head></head><body></body></html>"
