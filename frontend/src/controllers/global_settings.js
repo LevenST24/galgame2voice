@@ -43,6 +43,7 @@ const RESET_CONFIG_FIELDS = ['gParamSpeed', 'gParamTopK', 'gParamTopP', 'gParamT
 let privateEndpointRevision = 0;
 let privateEndpointSaved = false;
 let privateEndpointSaving = false;
+let precisionSavedRevision = 0;
 const CONFIG_FIELDS = ['gParamSovitsUrl', 'gPrecision', 'gParamSliceMethod', 'gParamSpeed', 'gParamTopK',
   'gParamTopP', 'gParamTemp', 'gParamFragmentInterval', 'gAudioRetention', 'gTgEnabled',
   'gTgToken', 'gTgChatId', 'gTgProxyHost', 'gTgProxyPort', 'gTgProxyEnabled'];
@@ -154,6 +155,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
   privateEndpointRevision += 1;
   privateEndpointSaved = false;
   privateEndpointSaving = false;
+  precisionSavedRevision += 1;
 
   // 3. Instantiate domain controllers
   providerController = createProviderSettingsController(_dom, {
@@ -184,6 +186,11 @@ export function initGlobalSettings(dom, callbacks = {}) {
     renderEngineStatus: (status) => telemetryController?.renderEngineStatus(status),
     goToInferenceTab,
     revokeAllCachedAudioUrls: () => _callbacks.revokeAllCachedAudioUrls?.(),
+    // An autosaved choice is no longer a pending edit, so later loads may refresh it.
+    onPrecisionSaved: (value) => {
+      precisionSavedRevision += 1;
+      if (_dom.gPrecision?.value === value) dirtyConfigFields.delete('gPrecision');
+    },
   });
 
   telegramController = createTelegramSettingsController(_dom, {
@@ -391,6 +398,7 @@ export async function loadGlobalConfig() {
   const targetDom = _dom;
   const load = ++configLoad;
   const privateRevision = privateEndpointRevision;
+  const precisionRevision = precisionSavedRevision;
   try {
     const fetchVoice = _callbacks.fetchVoiceProfiles
       ? _callbacks.fetchVoiceProfiles().catch(() => null)
@@ -443,7 +451,9 @@ export async function loadGlobalConfig() {
 
     // 语音与推理参数
     fill('gParamSovitsUrl', (el) => { el.value = s.gpt_sovits_url || 'http://127.0.0.1:9880'; });
-    fill('gPrecision', (el) => { el.value = s.inference_precision || 'auto'; });
+    if (precisionRevision === precisionSavedRevision) {
+      fill('gPrecision', (el) => { el.value = s.inference_precision || 'auto'; });
+    }
     fill('gParamSliceMethod', (el) => { el.value = s.text_split_method || 'cut5'; });
     fill('gParamSpeed', (el) => {
       el.value = s.speed_factor !== undefined ? s.speed_factor : 1.0;

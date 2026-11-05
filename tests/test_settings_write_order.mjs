@@ -198,3 +198,80 @@ test('a skipped global save still reports an already started model save accurate
   assert.ok(toasts.some(message => /模型设置已保存并启用；全局配置保存失败/.test(message)), toasts.join('\n'));
   assert.equal(state.dom.gChatModel.value, 'newer-unsaved-draft');
 });
+
+test('an autosaved precision follows a later change made elsewhere', async t => {
+  let persistElsewhere;
+  const state = fixture(t, (_url, payload, persist) => {
+    persistElsewhere = persist;
+    persist(payload.inference_precision);
+    return response({});
+  });
+  await loadGlobalConfig();
+  state.dom.gPrecision.value = 'cpu';
+  await state.dom.gPrecision.dispatch();
+  assert.equal(state.stored(), 'cpu');
+  persistElsewhere('fp32'); // e.g. another tab saved FP32 after this autosave
+  await loadGlobalConfig();
+  assert.equal(state.dom.gPrecision.value, 'fp32');
+  await saveGlobalConfig();
+  assert.equal(state.stored(), 'fp32');
+});
+
+test('a stale in-flight config load cannot overwrite a newer autosaved precision', async t => {
+  let finishLoad;
+  const state = fixture(t, (_url, payload, persist) => {
+    persist(payload.inference_precision);
+    return response({});
+  });
+  const originalFetch = globalThis.fetch;
+  let firstConfigLoad = true;
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/config' && firstConfigLoad) {
+      firstConfigLoad = false;
+      return new Promise(resolve => {
+        finishLoad = () => resolve(response({ status: 'ok', settings: { inference_precision: 'fp16' } }));
+      });
+    }
+    return originalFetch(url, options);
+  };
+  const pendingLoad = loadGlobalConfig(); await tick();
+  state.dom.gPrecision.value = 'cpu';
+  await state.dom.gPrecision.dispatch();
+  assert.equal(state.stored(), 'cpu');
+  finishLoad();
+  await pendingLoad;
+  assert.equal(state.dom.gPrecision.value, 'cpu');
+  await saveGlobalConfig();
+  assert.equal(state.stored(), 'cpu');
+});
+
+test('a successful engine restart clears dirty precision so later loads can refresh', async t => {
+  let failAutosave = true;
+  let persistElsewhere;
+  const state = fixture(t, (url, payload, persist) => {
+    persistElsewhere = persist;
+    if (url.endsWith('/restart_sovits')) {
+      persist(payload.precision);
+      return response({ status: 'starting' });
+    }
+    if (failAutosave) {
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }
+    persist(payload.inference_precision);
+    return response({});
+  });
+  await loadGlobalConfig();
+  state.dom.gPrecision.value = 'cpu';
+  await state.dom.gPrecision.dispatch();
+  assert.equal(state.stored(), 'fp16');
+  failAutosave = false;
+  await handleRestartSovits('fp32');
+  assert.equal(state.stored(), 'fp32');
+  assert.equal(state.dom.gPrecision.value, 'fp32');
+  persistElsewhere('auto');
+  await loadGlobalConfig();
+  assert.equal(state.dom.gPrecision.value, 'auto');
+  await saveGlobalConfig();
+  assert.equal(state.stored(), 'auto');
+});
+
