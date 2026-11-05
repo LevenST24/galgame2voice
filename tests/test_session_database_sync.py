@@ -37,6 +37,35 @@ async def test_session_explicit_null_unbinds_voice_and_empty_settings_clear(tmp_
         assert fresh.json()["session"]["voice_profile_id"] is None
 
 
+
+@pytest.mark.asyncio
+async def test_session_overview_does_not_restore_a_deleted_voice(tmp_path, monkeypatch):
+    from galgame2voice.database.models import VoiceProfileCreate
+    db = tmp_path / "deleted_voice.db"
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
+    await init_db(db)
+    profiles = {}
+    async with get_db(db) as conn:
+        for name in ("kept", "deleted"):
+            profiles[name] = await crud.create_voice_profile(conn, VoiceProfileCreate(
+                name=name, gpt_weights_path=f"{name}.ckpt", sovits_weights_path=f"{name}.pth",
+            ))
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+        for name, profile in profiles.items():
+            saved = await client.post("/api/chat/sessions", json={
+                "id": f"s_{name}", "voice_profile_id": profile.id,
+                "settings": {"voiceProfileId": profile.id, "temperature": 0.7},
+            })
+            assert saved.status_code == 200
+        # Deleted elsewhere (another page, or this page could not save the unbinding).
+        async with get_db(db) as conn:
+            assert await crud.delete_voice_profile(conn, profiles["deleted"].id)
+        overview = {item["id"]: item for item in (await client.get("/api/chat/sessions")).json()["sessions"]}
+    assert overview["s_deleted"]["voice_profile_id"] is None
+    assert overview["s_deleted"]["settings"] == {"voiceProfileId": None, "temperature": 0.7}
+    assert overview["s_kept"]["voice_profile_id"] == profiles["kept"].id
+    assert overview["s_kept"]["settings"] == {"voiceProfileId": profiles["kept"].id, "temperature": 0.7}
+
 @pytest.mark.asyncio
 async def test_session_overview_and_history_sync(tmp_path, monkeypatch):
     test_db = tmp_path / "test_sessions.db"
