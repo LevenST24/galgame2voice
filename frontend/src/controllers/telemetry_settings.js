@@ -13,6 +13,7 @@ export class TelemetrySettingsController {
     this.telemetryActive = false;
     this.telemetryController = null;
     this.engineStatusRevision = 0;
+    this.lastEngineState = null;
     this.unsubscribeVisibility = null;
     this.disposed = false;
     this.cleanups = [];
@@ -113,6 +114,13 @@ export class TelemetrySettingsController {
 
   renderEngineStatus(status = {}) {
     if (this.disposed) return;
+    this.engineStatusRevision += 1;
+    this._applyEngineStatus(status);
+  }
+
+  _applyEngineStatus(status = {}) {
+    if (this.disposed) return;
+    this.lastEngineState = status.state || null;
     const ready = status.state === 'ready' && status.ready === true;
     const loading = status.state === 'starting' || status.state === 'loading_slow';
     const checking = status.state === 'checking';
@@ -148,20 +156,7 @@ export class TelemetrySettingsController {
         if (!current() || !data) return;
         const isRestarting = this.coordinator.isRestarting ? this.coordinator.isRestarting() : false;
 
-        // 1. GPT-SoVITS
-        if (data.gpt_sovits && this.dom.gDashSovitsStatus && revision === this.engineStatusRevision && !isRestarting) {
-          const isOnline = data.gpt_sovits.status === 'reachable';
-          this.renderEngineStatus(engineRes?.state ? engineRes : {
-            state: isOnline ? 'ready' : 'unavailable',
-            ready: isOnline,
-            message: isOnline ? `运行正常 (${data.gpt_sovits.latency_ms || 0}ms)` : '服务未响应（可点下方配置或重启）',
-          });
-          if (this.dom.gDashSovitsUrl) {
-            this.dom.gDashSovitsUrl.textContent = engineRes?.base_url || data.gpt_sovits.base_url || 'http://127.0.0.1:9880';
-          }
-        }
-
-        // 2. Precision & GPU
+        // 1. Precision & GPU
         if (data.hardware && revision === this.engineStatusRevision && !isRestarting) {
           const prec = data.hardware.precision_source === 'managed_launch'
             ? (data.hardware.inference_precision || '').toUpperCase() : '';
@@ -226,7 +221,7 @@ export class TelemetrySettingsController {
           }
         }
 
-        // 3. Uptime & PID
+        // 2. Uptime & PID
         if (data.app && this.dom.gDashUptimeVal) {
           const sec = Math.round(data.app.uptime_seconds || 0);
           const h = Math.floor(sec / 3600);
@@ -250,16 +245,33 @@ export class TelemetrySettingsController {
         engineRes = data;
         const isRestarting = this.coordinator.isRestarting ? this.coordinator.isRestarting() : false;
         if (current() && data?.state && !isRestarting) {
-          this.renderEngineStatus(data);
+          this._applyEngineStatus(data);
         }
       });
 
       await Promise.all([statusRead, cacheRead, engineRead]);
       const isRestarting = this.coordinator.isRestarting ? this.coordinator.isRestarting() : false;
-      if (!statusRes && revision === this.engineStatusRevision && !isRestarting && this.dom.gDashSovitsStatus) {
+      if (current() && !isRestarting) {
         if (engineRes?.state) {
-          this.renderEngineStatus(engineRes);
-        } else {
+          const fallbackUrl = statusRes?.gpt_sovits ? (statusRes.gpt_sovits.base_url || 'http://127.0.0.1:9880') : undefined;
+          this._applyEngineStatus({
+            ...engineRes,
+            base_url: engineRes.base_url || fallbackUrl,
+          });
+        } else if (statusRes?.gpt_sovits && this.dom.gDashSovitsStatus) {
+          const isOnline = statusRes.gpt_sovits.status === 'reachable';
+          if (isOnline || !['starting', 'loading_slow', 'checking', 'failed'].includes(this.lastEngineState)) {
+            this._applyEngineStatus({
+              state: isOnline ? 'ready' : 'unavailable',
+              ready: isOnline,
+              base_url: statusRes.gpt_sovits.base_url || 'http://127.0.0.1:9880',
+              message: isOnline ? `运行正常 (${statusRes.gpt_sovits.latency_ms || 0}ms)` : '服务未响应（可点下方配置或重启）',
+            });
+          } else if (this.dom.gDashSovitsUrl && statusRes.gpt_sovits.base_url) {
+            this.dom.gDashSovitsUrl.textContent = statusRes.gpt_sovits.base_url;
+          }
+        } else if (!statusRes && this.dom.gDashSovitsStatus) {
+          this.lastEngineState = 'checking';
           this.dom.gDashSovitsStatus.textContent = '无法刷新状态，请保留启动窗口；若已关闭，请重新双击启动。';
           if (this.dom.gDashSovitsBadge) {
             this.dom.gDashSovitsBadge.textContent = '待检查';
