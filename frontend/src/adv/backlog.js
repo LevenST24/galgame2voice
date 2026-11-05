@@ -174,8 +174,11 @@ export function createBacklog(container, deps = {}) {
 
     const unavailable = line ? failedAudio.has(audioKey(line)) : false;
     const retryText = unavailable ? '' : (line ? (loadNotes.get(audioKey(line)) || '') : '');
-    statusSpan.hidden = !unavailable && !retryText;
-    statusSpan.textContent = unavailable ? '语音已过期或不可用' : retryText;
+    const isPartialFailed = !unavailable && !retryText && status === 'failed' && hasPlayableChunks && voiceOn && !isExpired;
+    statusSpan.hidden = !unavailable && !retryText && !isPartialFailed;
+    statusSpan.textContent = unavailable
+      ? '语音已过期或不可用'
+      : (retryText || (isPartialFailed ? '部分语音未生成，可重新生成' : ''));
     if (unavailable) {
       btn.disabled = true;
       btn.title = '语音已过期或不可用';
@@ -208,6 +211,7 @@ export function createBacklog(container, deps = {}) {
     msg,
     lineIndex,
     getText,
+    getStatus,
     replayBtn,
     regenerateBtn,
     refreshAudioState,
@@ -218,7 +222,7 @@ export function createBacklog(container, deps = {}) {
     function refreshRepairButton() {
       const generating = activeRegeneration?.key === lineKey;
       const isExplicitEmpty = Array.isArray(msg.lines) && msg.lines.length === 0;
-      const needsRepair = !isExplicitEmpty && replayBtn.disabled && isVoiceEnabled();
+      const needsRepair = !isExplicitEmpty && (replayBtn.disabled || getStatus() === 'failed') && isVoiceEnabled();
       regenerateBtn.hidden = !deps.regenerateLineAudio || (!generating && !needsRepair);
       const voice = deps.getRecoveryVoice?.();
       regenerateBtn.textContent = generating ? '取消生成' : voice ? '用当前音色重新生成' : '选择音色';
@@ -329,6 +333,7 @@ export function createBacklog(container, deps = {}) {
       msg,
       lineIndex: line.index,
       getText: () => line.ja,
+      getStatus: () => line.audio?.status,
       replayBtn,
       regenerateBtn,
       refreshAudioState,
@@ -460,6 +465,7 @@ export function createBacklog(container, deps = {}) {
       msg,
       lineIndex: 0,
       getText: () => msg.japanese,
+      getStatus: () => getTargetLine()?.audio?.status,
       replayBtn,
       regenerateBtn,
       refreshAudioState,
