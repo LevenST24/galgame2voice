@@ -1,5 +1,6 @@
 """Transport failures must not invent a refused port or hide a DNS failure."""
 
+import http.client
 import httpx
 import pytest
 
@@ -88,4 +89,75 @@ def test_format_provider_error_overload_and_endpoint_not_found():
     diag_503 = format_provider_error("openai", 503, "The model is currently overloaded. Please try again.")
     assert diag_503["error_code"] == "SERVER_OVERLOADED"
     assert "繁忙" in diag_503["error"] or "繁忙" in diag_503["diagnostic"]
+
+
+@pytest.mark.parametrize(
+    ("err", "expect_in_msg"),
+    [
+        (ConnectionResetError(10054, "远程主机强迫关闭了一个现有的连接。"), "10054"),
+        (ConnectionResetError("Connection reset by peer"), "Connection reset"),
+        (ConnectionAbortedError(10053, "你的主机中的软件中止了一个已建立的连接。"), "10053"),
+        (ConnectionAbortedError("Software caused connection abort"), "connection abort"),
+        (httpx.RemoteProtocolError("peer closed connection without sending complete message body"), "peer closed connection"),
+        (httpx.ReadError("connection reset by peer"), "ReadError"),
+        (httpx.WriteError("write failed"), "WriteError"),
+        (BrokenPipeError("Broken pipe"), "BrokenPipeError"),
+        (http.client.RemoteDisconnected("Remote end closed connection without response"), "Remote end closed connection"),
+        (http.client.IncompleteRead(b"partial_stream_data", 256), "IncompleteRead"),
+        ("ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。", "10054"),
+        ("httpx.RemoteProtocolError: peer closed connection without sending complete message body", "RemoteProtocolError"),
+    ],
+)
+def test_connection_reset_and_transport_interruption_diagnosis(err, expect_in_msg):
+    from galgame2voice.utils.error_diagnostics import chat_error_payload, format_provider_error
+
+    result = diagnose_llm_error(err)
+    assert result.error_code == "CONNECTION_RESET"
+    assert result.status_code == 502
+    assert "网络连接被中途断开或重置" in result.message
+    assert "请检查 Base URL 地址、API Key 凭据以及模型名称配置是否正确" not in result.guidance
+    assert "无需修改 API Key 或模型名称" in result.guidance
+    assert "重新发送重试" in result.guidance
+    assert expect_in_msg.lower() in (result.raw_error or "").lower()
+
+    payload = chat_error_payload(err, provider_id="openai")
+    assert payload["error_code"] == "CONNECTION_RESET"
+    assert payload["status_code"] == 502
+    assert "网络连接被中途断开或重置" in payload["error"]
+    assert "请检查 Base URL 地址、API Key 凭据以及模型名称配置是否正确" not in payload["error"]
+    assert "无需修改 API Key 或模型名称" in payload["error"]
+
+    diag_dict = format_provider_error("openai", 502, err)
+    assert diag_dict["error_code"] == "CONNECTION_RESET"
+    assert diag_dict["status_code"] == 502
+    assert "网络连接被中途断开或重置" in diag_dict["error"]
+
+
+@pytest.mark.parametrize(
+    "cause",
+    [
+        ConnectionResetError(10054, "远程主机强迫关闭了一个现有的连接。"),
+        httpx.RemoteProtocolError("peer closed connection without sending complete message body"),
+        httpx.ReadError("read error during stream"),
+        http.client.RemoteDisconnected("Remote end closed connection without response"),
+    ],
+)
+def test_streaming_runtime_error_wrapping_connection_reset(cause):
+    from galgame2voice.utils.error_diagnostics import chat_error_payload
+
+    streaming_err = RuntimeError(f"Streaming request failed to https://api.openai.com/v1/chat/completions: {cause}")
+    streaming_err.__cause__ = cause
+
+    result = diagnose_llm_error(streaming_err)
+    assert result.error_code == "CONNECTION_RESET"
+    assert result.status_code == 502
+    assert "请检查 Base URL 地址、API Key 凭据以及模型名称配置是否正确" not in result.guidance
+    assert "无需修改 API Key 或模型名称" in result.guidance
+
+    payload = chat_error_payload(streaming_err, provider_id="openai")
+    assert payload["error_code"] == "CONNECTION_RESET"
+    assert payload["status_code"] == 502
+    assert "网络连接被中途断开或重置" in payload["error"]
+    assert "请检查 Base URL 地址、API Key 凭据以及模型名称配置是否正确" not in payload["error"]
+
 
