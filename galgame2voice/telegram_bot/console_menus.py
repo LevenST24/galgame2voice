@@ -844,6 +844,9 @@ async def _handle_scalar_setting(
             await crud.update_settings(conn, SettingsUpdate(**{setting_key: new_val}))
     except Exception as exc:
         logger.warning("%s update exception: %s", log_name, exc)
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer("❌ 保存失败，请稍后重试", show_alert=True)
+        return
     if hasattr(ctx.query, "answer"):
         await ctx.query.answer(success_tmpl.format(val=new_val), show_alert=True)
     await _edit_menu_text(ctx, menu_builder())
@@ -894,6 +897,9 @@ async def _handle_set_split(ctx: _CallbackContext) -> None:
             await crud.update_settings(conn, SettingsUpdate(text_split_method=new_split))
     except Exception as exc:
         logger.warning("Split method update exception: %s", exc)
+        if hasattr(ctx.query, "answer"):
+            await ctx.query.answer("❌ 保存失败，请稍后重试", show_alert=True)
+        return
     if hasattr(ctx.query, "answer"):
         await ctx.query.answer(f"✂️ 切分方式已设置为: {new_split}", show_alert=True)
     await _edit_menu_text(ctx, build_tts_menu(db_path=ctx.db_path))

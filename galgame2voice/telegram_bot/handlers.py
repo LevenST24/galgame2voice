@@ -80,6 +80,16 @@ STT_UNSUPPORTED_REPLY = (
     f"或在控制台切换到支持语音识别的提供商（如 {_STT_PROVIDER_EXAMPLES}）后再发送语音。"
 )
 
+_TELEGRAM_BASE_TTS_KEYS: tuple[str, ...] = (
+    "speed_factor",
+    "temperature",
+    "text_split_method",
+    "top_k",
+    "top_p",
+    "batch_size",
+    "fragment_interval",
+)
+
 
 def _authorized_command(label: str) -> Callable[[CommandCallback], CommandCallback]:
     """Runs a slash command only for whitelisted users (the fail-closed policy chat messages use)."""
@@ -770,12 +780,22 @@ class TelegramBotHandlers:
                 prune_err,
             )
 
+    @staticmethod
+    async def _load_base_tts_options(conn: Any) -> dict[str, Any]:
+        """TTS parameters saved from the /console menu, used as the base for chat voice synthesis."""
+        settings = await crud.get_settings_raw(conn)
+        return {
+            key: val
+            for key in _TELEGRAM_BASE_TTS_KEYS
+            if (val := getattr(settings, key, None)) is not None
+        }
+
     async def _setup_user_chat_turn(
         self,
         session_id: str,
         effective_user_id: int,
         text: str,
-    ) -> tuple[Any, str, int, list[Any], int, str]:
+    ) -> tuple[Any, str, int, list[Any], int, str, dict[str, Any]]:
         """Prepares session, persists user message, extracts memory facts, and retrieves LLM adapter & messages."""
         async with get_db(self.db_path) as conn:
             await crud.get_or_create_session(conn, session_id, channel="telegram", user_id=str(effective_user_id))
@@ -791,6 +811,7 @@ class TelegramBotHandlers:
             profile = await crud.get_active_voice_profile(conn)
             profile_id = profile.id if profile else 1
             char_name = profile.name if profile else "Character"
+            base_tts_options = await self._load_base_tts_options(conn)
             try:
                 if hasattr(self.chat_service, "memory_service"):
                     await self.chat_service.memory_service.process_user_message(
@@ -810,7 +831,7 @@ class TelegramBotHandlers:
                 messages = await self.chat_service.prepare_messages(
                     conn, session_id, text, active_profile=profile, reply_format="old",
                 )
-                return adapter, model_name, profile_id, messages, user_msg.id, char_name
+                return adapter, model_name, profile_id, messages, user_msg.id, char_name, base_tts_options
             except Exception:
                 await self._prune_orphaned_user_message(user_msg.id, context_label="_setup_user_chat_turn")
                 raise
@@ -885,10 +906,12 @@ class TelegramBotHandlers:
                     return asyncio.create_task(_noop())
 
                 # 2. Query ChatService / LLM Adapter for bilingual response
-                adapter, model_name, profile_id, messages, user_msg_id, char_name = await self._setup_user_chat_turn(
-                    session_id=session_id,
-                    effective_user_id=effective_user_id,
-                    text=text,
+                adapter, model_name, profile_id, messages, user_msg_id, char_name, base_tts_options = (
+                    await self._setup_user_chat_turn(
+                        session_id=session_id,
+                        effective_user_id=effective_user_id,
+                        text=text,
+                    )
                 )
 
                 if not self.turn_coordinator.is_turn_valid(turn):
@@ -931,7 +954,9 @@ class TelegramBotHandlers:
                     )
                     msg = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
                     raise ValueError(msg)
-                dynamic_tts = parser.get_dynamic_tts_options(sentence_text=japanese)
+                dynamic_tts = parser.get_dynamic_tts_options(
+                    base_options=base_tts_options, sentence_text=japanese
+                )
 
                 # Final ownership check before sending to Telegram
                 if not self.turn_coordinator.is_turn_valid(turn):
