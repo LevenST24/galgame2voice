@@ -8,6 +8,7 @@ let currentVersionData = null;
 
 export function initUpdateManager(dom) {
   _dom = dom;
+  currentVersionData = null;
 
   if (_dom.gBtnCheckUpdate) {
     _dom.gBtnCheckUpdate.addEventListener('click', handleCheckUpdate);
@@ -40,7 +41,22 @@ export async function loadSystemVersionInfo(checkRemote = false) {
   }
 
   try {
-    const data = await fetchSystemVersion(checkRemote);
+    let data = await fetchSystemVersion(checkRemote);
+    if (
+      !checkRemote &&
+      currentVersionData?.has_update === true &&
+      data &&
+      data.current_version &&
+      data.current_version === currentVersionData.current_version
+    ) {
+      data = {
+        ...data,
+        has_update: currentVersionData.has_update,
+        behind_count: currentVersionData.behind_count,
+        commits_log: currentVersionData.commits_log,
+        latest_version: currentVersionData.latest_version,
+      };
+    }
     currentVersionData = data;
     renderSystemVersionUI(data);
     return data;
@@ -49,6 +65,18 @@ export async function loadSystemVersionInfo(checkRemote = false) {
     if (_dom.gRemoteStatusTag) {
       _dom.gRemoteStatusTag.className = 'badge-status-pill badge-pill-yellow';
       _dom.gRemoteStatusTag.textContent = '读取受阻';
+    }
+    if (checkRemote) {
+      if (_dom.gUpdateNoticeBox) {
+        _dom.gUpdateNoticeBox.classList.add('hidden');
+      }
+      if (_dom.gUpdateNoticeTitle) {
+        _dom.gUpdateNoticeTitle.textContent = '';
+      }
+      if (_dom.gUpdateNoticeDesc) {
+        _dom.gUpdateNoticeDesc.textContent = '';
+      }
+      throw err;
     }
     return null;
   }
@@ -178,6 +206,9 @@ export async function handleCheckUpdate() {
     }
   } catch (err) {
     console.error('检查更新发生异常:', err);
+    if (_dom.gUpdateNoticeBox) {
+      _dom.gUpdateNoticeBox.classList.add('hidden');
+    }
     showToast('检查更新失败：暂时无法连接服务，请检查网络连接后重试', 'error');
   } finally {
     _dom.gBtnCheckUpdate.disabled = false;
@@ -228,6 +259,7 @@ export async function handleApplyUpdate() {
       if (_dom.gBtnReloadPage) _dom.gBtnReloadPage.classList.remove('hidden');
       showToast('版本更新成功！请刷新页面体验最新功能', 'success');
 
+      currentVersionData = null;
       await loadSystemVersionInfo(false);
     } else {
       if (_dom.gUpdateProgressTitle) {
