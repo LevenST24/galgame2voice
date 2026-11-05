@@ -55,8 +55,12 @@
 - `settings.js`：ADV 设置项校验与字段规范。
 
 ### 4. 控制器与弹窗 (`src/controllers/`)
-- `global_settings.js`：全局设置弹窗（`#globalModal`，包含运行状态、语音服务、对话模型、Telegram、角色与记忆、备份与更新 6 个 Tab）。
-  遥测三路读取由本轮 AbortController 持有，关闭、后台隐藏和新刷新会取消旧读取；引擎卡独立更新，所有字段都核对操作所有权。详见 `docs/development/TELEMETRY.md`。
+- `global_settings.js`：全局设置兼容门面与配置草稿协调器（`#globalModal`，包含运行状态、语音服务、对话模型、Telegram、角色与记忆、备份与更新 6 个 Tab）。
+  协调各业务控制器实例的创建、销毁（`dispose()`）、页脚通用配置保存与窗口导航。
+- `provider_settings.js`：`ProviderSettingsController`，大模型提供商清单、参数草稿、API Key 脱敏/可见性、连通性测试及模型启用生命周期。
+- `telemetry_settings.js`：`TelemetrySettingsController`，运行状态与硬件遥测轮询（5秒周期），持有独立 AbortController，关闭/后台/新刷新时取消旧 GET；引擎卡独立更新，核对操作归属。详见 `docs/development/TELEMETRY.md`。
+- `engine_settings.js`：`EngineSettingsController`，GPT-SoVITS 推理精度自动保存/设备切换、引擎热重启（POST 结合 `waitForEngine` 轮询）及离线音频缓存清理。
+- `telegram_settings.js`：`TelegramSettingsController`，Telegram 机器人开关、字段可见性、用户 ID 校验、连接测试（独立 AbortController 与代数守卫）及载荷提取。
 - `voice_settings.js`：会话设置弹窗（`#sessionModal`，配置当前会话的角色人设、音色绑定、LLM 采样参数及 TTS 推理参数）。
   同一页面的音色切换串行执行，排队期间过时的会话选择直接跳过；列表目录与当前启用状态分别防止迟到响应覆盖。首页进入聊天会通过切换接口核验模型，已保存的音色 ID 仅作界面提示。
 - `audio_player_ui.js`：输入端麦克风录音控制与播放器 UI 状态协调。

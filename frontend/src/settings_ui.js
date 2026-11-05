@@ -82,12 +82,14 @@ export function initSettingsUi() {
 }
 
 export function initSettingsTabs(root, onSelect) {
-  if (!root) return;
+  if (!root) return () => {};
   const tabs = [...root.querySelectorAll('[data-gtab]')];
   root.setAttribute('role', 'tablist');
   root.setAttribute('aria-label', '设置中心分类');
   root.setAttribute('aria-orientation', 'vertical');
+  let disposed = false;
   const select = tab => {
+    if (disposed) return;
     for (const item of tabs) {
       const active = item === tab;
       item.classList.toggle('active', active);
@@ -95,10 +97,11 @@ export function initSettingsTabs(root, onSelect) {
       item.tabIndex = active ? 0 : -1;
       document.getElementById(`gp-${item.dataset.gtab}`)?.classList.toggle('hidden', !active);
     }
-    root.closest('.modal')?.querySelector('.modal-body')?.scrollTo(0, 0);
+    root.closest?.('.modal')?.querySelector('.modal-body')?.scrollTo(0, 0);
     tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     onSelect?.(tab.dataset.gtab);
   };
+  const cleanups = [];
   tabs.forEach((tab, index) => {
     tab.id ||= `gt-${tab.dataset.gtab}`;
     tab.setAttribute('role', 'tab');
@@ -108,8 +111,9 @@ export function initSettingsTabs(root, onSelect) {
     const panel = document.getElementById(`gp-${tab.dataset.gtab}`);
     panel?.setAttribute('role', 'tabpanel');
     panel?.setAttribute('aria-labelledby', tab.id);
-    tab.addEventListener('click', () => select(tab));
-    tab.addEventListener('keydown', event => {
+    const clickHandler = () => select(tab);
+    const keydownHandler = event => {
+      if (disposed) return;
       let next;
       if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (index + 1) % tabs.length;
       if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (index - 1 + tabs.length) % tabs.length;
@@ -119,6 +123,17 @@ export function initSettingsTabs(root, onSelect) {
       event.preventDefault();
       tabs[next].focus();
       select(tabs[next]);
+    };
+    tab.addEventListener('click', clickHandler);
+    tab.addEventListener('keydown', keydownHandler);
+    cleanups.push(() => {
+      tab.removeEventListener('click', clickHandler);
+      tab.removeEventListener('keydown', keydownHandler);
     });
   });
+
+  return () => {
+    disposed = true;
+    for (const cleanup of cleanups) cleanup();
+  };
 }

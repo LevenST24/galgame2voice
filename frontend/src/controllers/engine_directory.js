@@ -7,60 +7,68 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}) {
   let edited = false;
   let revision = 0;
   let loadRequest = 0;
+  let disposed = false;
+  let browsing = false;
+  let saving = false;
   const setStatus = (text) => { if (status) status.textContent = text; };
-  input?.addEventListener('input', () => {
+  const onInput = () => {
+    if (disposed) return;
     edited = true;
     revision += 1;
     setStatus('目录已修改，点击「保存目录」后生效。');
-  });
+  };
+  input?.addEventListener('input', onInput);
 
   async function request(url, options) {
     return requestJson(url, options, { timeoutMs: url.includes('browse-file') ? 0 : 15000 });
   }
 
   async function load() {
-    if (!input) return;
+    if (disposed || !input) return;
     const currentRequest = ++loadRequest;
     const currentRevision = revision;
     try {
       const data = await request('/api/system/sovits-directory');
-      if (!edited && revision === currentRevision && loadRequest === currentRequest) {
+      if (!disposed && !edited && revision === currentRevision && loadRequest === currentRequest) {
         input.value = data.directory || '';
         setStatus(data.message || '');
       }
     } catch (error) {
-      if (!edited && revision === currentRevision && loadRequest === currentRequest) setStatus(`读取目录失败：${error.message}`);
+      if (!disposed && !edited && revision === currentRevision && loadRequest === currentRequest) setStatus(`读取目录失败：${error.message}`);
     }
   }
 
   async function browse() {
-    if (!input) return;
+    if (disposed || !input) return;
+    browsing = true;
     if (dom.gBrowseSovitsDirectory) dom.gBrowseSovitsDirectory.disabled = true;
     try {
       const data = await request('/api/voice/browse-file', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_type: 'directory', initial_dir: input.value.trim() || null }),
       });
-      if (data.selected_path) {
+      if (!disposed && data.selected_path) {
         input.value = data.selected_path;
         edited = true;
         revision += 1;
         setStatus('目录已选择，点击「保存目录」后生效。');
       }
     } catch (error) {
-      notify(`无法选择文件夹：${error.message}。也可直接粘贴目录路径。`, 'error');
+      if (!disposed) notify(`无法选择文件夹：${error.message}。也可直接粘贴目录路径。`, 'error');
     } finally {
-      if (dom.gBrowseSovitsDirectory) dom.gBrowseSovitsDirectory.disabled = false;
+      browsing = false;
+      if (!disposed && dom.gBrowseSovitsDirectory) dom.gBrowseSovitsDirectory.disabled = false;
     }
   }
 
   async function save() {
-    if (!input) return;
+    if (disposed || !input) return;
     const directory = input.value.trim();
     if (!directory) {
       notify('请先选择或填写本机语音引擎目录。', 'error');
       return;
     }
+    saving = true;
     if (dom.gSaveSovitsDirectory) dom.gSaveSovitsDirectory.disabled = true;
     const savedRevision = ++revision;
     try {
@@ -68,24 +76,46 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}) {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ directory }),
       });
-      if (revision === savedRevision && input.value.trim() === directory) {
-        edited = false;
-        input.value = data.directory || directory;
-        setStatus(data.message || '目录已保存。');
-      } else {
-        setStatus('之前选择的目录已保存；当前修改尚未保存。');
+      if (!disposed) {
+        if (revision === savedRevision && input.value.trim() === directory) {
+          edited = false;
+          input.value = data.directory || directory;
+          setStatus(data.message || '目录已保存。');
+        } else {
+          setStatus('之前选择的目录已保存；当前修改尚未保存。');
+        }
+        onSaved();
+        notify('引擎目录已保存。可在「运行状态」中启动或重启引擎。', 'success');
       }
-      onSaved();
-      notify('引擎目录已保存。可在「运行状态」中启动或重启引擎。', 'success');
     } catch (error) {
-      setStatus(`保存失败：${error.message}`);
-      notify(`保存目录失败：${error.message}`, 'error');
+      if (!disposed) {
+        setStatus(`保存失败：${error.message}`);
+        notify(`保存目录失败：${error.message}`, 'error');
+      }
     } finally {
-      if (dom.gSaveSovitsDirectory) dom.gSaveSovitsDirectory.disabled = false;
+      saving = false;
+      if (!disposed && dom.gSaveSovitsDirectory) dom.gSaveSovitsDirectory.disabled = false;
     }
   }
 
   dom.gBrowseSovitsDirectory?.addEventListener('click', browse);
   dom.gSaveSovitsDirectory?.addEventListener('click', save);
-  return { load, browse, save };
+
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    if (browsing || dom.gBrowseSovitsDirectory?.disabled) {
+      if (dom.gBrowseSovitsDirectory) dom.gBrowseSovitsDirectory.disabled = false;
+    }
+    if (saving || dom.gSaveSovitsDirectory?.disabled) {
+      if (dom.gSaveSovitsDirectory) dom.gSaveSovitsDirectory.disabled = false;
+    }
+    browsing = false;
+    saving = false;
+    input?.removeEventListener('input', onInput);
+    dom.gBrowseSovitsDirectory?.removeEventListener('click', browse);
+    dom.gSaveSovitsDirectory?.removeEventListener('click', save);
+  }
+
+  return { load, browse, save, dispose };
 }
