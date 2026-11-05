@@ -9,6 +9,7 @@ import { fakeDocument, fakeClock, microtasks } from './helpers/adv_dom.mjs';
 import { createTitleScreen } from '../frontend/src/adv/title.js';
 import { tick } from './helpers/chat_stream.mjs';
 import { fetchVoiceProfiles } from '../frontend/src/controllers/voice_settings.js';
+import { openModal, closeModal } from '../frontend/src/settings_ui.js';
 
 test('model status is sampled coherently after a slow engine response and refreshes late character data on stage', async t => {
   let loaded = false, finishEngine;
@@ -251,3 +252,20 @@ test('new home actions forward only chosen settings, preserve settings snapshots
   api.previewSession('a'); api.startNewWith({ voiceProfileId: 8, advBackground: 'w/sea', advBgTime: 'day', ttsSpeed: 999 }); api.openSettings('models');
   assert.deepEqual(calls, [['preview','a'], ['new', { voiceProfileId: 8, advBackground: 'w/sea', advBgTime: 'day' }], ['settings','models']]);
 });
+
+test('advActions.subscribeSettings forwards modal open and close transitions and supports unsubscription', () => {
+  const doc = fakeDocument(); globalThis.document = doc;
+  const modalEl = doc.createElement('div');
+  const seen = [];
+  const unsubscribe = advActions.subscribeSettings(open => seen.push(open));
+  openModal(modalEl);
+  assert.deepEqual(seen, [true]);
+  closeModal(modalEl);
+  assert.deepEqual(seen, [true, false]);
+  unsubscribe();
+  openModal(modalEl);
+  assert.deepEqual(seen, [true, false], 'unsubscribed listener must not receive further events');
+  closeModal(modalEl);
+  delete globalThis.document;
+});
+

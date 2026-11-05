@@ -36,7 +36,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     button.setAttribute('aria-expanded', 'false');
     wrap.appendChild(button); tools.appendChild(wrap); pills[kind] = { wrap, button, dot, text };
   }
-  tools.appendChild(btn('home-gear', '⚙', () => actions.openSettings?.(), '设置中心'));
+  tools.appendChild(btn('home-gear', '⚙', () => { stopListen(); actions.openSettings?.(); }, '设置中心'));
   screen.appendChild(top);
   const pane = el('section', 'home-excerpt'); screen.appendChild(pane);
   const recents = el('section', 'home-recents'); screen.appendChild(recents);
@@ -102,7 +102,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     popupButton = pills[kind].button; popupButton.setAttribute('aria-expanded', 'true');
     popup = el('div', 'home-popover'); popup.setAttribute('role', 'group');
     add(popup, el('p', '', explanation(kind)), btn('home-link', '去设置', () => {
-      closePopup(); actions.openSettings?.(kind === 'chat' ? 'models' : 'inference');
+      closePopup(); stopListen(); actions.openSettings?.(kind === 'chat' ? 'models' : 'inference');
     }));
     pills[kind].wrap.appendChild(popup); focus(popup.querySelector('button'));
   }
@@ -207,6 +207,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       add(row, el('span', 'home-step-mark', done[i] ? '✓' : ''), copy);
       if (i === 1) row.appendChild(btn('home-link home-text-only', textOnly ? '✓ 暂时只用文字' : '暂时只用文字', () => { textOnly = true; renderPane(true); }));
       row.appendChild(btn(`home-step-button${done[i] ? '' : ' home-step-pending'}`, i === 2 ? '选择' : '去设置', () => {
+        stopListen();
         if (i === 2) actions.openCharacters?.(); else actions.openSettings?.(i === 0 ? 'models' : 'inference');
       }));
       pane.appendChild(row);
@@ -407,7 +408,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     // or the character list since the stage last rendered.
     if (mainId != null) preview(mainId);
     refresh().catch(() => {}); schedule();
-    unsubscribe = actions.subscribeSettings?.(() => { refresh().catch(() => {}); });
+    unsubscribe = actions.subscribeSettings?.(open => { if (open) stopListen(); else refresh().catch(() => {}); });
   }
   function close() {
     if (!opened) return;
