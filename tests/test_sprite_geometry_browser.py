@@ -5,6 +5,7 @@ from functools import partial
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 import threading
@@ -90,6 +91,7 @@ def test_browser_paints_expression_at_shared_body_coordinates(tmp_path, switch, 
                  f"--user-data-dir={profile}", f"http://127.0.0.1:{server.server_port}/"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                start_new_session=os.name != "nt",
             )
             try:
                 deadline = time.monotonic() + 20
@@ -129,7 +131,12 @@ def test_browser_paints_expression_at_shared_body_coordinates(tmp_path, switch, 
                             data = json.loads(value)
                             break
                         time.sleep(0.05)
-                    assert data is not None, "Synthetic portrait page did not complete"
+                    if data is None:
+                        diag = command("Runtime.evaluate", {
+                            "expression": "({url: location.href, readyState: document.readyState})",
+                            "returnByValue": True,
+                        })["result"].get("value")
+                    assert data is not None, f"Synthetic portrait page did not complete: page={diag}, requests={server.requests}"
                     image = command("Page.captureScreenshot", {"format": "png"})["data"]
                     (tmp_path / "portrait.png").write_bytes(base64.b64decode(image))
                     points = [[255, 55], [int(250 + 35 * scale), int(50 + 35 * scale)],
@@ -154,7 +161,16 @@ def test_browser_paints_expression_at_shared_body_coordinates(tmp_path, switch, 
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    process.terminate()
+                    if os.name == "nt":
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       check=False, creationflags=subprocess.CREATE_NO_WINDOW)
+                    else:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except OSError:
+                            pass
+                    process.kill()
                     process.wait(timeout=5)
     finally:
         server.shutdown()
