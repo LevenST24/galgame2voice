@@ -457,10 +457,14 @@ class TestSmokeWindowsUi(unittest.TestCase):
         if not browser_exe:
             self.skipTest("No supported browser found on host")
 
-        from http.server import HTTPServer, BaseHTTPRequestHandler
+        from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
         import tempfile
 
-        class _SynthServer(HTTPServer):
+        # Threaded: Chromium may open a speculative connection and send nothing on it; a
+        # single-threaded server blocks on that socket and never answers the navigation.
+        class _SynthServer(ThreadingHTTPServer):
+            daemon_threads = True
+
             def handle_error(self, request: Any, client_address: Any) -> None:
                 pass
 
