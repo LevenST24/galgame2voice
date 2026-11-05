@@ -810,4 +810,74 @@ for (const allowed of [true, false]) {
     globalThis.document = previousDocument;
   }
 }
+{
+  const doc = fakeDocument();
+  const toastRoot = doc.createElement('div');
+  toastRoot.id = 'toastRoot';
+  doc.body.appendChild(toastRoot);
+  const dom = {
+    gBtnCheckUpdate: doc.createElement('button'),
+    gBtnCheckUpdateText: doc.createElement('span'),
+    gRemoteStatusTag: doc.createElement('span'),
+    gUpdateNoticeBox: doc.createElement('div'),
+  };
+  dom.gBtnCheckUpdateText.textContent = '检查更新';
+  initUpdateManager(dom);
+  const previousDocument = globalThis.document;
+  globalThis.document = doc;
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => errors.push(args);
+  globalThis.fetch = async () => response({ error: 'fatal: unable to access github.com: connection timed out' });
+  try {
+    await handleCheckUpdate();
+    assert.equal(toastRoot.children.length, 1);
+    const toast = toastRoot.children[0];
+    assert.equal(toast.dataset.msg, '检查更新失败：暂时无法获取最新版本信息，请检查网络连接后重试');
+    assert.doesNotMatch(toast.dataset.msg, /fatal|unable to access|timed out/);
+    assert.ok(errors.some(args => args.join(' ').includes('fatal: unable to access')));
+    passed++;
+  } finally {
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    console.error = originalError;
+    globalThis.document = previousDocument;
+  }
+}
+{
+  const doc = fakeDocument();
+  const toastRoot = doc.createElement('div');
+  toastRoot.id = 'toastRoot';
+  doc.body.appendChild(toastRoot);
+  const throwingEl = doc.createElement('div');
+  Object.defineProperty(throwingEl, 'textContent', {
+    get() { throw new Error('DOM detached during update check'); },
+    set() {},
+  });
+  const dom = {
+    gDashVersionCommit: throwingEl,
+    gBtnCheckUpdate: doc.createElement('button'),
+    gBtnCheckUpdateText: doc.createElement('span'),
+    gRemoteStatusTag: doc.createElement('span'),
+  };
+  dom.gBtnCheckUpdateText.textContent = '检查更新';
+  initUpdateManager(dom);
+  const previousDocument = globalThis.document;
+  globalThis.document = doc;
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => errors.push(args);
+  try {
+    await handleCheckUpdate();
+    assert.equal(toastRoot.children.length, 1);
+    const toast = toastRoot.children[0];
+    assert.equal(toast.dataset.msg, '检查更新失败：暂时无法连接服务，请检查网络连接后重试');
+    assert.doesNotMatch(toast.dataset.msg, /DOM detached/);
+    assert.ok(errors.some(args => args.join(' ').includes('DOM detached')));
+    passed++;
+  } finally {
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    console.error = originalError;
+    globalThis.document = previousDocument;
+  }
+}
 console.log(`Runtime recovery: ${passed} scenarios passed`);

@@ -265,7 +265,8 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
       } catch { /* Keep the binding when its existence cannot be checked. */ }
     }
     if (_callbacks.isHomeOpen?.()) return;
-    showToast(`音色切换失败: ${e.message || e}`, 'error', _callbacks.onOpenEngineStatus ? {
+    console.error('音色切换失败:', e);
+    showToast('音色切换失败：请打开「运行状态」确认语音引擎正常后重试', 'error', _callbacks.onOpenEngineStatus ? {
       actionLabel: '检查语音状态',
       onAction: () => _callbacks.onOpenEngineStatus(),
     } : null);
@@ -522,7 +523,8 @@ export async function createCustomVoice() {
     const binding = state.sessions.includes(origin) ? `，已绑定到「${origin.title}」` : '，可在“角色与会话”中选择';
     showToast(`音色「${data.name}」已创建${binding}${note}`, note ? 'info' : 'success');
   } catch (e) {
-    showToast(`音色创建失败: ${e.message || e}`, 'error');
+    console.error('音色创建失败:', e);
+    showToast('音色创建失败：当前输入已保留，请检查参考音频与模型文件后重试', 'error');
   } finally {
     _dom.sCvCreate.disabled = false;
   }
@@ -546,7 +548,8 @@ export async function handleRescanCharacters() {
       showToast(count > 0 ? `已扫描并同步 ${count} 个角色包` : '已完成扫描（未发现新的角色包文件夹）', 'success');
     }
   } catch (e) {
-    showToast(`扫描角色包失败: ${e.message || e}`, 'error');
+    console.error('扫描角色包失败:', e);
+    showToast('扫描角色包失败：现有角色包列表保持不变，请检查角色包目录后重试', 'error');
   } finally {
     if (_dom.sVoiceRescan) _dom.sVoiceRescan.disabled = false;
   }
@@ -600,7 +603,8 @@ export async function deleteVoiceProfile() {
     ensureSessionVoice(getActive(), { silent: true });
     showToast(`音色「${p ? p.name : id}」已删除${bindingNote}`, bindingNote.startsWith('；') ? 'info' : 'success');
   } catch (e) {
-    showToast(`删除失败: ${e.message || e}`, 'error');
+    console.error('音色删除失败:', e);
+    showToast('音色删除失败：该音色已被保留，请稍后重试；若仍失败，请打开「运行状态」检查服务', 'error');
   } finally {
     _dom.sVoiceDelete.disabled = false;
   }

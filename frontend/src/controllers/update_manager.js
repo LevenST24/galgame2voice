@@ -173,10 +173,12 @@ export async function handleCheckUpdate() {
       showToast('当前已是最新版本', 'success');
       if (_dom.gUpdateNoticeBox) _dom.gUpdateNoticeBox.classList.remove('hidden');
     } else if (data && data.error) {
-      showToast(`检查更新失败: ${data.error}`, 'error');
+      console.error('检查更新失败:', data.error);
+      showToast('检查更新失败：暂时无法获取最新版本信息，请检查网络连接后重试', 'error');
     }
   } catch (err) {
-    showToast(`检查更新发生异常: ${err.message}`, 'error');
+    console.error('检查更新发生异常:', err);
+    showToast('检查更新失败：暂时无法连接服务，请检查网络连接后重试', 'error');
   } finally {
     _dom.gBtnCheckUpdate.disabled = false;
     if (_dom.gBtnCheckUpdateText) _dom.gBtnCheckUpdateText.textContent = originalText;

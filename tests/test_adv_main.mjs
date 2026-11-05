@@ -63,7 +63,9 @@ test('continuing the same session after silent home failure retries once and rep
   assert.equal(h.toasts.children.length, 0);
   h.home.element.querySelector('.home-continue').click(); await tick();
   assert.deepEqual(h.requests, [1, 1]); await h.finish();
-  assert.equal(h.toasts.children.length, 1); assert.match(h.toasts.children[0].dataset.msg, /音色切换失败: 语音模型尚未加载/);
+  assert.equal(h.toasts.children.length, 1);
+  assert.match(h.toasts.children[0].dataset.msg, /音色切换失败：请打开「运行状态」确认语音引擎正常后重试/);
+  assert.doesNotMatch(h.toasts.children[0].dataset.msg, /语音模型尚未加载/);
 });
 
 test('home visibility callback suppresses session-settings voice results and uses visibility when results arrive', async t => {
