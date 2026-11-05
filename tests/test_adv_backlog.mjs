@@ -8,7 +8,7 @@ import { decide, createShortcuts } from '../frontend/src/adv/shortcuts.js';
 import { createConversation } from '../frontend/src/conversation.js';
 import { createLinePlayer } from '../frontend/src/adv/line_player.js';
 import { clearMemAudioCache } from '../frontend/src/cache.js';
-import { DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
+import { DEFAULT_SESSION_SETTINGS, GREETING } from '../frontend/src/store.js';
 import { fakeDocument, fakeClock, Element, microtasks } from './helpers/adv_dom.mjs';
 import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
 
@@ -1652,4 +1652,94 @@ test('LOG assistant message with explicit empty lines array preserves text and a
   assert.equal(replay.disabled, true, 'expired replay is disabled');
   const regenBtn = entry.querySelector('.adv-log-regenerate-btn');
   assert.equal(regenBtn.hidden, true, 'repair button must be hidden for explicit empty lines array');
+});
+
+test('a line with noVoice flag does not render 语音 or 重新生成 buttons in LOG', () => {
+  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+  const now = Date.now();
+  const session = {
+    id: 's_lines',
+    settings: { ...DEFAULT_SESSION_SETTINGS },
+    messages: [
+      {
+        id: 'm_split',
+        role: 'assistant',
+        ts: now,
+        lines: [
+          { index: 0, zh: '有语音句子', ja: '声あり', audio: { status: 'skipped' } },
+          { index: 1, zh: '无语音句子', ja: '声なし', audio: { status: 'skipped' }, noVoice: true },
+        ],
+      },
+      {
+        id: 'm_entire_no_voice',
+        role: 'assistant',
+        ts: now,
+        noVoice: true,
+        lines: [
+          { index: 0, zh: '整条消息无语音', ja: '声なしメッセージ', audio: { status: 'skipped' } },
+        ],
+      },
+    ],
+  };
+
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => DEFAULT_SESSION_SETTINGS,
+    getCharacter: () => ({ name: '角色' }),
+    voiceEnabled: () => true,
+    wallNow: () => now,
+    regenerateLineAudio: async () => ({ persisted: true }),
+  });
+
+  const findEntry = (msgId, lineIndex) => [...log.element.querySelectorAll('.adv-log-entry')].find(el =>
+    el.dataset.msgId === String(msgId) && el.dataset.lineIndex === String(lineIndex)
+  );
+
+  const entry0 = findEntry('m_split', 0);
+  const entry1 = findEntry('m_split', 1);
+  const entryEntire = findEntry('m_entire_no_voice', 0);
+
+  assert.ok(entry0.querySelector('.adv-log-replay-btn'), 'line 0 has replay button');
+  assert.ok(entry0.querySelector('.adv-log-regenerate-btn'), 'line 0 has regenerate button');
+
+  assert.equal(entry1.querySelector('.adv-log-replay-btn'), null, 'noVoice line 1 has no replay button');
+  assert.equal(entry1.querySelector('.adv-log-regenerate-btn'), null, 'noVoice line 1 has no regenerate button');
+
+  assert.equal(entryEntire.querySelector('.adv-log-replay-btn'), null, 'noVoice msg has no replay button');
+  assert.equal(entryEntire.querySelector('.adv-log-regenerate-btn'), null, 'noVoice msg has no regenerate button');
+
+  log.destroy();
+});
+
+test('the welcome line, stored without split lines, shows no 语音 or 重新生成 button in LOG', () => {
+  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+  const now = Date.now();
+  const session = {
+    id: 's_welcome',
+    settings: { ...DEFAULT_SESSION_SETTINGS },
+    messages: [
+      { id: 'greet', role: 'assistant', content: GREETING, noVoice: true, ts: now },
+      { id: 'old_reply', role: 'assistant', content: '旧版回复', japanese: '古い返事', ts: now },
+    ],
+  };
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => DEFAULT_SESSION_SETTINGS,
+    getCharacter: () => ({ name: '角色' }),
+    voiceEnabled: () => true,
+    wallNow: () => now,
+    regenerateLineAudio: async () => ({ persisted: true }),
+  });
+  const entryOf = msgId => [...log.element.querySelectorAll('.adv-log-entry')].find(el => el.dataset.msgId === msgId);
+
+  const welcome = entryOf('greet');
+  assert.ok(welcome, 'the welcome line is listed');
+  assert.equal(welcome.querySelector('.adv-log-replay-btn'), null, 'welcome line has no 语音 button');
+  assert.equal(welcome.querySelector('.adv-log-regenerate-btn'), null, 'welcome line has no 重新生成 button');
+
+  const reply = entryOf('old_reply');
+  assert.ok(reply.querySelector('.adv-log-replay-btn'), 'an old reply keeps its 语音 button');
+  assert.equal(reply.querySelector('.adv-log-regenerate-btn').hidden, false, 'an old reply without audio still offers regeneration');
+
+  log.destroy();
 });

@@ -310,8 +310,10 @@ export function createBacklog(container, deps = {}) {
     const regenerateBtn = doc.createElement('button');
     regenerateBtn.type = 'button';
     regenerateBtn.className = 'adv-log-regenerate-btn';
+    const hasVoice = !msg.noVoice && !line.noVoice;
 
     function refreshAudioState() {
+      if (!hasVoice) return;
       updateReplayButtonState(replayBtn, line, msg, statusSpan);
       refreshRepairButton();
       const note = regenerationFeedback.get(lineKey);
@@ -381,11 +383,12 @@ export function createBacklog(container, deps = {}) {
       }
     };
 
-    rightControls.appendChild(replayBtn);
-    rightControls.appendChild(regenerateBtn);
-
     header.appendChild(speakerEl);
-    header.appendChild(rightControls);
+    if (hasVoice) {
+      rightControls.appendChild(replayBtn);
+      rightControls.appendChild(regenerateBtn);
+      header.appendChild(rightControls);
+    }
 
     const textWrap = doc.createElement('div');
     textWrap.className = 'adv-log-text-wrap';
@@ -447,6 +450,8 @@ export function createBacklog(container, deps = {}) {
     regenerateBtn.type = 'button';
     regenerateBtn.className = 'adv-log-regenerate-btn';
 
+    const hasVoice = !msg.noVoice;
+
     let repairedLine = Array.isArray(msg.lines) && msg.lines.length > 0 ? msg.lines[0] : null;
 
     const { lineKey, refreshRepairButton } = bindRegenerateControl({
@@ -486,6 +491,7 @@ export function createBacklog(container, deps = {}) {
     }
 
     function refreshAudioState() {
+      if (!hasVoice) return;
       if (!repairedLine && Array.isArray(msg.lines) && msg.lines.length > 0) {
         repairedLine = msg.lines[0];
         entryEl.dataset.lineIndex = '0';
@@ -566,9 +572,11 @@ export function createBacklog(container, deps = {}) {
     };
 
     header.appendChild(speakerEl);
-    rightControls.appendChild(replayBtn);
-    rightControls.appendChild(regenerateBtn);
-    header.appendChild(rightControls);
+    if (hasVoice) {
+      rightControls.appendChild(replayBtn);
+      rightControls.appendChild(regenerateBtn);
+      header.appendChild(rightControls);
+    }
 
     const textWrap = doc.createElement('div');
     textWrap.className = 'adv-log-text-wrap';
