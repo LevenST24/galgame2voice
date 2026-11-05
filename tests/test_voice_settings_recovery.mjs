@@ -834,6 +834,58 @@ const models = {
     globalThis.document = previousDocument;
   }
 }
+{
+  // (a) Failed voice switch clears loaded badge and allows deleting the voice;
+  // (b) Sole voice profile in catalog can be deleted directly.
+  const { first, dom } = setup();
+  dom.sVoiceActive = element();
+  dom.sVoiceDelete = element();
+  initVoiceSettings(dom);
+  globalThis.window = { confirm: () => true };
+
+  const deletedIds = [];
+  let catalog = [
+    { id: 1, name: '损坏音色', system_prompt: '' },
+    { id: 2, name: '备用音色', system_prompt: '' },
+  ];
+  let serverActiveId = 1;
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles' && (!options.method || options.method === 'GET')) {
+      return response({ profiles: catalog, active_profile_id: serverActiveId });
+    }
+    if (url === '/api/voice/switch' && options.method === 'POST') {
+      return response({ detail: '无法连接 GPT-SoVITS 语音引擎' }, 502);
+    }
+    if (url.startsWith('/api/voice/profiles/') && options.method === 'DELETE') {
+      const id = Number(url.split('/').pop());
+      deletedIds.push(id);
+      catalog = catalog.filter(p => p.id !== id);
+      serverActiveId = catalog[0]?.id ?? null;
+      return response({ status: 'deleted' });
+    }
+    return response({});
+  };
+
+  first.settings.voiceProfileId = 1;
+  await ensureSessionVoice(first, { silent: true });
+  await openSessionSettings(); await tick();
+  assert.equal(dom.sVoiceActive.textContent, '', 'switch failure must not mark fallback profile as currently loaded');
+  assert.equal(
+    dom.sVoice.children.some(opt => String(opt.textContent).includes('当前加载')),
+    false,
+    'dropdown options must not show (当前加载) after switch failure',
+  );
+  dom.sVoice.value = '1';
+  await dom.sVoiceDelete.click();
+  assert.deepEqual(deletedIds, [1], 'failed profile must be deletable when engine is offline');
+
+  // Now only profile 2 remains in the catalog; fresh init simulates normal state with a single voice.
+  initVoiceSettings(dom);
+  first.settings.voiceProfileId = 2;
+  await openSessionSettings(); await tick();
+  dom.sVoice.value = '2';
+  await dom.sVoiceDelete.click();
+  assert.deepEqual(deletedIds, [1, 2], 'sole remaining voice profile must be deletable without another voice to switch to');
+  passed++;
+}
 console.log(`Voice settings recovery: ${passed} scenarios passed`);
-
-
