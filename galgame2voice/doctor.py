@@ -39,6 +39,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from galgame2voice.config import Settings, get_settings
 from galgame2voice.database.session import get_database_path
 from galgame2voice.security.auth import is_auth_disabled
+from galgame2voice.services.sovits_endpoint import resolve_sovits_url
 from galgame2voice.utils.audio_converter import find_ffmpeg
 from galgame2voice.utils.http_client import PROXY_ENV_HINT, create_async_client, proxy_environment_is_usable
 
@@ -321,13 +322,18 @@ def _parse_admin_ids(raw: str) -> List[str]:
     return [item.strip() for item in (raw or "").split(",") if item.strip()]
 
 
-def check_telegram(settings: Settings, db_enabled: Optional[bool], admin_ids: str = "") -> List[Check]:
+def check_telegram(
+    settings: Settings,
+    db_enabled: Optional[bool],
+    admin_ids: str = "",
+    db_token: Optional[str] = None,
+) -> List[Check]:
     enabled = bool(db_enabled) if db_enabled is not None else bool(settings.telegram_enabled)
     if not enabled:
         return [Check("Telegram", SKIP, "disabled")]
 
     findings: List[Check] = []
-    token = (settings.telegram_token or "").strip()
+    token = (db_token or "").strip() or (settings.telegram_token or "").strip()
     if not token:
         findings.append(
             Check(
@@ -413,33 +419,52 @@ async def check_gpt_sovits(base_url: str, *, offline: bool = False) -> List[Chec
 # ---------------------------------------------------------------------------
 
 
-async def _load_database_state(settings: Settings) -> Tuple[Optional[bool], Optional[List[Any]], str]:
-    """Reads telegram_enabled, providers and the admin whitelist from the DB.
+async def _load_database_state(
+    settings: Settings,
+) -> Tuple[Optional[bool], Optional[List[Any]], str, Optional[str], Optional[str]]:
+    """Reads telegram_enabled, providers, admin whitelist, telegram_bot_token,
+    and gpt_sovits_url from the DB.
 
-    Returns None for the first two when the database is unavailable.
+    Returns None for DB-derived fields when the database is unavailable.
     """
-    if not await asyncio.to_thread(Path(get_database_path()).exists):
-        return None, None, ""
+    db_path = get_database_path()
+    if not await asyncio.to_thread(Path(db_path).exists):
+        return None, None, "", None, None
     try:
         from galgame2voice.database import crud
         from galgame2voice.database.session import get_db
 
-        async with get_db(get_database_path()) as connection:
+        async with get_db(db_path) as connection:
             row = await crud.get_settings_raw(connection)
             providers = await crud.list_providers(connection)
+        tg_token = (row.telegram_bot_token or "").strip() or None
+        db_sovits_url = (row.gpt_sovits_url or "").strip() or None
         return (
             bool(getattr(row, "telegram_enabled", False)),
             list(providers),
             str(getattr(row, "telegram_admin_ids", "") or ""),
+            tg_token,
+            db_sovits_url,
         )
     except Exception:
-        return None, None, ""
+        return None, None, "", None, None
 
 
 async def collect_checks(settings: Optional[Settings] = None, *, offline: bool = False) -> List[Check]:
     """Runs every check and returns the findings in report order."""
     settings = settings or get_settings()
-    telegram_enabled, providers, admin_ids = await _load_database_state(settings)
+    (
+        telegram_enabled,
+        providers,
+        admin_ids,
+        telegram_bot_token,
+        db_sovits_url,
+    ) = await _load_database_state(settings)
+
+    effective_sovits_url = resolve_sovits_url(
+        db_url=db_sovits_url,
+        settings_url=str(getattr(settings, "gpt_sovits_base_url", "") or ""),
+    ).base_url
 
     checks: List[Check] = []
     checks.extend(check_runtime())
@@ -450,8 +475,8 @@ async def collect_checks(settings: Optional[Settings] = None, *, offline: bool =
     checks.extend(check_proxy_environment())
     checks.extend(check_characters(settings))
     checks.extend(check_providers(providers))
-    checks.extend(check_telegram(settings, telegram_enabled, admin_ids))
-    checks.extend(await check_gpt_sovits(str(getattr(settings, "gpt_sovits_base_url", "") or ""), offline=offline))
+    checks.extend(check_telegram(settings, telegram_enabled, admin_ids, db_token=telegram_bot_token))
+    checks.extend(await check_gpt_sovits(effective_sovits_url, offline=offline))
     return checks
 
 

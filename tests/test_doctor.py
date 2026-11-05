@@ -547,3 +547,84 @@ def test_cli_entrypoint_dispatches_doctor_without_starting_the_server(monkeypatc
 
     assert excinfo.value.code == 0
     assert seen["argv"] == ["--offline"]
+
+
+def _setup_doctor_test_db(
+    tmp_path,
+    monkeypatch,
+    *,
+    tg_token: str = "123456:ABC-DEF",
+    sovits_url: str = "http://127.0.0.1:19880",
+):
+    import sqlite3
+
+    db_path = tmp_path / "data" / "galgame2voice.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute(
+            """
+            CREATE TABLE providers (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                base_url TEXT
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE settings (
+                id INTEGER PRIMARY KEY,
+                active_provider_id TEXT,
+                telegram_enabled INTEGER,
+                telegram_bot_token TEXT,
+                telegram_admin_ids TEXT,
+                gpt_sovits_url TEXT
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO settings (
+                id, active_provider_id, telegram_enabled,
+                telegram_bot_token, telegram_admin_ids, gpt_sovits_url
+            ) VALUES (1, 'deepseek', 1, ?, '987654321', ?);
+            """,
+            (tg_token, sovits_url),
+        )
+        conn.commit()
+
+    monkeypatch.delenv("GALGAME2VOICE_TELEGRAM_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_TOKEN", raising=False)
+    monkeypatch.delenv("GALGAME2VOICE_GPT_SOVITS_BASE_URL", raising=False)
+    monkeypatch.delenv("GPT_SOVITS_BASE_URL", raising=False)
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db_path))
+    monkeypatch.setenv("GALGAME_DB_PATH", str(db_path))
+    get_settings.cache_clear()
+    return get_settings()
+
+
+async def test_doctor_respects_db_saved_telegram_token(tmp_path, monkeypatch):
+    settings = _setup_doctor_test_db(tmp_path, monkeypatch)
+    checks = await doctor.collect_checks(settings, offline=True)
+    results = {c.name: c for c in checks}
+    assert results["Telegram"].status == doctor.OK
+    assert results["Telegram"].detail == "bot token configured"
+
+
+async def test_doctor_respects_db_saved_sovits_url(tmp_path, monkeypatch):
+    settings = _setup_doctor_test_db(tmp_path, monkeypatch)
+    probed_urls = []
+
+    class _RecordingFakeClient(_FakeClient):
+        async def get(self, url):
+            probed_urls.append(url)
+            return _FakeResponse(200)
+
+    monkeypatch.setattr(doctor, "create_async_client", lambda **kwargs: _RecordingFakeClient())
+    checks = await doctor.collect_checks(settings, offline=False)
+    results = {c.name: c for c in checks}
+    assert results["GPT-SoVITS"].status == doctor.OK
+    assert "19880" in results["GPT-SoVITS"].detail
+    assert probed_urls == ["http://127.0.0.1:19880/control"]
