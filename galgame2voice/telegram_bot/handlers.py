@@ -213,7 +213,7 @@ class TelegramBotHandlers:
     ):
         self.db_path = db_path
         self.chat_service = chat_service or ChatService(db_path=db_path)
-        self.tts_service = tts_service or TtsService()
+        self.tts_service = tts_service or TtsService(db_path=db_path)
         # Pending voice synthesis tasks keyed like sessions (resolve_session_key), so in a
         # group each member only ever cancels their own voice note.
         self.user_tasks: dict[str, asyncio.Task] = {}
@@ -812,6 +812,10 @@ class TelegramBotHandlers:
             profile_id = profile.id if profile else 1
             char_name = profile.name if profile else "Character"
             base_tts_options = await self._load_base_tts_options(conn)
+            if profile is not None:
+                base_tts_options.setdefault("voice_profile_id", profile.id)
+                base_tts_options.setdefault("character_name", profile.name)
+
             try:
                 if hasattr(self.chat_service, "memory_service"):
                     await self.chat_service.memory_service.process_user_message(
