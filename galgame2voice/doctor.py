@@ -172,7 +172,9 @@ def check_database(settings: Settings) -> List[Check]:
         ]
 
     try:
-        connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        connection = sqlite3.connect(
+            f"{Path(db_path).resolve().as_uri()}?mode=ro", uri=True
+        )
     except sqlite3.Error as exc:
         return [
             Check(

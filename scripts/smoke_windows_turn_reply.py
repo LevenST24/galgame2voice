@@ -434,7 +434,7 @@ def verify_sqlite_turn_cardinality(
     repair_audio_url: str,
 ) -> dict[str, Any]:
     assert db_path.is_file(), f"Database file missing: {db_path}"
-    conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
     try:
         cur = conn.cursor()
         cur.execute("PRAGMA user_version;")

@@ -28,6 +28,7 @@ import logging
 import os
 import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlparse
 
 logger = logging.getLogger("galgame2voice.services.sovits_endpoint")
@@ -190,7 +191,9 @@ def _read_db_sovits_url_sync(db_path: str | None) -> str | None:
         if not os.path.isfile(db_path):
             return None
         # Read-only open: never creates or mutates the database file.
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        conn = sqlite3.connect(
+            f"{Path(db_path).resolve().as_uri()}?mode=ro", uri=True, timeout=5.0
+        )
         try:
             conn.row_factory = sqlite3.Row
             try:

@@ -277,6 +277,49 @@ class TestSmokeWindowsUi(unittest.TestCase):
                 )
             self.assertIn("Expected exactly 2 total messages", str(ctx.exception))
 
+    def test_verify_sqlite_turn_cardinality_handles_special_characters_in_path(self) -> None:
+        """Paths containing '#' or '%' must not truncate URI or create ghost files in verify_sqlite_turn_cardinality."""
+        import sqlite3
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            special_dir = Path(tmp_dir) / "sub#1%20dir"
+            special_dir.mkdir(parents=True, exist_ok=True)
+            db_file = special_dir / "test.db"
+            conn = sqlite3.connect(str(db_file))
+            try:
+                conn.execute("PRAGMA user_version = 7;")
+                conn.execute(
+                    "CREATE TABLE messages ("
+                    "id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, "
+                    "lines_json TEXT, reply_to_message_id INTEGER);"
+                )
+                audio_data = json.dumps([{"index": 0, "audio": {"chunks": [{"audio_url": "/api/audio/repair.wav"}]}}])
+                conn.execute(
+                    "INSERT INTO messages (id, session_id, role, lines_json, reply_to_message_id) "
+                    "VALUES (1, 's1', 'user', '[]', NULL);"
+                )
+                conn.execute(
+                    "INSERT INTO messages (id, session_id, role, lines_json, reply_to_message_id) "
+                    "VALUES (2, 's1', 'assistant', ?, 1);",
+                    (audio_data,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            res = verify_sqlite_turn_cardinality(
+                db_path=db_file,
+                session_id="s1",
+                u_id=1,
+                assistant_id=2,
+                l_idx=0,
+                repair_audio_url="/api/audio/repair.wav",
+            )
+            self.assertEqual(res["total_messages"], 2)
+            stray_file = Path(tmp_dir) / "sub"
+            self.assertFalse(stray_file.exists(), f"Stray file was created at {stray_file}")
+
     def test_direct_script_execution_resolves_browser_ui_without_pythonpath(self) -> None:
         """Regression test: running smoke script directly sets sys.path[0] to scripts/ without parent PYTHONPATH."""
         script_path = REPO_ROOT / "scripts" / "smoke_windows_turn_reply.py"

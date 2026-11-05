@@ -182,6 +182,107 @@ def test_check_database_flags_a_corrupt_file(tmp_path, monkeypatch):
     assert check.status == doctor.FAIL
 
 
+@pytest.mark.parametrize(
+    "sub_dir,stray_prefix",
+    [
+        ("dir#1%20test", "dir"),
+        ("Gal#1", "Gal"),
+        ("100%20Complete", None),
+    ],
+)
+async def test_check_database_and_endpoint_with_special_chars_in_path(
+    tmp_path, monkeypatch, sub_dir, stray_prefix
+):
+    """Paths containing '#' or '%' must not truncate URI or create ghost files."""
+    import sqlite3
+    from galgame2voice.services.sovits_endpoint import (
+        _read_db_sovits_url_sync,
+        resolve_effective_sovits_endpoint,
+        resolve_effective_sovits_endpoint_sync,
+    )
+
+    special_dir = tmp_path / sub_dir
+    special_dir.mkdir(parents=True, exist_ok=True)
+    db_path = special_dir / "galgame2voice.db"
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("CREATE TABLE settings (id INTEGER PRIMARY KEY, gpt_sovits_url TEXT);")
+        conn.execute("INSERT INTO settings (id, gpt_sovits_url) VALUES (1, ?);", ("http://127.0.0.1:9882",))
+        conn.commit()
+
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db_path))
+    monkeypatch.setenv("GALGAME_DB_PATH", str(db_path))
+    monkeypatch.delenv("GALGAME2VOICE_GPT_SOVITS_BASE_URL", raising=False)
+    monkeypatch.delenv("GPT_SOVITS_BASE_URL", raising=False)
+    get_settings.cache_clear()
+
+    # 1. Sync endpoint read must resolve db URL without creating a stray file
+    db_url = _read_db_sovits_url_sync(str(db_path))
+    endpoint_sync = resolve_effective_sovits_endpoint_sync()
+
+    # Before fix, '#' truncated the URI path and mode=ro, creating stray files
+    if stray_prefix:
+        stray_file = tmp_path / stray_prefix
+        assert not stray_file.exists(), f"Stray file was created at {stray_file}"
+
+    assert db_url == "http://127.0.0.1:9882"
+    assert endpoint_sync.base_url == "http://127.0.0.1:9882"
+    assert endpoint_sync.source == "db"
+
+    # 2. Async endpoint resolution
+    endpoint_async = await resolve_effective_sovits_endpoint()
+    assert endpoint_async.base_url == "http://127.0.0.1:9882"
+    assert endpoint_async.source == "db"
+
+    # 3. doctor.check_database must succeed with OK and WAL enabled
+    (check,) = doctor.check_database(get_settings())
+    assert check.status == doctor.OK
+    assert "WAL enabled" in check.detail
+
+    if stray_prefix:
+        stray_file = tmp_path / stray_prefix
+        assert not stray_file.exists(), f"Stray file was created by doctor at {stray_file}"
+
+
+async def test_project_root_with_special_chars_resolves_endpoint_and_doctor(
+    tmp_path, monkeypatch
+):
+    """When project root itself contains special characters (#, %), default db resolution must work."""
+    import sqlite3
+    from galgame2voice.services.sovits_endpoint import resolve_effective_sovits_endpoint_sync
+
+    project_root = tmp_path / "Gal#1%20Suite" / "app"
+    data_dir = project_root / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    db_path = data_dir / "galgame2voice.db"
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("CREATE TABLE settings (id INTEGER PRIMARY KEY, gpt_sovits_url TEXT);")
+        conn.execute("INSERT INTO settings (id, gpt_sovits_url) VALUES (1, ?);", ("http://127.0.0.1:9884",))
+        conn.commit()
+
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(project_root))
+    monkeypatch.delenv("GALGAME2VOICE_DB_PATH", raising=False)
+    monkeypatch.delenv("GALGAME_DB_PATH", raising=False)
+    monkeypatch.delenv("DATA_DIR_NAME", raising=False)
+    monkeypatch.delenv("GALGAME2VOICE_GPT_SOVITS_BASE_URL", raising=False)
+    monkeypatch.delenv("GPT_SOVITS_BASE_URL", raising=False)
+    get_settings.cache_clear()
+
+    endpoint = resolve_effective_sovits_endpoint_sync()
+    assert endpoint.base_url == "http://127.0.0.1:9884"
+    assert endpoint.source == "db"
+
+    (check,) = doctor.check_database(get_settings())
+    assert check.status == doctor.OK
+    assert "WAL enabled" in check.detail
+
+    stray_file = tmp_path / "Gal"
+    assert not stray_file.exists(), f"Stray file was created at {stray_file}"
+
+
 def test_check_ffmpeg_warns_when_missing(monkeypatch):
     monkeypatch.setattr(doctor, "find_ffmpeg", lambda *a, **k: None)
 
