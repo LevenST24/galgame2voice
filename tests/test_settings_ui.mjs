@@ -22,8 +22,10 @@ class Node {
   getClientRects() { return this.closest('[inert], [hidden], .hidden') ? [] : [{}]; }
   hasAttribute(name) { return name in this.attrs; }
   addEventListener(name, callback) { this.handlers[name] = callback; }
+  removeEventListener(name) { delete this.handlers[name]; }
   click() { this.handlers.click?.(); }
   querySelector() { return null; }
+  querySelectorAll() { return []; }
 }
 const app = new Node();
 let handler;
@@ -41,11 +43,37 @@ function dialog() {
   first.addEventListener('click', () => closeModal(overlay));
   return { overlay, modal, first, last };
 }
-const key = (key, shiftKey = false) => {
-  const event = { key, shiftKey, prevented: false, stopped: false,
+const key = (key, shiftKey = false, extra = {}) => {
+  const event = { key, shiftKey, prevented: false, stopped: false, ...extra,
     preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; } };
   handler(event); return event;
 };
+
+test('Escape key during IME composition (isComposing or keyCode 229) does not close the dialog', () => {
+  const d = dialog(); openModal(d.overlay);
+  assert.equal(hasOpenModal(), true);
+
+  const eventComposing = key('Escape', false, { isComposing: true });
+  assert.equal(eventComposing.prevented, false);
+  assert.equal(eventComposing.stopped, false);
+  assert.equal(hasOpenModal(), true, 'Modal should remain open when isComposing is true');
+
+  const event229 = key('Escape', false, { keyCode: 229 });
+  assert.equal(event229.prevented, false);
+  assert.equal(event229.stopped, false);
+  assert.equal(hasOpenModal(), true, 'Modal should remain open when keyCode is 229');
+
+  const eventTabComposing = key('Tab', false, { isComposing: true });
+  assert.equal(eventTabComposing.prevented, false, 'Tab should not prevent default when isComposing is true');
+
+  const eventTab229 = key('Tab', false, { keyCode: 229 });
+  assert.equal(eventTab229.prevented, false, 'Tab should not prevent default when keyCode is 229');
+
+  const eventNormal = key('Escape');
+  assert.equal(eventNormal.prevented, true);
+  assert.equal(eventNormal.stopped, true);
+  assert.equal(hasOpenModal(), false, 'Modal should close on normal Escape');
+});
 
 test('closing a dialog restores its trigger and releases the background', () => {
   const trigger = new Node(); trigger.focus();
@@ -81,4 +109,84 @@ test('hidden and disabled controls are excluded from the focus loop', () => {
   d.first.hidden = true;
   assert.equal(key('Tab').prevented, true);
   closeModal(d.overlay);
+});
+
+test('auth token input ignores Enter and Escape during IME composition and preserves normal submit and cancel', async () => {
+  const modal = new Node(), input = new Node(modal), saveBtn = new Node(modal);
+  modal.id = 'tokenModal';
+  input.id = 'consoleTokenInput';
+  saveBtn.id = 'tokenModalSave';
+  input.value = 'test-token';
+
+  const oldGetElementById = document.getElementById;
+  const hadWindow = 'window' in globalThis;
+  const oldWindow = globalThis.window;
+  document.getElementById = id => {
+    if (id === 'tokenModal') return modal;
+    if (id === 'consoleTokenInput') return input;
+    if (id === 'tokenModalSave') return saveBtn;
+    return oldGetElementById(id);
+  };
+  globalThis.window = {
+    sessionStorage: {
+      _store: {},
+      getItem(k) { return this._store[k] || ''; },
+      setItem(k, v) { this._store[k] = String(v); },
+      removeItem(k) { delete this._store[k]; },
+    },
+  };
+
+  const { promptConsoleToken } = await import('../frontend/src/auth.js');
+
+  try {
+    let resolved = false;
+    let p = promptConsoleToken().then(val => { resolved = true; return val; });
+
+    // 1. Escape with isComposing
+    const imeEscape1 = { key: 'Escape', isComposing: true, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    input.handlers.keydown(imeEscape1);
+    assert.equal(imeEscape1.defaultPrevented, false);
+    assert.equal(resolved, false);
+
+    // 2. Escape with keyCode 229
+    const imeEscape2 = { key: 'Escape', keyCode: 229, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    input.handlers.keydown(imeEscape2);
+    assert.equal(imeEscape2.defaultPrevented, false);
+    assert.equal(resolved, false);
+
+    // 3. Enter with isComposing
+    const imeEnter1 = { key: 'Enter', isComposing: true, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    input.handlers.keydown(imeEnter1);
+    assert.equal(imeEnter1.defaultPrevented, false);
+    assert.equal(resolved, false);
+
+    // 4. Enter with keyCode 229
+    const imeEnter2 = { key: 'Enter', keyCode: 229, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    input.handlers.keydown(imeEnter2);
+    assert.equal(imeEnter2.defaultPrevented, false);
+    assert.equal(resolved, false);
+
+    // 5. Normal Escape cancels
+    const normalEscape = { key: 'Escape', defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    input.handlers.keydown(normalEscape);
+    assert.equal(normalEscape.defaultPrevented, true);
+    const resultCancel = await p;
+    assert.equal(resultCancel, null);
+    assert.equal(resolved, true);
+
+    // 6. Next prompt: normal Enter submits token
+    resolved = false;
+    p = promptConsoleToken().then(val => { resolved = true; return val; });
+    input.value = 'saved-token-123';
+    const normalEnter = { key: 'Enter', defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    input.handlers.keydown(normalEnter);
+    assert.equal(normalEnter.defaultPrevented, true);
+    const resultSave = await p;
+    assert.equal(resultSave, 'saved-token-123');
+    assert.equal(resolved, true);
+  } finally {
+    document.getElementById = oldGetElementById;
+    if (hadWindow) globalThis.window = oldWindow;
+    else delete globalThis.window;
+  }
 });
