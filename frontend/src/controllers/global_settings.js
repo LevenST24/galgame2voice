@@ -1,54 +1,62 @@
-// Global Settings Controller: LLM Providers Coordinator, Hardware Telemetry, Telegram, Audio Cache
+// Global Settings Controller: Coordinator & compatibility facade for Providers, Telemetry, Engine, Telegram
 import {
-  getErrorMessage,
   requestJson,
 } from '../api.js';
 import { state, saveGlobal } from '../store.js';
 import { showToast } from '../ui.js';
-import { clearMemAudioCache } from '../cache.js';
 import { initEngineDirectory } from './engine_directory.js';
-import { waitForEngine } from './engine_recovery.js';
 import { runSettingsMutation, saveConfirmedConfig } from './config_recovery.js';
 import {
   createProviderSettingsController,
-  PROVIDER_FIELDS,
 } from './provider_settings.js';
-import { initSettingsTabs, onModalChange } from '../settings_ui.js';
+import {
+  createTelemetrySettingsController,
+} from './telemetry_settings.js';
+import {
+  createEngineSettingsController,
+} from './engine_settings.js';
+import {
+  createTelegramSettingsController,
+} from './telegram_settings.js';
+import { initSettingsTabs } from '../settings_ui.js';
 
-const $ = (id) => document.getElementById(id);
-const UNCONFIRMED_RESTART_MESSAGE = '重启请求结果未确认；当前引擎已在线。计算方式以「启动计算方式」显示的状态为准。';
+const $ = (id) => (typeof document !== 'undefined' ? document.getElementById?.(id) : null);
 
 let _dom = {};
 let _callbacks = {};
 let providerController = null;
+let telemetryController = null;
+let engineController = null;
+let telegramController = null;
+let engineDirectory = null;
+let tabsCleanup = null;
+let coordinatorCleanups = [];
 let settingsCoordinatorRevision = 0;
 let configSaving = false;
-let engineDirectory = null;
 let configDirty = false;
 let configRevision = 0;
 let configLoad = 0;
-// The form starts with HTML defaults. Saving it before the server's values arrived
-// would overwrite the real settings (and stop a running Telegram bot), so saving waits
-// for one successful load, and a load fills every field the user has not edited.
 let configLoaded = false;
 const dirtyConfigFields = new Set();
 const RESET_CONFIG_FIELDS = ['gParamSpeed', 'gParamTopK', 'gParamTopP', 'gParamTemp', 'gParamSliceMethod',
   'gPrecision', 'gAudioRetention'];
-let restarting = false;
-let precisionRevision = 0;
-let engineStatusRevision = 0;
-let engineRestartUnconfirmed = false;
-let telemetryTimer = null;
-let telemetryGeneration = 0;
-let telemetryActive = false;
-let telemetryController = null;
-let unsubscribeTelemetry = null;
 let privateEndpointRevision = 0;
 let privateEndpointSaved = false;
 let privateEndpointSaving = false;
 const CONFIG_FIELDS = ['gParamSovitsUrl', 'gPrecision', 'gParamSliceMethod', 'gParamSpeed', 'gParamTopK',
   'gParamTopP', 'gParamTemp', 'gParamFragmentInterval', 'gAudioRetention', 'gTgEnabled',
   'gTgToken', 'gTgChatId', 'gTgProxyHost', 'gTgProxyPort', 'gTgProxyEnabled'];
+
+function _bindCoordinator(element, type, handler) {
+  if (!element || typeof element.addEventListener !== 'function') return;
+  const bound = (...args) => handler(...args);
+  element.addEventListener(type, bound);
+  coordinatorCleanups.push(() => {
+    if (typeof element.removeEventListener === 'function') {
+      element.removeEventListener(type, bound);
+    }
+  });
+}
 
 export function getCurrentActiveProvider() {
   return providerController ? providerController.getCurrentActiveProvider() : null;
@@ -87,23 +95,68 @@ export function handleActivateProvider() {
   return providerController ? providerController.handleActivateProvider() : Promise.resolve(false);
 }
 
+export function updateTelegramFieldsVisibility() {
+  return telegramController?.updateTelegramFieldsVisibility();
+}
+
+export function testTelegram() {
+  return telegramController ? telegramController.testTelegram() : Promise.resolve();
+}
+
+export function handleRestartSovits(precision) {
+  return engineController ? engineController.handleRestartSovits(precision) : Promise.resolve();
+}
+
+export function fetchSystemTelemetry() {
+  return telemetryController ? telemetryController.fetchSystemTelemetry() : Promise.resolve();
+}
+
 function updateSaveButtons() {
   const busy = (providerController?.isProviderSaving() ?? false) || configSaving;
   if (_dom.gProviderActivate) _dom.gProviderActivate.disabled = busy;
   if (_dom.gTgSave) _dom.gTgSave.disabled = busy;
 }
 
+function settingsVisible() {
+  return _dom.globalModal && !_dom.globalModal.hidden && !_dom.globalModal.classList.contains('hidden');
+}
+
+function goToInferenceTab() {
+  const tabBtn = _dom.gTabs ? _dom.gTabs.querySelector('[data-gtab="inference"]') : null;
+  if (tabBtn) tabBtn.click();
+}
+
 export function initGlobalSettings(dom, callbacks = {}) {
-  unsubscribeTelemetry?.();
-  stopTelemetryRefresh();
-  settingsCoordinatorRevision += 1;
-  _dom = dom;
-  _callbacks = callbacks;
-  engineStatusRevision += 1;
-  engineRestartUnconfirmed = false;
-  precisionRevision += 1;
+  // 1. Release previous controllers and coordinator listeners
+  telemetryController?.dispose();
+  engineController?.dispose();
+  telegramController?.dispose();
   providerController?.dispose();
-  providerController = createProviderSettingsController(dom, {
+  engineDirectory?.dispose?.();
+  if (typeof tabsCleanup === 'function') {
+    tabsCleanup();
+    tabsCleanup = null;
+  }
+  for (const cleanup of coordinatorCleanups) {
+    try { cleanup(); } catch (_) {}
+  }
+  coordinatorCleanups = [];
+
+  // 2. Set coordinator state
+  settingsCoordinatorRevision += 1;
+  _dom = dom || {};
+  _callbacks = callbacks || {};
+  configSaving = false;
+  configDirty = false;
+  configRevision = 0;
+  configLoaded = false;
+  dirtyConfigFields.clear();
+  privateEndpointRevision += 1;
+  privateEndpointSaved = false;
+  privateEndpointSaving = false;
+
+  // 3. Instantiate domain controllers
+  providerController = createProviderSettingsController(_dom, {
     updateBadge: () => _callbacks.updateBadge?.(),
     updateSaveButtons,
     isConfigSaving: () => configSaving,
@@ -111,151 +164,113 @@ export function initGlobalSettings(dom, callbacks = {}) {
     settingsVisible,
     showToast,
   });
-  configSaving = false;
-  updateSaveButtons();
-  configDirty = false;
-  configRevision = 0;
-  configLoad = 0;
-  configLoaded = false;
-  dirtyConfigFields.clear();
-  privateEndpointRevision += 1;
-  privateEndpointSaved = false;
-  privateEndpointSaving = false;
-  dom.gAllowPrivateEndpoints?.addEventListener('change', savePrivateEndpointPreference);
-  CONFIG_FIELDS.forEach((field) => {
-    for (const event of ['input', 'change']) dom[field]?.addEventListener(event, () => {
-      configDirty = true;
-      configRevision += 1;
-      dirtyConfigFields.add(field);
-    });
-  });
-  engineDirectory = initEngineDirectory(dom, showToast, () => _callbacks.onSovitsDirectorySaved?.());
-  const telemetryDocument = document;
-  const syncTelemetryVisibility = () => {
-    if (settingsVisible() && !telemetryDocument.hidden) startTelemetryRefresh();
-    else {
-      stopTelemetryRefresh();
+
+  telemetryController = createTelemetrySettingsController(_dom, {
+    settingsVisible,
+    isRestarting: () => engineController?.isRestarting() ?? false,
+    isEngineRestartUnconfirmed: () => engineController?.isEngineRestartUnconfirmed() ?? false,
+    loadGlobalConfig,
+    showToast,
+    onTelemetryHidden: () => {
       providerController?.invalidateActiveProviderTest();
-    }
-  };
-  const unsubscribeModal = onModalChange(syncTelemetryVisibility);
-  telemetryDocument.addEventListener?.('visibilitychange', syncTelemetryVisibility);
-  unsubscribeTelemetry = () => {
-    unsubscribeModal();
-    telemetryDocument.removeEventListener?.('visibilitychange', syncTelemetryVisibility);
-  };
-
-  // 选项卡切换
-  initSettingsTabs(_dom.gTabs, name => _callbacks.onSettingsTabChange?.(name));
-  for (const id of ['gOpenSessionSettings', 'gOpenCharacterSettings']) $(id)?.addEventListener('click', () => {
-    if (_callbacks.onSettingsTabChange) {
-      if (id === 'gOpenSessionSettings') _dom.gTabs?.querySelector('[data-gtab="session"]')?.click();
-      return;
-    }
-    _callbacks.closeModal?.(_dom.globalModal);
-    _callbacks.onOpenSessionSettings?.();
-  });
-  $('gOpenChatExperience')?.addEventListener('click', () => {
-    if (_callbacks.onSettingsTabChange) return;
-    _callbacks.closeModal?.(_dom.globalModal);
-    _callbacks.onOpenReadingSettings?.();
+      telegramController?.invalidateActiveTelegramTest();
+    },
   });
 
-  // 推理参数滑块数值联动
+  engineController = createEngineSettingsController(_dom, {
+    isConfigLoaded: () => configLoaded,
+    showToast,
+    fetchSystemTelemetry: () => telemetryController?.fetchSystemTelemetry(),
+    renderEngineStatus: (status) => telemetryController?.renderEngineStatus(status),
+    goToInferenceTab,
+    revokeAllCachedAudioUrls: () => _callbacks.revokeAllCachedAudioUrls?.(),
+  });
+
+  telegramController = createTelegramSettingsController(_dom, {
+    showToast,
+    updateSaveButtons,
+  });
+
+  updateSaveButtons();
+
+  // 4. Bind coordinator-owned controls
+  if (_dom.gAllowPrivateEndpoints) {
+    _bindCoordinator(_dom.gAllowPrivateEndpoints, 'change', savePrivateEndpointPreference);
+  }
+
+  CONFIG_FIELDS.forEach((field) => {
+    for (const event of ['input', 'change']) {
+      if (_dom[field]) {
+        _bindCoordinator(_dom[field], event, () => {
+          configDirty = true;
+          configRevision += 1;
+          dirtyConfigFields.add(field);
+        });
+      }
+    }
+  });
+
+  engineDirectory = initEngineDirectory(_dom, showToast, () => _callbacks.onSovitsDirectorySaved?.());
+
+  // Tabs
+  tabsCleanup = initSettingsTabs(_dom.gTabs, (name) => _callbacks.onSettingsTabChange?.(name));
+
+  // Settings cross-navigation
+  for (const id of ['gOpenSessionSettings', 'gOpenCharacterSettings']) {
+    const el = $(id);
+    if (el) {
+      _bindCoordinator(el, 'click', () => {
+        if (_callbacks.onSettingsTabChange) {
+          if (id === 'gOpenSessionSettings') _dom.gTabs?.querySelector('[data-gtab="session"]')?.click();
+          return;
+        }
+        _callbacks.closeModal?.(_dom.globalModal);
+        _callbacks.onOpenSessionSettings?.();
+      });
+    }
+  }
+
+  const openReading = $('gOpenChatExperience');
+  if (openReading) {
+    _bindCoordinator(openReading, 'click', () => {
+      if (_callbacks.onSettingsTabChange) return;
+      _callbacks.closeModal?.(_dom.globalModal);
+      _callbacks.onOpenReadingSettings?.();
+    });
+  }
+
+  // Sliders numeric display linkage
   if (_dom.gParamSpeed) {
-    _dom.gParamSpeed.addEventListener('input', (e) => {
+    _bindCoordinator(_dom.gParamSpeed, 'input', (e) => {
       if (_dom.gParamSpeedVal) _dom.gParamSpeedVal.textContent = e.target.value;
     });
   }
   if (_dom.gParamTopK) {
-    _dom.gParamTopK.addEventListener('input', (e) => {
+    _bindCoordinator(_dom.gParamTopK, 'input', (e) => {
       if (_dom.gParamTopKVal) _dom.gParamTopKVal.textContent = e.target.value;
     });
   }
   if (_dom.gParamTopP) {
-    _dom.gParamTopP.addEventListener('input', (e) => {
+    _bindCoordinator(_dom.gParamTopP, 'input', (e) => {
       if (_dom.gParamTopPVal) _dom.gParamTopPVal.textContent = e.target.value;
     });
   }
   if (_dom.gParamTemp) {
-    _dom.gParamTemp.addEventListener('input', (e) => {
+    _bindCoordinator(_dom.gParamTemp, 'input', (e) => {
       if (_dom.gParamTempVal) _dom.gParamTempVal.textContent = e.target.value;
     });
   }
 
-  // Telegram 开关
-  if (_dom.gTgEnabled) {
-    _dom.gTgEnabled.addEventListener('change', updateTelegramFieldsVisibility);
-  }
+  // Telegram save footer button
   if (_dom.gTgSave) {
-    _dom.gTgSave.addEventListener('click', saveGlobalConfig);
-  }
-  if (_dom.gTgTest) {
-    _dom.gTgTest.addEventListener('click', testTelegram);
+    _bindCoordinator(_dom.gTgSave, 'click', saveGlobalConfig);
   }
 
-  // 刷新状态诊断
-  if (_dom.gBtnRefreshStatus) {
-    _dom.gBtnRefreshStatus.addEventListener('click', () => {
-      fetchSystemTelemetry();
-      loadGlobalConfig();
-      showToast('诊断数据已刷新', 'info');
-    });
-  }
-
-  // 一键热重启 GPT-SoVITS 引擎
-  if (_dom.gBtnRestartSovits) {
-    _dom.gBtnRestartSovits.addEventListener('click', handleRestartSovits);
-  }
-
-  // 一键切换精度/设备并重启
-  if (_dom.gBtnTogglePrecision) {
-    _dom.gBtnTogglePrecision.addEventListener('click', handleTogglePrecision);
-  }
-
-  // 精度下拉菜单自动保存
-  if (_dom.gPrecision) {
-    _dom.gPrecision.addEventListener('change', async () => {
-      const revision = ++precisionRevision;
-      const val = _dom.gPrecision.value;
-      try {
-        await saveConfirmedConfig({ inference_precision: val });
-        if (revision !== precisionRevision) return;
-        const labelMap = {
-          auto: '自动判定 (Auto)',
-          fp16: 'FP16 半精度',
-          fp32: 'FP32 单精度',
-          cpu: 'CPU 稳定模式 (免显存)',
-        };
-        showToast(`已保存推理设置: ${labelMap[val] || val}。请点击【重启 SoVITS 引擎】应用。`, 'info');
-        fetchSystemTelemetry();
-      } catch (err) {
-        if (revision !== precisionRevision) return;
-        showToast(`推理设置尚未保存：${err.message}。当前选择已保留。`, 'error');
-      }
-    });
-  }
-
-  // 跳转至语音与推理设置
-  const goToInferenceTab = () => {
-    const tabBtn = _dom.gTabs ? _dom.gTabs.querySelector('[data-gtab="inference"]') : null;
-    if (tabBtn) tabBtn.click();
-  };
-  const btnGoPrecision = $('gBtnGoPrecision');
-  if (btnGoPrecision) {
-    btnGoPrecision.addEventListener('click', goToInferenceTab);
-  }
-  const btnGoSovitsSetup = $('gBtnGoSovitsSetup');
-  if (btnGoSovitsSetup) {
-    btnGoSovitsSetup.addEventListener('click', () => {
-      goToInferenceTab();
-      _dom.gSovitsDirectory?.focus?.();
-    });
-  }
+  // Diagnostic Chips
   const diagModelChip = $('gDiagModelChip');
   if (diagModelChip) {
     diagModelChip.style.cursor = 'pointer';
-    diagModelChip.addEventListener('click', () => {
+    _bindCoordinator(diagModelChip, 'click', () => {
       const tabBtn = _dom.gTabs ? _dom.gTabs.querySelector('[data-gtab="models"]') : null;
       if (tabBtn) tabBtn.click();
     });
@@ -263,7 +278,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
   const diagVoiceChip = $('gDiagVoiceChip');
   if (diagVoiceChip) {
     diagVoiceChip.style.cursor = 'pointer';
-    diagVoiceChip.addEventListener('click', () => {
+    _bindCoordinator(diagVoiceChip, 'click', () => {
       if (_callbacks.onSettingsTabChange) {
         _dom.gTabs?.querySelector('[data-gtab="session"]')?.click();
         return;
@@ -273,33 +288,28 @@ export function initGlobalSettings(dom, callbacks = {}) {
     });
   }
 
-  // 一键清空音频缓存
-  if (_dom.gBtnClearCache) {
-    _dom.gBtnClearCache.addEventListener('click', handleClearCache);
-  }
-
-  // 恢复默认参数
+  // Reset parameters
   if (_dom.gResetBtn) {
-    _dom.gResetBtn.addEventListener('click', () => {
-      if (!confirm('确定要将全局参数恢复为推荐默认值吗？')) return;
+    _bindCoordinator(_dom.gResetBtn, 'click', () => {
+      if (typeof confirm === 'function' && !confirm('确定要将全局参数恢复为推荐默认值吗？')) return;
       configDirty = true;
       configRevision += 1;
       RESET_CONFIG_FIELDS.forEach((field) => dirtyConfigFields.add(field));
       if (_dom.gParamSpeed) {
         _dom.gParamSpeed.value = '1.0';
-        _dom.gParamSpeedVal.textContent = '1.0';
+        if (_dom.gParamSpeedVal) _dom.gParamSpeedVal.textContent = '1.0';
       }
       if (_dom.gParamTopK) {
         _dom.gParamTopK.value = '15';
-        _dom.gParamTopKVal.textContent = '15';
+        if (_dom.gParamTopKVal) _dom.gParamTopKVal.textContent = '15';
       }
       if (_dom.gParamTopP) {
         _dom.gParamTopP.value = '1.0';
-        _dom.gParamTopPVal.textContent = '1.0';
+        if (_dom.gParamTopPVal) _dom.gParamTopPVal.textContent = '1.0';
       }
       if (_dom.gParamTemp) {
         _dom.gParamTemp.value = '1.0';
-        _dom.gParamTempVal.textContent = '1.0';
+        if (_dom.gParamTempVal) _dom.gParamTempVal.textContent = '1.0';
       }
       if (_dom.gParamSliceMethod) _dom.gParamSliceMethod.value = 'cut5';
       if (_dom.gPrecision) _dom.gPrecision.value = 'auto';
@@ -308,10 +318,10 @@ export function initGlobalSettings(dom, callbacks = {}) {
     });
   }
 
-  // 全局模态框关闭按键
+  // Modal close buttons
   if (_dom.globalModal) {
     _dom.globalModal.querySelectorAll('[data-close]').forEach((btn) => {
-      btn.addEventListener('click', () => {
+      _bindCoordinator(btn, 'click', () => {
         if (_callbacks.closeModal) _callbacks.closeModal(_dom.globalModal);
       });
     });
@@ -321,6 +331,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
 export function openGlobalSettings(tabName = null) {
   providerController?.invalidateActiveProviderTest();
   providerController?.resetTestResultBox();
+  telegramController?.invalidateActiveTelegramTest();
   if (_callbacks.openModal) _callbacks.openModal(_dom.globalModal);
   if (typeof tabName === 'string' && tabName && _dom.gTabs) {
     const tabBtn = _dom.gTabs.querySelector(`[data-gtab="${tabName}"]`);
@@ -330,8 +341,8 @@ export function openGlobalSettings(tabName = null) {
   }
   loadProviders();
   loadGlobalConfig();
-  if (settingsVisible()) startTelemetryRefresh();
-  else if (!document.hidden) fetchSystemTelemetry();
+  if (settingsVisible()) telemetryController?.startTelemetryRefresh();
+  else if (typeof document !== 'undefined' && !document.hidden) telemetryController?.fetchSystemTelemetry();
   if (_callbacks.loadSystemVersionInfo) {
     _callbacks.loadSystemVersionInfo(false).catch(() => {});
   }
@@ -341,35 +352,6 @@ export function openGlobalSettings(tabName = null) {
   if (_dom.gAutoTranslate) {
     _dom.gAutoTranslate.value = state.global.autoTranslate ? 'auto' : 'manual';
   }
-}
-
-function settingsVisible() {
-  return _dom.globalModal && !_dom.globalModal.hidden && !_dom.globalModal.classList.contains('hidden');
-}
-
-function stopTelemetryRefresh() {
-  clearTimeout(telemetryTimer);
-  telemetryTimer = null;
-  telemetryActive = false;
-  telemetryController?.abort();
-  telemetryController = null;
-  telemetryGeneration += 1;
-  engineStatusRevision += 1;
-}
-
-function startTelemetryRefresh() {
-  if (telemetryActive || document.hidden || !settingsVisible()) return;
-  telemetryActive = true;
-  const generation = ++telemetryGeneration;
-  const refresh = async () => {
-    // Restart owns its own readiness polling. Status refreshes never restart or
-    // reconfigure the engine, and closed dialogs do not leave timers behind.
-    if (!restarting && !document.hidden) await fetchSystemTelemetry();
-    if (generation !== telemetryGeneration) return;
-    if (!settingsVisible()) { stopTelemetryRefresh(); return; }
-    telemetryTimer = setTimeout(refresh, 5000);
-  };
-  refresh();
 }
 
 export async function savePrivateEndpointPreference() {
@@ -406,162 +388,10 @@ function connectionPreferencePending() {
   return true;
 }
 
-function renderEngineStatus(status) {
-  const ready = status.state === 'ready' && status.ready === true;
-  const loading = status.state === 'starting' || status.state === 'loading_slow';
-  const checking = status.state === 'checking';
-  if (_dom.gDashSovitsBadge) {
-    _dom.gDashSovitsBadge.className = `badge-status-pill badge-pill-${ready ? 'green' : loading || checking ? 'yellow' : 'red'}`;
-    _dom.gDashSovitsBadge.textContent = ready ? '在线' : status.state === 'loading_slow' ? '加载较慢'
-      : loading ? '启动中' : checking ? '待确认' : status.state === 'failed' ? '启动失败' : '离线';
-  }
-  if (_dom.gDashSovitsStatus) {
-    _dom.gDashSovitsStatus.textContent = ready && engineRestartUnconfirmed && !status.message?.includes('重启请求结果未确认')
-      ? UNCONFIRMED_RESTART_MESSAGE
-      : status.message;
-  }
-  if (_dom.gDashSovitsUrl && status.base_url) _dom.gDashSovitsUrl.textContent = status.base_url;
-}
-
-export async function fetchSystemTelemetry() {
-  if (document.hidden || (_dom.globalModal && !settingsVisible())) return;
-  telemetryController?.abort();
-  const controller = new AbortController();
-  telemetryController = controller;
-  const revision = ++engineStatusRevision;
-  const current = () => telemetryController === controller && !controller.signal.aborted && revision === engineStatusRevision;
-  try {
-    let statusRes = null, engineRes = null;
-    const renderStatus = data => {
-      if (!current() || !data) return;
-      // 1. GPT-SoVITS
-      if (data.gpt_sovits && _dom.gDashSovitsStatus && revision === engineStatusRevision && !restarting) {
-        const isOnline = data.gpt_sovits.status === 'reachable';
-        renderEngineStatus(engineRes?.state ? engineRes : {
-          state: isOnline ? 'ready' : 'unavailable', ready: isOnline,
-          message: isOnline ? `运行正常 (${data.gpt_sovits.latency_ms || 0}ms)` : '服务未响应（可点下方配置或重启）',
-        });
-        if (_dom.gDashSovitsUrl) _dom.gDashSovitsUrl.textContent = engineRes?.base_url || data.gpt_sovits.base_url || 'http://127.0.0.1:9880';
-      }
-      // 2. Precision & GPU
-      if (data.hardware && revision === engineStatusRevision && !restarting) {
-        const prec = data.hardware.precision_source === 'managed_launch'
-          ? (data.hardware.inference_precision || '').toUpperCase() : '';
-        const isCpu = prec === 'CPU';
-        const isFp16 = prec === 'FP16';
-        const known = isCpu || isFp16 || prec === 'FP32';
-        const labels = { CPU: 'CPU 模式', FP16: 'FP16 半精度', FP32: 'FP32 单精度' };
-        if (_dom.gDashPrecisionBadge) {
-          if (!known) {
-            _dom.gDashPrecisionBadge.className = 'badge-status-pill badge-pill-yellow';
-            _dom.gDashPrecisionBadge.textContent = '待确认';
-          } else if (isCpu) {
-            _dom.gDashPrecisionBadge.className = 'badge-status-pill badge-pill-yellow';
-            _dom.gDashPrecisionBadge.textContent = 'CPU';
-          } else if (isFp16) {
-            _dom.gDashPrecisionBadge.className = 'badge-status-pill badge-pill-indigo';
-            _dom.gDashPrecisionBadge.textContent = 'FP16';
-          } else {
-            _dom.gDashPrecisionBadge.className = 'badge-status-pill badge-pill-green';
-            _dom.gDashPrecisionBadge.textContent = 'FP32';
-          }
-        }
-        if (_dom.gDashPrecisionVal) {
-          _dom.gDashPrecisionVal.textContent = labels[prec] || '计算方式待确认';
-        }
-        if (_dom.gBtnTogglePrecisionText) {
-          if (!known) {
-            _dom.gBtnTogglePrecisionText.textContent = '按已保存设置启动';
-          } else if (isCpu) {
-            _dom.gBtnTogglePrecisionText.textContent = '切为 GPU(FP16)';
-          } else if (isFp16) {
-            _dom.gBtnTogglePrecisionText.textContent = '切为 FP32 重启';
-          } else {
-            _dom.gBtnTogglePrecisionText.textContent = '切为 CPU 模式';
-          }
-        }
-        if (_dom.gDashDeviceVal) {
-          if (!known) {
-            _dom.gDashDeviceVal.textContent = '启动配置待确认；外部引擎请在对应程序中查看。';
-          } else if (data.hardware.precision_pending_restart === true) {
-            _dom.gDashDeviceVal.textContent = `已保存：${labels[data.hardware.next_inference_precision] || '新的计算方式'}；重启引擎后生效。`;
-          } else if (isCpu) {
-            _dom.gDashDeviceVal.textContent = '免显存占用 · 依托物理大内存';
-          } else {
-            _dom.gDashDeviceVal.textContent = data.hardware.gpu_name ? data.hardware.gpu_name : '硬件加速中';
-          }
-        }
-        if (_dom.gDashHardwareVal) {
-          const procMem =
-            data.app && data.app.memory_usage_mb !== undefined && data.app.memory_usage_mb !== null
-              ? `${Math.round(data.app.memory_usage_mb)} MB`
-              : '正常';
-          _dom.gDashHardwareVal.textContent = `服务内存: ${procMem}`;
-        }
-        const hostRamEl = $('gDashHostRam');
-        if (hostRamEl) {
-          if (data.hardware.system_memory_gb && data.hardware.system_memory_avail_gb) {
-            hostRamEl.textContent = `系统可用: ${data.hardware.system_memory_avail_gb.toFixed(1)}G / ${data.hardware.system_memory_gb.toFixed(1)}G`;
-          } else {
-            hostRamEl.textContent = '系统内存: 良好';
-          }
-        }
-      }
-      // 3. Uptime & PID
-      if (data.app && _dom.gDashUptimeVal) {
-        const sec = Math.round(data.app.uptime_seconds || 0);
-        const h = Math.floor(sec / 3600);
-        const m = Math.floor((sec % 3600) / 60);
-        const s = sec % 60;
-        _dom.gDashUptimeVal.textContent = `PID: ${data.app.pid || '-'} · 运行: ${h}h ${m}m ${s}s`;
-      }
-    };
-    const options = { signal: controller.signal };
-    const statusRead = requestJson('/api/system/status', options, { timeoutMs: 15000 }).catch(() => null).then(data => {
-      statusRes = data;
-      renderStatus(data);
-    });
-    const cacheRead = requestJson('/api/cache/stats', options, { timeoutMs: 15000 }).catch(() => null).then(data => {
-      if (current() && data && _dom.gDashCacheVal) {
-        _dom.gDashCacheVal.textContent = `${data.total_entries || 0} 个文件 · ${(data.total_size_mb || 0).toFixed(1)} MB`;
-      }
-    });
-    const engineRead = requestJson('/api/system/engine-status', options, { timeoutMs: 10000 }).catch(() => null).then(data => {
-      engineRes = data;
-      if (current() && data?.state && !restarting) {
-        renderEngineStatus(data);
-      }
-    });
-    await Promise.all([statusRead, cacheRead, engineRead]);
-    if (!statusRes && revision === engineStatusRevision && !restarting && _dom.gDashSovitsStatus) {
-      if (engineRes?.state) renderEngineStatus(engineRes);
-      else {
-        _dom.gDashSovitsStatus.textContent = '无法刷新状态，请保留启动窗口；若已关闭，请重新双击启动。';
-        if (_dom.gDashSovitsBadge) {
-          _dom.gDashSovitsBadge.textContent = '待检查';
-          _dom.gDashSovitsBadge.className = 'badge-status-pill badge-pill-yellow';
-        }
-      }
-    }
-  } catch (e) {
-    if (!controller.signal.aborted) console.warn('Failed to fetch telemetry:', e);
-  } finally {
-    if (telemetryController === controller) telemetryController = null;
-    controller.abort();
-  }
-}
-
-export function updateTelegramFieldsVisibility() {
-  const enabled = _dom.gTgEnabled ? _dom.gTgEnabled.checked : false;
-  if (_dom.gTgFieldsGroup) {
-    _dom.gTgFieldsGroup.style.opacity = enabled ? '1' : '0.45';
-    _dom.gTgFieldsGroup.style.pointerEvents = enabled ? 'auto' : 'none';
-    _dom.gTgFieldsGroup.inert = !enabled;
-  }
-}
-
 export async function loadGlobalConfig() {
   engineDirectory?.load();
+  const coordinatorRevision = settingsCoordinatorRevision;
+  const targetDom = _dom;
   const load = ++configLoad;
   const privateRevision = privateEndpointRevision;
   try {
@@ -569,14 +399,14 @@ export async function loadGlobalConfig() {
       ? _callbacks.fetchVoiceProfiles().catch(() => null)
       : Promise.resolve(null);
     const [cfg] = await Promise.all([requestJson('/api/config'), fetchVoice]);
-    if (load !== configLoad) return;
+    if (coordinatorRevision !== settingsCoordinatorRevision || targetDom !== _dom || load !== configLoad) return;
     const configError = $('gConfigError');
     if (configError) { configError.textContent = ''; configError.classList.add('hidden'); }
     const s = cfg.settings || {};
     if (privateRevision === privateEndpointRevision && !privateEndpointSaving) {
       privateEndpointSaved = Boolean(s.allow_private_llm_endpoints);
-      if (_dom.gAllowPrivateEndpoints) _dom.gAllowPrivateEndpoints.checked = privateEndpointSaved;
-      if (_dom.gPrivateEndpointsStatus) _dom.gPrivateEndpointsStatus.textContent = privateEndpointSaved
+      if (targetDom.gAllowPrivateEndpoints) targetDom.gAllowPrivateEndpoints.checked = privateEndpointSaved;
+      if (targetDom.gPrivateEndpointsStatus) targetDom.gPrivateEndpointsStatus.textContent = privateEndpointSaved
         ? '已允许本机或局域网模型。更改后自动保存；仅填写你信任的服务地址。'
         : '使用 Ollama、LM Studio 或局域网模型时开启；更改后自动保存。仅填写你信任的服务地址。';
     }
@@ -608,9 +438,10 @@ export async function loadGlobalConfig() {
       diagVoice.title = voiceStr;
     }
     if (diagVoiceDot) diagVoiceDot.className = `diag-dot ${activeVoice ? 'ok' : ''}`;
+
     // Fill every field the user has not edited; edited fields keep their pending values.
     const fill = (field, apply) => {
-      if (_dom[field] && !dirtyConfigFields.has(field)) apply(_dom[field]);
+      if (targetDom[field] && !dirtyConfigFields.has(field)) apply(targetDom[field]);
     };
 
     // 语音与推理参数
@@ -619,44 +450,32 @@ export async function loadGlobalConfig() {
     fill('gParamSliceMethod', (el) => { el.value = s.text_split_method || 'cut5'; });
     fill('gParamSpeed', (el) => {
       el.value = s.speed_factor !== undefined ? s.speed_factor : 1.0;
-      if (_dom.gParamSpeedVal) _dom.gParamSpeedVal.textContent = el.value;
+      if (targetDom.gParamSpeedVal) targetDom.gParamSpeedVal.textContent = el.value;
     });
     fill('gParamTopK', (el) => {
       el.value = s.top_k || 15;
-      if (_dom.gParamTopKVal) _dom.gParamTopKVal.textContent = el.value;
+      if (targetDom.gParamTopKVal) targetDom.gParamTopKVal.textContent = el.value;
     });
     fill('gParamTopP', (el) => {
       el.value = s.top_p !== undefined ? s.top_p : 1.0;
-      if (_dom.gParamTopPVal) _dom.gParamTopPVal.textContent = el.value;
+      if (targetDom.gParamTopPVal) targetDom.gParamTopPVal.textContent = el.value;
     });
     fill('gParamTemp', (el) => {
       el.value = s.temperature !== undefined ? s.temperature : 1.0;
-      if (_dom.gParamTempVal) _dom.gParamTempVal.textContent = el.value;
+      if (targetDom.gParamTempVal) targetDom.gParamTempVal.textContent = el.value;
     });
     fill('gParamFragmentInterval', (el) => {
       el.value = s.fragment_interval !== undefined ? s.fragment_interval : 0.3;
     });
     fill('gAudioRetention', (el) => { el.value = s.audio_retention_minutes || 30; });
-    if (_dom.gDashRetentionVal) _dom.gDashRetentionVal.textContent = `保留时长: ${s.audio_retention_minutes || 30} 分钟`;
+    if (targetDom.gDashRetentionVal) targetDom.gDashRetentionVal.textContent = `保留时长: ${s.audio_retention_minutes || 30} 分钟`;
 
     // Telegram
-    fill('gTgEnabled', (el) => {
-      el.checked = Boolean(s.telegram_enabled);
-      updateTelegramFieldsVisibility();
-    });
-    const token = s.telegram_bot_token || '';
-    const masked = token.includes('****');
-    fill('gTgToken', (el) => {
-      el.value = '';
-      el.placeholder = masked ? '已保存（输入新 Token 可覆盖）' : '未配置，如 123456:ABC-DEF…';
-    });
-    fill('gTgChatId', (el) => { el.value = s.telegram_chat_id || s.telegram_admin_ids || ''; });
-    fill('gTgProxyHost', (el) => { el.value = s.telegram_proxy_host || ''; });
-    fill('gTgProxyPort', (el) => { el.value = s.telegram_proxy_port || ''; });
-    fill('gTgProxyEnabled', (el) => { el.checked = Boolean(s.telegram_proxy_enabled); });
+    telegramController?.fillTelegramConfig(s, dirtyConfigFields);
+
     configLoaded = true;
   } catch (e) {
-    if (load !== configLoad) return;
+    if (coordinatorRevision !== settingsCoordinatorRevision || targetDom !== _dom || load !== configLoad) return;
     const configError = $('gConfigError');
     if (configError) { configError.textContent = e.message; configError.classList.remove('hidden'); }
   }
@@ -669,12 +488,13 @@ export async function saveGlobalConfig() {
     loadGlobalConfig();
     return;
   }
-  const tgEnabled = _dom.gTgEnabled ? _dom.gTgEnabled.checked : false;
-  if (tgEnabled && _dom.gTgChatId && !_dom.gTgChatId.value.trim()) {
-    showToast('填写允许访问的用户ID，或先关闭Telegram再保存', 'error');
+  const tgValidation = telegramController?.validateTelegram() || { valid: true };
+  if (!tgValidation.valid) {
+    showToast(tgValidation.message, 'error');
     updateSaveButtons();
     return;
   }
+
   const coordinatorRevision = settingsCoordinatorRevision;
   const targetProviderController = providerController;
   configSaving = true;
@@ -684,6 +504,7 @@ export async function saveGlobalConfig() {
   try {
     const saveModel = targetProviderController?.isProviderDirty() ?? false;
     const savedRevision = configRevision;
+    const tgPayload = telegramController?.getTelegramPayload() || {};
     const payload = {
       gpt_sovits_url: _dom.gParamSovitsUrl ? _dom.gParamSovitsUrl.value.trim() || 'http://127.0.0.1:9880' : undefined,
       inference_precision: _dom.gPrecision ? _dom.gPrecision.value : undefined,
@@ -694,15 +515,8 @@ export async function saveGlobalConfig() {
       temperature: _dom.gParamTemp ? Number(_dom.gParamTemp.value) : undefined,
       fragment_interval: _dom.gParamFragmentInterval ? Number(_dom.gParamFragmentInterval.value) || 0.3 : undefined,
       audio_retention_minutes: _dom.gAudioRetention ? Math.max(1, Number(_dom.gAudioRetention.value) || 30) : 30,
-      telegram_enabled: _dom.gTgEnabled ? _dom.gTgEnabled.checked : false,
-      telegram_chat_id: _dom.gTgChatId ? _dom.gTgChatId.value.trim() : undefined,
-      telegram_admin_ids: _dom.gTgChatId ? _dom.gTgChatId.value.trim() : undefined,
-      telegram_proxy_enabled: _dom.gTgProxyEnabled ? _dom.gTgProxyEnabled.checked : false,
-      telegram_proxy_host: _dom.gTgProxyHost ? _dom.gTgProxyHost.value.trim() || '127.0.0.1' : '127.0.0.1',
-      telegram_proxy_port: _dom.gTgProxyPort ? Number(_dom.gTgProxyPort.value) || 10809 : 10809,
+      ...tgPayload,
     };
-    const token = _dom.gTgToken ? _dom.gTgToken.value.trim() : '';
-    if (token) payload.telegram_bot_token = token;
 
     // Start the provider save now so it captures this click's model draft, but
     // reserve the config write before later autosaves can overtake it.
@@ -713,7 +527,7 @@ export async function saveGlobalConfig() {
     // The earlier config write can fail and skip this queued callback while
     // the independent provider request is already in flight.
     modelResult.catch(() => {});
-    const saved = await runSettingsMutation(async save => {
+    const saved = await runSettingsMutation(async (save) => {
       if (saveModel && !await modelResult) return false;
       await save(payload);
       return true;
@@ -747,137 +561,5 @@ export async function saveGlobalConfig() {
       configSaving = false;
       updateSaveButtons();
     }
-  }
-}
-
-export async function testTelegram() {
-  if (_dom.gTgTest?.disabled) return;
-  if (_dom.gTgTest) _dom.gTgTest.disabled = true;
-  try {
-    const payload = {
-      proxy_enabled: _dom.gTgProxyEnabled ? _dom.gTgProxyEnabled.checked : false,
-      proxy_host: _dom.gTgProxyHost ? _dom.gTgProxyHost.value.trim() || '127.0.0.1' : '127.0.0.1',
-      proxy_port: _dom.gTgProxyPort ? Number(_dom.gTgProxyPort.value) || 10809 : 10809,
-    };
-    const token = _dom.gTgToken ? _dom.gTgToken.value.trim() : '';
-    if (token) payload.token = token;
-    const data = await requestJson('/api/telegram/test', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    }, { timeoutMs: 60000 });
-    showToast(data.message || (data.success ? '连接成功' : '连接失败'), data.success ? 'success' : 'error');
-  } catch (e) {
-    showToast(`测试失败: ${e.message || e}`, 'error');
-  } finally {
-    if (_dom.gTgTest) _dom.gTgTest.disabled = false;
-  }
-}
-
-export async function handleRestartSovits(precision) {
-  if (restarting) return;
-  restarting = true;
-  engineStatusRevision += 1;
-  renderEngineStatus({ state: 'starting', ready: false, message: '正在确认设置并准备语音引擎；文字聊天可继续使用。' });
-  if (_dom.gBtnRestartSovits) {
-    _dom.gBtnRestartSovits.disabled = true;
-    _dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>正在准备引擎…</span>';
-  }
-  if (_dom.gBtnTogglePrecision) _dom.gBtnTogglePrecision.disabled = true;
-  try {
-    const payload = {};
-    // Before the config loads, the dropdown shows its default; the engine keeps its saved precision.
-    const selected = typeof precision === 'string' ? precision : (configLoaded ? _dom.gPrecision?.value : '');
-    const revision = precisionRevision;
-    if (selected) payload.precision = selected;
-    let sent = false;
-    let acknowledged = true;
-    let data;
-    try {
-      data = await runSettingsMutation(() => {
-        sent = true;
-        return requestJson('/api/system/restart_sovits', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-        });
-      });
-    } catch (error) {
-      if (!sent || error.name === 'AbortError' || (error.status && error.status < 500)) throw error;
-      acknowledged = false;
-      engineRestartUnconfirmed = true;
-      data = { message: '重启请求结果未确认，正在核对当前引擎状态；请稍候，无需再次点击重启。' };
-      renderEngineStatus({ state: 'checking', ready: false, message: data.message });
-    }
-    if (acknowledged) engineRestartUnconfirmed = false;
-    if (acknowledged && _dom.gPrecision && selected && revision === precisionRevision) _dom.gPrecision.value = selected;
-    // The card and busy button already explain recovery. One final toast avoids
-    // covering the card with stacked progress messages on a narrow screen.
-    if (acknowledged) showToast(data.message || '引擎开始加载，请稍候。', 'info');
-    let result = await waitForEngine({ onProgress: (status) => {
-      renderEngineStatus(status);
-      if (_dom.gBtnRestartSovits) _dom.gBtnRestartSovits.innerHTML = `<svg class="icon"><use href="#i-play"></use></svg><span>${status.ready ? '引擎已就绪' : status.state === 'checking' ? '正在核对状态…' : status.state === 'loading_slow' ? '加载时间较长…' : '正在加载模型…'}</span>`;
-    } });
-    if (!acknowledged && result.ready) result = { ...result, message: UNCONFIRMED_RESTART_MESSAGE };
-    renderEngineStatus(result);
-    showToast(result.message, result.ready && acknowledged ? 'success' : 'info');
-  } catch (err) {
-    const unconfirmed = err.code === 'CONFIG_WRITE_SKIPPED' || [401, 403, 404, 429].includes(err.status);
-    renderEngineStatus({ state: err.engineState || (unconfirmed ? 'checking' : 'failed'), ready: false, message: err.message });
-    const needDir = /引擎目录|选择文件夹|api_v2\.py|运行环境/i.test(err.message || '');
-    showToast(err.message, 'error', needDir ? {
-      actionLabel: '选择引擎文件夹',
-      onAction: () => {
-        const tabBtn = _dom.gTabs ? _dom.gTabs.querySelector('[data-gtab="inference"]') : null;
-        if (tabBtn) tabBtn.click();
-        _dom.gSovitsDirectory?.focus?.();
-      },
-    } : null);
-  } finally {
-    restarting = false;
-    if (_dom.gBtnRestartSovits) {
-      _dom.gBtnRestartSovits.disabled = false;
-      _dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>重启 SoVITS 引擎</span>';
-    }
-    if (_dom.gBtnTogglePrecision) _dom.gBtnTogglePrecision.disabled = false;
-    fetchSystemTelemetry();
-  }
-}
-
-async function handleTogglePrecision() {
-  const badgeText = _dom.gDashPrecisionBadge?.textContent.trim().toUpperCase();
-  if (!['CPU', 'FP16', 'FP32'].includes(badgeText)) {
-    await handleRestartSovits();
-    return;
-  }
-  let targetPrec = 'fp16';
-  if (badgeText === 'FP16') {
-    targetPrec = 'fp32';
-  } else if (badgeText === 'FP32') {
-    targetPrec = 'cpu';
-  } else {
-    targetPrec = 'fp16';
-  }
-
-  await handleRestartSovits(targetPrec);
-}
-
-async function handleClearCache() {
-  if (_dom.gBtnClearCache.disabled) return;
-  if (!confirm('确定要清空全部 TTS 离线音频缓存吗？清空后新请求将重新合成。')) return;
-  _dom.gBtnClearCache.disabled = true;
-  try {
-    clearMemAudioCache();
-    if (_callbacks.revokeAllCachedAudioUrls) {
-      _callbacks.revokeAllCachedAudioUrls();
-    }
-    if ('caches' in window) {
-      await caches.delete('gal2voice-audio-v1').catch(() => {});
-    }
-    const data = await requestJson('/api/cache/clear', { method: 'POST' });
-    showToast(`缓存已清空：删除 ${data.deleted_files || 0} 个文件，释放 ${data.freed_mb || 0} MB`, 'success');
-    fetchSystemTelemetry();
-  } catch (err) {
-    showToast(`清空缓存失败: ${err.message}`, 'error');
-  } finally {
-    _dom.gBtnClearCache.disabled = false;
   }
 }
