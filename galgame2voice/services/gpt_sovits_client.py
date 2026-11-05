@@ -750,6 +750,7 @@ class GptSovitsClient:
                     'ref_audio_path': opts.get('ref_audio_path') or opts.get('refer_audio_path', ''),
                     'prompt_text': opts.get('prompt_text', ''),
                     'prompt_lang': opts.get('prompt_lang', 'ja'),
+                    'text_lang': opts.get('text_lang', 'ja'),
                 }
                 if not await self._switch_voice_profile_locked(target):
                     raise ValueError('所选音色的语音模型未能加载，请在「运行状态」检查引擎后重试。')
