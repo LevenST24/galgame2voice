@@ -776,7 +776,7 @@ class TestTelegramBotRealModules:
         # Assert dynamic TTS options were captured and passed to synthesize
         assert isinstance(captured_tts_opts, dict)
         assert captured_tts_opts.get("emotion") == "shy"
-        assert "speed" in captured_tts_opts
+        assert "speed_factor" in captured_tts_opts
 
         # Assert voice note was sent with Japanese caption
         assert len(client.sent_voices) == 1
@@ -897,6 +897,180 @@ class TestTelegramOptionalFeature:
             assert res2.telegram_enabled is False
             raw2 = await crud.get_settings_raw(conn)
             assert raw2.telegram_enabled is False
+
+
+class TestTelegramConsoleTtsSettings:
+    """Regression tests for Telegram /console TTS parameter application and write error handling."""
+
+    @pytest.mark.asyncio
+    async def test_telegram_console_tts_settings_applied_to_voice_synthesis(self, temp_db_path, monkeypatch):
+        """TTS parameters configured via /console callbacks must be saved and passed to synthesize in chat."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from galgame2voice.database import crud
+        from galgame2voice.database.models import SettingsUpdate, VoiceProfileCreate
+        from galgame2voice.database.session import get_db
+
+        async with get_db(temp_db_path) as conn:
+            profile = await crud.create_voice_profile(
+                conn,
+                VoiceProfileCreate(
+                    name="测试角色",
+                    gpt_weights_path="models/test.ckpt",
+                    sovits_weights_path="models/test.pth",
+                    ref_audio_path="models/ref.wav",
+                    ref_text="こんにちは",
+                    ref_lang="ja",
+                    is_default=True,
+                ),
+            )
+            await crud.update_settings(
+                conn,
+                SettingsUpdate(active_voice_profile_id=profile.id),
+            )
+
+        handlers = TelegramBotHandlers(admin_ids=[1001], db_path=temp_db_path)
+
+        class MockQuery:
+            def __init__(self, data):
+                self.data = data
+                self.answer_text = None
+                self.answer_alert = None
+                self.edit_count = 0
+
+            async def answer(self, text=None, show_alert=False):
+                self.answer_text = text
+                self.answer_alert = show_alert
+
+            async def edit_message_text(self, text, reply_markup=None):
+                self.edit_count += 1
+
+        class CallbackUpdate:
+            def __init__(self, data, chat_id=1001, user_id=1001):
+                self.callback_query = MockQuery(data)
+                self.effective_chat = type("Chat", (), {"id": chat_id})()
+                self.effective_user = type("User", (), {"id": user_id})()
+
+        class DummyContext:
+            def __init__(self):
+                self.bot = MockBotClient()
+
+        # 1. Adjust all 7 parameters through /console callback queries
+        settings_callbacks = [
+            ("set_speed_1.5", "⚡ 语速已调整为: 1.5x"),
+            ("set_temp_0.3", "🌡️ 发音温度已设置为: 0.3"),
+            ("set_split_cut3", "✂️ 切分方式已设置为: cut3"),
+            ("set_topk_30", "🎯 Top-K 已设置为: 30"),
+            ("set_topp_0.6", "🎯 Top-P 已设置为: 0.6"),
+            ("set_batch_8", "📦 批量大小已设置为: 8"),
+            ("set_interval_0.5", "⏱️ 分句连播间隔已设置为: 0.5s"),
+        ]
+        for cb_data, expected_toast in settings_callbacks:
+            update = CallbackUpdate(cb_data)
+            await handlers.handle_callback_query(update, DummyContext())
+            assert update.callback_query.answer_text == expected_toast
+            assert update.callback_query.answer_alert is True
+            assert update.callback_query.edit_count == 1
+
+        # 2. Spy on default handlers.tts_service.synthesize
+        captured_tts_calls = []
+        dummy_riff = (
+            b"RIFF\x24\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x08\x00\x00"
+            + b"\x00" * 100
+        )
+
+        async def _spy_synthesize(text: str, options=None):
+            captured_tts_calls.append({"text": text, "options": dict(options or {})})
+            return dummy_riff
+
+        handlers.tts_service.synthesize = _spy_synthesize
+
+        class _FakeAdapter:
+            async def chat(self, messages, **kwargs):
+                return SimpleNamespace(
+                    content='{"chinese": "你好。", "japanese": "こんにちは。"}',
+                    finish_reason="stop",
+                )
+
+        monkeypatch.setattr(
+            "galgame2voice.services.chat_service.get_llm_adapter",
+            lambda *_args, **_kwargs: _FakeAdapter(),
+        )
+        monkeypatch.setattr(
+            "galgame2voice.telegram_bot.handlers.convert_wav_to_ogg",
+            AsyncMock(return_value=b"fake_ogg"),
+        )
+
+        bot = SimpleNamespace(
+            send_chat_action=AsyncMock(),
+            send_message=AsyncMock(return_value=SimpleNamespace(message_id=1)),
+            send_voice=AsyncMock(),
+        )
+
+        voice_task = await handlers.process_text_chat(1001, "早上好", bot, user_id=1001)
+        if voice_task:
+            await voice_task
+
+        assert len(captured_tts_calls) == 1
+        opts = captured_tts_calls[0]["options"]
+        assert opts.get("text_split_method") == "cut3"
+        assert opts.get("top_k") == 30
+        assert opts.get("top_p") == 0.6
+        assert opts.get("batch_size") == 8
+        assert opts.get("fragment_interval") == 0.5
+        assert opts.get("speed_factor") == 1.5
+        assert opts.get("temperature") == 0.3
+
+    @pytest.mark.asyncio
+    async def test_telegram_console_tts_settings_update_failure_feedback(self, temp_db_path, monkeypatch):
+        """When updating scalar settings or split method fails in DB, query.answer must show error alert and not edit menu."""
+        handlers = TelegramBotHandlers(admin_ids=[1001], db_path=temp_db_path)
+
+        class MockQuery:
+            def __init__(self, data):
+                self.data = data
+                self.answer_text = None
+                self.answer_alert = None
+                self.edit_count = 0
+
+            async def answer(self, text=None, show_alert=False):
+                self.answer_text = text
+                self.answer_alert = show_alert
+
+            async def edit_message_text(self, text, reply_markup=None):
+                self.edit_count += 1
+
+        class CallbackUpdate:
+            def __init__(self, data, chat_id=1001, user_id=1001):
+                self.callback_query = MockQuery(data)
+                self.effective_chat = type("Chat", (), {"id": chat_id})()
+                self.effective_user = type("User", (), {"id": user_id})()
+
+        class DummyContext:
+            def __init__(self):
+                self.bot = MockBotClient()
+
+        async def _mock_update_err(*args, **kwargs):
+            raise RuntimeError("Simulated SQLite write error")
+
+        monkeypatch.setattr("galgame2voice.telegram_bot.console_menus.crud.update_settings", _mock_update_err)
+
+        # 1. Test scalar setting failure (speed)
+        cb_speed = CallbackUpdate("set_speed_1.5")
+        await handlers.handle_callback_query(cb_speed, DummyContext())
+
+        assert cb_speed.callback_query.answer_text == "❌ 保存失败，请稍后重试"
+        assert cb_speed.callback_query.answer_alert is True
+        assert cb_speed.callback_query.edit_count == 0
+
+        # 2. Test split method setting failure
+        cb_split = CallbackUpdate("set_split_cut3")
+        await handlers.handle_callback_query(cb_split, DummyContext())
+
+        assert cb_split.callback_query.answer_text == "❌ 保存失败，请稍后重试"
+        assert cb_split.callback_query.answer_alert is True
+        assert cb_split.callback_query.edit_count == 0
+
 
 
 
