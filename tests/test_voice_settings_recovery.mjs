@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { state, loadState, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
-import { initVoiceSettings, createCustomVoice, loadSessionVoiceSelect, handleRescanCharacters, populateScanOptions, invalidateScannedModels, ensureSessionVoice, deleteVoiceProfile } from '../frontend/src/controllers/voice_settings.js';
+import { initVoiceSettings, createCustomVoice, loadSessionVoiceSelect, handleRescanCharacters, populateScanOptions, invalidateScannedModels, ensureSessionVoice, deleteVoiceProfile, fetchVoiceProfiles, openSessionSettings } from '../frontend/src/controllers/voice_settings.js';
 import { persistSession } from '../frontend/src/session_api.js';
-import { openSessionSettings } from '../frontend/src/controllers/voice_settings.js';
 
 const storage = new Map();
 globalThis.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
@@ -603,4 +602,238 @@ const models = {
     globalThis.document = previousDocument;
   }
 }
+{
+  const { first, second, dom } = setup();
+  const toastRoot = element();
+  toastRoot.id = 'toastRoot';
+  toastRoot.querySelectorAll = () => toastRoot.children;
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
+    createElement: () => element(),
+  };
+
+  const profiles = [
+    { id: 1, name: '角色1', system_prompt: '人设1' },
+    { id: 2, name: '角色2', system_prompt: '人设2' },
+  ];
+
+  // 1. Initial catalog load to populate voiceProfiles cache
+  globalThis.fetch = async () => response({ profiles, active_profile_id: 1 });
+  await loadSessionVoiceSelect(first);
+
+  // Set second session with voiceProfileId: 2, leaving dom.sVoice with previous value ('1')
+  first.settings.voiceProfileId = 1;
+  second.settings.voiceProfileId = 2;
+  state.activeId = second.id;
+  dom.sVoice.value = '1';
+
+  let resolveProfilesFetch;
+  const promptWrites = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') {
+      return new Promise(resolve => {
+        resolveProfilesFetch = () => resolve(response({ profiles, active_profile_id: 1 }));
+      });
+    }
+    if (url.includes('/system-prompt') && options.method === 'PUT') {
+      promptWrites.push(JSON.parse(options.body));
+      return response({ status: 'ok' });
+    }
+    return response({});
+  };
+
+  try {
+    // Open session settings for second session while GET /api/voice/profiles is pending
+    const openPromise = openSessionSettings();
+
+    // Verify: instantly upon opening, dom.sVoice.value must synchronously be '2'
+    assert.equal(dom.sVoice.value, '2', 'sVoice.value should be synchronously initialized to 2');
+
+    // Case 1: Modify session parameters and save before voice profiles fetch finishes
+    second.title = '更新后的会话2';
+    dom.sTemp.value = '0.85';
+    await dom.sSave.click();
+    assert.equal(second.settings.voiceProfileId, 2, 'voiceProfileId should remain 2 after immediate save');
+    assert.equal(second.settings.temperature, 0.85, 'temperature should be saved');
+    assert.ok(!toastRoot.children.some(t => (t.dataset?.msg || '').includes('人设草稿与当前角色不一致')),
+      'should not falsely report persona draft mismatch');
+
+    // Case 2: Modify character persona in #sSystem while loadSessionVoiceSelect is in flight, then resolve fetch
+    dom.sSystem.value = '修改后的角色2人设';
+    resolveProfilesFetch();
+    await openPromise;
+    await tick();
+
+    assert.equal(dom.sVoice.value, '2', 'sVoice.value should remain 2 after profiles list resolves with edited persona');
+    await dom.sSave.click();
+    assert.equal(second.settings.voiceProfileId, 2, 'voiceProfileId should remain 2 after saving edited persona');
+    assert.equal(promptWrites.length, 1, 'edited prompt should be written to backend');
+    assert.equal(promptWrites[0].system_prompt, '修改后的角色2人设');
+    // Case 3: Session with deleted/missing role (id 99 not in profiles catalog)
+    // Synchronously initializes #sVoice to '99' and immediate save preserves voiceProfileId: 99
+    // without triggering a false "persona draft mismatch" error toast.
+    second.settings.voiceProfileId = 99;
+    dom.sVoice.value = '1';
+    let resolveMissingFetch;
+    globalThis.fetch = async (url) => {
+      if (url === '/api/voice/profiles') {
+        return new Promise(resolve => {
+          resolveMissingFetch = () => resolve(response({ profiles, active_profile_id: 1 }));
+        });
+      }
+      return response({});
+    };
+
+    const openPromiseMissing = openSessionSettings();
+    assert.equal(dom.sVoice.value, '99', 'sVoice.value should be synchronously initialized to 99 for missing role');
+
+    second.title = '缺少角色包的会话';
+    dom.sTemp.value = '0.9';
+    await dom.sSave.click();
+    assert.equal(second.settings.voiceProfileId, 99, 'voiceProfileId should remain 99 after immediate save');
+    assert.equal(second.settings.temperature, 0.9, 'temperature should be saved');
+    assert.ok(!toastRoot.children.some(t => (t.dataset?.msg || '').includes('人设草稿与当前角色不一致')),
+      'should not report persona draft mismatch for missing profile on immediate save');
+
+    resolveMissingFetch();
+    await openPromiseMissing;
+    await tick();
+
+    passed++;
+  } finally {
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    globalThis.document = previousDocument;
+  }
+}
+{
+  const { first, second, dom } = setup();
+  const profiles = [
+    { id: 1, name: '角色1', system_prompt: '人设1' },
+    { id: 2, name: '角色2', system_prompt: '人设2' },
+  ];
+  globalThis.fetch = async () => response({ profiles, active_profile_id: 1 });
+  await loadSessionVoiceSelect(first);
+
+  // Test A: Session without character binding resets leftover selection to empty string
+  second.settings.voiceProfileId = null;
+  state.activeId = second.id;
+  dom.sVoice.value = '2'; // leftover selection from prior session
+  dom.sVoice.children = []; // simulate empty select without "" option
+
+  let resolveProfilesFetch;
+  globalThis.fetch = async (url) => {
+    if (url === '/api/voice/profiles') {
+      return new Promise(resolve => {
+        resolveProfilesFetch = () => resolve(response({ profiles, active_profile_id: 1 }));
+      });
+    }
+    return response({});
+  };
+
+  const openPromise = openSessionSettings();
+  assert.equal(dom.sVoice.value, '', 'sVoice.value should synchronously reset to empty string for unbound session');
+
+  resolveProfilesFetch();
+  await openPromise;
+  await tick();
+
+  // Test B: First time opening for session with voiceProfileId: 2 when select has no options
+  first.settings.voiceProfileId = 2;
+  state.activeId = first.id;
+  dom.sVoice.value = '';
+  dom.sVoice.children = [];
+
+  let resolveProfilesFetchB;
+  globalThis.fetch = async (url) => {
+    if (url === '/api/voice/profiles') {
+      return new Promise(resolve => {
+        resolveProfilesFetchB = () => resolve(response({ profiles, active_profile_id: 1 }));
+      });
+    }
+    return response({});
+  };
+
+  const openPromiseB = openSessionSettings();
+  assert.equal(dom.sVoice.value, '2', 'sVoice.value should be 2 on first open even with empty select element');
+  const placeholderOpt = (dom.sVoice.options || dom.sVoice.children).find(o => String(o.value) === '2');
+  assert.ok(placeholderOpt, 'placeholder option for character 2 should be inserted');
+  assert.equal(placeholderOpt.textContent, '角色2');
+
+  resolveProfilesFetchB();
+  await openPromiseB;
+  await tick();
+  passed++;
+}
+{
+  const { first, second, dom } = setup();
+  const toastRoot = element();
+  toastRoot.id = 'toastRoot';
+  toastRoot.querySelectorAll = () => toastRoot.children;
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
+    createElement: () => element(),
+  };
+
+  const profiles = [
+    { id: 1, name: '角色1', system_prompt: '人设1' },
+    { id: 2, name: '角色2', system_prompt: '人设2' },
+  ];
+
+  // Cold start: empty voiceProfiles cache in memory
+  globalThis.fetch = async () => response({ profiles: [], active_profile_id: null });
+  await fetchVoiceProfiles();
+
+  // Session has voiceProfileId: 2, but voiceProfiles is empty
+  first.settings.voiceProfileId = 2;
+  first.title = '冷启动会话';
+  state.activeId = first.id;
+  dom.sVoice.value = '';
+  dom.sVoice.children = [];
+
+  let profilesFetchCount = 0;
+  let resolveColdFetch;
+  globalThis.fetch = async (url) => {
+    if (url === '/api/voice/profiles') {
+      profilesFetchCount++;
+      if (profilesFetchCount === 1) {
+        return new Promise(resolve => {
+          resolveColdFetch = () => resolve(response({ profiles, active_profile_id: 1 }));
+        });
+      }
+      return response({ profiles, active_profile_id: 1 });
+    }
+    return response({});
+  };
+
+  try {
+    const openPromise = openSessionSettings();
+    // Synchronously before catalog arrives:
+    assert.equal(dom.sVoice.value, '2', 'sVoice.value should be synchronously 2 even on cold catalog');
+    const placeholder = (dom.sVoice.options || dom.sVoice.children).find(o => String(o.value) === '2');
+    assert.ok(placeholder, 'placeholder option should exist before catalog loads');
+    assert.equal(placeholder.textContent, '#2', 'placeholder shows the voice id before the catalog loads');
+
+    // Immediate save before catalog resolves:
+    dom.sTemp.value = '0.65';
+    await dom.sSave.click();
+    assert.equal(first.settings.voiceProfileId, 2, 'voiceProfileId should remain 2 after immediate cold save');
+    assert.equal(first.settings.temperature, 0.65, 'temperature should be saved');
+    assert.ok(!toastRoot.children.some(t => (t.dataset?.msg || '').includes('人设草稿与当前角色不一致')),
+      'should not falsely report persona draft mismatch on cold save');
+
+    resolveColdFetch();
+    await openPromise;
+    await tick();
+
+    assert.equal(dom.sVoice.value, '2', 'sVoice.value should remain 2 after cold catalog resolves');
+    passed++;
+  } finally {
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    globalThis.document = previousDocument;
+  }
+}
 console.log(`Voice settings recovery: ${passed} scenarios passed`);
+
+

@@ -111,19 +111,38 @@ export function getVoiceProfiles() {
 
 export function cancelSessionSettingsLoad() { editorRevision += 1; }
 
+function syncInitialSessionVoiceSelection(session) {
+  if (!_dom.sVoice) return;
+  const initialVoiceId = session.settings?.voiceProfileId ? String(session.settings.voiceProfileId) : '';
+  const options = Array.from(_dom.sVoice.options || _dom.sVoice.children || []);
+  if (initialVoiceId && !options.some((opt) => String(opt.value) === initialVoiceId)) {
+    // Until the profile list loads, keep the bound voice selected so a save cannot unbind it.
+    const opt = document.createElement('option');
+    opt.value = initialVoiceId;
+    opt.textContent = voiceProfiles.find((p) => String(p.id) === initialVoiceId)?.name || `#${initialVoiceId}`;
+    _dom.sVoice.appendChild(opt);
+  }
+  _dom.sVoice.value = initialVoiceId;
+  syncCustomVoiceBox();
+}
+
 export async function openSessionSettings() {
   const s = getActive();
   if (!s) return;
   const revision = ++editorRevision;
   if (_dom.smTitle) _dom.smTitle.textContent = `· ${s.title}`;
+  syncInitialSessionVoiceSelection(s);
+  applyProfilePromptToField(s.settings?.voiceProfileId ?? null);
   if (_dom.sSystem) {
     // 人设提示词是角色级数据，权威源在角色包；这里只展示当前绑定角色的那一份
     if (!voiceProfiles.length) {
       try { await fetchVoiceProfiles(); } catch (_) { /* 下面按空值处理 */ }
     }
     if (getActive() !== s || revision !== editorRevision) return;
-    const prof = voiceProfiles.find((p) => p.id === s.settings?.voiceProfileId);
-    applyProfilePromptToField(prof ? prof.id : null);
+    const cleanPrompt = (_dom.sSystem.value || '').trim() === _promptBaseline.trim();
+    if (cleanPrompt) {
+      applyProfilePromptToField(s.settings?.voiceProfileId ?? null);
+    }
   }
   if (_dom.sTemp) _dom.sTemp.value = s.settings.temperature;
   if (_dom.sTopP) _dom.sTopP.value = s.settings.topP;
@@ -138,6 +157,7 @@ export async function openSessionSettings() {
   if (_dom.sTtsTopP) _dom.sTtsTopP.value = s.settings.ttsTopP;
   if (_dom.sTtsTemp) _dom.sTtsTemp.value = s.settings.ttsTemperature;
   syncRangeLabels();
+  syncInitialSessionVoiceSelection(s);
   if (_callbacks.openModal) _callbacks.openModal(_dom.sessionModal);
   // Opening the shared center starts a background catalog refresh. Start the
   // editor's own read afterwards so its render uses the newest catalog owner.
