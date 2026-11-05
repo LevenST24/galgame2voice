@@ -448,3 +448,40 @@ test('removed turn error code reports the deleted or cleared conversation after 
   assert.equal(failure.error, '对话已被删除或清空，本次回复未保存。');
   assert.equal(events.some(event => event.type === 'done'), false);
 });
+
+test('send: text exceeding 4000 characters is rejected with onBlocked message and clean state', () => {
+  const h = setup();
+  const longPrompt = '测'.repeat(4001);
+  const result = h.conversation.send(longPrompt);
+  assert.equal(result, false);
+  assert.equal(h.stream.requests.length, 0);
+  assert.equal(h.session.messages.length, 0);
+  assert.deepEqual(h.blocked, ['单次发送内容不能超过 4000 字，请删减后再发送。']);
+});
+
+test('send: text at exact 4000 characters boundary is accepted and transmitted', () => {
+  const h = setup();
+  const exactPrompt = '测'.repeat(4000);
+  const result = h.conversation.send(exactPrompt);
+  assert.equal(result, true);
+  assert.equal(h.stream.requests.length, 1);
+  assert.equal(h.session.messages.length, 1);
+  assert.equal(h.session.messages[0].content, exactPrompt);
+  assert.deepEqual(h.blocked, []);
+  h.conversation.stop();
+});
+
+test('send: whitespace-padded text respects trimmed length against 4000 limit', () => {
+  const h1 = setup();
+  const acceptedText = `  ${'a'.repeat(4000)}  \n`;
+  const result1 = h1.conversation.send(acceptedText);
+  assert.equal(result1, true);
+  h1.conversation.stop();
+
+  const h2 = setup();
+  const rejectedText = `  ${'b'.repeat(4001)}  \n`;
+  const result2 = h2.conversation.send(rejectedText);
+  assert.equal(result2, false);
+  assert.deepEqual(h2.blocked, ['单次发送内容不能超过 4000 字，请删减后再发送。']);
+});
+

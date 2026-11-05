@@ -73,6 +73,10 @@ export function createConversation({
       onBlocked?.('正在删除这个对话，请稍候或切换到其他对话。');
       return false;
     }
+    if (text.length > 4000) {
+      onBlocked?.('单次发送内容不能超过 4000 字，请删减后再发送。');
+      return false;
+    }
     const originId = session.id;
     beforeSend?.();
     let userMessage = retryOf;

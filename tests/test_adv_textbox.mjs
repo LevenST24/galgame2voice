@@ -546,4 +546,26 @@ test('textbox: long Japanese line pagination strictly confines every page within
   }
 });
 
+test('textbox: textarea has maxLength 4000 and retains draft when send is rejected', () => {
+  const container = new FakeElement();
+  const sent = [];
+  const tb = createTextbox(container, {
+    getSettings: () => ({ playerName: '勇者' }),
+    onSend: (text) => {
+      if (text.length > 4000) return false;
+      sent.push(text);
+      return true;
+    },
+  });
+  tb.enterInput({ canSend: true });
+  const textarea = container.querySelector('.adv-player-textarea');
+  assert.equal(textarea.maxLength, 4000);
+
+  const longText = 'a'.repeat(4005);
+  textarea.value = longText;
+  textarea.dispatchEvent({ type: 'keydown', key: 'Enter', shiftKey: false, preventDefault() {} });
+  assert.equal(sent.length, 0);
+  assert.equal(textarea.value, longText, 'Textarea draft must be preserved when onSend returns false');
+});
+
 
