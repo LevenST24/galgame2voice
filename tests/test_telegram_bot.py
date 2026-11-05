@@ -1072,5 +1072,282 @@ class TestTelegramConsoleTtsSettings:
         assert cb_split.callback_query.edit_count == 0
 
 
+class TestTelegramVoiceMenuRescan:
+    """Verifies that clicking '🔄 刷新角色' (menu_voice callback) rescans character packages from disk."""
+
+    @pytest.mark.asyncio
+    async def test_telegram_voice_menu_rescans_new_character_packages(self, tmp_path, monkeypatch):
+        import wave
+        import json
+        from galgame2voice.database.session import init_db
+        from galgame2voice.services.character_manager import CharacterManager
+
+        db_file = tmp_path / "test.db"
+        db_path = str(db_file)
+        await init_db(db_path)
+
+        chars_dir = tmp_path / "characters"
+        chars_dir.mkdir()
+
+        mgr = CharacterManager(characters_dir=chars_dir)
+        monkeypatch.setattr(CharacterManager, "_instance", mgr)
+
+        handlers = TelegramBotHandlers(admin_ids=[1001], db_path=db_path)
+
+        class MockQuery:
+            def __init__(self, data):
+                self.data = data
+                self.answered = False
+                self.answer_text = None
+                self.edited_text = None
+                self.edited_markup = None
+
+            async def answer(self, text=None, show_alert=False):
+                self.answered = True
+                self.answer_text = text
+
+            async def edit_message_text(self, text, reply_markup=None):
+                self.edited_text = text
+                self.edited_markup = reply_markup
+
+        class CallbackUpdate:
+            def __init__(self, data, chat_id=1001, user_id=1001):
+                self.callback_query = MockQuery(data)
+                self.effective_chat = type("Chat", (), {"id": chat_id})()
+                self.effective_user = type("User", (), {"id": user_id})()
+
+        class DummyContext:
+            def __init__(self):
+                self.bot = None
+
+        try:
+            # Add a new character package to characters/ directory while bot is running
+            new_char_dir = chars_dir / "kuro"
+            new_char_dir.mkdir()
+            (new_char_dir / "gpt.ckpt").write_bytes(b"dummy_weights")
+            (new_char_dir / "sovits.pth").write_bytes(b"dummy_weights")
+            with wave.open(str(new_char_dir / "ref.wav"), "wb") as audio:
+                audio.setnchannels(1)
+                audio.setsampwidth(2)
+                audio.setframerate(8000)
+                audio.writeframes(b"\x01\x00" * 8000 * 4)
+
+            manifest = {
+                "id": "kuro",
+                "name": "黑羽",
+                "version": "1.0.0",
+                "gpt_weights": "gpt.ckpt",
+                "sovits_weights": "sovits.pth",
+                "system_prompt": "你好，我是黑羽",
+                "emotions": {
+                    "gentle": {
+                        "audio": "ref.wav",
+                        "text": "こんにちは",
+                        "lang": "ja",
+                    }
+                },
+            }
+            (new_char_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            # Simulate user tapping "🔄 刷新角色" (callback_data="menu_voice")
+            cb_update = CallbackUpdate("menu_voice")
+            await handlers.handle_callback_query(cb_update, DummyContext())
+
+            assert cb_update.callback_query.edited_text is not None
+            assert "黑羽" in cb_update.callback_query.edited_text
+
+            markup = cb_update.callback_query.edited_markup
+            assert markup is not None
+            btn_texts = [btn.text for row in markup.inline_keyboard for btn in row]
+            assert any("黑羽" in text for text in btn_texts)
+        finally:
+            CharacterManager.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_telegram_voice_menu_rescan_exception_falls_back_gracefully(self, temp_db_path, monkeypatch, caplog):
+        from galgame2voice.services.character_manager import CharacterManager
+
+        handlers = TelegramBotHandlers(admin_ids=[1001], db_path=temp_db_path)
+
+        class MockQuery:
+            def __init__(self, data):
+                self.data = data
+                self.answered = False
+                self.answer_text = None
+                self.edited_text = None
+                self.edited_markup = None
+
+            async def answer(self, text=None, show_alert=False):
+                self.answered = True
+                self.answer_text = text
+
+            async def edit_message_text(self, text, reply_markup=None):
+                self.edited_text = text
+                self.edited_markup = reply_markup
+
+        class CallbackUpdate:
+            def __init__(self, data, chat_id=1001, user_id=1001):
+                self.callback_query = MockQuery(data)
+                self.effective_chat = type("Chat", (), {"id": chat_id})()
+                self.effective_user = type("User", (), {"id": user_id})()
+
+        class DummyContext:
+            def __init__(self):
+                self.bot = None
+
+        def _exploding_discover():
+            raise OSError("Simulated disk I/O error during scan")
+
+        mgr = CharacterManager.get_instance()
+        monkeypatch.setattr(mgr, "discover_characters", _exploding_discover)
+
+        try:
+            cb_update = CallbackUpdate("menu_voice")
+            # Should not raise exception
+            await handlers.handle_callback_query(cb_update, DummyContext())
+
+            assert cb_update.callback_query.edited_text is not None
+            assert "二次元伴侣中心" in cb_update.callback_query.edited_text
+            assert "Character package rescan failed before voice menu render" in caplog.text
+        finally:
+            CharacterManager.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_telegram_voice_menu_sync_db_exception_falls_back_gracefully(self, temp_db_path, monkeypatch, caplog):
+        from galgame2voice.services.character_manager import CharacterManager
+
+        handlers = TelegramBotHandlers(admin_ids=[1001], db_path=temp_db_path)
+
+        class MockQuery:
+            def __init__(self, data):
+                self.data = data
+                self.answered = False
+                self.answer_text = None
+                self.edited_text = None
+                self.edited_markup = None
+
+            async def answer(self, text=None, show_alert=False):
+                self.answered = True
+                self.answer_text = text
+
+            async def edit_message_text(self, text, reply_markup=None):
+                self.edited_text = text
+                self.edited_markup = reply_markup
+
+        class CallbackUpdate:
+            def __init__(self, data, chat_id=1001, user_id=1001):
+                self.callback_query = MockQuery(data)
+                self.effective_chat = type("Chat", (), {"id": chat_id})()
+                self.effective_user = type("User", (), {"id": user_id})()
+
+        class DummyContext:
+            def __init__(self):
+                self.bot = None
+
+        async def _exploding_sync(conn):
+            raise RuntimeError("Simulated database lock during sync")
+
+        mgr = CharacterManager.get_instance()
+        monkeypatch.setattr(mgr, "sync_with_db", _exploding_sync)
+
+        try:
+            cb_update = CallbackUpdate("menu_voice")
+            await handlers.handle_callback_query(cb_update, DummyContext())
+
+            assert cb_update.callback_query.edited_text is not None
+            assert "二次元伴侣中心" in cb_update.callback_query.edited_text
+            assert "Character package rescan failed before voice menu render" in caplog.text
+        finally:
+            CharacterManager.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_telegram_voice_menu_rescan_handles_partially_invalid_packages(self, tmp_path, monkeypatch):
+        import wave
+        import json
+        from galgame2voice.database.session import init_db
+        from galgame2voice.services.character_manager import CharacterManager
+
+        db_file = tmp_path / "test.db"
+        db_path = str(db_file)
+        await init_db(db_path)
+
+        chars_dir = tmp_path / "characters"
+        chars_dir.mkdir()
+
+        mgr = CharacterManager(characters_dir=chars_dir)
+        monkeypatch.setattr(CharacterManager, "_instance", mgr)
+
+        handlers = TelegramBotHandlers(admin_ids=[1001], db_path=db_path)
+
+        class MockQuery:
+            def __init__(self, data):
+                self.data = data
+                self.answered = False
+                self.answer_text = None
+                self.edited_text = None
+                self.edited_markup = None
+
+            async def answer(self, text=None, show_alert=False):
+                self.answered = True
+                self.answer_text = text
+
+            async def edit_message_text(self, text, reply_markup=None):
+                self.edited_text = text
+                self.edited_markup = reply_markup
+
+        class CallbackUpdate:
+            def __init__(self, data, chat_id=1001, user_id=1001):
+                self.callback_query = MockQuery(data)
+                self.effective_chat = type("Chat", (), {"id": chat_id})()
+                self.effective_user = type("User", (), {"id": user_id})()
+
+        class DummyContext:
+            def __init__(self):
+                self.bot = None
+
+        try:
+            # 1. Invalid package folder
+            bad_dir = chars_dir / "bad_pkg"
+            bad_dir.mkdir()
+            (bad_dir / "manifest.json").write_text("{invalid_json", encoding="utf-8")
+
+            # 2. Valid package folder
+            good_dir = chars_dir / "kuro"
+            good_dir.mkdir()
+            (good_dir / "gpt.ckpt").write_bytes(b"dummy_weights")
+            (good_dir / "sovits.pth").write_bytes(b"dummy_weights")
+            with wave.open(str(good_dir / "ref.wav"), "wb") as audio:
+                audio.setnchannels(1)
+                audio.setsampwidth(2)
+                audio.setframerate(8000)
+                audio.writeframes(b"\x01\x00" * 8000 * 4)
+
+            manifest = {
+                "id": "kuro",
+                "name": "黑羽",
+                "version": "1.0.0",
+                "gpt_weights": "gpt.ckpt",
+                "sovits_weights": "sovits.pth",
+                "system_prompt": "你好，我是黑羽",
+                "emotions": {
+                    "gentle": {
+                        "audio": "ref.wav",
+                        "text": "こんにちは",
+                        "lang": "ja",
+                    }
+                },
+            }
+            (good_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            cb_update = CallbackUpdate("menu_voice")
+            await handlers.handle_callback_query(cb_update, DummyContext())
+
+            assert cb_update.callback_query.edited_text is not None
+            assert "黑羽" in cb_update.callback_query.edited_text
+            markup = cb_update.callback_query.edited_markup
+            btn_texts = [btn.text for row in markup.inline_keyboard for btn in row]
+            assert any("黑羽" in text for text in btn_texts)
+        finally:
+            CharacterManager.reset_instance()
 
 
