@@ -510,6 +510,8 @@ class TtsService:
         priority = TtsPriority.from_options(opts)
         gen_id = opts.get("_generation_id")
 
+        # Privacy mode keeps no cache; the reply still needs a playable file.
+        use_cache = use_cache and not get_settings().privacy_mode
         if use_cache:
             cache_key, clean_text, params_hash = self.cache_manager.compute_cache_key(text, options=opts)
             cached = await self.cache_manager.get_file(cache_key)
