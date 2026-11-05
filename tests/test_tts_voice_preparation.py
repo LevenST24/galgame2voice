@@ -462,3 +462,15 @@ async def test_failed_preparation_preserves_selection_and_does_not_cache_wrong_a
         assert (await crud.get_active_voice_profile(conn)).id == stack.profiles[0].id
     refuse = False
     assert await render(stack, 'bytes') == wav(600)
+
+
+@pytest.mark.parametrize('mode', ['bytes', 'file', 'stream'])
+async def test_voice_loaded_for_synthesis_counts_as_the_active_voice(stack, mode):
+    # Choosing that voice again (POST /api/voice/switch, the Telegram voice menu) asks
+    # is_active_profile whether the engine already has it, to skip the switch and its memory guard.
+    from galgame2voice.services.voice_manager import VoiceManager
+
+    await render(stack, mode)
+    assert 'voice_b' in stack.engine.gpt and 'voice_b' in stack.engine.sovits
+
+    assert VoiceManager(stack.client, db_path=str(stack.db)).is_active_profile(stack.profiles[1])
