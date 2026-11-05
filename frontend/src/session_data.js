@@ -25,7 +25,8 @@ export function pickSettings(value, defaults) {
       result[key] = candidate;
     }
   }
-  if (result.advPrimaryLanguage === result.advSubtitleLanguage) {
+  if ('advPrimaryLanguage' in defaults && 'advSubtitleLanguage' in defaults &&
+      result.advPrimaryLanguage === result.advSubtitleLanguage) {
     result.advSubtitleLanguage = result.advPrimaryLanguage === 'zh' ? 'ja' : 'zh';
   }
   return result;

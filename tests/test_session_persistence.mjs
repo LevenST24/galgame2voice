@@ -3,7 +3,7 @@ import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSess
 import { mergeChatBackup, exportCompleteChatBackup } from '../frontend/src/chat_backup.js';
 import { pickSettings, serverTimestamp } from '../frontend/src/session_data.js';
 import { streamChat } from '../frontend/src/ai.js';
-import { GREETING, LEGACY_GREETINGS, loadState } from '../frontend/src/store.js';
+import { DEFAULT_GLOBAL, DEFAULT_SESSION_SETTINGS, GREETING, LEGACY_GREETINGS, loadState } from '../frontend/src/store.js';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const response = data => ({ ok: true, json: async () => data });
@@ -15,6 +15,34 @@ let passed = 0;
   assert.equal(pickSettings({ advPlayerName: 'Player' }, defaults).advPlayerName, '我');
   assert.equal(pickSettings({ advPlayerName: '小明' }, defaults).advPlayerName, '小明');
   assert.equal(pickSettings({}, defaults).advPlayerName, '我'); passed++;
+}
+
+{
+  const cleanedGlobal = pickSettings({ voiceMode: true, advSubtitleLanguage: 'zh' }, DEFAULT_GLOBAL);
+  assert.equal('advSubtitleLanguage' in cleanedGlobal, false);
+  assert.equal(cleanedGlobal.advSubtitleLanguage, undefined);
+
+  const cleanedGlobalEmpty = pickSettings({}, DEFAULT_GLOBAL);
+  assert.equal('advSubtitleLanguage' in cleanedGlobalEmpty, false);
+  assert.equal(cleanedGlobalEmpty.advSubtitleLanguage, undefined);
+
+  const fixedSession = pickSettings({ advPrimaryLanguage: 'zh', advSubtitleLanguage: 'zh' }, DEFAULT_SESSION_SETTINGS);
+  assert.equal(fixedSession.advSubtitleLanguage, 'ja');
+
+  // mergeChatBackup strips polluted advSubtitleLanguage from merged export global
+  const serverBkp = {
+    format: 'galgame2voice.chat', version: 1,
+    sessions: [{ id: 's_srv', title: 's', createdAt: 1, updatedAt: 2, settings: {}, messages: [] }],
+    global: { voiceMode: true, advSubtitleLanguage: 'zh' },
+  };
+  const localBkp = {
+    format: 'galgame2voice.chat', version: 1,
+    sessions: [{ id: 's_loc', title: 'l', createdAt: 1, updatedAt: 2, settings: {}, messages: [] }],
+    global: { voiceMode: true, advSubtitleLanguage: 'zh' },
+  };
+  const merged = mergeChatBackup(serverBkp, localBkp);
+  assert.equal('advSubtitleLanguage' in JSON.parse(merged.content).global, false, 'mergeChatBackup must not leak advSubtitleLanguage in global');
+  passed++;
 }
 
 {
@@ -224,6 +252,8 @@ async function exportPrefix(localSettings, localUpdatedAt) {
   const result = await exportCompleteChatBackup();
   assert.deepEqual(calls, ['/api/chat/export']);
   const exported = JSON.parse(result.content).sessions[0];
+  const exportedGlobal = JSON.parse(result.content).global;
+  assert.equal('advSubtitleLanguage' in exportedGlobal, false, 'exportCompleteChatBackup should not contain advSubtitleLanguage in global');
   return { result, exported };
 }
 {
