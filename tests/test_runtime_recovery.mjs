@@ -6,7 +6,7 @@ import { waitForEngine } from '../frontend/src/controllers/engine_recovery.js';
 import { saveConfirmedConfig } from '../frontend/src/controllers/config_recovery.js';
 import { ensureSessionVoice, initVoiceSettings } from '../frontend/src/controllers/voice_settings.js';
 import { initGlobalSettings, loadGlobalConfig, saveGlobalConfig, handleRestartSovits, fetchSystemTelemetry, savePrivateEndpointPreference, handleProviderTest, handleActivateProvider } from '../frontend/src/controllers/global_settings.js';
-import { renderSystemVersionUI, initUpdateManager, handleCheckUpdate, handleApplyUpdate } from '../frontend/src/controllers/update_manager.js';
+import { renderSystemVersionUI, initUpdateManager, loadSystemVersionInfo, handleCheckUpdate, handleApplyUpdate } from '../frontend/src/controllers/update_manager.js';
 import { formatUpdateStatus } from '../frontend/src/settings.js';
 
 let passed = 0;
@@ -986,6 +986,100 @@ for (const allowed of [true, false]) {
     passed++;
   } finally {
     for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    globalThis.document = previousDocument;
+  }
+}
+{
+  const doc = fakeDocument();
+  const toastRoot = doc.createElement('div');
+  toastRoot.id = 'toastRoot';
+  doc.body.appendChild(toastRoot);
+  const dom = {
+    gDashVersionBadge: doc.createElement('span'),
+    gCurrentCommit: doc.createElement('span'),
+    gCurrentBranch: doc.createElement('span'),
+    gRemoteStatusTag: doc.createElement('span'),
+    gUpdateNoticeBox: doc.createElement('div'),
+    gUpdateNoticeTitle: doc.createElement('div'),
+    gUpdateNoticeDesc: doc.createElement('div'),
+    gUpdateNoticeIcon: doc.createElement('span'),
+    gCommitsLogContainer: doc.createElement('div'),
+    gCommitsLogList: doc.createElement('ul'),
+    gBtnCheckUpdate: doc.createElement('button'),
+    gBtnCheckUpdateText: doc.createElement('span'),
+    gBtnApplyUpdate: doc.createElement('button'),
+    gBtnApplyUpdateText: doc.createElement('span'),
+  };
+  dom.gUpdateNoticeBox.classList.add('hidden');
+  dom.gCommitsLogContainer.classList.add('hidden');
+  dom.gBtnCheckUpdateText.textContent = '检查更新';
+  dom.gBtnApplyUpdateText.textContent = '一键拉取并更新';
+  initUpdateManager(dom);
+  const previousDocument = globalThis.document;
+  globalThis.document = doc;
+  const originalError = console.error;
+  const originalWarn = console.warn;
+  console.error = () => {};
+  console.warn = () => {};
+  try {
+    globalThis.fetch = async (url) => String(url).includes('check_remote=true')
+      ? response({
+        current_version: '1111111',
+        latest_version: '3333333',
+        current_branch: 'main',
+        has_update: true,
+        behind_count: 2,
+        build_pending: false,
+        error: null,
+        commits_log: ['3333333 feat: update (2026-11-05)'],
+      })
+      : response({
+        current_version: '1111111',
+        latest_version: '1111111',
+        current_branch: 'main',
+        has_update: false,
+        behind_count: 0,
+        build_pending: false,
+        error: null,
+        commits_log: [],
+      });
+    await handleCheckUpdate();
+    assert.equal(dom.gDashVersionBadge.textContent, '有更新 (2)');
+    assert.equal(dom.gBtnApplyUpdate.className, 'btn primary');
+    assert.match(dom.gBtnApplyUpdateText.textContent, /2 个新提交/);
+    await loadSystemVersionInfo(false);
+    assert.equal(dom.gDashVersionBadge.textContent, '有更新 (2)');
+    assert.equal(dom.gRemoteStatusTag.textContent, '落后 2 个提交');
+    assert.equal(dom.gBtnApplyUpdate.className, 'btn primary');
+    assert.match(dom.gBtnApplyUpdateText.textContent, /2 个新提交/);
+
+    globalThis.fetch = async () => response({
+      current_version: '3333333',
+      latest_version: '3333333',
+      current_branch: 'main',
+      has_update: false,
+      behind_count: 0,
+      build_pending: false,
+      error: null,
+      commits_log: [],
+    });
+    await handleCheckUpdate();
+    assert.equal(dom.gUpdateNoticeBox.classList.contains('hidden'), false);
+    assert.equal(dom.gUpdateNoticeTitle.textContent, '当前已是最新版本');
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    toastRoot.replaceChildren();
+
+    globalThis.fetch = async () => { throw new TypeError('Failed to fetch'); };
+    await handleCheckUpdate();
+    assert.equal(dom.gUpdateNoticeBox.classList.contains('hidden'), true);
+    assert.equal(toastRoot.children.length, 1);
+    assert.equal(toastRoot.children[0].dataset.msg, '检查更新失败：暂时无法连接服务，请检查网络连接后重试');
+    assert.match(toastRoot.children[0].className, /toast-error/);
+    passed++;
+  } finally {
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    console.error = originalError;
+    console.warn = originalWarn;
     globalThis.document = previousDocument;
   }
 }
