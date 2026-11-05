@@ -8,7 +8,12 @@ import { decide, createShortcuts } from '../frontend/src/adv/shortcuts.js';
 import { createConversation } from '../frontend/src/conversation.js';
 import { createLinePlayer } from '../frontend/src/adv/line_player.js';
 import { clearMemAudioCache } from '../frontend/src/cache.js';
-import { DEFAULT_SESSION_SETTINGS, GREETING } from '../frontend/src/store.js';
+import { initApp } from '../frontend/src/main.js';
+import { state as storedState, loadState, DEFAULT_SESSION_SETTINGS, GREETING } from '../frontend/src/store.js';
+import { streamAudioController } from '../frontend/src/audio_player.js';
+import { initAudioPlayerUi, stopCurrentVoice } from '../frontend/src/controllers/audio_player_ui.js';
+import { initVoiceSettings, fetchVoiceProfiles } from '../frontend/src/controllers/voice_settings.js';
+import { audioStore } from '../frontend/src/voice.js';
 import { fakeDocument, fakeClock, Element, microtasks } from './helpers/adv_dom.mjs';
 import { fakeChatStream, tick } from './helpers/chat_stream.mjs';
 
@@ -1742,4 +1747,357 @@ test('the welcome line, stored without split lines, shows no 语音 or 重新生
   assert.equal(reply.querySelector('.adv-log-regenerate-btn').hidden, false, 'an old reply without audio still offers regeneration');
 
   log.destroy();
+});
+
+
+test('LOG replay of line voice, legacy voice, and user recording keeps an in-flight line regeneration alive while preserving explicit cancel and LOG close', async (t) => {
+  const prev = {
+    document: globalThis.document,
+    window: globalThis.window,
+    Audio: globalThis.Audio,
+    fetch: globalThis.fetch,
+    localStorage: globalThis.localStorage,
+  };
+  const doc = fakeDocument();
+  globalThis.document = doc;
+
+  const contexts = [];
+  class AudioContextBoundary {
+    state = 'running';
+    currentTime = 0;
+    destination = {};
+    sources = [];
+    constructor() {
+      contexts.push(this);
+    }
+    createGain() {
+      return {
+        gain: { value: 1, setValueAtTime() {}, cancelScheduledValues() {}, linearRampToValueAtTime() {} },
+        connect() {},
+        disconnect() {},
+      };
+    }
+    createBufferSource() {
+      const source = {
+        started: false,
+        stopped: false,
+        connect() {},
+        disconnect() {},
+        start(time) { this.started = true; this.time = time; },
+        stop() { this.stopped = true; },
+        finish() { this.onended?.(); },
+      };
+      this.sources.push(source);
+      return source;
+    }
+    async decodeAudioData() {
+      return { duration: 4 };
+    }
+    async suspend() { this.state = 'suspended'; }
+    async resume() { this.state = 'running'; }
+    async close() { this.state = 'closed'; }
+  }
+
+  const audioElements = [];
+  class AudioElementBoundary {
+    constructor(src) {
+      this.src = src;
+      this.paused = true;
+      this.duration = 2;
+      this.currentTime = 0;
+      audioElements.push(this);
+    }
+    async play() {
+      this.paused = false;
+    }
+    pause() {
+      this.paused = true;
+    }
+  }
+
+  globalThis.window = { innerWidth: 1280, AudioContext: AudioContextBoundary };
+  globalThis.Audio = AudioElementBoundary;
+
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: key => (storage.has(key) ? storage.get(key) : null),
+    setItem: (key, value) => { storage.set(key, String(value)); },
+    removeItem: key => { storage.delete(key); },
+  };
+
+  const regenRequests = [];
+  const audioFetches = [];
+  const wavBlob = () => new Blob([new Uint8Array([1, 2, 3, 4])], { type: 'audio/wav' });
+  globalThis.fetch = (url, options = {}) => {
+    if (url === '/api/voice/profiles') {
+      return Promise.resolve(Response.json({ profiles: [{ id: 7, name: '丛雨' }], active_profile_id: 7 }));
+    }
+    if (url === '/api/backgrounds') {
+      return Promise.resolve(Response.json({ backgrounds: [], works: [] }));
+    }
+    if (String(url).startsWith('/api/characters/')) {
+      return Promise.resolve(Response.json({}));
+    }
+    if (String(url).startsWith('/audio/')) {
+      audioFetches.push(String(url));
+      return Promise.resolve(new Response(wavBlob(), { status: 200 }));
+    }
+    if (url === '/api/voice/regenerate-line') {
+      const body = JSON.parse(options.body);
+      let resolve, reject;
+      const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+      options.signal?.addEventListener('abort', () => {
+        reject(new DOMException('aborted', 'AbortError'));
+      }, { once: true });
+      regenRequests.push({
+        body,
+        signal: options.signal,
+        resolve: payload => resolve(Response.json(payload)),
+        reject,
+      });
+      return promise;
+    }
+    return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+  };
+
+  const now = Date.now();
+  const initialSession = {
+    id: 's_real_log',
+    title: '真实接线会话',
+    createdAt: now - 5000,
+    updatedAt: now,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 7 },
+    messages: [
+      {
+        id: 'm_legacy',
+        role: 'assistant',
+        content: '旧式整段回复。',
+        japanese: '昔の返答。',
+        audioUrls: ['/audio/cache/legacy.wav'],
+        ts: now - 3000,
+      },
+      {
+        id: 'm_user',
+        role: 'user',
+        content: '带录音的玩家提问',
+        dur: 2,
+        voiceKey: 'rec_u1',
+        ts: now - 2000,
+      },
+      {
+        id: 'm_10',
+        serverMessageId: 10,
+        role: 'assistant',
+        content: '第一句。第二句。第三句。',
+        japanese: '一句目。二句目。三句目。',
+        ts: now - 1000,
+        lines: [
+          {
+            index: 0,
+            zh: '第一句。',
+            ja: '一句目。',
+            emotion: 'gentle',
+            act: {},
+            audio: {
+              status: 'ready',
+              generated_at: now - 1000,
+              chunks: [{ index: 0, line: 0, audio_url: '/audio/cache/line0.wav', sentence: '一句目。' }],
+            },
+          },
+          {
+            index: 1,
+            zh: '第二句。',
+            ja: '二句目。',
+            emotion: 'gentle',
+            act: {},
+            audio: { status: 'failed', chunks: [] },
+          },
+          {
+            index: 2,
+            zh: '第三句。',
+            ja: '三句目。',
+            emotion: 'gentle',
+            act: {},
+            audio: { status: 'failed', chunks: [] },
+          },
+        ],
+      },
+    ],
+  };
+
+  storage.set('gal2voice.chat.v1', JSON.stringify({
+    sessions: [initialSession],
+    activeId: initialSession.id,
+    global: { voiceMode: true },
+  }));
+  loadState();
+  clearMemAudioCache();
+  audioStore.clear();
+  audioStore.set('m_user', { url: 'blob:user-rec-1', dur: 2 });
+  initAudioPlayerUi({}, {});
+  initVoiceSettings({}, {});
+  await fetchVoiceProfiles();
+
+  const dom = { advRoot: doc.createElement('div') };
+  doc.body.appendChild(dom.advRoot);
+  const app = initApp({ initialize: false, dom });
+  app.fullRender();
+
+  t.after(async () => {
+    app.conversation.stop();
+    app.adv?.unmount();
+    stopCurrentVoice();
+    streamAudioController.stopLine({ fadeMs: 0 });
+    streamAudioController.interrupt(0);
+    await streamAudioController.close();
+    audioStore.clear();
+    clearMemAudioCache();
+    for (const [k, v] of Object.entries(prev)) {
+      if (v === undefined) delete globalThis[k];
+      else globalThis[k] = v;
+    }
+  });
+
+  const flush = async () => {
+    for (let i = 0; i < 6; i++) await tick();
+  };
+
+  app.adv.action('log');
+  const log = app.adv.backlog;
+  assert.ok(log, 'LOG overlay mounted through real adv_app');
+
+  const entries = log.element.querySelectorAll('.adv-log-entry');
+  assert.equal(entries.length, 5);
+  const legacyReplayBtn = entries[0].querySelector('.adv-log-replay-btn');
+  const userRecBtn = entries[1].querySelector('.adv-log-user-recording-btn');
+  const line0ReplayBtn = entries[2].querySelector('.adv-log-replay-btn');
+  const line1ReplayBtn = entries[3].querySelector('.adv-log-replay-btn');
+  const line1RegenBtn = entries[3].querySelector('.adv-log-regenerate-btn');
+  const line1Status = entries[3].querySelector('.adv-log-audio-status');
+  const line2RegenBtn = entries[4].querySelector('.adv-log-regenerate-btn');
+  const line2Status = entries[4].querySelector('.adv-log-audio-status');
+
+  const playingButtons = () => [...log.element.querySelectorAll('button')]
+    .filter(btn => btn.classList.contains('is-playing'));
+
+  // 1. Start single-line regeneration on Line 1
+  line1RegenBtn.click();
+  await flush();
+  assert.equal(regenRequests.length, 1);
+  assert.equal(regenRequests[0].body.line_index, 1);
+  assert.equal(regenRequests[0].body.message_id, 10);
+  assert.equal(line1RegenBtn.textContent, '取消生成');
+  assert.equal(line1RegenBtn.getAttribute('aria-busy'), 'true');
+  assert.equal(line1Status.textContent, '正在生成这句语音…');
+  assert.equal(line1ReplayBtn.disabled, true);
+
+  // 2. Replay another line's「语音」while Line 1 regeneration is in flight
+  line0ReplayBtn.click();
+  await flush();
+  assert.equal(
+    regenRequests[0].signal.aborted,
+    false,
+    `replaying Line 0 aborted Line 1 regeneration; button="${line1RegenBtn.textContent}" status="${line1Status.textContent}"`
+  );
+  assert.equal(line1RegenBtn.textContent, '取消生成');
+  assert.equal(line1RegenBtn.getAttribute('aria-busy'), 'true');
+  assert.equal(line1Status.textContent, '正在生成这句语音…');
+  assert.deepEqual(playingButtons(), [line0ReplayBtn]);
+  const ctx = contexts[0];
+  assert.ok(ctx && ctx.sources.length === 1 && ctx.sources[0].started && !ctx.sources[0].stopped);
+  const line0Source = ctx.sources[0];
+
+  // 3. Replay legacy assistant entry's「语音」while Line 1 regeneration is still in flight
+  legacyReplayBtn.click();
+  await flush();
+  await new Promise(r => setTimeout(r, 60));
+  assert.ok(streamAudioController._linePlayState, 'starting legacy replay sets active line state');
+  assert.equal(streamAudioController._linePlayState.msgId, 'm_legacy', 'starting legacy replay switches active line to m_legacy');
+  assert.equal(streamAudioController._linePlayState.lineIndex, 0);
+  assert.equal(line0Source.stopped, true, 'starting legacy replay stops Line 0 audio source');
+  assert.equal(regenRequests[0].signal.aborted, false, 'legacy replay must not abort Line 1 regeneration');
+  assert.equal(line1RegenBtn.textContent, '取消生成');
+  assert.equal(line1Status.textContent, '正在生成这句语音…');
+  assert.deepEqual(playingButtons(), [legacyReplayBtn]);
+  const legacySource = ctx.sources.at(-1);
+  assert.ok(legacySource !== line0Source && legacySource.started);
+
+  // 4. Play user message recording「播放录音」while Line 1 regeneration is still in flight
+  userRecBtn.click();
+  await flush();
+  assert.equal(streamAudioController._linePlayState, null, 'starting user recording interrupts legacy playback');
+  assert.equal(streamAudioController.isPlaying, false);
+  assert.equal(regenRequests[0].signal.aborted, false, 'user recording playback must not abort Line 1 regeneration');
+  assert.equal(line1RegenBtn.textContent, '取消生成');
+  assert.equal(line1Status.textContent, '正在生成这句语音…');
+  assert.deepEqual(playingButtons(), [userRecBtn]);
+  assert.equal(audioElements.length, 1);
+  assert.equal(audioElements[0].paused, false);
+
+  // 5. Complete Line 1 regeneration while user recording is still playing
+  const generatedAt = now + 500;
+  regenRequests[0].resolve({
+    session_id: initialSession.id,
+    message_id: 10,
+    line_index: 1,
+    voice_profile_id: 7,
+    persisted: true,
+    audio: {
+      status: 'ready',
+      generated_at: generatedAt,
+      voice_profile_id: 7,
+      voice_name: '丛雨',
+      chunks: [{ index: 0, line: 1, audio_url: '/audio/repair_line1.wav', sentence: '二句目。' }],
+    },
+  });
+  await flush();
+
+  // User recording keeps playing without button state conflict; Line 1 updates audio, status, and buttons
+  assert.equal(audioElements[0].paused, false);
+  assert.deepEqual(playingButtons(), [userRecBtn]);
+  assert.equal(line1RegenBtn.hidden, true);
+  assert.equal(line1RegenBtn.getAttribute('aria-busy'), null);
+  assert.equal(line1ReplayBtn.disabled, false);
+  assert.equal(line1Status.hidden, false);
+  assert.equal(line1Status.textContent, '语音已生成，点语音播放。');
+  const activeSession = storedState.sessions.find(s => s.id === initialSession.id);
+  assert.equal(activeSession.messages[2].lines[1].audio.status, 'ready');
+  assert.equal(activeSession.messages[2].lines[1].audio.chunks[0].audio_url, '/audio/repair_line1.wav');
+
+  // 6. Replaying freshly regenerated Line 1 stops the user recording and plays the repaired audio
+  line1ReplayBtn.click();
+  await flush();
+  assert.equal(audioElements[0].paused, true);
+  assert.deepEqual(playingButtons(), [line1ReplayBtn]);
+  assert.equal(audioFetches.at(-1), '/audio/repair_line1.wav');
+  const line1Source = ctx.sources.at(-1);
+  assert.ok(line1Source.started && !line1Source.stopped);
+
+  // 7. Starting and explicitly cancelling Line 2 regeneration («取消生成») keeps Line 1 playback untouched
+  line2RegenBtn.click();
+  await flush();
+  assert.equal(regenRequests.length, 2);
+  assert.equal(line2RegenBtn.textContent, '取消生成');
+  assert.equal(line1Source.stopped, false, 'starting regeneration must not interrupt active replay');
+  assert.deepEqual(playingButtons(), [line1ReplayBtn]);
+
+  await new Promise(r => setTimeout(r, 550));
+  line2RegenBtn.click();
+  await flush();
+  assert.equal(regenRequests[1].signal.aborted, true, 'explicit 取消生成 aborts in-flight regeneration');
+  assert.equal(line2RegenBtn.textContent, '用当前音色重新生成');
+  assert.equal(line2Status.textContent, '已取消本次生成，原音频已保留。');
+  assert.equal(line1Source.stopped, false, 'cancelling regeneration must not interrupt active replay');
+  assert.deepEqual(playingButtons(), [line1ReplayBtn]);
+
+  // 8. Closing LOG cancels in-flight regeneration AND stops active replay
+  line2RegenBtn.click();
+  await flush();
+  assert.equal(regenRequests.length, 3);
+  assert.equal(regenRequests[2].signal.aborted, false);
+
+  app.adv.action('close_overlay');
+  await flush();
+  assert.equal(regenRequests[2].signal.aborted, true, 'closing LOG aborts in-flight regeneration');
+  assert.equal(streamAudioController._linePlayState, null, 'closing LOG interrupts active replay');
 });
