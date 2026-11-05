@@ -114,13 +114,38 @@ export function saveState() {
       return false;
     }
     const previous = localStorage.getItem(STORAGE_KEY);
-    const next = JSON.stringify(snapshot());
+    let next = JSON.stringify(snapshot());
     try { localStorage.setItem(STORAGE_KEY, next); }
     catch (error) {
       if (error.name !== 'QuotaExceededError') throw error;
       // Evict only our optional fallback snapshot, never the primary record.
       localStorage.removeItem(BACKUP_KEY);
-      localStorage.setItem(STORAGE_KEY, next);
+      try {
+        localStorage.setItem(STORAGE_KEY, next);
+      } catch (retryError) {
+        if (retryError.name !== 'QuotaExceededError') throw retryError;
+        const inactive = state.sessions
+          .filter((s) => s && s.id !== state.activeId && Array.isArray(s.messages) && s.messages.length > 0 &&
+            !s.messages.some((m) => m && m.role === 'user' && m.failed))
+          .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
+        let saved = false;
+        for (const s of inactive) {
+          if (!s.lastLine) {
+            const last = s.messages.at(-1);
+            s.lastLine = last?.lines?.at(-1)?.zh || last?.lines?.at(-1)?.ja || last?.content || '';
+          }
+          s.messages = [];
+          next = JSON.stringify(snapshot());
+          try {
+            localStorage.setItem(STORAGE_KEY, next);
+            saved = true;
+            break;
+          } catch (evictError) {
+            if (evictError.name !== 'QuotaExceededError') throw evictError;
+          }
+        }
+        if (!saved) throw retryError;
+      }
     }
     lastStoredRaw = next;
     // A fallback snapshot is best effort; lack of quota must not fail the main
