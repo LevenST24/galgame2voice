@@ -13,6 +13,7 @@ let _promptOwnerId = null;
 let _promptSelection = '';
 let editorRevision = 0;
 let activeProfileId = null;
+let lastSwitchFailed = false;
 let scannedModels = null;
 let pendingScan = null;
 let scanRevision = 0;
@@ -34,6 +35,7 @@ export function invalidateScannedModels() {
 export function initVoiceSettings(dom, callbacks = {}) {
   _dom = dom;
   _callbacks = callbacks;
+  lastSwitchFailed = false;
   editorRevision += 1;
   sessionVoiceRevision += 1;
   profilesRevision += 1;
@@ -203,7 +205,9 @@ export async function fetchVoiceProfiles() {
     if (data.catalog_warning) showToast(data.catalog_warning, 'error');
     // A catalog response may predate a completed switch. Keep its catalog,
     // but never publish that earlier active ID over the switch acknowledgement.
-    if (activeRevision === activeProfileRevision) activeProfileId = data.active_profile_id;
+    if (activeRevision === activeProfileRevision && !lastSwitchFailed) {
+      activeProfileId = data.active_profile_id;
+    }
   }
   return data;
 }
@@ -246,6 +250,7 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
       activeProfileRevision += 1;
     }
     if (!isCurrent()) return;
+    lastSwitchFailed = false;
     activeProfileId = want;
     // 换人后若面板正开着且人设框没有未保存编辑，就跟着换成新角色的那一份
     const modalOpen = _dom.sessionModal && !_dom.sessionModal.classList.contains('hidden');
@@ -257,6 +262,8 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
     if (!silent && !_callbacks.isHomeOpen?.()) showToast(`已切换音色：${data.profile || want}`, 'success');
   } catch (e) {
     if (!isCurrent()) return;
+    lastSwitchFailed = true;
+    activeProfileId = null;
     if (e.data?.detail?.error_code === 'VOICE_PROFILE_SAVE_FAILED') {
       // The models may be loaded even when the saved default is unconfirmed.
       // Older list reads cannot turn that uncertainty back into a known ID.
@@ -582,7 +589,13 @@ export async function deleteVoiceProfile() {
     showToast('请先在下拉框中选择要删除的音色', 'error');
     return;
   }
-  if (id === activeProfileId) {
+  const activeSession = getActive();
+  if (
+    id === activeProfileId
+    && !lastSwitchFailed
+    && voiceProfiles.length > 1
+    && activeSession?.settings?.voiceProfileId === id
+  ) {
     showToast('该音色正在被引擎加载，请先把会话切换到其他音色再删除', 'error');
     return;
   }
@@ -591,6 +604,7 @@ export async function deleteVoiceProfile() {
   _dom.sVoiceDelete.disabled = true;
   try {
     await requestJson(`/api/voice/profiles/${id}`, { method: 'DELETE' });
+    if (id === activeProfileId) activeProfileId = null;
     const cleared = state.sessions.filter(sess => sess.settings?.voiceProfileId === id);
     const sessionVersions = new Map();
     for (const sess of cleared) {
