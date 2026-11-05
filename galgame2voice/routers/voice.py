@@ -729,6 +729,23 @@ def _fs_browse_sync(path: str | None, file_type: str | None) -> dict[str, Any]:
 
 _scan_cache: dict[str, Any] = {}
 _SCAN_TTL_SECONDS = 60.0
+_SCAN_EXCLUDED_DIRS = frozenset({
+    ".git",
+    ".local",
+    "_scratch",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "runtime",
+    ".pytest_cache",
+    ".pytest_basetemp",
+    ".mypy_cache",
+    ".ruff_cache",
+    "pretrained_models",
+    "g2pwmodel",
+    "uvr5_weights",
+})
 
 
 def _discover_gpt_sovits_roots() -> list[str]:
@@ -779,21 +796,19 @@ def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
     for root_dir in candidate_roots:
         try:
             for root, dirs, filenames in os.walk(root_dir):
-                # Skip venvs, repos and caches — huge and irrelevant.
-                dirs[:] = [d for d in dirs if d not in (
-                    ".git", ".local", "_scratch", "node_modules", ".venv", "venv",
-                    "__pycache__", "runtime", ".pytest_cache", ".pytest_basetemp", ".mypy_cache", ".ruff_cache",
-                )]
+                # Skip venvs, repos, caches and built-in non-character model directories.
+                dirs[:] = [d for d in dirs if d.lower() not in _SCAN_EXCLUDED_DIRS]
                 for fname in filenames:
                     ext = os.path.splitext(fname)[1].lower()
-                    full_path = os.path.join(root, fname)
-                    if full_path in seen:
+                    full_path = os.path.normpath(os.path.join(root, fname))
+                    norm_key = os.path.normcase(full_path)
+                    if norm_key in seen:
                         continue
-                    seen.add(full_path)
+                    seen.add(norm_key)
 
                     if ext == ".ckpt":
                         gpt_weights.append({"name": fname, "path": full_path})
-                    elif ext == ".pth" and ("siki" in fname.lower() or "sovits" in root.lower() or "weight" in root.lower()):
+                    elif ext == ".pth":
                         sovits_weights.append({"name": fname, "path": full_path})
                     elif ext in (".wav", ".ogg", ".mp3", ".flac"):
                         audio_files.append({"name": fname, "path": full_path})
