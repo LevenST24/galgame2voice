@@ -323,8 +323,15 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     closePopup(); closeDropdown(); mode = 'home'; load.hidden = true; pane.hidden = false;
     renderPane(true); renderRecents(); focusPrimary();
   }
+  function gridSignature() {
+    const slice = sessions.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+    return JSON.stringify([page, sessions.length, slice.map(s => [s.id, s.title, s.characterName, s.lastLine, s.updatedAt, s.background])]);
+  }
   function setPage(value) { page = Math.max(0, Math.min(value, Math.ceil(sessions.length / PAGE_SIZE) - 1)); renderGrid(); }
   function renderGrid() {
+    // A poll that changes the page rebuilds it; the focused session keeps focus.
+    const focusedId = doc.activeElement?.closest('.adv-title-slot')?.getAttribute('data-session');
+    grid.dataset.key = gridSignature();
     grid.replaceChildren();
     for (const session of sessions.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)) {
       const slot = btn('adv-title-slot', '', () => enter(session.id)); slot.setAttribute('data-session', session.id);
@@ -339,6 +346,10 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     const count = Math.max(1, Math.ceil(sessions.length / PAGE_SIZE));
     info.textContent = `第 ${page + 1} / ${count} 页 · 共 ${sessions.length} 个会话`;
     prev.disabled = page === 0; next.disabled = page >= count - 1;
+    if (focusedId) {
+      const target = [...grid.children].find(c => c.getAttribute('data-session') === focusedId);
+      if (target) focus(target);
+    }
   }
   async function refresh() {
     if (!opened || polling?.revision === revision) return;
@@ -348,7 +359,19 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       const result = await actions.getStatus?.();
       if (!opened || token !== revision) return;
       status = result || status; readSessions(); renderStatus(); renderPane();
-      if (mode === 'all') renderGrid();
+      if (mode === 'all') {
+        if (grid.dataset.key !== gridSignature()) {
+          renderGrid();
+        } else {
+          // Same sessions on the page: only the relative times move on.
+          const slice = sessions.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+          for (const slot of grid.querySelectorAll('.adv-title-slot')) {
+            const session = slice.find(s => s.id === slot.getAttribute('data-session'));
+            const dateEl = slot.querySelector('.adv-title-slot-date');
+            if (dateEl && session) dateEl.textContent = formatHomeTime(session.updatedAt, now());
+          }
+        }
+      }
       // Keep recent buttons stable during polling so keyboard focus is preserved.
       const recentKey = JSON.stringify(sessions.map(s => [s.id, s.characterName, s.title, s.updatedAt, s.settings?.voiceProfileId]));
       if (recents.dataset.key !== recentKey) { recents.dataset.key = recentKey; renderRecents(); }
