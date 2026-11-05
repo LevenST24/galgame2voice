@@ -26,7 +26,7 @@ class Engine:
             error = self.health_error
             if self.delay_probe:
                 self.probing.set()
-                await self.finish_probe.wait()
+                await asyncio.wait_for(self.finish_probe.wait(), timeout=10.0)
             if error:
                 raise error("Synthetic health failure", request=request)
             return httpx.Response(self.health_status, json={"status": "running"})
@@ -186,7 +186,7 @@ async def test_delayed_failure_requires_a_more_recent_remote_confirmation(loaded
     engine.delay_probe = True
     probe = asyncio.create_task(client.check_health())
     try:
-        await engine.probing.wait()
+        await asyncio.wait_for(engine.probing.wait(), timeout=10.0)
         assert await client.switch_voice_profile(profile, force=force)
         engine.finish_probe.set()
         assert not (await probe)["connected"]
@@ -216,7 +216,7 @@ async def test_health_probe_keeps_its_original_address_during_hot_swap(loaded_en
     monkeypatch.setattr('galgame2voice.services.gpt_sovits_client.get_gpt_sovits_client', lambda: client)
     probe = asyncio.create_task(health._probe_gpt_sovits(old_url) if telemetry else client.check_health())
     try:
-        await engine.probing.wait()
+        await asyncio.wait_for(engine.probing.wait(), timeout=10.0)
         await client.set_base_url("http://new-engine.test:9999")
         replacement = Engine()
         client._client = httpx.AsyncClient(transport=httpx.MockTransport(replacement.request))
@@ -242,7 +242,7 @@ async def test_delayed_health_failure_cannot_erase_a_confirmed_individual_update
     engine.delay_probe = True
     probe = asyncio.create_task(client.check_health())
     try:
-        await engine.probing.wait()
+        await asyncio.wait_for(engine.probing.wait(), timeout=10.0)
         if part == 'gpt':
             assert await client.set_gpt_weights(client.current_gpt_weights)
         elif part == 'sovits':
@@ -291,14 +291,14 @@ async def test_restart_during_a_weight_load_rejects_the_old_acknowledgement(load
     async def blocked(request):
         if request.url.path == '/set_gpt_weights':
             entered.set()
-            await finish.wait()
+            await asyncio.wait_for(finish.wait(), timeout=10.0)
         return await original(request)
 
     old_pool = client._client
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(blocked))
     switching = asyncio.create_task(client.switch_voice_profile(profile, force=True))
     try:
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), timeout=10.0)
         await client.control('restart')
         finish.set()
         assert not await switching

@@ -158,10 +158,10 @@ async def test_turn_reply_repair_roundtrip_business_contract(tmp_path, monkeypat
             # Output in legal lines format so line_scanner immediately parses and emits line 0
             payload = '{"lines": [' + json.dumps(first_line, ensure_ascii=False)
             yield payload + "\n"
-            await stream_hang.wait()
+            await asyncio.wait_for(stream_hang.wait(), timeout=10.0)
         finally:
             cleanup_started.set()
-            await release_cleanup.wait()
+            await asyncio.wait_for(release_cleanup.wait(), timeout=10.0)
 
     try:
         # Owned scheduler & cache with patched consumption getters
@@ -183,7 +183,7 @@ async def test_turn_reply_repair_roundtrip_business_contract(tmp_path, monkeypat
             options = options or {}
             # If this is chat stream generation, keep voice pending until cancelled
             if options.get("_priority", 1) > 0 and options.get("filename_prefix") != REPAIR_AUDIO_PREFIX:
-                await chat_tts_hang.wait()
+                await asyncio.wait_for(chat_tts_hang.wait(), timeout=10.0)
             return create_pcm_wav(200)
 
         engine.synthesize = fake_engine_synthesize
@@ -399,7 +399,7 @@ async def test_turn_reply_repair_roundtrip_business_contract(tmp_path, monkeypat
         if proc and proc.returncode is None:
             try:
                 proc.kill()
-                await proc.wait()
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
             except Exception as e:
                 cleanup_errors.append(f"proc: {e}")
 

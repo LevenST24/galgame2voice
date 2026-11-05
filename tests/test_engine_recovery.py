@@ -141,12 +141,12 @@ async def test_restarts_are_serial_even_after_browser_disconnect(engine, monkeyp
     complete = asyncio.Event()
     async def restart(*args):
         entered.set()
-        await complete.wait()
+        await asyncio.wait_for(complete.wait(), timeout=10.0)
         return {"status": "starting"}
     monkeypatch.setattr(health, "_restart_local_engine", restart)
     first = asyncio.create_task(health.restart_sovits_endpoint(None))
     try:
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), timeout=10.0)
         first.cancel()
         with pytest.raises(asyncio.CancelledError):
             await first
