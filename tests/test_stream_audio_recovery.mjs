@@ -473,3 +473,119 @@ test('decode failure shows its own notice while other playback errors keep the L
     else globalThis.document = previous.document;
   }
 });
+
+test('runtime cache storage pruning keeps generated audio bounded to 100 entries and preserves user recordings', async () => {
+  const entries = new Map();
+  const storage = {
+    entries,
+    async match(req) { return entries.get(typeof req === 'string' ? req : req.url)?.clone(); },
+    async put(req, response) { entries.set(typeof req === 'string' ? req : req.url, response.clone()); },
+    async delete(req) { return entries.delete(typeof req === 'string' ? req : req.url); },
+    async keys() { return [...entries.keys()].map(key => new Request(key)); },
+  };
+  globalThis.caches = { open: async () => storage };
+  const previousWindow = globalThis.window;
+  globalThis.window = { ...(previousWindow || {}), caches: globalThis.caches };
+
+  try {
+    for (let i = 1; i <= 110; i++) {
+      await putCachedAudioBlob(`/audio/cache/line_${i}.wav`, blob());
+    }
+    await putCachedAudioBlob('user_rec_1', blob());
+
+    // 等待异步清理完成
+    const deadline = Date.now() + 500;
+    while (Date.now() < deadline) {
+      const allKeys = await storage.keys();
+      const generated = allKeys.filter(req => req.url.includes('/audio_cache/audio%2Fcache%2Fline_'));
+      if (generated.length <= 100) break;
+      await tick(10);
+    }
+
+    const allKeys = await storage.keys();
+    const generated = allKeys.filter(req => req.url.includes('/audio_cache/audio%2Fcache%2Fline_'));
+    const userRecs = allKeys.filter(req => req.url.includes('user_rec_1'));
+
+    assert.ok(generated.length <= 100, `generated audio entries must not exceed 100, got ${generated.length}`);
+    assert.equal(generated.length, 100);
+
+    // 最早写入的生成语音被淘汰
+    const line1 = await storage.match('https://gal2voice.local/audio_cache/audio%2Fcache%2Fline_1.wav');
+    assert.equal(line1, undefined, 'earliest generated audio line_1.wav should have been pruned');
+    const line10 = await storage.match('https://gal2voice.local/audio_cache/audio%2Fcache%2Fline_10.wav');
+    assert.equal(line10, undefined, 'earliest generated audio line_10.wav should have been pruned');
+
+    // 较晚写入的生成语音保留
+    const line11 = await storage.match('https://gal2voice.local/audio_cache/audio%2Fcache%2Fline_11.wav');
+    assert.ok(line11, 'retained generated audio line_11.wav must exist');
+    const line110 = await storage.match('https://gal2voice.local/audio_cache/audio%2Fcache%2Fline_110.wav');
+    assert.ok(line110, 'latest generated audio line_110.wav must exist');
+
+    // 用户录音条目完整保留
+    assert.equal(userRecs.length, 1, 'user recording entry must be preserved');
+    const userRec = await storage.match('https://gal2voice.local/audio_cache/user_rec_1');
+    assert.ok(userRec, 'user recording entry user_rec_1 must exist');
+  } finally {
+    clearMemAudioCache();
+    delete globalThis.caches;
+    globalThis.window = previousWindow;
+  }
+});
+
+test('runtime cache pruning coalesces overlapping prune requests and recovers from storage errors', async () => {
+  const entries = new Map();
+  let failDeleteOnce = true;
+
+  const storage = {
+    entries,
+    async match(req) { return entries.get(typeof req === 'string' ? req : req.url)?.clone(); },
+    async put(req, response) {
+      entries.set(typeof req === 'string' ? req : req.url, response.clone());
+    },
+    async delete(req) {
+      if (failDeleteOnce) {
+        failDeleteOnce = false;
+        throw new Error('Simulated CacheStorage delete failure');
+      }
+      return entries.delete(typeof req === 'string' ? req : req.url);
+    },
+    async keys() {
+      // Simulate artificial delay during prune keys traversal to force concurrency overlap
+      await tick(10);
+      return [...entries.keys()].map(key => new Request(key));
+    },
+  };
+
+  globalThis.caches = {
+    open: async () => storage,
+  };
+  const previousWindow = globalThis.window;
+  globalThis.window = { ...(previousWindow || {}), caches: globalThis.caches };
+
+  try {
+    // Concurrently write 105 entries to verify overlapping writes coalesce into subsequent passes
+    // and that a transient delete error in an earlier pass recovers without deadlocking the scheduler.
+    await Promise.all(
+      Array.from({ length: 105 }, (_, i) => putCachedAudioBlob(`/audio/cache/coalesce_${i}.wav`, blob()))
+    );
+
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      const allKeys = await storage.keys();
+      const generated = allKeys.filter(req => req.url.includes('/audio_cache/audio%2Fcache%2Fcoalesce_'));
+      if (generated.length <= 100) break;
+      await tick(10);
+    }
+
+    const allKeys = await storage.keys();
+    const generated = allKeys.filter(req => req.url.includes('/audio_cache/audio%2Fcache%2Fcoalesce_'));
+    assert.ok(generated.length <= 100, `concurrent burst must be coalesced and pruned to <= 100, got ${generated.length}`);
+    assert.equal(generated.length, 100);
+    assert.equal(failDeleteOnce, false, 'transient storage failure must have been encountered and recovered from');
+  } finally {
+    clearMemAudioCache();
+    delete globalThis.caches;
+    globalThis.window = previousWindow;
+  }
+});
+
