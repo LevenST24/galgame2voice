@@ -2101,3 +2101,144 @@ test('LOG replay of line voice, legacy voice, and user recording keeps an in-fli
   assert.equal(regenRequests[2].signal.aborted, true, 'closing LOG aborts in-flight regeneration');
   assert.equal(streamAudioController._linePlayState, null, 'closing LOG interrupts active replay');
 });
+
+test('LOG partial failed voice exposes playable audio, partial failure note and regenerate button, recovering cleanly on success', async t => {
+  const doc = fakeDocument();
+  const root = doc.createElement('div');
+  doc.body.appendChild(root);
+  const now = Date.now();
+
+  const session = {
+    id: 's_partial_failed',
+    settings: { voiceProfileId: 1 },
+    messages: [{
+      id: 'msg_1',
+      role: 'assistant',
+      content: '完整中文内容。',
+      japanese: '一部失敗した日本語。',
+      ts: now,
+      lines: [{
+        index: 0,
+        zh: '完整中文内容。',
+        ja: '一部失敗した日本語。',
+        emotion: 'neutral',
+        act: {},
+        audio: {
+          status: 'failed',
+          error: 'TTS generation timeout midway',
+          voiceProfileId: 1,
+          chunks: [{ subIndex: 0, audioUrl: '/a.wav' }],
+        },
+      }],
+    }],
+  };
+
+  let regenerated = false;
+  let voiceOn = true;
+  let playedChunks = null;
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => DEFAULT_SESSION_SETTINGS,
+    getCharacter: () => ({ name: '角色' }),
+    voiceEnabled: () => voiceOn,
+    wallNow: () => now,
+    getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
+    audio: {
+      stopLine() {},
+      async playLine(idx, chunks) {
+        playedChunks = chunks;
+        return 'ended';
+      },
+    },
+    regenerateLineAudio: async ({ messageId, lineIndex }) => {
+      regenerated = true;
+      const repairedAudio = {
+        status: 'ready',
+        voiceProfileId: 1,
+        chunks: [
+          { subIndex: 0, audioUrl: '/a.wav' },
+          { subIndex: 1, audioUrl: '/b.wav' },
+        ],
+      };
+      session.messages[0].lines[0].audio = repairedAudio;
+      return {
+        persisted: true,
+        saved: true,
+        audio: repairedAudio,
+      };
+    },
+  });
+  t.after(() => log.destroy());
+
+  let entry = log.element.querySelector('.adv-log-entry.is-assistant');
+  assert.ok(entry, 'assistant line entry should exist');
+  let replayBtn = entry.querySelector('.adv-log-replay-btn');
+  let regenerateBtn = entry.querySelector('.adv-log-regenerate-btn');
+  let statusSpan = entry.querySelector('.adv-log-audio-status');
+
+  // Before repair: replay button is playable, partial failed note is shown, and regenerate button is visible and active
+  assert.equal(replayBtn.disabled, false, 'replay button should remain playable for partial chunks');
+  assert.equal(statusSpan.hidden, false, 'status note should be visible for partial failure');
+  assert.equal(statusSpan.textContent, '部分语音未生成，可重新生成');
+  assert.equal(regenerateBtn.hidden, false, 'regenerate button should NOT be hidden for partial failed line');
+  assert.equal(regenerateBtn.disabled, false);
+  assert.equal(regenerateBtn.textContent, '用当前音色重新生成');
+
+  // Replaying partial audio before repair plays partial chunks and preserves failure note & repair button
+  await replayBtn.onclick({ stopPropagation() {} });
+  assert.deepEqual(playedChunks, [{ subIndex: 0, audioUrl: '/a.wav' }], 'replay should play partial chunks');
+  assert.equal(replayBtn.disabled, false);
+  assert.equal(statusSpan.hidden, false, 'status note should remain visible after playing partial audio');
+  assert.equal(statusSpan.textContent, '部分语音未生成，可重新生成');
+  assert.equal(regenerateBtn.hidden, false, 'regenerate button should remain visible after playing partial audio');
+
+  // Live SSE stream line_audio event via _updateLineAudio also correctly updates controls and failure note
+  entry._updateLineAudio('failed', [{ subIndex: 0, audioUrl: '/live_partial.wav' }]);
+  assert.equal(replayBtn.disabled, false);
+  assert.equal(statusSpan.hidden, false);
+  assert.equal(statusSpan.textContent, '部分语音未生成，可重新生成');
+  assert.equal(regenerateBtn.hidden, false);
+
+  // When voice is disabled globally, controls hide repair action and note
+  voiceOn = false;
+  log.renderAll();
+  entry = log.element.querySelector('.adv-log-entry.is-assistant');
+  replayBtn = entry.querySelector('.adv-log-replay-btn');
+  regenerateBtn = entry.querySelector('.adv-log-regenerate-btn');
+  statusSpan = entry.querySelector('.adv-log-audio-status');
+  assert.equal(replayBtn.disabled, true, 'replay button disabled when voice off');
+  assert.equal(regenerateBtn.hidden, true, 'regenerate button hidden when voice off');
+  assert.equal(statusSpan.hidden, true, 'status note hidden when voice off');
+
+  // Re-enabling voice restores playable state, repair button, and partial failure note
+  voiceOn = true;
+  log.renderAll();
+  entry = log.element.querySelector('.adv-log-entry.is-assistant');
+  replayBtn = entry.querySelector('.adv-log-replay-btn');
+  regenerateBtn = entry.querySelector('.adv-log-regenerate-btn');
+  statusSpan = entry.querySelector('.adv-log-audio-status');
+  assert.equal(replayBtn.disabled, false);
+  assert.equal(regenerateBtn.hidden, false);
+  assert.equal(statusSpan.hidden, false);
+  assert.equal(statusSpan.textContent, '部分语音未生成，可重新生成');
+
+  // Trigger regeneration and assert successful recovery
+  await regenerateBtn.onclick({ stopPropagation() {} });
+  assert.equal(regenerated, true, 'regenerateLineAudio should have been called');
+
+  // After repair: regenerate button is hidden, replay button remains playable, status feedback shown
+  assert.equal(regenerateBtn.hidden, true, 'regenerate button should hide after successful repair');
+  assert.equal(replayBtn.disabled, false, 'replay button should remain playable');
+  assert.equal(statusSpan.textContent, '语音已生成，点语音播放。');
+
+  // Clicking replay resets status note and plays the new repaired audio chunks
+  playedChunks = null;
+  await replayBtn.onclick({ stopPropagation() {} });
+  assert.equal(statusSpan.hidden, true, 'status note should be cleared upon replay of ready audio');
+  assert.deepEqual(playedChunks, [
+    { subIndex: 0, audioUrl: '/a.wav' },
+    { subIndex: 1, audioUrl: '/b.wav' },
+  ], 'repaired audio should play the complete chunks');
+});
+
+
