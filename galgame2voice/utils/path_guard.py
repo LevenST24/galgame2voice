@@ -5,6 +5,7 @@ are strictly bounded within authorized directories (audio_dir, data_dir, project
 rejecting path traversal attempts, symlink escapes, UNC paths, and Windows device names.
 """
 
+import glob
 import os
 import re
 import urllib.parse
@@ -91,6 +92,116 @@ def is_safe_filename(filename: str) -> bool:
     return not is_windows_device_name(clean)
 
 
+def get_effective_sovits_dir(project_root: Path | None = None) -> Path | None:
+    """
+    Returns the resolved Path of the explicitly configured GPT-SoVITS directory,
+    checking the sovits_dir.txt hint first, then the GPT_SOVITS_DIR environment variable.
+    Returns None if not configured or if the directory does not exist.
+    """
+    settings = get_settings()
+    default_root = settings.project_root.resolve()
+    p_root = Path(project_root).resolve() if project_root is not None else default_root
+
+    from galgame2voice.services.sovits_installation import read_sovits_directory
+
+    if project_root is not None and p_root != default_root:
+        sovits_txt = p_root / "data" / "sovits_dir.txt"
+        if not sovits_txt.is_file():
+            sovits_txt = getattr(settings, "data_dir", p_root / "data") / "sovits_dir.txt"
+    else:
+        sovits_txt = getattr(settings, "data_dir", p_root / "data") / "sovits_dir.txt"
+        if not sovits_txt.is_file():
+            sovits_txt = p_root / "data" / "sovits_dir.txt"
+
+    if sovits_txt.is_file():
+        try:
+            target_dir = read_sovits_directory(p_root, sovits_txt)
+            if target_dir is not None and target_dir.is_dir():
+                return target_dir.resolve()
+        except (OSError, UnicodeError, ValueError):
+            pass
+
+    env_sovits = os.environ.get("GPT_SOVITS_DIR")
+    if env_sovits:
+        try:
+            cand = Path(env_sovits).resolve()
+            if cand.is_dir():
+                return cand
+        except (OSError, ValueError):
+            pass
+
+    return None
+
+
+def discover_gpt_sovits_roots(project_root: Path | None = None) -> list[Path]:
+    """
+    Discovers candidate GPT-SoVITS installation directories across:
+    1. Explicitly configured directories via sovits_dir.txt and GPT_SOVITS_DIR (if valid).
+    2. project_root / "GPT-SoVITS" (if exists).
+    3. project_root.parent and project_root matching "GPT-SoVITS*" and its child "GPT-SoVITS*".
+    4. Windows drive roots C:, D:, E:, F: matching "GPT-SoVITS*" and its child "GPT-SoVITS*".
+    Returns deduplicated resolved Paths.
+    """
+    settings = get_settings()
+    p_root = Path(project_root).resolve() if project_root is not None else settings.project_root.resolve()
+    roots: list[Path] = []
+
+    def _add_cand(cand_path: Path | str) -> None:
+        try:
+            p = Path(cand_path).resolve()
+            if p.is_dir() and p not in roots:
+                roots.append(p)
+        except (OSError, ValueError):
+            pass
+
+    # 1. Configured GPT-SoVITS directories (sovits_dir.txt hint and GPT_SOVITS_DIR env)
+    effective = get_effective_sovits_dir(p_root)
+    if effective is not None:
+        _add_cand(effective)
+    env_sovits = os.environ.get("GPT_SOVITS_DIR")
+    if env_sovits:
+        _add_cand(env_sovits)
+
+    # 2. project_root / "GPT-SoVITS"
+    _add_cand(p_root / "GPT-SoVITS")
+
+    # 3. project_root.parent and project_root (single layer and one nested layer)
+    scan_bases: list[Path] = []
+    try:
+        if p_root.parent and p_root.parent != p_root:
+            scan_bases.append(p_root.parent)
+    except (ValueError, OSError):
+        pass
+    if p_root not in scan_bases:
+        scan_bases.append(p_root)
+
+    for base in scan_bases:
+        try:
+            if base.is_dir():
+                for cand in base.glob("GPT-SoVITS*"):
+                    if cand.is_dir():
+                        _add_cand(cand)
+                        try:
+                            for nested in cand.glob("GPT-SoVITS*"):
+                                if nested.is_dir():
+                                    _add_cand(nested)
+                        except OSError:
+                            pass
+        except OSError:
+            pass
+
+    # 4. Windows drives C:\, D:\, E:\, F:\ (single layer and one nested layer)
+    for drive in ("C", "D", "E", "F"):
+        for pattern in (rf"{drive}:\GPT-SoVITS*\GPT-SoVITS*", rf"{drive}:\GPT-SoVITS*"):
+            try:
+                for match in glob.glob(pattern):
+                    _add_cand(match)
+            except OSError:
+                pass
+
+    return roots
+
+
 def get_authorized_roots(
     custom_roots: Sequence[str | Path] | None = None,
     include_sovits: bool = True,
@@ -108,31 +219,9 @@ def get_authorized_roots(
     ]
 
     if include_sovits:
-        # Check environment or sovits_dir.txt if configured
-        env_sovits = os.environ.get("GPT_SOVITS_DIR")
-        if env_sovits and Path(env_sovits).is_dir():
-            roots.append(Path(env_sovits).resolve())
-
-        sovits_txt = settings.data_dir / "sovits_dir.txt"
-        if not sovits_txt.is_file():
-            sovits_txt = settings.project_root / "data" / "sovits_dir.txt"
-        if sovits_txt.is_file():
-            try:
-                from galgame2voice.services.sovits_installation import read_sovits_directory
-                target_dir = read_sovits_directory(settings.project_root, sovits_txt)
-                if target_dir is not None and target_dir.is_dir():
-                    roots.append(target_dir)
-            except (OSError, UnicodeError, ValueError):
-                pass
-
-        # GPT-SoVITS installs discovered relative to the project (portable across machines)
-        for scan_root in (settings.project_root.parent, settings.project_root):
-            try:
-                for cand in scan_root.glob("GPT-SoVITS*/GPT-SoVITS*"):
-                    if cand.is_dir() and cand.resolve() not in roots:
-                        roots.append(cand.resolve())
-            except OSError:
-                pass
+        for sovits_root in discover_gpt_sovits_roots(settings.project_root):
+            if sovits_root not in roots:
+                roots.append(sovits_root)
 
     if custom_roots:
         for r in custom_roots:
@@ -422,6 +511,8 @@ __all__ = [
     "is_windows_device_name",
     "contains_traversal_payload",
     "is_safe_filename",
+    "get_effective_sovits_dir",
+    "discover_gpt_sovits_roots",
     "get_authorized_roots",
     "validate_path_containment",
     "is_path_safe",

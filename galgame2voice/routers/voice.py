@@ -43,6 +43,7 @@ from galgame2voice.utils.async_tasks import await_protected, cancel_and_drain
 from galgame2voice.utils.path_guard import (
     PathTraversalError,
     contains_traversal_payload,
+    discover_gpt_sovits_roots,
     is_windows_device_name,
     safe_resolve_audio_path,
     get_authorized_roots,
@@ -750,27 +751,7 @@ _SCAN_EXCLUDED_DIRS = frozenset({
 
 def _discover_gpt_sovits_roots() -> list[str]:
     """Builds candidate GPT-SoVITS install roots from env + known layouts."""
-    import glob
-    roots: list[str] = []
-
-    env_dir = os.environ.get("GPT_SOVITS_DIR")
-    if env_dir:
-        roots.append(env_dir)
-
-    from galgame2voice.services.sovits_installation import read_sovits_directory
-    try:
-        configured = read_sovits_directory(get_settings().project_root)
-        if configured is not None:
-            roots.append(str(configured))
-    except (OSError, ValueError, UnicodeError):
-        pass
-
-    roots.append(str(get_settings().project_root / "GPT-SoVITS"))
-    # Generic drive fallbacks for renamed versions.
-    for drive in ("C", "D", "E", "F"):
-        roots.extend(glob.glob(rf"{drive}:\GPT-SoVITS*\GPT-SoVITS*"))
-        roots.extend(glob.glob(rf"{drive}:\GPT-SoVITS*"))
-    return roots
+    return [str(p) for p in discover_gpt_sovits_roots(get_settings().project_root)]
 
 
 def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
