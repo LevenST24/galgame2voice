@@ -140,13 +140,13 @@ async def test_another_endpoint_restart_does_not_hide_a_ready_service(owned_engi
 
     async def restart(*args):
         entered.set()
-        await complete.wait()
+        await asyncio.wait_for(complete.wait(), timeout=10.0)
         return {"status": "starting"}
 
     monkeypatch.setattr(health, "_restart_local_engine", restart)
     task = asyncio.create_task(health.restart_sovits_endpoint(None))
     try:
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), timeout=10.0)
         endpoint = parse_sovits_endpoint("https://synthetic.invalid:9443/voice", source="db")
 
         async def resolve():
@@ -172,12 +172,12 @@ async def test_restart_started_during_a_probe_invalidates_its_ready_result(owned
 
     async def probe(*args):
         probing.set()
-        await finish_probe.wait()
+        await asyncio.wait_for(finish_probe.wait(), timeout=10.0)
         return SimpleNamespace(status="reachable")
 
     async def restart(*args):
         restarting.set()
-        await finish_restart.wait()
+        await asyncio.wait_for(finish_restart.wait(), timeout=10.0)
         return {"status": "starting"}
 
     monkeypatch.setattr(health, "_probe_gpt_sovits", probe)
@@ -185,9 +185,9 @@ async def test_restart_started_during_a_probe_invalidates_its_ready_result(owned
     status_task = asyncio.create_task(health.engine_status_endpoint())
     restart_task = None
     try:
-        await probing.wait()
+        await asyncio.wait_for(probing.wait(), timeout=10.0)
         restart_task = asyncio.create_task(health.restart_sovits_endpoint(None))
-        await restarting.wait()
+        await asyncio.wait_for(restarting.wait(), timeout=10.0)
         finish_probe.set()
         result = await status_task
         assert result["state"] == "starting"
@@ -228,13 +228,13 @@ async def test_restart_during_log_diagnosis_invalidates_the_old_failure(owned_en
     async def delayed_diagnosis(function, *args, **kwargs):
         if function is health.engine_failure_message:
             reading.set()
-            await finish_read.wait()
+            await asyncio.wait_for(finish_read.wait(), timeout=10.0)
             return "旧进程的启动错误"
         return await to_thread(function, *args, **kwargs)
 
     async def restart(*args):
         restarting.set()
-        await finish_restart.wait()
+        await asyncio.wait_for(finish_restart.wait(), timeout=10.0)
         return {"status": "starting"}
 
     monkeypatch.setattr(health.asyncio, "to_thread", delayed_diagnosis)
@@ -242,9 +242,9 @@ async def test_restart_during_log_diagnosis_invalidates_the_old_failure(owned_en
     status_task = asyncio.create_task(health.engine_status_endpoint())
     restart_task = None
     try:
-        await reading.wait()
+        await asyncio.wait_for(reading.wait(), timeout=10.0)
         restart_task = asyncio.create_task(health.restart_sovits_endpoint(None))
-        await restarting.wait()
+        await asyncio.wait_for(restarting.wait(), timeout=10.0)
         finish_read.set()
         result = await status_task
         assert result["state"] == "starting"

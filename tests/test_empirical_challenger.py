@@ -150,7 +150,7 @@ class TestFastApiAdversarialEndpoints:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             tasks = [client.get("/api/health") for _ in range(200)]
-            responses = await asyncio.gather(*tasks)
+            responses = await asyncio.wait_for(asyncio.gather(*tasks), timeout=30.0)
             assert len(responses) == 200
             assert all(r.status_code == 200 for r in responses)
             for r in responses:
@@ -310,13 +310,12 @@ class TestProcessTerminationAndLifespan:
                     assert data["app"]["pid"] in owned_pids
 
             finally:
-                # Terminate only the process owned by this test.
-                if proc.poll() is None:
-                    proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
+                # Terminate the process and any child workers owned by this test with bounded timeouts.
+                _safe_terminate_subprocess(proc, timeout=5.0)
+                assert proc.poll() is not None, "Process did not terminate cleanly within timeout"
 
-                assert proc.poll() is not None, "Process did not terminate cleanly"
+def _safe_terminate_subprocess(proc: subprocess.Popen, timeout: float = 5.0) -> None:
+    """Stop the test's server with its workers; a stuck process fails the test instead of hanging CI."""
+    from scripts.run_server import terminate_process_tree
+    terminate_process_tree(proc.pid, timeout=timeout)
+    proc.wait(timeout=timeout)
