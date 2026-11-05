@@ -618,4 +618,107 @@ const sessionOf = (id, texts) => ({
   assert.equal(state.sessions[0].settings.autoTranslate, undefined, 'loadState must drop obsolete autoTranslate from session settings');
   passed++;
 }
+
+// saveState evicts inactive session messages from oldest to newest on QuotaExceededError while preserving lastLine, settings, and failed user messages
+{
+  const makeHistory = (prefix, count, finalZh) => Array.from({ length: count }, (_, idx) => ({
+    id: `${prefix}_m_${idx}`,
+    role: idx % 2 === 0 ? 'user' : 'assistant',
+    content: idx === count - 1 ? finalZh : `${prefix} 历史台词内容 ${idx} ${'文本填充'.repeat(20)}`,
+    ts: 100 + idx,
+    ...(idx % 2 === 1
+      ? {
+          lines: [{
+            index: 0,
+            zh: idx === count - 1 ? finalZh : `${prefix} 中文分句 ${idx}`,
+            ja: `${prefix} 日本語セリフ ${idx}`,
+            emotion: 'gentle',
+            act: {},
+            audio: { status: 'ready', chunks: [] },
+          }],
+        }
+      : {}),
+  }));
+
+  storage({
+    sessions: [
+      { id: 's_oldest', title: '最早会话', createdAt: 100, updatedAt: 1000, settings: { voiceProfileId: 11, temperature: 0.5 }, messages: [] },
+      { id: 's_failed', title: '含失败提问会话', createdAt: 200, updatedAt: 1500, settings: { voiceProfileId: 12, temperature: 0.6 }, messages: [] },
+      { id: 's_newer', title: '较新会话', createdAt: 300, updatedAt: 2000, settings: { voiceProfileId: 13, temperature: 0.9 }, messages: [] },
+      { id: 's_latest', title: '当前激活会话', createdAt: 400, updatedAt: 3000, settings: { voiceProfileId: 14, temperature: 0.8 }, messages: [] },
+    ],
+    activeId: 's_oldest',
+    global: {},
+  });
+  loadState();
+
+  const sOldest = state.sessions.find((s) => s.id === 's_oldest');
+  const sFailed = state.sessions.find((s) => s.id === 's_failed');
+  const sNewer = state.sessions.find((s) => s.id === 's_newer');
+  const sLatest = state.sessions.find((s) => s.id === 's_latest');
+
+  // 1. 激活 s_oldest 并载入历史
+  state.activeId = 's_oldest';
+  sOldest.messages = makeHistory('oldest', 20, '最早会话的最后一句台词');
+  sOldest.updatedAt = 1000;
+  assert.equal(saveState(), true);
+
+  // 2. 切换到 s_failed，载入历史并附带未成功发送的 failed 用户提问
+  state.activeId = 's_failed';
+  sFailed.messages = [
+    ...makeHistory('failed', 10, '失败会话的助手回复'),
+    { id: 'failed_user_1', role: 'user', content: '这是一条发送失败待重试的用户提问', failed: true, ts: 1500 },
+  ];
+  sFailed.updatedAt = 1500;
+  assert.equal(saveState(), true);
+
+  // 3. 切换到 s_newer 并载入历史
+  state.activeId = 's_newer';
+  sNewer.messages = makeHistory('newer', 20, '较新会话的最后一句台词');
+  sNewer.updatedAt = 2000;
+  assert.equal(saveState(), true);
+
+  const sizeWithThree = localStorage.getItem(KEY).length;
+  const oldestHistoryBytes = JSON.stringify(sOldest.messages).length;
+  // 配额设为：容纳不淘汰 s_oldest 时的 4 个完整会话会超限，但淘汰 s_oldest 后可成功写入
+  localStorage.limit = sizeWithThree + Math.floor(oldestHistoryBytes * 0.4);
+
+  // 4. 切换到 s_latest 并载入历史（约等于 s_oldest 的体积），触发配额淘汰
+  state.activeId = 's_latest';
+  sLatest.messages = makeHistory('latest', 20, '当前会话的最新台词');
+  sLatest.updatedAt = 3000;
+  assert.equal(saveState(), true, '淘汰最早非激活会话后 saveState 应成功');
+  assert.equal(getStorageStatus().ok, true);
+
+  // 验证按从旧到新顺序仅淘汰了 s_oldest，保留了其 lastLine 与 settings
+  assert.equal(sOldest.messages.length, 0, '最早的非激活会话应被优先淘汰 messages');
+  assert.equal(sOldest.lastLine, '最早会话的最后一句台词', '被淘汰会话应保留最后一条消息摘要到 lastLine');
+  assert.equal(sOldest.settings.voiceProfileId, 11);
+  assert.equal(sOldest.settings.temperature, 0.5);
+  assert.ok(sNewer.messages.length > 0, '空间已够时较新的非激活会话尚未被淘汰');
+  assert.ok(sFailed.messages.length > 0, '含 failed 用户消息的会话不应被淘汰');
+  assert.equal(sLatest.messages.length, 20, '当前激活会话的消息应完整保留');
+
+  // 5. 当前会话继续增长，再次触发配额限制：应跳过 s_failed（虽 updatedAt=1500 更早）而淘汰 s_newer（updatedAt=2000）
+  sLatest.messages.push(...makeHistory('latest_more', 20, '当前会话继续新增的台词'));
+  sLatest.updatedAt = 4000;
+  assert.equal(saveState(), true, '继续淘汰下一个可淘汰非激活会话后 saveState 应成功');
+  assert.equal(getStorageStatus().ok, true);
+
+  assert.equal(sNewer.messages.length, 0, '次旧的可淘汰会话 s_newer 应被淘汰');
+  assert.equal(sNewer.lastLine, '较新会话的最后一句台词', 's_newer 被淘汰前应保留其最后一条台词摘要');
+  assert.equal(sNewer.settings.voiceProfileId, 13);
+  assert.equal(sNewer.settings.temperature, 0.9);
+  assert.ok(sFailed.messages.length > 0, '含 failed 用户提问的会话绝不能被淘汰');
+  assert.equal(sFailed.messages.at(-1).content, '这是一条发送失败待重试的用户提问');
+  assert.equal(sLatest.messages.length, 40);
+
+  const persisted = JSON.parse(localStorage.getItem(KEY));
+  assert.equal(persisted.sessions.find((s) => s.id === 's_oldest').messages.length, 0);
+  assert.equal(persisted.sessions.find((s) => s.id === 's_newer').messages.length, 0);
+  assert.equal(persisted.sessions.find((s) => s.id === 's_failed').messages.length, 11);
+  assert.equal(persisted.sessions.find((s) => s.id === 's_latest').messages.length, 40);
+  passed++;
+}
+
 console.log(`Session backup and recovery: ${passed} scenarios passed`);
