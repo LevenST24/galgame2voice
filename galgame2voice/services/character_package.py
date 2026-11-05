@@ -91,12 +91,12 @@ class CharacterPackage:
 
         p = Path(clean_str)
         settings = get_settings()
-        char_dir = getattr(settings, "characters_dir", settings.project_root / "characters")
-        authorized = [self.folder_path, Path(char_dir)] + get_authorized_roots()
 
         if p.is_absolute():
             if p.is_file():
                 res = p.resolve()
+                char_dir = getattr(settings, "characters_dir", settings.project_root / "characters")
+                authorized = [self.folder_path, Path(char_dir)] + get_authorized_roots()
                 if any(res == root or res.is_relative_to(root) for root in authorized):
                     return res
             return None

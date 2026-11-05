@@ -1179,4 +1179,69 @@ async def test_update_persona_db_failure_standalone_profile(
         CharacterManager.reset_instance()
 
 
+def test_resolve_audio_path_does_not_call_authorized_roots_for_relative_paths(project, monkeypatch):
+    package_dir = install(project, "ann", "Ann")
+    # Add a second emotion with relative path and distinct audio content (to avoid duplicate hash rejection)
+    with wave.open(str(package_dir / "happy.wav"), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(8000)
+        audio.writeframes(b"\x02\x00" * 8000 * 5)
+    manifest_file = package_dir / "manifest.json"
+    manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+    manifest_data["emotions"]["happy"] = {"audio": "happy.wav", "text": "Happy Ann", "lang": "ja"}
+    manifest_file.write_text(json.dumps(manifest_data), encoding="utf-8")
 
+    from galgame2voice.services import character_package
+
+    root_calls = 0
+    orig_get_authorized_roots = character_package.get_authorized_roots
+
+    def spy_get_authorized_roots(*args, **kwargs):
+        nonlocal root_calls
+        root_calls += 1
+        return orig_get_authorized_roots(*args, **kwargs)
+
+    monkeypatch.setattr(character_package, "get_authorized_roots", spy_get_authorized_roots)
+
+    try:
+        # 1. Discover characters with relative-path emotions
+        manager = CharacterManager(project / "characters")
+        discovered = manager.discover_characters()
+        assert len(discovered) == 1
+        ann_pkg = discovered[0]
+        assert ann_pkg.id == "ann"
+        # Relative path resolution during discovery must not call get_authorized_roots
+        assert root_calls == 0
+
+        # Direct resolve_audio_path for relative path
+        rel_resolved = ann_pkg.resolve_audio_path("gentle.wav")
+        assert rel_resolved is not None
+        assert rel_resolved.name == "gentle.wav"
+        assert root_calls == 0
+
+        # 2. Existing absolute path within authorized root must call get_authorized_roots and return path
+        abs_path = (package_dir / "gentle.wav").resolve()
+        abs_resolved = ann_pkg.resolve_audio_path(str(abs_path))
+        assert abs_resolved == abs_path
+        assert root_calls == 1
+
+        # 3. Non-existent absolute path should return None without calling get_authorized_roots
+        non_existent = package_dir / "nonexistent.wav"
+        assert ann_pkg.resolve_audio_path(str(non_existent)) is None
+        assert root_calls == 1
+
+        # 4. Existing absolute path outside authorized roots must call get_authorized_roots and be rejected
+        outside_dir = project.parent / "outside_unauthorized"
+        outside_dir.mkdir(parents=True, exist_ok=True)
+        outside_audio = outside_dir / "outside.wav"
+        with wave.open(str(outside_audio), "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(8000)
+            audio.writeframes(b"\x03\x00" * 8000 * 4)
+
+        assert ann_pkg.resolve_audio_path(str(outside_audio)) is None
+        assert root_calls == 2
+    finally:
+        CharacterManager.reset_instance()
