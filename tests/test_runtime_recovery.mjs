@@ -880,4 +880,113 @@ for (const allowed of [true, false]) {
     globalThis.document = previousDocument;
   }
 }
+{
+  // Modifying or browsing the local engine directory in Voice Service settings and clicking
+  // the footer "保存全局配置" button must save the engine directory before confirming global save,
+  // and must abort without claiming "全局配置已保存" if directory validation fails (HTTP 400).
+  const previousDocument = globalThis.document;
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  const toastRoot = doc.createElement('div');
+  toastRoot.id = 'toastRoot';
+  doc.body.appendChild(toastRoot);
+  const control = (tag, value = '', checked = false) => {
+    const el = doc.createElement(tag);
+    el.value = value;
+    el.checked = checked;
+    return el;
+  };
+  const dom = {
+    gParamSovitsUrl: control('input', 'http://127.0.0.1:9880'),
+    gSovitsDirectory: control('input', ''),
+    gSovitsDirectoryStatus: control('small', ''),
+    gBrowseSovitsDirectory: control('button', ''),
+    gSaveSovitsDirectory: control('button', ''),
+    gPrecision: control('select', 'auto'),
+    gAudioRetention: control('input', '30'),
+    gTgSave: control('button', ''),
+  };
+  try {
+    let savedDirectory = '';
+    let rejectDirSave = false;
+    const dirPuts = [];
+    const configPosts = [];
+    globalThis.fetch = async (url, options = {}) => {
+      const method = options.method || 'GET';
+      if (url === '/api/system/sovits-directory' && method === 'PUT') {
+        const body = JSON.parse(options.body);
+        dirPuts.push(body.directory);
+        if (rejectDirSave) {
+          return response({ detail: '所选文件夹需包含 api_v2.py。请先完整解压 GPT-SoVITS，再选择引擎目录。' }, 400);
+        }
+        savedDirectory = body.directory;
+        return response({ directory: savedDirectory, valid: true, message: '引擎目录有效，可在「运行状态」中启动或重启引擎。' });
+      }
+      if (url === '/api/system/sovits-directory') {
+        return response({ directory: savedDirectory, valid: Boolean(savedDirectory), message: savedDirectory ? '引擎目录有效' : '尚未设置' });
+      }
+      if (url === '/api/voice/browse-file' && method === 'POST') {
+        return response({ selected_path: 'E:/GPT-SoVITS-browse' });
+      }
+      if (String(url).includes('/api/config')) {
+        if (method === 'POST') {
+          configPosts.push(JSON.parse(options.body));
+        }
+        return response({ status: 'ok', settings: { gpt_sovits_url: 'http://127.0.0.1:9880', inference_precision: 'auto', audio_retention_minutes: 30 } });
+      }
+      return response({});
+    };
+
+    initGlobalSettings(dom);
+    await loadGlobalConfig();
+    await tick();
+
+    // 1. Input edited directory -> click Save Global Config -> PUT /api/system/sovits-directory is called
+    dom.gSovitsDirectory.value = 'D:/GPT-SoVITS-v2';
+    dom.gSovitsDirectory.dispatchEvent({ type: 'input' });
+    await saveGlobalConfig();
+    await tick();
+
+    let messages = [...toastRoot.children].map(node => node.textContent);
+    assert.deepEqual(dirPuts, ['D:/GPT-SoVITS-v2']);
+    assert.equal(configPosts.length, 1);
+    assert.equal(dom.gSovitsDirectory.value, 'D:/GPT-SoVITS-v2');
+    assert.ok(messages.includes('全局配置已保存'), `expected global save toast, got: ${messages.join(' | ')}`);
+    passed++;
+
+    // 2. Browse directory -> click Save Global Config -> PUT /api/system/sovits-directory is called
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    toastRoot.replaceChildren();
+    dom.gBrowseSovitsDirectory.dispatchEvent({ type: 'click' });
+    await tick();
+    assert.equal(dom.gSovitsDirectory.value, 'E:/GPT-SoVITS-browse');
+    await saveGlobalConfig();
+    await tick();
+    assert.deepEqual(dirPuts, ['D:/GPT-SoVITS-v2', 'E:/GPT-SoVITS-browse']);
+    assert.equal(dom.gSovitsDirectory.value, 'E:/GPT-SoVITS-browse');
+    passed++;
+
+    // 3. Directory validation returns 400 -> aborts global save, preserves user input, does not show "全局配置已保存"
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    toastRoot.replaceChildren();
+    rejectDirSave = true;
+    const prevConfigPosts = configPosts.length;
+    dom.gSovitsDirectory.value = 'D:/incomplete-engine';
+    dom.gSovitsDirectory.dispatchEvent({ type: 'input' });
+    await saveGlobalConfig();
+    await tick();
+
+    messages = [...toastRoot.children].map(node => node.textContent);
+    assert.deepEqual(dirPuts, ['D:/GPT-SoVITS-v2', 'E:/GPT-SoVITS-browse', 'D:/incomplete-engine']);
+    assert.equal(configPosts.length, prevConfigPosts, 'global config POST must not be sent when engine directory save fails');
+    assert.equal(messages.includes('全局配置已保存'), false, `must not claim global config saved when directory save fails: ${messages.join(' | ')}`);
+    assert.ok(messages.some(m => m.includes('保存目录失败') && m.includes('api_v2.py')), `expected directory save error toast, got: ${messages.join(' | ')}`);
+    assert.equal(dom.gSovitsDirectory.value, 'D:/incomplete-engine', 'user input must be preserved on error');
+    assert.equal(dom.gTgSave.disabled, false);
+    passed++;
+  } finally {
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    globalThis.document = previousDocument;
+  }
+}
 console.log(`Runtime recovery: ${passed} scenarios passed`);
