@@ -62,6 +62,7 @@ const click = selector => {
   settle();
   const el = document.querySelector(selector);
   if (!el) throw new Error('Missing ' + selector);
+  el.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   const r = el.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
   if (el.disabled || el.closest('[inert]') || r.width <= 0 || r.height <= 0 || !el.contains(hit)) {
     throw new Error('Control is not reachable: ' + selector);
@@ -206,6 +207,47 @@ try {
 
   state.reopenResultBoxClean = testResultBox.classList.contains('hidden');
 
+  // --- SCENARIO 4: Repeated initialization disposal & single user click via reachable control ---
+  const { initGlobalSettings } = await import('/frontend/src/controllers/global_settings.js');
+  const currentDom = {
+    globalModal: document.getElementById('globalModal'),
+    gTabs: document.getElementById('gTabs'),
+    gProvider: providerSelect,
+    gProviderTest: testBtn,
+    gProviderTestResult: testResultBox,
+    gTestResultTitle: document.getElementById('gTestResultTitle'),
+    gTestResultLatency: document.getElementById('gTestResultLatency'),
+    gTestResultBody: testResultBody,
+    gChatModel: chatModelInput,
+    gChatModelSelect: document.getElementById('gChatModelSelect'),
+    gApiKey: document.getElementById('gApiKey'),
+    gBaseUrl: document.getElementById('gBaseUrl'),
+    gReasoningEffort: document.getElementById('gReasoningEffort'),
+    gCustomName: document.getElementById('gCustomName'),
+    gProviderActivate: document.getElementById('gProviderActivate'),
+  };
+  initGlobalSettings(currentDom);
+  initGlobalSettings(currentDom);
+
+  const callsBeforeReinitClick = testCalls.length;
+  click('#gProviderTest');
+  await wait(60);
+  const callsAfterReinitClick = testCalls.length;
+  state.singleRequestAfterReinitClick = (callsAfterReinitClick - callsBeforeReinitClick === 1);
+  state.reinitClickCallsCount = (callsAfterReinitClick - callsBeforeReinitClick);
+  state.test5StartedBusy = (testBtn.disabled === true);
+
+  // Release and drain the held Test 5 response
+  const holder5 = testHoldResolvers.shift();
+  if (!holder5) throw new Error('Missing test 5 promise resolver');
+  holder5.resolve(Response.json({ success: true, latency_ms: 25, models: ['deepseek-coder'] }));
+  await wait();
+  await wait();
+
+  state.test5CompletedBtnEnabled = (testBtn.disabled === false);
+  state.test5ResultBoxVisible = !testResultBox.classList.contains('hidden');
+  state.test5ResultSuccess = testResultBox.classList.contains('test-result-success');
+
   state.ok = Boolean(
     state.test1StartedBusy &&
     state.test1Indicator &&
@@ -229,7 +271,11 @@ try {
     state.toastAfterTest3Count === 1 &&
     state.toastAfterTest3Success &&
     state.modalClosedNoToast &&
-    state.reopenResultBoxClean
+    state.reopenResultBoxClean &&
+    state.singleRequestAfterReinitClick &&
+    state.test5StartedBusy &&
+    state.test5CompletedBtnEnabled &&
+    state.test5ResultSuccess
   );
 } catch (error) {
   state.error = String(error.stack || error);
@@ -248,6 +294,8 @@ parent.document.body.append(output);
 def test_provider_test_ownership_and_concurrency_in_browser(tmp_path, width, height):
     data = render_engine_case(tmp_path, width, height, SCRIPT, 12000)
     assert "error" not in data, data.get("error")
+    failed_fields = {k: v for k, v in data.items() if v is False}
+    assert not failed_fields, f"Browser test subfields failed: {failed_fields}"
     assert data.get("ok") is True, data
     assert data.get("test1SwitchRestoredBtn") is True
     assert data.get("staleResultBoxHidden") is True
@@ -256,3 +304,8 @@ def test_provider_test_ownership_and_concurrency_in_browser(tmp_path, width, hei
     assert data.get("test3ResultSuccess") is True
     assert data.get("modalClosedNoToast") is True
     assert data.get("reopenResultBoxClean") is True
+    assert data.get("singleRequestAfterReinitClick") is True, (
+        f"Expected 1 call after click, got {data.get('reinitClickCallsCount')}"
+    )
+    assert data.get("test5CompletedBtnEnabled") is True
+    assert data.get("test5ResultSuccess") is True

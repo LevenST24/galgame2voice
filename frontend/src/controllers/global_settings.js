@@ -1,18 +1,18 @@
-// Global Settings Controller: LLM Providers, Hardware Telemetry, Telegram, Audio Cache
+// Global Settings Controller: LLM Providers Coordinator, Hardware Telemetry, Telegram, Audio Cache
 import {
-  fetchProviders,
-  testProviderConnection,
   getErrorMessage,
   requestJson,
 } from '../api.js';
-import { formatProviderDiagnostic, BUILTIN_PRESETS } from '../settings.js';
 import { state, saveGlobal } from '../store.js';
 import { showToast } from '../ui.js';
 import { clearMemAudioCache } from '../cache.js';
 import { initEngineDirectory } from './engine_directory.js';
 import { waitForEngine } from './engine_recovery.js';
 import { runSettingsMutation, saveConfirmedConfig } from './config_recovery.js';
-import { saveConfirmedProvider, activateConfirmedProvider } from './provider_recovery.js';
+import {
+  createProviderSettingsController,
+  PROVIDER_FIELDS,
+} from './provider_settings.js';
 import { initSettingsTabs, onModalChange } from '../settings_ui.js';
 
 const $ = (id) => document.getElementById(id);
@@ -20,21 +20,9 @@ const UNCONFIRMED_RESTART_MESSAGE = '重启请求结果未确认；当前引擎�
 
 let _dom = {};
 let _callbacks = {};
-let cachedProviders = [];
-let cachedPresets = [];
-let currentActiveProvider = null;
-let providersLoaded = false;
-let providerReadError = false;
-let providerDirty = false;
-let providerRevision = 0;
-let providerLoad = 0;
-let providerSaving = false;
+let providerController = null;
+let settingsCoordinatorRevision = 0;
 let configSaving = false;
-const dirtyProviderFields = new Set();
-const PROVIDER_FIELDS = ['gApiKey', 'gBaseUrl', 'gChatModel', 'gChatModelSelect', 'gReasoningEffort', 'gCustomName'];
-let providerTestRevision = 0;
-let providerTestController = null;
-let providerTestInitialHtml = null;
 let engineDirectory = null;
 let configDirty = false;
 let configRevision = 0;
@@ -63,57 +51,44 @@ const CONFIG_FIELDS = ['gParamSovitsUrl', 'gPrecision', 'gParamSliceMethod', 'gP
   'gTgToken', 'gTgChatId', 'gTgProxyHost', 'gTgProxyPort', 'gTgProxyEnabled'];
 
 export function getCurrentActiveProvider() {
-  return currentActiveProvider;
+  return providerController ? providerController.getCurrentActiveProvider() : null;
 }
 
 /** 模型列表是否已读取过（成功或失败）；之前没有活跃模型不代表「未配置」。 */
 export function haveProvidersLoaded() {
-  return providersLoaded;
+  return providerController ? providerController.haveProvidersLoaded() : false;
 }
 
 export function hasProviderReadError() {
-  return providerReadError;
+  return providerController ? providerController.hasProviderReadError() : false;
 }
 
-function invalidateActiveProviderTest() {
-  providerTestRevision += 1;
-  if (providerTestController) {
-    providerTestController.abort();
-    providerTestController = null;
-  }
-  if (_dom.gProviderTest) {
-    _dom.gProviderTest.disabled = false;
-    if (providerTestInitialHtml) _dom.gProviderTest.innerHTML = providerTestInitialHtml;
-  }
+export function loadProviders(options) {
+  return providerController ? providerController.loadProviders(options) : Promise.resolve();
 }
 
-function isProviderTestCurrent(revision, snapshot) {
-  if (revision !== providerTestRevision) return false;
-  if (!settingsVisible()) return false;
-  if (!_dom.gProvider || _dom.gProvider.value !== snapshot.rawPid) return false;
-  if ((_dom.gBaseUrl?.value.trim() || '') !== snapshot.baseUrl) return false;
-  if ((_dom.gChatModel?.value.trim() || '') !== snapshot.chatModel) return false;
-  if ((_dom.gApiKey?.value.trim() || '') !== snapshot.apiKey) return false;
-  if ((_dom.gReasoningEffort?.value || '') !== snapshot.reasoningEffort) return false;
-  return true;
+export function onProviderChange() {
+  return providerController?.onProviderChange();
 }
 
-function markProviderDirty(field) {
-  providerDirty = true;
-  providerRevision += 1;
-  dirtyProviderFields.add(field);
-  if (field === 'gChatModelSelect') dirtyProviderFields.add('gChatModel');
-  if (PROVIDER_FIELDS.includes(field)) {
-    invalidateActiveProviderTest();
-    if (_dom.gProviderTestResult) {
-      _dom.gProviderTestResult.className = 'test-result-box hidden';
-      if (_dom.gTestResultBody) _dom.gTestResultBody.textContent = '';
-    }
-  }
+export function toggleKeyVisibility() {
+  return providerController?.toggleKeyVisibility();
+}
+
+export function onChatModelSelectChange() {
+  return providerController?.onChatModelSelectChange();
+}
+
+export function handleProviderTest() {
+  return providerController ? providerController.handleProviderTest() : Promise.resolve();
+}
+
+export function handleActivateProvider() {
+  return providerController ? providerController.handleActivateProvider() : Promise.resolve(false);
 }
 
 function updateSaveButtons() {
-  const busy = providerSaving || configSaving;
+  const busy = (providerController?.isProviderSaving() ?? false) || configSaving;
   if (_dom.gProviderActivate) _dom.gProviderActivate.disabled = busy;
   if (_dom.gTgSave) _dom.gTgSave.disabled = busy;
 }
@@ -121,18 +96,22 @@ function updateSaveButtons() {
 export function initGlobalSettings(dom, callbacks = {}) {
   unsubscribeTelemetry?.();
   stopTelemetryRefresh();
+  settingsCoordinatorRevision += 1;
   _dom = dom;
   _callbacks = callbacks;
   engineStatusRevision += 1;
   engineRestartUnconfirmed = false;
   precisionRevision += 1;
-  providerDirty = false;
-  providerRevision += 1;
-  providerLoad += 1;
-  dirtyProviderFields.clear();
-  providerTestInitialHtml = dom.gProviderTest?.innerHTML || '<svg class="icon" style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-activity"></use></svg><span>测试连通性</span>';
-  invalidateActiveProviderTest();
-  providerSaving = configSaving = false;
+  providerController?.dispose();
+  providerController = createProviderSettingsController(dom, {
+    updateBadge: () => _callbacks.updateBadge?.(),
+    updateSaveButtons,
+    isConfigSaving: () => configSaving,
+    isConnectionPreferencePending: connectionPreferencePending,
+    settingsVisible,
+    showToast,
+  });
+  configSaving = false;
   updateSaveButtons();
   configDirty = false;
   configRevision = 0;
@@ -156,7 +135,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
     if (settingsVisible() && !telemetryDocument.hidden) startTelemetryRefresh();
     else {
       stopTelemetryRefresh();
-      invalidateActiveProviderTest();
+      providerController?.invalidateActiveProviderTest();
     }
   };
   const unsubscribeModal = onModalChange(syncTelemetryVisibility);
@@ -299,16 +278,6 @@ export function initGlobalSettings(dom, callbacks = {}) {
     _dom.gBtnClearCache.addEventListener('click', handleClearCache);
   }
 
-  // 模型配置与连通性测试事件绑定
-  if (_dom.gProvider) _dom.gProvider.addEventListener('change', onProviderChange);
-  if (_dom.gBtnToggleKeyVisibility) _dom.gBtnToggleKeyVisibility.addEventListener('click', toggleKeyVisibility);
-  if (_dom.gChatModelSelect) _dom.gChatModelSelect.addEventListener('change', onChatModelSelectChange);
-  if (_dom.gProviderTest) _dom.gProviderTest.addEventListener('click', handleProviderTest);
-  if (_dom.gProviderActivate) _dom.gProviderActivate.addEventListener('click', handleActivateProvider);
-  for (const field of PROVIDER_FIELDS) {
-    for (const event of ['input', 'change']) _dom[field]?.addEventListener(event, () => markProviderDirty(field));
-  }
-
   // 恢复默认参数
   if (_dom.gResetBtn) {
     _dom.gResetBtn.addEventListener('click', () => {
@@ -350,11 +319,8 @@ export function initGlobalSettings(dom, callbacks = {}) {
 }
 
 export function openGlobalSettings(tabName = null) {
-  invalidateActiveProviderTest();
-  if (_dom.gProviderTestResult) {
-    _dom.gProviderTestResult.className = 'test-result-box hidden';
-    if (_dom.gTestResultBody) _dom.gTestResultBody.textContent = '';
-  }
+  providerController?.invalidateActiveProviderTest();
+  providerController?.resetTestResultBox();
   if (_callbacks.openModal) _callbacks.openModal(_dom.globalModal);
   if (typeof tabName === 'string' && tabName && _dom.gTabs) {
     const tabBtn = _dom.gTabs.querySelector(`[data-gtab="${tabName}"]`);
@@ -406,281 +372,6 @@ function startTelemetryRefresh() {
   refresh();
 }
 
-export async function loadProviders({ formRevision = providerRevision } = {}) {
-  const load = ++providerLoad;
-  const hadOptions = Boolean(_dom.gProvider?.children.length);
-  if (_dom.gProvider && !hadOptions) _dom.gProvider.innerHTML = '<option value="">加载模型列表…</option>';
-  try {
-    const data = await fetchProviders();
-    if (load !== providerLoad) return;
-    cachedProviders = data && data.providers ? data.providers : [];
-    cachedPresets = data && data.presets && data.presets.length ? data.presets : BUILTIN_PRESETS;
-
-    const active = cachedProviders.find((p) => p.is_active);
-    currentActiveProvider = active || null;
-    providersLoaded = true;
-    providerReadError = false;
-    if (_callbacks.updateBadge) _callbacks.updateBadge();
-
-    const presetOrder = ['gemini', 'openai', 'anthropic', 'deepseek', 'xai', 'siliconflow', 'glm', 'qwen', 'custom'];
-    const providerMap = new Map();
-
-    presetOrder.forEach((pid) => {
-      const preset = cachedPresets.find((p) => p.id === pid);
-      const stored = cachedProviders.find((p) => p.id === pid);
-      if (preset || stored) {
-        providerMap.set(pid, {
-          id: pid,
-          name: stored?.name || preset?.name || pid,
-          chat_model: stored?.chat_model || preset?.default_chat_model || '',
-          is_active: Boolean(stored?.is_active),
-        });
-      }
-    });
-
-    cachedPresets.forEach((p) => {
-      if (!providerMap.has(p.id) && p.id !== 'custom') {
-        const stored = cachedProviders.find((sp) => sp.id === p.id);
-        providerMap.set(p.id, {
-          id: p.id,
-          name: stored?.name || p.name || p.id,
-          chat_model: stored?.chat_model || p.default_chat_model || '',
-          is_active: Boolean(stored?.is_active),
-        });
-      }
-    });
-
-    cachedProviders.forEach((p) => {
-      if (!providerMap.has(p.id)) {
-        providerMap.set(p.id, {
-          id: p.id,
-          name: p.name,
-          chat_model: p.chat_model || '',
-          is_active: Boolean(p.is_active),
-        });
-      }
-    });
-
-    const items = Array.from(providerMap.values());
-    const sorted = active
-      ? [items.find((i) => i.id === active.id) || active, ...items.filter((i) => i.id !== active.id)]
-      : items;
-
-    const keepDraft = providerDirty || providerRevision !== formRevision;
-    const selection = keepDraft ? _dom.gProvider?.value : null;
-    if (_dom.gProvider) {
-      _dom.gProvider.innerHTML = '';
-      sorted.forEach((p) => {
-        const opt = document.createElement('option');
-        opt.value = p.id;
-        opt.textContent = `${p.name} · ${p.chat_model || '未设定'}${p.is_active ? '（当前生效）' : ''}`;
-        if (p.is_active) opt.selected = true;
-        _dom.gProvider.appendChild(opt);
-      });
-      const customOpt = document.createElement('option');
-      customOpt.value = '__custom__';
-      customOpt.textContent = '＋ 自定义模型 / 接口…';
-      if (!active && !sorted.length) customOpt.selected = true;
-      _dom.gProvider.appendChild(customOpt);
-      if (selection && [..._dom.gProvider.children].some(option => option.value === selection)) {
-        _dom.gProvider.value = selection;
-      }
-    }
-
-    renderLoadedProvider(keepDraft);
-  } catch (e) {
-    if (load !== providerLoad) return;
-    console.error('Failed to load providers:', e);
-    providersLoaded = true;
-    providerReadError = true;
-    if (_callbacks.updateBadge) _callbacks.updateBadge();
-    if (hadOptions) {
-      showToast(`列表暂时无法刷新，当前输入已保留：${e.message}`, 'error');
-      return;
-    }
-    if (_dom.gProvider) {
-      _dom.gProvider.innerHTML = '';
-      BUILTIN_PRESETS.forEach((p) => {
-        const opt = document.createElement('option');
-        opt.value = p.id;
-        opt.textContent = `${p.name} · ${p.default_chat_model}`;
-        _dom.gProvider.appendChild(opt);
-      });
-      const customOpt = document.createElement('option');
-      customOpt.value = '__custom__';
-      customOpt.textContent = '＋ 自定义模型 / 接口…';
-      _dom.gProvider.appendChild(customOpt);
-    }
-    showToast(`提供商列表加载异常: ${e.message || e}`, 'error');
-    renderLoadedProvider(providerDirty || providerRevision !== formRevision);
-  }
-}
-
-export function onProviderChange() {
-  invalidateActiveProviderTest();
-  providerDirty = false;
-  providerRevision += 1;
-  dirtyProviderFields.clear();
-  renderProviderForm();
-}
-
-function renderLoadedProvider(keepDraft) {
-  renderProviderForm(keepDraft);
-  if (!keepDraft) {
-    providerDirty = false;
-    dirtyProviderFields.clear();
-  }
-}
-
-function renderProviderForm(keepDraft = false) {
-  if (!_dom.gProvider) return;
-  const fill = (field, apply) => {
-    if (_dom[field] && !(keepDraft && dirtyProviderFields.has(field))) apply(_dom[field]);
-  };
-  const pid = _dom.gProvider.value;
-  const isCustom = pid === 'custom' || pid === '__custom__';
-  const realId = isCustom ? 'custom' : pid;
-
-  const stored = cachedProviders.find((p) => p.id === realId);
-  const preset = cachedPresets.find((p) => p.id === realId) || BUILTIN_PRESETS.find((p) => p.id === realId);
-
-  // 1. 自定义提供商名称字段显隐
-  if (_dom.gCustomNameField) {
-    _dom.gCustomNameField.classList.toggle('hidden', !isCustom);
-    fill('gCustomName', el => { el.value = isCustom ? stored?.name || '自定义模型' : ''; });
-  }
-
-  // 2. 当前生效状态徽标与描述文本
-  const isActive = Boolean(stored?.is_active);
-  if (_dom.gProviderActiveBadge) {
-    _dom.gProviderActiveBadge.className = `badge-status-pill ${isActive ? 'badge-pill-green' : 'badge-pill-gray'}`;
-    _dom.gProviderActiveBadge.textContent = isActive ? '当前生效' : '未启用';
-  }
-  if (_dom.gProviderActive) {
-    _dom.gProviderActive.textContent = isActive ? `当前：${stored ? stored.name : realId} · ${stored?.chat_model || ''}` : '';
-  }
-  if (_dom.gProviderDesc) {
-    _dom.gProviderDesc.textContent =
-      preset?.description ||
-      stored?.description ||
-      (isCustom ? '本地或私有部署的 OpenAI 兼容推理服务 (Ollama / vLLM / LMStudio)' : '外部 AI 大模型服务提供商');
-  }
-
-  // 3. API Key 状态与脱敏占位符处理
-  const keepKey = keepDraft && dirtyProviderFields.has('gApiKey');
-  fill('gApiKey', el => { el.value = ''; el.type = 'password'; });
-  if (_dom.gBtnToggleKeyText && !keepKey) {
-    _dom.gBtnToggleKeyText.textContent = '显示';
-  }
-  if (_dom.gIconKeyEye && !keepKey) {
-    const use = _dom.gIconKeyEye.querySelector('use');
-    if (use) use.setAttribute('href', '#i-eye');
-  }
-
-  const maskedKey = (stored?.api_key || '').trim();
-  const hasKey = Boolean(maskedKey && maskedKey.length > 0);
-
-  if (hasKey) {
-    if (_dom.gApiKey) _dom.gApiKey.placeholder = `已配置：${maskedKey}（留空保持原密钥，输入新密钥可覆盖）`;
-    if (_dom.gProviderKeyTag) _dom.gProviderKeyTag.className = 'provider-status-tag tag-configured';
-    if (_dom.gKeyStatusText) _dom.gKeyStatusText.textContent = `已配置密钥 (${maskedKey})`;
-    if (_dom.gApiKeyTip) _dom.gApiKeyTip.textContent = '后端已持久化该提供商密钥。如需修改，请在此输入新密钥后保存生效。';
-  } else if (isCustom) {
-    if (_dom.gApiKey) _dom.gApiKey.placeholder = 'sk-…（本地 Ollama / vLLM 等无鉴权服务可留空）';
-    if (_dom.gProviderKeyTag) _dom.gProviderKeyTag.className = 'provider-status-tag tag-optional';
-    if (_dom.gKeyStatusText) _dom.gKeyStatusText.textContent = '可选 (本地服务可免密)';
-    if (_dom.gApiKeyTip) _dom.gApiKeyTip.textContent = '本地服务（如 Ollama）无需填写，公网中转或鉴权服务请输入对应凭据。';
-  } else {
-    if (_dom.gApiKey) _dom.gApiKey.placeholder = `请输入 ${preset?.name || pid} 的有效 API Key (必填)`;
-    if (_dom.gProviderKeyTag) _dom.gProviderKeyTag.className = 'provider-status-tag tag-unconfigured';
-    if (_dom.gKeyStatusText) _dom.gKeyStatusText.textContent = '未配置 API Key · 无法调用';
-    if (_dom.gApiKeyTip) _dom.gApiKeyTip.textContent = '该提供商尚未配置密钥。请前往官方控制台申领并在此填入。';
-  }
-
-  // 4. Base URL 填充与一键恢复默认
-  const defaultUrl = preset?.default_base_url || (isCustom ? 'http://127.0.0.1:11434/v1' : 'https://api.openai.com/v1');
-  const currentUrl = stored?.api_base_url || defaultUrl;
-  fill('gBaseUrl', el => { el.value = currentUrl; el.placeholder = defaultUrl; });
-  if (_dom.gBtnResetBaseUrl) {
-    _dom.gBtnResetBaseUrl.textContent = '重置为默认';
-    _dom.gBtnResetBaseUrl.title = `恢复官方默认端点: ${defaultUrl}`;
-    _dom.gBtnResetBaseUrl.onclick = () => {
-      if (_dom.gBaseUrl) {
-        _dom.gBaseUrl.value = defaultUrl;
-        markProviderDirty('gBaseUrl');
-      }
-      showToast(`已恢复官方默认 Base URL: ${defaultUrl}`, 'info');
-    };
-  }
-
-  // 5. 对话模型选择
-  const presetModels = preset?.preset_models || (stored?.chat_model ? [stored.chat_model] : []);
-  const keepModelSelect = keepDraft && dirtyProviderFields.has('gChatModelSelect');
-  if (_dom.gChatModelSelect && !keepModelSelect) {
-    _dom.gChatModelSelect.innerHTML = '';
-    const placeholderOpt = document.createElement('option');
-    placeholderOpt.value = '';
-    placeholderOpt.textContent = '-- 选择预设推荐模型 --';
-    _dom.gChatModelSelect.appendChild(placeholderOpt);
-    presetModels.forEach((m) => {
-      const opt = document.createElement('option');
-      opt.value = m;
-      opt.textContent = m;
-      _dom.gChatModelSelect.appendChild(opt);
-    });
-    const customModelOpt = document.createElement('option');
-    customModelOpt.value = '__custom_model__';
-    customModelOpt.textContent = '✏️ 手动输入任意模型 ID...';
-    _dom.gChatModelSelect.appendChild(customModelOpt);
-  }
-
-  const currentModel = keepDraft && dirtyProviderFields.has('gChatModel') ? _dom.gChatModel.value
-    : stored?.chat_model || preset?.default_chat_model || presetModels[0] || '';
-  fill('gChatModel', el => { el.value = currentModel; });
-  if (_dom.gChatModelSelect && !keepModelSelect) {
-    if (presetModels.includes(currentModel)) {
-      _dom.gChatModelSelect.value = currentModel;
-    } else if (currentModel) {
-      _dom.gChatModelSelect.value = '__custom_model__';
-    } else {
-      _dom.gChatModelSelect.value = '';
-    }
-  }
-
-  // 6. 思考强度设置
-  fill('gReasoningEffort', el => { el.value = stored ? (stored.reasoning_effort || '') : (preset?.default_reasoning_effort || ''); });
-
-  // 7. 诊断输出框重置
-  if (_dom.gProviderTestResult) {
-    _dom.gProviderTestResult.className = 'test-result-box hidden';
-    if (_dom.gTestResultBody) _dom.gTestResultBody.textContent = '';
-  }
-}
-
-export function toggleKeyVisibility() {
-  if (!_dom.gApiKey) return;
-  const isPass = _dom.gApiKey.type === 'password';
-  _dom.gApiKey.type = isPass ? 'text' : 'password';
-  if (_dom.gBtnToggleKeyText) {
-    _dom.gBtnToggleKeyText.textContent = isPass ? '隐藏' : '显示';
-  }
-  if (_dom.gIconKeyEye) {
-    const use = _dom.gIconKeyEye.querySelector('use');
-    if (use) use.setAttribute('href', isPass ? '#i-eye-off' : '#i-eye');
-  }
-}
-
-export function onChatModelSelectChange() {
-  if (!_dom.gChatModelSelect || !_dom.gChatModel) return;
-  const val = _dom.gChatModelSelect.value;
-  if (val && val !== '__custom_model__') {
-    _dom.gChatModel.value = val;
-  } else if (val === '__custom_model__') {
-    _dom.gChatModel.focus();
-    _dom.gChatModel.select();
-  }
-}
-
 export async function savePrivateEndpointPreference() {
   if (!_dom.gAllowPrivateEndpoints || privateEndpointSaving) return;
   const revision = ++privateEndpointRevision;
@@ -713,187 +404,6 @@ function connectionPreferencePending() {
   if (!privateEndpointSaving) return false;
   showToast('正在保存模型连接范围，请完成后再测试或启用模型。', 'info');
   return true;
-}
-
-export async function handleProviderTest() {
-  if (!_dom.gProviderTest || !_dom.gProvider) return;
-  if (connectionPreferencePending()) return;
-
-  invalidateActiveProviderTest();
-  const revision = ++providerTestRevision;
-  const controller = new AbortController();
-  providerTestController = controller;
-
-  const rawPid = _dom.gProvider.value;
-  const pid = rawPid === '__custom__' ? 'custom' : rawPid;
-  const baseUrl = _dom.gBaseUrl ? _dom.gBaseUrl.value.trim() : '';
-  const chatModel = _dom.gChatModel ? _dom.gChatModel.value.trim() : '';
-  const apiKey = _dom.gApiKey ? _dom.gApiKey.value.trim() : '';
-  const reasoningEffort = _dom.gReasoningEffort ? _dom.gReasoningEffort.value : '';
-
-  const snapshot = {
-    rawPid,
-    pid,
-    baseUrl,
-    chatModel,
-    apiKey,
-    reasoningEffort,
-  };
-
-  _dom.gProviderTest.disabled = true;
-  if (!providerTestInitialHtml && _dom.gProviderTest.innerHTML && !_dom.gProviderTest.innerHTML.includes('测试中')) {
-    providerTestInitialHtml = _dom.gProviderTest.innerHTML;
-  }
-  _dom.gProviderTest.innerHTML =
-    '<svg class="icon" style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-activity"></use></svg><span>测试中…</span>';
-
-  const payload = {
-    id: pid,
-    api_base_url: baseUrl,
-    chat_model: chatModel,
-    reasoning_effort: reasoningEffort || null,
-  };
-  if (apiKey && !apiKey.includes('****')) {
-    payload.api_key = apiKey;
-  }
-
-  try {
-    const data = await testProviderConnection(payload, { signal: controller.signal });
-
-    if (!isProviderTestCurrent(revision, snapshot)) return;
-
-    if (_dom.gProviderTestResult) _dom.gProviderTestResult.classList.remove('hidden');
-
-    if (data.success) {
-      const lat = Math.round(data.latency_ms || 0);
-      showToast(`连通性测试成功 (耗时 ${lat}ms)`, 'success');
-      if (_dom.gProviderTestResult) {
-        _dom.gProviderTestResult.className = 'test-result-box test-result-success';
-      }
-      if (_dom.gTestResultTitle) _dom.gTestResultTitle.textContent = '连通性测试通过';
-      if (_dom.gTestResultLatency) _dom.gTestResultLatency.textContent = `耗时 ${lat}ms`;
-      if (_dom.gTestResultBody) {
-        const modelsCount = Array.isArray(data.models) ? data.models.length : 0;
-        _dom.gTestResultBody.textContent =
-          `已成功连接至目标端点，模型 ${chatModel || '默认'} 就绪。` +
-          (modelsCount > 0 ? ` (发现 ${modelsCount} 个可用模型)` : '');
-      }
-    } else {
-      const rawErr = data.error || data.message || '连接失败';
-      const diag = formatProviderDiagnostic(pid, rawErr, data.diagnostic);
-      showToast(`连通性测试未通过: ${diag.title}`, 'error');
-      if (_dom.gProviderTestResult) {
-        _dom.gProviderTestResult.className = 'test-result-box test-result-error';
-      }
-      if (_dom.gTestResultTitle) _dom.gTestResultTitle.textContent = diag.title;
-      if (_dom.gTestResultLatency) _dom.gTestResultLatency.textContent = '失败';
-      if (_dom.gTestResultBody) _dom.gTestResultBody.textContent = diag.guidance;
-    }
-  } catch (e) {
-    if (e.name === 'AbortError' || controller.signal.aborted) {
-      return;
-    }
-    if (!isProviderTestCurrent(revision, snapshot)) return;
-    showToast(`测试请求异常: ${e.message || e}`, 'error');
-    if (_dom.gProviderTestResult) {
-      _dom.gProviderTestResult.className = 'test-result-box test-result-error';
-      _dom.gProviderTestResult.classList.remove('hidden');
-      if (_dom.gTestResultTitle) _dom.gTestResultTitle.textContent = '网络请求异常';
-      if (_dom.gTestResultLatency) _dom.gTestResultLatency.textContent = '异常';
-      if (_dom.gTestResultBody) _dom.gTestResultBody.textContent = `请求发送失败: ${e.message || e}`;
-    }
-  } finally {
-    if (revision === providerTestRevision) {
-      if (providerTestController === controller) providerTestController = null;
-      if (_dom.gProviderTest) {
-        _dom.gProviderTest.disabled = false;
-        if (providerTestInitialHtml) _dom.gProviderTest.innerHTML = providerTestInitialHtml;
-      }
-    }
-  }
-}
-
-export async function handleActivateProvider() {
-  return saveAndActivateProvider();
-}
-
-// The footer save reuses this; it reports success itself and must say the rest was not saved either.
-async function saveAndActivateProvider({ fromFooter = false } = {}) {
-  if (!_dom.gProviderActivate || !_dom.gProvider) return false;
-  if (providerSaving || configSaving && !fromFooter) return false;
-  if (connectionPreferencePending()) return false;
-  const savedRevision = providerRevision;
-  providerSaving = true;
-  updateSaveButtons();
-  const origHtml = _dom.gProviderActivate.innerHTML;
-  _dom.gProviderActivate.innerHTML =
-    '<svg class="icon" style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-check"></use></svg><span>保存并启用中…</span>';
-
-  try {
-    const selected = _dom.gProvider.value;
-    const isCustom = selected === '__custom__' || selected === 'custom';
-    const pid = isCustom ? 'custom' : selected;
-
-    const baseUrl = _dom.gBaseUrl ? _dom.gBaseUrl.value.trim() : '';
-    const chatModel = _dom.gChatModel ? _dom.gChatModel.value.trim() : '';
-    const apiKey = _dom.gApiKey ? _dom.gApiKey.value.trim() : '';
-    const reasoningEffort = _dom.gReasoningEffort ? _dom.gReasoningEffort.value : null;
-    const customName = _dom.gCustomName ? _dom.gCustomName.value.trim() : '';
-
-    if (!baseUrl) {
-      throw new Error('请填写 API Base URL');
-    }
-    if (!chatModel) {
-      throw new Error('请填写或选择模型名称');
-    }
-
-    const stored = cachedProviders.find((p) => p.id === pid);
-    const preset = cachedPresets.find((p) => p.id === pid) || BUILTIN_PRESETS.find((p) => p.id === pid);
-
-    const hasExistingKey = Boolean(stored?.api_key && stored.api_key.length > 0);
-    if (!isCustom && !hasExistingKey && !apiKey) {
-      if (_dom.gApiKey) _dom.gApiKey.focus();
-      throw new Error(`请先输入 ${preset?.name || pid} 的 API Key 再启用`);
-    }
-
-    const payload = {
-      id: pid,
-      name: isCustom ? customName || '自定义模型' : preset?.name || stored?.name || pid,
-      api_base_url: baseUrl,
-      chat_model: chatModel,
-      reasoning_effort: reasoningEffort || null,
-      is_active: true,
-    };
-    if (apiKey && !apiKey.includes('****')) {
-      payload.api_key = apiKey;
-    }
-
-    const saved = await saveConfirmedProvider(payload);
-    // is_active is committed with the fields by POST /providers. A second
-    // activation can fail after success, or overwrite a later tab's selection.
-    const active = saved?.provider?.id === pid && saved.provider.is_active === true
-      ? saved.provider : (await activateConfirmedProvider(payload)).active_provider;
-
-    currentActiveProvider = active || { name: payload.name, chat_model: chatModel };
-    if (_callbacks.updateBadge) _callbacks.updateBadge();
-
-    if (savedRevision === providerRevision) {
-      providerDirty = false;
-      dirtyProviderFields.clear();
-    }
-    await loadProviders({ formRevision: savedRevision });
-    if (!fromFooter) showToast(`已成功保存并启用：${payload.name} · ${chatModel}${providerDirty ? '；当前修改尚未保存。' : ''}`, 'success');
-    return true;
-  } catch (e) {
-    console.error('Failed to activate provider:', e);
-    const message = e.code === 'PROVIDER_UNCONFIRMED' ? e.message : `模型设置未保存或启用失败：${e.message || e}`;
-    showToast(`${message}${fromFooter ? '；其他设置也还没有保存' : ''}`, 'error');
-    return false;
-  } finally {
-    providerSaving = false;
-    updateSaveButtons();
-    _dom.gProviderActivate.innerHTML = origHtml;
-  }
 }
 
 function renderEngineStatus(status) {
@@ -1153,7 +663,7 @@ export async function loadGlobalConfig() {
 }
 
 export async function saveGlobalConfig() {
-  if (configSaving || providerSaving) return;
+  if (configSaving || (providerController?.isProviderSaving() ?? false)) return;
   if (!configLoaded) {
     showToast('还没有读取到当前配置，保存会用默认值覆盖已有设置。正在重新读取，请稍后再保存。', 'error');
     loadGlobalConfig();
@@ -1165,12 +675,14 @@ export async function saveGlobalConfig() {
     updateSaveButtons();
     return;
   }
+  const coordinatorRevision = settingsCoordinatorRevision;
+  const targetProviderController = providerController;
   configSaving = true;
   updateSaveButtons();
   let modelSaved = false;
   let modelResult;
   try {
-    const saveModel = providerDirty;
+    const saveModel = targetProviderController?.isProviderDirty() ?? false;
     const savedRevision = configRevision;
     const payload = {
       gpt_sovits_url: _dom.gParamSovitsUrl ? _dom.gParamSovitsUrl.value.trim() || 'http://127.0.0.1:9880' : undefined,
@@ -1194,7 +706,7 @@ export async function saveGlobalConfig() {
 
     // Start the provider save now so it captures this click's model draft, but
     // reserve the config write before later autosaves can overtake it.
-    modelResult = saveModel ? saveAndActivateProvider({ fromFooter: true }).then(saved => {
+    modelResult = saveModel && targetProviderController ? targetProviderController.saveAndActivateProvider({ fromFooter: true }).then(saved => {
       modelSaved = saved;
       return saved;
     }) : Promise.resolve(true);
@@ -1206,6 +718,7 @@ export async function saveGlobalConfig() {
       await save(payload);
       return true;
     });
+    if (coordinatorRevision !== settingsCoordinatorRevision || targetProviderController?.disposed) return;
     if (!saved) return;
     if (savedRevision === configRevision) {
       configDirty = false;
@@ -1219,17 +732,21 @@ export async function saveGlobalConfig() {
       saveGlobal({ autoTranslate: _dom.gAutoTranslate.value === 'auto' });
     }
 
-    showToast(configDirty || providerDirty
+    const currentProviderDirty = targetProviderController?.isProviderDirty() ?? false;
+    showToast(configDirty || currentProviderDirty
       ? (saveModel ? '模型设置已保存并启用，之前的全局配置已保存；当前修改尚未保存。' : '之前的配置已保存；当前修改尚未保存。')
       : (saveModel ? '全局配置和模型设置已保存，模型已启用。' : '全局配置已保存'), 'success');
     loadGlobalConfig();
     fetchSystemTelemetry();
   } catch (e) {
     if (modelResult) await modelResult.catch(() => false);
+    if (coordinatorRevision !== settingsCoordinatorRevision || targetProviderController?.disposed) return;
     showToast(`${modelSaved ? '模型设置已保存并启用；全局配置保存失败' : '保存失败'}: ${e.message || e}`, 'error');
   } finally {
-    configSaving = false;
-    updateSaveButtons();
+    if (coordinatorRevision === settingsCoordinatorRevision) {
+      configSaving = false;
+      updateSaveButtons();
+    }
   }
 }
 

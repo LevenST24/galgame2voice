@@ -29,6 +29,9 @@
   - 证据：[`global_settings.js`](../../frontend/src/controllers/global_settings.js) 约 1,366 行，同时持有提供商表单、模型测试、运行状态轮询、引擎重启、Telegram 和全局保存的状态及监听器。
   - 工作：先拆提供商草稿与连接测试，再拆运行状态/引擎控制；保留一个设置窗口和入口协调器。让每个控制器明确拥有订阅、取消信号和关闭时的释放，不统一抹掉已有的细分版本守卫。
   - 验收：切页/关窗/重新打开/修改草稿/迟到请求的现有回归保持通过；真实浏览器验证焦点、返回首页和未保存草稿；每次仅迁移一个职责，不同时重做视觉。
+  - 当前进展（Phase 1 已完成 / Phase 2 待推进）：
+    - Phase 1（已完成）：已将提供商表单/草稿/读取状态、模型与密钥渲染、连通性测试、保存与启用逻辑从 `global_settings.js` 完整抽离至实例拥有的 `ProviderSettingsController`（`frontend/src/controllers/provider_settings.js`），`global_settings.js` 保持公共兼容门面与窗口/配置协调器；实现了控制器独立的事件解绑与生命周期释放（`dispose()`），消除了重复初始化导致重复绑定或旧 DOM 串扰新控件的缺陷；保留了原有页脚保存预约、细分版本守卫与草稿隔离语义。
+    - Phase 2（待推进）：运行状态/硬件遥测轮询、引擎重启与 Telegram 职责抽离。
 
 - [ ] **T05 / P2：缩小流式协调器的职责边界。**
   - 证据：[`stream_coordinator.py`](../../galgame2voice/services/chat_pipelines/stream_coordinator.py) 约 1,263 行，覆盖上游解析、TTS 队列、SSE、快照、拼接、数据库提交和好感度结算。
