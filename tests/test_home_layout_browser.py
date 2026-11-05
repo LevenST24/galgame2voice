@@ -12,6 +12,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import tempfile
 import time
@@ -22,6 +23,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_TEMP = tempfile.gettempdir()
+BROWSER_TIMEOUT_SECONDS = 40
 
 
 class LayoutServer(ThreadingHTTPServer):
@@ -63,8 +65,42 @@ def run_layout_browser(command, reset=None):
         with tempfile.TemporaryDirectory(prefix="g2v-browser-", dir=os.environ.get("G2V_BROWSER_PROFILE_ROOT") or SYSTEM_TEMP,
                                          ignore_cleanup_errors=True) as profile:
             launched = [f"--user-data-dir={profile}" if item.startswith("--user-data-dir=") else item for item in command]
-            return subprocess.run(launched, capture_output=True, timeout=40,
-                                  creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            stdout_path = Path(profile) / "stdout"
+            stderr_path = Path(profile) / "stderr"
+            with open(stdout_path, "wb") as stdout_file, open(stderr_path, "wb") as stderr_file:
+                proc = subprocess.Popen(
+                    launched,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                )
+            try:
+                proc.wait(timeout=BROWSER_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                proc.kill()
+                proc.wait()
+                raise subprocess.TimeoutExpired(
+                    launched,
+                    BROWSER_TIMEOUT_SECONDS,
+                    output=stdout_path.read_bytes(),
+                    stderr=stderr_path.read_bytes(),
+                ) from None
+            return subprocess.CompletedProcess(
+                launched,
+                proc.returncode,
+                stdout_path.read_bytes(),
+                stderr_path.read_bytes(),
+            )
 
     def relaunch():
         if reset:
@@ -193,11 +229,17 @@ RESULT_DUMP = b'<pre id="engine-result">{}</pre>'
 def test_run_layout_browser_retries_a_blank_virtual_time_dump_once(monkeypatch, dumps, launches):
     steps = []
 
-    def fake_run(command, **kwargs):
-        steps.append("launch")
-        return subprocess.CompletedProcess(command, 0, dumps[steps.count("launch") - 1], b"")
+    class FakePopen:
+        returncode = 0
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+        def __init__(self, command, *, stdout, **kwargs):
+            steps.append("launch")
+            stdout.write(dumps[steps.count("launch") - 1])
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
     run_layout_browser(["chrome", "--virtual-time-budget=5000", "--dump-dom", "http://127.0.0.1:9/"],
                        reset=lambda: steps.append("reset"))
     assert steps == ["launch", "reset", "launch"][:2 * launches - 1]
@@ -210,14 +252,27 @@ def test_run_layout_browser_reports_and_retries_a_hung_chrome_once(tmp_path, mon
                 subprocess.CompletedProcess(command, 0, RESULT_DUMP, b"")]
     steps = []
 
-    def fake_run(command, **kwargs):
-        steps.append("launch")
-        outcome = outcomes.pop(0)
-        if isinstance(outcome, Exception):
-            raise outcome
-        return outcome
+    class FakePopen:
+        pid = 12345
+        returncode = 0
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+        def __init__(self, launched, *, stdout, stderr, **kwargs):
+            steps.append("launch")
+            self.launched = launched
+            self.outcome = outcomes.pop(0)
+            stdout.write(self.outcome.stdout or b"")
+            stderr.write(self.outcome.stderr or b"")
+
+        def wait(self, timeout=None):
+            if timeout is not None and isinstance(self.outcome, Exception):
+                raise subprocess.TimeoutExpired(self.launched, timeout)
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: None)
     with pytest.warns(UserWarning, match=r"stdout 7 bytes, screenshot missing, stderr tail: \[ERROR:gpu\] stuck"):
         assert run_layout_browser(command, reset=lambda: steps.append("reset")).stdout == RESULT_DUMP
     # The state the first run left on the server is cleared before Chrome starts again.
@@ -228,6 +283,60 @@ def test_run_layout_browser_reports_and_retries_a_hung_chrome_once(tmp_path, mon
     with pytest.warns(UserWarning), pytest.raises(subprocess.TimeoutExpired):
         run_layout_browser(command)
     assert outcomes == []
+
+
+def _pid_alive(pid):
+    import _winapi
+
+    try:
+        handle = _winapi.OpenProcess(_winapi.SYNCHRONIZE, False, pid)
+    except OSError:
+        return False
+    try:
+        return _winapi.WaitForSingleObject(handle, 0) == _winapi.WAIT_TIMEOUT
+    finally:
+        _winapi.CloseHandle(handle)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires Windows taskkill")
+@pytest.mark.requires_process_termination
+def test_run_layout_browser_kills_process_tree_and_does_not_block_on_child_stdio(tmp_path, monkeypatch):
+    pids_file = tmp_path / "children.txt"
+    stub = tmp_path / "stub_browser.py"
+    stub.write_text(
+        "import pathlib, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"with pathlib.Path({str(pids_file)!r}).open('a', encoding='utf-8') as fh:\n"
+        "    fh.write(f'{child.pid}\\n')\n"
+        "sys.stdout.write('partial')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("G2V_BROWSER_PROFILE_ROOT", str(tmp_path))
+    monkeypatch.setattr(sys.modules[__name__], "BROWSER_TIMEOUT_SECONDS", 1)
+    started = time.monotonic()
+    try:
+        with pytest.warns(UserWarning, match=r"stdout 7 bytes"), pytest.raises(subprocess.TimeoutExpired):
+            run_layout_browser([sys.executable, str(stub)])
+        assert time.monotonic() - started < 10
+        child_pids = [int(line) for line in pids_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+        assert len(child_pids) == 2
+        assert not any(_pid_alive(pid) for pid in child_pids)
+    finally:
+        if pids_file.is_file():
+            import _winapi
+
+            for line in pids_file.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    try:
+                        handle = _winapi.OpenProcess(_winapi.PROCESS_ALL_ACCESS, False, int(line))
+                        try:
+                            _winapi.TerminateProcess(handle, 1)
+                        finally:
+                            _winapi.CloseHandle(handle)
+                    except OSError:
+                        pass
 
 
 @pytest.mark.requires_piped_subprocess
