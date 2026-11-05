@@ -6,6 +6,10 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- 拆分设置控制器第一阶段（Phase 1）：将大模型提供商表单、参数草稿与读取状态、模型与密钥展示、连通性测试及保存启用逻辑从 `global_settings.js` 抽离至实例拥有的 `ProviderSettingsController`（`provider_settings.js`），`global_settings.js` 保持公共兼容门面与配置协调；新控制器独立持有缓存、脏字段集合与操作版本代数，并在重新初始化时显式解绑旧事件监听与废弃迟到响应，避免重复绑定与 DOM 串扰；严格保持既有页脚保存预约顺序、版本守卫与草稿隔离语义。
+
 ### Fixed
 
 - 补齐旧版未分句助手历史回复（数据库中 `lines_json IS NULL`）的显式单句语音恢复流程：后端单句语音修复接口（`POST /api/voice/regenerate-line`）支持对 `lines_json IS NULL` 的旧版消息校验会话、消息编号与日文台词一致性后派生规范第 0 句，在合成前与入库前严格校验 `ReplyLineRecord` 规格（超长内容安全返回 422 且保留原音频与文本），通过事务前全量快照与 `immediate_transaction` 内的 CAS 校验防止并发覆盖，成功后原子写入规范 `lines_json` 并清空旧音频路径，严格区分 NULL、损坏 JSON（返回 422 且不修改原记录）与空数组（返回 404）；前端恢复控制器与 LOG 界面复用 600 秒显式生成预算与取消守卫，对显式空数组 `lines: []` 保留文本与音频但隐藏不可达的修复操作（不扩大控制器适用边界），兼容仅含 chunk/URL 结构的历史旧音频播放，通过真实音频控制器调度使确认丢失音频（404/410）安全进入失效状态并显式展示修复操作（不静默调用 16 秒未持久化合成），对临时网络抖动与超时保持重试能力而不误禁用，在旧版音频过期（>7天）或失效时提供当前音色重新生成，成功后原子就地安装规范第 0 句并更新展平播放元数据，即时允许在 LOG 中点击播放，在历史分页、聊天备份导出及重新连接时均可正常播放，并支持 409 只读远端同步；真实 GPU 与听感效果保持开放。
