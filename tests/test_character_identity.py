@@ -1011,3 +1011,56 @@ async def test_persona_save_character_scan_does_not_block_other_requests(
         if save_task is not None and not save_task.done():
             save_task.cancel()
         CharacterManager.reset_instance()
+
+
+@pytest.mark.asyncio
+async def test_rescan_reports_long_folder_with_corrupt_manifest(project, isolate_test_database):
+    CharacterManager.reset_instance()
+    try:
+        install(project, "valid_char", "有效角色")
+        prefix = "corrupt_character_package_" + "x" * 80
+        long_folder = (prefix + "_broken_json_edition")[:120]
+        assert len(long_folder) == 120
+        corrupt_dir = project / "characters" / long_folder
+        corrupt_dir.mkdir(parents=True)
+        (corrupt_dir / "manifest.json").write_text("{ invalid json", encoding="utf-8")
+
+        app = create_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            scan_res = await client.post("/api/characters/rescan")
+            assert scan_res.status_code == 200, scan_res.text
+            scan = scan_res.json()
+            chars_res = await client.get("/api/characters")
+            assert chars_res.status_code == 200, chars_res.text
+            chars = chars_res.json()
+            voices_res = await client.get("/api/voice/profiles")
+            assert voices_res.status_code == 200, voices_res.text
+            voices = voices_res.json()
+
+            assert scan["characters"] == ["有效角色"]
+            assert [c["name"] for c in chars["characters"]] == ["有效角色"]
+            assert [p["name"] for p in voices["profiles"]] == ["有效角色"]
+            warning = scan["catalog_warning"]
+            assert warning is not None
+            assert warning.startswith(f"角色包「{long_folder}」不合格：manifest.json JSON 解析错误:")
+            assert chars["catalog_warning"] == warning
+            assert voices["catalog_warning"] == warning
+
+            # A second 120-char folder sharing the first 100 chars and failing schema validation
+            # must also be reported without colliding on the truncated fallback ID.
+            second_long_folder = (prefix + "_bad_schema_edition_")[:120]
+            assert len(second_long_folder) == 120
+            assert second_long_folder[:100] == long_folder[:100]
+            second_dir = project / "characters" / second_long_folder
+            second_dir.mkdir(parents=True)
+            (second_dir / "manifest.json").write_text("{}", encoding="utf-8")
+
+            scan2_res = await client.post("/api/characters/rescan")
+            assert scan2_res.status_code == 200, scan2_res.text
+            scan2 = scan2_res.json()
+            assert scan2["characters"] == ["有效角色"]
+            warning2 = scan2["catalog_warning"]
+            assert f"角色包「{long_folder}」不合格：manifest.json JSON 解析错误:" in warning2
+            assert f"角色包「{second_long_folder}」不合格：manifest.json 结构验证失败:" in warning2
+    finally:
+        CharacterManager.reset_instance()
