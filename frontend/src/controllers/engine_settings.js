@@ -116,6 +116,7 @@ export class EngineSettingsController {
     try {
       await saveConfirmedConfig({ inference_precision: val });
       if (this.disposed || revision !== this.precisionRevision) return;
+      this.coordinator.onPrecisionSaved?.(val);
       const labelMap = {
         auto: '自动判定 (Auto)',
         fp16: 'FP16 半精度',
@@ -182,6 +183,7 @@ export class EngineSettingsController {
       if (acknowledged) this.engineRestartUnconfirmed = false;
       if (acknowledged && this.dom.gPrecision && selected && revision === this.precisionRevision) {
         this.dom.gPrecision.value = selected;
+        this.coordinator.onPrecisionSaved?.(selected);
       }
       if (acknowledged) this.coordinator.showToast?.(data.message || '引擎开始加载，请稍候。', 'info');
 
