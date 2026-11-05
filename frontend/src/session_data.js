@@ -141,6 +141,9 @@ export function normalizeSnapshot(data, sessionDefaults, globalDefaults) {
       createdAt: timestamp(session.createdAt), updatedAt: timestamp(session.updatedAt),
       settings: pickSettings(session.settings, sessionDefaults),
     };
+    if (typeof session.lastLine === 'string' && session.lastLine) {
+      normalizedSession.lastLine = session.lastLine;
+    }
     if (typeof session.unconfirmedSettingsVersion === 'number' && session.unconfirmedSettingsVersion > 0) {
       normalizedSession.unconfirmedSettingsVersion = session.unconfirmedSettingsVersion;
     }
@@ -159,7 +162,7 @@ export function portableSnapshot(snapshot) {
     // Generated audio is a separate cache. Browser recording blobs cannot be
     // restored from JSON, and URLs from other installations may be stale.
     sessions: snapshot.sessions.map(session => {
-      const { unconfirmedSettingsVersion: _dropped, ...rest } = session;
+      const { unconfirmedSettingsVersion: _dropped, lastLine: _droppedLastLine, ...rest } = session;
       return {
         ...rest,
         messages: session.messages.map(message => {
