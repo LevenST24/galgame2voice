@@ -103,7 +103,7 @@ async function fixture(t, options = {}) {
     playExcerpt: e => { calls.push(['play', e.messageId, e.line.index]); return new Promise(resolve => { finish = resolve; }); },
     stopExcerpt: () => calls.push('stop'), subscribeSettings: fn => { notify = fn; return () => { notify = null; }; },
     ...options.actions };
-  const ui = createTitleScreen(root, { actions, documentObj: doc, clock, now: () => NOW });
+  const ui = createTitleScreen(root, { actions, documentObj: doc, clock, now: options.now || (() => NOW) });
   t.after(() => ui.destroy()); ui.open(); await microtasks();
   const q = selector => ui.element.querySelector(selector);
   return { doc, clock, calls, stage, root, ui, q, sessions, actions,
@@ -331,6 +331,105 @@ test('all sessions paginate, show image/title/last line/time, return and load vi
   h.q('.home-all').click(); escape(h.q('.adv-title-back')); assert.equal(h.ui.loadScreen.hidden, true);
   h.q('.home-all').click(); h.q('.adv-title-slot-meta').children[0].click(); assert.deepEqual(h.calls.at(-1), ['load','a']); assert.equal(h.ui.isOpen, false);
 });
+test('all sessions grid preserves DOM slot buttons and keyboard focus across polling refresh when sessions are unchanged', async t => {
+  const h = await fixture(t);
+  h.q('.home-all').click();
+  const firstSlotBefore = h.q('.adv-title-slot');
+  assert.ok(firstSlotBefore, 'First slot button should exist');
+  firstSlotBefore.focus();
+  assert.equal(h.doc.activeElement, firstSlotBefore, 'First slot should have focus before poll');
+
+  // Advance 5000ms to trigger refresh() poll while mode === 'all'
+  h.clock.tick(5000);
+  await microtasks();
+
+  const firstSlotAfter = h.q('.adv-title-slot');
+  assert.equal(firstSlotBefore.isConnected, true, 'Focused slot button should not be detached from DOM during polling');
+  assert.equal(firstSlotAfter, firstSlotBefore, 'Slot button reference should be preserved when sessions have not changed');
+  assert.equal(h.doc.activeElement, firstSlotBefore, 'Focus should remain on the same slot button after polling');
+});
+
+test('all sessions grid restores focus to corresponding slot when sessions change and grid is rebuilt', async t => {
+  const h = await fixture(t);
+  h.q('.home-all').click();
+  const firstSlotBefore = h.q('.adv-title-slot');
+  firstSlotBefore.focus();
+  assert.equal(h.doc.activeElement, firstSlotBefore);
+
+  // Mutate session data so gridKey changes
+  h.sessions[0].title = '更新后的标题';
+  h.clock.tick(5000);
+  await microtasks();
+
+  const firstSlotAfter = h.q('.adv-title-slot');
+  assert.equal(firstSlotBefore.isConnected, false, 'Old slot should be detached on rebuild');
+  assert.notEqual(firstSlotAfter, firstSlotBefore, 'Grid slot should be reconstructed');
+  assert.equal(h.doc.activeElement, firstSlotAfter, 'Focus should be restored to slot with same session id');
+  assert.match(textTree(firstSlotAfter), /更新后的标题/);
+});
+
+test('all sessions grid updates relative time in-place during poll without replacing elements', async t => {
+  let currentTime = new Date(NOW.getTime());
+  const h = await fixture(t, { now: () => currentTime });
+  h.q('.home-all').click();
+  const slot = h.q('.adv-title-slot');
+  const dateEl = slot.querySelector('.adv-title-slot-date');
+  assert.match(dateEl.textContent, /今天/);
+
+  // Advance current time by 1 day so formatHomeTime produces '昨天'
+  currentTime = new Date(NOW.getTime() + 86400000);
+  h.clock.tick(5000);
+  await microtasks();
+
+  assert.equal(slot.isConnected, true, 'Slot should remain connected');
+  assert.match(dateEl.textContent, /昨天/, 'Date text should update in place');
+});
+
+test('all sessions grid preserves focus on non-slot controls and on later pages across polling refresh', async t => {
+  const h = await fixture(t);
+  h.q('.home-all').click();
+
+  // Focus pager next button
+  const nextBtn = h.q('.adv-title-page-next');
+  nextBtn.focus();
+  assert.equal(h.doc.activeElement, nextBtn);
+  h.clock.tick(5000);
+  await microtasks();
+  assert.equal(h.doc.activeElement, nextBtn, 'Pager next button retains focus during poll');
+
+  // Navigate to page 2 and focus a slot
+  nextBtn.click();
+  const page2Slots = h.ui.element.querySelectorAll('.adv-title-slot');
+  assert.equal(page2Slots.length, 2);
+  const slotOnPage2 = page2Slots[0];
+  slotOnPage2.focus();
+  assert.equal(h.doc.activeElement, slotOnPage2);
+
+  h.clock.tick(5000);
+  await microtasks();
+  assert.equal(slotOnPage2.isConnected, true);
+  assert.equal(h.doc.activeElement, slotOnPage2, 'Slot on page 2 retains focus during poll');
+});
+
+test('all sessions grid safely handles rebuild when focused session is removed', async t => {
+  const h = await fixture(t);
+  h.q('.home-all').click();
+  const firstSlot = h.q('.adv-title-slot');
+  firstSlot.focus();
+  assert.equal(h.doc.activeElement, firstSlot);
+
+  // Remove the focused session from sessions list
+  const removedId = h.sessions[0].id;
+  h.sessions.splice(0, 1);
+  h.clock.tick(5000);
+  await microtasks();
+
+  const slotsAfter = h.ui.element.querySelectorAll('.adv-title-slot');
+  assert.ok(![...slotsAfter].some(s => (s.getAttribute('data-session') || s.dataset?.session) === removedId));
+  assert.equal(firstSlot.isConnected, false, 'Old slot should be disconnected');
+});
+
+
 test('Escape closes popover then dropdown then draft/list; composing keys ignored; outside click closes', async t => {
   const h = await fixture(t); h.q('.home-new').click();
   h.q('.home-pick-advBgTime').click(); escape(h.q('.home-option'), { isComposing: true }); assert.ok(h.q('.home-dropdown'));
