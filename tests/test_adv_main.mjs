@@ -2215,3 +2215,374 @@ test('getErrorMessage: FastAPI 422 prompt validation errors return specific char
   assert.equal(getErrorMessage(systemPromptError, 'HTTP 422'), '配置不完整或数值超出范围，请检查填写内容后重新保存。');
 });
 
+test('startup sync marks unanswered user prompt as failed when pruned by server and preserves retry and sync baseline', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const session = {
+    id: 's_unanswered_pruned',
+    title: '未获回复会话',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_100_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_1', serverMessageId: 1, role: 'user', content: '第一问', ts: 1_700_000_050_000 },
+      { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '第一答', ts: 1_700_000_080_000 },
+      {
+        id: 'm_unanswered',
+        role: 'user',
+        content: '首字返回前刷新的提问',
+        ts: 1_700_000_100_000,
+      },
+    ],
+  };
+
+  const remSession = {
+    id: 's_unpersisted_rem',
+    title: '未落盘本地会话',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_100_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      {
+        id: 'm_rem_unanswered',
+        role: 'user',
+        content: '新会话未收到回复提问',
+        ts: 1_700_000_100_000,
+      },
+    ],
+  };
+
+  const server = {
+    id: session.id,
+    title: session.title,
+    voice_profile_id: null,
+    created_at: '2024-06-01 00:00:00',
+    updated_at: '2024-06-01 00:00:02',
+    message_count: 2, // 服务端物理清理了孤立提问，故 message_count 小于本地 messages.length (3)
+    last_message: '第一答',
+    settings: { ...session.settings },
+  };
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+    sessions: [session, remSession],
+    activeId: session.id,
+    global: { ...DEFAULT_GLOBAL },
+  })]]);
+
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+  };
+
+  const streamRequests = [];
+  const encoder = new TextEncoder();
+
+  globalThis.window.fetch = async (url, options = {}) => {
+    const target = String(url);
+    if (target.includes('/api/chat/sessions')) {
+      return Response.json({ sessions: [server], has_more: false, count: 1 });
+    }
+    if (target.includes('/api/chat/stream')) {
+      let output;
+      let started = false;
+      const body = new ReadableStream({
+        start(controller) { output = controller; started = true; },
+        cancel() { try { output?.close(); } catch {} },
+      });
+      options.signal?.addEventListener('abort', () => {
+        try { output?.close(); } catch {}
+      }, { once: true });
+      const request = {
+        url: target,
+        prompt: JSON.parse(options.body).prompt,
+        async event(type, payload) {
+          for (let i = 0; i < 10 && !started; i++) await tick();
+          output.enqueue(encoder.encode(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`));
+          await tick();
+        },
+      };
+      streamRequests.push(request);
+      return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
+    }
+    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+    if (target.includes('/api/providers')) return Response.json({
+      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
+      active_provider: 'p1',
+    });
+    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+    return Response.json({});
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  let app = initApp({
+    dom: { advRoot: root },
+    renderSessionList() {},
+  });
+  let app2;
+
+  t.after(() => {
+    try { app?.conversation.stop(); app?.adv?.unmount(); } catch {}
+    try { app2?.conversation.stop(); app2?.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  // 1. 断言已在服务端落盘会话中，因 message_count < local.messages.length 被自动补标 failed
+  const activeSession = storedActive();
+  const lastMsg = activeSession.messages.at(-1);
+  assert.equal(lastMsg.id, 'm_unanswered');
+  assert.deepEqual(lastMsg.failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
+  assert.equal(app.conversation.canRetry(lastMsg), true, '补标 failed 后 canRetry 必须为 true');
+
+  // 2. 断言未在服务端落盘的残留本地会话 remSession，末尾提问也被自动补标 failed
+  const remInState = storedState.sessions.find(s => s.id === remSession.id);
+  assert.ok(remInState, '残留本地会话必须被保留在会话列表中');
+  const lastRem = remInState.messages.at(-1);
+  assert.deepEqual(lastRem.failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
+
+  // 3. 断言 localStorage 已同步持久化补标的 failed
+  const storedJson = JSON.parse(storage.get('gal2voice.chat.v1'));
+  const storedSession = storedJson.sessions.find(s => s.id === session.id);
+  assert.deepEqual(storedSession.messages.at(-1).failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
+  const storedRem = storedJson.sessions.find(s => s.id === remSession.id);
+  assert.deepEqual(storedRem.messages.at(-1).failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
+
+  // 4. 打开 LOG 面板，断言渲染出错误信息和「重新发送」按钮，且点击后触发重试
+  app.adv.action('log');
+  const log = app.adv.backlog;
+  assert.ok(log, 'LOG 面板应已打开');
+  const failureEl = log.element.querySelector('.adv-log-failure');
+  assert.ok(failureEl, 'LOG 面板应展示未收到回复提示');
+  assert.match(failureEl.textContent, /未收到回复：对话已中断，未收到回复/);
+  const retryBtn = [...doc.querySelectorAll('.adv-error-btn')].find(b => b.textContent === '重新发送');
+  assert.ok(retryBtn, 'LOG 面板中必须渲染「重新发送」按钮');
+  retryBtn.click();
+  for (let i = 0; i < 5 && streamRequests.length === 0; i++) await tick();
+  assert.equal(streamRequests.length, 1, '点击「重新发送」必须向 /api/chat/stream 发送重发请求');
+  assert.equal(streamRequests[0].prompt, '首字返回前刷新的提问');
+  app.conversation.stop();
+
+  // 5. 验证服务端多出新消息（例如 message_count 变为 3，比已上云消息条数 2 多 1 条）时：
+  // 此时本地有 2 条已上云消息 + 1 条失败提问。
+  // 若未修，localCount 会被算为 3，3 > 3 为 false，从而跳过历史拉取；
+  // 修复后，因已补标 failed，localCount 正确算为 2，3 > 2 触发 loadSessionHistory，
+  // 且 loadSessionHistory 会将该失败提问保留在末尾。
+  let historyFetched = false;
+  server.message_count = 3;
+  server.last_message = '其他页面新增的第三问';
+  globalThis.window.fetch = async (url) => {
+    const target = String(url);
+    if (target.includes('/api/chat/sessions')) {
+      return Response.json({ sessions: [server], has_more: false, count: 1 });
+    }
+    if (target.includes('/api/chat/history')) {
+      historyFetched = true;
+      return Response.json({
+        session_id: session.id,
+        has_more: false,
+        oldest_id: 1,
+        count: 3,
+        messages: [
+          { id: 1, role: 'user', content_chinese: '第一问', content_japanese: '', created_at: '2024-06-01 00:00:00' },
+          { id: 2, role: 'assistant', content_chinese: '第一答', content_japanese: '', created_at: '2024-06-01 00:00:01' },
+          { id: 3, role: 'user', content_chinese: '其他页面新增的第三问', content_japanese: '', created_at: '2024-06-01 00:00:02' },
+        ],
+      });
+    }
+    if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+    if (target.includes('/api/providers')) return Response.json({
+      providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
+      active_provider: 'p1',
+    });
+    if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+    if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+    return Response.json({});
+  };
+
+  app2 = initApp({
+    dom: { advRoot: root },
+    renderSessionList() {},
+  });
+  await app2.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  assert.equal(historyFetched, true, '服务端比已上云消息多出新消息时必须触发 loadSessionHistory');
+  const finalSession = storedActive();
+  assert.equal(finalSession.messages.length, 4, '应包含服务端 3 条历史 + 本地末尾保留的 1 条失败提问');
+  assert.equal(finalSession.messages[2].content, '其他页面新增的第三问');
+  const finalLastMsg = finalSession.messages[3];
+  assert.equal(finalLastMsg.id, 'm_unanswered');
+  assert.deepEqual(finalLastMsg.failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
+  assert.equal(app2.conversation.canRetry(finalLastMsg), true, '历史更新后末尾失败提问仍可重试');
+});
+
+test('startup sync does not mark user prompt failed when server count covers local messages', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const session = {
+    id: 's_equal_count',
+    title: '已落盘提问',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_100_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_1', role: 'user', content: '提问', ts: 1_700_000_050_000 },
+    ],
+  };
+
+  const server = {
+    id: session.id,
+    title: session.title,
+    voice_profile_id: null,
+    created_at: '2024-06-01 00:00:00',
+    updated_at: '2024-06-01 00:00:02',
+    message_count: 1, // server.message_count >= local.messages.length (1 >= 1)
+    last_message: '提问',
+    settings: { ...session.settings },
+  };
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+    fetch: async (url) => {
+      const target = String(url);
+      if (target.includes('/api/chat/sessions')) {
+        return Response.json({ sessions: [server], has_more: false, count: 1 });
+      }
+      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
+      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+      return Response.json({});
+    },
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  const activeSession = storedActive();
+  const lastMsg = activeSession.messages.at(-1);
+  assert.equal(lastMsg.failed, undefined, '服务端消息数不小于本地时不得误标 failed');
+});
+
+test('startup sync marks unanswered user prompt as failed when server returns empty sessions list', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const session = {
+    id: 's_empty_backend',
+    title: '服务端无记录本地会话',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_100_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_unanswered_empty', role: 'user', content: '未上云且服务端无记录的提问', ts: 1_700_000_050_000 },
+    ],
+  };
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+    fetch: async (url) => {
+      const target = String(url);
+      if (target.includes('/api/chat/sessions')) {
+        return Response.json({ sessions: [], has_more: false, count: 0 });
+      }
+      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
+      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+      return Response.json({});
+    },
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  const activeSession = storedActive();
+  const lastMsg = activeSession.messages.at(-1);
+  assert.equal(lastMsg.id, 'm_unanswered_empty');
+  assert.deepEqual(lastMsg.failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
+  assert.equal(app.conversation.canRetry(lastMsg), true, '服务端返回空列表时本地中断提问亦可重试');
+});
