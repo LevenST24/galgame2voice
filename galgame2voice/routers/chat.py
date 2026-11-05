@@ -530,6 +530,10 @@ async def list_chat_sessions(
                     settings_dict = json.loads(s["settings_json"])
                 except (json.JSONDecodeError, TypeError, ValueError):
                     settings_dict = {}
+            # Deleting a voice nulls the column (ON DELETE SET NULL) but not this copy,
+            # and the browser merges the copy into its session on every sync.
+            if "voiceProfileId" in settings_dict:
+                settings_dict["voiceProfileId"] = s.get("voice_profile_id")
             results.append({
                 "id": s["id"],
                 "title": s.get("title") or "新对话",
