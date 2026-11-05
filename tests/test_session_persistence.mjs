@@ -4,7 +4,7 @@ import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSess
 import { mergeChatBackup, exportCompleteChatBackup } from '../frontend/src/chat_backup.js';
 import { pickSettings, serverTimestamp, normalizeSnapshot } from '../frontend/src/session_data.js';
 import { streamChat } from '../frontend/src/ai.js';
-import { DEFAULT_GLOBAL, DEFAULT_SESSION_SETTINGS, GREETING, LEGACY_GREETINGS, loadState } from '../frontend/src/store.js';
+import { DEFAULT_GLOBAL, DEFAULT_SESSION_SETTINGS, GREETING, LEGACY_GREETINGS, state, loadState, getSession, getActive, exportSessionData, prepareSessionImport, applySessionImport } from '../frontend/src/store.js';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const response = data => ({ ok: true, json: async () => data });
@@ -311,6 +311,179 @@ async function exportPrefix(localSettings, localUpdatedAt) {
   const parsed = JSON.parse(merged.content);
   assert.equal(parsed.global.autoTranslate, undefined, 'merged backup must not contain autoTranslate in global');
   assert.equal(parsed.sessions[0].settings.autoTranslate, undefined, 'merged backup must not contain autoTranslate in session settings');
+  passed++;
+}
+{
+  class MemoryStorage {
+    values = new Map();
+    getItem(key) { return this.values.get(key) ?? null; }
+    removeItem(key) { this.values.delete(key); }
+    setItem(key, value) { this.values.set(key, String(value)); }
+  }
+  globalThis.localStorage = new MemoryStorage();
+  const STORAGE_KEY = 'gal2voice.chat.v1';
+
+  const storedSessions = [
+    {
+      id: 's_legacy_1',
+      title: '旧会话 1',
+      createdAt: 1000,
+      updatedAt: 1001,
+      settings: { temperature: 0.7 },
+      messages: [
+        { id: 'm_1_1', role: 'assistant', content: LEGACY_GREETINGS[0], noVoice: true, ts: 1000 },
+        { id: 'm_1_2', role: 'user', content: '用户发问', ts: 1001 },
+        { id: 'm_1_3', role: 'assistant', content: '后续回复保持原样', ts: 1002 },
+      ],
+    },
+    {
+      id: 's_legacy_2',
+      title: '旧会话 2',
+      createdAt: 2000,
+      updatedAt: 2001,
+      settings: { temperature: 0.7 },
+      messages: [
+        { id: 'm_2_1', role: 'assistant', content: LEGACY_GREETINGS[1], noVoice: true, ts: 2000 },
+      ],
+    },
+    {
+      id: 's_custom',
+      title: '自定义开场白会话',
+      createdAt: 3000,
+      updatedAt: 3001,
+      settings: { temperature: 0.7 },
+      messages: [
+        { id: 'm_3_1', role: 'assistant', content: '自定义开场白，不得被替换', ts: 3000 },
+      ],
+    },
+    {
+      id: 's_user_matching',
+      title: '用户发了旧欢迎语文案',
+      createdAt: 4000,
+      updatedAt: 4001,
+      settings: { temperature: 0.7 },
+      messages: [
+        { id: 'm_4_1', role: 'user', content: LEGACY_GREETINGS[0], ts: 4000 },
+        { id: 'm_4_2', role: 'assistant', content: '用户输入不得被修改', ts: 4001 },
+      ],
+    },
+  ];
+
+  globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    sessions: storedSessions,
+    activeId: 's_legacy_1',
+    global: {},
+  }));
+
+  loadState();
+
+  const s1 = getSession('s_legacy_1');
+  const s2 = getSession('s_legacy_2');
+  const s3 = getSession('s_custom');
+  const s4 = getSession('s_user_matching');
+
+  // 1. 旧欢迎语被替换为现行欢迎语
+  assert.equal(s1.messages[0].content, GREETING);
+  assert.equal(s2.messages[0].content, GREETING);
+  assert.equal(getActive().messages[0].content, GREETING);
+
+  // 2. 会话中的其他消息（用户消息与后续助手回复）保持原样
+  assert.equal(s1.messages[1].content, '用户发问');
+  assert.equal(s1.messages[2].content, '后续回复保持原样');
+
+  // 3. 内容不同的助手消息不得被替换
+  assert.equal(s3.messages[0].content, '自定义开场白，不得被替换');
+
+  // 4. 用户输入内容即使与旧欢迎语完全一致也不得被替换
+  assert.equal(s4.messages[0].content, LEGACY_GREETINGS[0]);
+  assert.equal(s4.messages[1].content, '用户输入不得被修改');
+
+  // 5. 备份导入导出与往返不受影响
+  const exportedRaw = exportSessionData();
+  const exported = JSON.parse(exportedRaw);
+  assert.equal(exported.sessions.find(s => s.id === 's_legacy_1').messages[0].content, GREETING);
+  assert.equal(exported.sessions.find(s => s.id === 's_user_matching').messages[0].content, LEGACY_GREETINGS[0]);
+
+  // 导入包含旧欢迎语的历史备份时，同样刷新旧欢迎语并保持往返有效
+  const legacyBackupRaw = JSON.stringify({
+    format: 'galgame2voice.chat',
+    version: 1,
+    sessions: [
+      {
+        id: 's_imported_legacy',
+        title: '导入的旧会话',
+        createdAt: 5000,
+        updatedAt: 5001,
+        settings: {},
+        messages: [
+          { id: 'm_imp_1', role: 'assistant', content: LEGACY_GREETINGS[0], noVoice: true, ts: 5000 },
+          { id: 'm_imp_2', role: 'user', content: '导入的用户提问', ts: 5001 },
+        ],
+      },
+    ],
+    global: {},
+  });
+  const importedData = prepareSessionImport(legacyBackupRaw);
+  assert.equal(importedData.sessions[0].messages[0].content, GREETING);
+  assert.equal(importedData.sessions[0].messages[1].content, '导入的用户提问');
+  applySessionImport(importedData);
+
+  // 确保经备份往返及 mergeChatBackup 对比时不会产生额外副本
+  const mergeResult = mergeChatBackup(
+    backup([session(state.sessions[0].id, [message(1, '导入的用户提问')])]),
+    backup([state.sessions[0]])
+  );
+  assert.equal(mergeResult.browserCopies, 0);
+
+  passed++;
+}
+{
+  class MemoryStorage {
+    values = new Map();
+    getItem(key) { return this.values.get(key) ?? null; }
+    removeItem(key) { this.values.delete(key); }
+    setItem(key, value) { this.values.set(key, String(value)); }
+  }
+  globalThis.localStorage = new MemoryStorage();
+  const STORAGE_KEY = 'gal2voice.chat.v1';
+
+  const greeting20260909 =
+    '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。右上角`会话设置`可配置专属人设与采样参数，侧边栏底部齿轮可切换音色与对话模型。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。';
+  const greeting20261003 =
+    '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。右上角`会话设置`可绑定角色音色并配置人设与采样参数，侧边栏底部齿轮可切换对话模型。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。';
+
+  globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    sessions: [
+      {
+        id: 's_hist_1',
+        title: '历史会话 1',
+        createdAt: 1000,
+        updatedAt: 1001,
+        settings: {},
+        messages: [{ id: 'm_h_1', role: 'assistant', content: greeting20260909, noVoice: true, ts: 1000 }],
+      },
+      {
+        id: 's_hist_2',
+        title: '历史会话 2',
+        createdAt: 2000,
+        updatedAt: 2001,
+        settings: {},
+        messages: [{ id: 'm_h_2', role: 'assistant', content: greeting20261003, noVoice: true, ts: 2000 }],
+      },
+    ],
+    activeId: 's_hist_1',
+    global: {},
+  }));
+
+  loadState();
+
+  assert.equal(state.sessions[0].messages[0].content, GREETING);
+  assert.equal(state.sessions[1].messages[0].content, GREETING);
+  assert.equal(getSession('s_hist_1').messages[0].content, GREETING);
+  assert.equal(getSession('s_hist_2').messages[0].content, GREETING);
+  const saved = JSON.parse(globalThis.localStorage.getItem(STORAGE_KEY));
+  assert.equal(saved.sessions[0].messages[0].content, GREETING);
+  assert.equal(saved.sessions[1].messages[0].content, GREETING);
   passed++;
 }
 console.log(`Session persistence and complete backups: ${passed} scenarios passed`);
