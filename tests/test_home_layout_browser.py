@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -17,6 +18,7 @@ import threading
 import tempfile
 import time
 import warnings
+import weakref
 
 import pytest
 
@@ -24,6 +26,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_TEMP = tempfile.gettempdir()
 BROWSER_TIMEOUT_SECONDS = 40
+_SERVERS_BY_PORT = weakref.WeakValueDictionary()
 
 
 class LayoutServer(ThreadingHTTPServer):
@@ -31,6 +34,11 @@ class LayoutServer(ThreadingHTTPServer):
     # connections beyond the listen backlog (5 by default) instead of queueing them,
     # which left the page blank whenever the accept loop fell briefly behind.
     request_queue_size = 64
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.requests = []
+        _SERVERS_BY_PORT[self.server_port] = self
 
 
 def make_layout_server(handler):
@@ -47,12 +55,13 @@ def make_layout_server(handler):
     raise RuntimeError("Could not bind a high loopback port for browser tests")
 
 
-def _describe_hang(exc, command, seconds):
+def _describe_hang(exc, command, seconds, requests=()):
     screenshot = next((item.split("=", 1)[1] for item in command if item.startswith("--screenshot=")), None)
     stderr = (exc.stderr or b"").decode("utf-8", "replace").strip()[-400:]
+    seen = ", ".join(requests) if requests else "(none)"
     return (f"Chrome was still running after {exc.timeout} s (returned after {seconds:.0f} s) and was started again: "
             f"stdout {len(exc.stdout or b'')} bytes, screenshot {'written' if screenshot and os.path.exists(screenshot) else 'missing'}, "
-            f"stderr tail: {stderr or '(empty)'}")
+            f"requests: {seen}, stderr tail: {stderr or '(empty)'}")
 
 
 def run_layout_browser(command, reset=None):
@@ -61,7 +70,12 @@ def run_layout_browser(command, reset=None):
     A test whose server keeps state between requests (posted results, events the page sets)
     passes `reset` to clear it, so the second run does not start from what the first one left.
     """
+    port = next((int(m[1]) for item in reversed(command) if (m := re.match(r"^https?://127\.0\.0\.1:(\d+)(?:/|$)", str(item)))), None)
+    server = _SERVERS_BY_PORT.get(port)
+
     def launch():
+        if server is not None:
+            server.requests.clear()
         # Chrome's own cache filenames can exceed Windows MAX_PATH when a browser
         # profile sits under a long source-snapshot/pytest directory.
         with tempfile.TemporaryDirectory(prefix="g2v-browser-", dir=os.environ.get("G2V_BROWSER_PROFILE_ROOT") or SYSTEM_TEMP,
@@ -76,6 +90,7 @@ def run_layout_browser(command, reset=None):
                     stdout=stdout_file,
                     stderr=stderr_file,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                    start_new_session=os.name != "nt",
                 )
             try:
                 proc.wait(timeout=BROWSER_TIMEOUT_SECONDS)
@@ -89,6 +104,11 @@ def run_layout_browser(command, reset=None):
                         check=False,
                         creationflags=subprocess.CREATE_NO_WINDOW,
                     )
+                else:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
                 proc.kill()
                 proc.wait()
                 raise subprocess.TimeoutExpired(
@@ -116,7 +136,8 @@ def run_layout_browser(command, reset=None):
         # Windows CI sometimes keeps Chrome running for the whole 40 s, even past the 20 s
         # image hold in test_stream_progress_browser. The cause is not known: report what
         # Chrome had produced, then start it once more.
-        warnings.warn(_describe_hang(exc, command, time.monotonic() - started), stacklevel=2)
+        requests = list(server.requests) if server is not None else ()
+        warnings.warn(_describe_hang(exc, command, time.monotonic() - started, requests), stacklevel=2)
         return relaunch()
     # Under load the virtual-time budget can run out while Chrome is still on about:blank:
     # CI's blank screenshots are about 6 KB, the size of an about:blank capture, and the
@@ -174,6 +195,12 @@ class LayoutHandler(BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+    def parse_request(self):
+        ok = super().parse_request()
+        if ok and hasattr(self.server, "requests"):
+            self.server.requests.append(f"{self.command} {self.path}")
+        return ok
 
     def do_GET(self):
         if self.path == "/":
@@ -263,9 +290,11 @@ def test_run_layout_browser_retries_a_blank_virtual_time_dump_once(monkeypatch, 
     assert steps == ["launch", "reset", "launch"][:2 * launches - 1]
 
 
-def test_run_layout_browser_reports_and_retries_a_hung_chrome_once(tmp_path, monkeypatch):
+def test_run_layout_browser_reports_and_retries_a_hung_chrome_once(tmp_path, monkeypatch, request):
     screenshot = tmp_path / "shot.png"
-    command = ["chrome", "--dump-dom", f"--screenshot={screenshot}", "http://127.0.0.1:9/"]
+    server = make_layout_server(partial(LayoutHandler, page=b""))
+    request.addfinalizer(server.server_close)
+    command = ["chrome", "--dump-dom", f"--screenshot={screenshot}", f"http://127.0.0.1:{server.server_port}/"]
     outcomes = [subprocess.TimeoutExpired(command, 40, b"partial", b"[ERROR:gpu] stuck\n"),
                 subprocess.CompletedProcess(command, 0, RESULT_DUMP, b"")]
     steps = []
@@ -278,6 +307,8 @@ def test_run_layout_browser_reports_and_retries_a_hung_chrome_once(tmp_path, mon
             steps.append("launch")
             self.launched = launched
             self.outcome = outcomes.pop(0)
+            if len(steps) == 1:
+                server.requests.extend(["GET /", "GET /frontend/src/main.js"])
             stdout.write(self.outcome.stdout or b"")
             stderr.write(self.outcome.stderr or b"")
 
@@ -291,19 +322,27 @@ def test_run_layout_browser_reports_and_retries_a_hung_chrome_once(tmp_path, mon
 
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: None)
-    with pytest.warns(UserWarning, match=r"stdout 7 bytes, screenshot missing, stderr tail: \[ERROR:gpu\] stuck"):
+    with pytest.warns(UserWarning, match=r"stdout 7 bytes, screenshot missing, requests: GET /, GET /frontend/src/main\.js, stderr tail: \[ERROR:gpu\] stuck"):
         assert run_layout_browser(command, reset=lambda: steps.append("reset")).stdout == RESULT_DUMP
     # The state the first run left on the server is cleared before Chrome starts again.
     assert steps == ["launch", "reset", "launch"]
+    assert server.requests == []
 
     # A second hang is not retried again.
     outcomes[:] = [subprocess.TimeoutExpired(command, 40), subprocess.TimeoutExpired(command, 40)]
-    with pytest.warns(UserWarning), pytest.raises(subprocess.TimeoutExpired):
+    with pytest.warns(UserWarning, match=r"requests: \(none\)"), pytest.raises(subprocess.TimeoutExpired):
         run_layout_browser(command)
     assert outcomes == []
 
 
 def _pid_alive(pid):
+    if os.name != "nt":
+        # A killed process stays a zombie until its new parent reaps it.
+        try:
+            with open(f"/proc/{pid}/stat", encoding="ascii") as fh:
+                return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
+        except OSError:
+            return False
     import _winapi
 
     try:
@@ -316,7 +355,6 @@ def _pid_alive(pid):
         _winapi.CloseHandle(handle)
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Requires Windows taskkill")
 @pytest.mark.requires_process_termination
 def test_run_layout_browser_kills_process_tree_and_does_not_block_on_child_stdio(tmp_path, monkeypatch):
     pids_file = tmp_path / "children.txt"
@@ -342,19 +380,20 @@ def test_run_layout_browser_kills_process_tree_and_does_not_block_on_child_stdio
         assert len(child_pids) == 2
         assert not any(_pid_alive(pid) for pid in child_pids)
     finally:
-        if pids_file.is_file():
-            import _winapi
+        for line in pids_file.read_text(encoding="utf-8").splitlines() if pids_file.is_file() else ():
+            try:
+                if os.name != "nt":
+                    os.kill(int(line), signal.SIGKILL)
+                    continue
+                import _winapi
 
-            for line in pids_file.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    try:
-                        handle = _winapi.OpenProcess(_winapi.PROCESS_ALL_ACCESS, False, int(line))
-                        try:
-                            _winapi.TerminateProcess(handle, 1)
-                        finally:
-                            _winapi.CloseHandle(handle)
-                    except OSError:
-                        pass
+                handle = _winapi.OpenProcess(_winapi.PROCESS_ALL_ACCESS, False, int(line))
+                try:
+                    _winapi.TerminateProcess(handle, 1)
+                finally:
+                    _winapi.CloseHandle(handle)
+            except OSError:
+                pass
 
 
 @pytest.mark.requires_piped_subprocess
