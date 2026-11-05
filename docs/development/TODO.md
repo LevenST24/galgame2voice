@@ -61,10 +61,11 @@
   - 工作：复用现有流程，为启动器、打包、数据库迁移等相关改动添加有界的合并前检查；最终发布仍运行完整便携包验收。复用 workflow，避免复制一套会漂移的命令。
   - 验收：能在 PR 中发现缺少运行文件、启动失败或打包后恢复失败；纯文档变更不重复构建大包；失败上传现有诊断，成功后才允许正式发布。
 
-- [ ] **T10 / P2：修复测试能力探测遗留临时目录。**
+- [x] **T10 / P2：修复测试能力探测遗留临时目录。**
   - 证据：[`tests/conftest.py`](../../tests/conftest.py) 的 `_probe_writable_private_temp_dir` 创建 `g2v_cap_*`，写入后成功或失败均未清理。
   - 工作：用 `TemporaryDirectory` 或可靠的 `finally` 管理本次创建的目录；禁止按名字批量删除工作区中已有目录。
   - 验收：可写、写失败与不可创建三种探测结果保持原含义，执行后仅本次目录被清理；重复收集测试不会持续制造垃圾目录。
+  - 本次收口：探测在 `finally` 中用 `shutil.rmtree` 删除本次 `mkdtemp` 创建的目录，不按名字匹配任何已有目录；新增 [`test_capability_probes.py`](../../tests/test_capability_probes.py) 覆盖可写、写入失败、无法创建三种结果（修复前前两项失败）。修复前 conftest 会以 `conftest` 和 `tests.conftest` 各导入一次，每次 pytest 运行新增两个 `g2v_cap_*` 目录；系统临时目录不可写时落在当前目录（仓库根目录，因此 `.gitignore` 有 `g2v_cap_*/`）。修复后同样的运行不再新增目录。已有的遗留目录没有自动清理。
 
 - [ ] **T11 / P2：整理测试入口和模块归属。**
   - 证据：[`frontend/package.json`](../../frontend/package.json) 的 `test` 是逐个文件维护的长命令；测试中仍有 `adversarial_m*`、`challenger` 等历史流程命名。

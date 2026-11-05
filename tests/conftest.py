@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -86,7 +87,10 @@ PROCESS_TERMINATION_SKIP_REASON = (
 
 
 def _probe_writable_private_temp_dir() -> bool:
-    """True when a tempfile.mkdtemp() directory can be written into."""
+    """True when a tempfile.mkdtemp() directory can be written into.
+
+    Only the directory this probe created is removed afterwards, whatever the result.
+    """
     try:
         path = tempfile.mkdtemp(prefix="g2v_cap_")
     except OSError:
@@ -98,6 +102,8 @@ def _probe_writable_private_temp_dir() -> bool:
         return True
     except OSError:
         return False
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _probe_piped_subprocess() -> bool:
