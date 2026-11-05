@@ -169,3 +169,95 @@ def test_model_discovery_ignores_archived_test_models_and_audio(tmp_path, monkey
     result = voice._scan_models_sync()
     assert [item["path"] for item in result["gpt_weights"]] == [str(tmp_path / "characters" / "Demo" / "model.ckpt")]
     assert [item["path"] for item in result["audio_files"]] == [str(tmp_path / "characters" / "Demo" / "gentle.wav")]
+
+
+@pytest.mark.asyncio
+async def test_model_discovery_includes_data_pth_and_excludes_pretrained_models(tmp_path, monkeypatch):
+    from httpx import ASGITransport, AsyncClient
+    from galgame2voice.main import create_app
+    from galgame2voice.routers import voice
+
+    project_root = tmp_path / "portable_app"
+    data_dir = project_root / "data"
+    data_dir.mkdir(parents=True)
+
+    char_ckpt = data_dir / "char_model.ckpt"
+    char_ckpt.write_bytes(b"ckpt content")
+    char_pth = data_dir / "char_model.pth"
+    char_pth.write_bytes(b"pth content")
+    char_wav = data_dir / "char_sample.wav"
+    char_wav.write_bytes(b"wav content")
+
+    # Excluded built-in directories with both .pth and .ckpt files
+    for excluded_dir_name in ("pretrained_models", "Pretrained_Models", "g2pwmodel", "uvr5_weights"):
+        excluded_dir = project_root / excluded_dir_name
+        excluded_dir.mkdir(parents=True, exist_ok=True)
+        (excluded_dir / f"{excluded_dir_name}_s2G488k.pth").write_bytes(b"builtin pth")
+
+    # Explicit canonical GPT-SoVITS base models inside pretrained_models
+    (project_root / "pretrained_models" / "s2G488k.pth").write_bytes(b"s2G488k pth")
+    (project_root / "pretrained_models" / "s1bert25hz-25hz-460k.ckpt").write_bytes(b"s1 ckpt")
+
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(project_root))
+    get_settings.cache_clear()
+    monkeypatch.setattr(voice, "_discover_gpt_sovits_roots", lambda: [])
+    voice._scan_cache.clear()
+
+    try:
+        # 1. Direct sync scan
+        result_sync = voice._scan_models_sync()
+        discovered_sovits_paths = [item["path"] for item in result_sync["sovits_weights"]]
+        discovered_gpt_paths = [item["path"] for item in result_sync["gpt_weights"]]
+        assert str(char_pth) in discovered_sovits_paths
+        assert str(char_ckpt) in discovered_gpt_paths
+        assert str(char_wav) in [item["path"] for item in result_sync["audio_files"]]
+        assert not any("pretrained_models" in p.lower() for p in discovered_sovits_paths)
+        assert not any("pretrained_models" in p.lower() for p in discovered_gpt_paths)
+        assert not any("g2pwmodel" in p.lower() for p in discovered_sovits_paths)
+        assert not any("uvr5_weights" in p.lower() for p in discovered_sovits_paths)
+
+        # 2. Via HTTP API route GET /api/voice/scan-models
+        voice._scan_cache.clear()
+        async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+            response = await client.get("/api/voice/scan-models")
+            assert response.status_code == 200
+            payload = response.json()
+            api_sovits_paths = [item["path"] for item in payload["sovits_weights"]]
+            api_gpt_paths = [item["path"] for item in payload["gpt_weights"]]
+            assert str(char_pth) in api_sovits_paths
+            assert not any("s2g488k" in p.lower() for p in api_sovits_paths)
+            assert not any("s1bert" in p.lower() for p in api_gpt_paths)
+    finally:
+        get_settings.cache_clear()
+        voice._scan_cache.clear()
+
+
+def test_model_discovery_deduplicates_paths_across_slash_styles(tmp_path, monkeypatch):
+    from galgame2voice.routers import voice
+
+    project_root = tmp_path / "portable_app"
+    data_dir = project_root / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "voice.pth").write_bytes(b"content")
+
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(project_root))
+    get_settings.cache_clear()
+    # A configured root written with forward slashes duplicates project_root/data.
+    forward_slash_data = str(data_dir).replace("\\", "/")
+    monkeypatch.setattr(
+        voice,
+        "_discover_gpt_sovits_roots",
+        lambda: [forward_slash_data],
+    )
+    voice._scan_cache.clear()
+
+    try:
+        scanned = voice._scan_models_sync()
+        pth_paths = [item["path"] for item in scanned["sovits_weights"]]
+        # Exactly 1 occurrence of voice.pth despite forward-slash vs backslash candidate roots
+        assert len([p for p in pth_paths if "voice.pth" in p]) == 1
+    finally:
+        get_settings.cache_clear()
+        voice._scan_cache.clear()
+
+
