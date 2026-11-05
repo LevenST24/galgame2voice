@@ -216,3 +216,112 @@ async def test_telegram_console_does_not_announce_success_after_a_rejected_write
     assert "保存" in answer.args[0] and "已切换" not in answer.args[0]
     assert answer.kwargs["show_alert"] is True
     returned.assert_not_awaited()
+
+
+async def test_delete_active_voice_profile_clears_settings_and_manager(stack, monkeypatch):
+    assert stack.manager.active_profile.id == stack.old.id
+    async with get_db(stack.path) as connection:
+        raw_settings = await crud.get_settings_raw(connection)
+        assert raw_settings.active_voice_profile_id == stack.old.id
+
+    monkeypatch.setattr(
+        stack.manager,
+        "warmup_current_profile",
+        voice_manager.VoiceManager.warmup_current_profile.__get__(stack.manager),
+    )
+    monkeypatch.setattr(stack.client, "check_health", AsyncMock(return_value={"connected": True}))
+    warmed_profiles = []
+
+    async def fake_switch(profile, force=False):
+        warmed_profiles.append(profile)
+        return True
+
+    monkeypatch.setattr(stack.client, "switch_voice_profile", AsyncMock(side_effect=fake_switch))
+    monkeypatch.setattr(stack.client, "synthesize", AsyncMock(return_value=b"audio"))
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://test") as client:
+        # 1. Deleting an inactive profile must keep active settings and active manager intact
+        del_inactive = await client.delete(f"/api/voice/profiles/{stack.new.id}")
+        assert del_inactive.status_code == 200, del_inactive.text
+        assert del_inactive.json() == {"status": "deleted", "profile_id": stack.new.id}
+
+        assert stack.manager.active_profile is not None
+        assert stack.manager.active_profile.id == stack.old.id
+        async with get_db(stack.path) as connection:
+            raw_settings = await crud.get_settings_raw(connection)
+            assert raw_settings.active_voice_profile_id == stack.old.id
+
+        cfg_resp = await client.get("/api/config")
+        assert cfg_resp.status_code == 200
+        assert cfg_resp.json()["settings"]["active_voice_profile_id"] == stack.old.id
+
+        # 2. Deleting the currently active voice profile must clear settings and manager active profile
+        resp = await client.delete(f"/api/voice/profiles/{stack.old.id}")
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"status": "deleted", "profile_id": stack.old.id}
+
+        # 3. /api/config must now report active_voice_profile_id as None (not a dangling ID)
+        cfg_resp2 = await client.get("/api/config")
+        assert cfg_resp2.status_code == 200
+        assert cfg_resp2.json()["settings"]["active_voice_profile_id"] is None
+
+    async with get_db(stack.path) as connection:
+        raw_settings = await crud.get_settings_raw(connection)
+        assert raw_settings.active_voice_profile_id is None
+        cursor = await connection.execute("SELECT active_voice_profile_id FROM settings WHERE id = 1;")
+        row = await cursor.fetchone()
+        assert row[0] is None
+
+    assert stack.manager.active_profile is None
+
+    result = await stack.manager.warmup_current_profile()
+    assert result is False
+    assert len(warmed_profiles) == 0
+
+
+async def test_manager_delete_profile_clears_active_state(stack, monkeypatch):
+    await stack.manager.switch_profile(stack.new)
+    assert stack.manager.active_profile.id == stack.new.id
+    async with get_db(stack.path) as connection:
+        raw_settings = await crud.get_settings_raw(connection)
+        assert raw_settings.active_voice_profile_id == stack.new.id
+
+    monkeypatch.setattr(
+        stack.manager,
+        "warmup_current_profile",
+        voice_manager.VoiceManager.warmup_current_profile.__get__(stack.manager),
+    )
+    monkeypatch.setattr(stack.client, "check_health", AsyncMock(return_value={"connected": True}))
+    warmed_profiles = []
+
+    async def fake_switch(profile, force=False):
+        warmed_profiles.append(profile)
+        return True
+
+    monkeypatch.setattr(stack.client, "switch_voice_profile", AsyncMock(side_effect=fake_switch))
+    monkeypatch.setattr(stack.client, "synthesize", AsyncMock(return_value=b"audio"))
+
+    # 1. Deleting inactive stack.old.id must preserve active stack.new.id
+    assert await stack.manager.delete_profile(stack.old.id) is True
+    assert stack.manager.active_profile is not None
+    assert stack.manager.active_profile.id == stack.new.id
+    async with get_db(stack.path) as connection:
+        raw_settings = await crud.get_settings_raw(connection)
+        assert raw_settings.active_voice_profile_id == stack.new.id
+
+    # 2. Deleting active stack.new.id must clear active profile in manager and settings
+    deleted = await stack.manager.delete_profile(stack.new.id)
+    assert deleted is True
+
+    async with get_db(stack.path) as connection:
+        raw_settings = await crud.get_settings_raw(connection)
+        assert raw_settings.active_voice_profile_id is None
+
+    assert stack.manager.active_profile is None
+
+    warmed_profiles.clear()
+    assert await stack.manager.warmup_current_profile() is False
+    assert len(warmed_profiles) == 0
+
+
+

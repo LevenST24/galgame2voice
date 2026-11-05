@@ -211,5 +211,9 @@ async def delete_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> b
     async with immediate_transaction(conn):
         cursor = await conn.execute("DELETE FROM voice_profiles WHERE id = ?;", (profile_id,))
         if cursor.rowcount:
+            await conn.execute(
+                "UPDATE settings SET active_voice_profile_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE active_voice_profile_id = ?;",
+                (profile_id,),
+            )
             await invalidate_profiles_after_commit(conn)
     return cursor.rowcount > 0
