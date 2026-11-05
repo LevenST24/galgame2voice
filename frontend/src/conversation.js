@@ -257,8 +257,14 @@ export function createConversation({
         origin.messages.push(message);
         origin.updatedAt = Date.now();
       }
-      const failedInline = Boolean(error && !stored && origin?.messages.includes(userMessage));
-      if (failedInline) userMessage.failed = { error, code: errorCode };
+      let failedInline = Boolean(error && !stored && origin?.messages.includes(userMessage));
+      if (failedInline) {
+        userMessage.failed = { error, code: errorCode };
+      } else if (cancelled && !stored && origin?.messages.includes(userMessage)) {
+        delete userMessage.serverMessageId;
+        userMessage.failed = { error: '对话已中断，未收到回复', code: 'cancelled' };
+        failedInline = true;
+      }
       if (!cancelled && !error && stored) {
         const finalLines = message.lines?.length ? message.lines
           : current.hasReceivedLineEvents ? [] : [wholeReplyLine(message, meta)];
