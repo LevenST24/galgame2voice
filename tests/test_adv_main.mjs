@@ -127,7 +127,7 @@ test('real empty done offers retry while LOG stays open and reconciles the faile
   const h = setup(t); h.app.sendMessage('空回复'); h.app.adv.action('log');
   await h.stream.requests[0].onEnd('');
   const log = h.app.adv.backlog;
-  assert.equal(log.element.querySelector('.adv-log-failure')?.textContent, '未收到回复：模型这次没有返回任何内容');
+  assert.equal(log.element.querySelector('.adv-log-failure')?.textContent, '未收到回复：模型这次没有返回内容。请点「重新发送」再试；仍失败请检查「对话模型」设置。');
   assert.equal(log.element.ownerDocument.activeElement, log.closeButton);
   h.app.adv.action('close_overlay');
   assert.equal(h.app.adv.player.state, 'error');
@@ -338,7 +338,7 @@ test('real startup wiring silences both startup switches and all-session entry r
   home.element.querySelector('.home-all').click();
   home.element.querySelector('.adv-title-slot').click(); await tick();
   assert.deepEqual(switches, [1, 1, 1]); assert.equal(toasts.children.length, 1);
-  assert.equal(toasts.querySelector('.toast-action-btn').textContent, '检查语音状态');
+  assert.equal(toasts.querySelector('.toast-action-btn').textContent, '检查运行状态');
 });
 
 

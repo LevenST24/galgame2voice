@@ -11,7 +11,10 @@ function matches(provider, payload) {
 }
 
 function unconfirmed(action) {
-  const error = new Error(`模型${action}结果尚未确认，当前输入已保留。请刷新模型列表核对后再决定是否重新保存。`);
+  const msg = action === '启用'
+    ? '模型启用结果尚未确认，当前输入已保留。请核对当前生效的模型后再决定是否重新启用。'
+    : `模型${action}结果尚未确认，当前输入已保留。请刷新模型列表核对后再决定是否重新保存。`;
+  const error = new Error(msg);
   error.code = 'PROVIDER_UNCONFIRMED';
   return error;
 }

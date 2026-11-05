@@ -214,7 +214,7 @@ export class ProviderSettingsController {
       if (this.dom.gApiKey) this.dom.gApiKey.placeholder = `已配置：${maskedKey}（留空保持原密钥，输入新密钥可覆盖）`;
       if (this.dom.gProviderKeyTag) this.dom.gProviderKeyTag.className = 'provider-status-tag tag-configured';
       if (this.dom.gKeyStatusText) this.dom.gKeyStatusText.textContent = `已配置密钥 (${maskedKey})`;
-      if (this.dom.gApiKeyTip) this.dom.gApiKeyTip.textContent = '后端已持久化该提供商密钥。如需修改，请在此输入新密钥后保存生效。';
+      if (this.dom.gApiKeyTip) this.dom.gApiKeyTip.textContent = '密钥已保存。如需修改，请在此输入新密钥后保存。';
     } else if (isCustom) {
       if (this.dom.gApiKey) this.dom.gApiKey.placeholder = 'sk-…（本地 Ollama / vLLM 等无鉴权服务可留空）';
       if (this.dom.gProviderKeyTag) this.dom.gProviderKeyTag.className = 'provider-status-tag tag-optional';
@@ -313,7 +313,7 @@ export class ProviderSettingsController {
     if (this.disposed) return;
     const load = ++this.providerLoad;
     const hadOptions = Boolean(this.dom.gProvider?.children?.length);
-    if (this.dom.gProvider && !hadOptions) this.dom.gProvider.innerHTML = '<option value="">加载模型列表…</option>';
+    if (this.dom.gProvider && !hadOptions) this.dom.gProvider.innerHTML = '<option value="">加载模型服务列表…</option>';
     try {
       const data = await fetchProviders();
       if (load !== this.providerLoad || this.disposed) return;
@@ -415,7 +415,7 @@ export class ProviderSettingsController {
         customOpt.textContent = '＋ 自定义模型 / 接口…';
         this.dom.gProvider.appendChild(customOpt);
       }
-      showToast(`提供商列表加载异常: ${e.message || e}`, 'error');
+      showToast('模型服务列表加载失败：请检查网络后重试。', 'error');
       this.renderLoadedProvider(this.providerDirty || this.providerRevision !== formRevision);
     }
   }
@@ -471,7 +471,7 @@ export class ProviderSettingsController {
 
       if (data.success) {
         const lat = Math.round(data.latency_ms || 0);
-        showToast(`连通性测试成功 (耗时 ${lat}ms)`, 'success');
+        showToast(`连通性测试成功（耗时 ${lat} ms）`, 'success');
         if (this.dom.gProviderTestResult) {
           this.dom.gProviderTestResult.className = 'test-result-box test-result-success';
         }

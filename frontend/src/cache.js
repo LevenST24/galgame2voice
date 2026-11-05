@@ -211,7 +211,7 @@ export async function loadAudioBlob(url, options = {}) {
     const state = stateForKey(url), revision = state.revision;
     const res = await fetch(url, { signal, ...(bypassCache ? { cache: 'no-store' } : {}) });
     if (!res.ok) {
-      const error = new Error(`音频读取失败 (HTTP ${res.status})`);
+      const error = new Error('这句语音暂时读不出来，请检查语音引擎后重试，文字聊天仍可继续。');
       error.status = res.status;
       throw error;
     }

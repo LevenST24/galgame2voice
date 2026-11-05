@@ -865,7 +865,7 @@ test('Part 3 #2: empty done with no lines and no text shows error with Retry and
   assert.equal(h.app.player.state, 'error', 'Player must enter error state');
 
   const errorEl = h.app.stage.stage.querySelector('.adv-error-message');
-  assert.equal(errorEl.textContent, '模型这次没有返回任何内容');
+  assert.equal(errorEl.textContent, '模型这次没有返回内容。请点「重新发送」再试；仍失败请检查「对话模型」设置。');
 
   const actionBtns = [...h.app.stage.stage.querySelectorAll('.adv-error-btn')];
   assert.equal(actionBtns.length, 2);

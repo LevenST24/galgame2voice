@@ -131,7 +131,7 @@ export function createTextbox(container, opts = {}) {
   const textareaEl = document.createElement('textarea');
   textareaEl.className = 'adv-player-textarea';
   textareaEl.rows = 2;
-  textareaEl.placeholder = '请输入你的回答（Enter 发送，Shift+Enter 换行）...';
+  textareaEl.placeholder = '请输入你的回答（Enter 发送，Shift+Enter 换行）';
 
   function isOverlayBlocked() {
     let cur = rootEl;

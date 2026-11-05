@@ -22,7 +22,7 @@ function containsLocalMessages(server, local) {
 
 export function mergeChatBackup(serverData, localData) {
   if (serverData?.format !== 'galgame2voice.chat' || serverData.version !== 1) {
-    throw new Error('服务端备份格式无法识别，请更新程序或先导出浏览器记录。');
+    throw new Error('本地服务返回的备份格式无法识别，请更新程序或先单独导出浏览器记录。');
   }
   const server = normalize(serverData);
   const local = normalize(localData);
@@ -52,13 +52,13 @@ export function mergeChatBackup(serverData, localData) {
   const size = messages.reduce((sum, message) => sum + message.content.length + (message.japanese?.length || 0), 0);
   if (server.sessions.length > 10000 || messages.length > 50000 || size > 10_000_000 ||
       server.sessions.some(session => session.messages.length > 10000)) {
-    throw new Error('记录超过单份聊天备份的导入上限，请关闭程序后备份整个 data 文件夹，并单独导出浏览器记录。');
+    throw new Error('记录超过单份聊天备份的导入上限，请关闭程序后备份整个数据目录（data 文件夹），并单独导出浏览器记录。');
   }
   const data = { format: 'galgame2voice.chat', version: 1, exportedAt: new Date().toISOString(),
     ...server, activeId: local.activeId || server.activeId, global: local.global };
   const content = JSON.stringify(data, null, 2);
   if (new Blob([content]).size > 20 * 1024 * 1024) {
-    throw new Error('完整备份超过 20 MB 的导入上限，请关闭程序后备份整个 data 文件夹，并单独导出浏览器记录。');
+    throw new Error('完整备份超过 20 MB 的导入上限，请关闭程序后备份整个数据目录（data 文件夹），并单独导出浏览器记录。');
   }
   return { content, count: server.sessions.length, browserCopies };
 }

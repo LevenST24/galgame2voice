@@ -214,14 +214,14 @@ export class TelemetrySettingsController {
               data.app && data.app.memory_usage_mb !== undefined && data.app.memory_usage_mb !== null
                 ? `${Math.round(data.app.memory_usage_mb)} MB`
                 : '正常';
-            this.dom.gDashHardwareVal.textContent = `服务内存: ${procMem}`;
+            this.dom.gDashHardwareVal.textContent = `服务内存：${procMem}`;
           }
           const hostRamEl = typeof document !== 'undefined' ? document.getElementById?.('gDashHostRam') : null;
           if (hostRamEl) {
             if (data.hardware.system_memory_gb && data.hardware.system_memory_avail_gb) {
-              hostRamEl.textContent = `系统可用: ${data.hardware.system_memory_avail_gb.toFixed(1)}G / ${data.hardware.system_memory_gb.toFixed(1)}G`;
+              hostRamEl.textContent = `系统可用：${data.hardware.system_memory_avail_gb.toFixed(1)}G / ${data.hardware.system_memory_gb.toFixed(1)}G`;
             } else {
-              hostRamEl.textContent = '系统内存: 良好';
+              hostRamEl.textContent = '系统内存：良好';
             }
           }
         }

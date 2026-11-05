@@ -123,11 +123,11 @@ export class EngineSettingsController {
         fp32: 'FP32 单精度',
         cpu: 'CPU 稳定模式 (免显存)',
       };
-      this.coordinator.showToast?.(`已保存推理设置: ${labelMap[val] || val}。请点击【重启 SoVITS 引擎】应用。`, 'info');
+      this.coordinator.showToast?.(`已保存计算方式：${labelMap[val] || val}。请点击【重启语音引擎】应用。`, 'info');
       this.coordinator.fetchSystemTelemetry?.();
     } catch (err) {
       if (this.disposed || revision !== this.precisionRevision) return;
-      this.coordinator.showToast?.(`推理设置尚未保存：${err.message}。当前选择已保留。`, 'error');
+      this.coordinator.showToast?.(`计算方式尚未保存：${err.message}。当前选择已保留。`, 'error');
     }
   }
 

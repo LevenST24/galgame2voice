@@ -105,7 +105,7 @@ export function createQuickMenu(container, { onAction } = {}) {
 
   const statusLabel = document.createElement('span');
   statusLabel.className = 'adv-qm-status-label';
-  statusLabel.textContent = 'Model';
+  statusLabel.textContent = '模型';
 
   statusBtn.appendChild(statusDot);
   statusBtn.appendChild(statusLabel);

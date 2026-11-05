@@ -75,5 +75,5 @@ export async function waitForEngine({ timeoutMs = 180000, intervalMs = 1000, onP
   checkAbort(signal);
   if (lastState === 'checking') return { ...checking,
     message: '暂时无法确认语音引擎状态。请保留启动窗口，连接恢复后点击「刷新状态」核对，无需反复重启。' };
-  return { ready: false, state: 'loading_slow', message: '引擎加载时间较长，尚未确认就绪。请稍后点击「刷新状态」，无需反复重启；若持续没有进展，可提供 logs/gpt_sovits.log 排查。文字聊天可继续使用。' };
+  return { ready: false, state: 'loading_slow', message: '引擎加载时间较长，尚未确认就绪。请稍后点击「刷新状态」，无需反复重启；若长时间没有进展，请重启程序，仍无反应时可携带 logs/gpt_sovits.log 或截图本页状态求助。文字聊天可继续使用。' };
 }

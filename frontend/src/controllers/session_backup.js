@@ -87,7 +87,7 @@ export function initSessionBackup({ onImport, onOpenBackupTab, isBusy = () => fa
       forgetDeletedSessions(incoming.sessions.map(session => session.id));
       const result = applySessionImport(incoming);
       onImport?.();
-      showToast(`已导入 ${result.count} 个会话，原有会话保留。请在会话设置中重新选择音色。`, 'success');
+      showToast(`已导入 ${result.count} 个会话，原有会话保留。请在「角色与会话」中重新选择音色。`, 'success');
       if (!result.saved) showToast('记录已存入本机数据库；浏览器保存失败，请保留备份并检查存储权限。', 'info', onOpenBackupTab ? {
         actionLabel: '打开备份设置',
         onAction: () => onOpenBackupTab(),

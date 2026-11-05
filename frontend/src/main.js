@@ -584,7 +584,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       autoTitle(session);
       saveState();
     } catch (e) {
-      showToast(`加载更早消息失败：${e.message}`, 'error');
+      showToast('加载更早消息失败：请恢复连接后向上滚动重试。', 'error');
     } finally {
       session.loadingOlder = false;
       updateControls();

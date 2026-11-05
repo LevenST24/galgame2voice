@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { pickSettings, normalizeSnapshot } from '../frontend/src/session_data.js';
 import { DEFAULT_SESSION_SETTINGS as defaults, DEFAULT_GLOBAL, state, loadState, saveState,
-  createSession, getActive, exportSessionData, prepareSessionImport, applySessionImport } from '../frontend/src/store.js';
-import { createAdvSettings } from '../frontend/src/adv/settings.js';
+  createSession, getActive, exportSessionData, prepareSessionImport, applySessionImport, GREETING } from '../frontend/src/store.js';
+import { createAdvSettings, ADV_LABELS, validateAdvField, validateAdvLanguages } from '../frontend/src/adv/settings.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
 
 const expected = { advPlayerName: '我', advPrimaryLanguage: 'zh', advSubtitleLanguage: 'ja',
@@ -87,9 +87,22 @@ test('session settings group validates draft values, resets and safely renders l
   ui.load({ ...defaults, ...custom }); assert.deepEqual(ui.read(), custom);
   const name = panel.querySelector('#s-advPlayerName'); name.value = '<img src=x onerror=alert(1)>';
   assert.equal(ui.read().advPlayerName, name.value);
-  const opacity = panel.querySelector('#s-advWindowOpacity'); opacity.value = '101'; assert.throws(() => ui.read(), /ADV/);
-  opacity.value = ''; assert.throws(() => ui.read(), /ADV/);
+  const opacity = panel.querySelector('#s-advWindowOpacity'); opacity.value = '101'; assert.throws(() => ui.read(), /填写有误/);
+  opacity.value = ''; assert.throws(() => ui.read(), /填写有误/);
   assert.equal(panel.querySelector('#s-advEnabled'), null);
   ui.load(defaults); assert.deepEqual(ui.read(), expected);
   assert.equal(panel.querySelector('summary').textContent, 'ADV 显示与交互');
+});
+
+test('unified UI copy wording for ADV settings, labels, greetings, and import errors', () => {
+  assert.equal(ADV_LABELS['voice-priority'], '语音同步（推荐）');
+  assert.equal(ADV_LABELS.normal, '按阅读速度');
+  assert.equal(validateAdvField('advPlayerName', '', defaults).error, '「玩家名字」填写有误，请重新输入。');
+  assert.equal(validateAdvLanguages('zh', 'zh'), '主要语言和字幕语言不能相同。');
+  assert.match(GREETING, /返回首页/);
+  assert.doesNotMatch(GREETING, /返回开始页/);
+  assert.throws(
+    () => prepareSessionImport(JSON.stringify({ format: 'invalid', version: 1 })),
+    /备份格式或版本不受支持，请选择由 Gal2Voice 导出的聊天备份文件。/
+  );
 });

@@ -15,7 +15,7 @@ export const ADV_FIELDS = {
   advBlink: ['眨眼动画', ['true', 'false']],
   advLipSync: ['口型同步', ['true', 'false']],
 };
-export const ADV_LABELS = { true: '开启', false: '关闭', zh: '中文', ja: '日文', none: '无', 'voice-priority': '语音优先', normal: '通常' };
+export const ADV_LABELS = { true: '开启', false: '关闭', zh: '中文', ja: '日文', none: '无', 'voice-priority': '语音同步（推荐）', normal: '按阅读速度' };
 
 const fields = ADV_FIELDS;
 const labels = ADV_LABELS;
@@ -27,7 +27,7 @@ export function validateAdvField(key, raw, defaults) {
     if (typeof raw === 'boolean') return { valid: true, value: raw };
     const str = String(raw ?? '');
     if (!['true', 'false'].includes(str)) {
-      return { valid: false, error: `ADV 设置无效：${label}` };
+      return { valid: false, error: `「${label}」填写有误，请重新输入。` };
     }
     return { valid: true, value: str === 'true' };
   }
@@ -35,20 +35,20 @@ export function validateAdvField(key, raw, defaults) {
     const str = String(raw ?? '').trim();
     const num = str ? Number(str) : NaN;
     if (!Number.isFinite(num) || !validAdvSetting(key, num)) {
-      return { valid: false, error: `ADV 设置无效：${label}` };
+      return { valid: false, error: `「${label}」填写有误，请重新输入。` };
     }
     return { valid: true, value: num };
   }
   const str = String(raw ?? '');
   if (!validAdvSetting(key, str)) {
-    return { valid: false, error: `ADV 设置无效：${label}` };
+    return { valid: false, error: `「${label}」填写有误，请重新输入。` };
   }
   return { valid: true, value: str };
 }
 
 export function validateAdvLanguages(primary, subtitle) {
   if (primary && subtitle && primary === subtitle) {
-    return '主要语言和字幕语言需要不同。';
+    return '主要语言和字幕语言不能相同。';
   }
   return null;
 }
