@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSessions, fetchSessionHistoryPage, earliestServerMessageId } from '../frontend/src/session_api.js';
 import { mergeChatBackup, exportCompleteChatBackup } from '../frontend/src/chat_backup.js';
-import { pickSettings, serverTimestamp, normalizeSnapshot } from '../frontend/src/session_data.js';
+import { pickSettings, serverTimestamp, normalizeSnapshot, portableSnapshot } from '../frontend/src/session_data.js';
+import { renderSessionList } from '../frontend/src/ui.js';
 import { streamChat } from '../frontend/src/ai.js';
 import { DEFAULT_GLOBAL, DEFAULT_SESSION_SETTINGS, GREETING, LEGACY_GREETINGS, state, loadState, getSession, getActive, exportSessionData, prepareSessionImport, applySessionImport } from '../frontend/src/store.js';
 
@@ -504,5 +505,151 @@ async function exportPrefix(localSettings, localUpdatedAt) {
   assert.equal(saved.sessions[0].messages[0].content, GREETING);
   assert.equal(saved.sessions[1].messages[0].content, GREETING);
   passed++;
+}
+{
+  function makeElement(tag = 'div') {
+    const children = [];
+    const attrs = {};
+    const dataset = {};
+    const style = { setProperty: () => {} };
+    const listeners = {};
+    return {
+      tagName: tag.toUpperCase(), children, dataset, style, className: '', tabIndex: 0, textContent: '', title: '',
+      setAttribute(k, v) { attrs[k] = v; }, getAttribute(k) { return attrs[k]; },
+      appendChild(c) {
+        if (c.tagName === 'FRAGMENT') { children.push(...c.children); c.children.length = 0; return c; }
+        children.push(c); return c;
+      },
+      addEventListener(evt, fn) { (listeners[evt] ||= []).push(fn); },
+      set innerHTML(html) {
+        children.length = 0;
+        if (!html) return;
+        if (html.includes('si-main')) {
+          const title = makeElement('div'); title.className = 'si-title';
+          const preview = makeElement('span'); preview.className = 'si-preview';
+          children.push(title, preview);
+        }
+        if (html.includes('si-del')) {
+          const delBtn = makeElement('button'); delBtn.className = 'si-del';
+          children.push(delBtn);
+        }
+      },
+      querySelector(sel) {
+        for (const child of children) {
+          if (sel === '.si-title' && child.className === 'si-title') return child;
+          if (sel === '.si-preview' && child.className === 'si-preview') return child;
+          if (sel === '.si-del' && child.className === 'si-del') return child;
+          const nested = child.querySelector?.(sel);
+          if (nested) return nested;
+        }
+        return null;
+      },
+      querySelectorAll(sel) {
+        const results = [];
+        for (const child of children) {
+          if (sel === '.si-title' && child.className === 'si-title') results.push(child);
+          else if (sel === '.si-preview' && child.className === 'si-preview') results.push(child);
+          else if (sel === '.si-del' && child.className === 'si-del') results.push(child);
+          else if (sel === '.session-item' && child.className.includes('session-item')) results.push(child);
+          if (child.querySelectorAll) results.push(...child.querySelectorAll(sel));
+        }
+        return results;
+      },
+    };
+  }
+
+  const container = makeElement('div');
+  const prevDoc = globalThis.document;
+  globalThis.document = {
+    createElement: (tag) => makeElement(tag),
+    createDocumentFragment: () => makeElement('fragment'),
+  };
+
+  try {
+    const rawData = {
+      sessions: [
+        {
+          id: 's_sync_lastline',
+          title: '已同步历史会话',
+          createdAt: 1000,
+          updatedAt: 2000,
+          messages: [],
+          lastLine: '今天天气真不错，我们去散步吧。',
+          settings: {},
+        },
+        {
+          id: 's_empty_lastline',
+          title: '空消息且无摘要会话',
+          createdAt: 1000,
+          updatedAt: 2000,
+          messages: [],
+          lastLine: '',
+          settings: {},
+        },
+        {
+          id: 's_active_msgs',
+          title: '有完整消息会话',
+          createdAt: 1000,
+          updatedAt: 2000,
+          messages: [{ id: 'm_1', role: 'user', content: '测试消息内容', ts: 1000 }],
+          lastLine: '旧的服务端摘要',
+          settings: {},
+        },
+        {
+          id: 's_empty_content_msg',
+          title: '末条消息内容为空且含摘要',
+          createdAt: 1000,
+          updatedAt: 2000,
+          messages: [{ id: 'm_2', role: 'assistant', content: '', ts: 1000 }],
+          lastLine: '后备摘要文本',
+          settings: {},
+        },
+        {
+          id: 's_markdown_lastline',
+          title: 'Markdown摘要清理截断',
+          createdAt: 1000,
+          updatedAt: 2000,
+          messages: [],
+          lastLine: '# 标题*强调*`代码`\n超出二十六个字符之后的内容应当被干净截断显示',
+          settings: {},
+        },
+      ],
+      activeId: 's_sync_lastline',
+      global: {},
+    };
+
+    // 1. normalizeSnapshot 保留合法的非空字符串 lastLine
+    const normalized = normalizeSnapshot(rawData, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL);
+    assert.equal(normalized.sessions[0].lastLine, '今天天气真不错，我们去散步吧。', 'normalizeSnapshot 应保留有效 lastLine 字段');
+    assert.equal(normalized.sessions[1].lastLine, undefined, '空字符串 lastLine 应被忽略');
+    assert.equal(normalized.sessions[2].lastLine, '旧的服务端摘要');
+    assert.equal(normalized.sessions[3].lastLine, '后备摘要文本');
+
+    // 2. portableSnapshot 剔除 lastLine 保持导出备份 JSON 结构不变
+    const portable = portableSnapshot(normalized);
+    assert.equal(portable.sessions[0].lastLine, undefined, 'portableSnapshot 应剥除 lastLine 字段');
+    assert.equal(portable.sessions[1].lastLine, undefined);
+    assert.equal(portable.sessions[2].lastLine, undefined);
+    assert.equal(portable.sessions[3].lastLine, undefined);
+
+    // 3. renderSessionList 渲染预览文本
+    renderSessionList(container, {
+      sessions: normalized.sessions,
+      activeId: 's_active_msgs',
+      onSelect: () => {},
+      onDelete: () => {},
+    });
+
+    const previews = container.querySelectorAll('.si-preview').map(el => el.textContent);
+    assert.equal(previews[0], '今天天气真不错，我们去散步吧。', '未拉取消息的同步历史会话应展示 lastLine 摘要而非暂无消息');
+    assert.equal(previews[1], '暂无消息', '无消息且无 lastLine 时应展示暂无消息');
+    assert.equal(previews[2], '你：测试消息内容', '有完整消息时优先使用最后一条消息');
+    assert.equal(previews[3], '后备摘要文本', '最后一条消息内容为空时回退至 lastLine');
+    assert.equal(previews[4], '# 标题*强调*`代码`\n超出二十六个字符之后的内容应当被干净截断显示'.replace(/[*`#\n]/g, ' ').slice(0, 26), 'lastLine 同样清理 Markdown 与换行并截断至26字');
+
+    passed++;
+  } finally {
+    globalThis.document = prevDoc;
+  }
 }
 console.log(`Session persistence and complete backups: ${passed} scenarios passed`);
