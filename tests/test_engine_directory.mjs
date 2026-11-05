@@ -116,9 +116,27 @@ let passed = 0;
   let requested = false;
   const test = setup(async () => { requested = true; });
   test.dom.gSovitsDirectory.value = '  ';
-  await test.controller.save();
+  const saved = await test.controller.save();
+  assert.equal(saved, false);
   assert.equal(requested, false);
   assert.equal(test.notifications.at(-1)[1], 'error');
+  passed++;
+}
+{
+  const test = setup(async (url, options = {}) => {
+    if (options.method === 'PUT') return response({ directory: 'D:/voice-new', message: 'saved' });
+    return response({ directory: 'D:/voice', message: 'ready' });
+  });
+  await test.controller.load();
+  assert.equal(test.controller.isDirty(), false);
+  test.dom.gSovitsDirectory.value = '  D:/voice  ';
+  test.events.input();
+  assert.equal(test.controller.isDirty(), false, 'same trimmed directory as server is not dirty');
+  test.dom.gSovitsDirectory.value = 'D:/voice-new';
+  test.events.input();
+  assert.equal(test.controller.isDirty(), true);
+  assert.equal(await test.controller.save(), true);
+  assert.equal(test.controller.isDirty(), false);
   passed++;
 }
 console.log(`Engine directory: ${passed} scenarios passed`);

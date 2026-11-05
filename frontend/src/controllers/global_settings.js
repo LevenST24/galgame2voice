@@ -504,11 +504,17 @@ export async function saveGlobalConfig() {
 
   const coordinatorRevision = settingsCoordinatorRevision;
   const targetProviderController = providerController;
+  const targetEngineDirectory = engineDirectory;
   configSaving = true;
   updateSaveButtons();
   let modelSaved = false;
   let modelResult;
   try {
+    if (targetEngineDirectory?.isDirty?.()) {
+      const dirSaved = await targetEngineDirectory.save();
+      if (coordinatorRevision !== settingsCoordinatorRevision || targetProviderController?.disposed) return;
+      if (dirSaved === false) return;
+    }
     const saveModel = targetProviderController?.isProviderDirty() ?? false;
     const savedRevision = configRevision;
     const tgPayload = telegramController?.getTelegramPayload() || {};
@@ -551,7 +557,8 @@ export async function saveGlobalConfig() {
     }
 
     const currentProviderDirty = targetProviderController?.isProviderDirty() ?? false;
-    showToast(configDirty || currentProviderDirty
+    const currentDirectoryDirty = targetEngineDirectory?.isDirty?.() ?? false;
+    showToast(configDirty || currentProviderDirty || currentDirectoryDirty
       ? (saveModel ? '模型设置已保存并启用，之前的全局配置已保存；当前修改尚未保存。' : '之前的配置已保存；当前修改尚未保存。')
       : (saveModel ? '全局配置和模型设置已保存，模型已启用。' : '全局配置已保存'), 'success');
     loadGlobalConfig();

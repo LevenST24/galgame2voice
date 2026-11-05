@@ -10,6 +10,7 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}) {
   let disposed = false;
   let browsing = false;
   let saving = false;
+  let savedDirectory = '';
   const setStatus = (text) => { if (status) status.textContent = text; };
   const onInput = () => {
     if (disposed) return;
@@ -18,6 +19,11 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}) {
     setStatus('目录已修改，点击「保存目录」后生效。');
   };
   input?.addEventListener('input', onInput);
+
+  function isDirty() {
+    if (disposed || !input) return false;
+    return edited && input.value.trim() !== savedDirectory;
+  }
 
   async function request(url, options) {
     return requestJson(url, options, { timeoutMs: url.includes('browse-file') ? 0 : 15000 });
@@ -29,9 +35,12 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}) {
     const currentRevision = revision;
     try {
       const data = await request('/api/system/sovits-directory');
-      if (!disposed && !edited && revision === currentRevision && loadRequest === currentRequest) {
-        input.value = data.directory || '';
-        setStatus(data.message || '');
+      if (!disposed && loadRequest === currentRequest) {
+        savedDirectory = (data.directory || '').trim();
+        if (!edited && revision === currentRevision) {
+          input.value = data.directory || '';
+          setStatus(data.message || '');
+        }
       }
     } catch (error) {
       if (!disposed && !edited && revision === currentRevision && loadRequest === currentRequest) setStatus(`读取目录失败：${error.message}`);
@@ -62,11 +71,11 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}) {
   }
 
   async function save() {
-    if (disposed || !input) return;
+    if (disposed || !input) return false;
     const directory = input.value.trim();
     if (!directory) {
       notify('请先选择或填写本机语音引擎目录。', 'error');
-      return;
+      return false;
     }
     saving = true;
     if (dom.gSaveSovitsDirectory) dom.gSaveSovitsDirectory.disabled = true;
@@ -77,6 +86,8 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}) {
         body: JSON.stringify({ directory }),
       });
       if (!disposed) {
+        savedDirectory = (data.directory || directory).trim();
+        loadRequest += 1;
         if (revision === savedRevision && input.value.trim() === directory) {
           edited = false;
           input.value = data.directory || directory;
@@ -86,12 +97,15 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}) {
         }
         onSaved();
         notify('引擎目录已保存。可在「运行状态」中启动或重启引擎。', 'success');
+        return true;
       }
+      return false;
     } catch (error) {
       if (!disposed) {
         setStatus(`保存失败：${error.message}`);
         notify(`保存目录失败：${error.message}`, 'error');
       }
+      return false;
     } finally {
       saving = false;
       if (!disposed && dom.gSaveSovitsDirectory) dom.gSaveSovitsDirectory.disabled = false;
@@ -117,5 +131,5 @@ export function initEngineDirectory(dom, notify, onSaved = () => {}) {
     dom.gSaveSovitsDirectory?.removeEventListener('click', save);
   }
 
-  return { load, browse, save, dispose };
+  return { load, browse, save, isDirty, dispose };
 }
