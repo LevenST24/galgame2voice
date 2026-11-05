@@ -1083,4 +1083,104 @@ for (const allowed of [true, false]) {
     globalThis.document = previousDocument;
   }
 }
+{
+  // (a) handleRestartSovits failure states (400/409/500/network error) on the status card
+  // must not be overwritten to '离线' or '在线' by finally fetchSystemTelemetry.
+  const cases = [
+    {
+      name: '400',
+      restart: () => response({ detail: '尚未选择语音引擎目录。请在「设置中心 → 语音服务」点击「选择文件夹」。' }, 400),
+      engineStatus: { state: 'unavailable', ready: false, message: '语音引擎尚未就绪。' },
+      systemStatus: { gpt_sovits: { status: 'unreachable', base_url: 'http://127.0.0.1:9880' } },
+      expectedBadge: '启动失败',
+      expectedMessage: /尚未选择语音引擎目录/,
+    },
+    {
+      name: '409',
+      restart: () => response({ detail: '当前连接的是远端或外部语音引擎，无法由此处重启。' }, 409),
+      engineStatus: { state: 'ready', ready: true, message: '语音引擎已就绪。' },
+      systemStatus: { gpt_sovits: { status: 'reachable', base_url: 'http://127.0.0.1:9880' } },
+      expectedBadge: '启动失败',
+      expectedMessage: /远端或外部语音引擎/,
+    },
+    {
+      name: '500',
+      restart: () => response({ detail: '启动语音引擎失败：进程退出' }, 500),
+      engineStatus: { state: 'unavailable', ready: false, message: '语音引擎尚未就绪。' },
+      systemStatus: { gpt_sovits: { status: 'unreachable', base_url: 'http://127.0.0.1:9880' } },
+      expectedBadge: '启动失败',
+      expectedMessage: /启动语音引擎失败/,
+    },
+    {
+      name: 'network',
+      restart: () => { throw new TypeError('Failed to fetch'); },
+      engineStatus: { state: 'unavailable', ready: false, message: '语音引擎尚未就绪。' },
+      systemStatus: { gpt_sovits: { status: 'unreachable', base_url: 'http://127.0.0.1:9880' } },
+      expectedBadge: '待确认',
+      expectedMessage: /无法连接本机服务/,
+    },
+  ];
+
+  for (const tc of cases) {
+    const dom = {
+      gBtnRestartSovits: element(),
+      gBtnTogglePrecision: element(),
+      gPrecision: element('fp16'),
+      gDashSovitsBadge: element(),
+      gDashSovitsStatus: element(),
+      gDashSovitsUrl: element(),
+    };
+    initGlobalSettings(dom);
+    globalThis.fetch = async (url, options = {}) => {
+      if (url.endsWith('/restart_sovits') && options.method === 'POST') return tc.restart();
+      if (url.endsWith('/engine-status')) return response(tc.engineStatus);
+      if (url.endsWith('/system/status')) return response(tc.systemStatus);
+      return response({});
+    };
+    await handleRestartSovits();
+    await tick();
+    assert.equal(dom.gDashSovitsBadge.textContent, tc.expectedBadge, `case ${tc.name} badge`);
+    assert.match(dom.gDashSovitsStatus.textContent, tc.expectedMessage, `case ${tc.name} status`);
+    passed++;
+  }
+}
+{
+  // (b) When /api/system/status resolves before /api/system/engine-status during polling,
+  // a 'starting' state must not be flashed to '离线' ('unavailable').
+  const dom = { gDashSovitsBadge: element(), gDashSovitsStatus: element(), gDashSovitsUrl: element() };
+  initGlobalSettings(dom);
+  globalThis.fetch = async url => response(url.endsWith('/engine-status')
+    ? { state: 'starting', ready: false, message: '语音引擎正在启动，模型加载中…' }
+    : { gpt_sovits: { status: 'unreachable', base_url: 'http://127.0.0.1:9880' } });
+  await fetchSystemTelemetry();
+  assert.equal(dom.gDashSovitsBadge.textContent, '启动中');
+
+  let finishEngineStatus;
+  globalThis.fetch = url => {
+    if (url.endsWith('/system/status')) {
+      return Promise.resolve(response({ gpt_sovits: { status: 'unreachable', base_url: 'http://127.0.0.1:9880' } }));
+    }
+    if (url.endsWith('/engine-status')) {
+      return new Promise(resolve => {
+        finishEngineStatus = () => resolve(response({
+          state: 'starting',
+          ready: false,
+          base_url: 'http://127.0.0.1:9880',
+          message: '语音引擎正在启动，模型加载通常需要 10–60 秒；文字聊天可继续使用。',
+        }));
+      });
+    }
+    return Promise.resolve(response({}));
+  };
+
+  const pollPromise = fetchSystemTelemetry();
+  await tick();
+  assert.equal(dom.gDashSovitsBadge.textContent, '启动中', 'status resolving first must not flash badge to 离线');
+  assert.doesNotMatch(dom.gDashSovitsStatus.textContent, /服务未响应/);
+  finishEngineStatus();
+  await pollPromise;
+  assert.equal(dom.gDashSovitsBadge.textContent, '启动中');
+  assert.match(dom.gDashSovitsStatus.textContent, /语音引擎正在启动/);
+  passed++;
+}
 console.log(`Runtime recovery: ${passed} scenarios passed`);

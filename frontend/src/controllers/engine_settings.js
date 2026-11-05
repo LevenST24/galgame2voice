@@ -135,6 +135,7 @@ export class EngineSettingsController {
     if (this.disposed || this.restarting) return;
     this.restarting = true;
     this.engineStatusRevision += 1;
+    let restartFailed = false;
     this.coordinator.renderEngineStatus?.({
       state: 'starting',
       ready: false,
@@ -158,6 +159,7 @@ export class EngineSettingsController {
       if (selected) payload.precision = selected;
       let sent = false;
       let acknowledged = true;
+      let postError = null;
       let data;
       try {
         data = await runSettingsMutation(() => {
@@ -174,6 +176,7 @@ export class EngineSettingsController {
       } catch (error) {
         if (this.disposed) return;
         if (!sent || error.name === 'AbortError' || (error.status && error.status < 500)) throw error;
+        postError = error;
         acknowledged = false;
         this.engineRestartUnconfirmed = true;
         data = { message: '重启请求结果未确认，正在核对当前引擎状态；请稍候，无需再次点击重启。' };
@@ -191,6 +194,9 @@ export class EngineSettingsController {
         signal: waitController.signal,
         onProgress: (status) => {
           if (this.disposed) return;
+          // The restart answer was lost or failed, and the engine is confirmed down: show why.
+          // A failed read ('checking') is not a confirmation, so keep checking then.
+          if (!acknowledged && status.state === 'unavailable') throw postError;
           this.coordinator.renderEngineStatus?.(status);
           if (this.dom.gBtnRestartSovits) {
             this.dom.gBtnRestartSovits.innerHTML = `<svg class="icon"><use href="#i-play"></use></svg><span>${status.ready ? '引擎已就绪' : status.state === 'checking' ? '正在核对状态…' : status.state === 'loading_slow' ? '加载时间较长…' : '正在加载模型…'}</span>`;
@@ -203,9 +209,14 @@ export class EngineSettingsController {
       this.coordinator.showToast?.(result.message, result.ready && acknowledged ? 'success' : 'info');
     } catch (err) {
       if (this.disposed || err.name === 'AbortError') return;
-      const unconfirmed = err.code === 'CONFIG_WRITE_SKIPPED' || [401, 403, 404, 429].includes(err.status);
+      restartFailed = true;
+      const unconfirmed = err.code === 'CONFIG_WRITE_SKIPPED'
+        || [401, 403, 404, 429].includes(err.status)
+        || (!err.status && err.code !== 'ENGINE_NOT_READY');
       this.coordinator.renderEngineStatus?.({
-        state: err.engineState || (unconfirmed ? 'checking' : 'failed'),
+        state: (err.engineState && err.engineState !== 'unavailable')
+          ? err.engineState
+          : (unconfirmed ? 'checking' : 'failed'),
         ready: false,
         message: err.message,
       });
@@ -228,7 +239,9 @@ export class EngineSettingsController {
           this.dom.gBtnRestartSovits.innerHTML = '<svg class="icon"><use href="#i-play"></use></svg><span>重启 SoVITS 引擎</span>';
         }
         if (this.dom.gBtnTogglePrecision) this.dom.gBtnTogglePrecision.disabled = false;
-        this.coordinator.fetchSystemTelemetry?.();
+        if (!restartFailed) {
+          this.coordinator.fetchSystemTelemetry?.();
+        }
       }
     }
   }
