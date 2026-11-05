@@ -14,6 +14,8 @@ const blobVersions = new WeakMap();
 const storageWriters = new Map();
 const versionPrefix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let versionSequence = 0;
+let pruneRun = null;
+let pruneAgain = false;
 
 // L1 Memory cache for synchronous fast access within session (bounded LRU)
 const memAudioMap = new Map();
@@ -84,6 +86,7 @@ function persistMutation(key, mutation) {
                 'X-Cached-At': String(Date.now()),
                 'X-Audio-Version': desired.version,
               } }));
+              scheduleAudioCachePrune();
             } else {
               const existing = await cache.match(request);
               if (desired !== writer.latest) continue;
@@ -305,7 +308,7 @@ function isGeneratedAudioRequest(request) {
 export async function pruneAudioCacheStorage(maxEntries = 100) {
   if (typeof window === 'undefined' || !('caches' in window)) return;
   try {
-    const cache = await caches.open(AUDIO_CACHE_NAME);
+    const cache = await (globalThis.caches || window.caches).open(AUDIO_CACHE_NAME);
     const requests = (await cache.keys()).filter(isGeneratedAudioRequest);
     if (requests && requests.length > maxEntries) {
       const toDelete = requests.slice(0, requests.length - maxEntries);
@@ -316,11 +319,29 @@ export async function pruneAudioCacheStorage(maxEntries = 100) {
   }
 }
 
+// One pass at a time; a write that lands during a pass gets one more pass afterwards.
+function scheduleAudioCachePrune() {
+  if (pruneRun) {
+    pruneAgain = true;
+    return;
+  }
+  pruneRun = (async () => {
+    try {
+      do {
+        pruneAgain = false;
+        await pruneAudioCacheStorage();
+      } while (pruneAgain);
+    } finally {
+      pruneRun = null;
+    }
+  })();
+}
+
 // 在应用空闲时自动维护 Cache Storage 配额
 if (typeof window !== 'undefined') {
   if ('requestIdleCallback' in window) {
-    window.requestIdleCallback(() => pruneAudioCacheStorage().catch(() => {}));
+    window.requestIdleCallback(() => scheduleAudioCachePrune());
   } else {
-    setTimeout(() => pruneAudioCacheStorage().catch(() => {}), 5000);
+    setTimeout(() => scheduleAudioCachePrune(), 5000);
   }
 }
