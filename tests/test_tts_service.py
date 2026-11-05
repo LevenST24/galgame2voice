@@ -17,6 +17,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from typing import Any
+
+from galgame2voice.config import get_settings
+from galgame2voice.database.session import get_db, init_db
+from galgame2voice.services.chat_pipelines.tts_pipeline import TtsStreamPipeline
+from galgame2voice.services.tts_cache_manager import TtsCacheManager
 from galgame2voice.services.tts_service import (
     TtsService,
     _AUDIO_DURATION_CACHE,
@@ -169,3 +175,82 @@ async def test_populate_voice_profile_opts_async_duration(tmp_path):
         }
         res_invalid = await service._populate_voice_profile_opts(opts_invalid)
         assert res_invalid.get("ref_audio_path") == str(tmp_path / "fallback_ref.wav")
+
+
+class _MockGptSovitsForTest:
+    def __init__(self, wav_bytes: bytes):
+        self.wav_bytes = wav_bytes
+        self.call_count = 0
+
+    async def synthesize(self, text: str, options: Any = None) -> bytes:
+        self.call_count += 1
+        return self.wav_bytes
+
+
+@pytest.mark.asyncio
+async def test_privacy_mode_synthesize_to_file_writes_ephemeral_audio(tmp_path, monkeypatch):
+    """When privacy_mode=True, synthesize_to_file must return a playable ephemeral audio file,
+
+    never return an empty URL, and not populate persistent cache.
+    """
+    monkeypatch.setattr(get_settings(), "privacy_mode", True)
+    db_p = tmp_path / "privacy_test.db"
+    await init_db(db_p)
+    mgr = TtsCacheManager(cache_dir=tmp_path / "audio" / "cache", db_path=str(db_p))
+    wav_bytes = _make_test_wav(tmp_path / "seed.wav", duration_sec=1.0).read_bytes()
+    mock_client = _MockGptSovitsForTest(wav_bytes)
+    service = TtsService(client=mock_client, audio_dir=tmp_path / "audio", cache_manager=mgr)
+
+    text = "こんにちは、マスター。"
+    url_path, local_path, count = await service.synthesize_to_file(text, use_cache=True)
+
+    assert url_path != "", "audio_url must not be empty in privacy mode"
+    assert url_path.startswith("/audio/"), f"Unexpected url_path: {url_path}"
+    assert "/audio/cache/" not in url_path, "Audio must not point to persistent cache"
+    assert local_path.is_file(), f"Ephemeral audio file does not exist: {local_path}"
+    assert local_path.stat().st_size == len(wav_bytes)
+    assert count == len(wav_bytes)
+
+    # Persistent cache should not be populated
+    cache_wavs = list((tmp_path / "audio" / "cache").glob("*.wav"))
+    assert len(cache_wavs) == 0, f"Expected no cached files, found {cache_wavs}"
+    assert not (tmp_path / "audio" / "cache" / "index.json").exists()
+    stats = await mgr.get_stats()
+    assert stats["total_files"] == 0
+
+    # Repeated call should not hit cache, re-synthesizes to distinct ephemeral file
+    url_path2, local_path2, count2 = await service.synthesize_to_file(text, use_cache=True)
+    assert url_path2 != ""
+    assert url_path2 != url_path
+    assert local_path2 != local_path
+    assert local_path2.is_file()
+    assert count2 == len(wav_bytes)
+    assert mock_client.call_count == 2
+    assert (await mgr.get_stats())["total_files"] == 0
+
+    # Verify SQLite database table tts_cache_entries directly
+    async with get_db(str(db_p)) as conn:
+        cursor = await conn.execute("SELECT COUNT(*) FROM tts_cache_entries")
+        row = await cursor.fetchone()
+        assert row[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_privacy_mode_tts_stream_pipeline_chunk(tmp_path, monkeypatch):
+    """Stream pipeline in privacy mode delivers ready chunk with valid ephemeral audio_url."""
+    monkeypatch.setattr(get_settings(), "privacy_mode", True)
+    db_p = tmp_path / "pipeline_test.db"
+    await init_db(db_p)
+    mgr = TtsCacheManager(cache_dir=tmp_path / "audio" / "cache", db_path=str(db_p))
+    wav_bytes = _make_test_wav(tmp_path / "seed.wav", duration_sec=1.0).read_bytes()
+    mock_client = _MockGptSovitsForTest(wav_bytes)
+    service = TtsService(client=mock_client, audio_dir=tmp_path / "audio", cache_manager=mgr)
+    pipeline = TtsStreamPipeline(service, "gen_privacy_1")
+
+    chunk_data, err = await pipeline.synthesize_chunk("テスト台词です。", 0, options={"_pre_resolved": True})
+    assert err is None
+    assert chunk_data is not None
+    assert chunk_data["audio_url"] != ""
+    assert chunk_data["audio_url"].startswith("/audio/")
+    assert not chunk_data["is_cached"]
+    assert Path(chunk_data["local_path"]).is_file()  # noqa: ASYNC240
