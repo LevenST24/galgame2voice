@@ -378,8 +378,10 @@ class TestSilenceCalibrationRestart:
             proc.poll.return_value = 1
 
         def port_in_use(*_args, **_kwargs):
-            seen["status"] = asyncio.run(health.engine_status_endpoint())
-            return False
+            if run_server._SPAWNED_SOVITS_PROC is proc:
+                seen["status"] = asyncio.run(health.engine_status_endpoint())
+                return False
+            return True
 
         monkeypatch.setattr(health, "resolve_effective_sovits_endpoint", resolve)
         monkeypatch.setattr(health, "_probe_gpt_sovits", probe)
@@ -410,7 +412,11 @@ class TestSilenceCalibrationRestart:
             proc.poll.return_value = 1
 
         monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
-        monkeypatch.setattr(run_server, "is_port_in_use", lambda *_a, **_k: False)
+        monkeypatch.setattr(
+            run_server,
+            "is_port_in_use",
+            lambda *_a, **_k: run_server._SPAWNED_SOVITS_PROC is not proc,
+        )
         monkeypatch.setattr(run_server, "_probe_synth_peak", lambda *_a, **_k: next(peaks))
         monkeypatch.setattr(run_server, "_spawn_sovits_process", self._remember_replacement(False))
         run_server._calibrate_precision_after_ready(
@@ -467,6 +473,228 @@ class TestSilenceCalibrationRestart:
             engine, self.HOST, self.PORT, True, "default", device="cuda"
         )
         assert spawned == [], spawned
+
+    def test_fp32_restart_waits_for_port_and_settle_before_probing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(health, "_engine_restart_lock", threading.Lock())
+        monkeypatch.setattr(health, "_engine_restart_target", None)
+        monkeypatch.setattr(get_settings(), "project_root", tmp_path)
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", None)
+        monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", None)
+        monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", None)
+
+        endpoint = parse_sovits_endpoint(f"http://{self.HOST}:{self.PORT}", source="db")
+        monkeypatch.setattr(
+            "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync",
+            lambda: endpoint,
+        )
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        monkeypatch.setattr(run_server, "find_gpt_sovits_directory", lambda: engine)
+        monkeypatch.setattr(
+            run_server,
+            "resolve_initial_device_and_half",
+            lambda *_a, **_k: ("cuda", True, "default"),
+        )
+
+        active_state = None
+        states_by_pid = {}
+        probe_snapshots = []
+
+        def fake_spawn(sovits_dir, host, port, is_half, device="cuda"):
+            nonlocal active_state
+            pid = 5001 if is_half else 5002
+            proc = MagicMock(pid=pid)
+            state = {
+                "proc": proc,
+                "is_half": is_half,
+                "alive": True,
+                "port_checks": 0,
+                "ready_threshold": 2 if is_half else 4,
+                "listening": False,
+                "sleeps_after_listening": [],
+            }
+            proc.returncode = None
+            proc.poll.side_effect = lambda: None if state["alive"] else 1
+            states_by_pid[pid] = state
+            active_state = state
+            run_server._SPAWNED_SOVITS_PROC = proc
+            run_server._SPAWNED_SOVITS_LAUNCH = EngineLaunch(
+                proc, host, port, device, is_half, started_at=float(len(states_by_pid))
+            )
+            return proc
+
+        def fake_terminate(pid, timeout=2.0):
+            state = states_by_pid[pid]
+            state["alive"] = False
+            state["listening"] = False
+            state["proc"].returncode = 1
+
+        def fake_is_port_in_use(port, host):
+            if active_state is None or not active_state["alive"]:
+                return False
+            active_state["port_checks"] += 1
+            if active_state["port_checks"] >= active_state["ready_threshold"]:
+                active_state["listening"] = True
+            return active_state["listening"]
+
+        def fake_sleep(seconds):
+            if active_state is not None and active_state["listening"]:
+                active_state["sleeps_after_listening"].append(seconds)
+
+        def fake_probe(host, port, timeout=90.0):
+            probe_snapshots.append({
+                "is_half": active_state["is_half"],
+                "port_checks": active_state["port_checks"],
+                "listening": active_state["listening"],
+                "sleeps_after_listening": list(active_state["sleeps_after_listening"]),
+            })
+            if active_state is None or not active_state["alive"] or not active_state["listening"]:
+                return None
+            return 0.0 if active_state["is_half"] else 0.42
+
+        created = []
+        real_thread = threading.Thread
+
+        def capture_thread(*args, **kwargs):
+            t = real_thread(*args, **kwargs)
+            created.append(t)
+            return t
+
+        monkeypatch.setattr(run_server, "_spawn_sovits_process", fake_spawn)
+        monkeypatch.setattr(run_server, "terminate_process_tree", fake_terminate)
+        monkeypatch.setattr(run_server, "is_port_in_use", fake_is_port_in_use)
+        monkeypatch.setattr(run_server.time, "sleep", fake_sleep)
+        monkeypatch.setattr(run_server, "_probe_synth_peak", fake_probe)
+        monkeypatch.setattr(run_server.threading, "Thread", capture_thread)
+
+        run_server.ensure_gpt_sovits_running()
+        assert len(created) == 1
+        created[0].join(timeout=5)
+        assert not created[0].is_alive()
+
+        assert len(probe_snapshots) == 2
+        assert probe_snapshots[0]["is_half"] is True
+        assert probe_snapshots[0]["listening"] is True
+        assert probe_snapshots[0]["sleeps_after_listening"] == [2.0]
+
+        assert probe_snapshots[1]["is_half"] is False
+        assert probe_snapshots[1]["listening"] is True
+        assert probe_snapshots[1]["port_checks"] == 4
+        assert probe_snapshots[1]["sleeps_after_listening"] == [2.0]
+
+        cached = read_precision_cache(tmp_path)
+        assert cached is not None
+        assert cached["is_half"] is False
+
+    def test_fp32_restart_exiting_before_port_ready_reports_restart_failure(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(health, "_engine_restart_lock", threading.Lock())
+        monkeypatch.setattr(health, "_engine_restart_target", None)
+        monkeypatch.setattr(get_settings(), "project_root", tmp_path)
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", None)
+        monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", None)
+        monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", None)
+
+        endpoint = parse_sovits_endpoint(f"http://{self.HOST}:{self.PORT}", source="db")
+        monkeypatch.setattr(
+            "galgame2voice.services.sovits_endpoint.resolve_effective_sovits_endpoint_sync",
+            lambda: endpoint,
+        )
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        monkeypatch.setattr(run_server, "find_gpt_sovits_directory", lambda: engine)
+        monkeypatch.setattr(
+            run_server,
+            "resolve_initial_device_and_half",
+            lambda *_a, **_k: ("cuda", True, "default"),
+        )
+
+        active_state = None
+        states_by_pid = {}
+        probe_calls = []
+        calibration_results = []
+        real_calibrate = run_server.calibrate_engine_precision
+
+        def spy_calibrate(*args, **kwargs):
+            res = real_calibrate(*args, **kwargs)
+            calibration_results.append(res)
+            return res
+
+        def fake_spawn(sovits_dir, host, port, is_half, device="cuda"):
+            nonlocal active_state
+            pid = 6001 if is_half else 6002
+            proc = MagicMock(pid=pid)
+            state = {
+                "proc": proc,
+                "is_half": is_half,
+                "alive": True,
+                "port_checks": 0,
+                "listening": False,
+            }
+            proc.returncode = None
+            proc.poll.side_effect = lambda: None if state["alive"] else 1
+            states_by_pid[pid] = state
+            active_state = state
+            run_server._SPAWNED_SOVITS_PROC = proc
+            run_server._SPAWNED_SOVITS_LAUNCH = EngineLaunch(
+                proc, host, port, device, is_half, started_at=float(len(states_by_pid))
+            )
+            return proc
+
+        def fake_terminate(pid, timeout=2.0):
+            state = states_by_pid[pid]
+            state["alive"] = False
+            state["listening"] = False
+            state["proc"].returncode = 1
+
+        def fake_is_port_in_use(port, host):
+            if active_state is None or not active_state["alive"]:
+                return False
+            active_state["port_checks"] += 1
+            if active_state["is_half"]:
+                active_state["listening"] = True
+                return True
+            if active_state["port_checks"] >= 2:
+                active_state["alive"] = False
+                active_state["proc"].returncode = 1
+            return False
+
+        def fake_probe(host, port, timeout=90.0):
+            probe_calls.append(active_state["is_half"])
+            if active_state is None or not active_state["alive"] or not active_state["listening"]:
+                return None
+            return 0.0
+
+        created = []
+        real_thread = threading.Thread
+
+        def capture_thread(*args, **kwargs):
+            t = real_thread(*args, **kwargs)
+            created.append(t)
+            return t
+
+        monkeypatch.setattr(run_server, "calibrate_engine_precision", spy_calibrate)
+        monkeypatch.setattr(run_server, "_spawn_sovits_process", fake_spawn)
+        monkeypatch.setattr(run_server, "terminate_process_tree", fake_terminate)
+        monkeypatch.setattr(run_server, "is_port_in_use", fake_is_port_in_use)
+        monkeypatch.setattr(run_server.time, "sleep", lambda *_a, **_k: None)
+        monkeypatch.setattr(run_server, "_probe_synth_peak", fake_probe)
+        monkeypatch.setattr(run_server.threading, "Thread", capture_thread)
+
+        run_server.ensure_gpt_sovits_running()
+        assert len(created) == 1
+        created[0].join(timeout=5)
+        assert not created[0].is_alive()
+
+        captured = capsys.readouterr()
+        assert calibration_results == [(False, False)]
+        assert probe_calls == [True]
+        assert "FP32 引擎重启失败" in captured.out
+        assert "FP32 探针仍为静音或未完成" not in captured.out
+        assert read_precision_cache(tmp_path) is None
 
 
 class TestReadinessMonitorCalibration:

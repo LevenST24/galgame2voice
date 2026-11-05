@@ -916,6 +916,26 @@ def calibrate_engine_precision(
     return is_half, False
 
 
+_PORT_READY_SETTLE_SECONDS = 2.0
+
+
+def _wait_for_sovits_port(proc, host: str, port: int) -> bool:
+    """Waits while proc stays alive until (host, port) starts accepting connections."""
+    slow_hint_printed = False
+    ticks = 0
+    while proc is not None and proc.poll() is None:
+        time.sleep(0.5)
+        ticks += 1
+        if proc.poll() is not None:
+            break
+        if is_port_in_use(port, host):
+            return proc.poll() is None
+        if not slow_hint_printed and ticks >= 240:
+            print("\n      [提示] GPT-SoVITS 模型仍在后台加载中 (详见 logs/gpt_sovits.log)")
+            slow_hint_printed = True
+    return False
+
+
 def _calibrate_precision_after_ready(
     sovits_dir: Path,
     host: str,
@@ -963,7 +983,7 @@ def _calibrate_precision_after_ready(
                 print(f"      [WARN] 旧 GPT-SoVITS 进程未在 10 秒内释放端口 {port}，取消拉起新进程。")
                 return None
             try:
-                return _spawn_sovits_process(sovits_dir, host, port, new_is_half, device=device)
+                proc = _spawn_sovits_process(sovits_dir, host, port, new_is_half, device=device)
             except Exception as exc:
                 print(f"      [WARN] 引擎重启失败: {exc}")
                 return None
@@ -971,8 +991,14 @@ def _calibrate_precision_after_ready(
             health._engine_restart_target = None
             health._engine_restart_lock.release()
 
+        if not _wait_for_sovits_port(proc, host, port):
+            return None
+        # Give the model a moment to finish loading weights after port bind.
+        time.sleep(_PORT_READY_SETTLE_SECONDS)
+        return proc if proc.poll() is None else None
+
     # Give the model a moment to finish loading weights after port bind.
-    time.sleep(2.0)
+    time.sleep(_PORT_READY_SETTLE_SECONDS)
     _, calibrated = calibrate_engine_precision(sovits_dir, is_half, probe, restart)
     if calibrated:
         cached_half = read_precision_cache(PROJECT_ROOT)
@@ -1078,20 +1104,10 @@ def ensure_gpt_sovits_running(
         print("      [..] GPT-SoVITS 正在后台加载模型 (伴侣服务先行启动)...")
 
         def _wait_for_sovits_readiness_worker():
-            slow_hint_printed = False
-            ticks = 0
-            while proc is not None and proc.poll() is None:
-                time.sleep(0.5)
-                ticks += 1
-                if proc.poll() is not None:
-                    break
-                if is_port_in_use(sovits_port, sovits_host):
-                    print(f"\n      [OK] GPT-SoVITS 语音引擎已就绪 (http://{sovits_host}:{sovits_port}/)")
-                    _calibrate_precision_after_ready(sovits_dir, sovits_host, sovits_port, is_half, precision_source, device=device)
-                    return
-                if not slow_hint_printed and ticks >= 240:
-                    print("\n      [提示] GPT-SoVITS 模型仍在后台加载中 (详见 logs/gpt_sovits.log)")
-                    slow_hint_printed = True
+            if _wait_for_sovits_port(proc, sovits_host, sovits_port):
+                print(f"\n      [OK] GPT-SoVITS 语音引擎已就绪 (http://{sovits_host}:{sovits_port}/)")
+                _calibrate_precision_after_ready(sovits_dir, sovits_host, sovits_port, is_half, precision_source, device=device)
+                return
             if proc is not None and proc.poll() is not None:
                 print(f"\n      [WARN] GPT-SoVITS 异常退出 (退出码: {proc.returncode})，详见 logs/gpt_sovits.log")
 
