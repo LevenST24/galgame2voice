@@ -793,9 +793,14 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
         # process. A failed spawn cannot restore the stopped engine's models.
         client.invalidate_model_state()
 
-    if live_owned:
-        await asyncio.to_thread(run_server.terminate_process_tree, owned.pid)
-        await asyncio.to_thread(owned.wait, timeout=3)
+    if owned is not None:
+        if live_owned:
+            await asyncio.to_thread(run_server.terminate_process_tree, owned.pid)
+            await asyncio.to_thread(owned.wait, timeout=3)
+        run_server._SPAWNED_SOVITS_PROC = None
+        run_server._SPAWNED_SOVITS_LAUNCH = None
+        run_server._SPAWNED_SOVITS_STARTED_AT = None
+        (run_server.PROJECT_ROOT / "gptsovits.pid").unlink(missing_ok=True)
 
     # Bounded wait for the old process to release the port (replaces the old
     # fixed sleep): poll up to ~5s at 0.25s intervals, off the event loop.
