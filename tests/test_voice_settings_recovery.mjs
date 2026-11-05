@@ -888,4 +888,175 @@ const models = {
   assert.deepEqual(deletedIds, [1, 2], 'sole remaining voice profile must be deletable without another voice to switch to');
   passed++;
 }
+{
+  // First-use scenario: no voice profiles exist, session not bound to any voice.
+  // sVoice defaults to '__custom__'. Modifying inference parameters like temperature
+  // must save successfully without being blocked by custom voice creation prompt,
+  // while keeping voiceProfileId as null.
+  // Conversely, if custom voice draft fields are filled (e.g. sCvName), saving must be blocked.
+  let closed = 0;
+  const { first, dom } = setup({ closeModal() { closed++; } });
+  dom.sessionModal = element();
+  first.settings.voiceProfileId = null;
+  first.settings.temperature = 0.7;
+  dom.sCvName.value = '';
+  dom.sCvPromptText.value = '';
+  dom.sSystem.value = '';
+
+  const saves = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') return response({ profiles: [], active_profile_id: null });
+    if (url === '/api/chat/sessions') {
+      saves.push(JSON.parse(options.body));
+      return response({});
+    }
+    return response({});
+  };
+
+  await loadSessionVoiceSelect(first);
+  assert.equal(dom.sVoice.value, '__custom__', 'first-use without voices should auto-select __custom__');
+
+  // 1. Without drafting custom voice (clean empty strings), user modifies temperature and saves:
+  dom.sCvName.value = '';
+  dom.sCvPromptText.value = '';
+  dom.sSystem.value = '';
+  dom.sTemp.value = '0.35';
+  await dom.sSave.click();
+
+  assert.equal(first.settings.temperature, 0.35, 'temperature should be updated');
+  assert.equal(first.settings.voiceProfileId, null, 'voiceProfileId should remain null');
+  assert.equal(saves.length, 1, 'session should be persisted to server');
+  assert.equal(saves[0].settings.temperature, 0.35);
+  assert.equal(saves[0].voice_profile_id, null);
+  assert.equal(closed, 1, 'settings modal should close after successful save');
+  assert.equal(dom.sSave.disabled, false);
+
+  // 1b. Whitespace-only custom voice fields are also treated as untouched:
+  dom.sCvName.value = '   ';
+  dom.sCvPromptText.value = '  ';
+  dom.sSystem.value = ' ';
+  dom.sTemp.value = '0.4';
+  await dom.sSave.click();
+
+  assert.equal(first.settings.temperature, 0.4, 'temperature should be updated with whitespace inputs');
+  assert.equal(first.settings.voiceProfileId, null);
+  assert.equal(saves.length, 2);
+  assert.equal(saves[1].settings.temperature, 0.4);
+  assert.equal(closed, 2);
+
+  // 2. If user drafted sCvName, save must be intercepted:
+  dom.sCvName.value = 'My New Voice Draft';
+  dom.sCvPromptText.value = '';
+  dom.sSystem.value = '';
+  dom.sTemp.value = '0.9';
+  await dom.sSave.click();
+  assert.equal(first.settings.temperature, 0.4, 'temperature must not update when sCvName is present');
+  assert.equal(saves.length, 2, 'no additional server persistence should occur');
+  assert.equal(closed, 2, 'modal should not close');
+  assert.equal(dom.sCvName.value, 'My New Voice Draft', 'sCvName must be preserved');
+
+  // 3. If user drafted sCvPromptText, save must be intercepted:
+  dom.sCvName.value = '';
+  dom.sCvPromptText.value = 'Sample speech reference text';
+  dom.sTemp.value = '0.9';
+  await dom.sSave.click();
+  assert.equal(first.settings.temperature, 0.4, 'temperature must not update when sCvPromptText is present');
+  assert.equal(saves.length, 2);
+  assert.equal(closed, 2);
+  assert.equal(dom.sCvPromptText.value, 'Sample speech reference text');
+
+  // 4. If user drafted sSystem persona, save must be intercepted:
+  dom.sCvPromptText.value = '';
+  dom.sSystem.value = 'You are a friendly assistant.';
+  dom.sTemp.value = '0.9';
+  await dom.sSave.click();
+  assert.equal(first.settings.temperature, 0.4, 'temperature must not update when sSystem persona is present');
+  assert.equal(saves.length, 2);
+  assert.equal(closed, 2);
+  assert.equal(dom.sSystem.value, 'You are a friendly assistant.');
+
+  // 5. When drafts are cleared back to empty, save unblocks and succeeds:
+  dom.sSystem.value = '';
+  dom.sTemp.value = '0.85';
+  await dom.sSave.click();
+  assert.equal(first.settings.temperature, 0.85, 'clearing draft unblocks saving');
+  assert.equal(saves.length, 3);
+  assert.equal(saves[2].settings.temperature, 0.85);
+  assert.equal(closed, 3);
+
+  passed++;
+}
+{
+  // When voice profiles DO exist but current session is unbound, switching to __custom__
+  // must intercept save even if draft fields are empty.
+  let closed = 0;
+  const { first, dom } = setup({ closeModal() { closed++; } });
+  dom.sessionModal = element();
+  first.settings.voiceProfileId = null;
+  first.settings.temperature = 0.7;
+  dom.sCvName.value = '';
+  dom.sCvPromptText.value = '';
+  dom.sSystem.value = '';
+
+  const saves = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') {
+      return response({ profiles: [{ id: 1, name: 'Existing voice' }], active_profile_id: 1 });
+    }
+    if (url === '/api/chat/sessions') {
+      saves.push(JSON.parse(options.body));
+      return response({});
+    }
+    return response({});
+  };
+
+  await loadSessionVoiceSelect(first);
+  assert.equal(dom.sVoice.value, '', 'unbound session with profiles should default to ""');
+  dom.sVoice.value = '__custom__';
+  dom.sTemp.value = '0.45';
+  await dom.sSave.click();
+
+  assert.equal(first.settings.temperature, 0.7, 'save must be blocked when voices exist and __custom__ is manually chosen');
+  assert.equal(saves.length, 0);
+  assert.equal(closed, 0);
+  assert.equal(dom.sSave.disabled, false);
+
+  passed++;
+}
+{
+  // When no voice profiles exist but current session ALREADY has a voice bound (e.g. 99),
+  // switching to __custom__ must intercept save to prevent accidental unbinding.
+  let closed = 0;
+  const { first, dom } = setup({ closeModal() { closed++; } });
+  dom.sessionModal = element();
+  first.settings.voiceProfileId = 99;
+  first.settings.temperature = 0.7;
+  dom.sCvName.value = '';
+  dom.sCvPromptText.value = '';
+  dom.sSystem.value = '';
+
+  const saves = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') return response({ profiles: [], active_profile_id: null });
+    if (url === '/api/chat/sessions') {
+      saves.push(JSON.parse(options.body));
+      return response({});
+    }
+    return response({});
+  };
+
+  await loadSessionVoiceSelect(first);
+  assert.equal(dom.sVoice.value, '99', 'already-bound session should retain binding even if catalog is empty');
+  dom.sVoice.value = '__custom__';
+  dom.sTemp.value = '0.55';
+  await dom.sSave.click();
+
+  assert.equal(first.settings.temperature, 0.7, 'save must be blocked when session has voiceProfileId and __custom__ is chosen');
+  assert.equal(first.settings.voiceProfileId, 99, 'existing binding must not be wiped');
+  assert.equal(saves.length, 0);
+  assert.equal(closed, 0);
+  assert.equal(dom.sSave.disabled, false);
+
+  passed++;
+}
 console.log(`Voice settings recovery: ${passed} scenarios passed`);

@@ -661,8 +661,15 @@ async function handleSaveSessionSettings() {
   if (_dom.sSave) _dom.sSave.disabled = true;
   try {
     if (_dom.sVoice.value === '__custom__') {
-      showToast('请先点击「创建并绑定」完成新音色的创建，再保存会话参数。填写的内容已保留。', 'info');
-      return;
+      const isFirstUseUntouchedCustom = !voiceProfiles.length
+        && !s.settings?.voiceProfileId
+        && !(_dom.sCvName?.value || '').trim()
+        && !(_dom.sCvPromptText?.value || '').trim()
+        && !(_dom.sSystem?.value || '').trim();
+      if (!isFirstUseUntouchedCustom) {
+        showToast('请先点击「创建并绑定」完成新音色的创建，再保存会话参数。填写的内容已保留。', 'info');
+        return;
+      }
     }
     _callbacks.invalidateSessionSync?.();
     const maxTokens = Math.round(Number(_dom.sMaxTokens.value)) || DEFAULT_SESSION_SETTINGS.maxTokens;
