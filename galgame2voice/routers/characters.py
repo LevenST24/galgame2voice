@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from galgame2voice.database import crud
-from galgame2voice.database.session import get_db, immediate_transaction
+from galgame2voice.database.session import _run_uncancellable, get_db, immediate_transaction
 from galgame2voice.routers.common import persist_active_voice_profile_or_raise, switch_voice_profile_or_raise, validate_user_id
 from galgame2voice.security.media_urls import (
     get_media_signing_key,
@@ -532,9 +532,8 @@ async def _rollback_manifest_and_cache(
 ) -> None:
     """Put manifest.json back to the bytes read before this save and refresh cache."""
     _restore_manifest(manifest_path, original)
-    try:
-        await asyncio.to_thread(mgr.discover_characters)
-    except Exception as exc:
+    _, exc, _ = await _run_uncancellable(asyncio.to_thread(mgr.discover_characters))
+    if exc is not None:
         logger.warning("回滚角色包后刷新内存缓存失败: %s", exc)
 
 
@@ -612,7 +611,7 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
                     status_code=status.HTTP_409_CONFLICT,
                     detail=str(exc),
                 ) from exc
-            except Exception:
+            except BaseException:
                 await _rollback_manifest_and_cache(manifest_path, original_manifest, mgr)
                 raise
 
@@ -629,9 +628,11 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
                             status_code=status.HTTP_404_NOT_FOUND,
                             detail=f"Character with ID {character_id} not found",
                         )
-        except Exception as exc:
+        except BaseException as exc:
             if original_manifest is not None and manifest_path is not None:
                 await _rollback_manifest_and_cache(manifest_path, original_manifest, mgr)
+            if not isinstance(exc, Exception):
+                raise
             if isinstance(exc, HTTPException):
                 raise
             safe_err = sanitize_error_detail(exc)
