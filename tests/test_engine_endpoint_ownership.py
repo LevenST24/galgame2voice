@@ -326,3 +326,51 @@ async def test_busy_new_port_preserves_the_owned_engine_at_the_old_address(owned
     precision.assert_not_called()
     spawn.assert_not_called()
     proc.wait.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_mode", ["port_busy", "spawn_error"])
+async def test_restart_abort_after_stopping_owned_process_clears_launch_and_does_not_report_failed(
+    owned_engine, monkeypatch, tmp_path, failure_mode
+):
+    endpoint, proc = owned_engine
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+    pid_file = tmp_path / "gptsovits.pid"
+    pid_file.write_text(str(proc.pid), encoding="utf-8")
+
+    def terminate(pid):
+        assert pid == proc.pid
+        proc.poll.return_value = 1
+
+    monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
+    proc.wait = MagicMock(return_value=1)
+
+    monkeypatch.setattr(health, "_apply_sovits_precision_config", AsyncMock(return_value=("cpu", False, "test")))
+
+    sleep = asyncio.sleep
+
+    async def fast_sleep(delay):
+        await sleep(0 if delay == 0.25 else delay)
+
+    monkeypatch.setattr(health.asyncio, "sleep", fast_sleep)
+
+    if failure_mode == "port_busy":
+        monkeypatch.setattr(run_server, "is_port_in_use", lambda port, host=None: True)
+        with pytest.raises(HTTPException) as caught:
+            await health.restart_sovits_endpoint(None)
+        assert caught.value.status_code == 409
+    else:
+        monkeypatch.setattr(run_server, "is_port_in_use", lambda port, host=None: False)
+        monkeypatch.setattr(run_server, "_spawn_sovits_process", MagicMock(side_effect=RuntimeError("Spawn failed")))
+        with pytest.raises(HTTPException) as caught:
+            await health.restart_sovits_endpoint(None)
+        assert caught.value.status_code == 500
+
+    status = await health.engine_status_endpoint()
+    assert status["state"] == "unavailable"
+    assert "退出" not in status["message"]
+    assert run_server._SPAWNED_SOVITS_PROC is None
+    assert run_server._SPAWNED_SOVITS_LAUNCH is None
+    assert run_server._SPAWNED_SOVITS_STARTED_AT is None
+    assert not pid_file.exists()
+
