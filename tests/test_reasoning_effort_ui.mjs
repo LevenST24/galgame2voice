@@ -217,7 +217,8 @@ test('empty_reply travels through SSE and conversation to a retryable inline fai
   assert.equal(session.messages.length, 1);
   controller.stop();
   assert.equal(cancelled, 1);
-  assert.equal(user.failed, undefined);
+  assert.deepEqual(user.failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
+  assert.equal(controller.canRetry(user), true);
 });
 
 async function setupProviderFooter(t, { confirmActivation = true } = {}) {

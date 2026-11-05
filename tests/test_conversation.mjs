@@ -317,7 +317,41 @@ test('a turnstart listener can stop before fetch begins', () => {
   assert.equal(app.stream.requests.length, 0);
   assert.equal(cancelled.length, 1);
   assert.equal(cancelled[0].message, null);
-  assert.equal(app.session.messages[0].failed, undefined);
+  assert.equal(cancelled[0].failedInline, true);
+  assert.deepEqual(app.session.messages[0].failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
+  assert.equal(app.conversation.canRetry(app.session.messages[0]), true);
+});
+
+test('stopping before first reply cleans serverMessageId, marks failure and allows retry', async () => {
+  const app = setup();
+  const cancelled = [];
+  app.conversation.on('cancelled', event => cancelled.push(event));
+  app.conversation.send('等待模型首字');
+  const userMsg = app.session.messages[0];
+  userMsg.serverMessageId = 101;
+  const request = app.stream.requests[0];
+  await request.event('turn_started', { session_id: app.session.id, user_message_id: 101 });
+  app.conversation.stop();
+  assert.equal(app.conversation.busy, false);
+  assert.equal(cancelled.length, 1);
+  assert.equal(cancelled[0].message, null);
+  assert.equal(cancelled[0].failedInline, true);
+  assert.equal(userMsg.serverMessageId, undefined, 'serverMessageId pruned by backend must be cleaned on cancel');
+  assert.deepEqual(userMsg.failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
+  assert.equal(app.conversation.canRetry(userMsg), true);
+
+  // Calling retry (retryFailedMessage) resends the user message
+  const retryFailedMessage = msg => app.conversation.retry(msg);
+  const retried = retryFailedMessage(userMsg);
+  assert.equal(retried, true);
+  assert.equal(userMsg.failed, undefined);
+  assert.equal(app.stream.requests.length, 2);
+  assert.equal(app.stream.requests[1].prompt, '等待模型首字');
+  await app.stream.requests[1].onChunk('恢复后的回答');
+  await app.stream.requests[1].onEnd('恢复后的回答');
+  assert.equal(app.session.messages.length, 2);
+  assert.equal(app.session.messages[0], userMsg);
+  assert.equal(app.session.messages[1].content, '恢复后的回答');
 });
 
 test('a server error emits its kind and persists the inline failure on the user message', async () => {
