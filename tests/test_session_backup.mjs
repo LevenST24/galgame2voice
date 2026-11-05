@@ -603,4 +603,19 @@ const sessionOf = (id, texts) => ({
 
   passed++;
 }
+
+{
+  // Old stored data containing obsolete autoTranslate in global or session settings loads safely and drops it
+  storage({
+    sessions: [{ id: 's_old', title: '聊天', createdAt: 1, updatedAt: 2,
+      settings: { voiceProfileId: 99, temperature: 0.7, autoTranslate: true },
+      messages: [{ id: 'm_old', role: 'user', content: 'Original message', ts: 1 }] }],
+    activeId: 's_old',
+    global: { voiceMode: true, autoTranslate: true },
+  });
+  loadState();
+  assert.equal(state.global.autoTranslate, undefined, 'loadState must drop obsolete autoTranslate from global');
+  assert.equal(state.sessions[0].settings.autoTranslate, undefined, 'loadState must drop obsolete autoTranslate from session settings');
+  passed++;
+}
 console.log(`Session backup and recovery: ${passed} scenarios passed`);

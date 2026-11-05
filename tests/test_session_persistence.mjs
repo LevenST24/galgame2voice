@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { persistSession, deletePersistedSession, isSessionDeleting, fetchAllSessions, fetchSessionHistoryPage, earliestServerMessageId } from '../frontend/src/session_api.js';
 import { mergeChatBackup, exportCompleteChatBackup } from '../frontend/src/chat_backup.js';
-import { pickSettings, serverTimestamp } from '../frontend/src/session_data.js';
+import { pickSettings, serverTimestamp, normalizeSnapshot } from '../frontend/src/session_data.js';
 import { streamChat } from '../frontend/src/ai.js';
 import { DEFAULT_GLOBAL, DEFAULT_SESSION_SETTINGS, GREETING, LEGACY_GREETINGS, loadState } from '../frontend/src/store.js';
 
@@ -276,6 +277,40 @@ async function exportPrefix(localSettings, localUpdatedAt) {
   assert.equal(exported.settings.advPlayerName, '新名');
   assert.equal(exported.settings.advWindowOpacity, 30);
   assert.equal(exported.settings.voiceProfileId, 8);
+  passed++;
+}
+{
+  const html = fs.readFileSync(new URL('../frontend/index.html', import.meta.url), 'utf8');
+  assert.ok(!html.includes('gAutoTranslate'), 'index.html should not contain gAutoTranslate');
+  assert.ok(!html.includes('手动（点击消息底部的“翻译”按钮）'), 'index.html should not contain dead translate option');
+  assert.ok(!html.includes('日文原文显示'), 'index.html should not contain 日文原文显示 label');
+  passed++;
+}
+{
+  const legacyBackup = {
+    format: 'galgame2voice.chat',
+    version: 1,
+    activeId: 's_legacy',
+    global: { voiceMode: true, ttsPreset: 'default', autoTranslate: true },
+    sessions: [{
+      id: 's_legacy',
+      title: '旧会话',
+      messages: [{ id: 'm_1', role: 'user', content: '测试', ts: 1 }],
+      settings: { temperature: 0.7, autoTranslate: 'manual' },
+      createdAt: 1,
+      updatedAt: 1,
+    }],
+  };
+  const normalized = normalizeSnapshot(legacyBackup, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL);
+  assert.equal(normalized.global.autoTranslate, undefined, 'obsolete autoTranslate in global must be dropped');
+  assert.equal(normalized.sessions[0].settings.autoTranslate, undefined, 'obsolete autoTranslate in session settings must be dropped');
+  assert.equal(normalized.global.voiceMode, true);
+  assert.equal(normalized.global.ttsPreset, 'default');
+
+  const merged = mergeChatBackup(legacyBackup, legacyBackup);
+  const parsed = JSON.parse(merged.content);
+  assert.equal(parsed.global.autoTranslate, undefined, 'merged backup must not contain autoTranslate in global');
+  assert.equal(parsed.sessions[0].settings.autoTranslate, undefined, 'merged backup must not contain autoTranslate in session settings');
   passed++;
 }
 console.log(`Session persistence and complete backups: ${passed} scenarios passed`);

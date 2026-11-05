@@ -58,7 +58,6 @@ export const DEFAULT_SESSION_SETTINGS = {
 export const DEFAULT_GLOBAL = {
   voiceMode: true,
   ttsPreset: '',
-  autoTranslate: false,
 };
 
 export const state = {
