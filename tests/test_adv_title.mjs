@@ -107,7 +107,7 @@ async function fixture(t, options = {}) {
   t.after(() => ui.destroy()); ui.open(); await microtasks();
   const q = selector => ui.element.querySelector(selector);
   return { doc, clock, calls, stage, root, ui, q, sessions, actions,
-    setStatus(value) { status = value; }, finish: result => finish(result), notify: () => notify?.() };
+    setStatus(value) { status = value; }, finish: result => finish(result), notify: (...args) => notify?.(...args) };
 }
 
 test('excerpt selects last textual assistant and its final sentence, earlier user, Chinese/Japanese and time', async t => {
@@ -166,6 +166,96 @@ test('audio availability, stop toggle, natural completion and playback failure',
   h.q('.home-listen').click(); h.finish('ended'); await microtasks(); assert.equal(textTree(h.q('.home-listen')), '▶ 试听这句');
   h.q('.home-listen').click(); h.finish('failed'); await microtasks(); assert.equal(h.q('.home-listen').hidden, true);
 });
+
+test('opening settings center stops excerpt playback immediately via gear, capsule popover, or modal subscriber', async t => {
+  const h = await fixture(t);
+
+  // 1. Click .home-gear while playing
+  h.q('.home-listen').children[0].click();
+  assert.equal(textTree(h.q('.home-listen')), '■ 停止');
+  assert.equal(h.q('.home-listen').getAttribute('aria-pressed'), 'true');
+  assert.deepEqual(h.calls.at(-1), ['play', 'm9', 1]);
+
+  h.q('.home-gear').click();
+  assert.equal(h.calls.includes('stop'), true, 'clicking gear button must call stopExcerpt');
+  assert.equal(textTree(h.q('.home-listen')), '▶ 试听这句');
+  assert.equal(h.q('.home-listen').getAttribute('aria-pressed'), 'false');
+  assert.deepEqual(h.calls.at(-1), ['settings', undefined]);
+
+  // 1b. Late completion or failure after stopping does not mark failure or hide listen button
+  h.finish('failed');
+  await microtasks();
+  assert.equal(h.q('.home-listen').hidden, false);
+  assert.equal(textTree(h.q('.home-listen')), '▶ 试听这句');
+
+  // 2. Click capsule popover "去设置" while playing (chat pill)
+  h.calls.length = 0;
+  h.q('.home-listen').children[0].click();
+  assert.equal(textTree(h.q('.home-listen')), '■ 停止');
+  assert.equal(h.q('.home-listen').getAttribute('aria-pressed'), 'true');
+
+  const pills = h.ui.element.querySelectorAll('.home-pill');
+  pills[0].click();
+  assert.ok(h.q('.home-popover'));
+  h.q('.home-popover').querySelector('button').click();
+  assert.equal(h.calls.includes('stop'), true, 'clicking capsule popover settings must call stopExcerpt');
+  assert.equal(textTree(h.q('.home-listen')), '▶ 试听这句');
+  assert.equal(h.q('.home-listen').getAttribute('aria-pressed'), 'false');
+  assert.deepEqual(h.calls.at(-1), ['settings', 'models']);
+
+  // 2b. Click voice capsule popover "去设置" while playing
+  h.calls.length = 0;
+  h.q('.home-listen').children[0].click();
+  assert.equal(textTree(h.q('.home-listen')), '■ 停止');
+  assert.equal(h.q('.home-listen').getAttribute('aria-pressed'), 'true');
+
+  pills[1].click();
+  assert.ok(h.q('.home-popover'));
+  h.q('.home-popover').querySelector('button').click();
+  assert.equal(h.calls.includes('stop'), true, 'clicking voice capsule popover settings must call stopExcerpt');
+  assert.equal(textTree(h.q('.home-listen')), '▶ 试听这句');
+  assert.equal(h.q('.home-listen').getAttribute('aria-pressed'), 'false');
+  assert.deepEqual(h.calls.at(-1), ['settings', 'inference']);
+
+  // 3. Trigger subscribeSettings(true) while playing
+  h.calls.length = 0;
+  h.q('.home-listen').children[0].click();
+  assert.equal(textTree(h.q('.home-listen')), '■ 停止');
+  assert.equal(h.q('.home-listen').getAttribute('aria-pressed'), 'true');
+
+  h.notify(true);
+  assert.equal(h.calls.includes('stop'), true, 'opening modal via subscribeSettings(true) must call stopExcerpt');
+  assert.equal(textTree(h.q('.home-listen')), '▶ 试听这句');
+  assert.equal(h.q('.home-listen').getAttribute('aria-pressed'), 'false');
+
+  // 4. Clicking gear when not playing does not issue stopExcerpt
+  h.calls.length = 0;
+  h.q('.home-gear').click();
+  assert.equal(h.calls.includes('stop'), false);
+  assert.deepEqual(h.calls.at(-1), ['settings', undefined]);
+
+  // 5. Triggering subscribeSettings(false) triggers refresh, not stop
+  h.calls.length = 0;
+  h.notify(false);
+  await microtasks();
+  assert.equal(h.calls.includes('stop'), false);
+  assert.equal(h.calls.includes('status'), true);
+
+  // 6. First-use step buttons call stopListen before openSettings / openCharacters
+  const firstH = await fixture(t, {
+    status: { modelLoaded: true, hasModel: false, model: { state: 'error' }, engine: { state: 'unavailable' } },
+    sessions: [{ ...snapshot('a'), settings: { voiceProfileId: null } }],
+  });
+  const stepButtons = firstH.ui.element.querySelectorAll('.home-step-button');
+  assert.equal(stepButtons.length, 3);
+  stepButtons[0].click();
+  assert.deepEqual(firstH.calls.at(-1), ['settings', 'models']);
+  stepButtons[1].click();
+  assert.deepEqual(firstH.calls.at(-1), ['settings', 'inference']);
+  stepButtons[2].click();
+  assert.deepEqual(firstH.calls.at(-1), 'characters');
+});
+
 for (const scenario of ['empty', 'expired', 'voiceOff']) test(`unplayable audio: ${scenario}`, async t => {
   const s = snapshot('a'); s.excerpt = structuredClone(s.excerpt);
   if (scenario === 'empty') s.excerpt.line.audio.chunks = [];

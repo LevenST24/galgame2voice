@@ -736,7 +736,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       return streamAudioController.playLine(excerpt.line.index, excerpt.line.audio.chunks, { msgId: excerpt.messageId });
     },
     stopExcerpt: () => streamAudioController.stopLine({ fadeMs: 0 }),
-    subscribeSettings: listener => onModalChange(open => { if (!open) listener(); }),
+    subscribeSettings: listener => onModalChange(open => listener(open)),
   });
   Object.assign(advActions, actions);
   function returnHome() {
