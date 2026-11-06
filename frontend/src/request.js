@@ -13,7 +13,12 @@ export function getErrorMessage(data, fallback = '请求失败') {
   const message = typeof detail === 'string' ? detail
     : (!Array.isArray(detail) && detail && (detail.message || detail.error));
   if (typeof message === 'string' && /[\u3400-\u9fff]/.test(message)) return message;
-  if (Array.isArray(detail)) return '配置不完整或数值超出范围，请检查填写内容后重新保存。';
+  if (Array.isArray(detail)) {
+    const promptItem = detail.find(err => Array.isArray(err?.loc) && err.loc.includes('prompt'));
+    if (promptItem?.type === 'string_too_long') return '单次发送内容不能超过 4000 字，请删减后再发送。';
+    if (promptItem?.type === 'string_too_short') return '请输入要发送的对话内容。';
+    return '配置不完整或数值超出范围，请检查填写内容后重新保存。';
+  }
   const http = /^HTTP (\d+)$/.exec(fallback);
   return http ? statusMessage(Number(http[1])) : fallback;
 }

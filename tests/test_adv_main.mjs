@@ -8,6 +8,7 @@ import { serverTimestamp } from '../frontend/src/session_data.js';
 import { initVoiceSettings, ensureSessionVoice, getVoiceProfiles, fetchVoiceProfiles, getActiveProfileId, openSessionSettings } from '../frontend/src/controllers/voice_settings.js';
 import { createTitleScreen } from '../frontend/src/adv/title.js';
 import { initApp } from '../frontend/src/main.js';
+import { getErrorMessage } from '../frontend/src/request.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
 
 const ENGINE_NOT_LOADED = '语音模型尚未加载。请在「全局设置 → 状态诊断」检查语音状态。';
@@ -2144,5 +2145,73 @@ test('startup sync unconfirmed version is preserved and newer settings kept if e
   // 释放挂起的人设请求
   resolvePromptPut();
   await tick();
+});
+
+test('ADV player input: textarea has maxLength 4000 and sending > 4000 chars triggers onBlocked toast while retaining draft', async t => {
+  const toasts = [];
+  const h = setup(t, { callbacks: { showToast: (msg, type) => toasts.push({ msg, type }) } });
+  h.app.adv.textbox.enterInput({ canSend: true });
+  const textarea = h.dom.advRoot.querySelector('.adv-player-textarea');
+  assert.ok(textarea);
+  assert.equal(textarea.maxLength, 4000);
+
+  const longText = '长'.repeat(4005);
+  textarea.value = longText;
+  const sendBtn = h.dom.advRoot.querySelector('.adv-player-send-btn');
+  sendBtn.click();
+  await tick();
+
+  assert.equal(h.sessions[0].messages.length, 0);
+  assert.equal(textarea.value, longText);
+  assert.ok(toasts.some(item => item.msg === '单次发送内容不能超过 4000 字，请删减后再发送。'));
+});
+
+test('getErrorMessage: FastAPI 422 prompt validation errors return specific character length / empty guidance', () => {
+  const longError = {
+    detail: [
+      {
+        type: 'string_too_long',
+        loc: ['body', 'prompt'],
+        msg: 'String should have at most 4000 characters',
+        ctx: { max_length: 4000 },
+      },
+    ],
+  };
+  assert.equal(getErrorMessage(longError, 'HTTP 422'), '单次发送内容不能超过 4000 字，请删减后再发送。');
+
+  const shortError = {
+    detail: [
+      {
+        type: 'string_too_short',
+        loc: ['body', 'prompt'],
+        msg: 'String should have at least 1 characters',
+        ctx: { min_length: 1 },
+      },
+    ],
+  };
+  assert.equal(getErrorMessage(shortError, 'HTTP 422'), '请输入要发送的对话内容。');
+
+  const otherError = {
+    detail: [
+      {
+        type: 'greater_than_equal',
+        loc: ['body', 'temperature'],
+        msg: 'Input should be greater than or equal to 0',
+      },
+    ],
+  };
+  assert.equal(getErrorMessage(otherError, 'HTTP 422'), '配置不完整或数值超出范围，请检查填写内容后重新保存。');
+
+  const systemPromptError = {
+    detail: [
+      {
+        type: 'string_too_long',
+        loc: ['body', 'system_prompt'],
+        msg: 'String should have at most 4000 characters',
+        ctx: { max_length: 4000 },
+      },
+    ],
+  };
+  assert.equal(getErrorMessage(systemPromptError, 'HTTP 422'), '配置不完整或数值超出范围，请检查填写内容后重新保存。');
 });
 
