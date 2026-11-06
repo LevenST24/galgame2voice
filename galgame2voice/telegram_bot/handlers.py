@@ -961,6 +961,11 @@ class TelegramBotHandlers:
                 dynamic_tts = parser.get_dynamic_tts_options(
                     base_options=base_tts_options, sentence_text=japanese
                 )
+                dynamic_tts.update(base_tts_options)
+                if "speed_factor" in base_tts_options:
+                    dynamic_tts["speed"] = base_tts_options["speed_factor"]
+                if "temperature" in base_tts_options:
+                    dynamic_tts["temp"] = base_tts_options["temperature"]
 
                 # Final ownership check before sending to Telegram
                 if not self.turn_coordinator.is_turn_valid(turn):
