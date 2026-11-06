@@ -229,7 +229,7 @@ async def _reload_telegram_if_needed(sanitized_updates: dict[str, Any], updated_
         logger.warning("Failed to hot-reload Telegram Bot: %s", exc)
 
 
-def _sync_precision_cache(new_precision: str | None) -> None:
+def _sync_precision_cache(new_precision: str | None, previous_precision: str | None = None) -> None:
     """Save next-start preferences without modifying the running engine or its files."""
     if not new_precision:
         return
@@ -246,9 +246,10 @@ def _sync_precision_cache(new_precision: str | None) -> None:
             is_half, device = _PRECISION_CONFIG_MAP[prec_lower]
             write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=is_half, device=device)
         elif prec_lower == "auto":
-            cache_file = app_settings.project_root / "data" / "precision.json"
-            if cache_file.exists():
-                cache_file.unlink(missing_ok=True)
+            if previous_precision and str(previous_precision).lower() != "auto":
+                cache_file = app_settings.project_root / "data" / "precision.json"
+                if cache_file.exists():
+                    cache_file.unlink(missing_ok=True)
         logger.info("Inference precision preference saved for next engine start: %s", new_precision)
     except Exception as exc:
         # Disk sync failure is non-fatal and must not block or fail the configuration update API
@@ -286,6 +287,8 @@ async def update_config(payload: ConfigPayload | SettingsUpdate | dict[str, Any]
                     detail=f"Invalid gpt_sovits_url: {reason}",
                 )
 
+        previous_precision = (await crud.get_settings(conn, mask=True)).inference_precision
+
         if sanitized_updates:
             try:
                 update_model = SettingsUpdate(**sanitized_updates)
@@ -301,7 +304,10 @@ async def update_config(payload: ConfigPayload | SettingsUpdate | dict[str, Any]
 
     effective_sovits = await _apply_sovits_url_update(sanitized_updates.get("gpt_sovits_url"))
     await _reload_telegram_if_needed(sanitized_updates, updated_settings)
-    _sync_precision_cache(sanitized_updates.get("inference_precision"))
+    _sync_precision_cache(
+        sanitized_updates.get("inference_precision"),
+        previous_precision=previous_precision,
+    )
 
     response: dict[str, Any] = {
         "status": "success",

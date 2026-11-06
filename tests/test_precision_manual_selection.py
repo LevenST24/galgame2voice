@@ -88,6 +88,49 @@ class TestPrecisionAPI:
             cache3 = read_precision_cache(tmp_path)
             assert cache3 is None
 
+    async def test_auto_precision_preserves_launcher_calibration_on_config_save(self, tmp_path, monkeypatch):
+        """When settings.inference_precision is 'auto' (default), saving unrelated global
+        settings that include 'inference_precision: auto' must NOT delete the launcher-calibrated
+        data/precision.json cache file. Only switching from manual (e.g. fp32) to auto clears it."""
+        settings = get_settings()
+        monkeypatch.setattr(settings, "project_root", tmp_path)
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "data" / "sovits_dir.txt").write_text("D:/dummy_sovits", encoding="utf-8")
+
+        # Simulate launcher calibration having written precision.json for GTX 16xx (is_half=False, device="cuda")
+        write_precision_cache(tmp_path, "D:/dummy_sovits", is_half=False, device="cuda")
+        initial_cache = read_precision_cache(tmp_path)
+        assert initial_cache is not None
+        assert initial_cache["is_half"] is False
+        assert initial_cache["device"] == "cuda"
+
+        app = create_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # 1. DB inference_precision defaults to 'auto'. Save unrelated global settings carrying inference_precision: "auto"
+            resp = await client.post(
+                "/api/config",
+                json={"settings": {"audio_retention_minutes": 60, "inference_precision": "auto"}},
+            )
+            assert resp.status_code == 200
+            assert resp.json()["settings"]["audio_retention_minutes"] == 60
+            assert resp.json()["settings"]["inference_precision"] == "auto"
+
+            # Cache file MUST remain intact
+            preserved_cache = read_precision_cache(tmp_path)
+            assert preserved_cache is not None, "precision.json should be preserved when precision is already auto"
+            assert preserved_cache["is_half"] is False
+            assert preserved_cache["device"] == "cuda"
+
+            # 2. Switch to manual fp32
+            resp2 = await client.post("/api/config", json={"settings": {"inference_precision": "fp32"}})
+            assert resp2.status_code == 200
+            assert read_precision_cache(tmp_path)["is_half"] is False
+
+            # 3. Switching back from manual fp32 to auto SHOULD clear precision.json
+            resp3 = await client.post("/api/config", json={"settings": {"inference_precision": "auto"}})
+            assert resp3.status_code == 200
+            assert read_precision_cache(tmp_path) is None
+
     async def test_system_status_telemetry_includes_precision(self, monkeypatch):
         monkeypatch.setattr(
             "galgame2voice.utils.hardware.detect_gpu_capability",
