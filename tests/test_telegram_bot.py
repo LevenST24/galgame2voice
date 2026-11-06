@@ -1351,3 +1351,250 @@ class TestTelegramVoiceMenuRescan:
             CharacterManager.reset_instance()
 
 
+class TestTelegramVoiceTaskProfileBinding:
+    """Verifies that background voice tasks bind to the turn's voice profile and respect db_path."""
+
+    @pytest.mark.asyncio
+    async def test_telegram_voice_task_locks_turn_profile_and_db_path(self, temp_db_path, monkeypatch):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from galgame2voice.database import crud
+        from galgame2voice.database.session import get_db
+        from galgame2voice.database.models import VoiceProfileCreate
+        from galgame2voice.services.tts_service import TtsService
+
+        # 1. Assert default tts_service db_path is initialized to db_path
+        handlers = TelegramBotHandlers(admin_ids=[1001], db_path=temp_db_path)
+        assert isinstance(handlers.tts_service, TtsService)
+        assert handlers.tts_service.db_path == temp_db_path
+
+        # 2. Seed database with Character A and Character B, activating Character A
+        async with get_db(temp_db_path) as conn:
+            await crud.get_settings_raw(conn)
+            profile_a = await crud.create_voice_profile(
+                conn,
+                VoiceProfileCreate(
+                    name="爱丽丝",
+                    gpt_weights_path="weights/alice.ckpt",
+                    sovits_weights_path="weights/alice.pth",
+                    ref_audio_path="ref/alice.wav",
+                    prompt_text="こんにちは、アリスです。",
+                    prompt_lang="ja",
+                    text_lang="ja",
+                ),
+            )
+            profile_b = await crud.create_voice_profile(
+                conn,
+                VoiceProfileCreate(
+                    name="鲍勃",
+                    gpt_weights_path="weights/bob.ckpt",
+                    sovits_weights_path="weights/bob.pth",
+                    ref_audio_path="ref/bob.wav",
+                    prompt_text="こんにちは、ボブです。",
+                    prompt_lang="ja",
+                    text_lang="ja",
+                ),
+            )
+            await crud.set_active_voice_profile(conn, profile_a.id)
+
+        # Mock LLM adapter returning bilingual response
+        class _FakeAdapter:
+            async def chat(self, messages, **kwargs):
+                return SimpleNamespace(
+                    content='{"chinese": "早上好！", "japanese": "おはよう！"}',
+                    finish_reason="stop",
+                )
+
+        monkeypatch.setattr(
+            "galgame2voice.services.chat_service.get_llm_adapter",
+            lambda *_args, **_kwargs: _FakeAdapter(),
+        )
+        monkeypatch.setattr(
+            "galgame2voice.telegram_bot.handlers.convert_wav_to_ogg",
+            AsyncMock(return_value=b"fake_ogg"),
+        )
+
+        bot = SimpleNamespace(
+            send_chat_action=AsyncMock(),
+            send_message=AsyncMock(return_value=SimpleNamespace(message_id=1)),
+            send_voice=AsyncMock(),
+        )
+
+        # Suspend background voice synthesis before actual synthesis
+        synthesis_started = asyncio.Event()
+        allow_synthesis = asyncio.Event()
+        captured_client_calls = []
+
+        real_synthesize = handlers.tts_service.synthesize
+
+        async def _intercepting_synthesize(text, options=None, **kwargs):
+            synthesis_started.set()
+            await allow_synthesis.wait()
+            return await real_synthesize(text, options=options, **kwargs)
+
+        handlers.tts_service.synthesize = _intercepting_synthesize
+
+        async def _spy_client_synthesize(text, options=None, **kwargs):
+            captured_client_calls.append({"text": text, "options": dict(options or {})})
+            return (
+                b"RIFF\x24\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x08\x00\x00"
+                + b"\x00" * 200
+            )
+
+        handlers.tts_service.client.synthesize = _spy_client_synthesize
+
+        # 3. Trigger process_text_chat while Character A is active
+        voice_task = await handlers.process_text_chat(chat_id=1001, text="早上好", bot=bot, user_id=1001)
+        assert voice_task is not None
+
+        # Wait until background voice task is suspended before synthesizing
+        await synthesis_started.wait()
+
+        # 4. Switch global active voice profile to Character B before releasing synthesis
+        async with get_db(temp_db_path) as conn:
+            await crud.set_active_voice_profile(conn, profile_b.id)
+
+        # 5. Release synthesis and await completion
+        allow_synthesis.set()
+        await voice_task
+
+        # 6. Assert tts_service resolved and used Character A's profile id, character name, and model weights
+        assert len(captured_client_calls) == 1
+        used_opts = captured_client_calls[0]["options"]
+        assert used_opts.get("voice_profile_id") == profile_a.id
+        assert used_opts.get("character_name") == profile_a.name
+        assert used_opts.get("gpt_weights_path") == profile_a.gpt_weights_path
+        assert used_opts.get("sovits_weights_path") == profile_a.sovits_weights_path
+
+        # 7. When no voice profile exists, dummy selectors (1 / "Character") are not injected
+        async with get_db(temp_db_path) as conn:
+            await crud.delete_voice_profile(conn, profile_a.id)
+            await crud.delete_voice_profile(conn, profile_b.id)
+
+        no_profile_task = await handlers.process_text_chat(chat_id=1001, text="无音色测试", bot=bot, user_id=1001)
+        assert no_profile_task is not None
+        await no_profile_task
+
+        assert len(captured_client_calls) == 2
+        no_profile_opts = captured_client_calls[1]["options"]
+        assert "voice_profile_id" not in no_profile_opts
+        assert "character_name" not in no_profile_opts
+
+    @pytest.mark.asyncio
+    async def test_telegram_voice_task_concurrent_sessions_isolated_across_character_switches(
+        self, temp_db_path, monkeypatch
+    ):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from galgame2voice.database import crud
+        from galgame2voice.database.session import get_db
+        from galgame2voice.database.models import VoiceProfileCreate
+
+        handlers = TelegramBotHandlers(admin_ids=[1001, 1002], db_path=temp_db_path)
+
+        async with get_db(temp_db_path) as conn:
+            await crud.get_settings_raw(conn)
+            profile_a = await crud.create_voice_profile(
+                conn,
+                VoiceProfileCreate(
+                    name="爱丽丝",
+                    gpt_weights_path="weights/alice.ckpt",
+                    sovits_weights_path="weights/alice.pth",
+                    ref_audio_path="ref/alice.wav",
+                    prompt_text="こんにちは、アリスです。",
+                    prompt_lang="ja",
+                    text_lang="ja",
+                ),
+            )
+            profile_b = await crud.create_voice_profile(
+                conn,
+                VoiceProfileCreate(
+                    name="鲍勃",
+                    gpt_weights_path="weights/bob.ckpt",
+                    sovits_weights_path="weights/bob.pth",
+                    ref_audio_path="ref/bob.wav",
+                    prompt_text="こんにちは、ボブです。",
+                    prompt_lang="ja",
+                    text_lang="ja",
+                ),
+            )
+            await crud.set_active_voice_profile(conn, profile_a.id)
+
+        class _FakeAdapter:
+            async def chat(self, messages, **kwargs):
+                return SimpleNamespace(
+                    content='{"chinese": "回复内容", "japanese": "返信内容"}',
+                    finish_reason="stop",
+                )
+
+        monkeypatch.setattr(
+            "galgame2voice.services.chat_service.get_llm_adapter",
+            lambda *_args, **_kwargs: _FakeAdapter(),
+        )
+        monkeypatch.setattr(
+            "galgame2voice.telegram_bot.handlers.convert_wav_to_ogg",
+            AsyncMock(return_value=b"fake_ogg"),
+        )
+
+        bot = SimpleNamespace(
+            send_chat_action=AsyncMock(),
+            send_message=AsyncMock(return_value=SimpleNamespace(message_id=1)),
+            send_voice=AsyncMock(),
+        )
+
+        pause_synthesis = asyncio.Event()
+        captured_client_calls = []
+
+        real_synthesize = handlers.tts_service.synthesize
+
+        async def _intercepting_synthesize(text, options=None, **kwargs):
+            await pause_synthesis.wait()
+            return await real_synthesize(text, options=options, **kwargs)
+
+        handlers.tts_service.synthesize = _intercepting_synthesize
+
+        async def _spy_client_synthesize(text, options=None, **kwargs):
+            captured_client_calls.append({"text": text, "options": dict(options or {})})
+            return (
+                b"RIFF\x24\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x08\x00\x00"
+                + b"\x00" * 200
+            )
+
+        handlers.tts_service.client.synthesize = _spy_client_synthesize
+
+        # Turn 1: user 1001 with Character A active
+        task_1 = await handlers.process_text_chat(chat_id=1001, text="用户1的消息", bot=bot, user_id=1001)
+
+        # Switch active profile to Character B
+        async with get_db(temp_db_path) as conn:
+            await crud.set_active_voice_profile(conn, profile_b.id)
+
+        # Turn 2: user 1002 with Character B active
+        task_2 = await handlers.process_text_chat(chat_id=1002, text="用户2的消息", bot=bot, user_id=1002)
+
+        # Switch active profile to NULL / none
+        async with get_db(temp_db_path) as conn:
+            await conn.execute("UPDATE settings SET active_voice_profile_id = NULL WHERE id = 1;")
+            await conn.commit()
+
+        # Unpause and await both tasks
+        pause_synthesis.set()
+        await task_1
+        await task_2
+
+        # Verify that task_1 used profile_a and task_2 used profile_b
+        assert len(captured_client_calls) == 2
+        calls_by_profile = {
+            call["options"]["voice_profile_id"]: call["options"]
+            for call in captured_client_calls
+        }
+        assert profile_a.id in calls_by_profile
+        assert profile_b.id in calls_by_profile
+
+        assert calls_by_profile[profile_a.id].get("character_name") == profile_a.name
+        assert calls_by_profile[profile_a.id].get("gpt_weights_path") == profile_a.gpt_weights_path
+
+        assert calls_by_profile[profile_b.id].get("character_name") == profile_b.name
+        assert calls_by_profile[profile_b.id].get("gpt_weights_path") == profile_b.gpt_weights_path
+
+
