@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 // Import before installing a document: don't auto-boot authentication or devices.
 import { setup } from './helpers/adv_main.mjs';
-import { tick } from './helpers/chat_stream.mjs';
+import { tick, fakeChatStream } from './helpers/chat_stream.mjs';
 import { state as storedState, getActive as storedActive, getSession as storedSession, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL } from '../frontend/src/store.js';
 import { serverTimestamp } from '../frontend/src/session_data.js';
 import { initVoiceSettings, ensureSessionVoice, getVoiceProfiles, fetchVoiceProfiles, getActiveProfileId, openSessionSettings } from '../frontend/src/controllers/voice_settings.js';
@@ -2585,4 +2585,126 @@ test('startup sync marks unanswered user prompt as failed when server returns em
   assert.equal(lastMsg.id, 'm_unanswered_empty');
   assert.deepEqual(lastMsg.failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
   assert.equal(app.conversation.canRetry(lastMsg), true, '服务端返回空列表时本地中断提问亦可重试');
+});
+
+test('unbound session syncs active voice profile on turnstart and updates stage without cancelling the live turn', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const session = {
+    id: 's_unbound_follow',
+    title: '跟随当前音色',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_100_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null, advTextIntervalMs: 0 },
+    messages: [],
+  };
+  const server = {
+    id: session.id,
+    title: session.title,
+    voice_profile_id: null,
+    created_at: '2024-06-01 00:00:00',
+    updated_at: '2024-06-01 00:00:00',
+    message_count: 0,
+    last_message: '',
+    settings: { ...session.settings },
+  };
+  const portrait = id => ({
+    enabled: true,
+    defaultCostume: `outfit_${id}`,
+    costumes: [{ id: `outfit_${id}` }],
+    sprites: { [`outfit_${id}`]: { smile: { file: `/art_${id}.png`, width: 100, height: 200 } } },
+    faces: { smile: { primary: 'gentle' } },
+    expressionSets: { gentle: [{ id: 'smile' }] },
+  });
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  let activeProfile = 1;
+  const portraitUrls = [];
+  const stream = fakeChatStream();
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+    fetch: async (url) => {
+      const target = String(url);
+      if (target.includes('/api/chat/sessions')) {
+        return Response.json({ sessions: [server], has_more: false, count: 1 });
+      }
+      if (target.includes('/api/voice/profiles')) {
+        return Response.json({
+          profiles: [{ id: 1, name: '角色A', work: 'a' }, { id: 2, name: '角色B', work: 'b' }],
+          active_profile_id: activeProfile,
+        });
+      }
+      const portraitMatch = /\/api\/characters\/(\d+)\/portrait/.exec(target);
+      if (portraitMatch) {
+        portraitUrls.push(`/api/characters/${portraitMatch[1]}/portrait`);
+        return Response.json(portrait(portraitMatch[1]));
+      }
+      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
+      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+      return Response.json({});
+    },
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  await fetchVoiceProfiles();
+  const app = initApp({
+    dom: { advRoot: root },
+    renderSessionList() {},
+    showTitle() {},
+    fetch: stream.fetch,
+  });
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  assert.equal(getActiveProfileId(), 1);
+  assert.ok(portraitUrls.includes('/api/characters/1/portrait'), '初始舞台应请求角色 1 的立绘');
+
+  // 模拟在 Telegram 切换后端当前角色为 2（角色 B）
+  activeProfile = 2;
+  app.sendMessage('你好');
+  for (let i = 0; i < 5; i++) await tick();
+
+  assert.equal(app.conversation.busy, true, '同步后端当前音色不得取消正在进行的对话回合');
+  const req = stream.requests[0];
+  assert.ok(req, '应已发起流式对话请求');
+  await req.event('line', { index: 0, zh: '我是角色B。', ja: '私はBです。', emotion: 'gentle', act: {} });
+  await req.event('line_audio', { line: 0, status: 'skipped', chunks: [] });
+  await req.onEnd('我是角色B。');
+  for (let i = 0; i < 5; i++) await tick();
+
+  assert.equal(app.conversation.busy, false);
+  const lastMsg = storedActive().messages.at(-1);
+  assert.equal(lastMsg.role, 'assistant');
+  assert.equal(lastMsg.content, '我是角色B。');
+  assert.equal(getActiveProfileId(), 2);
+  assert.equal(app.adv.stage.textbox.querySelector('.adv-name-text')?.textContent, '角色B');
+  assert.ok(portraitUrls.includes('/api/characters/2/portrait'), '舞台应请求角色 2 的立绘');
 });

@@ -433,7 +433,13 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     conversation.retry(msg);
   }
 
-  conversation.on('turnstart', () => { renderSidebar(); renderHeader(); });
+  conversation.on('turnstart', () => {
+    renderSidebar();
+    renderHeader();
+    if (!getActive()?.settings?.voiceProfileId) {
+      ensureSessionVoice(getActive(), { silent: true });
+    }
+  });
   for (const kind of ['done', 'error', 'cancelled']) conversation.on(kind, event => {
     const { error, kind: code, failedInline, originId, meta = {} } = event;
     if (error && !(failedInline && originId === state.activeId)) {

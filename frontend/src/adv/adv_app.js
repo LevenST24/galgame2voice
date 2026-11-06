@@ -32,7 +32,7 @@ export function mountAdv(dom, deps) {
   const cancelRaf = deps.cancelRaf || (id => cancelAnimationFrame(id));
   const stage = createStage(dom.root);
   const disposers = [];
-  let destroyed = false, sessionId, characterKey, outfit, turnId = null;
+  let destroyed = false, sessionId, characterKey, boundProfileId, outfit, turnId = null;
   let settings, model = null, resolved = null, currentLine = null, failedUser = null, liveMessage = null;
   // The controller stores a finished reply under a new id; LOG must still know it is this turn.
   let storedTurnId = null;
@@ -667,6 +667,7 @@ export function mountAdv(dom, deps) {
     const mounted = sessionId !== undefined;
     const character = deps.getCharacter?.();
     const changedCharacter = switched || characterKey !== character?.id;
+    const changedBinding = switched || boundProfileId !== nextSettings.voiceProfileId;
     const changedOutfit = outfit !== nextSettings.advOutfit;
     const changedLanguage = settings.advPrimaryLanguage !== nextSettings.advPrimaryLanguage || settings.advSubtitleLanguage !== nextSettings.advSubtitleLanguage;
     settings = nextSettings;
@@ -679,20 +680,27 @@ export function mountAdv(dom, deps) {
       textbox.clearAnnouncement();
       textbox.setDraft(drafts.get(session?.id) || '');
     }
-    sessionId = session?.id; characterKey = character?.id; outfit = settings.advOutfit;
+    sessionId = session?.id; characterKey = character?.id; boundProfileId = nextSettings.voiceProfileId; outfit = settings.advOutfit;
     player.setSettings(playerSettings());
     sprite.setAnimationOptions(animationOptions(settings));
     syncBackground();
     if (changedCharacter) {
       pendingOutfit = null;
       if (!switched) {
-        controller.stop();
-        const idle = resetInput(); turnId = null; currentLine = null;
-        if (/^VOICE_PROFILE_/.test(failedUser?.failed?.code || '')
-          && controller.canRetry(failedUser) && !textbox.draft.trim()) {
-          player.settle(idle, { kind: 'error', error: {
-            message: '已重新选择角色音色，可以重新发送上一条问题。', code: 'VOICE_PROFILE_CHANGED',
-          } });
+        const presentingTurn = turnId !== null && player.state !== 'input' && player.state !== 'error';
+        if (!changedBinding && (controller.busy || presentingTurn)) {
+          if (presentingTurn) {
+            textbox.setSpeaker({ name: character?.name || '角色', mode: 'character' });
+          }
+        } else {
+          controller.stop();
+          const idle = resetInput(); turnId = null; currentLine = null;
+          if (/^VOICE_PROFILE_/.test(failedUser?.failed?.code || '')
+            && controller.canRetry(failedUser) && !textbox.draft.trim()) {
+            player.settle(idle, { kind: 'error', error: {
+              message: '已重新选择角色音色，可以重新发送上一条问题。', code: 'VOICE_PROFILE_CHANGED',
+            } });
+          }
         }
       }
       const swap = () => {
