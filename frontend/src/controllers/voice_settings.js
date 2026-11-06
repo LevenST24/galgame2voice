@@ -228,7 +228,7 @@ export function ensureSessionVoice(session, options = {}) {
 }
 
 async function applySessionVoice(session, { silent = false }, want, isCurrent) {
-  if (activeProfileId === null) {
+  if (activeProfileId === null || !want) {
     try {
       await fetchVoiceProfiles();
       if (!isCurrent()) return;
