@@ -87,9 +87,15 @@ export function createLineAudioRecovery({
     const body = {
       session_id: session.id, message_id: serverId, line_index: lineIndex, text,
       voice_profile_id: profileId, emotion, ai_adaptive_voice: settings.aiAdaptiveVoice !== false,
-      options: { speed_factor: settings.ttsSpeed ?? 1, temperature: settings.ttsTemperature ?? 1,
-        top_k: settings.ttsTopK ?? 15, top_p: settings.ttsTopP ?? 1 },
     };
+    if (settings.aiAdaptiveVoice === false) {
+      body.options = {
+        speed_factor: settings.ttsSpeed ?? 1,
+        temperature: settings.ttsTemperature ?? 1,
+        top_k: settings.ttsTopK ?? 15,
+        top_p: settings.ttsTopP ?? 1,
+      };
+    }
     const validateAudio = (candidateAudio) => {
       const sampleLine = isLegacy
         ? { index: 0, zh: message.content || '', ja: text, emotion: 'neutral', act: {}, audio: candidateAudio }

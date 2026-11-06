@@ -821,3 +821,46 @@ test('legacy repair saveState failure surfaces saved: false while installing can
   assert.equal(f.message.lines.length, 1);
   assert.equal(f.message.lines[0].audio.status, 'ready');
 });
+
+test('line recovery omits options in adaptive voice mode and transmits fixed sliders in manual mode', async () => {
+  const f = fixture();
+  // Case 1: default / adaptive mode (settings.aiAdaptiveVoice !== false)
+  f.session.settings.aiAdaptiveVoice = true;
+  await f.recover({ messageId: f.message.id, lineIndex: 1 });
+  assert.equal(f.calls.length, 1);
+  let [url, req] = f.calls[0];
+  let body = JSON.parse(req.body);
+  assert.equal(url, '/api/voice/regenerate-line');
+  assert.equal(body.ai_adaptive_voice, true);
+  assert.equal('options' in body, false, 'adaptive mode must not send fixed options');
+
+  // Case 2: implicit adaptive mode when settings.aiAdaptiveVoice is undefined
+  delete f.session.settings.aiAdaptiveVoice;
+  f.calls.length = 0;
+  await f.recover({ messageId: f.message.id, lineIndex: 1 });
+  assert.equal(f.calls.length, 1);
+  [url, req] = f.calls[0];
+  body = JSON.parse(req.body);
+  assert.equal(body.ai_adaptive_voice, true);
+  assert.equal('options' in body, false, 'implicit adaptive mode must not send fixed options');
+
+  // Case 3: fixed mode (settings.aiAdaptiveVoice === false) with custom sliders
+  f.session.settings.aiAdaptiveVoice = false;
+  f.session.settings.ttsSpeed = 1.25;
+  f.session.settings.ttsTemperature = 0.85;
+  f.session.settings.ttsTopK = 22;
+  f.session.settings.ttsTopP = 0.92;
+  f.calls.length = 0;
+  await f.recover({ messageId: f.message.id, lineIndex: 1 });
+  assert.equal(f.calls.length, 1);
+  [url, req] = f.calls[0];
+  body = JSON.parse(req.body);
+  assert.equal(body.ai_adaptive_voice, false);
+  assert.deepEqual(body.options, {
+    speed_factor: 1.25,
+    temperature: 0.85,
+    top_k: 22,
+    top_p: 0.92,
+  });
+});
+
