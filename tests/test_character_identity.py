@@ -1179,6 +1179,150 @@ async def test_update_persona_db_failure_standalone_profile(
         CharacterManager.reset_instance()
 
 
+@pytest.mark.asyncio
+async def test_update_persona_cancel_at_discover_characters_restores_manifest_and_cache(
+    ann_package, monkeypatch,
+):
+    client, ann, manifest_path, original_prompt = ann_package
+    mgr = characters.get_character_manager()
+    orig_discover = mgr.discover_characters
+    cancelled_once = False
+
+    def cancel_first_discover(*args, **kwargs):
+        nonlocal cancelled_once
+        if not cancelled_once:
+            cancelled_once = True
+            raise asyncio.CancelledError()
+        return orig_discover(*args, **kwargs)
+
+    monkeypatch.setattr(mgr, "discover_characters", cancel_first_discover)
+
+    with pytest.raises(asyncio.CancelledError):
+        await characters.update_character_system_prompt(
+            ann["id"],
+            characters.SystemPromptUpdate(system_prompt="取消的人设草稿：在刷新内存角色目录时被取消"),
+        )
+
+    # 1. 磁盘 manifest.json 必须恢复为原人设
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["system_prompt"] == original_prompt
+
+    # 2. 内存 CharacterManager 缓存必须恢复为原人设
+    mgr_pkg = mgr.get_character("ann")
+    assert mgr_pkg is not None
+    assert mgr_pkg.manifest.system_prompt == original_prompt
+
+    # 3. 数据库中的人设必须保持原样
+    async with characters.get_db() as conn:
+        db_prof = await crud.get_voice_profile(conn, ann["id"])
+        assert db_prof is not None
+        assert db_prof.system_prompt == original_prompt
+
+    # 4. 后续调用 sync_with_db 也不会用未保存的草稿篡改数据库
+    async with characters.get_db() as conn:
+        await mgr.sync_with_db(conn)
+        db_prof_after = await crud.get_voice_profile(conn, ann["id"])
+        assert db_prof_after is not None
+        assert db_prof_after.system_prompt == original_prompt
+
+
+@pytest.mark.asyncio
+async def test_update_persona_cancel_at_db_update_restores_manifest_and_cache(
+    ann_package, monkeypatch,
+):
+    client, ann, manifest_path, original_prompt = ann_package
+    mgr = characters.get_character_manager()
+
+    async def cancel_update_voice_profile(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        "galgame2voice.routers.characters.crud.update_voice_profile",
+        cancel_update_voice_profile,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await characters.update_character_system_prompt(
+            ann["id"],
+            characters.SystemPromptUpdate(system_prompt="取消的人设草稿：在写数据库时被取消"),
+        )
+
+    # 1. 磁盘 manifest.json 必须恢复为原人设
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["system_prompt"] == original_prompt
+
+    # 2. 内存 CharacterManager 缓存必须恢复为原人设
+    mgr_pkg = mgr.get_character("ann")
+    assert mgr_pkg is not None
+    assert mgr_pkg.manifest.system_prompt == original_prompt
+
+    # 3. 数据库中的人设必须保持原样
+    async with characters.get_db() as conn:
+        db_prof = await crud.get_voice_profile(conn, ann["id"])
+        assert db_prof is not None
+        assert db_prof.system_prompt == original_prompt
+
+    # 4. 后续调用 sync_with_db 也不会用未保存的草稿篡改数据库
+    async with characters.get_db() as conn:
+        await mgr.sync_with_db(conn)
+        db_prof_after = await crud.get_voice_profile(conn, ann["id"])
+        assert db_prof_after is not None
+        assert db_prof_after.system_prompt == original_prompt
+
+
+@pytest.mark.asyncio
+async def test_update_persona_task_cancel_restores_manifest_and_cache(
+    ann_package, monkeypatch,
+):
+    client, ann, manifest_path, original_prompt = ann_package
+    mgr = characters.get_character_manager()
+    started_update = asyncio.Event()
+
+    orig_update = crud.update_voice_profile
+
+    async def slow_update_voice_profile(*args, **kwargs):
+        started_update.set()
+        await asyncio.sleep(10)
+        return await orig_update(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "galgame2voice.routers.characters.crud.update_voice_profile",
+        slow_update_voice_profile,
+    )
+
+    task = asyncio.create_task(
+        characters.update_character_system_prompt(
+            ann["id"],
+            characters.SystemPromptUpdate(system_prompt="取消的人设草稿：在慢速写库时被Task取消"),
+        )
+    )
+
+    await started_update.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # 1. 磁盘 manifest.json 必须恢复为原人设
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["system_prompt"] == original_prompt
+
+    # 2. 内存 CharacterManager 缓存必须恢复为原人设
+    mgr_pkg = mgr.get_character("ann")
+    assert mgr_pkg is not None
+    assert mgr_pkg.manifest.system_prompt == original_prompt
+
+    # 3. 数据库中的人设必须保持原样
+    async with characters.get_db() as conn:
+        db_prof = await crud.get_voice_profile(conn, ann["id"])
+        assert db_prof is not None
+        assert db_prof.system_prompt == original_prompt
+
+    # 4. 后续调用 sync_with_db 也不会用未保存的草稿篡改数据库
+    async with characters.get_db() as conn:
+        await mgr.sync_with_db(conn)
+        db_prof_after = await crud.get_voice_profile(conn, ann["id"])
+        assert db_prof_after is not None
+        assert db_prof_after.system_prompt == original_prompt
+
+
 def test_resolve_audio_path_does_not_call_authorized_roots_for_relative_paths(project, monkeypatch):
     package_dir = install(project, "ann", "Ann")
     # Add a second emotion with relative path and distinct audio content (to avoid duplicate hash rejection)
