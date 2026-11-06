@@ -13,6 +13,7 @@ from galgame2voice.adapters.base import (
     BaseLLMAdapter,
     ChatMessage,
     LLMResponse,
+    MissingApiKeyError,
     TestResult,
     TRANSIENT_STATUS_CODES,
     TRANSIENT_NETWORK_EXCEPTIONS,
@@ -70,6 +71,11 @@ class AnthropicAdapter(BaseLLMAdapter):
         self.default_model = default_model
         self.custom_headers = custom_headers or {}
         self.last_finish_reason: str | None = None
+
+    def _validate_credentials(self) -> None:
+        """Validates that an API key is present."""
+        if not self.api_key:
+            raise MissingApiKeyError()
 
     def _record_finish_reason(self, chunk: dict[str, Any]) -> str | None:
         chunk_type = chunk.get("type")
@@ -203,6 +209,7 @@ class AnthropicAdapter(BaseLLMAdapter):
     ) -> LLMResponse:
         """Executes non-streaming chat completion via Anthropic /messages endpoint with exponential retries."""
         self.last_finish_reason = None
+        self._validate_credentials()
         url = f"{self.base_url}/messages" if not self.base_url.endswith("/messages") else self.base_url
         payload = self._prepare_anthropic_payload(
             messages, model=model, temperature=temperature, stream=False, **kwargs
@@ -290,6 +297,7 @@ class AnthropicAdapter(BaseLLMAdapter):
     ) -> AsyncGenerator[str, None]:
         """Streams token chunks from Anthropic SSE /messages stream with connection resilience."""
         self.last_finish_reason = None
+        self._validate_credentials()
         url = f"{self.base_url}/messages" if not self.base_url.endswith("/messages") else self.base_url
         payload = self._prepare_anthropic_payload(
             messages, model=model, temperature=temperature, stream=True, **kwargs
@@ -415,6 +423,12 @@ class AnthropicAdapter(BaseLLMAdapter):
 
     async def test_connection(self, model: str | None = None) -> TestResult:
         """Tests Anthropic API credentials with a minimal prompt."""
+        if not self.api_key:
+            return TestResult(
+                success=False,
+                message="Authentication failed: Invalid API key",
+                latency_ms=None,
+            )
         t0 = time.time()
         try:
             resp = await self.chat(

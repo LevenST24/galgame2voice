@@ -18,13 +18,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiosqlite
 import pytest
 
-from galgame2voice.adapters.base import ChatMessage
+from galgame2voice.adapters.base import ChatMessage, MissingApiKeyError
 from galgame2voice.adapters.llm.anthropic_adapter import AnthropicAdapter
 from galgame2voice.database import crud
 from galgame2voice.database.models import MessageCreate, UserMemoryCreate
 from galgame2voice.database.session import get_db, immediate_transaction, init_db
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.tts_cache_manager import TtsCacheManager
+from galgame2voice.utils.error_diagnostics import chat_error_payload
 
 
 # ============================================================================
@@ -305,3 +306,99 @@ class TestAnthropicPayloadInvariance:
         assert len(payload["messages"]) == 1
         assert payload["messages"][0]["role"] == "user"
         assert payload["messages"][0]["content"] == "Hello"
+
+
+# ============================================================================
+# 5. Anthropic Adapter Empty API Key Fast Fail
+# ============================================================================
+
+class TestAnthropicEmptyApiKeyFastFail:
+    """Verifies AnthropicAdapter fails fast without making network requests when api_key is empty."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("empty_key", ["", "   ", None])
+    async def test_chat_raises_missing_api_key_error_without_network_request(self, empty_key, monkeypatch):
+        """Calling chat() with an empty API key immediately raises MissingApiKeyError before any network/DNS call."""
+        network_called = False
+
+        def _fail_network(*args, **kwargs):
+            nonlocal network_called
+            network_called = True
+            raise AssertionError("Network call attempted with missing API key")
+
+        monkeypatch.setattr("galgame2voice.adapters.llm.anthropic_adapter.create_async_client", _fail_network)
+        monkeypatch.setattr("galgame2voice.security.url_guard.assert_llm_url_safe", _fail_network)
+
+        adapter = AnthropicAdapter(api_key=empty_key)
+        with pytest.raises(MissingApiKeyError) as exc_info:
+            await adapter.chat(messages=[ChatMessage(role="user", content="Hi")], model="claude-3-5-sonnet-20241022")
+
+        assert "api key is not configured" in str(exc_info.value).lower()
+        assert not network_called
+
+        # Verify chat_error_payload maps this to API_KEY_MISSING both with false flag and default None flag
+        is_configured = bool(str(empty_key or "").strip())
+        payload = chat_error_payload(exc_info.value, provider_id="anthropic", api_key_configured=is_configured)
+        assert payload["error_code"] == "API_KEY_MISSING"
+        assert "Anthropic Claude" in payload["error"]
+        assert "设置中心 → 对话模型" in payload["error"]
+
+        payload_default = chat_error_payload(exc_info.value, provider_id="anthropic")
+        assert payload_default["error_code"] == "API_KEY_MISSING"
+        assert "Anthropic Claude" in payload_default["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("empty_key", ["", "   ", None])
+    async def test_stream_chat_raises_missing_api_key_error_without_network_request(self, empty_key, monkeypatch):
+        """Calling stream_chat() with an empty API key immediately raises MissingApiKeyError on iteration."""
+        network_called = False
+
+        def _fail_network(*args, **kwargs):
+            nonlocal network_called
+            network_called = True
+            raise AssertionError("Network call attempted with missing API key")
+
+        monkeypatch.setattr("galgame2voice.adapters.llm.anthropic_adapter.create_async_client", _fail_network)
+        monkeypatch.setattr("galgame2voice.security.url_guard.assert_llm_url_safe", _fail_network)
+
+        adapter = AnthropicAdapter(api_key=empty_key)
+        stream_gen = adapter.stream_chat(
+            messages=[ChatMessage(role="user", content="Hi")],
+            model="claude-3-5-sonnet-20241022",
+        )
+
+        with pytest.raises(MissingApiKeyError) as exc_info:
+            async for _ in stream_gen:
+                pass
+
+        assert "api key is not configured" in str(exc_info.value).lower()
+        assert not network_called
+
+        # Verify chat_error_payload maps this to API_KEY_MISSING
+        is_configured = bool(str(empty_key or "").strip())
+        payload = chat_error_payload(exc_info.value, provider_id="anthropic", api_key_configured=is_configured)
+        assert payload["error_code"] == "API_KEY_MISSING"
+        assert "Anthropic Claude" in payload["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("empty_key", ["", "   ", None])
+    async def test_test_connection_fails_immediately_without_network_request(self, empty_key, monkeypatch):
+        """Calling test_connection() with an empty API key returns failure immediately without network/DNS call."""
+        network_called = False
+
+        def _fail_network(*args, **kwargs):
+            nonlocal network_called
+            network_called = True
+            raise AssertionError("Network call attempted with missing API key")
+
+        monkeypatch.setattr("galgame2voice.adapters.llm.anthropic_adapter.create_async_client", _fail_network)
+        monkeypatch.setattr("galgame2voice.security.url_guard.assert_llm_url_safe", _fail_network)
+
+        adapter = AnthropicAdapter(api_key=empty_key)
+        res = await adapter.test_connection(model="claude-3-5-sonnet-20241022")
+
+        assert res.success is False
+        assert res.message == "Authentication failed: Invalid API key"
+        assert res.latency_ms is None
+        assert not network_called
+
