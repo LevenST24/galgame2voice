@@ -988,7 +988,11 @@ class TestTelegramConsoleTtsSettings:
         class _FakeAdapter:
             async def chat(self, messages, **kwargs):
                 return SimpleNamespace(
-                    content='{"chinese": "你好。", "japanese": "こんにちは。"}',
+                    content=(
+                        '{"tts": {"speed": 1.05, "temp": 0.95, "top_k": 12, "top_p": 0.9, '
+                        '"fragment_interval": 0.2, "emotion": "happy"}, '
+                        '"chinese": "你好。", "japanese": "こんにちは。"}'
+                    ),
                     finish_reason="stop",
                 )
 
@@ -1019,7 +1023,10 @@ class TestTelegramConsoleTtsSettings:
         assert opts.get("batch_size") == 8
         assert opts.get("fragment_interval") == 0.5
         assert opts.get("speed_factor") == 1.5
+        assert opts.get("speed") == 1.5
         assert opts.get("temperature") == 0.3
+        assert opts.get("temp") == 0.3
+        assert opts.get("emotion") == "happy"
 
     @pytest.mark.asyncio
     async def test_telegram_console_tts_settings_update_failure_feedback(self, temp_db_path, monkeypatch):
