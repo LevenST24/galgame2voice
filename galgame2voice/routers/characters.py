@@ -406,7 +406,7 @@ async def get_media_portrait(
     except (ValueError, TypeError):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from None
 
-    decoded_path = f"/api/media/portrait/{character_id}/{unquoted_costume}/{unquoted_file}"
+    decoded_path = f"/api/media/portrait/{character_id}/{costume}/{file_name}"
     if not verify_media_url_signature(decoded_path, exp_int, v, sig):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
@@ -423,7 +423,7 @@ async def get_media_portrait(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Character package not found")
 
     portraits_root = (pkg.folder / "portrait").resolve()
-    file_path = (portraits_root / unquoted_costume / unquoted_file).resolve()
+    file_path = (portraits_root / costume / file_name).resolve()
     if not file_path.is_relative_to(portraits_root) or not file_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sprite image not found")
 

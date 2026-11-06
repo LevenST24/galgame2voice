@@ -660,3 +660,104 @@ def test_legacy_manifest_json_unchanged_by_pass_through(tmp_path):
     assert "faceRect" not in costume_entry
     assert "headAnchor" not in costume_entry
     assert "crop" not in costume_entry
+
+
+# ---------------------------------------------------------------------------
+# 9. Signed Media URLs with Percent-Encoded Hex Sequences in Path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_signed_portrait_with_percent_hex_literal_and_double_encoding_defense(
+    setup_test_character_db, test_character_pack
+):
+    profile = setup_test_character_db
+    portrait_dir = test_character_pack.portrait_dir
+
+    # Create costume directory and file with literal '%20' and '%2B' hex sequences
+    special_costume = "summer%20outfit"
+    special_file = "pose%2Bsmile.png"
+    special_dir = portrait_dir / special_costume
+    special_dir.mkdir(parents=True, exist_ok=True)
+    img_content = TINY_PNG_100x100 + b"special_percent_image"
+    (special_dir / special_file).write_bytes(img_content)
+
+    # Also test %2B in costume name, %20 and non-hex % in file name
+    second_costume = "autumn%2Bkimono"
+    second_file = "look%20neutral%zz.png"
+    second_dir = portrait_dir / second_costume
+    second_dir.mkdir(parents=True, exist_ok=True)
+    second_img = TINY_PNG_100x100 + b"second_percent_image"
+    (second_dir / second_file).write_bytes(second_img)
+
+    # Register into expressions.json
+    expr_file = portrait_dir / "expressions.json"
+    expr = json.loads(expr_file.read_text(encoding="utf-8"))
+    expr["costumes"][special_costume] = {
+        "id": special_costume,
+        "name": "Summer Outfit",
+        "sprites": {
+            "smile": {"file": special_file, "width": 100, "height": 100},
+        },
+    }
+    expr["costumes"][second_costume] = {
+        "id": second_costume,
+        "name": "Autumn Kimono",
+        "sprites": {
+            "neutral": {"file": second_file, "width": 100, "height": 100},
+        },
+    }
+    expr["faces"]["smile"] = {"primary": "smile", "label": "Smile", "parts": []}
+    expr["faces"]["neutral"] = {"primary": "neutral", "label": "Neutral", "parts": []}
+    expr["expression_sets"]["smile"] = [{"id": "smile", "strength": 1}]
+    expr["expression_sets"]["neutral"] = [{"id": "neutral", "strength": 1}]
+    expr_file.write_text(json.dumps(expr), encoding="utf-8")
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Fetch portrait manifest to obtain the signed media URL
+        resp = await client.get(f"/api/characters/{profile.id}/portrait")
+        assert resp.status_code == 200
+        manifest = resp.json()
+        assert manifest["enabled"] is True
+
+        signed_url = manifest["sprites"][special_costume]["smile"]["file"]
+        # Ensure the signed URL was encoded properly
+        assert "summer%2520outfit" in signed_url
+        assert "pose%252Bsmile.png" in signed_url
+        assert "sig=" in signed_url
+
+        # 2. Fetch the signed image URL -> must return 200 OK with correct image content
+        img_resp = await client.get(signed_url)
+        assert img_resp.status_code == 200
+        assert img_resp.content == img_content
+
+        # Verify second costume (%2B in costume, %20 and %zz in file)
+        second_signed_url = manifest["sprites"][second_costume]["neutral"]["file"]
+        assert "autumn%252Bkimono" in second_signed_url
+        assert "look%2520neutral%25zz.png" in second_signed_url
+        second_resp = await client.get(second_signed_url)
+        assert second_resp.status_code == 200
+        assert second_resp.content == second_img
+
+        # 3. Double-encoded path traversal attacks must still be rejected with 400 Bad Request
+        exp = compute_bucketed_expiry()
+        double_encoded_paths = [
+            f"/api/media/portrait/{profile.id}/%252e%252e/gentle.png",
+            f"/api/media/portrait/{profile.id}/%252E%252E/gentle.png",
+            f"/api/media/portrait/{profile.id}/casual/%252e%252e%252fsecret.txt",
+            f"/api/media/portrait/{profile.id}/casual/%252e%252e%255csecret.txt",
+            f"/api/media/portrait/{profile.id}/%252e%252e%252fcasual/gentle.png",
+            f"/api/media/portrait/{profile.id}/casual/gentle%2500.png",
+        ]
+        for bad_path in double_encoded_paths:
+            sig = generate_media_signature(bad_path, exp, v="")
+            bad_url = f"{bad_path}?exp={exp}&sig={sig}"
+            bad_resp = await client.get(bad_url)
+            assert bad_resp.status_code == 400, (
+                f"Double encoded path {bad_path} should return 400, got {bad_resp.status_code}"
+            )
+            assert bad_resp.json()["detail"] == "Invalid sprite path"
+
