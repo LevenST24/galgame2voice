@@ -36,7 +36,7 @@ from galgame2voice.routers.common import (
     validate_positive_profile_id,
 )
 from galgame2voice.services.character_manager import get_character_manager, get_character_work
-from galgame2voice.services.voice_manager import get_voice_manager
+from galgame2voice.services.voice_manager import VoiceManager, get_voice_manager
 from galgame2voice.routers.line_audio import router as line_audio_router
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.async_tasks import await_protected, cancel_and_drain
@@ -292,6 +292,9 @@ async def delete_voice_profile(profile_id: int) -> dict[str, Any]:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Voice profile ID {profile_id} not found",
                 )
+            manager = get_voice_manager()
+            if VoiceManager._resolve_profile_field(manager.active_profile, "id") == profile_id:
+                manager.active_profile = None
             return {"status": "deleted", "profile_id": profile_id}
         except HTTPException:
             raise

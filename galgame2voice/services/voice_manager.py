@@ -483,6 +483,8 @@ class VoiceManager:
         """Deletes a voice profile from database."""
         async with get_db(self.db_path) as conn:
             res = await crud.delete_voice_profile(conn, profile_id)
+        if res and self._resolve_profile_field(self.active_profile, "id") == profile_id:
+            self.active_profile = None
         return res
 
 
