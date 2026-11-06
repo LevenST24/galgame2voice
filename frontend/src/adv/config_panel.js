@@ -656,6 +656,7 @@ export function createConfigPanel(container, {
   // Keyboard navigation & Focus trapping
   listen(dialog, 'keydown', (e) => {
     if (embedded) return; // The shared settings dialog owns Escape and focus.
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();

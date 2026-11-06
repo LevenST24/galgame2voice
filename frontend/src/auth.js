@@ -100,6 +100,7 @@ export function promptConsoleToken(reason = '') {
     });
 
     const onKeydown = (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Enter') {
         e.preventDefault();
         onSave();

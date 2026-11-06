@@ -64,6 +64,7 @@ export function initSettingsUi() {
   document.addEventListener('keydown', event => {
     const current = top();
     if (!current) return;
+    if (event.isComposing || event.keyCode === 229) return;
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopImmediatePropagation();

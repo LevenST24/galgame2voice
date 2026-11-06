@@ -485,6 +485,76 @@ test('F8 opens panel outside composition; excluded during IME composition', t =>
   assert.equal(h.app.configPanel.isOpen, false);
 });
 
+test('Escape key during IME composition does not close config panel or revert preview draft', t => {
+  const h = setup(t, { settings: { advWindowOpacity: 75 } });
+  h.app.action('settings');
+  assert.equal(h.app.configPanel.isOpen, true);
+
+  const band = h.app.stage.stage.querySelector('.adv-band');
+  assert.equal(band.style['--adv-window-opacity'], '75', 'Initial band opacity');
+
+  // Preview change opacity to 35
+  const opacityInput = h.app.configPanel.controls.advWindowOpacity;
+  opacityInput.value = '35';
+  opacityInput.dispatchEvent({ type: 'input' });
+  assert.equal(h.app.configPanel.valElements.advWindowOpacity.textContent, '35%');
+  assert.equal(band.style['--adv-window-opacity'], '35', 'Preview draft opacity applied to band');
+
+  const dialog = h.app.configPanel.element.querySelector('.adv-config-dialog');
+  const playerNameInput = h.app.configPanel.controls.advPlayerName;
+
+  // 1. Keydown Escape dispatched from child input while isComposing = true (bubbles to dialog)
+  const e1 = {
+    type: 'keydown', key: 'Escape', isComposing: true, bubbles: true,
+    defaultPrevented: false, stopped: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  playerNameInput.dispatchEvent(e1);
+  assert.equal(h.app.configPanel.isOpen, true, 'Config panel must remain open during isComposing');
+  assert.equal(h.app.configPanel.valElements.advWindowOpacity.textContent, '35%', 'Preview draft label must be preserved');
+  assert.equal(band.style['--adv-window-opacity'], '35', 'Preview draft style must be preserved during isComposing');
+  assert.equal(e1.defaultPrevented, false);
+  assert.equal(e1.stopped, false);
+
+  // 2. Keydown Escape dispatched from child input while keyCode = 229 (bubbles to dialog)
+  const e2 = {
+    type: 'keydown', key: 'Escape', keyCode: 229, bubbles: true,
+    defaultPrevented: false, stopped: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  playerNameInput.dispatchEvent(e2);
+  assert.equal(h.app.configPanel.isOpen, true, 'Config panel must remain open during keyCode 229');
+  assert.equal(h.app.configPanel.valElements.advWindowOpacity.textContent, '35%', 'Preview draft label must be preserved');
+  assert.equal(band.style['--adv-window-opacity'], '35', 'Preview draft style must be preserved during keyCode 229');
+  assert.equal(e2.defaultPrevented, false);
+  assert.equal(e2.stopped, false);
+
+  // 3. Tab during IME composition must not trigger focus trapping or preventDefault
+  const eTab = {
+    type: 'keydown', key: 'Tab', isComposing: true, bubbles: true,
+    defaultPrevented: false, stopped: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  dialog.dispatchEvent(eTab);
+  assert.equal(eTab.defaultPrevented, false, 'Tab during composition must not be prevented');
+
+  // 4. Normal Escape closes panel and reverts preview draft
+  const e3 = {
+    type: 'keydown', key: 'Escape', bubbles: true,
+    defaultPrevented: false, stopped: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  playerNameInput.dispatchEvent(e3);
+  assert.equal(h.app.configPanel.isOpen, false);
+  assert.equal(e3.defaultPrevented, true);
+  assert.equal(e3.stopped, true);
+  assert.equal(band.style['--adv-window-opacity'], '75', 'Normal Escape reverts to baseline');
+});
+
 // ---------------------------------------------------------------------------
 // 6. Navigation buttons and global voice mode toggle
 // ---------------------------------------------------------------------------
