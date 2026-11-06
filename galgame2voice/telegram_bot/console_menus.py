@@ -27,6 +27,7 @@ except ImportError:
 from galgame2voice.database.session import get_db
 from galgame2voice.database import crud
 from galgame2voice.database.models import SettingsUpdate
+from galgame2voice.services.character_manager import get_character_manager
 from galgame2voice.services.voice_resources import InsufficientMemoryError
 from galgame2voice.services.voice_state import (
     ActiveVoicePersistenceError,
@@ -732,6 +733,13 @@ async def _handle_main_menu(ctx: _CallbackContext) -> None:
 
 
 async def _handle_voice_menu(ctx: _CallbackContext) -> None:
+    try:
+        char_mgr = get_character_manager()
+        await asyncio.to_thread(char_mgr.discover_characters)
+        async with get_db(ctx.db_path) as conn:
+            await char_mgr.sync_with_db(conn)
+    except Exception as exc:
+        logger.warning("Character package rescan failed before voice menu render: %s", exc)
     await _render_menu(ctx, build_voice_menu(db_path=ctx.db_path))
 
 
