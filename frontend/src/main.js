@@ -827,6 +827,19 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       if (isStale()) return;
       // 保存设置尚未确认时本机已记录标记。刷新后保留本机设置并补发，不要用服务端旧设置盖掉它。
       const unconfirmedLocalSessions = [];
+      const markInterruptedPrompt = (session, serverCount = 0) => {
+        const lastMsg = session.messages ? session.messages[session.messages.length - 1] : null;
+        if (
+          lastMsg &&
+          lastMsg.role === 'user' &&
+          !lastMsg.failed &&
+          extractServerId(lastMsg) === null &&
+          typeof serverCount === 'number' &&
+          serverCount < session.messages.length
+        ) {
+          lastMsg.failed = { error: '对话已中断，未收到回复', code: 'cancelled' };
+        }
+      };
       if (backendSessions.length > 0) {
         const existingMap = new Map(state.sessions.map((s) => [s.id, s]));
         const merged = [];
@@ -843,6 +856,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
               if (bs.voice_profile_id && !local.settings.voiceProfileId) local.settings.voiceProfileId = bs.voice_profile_id;
               if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = pickSettings({ ...local.settings, ...bs.settings }, DEFAULT_SESSION_SETTINGS);
             }
+            markInterruptedPrompt(local, bs.message_count);
             const lastMsg = local.messages ? local.messages[local.messages.length - 1] : null;
             const hasUnsentFailed = Boolean(
               lastMsg &&
@@ -881,6 +895,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           }
         }
         for (const [_, rem] of existingMap) {
+          markInterruptedPrompt(rem);
           if (rem.messages && rem.messages.some((m) => m.role === 'user')) {
             merged.push(rem);
           }
@@ -892,6 +907,8 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
       } else if (state.sessions.length === 0) {
         const s = createSession('新对话');
         if (!storageChangedByAnotherPage()) persistSession(s).catch(() => {});
+      } else {
+        for (const rem of state.sessions) markInterruptedPrompt(rem);
       }
       const curActive = getActive();
       if (curActive && (!curActive.messages || curActive.messages.length === 0 || sessionsBehindServer.has(curActive.id))) {
