@@ -433,7 +433,7 @@ async def _ensure_voice_profile_available(manager: Any, options: dict[str, Any])
             if not profiles and not manager.client.current_refer_audio and not has_server_audio:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="No character package or voice profile installed. Please install a character package to characters/ or configure a voice profile.",
+                    detail="尚未安装角色包或配置音色，请在「设置中心 → 角色与会话」导入角色包或创建自定义音色后重试。",
                 )
 
 

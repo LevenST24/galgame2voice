@@ -684,8 +684,7 @@ class GptSovitsClient:
 
         if not ref_audio:
             raise ValueError(
-                "No reference audio provided and no active character package configured. "
-                "Please configure an active character package or supply valid reference audio."
+                "尚未配置角色包或参考音频，请在「设置中心 → 角色与会话」导入角色包或创建自定义音色后重试。"
             )
 
         ok, reason = validate_reference_audio(ref_audio)
