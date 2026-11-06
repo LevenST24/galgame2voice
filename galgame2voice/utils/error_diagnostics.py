@@ -299,6 +299,39 @@ def _diagnose_transport_fault(
             raw_error=sanitized_raw,
         )
 
+    reset_types = (
+        "connectionreseterror",
+        "connectionabortederror",
+        "remoteprotocolerror",
+        "readerror",
+        "writeerror",
+        "brokenpipeerror",
+        "remotedisconnected",
+        "incompleteread",
+    )
+    reset_phrases = (
+        "10054",
+        "10053",
+        "connection reset",
+        "connection abort",
+        "peer closed connection",
+        "server disconnected",
+        "remote end closed connection",
+        "incomplete chunked read",
+    )
+    if (
+        any(t in exc_type for t in reset_types)
+        or any(t in ct for ct in chain_types for t in reset_types)
+        or any(ph in raw_lower for ph in (*reset_types, *reset_phrases))
+    ):
+        return DiagnosticResult(
+            error_code="CONNECTION_RESET",
+            message="网络连接被中途断开或重置 (Connection Reset)",
+            guidance="与模型服务的连接在传输中途中断（常见于网络波动、本地代理切换节点/重启或睡眠唤醒）。请检查网络与代理稳定性后直接重新发送重试，无需修改 API Key 或模型名称。",
+            status_code=status_code or 502,
+            raw_error=sanitized_raw,
+        )
+
     # ConnectError also covers TLS failures and other connection setup errors.
     # Its type alone cannot establish that a particular port refused the request.
     if (
