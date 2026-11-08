@@ -144,7 +144,7 @@ globalThis.document = { getElementById: () => null };
 
 function element(value = '') {
   const listeners = {};
-  return { value, textContent: '', innerHTML: '', disabled: false, checked: false,
+  return { value, textContent: '', innerHTML: '', disabled: false, checked: false, hidden: false,
     addEventListener(name, handler) { (listeners[name] ||= []).push(handler); },
     change(name = 'input') { listeners[name]?.forEach(handler => handler({ target: this })); } };
 }
@@ -182,6 +182,190 @@ for (const known of [true, false]) {
     assert.match(dom.gDashDeviceVal.textContent, /外部引擎/);
     assert.match(dom.gBtnTogglePrecisionText.textContent, /已保存/);
   }
+  passed++;
+}
+{
+  // CPU-only machine without discrete GPU: hide precision toggle button and block switching to CUDA/FP16
+  const dom = {
+    gDashPrecisionBadge: element(),
+    gDashPrecisionVal: element(),
+    gDashDeviceVal: element(),
+    gBtnTogglePrecision: element(),
+    gBtnTogglePrecisionText: element(),
+    gBtnRestartSovits: element(),
+  };
+  initGlobalSettings(dom);
+  const restartRequests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url.endsWith('/system/status')) {
+      return response({
+        hardware: {
+          gpu_available: false,
+          gpu_name: 'Intel Iris Xe',
+          inference_precision: 'CPU',
+          precision_source: 'managed_launch',
+        },
+      });
+    }
+    if (url.endsWith('/restart_sovits')) {
+      restartRequests.push(options.body ? JSON.parse(options.body) : {});
+      return response({ status: 'starting' });
+    }
+    if (url.endsWith('/engine-status')) {
+      return response({ state: 'ready', ready: true, message: '已就绪' });
+    }
+    return response({});
+  };
+
+  await fetchSystemTelemetry();
+
+  assert.equal(dom.gDashPrecisionBadge.textContent, 'CPU');
+  assert.equal(dom.gBtnTogglePrecision.hidden, true, 'Precision toggle button should be hidden on CPU-only device');
+  assert.equal(dom.gBtnTogglePrecisionText.textContent.includes('GPU(FP16)'), false, 'Text must not offer switching to GPU(FP16)');
+  assert.equal(dom.gBtnTogglePrecisionText.textContent, '当前仅支持 CPU 模式');
+
+  // Triggering click must be blocked and not request /restart_sovits
+  dom.gBtnTogglePrecision.change('click');
+  for (let i = 0; i < 3; i++) await tick();
+  assert.equal(restartRequests.length, 0, 'Clicking precision toggle when gpu_available is false must not send restart request');
+  passed++;
+}
+{
+  // Machine with GPU running in CPU mode: toggle button remains visible and clicking requests FP16
+  const dom = {
+    gDashPrecisionBadge: element(),
+    gDashPrecisionVal: element(),
+    gDashDeviceVal: element(),
+    gBtnTogglePrecision: element(),
+    gBtnTogglePrecisionText: element(),
+    gBtnRestartSovits: element(),
+  };
+  initGlobalSettings(dom);
+  const restartRequests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url.endsWith('/system/status')) {
+      return response({
+        hardware: {
+          gpu_available: true,
+          gpu_name: 'NVIDIA GeForce RTX 4070',
+          inference_precision: 'CPU',
+          precision_source: 'managed_launch',
+        },
+      });
+    }
+    if (url.endsWith('/restart_sovits')) {
+      restartRequests.push(options.body ? JSON.parse(options.body) : {});
+      return response({ status: 'starting' });
+    }
+    if (url.endsWith('/engine-status')) {
+      return response({ state: 'ready', ready: true, message: '已就绪' });
+    }
+    return response({});
+  };
+
+  await fetchSystemTelemetry();
+
+  assert.equal(dom.gDashPrecisionBadge.textContent, 'CPU');
+  assert.equal(dom.gBtnTogglePrecision.hidden, false, 'Precision toggle button should be visible when GPU is available');
+  assert.equal(dom.gBtnTogglePrecisionText.textContent, '切为 GPU(FP16)');
+
+  dom.gBtnTogglePrecision.change('click');
+  for (let i = 0; i < 3; i++) await tick();
+  assert.deepEqual(restartRequests, [{ precision: 'fp16' }], 'Clicking toggle when GPU is available sends fp16 restart request');
+  passed++;
+}
+{
+  // Transition: Poll 1 has gpu_available: false, then Poll 2 has gpu_available: undefined (legacy/external).
+  // gpuAvailable must recover to default true, making toggle visible and clickable for FP16.
+  const dom = {
+    gDashPrecisionBadge: element(),
+    gDashPrecisionVal: element(),
+    gDashDeviceVal: element(),
+    gBtnTogglePrecision: element(),
+    gBtnTogglePrecisionText: element(),
+    gBtnRestartSovits: element(),
+  };
+  initGlobalSettings(dom);
+  let statusHardware = {
+    gpu_available: false,
+    gpu_name: 'Intel Iris Xe',
+    inference_precision: 'CPU',
+    precision_source: 'managed_launch',
+  };
+  const restartRequests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url.endsWith('/system/status')) {
+      return response({ hardware: statusHardware });
+    }
+    if (url.endsWith('/restart_sovits')) {
+      restartRequests.push(options.body ? JSON.parse(options.body) : {});
+      return response({ status: 'starting' });
+    }
+    if (url.endsWith('/engine-status')) {
+      return response({ state: 'ready', ready: true, message: '已就绪' });
+    }
+    return response({});
+  };
+
+  await fetchSystemTelemetry();
+  assert.equal(dom.gBtnTogglePrecision.hidden, true);
+
+  // Poll 2: hardware present but gpu_available is undefined
+  statusHardware = {
+    inference_precision: 'CPU',
+    precision_source: 'managed_launch',
+  };
+  await fetchSystemTelemetry();
+  assert.equal(dom.gBtnTogglePrecision.hidden, false);
+  assert.equal(dom.gBtnTogglePrecisionText.textContent, '切为 GPU(FP16)');
+
+  dom.gBtnTogglePrecision.change('click');
+  for (let i = 0; i < 3; i++) await tick();
+  assert.deepEqual(restartRequests, [{ precision: 'fp16' }], 'Clicking toggle after undefined recovery sends fp16');
+  passed++;
+}
+{
+  // CPU-only device mistakenly set to FP16: button remains visible and offers direct switch to CPU mode
+  const dom = {
+    gDashPrecisionBadge: element(),
+    gDashPrecisionVal: element(),
+    gDashDeviceVal: element(),
+    gBtnTogglePrecision: element(),
+    gBtnTogglePrecisionText: element(),
+    gBtnRestartSovits: element(),
+  };
+  initGlobalSettings(dom);
+  const restartRequests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (url.endsWith('/system/status')) {
+      return response({
+        hardware: {
+          gpu_available: false,
+          gpu_name: 'Intel Iris Xe',
+          inference_precision: 'FP16',
+          precision_source: 'managed_launch',
+        },
+      });
+    }
+    if (url.endsWith('/restart_sovits')) {
+      restartRequests.push(options.body ? JSON.parse(options.body) : {});
+      return response({ status: 'starting' });
+    }
+    if (url.endsWith('/engine-status')) {
+      return response({ state: 'failed', ready: false, message: 'CUDA 不可用' });
+    }
+    return response({});
+  };
+
+  await fetchSystemTelemetry();
+
+  assert.equal(dom.gDashPrecisionBadge.textContent, 'FP16');
+  assert.equal(dom.gBtnTogglePrecision.hidden, false, 'Precision toggle button should remain visible to recover from FP16');
+  assert.equal(dom.gBtnTogglePrecisionText.textContent, '切为 CPU 模式');
+
+  dom.gBtnTogglePrecision.change('click');
+  for (let i = 0; i < 3; i++) await tick();
+  assert.deepEqual(restartRequests, [{ precision: 'cpu' }], 'Clicking toggle on CPU device in FP16 mode directly restarts in CPU mode');
   passed++;
 }
 {

@@ -249,13 +249,17 @@ export class EngineSettingsController {
   async handleTogglePrecision() {
     if (this.disposed) return;
     const badgeText = this.dom.gDashPrecisionBadge?.textContent.trim().toUpperCase();
+    const isGpuAvail = this.coordinator.isGpuAvailable?.() !== false;
+    if (badgeText === 'CPU' && !isGpuAvail) {
+      return;
+    }
     if (!['CPU', 'FP16', 'FP32'].includes(badgeText)) {
       await this.handleRestartSovits();
       return;
     }
     let targetPrec = 'fp16';
     if (badgeText === 'FP16') {
-      targetPrec = 'fp32';
+      targetPrec = isGpuAvail ? 'fp32' : 'cpu';
     } else if (badgeText === 'FP32') {
       targetPrec = 'cpu';
     } else {
