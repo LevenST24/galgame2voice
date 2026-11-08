@@ -43,14 +43,14 @@ class TtsStreamPipeline:
         self.generation_id = generation_id
 
     @staticmethod
-    def is_vocal_sentence(sentence: str) -> bool:
+    def is_vocal_sentence(sentence: str | None) -> bool:
         """Determines if a sentence contains speakable phonetic content."""
         if not sentence or not sentence.strip():
             return False
         cleaned = clean_japanese_parentheses(sentence).strip()
         if not cleaned:
             return False
-        return bool(_VOCAL_RE.search(sentence))
+        return bool(_VOCAL_RE.search(cleaned))
 
     def prepare_chunk_options(
         self,
