@@ -14,6 +14,8 @@ let _promptSelection = '';
 let editorRevision = 0;
 let activeProfileId = null;
 let lastSwitchFailed = false;
+let failedSwitchProfileId = null;
+let switchSaveUnconfirmed = false;
 let scannedModels = null;
 let pendingScan = null;
 let scanRevision = 0;
@@ -38,6 +40,8 @@ export function initVoiceSettings(dom, callbacks = {}) {
   _callbacks = callbacks;
   lastSwitchFailed = false;
   lastShownCatalogWarning = '';
+  failedSwitchProfileId = null;
+  switchSaveUnconfirmed = false;
   editorRevision += 1;
   sessionVoiceRevision += 1;
   profilesRevision += 1;
@@ -198,6 +202,26 @@ export function syncRangeLabels() {
   }
 }
 
+function refreshActiveLoadedBadges() {
+  const active = activeProfileId != null ? voiceProfiles.find((p) => Number(p.id) === Number(activeProfileId)) : null;
+  if (_dom.sVoiceActive) {
+    const activeSession = getActive();
+    _dom.sVoiceActive.textContent = active ? `当前加载：${active.name}`
+      : (!voiceProfiles.length && !activeSession?.settings?.voiceProfileId
+        ? '首次使用：请选择模型权重和参考音频，创建会话音色。' : '');
+  }
+  const options = Array.from(_dom.sVoice?.options || _dom.sVoice?.children || []);
+  for (const opt of options) {
+    const optId = Number(opt.value);
+    if (!optId) continue;
+    const p = voiceProfiles.find((x) => Number(x.id) === optId);
+    if (p) {
+      opt.textContent = `${p.name}${activeProfileId != null && Number(p.id) === Number(activeProfileId) ? '（当前加载）' : ''}`;
+    }
+  }
+  _callbacks.renderHeader?.();
+}
+
 export async function fetchVoiceProfiles({ silent = false } = {}) {
   const revision = ++profilesRevision;
   const activeRevision = activeProfileRevision;
@@ -212,8 +236,27 @@ export async function fetchVoiceProfiles({ silent = false } = {}) {
     }
     // A catalog response may predate a completed switch. Keep its catalog,
     // but never publish that earlier active ID over the switch acknowledgement.
-    if (activeRevision === activeProfileRevision && !lastSwitchFailed) {
-      activeProfileId = data.active_profile_id;
+    if (activeRevision === activeProfileRevision) {
+      const serverActiveId = data.active_profile_id;
+      const failedTargetRemoved = failedSwitchProfileId != null
+        && !voiceProfiles.some(p => Number(p.id) === Number(failedSwitchProfileId));
+      const serverConfirmedOtherValid = serverActiveId != null
+        && (failedSwitchProfileId == null || Number(serverActiveId) !== Number(failedSwitchProfileId))
+        && voiceProfiles.some(p => Number(p.id) === Number(serverActiveId))
+        && !switchSaveUnconfirmed;
+
+      if (!lastSwitchFailed || failedTargetRemoved || serverConfirmedOtherValid) {
+        const recovered = lastSwitchFailed && (failedTargetRemoved || serverConfirmedOtherValid);
+        if (recovered) {
+          lastSwitchFailed = false;
+          failedSwitchProfileId = null;
+          switchSaveUnconfirmed = false;
+        }
+        activeProfileId = serverActiveId;
+        if (recovered) {
+          refreshActiveLoadedBadges();
+        }
+      }
     }
   }
   return data;
@@ -258,6 +301,8 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
     }
     if (!isCurrent()) return;
     lastSwitchFailed = false;
+    failedSwitchProfileId = null;
+    switchSaveUnconfirmed = false;
     activeProfileId = want;
     // 换人后若面板正开着且人设框没有未保存编辑，就跟着换成新角色的那一份
     const modalOpen = _dom.sessionModal && !_dom.sessionModal.classList.contains('hidden');
@@ -270,8 +315,10 @@ async function applySessionVoice(session, { silent = false }, want, isCurrent) {
   } catch (e) {
     if (!isCurrent()) return;
     lastSwitchFailed = true;
+    failedSwitchProfileId = want != null ? Number(want) : null;
     activeProfileId = null;
-    if (e.data?.detail?.error_code === 'VOICE_PROFILE_SAVE_FAILED') {
+    switchSaveUnconfirmed = e.data?.detail?.error_code === 'VOICE_PROFILE_SAVE_FAILED';
+    if (switchSaveUnconfirmed) {
       // The models may be loaded even when the saved default is unconfirmed.
       // Older list reads cannot turn that uncertainty back into a known ID.
       activeProfileRevision += 1;
@@ -612,6 +659,11 @@ export async function deleteVoiceProfile() {
   try {
     await requestJson(`/api/voice/profiles/${id}`, { method: 'DELETE' });
     if (id === activeProfileId) activeProfileId = null;
+    if (failedSwitchProfileId != null && Number(id) === Number(failedSwitchProfileId)) {
+      lastSwitchFailed = false;
+      failedSwitchProfileId = null;
+      switchSaveUnconfirmed = false;
+    }
     const cleared = state.sessions.filter(sess => sess.settings?.voiceProfileId === id);
     const sessionVersions = new Map();
     for (const sess of cleared) {
@@ -641,6 +693,7 @@ export async function deleteVoiceProfile() {
       }
     }
     await loadSessionVoiceSelect(getActive());
+    refreshActiveLoadedBadges();
     ensureSessionVoice(getActive(), { silent: true });
     showToast(`音色「${p ? p.name : id}」已删除${bindingNote}`, bindingNote.startsWith('；') ? 'info' : 'success');
   } catch (e) {

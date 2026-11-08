@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { state, loadState, DEFAULT_SESSION_SETTINGS } from '../frontend/src/store.js';
-import { initVoiceSettings, createCustomVoice, loadSessionVoiceSelect, handleRescanCharacters, populateScanOptions, invalidateScannedModels, ensureSessionVoice, deleteVoiceProfile, fetchVoiceProfiles, openSessionSettings } from '../frontend/src/controllers/voice_settings.js';
+import { initVoiceSettings, createCustomVoice, loadSessionVoiceSelect, handleRescanCharacters, populateScanOptions, invalidateScannedModels, ensureSessionVoice, deleteVoiceProfile, fetchVoiceProfiles, openSessionSettings, getActiveProfileId } from '../frontend/src/controllers/voice_settings.js';
 import { persistSession } from '../frontend/src/session_api.js';
 
 const storage = new Map();
@@ -1148,5 +1148,116 @@ const models = {
     expireToasts();
     globalThis.document = previousDocument;
   }
+}
+{
+  // Regression test for X3:
+  // Switching from A (id=1) to B (id=2) fails -> delete failed voice B.
+  // getActiveProfileId() should recover to 1, and dropdown should display A (当前加载).
+  let headerRendered = 0;
+  const { first, dom } = setup({ renderHeader: () => { headerRendered++; } });
+  dom.sVoiceActive = element();
+  dom.sVoiceDelete = element();
+  initVoiceSettings(dom, { renderHeader: () => { headerRendered++; } });
+  globalThis.window = { confirm: () => true };
+
+  const deletedIds = [];
+  let catalog = [
+    { id: 1, name: '音色A', system_prompt: '人设A' },
+    { id: 2, name: '音色B', system_prompt: '人设B' },
+  ];
+  let serverActiveId = 1;
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles' && (!options.method || options.method === 'GET')) {
+      return response({ profiles: catalog, active_profile_id: serverActiveId });
+    }
+    if (url === '/api/voice/switch' && options.method === 'POST') {
+      const body = JSON.parse(options.body);
+      if (body.profile_id === 2) {
+        return response({ detail: '无法连接 GPT-SoVITS 语音引擎' }, 502);
+      }
+      serverActiveId = body.profile_id;
+      return response({ profile_id: body.profile_id, profile: catalog.find(c => c.id === body.profile_id)?.name });
+    }
+    if (url.startsWith('/api/voice/profiles/') && options.method === 'DELETE') {
+      const id = Number(url.split('/').pop());
+      deletedIds.push(id);
+      catalog = catalog.filter(p => p.id !== id);
+      return response({ status: 'deleted' });
+    }
+    return response({});
+  };
+
+  // 1. Initial state: server active is A (1)
+  await fetchVoiceProfiles();
+  assert.equal(getActiveProfileId(), 1, 'initially active profile is A (1)');
+
+  // 2. Switch to B (2) fails
+  first.settings.voiceProfileId = 2;
+  await ensureSessionVoice(first, { silent: true });
+  assert.equal(getActiveProfileId(), null, 'activeProfileId becomes null after switch failure');
+
+  // 3. Delete failed voice B (2)
+  await openSessionSettings(); await tick();
+  dom.sVoice.value = '2';
+  headerRendered = 0;
+  await dom.sVoiceDelete.click();
+  assert.deepEqual(deletedIds, [2], 'failed voice B was deleted');
+
+  // 4. Verification after deletion: activeProfileId restores to A (1), and dropdown shows (当前加载)
+  assert.equal(getActiveProfileId(), 1, 'activeProfileId must restore to 1 after deleting failed switch target');
+  assert.ok(headerRendered > 0, 'renderHeader must be invoked to update stage character upon deletion recovery');
+  assert.equal(dom.sVoiceActive.textContent, '当前加载：音色A', 'sVoiceActive shows loaded voice A');
+  const optionA = dom.sVoice.children.find(opt => opt.value === 1);
+  assert.ok(optionA, 'option for voice A exists in dropdown');
+  assert.equal(optionA.textContent, '音色A（当前加载）', 'voice A displays （当前加载） in dropdown');
+
+  // 5. Subsequent fetchVoiceProfiles() preserves activeProfileId as 1
+  await fetchVoiceProfiles();
+  assert.equal(getActiveProfileId(), 1, 'subsequent fetchVoiceProfiles retains recovered activeProfileId 1');
+
+  passed++;
+}
+{
+  // Test external removal / rescan recovery:
+  // When failed switch target is deleted externally (not in current voiceProfiles catalog),
+  // fetchVoiceProfiles() restores activeProfileId to server active voice and calls renderHeader.
+  let headerRendered = 0;
+  const { first, dom } = setup({ renderHeader: () => { headerRendered++; } });
+  dom.sVoiceActive = element();
+  initVoiceSettings(dom, { renderHeader: () => { headerRendered++; } });
+
+  let catalog = [
+    { id: 1, name: '音色A', system_prompt: '' },
+    { id: 2, name: '音色B', system_prompt: '' },
+  ];
+  let serverActiveId = 1;
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') {
+      return response({ profiles: catalog, active_profile_id: serverActiveId });
+    }
+    if (url === '/api/voice/switch') {
+      return response({ detail: '无法连接 GPT-SoVITS 语音引擎' }, 502);
+    }
+    return response({});
+  };
+
+  await fetchVoiceProfiles();
+  assert.equal(getActiveProfileId(), 1);
+
+  // Switch to voice 2 fails
+  first.settings.voiceProfileId = 2;
+  await ensureSessionVoice(first, { silent: true });
+  assert.equal(getActiveProfileId(), null);
+
+  // Catalog update simulates external deletion (e.g., rescan or another tab)
+  catalog = [{ id: 1, name: '音色A', system_prompt: '' }];
+  headerRendered = 0;
+  await fetchVoiceProfiles();
+
+  assert.equal(getActiveProfileId(), 1, 'activeProfileId restores to 1 when failed target is removed from catalog');
+  assert.ok(headerRendered > 0, 'renderHeader called on catalog-driven recovery');
+  assert.equal(dom.sVoiceActive.textContent, '当前加载：音色A');
+
+  passed++;
 }
 console.log(`Voice settings recovery: ${passed} scenarios passed`);
