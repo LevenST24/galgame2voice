@@ -3188,3 +3188,315 @@ test('startup sync with server message_count 0 preserves local starter GREETING 
   assert.equal(storedSession('s_local_greeting').messages.length, 1);
   assert.equal(storedSession('s_local_greeting').messages[0].content, GREETING);
 });
+
+for (const totalServerMessages of [150, 101]) {
+  test(`startup sync preserves unanswered local prompt and enables retry when server has ${totalServerMessages} messages (>100)`, async t => {
+    const doc = fakeDocument();
+    globalThis.document = doc;
+    doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+    const root = doc.createElement('div');
+    root.id = 'advRoot';
+    doc.body.appendChild(root);
+    const toasts = doc.createElement('div');
+    toasts.id = 'toastRoot';
+    doc.body.appendChild(toasts);
+
+    const oldestWindowId = totalServerMessages - 100 + 1;
+    const serverWindow = Array.from({ length: 100 }, (_, idx) => {
+      const id = oldestWindowId + idx;
+      const isAssistant = (totalServerMessages - id) % 2 === 0;
+      return {
+        id,
+        role: isAssistant ? 'assistant' : 'user',
+        content_chinese: isAssistant ? `服务端回复 #${id}` : `历史提问 #${id}`,
+        content_japanese: '',
+        created_at: '2024-06-01 00:00:00',
+      };
+    });
+
+    const localCachedWindow = serverWindow.map((bm, idx) => ({
+      id: `m_${bm.id}`,
+      serverMessageId: bm.id,
+      role: bm.role,
+      content: bm.content_chinese,
+      ts: 1_700_000_000_000 + idx * 1000,
+    }));
+    const unansweredId = `m_local_unanswered_${totalServerMessages}`;
+    const unansweredPrompt = '刷新前刚发出的长会话提问';
+
+    const session = {
+      id: `s_long_unanswered_${totalServerMessages}`,
+      title: '超百条长会话',
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_999_000,
+      hasMoreHistory: true,
+      oldestMessageId: oldestWindowId,
+      settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+      messages: [
+        ...localCachedWindow,
+        {
+          id: unansweredId,
+          role: 'user',
+          content: unansweredPrompt,
+          voiceKey: `user_${unansweredId}`,
+          dur: 1.6,
+          ts: 1_700_000_999_000,
+        },
+      ],
+    };
+
+    const server = {
+      id: session.id,
+      title: session.title,
+      voice_profile_id: null,
+      created_at: '2024-06-01 00:00:00',
+      updated_at: '2024-06-01 00:10:00',
+      message_count: totalServerMessages,
+      last_message: `服务端回复 #${totalServerMessages}`,
+      settings: { ...session.settings },
+    };
+
+    const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
+    globalThis.localStorage = {
+      getItem: key => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key),
+    };
+    globalThis.location = { origin: 'http://127.0.0.1:8000' };
+
+    let historyFetches = 0;
+    const streamRequests = [];
+    globalThis.window = {
+      innerWidth: 1280,
+      location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+      sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+      prompt: () => null,
+      fetch: async (url, options = {}) => {
+        const target = String(url);
+        if (target.includes('/api/chat/sessions')) {
+          return Response.json({ sessions: [server], has_more: false, count: 1 });
+        }
+        if (target.includes('/api/chat/history')) {
+          historyFetches += 1;
+          return Response.json({
+            session_id: session.id,
+            has_more: true,
+            oldest_id: oldestWindowId,
+            count: serverWindow.length,
+            messages: serverWindow,
+          });
+        }
+        if (target.includes('/api/chat/stream')) {
+          let output;
+          const body = new ReadableStream({
+            start(controller) { output = controller; },
+            cancel() { try { output?.close(); } catch {} },
+          });
+          options.signal?.addEventListener('abort', () => {
+            try { output?.close(); } catch {}
+          }, { once: true });
+          streamRequests.push({ url: target, prompt: JSON.parse(options.body).prompt });
+          return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
+        }
+        if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+        if (target.includes('/api/providers')) return Response.json({
+          providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
+          active_provider: 'p1',
+        });
+        if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+        if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+        return Response.json({});
+      },
+    };
+    globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+    const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
+    t.after(() => {
+      try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+      for (const toast of toasts.children) clearTimeout(toast._timer);
+      delete globalThis.document;
+      delete globalThis.window;
+      delete globalThis.localStorage;
+      delete globalThis.fetch;
+      delete globalThis.location;
+    });
+
+    await app.ready;
+    for (let i = 0; i < 5; i++) await tick();
+
+    assert.equal(historyFetches, 1, `服务端 message_count=${totalServerMessages} 时应拉取最近 100 条历史做核对`);
+    const activeSession = storedActive();
+    assert.equal(activeSession.hasMoreHistory, true);
+    assert.equal(activeSession.oldestMessageId, oldestWindowId);
+    assert.equal(activeSession.messages.length, 101, '应保留最近 100 条服务端消息 + 末尾 1 条未获回复本地提问');
+
+    const last = activeSession.messages.at(-1);
+    assert.equal(last.id, unansweredId);
+    assert.equal(last.content, unansweredPrompt);
+    assert.equal(last.voiceKey, `user_${unansweredId}`);
+    assert.equal(Boolean(last.failed), true, '未获回复本地提问必须标为 failed');
+    assert.deepEqual(last.failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
+    assert.equal(app.conversation.canRetry(last), true, '末尾失败提问必须支持重试');
+
+    const storedJson = JSON.parse(storage.get('gal2voice.chat.v1'));
+    const storedSess = storedJson.sessions.find(s => s.id === session.id);
+    assert.equal(storedSess.messages.length, 101);
+    assert.deepEqual(storedSess.messages.at(-1).failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
+
+    app.adv.action('log');
+    const retryBtn = [...doc.querySelectorAll('.adv-error-btn')].find(b => b.textContent === '重新发送');
+    assert.ok(retryBtn, 'LOG 面板中必须渲染「重新发送」按钮');
+    retryBtn.click();
+    for (let i = 0; i < 5 && streamRequests.length === 0; i++) await tick();
+    assert.equal(streamRequests.length, 1, '点击「重新发送」应向 /api/chat/stream 发起重试请求');
+    assert.equal(streamRequests[0].prompt, unansweredPrompt);
+    app.conversation.stop();
+  });
+}
+
+test('startup sync in >100 message session merges answered local prompt without duplication or false failure', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const initialWindow = Array.from({ length: 100 }, (_, idx) => {
+    const id = 51 + idx;
+    const isAssistant = id % 2 === 0;
+    return {
+      id: `m_${id}`,
+      serverMessageId: id,
+      role: isAssistant ? 'assistant' : 'user',
+      content: isAssistant ? `服务端回复 #${id}` : `历史提问 #${id}`,
+      ts: 1_700_000_000_000 + idx * 1000,
+    };
+  });
+
+  const answeredPrompt = '刷新期间已完成回复的提问';
+  const answeredReply = '服务端已生成的第152条回复';
+  const session = {
+    id: 's_long_already_answered',
+    title: '超百条已完成问答会话',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_999_000,
+    hasMoreHistory: true,
+    oldestMessageId: 51,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      ...initialWindow,
+      {
+        id: 'm_local_already_answered',
+        role: 'user',
+        content: answeredPrompt,
+        voiceKey: 'user_m_local_already_answered',
+        dur: 2.4,
+        ts: 1_700_000_999_000,
+      },
+    ],
+  };
+
+  const serverWindow = Array.from({ length: 100 }, (_, idx) => {
+    const id = 53 + idx;
+    if (id === 151) {
+      return { id: 151, role: 'user', content_chinese: answeredPrompt, content_japanese: '', created_at: '2024-06-01 00:10:01' };
+    }
+    if (id === 152) {
+      return { id: 152, role: 'assistant', content_chinese: answeredReply, content_japanese: '返答152', created_at: '2024-06-01 00:10:02' };
+    }
+    const isAssistant = id % 2 === 0;
+    return {
+      id,
+      role: isAssistant ? 'assistant' : 'user',
+      content_chinese: isAssistant ? `服务端回复 #${id}` : `历史提问 #${id}`,
+      content_japanese: '',
+      created_at: '2024-06-01 00:00:00',
+    };
+  });
+
+  const server = {
+    id: session.id,
+    title: session.title,
+    voice_profile_id: null,
+    created_at: '2024-06-01 00:00:00',
+    updated_at: '2024-06-01 00:10:02',
+    message_count: 152,
+    last_message: answeredReply,
+    settings: { ...session.settings },
+  };
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify(storedSessionSnapshot(session))]]);
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+    fetch: async (url) => {
+      const target = String(url);
+      if (target.includes('/api/chat/sessions')) {
+        return Response.json({ sessions: [server], has_more: false, count: 1 });
+      }
+      if (target.includes('/api/chat/history')) {
+        return Response.json({
+          session_id: session.id,
+          has_more: true,
+          oldest_id: 53,
+          count: 100,
+          messages: serverWindow,
+        });
+      }
+      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+      if (target.includes('/api/providers')) return Response.json({
+        providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
+        active_provider: 'p1',
+      });
+      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+      return Response.json({});
+    },
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  const activeSession = storedActive();
+  assert.equal(activeSession.messages.length, 100, '服务端已完成该轮问答时不应重复追加本地提问');
+  assert.equal(activeSession.messages.filter(m => m.content === answeredPrompt).length, 1);
+
+  const pairedUser = activeSession.messages.at(-2);
+  assert.equal(pairedUser.id, 'm_151');
+  assert.equal(pairedUser.serverMessageId, 151);
+  assert.equal(pairedUser.failed, undefined, '已完成问答的提问不得误标 failed');
+  assert.equal(pairedUser.voiceKey, 'user_m_local_already_answered', '已完成问答的提问应保留本地录音元数据');
+  assert.equal(pairedUser.dur, 2.4);
+
+  const assistantReply = activeSession.messages.at(-1);
+  assert.equal(assistantReply.id, 'm_152');
+  assert.equal(assistantReply.role, 'assistant');
+  assert.equal(assistantReply.content, answeredReply);
+  assert.equal(assistantReply.failed, undefined);
+  assert.equal(app.conversation.canRetry(pairedUser), false);
+  assert.equal(app.conversation.canRetry(assistantReply), false);
+});
