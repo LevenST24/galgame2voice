@@ -161,3 +161,124 @@ def test_streaming_runtime_error_wrapping_connection_reset(cause):
     assert "请检查 Base URL 地址、API Key 凭据以及模型名称配置是否正确" not in payload["error"]
 
 
+@pytest.mark.parametrize(
+    ("err", "provider_id", "status_code"),
+    [
+        ("400 prompt is too long: 210054 tokens > 200000 maximum", None, None),
+        (
+            RuntimeError(
+                'Anthropic API error (400): {"type":"error","error":{"type":"invalid_request_error",'
+                '"message":"prompt is too long: 210054 tokens > 200000 maximum"}}'
+            ),
+            "anthropic",
+            None,
+        ),
+        (
+            RuntimeError(
+                'API returned status 400: {"error":{"message":"prompt is too long: 10053 tokens > 8192 maximum"}}'
+            ),
+            "openai",
+            None,
+        ),
+        (
+            RuntimeError('API returned status 400: {"error":{"message":"Invalid field threaderror or on_readerror"}}'),
+            "openai",
+            None,
+        ),
+        (
+            '{"error":{"message":"Upstream validation error 10054: ReadError policy invalid"}}',
+            "openai",
+            400,
+        ),
+    ],
+)
+def test_provider_400_with_10054_or_readerror_substring_not_connection_reset(err, provider_id, status_code):
+    from galgame2voice.utils.error_diagnostics import chat_error_payload, format_provider_error
+
+    result = diagnose_llm_error(err, provider_id=provider_id, status_code=status_code)
+    assert result.error_code != "CONNECTION_RESET"
+    assert result.error_code == "PROVIDER_ERROR"
+    assert "无需修改 API Key 或模型名称" not in result.guidance
+
+    if status_code is not None:
+        diag_dict = format_provider_error(provider_id, status_code, err)
+        assert diag_dict["error_code"] != "CONNECTION_RESET"
+        assert diag_dict["error_code"] == "PROVIDER_ERROR"
+        assert "无需修改 API Key 或模型名称" not in diag_dict["diagnostic"]
+    else:
+        payload = chat_error_payload(err, provider_id=provider_id, api_key_configured=True)
+        assert payload["error_code"] != "CONNECTION_RESET"
+        assert payload["error_code"] == "PROVIDER_ERROR"
+        assert "无需修改 API Key 或模型名称" not in payload["error"]
+
+
+def test_provider_401_and_404_with_10054_substrings_preserve_specific_diagnosis():
+    from galgame2voice.utils.error_diagnostics import chat_error_payload, format_provider_error
+
+    openai_401 = ValueError(
+        'Authentication error (401): {"error":{"message":"Incorrect API key provided",'
+        '"code":"invalid_api_key"},"request_id":"req_10054"}'
+    )
+    res_401 = diagnose_llm_error(openai_401, provider_id="openai")
+    assert res_401.error_code == "OPENAI_AUTH_FAILED"
+    assert res_401.status_code == 401
+    assert "无需修改 API Key 或模型名称" not in res_401.guidance
+
+    payload_401 = chat_error_payload(openai_401, provider_id="openai", api_key_configured=True)
+    assert payload_401["error_code"] == "OPENAI_AUTH_FAILED"
+    assert "无需修改 API Key 或模型名称" not in payload_401["error"]
+
+    fmt_401 = format_provider_error(
+        "openai",
+        401,
+        '{"error":{"message":"Incorrect API key provided"},"request_id":"10054"}',
+    )
+    assert fmt_401["error_code"] == "OPENAI_AUTH_FAILED"
+    assert fmt_401["status_code"] == 401
+
+    anthropic_401 = ValueError(
+        'Anthropic auth failed (401): {"type":"error","error":{"type":"authentication_error",'
+        '"message":"invalid x-api-key"},"request_id":"req_10053"}'
+    )
+    assert diagnose_llm_error(anthropic_401, provider_id="anthropic").error_code == "ANTHROPIC_AUTH_FAILED"
+
+    model_404 = RuntimeError(
+        'API returned status 404: {"error":{"message":"The model `gpt-4o-unknown` does not exist",'
+        '"code":"model_not_found"},"request_id":"req_100549"}'
+    )
+    res_model_404 = diagnose_llm_error(model_404, provider_id="openai")
+    assert res_model_404.error_code == "MODEL_NOT_FOUND"
+    assert res_model_404.status_code == 404
+    assert "无需修改 API Key 或模型名称" not in res_model_404.guidance
+
+    endpoint_404 = RuntimeError('API returned status 404: {"error":"Not Found","request_id":"req_100549"}')
+    res_endpoint_404 = diagnose_llm_error(endpoint_404, provider_id="custom")
+    assert res_endpoint_404.error_code == "ENDPOINT_NOT_FOUND"
+    assert res_endpoint_404.status_code == 404
+    assert "无需修改 API Key 或模型名称" not in res_endpoint_404.guidance
+
+
+@pytest.mark.parametrize(
+    "err",
+    [
+        "[WinError 10054] 远程主机强迫关闭了一个现有的连接。",
+        "[WinError 10053] 你的主机中的软件中止了一个已建立的连接。",
+        "[Errno 10054] Connection reset by peer",
+        "[Errno 10053] Software caused connection abort",
+        "wsarecv: os error 10054",
+        "ReadError: ",
+        httpx.ReadError(""),
+        httpx.RemoteProtocolError("Server disconnected without sending a response."),
+    ],
+)
+def test_502_wrapped_and_contextual_errno_transport_resets_remain_connection_reset(err):
+    from galgame2voice.utils.error_diagnostics import format_provider_error
+
+    result = diagnose_llm_error(err, status_code=502)
+    assert result.error_code == "CONNECTION_RESET"
+    assert result.status_code == 502
+    assert "无需修改 API Key 或模型名称" in result.guidance
+
+    diag_dict = format_provider_error("openai", 502, err)
+    assert diag_dict["error_code"] == "CONNECTION_RESET"
+    assert diag_dict["status_code"] == 502

@@ -5,6 +5,7 @@ translating them into user-friendly Chinese diagnostic recommendations.
 """
 
 from dataclasses import dataclass
+import re
 from typing import Any
 from galgame2voice.utils.logger import MaskingFilter
 
@@ -224,6 +225,35 @@ def _diagnose_unsupported_parameter(
     return None
 
 
+_RESET_TYPES = (
+    "connectionreseterror",
+    "connectionabortederror",
+    "remoteprotocolerror",
+    "readerror",
+    "writeerror",
+    "brokenpipeerror",
+    "remotedisconnected",
+    "incompleteread",
+)
+
+_RESET_PHRASES = (
+    "connection reset",
+    "connection abort",
+    "peer closed connection",
+    "server disconnected",
+    "remote end closed connection",
+    "incomplete chunked read",
+)
+
+_RESET_TEXT_RE = re.compile(
+    r"\b(?:"
+    + "|".join(_RESET_TYPES)
+    + r"|(?:winerror|errno|error)\s+1005[34]"
+    + r")\b",
+    re.ASCII,
+)
+
+
 def _diagnose_transport_fault(
     exc_type: str,
     raw_lower: str,
@@ -299,31 +329,16 @@ def _diagnose_transport_fault(
             raw_error=sanitized_raw,
         )
 
-    reset_types = (
-        "connectionreseterror",
-        "connectionabortederror",
-        "remoteprotocolerror",
-        "readerror",
-        "writeerror",
-        "brokenpipeerror",
-        "remotedisconnected",
-        "incompleteread",
+    is_reset_exc = (
+        any(t in exc_type for t in _RESET_TYPES)
+        or any(t in ct for ct in chain_types for t in _RESET_TYPES)
     )
-    reset_phrases = (
-        "10054",
-        "10053",
-        "connection reset",
-        "connection abort",
-        "peer closed connection",
-        "server disconnected",
-        "remote end closed connection",
-        "incomplete chunked read",
+    is_upstream_4xx = status_code is not None and 400 <= status_code < 500
+    is_reset_text = not is_upstream_4xx and (
+        any(ph in raw_lower for ph in _RESET_PHRASES)
+        or bool(_RESET_TEXT_RE.search(raw_lower))
     )
-    if (
-        any(t in exc_type for t in reset_types)
-        or any(t in ct for ct in chain_types for t in reset_types)
-        or any(ph in raw_lower for ph in (*reset_types, *reset_phrases))
-    ):
+    if is_reset_exc or is_reset_text:
         return DiagnosticResult(
             error_code="CONNECTION_RESET",
             message="网络连接被中途断开或重置 (Connection Reset)",
