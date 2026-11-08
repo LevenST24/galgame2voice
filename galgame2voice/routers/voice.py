@@ -8,6 +8,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
+from pathlib import Path
+import re
 import sys
 import time
 from typing import Any
@@ -749,8 +751,23 @@ _SCAN_EXCLUDED_DIRS = frozenset({
     "pretrained_models",
     "g2pwmodel",
     "uvr5_weights",
-    "cache",
 })
+
+_SYNTH_AUDIO_FILENAME_PATTERN = re.compile(
+    r"^(?:chunk_\d+|full|repair|voice)_[0-9a-f]{12}\.wav$",
+    re.IGNORECASE,
+)
+
+
+def _is_path_or_subpath_of_any(path: Path, targets: set[Path]) -> bool:
+    try:
+        resolved = path.resolve()
+        for target in targets:
+            if resolved == target or resolved.is_relative_to(target):
+                return True
+    except (OSError, ValueError):
+        pass
+    return False
 
 
 def _discover_gpt_sovits_roots() -> list[str]:
@@ -767,11 +784,29 @@ def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
 
     # Also scan the app's own directories for user-copied assets.
     settings = get_settings()
-    candidate_roots.extend([
+    for root_candidate in (
         str(settings.project_root),
-        str(settings.project_root / "data"),
-        str(settings.project_root / "audio"),
-    ])
+        str(settings.data_dir),
+        str(settings.audio_dir),
+    ):
+        if root_candidate not in candidate_roots:
+            candidate_roots.append(root_candidate)
+
+    excluded_cache_dirs: set[Path] = set()
+    for p in (
+        settings.audio_dir / "cache",
+        settings.data_dir / "engine_cache",
+    ):
+        try:
+            excluded_cache_dirs.add(p.resolve())
+        except (OSError, ValueError):
+            pass
+
+    target_audio_dir: Path | None = None
+    try:
+        target_audio_dir = settings.audio_dir.resolve()
+    except (OSError, ValueError):
+        pass
 
     gpt_weights: list[dict[str, Any]] = []
     sovits_weights: list[dict[str, Any]] = []
@@ -779,11 +814,34 @@ def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
     seen = set()
 
     for root_dir in candidate_roots:
+        if not os.path.isdir(root_dir):
+            continue
+        if _is_path_or_subpath_of_any(Path(root_dir), excluded_cache_dirs):
+            continue
         try:
             for root, dirs, filenames in os.walk(root_dir):
                 # Skip venvs, repos, caches and built-in non-character model directories.
-                dirs[:] = [d for d in dirs if d.lower() not in _SCAN_EXCLUDED_DIRS]
+                dirs[:] = [
+                    d for d in dirs
+                    if d.lower() not in _SCAN_EXCLUDED_DIRS
+                    and not _is_path_or_subpath_of_any(Path(root, d), excluded_cache_dirs)
+                ]
+
+                is_in_audio_dir = False
+                if target_audio_dir:
+                    try:
+                        resolved_root = Path(root).resolve()
+                        is_in_audio_dir = (
+                            resolved_root == target_audio_dir
+                            or resolved_root.is_relative_to(target_audio_dir)
+                        )
+                    except (OSError, ValueError):
+                        is_in_audio_dir = False
+
                 for fname in filenames:
+                    if is_in_audio_dir and _SYNTH_AUDIO_FILENAME_PATTERN.match(fname):
+                        continue
+
                     ext = os.path.splitext(fname)[1].lower()
                     full_path = os.path.normpath(os.path.join(root, fname))
                     norm_key = os.path.normcase(full_path)
