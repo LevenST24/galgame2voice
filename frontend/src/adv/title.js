@@ -171,10 +171,11 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
       add(meta, el('b', '', session?.characterName || session?.title || '新对话'),
         el('span', 'home-time', session ? ` · ${formatHomeTime(session.updatedAt, now())}` : ''));
       pane.appendChild(meta);
-      const excerpt = session?.excerpt?.zh ? session.excerpt : { zh: '从这一刻，开始你们的故事。' };
+      const excerpt = (session?.excerpt?.zh || session?.excerpt?.ja) ? session.excerpt : { zh: '从这一刻，开始你们的故事。' };
       if (excerpt.user) pane.appendChild(el('p', 'home-you', `你：${excerpt.user}`));
-      pane.appendChild(el('blockquote', 'home-quote', `「${String(excerpt.zh || '').replace(/^「|」$/g, '')}」`));
-      if (excerpt.ja) pane.appendChild(el('p', 'home-ja', excerpt.ja));
+      const quote = excerpt.zh || excerpt.ja || '';
+      pane.appendChild(el('blockquote', 'home-quote', `「${String(quote).replace(/^「|」$/g, '')}」`));
+      if (excerpt.zh && excerpt.ja && excerpt.zh !== excerpt.ja) pane.appendChild(el('p', 'home-ja', excerpt.ja));
       const row = el('div', 'home-actions');
       row.appendChild(btn('home-primary home-continue', session?.hasUserMessages ? '接着聊 →' : '开始聊天', () => enter()));
       if (canReplayLine(excerpt.line, excerpt, actions.voiceEnabled?.() ?? true, now().getTime()) && !failedAudio.has(JSON.stringify(excerpt))) {
@@ -190,7 +191,8 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     // Keep the actual session's greeting available in the DOM while onboarding
     // replaces its visual excerpt (also used by portable initialization smoke).
     const excerpt = main()?.excerpt;
-    if (excerpt?.zh) { const greeting = el('blockquote', 'home-greeting', excerpt.zh); greeting.hidden = true; pane.appendChild(greeting); }
+    const greetingText = excerpt?.zh || excerpt?.ja;
+    if (greetingText) { const greeting = el('blockquote', 'home-greeting', greetingText); greeting.hidden = true; pane.appendChild(greeting); }
     const heading = el('div', 'home-first-heading');
     heading.appendChild(el('p', 'home-label', '第一次使用'));
     if (main()?.hasUserMessages) {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createTitleActions } from '../frontend/src/adv/actions.js';
+import { createTitleActions, homeExcerpt } from '../frontend/src/adv/actions.js';
 import { showTitle } from '../frontend/src/adv/title_hook.js';
 import { prepareSessionImport, applySessionImport, state, loadState, getActive, getSession } from '../frontend/src/store.js';
 import { setup } from './helpers/adv_main.mjs';
@@ -268,4 +268,42 @@ test('advActions.subscribeSettings forwards modal open and close transitions and
   closeModal(modalEl);
   delete globalThis.document;
 });
+
+test('homeExcerpt and listSessions preserve latest Japanese-only assistant reply instead of reverting to earlier turn', () => {
+  const messages = [
+    { id: 'm1_u', role: 'user', content: '第一轮提问' },
+    { id: 'm1_a', role: 'assistant', ts: 1000, lines: [{ index: 0, zh: '你好。', ja: 'こんにちは。' }] },
+    { id: 'm2_u', role: 'user', content: '第二轮提问' },
+    { id: 'm2_a', role: 'assistant', ts: 2000, lines: [{ index: 0, zh: '', ja: 'ただいま。', audio: { status: 'ready', chunks: ['/audio.wav'] } }] },
+  ];
+  const excerpt = homeExcerpt(messages);
+  assert.equal(excerpt.messageId, 'm2_a', 'must not skip latest turn to revert to m1_a');
+  assert.equal(excerpt.zh, '');
+  assert.equal(excerpt.ja, 'ただいま。');
+  assert.equal(excerpt.user, '第二轮提问');
+  assert.equal(excerpt.line?.ja, 'ただいま。');
+
+  const { api } = actions([{ id: 'sess1', title: '日文回复会话', updatedAt: 2000, settings: { voiceProfileId: 7 }, messages }]);
+  const item = api.listSessions()[0];
+  assert.equal(item.lastLine, 'ただいま。');
+  assert.equal(item.excerpt.messageId, 'm2_a');
+  assert.equal(item.excerpt.ja, 'ただいま。');
+});
+
+test('homeExcerpt extracts Japanese-only reply when session has no Chinese text', () => {
+  const messages = [
+    { id: 'm1_u', role: 'user', content: 'おかえり' },
+    { id: 'm1_a', role: 'assistant', ts: 1000, lines: [{ index: 0, zh: '', ja: 'ただいま。' }] },
+  ];
+  const excerpt = homeExcerpt(messages);
+  assert.equal(excerpt.messageId, 'm1_a');
+  assert.equal(excerpt.zh, '');
+  assert.equal(excerpt.ja, 'ただいま。');
+  assert.equal(excerpt.user, 'おかえり');
+
+  const { api } = actions([{ id: 'sess2', title: '纯日文会话', updatedAt: 1000, settings: {}, messages }]);
+  const item = api.listSessions()[0];
+  assert.equal(item.lastLine, 'ただいま。');
+});
+
 
