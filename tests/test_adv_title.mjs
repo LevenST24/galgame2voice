@@ -701,3 +701,56 @@ test('manifest-backed avatars reuse stage v2/v3 normalization and layer planning
   assert.deepEqual(layeredAvatar.crop, crop); assert.deepEqual(layeredAvatar.rect, rect);
   assert.deepEqual(layeredAvatar.layers.map(l => l.file), ['/fake-body.webp', '/fake-face.webp']);
 });
+
+test('title screen presents latest Japanese-only reply with audio preview and without duplicate ja line', async t => {
+  const audio = { status: 'ready', chunks: [{ audio_url: '/tadaima.wav' }] };
+  const sessionMessages = [
+    { role: 'user', content: '第一轮中文提问' },
+    { id: 'm1', role: 'assistant', ts: NOW.getTime() - 10000, lines: [{ index: 0, zh: '第一轮中文', ja: '一' }] },
+    { role: 'user', content: '第二轮提问：回家了吗？' },
+    { id: 'm2', role: 'assistant', ts: NOW.getTime(), lines: [{ index: 0, zh: '', ja: 'ただいま。', audio }] },
+  ];
+  const s = {
+    ...snapshot('ja_test'),
+    messages: sessionMessages,
+    excerpt: homeExcerpt(sessionMessages),
+    hasUserMessages: true,
+  };
+  const h = await fixture(t, { sessions: [s], active: 'ja_test' });
+  assert.equal(h.q('.home-you').textContent, '你：第二轮提问：回家了吗？');
+  assert.equal(h.q('.home-quote').textContent, '「ただいま。」');
+  assert.equal(h.q('.home-ja'), null, 'Japanese fallback quote must not be duplicated in p.home-ja');
+  assert.ok(h.q('.home-listen'), 'play excerpt button must be visible for Japanese-only reply');
+  assert.equal(h.q('.home-continue').children[0].textContent, '接着聊 →');
+
+  h.q('.home-listen').click();
+  assert.deepEqual(h.calls.find(c => Array.isArray(c) && c[0] === 'play'), ['play', 'm2', 0]);
+});
+
+test('title screen with pure Japanese reply does not fall back to default story opener', async t => {
+  const sessionMessages = [
+    { role: 'user', content: '元気？' },
+    { id: 'm1', role: 'assistant', ts: NOW.getTime(), lines: [{ index: 0, zh: '', ja: '元気ですよ。' }] },
+  ];
+  const s = {
+    ...snapshot('pure_ja'),
+    messages: sessionMessages,
+    excerpt: homeExcerpt(sessionMessages),
+    hasUserMessages: true,
+  };
+  const h = await fixture(t, { sessions: [s], active: 'pure_ja' });
+  assert.equal(h.q('.home-you').textContent, '你：元気？');
+  assert.equal(h.q('.home-quote').textContent, '「元気ですよ。」');
+  assert.notEqual(h.q('.home-quote').textContent, '「从这一刻，开始你们的故事。」');
+  assert.equal(h.q('.home-ja'), null);
+});
+
+test('onboarding preserves Japanese-only greeting in hidden home-greeting DOM', async t => {
+  const greetingExcerpt = { zh: '', ja: 'おかえりなさいませ。' };
+  const session = { ...snapshot('first_ja'), excerpt: greetingExcerpt };
+  const h = await fixture(t, { sessions: [session], status: { modelLoaded: true, hasModel: false, model: { state: 'error' } } });
+  assert.ok(h.q('.home-first-title'));
+  assert.ok(h.q('.home-greeting'));
+  assert.equal(h.q('.home-greeting').textContent, 'おかえりなさいませ。');
+});
+

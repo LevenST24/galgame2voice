@@ -8,9 +8,10 @@ export function homeExcerpt(messages = []) {
     if (msg.role !== 'assistant') continue;
     const line = msg.lines?.findLast(item => String(item.zh || item.ja || '').trim());
     const zh = line?.zh || msg.content || '';
-    if (!String(zh).trim()) continue;
+    const ja = line?.ja || (!line ? msg.japanese : '') || '';
+    if (!String(zh).trim() && !String(ja).trim()) continue;
     const user = messages.slice(0, i).findLast(item => item.role === 'user');
-    return { zh, ja: line?.ja || (!line ? msg.japanese : '') || '', user: user?.content || '',
+    return { zh, ja, user: user?.content || '',
       messageId: msg.id, ts: msg.ts, line: line ? structuredClone(line) : null };
   }
   return { zh: '', ja: '', user: '', line: null };
@@ -31,7 +32,7 @@ export function createTitleActions({ getSessions, getProfiles, getActiveId = () 
       const profile = profiles.find(p => p.id === settings.voiceProfileId);
       const last = session.messages?.at(-1);
       const behind = Boolean(isBehindServer?.(session.id));
-      const lastLine = (behind && session.lastLine) || excerpt.zh || last?.lines?.at(-1)?.zh || last?.lines?.at(-1)?.ja || last?.content || session.lastLine || '';
+      const lastLine = (behind && session.lastLine) || excerpt.zh || excerpt.ja || last?.lines?.at(-1)?.zh || last?.lines?.at(-1)?.ja || last?.content || session.lastLine || '';
       const lastUser = session.messages?.findLast ? session.messages.findLast(m => m.role === 'user') : null;
       return { id: session.id, title: session.title || '新对话', characterName: profile?.name || '',
         lastLine,
