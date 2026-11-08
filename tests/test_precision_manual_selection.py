@@ -230,6 +230,98 @@ class TestPrecisionAPI:
             assert cache3["device"] == "cpu"
             assert cache3["is_half"] is False
 
+    async def test_restart_sovits_auto_preserves_calibrated_cache_and_clears_on_manual_switch(
+        self, tmp_path, monkeypatch
+    ):
+        settings = get_settings()
+        monkeypatch.setattr(settings, "project_root", tmp_path)
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        fake_engine = tmp_path / "dummy_sovits"
+        fake_engine.mkdir()
+        (fake_engine / "api_v2.py").write_text("# test engine marker\n")
+        (tmp_path / "data" / "sovits_dir.txt").write_text(str(fake_engine), encoding="utf-8")
+
+        monkeypatch.setattr(rs, "_SPAWNED_SOVITS_PROC", None)
+        monkeypatch.setattr(rs, "is_port_in_use", lambda *args: False)
+        monkeypatch.setattr(
+            "galgame2voice.utils.hardware.detect_gpu_capability",
+            lambda: (True, "Mock NVIDIA GPU", 0),
+        )
+
+        async def _local_custom_resolver():
+            return parse_sovits_endpoint("http://127.0.0.1:9880", source="db")
+
+        monkeypatch.setattr(
+            "galgame2voice.routers.health.resolve_effective_sovits_endpoint",
+            _local_custom_resolver,
+        )
+
+        spawn_calls = []
+
+        class FakeProc:
+            pid = 9999
+
+            def poll(self):
+                return None
+
+        monkeypatch.setattr(
+            rs,
+            "_spawn_sovits_process",
+            lambda s_dir, host, port, is_half, device="cuda": spawn_calls.append(
+                (host, port, is_half, device)
+            ) or FakeProc(),
+        )
+
+        # 1. Launcher has calibrated FP32 cache (is_half=False, device="cuda")
+        write_precision_cache(tmp_path, str(fake_engine), is_half=False, device="cuda")
+        initial_cache = read_precision_cache(tmp_path)
+        assert initial_cache is not None
+        assert initial_cache["is_half"] is False
+        assert initial_cache["device"] == "cuda"
+
+        app = create_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # 1. Default auto state (before settings row is explicitly written) preserves calibrated precision.json
+            r1 = await client.post("/api/system/restart_sovits", json={"precision": "auto"})
+            assert r1.status_code == 200
+            data1 = r1.json()
+            assert data1["is_half"] is False
+            assert data1["precision"] == "FP32"
+            assert data1["device"] == "cuda"
+            assert spawn_calls[-1] == ("127.0.0.1", 9880, False, "cuda")
+            assert read_precision_cache(tmp_path) is not None
+
+            # 2. Explicit "auto" row in DB still preserves calibrated precision.json on subsequent auto restart
+            r2 = await client.post("/api/system/restart_sovits", json={"precision": "auto"})
+            assert r2.status_code == 200
+            data2 = r2.json()
+            assert data2["is_half"] is False
+            assert data2["precision"] == "FP32"
+            assert data2["device"] == "cuda"
+            assert spawn_calls[-1] == ("127.0.0.1", 9880, False, "cuda")
+            cache_after = read_precision_cache(tmp_path)
+            assert cache_after is not None, "precision.json should be preserved when DB precision is auto"
+            assert cache_after["is_half"] is False
+            assert cache_after["device"] == "cuda"
+
+            # 3. Switch to manual fp32
+            r3 = await client.post("/api/system/restart_sovits", json={"precision": "fp32"})
+            assert r3.status_code == 200
+            assert spawn_calls[-1] == ("127.0.0.1", 9880, False, "cuda")
+            cache_manual = read_precision_cache(tmp_path)
+            assert cache_manual is not None
+            assert cache_manual["is_half"] is False
+
+            # 4. Switching back from manual fp32 to auto clears precision.json and reverts to fallback
+            r4 = await client.post("/api/system/restart_sovits", json={"precision": "auto"})
+            assert r4.status_code == 200
+            assert read_precision_cache(tmp_path) is None
+            data4 = r4.json()
+            assert data4["is_half"] is True
+            assert data4["precision"] == "FP16"
+            assert data4["device"] == "cuda"
+            assert spawn_calls[-1] == ("127.0.0.1", 9880, True, "cuda")
+
     async def test_restart_sovits_endpoint_remote_returns_409(self, monkeypatch):
         """A remote effective endpoint must not be managed by this host:
         restart returns 409 REMOTE_SOVITS_NOT_MANAGED and never spawns."""

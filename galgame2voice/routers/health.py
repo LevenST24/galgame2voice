@@ -599,8 +599,12 @@ async def _apply_sovits_precision_config(
         await asyncio.to_thread(write_precision_cache, project_root, str(sovits_dir), is_half=is_half, device=device)
         await _update_inference_precision_setting(target_setting)
     elif req_prec == "auto":
-        cache_file = project_root / "data" / "precision.json"
-        await asyncio.to_thread(cache_file.unlink, missing_ok=True)
+        previous_precision = await asyncio.to_thread(
+            read_db_precision, project_root, db_path=get_settings().db_path,
+        )
+        if previous_precision and previous_precision != "auto":
+            cache_file = project_root / "data" / "precision.json"
+            await asyncio.to_thread(cache_file.unlink, missing_ok=True)
         await _update_inference_precision_setting("auto")
         device, is_half, source = await asyncio.to_thread(
             resolve_initial_device_and_half, project_root, sovits_dir, db_path=get_settings().db_path,
