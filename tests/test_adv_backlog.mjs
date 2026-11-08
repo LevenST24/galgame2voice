@@ -2241,4 +2241,374 @@ test('LOG partial failed voice exposes playable audio, partial failure note and 
   ], 'repaired audio should play the complete chunks');
 });
 
+test('LOG replay clears regeneration feedback for lines entry after ended or interrupted, but restores on blocked', async t => {
+  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+  const now = Date.now();
+  const session = {
+    id: 's_replay_clear',
+    settings: { voiceProfileId: 1 },
+    messages: [
+      {
+        id: 'msg1',
+        role: 'assistant',
+        lines: [
+          {
+            index: 0,
+            zh: '第一句',
+            ja: '一番目。',
+            emotion: 'neutral',
+            act: {},
+            audio: { status: 'failed', chunks: [] },
+          },
+          {
+            index: 1,
+            zh: '第二句',
+            ja: '二番目。',
+            emotion: 'neutral',
+            act: {},
+            audio: { status: 'ready', chunks: [{ index: 0, line: 1, audio_url: '/audio/2.wav', sentence: '二番目。' }] },
+          },
+        ],
+      },
+    ],
+  };
+
+  let playLineResult = 'ended';
+  let onStopLine = null;
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => DEFAULT_SESSION_SETTINGS,
+    getCharacter: () => ({ name: '角色' }),
+    voiceEnabled: () => true,
+    wallNow: () => now,
+    getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
+    regenerateLineAudio: async ({ lineIndex }) => {
+      const line = session.messages[0].lines[lineIndex];
+      line.audio = {
+        status: 'ready',
+        chunks: [{ index: 0, line: lineIndex, audio_url: `/audio/repaired_${lineIndex}.wav`, sentence: line.ja }],
+      };
+      return { line, audio: line.audio, remoteUpdated: false, persisted: true, saved: true };
+    },
+    audio: {
+      stopLine() {
+        onStopLine?.();
+      },
+      async playLine(index, chunks) {
+        if (typeof playLineResult === 'function') {
+          return playLineResult(index, chunks);
+        }
+        return playLineResult;
+      },
+    },
+  });
+  t.after(() => log.destroy());
+
+  const getEntry = lineIdx => [...log.element.querySelectorAll('.adv-log-entry.is-assistant')]
+    .find(el => el.dataset.lineIndex === String(lineIdx));
+
+  // Case 1: single line regeneration succeeds -> replay returns 'ended' -> renderAll -> feedback is cleared
+  const entry0 = getEntry(0);
+  const regenBtn0 = entry0.querySelector('.adv-log-regenerate-btn');
+  const replayBtn0 = entry0.querySelector('.adv-log-replay-btn');
+  const statusSpan0 = entry0.querySelector('.adv-log-audio-status');
+
+  await regenBtn0.onclick({ stopPropagation() {} });
+  assert.equal(statusSpan0.hidden, false);
+  assert.equal(statusSpan0.textContent, '语音已生成，点语音播放。');
+
+  playLineResult = 'ended';
+  await replayBtn0.onclick({ stopPropagation() {} });
+  assert.equal(statusSpan0.hidden, true);
+
+  // Trigger renderAll: must NOT resurrect feedback
+  log.renderAll();
+  const refreshedEntry0 = getEntry(0);
+  const refreshedStatus0 = refreshedEntry0.querySelector('.adv-log-audio-status');
+  assert.equal(refreshedStatus0.hidden, true, 'statusSpan should stay hidden after ended replay and renderAll');
+  assert.notEqual(refreshedStatus0.textContent, '语音已生成，点语音播放。');
+
+  // Case 2: blocked playback retains feedback and restores display
+  // Reset line 0 to failed, regenerate again
+  session.messages[0].lines[0].audio = { status: 'failed', chunks: [] };
+  log.renderAll();
+  const entry0Blocked = getEntry(0);
+  const regenBtn0Blocked = entry0Blocked.querySelector('.adv-log-regenerate-btn');
+  const replayBtn0Blocked = entry0Blocked.querySelector('.adv-log-replay-btn');
+  const statusSpan0Blocked = entry0Blocked.querySelector('.adv-log-audio-status');
+
+  await regenBtn0Blocked.onclick({ stopPropagation() {} });
+  assert.equal(statusSpan0Blocked.hidden, false);
+  assert.equal(statusSpan0Blocked.textContent, '语音已生成，点语音播放。');
+
+  playLineResult = 'blocked';
+  await replayBtn0Blocked.onclick({ stopPropagation() {} });
+  assert.equal(statusSpan0Blocked.hidden, false, 'statusSpan should restore on blocked replay');
+  assert.equal(statusSpan0Blocked.textContent, '语音已生成，点语音播放。');
+
+  // Case 3: interrupted playback clears feedback
+  playLineResult = index => {
+    if (index === 0) {
+      return new Promise(resolve => {
+        onStopLine = () => {
+          onStopLine = null;
+          resolve('interrupted');
+        };
+      });
+    }
+    return 'ended';
+  };
+
+  const playPromise0 = replayBtn0Blocked.onclick({ stopPropagation() {} });
+  await microtasks();
+
+  // Click line 1 replay to interrupt line 0 via stopReplay() -> audio.stopLine()
+  const entry1 = getEntry(1);
+  const replayBtn1 = entry1.querySelector('.adv-log-replay-btn');
+  await replayBtn1.onclick({ stopPropagation() {} });
+  await playPromise0;
+
+  // After interruption, renderAll must NOT resurrect feedback on line 0
+  log.renderAll();
+  const entry0AfterInterrupt = getEntry(0);
+  const status0AfterInterrupt = entry0AfterInterrupt.querySelector('.adv-log-audio-status');
+  assert.equal(status0AfterInterrupt.hidden, true, 'statusSpan should be cleared after interrupted replay and renderAll');
+  assert.notEqual(status0AfterInterrupt.textContent, '语音已生成，点语音播放。');
+});
+
+test('LOG replay clears regeneration feedback for legacy entry after ended or interrupted, but restores on blocked', async t => {
+  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+  const now = Date.now();
+  const session = {
+    id: 's_legacy_replay_clear',
+    settings: { voiceProfileId: 1 },
+    messages: [
+      {
+        id: 'msg_leg_1',
+        role: 'assistant',
+        content: '旧中文1',
+        japanese: '旧日本語1。',
+        ts: now - 8 * 86400000,
+        audioUrls: ['/audio/old1.wav'],
+      },
+      {
+        id: 'msg_leg_2',
+        role: 'assistant',
+        content: '旧中文2',
+        japanese: '旧日本語2。',
+        ts: now - 8 * 86400000,
+        audioUrls: ['/audio/old2.wav'],
+      },
+    ],
+  };
+
+  let playLineResult = 'ended';
+  let onStopLine = null;
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => DEFAULT_SESSION_SETTINGS,
+    getCharacter: () => ({ name: '角色' }),
+    voiceEnabled: () => true,
+    wallNow: () => now,
+    getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
+    regenerateLineAudio: async ({ messageId }) => {
+      const msg = session.messages.find(m => m.id === messageId);
+      const repaired = {
+        index: 0,
+        zh: msg.content,
+        ja: msg.japanese,
+        emotion: 'neutral',
+        act: {},
+        audio: {
+          status: 'ready',
+          generated_at: now,
+          chunks: [{ index: 0, line: 0, audio_url: `/audio/repaired_${messageId}.wav`, sentence: msg.japanese }],
+        },
+      };
+      if (messageId === 'msg_leg_1') {
+        msg.lines = [repaired];
+      }
+      return { line: repaired, audio: repaired.audio, remoteUpdated: false, persisted: true, saved: true };
+    },
+    audio: {
+      stopLine() {
+        onStopLine?.();
+      },
+      async playLine(index, chunks) {
+        if (typeof playLineResult === 'function') {
+          return playLineResult(index, chunks);
+        }
+        return playLineResult;
+      },
+    },
+  });
+  t.after(() => log.destroy());
+
+  const getEntryByMsg = msgId => [...log.element.querySelectorAll('.adv-log-entry')]
+    .find(el => el.dataset.msgId === msgId);
+
+  // Case 1: single legacy regeneration succeeds -> replay returns 'ended' -> renderAll -> feedback is cleared
+  const entry1 = getEntryByMsg('msg_leg_1');
+  assert.ok(entry1.classList.contains('is-legacy'), 'entry1 should initially be legacy');
+  const regenBtn1 = entry1.querySelector('.adv-log-regenerate-btn');
+  const replayBtn1 = entry1.querySelector('.adv-log-replay-btn');
+  const statusSpan1 = entry1.querySelector('.adv-log-audio-status');
+
+  await regenBtn1.onclick({ stopPropagation() {} });
+  assert.equal(statusSpan1.hidden, false);
+  assert.equal(statusSpan1.textContent, '语音已生成，点语音播放。');
+
+  playLineResult = 'ended';
+  await replayBtn1.onclick({ stopPropagation() {} });
+  assert.equal(statusSpan1.hidden, true);
+
+  // Trigger renderAll: feedback must NOT resurrect (transitions to line entry since msg.lines is set)
+  log.renderAll();
+  const refreshedEntry1 = getEntryByMsg('msg_leg_1');
+  const refreshedStatus1 = refreshedEntry1.querySelector('.adv-log-audio-status');
+  assert.equal(refreshedStatus1.hidden, true, 'statusSpan should stay hidden after ended replay and renderAll');
+  assert.notEqual(refreshedStatus1.textContent, '语音已生成，点语音播放。');
+
+  // Case 2: blocked playback retains feedback and restores display
+  const entry2 = getEntryByMsg('msg_leg_2');
+  assert.ok(entry2.classList.contains('is-legacy'), 'entry2 should be legacy');
+  const regenBtn2 = entry2.querySelector('.adv-log-regenerate-btn');
+  const replayBtn2 = entry2.querySelector('.adv-log-replay-btn');
+  const statusSpan2 = entry2.querySelector('.adv-log-audio-status');
+
+  await regenBtn2.onclick({ stopPropagation() {} });
+  assert.equal(statusSpan2.hidden, false);
+  assert.equal(statusSpan2.textContent, '语音已生成，点语音播放。');
+
+  playLineResult = 'blocked';
+  await replayBtn2.onclick({ stopPropagation() {} });
+  assert.equal(statusSpan2.hidden, false, 'legacy statusSpan should restore on blocked replay');
+  assert.equal(statusSpan2.textContent, '语音已生成，点语音播放。');
+
+  // Case 3: interrupted playback clears feedback
+  playLineResult = (index, chunks) => {
+    if (chunks[0].audio_url.includes('msg_leg_2')) {
+      return new Promise(resolve => {
+        onStopLine = () => {
+          onStopLine = null;
+          resolve('interrupted');
+        };
+      });
+    }
+    return 'ended';
+  };
+
+  const playPromise2 = replayBtn2.onclick({ stopPropagation() {} });
+  await microtasks();
+
+  // Click msg_leg_1 replay to interrupt msg_leg_2 via stopReplay() -> audio.stopLine()
+  const refreshedReplay1 = refreshedEntry1.querySelector('.adv-log-replay-btn');
+  await refreshedReplay1.onclick({ stopPropagation() {} });
+  await playPromise2;
+
+  // After interruption, renderAll must NOT resurrect feedback on msg_leg_2 (which remains legacy)
+  log.renderAll();
+  const entry2AfterInterrupt = getEntryByMsg('msg_leg_2');
+  assert.ok(entry2AfterInterrupt.classList.contains('is-legacy'), 'entry2 should still be legacy');
+  const status2AfterInterrupt = entry2AfterInterrupt.querySelector('.adv-log-audio-status');
+  assert.equal(status2AfterInterrupt.hidden, true, 'legacy statusSpan should be cleared after interrupted replay and renderAll');
+  assert.notEqual(status2AfterInterrupt.textContent, '语音已生成，点语音播放。');
+});
+
+test('LOG replay ending while the same line is actively regenerating does not clear the regeneration progress note', async t => {
+  const doc = fakeDocument(), root = doc.createElement('div'); doc.body.appendChild(root);
+  const now = Date.now();
+  const session = {
+    id: 's_active_regen_replay',
+    settings: { voiceProfileId: 1 },
+    messages: [
+      {
+        id: 'msg_active',
+        role: 'assistant',
+        lines: [
+          {
+            index: 0,
+            zh: '部分台词',
+            ja: '一部台詞。',
+            emotion: 'neutral',
+            act: {},
+            audio: {
+              status: 'failed',
+              chunks: [{ index: 0, line: 0, audio_url: '/audio/part0.wav', sentence: '一部台詞。' }],
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  let resolvePlay;
+  let resolveRegen;
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => DEFAULT_SESSION_SETTINGS,
+    getCharacter: () => ({ name: '角色' }),
+    voiceEnabled: () => true,
+    wallNow: () => now,
+    getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
+    regenerateLineAudio: async () => new Promise(r => { resolveRegen = r; }),
+    audio: {
+      stopLine() {},
+      async playLine() {
+        return new Promise(r => { resolvePlay = r; });
+      },
+    },
+  });
+  t.after(() => log.destroy());
+
+  const entry = log.element.querySelector('.adv-log-entry.is-assistant');
+  const replayBtn = entry.querySelector('.adv-log-replay-btn');
+  const regenBtn = entry.querySelector('.adv-log-regenerate-btn');
+  const statusSpan = entry.querySelector('.adv-log-audio-status');
+
+  // Start replay of partial chunk
+  const playPromise = replayBtn.onclick({ stopPropagation() {} });
+  await microtasks();
+
+  // While playing, start regeneration of line 0
+  const regenPromise = regenBtn.onclick({ stopPropagation() {} });
+  await microtasks();
+  assert.equal(statusSpan.textContent, '正在生成这句语音…');
+
+  // Now line 0 playback finishes with 'ended'
+  resolvePlay('ended');
+  await playPromise;
+
+  // Re-rendering while regeneration is still in flight must keep the progress note in regenerationFeedback
+  log.renderAll();
+  const refreshedStatus = log.element.querySelector('.adv-log-audio-status');
+  assert.equal(refreshedStatus.hidden, false);
+  assert.equal(refreshedStatus.textContent, '正在生成这句语音…');
+
+  // Complete regeneration
+  resolveRegen({
+    line: {
+      index: 0,
+      zh: '部分台词',
+      ja: '一部台詞。',
+      emotion: 'neutral',
+      act: {},
+      audio: {
+        status: 'ready',
+        generated_at: now,
+        chunks: [{ index: 0, line: 0, audio_url: '/audio/part_done.wav', sentence: '一部台詞。' }],
+      },
+    },
+    audio: {
+      status: 'ready',
+      generated_at: now,
+      chunks: [{ index: 0, line: 0, audio_url: '/audio/part_done.wav', sentence: '一部台詞。' }],
+    },
+    remoteUpdated: false,
+    persisted: true,
+    saved: true,
+  });
+  await regenPromise;
+  assert.equal(refreshedStatus.textContent, '语音已生成，点语音播放。');
+});
 

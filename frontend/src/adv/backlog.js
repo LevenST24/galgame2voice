@@ -372,7 +372,12 @@ export function createBacklog(container, deps = {}) {
         result = 'failed';
       }
 
-      if (!destroyed && replaySequence === thisReplay) {
+      if (destroyed) return;
+      if (activeRegeneration?.key !== lineKey && (result === 'ended' || result === 'interrupted')) {
+        regenerationFeedback.delete(lineKey);
+      }
+
+      if (replaySequence === thisReplay) {
         replayBtn.classList.remove('is-playing');
         activeReplayButton = null;
         if (result === 'failed') {
@@ -382,6 +387,8 @@ export function createBacklog(container, deps = {}) {
         } else if (loadRetryText[result]) {
           loadNotes.set(key, loadRetryText[result]);
           regenerationFeedback.delete(lineKey);
+        } else if (result === 'blocked') {
+          refreshAudioState();
         }
         if (result === 'failed' || loadRetryText[result]) {
           updateReplayButtonState(replayBtn, line, msg, statusSpan);
@@ -561,7 +568,12 @@ export function createBacklog(container, deps = {}) {
         result = 'failed';
       }
 
-      if (!destroyed && replaySequence === thisReplay) {
+      if (destroyed) return;
+      if (activeRegeneration?.key !== lineKey && (result === 'ended' || result === 'interrupted')) {
+        regenerationFeedback.delete(lineKey);
+      }
+
+      if (replaySequence === thisReplay) {
         replayBtn.classList.remove('is-playing');
         activeReplayButton = null;
         if (result === 'failed') {
@@ -571,6 +583,8 @@ export function createBacklog(container, deps = {}) {
         } else if (loadRetryText[result]) {
           loadNotes.set(key, loadRetryText[result]);
           regenerationFeedback.delete(lineKey);
+        } else if (result === 'blocked') {
+          refreshAudioState();
         }
         if (result === 'failed' || loadRetryText[result]) {
           updateReplayButtonState(replayBtn, targetLine, msg, statusSpan);
