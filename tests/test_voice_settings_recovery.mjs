@@ -1059,4 +1059,94 @@ const models = {
 
   passed++;
 }
+{
+  // Unbound session deduplicates repeated catalog_warning during turnstart background sync
+  const { first } = setup();
+  const toastRoot = element();
+  toastRoot.querySelectorAll = () => toastRoot.children;
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
+    createElement: () => element(),
+  };
+
+  const poppedToasts = [];
+  const originalAppendChild = toastRoot.appendChild.bind(toastRoot);
+  toastRoot.appendChild = (child) => {
+    poppedToasts.push(child);
+    originalAppendChild(child);
+  };
+  const expireToasts = () => {
+    for (const toast of toastRoot.children) clearTimeout(toast._timer);
+    toastRoot.children = [];
+  };
+
+  const warningA = '角色目录警告：包 A 缺失 weights';
+  const warningB = '角色目录警告：包 B 损坏';
+  let currentWarning = warningA;
+
+  globalThis.fetch = async (url) => {
+    if (url === '/api/characters/rescan') {
+      return response({ status: 'ok', discovered_count: 0, catalog_warning: currentWarning });
+    }
+    if (url === '/api/voice/profiles') {
+      return response({
+        profiles: [{ id: 1, name: '有效角色' }],
+        active_profile_id: 1,
+        catalog_warning: currentWarning,
+      });
+    }
+    return response({});
+  };
+
+  try {
+    assert.equal(first.settings.voiceProfileId, null);
+    await ensureSessionVoice(first, { silent: true });
+    assert.equal(poppedToasts.length, 1, 'First silent turn should display catalog warning');
+    assert.equal(poppedToasts[0].dataset.msg, warningA);
+
+    expireToasts();
+    await ensureSessionVoice(first, { silent: true });
+    assert.equal(poppedToasts.length, 1, 'Second silent turn with same catalog warning must not pop a new toast');
+
+    currentWarning = warningB;
+    await ensureSessionVoice(first, { silent: true });
+    assert.equal(poppedToasts.length, 2, 'Silent turn with changed catalog warning should pop new toast');
+    assert.equal(poppedToasts[1].dataset.msg, warningB);
+
+    expireToasts();
+    await loadSessionVoiceSelect(first);
+    assert.equal(poppedToasts.length, 3, 'User active loadSessionVoiceSelect should pop toast even with same warning');
+    assert.equal(poppedToasts[2].dataset.msg, warningB);
+
+    expireToasts();
+    await fetchVoiceProfiles();
+    assert.equal(poppedToasts.length, 4, 'User active fetchVoiceProfiles should pop toast');
+    assert.equal(poppedToasts[3].dataset.msg, warningB);
+
+    expireToasts();
+    await handleRescanCharacters();
+    assert.equal(poppedToasts.length, 5, 'User active handleRescanCharacters should pop toast with catalog warning');
+    assert.equal(poppedToasts[4].dataset.msg, warningB);
+
+    expireToasts();
+    await ensureSessionVoice(first, { silent: true });
+    assert.equal(poppedToasts.length, 5, 'Silent turn following user-initiated warning must not duplicate toast');
+
+    expireToasts();
+    currentWarning = null;
+    await ensureSessionVoice(first, { silent: true });
+    assert.equal(poppedToasts.length, 5, 'Silent turn when catalog warning is null should not pop toast');
+
+    currentWarning = warningB;
+    await ensureSessionVoice(first, { silent: true });
+    assert.equal(poppedToasts.length, 6, 'Silent turn when warning returns after clear should pop toast again');
+    assert.equal(poppedToasts[5].dataset.msg, warningB);
+
+    passed++;
+  } finally {
+    expireToasts();
+    globalThis.document = previousDocument;
+  }
+}
 console.log(`Voice settings recovery: ${passed} scenarios passed`);

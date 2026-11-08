@@ -25,6 +25,7 @@ let voiceSelectRevision = 0;
 // saving keeps the session's binding instead of treating it as "no character".
 const VOICE_LIST_UNAVAILABLE = '__unavailable__';
 let profilesRevision = 0;
+let lastShownCatalogWarning = '';
 
 export function invalidateScannedModels() {
   scannedModels = null;
@@ -36,6 +37,7 @@ export function initVoiceSettings(dom, callbacks = {}) {
   _dom = dom;
   _callbacks = callbacks;
   lastSwitchFailed = false;
+  lastShownCatalogWarning = '';
   editorRevision += 1;
   sessionVoiceRevision += 1;
   profilesRevision += 1;
@@ -196,13 +198,18 @@ export function syncRangeLabels() {
   }
 }
 
-export async function fetchVoiceProfiles() {
+export async function fetchVoiceProfiles({ silent = false } = {}) {
   const revision = ++profilesRevision;
   const activeRevision = activeProfileRevision;
   const data = await requestJson('/api/voice/profiles');
   if (revision === profilesRevision) {
     voiceProfiles = data.profiles || [];
-    if (data.catalog_warning) showToast(data.catalog_warning, 'error');
+    if (!data.catalog_warning) {
+      lastShownCatalogWarning = '';
+    } else if (!silent || data.catalog_warning !== lastShownCatalogWarning) {
+      showToast(data.catalog_warning, 'error');
+      lastShownCatalogWarning = data.catalog_warning;
+    }
     // A catalog response may predate a completed switch. Keep its catalog,
     // but never publish that earlier active ID over the switch acknowledgement.
     if (activeRevision === activeProfileRevision && !lastSwitchFailed) {
@@ -230,7 +237,7 @@ export function ensureSessionVoice(session, options = {}) {
 async function applySessionVoice(session, { silent = false }, want, isCurrent) {
   if (activeProfileId === null || !want) {
     try {
-      await fetchVoiceProfiles();
+      await fetchVoiceProfiles({ silent });
       if (!isCurrent()) return;
       _callbacks.renderHeader?.();
     } catch { /* Text and ADV art remain available without the voice service. */ }
