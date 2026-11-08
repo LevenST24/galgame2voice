@@ -940,3 +940,465 @@ class TestReadinessMonitorCalibration:
         assert captured.out.count("GPT-SoVITS 模型仍在后台加载中") == 1
 
 
+class TestProbeSynthCustomVoiceFallback:
+    """
+    Regression tests for custom voice profile fallback in _probe_synth_peak.
+    When characters/ is empty but a custom voice profile is configured in SQLite,
+    the probe must fall back to the custom voice reference audio and trigger FP32
+    precision calibration when FP16 produces silent audio.
+    """
+
+    @staticmethod
+    def _build_test_wav(samples: bytes, bits: int = 16, sample_rate: int = 32000, channels: int = 1) -> bytes:
+        import struct
+        block_align = channels * (bits // 8)
+        fmt = struct.pack(
+            "<HHIIHH", 1, channels, sample_rate,
+            sample_rate * block_align, block_align, bits,
+        )
+        chunk = b"fmt " + struct.pack("<I", len(fmt)) + fmt
+        chunk += b"data" + struct.pack("<I", len(samples)) + samples
+        if len(samples) % 2:
+            chunk += b"\x00"
+        return b"RIFF" + struct.pack("<I", 4 + len(chunk)) + b"WAVE" + chunk
+
+    def test_custom_voice_fallback_probes_and_calibrates_fp32(self, tmp_path, monkeypatch):
+        import http.server
+        import sqlite3
+        import urllib.parse
+        import wave
+        from galgame2voice.services.character_manager import get_character_manager
+
+        # 1. Setup isolated directories: empty characters/
+        char_dir = tmp_path / "characters"
+        char_dir.mkdir(parents=True, exist_ok=True)
+        mgr = get_character_manager(char_dir)
+        monkeypatch.setattr("galgame2voice.services.character_manager.get_character_manager", lambda: mgr)
+
+        # 2. Setup custom reference audio
+        ref_file = tmp_path / "custom_refs" / "user_sample.wav"
+        ref_file.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(ref_file), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(32000)
+            wf.writeframes(b"\x00\x10" * 32000)
+
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        settings = get_settings()
+        monkeypatch.setattr(settings, "project_root", tmp_path)
+
+        # 3. Setup SQLite DB with active voice profile
+        db_file = settings.db_path
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_file))
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    active_voice_profile_id INTEGER DEFAULT NULL
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS voice_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    ref_audio_path TEXT NOT NULL,
+                    prompt_text TEXT NOT NULL,
+                    prompt_lang TEXT NOT NULL DEFAULT 'ja',
+                    is_default INTEGER NOT NULL DEFAULT 0
+                );
+            """)
+            conn.execute("DELETE FROM voice_profiles;")
+            conn.execute(
+                "INSERT INTO voice_profiles (id, name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default) "
+                "VALUES (1, 'custom_char', 'gpt.ckpt', 'sovits.pth', ?, 'カスタムボイスです。', 'ja', 1);",
+                (str(ref_file),),
+            )
+            conn.execute("INSERT OR REPLACE INTO settings (id, active_voice_profile_id) VALUES (1, 1);")
+            conn.commit()
+        finally:
+            conn.close()
+
+        # 4. Mock HTTP /tts server:
+        # - call 1 (_probe_synth_peak directly): silent WAV
+        # - call 2 (calibrate_engine_precision FP16 probe): silent WAV -> triggers restart
+        # - call 3 (calibrate_engine_precision FP32 probe): audible WAV -> verified + cached
+        requests_received = []
+        response_queue = [
+            self._build_test_wav(b"\x00\x00" * 1600),
+            self._build_test_wav(b"\x00\x00" * 1600),
+            self._build_test_wav(b"\x00\x7f" * 1600),
+        ]
+
+        class MockTtsHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path == "/tts":
+                    qs = urllib.parse.parse_qs(parsed.query)
+                    requests_received.append(qs)
+                    payload = response_queue.pop(0) if response_queue else b""
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/wav")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), MockTtsHandler)
+        host, port = server.server_address
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+        try:
+            # First verify _probe_synth_peak directly
+            first_peak = run_server._probe_synth_peak(host, port)
+            assert first_peak == 0.0, f"Expected 0.0 (silent), got {first_peak}"
+            assert len(requests_received) == 1
+            assert requests_received[0]["ref_audio_path"] == [str(ref_file)]
+            assert requests_received[0]["prompt_text"] == ["カスタムボイスです。"]
+            assert requests_received[0]["prompt_lang"] == ["ja"]
+
+            # Now test precision calibration loop
+            restarts = []
+
+            def fake_restart(is_half):
+                restarts.append(is_half)
+                return object()
+
+            engine_dir = tmp_path / "engine"
+            engine_dir.mkdir(parents=True, exist_ok=True)
+
+            final_is_half, calibrated = run_server.calibrate_engine_precision(
+                engine_dir,
+                is_half=True,
+                probe_fn=lambda: run_server._probe_synth_peak(host, port),
+                restart_fn=fake_restart,
+            )
+
+            assert restarts == [False]
+            assert final_is_half is False
+            assert calibrated is True
+            cached = read_precision_cache(tmp_path)
+            assert cached is not None
+            assert cached["is_half"] is False
+            assert len(requests_received) == 3
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_custom_voice_fallback_no_active_uses_is_default_order(self, tmp_path, monkeypatch):
+        import http.server
+        import sqlite3
+        import urllib.parse
+        import wave
+        from galgame2voice.services.character_manager import get_character_manager
+
+        char_dir = tmp_path / "characters"
+        char_dir.mkdir(parents=True, exist_ok=True)
+        mgr = get_character_manager(char_dir)
+        monkeypatch.setattr("galgame2voice.services.character_manager.get_character_manager", lambda: mgr)
+
+        ref_dir = tmp_path / "custom_refs"
+        ref_dir.mkdir(parents=True, exist_ok=True)
+        ref1 = ref_dir / "profile1.wav"
+        ref2 = ref_dir / "profile2.wav"
+        for p in (ref1, ref2):
+            with wave.open(str(p), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(32000)
+                wf.writeframes(b"\x00\x10" * 32000)
+
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        settings = get_settings()
+        monkeypatch.setattr(settings, "project_root", tmp_path)
+
+        db_file = settings.db_path
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_file))
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    active_voice_profile_id INTEGER DEFAULT NULL
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS voice_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    ref_audio_path TEXT NOT NULL,
+                    prompt_text TEXT NOT NULL,
+                    prompt_lang TEXT NOT NULL DEFAULT 'ja',
+                    is_default INTEGER NOT NULL DEFAULT 0
+                );
+            """)
+            conn.execute("DELETE FROM voice_profiles;")
+            # Profile 1 is NOT default, Profile 2 IS default. Active is None.
+            conn.execute(
+                "INSERT INTO voice_profiles (id, name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default) "
+                "VALUES (1, 'p1', 'gpt1.ckpt', 'sovits1.pth', ?, 'テキスト1', 'ja', 0);",
+                (str(ref1),),
+            )
+            conn.execute(
+                "INSERT INTO voice_profiles (id, name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default) "
+                "VALUES (2, 'p2', 'gpt2.ckpt', 'sovits2.pth', ?, 'テキスト2', 'zh', 1);",
+                (str(ref2),),
+            )
+            conn.execute("INSERT OR REPLACE INTO settings (id, active_voice_profile_id) VALUES (1, NULL);")
+            conn.commit()
+        finally:
+            conn.close()
+
+        requests_received = []
+
+        class MockTtsHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path.startswith("/tts"):
+                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                    requests_received.append(qs)
+                    payload = TestProbeSynthCustomVoiceFallback._build_test_wav(b"\x00\x7f" * 1600)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/wav")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), MockTtsHandler)
+        host, port = server.server_address
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+        try:
+            peak = run_server._probe_synth_peak(host, port)
+            assert peak is not None and peak > 0.0
+            assert len(requests_received) == 1
+            # Profile 2 (is_default=1) should have been preferred over Profile 1
+            assert requests_received[0]["ref_audio_path"] == [str(ref2)]
+            assert requests_received[0]["prompt_text"] == ["テキスト2"]
+            assert requests_received[0]["prompt_lang"] == ["zh"]
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_custom_voice_fallback_non_default_character_preferred_over_db(self, tmp_path, monkeypatch):
+        import http.server
+        import json
+        import sqlite3
+        import urllib.parse
+        import wave
+        from galgame2voice.services.character_manager import get_character_manager
+
+        # 1. Setup a valid character package named 'alice' (NOT 'default')
+        char_dir = tmp_path / "characters"
+        alice_dir = char_dir / "alice"
+        alice_dir.mkdir(parents=True, exist_ok=True)
+        char_audio = alice_dir / "alice_voice.wav"
+        with wave.open(str(char_audio), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(32000)
+            wf.writeframes(b"\x00\x10" * 32000 * 4)  # 4 seconds
+
+        manifest = {
+            "id": "alice",
+            "name": "Alice",
+            "emotions": {
+                "gentle": {
+                    "audio": "alice_voice.wav",
+                    "text": "アリスです。",
+                    "lang": "ja",
+                }
+            },
+        }
+        (alice_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        mgr = get_character_manager(char_dir)
+        monkeypatch.setattr("galgame2voice.services.character_manager.get_character_manager", lambda: mgr)
+
+        # 2. Setup a custom voice profile in SQLite as well
+        ref_file = tmp_path / "custom_refs" / "db_sample.wav"
+        ref_file.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(ref_file), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(32000)
+            wf.writeframes(b"\x00\x10" * 32000)
+
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        settings = get_settings()
+        monkeypatch.setattr(settings, "project_root", tmp_path)
+
+        db_file = settings.db_path
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_file))
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    active_voice_profile_id INTEGER DEFAULT NULL
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS voice_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    ref_audio_path TEXT NOT NULL,
+                    prompt_text TEXT NOT NULL,
+                    prompt_lang TEXT NOT NULL DEFAULT 'ja',
+                    is_default INTEGER NOT NULL DEFAULT 0
+                );
+            """)
+            conn.execute("DELETE FROM voice_profiles;")
+            conn.execute(
+                "INSERT INTO voice_profiles (id, name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default) "
+                "VALUES (1, 'custom_char', 'gpt.ckpt', 'sovits.pth', ?, 'DB音色です。', 'ja', 1);",
+                (str(ref_file),),
+            )
+            conn.execute("INSERT OR REPLACE INTO settings (id, active_voice_profile_id) VALUES (1, 1);")
+            conn.commit()
+        finally:
+            conn.close()
+
+        requests_received = []
+
+        class MockTtsHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path.startswith("/tts"):
+                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                    requests_received.append(qs)
+                    payload = TestProbeSynthCustomVoiceFallback._build_test_wav(b"\x00\x7f" * 1600)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/wav")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), MockTtsHandler)
+        host, port = server.server_address
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+        try:
+            peak = run_server._probe_synth_peak(host, port)
+            assert peak is not None and peak > 0.0
+            assert len(requests_received) == 1
+            # Character package (alice) should be preferred over SQLite voice profile
+            assert requests_received[0]["ref_audio_path"] == [str(char_audio.resolve())]
+            assert requests_received[0]["prompt_text"] == ["アリスです。"]
+            assert requests_received[0]["prompt_lang"] == ["ja"]
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_custom_voice_fallback_nonexistent_audio_returns_none(self, tmp_path, monkeypatch):
+        import sqlite3
+        from galgame2voice.services.character_manager import get_character_manager
+
+        char_dir = tmp_path / "characters"
+        char_dir.mkdir(parents=True, exist_ok=True)
+        mgr = get_character_manager(char_dir)
+        monkeypatch.setattr("galgame2voice.services.character_manager.get_character_manager", lambda: mgr)
+
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        settings = get_settings()
+        monkeypatch.setattr(settings, "project_root", tmp_path)
+
+        db_file = settings.db_path
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_file))
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    active_voice_profile_id INTEGER DEFAULT NULL
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS voice_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    ref_audio_path TEXT NOT NULL,
+                    prompt_text TEXT NOT NULL,
+                    prompt_lang TEXT NOT NULL DEFAULT 'ja',
+                    is_default INTEGER NOT NULL DEFAULT 0
+                );
+            """)
+            conn.execute("DELETE FROM voice_profiles;")
+            conn.execute(
+                "INSERT INTO voice_profiles (id, name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default) "
+                "VALUES (1, 'p1', 'gpt.ckpt', 'sovits.pth', 'nonexistent/path/sample.wav', 'テキスト1', 'ja', 1);",
+            )
+            conn.execute("INSERT OR REPLACE INTO settings (id, active_voice_profile_id) VALUES (1, 1);")
+            conn.commit()
+        finally:
+            conn.close()
+
+        # When ref_audio_path points to non-existent file, probe safely returns None
+        peak = run_server._probe_synth_peak("127.0.0.1", 9999)
+        assert peak is None
+
+    def test_custom_voice_fallback_locked_db_returns_none(self, tmp_path, monkeypatch):
+        import sqlite3
+        from galgame2voice.services.character_manager import get_character_manager
+
+        char_dir = tmp_path / "characters"
+        char_dir.mkdir(parents=True, exist_ok=True)
+        mgr = get_character_manager(char_dir)
+        monkeypatch.setattr("galgame2voice.services.character_manager.get_character_manager", lambda: mgr)
+
+        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
+        settings = get_settings()
+        monkeypatch.setattr(settings, "project_root", tmp_path)
+
+        db_file = settings.db_path
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_file))
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    active_voice_profile_id INTEGER DEFAULT NULL
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS voice_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    ref_audio_path TEXT NOT NULL,
+                    prompt_text TEXT NOT NULL,
+                    prompt_lang TEXT NOT NULL DEFAULT 'ja',
+                    is_default INTEGER NOT NULL DEFAULT 0
+                );
+            """)
+            conn.commit()
+            # Lock the database exclusively
+            conn.execute("BEGIN EXCLUSIVE;")
+
+            # When database is locked exclusively, probe should gracefully catch and return None
+            peak = run_server._probe_synth_peak("127.0.0.1", 9999)
+            assert peak is None
+        finally:
+            conn.close()
+
+
+
+

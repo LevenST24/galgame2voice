@@ -854,33 +854,179 @@ def _spawn_sovits_process(
     return proc
 
 
+def _find_custom_voice_ref_audio(
+    default_text: str = "テスト、聞こえていますか。",
+    default_lang: str = "ja",
+) -> tuple[Path | None, str, str]:
+    """
+    Fallback when no character package is available: inspect SQLite voice_profiles.
+    Prioritizes settings.active_voice_profile_id, then walks rows by is_default DESC, id ASC.
+    Resolves reference audio files against resolve_reference_audio_path and PROJECT_ROOT.
+    Returns (ref_audio_path, prompt_text, prompt_lang) or (None, default_text, default_lang).
+    """
+    conn = None
+    cur = None
+    try:
+        import sqlite3
+        from galgame2voice.config import get_settings
+        from galgame2voice.utils.audio_spec import resolve_reference_audio_path
+
+        settings = get_settings()
+        db_path = getattr(settings, "db_path", None)
+        if not db_path:
+            return None, default_text, default_lang
+        db_file = Path(db_path)
+        if not db_file.is_file():
+            return None, default_text, default_lang
+
+        # 只读查询 SQLite (优先使用 mode=ro URI，失败则普通连接)
+        try:
+            conn = sqlite3.connect(f"{db_file.resolve().as_uri()}?mode=ro", uri=True, timeout=2.0)
+        except Exception:
+            conn = sqlite3.connect(str(db_file), timeout=2.0)
+
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        active_id = None
+        try:
+            cur.execute("SELECT active_voice_profile_id FROM settings WHERE id = 1;")
+            s_row = cur.fetchone()
+            if s_row and s_row["active_voice_profile_id"] is not None:
+                active_id = s_row["active_voice_profile_id"]
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower() or "busy" in str(e).lower():
+                return None, default_text, default_lang
+        except Exception:
+            pass
+
+        if active_id is not None:
+            cur.execute(
+                "SELECT * FROM voice_profiles ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, is_default DESC, id ASC;",
+                (active_id,),
+            )
+        else:
+            cur.execute("SELECT * FROM voice_profiles ORDER BY is_default DESC, id ASC;")
+
+        candidates = cur.fetchall()
+        project_root = getattr(settings, "project_root", PROJECT_ROOT)
+
+        for row in candidates:
+            keys = row.keys()
+            raw_ref = (
+                row["ref_audio_path"]
+                if "ref_audio_path" in keys and row["ref_audio_path"]
+                else (row["refer_audio_path"] if "refer_audio_path" in keys else "")
+            )
+            if not raw_ref or not str(raw_ref).strip():
+                continue
+
+            raw_ref_str = str(raw_ref).strip()
+            resolved_file: Path | None = None
+
+            try:
+                resolved_str = resolve_reference_audio_path(raw_ref_str)
+                if resolved_str:
+                    candidate = Path(resolved_str)
+                    if candidate.is_file():
+                        resolved_file = candidate.resolve()
+            except Exception:
+                pass
+
+            if resolved_file is None:
+                p_ref = Path(raw_ref_str)
+                search_paths = [p_ref] if p_ref.is_absolute() else [project_root / p_ref, PROJECT_ROOT / p_ref]
+                for candidate in search_paths:
+                    try:
+                        if candidate.is_file():
+                            resolved_file = candidate.resolve()
+                            break
+                    except OSError:
+                        pass
+
+            if resolved_file is not None and resolved_file.is_file():
+                raw_text = (
+                    row["prompt_text"]
+                    if "prompt_text" in keys and row["prompt_text"]
+                    else (row["refer_text"] if "refer_text" in keys else None)
+                )
+                raw_lang = (
+                    row["prompt_lang"]
+                    if "prompt_lang" in keys and row["prompt_lang"]
+                    else (row["refer_language"] if "refer_language" in keys else None)
+                )
+                prompt_text = str(raw_text).strip() if raw_text and str(raw_text).strip() else default_text
+                prompt_lang = str(raw_lang).strip() if raw_lang and str(raw_lang).strip() else default_lang
+                return resolved_file, prompt_text, prompt_lang
+
+    except Exception:
+        return None, default_text, default_lang
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return None, default_text, default_lang
+
+
 def _probe_synth_peak(host: str, port: int, timeout: float = 90.0) -> float | None:
     """
     Synthesizes one short test sentence via the engine's /tts endpoint and returns
     the WAV peak amplitude (0.0~1.0). Returns None when the probe is INCONCLUSIVE
-    (timeout / connection / HTTP error) — None never means 'silent'.
+    (timeout / connection / HTTP error / no reference audio) — None never means 'silent'.
     """
     import urllib.parse
     import urllib.request
 
+    ref_audio: Path | None = None
+    prompt_text = "テスト、聞こえていますか。"
+    prompt_lang = "ja"
+
+    # 1. 优先沿用角色包参考音频（优先 default 角色包，其次任意可用角色包）
     try:
-        from galgame2voice.services.gpt_sovits_client import wav_peak_amplitude
         from galgame2voice.services.character_manager import get_character_manager
         mgr = get_character_manager()
-        pkg = mgr.get_default_character()
-        if not pkg or not pkg.manifest or not pkg.manifest.emotions:
-            return None
-        emo = pkg.manifest.emotions.get("gentle") or next(iter(pkg.manifest.emotions.values()), None)
-        if not emo:
-            return None
-        resolved = pkg.resolve_audio_path(emo.audio)
-        if not resolved or not resolved.is_file():
-            return None
-        ref_audio = resolved
-        prompt_text = emo.text or "テスト、聞こえていますか。"
-        prompt_lang = emo.lang or "ja"
+
+        def _resolve_pkg_audio(pkg) -> tuple[Path | None, str, str]:
+            if pkg and pkg.manifest and pkg.manifest.emotions:
+                emo = pkg.manifest.emotions.get("gentle") or next(iter(pkg.manifest.emotions.values()), None)
+                if emo:
+                    resolved = pkg.resolve_audio_path(emo.audio)
+                    if resolved and resolved.is_file():
+                        return resolved, emo.text or prompt_text, emo.lang or prompt_lang
+            return None, prompt_text, prompt_lang
+
+        ref_audio, prompt_text, prompt_lang = _resolve_pkg_audio(mgr.get_default_character())
+        if ref_audio is None:
+            for p in mgr.get_available_characters():
+                ref_audio, prompt_text, prompt_lang = _resolve_pkg_audio(p)
+                if ref_audio is not None:
+                    break
     except Exception:
+        pass
+
+    # 2. 未找到可用角色包时，回退读取 SQLite voice_profiles 中的自定义音色参考音频
+    if ref_audio is None:
+        try:
+            ref_audio, prompt_text, prompt_lang = _find_custom_voice_ref_audio(prompt_text, prompt_lang)
+        except Exception:
+            pass
+
+    # 3. 若既无角色包也无任何有效自定义参考音频文件，安全返回 None
+    if ref_audio is None or not ref_audio.is_file():
         return None
+
+    try:
+        from galgame2voice.services.gpt_sovits_client import wav_peak_amplitude
+    except Exception:
+        from galgame2voice.utils.audio_spec import wav_peak_amplitude
 
     params = urllib.parse.urlencode({
         "text": "テスト、聞こえていますか。",
@@ -926,7 +1072,7 @@ def calibrate_engine_precision(
     """
     peak = probe_fn()
     if peak is None:
-        print("      [精度校准] 探针未完成 (超时/网络)，跳过本次校准，沿用当前精度。")
+        print("      [精度校准] 探针未完成 (未配置参考音频或网络/超时)，跳过本次校准，沿用当前精度。")
         return is_half, False
     if peak > 0:
         write_precision_cache(PROJECT_ROOT, str(sovits_dir), is_half)
