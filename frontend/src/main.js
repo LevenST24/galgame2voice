@@ -13,6 +13,8 @@ import {
   autoTitle,
   uid,
   DEFAULT_SESSION_SETTINGS,
+  GREETING,
+  LEGACY_GREETINGS,
 } from './store.js';
 import { createConversation } from './conversation.js';
 import { createLineAudioRecovery } from './controllers/line_audio_recovery.js';
@@ -108,6 +110,23 @@ export function extractServerId(msg) {
     }
   }
   return null;
+}
+
+function isLocalStarterGreeting(msg) {
+  return (
+    msg.noVoice &&
+    msg.role === 'assistant' &&
+    (msg.content === GREETING || LEGACY_GREETINGS.includes(msg.content)) &&
+    extractServerId(msg) === null
+  );
+}
+
+function retainLocalOnlyMessages(messages = []) {
+  const lastIdx = messages.length - 1;
+  return messages.filter((m, idx) =>
+    isLocalStarterGreeting(m) ||
+    (idx === lastIdx && m.role === 'user' && m.failed && extractServerId(m) === null)
+  );
 }
 
 // 可注入存储、流和渲染器，测试无需启动鉴权或麦克风。
@@ -547,6 +566,13 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
         sessionsBehindServer.delete(session.id);
         saveState();
       } else {
+        if (Array.isArray(data.messages)) {
+          const retained = retainLocalOnlyMessages(session.messages);
+          const changed = initialCount !== retained.length || Boolean(session.lastLine);
+          session.messages = retained;
+          session.lastLine = '';
+          if (changed) saveState();
+        }
         session.hasMoreHistory = false;
         session.oldestMessageId = null;
         sessionsBehindServer.delete(session.id);
@@ -863,17 +889,14 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
               if (bs.settings && Object.keys(bs.settings).length > 0) local.settings = pickSettings({ ...local.settings, ...bs.settings }, DEFAULT_SESSION_SETTINGS);
             }
             markInterruptedPrompt(local, bs.message_count);
-            const lastMsg = local.messages ? local.messages[local.messages.length - 1] : null;
-            const hasUnsentFailed = Boolean(
-              lastMsg &&
-              lastMsg.role === 'user' &&
-              lastMsg.failed &&
-              extractServerId(lastMsg) === null
-            );
-            const localCount = local.messages
-              ? (local.messages.length - (hasUnsentFailed ? 1 : 0))
-              : 0;
-            if (typeof bs.message_count === 'number' && bs.message_count > localCount) {
+            const localOnlyMessages = retainLocalOnlyMessages(local.messages);
+            const persistedLocalCount = local.messages.length - localOnlyMessages.length;
+            if (bs.message_count === 0 && persistedLocalCount > 0) {
+              local.messages = localOnlyMessages;
+              local.hasMoreHistory = false;
+              local.oldestMessageId = null;
+              sessionsBehindServer.delete(local.id);
+            } else if (Number.isInteger(bs.message_count) && bs.message_count !== persistedLocalCount) {
               sessionsBehindServer.add(local.id);
             } else {
               sessionsBehindServer.delete(local.id);

@@ -3,7 +3,8 @@ import test from 'node:test';
 // Import before installing a document: don't auto-boot authentication or devices.
 import { setup } from './helpers/adv_main.mjs';
 import { tick, fakeChatStream } from './helpers/chat_stream.mjs';
-import { state as storedState, getActive as storedActive, getSession as storedSession, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL } from '../frontend/src/store.js';
+import { state as storedState, getActive as storedActive, getSession as storedSession, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL, GREETING } from '../frontend/src/store.js';
+import { mergeChatBackup } from '../frontend/src/chat_backup.js';
 import { serverTimestamp } from '../frontend/src/session_data.js';
 import { initVoiceSettings, ensureSessionVoice, getVoiceProfiles, fetchVoiceProfiles, getActiveProfileId, openSessionSettings } from '../frontend/src/controllers/voice_settings.js';
 import { createTitleScreen } from '../frontend/src/adv/title.js';
@@ -2750,4 +2751,440 @@ test('chat stream request omits fixed tts sliders in adaptive voice mode and tra
   const backReqBody = JSON.parse(h.stream.requests[2].options.body);
   assert.equal(backReqBody.ai_adaptive_voice, true);
   assert.deepEqual(backReqBody.tts_options, { ai_adaptive_voice: true });
+});
+
+test('startup sync clears cached messages for both active and inactive sessions when server message_count is 0', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const tg1001 = {
+    id: 'tg_1001',
+    title: 'Telegram 会话 1',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_200_000,
+    lastLine: '旧回复 1',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_1', serverMessageId: 1, role: 'user', content: '旧提问 1', ts: 1_700_000_100_000 },
+      { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '旧回复 1', ts: 1_700_000_200_000 },
+    ],
+  };
+  const tg1002 = {
+    id: 'tg_1002',
+    title: 'Telegram 会话 2',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_150_000,
+    lastLine: '旧回复 2',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_3', serverMessageId: 3, role: 'user', content: '旧提问 2', ts: 1_700_000_120_000 },
+      { id: 'm_4', serverMessageId: 4, role: 'assistant', content: '旧回复 2', ts: 1_700_000_150_000 },
+    ],
+  };
+
+  const serverSessions = [
+    {
+      id: 'tg_1001',
+      title: 'Telegram 会话 1',
+      voice_profile_id: null,
+      created_at: '2024-06-01 00:00:00',
+      updated_at: '2024-06-01 00:00:10',
+      message_count: 0,
+      last_message: '',
+      settings: { ...tg1001.settings },
+    },
+    {
+      id: 'tg_1002',
+      title: 'Telegram 会话 2',
+      voice_profile_id: null,
+      created_at: '2024-06-01 00:00:00',
+      updated_at: '2024-06-01 00:00:09',
+      message_count: 0,
+      last_message: '',
+      settings: { ...tg1002.settings },
+    },
+  ];
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+    sessions: [tg1001, tg1002],
+    activeId: 'tg_1001',
+    global: { ...DEFAULT_GLOBAL },
+  })]]);
+
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+    fetch: async (url) => {
+      const target = String(url);
+      if (target.includes('/api/chat/sessions')) {
+        return Response.json({ sessions: serverSessions, has_more: false, count: 2 });
+      }
+      if (target.includes('/api/chat/history')) {
+        const sid = new URL(target, 'http://127.0.0.1:8000').searchParams.get('session_id') || '';
+        return Response.json({ session_id: sid, messages: [], has_more: false, oldest_id: null, count: 0 });
+      }
+      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
+      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+      return Response.json({});
+    },
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  assert.deepEqual(storedSession('tg_1001').messages, [], '激活会话 tg_1001 内存中的旧消息应已清空');
+  assert.equal(storedSession('tg_1001').lastLine, '');
+  assert.deepEqual(storedSession('tg_1002').messages, [], '非激活会话 tg_1002 内存中的旧消息应已清空');
+  assert.equal(storedSession('tg_1002').lastLine, '');
+
+  const storedJson = JSON.parse(storage.get('gal2voice.chat.v1'));
+  const stored1001 = storedJson.sessions.find(s => s.id === 'tg_1001');
+  const stored1002 = storedJson.sessions.find(s => s.id === 'tg_1002');
+  assert.deepEqual(stored1001.messages, [], 'localStorage 中 tg_1001 的旧消息应已清空');
+  assert.deepEqual(stored1002.messages, [], 'localStorage 中 tg_1002 的旧消息应已清空');
+
+  app.adv.action('log');
+  for (let i = 0; i < 3; i++) await tick();
+  assert.equal(doc.querySelectorAll('.adv-log-primary').length, 0, 'LOG 回看中不应残留已清空的旧消息');
+
+  const mergedBackup = mergeChatBackup({
+    format: 'galgame2voice.chat',
+    version: 1,
+    sessions: [
+      { id: 'tg_1001', title: 'Telegram 会话 1', messages: [], settings: { ...DEFAULT_SESSION_SETTINGS } },
+      { id: 'tg_1002', title: 'Telegram 会话 2', messages: [], settings: { ...DEFAULT_SESSION_SETTINGS } },
+    ],
+  }, storedJson);
+  assert.equal(mergedBackup.browserCopies, 0, '完整聊天备份不应为已清空会话派生浏览器副本');
+});
+
+test('switching to a session cleared on server empties cached messages via loadSessionHistory', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const activeSession = {
+    id: 's_active_keep',
+    title: '当前对话',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_300_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_1', serverMessageId: 1, role: 'user', content: '保留问', ts: 1_700_000_100_000 },
+      { id: 'm_2', serverMessageId: 2, role: 'assistant', content: '保留答', ts: 1_700_000_200_000 },
+    ],
+  };
+  const tgLess = {
+    id: 'tg_less_cleared',
+    title: '服务端少于本地后清空',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_200_000,
+    lastLine: '旧答 A',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_10', serverMessageId: 10, role: 'user', content: '旧问 A', ts: 1_700_000_100_000 },
+      { id: 'm_11', serverMessageId: 11, role: 'assistant', content: '旧答 A', ts: 1_700_000_200_000 },
+    ],
+  };
+  const tgMore = {
+    id: 'tg_more_cleared',
+    title: '运行期清空对话',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_150_000,
+    lastLine: '旧答 B',
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_20', serverMessageId: 20, role: 'user', content: '旧问 B', ts: 1_700_000_100_000 },
+      { id: 'm_21', serverMessageId: 21, role: 'assistant', content: '旧答 B', ts: 1_700_000_150_000 },
+    ],
+  };
+
+  const serverSessions = [
+    {
+      id: activeSession.id,
+      title: activeSession.title,
+      voice_profile_id: null,
+      created_at: '2024-06-01 00:00:00',
+      updated_at: '2024-06-01 00:00:10',
+      message_count: 2,
+      last_message: '保留答',
+      settings: { ...activeSession.settings },
+    },
+    {
+      id: tgLess.id,
+      title: tgLess.title,
+      voice_profile_id: null,
+      created_at: '2024-06-01 00:00:00',
+      updated_at: '2024-06-01 00:00:08',
+      message_count: 1,
+      last_message: '过渡消息',
+      settings: { ...tgLess.settings },
+    },
+    {
+      id: tgMore.id,
+      title: tgMore.title,
+      voice_profile_id: null,
+      created_at: '2024-06-01 00:00:00',
+      updated_at: '2024-06-01 00:00:07',
+      message_count: 3,
+      last_message: '过渡消息',
+      settings: { ...tgMore.settings },
+    },
+  ];
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+    sessions: [activeSession, tgLess, tgMore],
+    activeId: activeSession.id,
+    global: { ...DEFAULT_GLOBAL },
+  })]]);
+
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+    fetch: async (url) => {
+      const target = String(url);
+      if (target.includes('/api/chat/sessions')) {
+        return Response.json({ sessions: serverSessions, has_more: false, count: 3 });
+      }
+      if (target.includes('/api/chat/history')) {
+        const sid = new URL(target, 'http://127.0.0.1:8000').searchParams.get('session_id') || '';
+        // 会话已在运行期被清空，返回空历史列表
+        return Response.json({ session_id: sid, messages: [], has_more: false, oldest_id: null, count: 0 });
+      }
+      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+      if (target.includes('/api/providers')) return Response.json({ providers: [], active_provider: null });
+      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+      return Response.json({});
+    },
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  await app.switchSession('tg_more_cleared');
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(storedSession('tg_more_cleared').messages, [], '切换到运行期已清空的会话后 messages 应被清空');
+  assert.equal(storedSession('tg_more_cleared').lastLine, '');
+
+  await app.switchSession('tg_less_cleared');
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(storedSession('tg_less_cleared').messages, [], '服务端条数少于本地并在切换前清空的会话在切换后 messages 应被清空');
+  assert.equal(storedSession('tg_less_cleared').lastLine, '');
+
+  const storedJson = JSON.parse(storage.get('gal2voice.chat.v1'));
+  assert.deepEqual(storedJson.sessions.find(s => s.id === 'tg_more_cleared').messages, []);
+  assert.deepEqual(storedJson.sessions.find(s => s.id === 'tg_less_cleared').messages, []);
+});
+
+test('startup sync with server message_count 0 preserves local starter GREETING and unanswered user prompt for retry', async t => {
+  const doc = fakeDocument();
+  globalThis.document = doc;
+  doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
+  const root = doc.createElement('div');
+  root.id = 'advRoot';
+  doc.body.appendChild(root);
+  const toasts = doc.createElement('div');
+  toasts.id = 'toastRoot';
+  doc.body.appendChild(toasts);
+
+  const starterSession = {
+    id: 's_local_greeting',
+    title: '新对话',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_100_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_starter_greet', role: 'assistant', content: GREETING, noVoice: true, ts: 1_700_000_050_000 },
+    ],
+  };
+  const unansweredOnlySession = {
+    id: 's_unanswered_zero',
+    title: '未收到回复的提问',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_300_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_local_pending', role: 'user', content: '尚未收到回复的提问', ts: 1_700_000_300_000 },
+    ],
+  };
+  const clearedWithTailPending = {
+    id: 's_cleared_with_pending',
+    title: '清空旧历史但保留末尾未发提问',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_250_000,
+    settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: null },
+    messages: [
+      { id: 'm_old_1', serverMessageId: 1, role: 'user', content: '已删旧问', ts: 1_700_000_100_000 },
+      { id: 'm_old_2', serverMessageId: 2, role: 'assistant', content: '已删旧答', ts: 1_700_000_150_000 },
+      { id: 'm_tail_pending', role: 'user', content: '末尾待重发提问', ts: 1_700_000_250_000 },
+    ],
+  };
+
+  const serverSessions = [unansweredOnlySession, clearedWithTailPending, starterSession].map((s, idx) => ({
+    id: s.id,
+    title: s.title,
+    voice_profile_id: null,
+    created_at: '2024-06-01 00:00:00',
+    updated_at: `2024-06-01 00:00:0${9 - idx}`,
+    message_count: 0,
+    last_message: '',
+    settings: { ...s.settings },
+  }));
+
+  const storage = new Map([['gal2voice.chat.v1', JSON.stringify({
+    sessions: [unansweredOnlySession, clearedWithTailPending, starterSession],
+    activeId: unansweredOnlySession.id,
+    global: { ...DEFAULT_GLOBAL },
+  })]]);
+
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key),
+  };
+  globalThis.location = { origin: 'http://127.0.0.1:8000' };
+  const streamRequests = [];
+  globalThis.window = {
+    innerWidth: 1280,
+    location: { search: '', hash: '', origin: 'http://127.0.0.1:8000' },
+    sessionStorage: { getItem: () => '', setItem() {}, removeItem() {} },
+    prompt: () => null,
+    fetch: async (url, options = {}) => {
+      const target = String(url);
+      if (target.includes('/api/chat/sessions')) {
+        return Response.json({ sessions: serverSessions, has_more: false, count: serverSessions.length });
+      }
+      if (target.includes('/api/chat/history')) {
+        const sid = new URL(target, 'http://127.0.0.1:8000').searchParams.get('session_id') || '';
+        return Response.json({ session_id: sid, messages: [], has_more: false, oldest_id: null, count: 0 });
+      }
+      if (target.includes('/api/chat/stream')) {
+        let output;
+        const body = new ReadableStream({
+          start(controller) { output = controller; },
+          cancel() { try { output?.close(); } catch {} },
+        });
+        options.signal?.addEventListener('abort', () => {
+          try { output?.close(); } catch {}
+        }, { once: true });
+        streamRequests.push({ url: target, prompt: JSON.parse(options.body).prompt });
+        return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
+      }
+      if (target.includes('/api/voice/profiles')) return Response.json({ profiles: [], active_profile_id: null });
+      if (target.includes('/api/providers')) return Response.json({
+        providers: [{ id: 'p1', name: '测试模型', api_key: 'sk-test', chat_model: 'gpt-4o', is_active: true }],
+        active_provider: 'p1',
+      });
+      if (target.includes('/api/backgrounds')) return Response.json({ backgrounds: [] });
+      if (target.includes('/api/system/engine-status')) return Response.json({ state: 'ready' });
+      return Response.json({});
+    },
+  };
+  globalThis.fetch = (...args) => globalThis.window.fetch(...args);
+
+  const app = initApp({ dom: { advRoot: root }, renderSessionList() {} });
+  t.after(() => {
+    try { app.conversation.stop(); app.adv?.unmount(); } catch {}
+    for (const toast of toasts.children) clearTimeout(toast._timer);
+    delete globalThis.document;
+    delete globalThis.window;
+    delete globalThis.localStorage;
+    delete globalThis.fetch;
+    delete globalThis.location;
+  });
+
+  await app.ready;
+  for (let i = 0; i < 5; i++) await tick();
+
+  // (a) 仅含初始本地 GREETING 的新会话欢迎语不被误删
+  const liveStarter = storedSession('s_local_greeting');
+  assert.equal(liveStarter.messages.length, 1, '新会话初始本地 GREETING 不得被误删');
+  assert.equal(liveStarter.messages[0].content, GREETING);
+  assert.equal(liveStarter.messages[0].noVoice, true);
+
+  // (b1) 服务端 message_count: 0 但本地有一条未收到回复的用户提问时，补标 failed 并保留供重试
+  const liveUnanswered = storedSession('s_unanswered_zero');
+  assert.equal(liveUnanswered.messages.length, 1, '未收到回复的用户提问应保留在会话中');
+  const pendingMsg = liveUnanswered.messages[0];
+  assert.equal(pendingMsg.id, 'm_local_pending');
+  assert.deepEqual(pendingMsg.failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
+  assert.equal(app.conversation.canRetry(pendingMsg), true);
+
+  // 打开 LOG 点击「重新发送」可正常触发重发
+  app.adv.action('log');
+  const retryBtn = [...doc.querySelectorAll('.adv-error-btn')].find(b => b.textContent === '重新发送');
+  assert.ok(retryBtn, 'LOG 中应渲染「重新发送」按钮');
+  retryBtn.click();
+  for (let i = 0; i < 5 && streamRequests.length === 0; i++) await tick();
+  assert.equal(streamRequests.length, 1);
+  assert.equal(streamRequests[0].prompt, '尚未收到回复的提问');
+  app.conversation.stop();
+
+  // (b2) 曾有已删旧历史 + 末尾未收到回复提问时，旧历史被清理而末尾失败提问保留
+  const liveClearedTail = storedSession('s_cleared_with_pending');
+  assert.equal(liveClearedTail.messages.length, 1, '已删旧消息应被清理，仅保留末尾未上云失败提问');
+  assert.equal(liveClearedTail.messages[0].id, 'm_tail_pending');
+  assert.deepEqual(liveClearedTail.messages[0].failed, { error: '对话已中断，未收到回复', code: 'cancelled' });
+
+  // 切换到仅含欢迎语的新会话后，欢迎语同样保留
+  await app.switchSession('s_local_greeting');
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(storedSession('s_local_greeting').messages.length, 1);
+  assert.equal(storedSession('s_local_greeting').messages[0].content, GREETING);
 });
