@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import functools
 from io import BytesIO
 import logging
+import re
 from typing import Any, Awaitable, Callable
 import weakref
 
@@ -43,7 +44,7 @@ from galgame2voice.services.tts_service import TtsService
 from galgame2voice.adapters.base import configured_reasoning_effort
 from galgame2voice.adapters.registry import PROVIDER_PRESETS, SpeechRecognitionUnsupportedError, get_stt_adapter
 from galgame2voice.utils.audio_converter import convert_ogg_to_wav, convert_wav_to_ogg
-from galgame2voice.utils.japanese_phonetics import strip_stage_directions
+from galgame2voice.utils.japanese_phonetics import normalize_japanese_for_tts, strip_stage_directions
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.error_diagnostics import EMPTY_REPLY_DEFAULT, EMPTY_REPLY_STOPPED_ON_LENGTH
 from galgame2voice.telegram_bot.console_menus import (
@@ -89,6 +90,20 @@ _TELEGRAM_BASE_TTS_KEYS: tuple[str, ...] = (
     "batch_size",
     "fragment_interval",
 )
+
+_VOCAL_RE = re.compile(r"[\w\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
+
+
+def _extract_vocal_japanese(text: str | None) -> str:
+    """Strip stage directions and return speakable Japanese text, or empty string if none remains."""
+    cleaned = strip_stage_directions(text or "").strip()
+    if not cleaned or not _VOCAL_RE.search(normalize_japanese_for_tts(cleaned)):
+        return ""
+    return cleaned
+
+
+async def _noop() -> None:
+    pass
 
 
 def _authorized_command(label: str) -> Callable[[CommandCallback], CommandCallback]:
@@ -729,6 +744,10 @@ class TelegramBotHandlers:
         task_key: str | None = None,
     ) -> asyncio.Task:
         """Schedules background voice synthesis and tracks task in user_tasks with auto-cleanup."""
+        clean_japanese = _extract_vocal_japanese(japanese)
+        if not clean_japanese:
+            return asyncio.create_task(_noop())
+
         async def background_voice_worker() -> None:
             try:
                 if bot and hasattr(bot, "send_chat_action"):
@@ -737,7 +756,6 @@ class TelegramBotHandlers:
                     except Exception as action_err:
                         logger.debug("Failed sending record_voice chat action for chat_id=%d: %s", chat_id, action_err)
 
-                clean_japanese = strip_stage_directions(japanese).strip() or japanese
                 tts_opts = dict(dynamic_tts or {})
                 wav_bytes = await self.tts_service.synthesize(clean_japanese, options=tts_opts)
                 if not wav_bytes:
@@ -898,9 +916,6 @@ class TelegramBotHandlers:
         turn = _current_turn.get()
         if turn is None or turn.session_id != session_id:
             turn = self.turn_coordinator.prepare_turn(session_id)
-
-        async def _noop() -> None:
-            pass
 
         with self.turn_coordinator.activate_turn(turn):
             user_msg_id: int | None = None
