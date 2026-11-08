@@ -324,6 +324,7 @@ class VoiceProfileResolver:
             logger.debug("Failed looking up character package for '%s': %s", name, exc)
 
         if pkg is not None and pkg.is_valid:
+            from galgame2voice.services.character_manager import CharacterManager
             from galgame2voice.services.reference_origin import ReferenceOrigin, classify_reference_origin
             origin = classify_reference_origin(ref_audio, pkg, known_other_packages=other_packages)
             other_folders_set = {
@@ -334,15 +335,7 @@ class VoiceProfileResolver:
                 if origin == ReferenceOrigin.CROSS_PACKAGE:
                     prompt_text = ""
                 if pkg.manifest and pkg.manifest.emotions:
-                    candidate_emotions = []
-                    gentle_emo = pkg.manifest.emotions.get("gentle")
-                    if gentle_emo:
-                        candidate_emotions.append(gentle_emo)
-                    for emo_key, emo_val in pkg.manifest.emotions.items():
-                        if emo_key != "gentle":
-                            candidate_emotions.append(emo_val)
-
-                    for emo in candidate_emotions:
+                    for _emo_key, emo in CharacterManager.iter_default_emotion_candidates(pkg.manifest):
                         found_path = pkg.resolve_audio_path(emo.audio)
                         if found_path and found_path.is_file():
                             ref_audio = str(found_path.resolve())
@@ -354,15 +347,7 @@ class VoiceProfileResolver:
                 if own_ref is not None:
                     ref_audio = str(own_ref.resolve())
                 elif pkg.manifest and pkg.manifest.emotions:
-                    candidate_emotions = []
-                    gentle_emo = pkg.manifest.emotions.get("gentle")
-                    if gentle_emo:
-                        candidate_emotions.append(gentle_emo)
-                    for emo_key, emo_val in pkg.manifest.emotions.items():
-                        if emo_key != "gentle":
-                            candidate_emotions.append(emo_val)
-
-                    for emo in candidate_emotions:
+                    for _emo_key, emo in CharacterManager.iter_default_emotion_candidates(pkg.manifest):
                         found_path = pkg.resolve_audio_path(emo.audio)
                         if found_path and found_path.is_file():
                             ref_audio = str(found_path.resolve())

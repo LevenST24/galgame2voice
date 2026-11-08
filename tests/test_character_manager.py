@@ -36,7 +36,12 @@ import scripts.run_server as rs
 import scripts.package_release as pr
 
 
-def _create_synthetic_wav(path: Path, duration_sec: float, sample_rate: int = 16000) -> Path:
+def _create_synthetic_wav(
+    path: Path,
+    duration_sec: float,
+    sample_rate: int = 16000,
+    amplitude: int = 2000,
+) -> Path:
     """Creates a temporary valid PCM WAV file of specified duration."""
     path.parent.mkdir(parents=True, exist_ok=True)
     n_frames = int(sample_rate * duration_sec)
@@ -46,7 +51,7 @@ def _create_synthetic_wav(path: Path, duration_sec: float, sample_rate: int = 16
         w.setframerate(sample_rate)
         frames = bytearray()
         for i in range(n_frames):
-            val = int(2000 * (1 if (i // 80) % 2 == 0 else -1))
+            val = int(amplitude * (1 if (i // 80) % 2 == 0 else -1))
             frames.extend(struct.pack("<h", val))
         w.writeframes(frames)
     return path
@@ -768,6 +773,448 @@ def test_character_switch_api_all_characters_and_aliases():
                 assert data["status"] == "switched"
                 assert "character" in data
                 assert "character_id" in data
+
+
+# ============================================================================
+# 9. Manifest default_emotion Resolution & Fallback Regression Tests
+# ============================================================================
+
+
+def _same_resolved_path(p1: str | Path, p2: str | Path) -> bool:
+    return Path(p1).resolve() == Path(p2).resolve()
+
+
+def _unlink_file(path: Path) -> None:
+    path.unlink()
+
+
+@pytest.mark.asyncio
+async def test_manifest_default_emotion_respected_in_sync_emotion_resolution_and_voice_resolver(
+    tmp_path, monkeypatch
+):
+    """
+    When a character package defines emotions {"angry", "gentle", "calm"} and
+    manifest.json explicitly sets "default_emotion": "calm":
+    1. Package validation preserves manifest.default_emotion == "calm";
+    2. Syncing into SQLite voice_profiles stores "calm" as default ref_audio_path & prompt_text;
+    3. resolve_emotion_audio_path(char_id, None) and unknown emotion "unknown_mood" resolve to "calm";
+    4. VoiceProfileResolver heals EMPTY, CROSS_PACKAGE, and broken PACKAGE_OWNED references to "calm".
+    """
+    from galgame2voice.database import crud
+    from galgame2voice.database.models import VoiceProfileUpdate
+    from galgame2voice.database.session import get_db, init_db
+    from galgame2voice.services.voice_resolver import VoiceProfileResolver
+
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    CharacterManager.reset_instance()
+
+    def _setup_packages() -> tuple[Path, Path, Path, Path, Path]:
+        chars_dir = tmp_path / "characters"
+        calm_dir = chars_dir / "calm_heroine"
+        calm_refs = calm_dir / "refs"
+        angry_wav = _create_synthetic_wav(calm_refs / "angry.wav", duration_sec=4.0, amplitude=1200)
+        gentle_wav = _create_synthetic_wav(calm_refs / "gentle.wav", duration_sec=4.0, amplitude=1800)
+        calm_wav = _create_synthetic_wav(calm_refs / "calm.wav", duration_sec=4.0, amplitude=2400)
+        (calm_dir / "gpt.ckpt").write_bytes(b"synthetic gpt model")
+        (calm_dir / "sovits.pth").write_bytes(b"synthetic sovits model")
+
+        (calm_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "id": "calm_heroine",
+                    "name": "Calm Heroine",
+                    "gpt_weights": "gpt.ckpt",
+                    "sovits_weights": "sovits.pth",
+                    "default_emotion": "calm",
+                    "emotions": {
+                        "angry": {"audio": "refs/angry.wav", "text": "Angry prompt text", "lang": "ja"},
+                        "gentle": {"audio": "refs/gentle.wav", "text": "Gentle prompt text", "lang": "ja"},
+                        "calm": {"audio": "refs/calm.wav", "text": "Calm prompt text", "lang": "ja"},
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        other_dir = chars_dir / "other_heroine"
+        other_wav = _create_synthetic_wav(other_dir / "refs" / "other.wav", duration_sec=4.0, amplitude=3000)
+        (other_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "id": "other_heroine",
+                    "name": "Other Heroine",
+                    "emotions": {
+                        "gentle": {"audio": "refs/other.wav", "text": "Other prompt text", "lang": "ja"},
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return chars_dir, angry_wav, gentle_wav, calm_wav, other_wav
+
+    try:
+        chars_dir, angry_wav, gentle_wav, calm_wav, other_wav = _setup_packages()
+
+        mgr = get_character_manager(chars_dir)
+        mgr.discover_characters()
+        pkg = mgr.get_character("calm_heroine")
+        assert pkg is not None
+        assert pkg.is_valid is True
+        assert pkg.manifest.default_emotion == "calm"
+
+        db_path = tmp_path / "default_emotion_test.db"
+        await init_db(str(db_path))
+
+        async with get_db(str(db_path)) as conn:
+            synced = await mgr.sync_with_db(conn)
+            assert synced == 2
+            profiles = await crud.list_voice_profiles(conn)
+            calm_profile = next(p for p in profiles if p.name == "Calm Heroine")
+            assert calm_profile.ref_audio_path == "characters/calm_heroine/refs/calm.wav"
+            assert calm_profile.prompt_text == "Calm prompt text"
+
+        res_none = mgr.resolve_emotion_audio_path("calm_heroine", None)
+        assert res_none is not None
+        assert _same_resolved_path(res_none["ref_audio_path"], calm_wav)
+        assert res_none["prompt_text"] == "Calm prompt text"
+        assert res_none["emotion"] == "calm"
+
+        res_unknown = mgr.resolve_emotion_audio_path("calm_heroine", "unknown_mood")
+        assert res_unknown is not None
+        assert _same_resolved_path(res_unknown["ref_audio_path"], calm_wav)
+        assert res_unknown["prompt_text"] == "Calm prompt text"
+        assert res_unknown["emotion"] == "calm"
+
+        # Explicit emotion requests still resolve their exact targets
+        res_gentle = mgr.resolve_emotion_audio_path("calm_heroine", "gentle")
+        assert res_gentle is not None
+        assert _same_resolved_path(res_gentle["ref_audio_path"], gentle_wav)
+        res_angry = mgr.resolve_emotion_audio_path("calm_heroine", "angry")
+        assert res_angry is not None
+        assert _same_resolved_path(res_angry["ref_audio_path"], angry_wav)
+
+        resolver = VoiceProfileResolver()
+
+        # 1) EMPTY ref_audio_path falls back to calm
+        async with get_db(str(db_path)) as conn:
+            await crud.update_voice_profile(
+                conn,
+                calm_profile.id,
+                VoiceProfileUpdate(ref_audio_path="", prompt_text=""),
+            )
+        resolver.invalidate(db_path=str(db_path))
+        ctx_empty = await resolver.resolve_context(db_path=str(db_path), profile_id=calm_profile.id)
+        assert ctx_empty is not None
+        assert _same_resolved_path(ctx_empty.ref_audio_path, calm_wav)
+        assert ctx_empty.prompt_text == "Calm prompt text"
+
+        # 2) PACKAGE_OWNED missing file falls back to calm
+        async with get_db(str(db_path)) as conn:
+            await crud.update_voice_profile(
+                conn,
+                calm_profile.id,
+                VoiceProfileUpdate(
+                    ref_audio_path="characters/calm_heroine/refs/deleted_audio.wav",
+                    prompt_text="Stale prompt",
+                ),
+            )
+        resolver.invalidate(db_path=str(db_path))
+        ctx_broken = await resolver.resolve_context(db_path=str(db_path), profile_id=calm_profile.id)
+        assert ctx_broken is not None
+        assert _same_resolved_path(ctx_broken.ref_audio_path, calm_wav)
+        assert ctx_broken.prompt_text == "Calm prompt text"
+
+        # 3) CROSS_PACKAGE reference heals to calm
+        async with get_db(str(db_path)) as conn:
+            await crud.update_voice_profile(
+                conn,
+                calm_profile.id,
+                VoiceProfileUpdate(
+                    ref_audio_path=to_project_relative_path(other_wav),
+                    prompt_text="Other prompt text",
+                ),
+            )
+        resolver.invalidate(db_path=str(db_path))
+        ctx_cross = await resolver.resolve_context(db_path=str(db_path), profile_id=calm_profile.id)
+        assert ctx_cross is not None
+        assert _same_resolved_path(ctx_cross.ref_audio_path, calm_wav)
+        assert ctx_cross.prompt_text == "Calm prompt text"
+    finally:
+        CharacterManager.reset_instance()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_manifest_default_emotion_case_insensitive_synonym_and_missing_file_fallback(
+    tmp_path, monkeypatch
+):
+    """
+    Verifies:
+    1. Case-insensitive matching of default_emotion (e.g. "CALM" -> "calm");
+    2. Synonym normalization matching when default_emotion is not a literal key (e.g. "cheerful" -> "happy");
+    3. Secondary fallback order when audio files disappear after discovery:
+       default_emotion -> "gentle" -> first valid emotion in definition order.
+    """
+    from galgame2voice.database import crud
+    from galgame2voice.database.models import VoiceProfileUpdate
+    from galgame2voice.database.session import get_db, init_db
+    from galgame2voice.services.voice_resolver import VoiceProfileResolver
+
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    CharacterManager.reset_instance()
+
+    def _setup_packages() -> tuple[Path, Path, Path, Path, Path]:
+        chars_dir = tmp_path / "characters"
+
+        # Package A: case-insensitive default_emotion "CALM"
+        dir_a = chars_dir / "case_char"
+        angry_a = _create_synthetic_wav(dir_a / "refs" / "angry.wav", duration_sec=4.0, amplitude=1100)
+        gentle_a = _create_synthetic_wav(dir_a / "refs" / "gentle.wav", duration_sec=4.0, amplitude=1700)
+        calm_a = _create_synthetic_wav(dir_a / "refs" / "calm.wav", duration_sec=4.0, amplitude=2300)
+        (dir_a / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "id": "case_char",
+                    "name": "Case Char",
+                    "default_emotion": "CALM",
+                    "emotions": {
+                        "angry": {"audio": "refs/angry.wav", "text": "Angry A", "lang": "ja"},
+                        "gentle": {"audio": "refs/gentle.wav", "text": "Gentle A", "lang": "ja"},
+                        "calm": {"audio": "refs/calm.wav", "text": "Calm A", "lang": "ja"},
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        # Package B: synonym default_emotion "cheerful" -> matches "happy" over "gentle"
+        dir_b = chars_dir / "synonym_char"
+        _create_synthetic_wav(dir_b / "refs" / "angry.wav", duration_sec=4.0, amplitude=1300)
+        _create_synthetic_wav(dir_b / "refs" / "gentle.wav", duration_sec=4.0, amplitude=1900)
+        happy_b = _create_synthetic_wav(dir_b / "refs" / "happy.wav", duration_sec=4.0, amplitude=2500)
+        (dir_b / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "id": "synonym_char",
+                    "name": "Synonym Char",
+                    "default_emotion": "cheerful",
+                    "emotions": {
+                        "angry": {"audio": "refs/angry.wav", "text": "Angry B", "lang": "ja"},
+                        "gentle": {"audio": "refs/gentle.wav", "text": "Gentle B", "lang": "ja"},
+                        "happy": {"audio": "refs/happy.wav", "text": "Happy B", "lang": "ja"},
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return chars_dir, angry_a, gentle_a, calm_a, happy_b
+
+    try:
+        chars_dir, angry_a, gentle_a, calm_a, happy_b = _setup_packages()
+
+        mgr = get_character_manager(chars_dir)
+        mgr.discover_characters()
+
+        res_case = mgr.resolve_emotion_audio_path("case_char", None)
+        assert res_case is not None
+        assert _same_resolved_path(res_case["ref_audio_path"], calm_a)
+        assert res_case["emotion"] == "calm"
+
+        res_syn = mgr.resolve_emotion_audio_path("synonym_char", None)
+        assert res_syn is not None
+        assert _same_resolved_path(res_syn["ref_audio_path"], happy_b)
+        assert res_syn["emotion"] == "happy"
+
+        db_path = tmp_path / "fallback_chain.db"
+        await init_db(str(db_path))
+        async with get_db(str(db_path)) as conn:
+            await mgr.sync_with_db(conn)
+            profiles = await crud.list_voice_profiles(conn)
+            case_prof = next(p for p in profiles if p.name == "Case Char")
+            syn_prof = next(p for p in profiles if p.name == "Synonym Char")
+            assert syn_prof.ref_audio_path == "characters/synonym_char/refs/happy.wav"
+            assert syn_prof.prompt_text == "Happy B"
+
+        # Secondary fallback 1: angry.wav missing -> falls back to default_emotion ("calm")
+        _unlink_file(angry_a)
+        res_missing_angry = mgr.resolve_emotion_audio_path("case_char", "angry")
+        assert res_missing_angry is not None
+        assert _same_resolved_path(res_missing_angry["ref_audio_path"], calm_a)
+        assert res_missing_angry["emotion"] == "calm"
+
+        # Secondary fallback 2: calm.wav also missing -> falls back to "gentle"
+        _unlink_file(calm_a)
+        res_missing_calm = mgr.resolve_emotion_audio_path("case_char", None)
+        assert res_missing_calm is not None
+        assert _same_resolved_path(res_missing_calm["ref_audio_path"], gentle_a)
+        assert res_missing_calm["emotion"] == "gentle"
+
+        resolver = VoiceProfileResolver()
+        async with get_db(str(db_path)) as conn:
+            await crud.update_voice_profile(
+                conn, case_prof.id, VoiceProfileUpdate(ref_audio_path="", prompt_text="")
+            )
+        resolver.invalidate(db_path=str(db_path))
+        ctx_after_calm_deleted = await resolver.resolve_context(db_path=str(db_path), profile_id=case_prof.id)
+        assert ctx_after_calm_deleted is not None
+        assert _same_resolved_path(ctx_after_calm_deleted.ref_audio_path, gentle_a)
+        assert ctx_after_calm_deleted.prompt_text == "Gentle A"
+    finally:
+        CharacterManager.reset_instance()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_manifest_default_emotion_omitted_or_nonexistent_compatible_fallback(
+    tmp_path, monkeypatch
+):
+    """
+    Verifies backward compatibility when default_emotion is omitted or points to a non-existent key:
+    - Package validation never rejects the package due to missing/unmatched default_emotion;
+    - Falls back to "gentle" if available, otherwise to the first valid emotion in definition order.
+    """
+    from galgame2voice.database import crud
+    from galgame2voice.database.models import VoiceProfileUpdate
+    from galgame2voice.database.session import get_db, init_db
+    from galgame2voice.schemas.character_manifest import validate_character_package
+    from galgame2voice.services.voice_resolver import VoiceProfileResolver
+
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    CharacterManager.reset_instance()
+
+    def _setup_packages() -> tuple[Path, Path, Path, Path, tuple[Path, Path, Path]]:
+        chars_dir = tmp_path / "characters"
+
+        # 1. Omitted default_emotion, has gentle -> gentle
+        omitted_dir = chars_dir / "omitted_default"
+        _create_synthetic_wav(omitted_dir / "refs" / "angry.wav", duration_sec=4.0, amplitude=1200)
+        omitted_gentle = _create_synthetic_wav(omitted_dir / "refs" / "gentle.wav", duration_sec=4.0, amplitude=1800)
+        (omitted_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "id": "omitted_default",
+                    "name": "Omitted Default",
+                    "emotions": {
+                        "angry": {"audio": "refs/angry.wav", "text": "Angry 1", "lang": "ja"},
+                        "gentle": {"audio": "refs/gentle.wav", "text": "Gentle 1", "lang": "ja"},
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        # 2. Non-existent default_emotion, has gentle -> valid package, falls back to gentle
+        bad_with_gentle_dir = chars_dir / "bad_default_with_gentle"
+        _create_synthetic_wav(bad_with_gentle_dir / "refs" / "angry.wav", duration_sec=4.0, amplitude=1400)
+        bad_gentle = _create_synthetic_wav(bad_with_gentle_dir / "refs" / "gentle.wav", duration_sec=4.0, amplitude=2000)
+        (bad_with_gentle_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "id": "bad_default_with_gentle",
+                    "name": "Bad Default With Gentle",
+                    "default_emotion": "does_not_exist",
+                    "emotions": {
+                        "angry": {"audio": "refs/angry.wav", "text": "Angry 2", "lang": "ja"},
+                        "gentle": {"audio": "refs/gentle.wav", "text": "Gentle 2", "lang": "ja"},
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        # 3. Non-existent default_emotion, no gentle -> valid package, falls back to first ("angry")
+        bad_no_gentle_dir = chars_dir / "bad_default_no_gentle"
+        first_angry = _create_synthetic_wav(bad_no_gentle_dir / "refs" / "angry.wav", duration_sec=4.0, amplitude=1600)
+        _create_synthetic_wav(bad_no_gentle_dir / "refs" / "cool.wav", duration_sec=4.0, amplitude=2200)
+        (bad_no_gentle_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "id": "bad_default_no_gentle",
+                    "name": "Bad Default No Gentle",
+                    "default_emotion": "does_not_exist",
+                    "emotions": {
+                        "angry": {"audio": "refs/angry.wav", "text": "Angry 3", "lang": "ja"},
+                        "cool": {"audio": "refs/cool.wav", "text": "Cool 3", "lang": "ja"},
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return (
+            chars_dir,
+            omitted_gentle,
+            bad_gentle,
+            first_angry,
+            (omitted_dir, bad_with_gentle_dir, bad_no_gentle_dir),
+        )
+
+    try:
+        chars_dir, omitted_gentle, bad_gentle, first_angry, pkg_dirs = _setup_packages()
+
+        for d in pkg_dirs:
+            ok, errs = validate_character_package(d)
+            assert ok is True, f"Expected {d.name} valid, got errors: {errs}"
+
+        mgr = get_character_manager(chars_dir)
+        discovered = mgr.discover_characters()
+        assert len(discovered) == 3
+
+        db_path = tmp_path / "compat_fallback.db"
+        await init_db(str(db_path))
+        async with get_db(str(db_path)) as conn:
+            await mgr.sync_with_db(conn)
+            profiles = {p.name: p for p in await crud.list_voice_profiles(conn)}
+
+        assert profiles["Omitted Default"].prompt_text == "Gentle 1"
+        assert profiles["Bad Default With Gentle"].prompt_text == "Gentle 2"
+        assert profiles["Bad Default No Gentle"].prompt_text == "Angry 3"
+
+        for char_id, expected_wav, expected_emo in (
+            ("omitted_default", omitted_gentle, "gentle"),
+            ("bad_default_with_gentle", bad_gentle, "gentle"),
+            ("bad_default_no_gentle", first_angry, "angry"),
+        ):
+            for query in (None, "unknown_mood"):
+                res = mgr.resolve_emotion_audio_path(char_id, query)
+                assert res is not None
+                assert _same_resolved_path(res["ref_audio_path"], expected_wav)
+                assert res["emotion"] == expected_emo
+
+        resolver = VoiceProfileResolver()
+        async with get_db(str(db_path)) as conn:
+            for prof in profiles.values():
+                await crud.update_voice_profile(
+                    conn, prof.id, VoiceProfileUpdate(ref_audio_path="", prompt_text="")
+                )
+        resolver.invalidate(db_path=str(db_path))
+
+        ctx_1 = await resolver.resolve_context(
+            db_path=str(db_path), profile_id=profiles["Omitted Default"].id
+        )
+        assert _same_resolved_path(ctx_1.ref_audio_path, omitted_gentle)
+
+        ctx_2 = await resolver.resolve_context(
+            db_path=str(db_path), profile_id=profiles["Bad Default With Gentle"].id
+        )
+        assert _same_resolved_path(ctx_2.ref_audio_path, bad_gentle)
+
+        ctx_3 = await resolver.resolve_context(
+            db_path=str(db_path), profile_id=profiles["Bad Default No Gentle"].id
+        )
+        assert _same_resolved_path(ctx_3.ref_audio_path, first_angry)
+    finally:
+        CharacterManager.reset_instance()
+        get_settings.cache_clear()
 
 
 

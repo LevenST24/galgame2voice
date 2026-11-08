@@ -55,6 +55,7 @@ class CharacterManifest(BaseModel):
     version: str = Field(default="1.0.0", description="Character package semantic version")
     description: str = Field(default="", description="Character background or lore description")
     system_prompt: str | None = Field(default="", description="Personality prompt template")
+    default_emotion: str | None = Field(default="gentle", description="Default emotion identifier")
     default_voice_params: VoiceParamsConfig = Field(default_factory=VoiceParamsConfig)
     gpt_weights: str | None = Field(default=None, description="Path or pointer to GPT model weights")
     sovits_weights: str | None = Field(default=None, description="Path or pointer to SoVITS model weights")
