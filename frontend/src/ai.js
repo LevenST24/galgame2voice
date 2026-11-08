@@ -139,10 +139,12 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
     const ttsOpts = {};
     // voice_profile_id 走 ChatRequest 顶层字段；塞进 tts_options 会被后端
     // ChatTtsOptions(extra="forbid") 的白名单判为非法参数并返回 422。
-    if (typeof settings.ttsSpeed === 'number') ttsOpts.speed = settings.ttsSpeed;
-    if (typeof settings.ttsTopK === 'number') ttsOpts.top_k = Math.round(settings.ttsTopK);
-    if (typeof settings.ttsTopP === 'number') ttsOpts.top_p = settings.ttsTopP;
-    if (typeof settings.ttsTemperature === 'number') ttsOpts.temperature = settings.ttsTemperature;
+    if (settings.aiAdaptiveVoice === false) {
+      if (typeof settings.ttsSpeed === 'number') ttsOpts.speed = settings.ttsSpeed;
+      if (typeof settings.ttsTopK === 'number') ttsOpts.top_k = Math.round(settings.ttsTopK);
+      if (typeof settings.ttsTopP === 'number') ttsOpts.top_p = settings.ttsTopP;
+      if (typeof settings.ttsTemperature === 'number') ttsOpts.temperature = settings.ttsTemperature;
+    }
     if (typeof settings.aiAdaptiveVoice === 'boolean') {
       ttsOpts.ai_adaptive_voice = settings.aiAdaptiveVoice;
       body.ai_adaptive_voice = settings.aiAdaptiveVoice;

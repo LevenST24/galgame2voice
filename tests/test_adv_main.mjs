@@ -2708,3 +2708,46 @@ test('unbound session syncs active voice profile on turnstart and updates stage 
   assert.equal(app.adv.stage.textbox.querySelector('.adv-name-text')?.textContent, '角色B');
   assert.ok(portraitUrls.includes('/api/characters/2/portrait'), '舞台应请求角色 2 的立绘');
 });
+
+test('chat stream request omits fixed tts sliders in adaptive voice mode and transmits them in fixed mode', async (t) => {
+  const h = setup(t);
+  const session = h.getActive();
+  assert.equal(session.settings.aiAdaptiveVoice, true);
+  h.app.sendMessage('你好！');
+  await tick();
+  assert.equal(h.stream.requests.length, 1);
+  const autoReqBody = JSON.parse(h.stream.requests[0].options.body);
+  assert.equal(autoReqBody.ai_adaptive_voice, true);
+  assert.deepEqual(autoReqBody.tts_options, { ai_adaptive_voice: true });
+
+  // Switch to fixed mode and set custom sliders
+  session.settings.aiAdaptiveVoice = false;
+  session.settings.ttsSpeed = 1.25;
+  session.settings.ttsTopK = 20;
+  session.settings.ttsTopP = 0.85;
+  session.settings.ttsTemperature = 0.95;
+
+  await h.stream.requests[0].onEnd('你好！');
+  h.app.sendMessage('第二句');
+  await tick();
+  assert.equal(h.stream.requests.length, 2);
+  const fixedReqBody = JSON.parse(h.stream.requests[1].options.body);
+  assert.equal(fixedReqBody.ai_adaptive_voice, false);
+  assert.deepEqual(fixedReqBody.tts_options, {
+    speed: 1.25,
+    top_k: 20,
+    top_p: 0.85,
+    temperature: 0.95,
+    ai_adaptive_voice: false,
+  });
+
+  // Switch back to adaptive voice mode and verify sliders are omitted again
+  session.settings.aiAdaptiveVoice = true;
+  await h.stream.requests[1].onEnd('第二句');
+  h.app.sendMessage('第三句');
+  await tick();
+  assert.equal(h.stream.requests.length, 3);
+  const backReqBody = JSON.parse(h.stream.requests[2].options.body);
+  assert.equal(backReqBody.ai_adaptive_voice, true);
+  assert.deepEqual(backReqBody.tts_options, { ai_adaptive_voice: true });
+});
