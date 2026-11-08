@@ -2,6 +2,7 @@
 
 import shutil
 import asyncio
+from pathlib import Path
 import threading
 from unittest.mock import MagicMock
 
@@ -161,3 +162,143 @@ async def test_saving_directory_discards_inflight_scan_cache(tmp_path, monkeypat
         release.set()
         await pending
     assert "result" not in voice._scan_cache
+
+
+def test_launcher_discovery_writes_relative_hint_for_sibling_and_survives_copy(tmp_path, monkeypatch):
+    old_parent = tmp_path / "old_parent"
+    old_g2v = old_parent / "Galgame2Voice"
+    old_engine = make_engine(old_parent / "GPT-SoVITS")
+    old_g2v.mkdir(parents=True)
+
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", old_g2v)
+    monkeypatch.delenv("GPT_SOVITS_DIR", raising=False)
+    monkeypatch.delenv("GALGAME2VOICE_DATA_ROOT", raising=False)
+
+    discovered = run_server.find_gpt_sovits_directory()
+    assert discovered == old_engine.resolve()
+
+    cache_file = old_g2v / "data" / "sovits_dir.txt"
+    assert cache_file.is_file(), "data/sovits_dir.txt should have been created"
+    saved_text = cache_file.read_text(encoding="utf-8").strip()
+
+    # Must be relative path, not absolute
+    assert not Path(saved_text).is_absolute(), f"Expected relative path, got absolute: {saved_text}"
+    assert saved_text in ("..\\GPT-SoVITS", "../GPT-SoVITS")
+
+    # Now copy old_parent to new_parent (old_parent remains on disk!)
+    new_parent = tmp_path / "new_parent"
+    shutil.copytree(old_parent, new_parent)
+    new_g2v = new_parent / "Galgame2Voice"
+    new_engine = new_parent / "GPT-SoVITS"
+
+    # inspect_sovits_directory on new_g2v must resolve to new_engine, NOT old_engine
+    inspected = installation.inspect_sovits_directory(new_g2v)
+    assert inspected["valid"] is True
+    assert Path(inspected["directory"]).resolve() == new_engine.resolve()
+    assert Path(inspected["directory"]).resolve() != old_engine.resolve()
+
+    # find_gpt_sovits_directory with PROJECT_ROOT = new_g2v must resolve to new_engine, NOT old_engine
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", new_g2v)
+    new_discovered = run_server.find_gpt_sovits_directory()
+    assert new_discovered.resolve() == new_engine.resolve()
+    assert new_discovered.resolve() != old_engine.resolve()
+
+    # Also verify moving/renaming old_parent (old_parent removed)
+    moved_parent = tmp_path / "moved_parent"
+    shutil.move(str(old_parent), str(moved_parent))
+    moved_g2v = moved_parent / "Galgame2Voice"
+    moved_engine = moved_parent / "GPT-SoVITS"
+
+    inspected_moved = installation.inspect_sovits_directory(moved_g2v)
+    assert inspected_moved["valid"] is True
+    assert Path(inspected_moved["directory"]).resolve() == moved_engine.resolve()
+
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", moved_g2v)
+    assert run_server.find_gpt_sovits_directory().resolve() == moved_engine.resolve()
+
+
+def test_write_sovits_directory_hint_external_path(tmp_path):
+    root = tmp_path / "app"
+    external = tmp_path.parent / "completely_external_engine"
+    external.mkdir(parents=True, exist_ok=True)
+    stored = installation.write_sovits_directory_hint(root, external)
+    assert Path(stored).is_absolute()
+    assert (root / "data" / "sovits_dir.txt").read_text(encoding="utf-8") == str(external.resolve())
+    assert installation.read_sovits_directory(root) == external.resolve()
+
+
+def test_write_sovits_directory_hint_strips_quotes_and_survives_relocation(tmp_path):
+    parent = tmp_path / "bundle"
+    root = parent / "Galgame2Voice"
+    engine = make_engine(parent / "GPT-SoVITS")
+    root.mkdir(parents=True)
+
+    quoted_input = f'  "{engine.resolve()}"  '
+    stored = installation.write_sovits_directory_hint(root, quoted_input)
+    assert not Path(stored).is_absolute()
+    assert stored in ("..\\GPT-SoVITS", "../GPT-SoVITS")
+
+    new_parent = tmp_path / "moved_bundle"
+    shutil.move(str(parent), str(new_parent))
+    new_root = new_parent / "Galgame2Voice"
+    new_engine = new_parent / "GPT-SoVITS"
+
+    resolved = installation.read_sovits_directory(new_root)
+    assert resolved == new_engine.resolve()
+
+
+def test_launcher_discovery_migrates_legacy_absolute_hint_for_sibling(tmp_path, monkeypatch):
+    parent = tmp_path / "old_bundle"
+    g2v = parent / "Galgame2Voice"
+    engine = make_engine(parent / "GPT-SoVITS")
+    g2v.mkdir(parents=True)
+    (g2v / "data").mkdir()
+
+    # Pre-populate with legacy hardcoded absolute path
+    cache_file = g2v / "data" / "sovits_dir.txt"
+    cache_file.write_text(str(engine.resolve()), encoding="utf-8")
+
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", g2v)
+    monkeypatch.delenv("GPT_SOVITS_DIR", raising=False)
+    monkeypatch.delenv("GALGAME2VOICE_DATA_ROOT", raising=False)
+
+    discovered = run_server.find_gpt_sovits_directory()
+    assert discovered == engine.resolve()
+
+    # Launcher should have self-healed the legacy absolute cache to a relative hint
+    migrated_text = cache_file.read_text(encoding="utf-8").strip()
+    assert not Path(migrated_text).is_absolute(), f"Expected relative path after migration, got {migrated_text}"
+    assert migrated_text in ("..\\GPT-SoVITS", "../GPT-SoVITS")
+
+    # Verify that copying this bundle now survives without referencing old_bundle
+    new_parent = tmp_path / "new_bundle"
+    shutil.copytree(parent, new_parent)
+    new_g2v = new_parent / "Galgame2Voice"
+    new_engine = new_parent / "GPT-SoVITS"
+
+    inspected = installation.inspect_sovits_directory(new_g2v)
+    assert inspected["valid"] is True
+    assert Path(inspected["directory"]).resolve() == new_engine.resolve()
+    assert Path(inspected["directory"]).resolve() != engine.resolve()
+
+
+def test_launcher_discovery_handles_quoted_env_override(tmp_path, monkeypatch):
+    parent = tmp_path / "env_test"
+    g2v = parent / "Galgame2Voice"
+    engine = make_engine(parent / "Custom-SoVITS")
+    g2v.mkdir(parents=True)
+
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", g2v)
+    monkeypatch.setenv("GPT_SOVITS_DIR", f'  "{engine.resolve()}"  ')
+    monkeypatch.delenv("GALGAME2VOICE_DATA_ROOT", raising=False)
+
+    discovered = run_server.find_gpt_sovits_directory()
+    assert discovered == engine.resolve()
+
+    cache_file = g2v / "data" / "sovits_dir.txt"
+    assert cache_file.is_file()
+    saved_text = cache_file.read_text(encoding="utf-8").strip()
+    assert not Path(saved_text).is_absolute()
+
+
+

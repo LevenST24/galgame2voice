@@ -45,6 +45,47 @@ def inspect_sovits_directory(project_root: Path) -> dict:
         return {"directory": "", "valid": False, "runtime_available": False, "message": "无法读取引擎目录配置，请重新选择并保存。"}
 
 
+def write_sovits_directory_hint(project_root: Path, directory: Path | str) -> str:
+    """Persist the engine directory hint, preserving sibling portability and atomicity."""
+    if isinstance(directory, str):
+        directory = directory.strip().strip("\"'")
+    dir_path = Path(directory).expanduser()
+    if not dir_path.is_absolute():
+        dir_path = project_root / dir_path
+    resolved_dir = dir_path.resolve()
+    resolved_root = project_root.resolve()
+
+    stored = str(resolved_dir)
+    try:
+        if resolved_dir.is_relative_to(resolved_root.parent):
+            stored = os.path.relpath(resolved_dir, resolved_root)
+    except (ValueError, OSError):
+        pass
+
+    data_dir = project_root / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=data_dir,
+            prefix=".sovits-dir-",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(stored)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, data_dir / "sovits_dir.txt")
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return stored
+
+
 def save_sovits_directory(project_root: Path, value: str) -> dict:
     value = value.strip().strip("\"'")
     if not value or "\x00" in value:
@@ -57,22 +98,5 @@ def save_sovits_directory(project_root: Path, value: str) -> dict:
         raise ValueError("所选文件夹需包含 api_v2.py。请先完整解压 GPT-SoVITS，再选择引擎目录。")
     if getattr(sys, "frozen", False) and find_engine_python(directory) is None:
         raise ValueError("所选引擎缺少 runtime/python.exe，请选择包含运行环境的完整集成包。")
-    # Keep sibling installs portable when their containing folder is moved.
-    stored = str(directory)
-    if directory.is_relative_to(project_root.resolve().parent):
-        stored = os.path.relpath(directory, project_root.resolve())
-    data_dir = project_root / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=data_dir,
-                                         prefix=".sovits-dir-", suffix=".tmp", delete=False) as handle:
-            temporary = Path(handle.name)
-            handle.write(stored)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, data_dir / "sovits_dir.txt")
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    write_sovits_directory_hint(project_root, directory)
     return inspect_sovits_directory(project_root)

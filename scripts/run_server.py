@@ -53,7 +53,11 @@ try:
         resolve_initial_device_and_half,
     )
     from galgame2voice.utils.hardware import get_gpu_vram_status  # noqa: E402
-    from galgame2voice.services.sovits_installation import find_engine_python, read_sovits_directory  # noqa: E402
+    from galgame2voice.services.sovits_installation import (  # noqa: E402
+        find_engine_python,
+        read_sovits_directory,
+        write_sovits_directory_hint,
+    )
     from galgame2voice.services.engine_runtime import EngineLaunch, prepare_engine_entrypoint  # noqa: E402
     from galgame2voice.services.engine_recovery import ENGINE_LOG_START  # noqa: E402
     from galgame2voice.config import get_settings  # noqa: E402
@@ -453,7 +457,10 @@ def find_gpt_sovits_directory() -> Path | None:
     # 1. Explicit env overrides
     env_dir = os.environ.get("GPT_SOVITS_DIR")
     if env_dir:
-        candidates.append(Path(env_dir))
+        p = Path(env_dir.strip().strip("\"'"))
+        if not p.is_absolute():
+            p = PROJECT_ROOT / p
+        candidates.append(p)
     # Legacy known-installation hints (kept as low-priority fallbacks only)
     for extra in (os.environ.get("GALGAME2VOICE_DATA_ROOT"),):
         if extra:
@@ -468,6 +475,12 @@ def find_gpt_sovits_directory() -> Path | None:
             if cached_path is not None:
                 valid_cached = _check_sovits_dir(cached_path)
                 if valid_cached:
+                    try:
+                        raw_hint = cache_file.read_text(encoding="utf-8-sig").strip().strip("\"'")
+                        if Path(raw_hint).is_absolute() and valid_cached.resolve().is_relative_to(PROJECT_ROOT.resolve().parent):
+                            write_sovits_directory_hint(PROJECT_ROOT, valid_cached)
+                    except Exception:
+                        pass
                     return valid_cached
         except Exception:
             pass
@@ -476,7 +489,7 @@ def find_gpt_sovits_directory() -> Path | None:
         valid_dir = _check_sovits_dir(p)
         if valid_dir:
             try:
-                cache_file.write_text(str(valid_dir), encoding="utf-8")
+                write_sovits_directory_hint(PROJECT_ROOT, valid_dir)
             except Exception:
                 pass
             return valid_dir
@@ -496,7 +509,7 @@ def find_gpt_sovits_directory() -> Path | None:
         valid_dir = _check_sovits_dir(p)
         if valid_dir:
             try:
-                cache_file.write_text(str(valid_dir), encoding="utf-8")
+                write_sovits_directory_hint(PROJECT_ROOT, valid_dir)
             except Exception:
                 pass
             return valid_dir
@@ -510,7 +523,7 @@ def find_gpt_sovits_directory() -> Path | None:
             valid_dir = _check_sovits_dir(p)
             if valid_dir:
                 try:
-                    cache_file.write_text(str(valid_dir), encoding="utf-8")
+                    write_sovits_directory_hint(PROJECT_ROOT, valid_dir)
                 except Exception:
                     pass
                 return valid_dir
@@ -519,7 +532,7 @@ def find_gpt_sovits_directory() -> Path | None:
             valid_dir = _check_sovits_dir(p)
             if valid_dir:
                 try:
-                    cache_file.write_text(str(valid_dir), encoding="utf-8")
+                    write_sovits_directory_hint(PROJECT_ROOT, valid_dir)
                 except Exception:
                     pass
                 return valid_dir
