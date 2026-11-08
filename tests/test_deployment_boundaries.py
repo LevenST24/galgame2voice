@@ -279,6 +279,9 @@ async def test_model_discovery_excludes_tts_audio_cache_and_preserves_user_refer
         (cache_dir / f"cached_{i:04d}.wav").write_bytes(b"cached audio")
 
     monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(project_root))
+    # conftest points the app's data/audio dirs at sandbox paths; this test needs the portable layout.
+    monkeypatch.setenv("DATA_DIR_NAME", "data")
+    monkeypatch.setenv("AUDIO_DIR_NAME", "audio")
     get_settings.cache_clear()
     monkeypatch.setattr(voice, "_discover_gpt_sovits_roots", lambda: [])
     voice._scan_cache.clear()
@@ -304,5 +307,85 @@ async def test_model_discovery_excludes_tts_audio_cache_and_preserves_user_refer
     finally:
         get_settings.cache_clear()
         voice._scan_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_model_discovery_skips_synth_temp_audio_and_preserves_custom_cache_dirs(tmp_path, monkeypatch):
+    import uuid
+    from httpx import ASGITransport, AsyncClient
+    from galgame2voice.main import create_app
+    from galgame2voice.routers import voice
+
+    project_root = tmp_path / "portable_app"
+    audio_dir = project_root / "audio"
+    audio_dir.mkdir(parents=True)
+    audio_cache_dir = audio_dir / "cache"
+    audio_cache_dir.mkdir(parents=True)
+
+    # 1. Place 55 ephemeral synthesized audio files in audio/ (including multi-digit chunk indices & uppercase extensions)
+    synth_prefixes = ["chunk_0", "chunk_12", "full", "repair", "voice"]
+    synth_files = []
+    for i in range(55):
+        prefix = synth_prefixes[i % len(synth_prefixes)]
+        token = uuid.uuid4().hex[:12]
+        ext = ".WAV" if i % 2 == 0 else ".wav"
+        synth_file = audio_dir / f"{prefix}_{token}{ext}"
+        synth_file.write_bytes(b"ephemeral synthesized audio")
+        synth_files.append(synth_file)
+
+    # 2. Place files in system tts cache: audio/cache/ and data/engine_cache/
+    for i in range(10):
+        (audio_cache_dir / f"cached_{i:04d}.wav").write_bytes(b"cached audio")
+    engine_cache_dir = project_root / "data" / "engine_cache"
+    engine_cache_dir.mkdir(parents=True)
+    engine_cache_file = engine_cache_dir / "engine_cached.wav"
+    engine_cache_file.write_bytes(b"engine cache audio")
+
+    # 3. Place user reference in audio/ (named with 'z' so it sorts after chunk/full/repair/voice)
+    user_audio_in_root = audio_dir / "z_user_ref.wav"
+    user_audio_in_root.write_bytes(b"user voice reference in audio root")
+
+    # 4. Place user reference in a user-created folder named 'cache' (non-system cache)
+    user_custom_cache_dir = project_root / "data" / "cache"
+    user_custom_cache_dir.mkdir(parents=True)
+    user_audio_in_custom_cache = user_custom_cache_dir / "user_ref_in_custom_cache.wav"
+    user_audio_in_custom_cache.write_bytes(b"user voice reference in user cache folder")
+
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(project_root))
+    # conftest points the app's data/audio dirs at sandbox paths; this test needs the portable layout.
+    monkeypatch.setenv("DATA_DIR_NAME", "data")
+    monkeypatch.setenv("AUDIO_DIR_NAME", "audio")
+    get_settings.cache_clear()
+    monkeypatch.setattr(voice, "_discover_gpt_sovits_roots", lambda: [])
+    voice._scan_cache.clear()
+
+    try:
+        # 1. Direct sync scan
+        result_sync = voice._scan_models_sync()
+        audio_paths_sync = [item["path"] for item in result_sync["audio_files"]]
+        assert str(user_audio_in_root) in audio_paths_sync
+        assert str(user_audio_in_custom_cache) in audio_paths_sync
+        assert not any(str(sf) in audio_paths_sync for sf in synth_files)
+        assert not any("cached_" in Path(p).name for p in audio_paths_sync)
+        assert not any("engine_cached" in Path(p).name for p in audio_paths_sync)
+        assert set(audio_paths_sync) == {str(user_audio_in_root), str(user_audio_in_custom_cache)}
+
+        # 2. Via HTTP API route GET /api/voice/scan-models
+        voice._scan_cache.clear()
+        async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+            response = await client.get("/api/voice/scan-models")
+            assert response.status_code == 200
+            payload = response.json()
+            audio_paths_api = [item["path"] for item in payload["audio_files"]]
+            assert str(user_audio_in_root) in audio_paths_api
+            assert str(user_audio_in_custom_cache) in audio_paths_api
+            assert not any(str(sf) in audio_paths_api for sf in synth_files)
+            assert not any("cached_" in Path(p).name for p in audio_paths_api)
+            assert not any("engine_cached" in Path(p).name for p in audio_paths_api)
+            assert set(audio_paths_api) == {str(user_audio_in_root), str(user_audio_in_custom_cache)}
+    finally:
+        get_settings.cache_clear()
+        voice._scan_cache.clear()
+
 
 
