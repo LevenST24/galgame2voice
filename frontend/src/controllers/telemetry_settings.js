@@ -158,6 +158,8 @@ export class TelemetrySettingsController {
 
         // 1. Precision & GPU
         if (data.hardware && revision === this.engineStatusRevision && !isRestarting) {
+          const hasNoGpu = data.hardware.gpu_available === false;
+          this.coordinator.onGpuAvailabilityChange?.(!hasNoGpu);
           const prec = data.hardware.precision_source === 'managed_launch'
             ? (data.hardware.inference_precision || '').toUpperCase() : '';
           const isCpu = prec === 'CPU';
@@ -182,13 +184,20 @@ export class TelemetrySettingsController {
           if (this.dom.gDashPrecisionVal) {
             this.dom.gDashPrecisionVal.textContent = labels[prec] || '计算方式待确认';
           }
+          if (this.dom.gBtnTogglePrecision) {
+            this.dom.gBtnTogglePrecision.hidden = Boolean(isCpu && hasNoGpu);
+          }
           if (this.dom.gBtnTogglePrecisionText) {
             if (!known) {
               this.dom.gBtnTogglePrecisionText.textContent = '按已保存设置启动';
             } else if (isCpu) {
-              this.dom.gBtnTogglePrecisionText.textContent = '切为 GPU(FP16)';
+              this.dom.gBtnTogglePrecisionText.textContent = hasNoGpu
+                ? '当前仅支持 CPU 模式'
+                : '切为 GPU(FP16)';
             } else if (isFp16) {
-              this.dom.gBtnTogglePrecisionText.textContent = '切为 FP32 重启';
+              this.dom.gBtnTogglePrecisionText.textContent = hasNoGpu
+                ? '切为 CPU 模式'
+                : '切为 FP32 重启';
             } else {
               this.dom.gBtnTogglePrecisionText.textContent = '切为 CPU 模式';
             }

@@ -43,6 +43,7 @@ let privateEndpointRevision = 0;
 let privateEndpointSaved = false;
 let privateEndpointSaving = false;
 let precisionSavedRevision = 0;
+let gpuAvailable = true;
 const CONFIG_FIELDS = ['gParamSovitsUrl', 'gPrecision', 'gParamSliceMethod', 'gParamSpeed', 'gParamTopK',
   'gParamTopP', 'gParamTemp', 'gParamFragmentInterval', 'gAudioRetention', 'gTgEnabled',
   'gTgToken', 'gTgChatId', 'gTgProxyHost', 'gTgProxyPort', 'gTgProxyEnabled'];
@@ -155,6 +156,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
   privateEndpointSaved = false;
   privateEndpointSaving = false;
   precisionSavedRevision += 1;
+  gpuAvailable = true;
 
   // 3. Instantiate domain controllers
   providerController = createProviderSettingsController(_dom, {
@@ -172,6 +174,9 @@ export function initGlobalSettings(dom, callbacks = {}) {
     isEngineRestartUnconfirmed: () => engineController?.isEngineRestartUnconfirmed() ?? false,
     loadGlobalConfig,
     showToast,
+    onGpuAvailabilityChange: (available) => {
+      gpuAvailable = available !== false;
+    },
     onTelemetryHidden: () => {
       providerController?.invalidateActiveProviderTest();
       telegramController?.invalidateActiveTelegramTest();
@@ -180,6 +185,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
 
   engineController = createEngineSettingsController(_dom, {
     isConfigLoaded: () => configLoaded,
+    isGpuAvailable: () => gpuAvailable,
     showToast,
     fetchSystemTelemetry: () => telemetryController?.fetchSystemTelemetry(),
     renderEngineStatus: (status) => telemetryController?.renderEngineStatus(status),
