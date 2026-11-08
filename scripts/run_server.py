@@ -91,6 +91,28 @@ _SPAWNED_SOVITS_PROC = None
 _SPAWNED_SOVITS_STARTED_AT: float | None = None
 _SPAWNED_SOVITS_LAUNCH: EngineLaunch | None = None
 _WINDOWS_JOB_HANDLE = None
+_IPV4_LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
+
+
+def _normalize_host(host: Any) -> str:
+    h = str(host or "").strip().lower()
+    if h.startswith("[") and h.endswith("]"):
+        h = h[1:-1].strip()
+    return h
+
+
+def _is_matching_managed_host(endpoint_host: Any, launch_host: Any) -> bool:
+    ep_h = _normalize_host(endpoint_host)
+    l_h = _normalize_host(launch_host)
+    if not ep_h or not l_h:
+        return False
+    if ep_h == l_h:
+        return True
+    if {ep_h, l_h} <= _IPV4_LOOPBACK_HOSTS:
+        return True
+    if l_h == "0.0.0.0" and ep_h in _IPV4_LOOPBACK_HOSTS:
+        return True
+    return False
 
 
 def get_managed_engine_launch(endpoint: Any) -> EngineLaunch | None:
@@ -98,7 +120,8 @@ def get_managed_engine_launch(endpoint: Any) -> EngineLaunch | None:
     launch = _SPAWNED_SOVITS_LAUNCH
     if (endpoint is None or not endpoint.is_local or launch is None
             or launch.process is not _SPAWNED_SOVITS_PROC
-            or (endpoint.host, endpoint.port) != (launch.host, launch.port)):
+            or endpoint.port != launch.port
+            or not _is_matching_managed_host(endpoint.host, launch.host)):
         return None
     return launch
 
