@@ -1605,3 +1605,112 @@ class TestTelegramVoiceTaskProfileBinding:
         assert calls_by_profile[profile_b.id].get("gpt_weights_path") == profile_b.gpt_weights_path
 
 
+class TestTelegramVoiceVocalFiltering:
+    """Verifies that replies containing only stage directions, whitespace, or punctuation skip voice synthesis."""
+
+    @pytest.mark.parametrize("zh_input,zh_reply,ja_reply,should_voice,expected_clean_ja", [
+        ("纯动作括号", "（微笑）", "（微笑む）", False, None),
+        ("动作加省略号", "（叹气）……", "（ため息）……", False, None),
+        ("空日文回复", "（默默注视着你）", "", False, None),
+        ("纯省略号", "……", "……", False, None),
+        ("纯空白", "这是中文回复", "   ", False, None),
+        ("黑括号动作", "【微笑】", "【微笑】", False, None),
+        ("星号动作", "*nods*", "*nods*", False, None),
+        ("带动作的正常台词", "（微笑）早上好。", "（微笑む）おはよう。", True, "おはよう。"),
+    ])
+    @pytest.mark.asyncio
+    async def test_telegram_process_text_chat_skips_stage_direction_only_voice(
+        self, tmp_path, temp_db_path, monkeypatch, caplog, zh_input, zh_reply, ja_reply, should_voice, expected_clean_ja
+    ):
+        import json
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from galgame2voice.database import crud
+        from galgame2voice.database.models import VoiceProfileCreate
+        from galgame2voice.database.session import get_db
+        from galgame2voice.services.gpt_sovits_client import GptSovitsClient
+        from galgame2voice.services.tts_cache_manager import TtsCacheManager
+        from galgame2voice.services.tts_service import TtsService
+
+        mock_sovits = MockGptSovitsServer()
+        client = GptSovitsClient(server=mock_sovits)
+        cache_mgr = TtsCacheManager(cache_dir=tmp_path / "cache", db_path=temp_db_path)
+
+        handlers = TelegramBotHandlers(admin_ids=[1001], db_path=temp_db_path)
+        handlers.tts_service = TtsService(
+            client=client,
+            audio_dir=tmp_path / "audio",
+            cache_manager=cache_mgr,
+            db_path=temp_db_path,
+        )
+
+        try:
+            async with get_db(temp_db_path) as conn:
+                await crud.get_settings_raw(conn)
+                profile = await crud.create_voice_profile(
+                    conn,
+                    VoiceProfileCreate(
+                        name="测试角色",
+                        gpt_weights_path="weights/test.ckpt",
+                        sovits_weights_path="weights/test.pth",
+                        ref_audio_path="ref/test.wav",
+                        prompt_text="テストプロンプト",
+                        prompt_lang="ja",
+                        text_lang="ja",
+                    ),
+                )
+                await crud.set_active_voice_profile(conn, profile.id)
+
+            raw_llm_json = json.dumps({"lines": [{"zh": zh_reply, "ja": ja_reply}]}, ensure_ascii=False)
+
+            class _FakeAdapter:
+                async def chat(self, messages, **kwargs):
+                    return SimpleNamespace(content=raw_llm_json, finish_reason="stop")
+
+            monkeypatch.setattr(
+                "galgame2voice.services.chat_service.get_llm_adapter",
+                lambda *_args, **_kwargs: _FakeAdapter(),
+            )
+            monkeypatch.setattr(
+                "galgame2voice.telegram_bot.handlers.convert_wav_to_ogg",
+                AsyncMock(return_value=b"fake_ogg"),
+            )
+
+            bot = SimpleNamespace(
+                send_chat_action=AsyncMock(),
+                send_message=AsyncMock(return_value=SimpleNamespace(message_id=1)),
+                send_voice=AsyncMock(),
+            )
+
+            with caplog.at_level(logging.ERROR):
+                task = await handlers.process_text_chat(chat_id=1001, text=zh_input, bot=bot, user_id=1001)
+                assert task is not None
+                await task
+
+            bot.send_message.assert_awaited_once()
+            sent_text = bot.send_message.call_args.kwargs["text"]
+            assert sent_text.strip() != ""
+
+            async with get_db(temp_db_path) as conn:
+                msgs = await crud.get_recent_messages(conn, session_id="tg_1001", limit=10)
+                assert any(m.role == "assistant" and m.content_chinese == sent_text for m in msgs)
+
+            record_actions = [c for c in bot.send_chat_action.call_args_list if c.kwargs.get("action") == "record_voice"]
+            tts_calls = [c for c in mock_sovits.call_history if c["endpoint"] == "/tts"]
+
+            if not should_voice:
+                assert len(record_actions) == 0
+                assert len(tts_calls) == 0
+                bot.send_voice.assert_not_awaited()
+            else:
+                assert len(record_actions) == 1
+                assert len(tts_calls) == 1
+                assert tts_calls[0]["payload"]["text"] == expected_clean_ja
+                bot.send_voice.assert_awaited_once()
+                assert bot.send_voice.call_args.kwargs["caption"] == expected_clean_ja
+
+            error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+            assert error_records == []
+        finally:
+            await handlers.chat_service.aclose()
+            await client.aclose()
