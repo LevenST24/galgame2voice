@@ -38,8 +38,7 @@ let configRevision = 0;
 let configLoad = 0;
 let configLoaded = false;
 const dirtyConfigFields = new Set();
-const RESET_CONFIG_FIELDS = ['gParamSpeed', 'gParamTopK', 'gParamTopP', 'gParamTemp', 'gParamSliceMethod',
-  'gPrecision', 'gAudioRetention'];
+const RESET_CONFIG_FIELDS = ['gPrecision', 'gAudioRetention'];
 let privateEndpointRevision = 0;
 let privateEndpointSaved = false;
 let privateEndpointSaving = false;
@@ -302,23 +301,6 @@ export function initGlobalSettings(dom, callbacks = {}) {
       configDirty = true;
       configRevision += 1;
       RESET_CONFIG_FIELDS.forEach((field) => dirtyConfigFields.add(field));
-      if (_dom.gParamSpeed) {
-        _dom.gParamSpeed.value = '1.0';
-        if (_dom.gParamSpeedVal) _dom.gParamSpeedVal.textContent = '1.0';
-      }
-      if (_dom.gParamTopK) {
-        _dom.gParamTopK.value = '15';
-        if (_dom.gParamTopKVal) _dom.gParamTopKVal.textContent = '15';
-      }
-      if (_dom.gParamTopP) {
-        _dom.gParamTopP.value = '1.0';
-        if (_dom.gParamTopPVal) _dom.gParamTopPVal.textContent = '1.0';
-      }
-      if (_dom.gParamTemp) {
-        _dom.gParamTemp.value = '1.0';
-        if (_dom.gParamTempVal) _dom.gParamTempVal.textContent = '1.0';
-      }
-      if (_dom.gParamSliceMethod) _dom.gParamSliceMethod.value = 'cut5';
       if (_dom.gPrecision) _dom.gPrecision.value = 'auto';
       if (_dom.gAudioRetention) _dom.gAudioRetention.value = '30';
       showToast('已恢复推荐数值，请点击【保存全局配置】生效', 'info');
