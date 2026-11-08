@@ -390,6 +390,8 @@ def _collect_hardware_telemetry_sync(
         cfg_prec = "fp16"
     elif env_prec in ("fp32", "float32", "false", "0"):
         cfg_prec = "fp32"
+    elif env_prec == "auto":
+        cfg_prec = "auto"
 
     return HardwareTelemetry(
         gpu_available=gpu_avail,
