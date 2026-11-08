@@ -438,8 +438,9 @@ class CharacterManager:
         if not emotions:
             return None
 
-        from galgame2voice.services.emotion_references import normalize_emotion
-        canonical_emo = normalize_emotion(emotion)
+        from galgame2voice.services.emotion_references import EMOTION_SYNONYMS
+        cleaned_emo = str(emotion).strip().lower() if emotion else ""
+        canonical_emo = EMOTION_SYNONYMS.get(cleaned_emo, "") if cleaned_emo else ""
 
         target_cfg, resolved_audio, matched_emo = self._select_emotion_config(
             pkg, emotions, canonical_emo, emotion
@@ -464,45 +465,91 @@ class CharacterManager:
         return res
 
     @staticmethod
+    def _match_emotion_key(emotions: dict[str, Any], target: str | None) -> str | None:
+        """Matches an emotion key in `emotions` exact-first, then case-insensitively."""
+        if not emotions or not target:
+            return None
+        raw = str(target).strip()
+        if not raw:
+            return None
+        if raw in emotions:
+            return raw
+        lowered = raw.lower()
+        if lowered in emotions:
+            return lowered
+        for key in emotions:
+            if str(key).strip().lower() == lowered:
+                return key
+        return None
+
+    @classmethod
+    def iter_default_emotion_candidates(
+        cls,
+        manifest: Any,
+        emotions: dict[str, Any] | None = None,
+    ) -> list[tuple[str, Any]]:
+        """
+        Returns `(emotion_key, emotion_config)` pairs ordered by unified default priority:
+        1. `manifest.default_emotion` (case-insensitive match against `emotions` keys,
+           falling back to `normalize_emotion` synonym match if not directly matched);
+        2. `"gentle"` (case-insensitive match);
+        3. Remaining `emotions` entries in definition order.
+        """
+        emo_map = emotions if emotions is not None else getattr(manifest, "emotions", None)
+        if not emo_map:
+            return []
+
+        ordered_keys: list[str] = []
+
+        def _add(key: str | None) -> None:
+            if key is not None and key not in ordered_keys:
+                ordered_keys.append(key)
+
+        raw_default = getattr(manifest, "default_emotion", None) if manifest is not None else None
+        if isinstance(raw_default, str) and raw_default.strip():
+            direct_key = cls._match_emotion_key(emo_map, raw_default)
+            if direct_key is not None:
+                _add(direct_key)
+            else:
+                from galgame2voice.services.emotion_references import normalize_emotion
+                _add(cls._match_emotion_key(emo_map, normalize_emotion(raw_default)))
+
+        _add(cls._match_emotion_key(emo_map, "gentle"))
+
+        for key in emo_map:
+            _add(key)
+
+        return [(key, emo_map[key]) for key in ordered_keys]
+
+    @classmethod
     def _select_emotion_config(
+        cls,
         pkg: CharacterPackage,
         emotions: dict[str, Any],
         canonical_emo: str,
         emotion: str | None,
     ) -> tuple[Any | None, Path | None, str]:
-        """Resolves target emotion config and valid audio path with gentle/first fallback."""
-        raw_key = str(emotion).strip().lower() if emotion else ""
-        target_cfg = None
-        matched_emo = ""
+        """Resolves target emotion config and valid audio path with default_emotion/gentle/first fallback."""
+        if not emotions:
+            return None, None, ""
 
-        # 1. Exact match in character package manifest
-        if raw_key and raw_key in emotions:
-            target_cfg = emotions[raw_key]
-            matched_emo = raw_key
-        # 2. Canonical archetype match via synonyms
-        elif canonical_emo and canonical_emo in emotions:
-            target_cfg = emotions[canonical_emo]
-            matched_emo = canonical_emo
-        # 3. Fallback to gentle or first available emotion
-        elif "gentle" in emotions:
-            target_cfg = emotions["gentle"]
-            matched_emo = "gentle"
-        elif emotions:
-            first_key = next(iter(emotions))
-            target_cfg = emotions[first_key]
-            matched_emo = first_key
+        matched_key = cls._match_emotion_key(emotions, emotion)
+        if matched_key is None and canonical_emo:
+            matched_key = cls._match_emotion_key(emotions, canonical_emo)
 
-        resolved_audio = pkg.resolve_audio_path(target_cfg.audio)
-        if resolved_audio is None or not resolved_audio.is_file():
-            fallback_key = "gentle" if "gentle" in emotions else next(iter(emotions))
-            fallback_cfg = emotions[fallback_key]
+        matched_emo = matched_key or ""
+        if matched_key is not None:
+            target_cfg = emotions[matched_key]
+            resolved_audio = pkg.resolve_audio_path(target_cfg.audio)
+            if resolved_audio is not None and resolved_audio.is_file():
+                return target_cfg, resolved_audio, matched_key
+
+        for fallback_key, fallback_cfg in cls.iter_default_emotion_candidates(pkg.manifest, emotions):
             resolved_audio = pkg.resolve_audio_path(fallback_cfg.audio)
-            if resolved_audio is None or not resolved_audio.is_file():
-                return None, None, matched_emo
-            target_cfg = fallback_cfg
-            matched_emo = fallback_key
+            if resolved_audio is not None and resolved_audio.is_file():
+                return fallback_cfg, resolved_audio, fallback_key
 
-        return target_cfg, resolved_audio, matched_emo
+        return None, None, matched_emo
 
     @staticmethod
     def _weight_needs_healing(w_path: str) -> bool:
@@ -546,15 +593,24 @@ class CharacterManager:
             rows = [row for row in rows if index.resolve(row["name"]) is package]
         return select_profile(rows, char_name, aliases or ())
 
-    @staticmethod
-    def _resolve_package_profile_defaults(pkg: CharacterPackage) -> dict[str, Any]:
+    @classmethod
+    def _resolve_package_profile_defaults(cls, pkg: CharacterPackage) -> dict[str, Any]:
         """Resolves default reference audio, weights, and prompt settings for a package."""
         manifest = pkg.manifest
-        default_emo = manifest.emotions.get("gentle") or (
-            next(iter(manifest.emotions.values())) if manifest.emotions else None
-        )
-        if default_emo:
+        candidates = cls.iter_default_emotion_candidates(manifest)
+        default_emo = None
+        resolved_audio = None
+        for _emo_key, cand_emo in candidates:
+            cand_audio = pkg.resolve_audio_path(cand_emo.audio)
+            if cand_audio is not None and cand_audio.is_file():
+                default_emo = cand_emo
+                resolved_audio = cand_audio
+                break
+        if default_emo is None and candidates:
+            default_emo = candidates[0][1]
             resolved_audio = pkg.resolve_audio_path(default_emo.audio)
+
+        if default_emo:
             ref_audio_str = to_project_relative_path(resolved_audio) if resolved_audio else default_emo.audio
             prompt_text = default_emo.text
             prompt_lang = default_emo.lang
