@@ -307,6 +307,123 @@ class TestAnthropicPayloadInvariance:
         assert payload["messages"][0]["role"] == "user"
         assert payload["messages"][0]["content"] == "Hello"
 
+    def test_prepare_payload_omits_top_p_when_temperature_present(self):
+        """When temperature is specified (including 0.0), top_p and unsupported penalties must not be in payload."""
+        adapter = AnthropicAdapter(api_key="sk-ant-test")
+        messages = [ChatMessage(role="user", content="Hello")]
+
+        payload = adapter._prepare_anthropic_payload(
+            messages,
+            temperature=0.7,
+            top_p=1.0,
+            frequency_penalty=0.0,
+            presence_penalty=0.0,
+        )
+
+        assert payload["temperature"] == 0.7
+        assert "top_p" not in payload
+        assert "frequency_penalty" not in payload
+        assert "presence_penalty" not in payload
+
+        zero_temp_payload = adapter._prepare_anthropic_payload(
+            messages,
+            temperature=0.0,
+            top_p=1.0,
+        )
+        assert zero_temp_payload["temperature"] == 0.0
+        assert "top_p" not in zero_temp_payload
+
+    @pytest.mark.asyncio
+    async def test_chat_omits_top_p_and_penalties_in_request_payload(self):
+        """chat() request payload must include temperature=0.7 and omit top_p, frequency_penalty, presence_penalty."""
+        adapter = AnthropicAdapter(api_key="sk-ant-test")
+        messages = [ChatMessage(role="user", content="Hello")]
+
+        mock_client = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = '{"content": [{"type": "text", "text": "Hi"}]}'
+        mock_resp.json.return_value = {"content": [{"type": "text", "text": "Hi"}]}
+        mock_client.post.return_value = mock_resp
+
+        res = await adapter.chat(
+            messages,
+            temperature=0.7,
+            top_p=1.0,
+            frequency_penalty=0.0,
+            presence_penalty=0.0,
+            client_override=mock_client,
+        )
+
+        assert res.content == "Hi"
+        assert mock_client.post.called
+        sent_payload = mock_client.post.call_args.kwargs["json"]
+        assert sent_payload["temperature"] == 0.7
+        assert "top_p" not in sent_payload
+        assert "frequency_penalty" not in sent_payload
+        assert "presence_penalty" not in sent_payload
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_omits_top_p_and_penalties_in_request_payload(self):
+        """stream_chat() request payload must include temperature=0.7 and omit top_p, frequency_penalty, presence_penalty."""
+        adapter = AnthropicAdapter(api_key="sk-ant-test")
+        messages = [ChatMessage(role="user", content="Hello")]
+
+        mock_client = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = (
+            'event: content_block_delta\n'
+            'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hi"}}\n\n'
+            'event: message_delta\n'
+            'data: {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}\n\n'
+            'event: message_stop\n'
+            'data: {"type": "message_stop"}\n\n'
+        )
+        mock_client.post.return_value = mock_resp
+
+        chunks = [
+            chunk
+            async for chunk in adapter.stream_chat(
+                messages,
+                temperature=0.7,
+                top_p=1.0,
+                frequency_penalty=0.0,
+                presence_penalty=0.0,
+                client_override=mock_client,
+            )
+        ]
+
+        assert chunks == ["Hi"]
+        assert mock_client.post.called
+        sent_payload = mock_client.post.call_args.kwargs["json"]
+        assert sent_payload["temperature"] == 0.7
+        assert "top_p" not in sent_payload
+        assert "frequency_penalty" not in sent_payload
+        assert "presence_penalty" not in sent_payload
+
+    @pytest.mark.asyncio
+    async def test_allows_top_p_when_temperature_not_specified(self):
+        """When temperature is None or omitted and top_p is provided, payload retains top_p and omits temperature."""
+        adapter = AnthropicAdapter(api_key="sk-ant-test")
+        messages = [ChatMessage(role="user", content="Hello")]
+
+        payload = adapter._prepare_anthropic_payload(messages, temperature=None, top_p=0.9)
+        assert "temperature" not in payload
+        assert payload.get("top_p") == 0.9
+
+        mock_client = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = '{"content": [{"type": "text", "text": "Hi"}]}'
+        mock_resp.json.return_value = {"content": [{"type": "text", "text": "Hi"}]}
+        mock_client.post.return_value = mock_resp
+
+        await adapter.chat(messages, top_p=0.85, client_override=mock_client)
+        sent_payload = mock_client.post.call_args.kwargs["json"]
+        assert "temperature" not in sent_payload
+        assert sent_payload.get("top_p") == 0.85
+
 
 # ============================================================================
 # 5. Anthropic Adapter Empty API Key Fast Fail

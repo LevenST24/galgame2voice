@@ -135,7 +135,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         self,
         messages: list[ChatMessage],
         model: str | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int = 1024,
         stream: bool = False,
         **kwargs: Any,
@@ -177,23 +177,30 @@ class AnthropicAdapter(BaseLLMAdapter):
         elif merged_msgs[0]["role"] != "user":
             merged_msgs.insert(0, {"role": "user", "content": "Hello"})
 
+        if temperature is None and kwargs.get("top_p") is None:
+            temperature = 0.7
+
         payload: dict[str, Any] = {
             "model": model or self.default_model,
             "messages": merged_msgs,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "stream": stream,
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
         if system_content:
             payload["system"] = system_content
         reasoning_effort = kwargs.get("reasoning_effort", self.reasoning_effort)
         if reasoning_effort is not None:
             payload["reasoning_effort"] = reasoning_effort
 
-        # Anthropic API 不支持这些 OpenAI 风格参数，透传会导致 400
+        # Anthropic API 不支持这些 OpenAI 风格参数，透传会导致 400；
+        # 且 temperature 与 top_p 互斥，已写入 temperature 时必须省略 top_p。
         _UNSUPPORTED = ("frequency_penalty", "presence_penalty", "top_k")
         for k, v in kwargs.items():
             if k == "reasoning_effort":
+                continue
+            if k == "top_p" and ("temperature" in payload or v is None):
                 continue
             if k not in ("client_override", "custom_headers", "timeout_s", "max_retries", "base_delay") and k not in _UNSUPPORTED:
                 payload[k] = v
@@ -204,7 +211,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         self,
         messages: list[ChatMessage],
         model: str | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """Executes non-streaming chat completion via Anthropic /messages endpoint with exponential retries."""
@@ -292,7 +299,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         self,
         messages: list[ChatMessage],
         model: str | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
         """Streams token chunks from Anthropic SSE /messages stream with connection resilience."""
