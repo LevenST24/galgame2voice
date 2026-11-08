@@ -18,7 +18,7 @@ import json
 import shlex
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, MutableMapping
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = (
@@ -1043,6 +1043,12 @@ def ensure_gpt_sovits_running(
     SQLite > .env > built-in default). Remote endpoints are never managed by
     this launcher: no fallback to a local 127.0.0.1:9880 process is performed.
     """
+    sync_runtime_precision(
+        fp16=fp16,
+        fp32=fp32,
+        cpu=cpu,
+        precision=precision,
+    )
     try:
         from galgame2voice.services.sovits_endpoint import (
             resolve_effective_sovits_endpoint_sync,
@@ -1243,6 +1249,50 @@ def sync_runtime_address(*, host: str | None = None, port: int | None = None) ->
         pass
 
 
+def sync_runtime_precision(
+    *,
+    fp16: bool = False,
+    fp32: bool = False,
+    cpu: bool = False,
+    precision: str | None = None,
+    environ: MutableMapping[str, str] | None = None,
+) -> str | None:
+    """Synchronize CLI precision flags across runtime environment variables.
+
+    Priority matches ensure_gpt_sovits_running:
+    1. --cpu / --precision cpu -> "cpu"
+    2. --fp16 / --precision fp16 -> "fp16"
+    3. --fp32 / --precision fp32 -> "fp32"
+    4. --precision auto -> "auto"
+    If no precision option was specified, environ is left untouched and None is returned.
+    When mode is "cpu", GPT_SOVITS_DEVICE="cpu" is also set.
+    When mode is "fp16", "fp32", or "auto", any leftover GPT_SOVITS_DEVICE="cpu" is removed.
+    """
+    prec_opt = (precision or "").strip().lower()
+    mode: str | None = None
+    if cpu or prec_opt == "cpu":
+        mode = "cpu"
+    elif fp16 or prec_opt == "fp16":
+        mode = "fp16"
+    elif fp32 or prec_opt == "fp32":
+        mode = "fp32"
+    elif prec_opt == "auto":
+        mode = "auto"
+
+    if mode is None:
+        return None
+
+    target_env = environ if environ is not None else os.environ
+    target_env["GPT_SOVITS_PRECISION"] = mode
+    if mode == "cpu":
+        target_env["GPT_SOVITS_DEVICE"] = "cpu"
+    else:
+        for k in list(target_env.keys()):
+            if k.lower() == "gpt_sovits_device" and str(target_env[k]).strip().lower() == "cpu":
+                target_env.pop(k, None)
+    return mode
+
+
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     """Parses CLI flags for the Galgame2Voice server launcher."""
     parser = argparse.ArgumentParser(
@@ -1331,6 +1381,12 @@ def main(args: list[str] | None = None):
     # Immediately synchronize the requested host/port across all environment aliases
     # and clear any early-cached Settings before any diagnostic or engine setup runs.
     sync_runtime_address(host=parsed.host, port=parsed.port)
+    sync_runtime_precision(
+        fp16=getattr(parsed, "fp16", False),
+        fp32=getattr(parsed, "fp32", False),
+        cpu=getattr(parsed, "cpu", False),
+        precision=getattr(parsed, "precision", None),
+    )
 
     if getattr(parsed, "profile", False):
         os.environ["GALGAME2VOICE_PROFILE"] = "1"

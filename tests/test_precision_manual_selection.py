@@ -16,7 +16,13 @@ from httpx import AsyncClient, ASGITransport
 from galgame2voice.main import create_app
 from galgame2voice.config import get_settings
 from galgame2voice.services.sovits_endpoint import parse_sovits_endpoint
-from galgame2voice.utils.precision import read_precision_cache, write_precision_cache
+from galgame2voice.services.engine_runtime import EngineLaunch
+from galgame2voice.utils.precision import (
+    read_precision_cache,
+    write_precision_cache,
+    resolve_initial_device_and_half,
+)
+from galgame2voice.routers.health import _collect_hardware_telemetry_sync
 import scripts.run_server as rs
 
 
@@ -53,9 +59,64 @@ class TestPrecisionCLI:
         args_auto = rs.parse_args(["--precision", "auto"])
         assert args_auto.precision == "auto"
 
+    def test_sync_runtime_precision_pure_mapping(self):
+        env = {}
+        assert rs.sync_runtime_precision(environ=env) is None
+        assert env == {}
+
+        # --cpu
+        assert rs.sync_runtime_precision(cpu=True, environ=env) == "cpu"
+        assert env["GPT_SOVITS_PRECISION"] == "cpu"
+        assert env["GPT_SOVITS_DEVICE"] == "cpu"
+
+        # --fp16 removes leftover cpu device
+        assert rs.sync_runtime_precision(fp16=True, environ=env) == "fp16"
+        assert env["GPT_SOVITS_PRECISION"] == "fp16"
+        assert "GPT_SOVITS_DEVICE" not in env
+
+        # --fp32
+        assert rs.sync_runtime_precision(fp32=True, environ=env) == "fp32"
+        assert env["GPT_SOVITS_PRECISION"] == "fp32"
+
+        # --precision auto removes leftover cpu device if present
+        env["GPT_SOVITS_DEVICE"] = "cpu"
+        assert rs.sync_runtime_precision(precision="auto", environ=env) == "auto"
+        assert env["GPT_SOVITS_PRECISION"] == "auto"
+        assert "GPT_SOVITS_DEVICE" not in env
+
+        # --precision variants and case-insensitivity
+        assert rs.sync_runtime_precision(precision="cpu", environ=env) == "cpu"
+        assert env["GPT_SOVITS_PRECISION"] == "cpu"
+        assert env["GPT_SOVITS_DEVICE"] == "cpu"
+
+        assert rs.sync_runtime_precision(precision="FP16", environ=env) == "fp16"
+        assert env["GPT_SOVITS_PRECISION"] == "fp16"
+        assert "GPT_SOVITS_DEVICE" not in env
+
+        assert rs.sync_runtime_precision(precision="FP32", environ=env) == "fp32"
+        assert env["GPT_SOVITS_PRECISION"] == "fp32"
+
+        assert rs.sync_runtime_precision(precision="AUTO", environ=env) == "auto"
+        assert env["GPT_SOVITS_PRECISION"] == "auto"
+
+        # Precedence: cpu > fp16 > fp32 > auto
+        assert rs.sync_runtime_precision(cpu=True, fp16=True, fp32=True, precision="auto", environ=env) == "cpu"
+        assert rs.sync_runtime_precision(fp16=True, fp32=True, precision="auto", environ=env) == "fp16"
+        assert rs.sync_runtime_precision(fp32=True, precision="auto", environ=env) == "fp32"
+
 
 @pytest.mark.asyncio
 class TestPrecisionAPI:
+    @pytest.fixture(autouse=True)
+    def clean_precision_env(self):
+        os.environ.pop("GPT_SOVITS_PRECISION", None)
+        os.environ.pop("GPT_SOVITS_DEVICE", None)
+        try:
+            yield
+        finally:
+            os.environ.pop("GPT_SOVITS_PRECISION", None)
+            os.environ.pop("GPT_SOVITS_DEVICE", None)
+
     async def test_update_precision_in_config_and_cache(self, tmp_path, monkeypatch):
         settings = get_settings()
         monkeypatch.setattr(settings, "project_root", tmp_path)
@@ -352,3 +413,122 @@ class TestPrecisionAPI:
             assert detail["code"] == "REMOTE_SOVITS_NOT_MANAGED"
             assert detail["base_url"] == "http://10.0.0.20:9880"
             assert spawn_calls == []
+
+    async def test_sync_runtime_precision_telemetry_cpu_and_fp32(self, tmp_path, monkeypatch):
+        settings = get_settings()
+        monkeypatch.setattr(settings, "project_root", tmp_path)
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        fake_engine = tmp_path / "dummy_sovits"
+        fake_engine.mkdir()
+        (fake_engine / "api_v2.py").write_text("# dummy")
+        (tmp_path / "data" / "sovits_dir.txt").write_text(str(fake_engine), encoding="utf-8")
+
+        app = create_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # Seed SQLite with manual fp16 to ensure CLI flags override stale DB entries
+            resp = await client.post("/api/config", json={"settings": {"inference_precision": "fp16"}})
+            assert resp.status_code == 200
+
+        endpoint = parse_sovits_endpoint("http://127.0.0.1:9880", source="default")
+
+        class FakeProc:
+            def poll(self):
+                return None
+
+        proc = FakeProc()
+        monkeypatch.setattr(rs, "_SPAWNED_SOVITS_PROC", proc)
+
+        # 1. Test --cpu
+        os.environ.pop("GPT_SOVITS_PRECISION", None)
+        os.environ.pop("GPT_SOVITS_DEVICE", None)
+        rs.sync_runtime_precision(cpu=True)
+        monkeypatch.setattr(
+            rs,
+            "_SPAWNED_SOVITS_LAUNCH",
+            EngineLaunch(proc, "127.0.0.1", 9880, "cpu", False),
+        )
+
+        telem_cpu = _collect_hardware_telemetry_sync(endpoint, gpu_snapshot=(True, "NVIDIA GeForce RTX 3060"))
+        assert telem_cpu.configured_precision == "cpu"
+        assert telem_cpu.inference_precision == "CPU"
+        assert telem_cpu.next_inference_precision == "CPU"
+        assert telem_cpu.precision_pending_restart is False
+
+        # 2. Test --fp32
+        os.environ.pop("GPT_SOVITS_PRECISION", None)
+        os.environ.pop("GPT_SOVITS_DEVICE", None)
+        rs.sync_runtime_precision(fp32=True)
+        monkeypatch.setattr(
+            rs,
+            "_SPAWNED_SOVITS_LAUNCH",
+            EngineLaunch(proc, "127.0.0.1", 9880, "cuda", False),
+        )
+
+        telem_fp32 = _collect_hardware_telemetry_sync(endpoint, gpu_snapshot=(True, "NVIDIA GeForce RTX 3060"))
+        assert telem_fp32.configured_precision == "fp32"
+        assert telem_fp32.inference_precision == "FP32"
+        assert telem_fp32.next_inference_precision == "FP32"
+        assert telem_fp32.precision_pending_restart is False
+
+    async def test_cli_precision_auto_skips_db_and_retains_cache(self, tmp_path, monkeypatch):
+        settings = get_settings()
+        monkeypatch.setattr(settings, "project_root", tmp_path)
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        fake_engine = tmp_path / "dummy_sovits"
+        fake_engine.mkdir()
+        (fake_engine / "api_v2.py").write_text("# dummy")
+        (tmp_path / "data" / "sovits_dir.txt").write_text(str(fake_engine), encoding="utf-8")
+
+        app = create_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # 1. Put manual fp16 into SQLite database via /api/config
+            resp = await client.post("/api/config", json={"settings": {"inference_precision": "fp16"}})
+            assert resp.status_code == 200
+
+            # Seed calibration cache with FP32 (is_half=False) to prove DB fp16 is bypassed
+            write_precision_cache(tmp_path, str(fake_engine), is_half=False, device="cuda")
+            assert read_precision_cache(tmp_path)["is_half"] is False
+
+            # 2. Simulate launcher starting with --precision auto
+            rs.sync_runtime_precision(precision="auto")
+
+            # resolve_initial_device_and_half should skip DB fp16 and hit precision.json cache
+            dev, is_half, source = resolve_initial_device_and_half(
+                tmp_path, fake_engine, db_path=settings.db_path, gpu_available=True
+            )
+            assert dev == "cuda"
+            assert is_half is False
+            assert source == "cache"
+
+            # Check telemetry reports configured_precision as "auto" despite DB holding "fp16"
+            endpoint = parse_sovits_endpoint("http://127.0.0.1:9880", source="default")
+            telem_auto = _collect_hardware_telemetry_sync(endpoint, gpu_snapshot=(True, "NVIDIA GeForce RTX 3060"))
+            assert telem_auto.configured_precision == "auto"
+
+            # 3. GET /api/config should align settings.inference_precision to "auto"
+            cfg_resp = await client.get("/api/config")
+            assert cfg_resp.status_code == 200
+            assert cfg_resp.json()["settings"]["inference_precision"] == "auto"
+
+            # 4. POST /api/system/restart_sovits without precision parameter should preserve auto mode
+            spawn_calls = []
+            class FakeProc:
+                pid = 9999
+                def poll(self):
+                    return None
+
+            monkeypatch.setattr(rs, "_SPAWNED_SOVITS_PROC", None)
+            monkeypatch.setattr(rs, "is_port_in_use", lambda *args: False)
+            monkeypatch.setattr(
+                rs,
+                "_spawn_sovits_process",
+                lambda s_dir, host, port, half, device="cuda": spawn_calls.append(
+                    (host, port, half, device)
+                ) or FakeProc(),
+            )
+
+            r_restart = await client.post("/api/system/restart_sovits")
+            assert r_restart.status_code == 200
+            assert r_restart.json()["is_half"] is False
+            assert r_restart.json()["precision"] == "FP32"
+            assert spawn_calls[-1] == ("127.0.0.1", 9880, False, "cuda")

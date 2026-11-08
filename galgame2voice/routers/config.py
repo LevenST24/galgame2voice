@@ -84,6 +84,10 @@ async def get_config() -> dict[str, Any]:
         active_provider = await crud.get_active_provider(conn, mask=True)
 
         settings_dict = settings.model_dump()
+        from galgame2voice.utils.precision import resolve_env_precision
+        env_prec = resolve_env_precision()
+        if env_prec is not None:
+            settings_dict["inference_precision"] = env_prec
         # Ensure compatibility with both dict mapping and model schema
         return {
             "status": "ok",

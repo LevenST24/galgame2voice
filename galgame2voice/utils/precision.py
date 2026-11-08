@@ -11,7 +11,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 logger = logging.getLogger("galgame2voice.utils.precision")
 
@@ -201,10 +201,27 @@ def read_db_precision(project_root: Path, *, db_path: Path | None = None) -> str
     return None
 
 
+def resolve_env_precision(environ: Mapping[str, str] | None = None) -> str | None:
+    """Returns canonical environment precision ('cpu' | 'fp16' | 'fp32' | 'auto') if set, else None."""
+    env = environ if environ is not None else os.environ
+    env_prec = str(env.get(_PRECISION_ENV_VAR, "")).strip().lower()
+    dev_override = str(env.get("GPT_SOVITS_DEVICE", "")).strip().lower()
+
+    if dev_override == DEVICE_CPU or env_prec == DEVICE_CPU:
+        return DEVICE_CPU
+    if env_prec in ("fp16", "half", "true", "1"):
+        return "fp16"
+    if env_prec in ("fp32", "float32", "false", "0"):
+        return "fp32"
+    if env_prec == "auto":
+        return "auto"
+    return None
+
+
 def resolve_initial_device_and_half(
     project_root: Path,
     sovits_dir: Path,
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
     *,
     db_path: Path | None = None,
     gpu_available: bool | None = None,
@@ -212,8 +229,9 @@ def resolve_initial_device_and_half(
     """
     Decides the initial device ('cuda' | 'cpu') and is_half setting for engine launch.
     Priority: ENV override (GPT_SOVITS_PRECISION / GPT_SOVITS_DEVICE) > SQLite settings >
-    verified cache > existing YAML setting > hardware default. CLI flags are resolved by the
-    caller before this function is reached, so they never appear as a source here.
+    verified cache > existing YAML setting > hardware default.
+    When GPT_SOVITS_PRECISION='auto', the SQLite setting is skipped to allow auto calibration/cache.
+    CLI flags are resolved by the caller before this function is reached, so they never appear as a source here.
     Returns (device, is_half, source) where source is "env" | "db" | "cache" | "yaml" | "default".
     gpu_available reuses an existing measurement for the hardware default only;
     omitting it keeps the engine launcher's full detection behavior.
@@ -229,14 +247,15 @@ def resolve_initial_device_and_half(
     if override in ("fp32", "float32", "false", "0"):
         return DEVICE_CUDA, False, "env"
 
-    # User configured setting in SQLite database
-    db_prec = read_db_precision(project_root, db_path=db_path)
-    if db_prec == DEVICE_CPU:
-        return DEVICE_CPU, False, "db"
-    if db_prec in ("fp32", "float32"):
-        return DEVICE_CUDA, False, "db"
-    if db_prec in ("fp16", "half"):
-        return DEVICE_CUDA, True, "db"
+    # User configured setting in SQLite database (skipped when override is auto)
+    if override != "auto":
+        db_prec = read_db_precision(project_root, db_path=db_path)
+        if db_prec == DEVICE_CPU:
+            return DEVICE_CPU, False, "db"
+        if db_prec in ("fp32", "float32"):
+            return DEVICE_CUDA, False, "db"
+        if db_prec in ("fp16", "half"):
+            return DEVICE_CUDA, True, "db"
 
     # Calibration cache in precision.json
     cache = read_precision_cache(project_root)
