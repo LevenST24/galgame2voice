@@ -531,7 +531,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           // 2. 没有已知 ID 的本地用户消息才按正文配对，而且只配给没被 ID 占用的服务端用户消息，保持从后往前的顺序。
           for (let i = session.messages.length - 1; i >= 0; i--) {
             const localMsg = session.messages[i];
-            if (localMsg && localMsg.role === 'user' && extractServerId(localMsg) === null) {
+            if (localMsg && localMsg.role === 'user' && !localMsg.failed && extractServerId(localMsg) === null) {
               for (let j = incoming.length - 1; j >= 0; j--) {
                 if (usedIndices.has(j)) continue;
                 const serverMsg = incoming[j];
@@ -553,9 +553,17 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
             }
           }
 
-          // 3. 本地最后一条是带 failed 的用户消息，且没有配上任何服务端消息时，把它原样（保留 failed）接到新列表末尾。
+          // 3. 本地最后一条是带 failed 或尚无服务端 ID 的用户消息，且没有配上任何服务端消息时，补标 failed 并接到新列表末尾。
           const lastLocalMsg = session.messages[session.messages.length - 1];
-          if (lastLocalMsg && lastLocalMsg.role === 'user' && lastLocalMsg.failed && !pairedLocal.has(lastLocalMsg)) {
+          if (
+            lastLocalMsg &&
+            lastLocalMsg.role === 'user' &&
+            !pairedLocal.has(lastLocalMsg) &&
+            (lastLocalMsg.failed || extractServerId(lastLocalMsg) === null)
+          ) {
+            if (!lastLocalMsg.failed) {
+              lastLocalMsg.failed = { error: '对话已中断，未收到回复', code: 'cancelled' };
+            }
             incoming.push(lastLocalMsg);
           }
         }
@@ -890,7 +898,14 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
             }
             markInterruptedPrompt(local, bs.message_count);
             const localOnlyMessages = retainLocalOnlyMessages(local.messages);
-            const persistedLocalCount = local.messages.length - localOnlyMessages.length;
+            const lastMsg = local.messages ? local.messages[local.messages.length - 1] : null;
+            const hasUnpersistedTailPrompt = Boolean(
+              lastMsg &&
+              lastMsg.role === 'user' &&
+              !lastMsg.failed &&
+              extractServerId(lastMsg) === null
+            );
+            const persistedLocalCount = local.messages.length - localOnlyMessages.length - (hasUnpersistedTailPrompt ? 1 : 0);
             if (bs.message_count === 0 && persistedLocalCount > 0) {
               local.messages = localOnlyMessages;
               local.hasMoreHistory = false;
