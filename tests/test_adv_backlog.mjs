@@ -2612,3 +2612,235 @@ test('LOG replay ending while the same line is actively regenerating does not cl
   assert.equal(refreshedStatus.textContent, '语音已生成，点语音播放。');
 });
 
+test('LOG: replaying line voice, legacy voice, or user recording preserves .is-playing across renderAll() and cleans up on completion', async t => {
+  const h = setupApp(t);
+  const now = h.getWallTime();
+  const session = h.active();
+
+  session.messages = [
+    { id: 'm_u', role: 'user', content: '用户录音', voiceKey: 'rec_u', ts: now - 3000 },
+    {
+      id: 'm_legacy',
+      role: 'assistant',
+      ts: now - 2000,
+      content: '旧版消息',
+      japanese: '旧版日本語。',
+      audioUrls: ['/audio/legacy.wav'],
+    },
+    {
+      id: 'm_a',
+      role: 'assistant',
+      ts: now - 1000,
+      lines: [
+        {
+          index: 0,
+          zh: '分句台词',
+          ja: '台詞。',
+          emotion: 'neutral',
+          act: {},
+          audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/audio/line0.wav' }] },
+        },
+      ],
+    },
+  ];
+
+  h.app.action('log');
+  const log = h.app.backlog;
+
+  // 1. Assistant line replay across renderAll()
+  const lineEntry = [...log.listElement.querySelectorAll('.adv-log-entry.is-assistant')].find(e => !e.classList.contains('is-legacy'));
+  const lineReplayBtn = lineEntry.querySelector('.adv-log-replay-btn');
+  lineReplayBtn.click();
+  await microtasks();
+  assert.equal(lineReplayBtn.classList.contains('is-playing'), true, 'line replay button should have .is-playing before renderAll');
+
+  // Trigger renderAll() (e.g. background chat completion)
+  h.done();
+  await microtasks();
+
+  const newLineEntry = [...log.listElement.querySelectorAll('.adv-log-entry.is-assistant')].find(e => !e.classList.contains('is-legacy'));
+  const newLineReplayBtn = newLineEntry.querySelector('.adv-log-replay-btn');
+  assert.notEqual(newLineReplayBtn, lineReplayBtn, 'entry should have been reconstructed in DOM');
+  assert.equal(newLineReplayBtn.classList.contains('is-playing'), true, 'reconstructed line replay button should preserve .is-playing');
+
+  // Finish audio playback
+  h.endVoice('ended');
+  await microtasks();
+  assert.equal(newLineReplayBtn.classList.contains('is-playing'), false, 'reconstructed line replay button should clear .is-playing on playback end');
+
+  // 2. Legacy assistant replay across renderAll()
+  const legacyEntry = log.listElement.querySelector('.adv-log-entry.is-legacy');
+  const legacyReplayBtn = legacyEntry.querySelector('.adv-log-replay-btn');
+  legacyReplayBtn.click();
+  await microtasks();
+  assert.equal(legacyReplayBtn.classList.contains('is-playing'), true, 'legacy replay button should have .is-playing before renderAll');
+
+  // Re-render
+  log.renderAll();
+  const newLegacyEntry = log.listElement.querySelector('.adv-log-entry.is-legacy');
+  const newLegacyReplayBtn = newLegacyEntry.querySelector('.adv-log-replay-btn');
+  assert.notEqual(newLegacyReplayBtn, legacyReplayBtn, 'legacy entry should have been reconstructed in DOM');
+  assert.equal(newLegacyReplayBtn.classList.contains('is-playing'), true, 'reconstructed legacy replay button should preserve .is-playing');
+
+  // Stop replay via stopReplay
+  log.stopReplay();
+  assert.equal(newLegacyReplayBtn.classList.contains('is-playing'), false, 'reconstructed legacy replay button should clear .is-playing on stopReplay');
+
+  // 3. User recording replay across renderAll()
+  const userEntry = log.listElement.querySelector('.adv-log-entry.is-user');
+  const userRecBtn = userEntry.querySelector('.adv-log-user-recording-btn');
+  userRecBtn.click();
+  assert.equal(h.calls.playUserVoice.length, 1);
+  const userCtl = h.calls.playUserVoice[0].ctl;
+  userCtl.setPlaying(true);
+  assert.equal(userRecBtn.classList.contains('is-playing'), true, 'user recording button should have .is-playing');
+
+  // Re-render
+  log.renderAll();
+  const newUserEntry = log.listElement.querySelector('.adv-log-entry.is-user');
+  const newUserRecBtn = newUserEntry.querySelector('.adv-log-user-recording-btn');
+  assert.notEqual(newUserRecBtn, userRecBtn, 'user entry should have been reconstructed in DOM');
+  assert.equal(newUserRecBtn.classList.contains('is-playing'), true, 'reconstructed user recording button should preserve .is-playing');
+
+  // Finish user playback
+  userCtl.setPlaying(false);
+  assert.equal(newUserRecBtn.classList.contains('is-playing'), false, 'reconstructed user recording button should clear .is-playing on setPlaying(false)');
+});
+
+test('LOG: user recording re-render before setPlaying(true), and line audio failure after re-render', async t => {
+  const h = setupApp(t);
+  const now = h.getWallTime();
+  const session = h.active();
+
+  session.messages = [
+    { id: 'm_u_early', role: 'user', content: '早先录音', voiceKey: 'rec_early', ts: now - 3000 },
+    {
+      id: 'm_fail',
+      role: 'assistant',
+      ts: now - 1000,
+      lines: [
+        {
+          index: 0,
+          zh: '失败台词',
+          ja: '失敗。',
+          emotion: 'neutral',
+          act: {},
+          audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/audio/fail.wav' }] },
+        },
+      ],
+    },
+  ];
+
+  h.app.action('log');
+  const log = h.app.backlog;
+
+  // 1. User recording clicked, renderAll() occurs BEFORE setPlaying(true)
+  const userEntry = log.listElement.querySelector('.adv-log-entry.is-user');
+  const userRecBtn = userEntry.querySelector('.adv-log-user-recording-btn');
+  userRecBtn.click();
+  assert.equal(h.calls.playUserVoice.length, 1);
+  const earlyCtl = h.calls.playUserVoice[0].ctl;
+
+  // Trigger renderAll() before earlyCtl.setPlaying(true)
+  log.renderAll();
+  const reconstructedUserBtn = log.listElement.querySelector('.adv-log-user-recording-btn');
+  assert.notEqual(reconstructedUserBtn, userRecBtn);
+
+  // Now audio actually begins playing
+  earlyCtl.setPlaying(true);
+  assert.equal(reconstructedUserBtn.classList.contains('is-playing'), true, 'reconstructed user button must have is-playing once setPlaying(true) arrives');
+
+  // And audio completes
+  earlyCtl.setPlaying(false);
+  assert.equal(reconstructedUserBtn.classList.contains('is-playing'), false, 'reconstructed user button must remove is-playing when audio ends');
+
+  // 2. Line replay clicked, renderAll() occurs, audio resolution is 'failed'
+  const lineEntry = log.listElement.querySelector('.adv-log-entry.is-assistant');
+  const lineReplayBtn = lineEntry.querySelector('.adv-log-replay-btn');
+  lineReplayBtn.click();
+  await microtasks();
+
+  log.renderAll();
+  const reconstructedLineBtn = log.listElement.querySelector('.adv-log-replay-btn');
+  assert.notEqual(reconstructedLineBtn, lineReplayBtn);
+  assert.equal(reconstructedLineBtn.classList.contains('is-playing'), true);
+
+  // Fail the audio
+  h.endVoice('failed');
+  await microtasks();
+  assert.equal(reconstructedLineBtn.classList.contains('is-playing'), false);
+  assert.equal(reconstructedLineBtn.disabled, true, 'reconstructed line button must be disabled after failed audio');
+  assert.equal(reconstructedLineBtn.title, '语音已过期或不可用');
+});
+
+test('LOG: rapid switching between lines and user recording across multiple renderAll() cycles', async t => {
+  const h = setupApp(t);
+  const now = h.getWallTime();
+  const session = h.active();
+
+  session.messages = [
+    { id: 'm_u', role: 'user', content: '用户录音', voiceKey: 'rec_u', ts: now - 3000 },
+    {
+      id: 'm_a',
+      role: 'assistant',
+      ts: now - 1000,
+      lines: [
+        {
+          index: 0,
+          zh: '台词0',
+          ja: '台詞0。',
+          audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/audio/line0.wav' }] },
+        },
+        {
+          index: 1,
+          zh: '台词1',
+          ja: '台詞1。',
+          audio: { status: 'ready', chunks: [{ index: 0, line: 1, audio_url: '/audio/line1.wav' }] },
+        },
+      ],
+    },
+  ];
+
+  h.app.action('log');
+  const log = h.app.backlog;
+
+  // Click line 0 replay
+  const line0Btn = log.listElement.querySelectorAll('.adv-log-replay-btn')[0];
+  line0Btn.click();
+  await microtasks();
+  assert.equal(line0Btn.classList.contains('is-playing'), true);
+
+  // Re-render
+  log.renderAll();
+  let [reconstructedLine0, reconstructedLine1] = log.listElement.querySelectorAll('.adv-log-replay-btn');
+  assert.equal(reconstructedLine0.classList.contains('is-playing'), true);
+  assert.equal(reconstructedLine1.classList.contains('is-playing'), false);
+
+  // Click line 1 while line 0 is playing across renderAll()
+  reconstructedLine1.click();
+  await microtasks();
+  assert.equal(reconstructedLine0.classList.contains('is-playing'), false, 'line 0 button should lose is-playing when line 1 is clicked');
+  assert.equal(reconstructedLine1.classList.contains('is-playing'), true, 'line 1 button should gain is-playing');
+
+  // Re-render again
+  log.renderAll();
+  [reconstructedLine0, reconstructedLine1] = log.listElement.querySelectorAll('.adv-log-replay-btn');
+  assert.equal(reconstructedLine0.classList.contains('is-playing'), false);
+  assert.equal(reconstructedLine1.classList.contains('is-playing'), true);
+
+  // Now switch from line 1 to user recording across re-render
+  const userBtn = log.listElement.querySelector('.adv-log-user-recording-btn');
+  userBtn.click();
+  assert.equal(reconstructedLine1.classList.contains('is-playing'), false, 'line 1 should lose is-playing when user voice is clicked');
+  assert.equal(userBtn.classList.contains('is-playing'), true, 'user button should gain is-playing');
+
+  // Re-render while user voice is active
+  log.renderAll();
+  const reconstructedUserBtn = log.listElement.querySelector('.adv-log-user-recording-btn');
+  assert.equal(reconstructedUserBtn.classList.contains('is-playing'), true, 'reconstructed user button preserves is-playing');
+
+  // End user voice
+  const userCtl = h.calls.playUserVoice.at(-1).ctl;
+  userCtl.setPlaying(false);
+  assert.equal(reconstructedUserBtn.classList.contains('is-playing'), false, 'reconstructed user button clears is-playing');
+});

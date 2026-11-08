@@ -84,6 +84,7 @@ export function createBacklog(container, deps = {}) {
   let loadingOlder = false;
   let destroyed = false;
   let replaySequence = 0;
+  let activeReplayKey = null;
   let activeReplayButton = null;
   let activeRegeneration = null;
   const regenerationFeedback = new Map();
@@ -144,6 +145,7 @@ export function createBacklog(container, deps = {}) {
     ++replaySequence;
     activeReplayButton?.classList.remove('is-playing');
     activeReplayButton = null;
+    activeReplayKey = null;
     deps.stopOtherVoice?.();
     deps.audio?.stopLine?.({ fadeMs: 0 });
   }
@@ -344,6 +346,11 @@ export function createBacklog(container, deps = {}) {
 
     refreshAudioState();
 
+    if (hasVoice && activeReplayKey === lineKey) {
+      replayBtn.classList.add('is-playing');
+      activeReplayButton = replayBtn;
+    }
+
     replayBtn.onclick = async (e) => {
       e.stopPropagation();
       if (destroyed) return;
@@ -356,6 +363,7 @@ export function createBacklog(container, deps = {}) {
       if (replayBtn.disabled) return;
       stopReplay();
       const thisReplay = replaySequence;
+      activeReplayKey = lineKey;
       activeReplayButton = replayBtn;
 
       replayBtn.classList.add('is-playing');
@@ -378,8 +386,10 @@ export function createBacklog(container, deps = {}) {
       }
 
       if (replaySequence === thisReplay) {
-        replayBtn.classList.remove('is-playing');
+        const currentBtn = activeReplayButton || replayBtn;
+        currentBtn.classList.remove('is-playing');
         activeReplayButton = null;
+        activeReplayKey = null;
         if (result === 'failed') {
           failedAudio.add(key);
           loadNotes.delete(key);
@@ -391,7 +401,7 @@ export function createBacklog(container, deps = {}) {
           refreshAudioState();
         }
         if (result === 'failed' || loadRetryText[result]) {
-          updateReplayButtonState(replayBtn, line, msg, statusSpan);
+          updateReplayButtonState(currentBtn, line, msg, statusSpan);
           for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
         }
       }
@@ -521,7 +531,14 @@ export function createBacklog(container, deps = {}) {
       }
     }
 
+    const legacyReplayKey = `legacy:${msg.id}`;
+
     refreshAudioState();
+
+    if (hasVoice && activeReplayKey === legacyReplayKey) {
+      replayBtn.classList.add('is-playing');
+      activeReplayButton = replayBtn;
+    }
 
     replayBtn.onclick = async event => {
       event.stopPropagation();
@@ -539,6 +556,7 @@ export function createBacklog(container, deps = {}) {
 
       stopReplay();
       const thisReplay = replaySequence;
+      activeReplayKey = legacyReplayKey;
       activeReplayButton = replayBtn;
       replayBtn.classList.add('is-playing');
 
@@ -553,7 +571,8 @@ export function createBacklog(container, deps = {}) {
             deps.playLegacyVoice(msg, {
               setPlaying: playing => {
                 if (!destroyed && thisReplay === replaySequence) {
-                  replayBtn.classList.toggle('is-playing', Boolean(playing));
+                  const currentBtn = activeReplayButton || replayBtn;
+                  currentBtn.classList.toggle('is-playing', Boolean(playing));
                   if (!playing) resolve('ended');
                 }
               },
@@ -574,8 +593,10 @@ export function createBacklog(container, deps = {}) {
       }
 
       if (replaySequence === thisReplay) {
-        replayBtn.classList.remove('is-playing');
+        const currentBtn = activeReplayButton || replayBtn;
+        currentBtn.classList.remove('is-playing');
         activeReplayButton = null;
+        activeReplayKey = null;
         if (result === 'failed') {
           failedAudio.add(key);
           loadNotes.delete(key);
@@ -587,7 +608,7 @@ export function createBacklog(container, deps = {}) {
           refreshAudioState();
         }
         if (result === 'failed' || loadRetryText[result]) {
-          updateReplayButtonState(replayBtn, targetLine, msg, statusSpan);
+          updateReplayButtonState(currentBtn, targetLine, msg, statusSpan);
           for (const entry of listEl.querySelectorAll('.adv-log-entry')) entry._refreshAudioState?.();
         }
       }
@@ -650,20 +671,34 @@ export function createBacklog(container, deps = {}) {
 
     const hasRecording = Boolean(msg.recording || msg.dur || msg.voiceKey || msg.audioUrl);
     if (hasRecording) {
+      const userReplayKey = `user:${msg.id}`;
       const recBtn = doc.createElement('button');
       recBtn.type = 'button';
       recBtn.className = 'adv-log-user-recording-btn';
       recBtn.textContent = '播放录音';
       recBtn.setAttribute('aria-label', '播放录音');
+      if (activeReplayKey === userReplayKey) {
+        recBtn.classList.add('is-playing');
+        activeReplayButton = recBtn;
+      }
       recBtn.onclick = (e) => {
         e.stopPropagation();
         if (destroyed) return;
         stopReplay();
         const sequence = replaySequence;
+        activeReplayKey = userReplayKey;
         activeReplayButton = recBtn;
+        recBtn.classList.add('is-playing');
         deps.playUserVoice?.(msg, {
           setPlaying: (p) => {
-            if (!destroyed && sequence === replaySequence) recBtn.classList.toggle('is-playing', Boolean(p));
+            if (!destroyed && sequence === replaySequence) {
+              const currentBtn = activeReplayButton || recBtn;
+              currentBtn.classList.toggle('is-playing', Boolean(p));
+              if (!p && activeReplayKey === userReplayKey) {
+                activeReplayKey = null;
+                activeReplayButton = null;
+              }
+            }
           },
           setProgress: () => {},
         });
