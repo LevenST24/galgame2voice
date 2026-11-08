@@ -374,3 +374,123 @@ async def test_restart_abort_after_stopping_owned_process_clears_launch_and_does
     assert run_server._SPAWNED_SOVITS_STARTED_AT is None
     assert not pid_file.exists()
 
+
+@pytest.mark.asyncio
+async def test_managed_engine_launch_matches_localhost_loopback_alias_and_allows_restart(owned_engine, monkeypatch):
+    endpoint, proc = owned_engine
+    launch = EngineLaunch(proc, "127.0.0.1", 9880, "cuda", False)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", launch)
+
+    localhost_endpoint = parse_sovits_endpoint("http://localhost:9880", source="db")
+    assert localhost_endpoint.is_local is True
+
+    matched = run_server.get_managed_engine_launch(localhost_endpoint)
+    assert matched is launch
+    assert run_server.get_managed_engine_precision(localhost_endpoint) == "FP32"
+
+    monkeypatch.setattr(health, "resolve_effective_sovits_endpoint", AsyncMock(return_value=localhost_endpoint))
+    monkeypatch.setattr(health, "_apply_sovits_precision_config", AsyncMock(return_value=("cuda", False, "test")))
+
+    in_use = True
+    monkeypatch.setattr(run_server, "is_port_in_use", lambda port, host=None: in_use)
+
+    terminated_pids = []
+
+    def terminate(pid):
+        nonlocal in_use
+        terminated_pids.append(pid)
+        proc.poll.return_value = 1
+        in_use = False
+
+    monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
+    proc.wait = MagicMock(return_value=0)
+
+    next_proc = MagicMock(pid=5678)
+    next_proc.poll.return_value = None
+    spawn = MagicMock(return_value=next_proc)
+    monkeypatch.setattr(run_server, "_spawn_sovits_process", spawn)
+
+    result = await health.restart_sovits_endpoint(None)
+    assert result["status"] == "starting"
+    assert terminated_pids == [proc.pid]
+    assert spawn.call_count == 1
+    assert spawn.call_args.args[1:3] == (localhost_endpoint.host, localhost_endpoint.port)
+
+
+def test_managed_engine_launch_does_not_match_ipv6_loopback_to_ipv4_launch(owned_engine, monkeypatch):
+    endpoint, proc = owned_engine
+    launch = EngineLaunch(proc, "127.0.0.1", 9880, "cuda", False)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", launch)
+
+    ipv6_endpoint = parse_sovits_endpoint("http://[::1]:9880", source="db")
+    assert ipv6_endpoint.is_local is True
+
+    assert run_server.get_managed_engine_launch(ipv6_endpoint) is None
+    assert run_server.get_managed_engine_precision(ipv6_endpoint) is None
+
+
+@pytest.mark.parametrize(
+    ("ep_url", "launch_host", "launch_port", "expected_match"),
+    [
+        ("http://localhost:9880", "127.0.0.1", 9880, True),
+        ("http://127.0.0.1:9880", "localhost", 9880, True),
+        ("http://localhost:9880", "localhost", 9880, True),
+        ("http://127.0.0.1:9880", "127.0.0.1", 9880, True),
+        ("http://localhost:9880", "0.0.0.0", 9880, True),
+        ("http://127.0.0.1:9880", "0.0.0.0", 9880, True),
+        ("http://LOCALHOST:9880", "127.0.0.1", 9880, True),
+        ("http://localhost:9880", "  127.0.0.1  ", 9880, True),
+        ("http://127.0.0.1:9880", "::1", 9880, False),
+        ("http://localhost:9880", "::1", 9880, False),
+        ("http://[::1]:9880", "localhost", 9880, False),
+        ("http://localhost:9880", "127.0.0.1", 9881, False),
+        ("http://[::1]:9880", "127.0.0.1", 9880, False),
+        ("http://[::1]:9880", "::1", 9880, True),
+        ("http://[::1]:9880", "[::1]", 9880, True),
+        ("http://[::1]:9880", "0.0.0.0", 9880, False),
+    ],
+)
+def test_managed_engine_launch_host_matching_matrix(
+    owned_engine, monkeypatch, ep_url, launch_host, launch_port, expected_match
+):
+    _, proc = owned_engine
+    launch = EngineLaunch(proc, launch_host, launch_port, "cpu", False)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", launch)
+
+    endpoint = parse_sovits_endpoint(ep_url, source="db")
+    matched = run_server.get_managed_engine_launch(endpoint)
+    if expected_match:
+        assert matched is launch
+    else:
+        assert matched is None
+
+
+@pytest.mark.asyncio
+async def test_managed_engine_launch_matches_localhost_when_process_crashed_for_diagnostics(owned_engine, monkeypatch):
+    endpoint, proc = owned_engine
+    proc.poll.return_value = 1
+    launch = EngineLaunch(proc, "127.0.0.1", 9880, "cuda", False)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", launch)
+
+    localhost_endpoint = parse_sovits_endpoint("http://localhost:9880", source="db")
+    matched = run_server.get_managed_engine_launch(localhost_endpoint)
+    assert matched is launch
+    assert run_server.get_managed_engine_precision(localhost_endpoint) is None
+
+    monkeypatch.setattr(health, "resolve_effective_sovits_endpoint", AsyncMock(return_value=localhost_endpoint))
+    diagnose = MagicMock(return_value="显存不足 (CUDA out of memory)")
+    monkeypatch.setattr(health, "engine_failure_message", diagnose)
+
+    status = await health.engine_status_endpoint()
+    assert status["state"] == "failed"
+    assert "显存不足 (CUDA out of memory)" in status["message"]
+    diagnose.assert_called_once()
+
+
+def test_is_matching_managed_host_rejects_empty_or_none():
+    assert run_server._is_matching_managed_host(None, None) is False
+    assert run_server._is_matching_managed_host("", "") is False
+    assert run_server._is_matching_managed_host("127.0.0.1", None) is False
+    assert run_server._is_matching_managed_host(None, "127.0.0.1") is False
+    assert run_server._is_matching_managed_host("   ", "   ") is False
+
