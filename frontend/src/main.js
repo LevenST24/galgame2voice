@@ -529,12 +529,15 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
           }
 
           // 2. 没有已知 ID 的本地用户消息才按正文配对，而且只配给没被 ID 占用的服务端用户消息，保持从后往前的顺序。
+          const lastKnownId = Math.max(0, ...session.messages.map(extractServerId).filter(Number.isInteger));
+
           for (let i = session.messages.length - 1; i >= 0; i--) {
             const localMsg = session.messages[i];
-            if (localMsg && localMsg.role === 'user' && !localMsg.failed && extractServerId(localMsg) === null) {
+            if (localMsg && localMsg.role === 'user' && extractServerId(localMsg) === null) {
               for (let j = incoming.length - 1; j >= 0; j--) {
                 if (usedIndices.has(j)) continue;
                 const serverMsg = incoming[j];
+                if (localMsg.failed && !(extractServerId(serverMsg) > lastKnownId)) continue;
                 if (serverMsg.role === 'user' && serverMsg.content === localMsg.content) {
                   usedIndices.add(j);
                   pairedLocal.add(localMsg);
