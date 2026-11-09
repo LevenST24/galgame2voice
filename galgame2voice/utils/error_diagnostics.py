@@ -5,6 +5,7 @@ translating them into user-friendly Chinese diagnostic recommendations.
 """
 
 from dataclasses import dataclass
+import html
 import re
 from typing import Any
 from galgame2voice.utils.logger import MaskingFilter
@@ -191,11 +192,78 @@ def _unwrap_exception_chain(exc: BaseException) -> list[BaseException]:
     return chain
 
 
+def _clean_html_text(text: str) -> str:
+    """Strips HTML markup and extracts title if present to avoid leaking raw HTML tags."""
+    if not text:
+        return ""
+    lower = text.lower()
+    has_html = any(tag in lower for tag in (
+        "<!doctype", "<html", "<head", "<body", "<title", "<center",
+        "<h1", "<h2", "<h3", "</h", "</p>", "</div>", "</span>",
+        "</table", "<script", "<style"
+    ))
+    if not has_html:
+        return text
+
+    # Strip comments, scripts, and styles first so they don't corrupt title extraction or body text
+    cleaned = re.sub(r"<!--.*?-->", " ", text, flags=re.DOTALL)
+    cleaned = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", cleaned, re.IGNORECASE | re.DOTALL)
+    if title_match:
+        title_content = re.sub(r"<[^>]+>", " ", title_match.group(1)).strip()
+        title_content = html.unescape(re.sub(r"\s+", " ", title_content)).strip()
+        if title_content:
+            html_start = re.search(r"(<!doctype|<html|<head|<body|<title)", text, re.IGNORECASE)
+            if html_start and html_start.start() > 0:
+                prefix = re.sub(r"\s+", " ", text[:html_start.start()]).strip()
+                if prefix:
+                    return f"{prefix} {title_content}".strip()
+            return title_content
+
+    # If no title or title was empty, strip all tags and decode entities
+    stripped = re.sub(r"<[^>]+>", " ", cleaned)
+    stripped = html.unescape(stripped)
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
+_VALID_STATUS_CODES = (401, 402, 403, 429, 404, 400, 408, 502, 503, 504, 524, 529)
+
+_EXPLICIT_STATUS_RE = re.compile(
+    r"(?:"
+    r"\bstatus(?:[\s_]+code)?[:\s=]+['\"]?(\d{3})\b|"
+    r"\bhttp(?:/[0-9.]+)?\s+['\"]?(\d{3})\b|"
+    r"\bcode[:\s=]+['\"]?(\d{3})\b|"
+    r"\berror(?:[\s_]+code)?[:\s=]+['\"]?(\d{3})\b|"
+    r"\((\d{3})\)|"
+    r"\[(\d{3})\]|"
+    r"<(?:title|h1)[^>]*>(?:error\s+)?(\d{3})\b|"
+    r"^(\d{3})(?:[\s:]|$)"
+    r")",
+    re.IGNORECASE,
+)
+
+
 def _extract_status_code(status_code: int | None, raw_lower: str) -> int | None:
     if status_code is not None:
         return status_code
-    for code in (401, 403, 429, 404, 400, 408, 502, 503, 504, 529):
-        if f"({code})" in raw_lower or f" {code} " in raw_lower or f"http {code}" in raw_lower or f"status {code}" in raw_lower:
+
+    # Pass 1: high-confidence explicit status/http/code patterns
+    for m in _EXPLICIT_STATUS_RE.finditer(raw_lower):
+        matched = next((int(g) for g in m.groups() if g is not None), None)
+        if matched in _VALID_STATUS_CODES:
+            return matched
+
+    # Pass 2: secondary/gateway phrases
+    for code in (524, 502, 504, 503, 529, 402, 429, 401, 403, 404, 400, 408):
+        if (
+            f"{code} a timeout occurred" in raw_lower
+            or f"{code} bad gateway" in raw_lower
+            or f" {code} " in raw_lower
+            or f" {code}:" in raw_lower
+            or f"'{code}'" in raw_lower
+            or f'"{code}"' in raw_lower
+        ):
             return code
     return None
 
@@ -271,7 +339,9 @@ def _diagnose_transport_fault(
         or "timed out" in raw_lower
         or "readtimeout" in raw_lower
         or "connecttimeout" in raw_lower
-        or status_code in (408, 504)
+        or "a timeout occurred" in raw_lower
+        or "524 timeout" in raw_lower
+        or status_code in (408, 504, 524)
     )
 
     if is_timeout:
@@ -290,6 +360,23 @@ def _diagnose_transport_fault(
                 message="本机模型响应超时 (Read Timeout)",
                 guidance="本机模型响应太慢或仍在加载。本地服务（如 Ollama / LM Studio）在首次加载模型权重到显存或生成长文本时耗时较长，请检查本地推理服务运行状态，或调大超时时间后重试。",
                 status_code=status_code or 408,
+                raw_error=sanitized_raw,
+            )
+
+        if (
+            status_code == 524
+            or "524 timeout" in raw_lower
+            or "a timeout occurred" in raw_lower
+            or " 524 " in raw_lower
+            or "(524)" in raw_lower
+            or "'524'" in raw_lower
+            or '"524"' in raw_lower
+        ):
+            return DiagnosticResult(
+                error_code="NETWORK_TIMEOUT",
+                message="网关连接超时 (524 Timeout)",
+                guidance="Cloudflare 或反向代理网关等待上游源站响应超时（524 A Timeout Occurred）。若正在使用推理模型（如 DeepSeek-R1 / QwQ），长思考可能超出了网关超时时限；建议降低思考强度、简化提示词或在反代中调大超时后重试。",
+                status_code=524,
                 raw_error=sanitized_raw,
             )
 
@@ -353,13 +440,21 @@ def _diagnose_transport_fault(
         "connecterror" in exc_type
         or any("connecterror" in t for t in chain_types)
         or "connecterror" in raw_lower
-        or (status_code in (502, 503) and ("connect" in raw_lower or not raw_lower))
     ):
         return DiagnosticResult(
             error_code="NETWORK_CONNECTION_FAILED",
             message="网络连接失败 (Connection Failed)",
             guidance="无法与模型服务建立连接。请检查网络、代理和服务地址；若使用本机代理，请确认程序启动时已配置相应代理。",
             status_code=status_code or 502,
+            raw_error=sanitized_raw,
+        )
+
+    if status_code == 502 or "bad gateway" in raw_lower:
+        return DiagnosticResult(
+            error_code="BAD_GATEWAY",
+            message="网关连接异常 (502 Bad Gateway)",
+            guidance="上游网关或反向代理暂时无法连接源站服务器（502 Bad Gateway）。服务可能暂时不可用或正在维护，建议稍后重试或检查反向代理服务状态。",
+            status_code=502,
             raw_error=sanitized_raw,
         )
 
@@ -458,6 +553,66 @@ def _diagnose_endpoint_not_found(
     )
 
 
+def _diagnose_context_length_exceeded(
+    raw_lower: str,
+    status_code: int | None,
+    sanitized_raw: str,
+) -> DiagnosticResult | None:
+    context_keywords = (
+        "context_length_exceeded",
+        "maximum context length",
+        "context length",
+        "context window",
+        "prompt is too long",
+        "too many tokens",
+        "exceeds maximum context",
+        "exceeds the maximum token",
+        "exceeds maximum token",
+        "token count exceeds",
+        "max_tokens is too large",
+        "token limit exceeded",
+    )
+    is_context_exceeded = (
+        any(kw in raw_lower for kw in context_keywords)
+        or ("上下文" in raw_lower and any(kw in raw_lower for kw in ("超出", "超限", "过长", "上限", "限制")))
+    )
+    if is_context_exceeded:
+        return DiagnosticResult(
+            error_code="CONTEXT_LENGTH_EXCEEDED",
+            message="对话上下文超出模型最大限制 (Context Length Exceeded)",
+            guidance="对话上下文超出模型最大长度限制。建议在会话设置中调小「最大上下文轮数」，或清理历史记录、开启新会话。",
+            status_code=status_code or 400,
+            raw_error=sanitized_raw,
+        )
+    return None
+
+
+def _diagnose_insufficient_balance(
+    raw_lower: str,
+    status_code: int | None,
+    sanitized_raw: str,
+) -> DiagnosticResult | None:
+    is_insufficient_balance = (
+        status_code == 402
+        or (status_code != 429 and any(kw in raw_lower for kw in (
+            "insufficient balance",
+            "insufficient_balance",
+            "insufficient_quota",
+            "余额不足",
+            "payment required",
+        )))
+    )
+    if is_insufficient_balance:
+        return DiagnosticResult(
+            error_code="QUOTA_EXCEEDED",
+            message=f"账户可用余额不足 ({status_code or 402} Payment Required)",
+            guidance="当前提供商账户可用余额或额度已耗尽（402 Payment Required）。请前往对应模型服务商控制台充值或检查账单。",
+            status_code=status_code or 402,
+            raw_error=sanitized_raw,
+        )
+    return None
+
+
 def _diagnose_gemini(
     raw_lower: str,
     status_code: int | None,
@@ -477,13 +632,21 @@ def _diagnose_gemini(
             raw_error=sanitized_raw,
         )
 
-    if (
-        status_code in (400, 401)
-        or "api key not valid" in raw_lower
-        or "please pass a valid api key" in raw_lower
-        or "invalid_argument" in raw_lower
-        or "api_key_invalid" in raw_lower
-    ):
+    has_gemini_key_phrase = any(
+        kw in raw_lower
+        for kw in (
+            "api key not valid",
+            "please pass a valid api key",
+            "api_key_invalid",
+            "invalid api key",
+        )
+    )
+    is_gemini_key_error = (
+        status_code == 401
+        or has_gemini_key_phrase
+        or (status_code in (400, None) and any(kw in raw_lower for kw in ("api key", "api_key")))
+    )
+    if is_gemini_key_error:
         return DiagnosticResult(
             error_code="GEMINI_KEY_INVALID",
             message="Google Gemini API Key 无效或格式错误 (400/401)",
@@ -508,13 +671,20 @@ def _diagnose_xai(
     status_code: int | None,
     sanitized_raw: str,
 ) -> DiagnosticResult | None:
-    if (
-        status_code in (400, 401)
-        or "incorrect api key" in raw_lower
-        or "unauthorized" in raw_lower
-        or "invalid-argument" in raw_lower
-        or "api key" in raw_lower
-    ):
+    has_xai_auth_phrase = any(
+        kw in raw_lower
+        for kw in (
+            "incorrect api key",
+            "invalid api key",
+            "invalid_api_key",
+        )
+    )
+    is_xai_auth_failure = (
+        status_code == 401
+        or has_xai_auth_phrase
+        or (status_code in (400, None) and any(kw in raw_lower for kw in ("api key", "api_key", "unauthorized")))
+    )
+    if is_xai_auth_failure:
         return DiagnosticResult(
             error_code="XAI_AUTH_FAILED",
             message="xAI (Grok) 身份验证失败 (400/401 Unauthorized)",
@@ -548,13 +718,19 @@ def _diagnose_openai(
     status_code: int | None,
     sanitized_raw: str,
 ) -> DiagnosticResult | None:
-    if (
+    has_openai_auth_phrase = any(
+        kw in raw_lower
+        for kw in (
+            "invalid_api_key",
+            "incorrect api key",
+        )
+    )
+    is_openai_auth_failure = (
         status_code == 401
-        or "invalid_api_key" in raw_lower
-        or "incorrect api key" in raw_lower
-        or "unauthorized" in raw_lower
-        or "api key" in raw_lower
-    ):
+        or has_openai_auth_phrase
+        or (status_code in (400, None) and any(kw in raw_lower for kw in ("api key", "api_key", "unauthorized")))
+    )
+    if is_openai_auth_failure:
         return DiagnosticResult(
             error_code="OPENAI_AUTH_FAILED",
             message="OpenAI API Key 身份验证失败 (401 Unauthorized)",
@@ -729,7 +905,18 @@ def diagnose_llm_error(
     chain_str = " | ".join(chain_parts) if chain_parts else ""
     raw_combined = f"{chain_str} {raw_body or ''}".strip()
     raw_lower = raw_combined.lower()
-    sanitized_raw = MaskingFilter.sanitize(raw_combined)[:300] if raw_combined else ""
+    sanitized_raw = MaskingFilter.sanitize(_clean_html_text(raw_combined))[:300] if raw_combined else ""
+
+    if status_code is None and exc_chain:
+        for e in exc_chain:
+            code = getattr(e, "status_code", None)
+            if code is None:
+                resp = getattr(e, "response", None)
+                if resp is not None:
+                    code = getattr(resp, "status_code", None)
+            if isinstance(code, int) and 100 <= code <= 599:
+                status_code = code
+                break
 
     status_code = _extract_status_code(status_code, raw_lower)
 
@@ -740,6 +927,8 @@ def diagnose_llm_error(
         or _diagnose_overload(raw_lower, status_code, sanitized_raw)
         or _diagnose_model_not_found(raw_lower, status_code, sanitized_raw)
         or _diagnose_endpoint_not_found(raw_lower, status_code, sanitized_raw)
+        or _diagnose_context_length_exceeded(raw_lower, status_code, sanitized_raw)
+        or _diagnose_insufficient_balance(raw_lower, status_code, sanitized_raw)
         or _diagnose_provider_specific(p_id, raw_lower, status_code, sanitized_raw)
         or _diagnose_generic_http(raw_lower, status_code, sanitized_raw)
         or _diagnose_final_fallback(status_code, sanitized_raw)
