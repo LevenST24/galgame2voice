@@ -113,6 +113,109 @@ test('formatProviderDiagnostic intercepts 400 parameter errors before API key er
   assert.equal(keyErr.title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
 });
 
+test('BUILTIN_PRESETS includes correct default_base_url for gemini and anthropic, and includes moonshot', () => {
+  const gemini = BUILTIN_PRESETS.find(p => p.id === 'gemini');
+  assert.ok(gemini, 'Gemini preset must exist');
+  assert.equal(gemini.default_base_url, 'https://generativelanguage.googleapis.com/v1beta/openai');
+
+  const anthropic = BUILTIN_PRESETS.find(p => p.id === 'anthropic');
+  assert.ok(anthropic, 'Anthropic preset must exist');
+  assert.equal(anthropic.default_base_url, 'https://api.anthropic.com/v1');
+
+  const moonshot = BUILTIN_PRESETS.find(p => p.id === 'moonshot');
+  assert.ok(moonshot, 'Moonshot preset must exist');
+  assert.equal(moonshot.default_base_url, 'https://api.moonshot.cn/v1');
+  assert.equal(moonshot.default_chat_model, 'moonshot-v1-32k');
+  assert.deepEqual(moonshot.preset_models, ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k']);
+});
+
+test('formatProviderDiagnostic distinguishes non-auth HTTP 400 from genuine auth failures for xAI and Gemini', () => {
+  // 1. xAI 400 with non-key error (e.g. context length) should not report API key error
+  const xaiContext = formatProviderDiagnostic('xai', 'HTTP 400: maximum context length exceeded');
+  assert.notEqual(xaiContext.title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
+  assert.equal(xaiContext.title, '对话上下文超出长度限制 (HTTP 400)');
+
+  // 2. Gemini 400 with non-key error (e.g. invalid temperature) should not report API key error
+  const geminiParam = formatProviderDiagnostic('gemini', 'HTTP 400: invalid temperature value');
+  assert.notEqual(geminiParam.title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
+
+  // 2.5 Non-context-length 400 timeout like "context deadline exceeded" should not be treated as context length exceeded
+  const deadlineExceeded = formatProviderDiagnostic('custom', 'HTTP 400: context deadline exceeded');
+  assert.notEqual(deadlineExceeded.title, '对话上下文超出长度限制 (HTTP 400)');
+
+  // 3. Genuine 400 auth errors still report API key error
+  const xaiKey = formatProviderDiagnostic('xai', 'HTTP 400: Incorrect API key provided');
+  assert.equal(xaiKey.title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
+  assert.ok(xaiKey.guidance.includes('xAI (Grok) 密钥认证失败'));
+
+  const geminiKey = formatProviderDiagnostic('gemini', 'HTTP 400: API key not valid');
+  assert.equal(geminiKey.title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
+  assert.ok(geminiKey.guidance.includes('Google Gemini 认证失败'));
+});
+
+test('formatProviderDiagnostic handles HTTP 402 insufficient balance and moonshot diagnostics', () => {
+  const balance = formatProviderDiagnostic('deepseek', 'HTTP 402: Insufficient Balance');
+  assert.equal(balance.title, '账户余额或额度不足 (HTTP 402)');
+  assert.ok(balance.guidance.includes('余额'));
+
+  const moonshotAuth = formatProviderDiagnostic('moonshot', 'HTTP 401: Unauthorized');
+  assert.equal(moonshotAuth.title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
+  assert.ok(moonshotAuth.guidance.includes('https://platform.moonshot.cn'));
+
+  const moonshotBalance = formatProviderDiagnostic('moonshot', 'HTTP 402: Insufficient Balance');
+  assert.equal(moonshotBalance.title, '账户余额或额度不足 (HTTP 402)');
+  assert.ok(moonshotBalance.guidance.includes('余额'));
+
+  const moonshotRate = formatProviderDiagnostic('moonshot', 'HTTP 429: Too Many Requests');
+  assert.equal(moonshotRate.title, '请求受限或账户额度耗尽 (HTTP 429)');
+  assert.ok(moonshotRate.guidance.includes('https://platform.moonshot.cn'));
+  assert.ok(moonshotRate.guidance.includes('速率超限') || moonshotRate.guidance.includes('配额'));
+
+  // 429 quota exhaustion (e.g. OpenAI insufficient_quota) must be 429, not HTTP 402
+  const openai429 = formatProviderDiagnostic('openai', 'HTTP 429 Too Many Requests: insufficient_quota');
+  assert.equal(openai429.title, '请求受限或账户额度耗尽 (HTTP 429)');
+  assert.ok(openai429.guidance.includes('HTTP 429'));
+});
+
+test('formatProviderDiagnostic with backendDiagnostic mentioning API Key does not misclassify as auth error', () => {
+  const overloadWithKeyText = formatProviderDiagnostic(
+    'openai',
+    'HTTP 503 Service Unavailable',
+    '模型服务当前过载或暂时繁忙，请稍后重试。通常无需修改 API Key。'
+  );
+  assert.equal(overloadWithKeyText.title, '服务暂时繁忙 (503/529)');
+
+  const contextWithKeyText = formatProviderDiagnostic(
+    'xai',
+    'HTTP 400: context_length_exceeded',
+    '对话上下文超出长度限制，请新建对话。通常无需修改 API Key。'
+  );
+  assert.equal(contextWithKeyText.title, '对话上下文超出长度限制 (HTTP 400)');
+
+  // Negation with Chinese 密钥 in backendDiagnostic must not trigger 'API Key 凭据鉴权未通过'
+  const chineseKeyNegation = formatProviderDiagnostic(
+    'gemini',
+    'Connection reset',
+    '网络连接波动中断，无需修改密钥'
+  );
+  assert.notEqual(chineseKeyNegation.title, 'API Key 凭据鉴权未通过');
+
+  // Raw 400 error mentioning '无需修改 API Key' must not be classified as auth failure
+  const raw400Negation = formatProviderDiagnostic(
+    'gemini',
+    'HTTP 400: 连接中断，无需修改 API Key'
+  );
+  assert.notEqual(raw400Negation.title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
+
+  // Context length in various natural Chinese phrasing
+  const zhContext = formatProviderDiagnostic(
+    'openai',
+    'Error',
+    '单次对话超出上下文长度限制'
+  );
+  assert.equal(zhContext.title, '对话上下文超出长度限制 (HTTP 400)');
+});
+
 test('needsModelSettings considers empty_reply a model setting issue', () => {
   assert.equal(needsModelSettings('任何信息', 'empty_reply'), true);
   assert.equal(needsModelSettings('模型把生成长度用完了，却没有写出回复', null), true);
@@ -189,6 +292,28 @@ test('provider editor loads and saves 思考强度, defaulting only new Gemini t
   await handleActivateProvider();
   assert.equal(saved.reasoning_effort, null);
   assert.equal(dom.gReasoningEffort.value, '');
+});
+
+test('presetOrder and provider dropdown places moonshot before custom', async t => {
+  const { initGlobalSettings, loadProviders } = await import('../frontend/src/controllers/global_settings.js');
+  const d = fakeDocument();
+  globalThis.document = d;
+  const dom = Object.fromEntries(['gProvider', 'gReasoningEffort', 'gProviderActivate', 'gProviderTest',
+    'gProviderTestResult', 'gBaseUrl', 'gChatModel', 'gApiKey'].map(key => [key, d.createElement('input')]));
+  const previousFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = previousFetch; });
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ providers: [], presets: BUILTIN_PRESETS }),
+  });
+  initGlobalSettings(dom);
+  await loadProviders();
+  const optionValues = dom.gProvider.children.map(opt => opt.value);
+  assert.ok(optionValues.includes('moonshot'), 'moonshot must be in provider options');
+  const moonshotIndex = optionValues.indexOf('moonshot');
+  const customIndex = optionValues.indexOf('custom');
+  assert.ok(moonshotIndex !== -1 && customIndex !== -1 && moonshotIndex < customIndex, 'moonshot must precede custom');
 });
 
 test('empty_reply travels through SSE and conversation to a retryable inline failure; cancel stays cancelled', async () => {

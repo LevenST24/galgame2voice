@@ -333,7 +333,7 @@ export class ProviderSettingsController {
       this.providerReadError = false;
       if (this.coordinator.updateBadge) this.coordinator.updateBadge();
 
-      const presetOrder = ['gemini', 'openai', 'anthropic', 'deepseek', 'xai', 'siliconflow', 'glm', 'qwen', 'custom'];
+      const presetOrder = ['gemini', 'openai', 'anthropic', 'deepseek', 'xai', 'siliconflow', 'glm', 'qwen', 'moonshot', 'custom'];
       const providerMap = new Map();
 
       presetOrder.forEach((pid) => {
