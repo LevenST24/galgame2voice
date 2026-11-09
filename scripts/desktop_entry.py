@@ -18,7 +18,8 @@ def verify_portable_runtime() -> None:
 
     if tkinter.Tcl().eval("expr {1 + 1}") != "2":
         raise RuntimeError("Bundled Tcl runtime failed its self-check")
-    expected = get_install_root() / "tools" / "ffmpeg.exe"
+    exe_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+    expected = get_install_root() / "tools" / exe_name
     if not find_ffmpeg() or os.path.normcase(find_ffmpeg()) != os.path.normcase(str(expected)):
         raise RuntimeError("Self-check must use the bundled FFmpeg executable")
     buffer = io.BytesIO()
