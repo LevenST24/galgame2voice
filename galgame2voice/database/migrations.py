@@ -26,17 +26,6 @@ logger = logging.getLogger("galgame2voice.database.migrations")
 _DEFAULT_REF_AUDIO = "audio/references/natsume/gentle.ogg"
 _DEFAULT_REF_TEXT = "とりあえず、今日見たことは忘れて、わかった?"
 
-# Legacy placeholder model names seeded in earlier versions that do not exist upstream
-LEGACY_FICTIONAL_CHAT_MODELS: dict[str, str] = {
-    "gemini": "gemini-3.7-flash",
-    "openai": "gpt-5.6-sol",
-    "deepseek": "deepseek-v4-pro",
-    "anthropic": "claude-5-sonnet-latest",
-    "glm": "glm-5.3",
-    "qwen": "qwen3.8-max",
-    "custom": "deepseek-v4:latest",
-}
-
 # ==================== Schema Versioning & Migrations ====================
 
 CURRENT_SCHEMA_VERSION = 7
@@ -671,18 +660,6 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
                 ),
             )
 
-        # Heal legacy fictional chat_model placeholders to official presets
-        for p_id, fake_model in LEGACY_FICTIONAL_CHAT_MODELS.items():
-            preset = PROVIDER_PRESETS.get(p_id)
-            if preset and preset.get("default_chat_model"):
-                await conn.execute(
-                    """
-                    UPDATE providers
-                    SET chat_model = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ? AND TRIM(chat_model) = ?;
-                    """,
-                    (preset["default_chat_model"], p_id, fake_model),
-                )
     except Exception as exc:
         logger.debug("Provider presets sync during schema init skipped: %s", exc)
 
