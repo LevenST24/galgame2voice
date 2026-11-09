@@ -46,7 +46,12 @@ from galgame2voice.adapters.registry import PROVIDER_PRESETS, SpeechRecognitionU
 from galgame2voice.utils.audio_converter import convert_ogg_to_wav, convert_wav_to_ogg
 from galgame2voice.utils.japanese_phonetics import normalize_japanese_for_tts, strip_reasoning_tags, strip_stage_directions
 from galgame2voice.utils.logger import sanitize_error_detail
-from galgame2voice.utils.error_diagnostics import EMPTY_REPLY_DEFAULT, EMPTY_REPLY_STOPPED_ON_LENGTH
+from galgame2voice.utils.error_diagnostics import (
+    CONTENT_FILTER_FINISH_REASONS,
+    EMPTY_REPLY_CONTENT_FILTERED,
+    EMPTY_REPLY_DEFAULT,
+    EMPTY_REPLY_STOPPED_ON_LENGTH,
+)
 from galgame2voice.telegram_bot.console_menus import (
     ADMIN_CALLBACK_ACTIONS,
     ADMIN_CALLBACK_PREFIXES,
@@ -973,11 +978,15 @@ class TelegramBotHandlers:
                 display_clean = strip_stage_directions(chinese).strip()
                 display_chinese = display_clean if display_clean else strip_reasoning_tags(chinese).strip()
                 if not display_chinese.strip():
-                    stopped_on_length = bool(
-                        getattr(parser, "lines_truncated", False)
-                        or getattr(adapter, "last_finish_reason", None) in ("length", "MAX_TOKENS", "max_tokens")
-                    )
-                    msg = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
+                    last_finish = getattr(adapter, "last_finish_reason", None)
+                    if last_finish in CONTENT_FILTER_FINISH_REASONS:
+                        msg = EMPTY_REPLY_CONTENT_FILTERED
+                    else:
+                        stopped_on_length = bool(
+                            getattr(parser, "lines_truncated", False)
+                            or last_finish in ("length", "MAX_TOKENS", "max_tokens")
+                        )
+                        msg = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
                     raise ValueError(msg)
                 dynamic_tts = parser.get_dynamic_tts_options(
                     base_options=base_tts_options, sentence_text=japanese

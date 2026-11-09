@@ -30,6 +30,19 @@ class DiagnosticResult:
         }
 
 
+CONTENT_FILTER_FINISH_REASONS = (
+    "content_filter",
+    "SAFETY",
+    "RECITATION",
+    "BLOCKLIST",
+    "PROHIBITED_CONTENT",
+    "SPII",
+    "refusal",
+)
+EMPTY_REPLY_CONTENT_FILTERED = "模型输出触发了服务商内容安全过滤，未能生成回复。可以调整表达后重试或更换模型。"
+STREAM_TRUNCATED_CONTENT_FILTERED = "模型输出触发了服务商内容安全过滤，回复未能完整生成。可以调整表达后重试或更换模型。"
+
+
 EMPTY_REPLY_STOPPED_ON_LENGTH = (
     "模型把生成长度用完了，却没有写出回复，通常是思考占满了额度。"
     "可以在模型设置里把“思考强度”调低，或在会话设置里调大“最大生成长度”。"
@@ -130,7 +143,7 @@ def chat_error_payload(
         return {
             "error": str(exc),
             "diagnostic": str(exc),
-            "error_code": "stream_truncated_on_length",
+            "error_code": "stream_truncated_on_length" if getattr(exc, "stopped_on_length", True) else "stream_truncated_content_filtered",
             "status_code": 200,
         }
     diag = diagnose_llm_error(exc, provider_id=provider_id, api_key_configured=api_key_configured)

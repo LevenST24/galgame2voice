@@ -30,6 +30,8 @@ from galgame2voice.services.tts_scheduler import get_tts_scheduler
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.audio_concat import concat_wav_files
 from galgame2voice.utils.error_diagnostics import (
+    CONTENT_FILTER_FINISH_REASONS,
+    EMPTY_REPLY_CONTENT_FILTERED,
     EMPTY_REPLY_DEFAULT,
     EMPTY_REPLY_STOPPED_ON_LENGTH,
     EmptyReplyError,
@@ -1064,11 +1066,16 @@ class StreamCoordinator:
         )
 
         if not has_meaningful_content and not bool(cancel_event and cancel_event.is_set()):
-            stopped_on_length = bool(
-                getattr(parser, "lines_truncated", False)
-                or getattr(self.adapter, "last_finish_reason", None) in ("length", "MAX_TOKENS", "max_tokens")
-            )
-            text = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
+            last_finish = getattr(self.adapter, "last_finish_reason", None)
+            if last_finish in CONTENT_FILTER_FINISH_REASONS:
+                text = EMPTY_REPLY_CONTENT_FILTERED
+                stopped_on_length = False
+            else:
+                stopped_on_length = bool(
+                    getattr(parser, "lines_truncated", False)
+                    or last_finish in ("length", "MAX_TOKENS", "max_tokens")
+                )
+                text = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
             await self._prune_orphaned_user_message()
             run.error_seen = True
             yield {
