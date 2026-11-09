@@ -1149,6 +1149,45 @@ async def test_update_persona_db_not_found_restores_manifest(ann_package, monkey
 
 
 @pytest.mark.asyncio
+async def test_update_persona_disk_full_keeps_original_error_when_rollback_also_fails(
+    ann_package, monkeypatch,
+):
+    import errno
+
+    client, ann, manifest_path, original_prompt = ann_package
+    original_bytes = manifest_path.read_bytes()
+    real_write_text = Path.write_text
+    real_write_bytes = Path.write_bytes
+
+    def full_disk(self):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    def write_text(self, *args, **kwargs):
+        if self.name == "manifest.json.tmp":
+            full_disk(self)
+        return real_write_text(self, *args, **kwargs)
+
+    def write_bytes(self, *args, **kwargs):
+        if self.name == "manifest.json.tmp":
+            full_disk(self)
+        return real_write_bytes(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write_text)
+    monkeypatch.setattr(Path, "write_bytes", write_bytes)
+
+    response = await client.put(
+        f"/api/characters/{ann['id']}/system-prompt",
+        json={"system_prompt": "新的人设内容：磁盘已满"},
+    )
+
+    assert response.status_code == 500, response.text
+    detail = response.json()["detail"]
+    assert "写入角色 manifest.json 失败" in detail
+    assert "磁盘空间不足" in detail
+    assert manifest_path.read_bytes() == original_bytes
+
+
+@pytest.mark.asyncio
 async def test_update_persona_db_failure_standalone_profile(
     project, isolate_test_database, monkeypatch,
 ):

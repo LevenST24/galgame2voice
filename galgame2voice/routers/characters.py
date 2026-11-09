@@ -531,7 +531,11 @@ async def _rollback_manifest_and_cache(
     mgr: Any,
 ) -> None:
     """Put manifest.json back to the bytes read before this save and refresh cache."""
-    _restore_manifest(manifest_path, original)
+    try:
+        _restore_manifest(manifest_path, original)
+    except OSError as restore_exc:
+        # 回滚也写不进去（如磁盘已满）时不能顶掉调用方要抛出的原始错误
+        logger.warning("回滚角色包 manifest.json 失败: %s", sanitize_error_detail(restore_exc))
     _, exc, _ = await _run_uncancellable(asyncio.to_thread(mgr.discover_characters))
     if exc is not None:
         logger.warning("回滚角色包后刷新内存缓存失败: %s", exc)
