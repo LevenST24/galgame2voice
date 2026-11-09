@@ -14,6 +14,7 @@ import pytest
 from galgame2voice.database import crud
 from galgame2voice.database.models import VoiceProfileCreate
 from galgame2voice.database.session import get_db, init_db
+from galgame2voice.services.audio_identity import AudioIdentity
 from galgame2voice.services.voice_manager import VoiceManager, set_voice_manager
 from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from telegram_test_support import TELEGRAM_TEST_ADMINS
@@ -173,6 +174,7 @@ async def test_console_rejects_nonexistent_voice_id(temp_db_path, monkeypatch, p
         assert row["active_voice_profile_id"] == profile.id
 
 
+
 @pytest.mark.parametrize("prefix", ["set_voice_", "set_char_"])
 @pytest.mark.asyncio
 async def test_console_saves_existing_voice_when_engine_offline(temp_db_path, monkeypatch, prefix):
@@ -248,5 +250,112 @@ async def test_console_handles_db_error_during_lookup(temp_db_path, monkeypatch)
         cursor = await conn.execute("SELECT active_voice_profile_id FROM settings WHERE id = 1;")
         row = await cursor.fetchone()
         assert row["active_voice_profile_id"] == profile.id
+
+
+class _MessageUpdate:
+    def __init__(self, text, chat_id=1002):
+        self.effective_chat = type("Chat", (), {"id": chat_id})()
+        self.message = type(
+            "Message",
+            (),
+            {
+                "text": text,
+                "reply_text": self._reply_text,
+            },
+        )()
+        self.replied = []
+
+    async def _reply_text(self, text, **kwargs):
+        self.replied.append(text)
+
+
+@pytest.mark.parametrize("prefix", ["set_voice_", "set_char_"])
+@pytest.mark.parametrize("failed_step", ["set_gpt_weights", "set_sovits_weights", "set_refer_audio"])
+@pytest.mark.asyncio
+async def test_console_rejects_switch_when_weights_load_fails(temp_db_path, monkeypatch, prefix, failed_step):
+    """When engine is online but weights fail to load, console switch must not claim offline nor persist."""
+    profile_a = await _saved_voice(temp_db_path)
+    profile_b = await _add_second_voice(temp_db_path)
+    server, manager = _standin(temp_db_path, monkeypatch)
+    server.fail_on_step(failed_step)
+    handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=temp_db_path)
+
+    update = _Update(f"{prefix}{profile_b.id}")
+    await handlers.handle_callback_query(update, _Context())
+
+    answer = update.callback_query.answer_text or ""
+    assert "语音引擎离线" not in answer
+    assert "音色已切换为" not in answer
+    assert "失败" in answer or "回滚" in answer
+    assert update.callback_query.show_alert is True
+
+    async with get_db(temp_db_path) as conn:
+        cursor = await conn.execute("SELECT active_voice_profile_id FROM settings WHERE id = 1;")
+        row = await cursor.fetchone()
+        assert row["active_voice_profile_id"] == profile_a.id
+        active_prof = await crud.get_active_voice_profile(conn)
+        assert active_prof is not None
+        assert active_prof.id == profile_a.id
+
+
+@pytest.mark.parametrize("failed_step", ["set_gpt_weights", "set_sovits_weights", "set_refer_audio"])
+@pytest.mark.parametrize("use_id", [False, True])
+@pytest.mark.asyncio
+async def test_handle_character_rejects_switch_when_weights_load_fails(temp_db_path, monkeypatch, failed_step, use_id):
+    """When engine is online but weights fail to load, /character must not claim offline nor persist."""
+    profile_a = await _saved_voice(temp_db_path)
+    profile_b = await _add_second_voice(temp_db_path)
+    server, manager = _standin(temp_db_path, monkeypatch)
+    server.fail_on_step(failed_step)
+    handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=temp_db_path)
+
+    arg = str(profile_b.id) if use_id else profile_b.name
+    update = _MessageUpdate(f"/character {arg}")
+    reply = await handlers.handle_character(update, _Context())
+
+    assert "角色切换成功" not in reply
+    assert "离线状态" not in reply
+    assert "失败" in reply
+    assert "模型权重" in reply or "回滚" in reply
+
+    async with get_db(temp_db_path) as conn:
+        cursor = await conn.execute("SELECT active_voice_profile_id FROM settings WHERE id = 1;")
+        row = await cursor.fetchone()
+        assert row["active_voice_profile_id"] == profile_a.id
+        active_prof = await crud.get_active_voice_profile(conn)
+        assert active_prof is not None
+        assert active_prof.id == profile_a.id
+
+
+@pytest.mark.asyncio
+async def test_audio_identity_remains_consistent_after_weights_load_failure(temp_db_path, monkeypatch):
+    """When switching to voice B fails and engine rolls back to voice A, active DB identity matches engine."""
+    profile_a = await _saved_voice(temp_db_path)
+    profile_b = await _add_second_voice(temp_db_path)
+    server, manager = _standin(temp_db_path, monkeypatch)
+
+    # First load profile A successfully into engine
+    assert await manager.client.switch_voice_profile(profile_a) is True
+    assert manager.client.current_gpt_weights == profile_a.gpt_weights_path
+
+    # Simulate weights load failure on voice B (Step 2 failure triggers rollback of Step 1)
+    server.fail_on_step("set_sovits_weights")
+    handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=temp_db_path)
+
+    update = _MessageUpdate(f"/character {profile_b.name}")
+    reply = await handlers.handle_character(update, _Context())
+    assert "失败" in reply
+
+    # Verify DB active voice is still profile A
+    async with get_db(temp_db_path) as conn:
+        active_prof = await crud.get_active_voice_profile(conn)
+        assert active_prof is not None
+        assert active_prof.id == profile_a.id
+
+    # AudioIdentity for DB active voice matches engine weights
+    active_dict = active_prof.model_dump()
+    identity = AudioIdentity.capture(active_dict)
+    identity.validate(active_dict, manager.client)  # Must not raise ValueError
+
 
 
