@@ -66,6 +66,61 @@ _RE_PARAM_TOP_P = re.compile(r'["\']?top_?p["\']?\s*:\s*["\']?(-?[0-9]*\.?[0-9]+
 _RE_PARAM_FRAG = re.compile(r'["\']?(?:fragment_interval|interval|pause)["\']?\s*:\s*["\']?(-?[0-9]*\.?[0-9]+)["\']?', flags=re.IGNORECASE)
 _RE_PARAM_EMOTION = re.compile(r'["\']?emotion["\']?\s*:\s*["\']?([a-zA-Z\u4e00-\u9fa5]+)["\']?')
 
+_RE_THINK_BLOCK_CLOSED = re.compile(
+    r"<\s*(think|thought|reasoning)\b(?:[^>]*?/\s*>|[^>]*>.*?</\s*\1\s*>)",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_RE_THINK_BLOCK_UNCLOSED = re.compile(
+    r"<\s*(think|thought|reasoning)\b.*$",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_RE_THINK_TAG_PREFIX_PENDING = re.compile(
+    r"<\s*([a-zA-Z]{0,9})$",
+)
+_RE_THINK_TAG_ORPHAN_CLOSE = re.compile(
+    r"</\s*(think|thought|reasoning)\b[^>]*>",
+    flags=re.IGNORECASE,
+)
+
+
+def _strip_and_check_think_buffer(buffer: str, is_final: bool = False) -> tuple[str, bool]:
+    """
+    Strips closed thinking blocks, orphaned close tags, and checks if the buffer
+    is currently inside an unclosed thinking block or typing a thinking tag prefix.
+    Returns:
+        (effective_text, is_inside_or_pending_think)
+    """
+    if not buffer:
+        return "", False
+
+    # 1. Strip all closed think blocks (loop to handle nested blocks)
+    cleaned = buffer
+    prev = None
+    while prev != cleaned:
+        prev = cleaned
+        cleaned = _RE_THINK_BLOCK_CLOSED.sub("", cleaned)
+
+    # 2. Check for unclosed think block (opening tag started, with or without '>')
+    m_unclosed = _RE_THINK_BLOCK_UNCLOSED.search(cleaned)
+    if m_unclosed:
+        effective = _RE_THINK_TAG_ORPHAN_CLOSE.sub("", cleaned[: m_unclosed.start()])
+        return effective, True
+
+    # 3. Check for partial prefix at the tail (e.g. "<", "<th", "<thought")
+    m_pfx = _RE_THINK_TAG_PREFIX_PENDING.search(cleaned)
+    if m_pfx:
+        pfx = m_pfx.group(1).lower()
+        if (pfx == "" and not is_final) or (
+            pfx and any(tag.startswith(pfx) for tag in ("think", "thought", "reasoning"))
+        ):
+            effective = _RE_THINK_TAG_ORPHAN_CLOSE.sub("", cleaned[: m_pfx.start()])
+            return effective, True
+
+    # 4. Strip orphaned closing tags if any
+    cleaned = _RE_THINK_TAG_ORPHAN_CLOSE.sub("", cleaned)
+
+    return cleaned, False
+
 
 def _extract_numeric_param(
     text: str,
@@ -249,7 +304,8 @@ class StreamingBilingualParser:
     @property
     def chinese_complete(self) -> bool:
         """Whether the legacy JSON Chinese string has closed (even before EOF)."""
-        clean = self.clean_markdown_delimiters(self.buffer)
+        effective_buf, _ = _strip_and_check_think_buffer(self.buffer)
+        clean = self.clean_markdown_delimiters(effective_buf)
         if bool(_RE_CHINESE_CLOSED.search(clean)):
             return True
         if bool(re.search(r'(?:中文|Chinese)[:：].*?(?:日文|Japanese)[:：]', clean, flags=re.DOTALL | re.IGNORECASE)):
@@ -259,7 +315,8 @@ class StreamingBilingualParser:
     @property
     def japanese_complete(self) -> bool:
         """Whether the legacy JSON Japanese string has closed (even before EOF)."""
-        return bool(_RE_JAPANESE_CLOSED.search(self.clean_markdown_delimiters(self.buffer)))
+        effective_buf, _ = _strip_and_check_think_buffer(self.buffer)
+        return bool(_RE_JAPANESE_CLOSED.search(self.clean_markdown_delimiters(effective_buf)))
 
     def get_dynamic_tts_options(
         self,
@@ -294,14 +351,21 @@ class StreamingBilingualParser:
             _, text_emo = extract_stage_directions_and_emotion(sentence_text)
             if text_emo:
                 emo = text_emo
+        effective_buf: str | None = None
         if not emo and self.buffer:
-            _, text_emo = extract_stage_directions_and_emotion(self.buffer)
-            if text_emo:
-                emo = text_emo
+            effective_buf, _ = _strip_and_check_think_buffer(self.buffer)
+            if effective_buf:
+                _, text_emo = extract_stage_directions_and_emotion(effective_buf)
+                if text_emo:
+                    emo = text_emo
         if not emo:
             emo = self.get_emotion()
 
-        text_context = sentence_text or self.japanese_extracted or self.chinese_extracted or self.buffer
+        text_context = sentence_text or self.japanese_extracted or self.chinese_extracted
+        if not text_context:
+            if effective_buf is None:
+                effective_buf, _ = _strip_and_check_think_buffer(self.buffer)
+            text_context = effective_buf
         adaptive_calc = calculate_adaptive_prosody(text=text_context, emotion=emo, base_params=opts)
 
         # Apply calculated baseline if not explicitly pinned in base_options
@@ -408,7 +472,12 @@ class StreamingBilingualParser:
                 self._apply_parsed_json_dict({"tts": self.line_scanner.tts})
             self.emitted_chinese_len = len(self.chinese_extracted)
             return delta, []
-        sanitized = self.clean_markdown_delimiters(self.buffer)
+
+        effective_buffer, is_inside_think = _strip_and_check_think_buffer(self.buffer)
+        if is_inside_think and not effective_buffer.strip():
+            return "", []
+
+        sanitized = self.clean_markdown_delimiters(effective_buffer)
 
         new_chinese_delta = ""
         new_sentences: list[str] = []
@@ -440,8 +509,11 @@ class StreamingBilingualParser:
                 # Plain text keeps streaming once detected; only the first
                 # characters wait, in case JSON or a 中文： label follows.
                 current_ch = _visible_fallback_chinese(sanitized)
-                if self._unlabeled_text_mode or (
-                    not self.chinese_extracted and len(current_ch) > _PLAIN_TEXT_MIN_CHARS
+                if not is_inside_think and (
+                    self._unlabeled_text_mode
+                    or (
+                        not self.chinese_extracted and len(current_ch) > _PLAIN_TEXT_MIN_CHARS
+                    )
                 ):
                     self._unlabeled_text_mode = True
                     self.is_plain_text_fallback = True
@@ -628,7 +700,16 @@ class StreamingBilingualParser:
             self.emotion_extracted = self.get_emotion()
             return self.chinese_extracted, self.japanese_extracted, []
 
-        sanitized = self.clean_markdown_delimiters(self.buffer).strip()
+        effective_buffer, is_inside_think = _strip_and_check_think_buffer(self.buffer, is_final=True)
+        if is_inside_think or scanned.truncated:
+            self.lines_truncated = True
+
+        sanitized = self.clean_markdown_delimiters(effective_buffer).strip()
+
+        if not sanitized:
+            self.chinese_extracted = ""
+            self.japanese_extracted = ""
+            return "", "", []
 
         parsed = self._parse_json_payload(sanitized)
         if parsed is not None:
