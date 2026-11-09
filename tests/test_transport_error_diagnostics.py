@@ -197,18 +197,19 @@ def test_provider_400_with_10054_or_readerror_substring_not_connection_reset(err
 
     result = diagnose_llm_error(err, provider_id=provider_id, status_code=status_code)
     assert result.error_code != "CONNECTION_RESET"
-    assert result.error_code == "PROVIDER_ERROR"
+    expected_code = "CONTEXT_LENGTH_EXCEEDED" if "prompt is too long" in str(err) else "PROVIDER_ERROR"
+    assert result.error_code == expected_code
     assert "无需修改 API Key 或模型名称" not in result.guidance
 
     if status_code is not None:
         diag_dict = format_provider_error(provider_id, status_code, err)
         assert diag_dict["error_code"] != "CONNECTION_RESET"
-        assert diag_dict["error_code"] == "PROVIDER_ERROR"
+        assert diag_dict["error_code"] == expected_code
         assert "无需修改 API Key 或模型名称" not in diag_dict["diagnostic"]
     else:
         payload = chat_error_payload(err, provider_id=provider_id, api_key_configured=True)
         assert payload["error_code"] != "CONNECTION_RESET"
-        assert payload["error_code"] == "PROVIDER_ERROR"
+        assert payload["error_code"] == expected_code
         assert "无需修改 API Key 或模型名称" not in payload["error"]
 
 
