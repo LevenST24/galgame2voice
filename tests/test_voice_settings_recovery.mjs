@@ -549,6 +549,30 @@ const models = {
     getElementById: id => (id === 'toastRoot' ? toastRoot : null),
     createElement: () => element(),
   };
+  const full = '本机磁盘空间不足，数据没能保存。请清理磁盘空间后重试。';
+  globalThis.fetch = async () => response({ detail: full }, 400);
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    await createCustomVoice();
+    assert.equal(toastRoot.children.length, 1);
+    assert.equal(toastRoot.children[0].dataset.msg, full);
+    passed++;
+  } finally {
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    console.error = originalError;
+    globalThis.document = previousDocument;
+  }
+}
+{
+  const { dom } = setup();
+  const toastRoot = element();
+  toastRoot.id = 'toastRoot';
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
+    createElement: () => element(),
+  };
   const errors = [];
   const originalError = console.error;
   console.error = (...args) => errors.push(args);
@@ -595,6 +619,38 @@ const models = {
     assert.equal(toast.dataset.msg, '音色删除失败：该音色已被保留，请稍后重试；若仍失败，请打开「运行状态」检查服务');
     assert.doesNotMatch(toast.dataset.msg, /disk I\/O|SQLite/);
     assert.ok(errors.length > 0);
+    passed++;
+  } finally {
+    for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
+    console.error = originalError;
+    globalThis.document = previousDocument;
+  }
+}
+{
+  const { dom } = setup();
+  const toastRoot = element();
+  toastRoot.id = 'toastRoot';
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    getElementById: id => (id === 'toastRoot' ? toastRoot : null),
+    createElement: () => element(),
+  };
+  globalThis.window = { confirm: () => true };
+  dom.sVoiceDelete = element();
+  dom.sVoice.value = '2';
+  const full = '本机磁盘空间不足，数据没能保存。请清理磁盘空间后重试。';
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/voice/profiles') return response({ profiles: [{ id: 1, name: 'A' }, { id: 2, name: 'B' }], active_profile_id: 1 });
+    if (url === '/api/voice/profiles/2' && options.method === 'DELETE') return response({ detail: full }, 500);
+    return response({});
+  };
+  await loadSessionVoiceSelect();
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    await deleteVoiceProfile();
+    assert.equal(toastRoot.children.length, 1);
+    assert.equal(toastRoot.children[0].dataset.msg, full);
     passed++;
   } finally {
     for (const toast of [...toastRoot.children]) clearTimeout(toast._timer);
