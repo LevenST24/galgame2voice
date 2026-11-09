@@ -48,6 +48,7 @@ from galgame2voice.utils.hardware import (
 from galgame2voice.utils.precision import (
     read_db_precision,
     resolve_initial_device_and_half,
+    sync_runtime_precision_override,
     write_precision_cache,
 )
 
@@ -588,6 +589,8 @@ async def _apply_sovits_precision_config(
 ) -> tuple[str, bool, str]:
     """Applies target precision configuration to cache, YAML, and database settings.
     Returns (device, is_half, source)."""
+    if req_prec is not None:
+        sync_runtime_precision_override(req_prec)
     precision_map = {
         "cpu": ("cpu", False, "cpu"),
         "fp32": ("cuda", False, "fp32"),

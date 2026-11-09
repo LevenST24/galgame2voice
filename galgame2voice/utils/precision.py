@@ -11,7 +11,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, MutableMapping
 
 logger = logging.getLogger("galgame2voice.utils.precision")
 
@@ -216,6 +216,30 @@ def resolve_env_precision(environ: Mapping[str, str] | None = None) -> str | Non
     if env_prec == "auto":
         return "auto"
     return None
+
+
+def sync_runtime_precision_override(
+    target_precision: str | None,
+    environ: MutableMapping[str, str] | None = None,
+) -> None:
+    """Synchronizes or clears runtime environment precision when an override is active.
+
+    If no environment override was active at launch (resolve_env_precision is None),
+    this is a no-op to avoid injecting environment variables into unconfigured processes.
+    """
+    env = environ if environ is not None else os.environ
+    if resolve_env_precision(env) is None:
+        return
+    prec = (target_precision or "").strip().lower()
+    if prec == "auto":
+        env.pop(_PRECISION_ENV_VAR, None)
+        for k in list(env.keys()):
+            if k.lower() == "gpt_sovits_device" and str(env[k]).strip().lower() == "cpu":
+                env.pop(k, None)
+    elif prec in ("cpu", "fp16", "half", "fp32", "float32"):
+        norm_prec = "cpu" if prec == "cpu" else ("fp16" if prec in ("fp16", "half") else "fp32")
+        from scripts.run_server import sync_runtime_precision
+        sync_runtime_precision(precision=norm_prec, environ=env)
 
 
 def resolve_initial_device_and_half(
