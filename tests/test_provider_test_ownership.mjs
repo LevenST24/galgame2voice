@@ -835,3 +835,132 @@ test('reinit disposes previous controller: in-flight save lacking active confirm
   assert.equal(activationCalls, 0, 'disposed controller must not issue fallback activation request');
   assert.deepEqual(fixture2.toasts, [], 'no toasts on new coordinator');
 });
+
+test('switching provider in dropdown without editing inputs sets providerDirty, saving on footer save; switching back avoids POST', async t => {
+  const providerPosts = [];
+  const configPosts = [];
+
+  let currentProviders = [
+    { id: 'openai', name: 'OpenAI', is_active: true, chat_model: 'gpt-4o', api_base_url: 'https://api.openai.com/v1', api_key: 'sk-****openai' },
+    { id: 'deepseek', name: 'DeepSeek', is_active: false, chat_model: 'deepseek-chat', api_base_url: 'https://api.deepseek.com/v1', api_key: 'sk-****1234' },
+  ];
+
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/providers' && options.method === 'POST') {
+      const payload = JSON.parse(options.body);
+      providerPosts.push(payload);
+      let found = false;
+      currentProviders = currentProviders.map(p => {
+        if (p.id === payload.id) {
+          found = true;
+          return { ...p, ...payload, is_active: true };
+        }
+        return { ...p, is_active: false };
+      });
+      if (!found) {
+        currentProviders.push({ ...payload, is_active: true });
+      }
+      return response({
+        provider: {
+          ...payload,
+          is_active: true,
+        },
+      });
+    }
+    if (url === '/api/config' && options.method === 'POST') {
+      configPosts.push(JSON.parse(options.body));
+      return response({ status: 'ok', settings: {} });
+    }
+    if (url === '/api/config') {
+      return response({ status: 'ok', settings: { audio_retention_minutes: 30 } });
+    }
+    if (url === '/api/providers') {
+      return response({
+        providers: currentProviders,
+        presets: [
+          { id: 'openai', name: 'OpenAI', default_chat_model: 'gpt-4o', default_base_url: 'https://api.openai.com/v1' },
+          { id: 'deepseek', name: 'DeepSeek', default_chat_model: 'deepseek-chat', default_base_url: 'https://api.deepseek.com/v1' },
+        ],
+      });
+    }
+    return response({});
+  };
+
+  const { dom, toasts } = fixture(t);
+  openModal(dom.globalModal);
+  await loadGlobalConfig();
+  await loadProviders();
+
+  assert.equal(getCurrentActiveProvider()?.id, 'openai');
+  assert.equal(dom.gProvider.value, 'openai');
+
+  // 1. User switches dropdown to 'deepseek', but then switches back to original active 'openai' without editing
+  dom.gProvider.value = 'deepseek';
+  await dom.gProvider.dispatch('change');
+  dom.gProvider.value = 'openai';
+  await dom.gProvider.dispatch('change');
+
+  // User clicks footer save
+  await saveGlobalConfig();
+  await settle();
+
+  // Assert: No redundant POST /api/providers request
+  assert.equal(providerPosts.length, 0, 'switching to another provider then back to original active provider must not post provider save');
+  assert.ok(toasts.some(msg => msg === '全局配置已保存'), 'should show global config saved toast without model change');
+
+  // Clear tracking
+  providerPosts.length = 0;
+  toasts.length = 0;
+
+  // 2. User switches dropdown to 'deepseek' and triggers change
+  dom.gProvider.value = 'deepseek';
+  await dom.gProvider.dispatch('change');
+
+  // User does NOT edit any other input, directly clicks footer save
+  await saveGlobalConfig();
+  await settle();
+
+  // Assert: POST /api/providers was issued for deepseek with is_active: true
+  assert.equal(providerPosts.length, 1, 'should have posted provider save for deepseek');
+  assert.equal(providerPosts[0].id, 'deepseek');
+  assert.equal(providerPosts[0].is_active, true);
+  assert.equal(getCurrentActiveProvider()?.id, 'deepseek');
+  assert.ok(toasts.some(msg => msg.includes('全局配置和模型设置已保存')), 'should show success toast including model saved');
+
+  // Clear tracking
+  providerPosts.length = 0;
+  toasts.length = 0;
+
+  // 3. User switches dropdown to 'openai', then immediately back to 'deepseek' (the now-active provider) without editing
+  dom.gProvider.value = 'openai';
+  await dom.gProvider.dispatch('change');
+  dom.gProvider.value = 'deepseek';
+  await dom.gProvider.dispatch('change');
+
+  // User clicks footer save
+  await saveGlobalConfig();
+  await settle();
+
+  // Assert: No redundant POST /api/providers request
+  assert.equal(providerPosts.length, 0, 'switching to another provider then back to active provider must not post provider save');
+  assert.ok(toasts.some(msg => msg === '全局配置已保存'), 'should show global config saved toast without model change');
+
+  // Clear tracking
+  providerPosts.length = 0;
+  toasts.length = 0;
+
+  // 4. User switches dropdown to '__custom__' (keyless) and directly clicks footer save
+  dom.gProvider.value = '__custom__';
+  await dom.gProvider.dispatch('change');
+
+  await saveGlobalConfig();
+  await settle();
+
+  // Assert: POST /api/providers was issued for custom with is_active: true
+  assert.equal(providerPosts.length, 1, 'should have posted provider save for custom');
+  assert.equal(providerPosts[0].id, 'custom');
+  assert.equal(providerPosts[0].is_active, true);
+  assert.equal(getCurrentActiveProvider()?.id, 'custom');
+  assert.ok(toasts.some(msg => msg.includes('全局配置和模型设置已保存')), 'should show success toast including custom model saved');
+});
+
