@@ -15,10 +15,10 @@ MOTIONS = ("nod", "bounce", "startle", "sigh", "fidget", "head-shake", "lean-in"
 MOVES = ("approach", "retreat", "closeup", "left", "right", "center")
 FX = ("sweat", "anger", "heart", "sparkle", "question", "exclamation")
 
-_RE_THINK_OPEN_MATCH = re.compile(r"^<\s*(think|thought|reasoning)\b", re.IGNORECASE)
-_RE_THINK_CLOSE_PREFIX = re.compile(r"^</\s*(think|thought|reasoning)\b", re.IGNORECASE)
-_RE_THINK_CLOSE_MATCH = re.compile(r"^</\s*(think|thought|reasoning)\b[^>]*>", re.IGNORECASE)
-_RE_THINK_SELF_CLOSING = re.compile(r"^<\s*(think|thought|reasoning)\b[^>]*?/\s*>", re.IGNORECASE)
+_RE_THINK_OPEN_MATCH = re.compile(r"^<\s*(think(?:ing)?|thought|reasoning)\b", re.IGNORECASE)
+_RE_THINK_CLOSE_PREFIX = re.compile(r"^</\s*(think(?:ing)?|thought|reasoning)\b", re.IGNORECASE)
+_RE_THINK_CLOSE_MATCH = re.compile(r"^</\s*(think(?:ing)?|thought|reasoning)\b[^>]*>", re.IGNORECASE)
+_RE_THINK_SELF_CLOSING = re.compile(r"^<\s*(think(?:ing)?|thought|reasoning)\b[^>]*?/\s*>", re.IGNORECASE)
 
 
 def _is_think_prefix(s: str) -> bool:
@@ -28,7 +28,7 @@ def _is_think_prefix(s: str) -> bool:
     tag_part = s_clean[1:].lstrip()
     if not tag_part:
         return True
-    return any(t.startswith(tag_part) for t in ("think", "thought", "reasoning")) or bool(
+    return any(t.startswith(tag_part) for t in ("think", "thinking", "thought", "reasoning")) or bool(
         _RE_THINK_OPEN_MATCH.match(s)
     )
 
@@ -40,7 +40,7 @@ def _is_think_close_prefix(s: str) -> bool:
     tag_part = s_clean[2:].lstrip()
     if not tag_part:
         return True
-    return any(t.startswith(tag_part) for t in ("think", "thought", "reasoning")) or bool(
+    return any(t.startswith(tag_part) for t in ("think", "thinking", "thought", "reasoning")) or bool(
         _RE_THINK_CLOSE_PREFIX.match(s)
     )
 
@@ -605,7 +605,7 @@ class LineScanner:
             if self._tag_pending:
                 tag_part = self._tag_pending.lstrip().lower()[1:].lstrip()
                 tag_is_think = bool(tag_part) and (
-                    any(t.startswith(tag_part) for t in ("think", "thought", "reasoning"))
+                    any(t.startswith(tag_part) for t in ("think", "thinking", "thought", "reasoning"))
                     or bool(_RE_THINK_OPEN_MATCH.match(self._tag_pending))
                 )
             if self._think_depth > 0 or tag_is_think:
