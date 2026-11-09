@@ -1130,58 +1130,35 @@ class TestProviderPresetSeedsAndFallback:
 
     @pytest.mark.asyncio
     async def test_legacy_db_seed_healing_and_user_customization_preserved(self, tmp_path):
-        """Old DB with missing siliconflow/moonshot and 7 fictional models is healed without touching user customization."""
+        """Old DB missing siliconflow/moonshot is seeded; saved chat models stay untouched across restarts."""
         db_path = tmp_path / "legacy.db"
-        # 1. Initialize DB
         await init_db(db_path)
 
-        # 2. Simulate legacy DB state: delete siliconflow and moonshot, set fictional model names, set one custom model
+        saved_models = {
+            "gemini": "gemini-3.7-flash",
+            "openai": "gpt-5.6-sol",
+            "deepseek": "deepseek-v4-pro",
+            "anthropic": "claude-5-sonnet-latest",
+            "glm": "glm-5.3",
+            "qwen": "qwen3.8-max",
+            "custom": "deepseek-v4:latest",
+        }
         async with get_db(db_path) as conn:
             await conn.execute("DELETE FROM providers WHERE id IN ('siliconflow', 'moonshot');")
-            legacy_fictional = {
-                "gemini": "gemini-3.7-flash",
-                "openai": "gpt-5.6-sol",
-                "deepseek": "my-custom-deepseek-v3",  # User customized this!
-                "anthropic": "claude-5-sonnet-latest",
-                "glm": "glm-5.3",
-                "qwen": "qwen3.8-max",
-                "custom": "deepseek-v4:latest",
-            }
-            for pid, model in legacy_fictional.items():
+            for pid, model in saved_models.items():
                 await conn.execute("UPDATE providers SET chat_model = ? WHERE id = ?;", (model, pid))
             await conn.commit()
 
-        # Verify legacy state setup
-        async with get_db(db_path) as conn:
-            provs = {p.id: p for p in await crud.list_providers(conn, mask=False)}
-            assert "siliconflow" not in provs
-            assert "moonshot" not in provs
-            assert provs["gemini"].chat_model == "gemini-3.7-flash"
-            assert provs["deepseek"].chat_model == "my-custom-deepseek-v3"
-
-            # 3. Run init_schema_and_seeds (which runs on every app startup)
             from galgame2voice.database.migrations import init_schema_and_seeds
-            await init_schema_and_seeds(conn)
+            for _ in range(2):
+                await init_schema_and_seeds(conn)
 
-            # 4. Verify healing:
-            # - Missing siliconflow and moonshot are added
-            provs_healed = {p.id: p for p in await crud.list_providers(conn, mask=False)}
-            assert "siliconflow" in provs_healed
-            assert "moonshot" in provs_healed
-            assert provs_healed["siliconflow"].is_active == 0
-            assert provs_healed["moonshot"].is_active == 0
-            assert provs_healed["siliconflow"].chat_model == PROVIDER_PRESETS["siliconflow"]["default_chat_model"]
-
-            # - Fictional models are healed to official presets
-            assert provs_healed["gemini"].chat_model == PROVIDER_PRESETS["gemini"]["default_chat_model"]
-            assert provs_healed["openai"].chat_model == PROVIDER_PRESETS["openai"]["default_chat_model"]
-            assert provs_healed["anthropic"].chat_model == PROVIDER_PRESETS["anthropic"]["default_chat_model"]
-            assert provs_healed["glm"].chat_model == PROVIDER_PRESETS["glm"]["default_chat_model"]
-            assert provs_healed["qwen"].chat_model == PROVIDER_PRESETS["qwen"]["default_chat_model"]
-            assert provs_healed["custom"].chat_model == PROVIDER_PRESETS["custom"]["default_chat_model"]
-
-            # - User customization is NOT overwritten
-            assert provs_healed["deepseek"].chat_model == "my-custom-deepseek-v3"
+            provs = {p.id: p for p in await crud.list_providers(conn, mask=False)}
+            for pid in ("siliconflow", "moonshot"):
+                assert provs[pid].is_active == 0
+                assert provs[pid].chat_model == PROVIDER_PRESETS[pid]["default_chat_model"]
+            for pid, model in saved_models.items():
+                assert provs[pid].chat_model == model
 
     @pytest.mark.asyncio
     async def test_update_settings_active_provider_unseeded_preset(self, tmp_path):
