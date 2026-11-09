@@ -405,4 +405,40 @@ def test_non_tag_trailing_angle_bracket():
     assert parser.lines_truncated is False
 
 
+_REAL_LINES = '{"lines": [{"zh": "正式台词", "ja": "本番のセリフ", "emotion": "happy"}]}'
 
+
+def test_line_scanner_ignores_draft_json_in_thinking_tag_split_across_chunks():
+    chunks = ["<thinki", 'ng>Let me format {"lines": [{"zh": "草稿"}]}', "</thinki", "ng>\n", _REAL_LINES]
+    scanner = LineScanner()
+    for c in chunks:
+        scanner.feed(c)
+    scanned = scanner.finish()
+
+    assert scanned.truncated is False
+    assert [line.zh for line in scanned.lines] == ["正式台词"]
+
+
+def test_streaming_parser_strips_thinking_tag_from_deltas_and_result():
+    parser = StreamingBilingualParser()
+    deltas = []
+    for chunk in ["<thinking>Let me format ", '{"lines": [{"zh": "草稿", "ja": "下書き"}]}', "</thinking>\n", _REAL_LINES]:
+        delta, _ = parser.feed_chunk(chunk)
+        if delta:
+            deltas.append(delta)
+    zh, ja, _ = parser.finalize()
+
+    emitted = "".join(deltas)
+    assert "草稿" not in emitted and "thinking" not in emitted
+    assert zh == "正式台词"
+    assert ja == "本番のセリフ"
+    assert [line["zh"] for line in parser.normalized_lines()] == ["正式台词"]
+
+
+def test_strip_reasoning_tags_removes_thinking_block():
+    assert strip_reasoning_tags("<thinking>草稿</thinking>你好").strip() == "你好"
+    assert strip_reasoning_tags("<Thinking mode='x'>草稿</THINKING>你好").strip() == "你好"
+    assert strip_reasoning_tags("<thinking>未闭合的思考内容") == ""
+    assert strip_reasoning_tags("你好<thinking>草稿</thinking>世界") == "你好世界"
+    assert strip_reasoning_tags("<thinking/>你好") == "你好"
+    assert strip_reasoning_tags("<thinking>只有思考</thinking>") == ""

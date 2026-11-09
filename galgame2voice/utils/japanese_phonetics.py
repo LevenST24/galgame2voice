@@ -198,18 +198,18 @@ def is_spoken_dialogue_inside_brackets(content: str) -> bool:
 
 
 _RE_REASONING_CLOSED = re.compile(
-    r"<\s*(think|thought|reasoning)\b(?:[^>]*?/\s*>|[^>]*>.*?</\s*\1\s*>)",
+    r"<\s*(think(?:ing)?|thought|reasoning)\b(?:[^>]*?/\s*>|[^>]*>.*?</\s*\1\s*>)",
     flags=re.IGNORECASE | re.DOTALL,
 )
 _RE_REASONING_UNCLOSED = re.compile(
-    r"<\s*(think|thought|reasoning)\b.*$",
+    r"<\s*(think(?:ing)?|thought|reasoning)\b.*$",
     flags=re.IGNORECASE | re.DOTALL,
 )
 _RE_REASONING_PREFIX_PENDING = re.compile(
     r"<\s*([a-zA-Z]{1,9})$",
 )
 _RE_REASONING_ORPHAN_CLOSE = re.compile(
-    r"</\s*(think|thought|reasoning)\b[^>]*>",
+    r"</\s*(think(?:ing)?|thought|reasoning)\b[^>]*>",
     flags=re.IGNORECASE,
 )
 
@@ -230,7 +230,7 @@ def strip_reasoning_tags(text: str) -> str:
     m_pfx = _RE_REASONING_PREFIX_PENDING.search(cleaned)
     if m_pfx:
         pfx = m_pfx.group(1).lower()
-        if any(tag.startswith(pfx) for tag in ("think", "thought", "reasoning")):
+        if any(tag.startswith(pfx) for tag in ("think", "thinking", "thought", "reasoning")):
             cleaned = cleaned[: m_pfx.start()]
     cleaned = _RE_REASONING_ORPHAN_CLOSE.sub("", cleaned)
     return cleaned

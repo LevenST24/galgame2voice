@@ -67,18 +67,18 @@ _RE_PARAM_FRAG = re.compile(r'["\']?(?:fragment_interval|interval|pause)["\']?\s
 _RE_PARAM_EMOTION = re.compile(r'["\']?emotion["\']?\s*:\s*["\']?([a-zA-Z\u4e00-\u9fa5]+)["\']?')
 
 _RE_THINK_BLOCK_CLOSED = re.compile(
-    r"<\s*(think|thought|reasoning)\b(?:[^>]*?/\s*>|[^>]*>.*?</\s*\1\s*>)",
+    r"<\s*(think(?:ing)?|thought|reasoning)\b(?:[^>]*?/\s*>|[^>]*>.*?</\s*\1\s*>)",
     flags=re.IGNORECASE | re.DOTALL,
 )
 _RE_THINK_BLOCK_UNCLOSED = re.compile(
-    r"<\s*(think|thought|reasoning)\b.*$",
+    r"<\s*(think(?:ing)?|thought|reasoning)\b.*$",
     flags=re.IGNORECASE | re.DOTALL,
 )
 _RE_THINK_TAG_PREFIX_PENDING = re.compile(
     r"<\s*([a-zA-Z]{0,9})$",
 )
 _RE_THINK_TAG_ORPHAN_CLOSE = re.compile(
-    r"</\s*(think|thought|reasoning)\b[^>]*>",
+    r"</\s*(think(?:ing)?|thought|reasoning)\b[^>]*>",
     flags=re.IGNORECASE,
 )
 
@@ -111,7 +111,7 @@ def _strip_and_check_think_buffer(buffer: str, is_final: bool = False) -> tuple[
     if m_pfx:
         pfx = m_pfx.group(1).lower()
         if (pfx == "" and not is_final) or (
-            pfx and any(tag.startswith(pfx) for tag in ("think", "thought", "reasoning"))
+            pfx and any(tag.startswith(pfx) for tag in ("think", "thinking", "thought", "reasoning"))
         ):
             effective = _RE_THINK_TAG_ORPHAN_CLOSE.sub("", cleaned[: m_pfx.start()])
             return effective, True
