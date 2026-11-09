@@ -11,7 +11,7 @@ import { clearMemAudioCache } from '../frontend/src/cache.js';
 import { initApp } from '../frontend/src/main.js';
 import { state as storedState, loadState, DEFAULT_SESSION_SETTINGS, GREETING } from '../frontend/src/store.js';
 import { streamAudioController } from '../frontend/src/audio_player.js';
-import { initAudioPlayerUi, stopCurrentVoice } from '../frontend/src/controllers/audio_player_ui.js';
+import { initAudioPlayerUi, stopCurrentVoice, playUserVoice } from '../frontend/src/controllers/audio_player_ui.js';
 import { initVoiceSettings, fetchVoiceProfiles } from '../frontend/src/controllers/voice_settings.js';
 import { audioStore } from '../frontend/src/voice.js';
 import { fakeDocument, fakeClock, Element, microtasks } from './helpers/adv_dom.mjs';
@@ -180,6 +180,7 @@ function setupApp(t, options = {}) {
     },
     playUserVoice: (msg, ctl) => {
       calls.playUserVoice.push({ msg, ctl });
+      if (options.playUserVoice) options.playUserVoice(msg, ctl);
     },
     stopOtherVoice: () => {
       calls.stoppedOther++;
@@ -2843,4 +2844,52 @@ test('LOG: rapid switching between lines and user recording across multiple rend
   const userCtl = h.calls.playUserVoice.at(-1).ctl;
   userCtl.setPlaying(false);
   assert.equal(reconstructedUserBtn.classList.contains('is-playing'), false, 'reconstructed user button clears is-playing');
+});
+
+test('LOG: user recording whose audio cache was evicted or missing resets .is-playing immediately and across renderAll()', async t => {
+  const h = setupApp(t, {
+    playUserVoice: (msg, ctl) => playUserVoice(msg, ctl),
+  });
+  const now = h.getWallTime();
+  const session = h.active();
+
+  session.messages = [
+    { id: 'm_evicted_u', role: 'user', content: '被清理的录音', voiceKey: 'evicted_voice_key', ts: now - 3000 },
+  ];
+
+  const originalCaches = globalThis.caches;
+  const originalWindow = globalThis.window;
+  let cacheMatchCalled = false;
+  const mockCaches = {
+    open: async () => ({
+      match: async () => {
+        cacheMatchCalled = true;
+        return null;
+      },
+    }),
+  };
+  globalThis.caches = mockCaches;
+  globalThis.window = { caches: mockCaches };
+  t.after(() => {
+    globalThis.caches = originalCaches;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    clearMemAudioCache();
+  });
+
+  h.app.action('log');
+  const log = h.app.backlog;
+
+  const userEntry = log.listElement.querySelector('.adv-log-entry.is-user');
+  const userRecBtn = userEntry.querySelector('.adv-log-user-recording-btn');
+  userRecBtn.click();
+  await microtasks();
+
+  assert.equal(cacheMatchCalled, true, 'cache storage should be queried for the user recording');
+  assert.equal(userRecBtn.classList.contains('is-playing'), false, 'user recording button should not have .is-playing when audio cache is evicted');
+
+  log.renderAll();
+  const newUserEntry = log.listElement.querySelector('.adv-log-entry.is-user');
+  const newUserRecBtn = newUserEntry.querySelector('.adv-log-user-recording-btn');
+  assert.equal(newUserRecBtn.classList.contains('is-playing'), false, 'reconstructed user recording button should not have .is-playing after renderAll()');
 });

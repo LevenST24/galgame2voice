@@ -498,6 +498,7 @@ export async function playUserVoice(msg, ctl) {
     }
     if (!request.current()) return;
     if (!rec) {
+      ctl?.setPlaying?.(false);
       showToast('该条录音缓存已过期或被清理，无法播放。', 'info');
       return;
     }

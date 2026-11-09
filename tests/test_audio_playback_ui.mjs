@@ -129,3 +129,10 @@ test('a rejected browser play releases ownership so the next click can retry', a
   playSingleAudio(() => audio, 'single', ctl); await tick();
   assert.equal(getCurrentVoice(), null); assert.equal(ctl.playing, false);
 });
+test('playUserVoice resets playing state on controller when recording is missing or expired', async () => {
+  const ctl = control();
+  ctl.setPlaying(true);
+  window.caches = globalThis.caches = { open: async () => ({ match: async () => null }) };
+  await playUserVoice({ id: 'missing_rec', role: 'user', voiceKey: 'expired_key' }, ctl);
+  assert.equal(ctl.playing, false);
+});
