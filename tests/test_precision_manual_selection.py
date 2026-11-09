@@ -7,10 +7,9 @@ Unit tests for manual precision selection, persistence, CLI flags, and restart e
 """
 
 import os
-import json
+import sys
 import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 from httpx import AsyncClient, ASGITransport
 
 from galgame2voice.main import create_app
@@ -104,6 +103,61 @@ class TestPrecisionCLI:
         assert rs.sync_runtime_precision(fp16=True, fp32=True, precision="auto", environ=env) == "fp16"
         assert rs.sync_runtime_precision(fp32=True, precision="auto", environ=env) == "fp32"
 
+    def test_spawn_sovits_process_cpu_logs_cpu_not_fp32(self, tmp_path, monkeypatch, capsys):
+        fake_engine = tmp_path / "dummy_sovits"
+        fake_engine.mkdir()
+        monkeypatch.setattr(rs, "find_engine_python", lambda s: Path(sys.executable))
+        monkeypatch.setattr(rs, "prepare_engine_entrypoint", lambda s, b: tmp_path / "dummy_entry.py")
+        monkeypatch.setattr(rs, "write_sovits_yaml_config", lambda *args, **kwargs: None)
+        monkeypatch.setattr(rs, "setup_windows_job_object", lambda: None)
+        monkeypatch.setattr(rs, "assign_process_to_job", lambda proc: True)
+
+        class FakeProc:
+            pid = 1234
+            def poll(self):
+                return None
+
+        monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: FakeProc())
+
+        try:
+            rs._spawn_sovits_process(fake_engine, "127.0.0.1", 9880, is_half=False, device="cpu")
+            captured = capsys.readouterr().out
+            assert "CPU" in captured
+            assert "FP32" not in captured
+        finally:
+            rs._SPAWNED_SOVITS_PROC = None
+            rs._SPAWNED_SOVITS_LAUNCH = None
+            rs._SPAWNED_SOVITS_STARTED_AT = None
+            (rs.PROJECT_ROOT / "gptsovits.pid").unlink(missing_ok=True)
+
+    def test_sync_runtime_precision_override_helper(self):
+        from galgame2voice.utils.precision import sync_runtime_precision_override
+
+        env = {}
+        # When no override active, no-op (no pollution)
+        sync_runtime_precision_override("fp16", environ=env)
+        assert "GPT_SOVITS_PRECISION" not in env
+        assert "GPT_SOVITS_DEVICE" not in env
+
+        # When CLI fp32 active, sync to fp16
+        env["GPT_SOVITS_PRECISION"] = "fp32"
+        sync_runtime_precision_override("fp16", environ=env)
+        assert env["GPT_SOVITS_PRECISION"] == "fp16"
+
+        # When CLI cpu active, sync to fp32 removes cpu device
+        env["GPT_SOVITS_PRECISION"] = "cpu"
+        env["GPT_SOVITS_DEVICE"] = "cpu"
+        sync_runtime_precision_override("fp32", environ=env)
+        assert env["GPT_SOVITS_PRECISION"] == "fp32"
+        assert "GPT_SOVITS_DEVICE" not in env
+
+        # When CLI active, sync to auto clears all override variables
+        env["GPT_SOVITS_PRECISION"] = "cpu"
+        env["GPT_SOVITS_DEVICE"] = "cpu"
+        sync_runtime_precision_override("auto", environ=env)
+        assert "GPT_SOVITS_PRECISION" not in env
+        assert "GPT_SOVITS_DEVICE" not in env
+
 
 @pytest.mark.asyncio
 class TestPrecisionAPI:
@@ -111,11 +165,17 @@ class TestPrecisionAPI:
     def clean_precision_env(self):
         os.environ.pop("GPT_SOVITS_PRECISION", None)
         os.environ.pop("GPT_SOVITS_DEVICE", None)
+        rs._SPAWNED_SOVITS_PROC = None
+        rs._SPAWNED_SOVITS_LAUNCH = None
+        rs._SPAWNED_SOVITS_STARTED_AT = None
         try:
             yield
         finally:
             os.environ.pop("GPT_SOVITS_PRECISION", None)
             os.environ.pop("GPT_SOVITS_DEVICE", None)
+            rs._SPAWNED_SOVITS_PROC = None
+            rs._SPAWNED_SOVITS_LAUNCH = None
+            rs._SPAWNED_SOVITS_STARTED_AT = None
 
     async def test_update_precision_in_config_and_cache(self, tmp_path, monkeypatch):
         settings = get_settings()
@@ -532,3 +592,232 @@ class TestPrecisionAPI:
             assert r_restart.json()["is_half"] is False
             assert r_restart.json()["precision"] == "FP32"
             assert spawn_calls[-1] == ("127.0.0.1", 9880, False, "cuda")
+
+    async def test_cli_fp32_runtime_override_via_config_api(self, tmp_path, monkeypatch):
+        settings = get_settings()
+        monkeypatch.setattr(settings, "project_root", tmp_path)
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        fake_engine = tmp_path / "dummy_sovits"
+        fake_engine.mkdir()
+        (fake_engine / "api_v2.py").write_text("# dummy")
+        (tmp_path / "data" / "sovits_dir.txt").write_text(str(fake_engine), encoding="utf-8")
+
+        # Simulate starting with --fp32
+        rs.sync_runtime_precision(fp32=True)
+        assert os.environ.get("GPT_SOVITS_PRECISION") == "fp32"
+
+        app = create_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # Initial GET /api/config returns fp32
+            r_init = await client.get("/api/config")
+            assert r_init.status_code == 200
+            assert r_init.json()["settings"]["inference_precision"] == "fp32"
+
+            # 1. Switch to fp16 via POST /api/config
+            r_post16 = await client.post("/api/config", json={"settings": {"inference_precision": "fp16"}})
+            assert r_post16.status_code == 200
+            assert r_post16.json()["settings"]["inference_precision"] == "fp16"
+
+            # Subsequent GET /api/config must reflect updated fp16, NOT locked to fp32
+            r_get16 = await client.get("/api/config")
+            assert r_get16.status_code == 200
+            assert r_get16.json()["settings"]["inference_precision"] == "fp16"
+
+            # Telemetry GET /api/system/status reflects configured_precision="fp16" and next_inference_precision="FP16"
+            r_stat16 = await client.get("/api/system/status")
+            assert r_stat16.status_code == 200
+            hw16 = r_stat16.json()["hardware"]
+            assert hw16["configured_precision"] == "fp16"
+            assert hw16["next_inference_precision"] == "FP16"
+
+            # 2. Switch to auto via POST /api/config
+            r_post_auto = await client.post("/api/config", json={"settings": {"inference_precision": "auto"}})
+            assert r_post_auto.status_code == 200
+            assert r_post_auto.json()["settings"]["inference_precision"] == "auto"
+
+            # Subsequent GET /api/config must reflect "auto"
+            r_get_auto = await client.get("/api/config")
+            assert r_get_auto.status_code == 200
+            assert r_get_auto.json()["settings"]["inference_precision"] == "auto"
+
+            # Telemetry GET /api/system/status reflects configured_precision="auto"
+            r_stat_auto = await client.get("/api/system/status")
+            assert r_stat_auto.status_code == 200
+            hw_auto = r_stat_auto.json()["hardware"]
+            assert hw_auto["configured_precision"] == "auto"
+
+    async def test_cli_fp32_restart_with_explicit_precision_and_subsequent_default_restart(self, tmp_path, monkeypatch):
+        settings = get_settings()
+        monkeypatch.setattr(settings, "project_root", tmp_path)
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        fake_engine = tmp_path / "dummy_sovits"
+        fake_engine.mkdir()
+        (fake_engine / "api_v2.py").write_text("# dummy")
+        (tmp_path / "data" / "sovits_dir.txt").write_text(str(fake_engine), encoding="utf-8")
+
+        monkeypatch.setattr(rs, "_SPAWNED_SOVITS_PROC", None)
+        monkeypatch.setattr(rs, "is_port_in_use", lambda *args: False)
+        monkeypatch.setattr(
+            "galgame2voice.utils.hardware.detect_gpu_capability",
+            lambda: (True, "Mock NVIDIA GPU", 0),
+        )
+        monkeypatch.setattr(
+            "galgame2voice.routers.health._get_gpu_telemetry_cached",
+            lambda: (True, "Mock NVIDIA GPU"),
+        )
+
+        async def _local_custom_resolver():
+            return parse_sovits_endpoint("http://127.0.0.1:9880", source="db")
+
+        monkeypatch.setattr(
+            "galgame2voice.routers.health.resolve_effective_sovits_endpoint",
+            _local_custom_resolver,
+        )
+
+        spawn_calls = []
+        class FakeProc:
+            pid = 9999
+            def poll(self):
+                return None
+            def wait(self, timeout=None):
+                return 0
+
+        monkeypatch.setattr(rs, "terminate_process_tree", lambda pid: None)
+
+        def _fake_spawn(s_dir, host, port, is_half, device="cuda"):
+            spawn_calls.append((host, port, is_half, device))
+            proc = FakeProc()
+            rs._SPAWNED_SOVITS_PROC = proc
+            rs._SPAWNED_SOVITS_LAUNCH = EngineLaunch(proc, host, port, device, is_half, 1.0)
+            return proc
+
+        monkeypatch.setattr(rs, "_spawn_sovits_process", _fake_spawn)
+
+        # Simulate started with --fp32
+        rs.sync_runtime_precision(fp32=True)
+        assert os.environ.get("GPT_SOVITS_PRECISION") == "fp32"
+
+        app = create_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # 1. Restart explicitly with fp16
+            r_restart = await client.post("/api/system/restart_sovits", json={"precision": "fp16"})
+            assert r_restart.status_code == 200
+            assert r_restart.json()["precision"] == "FP16"
+            assert spawn_calls[-1] == ("127.0.0.1", 9880, True, "cuda")
+
+            # Status check: precision_pending_restart MUST be False, next_inference_precision="FP16"
+            r_stat = await client.get("/api/system/status")
+            assert r_stat.status_code == 200
+            hw = r_stat.json()["hardware"]
+            assert hw["inference_precision"] == "FP16"
+            assert hw["next_inference_precision"] == "FP16"
+            assert hw["precision_pending_restart"] is False
+
+            # 2. Subsequent restart without precision payload ({}) must stay FP16, NOT revert to FP32
+            r_restart2 = await client.post("/api/system/restart_sovits", json={})
+            assert r_restart2.status_code == 200
+            assert r_restart2.json()["precision"] == "FP16"
+            assert spawn_calls[-1] == ("127.0.0.1", 9880, True, "cuda")
+
+            # 3. Restart with precision="auto" must resolve to hardware default (FP16), NOT stale FP32
+            r_restart_auto = await client.post("/api/system/restart_sovits", json={"precision": "auto"})
+            assert r_restart_auto.status_code == 200
+            assert r_restart_auto.json()["precision"] == "FP16"
+            assert spawn_calls[-1] == ("127.0.0.1", 9880, True, "cuda")
+
+            r_stat_auto = await client.get("/api/system/status")
+            assert r_stat_auto.status_code == 200
+            hw_auto = r_stat_auto.json()["hardware"]
+            assert hw_auto["inference_precision"] == "FP16"
+            assert hw_auto["next_inference_precision"] == "FP16"
+            assert hw_auto["precision_pending_restart"] is False
+
+    async def test_cli_cpu_restart_with_explicit_precision_and_subsequent_default_restart(self, tmp_path, monkeypatch):
+        settings = get_settings()
+        monkeypatch.setattr(settings, "project_root", tmp_path)
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        fake_engine = tmp_path / "dummy_sovits"
+        fake_engine.mkdir()
+        (fake_engine / "api_v2.py").write_text("# dummy")
+        (tmp_path / "data" / "sovits_dir.txt").write_text(str(fake_engine), encoding="utf-8")
+
+        monkeypatch.setattr(rs, "_SPAWNED_SOVITS_PROC", None)
+        monkeypatch.setattr(rs, "is_port_in_use", lambda *args: False)
+        monkeypatch.setattr(
+            "galgame2voice.utils.hardware.detect_gpu_capability",
+            lambda: (True, "Mock NVIDIA GPU", 0),
+        )
+        monkeypatch.setattr(
+            "galgame2voice.routers.health._get_gpu_telemetry_cached",
+            lambda: (True, "Mock NVIDIA GPU"),
+        )
+
+        async def _local_custom_resolver():
+            return parse_sovits_endpoint("http://127.0.0.1:9880", source="db")
+
+        monkeypatch.setattr(
+            "galgame2voice.routers.health.resolve_effective_sovits_endpoint",
+            _local_custom_resolver,
+        )
+
+        spawn_calls = []
+        captured_envs = []
+        class FakeProc:
+            pid = 9999
+            def poll(self):
+                return None
+            def wait(self, timeout=None):
+                return 0
+
+        monkeypatch.setattr(rs, "terminate_process_tree", lambda pid: None)
+
+        def _fake_spawn(s_dir, host, port, is_half, device="cuda"):
+            spawn_calls.append((host, port, is_half, device))
+            captured_envs.append(dict(os.environ))
+            proc = FakeProc()
+            rs._SPAWNED_SOVITS_PROC = proc
+            rs._SPAWNED_SOVITS_LAUNCH = EngineLaunch(proc, host, port, device, is_half, 1.0)
+            return proc
+
+        monkeypatch.setattr(rs, "_spawn_sovits_process", _fake_spawn)
+
+        # Simulate started with --cpu
+        rs.sync_runtime_precision(cpu=True)
+        assert os.environ.get("GPT_SOVITS_PRECISION") == "cpu"
+        assert os.environ.get("GPT_SOVITS_DEVICE") == "cpu"
+
+        app = create_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # 1. Restart explicitly with fp16
+            r_restart = await client.post("/api/system/restart_sovits", json={"precision": "fp16"})
+            assert r_restart.status_code == 200
+            assert r_restart.json()["precision"] == "FP16"
+            assert spawn_calls[-1] == ("127.0.0.1", 9880, True, "cuda")
+            # Child process environment must NOT retain stale GPT_SOVITS_DEVICE=cpu
+            assert captured_envs[-1].get("GPT_SOVITS_DEVICE") != "cpu"
+
+            r_stat = await client.get("/api/system/status")
+            assert r_stat.status_code == 200
+            hw = r_stat.json()["hardware"]
+            assert hw["inference_precision"] == "FP16"
+            assert hw["next_inference_precision"] == "FP16"
+            assert hw["precision_pending_restart"] is False
+
+            # 2. Subsequent restart without precision payload ({}) must stay FP16, NOT revert to CPU
+            r_restart2 = await client.post("/api/system/restart_sovits", json={})
+            assert r_restart2.status_code == 200
+            assert r_restart2.json()["precision"] == "FP16"
+            assert spawn_calls[-1] == ("127.0.0.1", 9880, True, "cuda")
+
+            # 3. Restart explicitly with auto
+            r_restart3 = await client.post("/api/system/restart_sovits", json={"precision": "auto"})
+            assert r_restart3.status_code == 200
+            assert r_restart3.json()["precision"] == "FP16"
+            assert spawn_calls[-1] == ("127.0.0.1", 9880, True, "cuda")
+
+            r_stat3 = await client.get("/api/system/status")
+            assert r_stat3.status_code == 200
+            hw3 = r_stat3.json()["hardware"]
+            assert hw3["inference_precision"] == "FP16"
+            assert hw3["next_inference_precision"] == "FP16"
+            assert hw3["precision_pending_restart"] is False

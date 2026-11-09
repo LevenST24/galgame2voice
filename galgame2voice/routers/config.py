@@ -239,13 +239,13 @@ def _sync_precision_cache(new_precision: str | None, previous_precision: str | N
         return
     try:
         # Lazy import avoids circular import with config; precision disk sync is best-effort
-        from galgame2voice.utils.precision import write_precision_cache
+        from galgame2voice.utils.precision import write_precision_cache, sync_runtime_precision_override
         from galgame2voice.config import get_settings
         app_settings = get_settings()
         from galgame2voice.services.sovits_installation import read_sovits_directory
         directory = read_sovits_directory(app_settings.project_root)
         sovits_dir_str = str(directory) if directory is not None else ""
-        prec_lower = str(new_precision).lower()
+        prec_lower = str(new_precision).strip().lower()
         if prec_lower in _PRECISION_CONFIG_MAP:
             is_half, device = _PRECISION_CONFIG_MAP[prec_lower]
             write_precision_cache(app_settings.project_root, sovits_dir_str, is_half=is_half, device=device)
@@ -254,6 +254,9 @@ def _sync_precision_cache(new_precision: str | None, previous_precision: str | N
                 cache_file = app_settings.project_root / "data" / "precision.json"
                 if cache_file.exists():
                     cache_file.unlink(missing_ok=True)
+
+        sync_runtime_precision_override(prec_lower)
+
         logger.info("Inference precision preference saved for next engine start: %s", new_precision)
     except Exception as exc:
         # Disk sync failure is non-fatal and must not block or fail the configuration update API

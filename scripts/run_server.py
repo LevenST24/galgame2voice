@@ -848,7 +848,8 @@ def _spawn_sovits_process(
         setup_windows_job_object()
     assigned = assign_process_to_job(proc)
     (PROJECT_ROOT / "gptsovits.pid").write_text(str(proc.pid), encoding="utf-8")
-    print(f"      [OK] 已在后台启动 GPT-SoVITS (PID: {proc.pid}, {'FP16' if is_half else 'FP32'})")
+    prec_label = "CPU" if str(device).lower() == "cpu" else ("FP16" if is_half else "FP32")
+    print(f"      [OK] 已在后台启动 GPT-SoVITS (PID: {proc.pid}, {prec_label})")
     if sys.platform == "win32" and not assigned:
         print("      [提示] Windows 未允许绑定引擎进程；请用 Ctrl+C 正常退出以清理引擎。")
     return proc
