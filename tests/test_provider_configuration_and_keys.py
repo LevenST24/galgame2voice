@@ -45,6 +45,7 @@ from galgame2voice.utils.error_diagnostics import (
     format_provider_error,
     diagnose_llm_error,
 )
+from galgame2voice.services.chat_service import ChatService
 
 
 # ============================================================================
@@ -1077,3 +1078,186 @@ class TestProviderSecurityAndSsrfBoundaries:
                 "base_url": scheme_url,
             })
             assert resp.status_code == 400
+
+
+class TestProviderPresetSeedsAndFallback:
+    """Regression tests for provider preset seeds, legacy healing, and empty chat_model fallback."""
+
+    FICTIONAL_MODELS = {
+        "gemini-3.7-flash",
+        "gpt-5.6-sol",
+        "deepseek-v4-pro",
+        "claude-5-sonnet-latest",
+        "glm-5.3",
+        "qwen3.8-max",
+        "deepseek-v4:latest",
+    }
+
+    @pytest.mark.asyncio
+    async def test_initial_db_seeds_all_10_presets_without_fictional_models(self, tmp_path):
+        """Fresh database must seed all 10 presets with real default models, no fictional models."""
+        db_path = tmp_path / "fresh.db"
+        await init_db(db_path)
+
+        async with get_db(db_path) as conn:
+            providers = await crud.list_providers(conn, mask=False)
+            provider_map = {p.id: p for p in providers}
+
+            # 1. All 10 presets must exist
+            for preset_id in PROVIDER_PRESETS:
+                assert preset_id in provider_map, f"Preset '{preset_id}' missing from freshly seeded providers"
+
+            # 2. None of the providers may use fictional model names
+            for p_id, p in provider_map.items():
+                assert p.chat_model not in self.FICTIONAL_MODELS, (
+                    f"Provider '{p_id}' has fictional chat_model '{p.chat_model}'"
+                )
+
+            # 3. Built-in presets must match PROVIDER_PRESETS default_chat_model
+            for preset_id, preset in PROVIDER_PRESETS.items():
+                expected_model = preset["default_chat_model"]
+                assert provider_map[preset_id].chat_model == expected_model, (
+                    f"Provider '{preset_id}' chat_model is '{provider_map[preset_id].chat_model}', "
+                    f"expected '{expected_model}'"
+                )
+
+        # 4. Telegram model menu lists all presets including siliconflow and moonshot
+        from galgame2voice.telegram_bot.console_menus import build_model_menu
+        text, markup = await build_model_menu(db_path=db_path)
+        button_data = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        assert "set_model_siliconflow" in button_data
+        assert "set_model_moonshot" in button_data
+
+    @pytest.mark.asyncio
+    async def test_legacy_db_seed_healing_and_user_customization_preserved(self, tmp_path):
+        """Old DB with missing siliconflow/moonshot and 7 fictional models is healed without touching user customization."""
+        db_path = tmp_path / "legacy.db"
+        # 1. Initialize DB
+        await init_db(db_path)
+
+        # 2. Simulate legacy DB state: delete siliconflow and moonshot, set fictional model names, set one custom model
+        async with get_db(db_path) as conn:
+            await conn.execute("DELETE FROM providers WHERE id IN ('siliconflow', 'moonshot');")
+            legacy_fictional = {
+                "gemini": "gemini-3.7-flash",
+                "openai": "gpt-5.6-sol",
+                "deepseek": "my-custom-deepseek-v3",  # User customized this!
+                "anthropic": "claude-5-sonnet-latest",
+                "glm": "glm-5.3",
+                "qwen": "qwen3.8-max",
+                "custom": "deepseek-v4:latest",
+            }
+            for pid, model in legacy_fictional.items():
+                await conn.execute("UPDATE providers SET chat_model = ? WHERE id = ?;", (model, pid))
+            await conn.commit()
+
+        # Verify legacy state setup
+        async with get_db(db_path) as conn:
+            provs = {p.id: p for p in await crud.list_providers(conn, mask=False)}
+            assert "siliconflow" not in provs
+            assert "moonshot" not in provs
+            assert provs["gemini"].chat_model == "gemini-3.7-flash"
+            assert provs["deepseek"].chat_model == "my-custom-deepseek-v3"
+
+            # 3. Run init_schema_and_seeds (which runs on every app startup)
+            from galgame2voice.database.migrations import init_schema_and_seeds
+            await init_schema_and_seeds(conn)
+
+            # 4. Verify healing:
+            # - Missing siliconflow and moonshot are added
+            provs_healed = {p.id: p for p in await crud.list_providers(conn, mask=False)}
+            assert "siliconflow" in provs_healed
+            assert "moonshot" in provs_healed
+            assert provs_healed["siliconflow"].is_active == 0
+            assert provs_healed["moonshot"].is_active == 0
+            assert provs_healed["siliconflow"].chat_model == PROVIDER_PRESETS["siliconflow"]["default_chat_model"]
+
+            # - Fictional models are healed to official presets
+            assert provs_healed["gemini"].chat_model == PROVIDER_PRESETS["gemini"]["default_chat_model"]
+            assert provs_healed["openai"].chat_model == PROVIDER_PRESETS["openai"]["default_chat_model"]
+            assert provs_healed["anthropic"].chat_model == PROVIDER_PRESETS["anthropic"]["default_chat_model"]
+            assert provs_healed["glm"].chat_model == PROVIDER_PRESETS["glm"]["default_chat_model"]
+            assert provs_healed["qwen"].chat_model == PROVIDER_PRESETS["qwen"]["default_chat_model"]
+            assert provs_healed["custom"].chat_model == PROVIDER_PRESETS["custom"]["default_chat_model"]
+
+            # - User customization is NOT overwritten
+            assert provs_healed["deepseek"].chat_model == "my-custom-deepseek-v3"
+
+    @pytest.mark.asyncio
+    async def test_update_settings_active_provider_unseeded_preset(self, tmp_path):
+        """Updating active_provider_id to an unseeded preset creates and activates it safely."""
+        db_path = tmp_path / "settings_prov.db"
+        await init_db(db_path)
+
+        async with get_db(db_path) as conn:
+            # Force remove siliconflow to simulate unseeded state
+            await conn.execute("DELETE FROM providers WHERE id = 'siliconflow';")
+            await conn.commit()
+
+            # Now update settings to activate siliconflow (testing case-insensitivity as well)
+            updated_settings = await crud.update_settings(conn, SettingsUpdate(active_provider_id="SiliconFlow"))
+
+            # Must not be None!
+            active_raw = await crud.get_active_provider_raw(conn)
+            assert active_raw is not None
+            assert active_raw.id == "siliconflow"
+            assert active_raw.is_active == 1
+            assert updated_settings.active_provider_id == "siliconflow"
+
+    @pytest.mark.asyncio
+    async def test_empty_chat_model_falls_back_to_preset_default_not_gpt4omini(self, tmp_path):
+        """When provider chat_model is empty/blank in DB, ChatService uses preset default_chat_model, not gpt-4o-mini."""
+        db_path = tmp_path / "empty_model.db"
+        await init_db(db_path)
+
+        async with get_db(db_path) as conn:
+            # Set deepseek as active with empty chat_model
+            await conn.execute("UPDATE providers SET is_active = 0;")
+            await conn.execute("UPDATE providers SET is_active = 1, chat_model = '' WHERE id = 'deepseek';")
+            await conn.execute("UPDATE settings SET active_provider_id = 'deepseek' WHERE id = 1;")
+            await conn.commit()
+
+        service = ChatService(db_path=db_path)
+        adapter, model_name, provider_id = await service.get_active_llm_adapter()
+
+        assert provider_id == "deepseek"
+        assert model_name == "deepseek-chat"
+        assert model_name != "gpt-4o-mini"
+
+        # Test xai with whitespace chat_model
+        async with get_db(db_path) as conn:
+            await conn.execute("UPDATE providers SET is_active = 0;")
+            await conn.execute("UPDATE providers SET is_active = 1, chat_model = '   ' WHERE id = 'xai';")
+            await conn.execute("UPDATE settings SET active_provider_id = 'xai' WHERE id = 1;")
+            await conn.commit()
+
+        adapter, model_name, provider_id = await service.get_active_llm_adapter()
+        assert provider_id == "xai"
+        assert model_name == "grok-3"
+        assert model_name != "gpt-4o-mini"
+
+        # Test moonshot with empty chat_model
+        async with get_db(db_path) as conn:
+            await conn.execute("UPDATE providers SET is_active = 0;")
+            await conn.execute("UPDATE providers SET is_active = 1, chat_model = '' WHERE id = 'moonshot';")
+            await conn.execute("UPDATE settings SET active_provider_id = 'moonshot' WHERE id = 1;")
+            await conn.commit()
+
+        adapter, model_name, provider_id = await service.get_active_llm_adapter()
+        assert provider_id == "moonshot"
+        assert model_name == "moonshot-v1-32k"
+        assert model_name != "gpt-4o-mini"
+
+        # Test custom non-preset provider with empty chat_model gracefully falls back to gpt-4o-mini
+        async with get_db(db_path) as conn:
+            await conn.execute(
+                "INSERT INTO providers (id, name, api_base_url, api_key, chat_model, is_active) "
+                "VALUES ('custom_unknown', 'My Unknown Provider', 'https://example.com/v1', 'key', '', 1);"
+            )
+            await conn.execute("UPDATE providers SET is_active = 0 WHERE id != 'custom_unknown';")
+            await conn.execute("UPDATE settings SET active_provider_id = 'custom_unknown' WHERE id = 1;")
+            await conn.commit()
+
+        adapter, model_name, provider_id = await service.get_active_llm_adapter()
+        assert provider_id == "custom_unknown"
+        assert model_name == "gpt-4o-mini"

@@ -133,6 +133,12 @@ async def update_settings(conn: aiosqlite.Connection, updates: SettingsUpdate) -
     }
     if update_dict.keys() - allowed_columns:
         raise ValueError("Unsupported settings update columns")
+    if "active_provider_id" in update_dict and update_dict["active_provider_id"]:
+        from galgame2voice.adapters.registry import get_provider_preset
+
+        raw_pid = str(update_dict["active_provider_id"]).strip()
+        preset = get_provider_preset(raw_pid)
+        update_dict["active_provider_id"] = preset["id"] if preset else raw_pid
     for k, v in update_dict.items():
         if k == "telegram_bot_token":
             if v is not None and not is_masked_key(str(v)):
@@ -171,6 +177,26 @@ async def update_settings(conn: aiosqlite.Connection, updates: SettingsUpdate) -
 
             if "active_provider_id" in update_dict and update_dict["active_provider_id"]:
                 prov_id = str(update_dict["active_provider_id"]).strip()
+                from galgame2voice.adapters.registry import get_provider_preset
+
+                preset = get_provider_preset(prov_id)
+                if preset:
+                    prov_id = preset["id"]
+                    await conn.execute(
+                        """
+                        INSERT OR IGNORE INTO providers (
+                            id, name, api_base_url, api_key, chat_model, stt_model, is_active, custom_headers, reasoning_effort
+                        ) VALUES (?, ?, ?, '', ?, ?, 0, '{}', ?);
+                        """,
+                        (
+                            preset["id"],
+                            preset["name"],
+                            preset.get("default_base_url", ""),
+                            preset.get("default_chat_model", ""),
+                            preset.get("default_stt_model", ""),
+                            preset.get("default_reasoning_effort"),
+                        ),
+                    )
                 await conn.execute("UPDATE providers SET is_active = 0;")
                 await conn.execute("UPDATE providers SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?;", (prov_id,))
             if "active_voice_profile_id" in update_dict:

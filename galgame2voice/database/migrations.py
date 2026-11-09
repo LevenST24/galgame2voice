@@ -18,12 +18,24 @@ from galgame2voice.database.session import (
     set_schema_version,
 )
 from galgame2voice.security.crypto import MasterKeyError, encrypt_secret, upgrade_secret_encryption
+from galgame2voice.adapters.registry import PROVIDER_PRESETS
 
 logger = logging.getLogger("galgame2voice.database.migrations")
 
 # Compatibility exports for existing integrations; not used to seed new databases.
 _DEFAULT_REF_AUDIO = "audio/references/natsume/gentle.ogg"
 _DEFAULT_REF_TEXT = "とりあえず、今日見たことは忘れて、わかった?"
+
+# Legacy placeholder model names seeded in earlier versions that do not exist upstream
+LEGACY_FICTIONAL_CHAT_MODELS: dict[str, str] = {
+    "gemini": "gemini-3.7-flash",
+    "openai": "gpt-5.6-sol",
+    "deepseek": "deepseek-v4-pro",
+    "anthropic": "claude-5-sonnet-latest",
+    "glm": "glm-5.3",
+    "qwen": "qwen3.8-max",
+    "custom": "deepseek-v4:latest",
+}
 
 # ==================== Schema Versioning & Migrations ====================
 
@@ -291,21 +303,24 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
     count_row = await cursor.fetchone()
     count = count_row[0] if count_row else 0
     if count == 0:
-        presets = [
-            ("gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.7-flash", "", 1),
-            ("openai", "OpenAI", "https://api.openai.com/v1", "gpt-5.6-sol", "whisper-1", 0),
-            ("deepseek", "DeepSeek", "https://api.deepseek.com", "deepseek-v4-pro", "", 0),
-            ("anthropic", "Anthropic Claude", "https://api.anthropic.com/v1", "claude-5-sonnet-latest", "", 0),
-            ("xai", "xAI (Grok)", "https://api.x.ai/v1", "grok-3", "", 0),
-            ("glm", "智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-5.3", "", 0),
-            ("qwen", "通义千问 (Qwen)", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.8-max", "qwen-audio-asr", 0),
-            ("custom", "自定义 / 本地模型 (Ollama / vLLM)", "http://127.0.0.1:11434/v1", "deepseek-v4:latest", "", 0),
-        ]
-        for p in presets:
-            await conn.execute("""
-                INSERT OR IGNORE INTO providers (id, name, api_base_url, api_key, chat_model, stt_model, is_active, custom_headers)
-                VALUES (?, ?, ?, '', ?, ?, ?, '{}');
-            """, p)
+        for p_id, preset in PROVIDER_PRESETS.items():
+            is_active = 1 if p_id == "gemini" else 0
+            await conn.execute(
+                """
+                INSERT OR IGNORE INTO providers (
+                    id, name, api_base_url, api_key, chat_model, stt_model, is_active, custom_headers, reasoning_effort
+                ) VALUES (?, ?, ?, '', ?, ?, ?, '{}', ?);
+                """,
+                (
+                    preset["id"],
+                    preset["name"],
+                    preset.get("default_base_url", ""),
+                    preset.get("default_chat_model", ""),
+                    preset.get("default_stt_model", ""),
+                    is_active,
+                    preset.get("default_reasoning_effort"),
+                ),
+            )
 
     # Seed Settings
     cursor = await conn.execute("SELECT COUNT(*) FROM settings WHERE id = 1;")
@@ -636,6 +651,40 @@ async def init_schema_and_seeds(conn: aiosqlite.Connection) -> None:
         raise
     except Exception as exc:
         logger.debug("Could not auto-generate missing console token in init_schema_and_seeds: %s", exc)
+
+    # Ensure all built-in provider presets exist in the providers table (e.g. siliconflow, moonshot for older DBs)
+    try:
+        for preset in PROVIDER_PRESETS.values():
+            await conn.execute(
+                """
+                INSERT OR IGNORE INTO providers (
+                    id, name, api_base_url, api_key, chat_model, stt_model, is_active, custom_headers, reasoning_effort
+                ) VALUES (?, ?, ?, '', ?, ?, 0, '{}', ?);
+                """,
+                (
+                    preset["id"],
+                    preset["name"],
+                    preset.get("default_base_url", ""),
+                    preset.get("default_chat_model", ""),
+                    preset.get("default_stt_model", ""),
+                    preset.get("default_reasoning_effort"),
+                ),
+            )
+
+        # Heal legacy fictional chat_model placeholders to official presets
+        for p_id, fake_model in LEGACY_FICTIONAL_CHAT_MODELS.items():
+            preset = PROVIDER_PRESETS.get(p_id)
+            if preset and preset.get("default_chat_model"):
+                await conn.execute(
+                    """
+                    UPDATE providers
+                    SET chat_model = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND TRIM(chat_model) = ?;
+                    """,
+                    (preset["default_chat_model"], p_id, fake_model),
+                )
+    except Exception as exc:
+        logger.debug("Provider presets sync during schema init skipped: %s", exc)
 
     # Auto-heal missing or broken reference audio paths across existing voice profiles
     try:
