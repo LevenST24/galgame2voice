@@ -41,6 +41,42 @@ test('provider overload and endpoint 404 diagnostics show specific titles', () =
   assert.equal(model404.title, '模型名称不存在 (HTTP 404)');
 });
 
+// 以下 error / diagnostic 文案取自后端 format_provider_error() 的真实输出：
+// 连接测试失败时后端总会带上诊断，所以这里走的是有诊断的分支。
+const GENERIC_PROVIDER_GUIDE = '请检查 Base URL 地址、API Key 凭据以及模型名称配置是否正确。';
+
+test('provider test diagnosis does not read auth keywords from the generic backend guidance', () => {
+  const gemini400 = formatProviderDiagnostic('gemini',
+    '提供商调用异常: Error code: 400 - [{"error": {"code": 400, "message": "Invalid JSON payload received. Unknown name \\"foo\\": Cannot find field.", "status": "INVALID_ARGUMENT"}}]',
+    GENERIC_PROVIDER_GUIDE);
+  assert.equal(gemini400.title, '连通性诊断提示');
+  assert.equal(gemini400.guidance, GENERIC_PROVIDER_GUIDE);
+
+  const xai400 = formatProviderDiagnostic('xai',
+    '提供商调用异常: Error code: 400 - {"code": "Client specified an invalid argument", "error": "This model\'s maximum prompt length is 131072 but the request contains 140000 tokens."}',
+    GENERIC_PROVIDER_GUIDE);
+  assert.equal(xai400.title, '连通性诊断提示');
+});
+
+test('provider test diagnosis matches 402 only as a whole status code', () => {
+  const server500 = formatProviderDiagnostic('openai',
+    '提供商调用异常: Error code: 500 - {"error": {"message": "The server had an error while processing your request. request_id=req_840215", "type": "server_error"}}',
+    GENERIC_PROVIDER_GUIDE);
+  assert.equal(server500.title, '连通性诊断提示');
+});
+
+test('provider test diagnosis still recognises genuine auth, balance and rate-limit failures', () => {
+  const key = formatProviderDiagnostic('openai', 'OpenAI API Key 身份验证失败 (401 Unauthorized)',
+    '身份验证失败。请检查输入的 sk- 密钥是否完整无误，或在 OpenAI 控制台 (https://platform.openai.com/api-keys) 重新创建 Secret Key。');
+  assert.equal(key.title, 'API Key 凭据鉴权未通过');
+  const balance = formatProviderDiagnostic('deepseek', '账户可用余额不足 (402 Payment Required)',
+    '当前提供商账户可用余额或额度已耗尽（402 Payment Required）。请前往对应模型服务商控制台充值或检查账单。');
+  assert.equal(balance.title, '账户余额或额度不足 (HTTP 402)');
+  const limited = formatProviderDiagnostic('openai', 'OpenAI 请求频率超限 (429 Rate Limit)',
+    '请求速率超出了当前账户层级的 RPM/TPM 限制。请稍候重试，或在会话设置中减小单次生成的 max_tokens。');
+  assert.equal(limited.title, '请求受限或额度不足 (429)');
+});
+
 function setup(t, options = {}) {
   const d = fakeDocument();
   globalThis.document = d;

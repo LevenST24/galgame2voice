@@ -13,10 +13,12 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
   const pid = (providerId || '').toLowerCase();
   const msg = String(rawMessage || '');
   const lower = (msg + ' ' + (backendDiagnostic || '')).toLowerCase();
+  // 鉴权关键词只看错误标题：后端的建议文本常泛泛提到 API Key，不能据此判成鉴权失败。
+  const head = msg.toLowerCase();
 
   const isParamError = /400/.test(lower) && /reasoning_effort|thinking level|thinking_?config/.test(lower) && /not supported|unsupported|invalid|unknown|unrecognized|not allowed|not permitted/.test(lower);
   const isContextLength = /context_length_exceeded|maximum context length|context length|context_window|context.*limit|超出.*上下文|上下文.*(?:超出|超长|超限|限制)/.test(lower) || (/400/.test(lower) && /上下文/.test(lower));
-  const isInsufficientBalance = /402/.test(lower) || (!/429/.test(lower) && /insufficient balance|余额不足|账户余额/.test(lower));
+  const isInsufficientBalance = /\b402\b|payment required/.test(lower) || (!/\b429\b/.test(lower) && /insufficient balance|余额不足|账户余额/.test(lower));
   const hasAuthNegation = /(?:无需|不必|不用|不需要)(?:修改|更换|重新|更改|检查|重置|配置|调整|更新|变更)?.*(?:api\s*key|key|密钥|凭据|鉴权)/i.test(lower) || /无需(?:修改|更换|重新配置)/.test(lower);
 
   // 若后端已有结构化诊断，优先结合提供商特色进行润色
@@ -38,7 +40,7 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
       title = '网络连接失败';
     } else if (lower.includes('503') || lower.includes('529') || /overload|过载|繁忙/.test(lower)) {
       title = '服务暂时繁忙 (503/529)';
-    } else if (lower.includes('429') || lower.includes('quota') || lower.includes('rate')) {
+    } else if (/\b429\b/.test(lower) || lower.includes('quota') || lower.includes('rate')) {
       title = '请求受限或额度不足 (429)';
     } else if (lower.includes('403')) {
       title = '访问受限或权限不足 (403)';
@@ -47,7 +49,7 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
       lower.includes('unauthorized') ||
       lower.includes('invalid api key') ||
       lower.includes('incorrect api key') ||
-      ((lower.includes('key') || lower.includes('auth') || lower.includes('密钥') || lower.includes('鉴权')) && !hasAuthNegation)
+      ((head.includes('key') || head.includes('auth') || head.includes('密钥') || head.includes('鉴权') || head.includes('身份验证')) && !hasAuthNegation)
     ) {
       title = 'API Key 凭据鉴权未通过';
     } else if (lower.includes('404') || ((lower.includes('model') || lower.includes('模型')) && /not found|not_found|does not exist|不存在|找不到|未找到|no such model|unknown model/.test(lower))) {
