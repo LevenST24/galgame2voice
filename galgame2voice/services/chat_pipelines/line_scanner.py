@@ -7,12 +7,42 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import re
 from typing import Any
 
 EMOTIONS = ("gentle", "happy", "shy", "tsundere", "cool", "sad", "angry")
 MOTIONS = ("nod", "bounce", "startle", "sigh", "fidget", "head-shake", "lean-in", "step-back")
 MOVES = ("approach", "retreat", "closeup", "left", "right", "center")
 FX = ("sweat", "anger", "heart", "sparkle", "question", "exclamation")
+
+_RE_THINK_OPEN_MATCH = re.compile(r"^<\s*(think|thought|reasoning)\b", re.IGNORECASE)
+_RE_THINK_CLOSE_PREFIX = re.compile(r"^</\s*(think|thought|reasoning)\b", re.IGNORECASE)
+_RE_THINK_CLOSE_MATCH = re.compile(r"^</\s*(think|thought|reasoning)\b[^>]*>", re.IGNORECASE)
+_RE_THINK_SELF_CLOSING = re.compile(r"^<\s*(think|thought|reasoning)\b[^>]*?/\s*>", re.IGNORECASE)
+
+
+def _is_think_prefix(s: str) -> bool:
+    s_clean = s.lstrip().lower()
+    if not s_clean.startswith("<"):
+        return False
+    tag_part = s_clean[1:].lstrip()
+    if not tag_part:
+        return True
+    return any(t.startswith(tag_part) for t in ("think", "thought", "reasoning")) or bool(
+        _RE_THINK_OPEN_MATCH.match(s)
+    )
+
+
+def _is_think_close_prefix(s: str) -> bool:
+    s_clean = s.lstrip().lower()
+    if not s_clean.startswith("</"):
+        return False
+    tag_part = s_clean[2:].lstrip()
+    if not tag_part:
+        return True
+    return any(t.startswith(tag_part) for t in ("think", "thought", "reasoning")) or bool(
+        _RE_THINK_CLOSE_PREFIX.match(s)
+    )
 
 
 @dataclass
@@ -206,6 +236,10 @@ class LineScanner:
         self._other_obj_depth: int = 0
         self._other_arr_depth: int = 0
 
+        # Thinking tag tracking in _phase == 0
+        self._think_depth: int = 0
+        self._tag_pending: str = ""
+
     def feed(self, chunk: str) -> list[ScannedLine]:
         """
         Feeds an incoming stream token chunk.
@@ -223,7 +257,65 @@ class LineScanner:
                 continue
 
             if self._phase == 0:
-                # BEFORE_ROOT: Look for opening '{'
+                # BEFORE_ROOT: Handle thinking tags and look for opening '{'
+                if self._think_depth > 0:
+                    # Inside a thinking block: look for tags e.g. </think> or nested <thought>
+                    if c == "<":
+                        self._tag_pending = "<"
+                        continue
+                    if self._tag_pending:
+                        self._tag_pending += c
+                        if c == ">":
+                            if _RE_THINK_CLOSE_MATCH.match(self._tag_pending):
+                                self._think_depth = max(0, self._think_depth - 1)
+                            elif _RE_THINK_SELF_CLOSING.match(self._tag_pending):
+                                pass
+                            elif _RE_THINK_OPEN_MATCH.match(self._tag_pending):
+                                self._think_depth += 1
+                            self._tag_pending = ""
+                            continue
+                        if not _is_think_prefix(self._tag_pending) and not _is_think_close_prefix(self._tag_pending):
+                            self._tag_pending = ""
+                        continue
+                    # Ignore all characters (including '{') while inside thinking block
+                    continue
+
+                # Outside thinking block in phase 0:
+                if c == "<":
+                    self._tag_pending = "<"
+                    continue
+                if self._tag_pending:
+                    self._tag_pending += c
+                    if c == ">":
+                        if _RE_THINK_SELF_CLOSING.match(self._tag_pending):
+                            self._tag_pending = ""
+                            continue
+                        if _RE_THINK_OPEN_MATCH.match(self._tag_pending):
+                            self._think_depth += 1
+                            self._tag_pending = ""
+                            continue
+                        # Not an opening think tag (e.g. </think> orphaned or <p>)
+                        pending = self._tag_pending
+                        self._tag_pending = ""
+                        if "{" in pending:
+                            self._phase = 1
+                            continue
+                    elif c == "{":
+                        if _is_think_prefix(self._tag_pending):
+                            # '{' inside tag attribute (e.g. <think metadata="{...}">)
+                            continue
+                        self._tag_pending = ""
+                        self._phase = 1
+                        continue
+                    elif not _is_think_prefix(self._tag_pending):
+                        pending = self._tag_pending
+                        self._tag_pending = ""
+                        if "{" in pending:
+                            self._phase = 1
+                            continue
+                    continue
+
+                # Normal phase 0 character check
                 if c == "{":
                     self._phase = 1
                 continue
@@ -509,7 +601,18 @@ class LineScanner:
         if self._phase == 3:
             truncated = False
         elif self._phase == 0:
-            truncated = False
+            tag_is_think = False
+            if self._tag_pending:
+                tag_part = self._tag_pending.lstrip().lower()[1:].lstrip()
+                tag_is_think = bool(tag_part) and (
+                    any(t.startswith(tag_part) for t in ("think", "thought", "reasoning"))
+                    or bool(_RE_THINK_OPEN_MATCH.match(self._tag_pending))
+                )
+            if self._think_depth > 0 or tag_is_think:
+                truncated = True
+                self.issues.append("stream truncated inside thinking block")
+            else:
+                truncated = False
         else:
             truncated = True
             self.issues.append("stream truncated before root object closed")

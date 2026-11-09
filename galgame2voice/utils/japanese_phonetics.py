@@ -197,6 +197,45 @@ def is_spoken_dialogue_inside_brackets(content: str) -> bool:
     return True
 
 
+_RE_REASONING_CLOSED = re.compile(
+    r"<\s*(think|thought|reasoning)\b(?:[^>]*?/\s*>|[^>]*>.*?</\s*\1\s*>)",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_RE_REASONING_UNCLOSED = re.compile(
+    r"<\s*(think|thought|reasoning)\b.*$",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_RE_REASONING_PREFIX_PENDING = re.compile(
+    r"<\s*([a-zA-Z]{1,9})$",
+)
+_RE_REASONING_ORPHAN_CLOSE = re.compile(
+    r"</\s*(think|thought|reasoning)\b[^>]*>",
+    flags=re.IGNORECASE,
+)
+
+
+def strip_reasoning_tags(text: str) -> str:
+    """
+    Strips closed <think>...</think>, <thought>...</thought>, <reasoning>...</reasoning>
+    blocks, trailing unclosed think blocks, pending prefixes, and orphaned closing tags from text.
+    """
+    if not text:
+        return ""
+    cleaned = text
+    prev = None
+    while prev != cleaned:
+        prev = cleaned
+        cleaned = _RE_REASONING_CLOSED.sub("", cleaned)
+    cleaned = _RE_REASONING_UNCLOSED.sub("", cleaned)
+    m_pfx = _RE_REASONING_PREFIX_PENDING.search(cleaned)
+    if m_pfx:
+        pfx = m_pfx.group(1).lower()
+        if any(tag.startswith(pfx) for tag in ("think", "thought", "reasoning")):
+            cleaned = cleaned[: m_pfx.start()]
+    cleaned = _RE_REASONING_ORPHAN_CLOSE.sub("", cleaned)
+    return cleaned
+
+
 def clean_japanese_parentheses(text: str, max_passes: int = 5) -> str:
     """
     Strips stage cues and action directions enclosed in fullwidth （...）, ASCII (...),
@@ -208,7 +247,9 @@ def clean_japanese_parentheses(text: str, max_passes: int = 5) -> str:
     if not text:
         return ""
 
-    cleaned = text
+    cleaned = strip_reasoning_tags(text)
+    if not cleaned:
+        return ""
 
     # 1. Clean Markdown action asterisks e.g. *sighs*, *blushes*, *叹气*, *脸红*
     def _replace_asterisk(m: re.Match) -> str:
@@ -452,17 +493,21 @@ def normalize_galgame_names_and_readings(text: str) -> str:
 def normalize_japanese_for_tts(text: str) -> str:
     """
     Complete pre-synthesis Japanese text normalization pipeline:
-    1. Replaces inline furigana brackets 漢字（ふりがな） with phonetic kana.
-    2. Strips stage cues and bracketed action directions via clean_japanese_parentheses.
-    3. Substitutes known Galgame proper names and vocatives with canonical kana.
+    1. Strips thinking/reasoning tags via strip_reasoning_tags.
+    2. Replaces inline furigana brackets 漢字（ふりがな） with phonetic kana.
+    3. Strips stage cues and bracketed action directions via clean_japanese_parentheses.
+    4. Substitutes known Galgame proper names and vocatives with canonical kana.
     """
     if not text:
         return ""
-    # 1. Furigana first before brackets might get touched
-    s = normalize_japanese_furigana(text)
-    # 2. Stage cues & bracket cleaner
+    s = strip_reasoning_tags(text)
+    if not s:
+        return ""
+    # 2. Furigana first before brackets might get touched
+    s = normalize_japanese_furigana(s)
+    # 3. Stage cues & bracket cleaner
     s = clean_japanese_parentheses(s)
-    # 3. Canonical name phonetics
+    # 4. Canonical name phonetics
     s = normalize_galgame_names_and_readings(s)
     return s.strip()
 
@@ -477,6 +522,7 @@ __all__ = [
     "CHINESE_STAGE_MODIFIERS_PATTERN",
     "STAGE_CUE_EMOTION_MAP",
     "is_spoken_dialogue_inside_brackets",
+    "strip_reasoning_tags",
     "clean_japanese_parentheses",
     "extract_stage_directions_and_emotion",
     "normalize_japanese_furigana",
