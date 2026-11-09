@@ -15,28 +15,41 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
   const lower = (msg + ' ' + (backendDiagnostic || '')).toLowerCase();
 
   const isParamError = /400/.test(lower) && /reasoning_effort|thinking level|thinking_?config/.test(lower) && /not supported|unsupported|invalid|unknown|unrecognized|not allowed|not permitted/.test(lower);
+  const isContextLength = /context_length_exceeded|maximum context length|context length|context_window|context.*limit|超出.*上下文|上下文.*(?:超出|超长|超限|限制)/.test(lower) || (/400/.test(lower) && /上下文/.test(lower));
+  const isInsufficientBalance = /402/.test(lower) || (!/429/.test(lower) && /insufficient balance|余额不足|账户余额/.test(lower));
+  const hasAuthNegation = /(?:无需|不必|不用|不需要)(?:修改|更换|重新|更改|检查|重置|配置|调整|更新|变更)?.*(?:api\s*key|key|密钥|凭据|鉴权)/i.test(lower) || /无需(?:修改|更换|重新配置)/.test(lower);
 
   // 若后端已有结构化诊断，优先结合提供商特色进行润色
   if (backendDiagnostic && backendDiagnostic.trim()) {
     let title = '连通性诊断提示';
     if (isParamError) {
       title = '模型参数不受支持 (HTTP 400)';
+    } else if (isContextLength) {
+      title = '对话上下文超出长度限制 (HTTP 400)';
+    } else if (isInsufficientBalance) {
+      title = '账户余额或额度不足 (HTTP 402)';
     } else if (/dns error|域名解析失败|getaddrinfo failed|name resolution/.test(lower)) {
       title = '服务器域名解析失败';
     } else if (/timeout|timed out|连接超时/.test(lower)) {
       title = '网络连接超时';
     } else if (/connection refused|连接被拒绝/.test(lower)) {
       title = '连接被拒绝';
-    } else if (/connecterror|connection failed|网络连接失败/.test(lower)) {
+    } else if (/connecterror|connection failed|网络连接失败|connection reset|中途断开|连接中断/.test(lower)) {
       title = '网络连接失败';
-    } else if (lower.includes('401') || lower.includes('key') || lower.includes('auth')) {
-      title = 'API Key 凭据鉴权未通过';
+    } else if (lower.includes('503') || lower.includes('529') || /overload|过载|繁忙/.test(lower)) {
+      title = '服务暂时繁忙 (503/529)';
     } else if (lower.includes('429') || lower.includes('quota') || lower.includes('rate')) {
       title = '请求受限或额度不足 (429)';
     } else if (lower.includes('403')) {
       title = '访问受限或权限不足 (403)';
-    } else if (lower.includes('503') || lower.includes('529') || /overload|过载|繁忙/.test(lower)) {
-      title = '服务暂时繁忙 (503/529)';
+    } else if (
+      lower.includes('401') ||
+      lower.includes('unauthorized') ||
+      lower.includes('invalid api key') ||
+      lower.includes('incorrect api key') ||
+      ((lower.includes('key') || lower.includes('auth') || lower.includes('密钥') || lower.includes('鉴权')) && !hasAuthNegation)
+    ) {
+      title = 'API Key 凭据鉴权未通过';
     } else if (lower.includes('404') || ((lower.includes('model') || lower.includes('模型')) && /not found|not_found|does not exist|不存在|找不到|未找到|no such model|unknown model/.test(lower))) {
       title = /model|模型/.test(lower) && !/404 not found|page not found|endpoint|路径/.test(lower)
         ? '模型名称不存在 (HTTP 404)'
@@ -54,21 +67,48 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
   if (isParamError) {
     title = '模型参数不受支持 (HTTP 400)';
     guidance = `请求参数与所选模型不兼容（如思考强度 reasoning_effort）。请尝试将「思考强度」设为默认或调整模型配置。原始信息: ${msg}`;
+  } else if (isContextLength) {
+    title = '对话上下文超出长度限制 (HTTP 400)';
+    guidance = '单次对话上下文超出模型最大限制。请尝试新建会话、清理历史消息或调小会话携带的历史轮数。通常无需修改 API Key。';
+  } else if (isInsufficientBalance) {
+    title = '账户余额或额度不足 (HTTP 402)';
+    if (pid === 'deepseek') {
+      guidance = 'DeepSeek 账户余额不足：请前往 DeepSeek 开放平台 (https://platform.deepseek.com) 检查并充值账户余额。';
+    } else if (pid === 'moonshot') {
+      guidance = 'Moonshot 账户余额不足：请前往 Moonshot 开放平台 (https://platform.moonshot.cn) 检查并充值账户余额。';
+    } else if (pid === 'xai') {
+      guidance = 'xAI 积分不足：请前往 xAI 控制台 (https://console.x.ai) 充值积分。';
+    } else {
+      guidance = 'HTTP 402 Payment Required：账户可用余额或额度已耗尽，请前往对应模型服务商控制台充值。';
+    }
   }
   // 1. 401 密钥鉴权失败
   else if (
-    lower.includes('401') ||
-    lower.includes('invalid api key') ||
-    lower.includes('authentication failed') ||
-    lower.includes('unauthorized') ||
-    lower.includes('incorrect api key') ||
-    (lower.includes('400') && (lower.includes('api_key') || lower.includes('api key') || pid === 'xai' || pid === 'gemini'))
+    !hasAuthNegation && (
+      lower.includes('401') ||
+      lower.includes('invalid api key') ||
+      lower.includes('authentication failed') ||
+      lower.includes('unauthorized') ||
+      lower.includes('incorrect api key') ||
+      (lower.includes('400') && (
+        lower.includes('api_key') ||
+        lower.includes('api key') ||
+        lower.includes('incorrect api key') ||
+        lower.includes('invalid api key') ||
+        lower.includes('api key not valid') ||
+        lower.includes('unauthorized') ||
+        lower.includes('密钥') ||
+        lower.includes('鉴权')
+      ))
+    )
   ) {
     title = 'API Key 凭据无效或未授权 (HTTP 400/401)';
     if (pid === 'xai') {
       guidance = 'xAI (Grok) 密钥认证失败：请检查输入的 API Key 是否正确（通常以 xai- 开头），或前往 xAI 开发者控制台 (https://console.x.ai) 确认密钥启用状态与额度绑定。';
     } else if (pid === 'gemini') {
       guidance = 'Google Gemini 认证失败：请检查 API Key 是否有效，或前往 Google AI Studio (https://aistudio.google.com) 重新申领新密钥。';
+    } else if (pid === 'moonshot') {
+      guidance = 'Moonshot 月之暗面认证失败：请前往 Moonshot 开放平台 (https://platform.moonshot.cn) 检查 API Key 与账户有效性。';
     } else if (pid === 'deepseek') {
       guidance = 'DeepSeek 认证失败：请前往 DeepSeek 开放平台 (https://platform.deepseek.com) 检查 API Key 与账户可用余额。';
     } else if (pid === 'anthropic') {
@@ -95,6 +135,8 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
     title = '请求受限或账户额度耗尽 (HTTP 429)';
     if (pid === 'xai') {
       guidance = 'xAI (Grok) 速率超限或余额不足：请前往 xAI 控制台 (https://console.x.ai) 检查账单与充值状态。';
+    } else if (pid === 'moonshot') {
+      guidance = 'Moonshot 速率超限或账户额度不足：请前往 Moonshot 开放平台 (https://platform.moonshot.cn) 检查并发配额与账户余额。';
     } else {
       guidance = 'HTTP 429 Too Many Requests：该提供商触发了并发频率上限或账户余额不足，请前往对应服务商控制台查看账户账单与配额。';
     }
@@ -135,7 +177,7 @@ export const BUILTIN_PRESETS = [
   {
     id: 'gemini',
     name: 'Google Gemini',
-    default_base_url: 'https://generativelanguage.googleapis.com',
+    default_base_url: 'https://generativelanguage.googleapis.com/v1beta/openai',
     default_chat_model: 'gemini-2.5-flash',
     preset_models: ['gemini-2.5-flash', 'gemini-2.5-pro'],
     default_reasoning_effort: 'low',
@@ -152,7 +194,7 @@ export const BUILTIN_PRESETS = [
   {
     id: 'anthropic',
     name: 'Anthropic Claude',
-    default_base_url: 'https://api.anthropic.com',
+    default_base_url: 'https://api.anthropic.com/v1',
     default_chat_model: 'claude-3-7-sonnet-20250219',
     preset_models: [
       'claude-3-7-sonnet-20250219',
@@ -204,6 +246,14 @@ export const BUILTIN_PRESETS = [
     default_chat_model: 'qwen-max-latest',
     preset_models: ['qwen-max-latest', 'qwen-plus-latest', 'qwen-turbo-latest'],
     description: '阿里云百炼 DashScope 通义千问 Qwen Max / Plus 系列',
+  },
+  {
+    id: 'moonshot',
+    name: 'Moonshot 月之暗面 (Kimi)',
+    default_base_url: 'https://api.moonshot.cn/v1',
+    default_chat_model: 'moonshot-v1-32k',
+    preset_models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
+    description: '月之暗面 Kimi 官方 API (moonshot-v1 长上下文系列)',
   },
   {
     id: 'custom',
