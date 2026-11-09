@@ -124,7 +124,7 @@ class TestConcurrencyAndStress:
             s = await get_settings(conn)
             assert s is not None
             providers = await list_providers(conn)
-            assert len(providers) == 8
+            assert len(providers) == 10
 
     @pytest.mark.asyncio
     async def test_concurrent_session_creation_race(self, adversarial_db):
@@ -176,7 +176,7 @@ class TestConcurrencyAndStress:
                 profiles = await list_voice_profiles(conn)
                 assert profiles == []  # First install awaits user voice setup.
                 providers = await list_providers(conn)
-                assert len(providers) == 8
+                assert len(providers) == 10
         finally:
             if os.path.exists(path):
                 os.remove(path)

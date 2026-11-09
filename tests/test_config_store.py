@@ -399,7 +399,7 @@ class TestConfigStoreCrud:
 
                 # Check Providers
                 providers = await list_providers(conn)
-                assert len(providers) == 8
+                assert len(providers) == 10
                 active_p = await get_active_provider(conn)
                 assert active_p is not None
                 assert active_p.id in ("gemini", "deepseek", "openai")
