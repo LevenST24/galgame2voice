@@ -791,14 +791,18 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
         try:
             switched = await vm.switch_active_profile(profile_id)
             if not switched:
-                warning_note = "（语音引擎离线）"
+                if getattr(vm, "last_switch_error", None) == "weights_load_failed":
+                    err_msg = "❌ 角色模型加载失败，已回滚并保持原角色"
+                else:
+                    warning_note = "（语音引擎离线）"
         except (InsufficientMemoryError, ActiveVoicePersistenceError, VoiceProfileRemoved):
             raise
         except Exception as sw_err:
             logger.debug("VoiceManager weight switch skipped: %s", sw_err)
             warning_note = "（语音引擎离线）"
 
-        await persist_active_voice_profile(profile_id, db_path=ctx.db_path)
+        if not err_msg:
+            await persist_active_voice_profile(profile_id, db_path=ctx.db_path)
     except VoiceProfileRemoved as removed:
         err_msg = str(removed)
     except InsufficientMemoryError as mem_err:
@@ -810,7 +814,8 @@ async def _handle_set_voice(ctx: _CallbackContext) -> None:
 
     if err_msg:
         if hasattr(ctx.query, "answer"):
-            await ctx.query.answer(f"⚠️ {err_msg}", show_alert=True)
+            toast = err_msg if err_msg.startswith(("⚠️", "❌")) else f"⚠️ {err_msg}"
+            await ctx.query.answer(toast, show_alert=True)
         await _edit_menu_text(ctx, build_voice_menu(db_path=ctx.db_path))
     else:
         if hasattr(ctx.query, "answer"):

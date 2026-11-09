@@ -550,6 +550,11 @@ class TelegramBotHandlers:
             try:
                 switched = await vm.switch_active_profile(profile_id)
                 if not switched:
+                    if getattr(vm, "last_switch_error", None) == "weights_load_failed":
+                        return (
+                            "GPT-SoVITS 引擎在线，但加载角色模型权重失败，已自动回滚并保持原角色。请检查该角色的权重与参考音频文件是否完整。",
+                            "",
+                        )
                     warning_note = "\n⚠️ 提示：GPT-SoVITS 语音引擎当前处于离线状态，已为您激活对话人设与好感档案。"
             except (InsufficientMemoryError, ActiveVoicePersistenceError, VoiceProfileRemoved):
                 raise
@@ -557,7 +562,7 @@ class TelegramBotHandlers:
                 logger.debug("VoiceManager weight switch skipped: %s", sw_err)
                 warning_note = "\n⚠️ 提示：GPT-SoVITS 语音引擎当前处于离线状态，已为您激活对话人设与好感档案。"
 
-            await persist_active_voice_profile(profile_id,db_path=self.db_path)
+            await persist_active_voice_profile(profile_id, db_path=self.db_path)
             return None, warning_note
         except VoiceProfileRemoved as error:
             return str(error), ""
