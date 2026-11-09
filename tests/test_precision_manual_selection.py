@@ -661,6 +661,10 @@ class TestPrecisionAPI:
             "galgame2voice.utils.hardware.detect_gpu_capability",
             lambda: (True, "Mock NVIDIA GPU", 0),
         )
+        monkeypatch.setattr(
+            "galgame2voice.routers.health._get_gpu_telemetry_cached",
+            lambda: (True, "Mock NVIDIA GPU"),
+        )
 
         async def _local_custom_resolver():
             return parse_sovits_endpoint("http://127.0.0.1:9880", source="db")
@@ -742,6 +746,10 @@ class TestPrecisionAPI:
         monkeypatch.setattr(
             "galgame2voice.utils.hardware.detect_gpu_capability",
             lambda: (True, "Mock NVIDIA GPU", 0),
+        )
+        monkeypatch.setattr(
+            "galgame2voice.routers.health._get_gpu_telemetry_cached",
+            lambda: (True, "Mock NVIDIA GPU"),
         )
 
         async def _local_custom_resolver():
