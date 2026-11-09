@@ -16,6 +16,7 @@ export class ProviderSettingsController {
     this.cachedProviders = [];
     this.cachedPresets = [];
     this.currentActiveProvider = null;
+    this.loadedProviderId = '';
     this.providersLoaded = false;
     this.providerReadError = false;
     this.providerDirty = false;
@@ -147,9 +148,12 @@ export class ProviderSettingsController {
   onProviderChange() {
     if (this.disposed) return;
     this.invalidateActiveProviderTest();
-    this.providerDirty = false;
     this.providerRevision += 1;
     this.dirtyProviderFields.clear();
+    const pid = this.dom.gProvider?.value;
+    const realId = (pid === '__custom__' || pid === 'custom') ? 'custom' : (pid || '');
+    const baselineId = this.currentActiveProvider?.id || this.loadedProviderId || '';
+    this.providerDirty = Boolean(realId && baselineId && realId !== baselineId);
     this.renderProviderForm();
   }
 
@@ -157,6 +161,9 @@ export class ProviderSettingsController {
     if (this.disposed) return;
     this.renderProviderForm(keepDraft);
     if (!keepDraft) {
+      const rawPid = this.dom.gProvider?.value;
+      const normPid = (rawPid === '__custom__' || rawPid === 'custom') ? 'custom' : (rawPid || '');
+      this.loadedProviderId = normPid || this.currentActiveProvider?.id || '';
       this.providerDirty = false;
       this.dirtyProviderFields.clear();
     }
@@ -592,6 +599,7 @@ export class ProviderSettingsController {
       if (this.disposed) return true;
 
       this.currentActiveProvider = active || { name: payload.name, chat_model: chatModel };
+      this.loadedProviderId = active?.id || pid;
       if (this.coordinator.updateBadge) this.coordinator.updateBadge();
 
       if (savedRevision === this.providerRevision && !this.disposed) {
