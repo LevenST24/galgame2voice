@@ -19,6 +19,7 @@ from galgame2voice.services.voice_resolver import VoiceContextUnavailableError
 from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.services.audio_artifacts import REPAIR_AUDIO_PREFIX, discard_repair_audio
 from galgame2voice.utils.async_tasks import cancel_and_drain
+from galgame2voice.utils.logger import describe_storage_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -148,6 +149,9 @@ async def regenerate_line(req: LineAudioRequest, request: Request, manager: Anno
         raise HTTPException(503, "音色配置暂时无法读取，请稍后重试。原音频与文字已保留。") from exc
     except Exception as exc:
         logger.warning("Single-line audio regeneration failed: %s", type(exc).__name__)
+        storage_message = describe_storage_error(exc)
+        if storage_message:
+            raise HTTPException(507, f"{storage_message}原音频与文字已保留。") from exc
         raise HTTPException(502, "这句语音暂时未能重新生成，原音频与文字已保留。请在设置中心的运行状态检查语音引擎后重试。") from exc
     published = write_started = False
     try:

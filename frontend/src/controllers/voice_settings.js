@@ -2,6 +2,7 @@
 import { state, saveState, storageChangedByAnotherPage, getActive, DEFAULT_SESSION_SETTINGS } from '../store.js';
 import { showToast } from '../ui.js';
 import { requestJson } from '../api.js';
+import { getErrorMessage } from '../request.js';
 import { persistSession } from '../session_api.js';
 
 let _dom = {};
@@ -23,6 +24,9 @@ let sessionVoiceRevision = 0;
 let voiceSwitchTail = Promise.resolve();
 let activeProfileRevision = 0;
 let voiceSelectRevision = 0;
+
+// 服务端响应里带中文说明时直接显示它（规则同 getErrorMessage）；否则返回空串，由调用处用默认文案。
+const serverMessage = e => (e?.data ? getErrorMessage(e.data, '') : '');
 // Value of the only option left when the voice list fails to load. It is not a choice:
 // saving keeps the session's binding instead of treating it as "no character".
 const VOICE_LIST_UNAVAILABLE = '__unavailable__';
@@ -605,7 +609,7 @@ export async function createCustomVoice() {
     showToast(`音色「${data.name}」已创建${binding}${note}`, note ? 'info' : 'success');
   } catch (e) {
     console.error('音色创建失败:', e);
-    showToast('音色创建失败：当前输入已保留，请检查参考音频与模型文件后重试', 'error');
+    showToast(serverMessage(e) || '音色创建失败：当前输入已保留，请检查参考音频与模型文件后重试', 'error');
   } finally {
     _dom.sCvCreate.disabled = false;
   }
@@ -698,7 +702,7 @@ export async function deleteVoiceProfile() {
     showToast(`音色「${p ? p.name : id}」已删除${bindingNote}`, bindingNote.startsWith('；') ? 'info' : 'success');
   } catch (e) {
     console.error('音色删除失败:', e);
-    showToast('音色删除失败：该音色已被保留，请稍后重试；若仍失败，请打开「运行状态」检查服务', 'error');
+    showToast(serverMessage(e) || '音色删除失败：该音色已被保留，请稍后重试；若仍失败，请打开「运行状态」检查服务', 'error');
   } finally {
     _dom.sVoiceDelete.disabled = false;
   }

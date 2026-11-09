@@ -3,6 +3,7 @@ Security-hardened logging module for galgame2voice.
 Provides zero-leakage masking filter, masking formatter, and traceback sanitization.
 """
 
+import errno
 import logging
 import logging.handlers
 import re
@@ -149,15 +150,45 @@ class MaskingFormatter(logging.Formatter):
         return MaskingFilter.sanitize(stack_text)
 
 
+DISK_FULL_MESSAGE = "本机磁盘空间不足，数据没能保存。请清理磁盘空间后重试。"
+READ_ONLY_MESSAGE = "数据目录是只读的，数据没能保存。请检查磁盘或文件夹权限后重试。"
+_DISK_FULL_TEXT = ("no space left on device", "there is not enough space on the disk", "database or disk is full", "the disk is full")
+_READ_ONLY_TEXT = ("read-only file system", "attempt to write a readonly database")
+_STORAGE_FULL_RE = re.compile(r"\b(?:winerror[:\s=]*\s*(?:112|39)|errno[:\s=]*\s*28)\b", re.IGNORECASE)
+_STORAGE_RO_RE = re.compile(r"\berrno[:\s=]*\s*30\b", re.IGNORECASE)
+
+
+def describe_storage_error(exc_or_msg: Exception | str | None) -> str | None:
+    """Return a Chinese sentence if the error means a full disk or read-only storage, else None."""
+    if exc_or_msg is None:
+        return None
+    if isinstance(exc_or_msg, OSError):
+        if exc_or_msg.errno == errno.ENOSPC or getattr(exc_or_msg, "winerror", None) in (112, 39):
+            return DISK_FULL_MESSAGE
+        if exc_or_msg.errno == errno.EROFS:
+            return READ_ONLY_MESSAGE
+    text = str(exc_or_msg).lower()
+    if _STORAGE_FULL_RE.search(text) or any(marker in text for marker in _DISK_FULL_TEXT):
+        return DISK_FULL_MESSAGE
+    if _STORAGE_RO_RE.search(text) or any(marker in text for marker in _READ_ONLY_TEXT):
+        return READ_ONLY_MESSAGE
+    return None
+
+
 def sanitize_error_detail(exc_or_msg: Exception | str | None) -> str:
     """
     Sanitizes an exception or error string before returning to client or logging.
     Guarantees no API keys, tokens, or URL query secrets are disclosed.
+    Full-disk and read-only storage errors are prefixed with a Chinese explanation.
     """
     if exc_or_msg is None:
         return ""
     raw_text = str(exc_or_msg)
-    return MaskingFilter.sanitize(raw_text)
+    sanitized = MaskingFilter.sanitize(raw_text)
+    storage_message = describe_storage_error(exc_or_msg)
+    if storage_message and not sanitized.startswith(storage_message):
+        return f"{storage_message}（{sanitized}）"
+    return sanitized
 
 
 def setup_logger(
