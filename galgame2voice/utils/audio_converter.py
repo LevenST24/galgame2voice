@@ -49,16 +49,27 @@ def _find_ffmpeg_in_python_env(exe_name: str, scripts_dir: str) -> str | None:
 
 def _find_ffmpeg_in_project_dirs(exe_name: str) -> str | None:
     """Checks project root and bundled tool directories for ffmpeg binary."""
+    from galgame2voice.runtime_paths import get_install_root
+
+    candidate_roots: list[Path] = [get_install_root()]
     try:
         from galgame2voice.config import get_settings
-        root = get_settings().project_root
-    except Exception:
-        root = Path(__file__).resolve().parent.parent.parent
 
-    for candidate_dir in ("tools", "runtime", "bin", "ffmpeg"):
-        bundled = root / candidate_dir / exe_name
-        if bundled.is_file():
-            return str(bundled.resolve())
+        candidate_roots.append(get_settings().project_root)
+    except Exception:
+        pass
+
+    seen: set[Path] = set()
+    for root in candidate_roots:
+        resolved_root = Path(root).resolve()
+        if resolved_root in seen:
+            continue
+        seen.add(resolved_root)
+
+        for candidate_dir in ("tools", "runtime", "bin", "ffmpeg"):
+            bundled = resolved_root / candidate_dir / exe_name
+            if bundled.is_file():
+                return str(bundled.resolve())
     return None
 
 
@@ -69,12 +80,13 @@ def find_ffmpeg(custom_path: str | None = None) -> str | None:
     1. custom_path (if provided and resolvable)
     2. Cached path from previous discovery
     3. Environment variable FFMPEG_PATH or FFMPEG_BIN
-    4. System PATH via shutil.which("ffmpeg")
-    5. Local virtualenv (sys.prefix/Scripts/ffmpeg.exe or bin/ffmpeg)
-    6. Bundled / project tools directories (tools/ffmpeg, runtime/ffmpeg, etc.)
+    4. Project root & bundled tools directories (tools/ffmpeg, runtime/ffmpeg, etc.)
+    5. Local isolated virtualenv (sys.prefix/Scripts/ffmpeg.exe or bin/ffmpeg)
+    6. System PATH via shutil.which("ffmpeg")
+    7. imageio-ffmpeg bundled binary fallback
     """
     if custom_path:
-        # If an explicit path was passed, check it directly without caching as global default
+        # 1. Explicit custom_path: check directly without caching as global default
         resolved = shutil.which(custom_path)
         if resolved:
             return resolved
@@ -84,10 +96,11 @@ def find_ffmpeg(custom_path: str | None = None) -> str | None:
         return None
 
     global _cached_ffmpeg_bin
+    # 2. Cached path from previous discovery
     if _cached_ffmpeg_bin is not None:
         return _cached_ffmpeg_bin
 
-    # 1. Environment variables
+    # 3. Environment variables FFMPEG_PATH or FFMPEG_BIN
     for env_var in ("FFMPEG_PATH", "FFMPEG_BIN"):
         env_val = os.environ.get(env_var)
         if env_val:
@@ -96,28 +109,29 @@ def find_ffmpeg(custom_path: str | None = None) -> str | None:
                 _cached_ffmpeg_bin = resolved
                 return _cached_ffmpeg_bin
 
-    # 2. System PATH
-    system_ffmpeg = shutil.which("ffmpeg") or (shutil.which("ffmpeg.exe") if sys.platform == "win32" else None)
-    if system_ffmpeg:
-        _cached_ffmpeg_bin = system_ffmpeg
-        return _cached_ffmpeg_bin
-
-    # 3. Virtualenv scripts
     is_win = sys.platform == "win32"
     exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
     scripts_dir = "Scripts" if is_win else "bin"
-    py_env_ffmpeg = _find_ffmpeg_in_python_env(exe_name, scripts_dir)
-    if py_env_ffmpeg:
-        _cached_ffmpeg_bin = py_env_ffmpeg
-        return _cached_ffmpeg_bin
 
-    # 4. Project root & bundled tools
+    # 4. Project root & bundled tools directories
     bundled_ffmpeg = _find_ffmpeg_in_project_dirs(exe_name)
     if bundled_ffmpeg:
         _cached_ffmpeg_bin = bundled_ffmpeg
         return _cached_ffmpeg_bin
 
-    # 5. imageio-ffmpeg bundled binary
+    # 5. Local isolated virtualenv scripts
+    py_env_ffmpeg = _find_ffmpeg_in_python_env(exe_name, scripts_dir)
+    if py_env_ffmpeg:
+        _cached_ffmpeg_bin = py_env_ffmpeg
+        return _cached_ffmpeg_bin
+
+    # 6. System PATH
+    system_ffmpeg = shutil.which("ffmpeg") or (shutil.which("ffmpeg.exe") if sys.platform == "win32" else None)
+    if system_ffmpeg:
+        _cached_ffmpeg_bin = system_ffmpeg
+        return _cached_ffmpeg_bin
+
+    # 7. imageio-ffmpeg bundled binary fallback
     try:
         import imageio_ffmpeg
 

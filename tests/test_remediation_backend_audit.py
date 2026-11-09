@@ -8,9 +8,10 @@ Targeted regression and adversarial test suites covering M18 backend defect reme
 import asyncio
 import io
 import struct
+import sys
 import wave
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import imageio_ffmpeg
 import pytest
@@ -123,6 +124,164 @@ class TestFFmpegDiscoveryBundledFallback:
 
         monkeypatch.setattr("sys.prefix", str(venv_dir))
         assert _find_ffmpeg_in_python_env("ffmpeg", "bin") == str(fake_ffmpeg.resolve())
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_prefers_bundled_tools_over_system_path(self, monkeypatch, tmp_path):
+        """Bundled project/portable tools/ffmpeg must take precedence over system PATH."""
+        reset_ffmpeg_cache()
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+
+        is_win = sys.platform == "win32"
+        exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
+
+        fake_install_root = tmp_path / "portable_root"
+        tools_dir = fake_install_root / "tools"
+        tools_dir.mkdir(parents=True)
+        bundled_bin = tools_dir / exe_name
+        bundled_bin.write_bytes(b"fake bundled binary")
+
+        system_bin = tmp_path / "system_bin" / exe_name
+        system_bin.parent.mkdir(parents=True)
+        system_bin.write_bytes(b"fake system binary")
+
+        from scripts import desktop_entry
+
+        monkeypatch.setattr("galgame2voice.runtime_paths.get_install_root", lambda: fake_install_root)
+        monkeypatch.setattr(desktop_entry, "get_install_root", lambda: fake_install_root)
+        from galgame2voice.config import get_settings
+        monkeypatch.setattr(get_settings(), "project_root", fake_install_root)
+        monkeypatch.setattr("shutil.which", lambda cmd: str(system_bin.resolve()) if "ffmpeg" in cmd else None)
+
+        discovered = find_ffmpeg()
+        assert discovered is not None
+        assert Path(discovered).resolve() == bundled_bin.resolve()
+        assert Path(discovered).resolve() != system_bin.resolve()
+
+        mock_tkinter = MagicMock()
+        mock_tkinter.Tcl.return_value.eval.return_value = "2"
+        with patch.dict(sys.modules, {"tkinter": mock_tkinter}), \
+             patch("galgame2voice.utils.audio_converter.convert_wav_to_ogg", return_value=b"OggS_fake_stream"):
+            from scripts.desktop_entry import verify_portable_runtime
+            verify_portable_runtime()
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_prefers_bundled_tools_over_virtualenv_and_system_path(self, monkeypatch, tmp_path):
+        """Bundled tools takes precedence over both virtualenv and system PATH."""
+        reset_ffmpeg_cache()
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+
+        is_win = sys.platform == "win32"
+        exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
+
+        fake_install_root = tmp_path / "portable_root"
+        tools_dir = fake_install_root / "tools"
+        tools_dir.mkdir(parents=True)
+        bundled_bin = tools_dir / exe_name
+        bundled_bin.write_bytes(b"fake bundled binary")
+
+        venv_bin = tmp_path / "venv_bin" / exe_name
+        venv_bin.parent.mkdir(parents=True)
+        venv_bin.write_bytes(b"fake venv binary")
+
+        system_bin = tmp_path / "system_bin" / exe_name
+        system_bin.parent.mkdir(parents=True)
+        system_bin.write_bytes(b"fake system binary")
+
+        monkeypatch.setattr("galgame2voice.runtime_paths.get_install_root", lambda: fake_install_root)
+        from galgame2voice.config import get_settings
+        monkeypatch.setattr(get_settings(), "project_root", fake_install_root)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_python_env", lambda *a: str(venv_bin.resolve()))
+        monkeypatch.setattr("shutil.which", lambda cmd: str(system_bin.resolve()) if "ffmpeg" in cmd else None)
+
+        discovered = find_ffmpeg()
+        assert discovered is not None
+        assert Path(discovered).resolve() == bundled_bin.resolve()
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_prefers_virtualenv_over_system_path(self, monkeypatch, tmp_path):
+        """When bundled tools is missing, virtualenv takes precedence over system PATH."""
+        reset_ffmpeg_cache()
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+
+        is_win = sys.platform == "win32"
+        exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
+
+        empty_root = tmp_path / "empty_root"
+        empty_root.mkdir(parents=True)
+
+        venv_bin = tmp_path / "venv_bin" / exe_name
+        venv_bin.parent.mkdir(parents=True)
+        venv_bin.write_bytes(b"fake venv binary")
+
+        system_bin = tmp_path / "system_bin" / exe_name
+        system_bin.parent.mkdir(parents=True)
+        system_bin.write_bytes(b"fake system binary")
+
+        monkeypatch.setattr("galgame2voice.runtime_paths.get_install_root", lambda: empty_root)
+        from galgame2voice.config import get_settings
+        monkeypatch.setattr(get_settings(), "project_root", empty_root)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_python_env", lambda *a: str(venv_bin.resolve()))
+        monkeypatch.setattr("shutil.which", lambda cmd: str(system_bin.resolve()) if "ffmpeg" in cmd else None)
+
+        discovered = find_ffmpeg()
+        assert discovered is not None
+        assert Path(discovered).resolve() == venv_bin.resolve()
+        assert Path(discovered).resolve() != system_bin.resolve()
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_in_project_dirs_checks_both_install_root_and_project_root(self, monkeypatch, tmp_path):
+        """_find_ffmpeg_in_project_dirs inspects both get_install_root and settings.project_root."""
+        from galgame2voice.utils.audio_converter import _find_ffmpeg_in_project_dirs
+
+        is_win = sys.platform == "win32"
+        exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
+
+        empty_install = tmp_path / "empty_install"
+        empty_install.mkdir(parents=True)
+
+        custom_project_root = tmp_path / "project_root"
+        tools_dir = custom_project_root / "tools"
+        tools_dir.mkdir(parents=True)
+        bin_path = tools_dir / exe_name
+        bin_path.write_bytes(b"fake")
+
+        monkeypatch.setattr("galgame2voice.runtime_paths.get_install_root", lambda: empty_install)
+        from galgame2voice.config import get_settings
+        monkeypatch.setattr(get_settings(), "project_root", custom_project_root)
+
+        found = _find_ffmpeg_in_project_dirs(exe_name)
+        assert found is not None
+        assert Path(found).resolve() == bin_path.resolve()
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_falls_back_to_system_path_when_bundled_missing(self, monkeypatch, tmp_path):
+        """When bundled tools/ffmpeg does not exist, find_ffmpeg falls back to system PATH."""
+        reset_ffmpeg_cache()
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+
+        is_win = sys.platform == "win32"
+        exe_name = "ffmpeg.exe" if is_win else "ffmpeg"
+
+        empty_install_root = tmp_path / "empty_root"
+        empty_install_root.mkdir(parents=True)
+
+        system_bin = tmp_path / "system_bin" / exe_name
+        system_bin.parent.mkdir(parents=True)
+        system_bin.write_bytes(b"fake system binary")
+
+        monkeypatch.setattr("galgame2voice.runtime_paths.get_install_root", lambda: empty_install_root)
+        from galgame2voice.config import get_settings
+        monkeypatch.setattr(get_settings(), "project_root", empty_install_root)
+        monkeypatch.setattr("galgame2voice.utils.audio_converter._find_ffmpeg_in_python_env", lambda *a: None)
+        monkeypatch.setattr("shutil.which", lambda cmd: str(system_bin.resolve()) if "ffmpeg" in cmd else None)
+
+        discovered = find_ffmpeg()
+        assert discovered is not None
+        assert Path(discovered).resolve() == system_bin.resolve()
 
     @pytest.mark.requires_piped_subprocess
     @pytest.mark.asyncio
