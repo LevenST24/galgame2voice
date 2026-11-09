@@ -42,6 +42,8 @@ from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.sse import format_sse_frame
 from galgame2voice.utils.text_splitter import split_japanese_sentences
 from galgame2voice.utils.error_diagnostics import (
+    CONTENT_FILTER_FINISH_REASONS,
+    EMPTY_REPLY_CONTENT_FILTERED,
     EMPTY_REPLY_DEFAULT,
     EMPTY_REPLY_STOPPED_ON_LENGTH,
     EmptyReplyError,
@@ -198,6 +200,7 @@ class ChatService:
         parser: Any,
         adaptive_enabled: bool,
         lines: list[dict[str, Any]] | None = None,
+        truncated: bool = False,
     ) -> dict[str, Any]:
         """Formats standard response dictionary for chat_sync."""
         final_tts_params = {
@@ -219,6 +222,7 @@ class ChatService:
             "audioUrl": audio_url,
             "latency_ms": latency_ms,
             "tts_params": final_tts_params,
+            "truncated": truncated,
         }
 
     @staticmethod
@@ -806,11 +810,16 @@ class ChatService:
                 or (parser.line_scanner.format == "lines" and bool(parser.line_scanner.lines))
             )
             if not has_content:
-                stopped_on_length = bool(
-                    getattr(parser, "lines_truncated", False)
-                    or getattr(adapter, "last_finish_reason", None) in ("length", "MAX_TOKENS", "max_tokens")
-                )
-                msg = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
+                last_finish = getattr(adapter, "last_finish_reason", None)
+                if last_finish in CONTENT_FILTER_FINISH_REASONS:
+                    msg = EMPTY_REPLY_CONTENT_FILTERED
+                    stopped_on_length = False
+                else:
+                    stopped_on_length = bool(
+                        getattr(parser, "lines_truncated", False)
+                        or last_finish in ("length", "MAX_TOKENS", "max_tokens")
+                    )
+                    msg = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
                 raise EmptyReplyError(msg, stopped_on_length=stopped_on_length)
 
             final_emotion = classify_emotion(chinese, japanese, parser.emotion_extracted)
@@ -893,6 +902,11 @@ class ChatService:
             else:
                 affection_res = self._affection_fallback(final_emotion)
 
+            is_truncated = bool(
+                getattr(parser, "lines_truncated", False)
+                or getattr(adapter, "last_finish_reason", None) in ("length", "MAX_TOKENS", "max_tokens", *CONTENT_FILTER_FINISH_REASONS)
+            )
+
             return self._format_sync_response(
                 session_id=session_id,
                 chinese=chinese,
@@ -905,6 +919,7 @@ class ChatService:
                 parser=parser,
                 adaptive_enabled=adaptive_enabled,
                 lines=lines,
+                truncated=is_truncated,
             )
         finally:
             if not persisted_assistant and user_msg is not None:

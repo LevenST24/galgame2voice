@@ -14,6 +14,8 @@ from typing import AsyncIterator, Any, Callable
 import httpx
 from pydantic import BaseModel, Field
 
+from galgame2voice.utils.error_diagnostics import CONTENT_FILTER_FINISH_REASONS
+
 logger = logging.getLogger("galgame2voice.adapters.base")
 
 # The chat producer installs this for one reply. Reasoning text never leaves the parser.
@@ -313,10 +315,11 @@ def validate_stream_completion(
     saw_terminal: bool,
     finish_reason: str | None,
     length_reasons: tuple[str, ...] = ("length", "MAX_TOKENS", "max_tokens"),
+    content_filter_reasons: tuple[str, ...] = CONTENT_FILTER_FINISH_REASONS,
 ) -> None:
     """
     Validates that a streaming LLM response completed cleanly.
-    Raises StreamTruncatedError if length limit was reached after yielding tokens.
+    Raises StreamTruncatedError if length limit or content filter was reached after yielding tokens.
     Raises StreamIncompleteError if the stream ended abruptly without any terminal signal.
     """
     if yielded_any and finish_reason in length_reasons:
@@ -325,6 +328,16 @@ def validate_stream_completion(
         raise StreamTruncatedError(
             "模型输出达到最大长度限制，回复未能完整生成。建议调大「最大生成长度」或降低「思考强度」。",
             stopped_on_length=True,
+        )
+    if yielded_any and finish_reason in content_filter_reasons:
+        from galgame2voice.utils.error_diagnostics import (
+            STREAM_TRUNCATED_CONTENT_FILTERED,
+            StreamTruncatedError,
+        )
+
+        raise StreamTruncatedError(
+            STREAM_TRUNCATED_CONTENT_FILTERED,
+            stopped_on_length=False,
         )
     if not saw_terminal and not finish_reason:
         from galgame2voice.utils.error_diagnostics import StreamIncompleteError

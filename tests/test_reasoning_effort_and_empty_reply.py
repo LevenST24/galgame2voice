@@ -38,9 +38,12 @@ from galgame2voice.services.chat_pipelines.stream_coordinator import StreamCoord
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from galgame2voice.utils.error_diagnostics import (
+    CONTENT_FILTER_FINISH_REASONS,
+    EMPTY_REPLY_CONTENT_FILTERED,
     EMPTY_REPLY_DEFAULT,
     EMPTY_REPLY_STOPPED_ON_LENGTH,
     EmptyReplyError,
+    STREAM_TRUNCATED_CONTENT_FILTERED,
     diagnose_llm_error,
     chat_error_payload,
 )
@@ -811,3 +814,308 @@ def test_configured_reasoning_effort_forwards_only_known_levels():
     assert configured_reasoning_effort(SimpleNamespace()) is None
     for level in ("none", "low", "medium", "high"):
         assert configured_reasoning_effort(SimpleNamespace(reasoning_effort=level)) == level
+
+
+
+@pytest.mark.parametrize("finish_reason", list(CONTENT_FILTER_FINISH_REASONS))
+def test_validate_stream_completion_content_filter(finish_reason):
+    """Verifies validate_stream_completion raises StreamTruncatedError on all content filter finish reasons."""
+    from galgame2voice.adapters.base import validate_stream_completion
+    from galgame2voice.utils.error_diagnostics import StreamTruncatedError
+
+    with pytest.raises(StreamTruncatedError) as exc_info:
+        validate_stream_completion(
+            yielded_any=True,
+            saw_terminal=True,
+            finish_reason=finish_reason,
+        )
+    assert exc_info.value.stopped_on_length is False
+    assert STREAM_TRUNCATED_CONTENT_FILTERED in str(exc_info.value)
+
+
+def test_validate_stream_completion_edge_cases():
+    """Verifies validate_stream_completion ignores empty stream content filters and unknown finish reasons."""
+    from galgame2voice.adapters.base import validate_stream_completion
+    from galgame2voice.utils.error_diagnostics import StreamIncompleteError
+
+    # Empty stream with content_filter does not raise StreamTruncatedError (empty reply handled downstream)
+    for cf_reason in CONTENT_FILTER_FINISH_REASONS:
+        validate_stream_completion(yielded_any=False, saw_terminal=True, finish_reason=cf_reason)
+        validate_stream_completion(yielded_any=False, saw_terminal=False, finish_reason=cf_reason)
+
+    # Unknown clean stop reasons pass without exception
+    validate_stream_completion(yielded_any=True, saw_terminal=True, finish_reason="unknown_clean_stop")
+
+    # Abrupt end without terminal signal or finish_reason raises StreamIncompleteError
+    with pytest.raises(StreamIncompleteError):
+        validate_stream_completion(yielded_any=True, saw_terminal=False, finish_reason=None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish_reason", ["content_filter", "SAFETY"])
+async def test_streaming_content_filter_emits_error_and_truncated_done(tmp_path, finish_reason):
+    """Verifies stream_chat emits error event with content filter message and done with truncated: True."""
+    from galgame2voice.adapters.base import validate_stream_completion
+
+    db_file = tmp_path / f"stream_cf_{finish_reason}.db"
+    await init_db(db_file)
+
+    async with get_db(str(db_file)) as conn:
+        user_msg = await crud.add_message(
+            conn,
+            MessageCreate(session_id="cf_sess", role="user", content_chinese="触发过滤"),
+        )
+
+    async def cf_stream(*args, **kwargs):
+        yield '{"lines": [{"zh": "你好呀", "ja": "こんにちは"}], "unclosed": "'
+        validate_stream_completion(
+            yielded_any=True,
+            saw_terminal=False,
+            finish_reason=finish_reason,
+        )
+
+    adapter = SimpleNamespace(
+        stream_chat=cf_stream,
+        api_key="synthetic",
+        last_finish_reason=finish_reason,
+    )
+
+    coordinator = StreamCoordinator(
+        adapter=adapter,
+        messages=[],
+        model_name="test",
+        actual_provider_id="custom",
+        session_id="cf_sess",
+        prompt="触发过滤",
+        user_msg=user_msg,
+        db_path=str(db_file),
+        metrics_collector=SimpleNamespace(record_chat_turn=AsyncMock(return_value={})),
+        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": "gentle"})),
+        tts_service=None,
+        concat_wav_fn=lambda *args: True,
+    )
+
+    events = [e async for e in coordinator]
+    error_events = [e for e in events if e.get("event") == "error"]
+    done_events = [e for e in events if e.get("event") == "done"]
+
+    assert len(error_events) == 1
+    err_data = error_events[0]["data"]
+    assert STREAM_TRUNCATED_CONTENT_FILTERED in err_data["error"]
+    assert err_data.get("error_code") == "stream_truncated_content_filtered"
+    assert err_data.get("diagnostic") == STREAM_TRUNCATED_CONTENT_FILTERED
+
+    assert len(done_events) == 1
+    assert done_events[0]["data"]["truncated"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish_reason", ["content_filter", "SAFETY"])
+async def test_streaming_empty_reply_content_filtered(tmp_path, finish_reason):
+    """Verifies that empty reply with content filter finish reason uses content-filtered explanation."""
+    db_file = tmp_path / f"stream_empty_cf_{finish_reason}.db"
+    await init_db(db_file)
+
+    async with get_db(str(db_file)) as conn:
+        user_msg = await crud.add_message(
+            conn,
+            MessageCreate(session_id="empty_cf", role="user", content_chinese="违规问题"),
+        )
+
+    async def empty_tokens(*args, **kwargs):
+        if False:
+            yield ""
+
+    adapter = SimpleNamespace(
+        stream_chat=empty_tokens,
+        api_key="synthetic",
+        last_finish_reason=finish_reason,
+    )
+
+    coordinator = StreamCoordinator(
+        adapter=adapter,
+        messages=[],
+        model_name="test",
+        actual_provider_id="custom",
+        session_id="empty_cf",
+        prompt="违规问题",
+        user_msg=user_msg,
+        db_path=str(db_file),
+        metrics_collector=SimpleNamespace(record_chat_turn=AsyncMock(return_value={})),
+        affection_service=SimpleNamespace(handle_turn_affection=AsyncMock(return_value={"emotion": "gentle"})),
+        tts_service=None,
+        concat_wav_fn=lambda *args: True,
+    )
+
+    events = [e async for e in coordinator]
+    assert len(events) >= 1
+    last_event = events[-1]
+    assert last_event["event"] == "error"
+    data = last_event["data"]
+    assert data["kind"] == "empty_reply"
+    assert data["error"] == EMPTY_REPLY_CONTENT_FILTERED
+
+    async with get_db(str(db_file)) as conn:
+        remaining = await crud.get_recent_messages(conn, "empty_cf")
+        assert len(remaining) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish_reason", ["content_filter", "SAFETY"])
+async def test_chat_sync_empty_reply_content_filtered(tmp_path, finish_reason):
+    """Verifies ChatService.chat_sync raises EmptyReplyError with EMPTY_REPLY_CONTENT_FILTERED."""
+    db_file = tmp_path / f"sync_empty_cf_{finish_reason}.db"
+    await init_db(db_file)
+
+    service = ChatService(db_path=str(db_file))
+    mock_adapter_tuple = (
+        SimpleNamespace(
+            chat=AsyncMock(return_value=SimpleNamespace(content="")),
+            stream_chat=AsyncMock(),
+            last_finish_reason=finish_reason,
+        ),
+        "test_model",
+        "custom",
+    )
+    service.get_active_llm_adapter = AsyncMock(return_value=mock_adapter_tuple)
+    service._get_active_llm_adapter = service.get_active_llm_adapter
+
+    with pytest.raises(EmptyReplyError) as exc_info:
+        await service.chat_sync("问题", session_id="sync_sess_cf")
+
+    assert str(exc_info.value) == EMPTY_REPLY_CONTENT_FILTERED
+    assert exc_info.value.stopped_on_length is False
+
+    async with get_db(str(db_file)) as conn:
+        msgs = await crud.get_recent_messages(conn, "sync_sess_cf")
+        assert len(msgs) == 0
+
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish_reason", ["content_filter", "SAFETY"])
+async def test_telegram_empty_reply_content_filtered(tmp_path, monkeypatch, finish_reason):
+    """Verifies Telegram bot handlers explain content filter on empty reply."""
+    db_file = tmp_path / f"tg_empty_cf_{finish_reason}.db"
+    await init_db(db_file)
+
+    service = ChatService(db_path=str(db_file))
+    mock_adapter_tuple = (
+        SimpleNamespace(
+            chat=AsyncMock(return_value=SimpleNamespace(content="")),
+            stream_chat=AsyncMock(),
+            last_finish_reason=finish_reason,
+        ),
+        "test_model",
+        "custom",
+    )
+    service.get_active_llm_adapter = AsyncMock(return_value=mock_adapter_tuple)
+    service._get_active_llm_adapter = service.get_active_llm_adapter
+    service.memory_service.process_user_message = AsyncMock()
+    service.prepare_messages = AsyncMock(return_value=[])
+    service.affection_service.handle_turn_affection = AsyncMock()
+
+    handlers = TelegramBotHandlers(chat_service=service, db_path=str(db_file))
+    bot = SimpleNamespace(send_message=AsyncMock(), send_chat_action=AsyncMock())
+    monkeypatch.setattr(handlers, "_spawn_background_voice_task", lambda *args, **kwargs: None)
+
+    task = await handlers.process_text_chat(888, "敏感问题", bot)
+    if task:
+        await task
+
+    assert bot.send_message.called
+    sent_text = bot.send_message.call_args.kwargs["text"]
+    assert EMPTY_REPLY_CONTENT_FILTERED in sent_text
+
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_text", "finish_reason", "expected_truncated"),
+    [
+        ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}]}', "stop", False),
+        ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}]}', "length", True),
+        ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}]}', "MAX_TOKENS", True),
+        ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}]}', "content_filter", True),
+        ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}]}', "SAFETY", True),
+        ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}]}', None, False),
+        ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}], "unclosed', "stop", True),
+    ],
+)
+async def test_chat_sync_truncated_flag(tmp_path, raw_text, finish_reason, expected_truncated):
+    """Verifies chat_sync return dict includes truncated: bool reflecting finish_reason and parser truncation."""
+    db_file = tmp_path / f"sync_trunc_{finish_reason}_{expected_truncated}.db"
+    await init_db(db_file)
+
+    service = ChatService(db_path=str(db_file))
+    mock_adapter_tuple = (
+        SimpleNamespace(
+            chat=AsyncMock(return_value=SimpleNamespace(content=raw_text)),
+            stream_chat=AsyncMock(),
+            last_finish_reason=finish_reason,
+        ),
+        "test_model",
+        "custom",
+    )
+    service.get_active_llm_adapter = AsyncMock(return_value=mock_adapter_tuple)
+    service._get_active_llm_adapter = service.get_active_llm_adapter
+    service.memory_service.process_user_message = AsyncMock()
+    service.prepare_messages = AsyncMock(return_value=[])
+    service.affection_service.handle_turn_affection = AsyncMock(return_value={"emotion": "gentle"})
+    service._synthesize_sync_audio = AsyncMock(return_value=("", 0.0, 0, 0))
+
+    result = await service.chat_sync("问题", session_id="sync_trunc_sess")
+    assert "truncated" in result
+    assert result["truncated"] is expected_truncated
+
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_api_chat_sync_endpoint_content_filter_and_truncated_flag():
+    """Verifies POST /api/chat responds properly to empty reply content filter and truncated flag."""
+    from httpx import ASGITransport, AsyncClient
+    from galgame2voice.routers.chat import set_chat_service
+
+    app = create_app()
+    service = AsyncMock()
+
+    # 1. Empty reply due to content filter -> HTTP 502 with EMPTY_REPLY_CONTENT_FILTERED
+    service.chat_sync.side_effect = EmptyReplyError(EMPTY_REPLY_CONTENT_FILTERED, stopped_on_length=False)
+    set_chat_service(service)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/api/chat", json={"prompt": "敏感词", "session_id": "test_cf_api"})
+            assert resp.status_code == 502
+            data = resp.json()
+            detail = data.get("detail", {})
+            assert detail.get("kind") == "empty_reply"
+            assert detail.get("error_code") == "empty_reply"
+            assert detail.get("error") == EMPTY_REPLY_CONTENT_FILTERED
+
+        # 2. Sync response with truncated: True -> HTTP 200 with truncated: True
+        service.chat_sync.side_effect = None
+        service.chat_sync.return_value = {
+            "session_id": "test_cf_api",
+            "chinese": "截断回复",
+            "japanese": "中断",
+            "lines": [],
+            "emotion": "gentle",
+            "affection": {},
+            "metrics": {},
+            "audio_url": "",
+            "audioUrl": "",
+            "latency_ms": 100,
+            "tts_params": None,
+            "truncated": True,
+        }
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/api/chat", json={"prompt": "截断提示", "session_id": "test_cf_api"})
+            assert resp.status_code == 200
+            assert resp.json().get("truncated") is True
+    finally:
+        set_chat_service(None)
+
