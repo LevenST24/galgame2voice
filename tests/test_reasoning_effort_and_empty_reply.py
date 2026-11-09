@@ -1033,6 +1033,52 @@ async def test_telegram_empty_reply_content_filtered(tmp_path, monkeypatch, fini
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("finish_reason", "expect_notice"),
+    [("content_filter", True), ("SAFETY", True), ("stop", False), (None, False)],
+)
+async def test_telegram_partial_reply_content_filtered_notice(tmp_path, monkeypatch, finish_reason, expect_notice):
+    """A partial reply cut by the content filter is followed by a notice; normal endings add nothing."""
+    db_file = tmp_path / f"tg_partial_cf_{finish_reason}.db"
+    await init_db(db_file)
+
+    service = ChatService(db_path=str(db_file))
+    raw_text = '{"lines": [{"zh": "你好呀，我想说", "ja": "こんにちは"}]}'
+    service.get_active_llm_adapter = AsyncMock(
+        return_value=(
+            SimpleNamespace(
+                chat=AsyncMock(return_value=SimpleNamespace(content=raw_text)),
+                stream_chat=AsyncMock(),
+                last_finish_reason=finish_reason,
+            ),
+            "test_model",
+            "custom",
+        )
+    )
+    service._get_active_llm_adapter = service.get_active_llm_adapter
+    service.memory_service.process_user_message = AsyncMock()
+    service.prepare_messages = AsyncMock(return_value=[])
+    service.affection_service.handle_turn_affection = AsyncMock(return_value={"emotion": "gentle"})
+
+    handlers = TelegramBotHandlers(chat_service=service, db_path=str(db_file))
+    bot = SimpleNamespace(send_message=AsyncMock(), send_chat_action=AsyncMock())
+    monkeypatch.setattr(handlers, "_spawn_background_voice_task", lambda *args, **kwargs: None)
+
+    task = await handlers.process_text_chat(889, "敏感问题", bot)
+    if task:
+        await task
+
+    sent = [call.kwargs["text"] for call in bot.send_message.call_args_list]
+    assert sent[0] == "你好呀，我想说"
+    if expect_notice:
+        assert sent[1:] == [STREAM_TRUNCATED_CONTENT_FILTERED]
+    else:
+        assert len(sent) == 1
+
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("raw_text", "finish_reason", "expected_truncated"),
     [
         ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}]}', "stop", False),
