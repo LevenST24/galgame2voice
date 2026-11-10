@@ -772,3 +772,23 @@ test('save-and-activate button keeps its busy label and clears edits for footer 
   await h.save();
   assert.equal(h.writes().length, 1);
 });
+
+test('formatProviderDiagnostic matches HTTP status codes only as whole numbers', () => {
+  const rate = 'HTTP 429: Rate limit reached for gpt-4o in organization org-abc on tokens per min (TPM): Limit 30000, Used 28401, Requested 2100. Please try again in 1.002s.';
+  const rateTitle = '请求受限或账户额度耗尽 (HTTP 429)';
+  assert.equal(formatProviderDiagnostic('openai', rate).title, rateTitle);
+
+  const busyLookalike = formatProviderDiagnostic('openai', rate.replace('28401', '25031'), '请求过于频繁，请稍后再试。');
+  assert.equal(busyLookalike.title, '请求受限或额度不足 (429)');
+
+  const requestId = 'HTTP 500: Internal server error (request id: req_840401a7c2)';
+  assert.notEqual(formatProviderDiagnostic('openai', requestId).title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
+  assert.notEqual(formatProviderDiagnostic('openai', requestId, '服务端内部错误，请稍后重试。').title, 'API Key 凭据鉴权未通过');
+
+  const authTitle = 'API Key 凭据无效或未授权 (HTTP 400/401)';
+  assert.equal(formatProviderDiagnostic('openai', 'HTTP 401: Unauthorized').title, authTitle);
+  assert.equal(formatProviderDiagnostic('openai', 'Error code: 403 - forbidden').title, '访问受限或地区限制 (HTTP 403)');
+  assert.equal(formatProviderDiagnostic('openai', 'status_code=404').title, '接口地址未找到 (HTTP 404)');
+  assert.equal(formatProviderDiagnostic('openai', 'HTTP 503 Service Unavailable').title, '服务暂时繁忙 (HTTP 503/529)');
+  assert.equal(formatProviderDiagnostic('openai', '错误码529').title, '服务暂时繁忙 (HTTP 503/529)');
+});
