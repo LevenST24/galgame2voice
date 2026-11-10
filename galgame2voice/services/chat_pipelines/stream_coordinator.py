@@ -11,7 +11,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Any, AsyncGenerator, Callable
+from typing import Any, AsyncGenerator, Callable, Mapping, Sequence
 from anyio import CancelScope
 
 from galgame2voice.adapters.base import (
@@ -44,6 +44,18 @@ from galgame2voice.utils.text_splitter import split_japanese_sentences
 from .acting_menu import get_recent_pose, sanitize_act
 from .line_builder import LineAligner
 from .llm_pipeline import LlmStreamPipeline
+from .stream_snapshot import (
+    build_early_done_event,
+    build_final_tts_params,
+    build_line_audio_event,
+    clean_audio_chunks,
+    compute_completion_snapshot,
+    compute_disconnect_snapshot,
+    compute_early_exit_snapshot,
+    has_meaningful_text,
+    new_line_audio_state,
+    snapshot_lines_with_audio,
+)
 from .text_pipeline import TextSegmentationPipeline
 from .tts_pipeline import TtsStreamPipeline
 from .turn_persistence import TurnUnavailableError, require_user_turn
@@ -95,7 +107,7 @@ class SseKeepAlive(dict):
 
 def _has_meaningful_text(chinese: str | None, japanese: str | None) -> bool:
     """Returns True if either Chinese or Japanese string contains non-whitespace text."""
-    return bool((chinese and chinese.strip()) or (japanese and japanese.strip()))
+    return has_meaningful_text(chinese, japanese)
 
 
 class _StreamRun:
@@ -514,15 +526,7 @@ class StreamCoordinator:
 
     @staticmethod
     def _line_audio_state(run: _StreamRun, index: int) -> dict[str, Any]:
-        return run.line_audio_states.setdefault(index, {
-            "line": index,
-            "sealed": False,
-            "pending": 0,
-            "chunks": [],
-            "errors": [],
-            "emitted": False,
-            "status": None,
-        })
+        return run.line_audio_states.setdefault(index, new_line_audio_state(index))
 
     async def _try_emit_line_audio(self, run: _StreamRun) -> None:
         # Both producer and worker can settle a line. Hold the lock across the
@@ -537,18 +541,13 @@ class StreamCoordinator:
             if not state["sealed"] or state["pending"] > 0:
                 break
             if not state["emitted"]:
-                status = "failed" if state["errors"] else ("ready" if state["chunks"] else "skipped")
-                data: dict[str, Any] = {
-                    "line": idx,
-                    "status": status,
-                    "chunks": list(state["chunks"]),
-                }
-                if status == "failed":
-                    data["error"] = "; ".join(dict.fromkeys(state["errors"]))
-                if not await self._put_with_cancel(run.event_queue, {
-                    "event": "line_audio",
-                    "data": data,
-                }, run.cancel_event, run.shutdown_event):
+                status, event = build_line_audio_event(idx, state)
+                if not await self._put_with_cancel(
+                    run.event_queue,
+                    event,
+                    run.cancel_event,
+                    run.shutdown_event,
+                ):
                     return
                 state["emitted"] = True
                 state["status"] = status
@@ -680,30 +679,11 @@ class StreamCoordinator:
         *,
         mark_unfinished_failed: bool = False,
     ) -> list[dict[str, Any]]:
-        result = []
-        for line in run.announced_lines:
-            line_copy = dict(line)
-            idx = line["index"]
-            state = run.line_audio_states.get(idx)
-            if state is not None:
-                if state.get("emitted"):
-                    status = state["status"]
-                elif state.get("sealed") and state.get("pending", 0) == 0 and not state.get("errors"):
-                    status = "ready" if state.get("chunks") else "skipped"
-                elif mark_unfinished_failed:
-                    status = "failed"
-                else:
-                    status = "failed" if state.get("errors") else ("ready" if state.get("chunks") else "skipped")
-                chunks = list(state.get("chunks", []))
-            else:
-                status = "failed" if mark_unfinished_failed else "skipped"
-                chunks = []
-            line_copy["audio"] = {
-                "status": status,
-                "chunks": chunks,
-            }
-            result.append(line_copy)
-        return result
+        return snapshot_lines_with_audio(
+            run.announced_lines,
+            run.line_audio_states,
+            mark_unfinished_failed=mark_unfinished_failed,
+        )
 
     def _note_reply_progress(self, run: _StreamRun, stage: str) -> None:
         """Queues one generic in-progress frame, at most once per few seconds."""
@@ -911,27 +891,32 @@ class StreamCoordinator:
         # Request stop immediately; teardown reaps both tasks before persistence.
         self._request_pipeline_stop(run)
 
-        snapshot_lines = self._snapshot_lines_with_audio(run, mark_unfinished_failed=True)
+        early = compute_early_exit_snapshot(
+            announced_lines=run.announced_lines,
+            line_audio_states=run.line_audio_states,
+            partial_chinese=run.final_result.get("chinese") or run.parser.chinese_extracted,
+            partial_japanese=run.final_result.get("japanese") or run.parser.japanese_extracted,
+            cancel_flagged=is_cancelled,
+            is_truncation=getattr(run, "truncation_error", None) is not None,
+        )
+        snapshot_lines = early["snapshot_lines"]
         run.persisted_lines = snapshot_lines or None
 
-        partial_ch = run.final_result.get("chinese") or run.parser.chinese_extracted
-        partial_ja = run.final_result.get("japanese") or run.parser.japanese_extracted
-        has_partial = _has_meaningful_text(partial_ch, partial_ja) or bool(snapshot_lines)
-
-        if is_cancelled or (getattr(run, "truncation_error", None) is not None and has_partial):
-            if not self.persisted_assistant and self.user_msg is not None and has_partial:
-                await self._persist_partial_message(partial_ch, partial_ja, run.t_start, lines=snapshot_lines)
-            yield {
-                "event": "done",
-                "data": {
-                    "truncated": True,
-                    "chinese": partial_ch or "",
-                    "japanese": partial_ja or "",
-                    "lines": snapshot_lines,
-                    "reply_format": run.parser.line_scanner.format,
-                    **({"message_id": self.persisted_message_id} if self.persisted_message_id is not None else {}),
-                },
-            }
+        if early["emit_truncated_done"]:
+            if not self.persisted_assistant and self.user_msg is not None and early["should_persist"]:
+                await self._persist_partial_message(
+                    early["partial_chinese"],
+                    early["partial_japanese"],
+                    run.t_start,
+                    lines=snapshot_lines,
+                )
+            yield build_early_done_event(
+                partial_chinese=early["partial_chinese"],
+                partial_japanese=early["partial_japanese"],
+                snapshot_lines=snapshot_lines,
+                reply_format=run.parser.line_scanner.format,
+                message_id=self.persisted_message_id,
+            )
 
     async def _concat_audio_chunks(self, audio_chunks: list[dict[str, Any]]) -> str:
         """Concatenates chunk WAVs into a master WAV file in a worker thread."""
@@ -971,28 +956,15 @@ class StreamCoordinator:
 
     @staticmethod
     def _clean_audio_chunks(
-        audio_chunks: list[dict[str, Any]], *, include_line: bool = False,
+        audio_chunks: Sequence[Mapping[str, Any]], *, include_line: bool = False,
     ) -> list[dict[str, Any]]:
         """Cleans local_path from audio_chunks before emitting to frontend."""
-        return [
-            {
-                "index": c.get("index", i), "audio_url": c.get("audio_url", ""), "sentence": c.get("sentence", ""),
-                **({"line": c["line"]} if include_line and "line" in c else {}),
-            }
-            for i, c in enumerate(audio_chunks)
-        ]
+        return clean_audio_chunks(audio_chunks, include_line=include_line)
 
     @staticmethod
     def _build_final_tts_params(parser: Any, ai_adaptive_voice: Any) -> dict[str, Any] | None:
         """Constructs final TTS parameter payload from parser attributes if available."""
-        if parser.tts_speed is not None or parser.tts_temperature is not None or parser.tts_emotion is not None:
-            return {
-                "speed": parser.tts_speed,
-                "temperature": parser.tts_temperature,
-                "emotion": parser.tts_emotion,
-                "adaptive_enabled": bool(ai_adaptive_voice),
-            }
-        return None
+        return build_final_tts_params(parser, bool(ai_adaptive_voice))
 
     async def _persist_turn_message(
         self,
@@ -1057,13 +1029,16 @@ class StreamCoordinator:
         full_japanese = run.final_result.get("japanese") or parser.japanese_extracted
         final_emotion = classify_emotion(full_chinese, full_japanese, parser.emotion_extracted)
 
-        final_lines = self._snapshot_lines_with_audio(run, mark_unfinished_failed=False)
-        run.persisted_lines = final_lines
-
-        has_meaningful_content = (
-            _has_meaningful_text(full_chinese, full_japanese)
-            or bool(final_lines)
+        completion = compute_completion_snapshot(
+            announced_lines=run.announced_lines,
+            line_audio_states=run.line_audio_states,
+            final_chinese=full_chinese,
+            final_japanese=full_japanese,
+            lines_truncated=bool(getattr(parser, "lines_truncated", False)),
         )
+        final_lines = completion["final_lines"]
+        run.persisted_lines = final_lines
+        has_meaningful_content = completion["has_reply"]
 
         if not has_meaningful_content and not bool(cancel_event and cancel_event.is_set()):
             last_finish = getattr(self.adapter, "last_finish_reason", None)
@@ -1185,11 +1160,21 @@ class StreamCoordinator:
         if not self.persisted_assistant and self.user_msg is not None:
             partial_ch = run.final_result.get("chinese") or run.parser.chinese_extracted
             partial_ja = run.final_result.get("japanese") or run.parser.japanese_extracted
-            if _has_meaningful_text(partial_ch, partial_ja):
-                lines_to_save = getattr(run, "persisted_lines", None)
-                if lines_to_save is None and run.announced_lines:
-                    lines_to_save = self._snapshot_lines_with_audio(run, mark_unfinished_failed=True)
-                await self._persist_partial_message(partial_ch, partial_ja, run.t_start, lines=lines_to_save)
+            disconnect_snap = compute_disconnect_snapshot(
+                announced_lines=run.announced_lines,
+                line_audio_states=run.line_audio_states,
+                partial_chinese=partial_ch,
+                partial_japanese=partial_ja,
+                message_persisted=self.persisted_assistant,
+                persisted_lines=getattr(run, "persisted_lines", None),
+            )
+            if disconnect_snap["should_persist"]:
+                await self._persist_partial_message(
+                    partial_ch,
+                    partial_ja,
+                    run.t_start,
+                    lines=disconnect_snap["snapshot_lines"],
+                )
             else:
                 await self._prune_orphaned_user_message()
 
