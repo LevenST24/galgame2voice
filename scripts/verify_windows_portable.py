@@ -4,14 +4,21 @@ import argparse
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
+import re
 import zipfile
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PREFIX = "Galgame2Voice/"
+PYTHON_RUNTIME_DLL_RE = re.compile(r"^Galgame2Voice/_internal/python3\d+\.dll$", re.IGNORECASE)
 
 
-def verify_archive(archive: Path, project_root: Path = PROJECT_ROOT) -> dict:
+def verify_archive(
+    archive: Path,
+    project_root: Path = PROJECT_ROOT,
+    *,
+    require_vite_dist: bool = True,
+) -> dict:
     """Check the final ZIP without executing it or reading installed user data."""
     digest = hashlib.sha256()
     with archive.open("rb") as handle:
@@ -43,6 +50,8 @@ def verify_archive(archive: Path, project_root: Path = PROJECT_ROOT) -> dict:
             raise ValueError(f"Required portable files missing: {sorted(missing)}")
         if not any(name.startswith(PREFIX + "_internal/") for name in files):
             raise ValueError("Bundled runtime is missing")
+        if not any(PYTHON_RUNTIME_DLL_RE.match(name) for name in files):
+            raise ValueError("Bundled Python runtime DLL is missing")
         for folder in ("data", "audio", "logs", "characters"):
             actual = {name for name in files if name.casefold().startswith(f"{PREFIX}{folder}/".casefold())}
             if actual != {f"{PREFIX}{folder}/.keep"}:
@@ -60,16 +69,25 @@ def verify_archive(archive: Path, project_root: Path = PROJECT_ROOT) -> dict:
             content = (static / relative).read_bytes()
             if content != bundle.read(PREFIX + "galgame2voice/static/" + relative):
                 raise ValueError(f"ZIP frontend content differs: {relative}")
-            if content != (built / relative).read_bytes():
+            if require_vite_dist and content != (built / relative).read_bytes():
                 raise ValueError(f"Deployed frontend differs from Vite build: {relative}")
         if bundle.read(PREFIX + "使用说明.md") != (project_root / "docs" / "WINDOWS_PORTABLE.md").read_bytes():
             raise ValueError("Portable guide differs from the current documentation")
-    return {"archive": str(archive.resolve()), "bytes": archive.stat().st_size, "sha256": checksum,
-            "frontend_matches_zip_and_dist": True, "empty_user_folders": True, "no_user_secrets_or_models": True}
+    return {
+        "archive": str(archive.resolve()),
+        "bytes": archive.stat().st_size,
+        "sha256": checksum,
+        "frontend_matches_deployed_static": True,
+        "frontend_matches_zip_and_dist": require_vite_dist,
+        "empty_user_folders": True,
+        "no_user_secrets_or_models": True,
+    }
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", type=Path)
+    parser.add_argument("--skip-vite-dist", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(verify_archive(args.archive), ensure_ascii=False, indent=2))
+    result = verify_archive(args.archive, require_vite_dist=not args.skip_vite_dist)
+    print(json.dumps(result, ensure_ascii=False, indent=2))

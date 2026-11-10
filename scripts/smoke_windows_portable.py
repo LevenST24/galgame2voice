@@ -2,7 +2,7 @@
 
 import argparse
 import errno
-from contextlib import closing
+from contextlib import closing, contextmanager
 from html.parser import HTMLParser
 import hashlib
 import json
@@ -79,7 +79,34 @@ def check_browser(browser: Path, base_url: str, env: dict[str, str], root: Path,
         return
 
 
-def smoke_test(archive: Path, scratch: Path, *, skip_browser: bool = False) -> None:
+@contextmanager
+def _preserve_diagnostics_on_error(root: Path, scratch: Path):
+    try:
+        yield root
+    except Exception:
+        install = root / "Galgame2Voice"
+        candidates = (
+            root / "launch.log",
+            install / "logs" / "launcher_error.log",
+            root / "updated-launch.log",
+            root / "recovered-launch.log",
+        )
+        existing = [path for path in candidates if path.is_file()]
+        if existing:
+            diagnostics = scratch / "diagnostics"
+            diagnostics.mkdir(parents=True, exist_ok=True)
+            for path in existing:
+                shutil.copy2(path, diagnostics / path.name)
+        raise
+
+
+def smoke_test(
+    archive: Path,
+    scratch: Path,
+    *,
+    skip_browser: bool = False,
+    startup_only: bool = False,
+) -> None:
     scratch.mkdir(parents=True, exist_ok=True)
     with archive.open("rb") as handle:
         digest = hashlib.sha256()
@@ -89,8 +116,10 @@ def smoke_test(archive: Path, scratch: Path, *, skip_browser: bool = False) -> N
     expected_hash = archive.with_suffix(".zip.sha256").read_text().split()[0]
     if actual_hash != expected_hash:
         raise RuntimeError("Release checksum does not match")
-    with tempfile.TemporaryDirectory(prefix="portable 中文 ! ", dir=scratch) as temporary:
-        root = Path(temporary).resolve()
+    with (
+        tempfile.TemporaryDirectory(prefix="portable 中文 ! ", dir=scratch) as temporary,
+        _preserve_diagnostics_on_error(Path(temporary).resolve(), scratch) as root,
+    ):
         with zipfile.ZipFile(archive) as bundle:
             for entry in bundle.infolist():
                 (root / entry.filename).resolve().relative_to(root)
@@ -212,6 +241,14 @@ def smoke_test(archive: Path, scratch: Path, *, skip_browser: bool = False) -> N
                 with opener.open(base_url + asset[1], timeout=5) as response:
                     if "javascript" not in response.headers.get("Content-Type", "") or len(response.read()) < 100:
                         raise RuntimeError("Portable frontend script is missing or has the wrong MIME type")
+                if startup_only:
+                    print(
+                        "Portable startup check passed: restricted PATH, Unicode/spaces/!, "
+                        "Tcl, startup diagnostics, application FFmpeg conversion, "
+                        "first-install database, duplicate launch protection, "
+                        "live-instance recovery guard, and HTML/JS static assets."
+                    )
+                    return
                 browser_candidates = [
                     Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Google/Chrome/Application/chrome.exe",
                     Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Microsoft/Edge/Application/msedge.exe",
@@ -455,5 +492,11 @@ if __name__ == "__main__":
     parser.add_argument("archive", type=Path)
     parser.add_argument("--scratch", type=Path, default=Path(".local/portable-smoke"))
     parser.add_argument("--skip-browser", action="store_true", help="Use when browser interaction is verified separately")
+    parser.add_argument("--startup-only", action="store_true", help="Run bounded startup and launcher health checks only")
     arguments = parser.parse_args()
-    smoke_test(arguments.archive.resolve(), arguments.scratch.resolve(), skip_browser=arguments.skip_browser)
+    smoke_test(
+        arguments.archive.resolve(),
+        arguments.scratch.resolve(),
+        skip_browser=arguments.skip_browser,
+        startup_only=arguments.startup_only,
+    )
