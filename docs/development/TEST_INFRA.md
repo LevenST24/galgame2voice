@@ -440,6 +440,16 @@ where someone installed those assets by hand. Tests that need such a file either
 take the `requires_character_assets` marker or materialise an isolated project
 root (`GALGAME2VOICE_PROJECT_ROOT` → `tmp_path`) and create the file there.
 
+For manual visual review across fixed UI states without real character assets or
+a GPU, capture synthetic v3 layered portraits against `scripts/dev_standins.py`:
+
+```powershell
+.\.venv\Scripts\python scripts/capture_visual_scenes.py --output-dir .local/visual-captures
+```
+
+This writes `3 viewports × 5 scenes` under `.local/visual-captures/<viewport>/<scene>.png`
+plus `capture_manifest.json` for human inspection only (not automated visual sign-off).
+
 ## 8. Static Analysis Gates (staged adoption)
 
 Ruff runs in CI over `galgame2voice scripts`. Widening the rule set all at once
