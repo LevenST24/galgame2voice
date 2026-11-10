@@ -128,8 +128,10 @@ export function saveState() {
           .filter((s) => s && s.id !== state.activeId && Array.isArray(s.messages) && s.messages.length > 0 &&
             !s.messages.some((m) => m && m.role === 'user' && m.failed))
           .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
+        const evicted = [];
         let saved = false;
         for (const s of inactive) {
+          evicted.push({ session: s, messages: s.messages, lastLine: s.lastLine });
           if (!s.lastLine) {
             const last = s.messages.at(-1);
             s.lastLine = last?.lines?.at(-1)?.zh || last?.lines?.at(-1)?.ja || last?.content || '';
@@ -144,7 +146,17 @@ export function saveState() {
             if (evictError.name !== 'QuotaExceededError') throw evictError;
           }
         }
-        if (!saved) throw retryError;
+        if (!saved) {
+          for (const item of evicted) {
+            item.session.messages = item.messages;
+            if (item.lastLine === undefined) {
+              delete item.session.lastLine;
+            } else {
+              item.session.lastLine = item.lastLine;
+            }
+          }
+          throw retryError;
+        }
       }
     }
     lastStoredRaw = next;

@@ -721,4 +721,136 @@ const sessionOf = (id, texts) => ({
   passed++;
 }
 
+// saveState rolls back in-memory messages and lastLine when eviction still fails due to QuotaExceededError
+{
+  storage({
+    sessions: [
+      {
+        id: 's_active',
+        title: '活跃会话',
+        createdAt: 200,
+        updatedAt: 2000,
+        settings: { voiceProfileId: 1, temperature: 0.7 },
+        messages: [{ id: 'm_act_1', role: 'user', content: '活跃提问', ts: 201 }],
+      },
+      {
+        id: 's_inactive',
+        title: '历史会话',
+        createdAt: 100,
+        updatedAt: 1000,
+        settings: { voiceProfileId: 2, temperature: 0.5 },
+        messages: [
+          { id: 'm_inact_1', role: 'user', content: '历史提问', ts: 101 },
+          { id: 'm_inact_2', role: 'assistant', content: '历史回答', ts: 102 },
+        ],
+      },
+    ],
+    activeId: 's_active',
+    global: {},
+  });
+  loadState();
+
+  const sActive = state.sessions.find((s) => s.id === 's_active');
+  const sInactive = state.sessions.find((s) => s.id === 's_inactive');
+
+  assert.equal(sInactive.messages.length, 2);
+  assert.equal(sInactive.lastLine, undefined);
+
+  localStorage.limit = 0;
+  sActive.messages.push({ id: 'm_act_2', role: 'user', content: '活跃新提问', ts: 202 });
+
+  assert.equal(saveState(), false, '配额耗尽且淘汰后依然超限时 saveState 应返回 false');
+  assert.equal(getStorageStatus().ok, false);
+  assert.equal(sInactive.messages.length, 2, '淘汰保存失败后非活跃会话内存中的 messages 必须完整回滚');
+  assert.equal(sInactive.lastLine, undefined, '淘汰保存失败后非活跃会话内存中的 lastLine 必须回滚');
+
+  const exported = JSON.parse(exportSessionData());
+  const exportedInactive = exported.sessions.find((s) => s.id === 's_inactive');
+  assert.equal(exportedInactive.messages.length, 2, '导出聊天备份必须包含完整未被清空的非活跃会话消息');
+
+  localStorage.limit = Infinity;
+  assert.equal(saveState(), true, '恢复配额后 saveState 应成功');
+  assert.equal(getStorageStatus().ok, true);
+
+  const persisted = JSON.parse(localStorage.getItem(KEY));
+  const persistedInactive = persisted.sessions.find((s) => s.id === 's_inactive');
+  assert.equal(persistedInactive.messages.length, 2, '持久化数据中非活跃会话 messages 应完整保留');
+  assert.equal(persistedInactive.lastLine, undefined, '持久化数据中未被淘汰会话不应残留 lastLine');
+  passed++;
+}
+
+// saveState rolls back multiple inactive sessions and preserves pre-existing lastLine across consecutive eviction failures
+{
+  storage({
+    sessions: [
+      {
+        id: 's_active',
+        title: '活跃会话',
+        createdAt: 300,
+        updatedAt: 3000,
+        settings: { voiceProfileId: 1, temperature: 0.7 },
+        messages: [{ id: 'm_act_1', role: 'user', content: '活跃提问', ts: 301 }],
+      },
+      {
+        id: 's_inactive_old',
+        title: '较旧历史会话',
+        createdAt: 100,
+        updatedAt: 1000,
+        lastLine: '已有历史摘要',
+        settings: { voiceProfileId: 2, temperature: 0.5 },
+        messages: [
+          { id: 'm_old_1', role: 'user', content: '旧历史提问', ts: 101 },
+          { id: 'm_old_2', role: 'assistant', content: '旧历史回答', ts: 102 },
+        ],
+      },
+      {
+        id: 's_inactive_new',
+        title: '较新历史会话',
+        createdAt: 200,
+        updatedAt: 2000,
+        settings: { voiceProfileId: 3, temperature: 0.6 },
+        messages: [
+          { id: 'm_new_1', role: 'user', content: '新历史提问', ts: 201 },
+          { id: 'm_new_2', role: 'assistant', content: '新历史回答', ts: 202 },
+        ],
+      },
+    ],
+    activeId: 's_active',
+    global: {},
+  });
+  loadState();
+
+  const sInactiveOld = state.sessions.find((s) => s.id === 's_inactive_old');
+  const sInactiveNew = state.sessions.find((s) => s.id === 's_inactive_new');
+
+  assert.equal(sInactiveOld.messages.length, 2);
+  assert.equal(sInactiveOld.lastLine, '已有历史摘要');
+  assert.equal(sInactiveNew.messages.length, 2);
+  assert.equal(sInactiveNew.lastLine, undefined);
+
+  localStorage.limit = 0;
+
+  // 连续多次调用 saveState 均应安全回滚，不造成内存状态累积损坏
+  for (let i = 0; i < 3; i++) {
+    assert.equal(saveState(), false, `第 ${i + 1} 次保存失败时应返回 false`);
+    assert.equal(sInactiveOld.messages.length, 2, '较旧历史会话 messages 必须保持完整');
+    assert.equal(sInactiveOld.lastLine, '已有历史摘要', '已有的 lastLine 必须原样恢复');
+    assert.equal(sInactiveNew.messages.length, 2, '较新历史会话 messages 必须保持完整');
+    assert.equal(sInactiveNew.lastLine, undefined, '初始无 lastLine 的会话必须还原为 undefined');
+  }
+
+  const exported = JSON.parse(exportSessionData());
+  assert.equal(exported.sessions.find((s) => s.id === 's_inactive_old').messages.length, 2);
+  assert.equal(exported.sessions.find((s) => s.id === 's_inactive_new').messages.length, 2);
+
+  localStorage.limit = Infinity;
+  assert.equal(saveState(), true);
+  const persisted = JSON.parse(localStorage.getItem(KEY));
+  assert.equal(persisted.sessions.find((s) => s.id === 's_inactive_old').messages.length, 2);
+  assert.equal(persisted.sessions.find((s) => s.id === 's_inactive_old').lastLine, '已有历史摘要');
+  assert.equal(persisted.sessions.find((s) => s.id === 's_inactive_new').messages.length, 2);
+  assert.equal(persisted.sessions.find((s) => s.id === 's_inactive_new').lastLine, undefined);
+  passed++;
+}
+
 console.log(`Session backup and recovery: ${passed} scenarios passed`);
