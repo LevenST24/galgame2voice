@@ -765,7 +765,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     getAvatar: session => portraits.avatar(session),
     getStatus: async () => {
       let engine;
-      try { engine = await requestJson('/api/system/engine-status', {}, { timeoutMs: 4500 }); }
+      try { engine = await requestJson('/api/system/engine-status', {}, { timeoutMs: 10000 }); }
       catch (error) { engine = { state: 'unavailable', message: error.message }; }
       // Sample all model fields together after the engine request. Providers may
       // finish loading while it is pending; never mix that flag with an old model.
