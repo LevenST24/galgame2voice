@@ -1,0 +1,642 @@
+{
+  "schema_version": "sse_turn_reply_v1",
+  "sse_events": {
+    "turn_started": {
+      "event": "turn_started",
+      "data": {
+        "session_id": "sess_contract_1",
+        "user_message_id": 101
+      }
+    },
+    "line_0": {
+      "event": "line",
+      "data": {
+        "index": 0,
+        "zh": "早安。",
+        "ja": "おはよう。",
+        "emotion": "happy",
+        "act": {
+          "face": "smile",
+          "pose": "",
+          "motion": "nod",
+          "blush": false,
+          "fx": null
+        }
+      }
+    },
+    "line_1": {
+      "event": "line",
+      "data": {
+        "index": 1,
+        "zh": "（轻轻挥手）",
+        "ja": "",
+        "emotion": "gentle",
+        "act": {
+          "face": "",
+          "pose": "",
+          "motion": null,
+          "blush": false,
+          "fx": null
+        }
+      }
+    },
+    "line_2": {
+      "event": "line",
+      "data": {
+        "index": 2,
+        "zh": "听得到吗？",
+        "ja": "聞こえる？",
+        "emotion": "serious",
+        "act": {
+          "face": "",
+          "pose": "",
+          "motion": null,
+          "blush": false,
+          "fx": "question"
+        }
+      }
+    },
+    "audio_chunk_0": {
+      "event": "audio_chunk",
+      "data": {
+        "index": 0,
+        "line": 0,
+        "sentence": "おはよう。",
+        "audio_url": "/audio/cache/contract_0.wav",
+        "emotion": "happy",
+        "audio_b64": null
+      }
+    },
+    "line_audio_ready": {
+      "event": "line_audio",
+      "data": {
+        "line": 0,
+        "status": "ready",
+        "chunks": [
+          {
+            "index": 0,
+            "line": 0,
+            "sentence": "おはよう。",
+            "audio_url": "/audio/cache/contract_0.wav"
+          }
+        ]
+      }
+    },
+    "line_audio_skipped": {
+      "event": "line_audio",
+      "data": {
+        "line": 1,
+        "status": "skipped",
+        "chunks": []
+      }
+    },
+    "line_audio_failed": {
+      "event": "line_audio",
+      "data": {
+        "line": 2,
+        "status": "failed",
+        "chunks": [],
+        "error": "GPT-SoVITS timeout"
+      }
+    },
+    "done_complete": {
+      "event": "done",
+      "data": {
+        "full_text": "早安。（轻轻挥手）听得到吗？",
+        "chinese": "早安。（轻轻挥手）听得到吗？",
+        "japanese": "おはよう。聞こえる？",
+        "emotion": "happy",
+        "reply_format": "lines",
+        "truncated": false,
+        "tts_params": null,
+        "audio_url": "/audio/cache/contract_0.wav",
+        "total_audio_url": "/audio/cache/contract_0.wav",
+        "chunks": [
+          {
+            "index": 0,
+            "line": 0,
+            "sentence": "おはよう。",
+            "audio_url": "/audio/cache/contract_0.wav"
+          }
+        ],
+        "audio_chunks": [
+          {
+            "index": 0,
+            "line": 0,
+            "sentence": "おはよう。",
+            "audio_url": "/audio/cache/contract_0.wav"
+          }
+        ],
+        "lines": [
+          {
+            "index": 0,
+            "zh": "早安。",
+            "ja": "おはよう。",
+            "emotion": "happy",
+            "act": {
+              "face": "smile",
+              "pose": "",
+              "motion": "nod",
+              "blush": false,
+              "fx": null
+            },
+            "audio": {
+              "status": "ready",
+              "chunks": [
+                {
+                  "index": 0,
+                  "line": 0,
+                  "sentence": "おはよう。",
+                  "audio_url": "/audio/cache/contract_0.wav"
+                }
+              ]
+            }
+          },
+          {
+            "index": 1,
+            "zh": "（轻轻挥手）",
+            "ja": "",
+            "emotion": "gentle",
+            "act": {
+              "face": "",
+              "pose": "",
+              "motion": null,
+              "blush": false,
+              "fx": null
+            },
+            "audio": {
+              "status": "skipped",
+              "chunks": []
+            }
+          },
+          {
+            "index": 2,
+            "zh": "听得到吗？",
+            "ja": "聞こえる？",
+            "emotion": "serious",
+            "act": {
+              "face": "",
+              "pose": "",
+              "motion": null,
+              "blush": false,
+              "fx": "question"
+            },
+            "audio": {
+              "status": "failed",
+              "chunks": []
+            }
+          }
+        ],
+        "session_id": "sess_contract_1",
+        "message_id": 102,
+        "user_message_id": 101
+      }
+    },
+    "done_truncated": {
+      "event": "done",
+      "data": {
+        "full_text": "早安。",
+        "chinese": "早安。",
+        "japanese": "おはよう。",
+        "emotion": "gentle",
+        "reply_format": "lines",
+        "tts_params": null,
+        "audio_url": "/audio/cache/contract_0.wav",
+        "chunks": [
+          {
+            "index": 0,
+            "line": 0,
+            "sentence": "おはよう。",
+            "audio_url": "/audio/cache/contract_0.wav"
+          }
+        ],
+        "audio_chunks": [
+          {
+            "index": 0,
+            "sentence": "おはよう。",
+            "audio_url": "/audio/cache/contract_0.wav"
+          }
+        ],
+        "lines": [
+          {
+            "index": 0,
+            "zh": "早安。",
+            "ja": "おはよう。",
+            "emotion": "happy",
+            "act": {},
+            "audio": {
+              "status": "ready",
+              "chunks": [
+                {
+                  "index": 0,
+                  "line": 0,
+                  "sentence": "おはよう。",
+                  "audio_url": "/audio/cache/contract_0.wav"
+                }
+              ]
+            }
+          },
+          {
+            "index": 2,
+            "zh": "听得到吗？",
+            "ja": "聞こえる？",
+            "emotion": "serious",
+            "act": {},
+            "audio": {
+              "status": "failed",
+              "chunks": []
+            }
+          }
+        ],
+        "session_id": "sess_contract_1",
+        "truncated": true,
+        "message_id": 103,
+        "user_message_id": 101
+      }
+    }
+  },
+  "persisted_assistant_message": {
+    "id": 102,
+    "session_id": "sess_contract_1",
+    "role": "assistant",
+    "content_chinese": "早安。（轻轻挥手）听得到吗？",
+    "content_japanese": "おはよう。聞こえる？",
+    "audio_url": "/audio/cache/contract_0.wav",
+    "latency_ms": 420,
+    "reply_to_message_id": 101,
+    "created_at": "2026-04-01 12:00:00",
+    "lines": [
+      {
+        "index": 0,
+        "zh": "早安。",
+        "ja": "おはよう。",
+        "emotion": "happy",
+        "act": {
+          "face": "smile",
+          "pose": "",
+          "motion": "nod",
+          "blush": false,
+          "fx": null
+        },
+        "audio": {
+          "status": "ready",
+          "chunks": [
+            {
+              "index": 0,
+              "line": 0,
+              "sentence": "おはよう。",
+              "audio_url": "/audio/cache/contract_0.wav"
+            }
+          ]
+        }
+      },
+      {
+        "index": 1,
+        "zh": "（轻轻挥手）",
+        "ja": "",
+        "emotion": "gentle",
+        "act": {
+          "face": "",
+          "pose": "",
+          "motion": null,
+          "blush": false,
+          "fx": null
+        },
+        "audio": {
+          "status": "skipped",
+          "chunks": []
+        }
+      },
+      {
+        "index": 2,
+        "zh": "听得到吗？",
+        "ja": "聞こえる？",
+        "emotion": "serious",
+        "act": {
+          "face": "",
+          "pose": "",
+          "motion": null,
+          "blush": false,
+          "fx": "question"
+        },
+        "audio": {
+          "status": "failed",
+          "chunks": []
+        }
+      }
+    ]
+  },
+  "turn_reply_responses": {
+    "ready": {
+      "session_id": "sess_contract_1",
+      "user_message_id": 101,
+      "status": "ready",
+      "message_id": 102
+    },
+    "pending": {
+      "session_id": "sess_contract_1",
+      "user_message_id": 101,
+      "status": "pending"
+    },
+    "gone": {
+      "session_id": "sess_contract_1",
+      "user_message_id": 999,
+      "status": "gone"
+    },
+    "ambiguous": {
+      "session_id": "sess_contract_1",
+      "user_message_id": 101,
+      "status": "ambiguous"
+    },
+    "unavailable": {
+      "session_id": "sess_contract_1",
+      "user_message_id": 101,
+      "status": "unavailable"
+    }
+  },
+  "edge_cases": {
+    "missing_fields": {
+      "turn_started_missing_id": {
+        "event": "turn_started",
+        "data": {
+          "session_id": "sess_contract_1"
+        },
+        "expected": {
+          "accepted": false,
+          "conflict": false,
+          "persisted_server_user_message_id": null
+        }
+      },
+      "line_missing_index": {
+        "event": "line",
+        "data": {
+          "zh": "缺行号",
+          "ja": ""
+        },
+        "expected": {
+          "ignored_by_conversation": true,
+          "emitted_line_count_delta": 0
+        }
+      },
+      "done_empty": {
+        "event": "done",
+        "data": {
+          "full_text": "",
+          "chinese": "",
+          "japanese": "",
+          "session_id": "sess_contract_1"
+        },
+        "expected": {
+          "terminal_event": "error",
+          "error_code": "empty_reply",
+          "stored_assistant_message": false,
+          "failed_inline": true
+        }
+      }
+    },
+    "id_conflict": {
+      "first_turn_started": {
+        "event": "turn_started",
+        "data": {
+          "session_id": "sess_contract_1",
+          "user_message_id": 101
+        }
+      },
+      "conflicting_turn_started": {
+        "event": "turn_started",
+        "data": {
+          "session_id": "sess_contract_1",
+          "user_message_id": 202
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "conflict": true,
+        "turn_conflict": true,
+        "recovery_error_substring": "回复身份存在冲突"
+      }
+    },
+    "out_of_order": {
+      "audio_chunk_before_line": {
+        "early_audio_chunk": {
+          "event": "audio_chunk",
+          "data": {
+            "index": 0,
+            "line": 0,
+            "sentence": "おはよう。",
+            "audio_url": "/audio/cache/contract_0.wav",
+            "emotion": "happy"
+          }
+        },
+        "late_line": {
+          "event": "line",
+          "data": {
+            "index": 0,
+            "zh": "早安。",
+            "ja": "おはよう。",
+            "emotion": "happy",
+            "act": {}
+          }
+        },
+        "expected": {
+          "buffered_chunk_attached_on_line": true,
+          "initial_line_audio_status": "pending",
+          "attached_audio_url": "/audio/cache/contract_0.wav"
+        }
+      },
+      "line_audio_before_line": {
+        "early_line_audio": {
+          "event": "line_audio",
+          "data": {
+            "line": 0,
+            "status": "ready",
+            "chunks": [
+              {
+                "index": 0,
+                "line": 0,
+                "sentence": "おはよう。",
+                "audio_url": "/audio/cache/contract_0.wav"
+              }
+            ]
+          }
+        },
+        "late_line": {
+          "event": "line",
+          "data": {
+            "index": 0,
+            "zh": "早安。",
+            "ja": "おはよう。",
+            "emotion": "happy",
+            "act": {}
+          }
+        },
+        "authoritative_done": {
+          "event": "done",
+          "data": {
+            "chinese": "早安。",
+            "japanese": "おはよう。",
+            "lines": [
+              {
+                "index": 0,
+                "zh": "早安。",
+                "ja": "おはよう。",
+                "emotion": "happy",
+                "act": {},
+                "audio": {
+                  "status": "ready",
+                  "chunks": [
+                    {
+                      "index": 0,
+                      "line": 0,
+                      "sentence": "おはよう。",
+                      "audio_url": "/audio/cache/contract_0.wav"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "expected": {
+          "line_arrival_status": "pending",
+          "final_persisted_status": "ready",
+          "total_line_audio_emissions": 1
+        }
+      }
+    },
+    "duplicate": {
+      "duplicate_turn_started": {
+        "first": {
+          "event": "turn_started",
+          "data": {
+            "session_id": "sess_contract_1",
+            "user_message_id": 101
+          }
+        },
+        "second": {
+          "event": "turn_started",
+          "data": {
+            "session_id": "sess_contract_1",
+            "user_message_id": 101
+          }
+        },
+        "expected": {
+          "accepted": false,
+          "conflict": false,
+          "server_user_message_id": 101,
+          "turn_conflict": false
+        }
+      },
+      "duplicate_line_same_index": {
+        "first_line": {
+          "event": "line",
+          "data": {
+            "index": 0,
+            "zh": "早安（初稿）。",
+            "ja": "おはよう。",
+            "emotion": "gentle",
+            "act": {}
+          }
+        },
+        "updated_line": {
+          "event": "line",
+          "data": {
+            "index": 0,
+            "zh": "早安。",
+            "ja": "おはよう。",
+            "emotion": "happy",
+            "act": {
+              "face": "smile"
+            }
+          }
+        },
+        "expected": {
+          "persisted_line_count": 1,
+          "persisted_zh": "早安。",
+          "persisted_emotion": "happy"
+        }
+      },
+      "duplicate_line_audio_in_done": {
+        "line_event": {
+          "event": "line",
+          "data": {
+            "index": 0,
+            "zh": "早安。",
+            "ja": "おはよう。",
+            "emotion": "happy",
+            "act": {}
+          }
+        },
+        "line_audio_event": {
+          "event": "line_audio",
+          "data": {
+            "line": 0,
+            "status": "ready",
+            "chunks": [
+              {
+                "index": 0,
+                "line": 0,
+                "sentence": "おはよう。",
+                "audio_url": "/audio/cache/contract_0.wav"
+              }
+            ]
+          }
+        },
+        "done_event": {
+          "event": "done",
+          "data": {
+            "chinese": "早安。",
+            "japanese": "おはよう。",
+            "lines": [
+              {
+                "index": 0,
+                "zh": "早安。",
+                "ja": "おはよう。",
+                "emotion": "happy",
+                "act": {},
+                "audio": {
+                  "status": "ready",
+                  "chunks": [
+                    {
+                      "index": 0,
+                      "line": 0,
+                      "sentence": "おはよう。",
+                      "audio_url": "/audio/cache/contract_0.wav"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "expected": {
+          "emitted_line_audio_count": 1
+        }
+      }
+    },
+    "unknown_events": {
+      "unknown_sse_event": {
+        "event": "heartbeat_ping",
+        "data": {
+          "ts": 123456
+        },
+        "expected": {
+          "forwarded_to_on_event": true,
+          "pollutes_message_content": false
+        }
+      },
+      "unknown_turn_reply_status": {
+        "response": {
+          "status": "mystery_state",
+          "session_id": "sess_contract_1",
+          "user_message_id": 101
+        },
+        "expected": {
+          "gives_up_immediately": true,
+          "attempts": 1,
+          "error_substring": "未知的回复状态"
+        }
+      }
+    }
+  }
+}
