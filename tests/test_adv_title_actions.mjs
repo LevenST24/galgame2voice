@@ -306,4 +306,28 @@ test('homeExcerpt extracts Japanese-only reply when session has no Chinese text'
   assert.equal(item.lastLine, 'ただいま。');
 });
 
+test('engine status polling accommodates slow starting response within 10s timeout without reporting unavailable', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = setup(t);
+  globalThis.fetch = async url => {
+    if (url === '/api/system/engine-status') {
+      return new Promise(resolve => {
+        setTimeout(() => {
+          resolve(Response.json({
+            state: 'starting',
+            ready: false,
+            message: '引擎正在加载模型，请稍候；文字聊天可继续使用。',
+          }));
+        }, 5500);
+      });
+    }
+    return Response.json({});
+  };
+  const pending = h.app.actions.getStatus();
+  t.mock.timers.tick(5500);
+  const status = await pending;
+  assert.equal(status.engine.state, 'starting');
+  assert.ok(status.engine.message.includes('正在加载模型'));
+});
+
 
