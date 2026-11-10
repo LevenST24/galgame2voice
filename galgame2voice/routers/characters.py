@@ -529,16 +529,22 @@ async def _rollback_manifest_and_cache(
     manifest_path: Path,
     original: bytes,
     mgr: Any,
-) -> None:
-    """Put manifest.json back to the bytes read before this save and refresh cache."""
+) -> bool:
+    """Put manifest.json back to the bytes read before this save and refresh cache.
+
+    Returns whether manifest.json was actually restored.
+    """
+    restored = True
     try:
         _restore_manifest(manifest_path, original)
     except OSError as restore_exc:
         # 回滚也写不进去（如磁盘已满）时不能顶掉调用方要抛出的原始错误
+        restored = False
         logger.warning("回滚角色包 manifest.json 失败: %s", sanitize_error_detail(restore_exc))
     _, exc, _ = await _run_uncancellable(asyncio.to_thread(mgr.discover_characters))
     if exc is not None:
         logger.warning("回滚角色包后刷新内存缓存失败: %s", exc)
+    return restored
 
 
 def _write_manifest_system_prompt(manifest_path: Path, text: str) -> None:
@@ -633,14 +639,15 @@ async def update_character_system_prompt(character_id: int, req: SystemPromptUpd
                             detail=f"Character with ID {character_id} not found",
                         )
         except BaseException as exc:
+            rollback_suffix = ""
             if original_manifest is not None and manifest_path is not None:
-                await _rollback_manifest_and_cache(manifest_path, original_manifest, mgr)
+                restored = await _rollback_manifest_and_cache(manifest_path, original_manifest, mgr)
+                rollback_suffix = "，已回滚角色包修改" if restored else "，角色包文件未能回滚"
             if not isinstance(exc, Exception):
                 raise
             if isinstance(exc, HTTPException):
                 raise
             safe_err = sanitize_error_detail(exc)
-            rollback_suffix = "，已回滚角色包修改" if original_manifest is not None else ""
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"人设保存到数据库失败{rollback_suffix}: {safe_err}",
