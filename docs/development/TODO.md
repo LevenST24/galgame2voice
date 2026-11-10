@@ -37,16 +37,28 @@
   - 证据：[`stream_coordinator.py`](../../galgame2voice/services/chat_pipelines/stream_coordinator.py) 约 1,263 行，覆盖上游解析、TTS 队列、SSE、快照、拼接、数据库提交和好感度结算。
   - 工作：优先提取纯粹的快照状态计算和最终持久化策略；统一由现有轮次生命周期拥有任务与清理。先写清完成、截断、取消、断网的终态，再移动代码。
   - 验收：同一轮只保存一次、只结算一次；中断仍保留有效文本和已完整生成的音频；断连任务全部收束；不新增竞争读取 ASGI `receive()` 的任务，也不改变既有音色隔离。
+  - 阶段进展：
+    - 第一阶段（[PR #400](https://github.com/LevenST24/galgame2voice/pull/400)）：新增无 I/O 纯函数模块 [`stream_snapshot.py`](../../galgame2voice/services/chat_pipelines/stream_snapshot.py) 与单测 [`test_stream_snapshot.py`](../../tests/test_stream_snapshot.py)，将单句音频状态结算（`new_line_audio_state`、`build_line_audio_event`、`resolve_line_audio_snapshot_status`、`snapshot_lines_with_audio`）、完成/截断/取消/断网四类终态的快照状态计算（`compute_completion_snapshot`、`compute_early_exit_snapshot`、`compute_disconnect_snapshot`）、提前退出 `done` 事件构造（`build_early_done_event`）及切片/TTS 参数整理从 [`stream_coordinator.py`](../../galgame2voice/services/chat_pipelines/stream_coordinator.py) 中抽离。
+    - 已覆盖验收：以纯函数单测明确了正常完成、异常截断、用户取消与客户端断网四类终态下的有效文本判定与已完成单句音频保留/未完成句标 `failed` 规则；委托切换后不新增竞争读取 ASGI `receive()` 的任务，也不改变既有音色隔离。
+    - 剩余未完成：终态数据库落库、主音频 WAV 拼接计划与好感度结算的最终持久化策略仍在 [`stream_coordinator.py`](../../galgame2voice/services/chat_pipelines/stream_coordinator.py) 内联（同一轮只保存一次、只结算一次仍依赖协调器实例状态）；后台生产、合成与取消监听任务的生命周期及断连收束清理尚未统一收口；客户端断网兜底（`compute_disconnect_snapshot`）在仅有 `announced_lines` 而 `partial_chinese`/`partial_japanese` 为空时的部分落盘判据尚未与 `compute_early_exit_snapshot` 对齐。
 
 - [ ] **T06 / P2：让 SSE 和恢复接口契约可以被前后端共同核验。**
   - 证据：[`ai.js`](../../frontend/src/ai.js)、[`conversation.js`](../../frontend/src/conversation.js)、后端流式协调器及轮次恢复接口分别维护事件名、字段和身份判定。
   - 工作：从已有事件选小范围建立版本化样例/契约测试，先覆盖 `turn_started`、`done`、`line_audio` 和 `/api/chat/turn-reply`。无需为此整体迁移 TypeScript 或引入前端框架。
   - 验收：服务端输出样例由真实序列化器生成，前端消费同一样例；缺字段、冲突 ID、乱序、重复和未知事件有明确行为；修改协议时双方测试一起失败或一起更新。
+  - 阶段进展：
+    - 第一阶段（[PR #402](https://github.com/LevenST24/galgame2voice/pull/402)）：新增版本化共享契约样本 [`sse_turn_reply_v1.json`](../../tests/contracts/sse_turn_reply_v1.json)（`schema_version: "sse_turn_reply_v1"`）及后端 [`test_sse_contract_samples.py`](../../tests/test_sse_contract_samples.py)、前端 [`test_sse_contract_samples.mjs`](../../tests/test_sse_contract_samples.mjs) 双端契约测试，打通后端 [`sse.py`](../../galgame2voice/utils/sse.py) `format_sse_frame`、`sse_event_formatter`、`StreamCoordinator`、`get_turn_reply` 与前端 [`ai.js`](../../frontend/src/ai.js)、[`conversation.js`](../../frontend/src/conversation.js)、`resolveTurnReplyIdentity`、`createLineAudioRecovery` 对同一样本的生成与消费核验。
+    - 已覆盖验收：覆盖 `turn_started`、`line`、`audio_chunk`、`line_audio`、`done`（完整与截断）及 `/api/chat/turn-reply` 全部五种状态（`ready` / `pending` / `gone` / `ambiguous` / `unavailable`）的真实序列化输出与前端同源消费，并锁定了缺字段、冲突 ID、乱序、重复和未知事件五类边界在当前实现下的行为；破坏上述已覆盖字段或状态时双端测试会同步失败。
+    - 剩余未完成：[`conversation.js`](../../frontend/src/conversation.js) 在 `line_audio` 早于同句 `line` 乱序到达时未缓存回填该句音频状态（当前仅靠终态 `done.lines` 兜底修正），且对 `line_audio` 缺少合法行号或 `status` 尚未做与 [`ai.js`](../../frontend/src/ai.js) `isReplyProgress` 一致的防御校验；其余流式事件（`text`、`progress`、`voice_job`、`error`、`audio_chunk_error`）尚未纳入版本化共享契约。
 
 - [ ] **T07 / P2：测量用户实际听到第一句的等待时间。**
   - 证据：后端已有 `MetricsCollector`、TTFT、首个 TTS chunk 和排队均值。服务端生成首片段的时刻不等于浏览器开始播放的时刻。
   - 工作：复用 [`metrics_collector.py`](../../galgame2voice/services/metrics_collector.py) 和 [`audio_player.js`](../../frontend/src/audio_player.js)，用单轮时间线区分首字、首句、排队、合成、下载/解码、真正播放；样本有上限且不记录正文或密钥。
   - 验收：冷启动、热缓存、慢合成和网络抖动分别记录分布与环境；先拿到基线再决定缓冲或并行策略，不用固定 sleep 或模拟引擎成绩宣称真实提速。
+  - 阶段进展：
+    - 第一阶段（[PR #401](https://github.com/LevenST24/galgame2voice/pull/401)）：在 [`ai.js`](../../frontend/src/ai.js) 透传 SSE `done` 事件中的 `telemetry`（来自后端 [`profiler.py`](../../galgame2voice/utils/profiler.py) `ChatTurnProfiler`）与 `latency_ms`，并在 [`adv_app.js`](../../frontend/src/adv/adv_app.js)、[`main.js`](../../frontend/src/main.js) 与 [`index.html`](../../frontend/index.html) 诊断面板 `#g-dash-perf-summary` 中对接 [`audio_player.js`](../../frontend/src/audio_player.js) `StreamAudioController.playLine` 的 `onStart` 回调，建立容量上限为 5 轮的内存环形缓冲 `recentTurnTimelines`，配套单测 [`test_first_audio_timeline.mjs`](../../tests/test_first_audio_timeline.mjs)。
+    - 已覆盖验收：单轮时间线已记录请求发起、首字（`llm_first_token_ms`）、首句切出（`first_sentence_parsed_ms`）、首音就绪（`first_tts_ready_ms`）、浏览器真正开播（`first_audio_play_ms`）与整轮耗时（`total_ms`），覆盖首句无声跳至后续有声行、`done` 与 `onStart` 乱序到达、最多保留 5 轮上限且不记录对话正文或密钥、不发额外遥测请求。
+    - 剩余未完成：TTS 排队、合成、网络下载与 Web Audio 解码等细分阶段耗时拆分及 [`metrics_collector.py`](../../galgame2voice/services/metrics_collector.py) 汇聚/环境标签记录尚未补齐；后端 [`profiler.py`](../../galgame2voice/utils/profiler.py) 在整轮无音频生成时仍会将 `t5_app_ttfa_ms` 回退记为整轮耗时；冷启动、热缓存、慢合成和网络抖动四类场景下的真实环境分布基线采样及后续缓冲/并行策略评估**待维护者验收**。
 
 ## 测试与发布维护
 
@@ -71,6 +83,10 @@
   - 证据：[`frontend/package.json`](../../frontend/package.json) 的 `test` 是逐个文件维护的长命令；测试中仍有 `adversarial_m*`、`challenger` 等历史流程命名。
   - 工作：先建立明确的前端测试发现规则和排除清单，再按被测模块渐进改名/归档。避免一次重写全部测试或只为减少行数删除边界回归。
   - 验收：列出迁移前后同一测试集合；新增符合约定的测试自动执行；独立浏览器/素材/集成任务仍可单独运行；关键失败不会因 glob 或退出码处理漏掉。
+  - 阶段进展：
+    - 第一阶段（[PR #399](https://github.com/LevenST24/galgame2voice/pull/399)）：新增 [`run_tests.mjs`](../../frontend/run_tests.mjs) 与自检回归 [`test_frontend_test_discovery.mjs`](../../tests/test_frontend_test_discovery.mjs)，将 [`frontend/package.json`](../../frontend/package.json) 的 `npm test` 改为顶层 `tests/test_*.{mjs,js}` 按 ASCII 顺序自动发现（`discoverFrontendTests`）+ 显式冻结排除清单（`EXCLUDED_TESTS`）与临时探测前缀过滤（`TEMP_TEST_PREFIX_RE`）+ 逐文件独立 Node 子进程隔离执行。
+    - 已覆盖验收：核对了迁移前 61 个前端测试集合零遗漏（合并时含自检共 62 项，后续新增的合规前端测试已自动纳入执行），独立浏览器/素材/集成脚本与 `tests/helpers/` 保持隔离可单独运行，子进程非零退出码、信号中断与空目录发现失败均严格透传并短路阻断。
+    - 剩余未完成：`tests/` 下历史遗留的 `adversarial_m*`、`challenger`、`m*` 等里程碑/流程化测试文件（含前端 `test_m7_audio_lru_challenger2.js` 与后端 `test_adversarial_*` 等）尚未按被测业务模块渐进改名与归档。
 
 - [ ] **T12 / P2：为内部界面建立可重复的浏览器视觉验收。**
   - 证据：现有发布 smoke 验证设置 Tab、LOG、导出和音频地址等行为，尚不能证明立绘部件对齐、排版比例或所有滚动/遮挡场景符合审美。
