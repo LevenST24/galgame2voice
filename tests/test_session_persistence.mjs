@@ -5,7 +5,7 @@ import { mergeChatBackup, exportCompleteChatBackup } from '../frontend/src/chat_
 import { pickSettings, serverTimestamp, normalizeSnapshot, portableSnapshot } from '../frontend/src/session_data.js';
 import { renderSessionList } from '../frontend/src/ui.js';
 import { streamChat } from '../frontend/src/ai.js';
-import { DEFAULT_GLOBAL, DEFAULT_SESSION_SETTINGS, GREETING, LEGACY_GREETINGS, state, loadState, getSession, getActive, exportSessionData, prepareSessionImport, applySessionImport } from '../frontend/src/store.js';
+import { DEFAULT_GLOBAL, DEFAULT_SESSION_SETTINGS, GREETING, LEGACY_GREETINGS, state, loadState, saveState, getSession, getActive, exportSessionData, prepareSessionImport, applySessionImport } from '../frontend/src/store.js';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const response = data => ({ ok: true, json: async () => data });
@@ -613,6 +613,28 @@ async function exportPrefix(localSettings, localUpdatedAt) {
           lastLine: '# 标题*强调*`代码`\n超出二十六个字符之后的内容应当被干净截断显示',
           settings: {},
         },
+        {
+          id: 's_japanese_lines',
+          title: '纯日文台词lines会话',
+          createdAt: 1000,
+          updatedAt: 2000,
+          messages: [
+            { id: 'm_ja_u1', role: 'user', content: '你好', ts: 1000 },
+            { id: 'm_ja_a1', role: 'assistant', content: '', lines: [{ index: 0, zh: '', ja: 'おかえりなさい！', emotion: 'gentle' }], ts: 1001 },
+          ],
+          settings: {},
+        },
+        {
+          id: 's_japanese_field',
+          title: '纯日文台词japanese属性会话',
+          createdAt: 1000,
+          updatedAt: 2000,
+          messages: [
+            { id: 'm_ja_u2', role: 'user', content: '你好', ts: 1000 },
+            { id: 'm_ja_a2', role: 'assistant', content: '', japanese: 'ただいま。', ts: 1001 },
+          ],
+          settings: {},
+        },
       ],
       activeId: 's_sync_lastline',
       global: {},
@@ -646,10 +668,72 @@ async function exportPrefix(localSettings, localUpdatedAt) {
     assert.equal(previews[2], '你：测试消息内容', '有完整消息时优先使用最后一条消息');
     assert.equal(previews[3], '后备摘要文本', '最后一条消息内容为空时回退至 lastLine');
     assert.equal(previews[4], '# 标题*强调*`代码`\n超出二十六个字符之后的内容应当被干净截断显示'.replace(/[*`#\n]/g, ' ').slice(0, 26), 'lastLine 同样清理 Markdown 与换行并截断至26字');
+    assert.equal(previews[5], 'おかえりなさい！', '最新一条助手消息仅含 lines[].ja 时应展示日文台词摘要而非暂无消息');
+    assert.equal(previews[6], 'ただいま。', '最新一条助手消息仅含 japanese 属性时应展示日文台词摘要而非暂无消息');
 
     passed++;
   } finally {
     globalThis.document = prevDoc;
+  }
+}
+{
+  class QuotaStorage {
+    values = new Map();
+    limit = 100000;
+    getItem(key) { return this.values.get(key) ?? null; }
+    removeItem(key) { this.values.delete(key); }
+    setItem(key, value) {
+      if (value.length > this.limit) {
+        const err = new Error('quota');
+        err.name = 'QuotaExceededError';
+        throw err;
+      }
+      this.values.set(key, String(value));
+    }
+  }
+  const prevStorage = globalThis.localStorage;
+  const storage = new QuotaStorage();
+  globalThis.localStorage = storage;
+  const STORAGE_KEY = 'gal2voice.chat.v1';
+  try {
+    storage.values.set(STORAGE_KEY, JSON.stringify({
+      sessions: [
+        {
+          id: 's_active_now',
+          title: '当前会话',
+          createdAt: 2000,
+          updatedAt: 2000,
+          settings: {},
+          messages: [{ id: 'm_act', role: 'user', content: '继续聊天', ts: 2000 }],
+        },
+        {
+          id: 's_inactive_ja_only',
+          title: '日文兜底淘汰会话',
+          createdAt: 1000,
+          updatedAt: 1000,
+          settings: {},
+          messages: [
+            { id: 'm_ja_u', role: 'user', content: '你好', ts: 1000 },
+            { id: 'm_ja_a', role: 'assistant', content: '', japanese: 'ただいま。', ts: 1001 },
+          ],
+        },
+      ],
+      activeId: 's_active_now',
+      global: {},
+    }));
+    loadState();
+    const sInactive = state.sessions.find(s => s.id === 's_inactive_ja_only');
+    assert.equal(sInactive.lastLine, undefined);
+
+    const initialLen = storage.values.get(STORAGE_KEY).length;
+    const jaMessagesLen = JSON.stringify(sInactive.messages).length;
+    storage.limit = initialLen - Math.floor(jaMessagesLen * 0.5);
+    assert.equal(saveState(), true);
+    assert.equal(sInactive.messages.length, 0, 'inactive session messages evicted');
+    assert.equal(sInactive.lastLine, 'ただいま。', '配额超限淘汰 messages 时应回退提取 last.japanese 作为 lastLine');
+    passed++;
+  } finally {
+    globalThis.localStorage = prevStorage;
   }
 }
 console.log(`Session persistence and complete backups: ${passed} scenarios passed`);

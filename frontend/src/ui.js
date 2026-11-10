@@ -69,8 +69,10 @@ export function renderSessionList(container, { sessions, activeId, onSelect, onD
     item.setAttribute('role', 'button');
 
     const last = s.messages[s.messages.length - 1];
-    const preview = (last && last.content)
-      ? `${last.role === 'user' ? '你：' : ''}${last.content.replace(/[*`#\n]/g, ' ').slice(0, 26)}`
+    const lastLine = last?.lines?.findLast(item => String(item.zh || item.ja || '').trim());
+    const lastText = last && (last.content || lastLine?.zh || lastLine?.ja || last.japanese);
+    const preview = lastText
+      ? `${last.role === 'user' ? '你：' : ''}${lastText.replace(/[*`#\n]/g, ' ').slice(0, 26)}`
       : (s.lastLine ? s.lastLine.replace(/[*`#\n]/g, ' ').slice(0, 26) : '暂无消息');
 
     item.innerHTML = `
