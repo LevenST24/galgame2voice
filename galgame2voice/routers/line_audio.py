@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
 from galgame2voice.database import crud
+from galgame2voice.database.commit_hooks import after_commit
 from galgame2voice.database.models import ReplyLineRecord, TtsOptions
 from galgame2voice.database.session import get_db, get_database_path, immediate_transaction
 from galgame2voice.services.gpt_sovits_client import normalize_japanese_for_tts
@@ -153,7 +154,12 @@ async def regenerate_line(req: LineAudioRequest, request: Request, manager: Anno
         if storage_message:
             raise HTTPException(507, f"{storage_message}原音频与文字已保留。") from exc
         raise HTTPException(502, "这句语音暂时未能重新生成，原音频与文字已保留。请在设置中心的运行状态检查语音引擎后重试。") from exc
-    published = write_started = False
+    published = False
+
+    def mark_published():
+        nonlocal published
+        published = True
+
     try:
         if size <= 0:
             raise HTTPException(502, "生成的语音为空，原音频与文字已保留。请检查语音引擎后重试。")
@@ -195,7 +201,6 @@ async def regenerate_line(req: LineAudioRequest, request: Request, manager: Anno
                             lines = [validated.model_dump(exclude_unset=True)]
                         except ValidationError as exc:
                             raise HTTPException(422, "这句历史台词超出单句规格，无法生成规范台词记录，原音频与文字已保留。") from exc
-                        write_started = True
                         await conn.execute("UPDATE messages SET lines_json=?, audio_url='' WHERE id=? AND session_id=?",
                                            (json.dumps(lines, ensure_ascii=False), req.message_id, req.session_id))
                     else:
@@ -205,14 +210,19 @@ async def regenerate_line(req: LineAudioRequest, request: Request, manager: Anno
                         if await request.is_disconnected():
                             raise HTTPException(499, "语音生成已取消，原音频与文字已保留。")
                         line["audio"] = audio
-                        # From this point a cancellation may race a durable commit.
-                        # Keep the file even if the response cannot confirm the write.
-                        write_started = True
                         await conn.execute("UPDATE messages SET lines_json=?, audio_url='' WHERE id=? AND session_id=?",
                                            (json.dumps(lines, ensure_ascii=False), req.message_id, req.session_id))
+                    after_commit(conn, mark_published)
         published = True
         return {"session_id": req.session_id, "message_id": req.message_id, "line_index": req.line_index,
                 "voice_profile_id": req.voice_profile_id, "audio": audio, "persisted": req.message_id is not None}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        storage_message = describe_storage_error(exc)
+        if storage_message:
+            raise HTTPException(507, f"{storage_message}原音频与文字已保留。") from exc
+        raise
     finally:
-        if not published and not write_started:
+        if not published:
             await discard_repair_audio(service.audio_dir, path)
