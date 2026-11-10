@@ -14,6 +14,16 @@ export function formatHomeTime(value, now = new Date()) {
   return `${date.getFullYear() === now.getFullYear() ? '' : `${date.getFullYear()}年`}${date.getMonth() + 1}月${date.getDate()}日`;
 }
 
+function createInitialStatus() {
+  return {
+    modelLoaded: false,
+    engine: {
+      state: 'checking',
+      message: '正在核对语音引擎，可以先用文字聊天',
+    },
+  };
+}
+
 export function createTitleScreen(root, { actions = {}, documentObj = globalThis.document,
   matchMedia = globalThis.matchMedia, clock = globalThis, now = () => new Date() } = {}) {
   const doc = documentObj || root.ownerDocument;
@@ -53,7 +63,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
   root.appendChild(screen);
   let opened = false, destroyed = false, mode = 'home', page = 0, sessions = [], mainId = null;
   let recentOrder = [];
-  let status = { modelLoaded: false, engine: {} }, textOnly = false, draft = null;
+  let status = createInitialStatus(), textOnly = false, draft = null;
   let popup = null, popupButton = null, dropdown = null, dropdownButton = null;
   let timer = null, unsubscribe = null, revision = 0, previewRevision = 0, polling = null;
   let playing = false, playRevision = 0, listenButton = null, rendered = '';
@@ -403,7 +413,7 @@ export function createTitleScreen(root, { actions = {}, documentObj = globalThis
     if (opened || destroyed) return;
     opened = true; ++revision; screen.hidden = false; screen.removeAttribute('hidden');
     mode = 'home'; pane.hidden = false; load.hidden = true; textOnly = false;
-    status = { modelLoaded: false, engine: {} };
+    status = createInitialStatus();
     setStageHome(true); readSessions(); recentOrder = sessions.filter(s => s.id !== mainId).map(s => s.id);
     renderStatus(); renderPane(true); renderRecents(); focusPrimary();
     // Reconcile even a matching id: startup sync may have changed its settings
