@@ -17,6 +17,13 @@ import { requestJson } from '../request.js';
 import { needsModelSettings } from '../ui.js';
 export { advActions } from './actions.js';
 
+const MAX_TIMELINE_TURNS = 5;
+
+export function formatTurnTimelineEntry(entry) {
+  const fmt = v => (v != null && Number.isFinite(v) ? `${Math.round(v)}ms` : '--');
+  return `#${entry.turn_seq} 首字: ${fmt(entry.llm_first_token_ms)} | 首句切出: ${fmt(entry.first_sentence_parsed_ms)} | 首音就绪: ${fmt(entry.first_tts_ready_ms)} | 首音播放: ${fmt(entry.first_audio_play_ms)}`;
+}
+
 /** Mount one disposable renderer. Controller remains the sole history writer.
  * dom: { root, sidebar? }
  * deps: { controller, audio, getSession, voiceEnabled, loadPortrait, getCharacter,
@@ -41,6 +48,37 @@ export function mountAdv(dom, deps) {
   let portraitRevision = 0, portraitRequest = null, refreshTimer = null, refreshAttempted = false;
   let drawer = null, backlog = null, externalOverlay = false, savedFocus = null, temporarySkip = false;
   let voiceSequence = 0;
+  let turnSeq = 0, activeTurn = null;
+  const recentTurnTimelines = [];
+  function ensureActiveTurnEntry(turn) {
+    if (!turn.entry) {
+      turn.entry = {
+        turn_seq: turn.turn_seq,
+        request_start_ms: 0,
+        llm_first_token_ms: null,
+        first_sentence_parsed_ms: null,
+        first_tts_ready_ms: null,
+        first_audio_play_ms: null,
+        total_ms: null,
+      };
+      recentTurnTimelines.push(turn.entry);
+      if (recentTurnTimelines.length > MAX_TIMELINE_TURNS) {
+        recentTurnTimelines.shift();
+      }
+    }
+    return turn.entry;
+  }
+  function syncTelemetryPerfSummary() {
+    if (!dom.gDashPerfSummary) return;
+    if (recentTurnTimelines.length === 0) {
+      dom.gDashPerfSummary.textContent = '等待对话数据...';
+      return;
+    }
+    dom.gDashPerfSummary.textContent = [...recentTurnTimelines]
+      .reverse()
+      .map(formatTurnTimelineEntry)
+      .join('\n');
+  }
   const moved = new Map();
   const drafts = new Map();
   let replayToken = 0;
@@ -102,11 +140,22 @@ export function mountAdv(dom, deps) {
       deps.stopOtherVoice?.();
       const key = turnId;
       const sequence = ++voiceSequence;
+      const turnForLine = activeTurn;
+      const handleStart = () => {
+        if (turnForLine && turnForLine.first_audio_play_ms === null) {
+          const playMs = Math.max(0, Math.round(clock.now() - turnForLine.startedAtMs));
+          turnForLine.first_audio_play_ms = playMs;
+          const entry = ensureActiveTurnEntry(turnForLine);
+          entry.first_audio_play_ms = playMs;
+          syncTelemetryPerfSummary();
+        }
+        onStart?.();
+      };
       textbox.setVoice({ active: true });
       const lipSync = sprite.startLipSync({ audioPlayer: audio, characterVoice: true });
       let result;
       // playLine resumes a suspended context itself and gives up after a bounded wait.
-      try { result = await audio.playLine(index, chunks, { msgId: key, onStart }); }
+      try { result = await audio.playLine(index, chunks, { msgId: key, onStart: handleStart }); }
       catch { result = 'failed'; }
       if (!destroyed && key === turnId && sequence === voiceSequence) textbox.setVoice({ active: false });
       // A later line may own the mouth by now; this line's token cannot stop it.
@@ -741,6 +790,8 @@ export function mountAdv(dom, deps) {
     liveMessage = { ...event.assistantMessage, lines: [...event.assistantMessage.lines || []] };
     turnLines = liveMessage.lines;
     failedUser = event.userMessage; turnId = event.assistantMessage.id; storedTurnId = null; currentLine = null;
+    turnSeq += 1;
+    activeTurn = { turn_seq: turnSeq, startedAtMs: clock.now(), first_audio_play_ms: null, entry: null };
     textbox.setDraft(''); textbox.clearError();
     textbox.setSpeaker({ name: deps.getCharacter?.()?.name || '角色', mode: 'character' });
     player.startTurn(turnId); syncControls();
@@ -786,6 +837,22 @@ export function mountAdv(dom, deps) {
       syncControls();
       return;
     }
+    if (kind === 'done' && activeTurn) {
+      const telemetry = event.meta?.telemetry;
+      if (telemetry) {
+        const marks = telemetry.marks || telemetry;
+        const entry = ensureActiveTurnEntry(activeTurn);
+        const ttft = marks.llm_first_token ?? telemetry.t1_ttft_ms;
+        const firstSentence = marks.first_sentence_parsed ?? telemetry.t2_first_sentence_ms;
+        const firstTtsReady = marks.first_tts_ready ?? telemetry.t5_app_ttfa_ms;
+        const total = telemetry.total_ms ?? event.meta.latencyMs;
+        if (ttft != null) entry.llm_first_token_ms = Math.round(Number(ttft));
+        if (firstSentence != null) entry.first_sentence_parsed_ms = Math.round(Number(firstSentence));
+        if (firstTtsReady != null) entry.first_tts_ready_ms = Math.round(Number(firstTtsReady));
+        if (total != null) entry.total_ms = Math.round(Number(total));
+        syncTelemetryPerfSummary();
+      }
+    }
     player.settle(turnId, kind === 'done' ? { ok: true } : { kind, error: { message: event.error, code: event.code || event.kind } });
     syncControls();
   }));
@@ -800,8 +867,10 @@ export function mountAdv(dom, deps) {
   });
   loadBackgrounds();
   update();
+  syncTelemetryPerfSummary();
   return {
     update, player, textbox, sprite, stage, action, configPanel, background, bgPanel, closeDrawer,
+    getRecentTurnTimelines: () => recentTurnTimelines.map(item => ({ ...item })),
     prepareHome() {
       configPanel.close({ revert: true }); closeBgPanel(); closeLog(); closeDrawer();
       temporarySkip = false; ++replayToken;

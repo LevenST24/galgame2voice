@@ -114,6 +114,8 @@ export function streamChat({ prompt, sessionId, settings, preset, onChunk, onAud
       affection: (doneMeta && doneMeta.affection) || null,
       ttsParams: (doneMeta && doneMeta.tts_params) || null,
       ...(Number.isSafeInteger(doneMeta?.message_id) && doneMeta.message_id > 0 ? { messageId: doneMeta.message_id } : {}),
+      ...(doneMeta?.telemetry ? { telemetry: doneMeta.telemetry } : {}),
+      ...(Number.isFinite(doneMeta?.latency_ms) ? { latencyMs: doneMeta.latency_ms } : {}),
       lines: (doneMeta && Array.isArray(doneMeta.lines)) ? doneMeta.lines : null,
     });
   };
