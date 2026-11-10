@@ -2893,3 +2893,155 @@ test('LOG: user recording whose audio cache was evicted or missing resets .is-pl
   const newUserRecBtn = newUserEntry.querySelector('.adv-log-user-recording-btn');
   assert.equal(newUserRecBtn.classList.contains('is-playing'), false, 'reconstructed user recording button should not have .is-playing after renderAll()');
 });
+
+test('LOG: repaired legacy reply preserves .is-playing across renderAll() and cleans up on playback end', async t => {
+  const doc = fakeDocument();
+  const root = doc.createElement('div');
+  doc.body.appendChild(root);
+  const now = Date.now();
+
+  const legacyMsg = {
+    id: 901,
+    role: 'assistant',
+    content: '你好',
+    japanese: 'こんにちは',
+    audio_url: '',
+    ts: now - 8 * 86400000,
+  };
+
+  const session = {
+    id: 's_repaired_legacy_replay',
+    settings: { voiceProfileId: 1 },
+    messages: [legacyMsg],
+  };
+
+  let resolvePlay;
+  const log = createBacklog(root, {
+    getSession: () => session,
+    getSettings: () => DEFAULT_SESSION_SETTINGS,
+    getCharacter: () => ({ name: '角色' }),
+    voiceEnabled: () => true,
+    wallNow: () => now,
+    getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
+    audio: {
+      stopLine() {},
+      async playLine() {
+        return new Promise(r => { resolvePlay = r; });
+      },
+    },
+    regenerateLineAudio: async ({ messageId, lineIndex }) => {
+      const repairedAudio = {
+        status: 'ready',
+        generated_at: now,
+        voice_profile_id: 1,
+        chunks: [{ index: 0, line: 0, audio_url: '/audio/repair_901.wav', sentence: legacyMsg.japanese }],
+      };
+      const canonicalLine = {
+        index: 0,
+        zh: legacyMsg.content,
+        ja: legacyMsg.japanese,
+        emotion: 'neutral',
+        act: {},
+        audio: repairedAudio,
+      };
+      legacyMsg.lines = [canonicalLine];
+      return { line: canonicalLine, audio: repairedAudio, persisted: true, saved: true };
+    },
+  });
+  t.after(() => log.destroy());
+
+  let entry = root.querySelector('.adv-log-entry.is-assistant');
+  assert.ok(entry.classList.contains('is-legacy'), 'entry should initially be legacy');
+  let replayBtn = entry.querySelector('.adv-log-replay-btn');
+  let regenBtn = entry.querySelector('.adv-log-regenerate-btn');
+  assert.equal(replayBtn.disabled, true, 'unrepaired legacy entry replay button should be disabled');
+
+  // 1. Click regenerate button to repair
+  await regenBtn.onclick({ stopPropagation() {} });
+  assert.ok(legacyMsg.lines, 'legacyMsg now has lines');
+  assert.equal(replayBtn.disabled, false, 'replay button should be enabled after repair');
+
+  // 2. Click replay button to start playing
+  const playPromise = replayBtn.onclick({ stopPropagation() {} });
+  await microtasks();
+  assert.equal(replayBtn.classList.contains('is-playing'), true, 'replay button should have .is-playing before renderAll');
+
+  // 3. Trigger renderAll() while playback is in flight (message now renders via renderAssistantLineEntry)
+  log.renderAll();
+
+  const refreshedEntry = root.querySelector('.adv-log-entry.is-assistant');
+  assert.equal(refreshedEntry.classList.contains('is-legacy'), false, 're-rendered entry should now be line entry');
+  const refreshedReplayBtn = refreshedEntry.querySelector('.adv-log-replay-btn');
+  assert.notEqual(refreshedReplayBtn, replayBtn, 'entry should have been reconstructed in DOM');
+
+  // 4. Assert that reconstructed button preserves .is-playing class
+  assert.equal(
+    refreshedReplayBtn.classList.contains('is-playing'),
+    true,
+    'refreshed replay button MUST preserve is-playing state across renderAll()'
+  );
+
+  // 5. Complete audio playback and assert .is-playing is removed
+  resolvePlay('ended');
+  await playPromise;
+  await microtasks();
+  assert.equal(
+    refreshedReplayBtn.classList.contains('is-playing'),
+    false,
+    'refreshed replay button should clear .is-playing on playback end'
+  );
+
+  // Sub-case B: Replaying again, but stopped via stopReplay() after renderAll()
+  const playPromise2 = refreshedReplayBtn.onclick({ stopPropagation() {} });
+  await microtasks();
+  assert.equal(refreshedReplayBtn.classList.contains('is-playing'), true);
+
+  log.renderAll();
+  const refreshedEntry2 = root.querySelector('.adv-log-entry.is-assistant');
+  const refreshedReplayBtn2 = refreshedEntry2.querySelector('.adv-log-replay-btn');
+  assert.equal(refreshedReplayBtn2.classList.contains('is-playing'), true);
+
+  log.stopReplay();
+  assert.equal(refreshedReplayBtn2.classList.contains('is-playing'), false, 'stopReplay() clears .is-playing on re-rendered button');
+
+  // Sub-case C: Legacy reply starts playing BEFORE msg.lines exists, then msg.lines is added and renderAll() is triggered
+  const legacyMsg2 = {
+    id: 902,
+    role: 'assistant',
+    content: '旧消息2',
+    japanese: '古いメッセージ2',
+    audioUrls: ['/audio/legacy_902.wav'],
+    ts: now,
+  };
+  session.messages.push(legacyMsg2);
+  log.renderAll();
+
+  const legacyEntry2 = [...root.querySelectorAll('.adv-log-entry.is-assistant')].find(e => e.dataset.msgId === '902');
+  assert.ok(legacyEntry2.classList.contains('is-legacy'));
+  const legacyReplayBtn2 = legacyEntry2.querySelector('.adv-log-replay-btn');
+
+  const playPromise3 = legacyReplayBtn2.onclick({ stopPropagation() {} });
+  await microtasks();
+  assert.equal(legacyReplayBtn2.classList.contains('is-playing'), true);
+
+  // During playback, message is upgraded with msg.lines and renderAll() is triggered
+  legacyMsg2.lines = [{
+    index: 0,
+    zh: legacyMsg2.content,
+    ja: legacyMsg2.japanese,
+    emotion: 'neutral',
+    act: {},
+    audio: { status: 'ready', chunks: [{ index: 0, line: 0, audio_url: '/audio/legacy_902.wav', sentence: legacyMsg2.japanese }] },
+  }];
+  log.renderAll();
+
+  const refreshedLineEntry2 = [...root.querySelectorAll('.adv-log-entry.is-assistant')].find(e => e.dataset.msgId === '902');
+  assert.equal(refreshedLineEntry2.classList.contains('is-legacy'), false);
+  const refreshedLineReplayBtn2 = refreshedLineEntry2.querySelector('.adv-log-replay-btn');
+  assert.equal(refreshedLineReplayBtn2.classList.contains('is-playing'), true, 'line entry upgrades legacy replay key and preserves is-playing');
+
+  resolvePlay('ended');
+  await playPromise3;
+  await microtasks();
+  assert.equal(refreshedLineReplayBtn2.classList.contains('is-playing'), false, 'upgraded replay button clears is-playing on playback end');
+});
