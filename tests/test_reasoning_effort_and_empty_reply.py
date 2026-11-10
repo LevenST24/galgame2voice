@@ -44,6 +44,7 @@ from galgame2voice.utils.error_diagnostics import (
     EMPTY_REPLY_STOPPED_ON_LENGTH,
     EmptyReplyError,
     STREAM_TRUNCATED_CONTENT_FILTERED,
+    STREAM_TRUNCATED_ON_LENGTH,
     diagnose_llm_error,
     chat_error_payload,
 )
@@ -1075,6 +1076,104 @@ async def test_telegram_partial_reply_content_filtered_notice(tmp_path, monkeypa
         assert len(sent) == 1
 
     await service.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("finish_reason", "expect_notice"),
+    [("length", True), ("MAX_TOKENS", True), ("max_tokens", True), ("stop", False), (None, False)],
+)
+async def test_telegram_partial_reply_length_notice(tmp_path, monkeypatch, finish_reason, expect_notice):
+    """A partial reply cut by the max length is followed by a notice; normal endings add nothing."""
+    db_file = tmp_path / f"tg_partial_len_{finish_reason}.db"
+    await init_db(db_file)
+
+    service = ChatService(db_path=str(db_file))
+    raw_text = '{"lines": [{"zh": "你好呀，我想说", "ja": "こんにちは"}]}'
+    service.get_active_llm_adapter = AsyncMock(
+        return_value=(
+            SimpleNamespace(
+                chat=AsyncMock(return_value=SimpleNamespace(content=raw_text)),
+                stream_chat=AsyncMock(),
+                last_finish_reason=finish_reason,
+            ),
+            "test_model",
+            "custom",
+        )
+    )
+    service._get_active_llm_adapter = service.get_active_llm_adapter
+    service.memory_service.process_user_message = AsyncMock()
+    service.prepare_messages = AsyncMock(return_value=[])
+    service.affection_service.handle_turn_affection = AsyncMock(return_value={"emotion": "gentle"})
+
+    handlers = TelegramBotHandlers(chat_service=service, db_path=str(db_file))
+    bot = SimpleNamespace(send_message=AsyncMock(), send_chat_action=AsyncMock())
+    monkeypatch.setattr(handlers, "_spawn_background_voice_task", lambda *args, **kwargs: None)
+
+    task = await handlers.process_text_chat(890, "长问题", bot)
+    if task:
+        await task
+
+    sent = [call.kwargs["text"] for call in bot.send_message.call_args_list]
+    assert sent[0] == "你好呀，我想说"
+    if expect_notice:
+        assert sent[1:] == [STREAM_TRUNCATED_ON_LENGTH]
+    else:
+        assert len(sent) == 1
+
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_telegram_partial_reply_unclosed_json_ignores_lines_truncated(tmp_path, monkeypatch):
+    """Lines truncated due to unclosed JSON without a length finish reason must not trigger truncation notice."""
+    db_file = tmp_path / "tg_unclosed_len.db"
+    await init_db(db_file)
+
+    service = ChatService(db_path=str(db_file))
+    raw_unclosed = '{"lines": [{"zh": "半截文本", "ja": "途中"}], "unclosed'
+    adapter = SimpleNamespace(
+        chat=AsyncMock(return_value=SimpleNamespace(content=raw_unclosed)),
+        stream_chat=AsyncMock(),
+        last_finish_reason="stop",
+    )
+    service.get_active_llm_adapter = AsyncMock(return_value=(adapter, "test_model", "custom"))
+    service._get_active_llm_adapter = service.get_active_llm_adapter
+    service.memory_service.process_user_message = AsyncMock()
+    service.prepare_messages = AsyncMock(return_value=[])
+    service.affection_service.handle_turn_affection = AsyncMock(return_value={"emotion": "gentle"})
+
+    handlers = TelegramBotHandlers(chat_service=service, db_path=str(db_file))
+    bot = SimpleNamespace(send_message=AsyncMock(), send_chat_action=AsyncMock())
+    monkeypatch.setattr(handlers, "_spawn_background_voice_task", lambda *args, **kwargs: None)
+
+    # With finish_reason="stop", even if parser.lines_truncated is True, no notice should be sent
+    await handlers.process_text_chat(892, "残缺格式", bot)
+    sent = [call.kwargs["text"] for call in bot.send_message.call_args_list]
+    assert sent == ["半截文本"]
+
+    # When finish_reason is "length", the notice must be appended
+    bot.send_message.reset_mock()
+    adapter.last_finish_reason = "length"
+    await handlers.process_text_chat(892, "残缺且超长", bot)
+    sent_len = [call.kwargs["text"] for call in bot.send_message.call_args_list]
+    assert sent_len == ["半截文本", STREAM_TRUNCATED_ON_LENGTH]
+
+    await service.aclose()
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "MAX_TOKENS", "max_tokens"])
+def test_stream_length_truncation_text_matches_constant(finish_reason):
+    from galgame2voice.adapters.base import validate_stream_completion
+    from galgame2voice.utils.error_diagnostics import StreamTruncatedError
+
+    with pytest.raises(StreamTruncatedError) as exc_info:
+        validate_stream_completion(yielded_any=True, saw_terminal=True, finish_reason=finish_reason)
+    assert exc_info.value.stopped_on_length is True
+    assert str(exc_info.value) == STREAM_TRUNCATED_ON_LENGTH
+    assert STREAM_TRUNCATED_ON_LENGTH == (
+        "模型输出达到最大长度限制，回复未能完整生成。建议调大「最大生成长度」或降低「思考强度」。"
+    )
 
 
 @pytest.mark.asyncio
