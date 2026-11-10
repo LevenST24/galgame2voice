@@ -1,5 +1,8 @@
 // 设置模块辅助函数：提供商诊断解析、预设回退与表单辅助
 
+// 状态码按完整数字匹配：前后不能紧挨字母、数字或下划线，避免用量数字、请求 ID 里的片段误中。
+const hasCode = (text, code) => new RegExp('\\b' + code + '\\b').test(text);
+
 /**
  * 针对各主流 LLM 提供商生成清晰明确的中文排错与解决指引
  * 重点覆盖：xAI (Grok)、Gemini、DeepSeek、OpenAI、Claude 等
@@ -16,9 +19,9 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
   // 鉴权关键词只看错误标题：后端的建议文本常泛泛提到 API Key，不能据此判成鉴权失败。
   const head = msg.toLowerCase();
 
-  const isParamError = /400/.test(lower) && /reasoning_effort|thinking level|thinking_?config/.test(lower) && /not supported|unsupported|invalid|unknown|unrecognized|not allowed|not permitted/.test(lower);
-  const isContextLength = /context_length_exceeded|maximum context length|context length|context_window|context.*limit|超出.*上下文|上下文.*(?:超出|超长|超限|限制)/.test(lower) || (/400/.test(lower) && /上下文/.test(lower));
-  const isInsufficientBalance = /\b402\b|payment required/.test(lower) || (!/\b429\b/.test(lower) && /insufficient balance|余额不足|账户余额/.test(lower));
+  const isParamError = hasCode(lower, '400') && /reasoning_effort|thinking level|thinking_?config/.test(lower) && /not supported|unsupported|invalid|unknown|unrecognized|not allowed|not permitted/.test(lower);
+  const isContextLength = /context_length_exceeded|maximum context length|context length|context_window|context.*limit|超出.*上下文|上下文.*(?:超出|超长|超限|限制)/.test(lower) || (hasCode(lower, '400') && /上下文/.test(lower));
+  const isInsufficientBalance = hasCode(lower, '402') || /payment required/.test(lower) || (!hasCode(lower, '429') && /insufficient balance|余额不足|账户余额/.test(lower));
   const hasAuthNegation = /(?:无需|不必|不用|不需要)(?:修改|更换|重新|更改|检查|重置|配置|调整|更新|变更)?.*(?:api\s*key|key|密钥|凭据|鉴权)/i.test(lower) || /无需(?:修改|更换|重新配置)/.test(lower);
 
   // 若后端已有结构化诊断，优先结合提供商特色进行润色
@@ -38,21 +41,21 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
       title = '连接被拒绝';
     } else if (/connecterror|connection failed|网络连接失败|connection reset|中途断开|连接中断/.test(lower)) {
       title = '网络连接失败';
-    } else if (lower.includes('503') || lower.includes('529') || /overload|过载|繁忙/.test(lower)) {
+    } else if (hasCode(lower, '503') || hasCode(lower, '529') || /overload|过载|繁忙/.test(lower)) {
       title = '服务暂时繁忙 (503/529)';
-    } else if (/\b429\b/.test(lower) || lower.includes('quota') || lower.includes('rate')) {
+    } else if (hasCode(lower, '429') || lower.includes('quota') || lower.includes('rate')) {
       title = '请求受限或额度不足 (429)';
-    } else if (lower.includes('403')) {
+    } else if (hasCode(lower, '403')) {
       title = '访问受限或权限不足 (403)';
     } else if (
-      lower.includes('401') ||
+      hasCode(lower, '401') ||
       lower.includes('unauthorized') ||
       lower.includes('invalid api key') ||
       lower.includes('incorrect api key') ||
       ((head.includes('key') || head.includes('auth') || head.includes('密钥') || head.includes('鉴权') || head.includes('身份验证')) && !hasAuthNegation)
     ) {
       title = 'API Key 凭据鉴权未通过';
-    } else if (lower.includes('404') || ((lower.includes('model') || lower.includes('模型')) && /not found|not_found|does not exist|不存在|找不到|未找到|no such model|unknown model/.test(lower))) {
+    } else if (hasCode(lower, '404') || ((lower.includes('model') || lower.includes('模型')) && /not found|not_found|does not exist|不存在|找不到|未找到|no such model|unknown model/.test(lower))) {
       title = /model|模型/.test(lower) && !/404 not found|page not found|endpoint|路径/.test(lower)
         ? '模型名称不存在 (HTTP 404)'
         : '接口地址未找到 (HTTP 404)';
@@ -87,12 +90,12 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
   // 1. 401 密钥鉴权失败
   else if (
     !hasAuthNegation && (
-      lower.includes('401') ||
+      hasCode(lower, '401') ||
       lower.includes('invalid api key') ||
       lower.includes('authentication failed') ||
       lower.includes('unauthorized') ||
       lower.includes('incorrect api key') ||
-      (lower.includes('400') && (
+      (hasCode(lower, '400') && (
         lower.includes('api_key') ||
         lower.includes('api key') ||
         lower.includes('incorrect api key') ||
@@ -124,7 +127,7 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
     }
   }
   // 2. 403 权限不足或地区受限
-  else if (lower.includes('403') || lower.includes('permission denied') || lower.includes('forbidden') || lower.includes('country')) {
+  else if (hasCode(lower, '403') || lower.includes('permission denied') || lower.includes('forbidden') || lower.includes('country')) {
     title = '访问受限或地区限制 (HTTP 403)';
     if (pid === 'xai' || pid === 'gemini' || pid === 'anthropic') {
       guidance = `HTTP 403 Forbidden：${providerId.toUpperCase()} 限制了当前 IP 所在地或账户权限。请确保代理工具已开启全局/分流，并确认该账户已开通该模型访问权限。`;
@@ -133,7 +136,7 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
     }
   }
   // 3. 429 频率超限或额度耗尽
-  else if (lower.includes('429') || lower.includes('rate limit') || lower.includes('quota') || lower.includes('too many requests')) {
+  else if (hasCode(lower, '429') || lower.includes('rate limit') || lower.includes('quota') || lower.includes('too many requests')) {
     title = '请求受限或账户额度耗尽 (HTTP 429)';
     if (pid === 'xai') {
       guidance = 'xAI (Grok) 速率超限或余额不足：请前往 xAI 控制台 (https://console.x.ai) 检查账单与充值状态。';
@@ -144,12 +147,12 @@ export function formatProviderDiagnostic(providerId, rawMessage, backendDiagnost
     }
   }
   // 3.5. 503/529 服务过载或繁忙
-  else if (lower.includes('503') || lower.includes('529') || /overload|过载|繁忙/.test(lower)) {
+  else if (hasCode(lower, '503') || hasCode(lower, '529') || /overload|过载|繁忙/.test(lower)) {
     title = '服务暂时繁忙 (HTTP 503/529)';
     guidance = '模型服务当前过载或暂时繁忙，请稍后重试。通常无需修改配置。';
   }
   // 4. 404 模型不存在或路径错误
-  else if (lower.includes('404') || lower.includes('not found') || lower.includes('model not found')) {
+  else if (hasCode(lower, '404') || lower.includes('not found') || lower.includes('model not found')) {
     const isModel = /model|模型/.test(lower) && !/404 not found|page not found|endpoint|路径/.test(lower);
     title = isModel ? '模型名称不存在 (HTTP 404)' : '接口地址未找到 (HTTP 404)';
     guidance = isModel
