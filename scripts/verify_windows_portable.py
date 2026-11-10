@@ -52,7 +52,7 @@ def verify_archive(
             raise ValueError("Bundled runtime is missing")
         if not any(PYTHON_RUNTIME_DLL_RE.match(name) for name in files):
             raise ValueError("Bundled Python runtime DLL is missing")
-        for folder in ("data", "audio", "logs", "characters"):
+        for folder in ("data", "audio", "logs", "characters", "backgrounds"):
             actual = {name for name in files if name.casefold().startswith(f"{PREFIX}{folder}/".casefold())}
             if actual != {f"{PREFIX}{folder}/.keep"}:
                 raise ValueError(f"Release {folder}/ must contain only .keep")
