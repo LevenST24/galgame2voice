@@ -455,6 +455,19 @@ class TestSilenceCalibrationRestart:
 
     def test_silence_calibration_does_not_spawn_while_the_port_is_busy(self, tmp_path, monkeypatch):
         proc, engine = self._install_owned_engine(tmp_path, monkeypatch)
+        pid_file = tmp_path / "gptsovits.pid"
+        pid_file.write_text(str(proc.pid), encoding="utf-8")
+        endpoint = parse_sovits_endpoint(f"http://{self.HOST}:{self.PORT}", source="db")
+
+        async def resolve():
+            return endpoint
+
+        async def probe(*_args, **_kwargs):
+            return SimpleNamespace(status="unreachable")
+
+        monkeypatch.setattr(health, "resolve_effective_sovits_endpoint", resolve)
+        monkeypatch.setattr(health, "_probe_gpt_sovits", probe)
+
         spawned = []
 
         def terminate(pid, timeout=2.0):
@@ -473,6 +486,54 @@ class TestSilenceCalibrationRestart:
             engine, self.HOST, self.PORT, True, "default", device="cuda"
         )
         assert spawned == [], spawned
+        assert run_server._SPAWNED_SOVITS_PROC is None
+        assert run_server._SPAWNED_SOVITS_LAUNCH is None
+        assert run_server._SPAWNED_SOVITS_STARTED_AT is None
+        assert not pid_file.exists()
+
+        status = asyncio.run(health.engine_status_endpoint())
+        assert status["state"] == "unavailable", status
+        assert "退出" not in status["message"]
+
+    def test_silence_calibration_clears_managed_state_when_replacement_spawn_raises(
+        self, tmp_path, monkeypatch
+    ):
+        proc, engine = self._install_owned_engine(tmp_path, monkeypatch)
+        pid_file = tmp_path / "gptsovits.pid"
+        pid_file.write_text(str(proc.pid), encoding="utf-8")
+        endpoint = parse_sovits_endpoint(f"http://{self.HOST}:{self.PORT}", source="db")
+
+        async def resolve():
+            return endpoint
+
+        async def probe(*_args, **_kwargs):
+            return SimpleNamespace(status="unreachable")
+
+        monkeypatch.setattr(health, "resolve_effective_sovits_endpoint", resolve)
+        monkeypatch.setattr(health, "_probe_gpt_sovits", probe)
+
+        def terminate(pid, timeout=2.0):
+            assert pid == proc.pid
+            proc.poll.return_value = 1
+
+        def failing_spawn(*_args, **_kwargs):
+            raise OSError("spawn failed")
+
+        monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
+        monkeypatch.setattr(run_server, "is_port_in_use", lambda *_a, **_k: False)
+        monkeypatch.setattr(run_server, "_probe_synth_peak", lambda *_a, **_k: 0.0)
+        monkeypatch.setattr(run_server, "_spawn_sovits_process", failing_spawn)
+        run_server._calibrate_precision_after_ready(
+            engine, self.HOST, self.PORT, True, "default", device="cuda"
+        )
+        assert run_server._SPAWNED_SOVITS_PROC is None
+        assert run_server._SPAWNED_SOVITS_LAUNCH is None
+        assert run_server._SPAWNED_SOVITS_STARTED_AT is None
+        assert not pid_file.exists()
+
+        status = asyncio.run(health.engine_status_endpoint())
+        assert status["state"] == "unavailable", status
+        assert "退出" not in status["message"]
 
     def test_fp32_restart_waits_for_port_and_settle_before_probing(self, tmp_path, monkeypatch):
         monkeypatch.setattr(health, "_engine_restart_lock", threading.Lock())

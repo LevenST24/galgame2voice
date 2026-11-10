@@ -1135,7 +1135,7 @@ def _calibrate_precision_after_ready(
         return _probe_synth_peak(host, port)
 
     def restart(new_is_half: bool):
-        global _SPAWNED_SOVITS_PROC
+        global _SPAWNED_SOVITS_PROC, _SPAWNED_SOVITS_LAUNCH, _SPAWNED_SOVITS_STARTED_AT
         from galgame2voice.routers import health
         from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client
         from galgame2voice.services.sovits_endpoint import parse_sovits_endpoint
@@ -1162,6 +1162,11 @@ def _calibrate_precision_after_ready(
                 if not is_port_in_use(port, host):
                     port_released = True
                     break
+            if old is not None:
+                _SPAWNED_SOVITS_PROC = None
+                _SPAWNED_SOVITS_LAUNCH = None
+                _SPAWNED_SOVITS_STARTED_AT = None
+                (PROJECT_ROOT / "gptsovits.pid").unlink(missing_ok=True)
             if not port_released:
                 print(f"      [WARN] 旧 GPT-SoVITS 进程未在 10 秒内释放端口 {port}，取消拉起新进程。")
                 return None
