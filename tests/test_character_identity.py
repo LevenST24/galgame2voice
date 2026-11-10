@@ -1188,6 +1188,42 @@ async def test_update_persona_disk_full_keeps_original_error_when_rollback_also_
 
 
 @pytest.mark.asyncio
+async def test_update_persona_db_failure_then_rollback_failure_does_not_claim_rollback(
+    ann_package, monkeypatch,
+):
+    import errno
+    import sqlite3
+
+    client, ann, manifest_path, original_prompt = ann_package
+    real_write_bytes = Path.write_bytes
+    new_prompt = "新的人设内容：写库失败且回滚也失败"
+
+    # 保存用 write_text 写 manifest.json.tmp，回滚用 write_bytes；只让回滚那一步写不进去
+    def write_bytes(self, *args, **kwargs):
+        if self.name == "manifest.json.tmp":
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write_bytes(self, *args, **kwargs)
+
+    async def fail_update_voice_profile(*args, **kwargs):
+        monkeypatch.setattr(Path, "write_bytes", write_bytes)
+        raise sqlite3.OperationalError("database or disk is full")
+
+    monkeypatch.setattr("galgame2voice.routers.characters.crud.update_voice_profile", fail_update_voice_profile)
+
+    response = await client.put(
+        f"/api/characters/{ann['id']}/system-prompt",
+        json={"system_prompt": new_prompt},
+    )
+
+    assert response.status_code == 500, response.text
+    detail = response.json()["detail"]
+    assert "人设保存到数据库失败" in detail
+    assert "角色包文件未能回滚" in detail
+    assert "已回滚角色包修改" not in detail
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["system_prompt"] == new_prompt
+
+
+@pytest.mark.asyncio
 async def test_update_persona_db_failure_standalone_profile(
     project, isolate_test_database, monkeypatch,
 ):
