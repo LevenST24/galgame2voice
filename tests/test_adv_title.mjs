@@ -411,6 +411,41 @@ test('home shows an in-flight launch change as unconfirmed, not disconnected', a
   );
 });
 
+test('opening home shows voice pill as checking and unconfirmed before first engine status response arrives', async t => {
+  let resolveStatus;
+  const statusPromise = new Promise(resolve => { resolveStatus = resolve; });
+  const h = await fixture(t, {
+    actions: {
+      getStatus: () => statusPromise,
+    },
+  });
+
+  const voice = voicePill(h);
+  const dot = voice.querySelector('.home-dot');
+  const label = textTree(voice);
+
+  assert.equal(dot.className, 'home-dot warn');
+  assert.match(label, /语音 待确认/);
+  assert.doesNotMatch(label, /未连接/);
+  assert.equal(h.q('.home-notice').textContent, '正在核对语音引擎，可以先用文字聊天');
+
+  voice.click();
+  const popover = textTree(h.q('.home-popover'));
+  assert.match(popover, /正在核对语音引擎，可以先用文字聊天/);
+  assert.doesNotMatch(popover, /语音引擎未连接/);
+
+  resolveStatus({
+    ...readyModel,
+    engine: { state: 'unavailable' },
+  });
+  await microtasks();
+
+  assert.equal(dot.className, 'home-dot bad');
+  assert.match(textTree(voice), /语音 未连接/);
+  assert.equal(h.q('.home-notice').textContent, '语音引擎未连接，可以先用文字聊天');
+  assert.match(textTree(h.q('.home-popover')), /语音引擎未连接，可以先用文字聊天/);
+});
+
 test('all sessions paginate, show image/title/last line/time, return and load via nested spans', async t => {
   const h = await fixture(t); h.q('.home-all').click(); assert.equal(h.ui.loadScreen.hidden, false);
   assert.equal(h.ui.element.querySelectorAll('.adv-title-slot').length, 6); assert.equal(h.q('.adv-title-thumb-image').src, '/fake.webp');
