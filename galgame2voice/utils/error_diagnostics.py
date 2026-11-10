@@ -41,6 +41,7 @@ CONTENT_FILTER_FINISH_REASONS = (
 )
 EMPTY_REPLY_CONTENT_FILTERED = "模型输出触发了服务商内容安全过滤，未能生成回复。可以调整表达后重试或更换模型。"
 STREAM_TRUNCATED_CONTENT_FILTERED = "模型输出触发了服务商内容安全过滤，回复未能完整生成。可以调整表达后重试或更换模型。"
+STREAM_TRUNCATED_ON_LENGTH = "模型输出达到最大长度限制，回复未能完整生成。建议调大「最大生成长度」或降低「思考强度」。"
 
 
 EMPTY_REPLY_STOPPED_ON_LENGTH = (

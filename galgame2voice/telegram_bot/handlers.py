@@ -52,6 +52,7 @@ from galgame2voice.utils.error_diagnostics import (
     EMPTY_REPLY_DEFAULT,
     EMPTY_REPLY_STOPPED_ON_LENGTH,
     STREAM_TRUNCATED_CONTENT_FILTERED,
+    STREAM_TRUNCATED_ON_LENGTH,
 )
 from galgame2voice.telegram_bot.console_menus import (
     ADMIN_CALLBACK_ACTIONS,
@@ -1006,8 +1007,11 @@ class TelegramBotHandlers:
 
                 # 3. Send text reply immediately
                 await bot.send_message(chat_id=chat_id, text=display_chinese)
-                if getattr(adapter, "last_finish_reason", None) in CONTENT_FILTER_FINISH_REASONS:
+                finish_reason = getattr(adapter, "last_finish_reason", None)
+                if finish_reason in CONTENT_FILTER_FINISH_REASONS:
                     await bot.send_message(chat_id=chat_id, text=STREAM_TRUNCATED_CONTENT_FILTERED)
+                elif finish_reason in ("length", "MAX_TOKENS", "max_tokens"):
+                    await bot.send_message(chat_id=chat_id, text=STREAM_TRUNCATED_ON_LENGTH)
 
                 # 4. Immediately persist assistant message to DB & process affection progression
                 lines = (

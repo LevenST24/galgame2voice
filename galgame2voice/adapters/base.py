@@ -323,10 +323,13 @@ def validate_stream_completion(
     Raises StreamIncompleteError if the stream ended abruptly without any terminal signal.
     """
     if yielded_any and finish_reason in length_reasons:
-        from galgame2voice.utils.error_diagnostics import StreamTruncatedError
+        from galgame2voice.utils.error_diagnostics import (
+            STREAM_TRUNCATED_ON_LENGTH,
+            StreamTruncatedError,
+        )
 
         raise StreamTruncatedError(
-            "模型输出达到最大长度限制，回复未能完整生成。建议调大「最大生成长度」或降低「思考强度」。",
+            STREAM_TRUNCATED_ON_LENGTH,
             stopped_on_length=True,
         )
     if yielded_any and finish_reason in content_filter_reasons:
