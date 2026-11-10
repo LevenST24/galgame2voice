@@ -248,6 +248,7 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     gDashDeviceVal: $('gDashDeviceVal'),
     gDashHardwareVal: $('gDashHardwareVal'),
     gDashUptimeVal: $('gDashUptimeVal'),
+    gDashPerfSummary: $('g-dash-perf-summary'),
     gDashCacheVal: $('gDashCacheVal'),
     gDashRetentionVal: $('gDashRetentionVal'),
     gBtnClearCache: $('gBtnClearCache'),
