@@ -346,7 +346,8 @@ export function createBacklog(container, deps = {}) {
 
     refreshAudioState();
 
-    if (hasVoice && activeReplayKey === lineKey) {
+    if (hasVoice && (activeReplayKey === lineKey || (line.index === 0 && activeReplayKey === `legacy:${msg.id}`))) {
+      activeReplayKey = lineKey;
       replayBtn.classList.add('is-playing');
       activeReplayButton = replayBtn;
     }
@@ -535,7 +536,7 @@ export function createBacklog(container, deps = {}) {
 
     refreshAudioState();
 
-    if (hasVoice && activeReplayKey === legacyReplayKey) {
+    if (hasVoice && (activeReplayKey === legacyReplayKey || activeReplayKey === lineKey)) {
       replayBtn.classList.add('is-playing');
       activeReplayButton = replayBtn;
     }
@@ -556,7 +557,7 @@ export function createBacklog(container, deps = {}) {
 
       stopReplay();
       const thisReplay = replaySequence;
-      activeReplayKey = legacyReplayKey;
+      activeReplayKey = repairedLine ? lineKey : legacyReplayKey;
       activeReplayButton = replayBtn;
       replayBtn.classList.add('is-playing');
 
