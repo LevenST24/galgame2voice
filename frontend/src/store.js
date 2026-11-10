@@ -134,7 +134,7 @@ export function saveState() {
           evicted.push({ session: s, messages: s.messages, lastLine: s.lastLine });
           if (!s.lastLine) {
             const last = s.messages.at(-1);
-            s.lastLine = last?.lines?.at(-1)?.zh || last?.lines?.at(-1)?.ja || last?.content || '';
+            s.lastLine = last?.lines?.at(-1)?.zh || last?.lines?.at(-1)?.ja || last?.content || last?.japanese || '';
           }
           s.messages = [];
           next = JSON.stringify(snapshot());
