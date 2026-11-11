@@ -10,6 +10,7 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ### Changed
 
+- 自动扫描模型与参考音频时，项目目录下的数据目录与音频目录不再被重复遍历第二、三遍，音频较多时扫描更快。
 - 完成全局设置控制器业务职责与生命周期解耦（T04 收口）：将遥测轮询与硬件卡片渲染、GPT-SoVITS 引擎精度/重启/缓存清理，以及 Telegram 开关/可见性/验证与测试逻辑分别抽离至独立的 `TelemetrySettingsController`（`telemetry_settings.js`）、`EngineSettingsController`（`engine_settings.js`）与 `TelegramSettingsController`（`telegram_settings.js`）；`global_settings.js` 保持公共兼容门面与配置草稿协调；每个控制器实例独立拥有 AbortController、代数守卫、定时器与事件解绑；`initGlobalSettings` 在重新初始化时显式释放旧控制器与旧监听器，消除了旧请求回写新 DOM、覆盖忙碌状态、旧重启阻塞新操作或重复绑定导致多次调用的缺陷。
 - 拆分设置控制器第一阶段（Phase 1，PR294）：将大模型提供商表单、参数草稿与读取状态、模型与密钥展示、连通性测试及保存启用逻辑从 `global_settings.js` 抽离至实例拥有的 `ProviderSettingsController`（`provider_settings.js`），保持原有页脚保存预约顺序、版本守卫与草稿隔离语义。
 
