@@ -551,7 +551,10 @@ class TestSmokeWindowsUi(unittest.TestCase):
             try:
                 port_file = profile_dir / "DevToolsActivePort"
                 cdp_port = None
-                for _ in range(100):
+                # Same 15 s budget as scripts/smoke_windows_ui.py. The old 5 s ran out twice in a row on the
+                # Linux job while pytest-xdist kept the other CPUs busy (run 42960316374, attempts 1 and 2).
+                deadline = time.monotonic() + 15.0
+                while time.monotonic() < deadline and proc.poll() is None:
                     if port_file.is_file():
                         try:
                             cdp_port = int(port_file.read_text(encoding="utf-8").splitlines()[0])
@@ -559,7 +562,7 @@ class TestSmokeWindowsUi(unittest.TestCase):
                         except Exception:
                             pass
                     time.sleep(0.05)
-                self.assertIsNotNone(cdp_port, "DevToolsActivePort not exposed")
+                self.assertIsNotNone(cdp_port, f"DevToolsActivePort not exposed (Chrome exit code: {proc.poll()})")
 
                 import urllib.request
                 with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/list", timeout=5) as res:
