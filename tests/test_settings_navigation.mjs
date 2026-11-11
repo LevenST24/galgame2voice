@@ -7,6 +7,9 @@ import { createSettingsCenter } from '../frontend/src/controllers/settings_cente
 import { fakeDocument } from './helpers/adv_dom.mjs';
 import * as settingsUi from '../frontend/src/settings_ui.js';
 import { createTitleScreen } from '../frontend/src/adv/title.js';
+import { normalizeSnapshot } from '../frontend/src/session_data.js';
+import { DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL } from '../frontend/src/store.js';
+import { mergeChatBackup } from '../frontend/src/chat_backup.js';
 const { openModal, closeModal, hasOpenModal } = settingsUi;
 
 function centerFixture(t) {
@@ -153,8 +156,8 @@ test('settings center: reset button is visible only on inference tab, and resets
   // Initialization: gResetBtn should be hidden (dashboard is default tab)
   assert.equal(dom.gResetBtn.hidden, true, 'gResetBtn should be hidden on initialization');
 
-  // 1. Traverse switching 8 tabs:
-  const tabs = ['dashboard', 'models', 'inference', 'telegram', 'memory', 'update', 'experience', 'session'];
+  // 1. Traverse switching 7 tabs:
+  const tabs = ['dashboard', 'models', 'inference', 'memory', 'update', 'experience', 'session'];
   for (const tab of tabs) {
     center.select(tab);
     assert.equal(
@@ -409,21 +412,70 @@ test('global settings mounted from real index.html saves exact POST /api/config 
   await saveGlobalConfig();
 
   assert.ok(savedPayload !== null, 'Expected POST /api/config payload');
-  for (const ghostKey of ['text_split_method', 'speed_factor', 'top_k', 'top_p', 'temperature', 'fragment_interval']) {
+  for (const ghostKey of ['text_split_method', 'speed_factor', 'top_k', 'top_p', 'temperature', 'fragment_interval', 'telegram_enabled', 'telegram_chat_id', 'telegram_admin_ids', 'telegram_bot_token', 'telegram_proxy_enabled', 'telegram_proxy_host', 'telegram_proxy_port']) {
     assert.equal(Object.hasOwn(savedPayload, ghostKey), false, `POST /api/config must not include ${ghostKey}`);
   }
   const expectedPayload = {
     gpt_sovits_url: 'http://127.0.0.1:9880',
     inference_precision: 'fp16',
     audio_retention_minutes: 45,
-    telegram_enabled: false,
-    telegram_chat_id: '987654321',
-    telegram_admin_ids: '987654321',
-    telegram_proxy_enabled: true,
-    telegram_proxy_host: '127.0.0.1',
-    telegram_proxy_port: 10809,
   };
   assert.deepEqual(Object.keys(savedPayload), Object.keys(expectedPayload));
   assert.deepEqual(savedPayload, expectedPayload);
   assert.equal(savedRawBody, JSON.stringify(expectedPayload));
+});
+
+test('telegram settings tab is removed from index.html while preserving gTgSave and legacy backup compatibility', () => {
+  const indexHtml = fs.readFileSync(new URL('../frontend/index.html', import.meta.url), 'utf8');
+  assert.equal(indexHtml.includes('data-gtab="telegram"'), false, 'Telegram nav tab should not exist in frontend/index.html');
+  assert.equal(indexHtml.includes('id="gp-telegram"'), false, 'Telegram panel should not exist in frontend/index.html');
+  for (const removedId of ['gTgEnabled', 'gTgFieldsGroup', 'gTgToken', 'gTgChatId', 'gTgProxyHost', 'gTgProxyPort', 'gTgProxyEnabled', 'gTgTest']) {
+    assert.equal(indexHtml.includes(`id="${removedId}"`), false, `${removedId} should not exist in frontend/index.html`);
+  }
+  assert.equal(indexHtml.includes('id="gTgSave"'), true, 'Shared global save button #gTgSave must remain in frontend/index.html');
+
+  const legacyBackup = {
+    format: 'galgame2voice.chat',
+    version: 1,
+    activeId: 'tg_99',
+    global: {
+      voiceMode: false,
+      telegram_enabled: true,
+      telegram_bot_token: 'secret',
+    },
+    sessions: [
+      {
+        id: 'tg_99',
+        channel: 'telegram',
+        title: '旧Telegram对话',
+        createdAt: 1700000000000,
+        updatedAt: 1700000005000,
+        settings: {
+          temperature: 0.9,
+          telegram_chat_id: '123456',
+          telegram_admin_ids: '123456',
+        },
+        messages: [
+          { id: 'm_1', role: 'user', content: '你好', ts: 1700000001000 },
+          { id: 'm_2', role: 'assistant', content: '你好呀', japanese: 'こんにちは', ts: 1700000002000 },
+        ],
+      },
+    ],
+  };
+
+  const parsed = normalizeSnapshot(legacyBackup, DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL);
+  assert.equal(parsed.activeId, 'tg_99');
+  assert.equal(parsed.global.voiceMode, false);
+  assert.equal('telegram_enabled' in parsed.global, false);
+  assert.equal('telegram_bot_token' in parsed.global, false);
+  assert.equal(parsed.sessions.length, 1);
+  assert.equal(parsed.sessions[0].id, 'tg_99');
+  assert.equal(parsed.sessions[0].title, '旧Telegram对话');
+  assert.equal(parsed.sessions[0].settings.temperature, 0.9);
+  assert.equal('telegram_chat_id' in parsed.sessions[0].settings, false);
+  assert.equal('telegram_admin_ids' in parsed.sessions[0].settings, false);
+
+  const merged = mergeChatBackup(legacyBackup, { sessions: [], activeId: null, global: {} });
+  assert.equal(merged.count, 1);
+  assert.equal(JSON.parse(merged.content).sessions[0].id, 'tg_99');
 });

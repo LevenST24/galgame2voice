@@ -19,7 +19,6 @@ from galgame2voice.database.models import (
 )
 from galgame2voice.database.session import immediate_transaction
 from galgame2voice.security.crypto import decrypt_secret, encrypt_secret
-from galgame2voice.utils.text_sanitize import sanitize_bot_token
 
 logger = logging.getLogger("galgame2voice.database.crud_modules.settings_cache")
 
@@ -58,10 +57,7 @@ async def get_settings_raw(conn: aiosqlite.Connection) -> SettingsInDB:
             row = await cursor.fetchone()
         if row:
             data = dict(row)
-            data["telegram_proxy_enabled"] = bool(data.get("telegram_proxy_enabled", 0))
-            data["telegram_enabled"] = bool(data.get("telegram_enabled", 0))
             data["allow_private_llm_endpoints"] = bool(data.get("allow_private_llm_endpoints", 0))
-            data["telegram_bot_token"] = decrypt_secret(data.get("telegram_bot_token", ""))
             data["console_token"] = decrypt_secret(data.get("console_token", ""))
             return SettingsInDB(**data)
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
@@ -78,8 +74,6 @@ async def get_settings_raw(conn: aiosqlite.Connection) -> SettingsInDB:
             active_provider_id=kv.get("active_provider_id", "deepseek"),
             active_voice_profile_id=int(kv.get("active_voice_profile_id", 1)) if kv.get("active_voice_profile_id") else 1,
             max_history_messages=int(kv.get("max_history_messages", 10)) if kv.get("max_history_messages") else 10,
-            telegram_enabled=bool(int(kv.get("telegram_enabled", 0))) if kv.get("telegram_enabled") else False,
-            telegram_bot_token=decrypt_secret(kv.get("telegram_bot_token", "")),
             console_token=decrypt_secret(kv.get("console_token", "")),
         )
     except Exception:
@@ -92,10 +86,7 @@ async def get_settings(conn: aiosqlite.Connection, mask: bool = True) -> Setting
     raw = await get_settings_raw(conn)
     resp_data = raw.model_dump()
     if mask:
-        resp_data["telegram_bot_token"] = mask_api_key(raw.telegram_bot_token)
         resp_data["console_token"] = mask_api_key(raw.console_token)
-    if not resp_data.get("telegram_chat_id"):
-        resp_data["telegram_chat_id"] = resp_data.get("telegram_admin_ids", "")
     return SettingsResponse(**resp_data)
 
 
@@ -112,8 +103,6 @@ async def update_settings(conn: aiosqlite.Connection, updates: SettingsUpdate) -
         "active_provider_id", "active_voice_profile_id", "gpt_sovits_url", "audio_output_dir",
         "audio_retention_minutes", "audio_cleanup_interval_sec", "speed_factor", "temperature",
         "top_k", "top_p", "seed", "batch_size", "text_split_method", "fragment_interval",
-        "telegram_enabled", "telegram_bot_token", "telegram_bot_username", "telegram_proxy_host",
-        "telegram_proxy_port", "telegram_proxy_enabled", "telegram_admin_ids", "telegram_chat_id",
         "allow_private_llm_endpoints", "console_url", "max_history_messages", "inference_precision",
         "stt_engine", "console_token",
     }
@@ -126,27 +115,14 @@ async def update_settings(conn: aiosqlite.Connection, updates: SettingsUpdate) -
         preset = get_provider_preset(raw_pid)
         update_dict["active_provider_id"] = preset["id"] if preset else raw_pid
     for k, v in update_dict.items():
-        if k == "telegram_bot_token":
-            if v is not None and not is_masked_key(str(v)):
-                cleaned = sanitize_bot_token(v)
-                fields.append(f"{k} = ?")
-                values.append(encrypt_secret(cleaned) if cleaned else "")
-        elif k == "console_token":
+        if k == "console_token":
             if v is not None and not is_masked_key(str(v)):
                 cleaned = str(v).strip()
                 fields.append(f"{k} = ?")
                 values.append(encrypt_secret(cleaned) if cleaned else "")
-        elif k in ("telegram_enabled", "telegram_proxy_enabled", "allow_private_llm_endpoints"):
+        elif k == "allow_private_llm_endpoints":
             fields.append(f"{k} = ?")
             values.append(1 if v else 0)
-        elif k in ("telegram_admin_ids", "telegram_chat_id"):
-            ids = ",".join(
-                part.strip() for part in str(v or "").replace("，", ",").split(",")
-                if part.strip().isdigit()
-            )
-            if not any(f.startswith("telegram_admin_ids") for f in fields):
-                fields.append("telegram_admin_ids = ?")
-                values.append(ids)
         elif k == "stt_engine":
             fields.append("stt_engine = ?")
             values.append(str(v or "browser").strip())

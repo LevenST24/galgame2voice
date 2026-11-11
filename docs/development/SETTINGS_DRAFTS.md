@@ -25,11 +25,6 @@
 `dispose()`，自动解绑所有归属事件监听器并作废迟到响应，防止旧 DOM 节点串扰新控件。
 `global_settings.js` 作为协调器和兼容门面，通过狭窄契约协调页脚保存和私有连接偏好。
 
-`telegram_settings.js` 中的 `TelegramSettingsController` 独立持有 Telegram 机器人配置、代理设置、
-字段可见性与连接测试请求。测试请求使用专属 AbortController 与代数序号，输入修改、窗口关闭或
-重新初始化立即作废旧测试，旧响应不再触发提示或提前解除新测试按钮的忙碌状态；保存前校验启用
-状态下的访问用户 ID，未填时阻断保存并提示指引；脱敏 Token 绝不作为有效载荷回传覆写。
-
 `engine_settings.js` 中的 `EngineSettingsController` 独立持有重启状态、未确认标记、精度自动保存
 代数与 `waitForEngine` 的 AbortController。引擎重启 POST 严格单次发送，状态轮询支持外部
 AbortSignal 退出等待且不影响服务端已确认重启；旧重启完成时的 `finally` 与进度更新受实例生命周期

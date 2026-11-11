@@ -39,9 +39,7 @@ from galgame2voice.services.affection_service import AffectionService
 from galgame2voice.services.chat_service import StreamingBilingualParser
 from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.services.tts_cache_manager import TtsCacheManager
-from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from galgame2voice.utils.logger import MaskingFilter
-from telegram_test_support import TELEGRAM_TEST_ADMINS
 
 
 # ============================================================================
@@ -124,18 +122,6 @@ class TestTier1FeatureCoverage:
         assert "Database connection timed out" in full_stream
 
     @pytest.mark.asyncio
-    async def test_f2_03_telegram_test_error_sanitization(self):
-        """Verifies Telegram test endpoint does not crash and returns friendly message on invalid token."""
-        app = create_app()
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/api/telegram/test", json={"token": "12345:invalid_token_xyz"})
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "未配置" in data["message"] or "验证失败" in data["message"] or "失败" in data["message"]
-
-    @pytest.mark.asyncio
     async def test_f2_04_provider_test_error_sanitization(self):
         """Verifies provider test endpoint returns failure message without unhandled exception."""
         app = create_app()
@@ -157,7 +143,7 @@ class TestTier1FeatureCoverage:
         app = create_app()
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/api/chat", json={"prompt": "   ", "session_id": "test_s"})
+            resp = await client.post("/api/chat/stream", json={"prompt": "   ", "session_id": "test_s"})
             assert resp.status_code == 422
 
     # --- F3: System Diagnostics & Health Telemetry ---
@@ -187,7 +173,6 @@ class TestTier1FeatureCoverage:
             assert "app" in data
             assert "database" in data
             assert "storage" in data
-            assert "telegram" in data
             assert data["database"]["wal_mode"] is True
 
     @pytest.mark.asyncio
@@ -384,13 +369,13 @@ class TestTier1FeatureCoverage:
     async def test_f6_03_settings_crud_masking(self):
         """Verifies crud.get_settings with mask=True masks credentials."""
         async with get_db() as conn:
-            await crud.update_settings(conn, SettingsUpdate(telegram_bot_token="123456789:ABCDEF_SECRET_TOKEN"))
+            await crud.update_settings(conn, SettingsUpdate(console_token="sec_console_secret_token_987654"))
             masked = await crud.get_settings(conn, mask=True)
-            assert "ABCDEF_SECRET" not in masked.telegram_bot_token
-            assert "****" in masked.telegram_bot_token
+            assert "secret_token" not in masked.console_token
+            assert "****" in masked.console_token
 
             raw = await crud.get_settings_raw(conn)
-            assert raw.telegram_bot_token == "123456789:ABCDEF_SECRET_TOKEN"
+            assert raw.console_token == "sec_console_secret_token_987654"
 
     @pytest.mark.asyncio
     async def test_f6_04_providers_crud_upsert(self):
@@ -506,28 +491,6 @@ class TestTier1FeatureCoverage:
         assembled_zh = "".join(chinese_tokens)
         assert "你好，指挥官！今天也很精神呢。" in (assembled_zh or full_zh)
         assert len(japanese_sentences) >= 1 or len(full_ja) >= 1
-
-    # --- F9: Telegram Bot Handlers ---
-    def test_f9_01_telegram_session_keys_isolated(self):
-        """Verifies private vs group chat session keys are properly isolated."""
-        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, )
-        assert handlers._session_key(chat_id=12345, user_id=12345) == "tg_12345"
-        assert handlers._session_key(chat_id=-100123456, user_id=98765) == "tg_-100123456_98765"
-
-    @pytest.mark.asyncio
-    async def test_f9_02_telegram_task_cancellation(self):
-        """Verifies background task cancellation properly cancels pending async task."""
-        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, )
-
-        async def dummy_coro():
-            await asyncio.sleep(10)
-
-        task = asyncio.create_task(dummy_coro())
-        handlers.user_tasks[111] = task
-
-        handlers.cancel_user_task(111)
-        with pytest.raises(asyncio.CancelledError):
-            await task
 
 
 # ============================================================================
@@ -831,10 +794,10 @@ class TestTier3CrossFeatureCombinations:
         assert re.match(r"^[a-f0-9]{64}$", key)
         assert "/" not in key and ".." not in key
 
-    # Pairwise: Telegram Bot (F9) + Memory & Affection Progression (F4)
+    # Pairwise: Legacy tg_* User Session + Memory & Affection Progression (F4)
     @pytest.mark.asyncio
     async def test_pair_05_telegram_bot_and_memory_affection(self):
-        """Verifies Telegram user interactions properly trigger memory extraction and affection updates in SQLite."""
+        """Verifies legacy tg_* user IDs still trigger memory extraction and affection updates in SQLite."""
         async with get_db() as conn:
             user_id = "tg_user_998877"
             mem_svc = MemoryService()

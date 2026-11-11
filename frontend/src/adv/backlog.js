@@ -372,8 +372,6 @@ export function createBacklog(container, deps = {}) {
       try {
         if (deps.audio?.playLine) {
           result = await deps.audio.playLine(line.index, line.audio.chunks, { msgId: msg.id });
-        } else if (deps.voice?.play) {
-          result = await deps.voice.play(line.index, line.audio.chunks);
         } else {
           result = 'ended';
         }
@@ -565,22 +563,6 @@ export function createBacklog(container, deps = {}) {
       try {
         if (deps.audio?.playLine) {
           result = await deps.audio.playLine(targetLine.index, targetLine.audio.chunks, { msgId: msg.id });
-        } else if (deps.voice?.play) {
-          result = await deps.voice.play(targetLine.index, targetLine.audio.chunks);
-        } else if (deps.playLegacyVoice && !repairedLine) {
-          result = await new Promise(resolve => {
-            deps.playLegacyVoice(msg, {
-              setPlaying: playing => {
-                if (!destroyed && thisReplay === replaySequence) {
-                  const currentBtn = activeReplayButton || replayBtn;
-                  currentBtn.classList.toggle('is-playing', Boolean(playing));
-                  if (!playing) resolve('ended');
-                }
-              },
-              setProgress() {},
-              setLoading() {},
-            });
-          });
         } else {
           result = 'ended';
         }

@@ -29,25 +29,6 @@ def _turn_lock(db_path, session_id):
     return lock
 
 
-def session_turn(db_path, session_id):
-    """Return the shared in-process lock for one database session."""
-    return _turn_lock(db_path, session_id)
-
-
-def serialize_sync_turn(func):
-    @wraps(func)
-    async def wrapped(self, prompt, session_id="default", *args, **kwargs):
-        lock = session_turn(self.db_path, session_id)
-        queued = lock.requests > 0
-        lock.requests += 1
-        try:
-            async with lock:
-                return await func(self, prompt, session_id, *args, _require_existing_session=queued, **kwargs)
-        finally:
-            lock.requests -= 1
-    return wrapped
-
-
 def serialize_stream_turn(func):
     call_signature = signature(func)
 

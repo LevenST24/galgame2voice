@@ -29,7 +29,6 @@ export class StreamAudioController {
 
     this.ctx = null;
     this.masterGain = null;
-    this.masterGainNode = null;
     this.analyser = null;
 
     /** @type {Array<{id: string, sessionId: number, index: number, url: string, sentence: string, audioBuffer: AudioBuffer|null, status: string, duration?: number}>} */
@@ -38,30 +37,19 @@ export class StreamAudioController {
     this.nextStartTime = 0;
     this.isPlaying = false;
     this.isPaused = false;
-    this.isStreaming = false;
     this.currentSessionId = 0;
     this.currentMsgId = null;
     this.abortController = null;
     this._currentCtl = null;
     this._progressTimer = null;
-    this._scheduleRetryTimer = null;
     this._seenChunkIndexes = new Set();
     this._reportedError = false;
-    this._speaking = false;
     this._lastProgress = 0;
     this._linePlayState = null;
     this.supportsStartNotification = true;
 
-    this.underrunCount = 0;
-    this.chunksPlayed = 0;
-    this.minBufferLeadSec = 0.02; // 20ms baseline ultra-low latency
-    this.maxBufferLeadSec = 0.12; // 120ms max jitter cushion
     this.currentBufferLeadSec = 0.02;
-    this.consecutiveSmoothChunks = 0;
 
-    this.onStatusChange = options.onStatusChange || null;
-    this.onChunkStart = options.onChunkStart || null;
-    this.onChunkEnd = options.onChunkEnd || null;
     this.onQueueEmpty = options.onQueueEmpty || null;
     this.onError = options.onError || null;
 
@@ -93,7 +81,6 @@ export class StreamAudioController {
       }
       this.ctx = new AudioContextClass();
       this.masterGain = this.ctx.createGain();
-      this.masterGainNode = this.masterGain;
       this.masterGain.gain.setValueAtTime(1.0, this.ctx.currentTime);
       this.analyser = null;
       if (typeof this.ctx.createAnalyser === 'function') {
@@ -155,7 +142,6 @@ export class StreamAudioController {
    */
   pause() {
     this.isPaused = true;
-    this._setSpeaking(false);
     if (this.ctx && this.ctx.state === 'running') {
       this.ctx.suspend().catch(() => {});
     }
@@ -189,29 +175,15 @@ export class StreamAudioController {
   }
 
   /**
-   * 绑定或更新当前播放的 UI 控件回调
-   * @param {Object} ctl - { setPlaying, setProgress, setLoading }
-   * @param {string} [msgId]
-   */
-  attachControl(ctl, msgId = null) {
-    this._currentCtl = ctl;
-    if (msgId) this.currentMsgId = msgId;
-    if (ctl && ctl.setPlaying) {
-      ctl.setPlaying(this.isPlaying && !this.paused);
-    }
-    ctl?.setProgress?.(this._lastProgress);
-  }
-
-  /**
    * 开始一个新的流式/批量播放会话
    * @param {string} msgId
    * @param {Object} [ctl]
    */
-  startSession(msgId, ctl = null, { streaming = false } = {}) {
+  startSession(msgId, ctl = null) {
     this.currentSessionId += 1; // 使旧 interrupt 的延迟回调失效，避免打断新会话开头
     this.interrupt(0);
     this.ensureContext();
-    const gainNode = this.masterGainNode || this.masterGain;
+    const gainNode = this.masterGain;
     if (gainNode && gainNode.gain && this.ctx) {
       try {
         gainNode.gain.cancelScheduledValues(this.ctx.currentTime);
@@ -222,13 +194,8 @@ export class StreamAudioController {
     this._currentCtl = ctl;
     this.isPaused = false;
     this.isPlaying = true;
-    this.isStreaming = streaming;
     this.nextStartTime = 0;
-    this.consecutiveSmoothChunks = 0;
     this._lastProgress = 0;
-    if (this.underrunCount === 0) {
-      this.currentBufferLeadSec = this.minBufferLeadSec;
-    }
     if (ctl && ctl.setPlaying) ctl.setPlaying(true);
     if (ctl && ctl.setProgress) ctl.setProgress(0);
   }
@@ -593,13 +560,6 @@ export class StreamAudioController {
       } catch (_) {}
     }
     if (this.nextStartTime <= now) {
-      if (this.nextStartTime > 0 && this.isPlaying && this.activeSources.length === 0) {
-        this.underrunCount++;
-        // 欠载自适应：缓冲裕度递增 20ms（上限 120ms），消除后续切片抖动
-        this.currentBufferLeadSec = Math.min(this.maxBufferLeadSec, this.currentBufferLeadSec + 0.02);
-        this.consecutiveSmoothChunks = 0;
-      }
-      // 预留自适应 Jitter 缓冲给音频驱动混音
       this.nextStartTime = now + this.currentBufferLeadSec;
     }
 
@@ -632,14 +592,7 @@ export class StreamAudioController {
       chunkGain.connect(this.masterGain);
 
       source.start(startTime);
-      this.chunksPlayed++;
-      this.consecutiveSmoothChunks++;
-      // 连续 5 个切片平稳排期播放无欠载时，平滑递减 5ms 回退向 20ms 基线，恢复极低延迟
-      if (this.consecutiveSmoothChunks >= 5 && this.currentBufferLeadSec > this.minBufferLeadSec) {
-        this.currentBufferLeadSec = Math.max(this.minBufferLeadSec, this.currentBufferLeadSec - 0.005);
-        this.consecutiveSmoothChunks = 0;
-      }
-      const entry = { source, chunkGain, item: nextItem, startTime, duration, notified: false };
+      const entry = { source, chunkGain, item: nextItem, startTime, duration };
       this.activeSources.push(entry);
 
       this.isPlaying = true;
@@ -660,7 +613,6 @@ export class StreamAudioController {
         } catch (_) {}
 
         if (nextItem.sessionId === this.currentSessionId) {
-          if (this.onChunkEnd) this.onChunkEnd(nextItem);
           this._maybeQueueEmpty();
         }
       };
@@ -671,11 +623,9 @@ export class StreamAudioController {
    * 检查队列与活动源是否全部结束
    */
   _maybeQueueEmpty() {
-    if (!this.activeSources.length) this._setSpeaking(false);
     if (this.activeSources.length === 0 && this.queue.length === 0) {
       clearInterval(this._progressTimer);
       this._progressTimer = null;
-      if (this.isStreaming) return;
       this.isPlaying = false;
       this.isPaused = false;
       this.nextStartTime = 0;
@@ -699,7 +649,6 @@ export class StreamAudioController {
     }
     this.currentSessionId += 1;
     this.currentMsgId = null;
-    this.isStreaming = false;
 
     if (this.abortController) {
       try {
@@ -712,12 +661,6 @@ export class StreamAudioController {
     this._reportedError = false;
     clearInterval(this._progressTimer);
     this._progressTimer = null;
-    this._setSpeaking(false);
-
-    if (this._scheduleRetryTimer) {
-      clearTimeout(this._scheduleRetryTimer);
-      this._scheduleRetryTimer = null;
-    }
 
     if (this.ctx && this.masterGain && this.activeSources.length > 0) {
       if (fadeMs <= 0) {
@@ -793,11 +736,6 @@ export class StreamAudioController {
     this._currentCtl = null;
   }
 
-  finishInput() {
-    this.isStreaming = false;
-    this._maybeQueueEmpty();
-  }
-
   _reportError(error) {
     if (this._reportedError) return;
     this._reportedError = true;
@@ -809,28 +747,15 @@ export class StreamAudioController {
     this._reportError(new Error('浏览器暂停了语音播放，请在 LOG 里再点一次「语音」。'));
   }
 
-  _setSpeaking(value) {
-    if (value === this._speaking) return;
-    this._speaking = value;
-    this.onStatusChange?.(value);
-  }
-
   _startProgressTimer() {
     if (this._progressTimer) return;
     this._progressTimer = setInterval(() => {
-      // Audio time stops on pause. Wall-clock timers would advance portraits
-      // and dialogue while the corresponding sentence was still inaudible.
       if (!this.ctx || this.isPaused || this.ctx.state !== 'running') return;
       const now = this.ctx.currentTime;
       const audible = this.activeSources.filter(entry =>
         entry.item.sessionId === this.currentSessionId && entry.startTime <= now &&
         now < entry.startTime + entry.duration);
-      this._setSpeaking(audible.length > 0);
       for (const entry of audible) {
-        if (!entry.notified) {
-          entry.notified = true;
-          this.onChunkStart?.(entry.item);
-        }
         const { item, startTime, duration } = entry;
         if (item.totalExpected > 0) {
           const fraction = (item.index + Math.min(1, (now - startTime) / duration)) / item.totalExpected;
@@ -839,23 +764,6 @@ export class StreamAudioController {
         }
       }
     }, 40);
-  }
-
-  /**
-   * 返回当前播放时延与缓冲健康度指标
-   */
-  getStats() {
-    return {
-      isPlaying: this.isPlaying,
-      isPaused: this.paused,
-      underrunCount: this.underrunCount,
-      chunksPlayed: this.chunksPlayed,
-      bufferLeadMs: Math.round(this.currentBufferLeadSec * 1000),
-      activeSources: this.activeSources.length,
-      queueLength: this.queue.length,
-      currentTime: this.ctx ? this.ctx.currentTime : 0,
-      nextStartTime: this.nextStartTime,
-    };
   }
 
   /**

@@ -419,26 +419,6 @@ def test_voice_profile_resolver_scopes_audio_to_owning_package(project, monkeypa
     assert conflicting_ctx.emotions == {}
 
 
-@pytest.mark.asyncio
-async def test_telegram_character_lookup_does_not_match_substrings(project, isolate_test_database, monkeypatch):
-    from galgame2voice.services import character_manager
-    from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
-
-    install(project, "natsume", "四季夏目", ["Natsume"])
-    manager = catalog(project)
-    monkeypatch.setattr(character_manager, "get_character_manager", lambda: manager)
-    bot = TelegramBotHandlers.__new__(TelegramBotHandlers)
-
-    async with aiosqlite.connect(isolate_test_database) as conn:
-        conn.row_factory = aiosqlite.Row
-        annabelle = await profile(conn, "Annabelle")
-        natsume = await profile(conn, "四季夏目")
-        profiles = [annabelle, natsume]
-        assert await bot._lookup_character_profile_by_query(conn, "Ann", profiles) is None
-        matched = await bot._lookup_character_profile_by_query(conn, "natsume", profiles)
-        assert matched is not None and matched.id == natsume.id
-
-
 def test_character_manager_is_conflicting(project):
     install(project, "alice", "Alice", ["shared"])
     install(project, "bella", "Bella", ["shared"])

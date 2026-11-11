@@ -241,10 +241,15 @@ def get_speed_tracker() -> SynthesisSpeedTracker:
 
 
 def reset_speed_tracker() -> None:
-    """Resets the process-wide SynthesisSpeedTracker singleton."""
-    global _GLOBAL_TRACKER
+    """Resets the process-wide SynthesisSpeedTracker singleton.
+
+    The scheduler singleton holds its own reference to the tracker, so it is
+    dropped too and rebuilt on the fresh tracker by the next get_batch_scheduler().
+    """
+    global _GLOBAL_TRACKER, _GLOBAL_SCHEDULER
     with _INIT_LOCK:
         _GLOBAL_TRACKER = SynthesisSpeedTracker()
+        _GLOBAL_SCHEDULER = None
 
 
 def get_batch_scheduler() -> DynamicBatchScheduler:

@@ -56,9 +56,7 @@ from galgame2voice.database.models import (
 )
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
-from galgame2voice.routers.config import TelegramTestRequest, test_telegram_bot as handle_test_telegram_bot
 from galgame2voice.services.memory_service import MemoryService
-from galgame2voice.telegram_bot.bot import TelegramBotManager, validate_bot_token
 from galgame2voice.utils.logger import (
     MaskingFilter,
     MaskingFormatter,
@@ -271,102 +269,6 @@ class TestLoggerStacktraceAndRegexBoundaries:
         sanitized = sanitize_error_detail(CustomObj())
         assert TestLoggerStacktraceAndRegexBoundaries.SECRET_CORPUS["openai_std"] not in sanitized
         assert "api_key=****" in sanitized
-
-
-# ============================================================================
-# Dimension 2: Telegram Bot Token URL Sanitization in httpx Error Conditions
-# ============================================================================
-
-class TestTelegramHttpxErrorSanitization:
-    """Adversarially tests token redaction during Telegram httpx network errors."""
-
-    SECRET_TG_TOKEN = "9876543210:AAH_ZyxWvuTsRqPoNmLkJiHgFeDcBa09876"
-
-    @pytest.mark.asyncio
-    async def test_telegram_bot_manager_test_token_with_httpx_connect_timeout(self):
-        """Simulates httpx.ConnectTimeout holding the raw Telegram URL."""
-        mgr = TelegramBotManager()
-        raw_url = f"https://api.telegram.org/bot{self.SECRET_TG_TOKEN}/getMe"
-
-        request = httpx.Request("GET", raw_url)
-        exc = httpx.ConnectTimeout(f"ConnectTimeout while requesting {raw_url}", request=request)
-
-        with patch("httpx.AsyncClient.get", side_effect=exc):
-            result = await mgr.test_token(self.SECRET_TG_TOKEN)
-            assert result["success"] is False
-            # Ensure secret token is nowhere in the error message
-            assert self.SECRET_TG_TOKEN not in result["message"]
-            assert "9876543210:AAH_" not in result["message"]
-            assert "[MASKED_TELEGRAM_TOKEN]" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_telegram_bot_manager_test_token_with_httpx_connect_error(self):
-        """Simulates [WinError 10061] ConnectError with full request URL."""
-        mgr = TelegramBotManager()
-        raw_url = f"https://api.telegram.org/bot{self.SECRET_TG_TOKEN}/getMe"
-        request = httpx.Request("GET", raw_url)
-        exc = httpx.ConnectError(f"[WinError 10061] No connection to {raw_url}", request=request)
-
-        with patch("httpx.AsyncClient.get", side_effect=exc):
-            result = await mgr.test_token(self.SECRET_TG_TOKEN)
-            assert result["success"] is False
-            assert self.SECRET_TG_TOKEN not in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_telegram_bot_manager_test_token_with_proxy_error(self):
-        """Simulates proxy tunnel failure containing raw token URL."""
-        mgr = TelegramBotManager()
-        raw_url = f"https://api.telegram.org/bot{self.SECRET_TG_TOKEN}/getMe"
-        request = httpx.Request("GET", raw_url)
-        exc = httpx.ProxyError(f"Cannot connect to proxy 127.0.0.1:7890 for {raw_url}", request=request)
-
-        with patch("httpx.AsyncClient.get", side_effect=exc):
-            result = await mgr.test_token(self.SECRET_TG_TOKEN, proxy_url="http://127.0.0.1:7890")
-            assert result["success"] is False
-            assert self.SECRET_TG_TOKEN not in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_config_router_test_telegram_bot_httpx_error_branches(self):
-        """
-        Tests /api/telegram/test endpoint handler directly under:
-        1. ConnectError with connection refused
-        2. HTTPStatusError (401, 404, 502)
-        3. Generic RequestError with token URL
-        """
-        raw_url = f"https://api.telegram.org/bot{self.SECRET_TG_TOKEN}/getMe"
-        req = TelegramTestRequest(bot_token=self.SECRET_TG_TOKEN, proxy_enabled=False)
-
-        # 1. ConnectError
-        request = httpx.Request("GET", raw_url)
-        with patch("httpx.AsyncClient.get", side_effect=httpx.ConnectError("Connection refused by peer", request=request)):
-            res = await handle_test_telegram_bot(req)
-            assert res["success"] is False
-            assert self.SECRET_TG_TOKEN not in res["message"]
-            assert "代理连接失败" in res["message"] or "连接失败" in res["message"]
-
-        # 2. HTTPStatusError 401
-        response_401 = httpx.Response(401, request=request, json={"ok": False, "description": "Unauthorized"})
-        with patch("httpx.AsyncClient.get", return_value=response_401):
-            res_401 = await handle_test_telegram_bot(req)
-            assert res_401["success"] is False
-            assert "401" in res_401["message"]
-            assert self.SECRET_TG_TOKEN not in res_401["message"]
-
-        # 3. HTTPStatusError 404
-        response_404 = httpx.Response(404, request=request, json={"ok": False, "description": "Not Found"})
-        with patch("httpx.AsyncClient.get", return_value=response_404):
-            res_404 = await handle_test_telegram_bot(req)
-            assert res_404["success"] is False
-            assert "404" in res_404["message"]
-            assert self.SECRET_TG_TOKEN not in res_404["message"]
-
-        # 4. HTTPStatusError 502 Bad Gateway
-        response_502 = httpx.Response(502, request=request, text="<html>502 Bad Gateway</html>")
-        with patch("httpx.AsyncClient.get", return_value=response_502):
-            res_502 = await handle_test_telegram_bot(req)
-            assert res_502["success"] is False
-            assert "502" in res_502["message"]
-            assert self.SECRET_TG_TOKEN not in res_502["message"]
 
 
 # ============================================================================

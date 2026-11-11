@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Persistent Audio Cache for Gal2Voice (Web Cache Storage API)
  * Stores synthesized character audio Blobs and user microphone recordings
@@ -6,49 +7,125 @@
 
 import { withAudioDeadline } from './audio_request.js';
 
+/**
+ * @typedef {import('./audio_request.js').AudioDeadlineOptions} AudioDeadlineOptions
+ */
+
+/**
+ * @typedef {Error & { code?: string, status?: number, cause?: unknown }} AudioCacheError
+ */
+
+/**
+ * @typedef {object} AudioKeyState
+ * @property {number} revision
+ * @property {Set<string>} invalid
+ * @property {boolean} active
+ */
+
+/**
+ * @typedef {{ kind: 'put', version: string, blob: Blob } | { kind: 'delete', version: string }} AudioCacheMutation
+ */
+
+/**
+ * @typedef {object} AudioStorageWriter
+ * @property {AudioCacheMutation | null} latest
+ * @property {Promise<void> | null} promise
+ */
+
+/**
+ * @typedef {Map<string, Blob>} BoundedAudioStore
+ */
+
+/**
+ * @typedef {object} AudioLoadOptions
+ * @property {boolean} [bypassCache]
+ * @property {boolean} [cacheResult]
+ * @property {AbortSignal | null} [signal]
+ * @property {number} [timeoutMs]
+ */
+
+/**
+ * @typedef {object} AudioBufferLoadOptions
+ * @property {string} [url]
+ * @property {Blob | null} [blob]
+ * @property {AbortSignal | null} [signal]
+ * @property {number} [timeoutMs]
+ */
+
 const AUDIO_CACHE_NAME = 'gal2voice-audio-v1';
 const MAX_MEM_AUDIO_ENTRIES = 50;
 const MAX_KEY_STATES = 100;
+/** @type {Map<string, AudioKeyState>} */
 const keyStates = new Map();
+/** @type {WeakMap<Blob, Map<string, string>>} */
 const blobVersions = new WeakMap();
+/** @type {Map<string, AudioStorageWriter>} */
 const storageWriters = new Map();
 const versionPrefix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let versionSequence = 0;
+/** @type {Promise<void> | null} */
 let pruneRun = null;
 let pruneAgain = false;
 
 // L1 Memory cache for synchronous fast access within session (bounded LRU)
+/** @type {BoundedAudioStore} */
 const memAudioMap = new Map();
 
+/**
+ * @param {string} key
+ * @returns {AudioKeyState}
+ */
 function stateForKey(key) {
   let state = keyStates.get(key);
   if (!state) state = { revision: 0, invalid: new Set(), active: true };
   keyStates.delete(key);
   keyStates.set(key, state);
   if (keyStates.size > MAX_KEY_STATES) {
-    const oldest = keyStates.keys().next().value;
-    keyStates.get(oldest).active = false;
+    const oldest = /** @type {string} */ (keyStates.keys().next().value);
+    /** @type {AudioKeyState} */ (keyStates.get(oldest)).active = false;
     keyStates.delete(oldest);
   }
   return state;
 }
 
+/**
+ * @param {string} key
+ * @param {Blob} blob
+ * @param {string} version
+ */
 function rememberBlobVersion(key, blob, version) {
   let versions = blobVersions.get(blob);
   if (!versions) { versions = new Map(); blobVersions.set(blob, versions); }
   versions.delete(key);
   versions.set(key, version);
-  if (versions.size > MAX_MEM_AUDIO_ENTRIES) versions.delete(versions.keys().next().value);
+  if (versions.size > MAX_MEM_AUDIO_ENTRIES) versions.delete(/** @type {string} */ (versions.keys().next().value));
 }
 
+/**
+ * @param {string} key
+ * @param {Blob | null | undefined} blob
+ * @returns {string | null | undefined}
+ */
 function blobVersion(key, blob) { return blob && blobVersions.get(blob)?.get(key); }
+
+/**
+ * @param {Response} response
+ * @returns {string}
+ */
 function responseVersion(response) {
+  /** @param {string} name */
   const header = name => response.headers?.get?.(name) || '';
   return header('X-Audio-Version') || `legacy:${header('X-Cached-At')}:${header('Content-Length')}`;
 }
 
+/**
+ * @param {unknown} cause
+ * @returns {AudioCacheError}
+ */
 function decodeFailure(cause) {
-  const error = new Error('这句语音无法解码，原有内容已保留。请检查语音服务后重试，文字聊天仍可继续。');
+  const error = /** @type {AudioCacheError} */ (
+    new Error('这句语音无法解码，原有内容已保留。请检查语音服务后重试，文字聊天仍可继续。')
+  );
   error.code = 'AUDIO_DECODE_FAILED';
   error.cause = cause;
   return error;
@@ -56,6 +133,11 @@ function decodeFailure(cause) {
 
 // One writer per key applies only the latest desired state. Playback never waits
 // for storage; a hanging browser API retains at most one pending body per writer.
+/**
+ * @param {string} key
+ * @param {AudioCacheMutation} mutation
+ * @returns {Promise<void>}
+ */
 function persistMutation(key, mutation) {
   if (typeof window === 'undefined' || !('caches' in window)) return Promise.resolve();
   const api = globalThis.caches || window.caches;
@@ -98,11 +180,15 @@ function persistMutation(key, mutation) {
       } finally { if (storageWriters.get(key) === writer) storageWriters.delete(key); }
     })();
   }
-  return withAudioDeadline(() => writer.promise, { timeoutMs: 1500 }).catch(error => {
+  return withAudioDeadline(() => /** @type {Promise<void>} */ (writer.promise), { timeoutMs: 1500 }).catch(error => {
     console.debug('Audio cache storage update did not finish in time:', error);
   });
 }
 
+/**
+ * @param {string} key
+ * @param {Blob} blob
+ */
 function discardAudioBlob(key, blob) {
   const state = stateForKey(key);
   const version = blobVersion(key, blob);
@@ -113,10 +199,14 @@ function discardAudioBlob(key, blob) {
   }
   if (!version) return;
   state.invalid.add(version);
-  if (state.invalid.size > 4) state.invalid.delete(state.invalid.values().next().value);
+  if (state.invalid.size > 4) state.invalid.delete(/** @type {string} */ (state.invalid.values().next().value));
   void persistMutation(key, { kind: 'delete', version });
 }
 
+/**
+ * @param {string} key
+ * @param {Blob} blob
+ */
 function storeInMemAudioMap(key, blob) {
   if (memAudioMap.has(key)) {
     memAudioMap.delete(key);
@@ -132,6 +222,7 @@ function storeInMemAudioMap(key, blob) {
 
 /**
  * Clears the in-memory audio blob cache.
+ * @returns {void}
  */
 export function clearMemAudioCache() {
   memAudioMap.clear();
@@ -139,6 +230,10 @@ export function clearMemAudioCache() {
   keyStates.clear();
 }
 
+/**
+ * @param {string} key
+ * @returns {Request}
+ */
 function toCacheRequest(key) {
   const safeKey = String(key || '').replace(/^[/\\]+/, '');
   return new Request(`https://gal2voice.local/audio_cache/${encodeURIComponent(safeKey)}`);
@@ -147,6 +242,7 @@ function toCacheRequest(key) {
 /**
  * Retrieves cached audio Blob from Cache Storage or memory.
  * @param {string} key - Cache key or URL
+ * @param {AudioDeadlineOptions} [options]
  * @returns {Promise<Blob|null>}
  */
 export async function getCachedAudioBlob(key, options = {}) {
@@ -154,7 +250,7 @@ export async function getCachedAudioBlob(key, options = {}) {
   const state = stateForKey(key);
   const revision = state.revision;
   if (memAudioMap.has(key)) {
-    const blob = memAudioMap.get(key);
+    const blob = /** @type {Blob} */ (memAudioMap.get(key));
     memAudioMap.delete(key);
     memAudioMap.set(key, blob);
     return blob;
@@ -189,6 +285,7 @@ export async function getCachedAudioBlob(key, options = {}) {
  * Stores an audio Blob in Cache Storage and memory cache.
  * @param {string} key - Cache key or URL
  * @param {Blob} blob - Audio Blob
+ * @returns {Promise<void>}
  */
 export async function putCachedAudioBlob(key, blob) {
   if (!key || !blob) return;
@@ -203,7 +300,8 @@ export async function putCachedAudioBlob(key, blob) {
 /**
  * Fetches an audio URL and caches its Blob locally.
  * @param {string} url - Audio URL (e.g. /audio/cache/xxx.wav)
- * @returns {Promise<Blob|null>}
+ * @param {AudioLoadOptions} [options]
+ * @returns {Promise<Blob>}
  */
 export async function loadAudioBlob(url, options = {}) {
   const { bypassCache = false, cacheResult = true, ...deadline } = options;
@@ -214,7 +312,9 @@ export async function loadAudioBlob(url, options = {}) {
     const state = stateForKey(url), revision = state.revision;
     const res = await fetch(url, { signal, ...(bypassCache ? { cache: 'no-store' } : {}) });
     if (!res.ok) {
-      const error = new Error('这句语音暂时读不出来，请检查语音引擎后重试，文字聊天仍可继续。');
+      const error = /** @type {AudioCacheError} */ (
+        new Error('这句语音暂时读不出来，请检查语音引擎后重试，文字聊天仍可继续。')
+      );
       error.status = res.status;
       throw error;
     }
@@ -227,13 +327,20 @@ export async function loadAudioBlob(url, options = {}) {
   }, deadline);
 }
 
-/** Decode once, then retry the same URL once if its cached audio is invalid. */
+/**
+ * Decode once, then retry the same URL once if its cached audio is invalid.
+ * @template [TDecoded=AudioBuffer]
+ * @param {(audioData: ArrayBuffer) => Promise<TDecoded>} decode - Typically AudioContext.prototype.decodeAudioData bound to an AudioContext
+ * @param {AudioBufferLoadOptions} [options]
+ * @returns {Promise<TDecoded>}
+ */
 export async function loadAudioBuffer(decode, { url = '', blob = null, signal, timeoutMs = 15000 } = {}) {
   return withAudioDeadline(async ownedSignal => {
     const checkCancelled = () => {
       if (ownedSignal.aborted) throw new DOMException('播放已取消', 'AbortError');
     };
     const canRefresh = /^(?:\/|https?:\/\/)/i.test(url);
+    /** @param {Blob} value */
     const decodeBlob = async value => {
       const buffer = await value.arrayBuffer(); checkCancelled();
       const decoded = await decode(buffer); checkCancelled(); return decoded;
@@ -280,6 +387,11 @@ export async function loadAudioBuffer(decode, { url = '', blob = null, signal, t
   }, { signal, timeoutMs });
 }
 
+/**
+ * @param {string} url
+ * @param {AudioLoadOptions} [options]
+ * @returns {Promise<Blob | null>}
+ */
 export async function fetchAndCacheAudio(url, options = {}) {
   if (!url) return null;
   try {
@@ -290,7 +402,11 @@ export async function fetchAndCacheAudio(url, options = {}) {
   return null;
 }
 
-/** Keep microphone recordings and unknown legacy keys; they may be the only copy. */
+/**
+ * Keep microphone recordings and unknown legacy keys; they may be the only copy.
+ * @param {Request} request
+ * @returns {boolean}
+ */
 function isGeneratedAudioRequest(request) {
   try {
     const url = new URL(request.url);
@@ -304,7 +420,11 @@ function isGeneratedAudioRequest(request) {
   }
 }
 
-/** Limit generated audio copies without silently removing user recordings. */
+/**
+ * Limit generated audio copies without silently removing user recordings.
+ * @param {number} [maxEntries]
+ * @returns {Promise<void>}
+ */
 export async function pruneAudioCacheStorage(maxEntries = 100) {
   if (typeof window === 'undefined' || !('caches' in window)) return;
   try {

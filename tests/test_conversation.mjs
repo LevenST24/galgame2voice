@@ -124,8 +124,6 @@ function setup({ voiceMode = false } = {}) {
     isPlaying: false, currentMsgId: null, paused: false,
     startSession(id, ctl, options) { this.currentMsgId = id; this.isPlaying = true; audio.push(['start', id, ctl, options]); },
     enqueueChunk(chunk) { audio.push(['chunk', chunk]); },
-    finishInput() { audio.push(['finish']); },
-    attachControl(ctl, id) { this.currentMsgId = id; audio.push(['attach', ctl, id]); },
     pause() { this.paused = true; }, resume() { this.paused = false; },
     interrupt(ms) { this.isPlaying = false; audio.push(['interrupt', ms]); },
   };

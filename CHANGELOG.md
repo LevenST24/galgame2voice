@@ -6,6 +6,8 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ## [Unreleased]
 
+
+
 ### Changed
 
 - 完成全局设置控制器业务职责与生命周期解耦（T04 收口）：将遥测轮询与硬件卡片渲染、GPT-SoVITS 引擎精度/重启/缓存清理，以及 Telegram 开关/可见性/验证与测试逻辑分别抽离至独立的 `TelemetrySettingsController`（`telemetry_settings.js`）、`EngineSettingsController`（`engine_settings.js`）与 `TelegramSettingsController`（`telegram_settings.js`）；`global_settings.js` 保持公共兼容门面与配置草稿协调；每个控制器实例独立拥有 AbortController、代数守卫、定时器与事件解绑；`initGlobalSettings` 在重新初始化时显式释放旧控制器与旧监听器，消除了旧请求回写新 DOM、覆盖忙碌状态、旧重启阻塞新操作或重复绑定导致多次调用的缺陷。
@@ -15,12 +17,13 @@ All notable changes to galgame2voice are documented here. The format follows
 
 
 
+
 ### Fixed
 
 - 修复一键更新前的本地修改备份（`pre_update_backup_*.zip`）总是写到程序目录下的 `data/backups`、不跟随自定义数据目录的问题；现在与数据库快照一样存放在当前数据目录的 `backups` 中。运行测试也不会再往本机 `data/backups` 写入备份并挤掉真实的更新前备份。
+- 修复导入的聊天备份中若含有 system 角色记录，后续继续对话时会被当作系统级指令原样发给大模型、可能改写角色设定的问题；现在只有用户与角色的对话会进入上下文。
 - 修复某一轮对话没有生成语音（如关闭语音或台词只有动作描写）时，设置中心「运行状态」的阶段耗时里「首音就绪」误显示为整轮耗时的问题；现在没有生成语音的轮次显示为「--」。
 - 修复旧 Telegram 连通性测试在途时重新打开设置或发起新测试后，旧响应结束时错误提前解锁新测试按钮并弹出旧提示的问题，以及测试进行中编辑输入框会导致测试按钮永久锁死的问题；现在 Telegram 测试拥有独立的代数守卫与 AbortController，草稿变更或重新初始化立即作废旧测试且不泄露提示或干扰新状态，编辑输入框会即时重置忙碌态以允许再次重试。
-### Removed
 - 移除网页界面与 Telegram 均未使用的好感度、长期记忆和性能指标独立接口；对话中的长期记忆提取与好感度演进，以及设置中心的语音缓存统计与清理功能保持不变。
 ### Removed
 - 移除两个页面和内置脚本都不会用到的接口：GET /api/providers/presets 与 GET /api/providers/{id}/models；模型提供商的预设列表仍随 GET /api/providers 一并返回。
@@ -139,6 +142,11 @@ All notable changes to galgame2voice are documented here. The format follows
 - 修复选择本地或自定义模型并填写本机或局域网地址、但未勾选「允许连接本机或局域网的模型服务」时，点击「测试连通性」或保存会直接报错且不指向该开关的问题；现在会在页面内直接提示开启该选项并定位到对应开关。
 - 修复在未填写模型名称直接测试自定义接口连通性时，Moonshot 等服务商误按旧默认模型探测导致报错，以及预设列表未加载完成时界面显示的默认模型与推荐模型列表落后于最新内置配置的问题；现在连通性测试与界面默认模型、推荐列表均统一使用各服务商最新内置预设。
 - 在设置中心「对话模型」点击「测试连接」失败时，部分连接异常、频率限制或密钥错误会被误报为网关异常或其他原因；现在统一按实际失败原因显示准确的中文标题与排障建议。
+### Removed
+### Removed
+- 移除 Telegram 机器人功能与设置中心里的「Telegram」页面；原有的 Telegram 历史对话与旧版聊天备份仍可在网页端正常查看、导出和导入。
+### Removed
+- 移除旧的同步聊天接口（POST /api/chat）和单独的语音合成接口（POST /api/voice/synthesize）；网页聊天仍使用流式接口，历史台词的语音文件已过期或不存在时，点播放不再自动重新合成，而是提示可到 LOG 里重新生成这一句的语音。
 
 ## [3.1.2] - 2026-11-04
 

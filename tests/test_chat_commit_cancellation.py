@@ -16,8 +16,7 @@ from galgame2voice.services.chat_service import ChatService
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["stream", "sync"])
-async def test_assistant_commit_followed_by_cancellation_keeps_exactly_one_turn(tmp_path, monkeypatch, mode):
+async def test_assistant_commit_followed_by_cancellation_keeps_exactly_one_turn(tmp_path, monkeypatch):
     """Cancellation after SQLite commit cannot duplicate a reply or prune its user."""
     database = tmp_path / "commit-cancellation.db"
     await init_db(database)
@@ -34,10 +33,6 @@ async def test_assistant_commit_followed_by_cancellation_keeps_exactly_one_turn(
     service._resolve_adapter_and_messages = AsyncMock(return_value=(
         SimpleNamespace(stream_chat=tokens, api_key="synthetic"), "synthetic", "synthetic", [],
     ))
-    service._execute_sync_llm = AsyncMock(return_value=(
-        '{"chinese":"Synthetic answer","japanese":""}', 0,
-    ))
-    service._synthesize_sync_audio = AsyncMock(return_value=("/audio/synthetic.wav", 0, 0, 0))
     service._spawn_background = lambda coro: coro.close()
     monkeypatch.setattr(StreamCoordinator, "_concat_audio_chunks", AsyncMock(return_value="/audio/synthetic.wav"))
 
@@ -68,9 +63,7 @@ async def test_assistant_commit_followed_by_cancellation_keeps_exactly_one_turn(
         return [event async for event in service.stream_chat("Synthetic question", session_id="synthetic")]
 
     try:
-        operation = asyncio.create_task(consume() if mode == "stream" else service.chat_sync(
-            "Synthetic question", session_id="synthetic"
-        ))
+        operation = asyncio.create_task(consume())
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(operation, timeout=10)
         assert cancelled_after_commit.is_set(), "test did not reach the assistant's durable commit"

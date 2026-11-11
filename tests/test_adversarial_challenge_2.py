@@ -33,9 +33,7 @@ from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.services.session_manager import SessionManager
 from galgame2voice.services.tts_cache_manager import TtsCacheManager
 from galgame2voice.services.tts_service import TtsService
-from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
-from galgame2voice.utils.logger import MaskingFilter, setup_logger
-from telegram_test_support import TELEGRAM_TEST_ADMINS
+from galgame2voice.utils.logger import MaskingFilter
 
 
 # ============================================================================
@@ -368,144 +366,12 @@ class TestTtsCacheConcurrencyAndCorruption:
 
 
 # ============================================================================
-# 3. Telegram Bot Parameter & Security Gating
+# 3. Zero-Leak Logger Masking
 # ============================================================================
 
 @pytest.mark.asyncio
-class TestTelegramBotParameterAndSecurityGating:
-    """Adversarial validation of Telegram unconfigured provider blocking, /nickname persistence, and log masking."""
-
-    async def test_unconfigured_llm_provider_switching_is_blocked_and_alerted(self, tmp_path):
-        """Verifies that selecting an LLM provider with an empty API key is strictly blocked and alerted."""
-        db_file = tmp_path / "test_tg_gating.db"
-        await init_db(str(db_file))
-        async with get_db(str(db_file)) as conn:
-            # Ensure anthropic provider has empty API key
-            await conn.execute("UPDATE providers SET api_key = '', is_active = 0 WHERE id = 'anthropic';")
-            # Ensure deepseek is active with a valid key
-            await conn.execute("UPDATE providers SET api_key = 'sk-valid-key-9999', is_active = 1 WHERE id = 'deepseek';")
-            await crud.set_active_provider(conn, "deepseek")
-
-        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=str(db_file))
-
-        # Mock CallbackQuery for switching to unconfigured provider
-        mock_query = AsyncMock()
-        mock_query.data = "set_model_anthropic"
-        mock_query.answer = AsyncMock()
-        mock_query.edit_message_text = AsyncMock()
-
-        mock_update = MagicMock()
-        mock_update.callback_query = mock_query
-        mock_update.effective_chat.id = 99887766
-
-        await handlers.handle_callback_query(mock_update)
-
-        # 1. Verify user received an alert popup
-        mock_query.answer.assert_called_once()
-        alert_args = mock_query.answer.call_args
-        alert_msg = alert_args[0][0] if alert_args[0] else alert_args[1].get("text", "")
-        show_alert = alert_args[1].get("show_alert", False)
-
-        assert show_alert is True
-        assert "未配置 API Key" in alert_msg or "无法激活" in alert_msg
-
-        # 2. Verify active provider in SQLite was NOT changed
-        async with get_db(str(db_file)) as conn:
-            active_prov = await crud.get_active_provider(conn)
-            assert active_prov.id == "deepseek"
-            assert active_prov.id != "anthropic"
-
-    async def test_custom_provider_switching_without_key_is_allowed(self, tmp_path):
-        """Verifies that 'custom' local provider switching is allowed even without an API key."""
-        db_file = tmp_path / "test_tg_custom.db"
-        await init_db(str(db_file))
-        async with get_db(str(db_file)) as conn:
-            await conn.execute("UPDATE providers SET api_key = '', is_active = 0 WHERE id = 'custom';")
-
-        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=str(db_file))
-        mock_query = AsyncMock()
-        mock_query.data = "set_model_custom"
-        mock_query.answer = AsyncMock()
-        mock_query.edit_message_text = AsyncMock()
-
-        mock_update = MagicMock()
-        mock_update.callback_query = mock_query
-        mock_update.effective_chat.id = 11223344
-
-        await handlers.handle_callback_query(mock_update)
-
-        async with get_db(str(db_file)) as conn:
-            active_prov = await crud.get_active_provider(conn)
-            assert active_prov.id == "custom"
-
-    async def test_nickname_command_persists_to_sqlite_and_updates_affection_context(self, tmp_path):
-        """Verifies that /nickname saves custom nickname to SQLite and injects it into LLM affection prompt."""
-        db_file = tmp_path / "test_tg_nick.db"
-        await init_db(str(db_file))
-        async with get_db(str(db_file)) as conn:
-            # Seed active voice profile
-            await crud.get_active_voice_profile(conn)
-
-        chat_service = ChatService(db_path=str(db_file))
-        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, chat_service=chat_service, db_path=str(db_file))
-
-        test_chat_id = 88776655
-        custom_name = "昂晴君"
-
-        # 1. Execute /nickname command
-        mock_message = AsyncMock()
-        mock_message.text = f"/nickname {custom_name}"
-        mock_message.reply_text = AsyncMock()
-
-        mock_update = MagicMock()
-        mock_update.message = mock_message
-        mock_update.effective_chat.id = test_chat_id
-        # A private chat: the sender is the chat, and must be whitelisted.
-        mock_update.effective_user.id = test_chat_id
-        handlers.admin_ids.add(test_chat_id)
-
-        reply = await handlers.handle_nickname(mock_update)
-        assert custom_name in reply
-        assert ("更新" in reply or "称呼" in reply)
-
-        # 2. Verify persistence in SQLite character_affection table
-        async with get_db(str(db_file)) as conn:
-            aff = await crud.get_or_create_character_affection(conn, user_id=str(test_chat_id), character_id=1)
-            assert aff.custom_nickname == custom_name
-
-            # Ensure Telegram session is initialized for this chat_id
-            session_id = f"tg_{test_chat_id}"
-            await crud.get_or_create_session(conn, session_id, channel="telegram", user_id=str(test_chat_id))
-
-            # 3. Verify affection context propagation into ChatService prepare_messages
-            messages = await chat_service.prepare_messages(
-                conn=conn,
-                session_id=session_id,
-                user_prompt="你好呀夏目！",
-                character_name="四季夏目",
-            )
-
-            system_msg = next((m for m in messages if m.role == "system"), None)
-            assert system_msg is not None
-            assert f"称呼玩家为：{custom_name}" in system_msg.content
-
-    async def test_nickname_command_empty_args_shows_usage_help(self, tmp_path):
-        """Verifies that calling /nickname without args outputs usage instructions."""
-        db_file = tmp_path / "test_tg_nick_empty.db"
-        await init_db(str(db_file))
-        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=str(db_file))
-
-        mock_message = AsyncMock()
-        mock_message.text = "/nickname   "
-        mock_message.reply_text = AsyncMock()
-
-        mock_update = MagicMock()
-        mock_update.message = mock_message
-        mock_update.effective_chat.id = 99112233
-
-        reply = await handlers.handle_nickname(mock_update)
-        assert "用法" in reply
-        assert "/nickname <你的称呼>" in reply
+class TestLogMaskingSecurity:
+    """Adversarial validation of zero-leak log masking."""
 
     async def test_api_key_masking_filter_sanitizes_all_sensitive_tokens(self):
         """Verifies that MaskingFilter catches OpenAI, Bearer, Telegram tokens, and URL params without leakage."""

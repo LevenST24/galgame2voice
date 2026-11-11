@@ -21,7 +21,6 @@ startup simultaneously. These tests pin both halves of the contract:
 import httpx
 import pytest
 
-from galgame2voice.telegram_bot.proxy import get_telegram_request_kwargs
 from galgame2voice.utils.http_client import (
     create_async_client,
     proxy_environment_is_usable,
@@ -104,18 +103,3 @@ def test_proxy_environment_is_usable_false_under_broken_environment(broken_proxy
 
 def test_proxy_environment_is_usable_true_without_proxy_variables(clean_proxy_environment):
     assert proxy_environment_is_usable() is True
-
-
-def test_telegram_request_kwargs_ignore_unusable_proxy_environment(broken_proxy_environment):
-    """python-telegram-bot builds its own client, so it needs the same guard."""
-    kwargs = get_telegram_request_kwargs(None)
-
-    assert kwargs["httpx_kwargs"] == {"trust_env": False}
-
-
-def test_telegram_request_kwargs_untouched_when_proxy_url_is_explicit(broken_proxy_environment):
-    """An explicit proxy URL bypasses environment parsing, so nothing is overridden."""
-    kwargs = get_telegram_request_kwargs(PROXY_URL)
-
-    assert kwargs["proxy"] == PROXY_URL
-    assert "httpx_kwargs" not in kwargs

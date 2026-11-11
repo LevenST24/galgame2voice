@@ -361,7 +361,7 @@ class VoiceManager:
 
         # Memory precheck: new and old weights briefly co-reside during a switch; loading
         # with too little free memory OOM-crashes the engine. Sits here (not in the HTTP
-        # layer) so every call path — REST, Telegram, auto-bind — gets the same guard.
+        # layer) so every call path — REST, auto-bind, warmup — gets the same guard.
         await asyncio.to_thread(self._check_switch_memory_guard, force)
 
         # 2. Execute 3-step atomic model switch with auto-rollback.
@@ -429,16 +429,6 @@ class VoiceManager:
         if opts.get("voice_profile_id") is None and legacy_id is not None:
             opts["voice_profile_id"] = legacy_id
         return opts
-
-    async def synthesize(
-        self,
-        text: str,
-        options: dict[str, Any] | None = None,
-        use_cache: bool = True,
-    ) -> bytes:
-        """Synthesizes text into complete audio bytes using active weights, persistent cache and inference mutex."""
-        opts = await self._resolve_active_options(options)
-        return await self.tts_service.synthesize(text, options=opts, use_cache=use_cache)
 
     async def stream_tts(
         self,

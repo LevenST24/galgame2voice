@@ -453,7 +453,7 @@ class TestMetricsAndCacheRestEndpoints:
 # ============================================================================
 
 class TestChatServiceTelemetryIntegration:
-    """Validates that ChatService stream_chat and chat_sync emit and record telemetry metrics."""
+    """Validates that ChatService stream_chat emits and records telemetry metrics."""
 
     @pytest.mark.asyncio
     async def test_stream_chat_telemetry_emission(self, tmp_path):
@@ -504,27 +504,3 @@ class TestChatServiceTelemetryIntegration:
         assert len(rows) >= 1
         assert rows[0]["session_id"] == "test_stream_sess"
         assert rows[0]["model_name"] == "deepseek-chat"
-
-    @pytest.mark.asyncio
-    async def test_chat_sync_telemetry_recording(self, tmp_path):
-        db_p = tmp_path / "chat_sync_m.db"
-        await init_db(db_p)
-        cache_mgr = TtsCacheManager(cache_dir=tmp_path / "audio" / "cache", db_path=str(db_p))
-        tts_svc = TtsService(client=MockGptSovitsForCache(), audio_dir=tmp_path / "audio", cache_manager=cache_mgr)
-        metrics_col = MetricsCollector(db_path=str(db_p))
-        chat_svc = ChatService(tts_service=tts_svc, db_path=str(db_p), metrics_collector=metrics_col)
-
-        from tests.test_chat_streaming_m4 import MockStreamingLLMAdapter
-        mock_adapter = MockStreamingLLMAdapter()
-
-        async def mock_get_adapter(conn=None, provider_id=None):
-            return mock_adapter, "gpt-4o-mini"
-
-        chat_svc._get_active_llm_adapter = mock_get_adapter
-
-        resp = await chat_svc.chat_sync("こんにちは", session_id="sync_sess")
-        assert "metrics" in resp
-        assert resp["metrics"]["prompt_tokens"] > 0
-        assert resp["metrics"]["completion_tokens"] > 0
-        assert resp["metrics"]["total_latency_ms"] >= 0
-

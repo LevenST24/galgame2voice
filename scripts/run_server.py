@@ -626,7 +626,6 @@ def check_python_environment() -> bool:
         ("httpx", "httpx"),
         ("pydantic_settings", "pydantic-settings"),
         ("psutil", "psutil"),
-        ("telegram", "python-telegram-bot"),
         ("cryptography", "cryptography"),
     ]
     if getattr(sys, "frozen", False):

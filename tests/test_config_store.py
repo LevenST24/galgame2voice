@@ -341,7 +341,6 @@ class TestConfigStoreTier2:
 
     @pytest.mark.parametrize("key_name,default_val", [
         ("gpt_sovits_url", "http://127.0.0.1:9880"),
-        ("telegram_bot_token", "123456789:ABCDEF"),
         ("audio_speed", "1.0"),
         ("top_k", "15"),
         ("temperature", "0.8"),
@@ -416,26 +415,22 @@ class TestConfigStoreCrud:
         try:
             await init_db(db_file)
             async with get_db(db_file) as conn:
-                # Set initial secret
-                await update_settings(conn, SettingsUpdate(telegram_bot_token="123456789:ABCdefgh-secrettoken1234567890"))
+                await update_settings(conn, SettingsUpdate(console_token="sec-console-secret-token-1234567890"))
                 raw = await get_settings_raw(conn)
-                assert raw.telegram_bot_token == "123456789:ABCdefgh-secrettoken1234567890"
+                assert raw.console_token == "sec-console-secret-token-1234567890"
 
-                # Update speed_factor but submit masked token placeholder
                 masked_resp = await get_settings(conn, mask=True)
-                assert is_masked_key(masked_resp.telegram_bot_token)
+                assert is_masked_key(masked_resp.console_token)
 
                 await update_settings(conn, SettingsUpdate(
                     speed_factor=1.25,
-                    telegram_bot_token=masked_resp.telegram_bot_token
+                    console_token=masked_resp.console_token,
                 ))
 
-                # Verify secret was not overwritten with the mask
                 raw2 = await get_settings_raw(conn)
                 assert raw2.speed_factor == 1.25
-                assert raw2.telegram_bot_token == "123456789:ABCdefgh-secrettoken1234567890"
+                assert raw2.console_token == "sec-console-secret-token-1234567890"
 
-                # Verify console token
                 assert await verify_console_token(conn, raw2.console_token) is True
                 assert await verify_console_token(conn, "wrong-token") is False
         finally:

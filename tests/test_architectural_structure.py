@@ -160,7 +160,6 @@ async def test_providers_router_decoupling():
     # Model and helper re-exports
     assert conf_mod.ProviderTestRequest is prov_mod.ProviderTestRequest
     assert conf_mod.ProviderTestResponse is prov_mod.ProviderTestResponse
-    assert conf_mod.TelegramTestRequest is prov_mod.TelegramTestRequest
     assert conf_mod._allow_private_endpoints is prov_mod._allow_private_endpoints
     assert conf_mod._enforce_llm_url_guard is prov_mod._enforce_llm_url_guard
 
