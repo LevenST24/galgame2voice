@@ -100,22 +100,26 @@ class ChatTurnProfiler:
     def app_first_chunk_ts(self) -> float | None:
         return self.t_first_audio
 
-    def _diff_ms(self, t: float | None) -> float:
-        return (t - self.t_start) * 1000.0 if t is not None else 0.0
+    def _diff_ms(self, t: float | None) -> float | None:
+        """Milliseconds from t_start, or None when the checkpoint was never reached."""
+        return (t - self.t_start) * 1000.0 if t is not None else None
 
-    def _calculate_milestones(self) -> dict[str, float]:
-        """Calculates elapsed milliseconds for all checkpoints relative to t_start."""
-        now = time.perf_counter()
+    def _calculate_milestones(self) -> dict[str, float | None]:
+        """Elapsed milliseconds for each checkpoint relative to t_start; None if it never happened."""
         return {
             "ttft_ms": self._diff_ms(self.t_llm_first_token),
             "sent_ms": self._diff_ms(self.t_first_sentence),
             "disp_ms": self._diff_ms(self.t_tts_dispatch),
             "upstream_ms": self._diff_ms(self.t_upstream_first_byte),
             "infer_ms": self._diff_ms(self.t_tts_inference_done),
-            "ttfa_ms": self._diff_ms(self.t_first_audio) or (now - self.t_start) * 1000.0,
+            "ttfa_ms": self._diff_ms(self.t_first_audio),
             "delivered_ms": self._diff_ms(self.t_frontend_delivered),
             "playback_ms": self._diff_ms(self.t_playback_started),
         }
+
+    @staticmethod
+    def _round(ms: float | None) -> float | None:
+        return round(ms, 1) if ms is not None else None
 
     def to_dict(self) -> dict[str, Any]:
         """Returns structured JSON-serializable telemetry data."""
@@ -136,21 +140,21 @@ class ChatTurnProfiler:
         return {
             "turn_id": self.turn_id,
             "t0_start_s": self.t_start,
-            "t1_ttft_ms": round(ttft_ms, 1),
-            "t2_first_sentence_ms": round(sent_ms, 1),
-            "t3_tts_dispatch_ms": round(disp_ms, 1),
-            "t4_upstream_first_byte_ms": round(upstream_ms, 1),
-            "t5_app_ttfa_ms": round(ttfa_ms, 1),
-            "t6_frontend_delivered_ms": round(delivered_ms, 1),
-            "t7_playback_ms": round(playback_ms, 1),
-            "tts_infer_done_ms": round(infer_ms, 1),
+            "t1_ttft_ms": self._round(ttft_ms),
+            "t2_first_sentence_ms": self._round(sent_ms),
+            "t3_tts_dispatch_ms": self._round(disp_ms),
+            "t4_upstream_first_byte_ms": self._round(upstream_ms),
+            "t5_app_ttfa_ms": self._round(ttfa_ms),
+            "t6_frontend_delivered_ms": self._round(delivered_ms),
+            "t7_playback_ms": self._round(playback_ms),
+            "tts_infer_done_ms": self._round(infer_ms),
             "cache_hits": list(self.cache_hits),
             "cache_misses": list(self.cache_misses),
             "cached_chunks": cached_count,
             "generated_chunks": generated_count,
             "cache_hit_rate": round(hit_rate, 2),
             "chunk_count": self.chunk_count,
-            "passed_target": ttfa_ms < 1000.0,
+            "passed_target": ttfa_ms < 1000.0 if ttfa_ms is not None else None,
         }
 
     def _format_bar(self, ms: float, max_ms: float, bar_width: int = 20) -> str:
@@ -162,7 +166,10 @@ class ChatTurnProfiler:
 
     def render_ascii(self) -> str:
         """Renders the ASCII waterfall diagram regardless of enabled flag."""
-        m = self._calculate_milestones()
+        # The waterfall draws an unreached checkpoint at 0 ms, as it always has;
+        # only the TTFA verdict depends on whether audio was produced at all.
+        m = {key: value or 0.0 for key, value in self._calculate_milestones().items()}
+        has_audio = self.t_first_audio is not None
         ttft_ms = m["ttft_ms"]
         sent_ms = m["sent_ms"]
         disp_ms = m["disp_ms"]
@@ -174,6 +181,7 @@ class ChatTurnProfiler:
 
         max_metric = max(100.0, ttfa_ms, infer_ms, deliv_ms, play_ms)
         status = "PASS (<1000ms)" if ttfa_ms < 1000.0 else "WARN (>=1000ms)"
+        ttfa_summary = f"{ttfa_ms:6.1f}ms (Target: <1000ms) -> {status}" if has_audio else "   n/a (no audio this turn)"
 
         lines = [
             f"\n┌── [Chat Turn #{self.turn_id} Profile Waterfall (T0~T7)] ──────────────────",
@@ -195,7 +203,7 @@ class ChatTurnProfiler:
 
         lines.extend([
             "├─────────────────────────────────────────────────────────────",
-            f"│  TTFA:                 {ttfa_ms:6.1f}ms (Target: <1000ms) -> {status}",
+            f"│  TTFA:                 {ttfa_summary}",
         ])
 
         if self.cache_hits:
