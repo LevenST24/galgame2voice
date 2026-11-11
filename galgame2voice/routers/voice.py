@@ -504,6 +504,9 @@ def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
     sovits_weights: list[dict[str, Any]] = []
     audio_files: list[dict[str, Any]] = []
     seen = set()
+    # data_dir and audio_dir normally live under project_root (and engine
+    # roots can nest), so the same directory would be walked several times.
+    visited_dirs: set[str] = set()
 
     for root_dir in candidate_roots:
         if not os.path.isdir(root_dir):
@@ -512,6 +515,17 @@ def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
             continue
         try:
             for root, dirs, filenames in os.walk(root_dir):
+                try:
+                    resolved_root: Path | None = Path(root).resolve()
+                except (OSError, ValueError):
+                    resolved_root = None
+                if resolved_root is not None:
+                    visit_key = os.path.normcase(str(resolved_root))
+                    if visit_key in visited_dirs:
+                        dirs[:] = []
+                        continue
+                    visited_dirs.add(visit_key)
+
                 # Skip venvs, repos, caches and built-in non-character model directories.
                 dirs[:] = [
                     d for d in dirs
@@ -520,15 +534,11 @@ def _scan_models_sync() -> dict[str, list[dict[str, Any]]]:
                 ]
 
                 is_in_audio_dir = False
-                if target_audio_dir:
-                    try:
-                        resolved_root = Path(root).resolve()
-                        is_in_audio_dir = (
-                            resolved_root == target_audio_dir
-                            or resolved_root.is_relative_to(target_audio_dir)
-                        )
-                    except (OSError, ValueError):
-                        is_in_audio_dir = False
+                if target_audio_dir and resolved_root is not None:
+                    is_in_audio_dir = (
+                        resolved_root == target_audio_dir
+                        or resolved_root.is_relative_to(target_audio_dir)
+                    )
 
                 for fname in filenames:
                     if is_in_audio_dir and _SYNTH_AUDIO_FILENAME_PATTERN.match(fname):
