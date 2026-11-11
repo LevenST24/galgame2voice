@@ -925,68 +925,6 @@ class ChatService:
             if not persisted_assistant and user_msg is not None:
                 await self._prune_orphaned_user_message(getattr(user_msg, "id", None), context_label="chat_sync")
 
-    async def resolve_message_japanese(
-        self,
-        text: str,
-        session_id: str | None = None,
-    ) -> str:
-        """
-        Resolves the Japanese original text used during backend synthesis for a given Chinese message.
-        1. Checks database records for an exact or approximate match in messages table.
-        2. If not found in database, invokes active LLM adapter to translate to spoken Japanese suitable for Galgame.
-        """
-        clean_text = (text or "").strip()
-        if not clean_text:
-            return ""
-
-        async with get_db(self.db_path) as conn:
-            async def _find_ja(sid: str | None) -> str | None:
-                where_clause = "session_id = ? AND " if sid else ""
-                query = f"""
-                    SELECT content_japanese FROM messages
-                    WHERE {where_clause}role = 'assistant' AND content_japanese != '' AND content_chinese != ''
-                      AND (content_chinese = ? OR ? LIKE '%' || content_chinese || '%' OR content_chinese LIKE '%' || ? || '%')
-                    ORDER BY id DESC LIMIT 1
-                """
-                params = (sid, clean_text, clean_text, clean_text) if sid else (clean_text, clean_text, clean_text)
-                cursor = await conn.execute(query, params)
-                row = await cursor.fetchone()
-                if row and row[0] and str(row[0]).strip():
-                    return str(row[0]).strip()
-                return None
-
-            # First attempt: match by session_id and exact/substring content_chinese
-            if session_id:
-                matched = await _find_ja(session_id)
-                if matched:
-                    return matched
-
-            # Second attempt: search across all assistant messages in DB
-            matched = await _find_ja(None)
-            if matched:
-                return matched
-
-            # Third attempt: fallback to active LLM translation
-            try:
-                res = await self._get_active_llm_adapter(conn=conn)
-                adapter, model_name, _ = await self._resolve_adapter_triple(res, conn)
-                translation_prompt = (
-                    "你是一个Galgame本地化配音翻译专家。请将以下中文台词直接翻译为适合配音朗读的口语化自然日文。"
-                    "注意：仅输出翻译后的纯日文句子，严禁包含任何中文、拼音、假名注音或解释说明。\n\n"
-                    f"中文台词：{clean_text}"
-                )
-                chat_msg = ChatMessage(role="user", content=translation_prompt)
-                chat_kwargs = {"model": model_name, "temperature": 0.3}
-                effort = configured_reasoning_effort(adapter)
-                if effort is not None:
-                    chat_kwargs["reasoning_effort"] = effort
-                resp = await adapter.chat([chat_msg], **chat_kwargs)
-                raw_ja = resp.content if hasattr(resp, "content") else str(resp)
-                return raw_ja.strip().strip('"\'`「」『』')
-            except Exception as exc:
-                logger.warning("LLM translation fallback in resolve_message_japanese failed: %s", exc)
-                return ""
-
 
 __all__ = [
     "StreamingBilingualParser",

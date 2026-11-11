@@ -373,13 +373,7 @@ class TestVoiceRouterEndpointsM3:
             assert synth_resp_2.status_code == 200
             assert synth_resp_2.content == synth_resp.content
 
-            # 6. Presets API
-            preset_resp = await client.get("/api/voice/presets")
-            assert preset_resp.status_code == 200
-            assert "presets" in preset_resp.json()
-            assert "slicing_methods" in preset_resp.json()
-
-            # 7. Delete Profile
+            # 6. Delete Profile
             del_resp = await client.delete(f"/api/voice/profiles/{profile_id}")
             assert del_resp.status_code == 200
             assert del_resp.json()["status"] == "deleted"

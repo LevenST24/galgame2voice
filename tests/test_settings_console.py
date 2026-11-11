@@ -343,23 +343,12 @@ class TestVoiceAndInferenceTuning:
     """Verifies voice profile management, atomic model switching, and inference parameter tuning."""
 
     @pytest.mark.asyncio
-    async def test_voice_profiles_crud_and_presets(self):
-        """Verifies voice profiles listing, creation, updates, and TTS presets."""
+    async def test_voice_profiles_crud(self):
+        """Verifies voice profiles listing, creation, and updates."""
         app = create_app()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            # 1. Presets
-            presets_resp = await client.get("/api/voice/presets")
-            assert presets_resp.status_code == 200
-            p_data = presets_resp.json()
-            assert "presets" in p_data
-            assert "high_quality" in p_data["presets"]
-            assert "balanced" in p_data["presets"]
-            assert "low_latency" in p_data["presets"]
-            assert "slicing_methods" in p_data
-            assert "cut5" in p_data["slicing_methods"]
-
-            # 2. Create Profile
+            # 1. Create Profile
             create_resp = await client.post("/api/voice/profiles", json={
                 "name": "ConsoleTestCharacter",
                 "description": "Character for Console UI Test",
@@ -372,7 +361,7 @@ class TestVoiceAndInferenceTuning:
             assert create_resp.status_code == 201
             profile_id = create_resp.json()["id"]
 
-            # 3. Update Profile
+            # 2. Update Profile
             update_resp = await client.put(f"/api/voice/profiles/{profile_id}", json={
                 "description": "Updated character description",
                 "prompt_lang": "zh"
@@ -380,12 +369,12 @@ class TestVoiceAndInferenceTuning:
             assert update_resp.status_code == 200
             assert update_resp.json()["profile"]["description"] == "Updated character description"
 
-            # 4. List Profiles
+            # 3. List Profiles
             list_resp = await client.get("/api/voice/profiles")
             assert list_resp.status_code == 200
             assert any(p["name"] == "ConsoleTestCharacter" for p in list_resp.json()["profiles"])
 
-            # 5. Delete Profile
+            # 4. Delete Profile
             del_resp = await client.delete(f"/api/voice/profiles/{profile_id}")
             assert del_resp.status_code == 200
 
@@ -579,8 +568,8 @@ class TestConsoleVoiceAndProviderIntegration:
             assert switch_resp.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_health_check_and_legacy_status(self):
-        """Verifies GET /api/health and GET /status endpoints."""
+    async def test_health_check(self):
+        """Verifies GET /api/health endpoint."""
         app = create_app()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -591,11 +580,4 @@ class TestConsoleVoiceAndProviderIntegration:
             assert h_data["status"] == "ok"
             assert "uptime_seconds" in h_data
             assert h_data["app"] == "galgame2voice"
-
-            # Legacy status
-            s_resp = await client.get("/status")
-            assert s_resp.status_code == 200
-            s_data = s_resp.json()
-            assert s_data["status"] == "ok"
-            assert "gpt_sovits" in s_data
 

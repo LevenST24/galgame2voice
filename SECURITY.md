@@ -21,7 +21,7 @@ Please report vulnerabilities privately through GitHub's private vulnerability r
 
 ## 认证
 
-- 除 `/api/health`、`/status`、静态资源与音频文件外，**所有 API 路由均声明了控制台 Token 认证依赖**
+- 除 `/api/health`、静态资源与音频文件外，**所有 API 路由均声明了控制台 Token 认证依赖**
   （`Authorization: Bearer <token>` 或 `X-Console-Token` 头，见 `main.py` 的 `auth_deps`）。
 - **本地默认模式下鉴权实际上是关闭的**：`Settings.auth_disabled` 默认 `True`
   （`galgame2voice/config.py`），`require_auth()` 在该开关为真时直接放行

@@ -34,7 +34,6 @@ from galgame2voice.database.models import (
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 from galgame2voice.routers.chat import sse_event_formatter
-from galgame2voice.routers.voice import _fs_browse_sync
 from galgame2voice.security.url_guard import validate_llm_base_url
 from galgame2voice.services.affection_service import AffectionService
 from galgame2voice.services.chat_service import StreamingBilingualParser
@@ -175,18 +174,6 @@ class TestTier1FeatureCoverage:
             assert "uptime_seconds" in data
             from galgame2voice import __version__
             assert data["version"] == __version__
-
-    @pytest.mark.asyncio
-    async def test_f3_02_legacy_status_endpoint(self):
-        """Verifies /status endpoint returns legacy compatibility response."""
-        app = create_app()
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/status")
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["status"] == "ok"
-            assert "gpt_sovits" in data
 
     @pytest.mark.asyncio
     async def test_f3_03_system_status_telemetry(self):
@@ -467,27 +454,6 @@ class TestTier1FeatureCoverage:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.get("/audio/../config.py")
             assert resp.status_code in (404, 400, 403)
-
-    def test_f7_02_fs_browse_filter_extensions(self, tmp_path, monkeypatch):
-        """Verifies _fs_browse_sync filters files strictly by whitelisted extensions."""
-        monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
-        from galgame2voice.config import get_settings
-        get_settings.cache_clear()
-        (tmp_path / "model.ckpt").write_text("dummy")
-        (tmp_path / "weights.pth").write_text("dummy")
-        (tmp_path / "audio.wav").write_text("dummy")
-        (tmp_path / "secret.py").write_text("SECRET")
-        (tmp_path / "config.json").write_text("{}")
-
-        res_gpt = _fs_browse_sync(str(tmp_path), file_type="gpt")
-        gpt_files = [f["name"] for f in res_gpt["files"]]
-        assert "model.ckpt" in gpt_files
-        assert "secret.py" not in gpt_files
-
-        res_audio = _fs_browse_sync(str(tmp_path), file_type="audio")
-        audio_files = [f["name"] for f in res_audio["files"]]
-        assert "audio.wav" in audio_files
-        assert "weights.pth" not in audio_files
 
     def test_f7_03_ssrf_url_guard_blocks_private_ranges(self):
         """Verifies validate_llm_base_url blocks internal and loopback IP addresses."""

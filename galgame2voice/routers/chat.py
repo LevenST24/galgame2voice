@@ -1,7 +1,7 @@
 """
 Chat Router for galgame2voice.
 Provides real-time SSE streaming endpoint (/api/chat/stream) and
-backward-compatible synchronous chat endpoints (/api/chat, /ai/chat).
+backward-compatible synchronous chat endpoint (/api/chat).
 """
 
 import asyncio
@@ -320,65 +320,6 @@ async def chat_sync_endpoint(req: ChatRequest) -> dict[str, Any]:
         ) from exc
 
 
-@router.get("/ai/chat", summary="Legacy GET chat completion endpoint")
-async def legacy_get_chat(
-    prompt: str = Query(..., min_length=1, max_length=PROMPT_MAX_LENGTH, description="Prompt text"),
-    session_id: str = Query(default="default", max_length=SESSION_ID_MAX_LENGTH, description="Session ID"),
-    character_name: str | None = Query(default=None, max_length=100, description="Character name"),
-    preset: str | None = Query(default=None, max_length=64, description="TTS preset"),
-) -> dict[str, Any]:
-    """
-    Legacy backward-compatible GET endpoint for simple chat queries.
-    """
-    if not prompt or not prompt.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Prompt cannot be empty",
-        )
-
-    clean_session_id = (session_id or "").strip() or "default"
-    clean_char_name = character_name.strip() if character_name else None
-    service = get_chat_service()
-    tts_opts = {"preset": preset} if preset else {}
-    try:
-        return await service.chat_sync(
-            prompt=prompt.strip(),
-            session_id=clean_session_id,
-            character_name=clean_char_name,
-            tts_options=tts_opts,
-        )
-    except HTTPException:
-        raise
-    except ConfigurationSelectionError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=chat_error_payload(exc)) from exc
-    except EmptyReplyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"error": str(exc), "error_code": "empty_reply", "kind": "empty_reply", "message": str(exc)},
-        ) from exc
-    except Exception as exc:
-        logger.error(
-            "Error in legacy GET chat completion (session_id=%s, character=%s): %s",
-            clean_session_id,
-            clean_char_name,
-            exc,
-            exc_info=True,
-        )
-        safe_err = sanitize_error_detail(exc)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=safe_err or "Chat completion encountered an internal error",
-        ) from exc
-
-
-@router.post("/ai/chat", summary="Legacy POST chat completion endpoint")
-async def legacy_post_chat(req: ChatRequest) -> dict[str, Any]:
-    """
-    Legacy backward-compatible POST endpoint.
-    """
-    return await chat_sync_endpoint(req)
-
-
 # ============================================================================
 # Session & Message History Endpoints
 # ============================================================================
@@ -691,23 +632,5 @@ async def clear_chat_history(
             "session_id": clean_session_id,
             "success": cleared,
         }
-
-
-class MessageJapaneseRequest(BaseModel):
-    """Request payload for retrieving or translating Japanese speech script for a message."""
-
-    text: str = Field(..., min_length=1, max_length=PROMPT_MAX_LENGTH, description="Chinese text of the assistant message")
-    session_id: str | None = Field(default=None, max_length=SESSION_ID_MAX_LENGTH, description="Session ID if known")
-
-
-@router.post("/api/chat/japanese", summary="Get or resolve backend synthesized Japanese text")
-async def get_message_japanese_endpoint(req: MessageJapaneseRequest) -> dict[str, Any]:
-    """
-    Returns the Japanese original text used for TTS synthesis of this message.
-    Looks up database history first, falling back to LLM translation.
-    """
-    service = get_chat_service()
-    ja = await service.resolve_message_japanese(req.text, session_id=req.session_id)
-    return {"japanese": ja}
 
 

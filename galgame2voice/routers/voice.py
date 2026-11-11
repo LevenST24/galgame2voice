@@ -10,11 +10,10 @@ import logging
 import os
 from pathlib import Path
 import re
-import sys
 import time
 from typing import Any
 import aiosqlite
-from fastapi import APIRouter, HTTPException, Query, status, Response, Request
+from fastapi import APIRouter, HTTPException, status, Response, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.requests import ClientDisconnect
@@ -29,8 +28,6 @@ from galgame2voice.database.models import (
 from galgame2voice.services.gpt_sovits_client import (
     normalize_japanese_for_tts,
     validate_user_tts_options,
-    TTS_PRESETS,
-    SLICING_METHODS,
 )
 from galgame2voice.routers.common import (
     persist_active_voice_profile_or_raise,
@@ -44,12 +41,9 @@ from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.async_tasks import await_protected, cancel_and_drain
 from galgame2voice.utils.path_guard import (
     PathTraversalError,
-    contains_traversal_payload,
     discover_gpt_sovits_roots,
-    is_windows_device_name,
     safe_resolve_audio_path,
     get_authorized_roots,
-    validate_path_containment,
     to_project_relative_path,
     validate_voice_profile_paths,
 )
@@ -565,12 +559,6 @@ _NATIVE_FILE_PICKER_CONFIG: dict[str, tuple[str, list[tuple[str, str]]]] = {
     ),
 }
 
-_FS_BROWSE_EXTS: dict[str, set[str]] = {
-    "gpt": {".ckpt"},
-    "sovits": {".pth"},
-    "audio": {".wav", ".ogg", ".mp3", ".flac", ".m4a"},
-}
-
 
 @router.post(
     "/browse-file",
@@ -613,120 +601,6 @@ async def open_native_file_dialog(req: BrowseFileRequest) -> dict[str, Any]:
 
     path = await asyncio.wrap_future(_NATIVE_PICKER_EXECUTOR.submit(_run_picker))
     return {"selected_path": path}
-
-
-@router.get(
-    "/fs-browse",
-    summary="Web Directory Browser",
-    description="Lists drives, directories, and files with filtering for in-browser selection.",
-)
-async def fs_browse(
-    path: str | None = Query(None, description="Directory path to explore"),
-    file_type: str | None = Query("all", description="'gpt', 'sovits', 'audio', or 'all'"),
-):
-    return await asyncio.to_thread(_fs_browse_sync, path, file_type)
-
-
-def _get_available_drives() -> list[str]:
-    """Returns available drive paths on Windows or root directory on POSIX."""
-    if sys.platform == "win32":
-        import string
-        drives = []
-        for letter in string.ascii_uppercase:
-            drive_path = f"{letter}:\\"
-            if os.path.exists(drive_path):
-                drives.append(drive_path)
-        return drives
-    return ["/"]
-
-
-def _scan_dir_entries(
-    current_path: str,
-    exts: set[str] | None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Scandir helper returning sorted (directories, files) for a directory path."""
-    directories: list[dict[str, Any]] = []
-    files: list[dict[str, Any]] = []
-    with os.scandir(current_path) as it:
-        for entry in it:
-            try:
-                if entry.is_dir(follow_symlinks=False):
-                    if not entry.name.startswith("."):
-                        directories.append({
-                            "name": entry.name,
-                            "path": entry.path,
-                        })
-                elif not entry.name.startswith(".") and entry.is_file(follow_symlinks=False):
-                    ext = os.path.splitext(entry.name)[1].lower()
-                    if exts is None or ext in exts:
-                        files.append({
-                            "name": entry.name,
-                            "path": entry.path,
-                            "size_bytes": entry.stat().st_size,
-                        })
-            except (PermissionError, OSError):
-                continue
-
-    directories.sort(key=lambda x: x["name"].lower())
-    files.sort(key=lambda x: x["name"].lower())
-    return directories, files
-
-
-def _fs_browse_sync(path: str | None, file_type: str | None) -> dict[str, Any]:
-    """Blocking directory listing (runs in a worker thread)."""
-    # Path traversal and device name safety check
-    if path and (contains_traversal_payload(path) or is_windows_device_name(path)):
-        return {
-            "current_path": path,
-            "parent_path": None,
-            "drives": [],
-            "directories": [],
-            "files": [],
-            "error": "Invalid or unsafe directory path",
-        }
-
-    roots = get_authorized_roots()
-    drives = list(dict.fromkeys(str(root) for root in roots if root.is_dir()))
-    current_path = os.path.abspath(path) if path and os.path.exists(path) else str(get_settings().project_root)
-    if os.path.isfile(current_path):
-        current_path = os.path.dirname(current_path)
-
-    try:
-        current_path = str(validate_path_containment(current_path, allowed_roots=roots))
-    except (PathTraversalError, OSError, ValueError):
-        return {
-            "current_path": str(get_settings().project_root), "parent_path": None,
-            "drives": drives, "directories": [], "files": [],
-            "error": "无法访问目录：路径超出已授权的项目或 GPT-SoVITS 目录",
-        }
-
-    parent_path = os.path.dirname(current_path) if current_path != os.path.dirname(current_path) else None
-    if parent_path:
-        try:
-            validate_path_containment(parent_path, allowed_roots=roots)
-        except PathTraversalError:
-            parent_path = None
-    exts = _FS_BROWSE_EXTS.get(file_type)
-
-    try:
-        directories, files = _scan_dir_entries(current_path, exts)
-    except (PermissionError, OSError) as exc:
-        return {
-            "current_path": current_path,
-            "parent_path": parent_path,
-            "drives": drives,
-            "directories": [],
-            "files": [],
-            "error": f"无法访问目录: {exc}",
-        }
-
-    return {
-        "current_path": current_path,
-        "parent_path": parent_path,
-        "drives": drives,
-        "directories": directories,
-        "files": files,
-    }
 
 
 # ============================================================================
@@ -881,15 +755,3 @@ async def scan_discovered_models():
     if _scan_cache.get("generation", 0) == generation:
         _scan_cache["result"] = (now, result)
     return result
-
-
-@router.get(
-    "/presets",
-    summary="List Voice Presets & Slicing Methods",
-    description="Returns built-in inference presets (High Quality, Balanced, Low Latency) and cut options.",
-)
-async def get_presets_and_slicing():
-    return {
-        "presets": TTS_PRESETS,
-        "slicing_methods": SLICING_METHODS,
-    }

@@ -16,7 +16,6 @@ Adversarially tests:
    - Multi-layer verification that no plaintext bot token survives in responses or logs
 3. Path traversal attack vectors against static audio and filesystem browse endpoints:
    - /audio static mount with directory traversal (../, ..%2f, ..%5c, %2e%2e, null bytes, device names)
-   - /api/voice/fs-browse with traversal, non-existent paths, permission-denied directories, UNC, long paths
    - /api/voice/browse-file native dialog fallback with invalid paths and filetypes
    - Audio cache path validation and access control
 """
@@ -58,7 +57,6 @@ from galgame2voice.database.models import (
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 from galgame2voice.routers.config import TelegramTestRequest, test_telegram_bot as handle_test_telegram_bot
-from galgame2voice.routers.voice import _fs_browse_sync
 from galgame2voice.services.memory_service import MemoryService
 from galgame2voice.telegram_bot.bot import TelegramBotManager, validate_bot_token
 from galgame2voice.utils.logger import (
@@ -422,63 +420,6 @@ class TestPathTraversalAndFileSystemSecurity:
         finally:
             if test_wav.exists():
                 test_wav.unlink()
-
-    def test_fs_browse_sync_adversarial_paths(self):
-        """
-        Tests _fs_browse_sync with adversarial path inputs:
-        - Non-existent directories
-        - System Volume Information (permission denied)
-        - UNC paths
-        - Root drive boundary checks
-        - Extreme path lengths (> 300 chars)
-        - Special characters and device names
-        """
-        # 1. Non-existent path -> should fallback gracefully to root drive or current directory
-        res_nonexistent = _fs_browse_sync("C:\\NonExistent_Directory_12345\\SubFolder", "all")
-        assert "directories" in res_nonexistent
-        assert "files" in res_nonexistent
-        assert res_nonexistent["current_path"] != "C:\\NonExistent_Directory_12345\\SubFolder"
-
-        # 2. Permission denied simulation (or System Volume Information on Windows)
-        res_sys_vol = _fs_browse_sync("C:\\System Volume Information", "all")
-        assert "directories" in res_sys_vol
-        assert "files" in res_sys_vol
-        # Should gracefully return error message or empty lists, never crash with unhandled exception
-        if "error" in res_sys_vol:
-            assert "无法访问" in res_sys_vol["error"] or "PermissionError" in res_sys_vol["error"]
-
-        # 3. None path -> returns drive listing and top root
-        res_none = _fs_browse_sync(None, "all")
-        assert "drives" in res_none
-        assert len(res_none["drives"]) > 0
-
-        # 4. Filter by file_type: gpt, sovits, audio
-        res_audio = _fs_browse_sync(".", "audio")
-        for f in res_audio.get("files", []):
-            ext = os.path.splitext(f["name"])[1].lower()
-            assert ext in {".wav", ".ogg", ".mp3", ".flac", ".m4a"}
-
-        # 5. Overlong path string (> 300 chars)
-        long_path = "C:\\" + "a" * 350
-        res_long = _fs_browse_sync(long_path, "all")
-        assert "directories" in res_long
-        assert "files" in res_long
-
-    def test_fs_browse_api_requires_auth(self, monkeypatch, clean_db):
-        """Ensures /api/voice/fs-browse is protected by auth dependencies when auth is enabled."""
-        monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "0")
-        monkeypatch.setenv("GALGAME2VOICE_CONSOLE_TOKEN", "super-secret-token")
-        os.environ["DATABASE_PATH"] = clean_db
-        app = create_app()
-        with TestClient(app) as client:
-            # 1. Unauthenticated request -> 401
-            resp = client.get("/api/voice/fs-browse")
-            assert resp.status_code == 401, f"Expected 401 Unauthorized for fs-browse without token, got: {resp.status_code}"
-
-            # 2. Authenticated request with Bearer -> 200
-            resp_auth = client.get("/api/voice/fs-browse", headers={"Authorization": "Bearer super-secret-token"})
-            assert resp_auth.status_code == 200
-            assert "drives" in resp_auth.json()
 
     def test_browse_file_api_handles_arbitrary_inputs(self, app_client):
         """Tests /api/voice/browse-file with invalid file types and non-existent initial_dir."""

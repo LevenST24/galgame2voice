@@ -130,20 +130,17 @@ async def test_rejected_selection_does_not_generate_or_process_memory(selected, 
         assert row[0] == 0
 
 
-@pytest.mark.parametrize("method,path,body,code", [
-    ("POST", "/api/chat", {"voice_profile_id": 99999}, "VOICE_PROFILE_NOT_FOUND"),
-    ("POST", "/ai/chat", {"provider_id": "synthetic-missing"}, "PROVIDER_NOT_FOUND"),
-    ("GET", "/ai/chat", {"character_name": "Synthetic missing"}, "VOICE_PROFILE_NOT_FOUND"),
+@pytest.mark.parametrize("body,code", [
+    ({"voice_profile_id": 99999}, "VOICE_PROFILE_NOT_FOUND"),
+    ({"provider_id": "synthetic-missing"}, "PROVIDER_NOT_FOUND"),
+    ({"character_name": "Synthetic missing"}, "VOICE_PROFILE_NOT_FOUND"),
 ])
-async def test_sync_http_errors_explain_the_relevant_settings_page(selected, monkeypatch, method, path, body, code):
+async def test_sync_http_errors_explain_the_relevant_settings_page(selected, monkeypatch, body, code):
     monkeypatch.setattr(chat, "get_chat_service", lambda: selected.service)
     app = FastAPI()
     app.include_router(chat.router)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
-        if method == "GET":
-            response = await client.get(path, params={"prompt": "synthetic", "session_id": "http-rejected", **body})
-        else:
-            response = await client.post(path, json={"prompt": "synthetic", "session_id": "http-rejected", **body})
+        response = await client.post("/api/chat", json={"prompt": "synthetic", "session_id": "http-rejected", **body})
     assert response.status_code == 404, response.text
     assert response.json()["detail"]["error_code"] == code
     selected.factory.assert_not_called()
