@@ -139,9 +139,6 @@ async def test_saved_private_permission_reaches_real_chat_adapter_and_can_be_rev
         with pytest.raises(PermissionError, match="阻止"):
             await complete(adapter, model)
         assert len(outbound) == 1, "revoking permission must block the next outbound request"
-        listing = await client.get("/api/providers/custom/models")
-        assert listing.status_code == 400
-        assert len(outbound) == 1
     finally:
         await service.aclose()
 

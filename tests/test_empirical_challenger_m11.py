@@ -408,7 +408,7 @@ class TestBaseUrlResetLogic:
         # Enable allow_private_llm_endpoints for local testing of custom provider
         await app_client.post("/api/config", json={"settings": {"allow_private_llm_endpoints": True}})
 
-        presets_resp = await app_client.get("/api/providers/presets")
+        presets_resp = await app_client.get("/api/providers")
         assert presets_resp.status_code == 200
         presets = {p["id"]: p for p in presets_resp.json()["presets"]}
 

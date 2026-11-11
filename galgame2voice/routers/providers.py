@@ -1,8 +1,7 @@
 """
 Provider and Connectivity Testing Router for galgame2voice.
 Provides REST endpoints for LLM/STT provider configurations,
-presets, live model discovery, in-flight connectivity testing,
-and Telegram bot token verification.
+in-flight connectivity testing, and Telegram bot token verification.
 """
 
 import asyncio
@@ -128,15 +127,6 @@ async def list_providers():
             "providers": all_providers,
             "presets": presets,
         }
-
-
-@router.get(
-    "/providers/presets",
-    summary="List Provider Presets",
-    description="Returns built-in templates for 10+ major LLM providers.",
-)
-async def get_presets():
-    return {"presets": list_provider_presets()}
 
 
 @router.get(
@@ -352,45 +342,6 @@ async def activate_provider(provider_id: str):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")
         active = await crud.get_active_provider(conn, mask=True)
         return {"status": "success", "active_provider": active.model_dump() if active else None}
-
-
-@router.get(
-    "/providers/{provider_id}/models",
-    summary="Fetch Provider Model List",
-    description="Fetches live available model list directly from the provider's /models API.",
-)
-async def get_provider_models(provider_id: str):
-    clean_id = (provider_id or "").strip().lower()
-    if not clean_id or len(clean_id) > 64:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Provider '{provider_id}' not found")
-    async with get_db() as conn:
-        stored = await crud.get_provider_raw(conn, clean_id)
-        if not stored:
-            preset = get_provider_preset(clean_id)
-            if not preset:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Provider '{provider_id}' not found",
-                )
-            return {"provider_id": clean_id, "models": preset["preset_models"]}
-
-        allow_private = await _enforce_llm_url_guard(stored.api_base_url)
-        adapter = get_llm_adapter(
-            provider_id_or_config=stored,
-            api_key=stored.api_key,
-            base_url=stored.api_base_url,
-            custom_headers=stored.custom_headers,
-            allow_private=allow_private,
-        )
-
-        try:
-            models = await adapter.list_models()
-            return {"provider_id": clean_id, "models": models}
-        except Exception as exc:
-            logger.warning("Failed to list models for provider %s: %s", clean_id, exc)
-            preset = get_provider_preset(clean_id)
-            fallback = preset["preset_models"] if preset else [stored.chat_model]
-            return {"provider_id": clean_id, "models": fallback, "warning": sanitize_error_detail(exc)}
 
 
 async def _resolve_provider_test_credentials(
