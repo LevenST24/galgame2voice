@@ -401,18 +401,6 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
 
   function renderHeader() { updateBadge(); }
 
-  async function resolveJapanese(msg) {
-    if (msg.japanese) return msg.japanese;
-    try {
-      const data = await requestJson('/api/chat/japanese', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: msg.content, session_id: state.activeId }),
-      }, { timeoutMs: 60000 });
-      if (data.japanese) { msg.japanese = data.japanese; saveState(); return data.japanese; }
-    } catch (error) { console.debug('Japanese voice text unavailable:', error); }
-    return '';
-  }
-
   function fullRender() {
     renderSidebar();
     renderHeader();
@@ -818,7 +806,6 @@ export function initApp({ dom: injectedDom, initialize = true, ...callbacks } = 
     getMicButton: () => advApp?.textbox.micButton,
     sendMessage,
     isBusy: () => conversation.busy,
-    resolveJapanese,
     onOpenSessionSettings: openSessionSettings,
     onOpenEngineStatus: () => openGlobalSettings('dashboard'),
   });
