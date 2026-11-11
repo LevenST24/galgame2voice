@@ -5,8 +5,11 @@ and cross-platform host system memory status telemetry.
 """
 
 import os
-import sys
+import signal
 import subprocess
+from subprocess import SubprocessError, TimeoutExpired
+import sys
+import threading
 from pathlib import Path
 
 BYTES_PER_KB: int = 1024
@@ -31,16 +34,75 @@ if sys.platform == "win32":
         ]
 
 
-def _exec_command_output(cmd: list[str], timeout: float = DEFAULT_SUBPROCESS_TIMEOUT) -> str | None:
-    """Safely executes a system command, suppressing stderr and subprocess exceptions."""
+def _terminate_probe_tree(proc: subprocess.Popen[bytes]) -> None:
+    """Terminates a timed-out probe process and any descendant processes holding its pipes."""
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=3.0,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, SubprocessError):
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+
     try:
-        return subprocess.check_output(
+        proc.kill()
+    except OSError:
+        pass
+
+    try:
+        proc.wait(timeout=1.0)
+    except (OSError, SubprocessError):
+        pass
+
+
+def _exec_command_output(cmd: list[str], timeout: float = DEFAULT_SUBPROCESS_TIMEOUT) -> str | None:
+    """Safely executes a system command with process-tree cleanup and bounded pipe reads."""
+    try:
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+        proc = subprocess.Popen(
             cmd,
-            text=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            timeout=timeout,
+            creationflags=creationflags,
+            start_new_session=(sys.platform != "win32"),
         )
-    except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
+        stdout_pipe = proc.stdout
+        chunks: list[bytes] = []
+
+        def _drain() -> None:
+            try:
+                with stdout_pipe:
+                    chunks.append(stdout_pipe.read())
+            except (OSError, ValueError):
+                pass
+
+        reader = threading.Thread(target=_drain, daemon=True)
+        reader.start()
+
+        try:
+            proc.wait(timeout=timeout)
+        except TimeoutExpired:
+            _terminate_probe_tree(proc)
+            reader.join(timeout=0.5)
+            return None
+
+        reader.join(timeout=1.0)
+        if reader.is_alive() or proc.returncode != 0 or not chunks or not chunks[0]:
+            return None
+        return chunks[0].decode("utf-8")
+    except (SubprocessError, OSError, UnicodeDecodeError):
         return None
 
 
@@ -417,19 +479,18 @@ def get_gpu_vram_status() -> tuple[float | None, float | None]:
     DEFAULT_SUBPROCESS_TIMEOUT seconds) and nothing is cached, so every call stalls the
     calling thread — cache it or run it via asyncio.to_thread before calling from the loop.
     """
-    try:
-        out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv,noheader,nounits"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-            timeout=DEFAULT_SUBPROCESS_TIMEOUT,
-        )
-        first_line = out.strip().splitlines()[0]
-        parts = [float(x.strip()) for x in first_line.split(",")]
-        if len(parts) >= 2:
-            return round(parts[0] / BYTES_PER_KB, 2), round(parts[1] / BYTES_PER_KB, 2)
-    except (subprocess.SubprocessError, OSError, ValueError, IndexError):
-        pass
+    out = _exec_command_output(
+        ["nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv,noheader,nounits"],
+        timeout=DEFAULT_SUBPROCESS_TIMEOUT,
+    )
+    if out:
+        try:
+            first_line = out.strip().splitlines()[0]
+            parts = [float(x.strip()) for x in first_line.split(",")]
+            if len(parts) >= 2:
+                return round(parts[0] / BYTES_PER_KB, 2), round(parts[1] / BYTES_PER_KB, 2)
+        except (ValueError, IndexError):
+            pass
 
     torch = _loaded_torch()
     try:

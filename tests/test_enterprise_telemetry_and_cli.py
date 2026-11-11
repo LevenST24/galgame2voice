@@ -72,7 +72,7 @@ class TestHardwareUtilities:
         monkeypatch.setitem(sys.modules, "torch", mock_torch_no_cuda)
 
         import galgame2voice.utils.hardware as hw
-        monkeypatch.setattr(hw.subprocess, "check_output", lambda *args, **kwargs: "GeForce GTX 1080\n")
+        monkeypatch.setattr(hw, "_exec_command_output", lambda *args, **kwargs: "GeForce GTX 1080\n")
         avail, name, count = hw.detect_gpu_capability()
         assert avail is True
         assert name == "GeForce GTX 1080"
@@ -137,7 +137,7 @@ class TestHardwareUtilities:
         orig_exists = hw.os.path.exists
         monkeypatch.setattr(hw.os.path, "exists", lambda p: False if str(p) == "/proc/meminfo" else orig_exists(p))
         monkeypatch.delattr(hw.os, "sysconf", raising=False)
-        monkeypatch.setattr(hw.subprocess, "check_output", lambda *args, **kwargs: "17179869184\n")
+        monkeypatch.setattr(hw, "_exec_command_output", lambda *args, **kwargs: "17179869184\n")
 
         total, avail = hw.get_system_memory_status()
         assert total == 16.0
@@ -168,7 +168,9 @@ class TestRunServerReExports:
         assert "has_nvidia" in diag
 
     def test_run_server_detect_gpu_capability_respects_subprocess_monkeypatch(self, monkeypatch):
+        import io
         import subprocess as real_sub
+        from types import SimpleNamespace
         mock_torch_no_cuda = type("Torch", (), {
             "cuda": type("Cuda", (), {
                 "is_available": lambda: False,
@@ -176,7 +178,14 @@ class TestRunServerReExports:
         })
         monkeypatch.setitem(sys.modules, "torch", mock_torch_no_cuda)
         monkeypatch.setattr(rs, "subprocess", type("M", (), {
-            "check_output": lambda *args, **kwargs: "GeForce RTX 3070\n",
+            "Popen": lambda *args, **kwargs: SimpleNamespace(
+                stdout=io.BytesIO(b"GeForce RTX 3070\n"),
+                wait=lambda timeout=None: 0,
+                returncode=0,
+                pid=12345,
+                kill=lambda: None,
+            ),
+            "PIPE": real_sub.PIPE,
             "DEVNULL": real_sub.DEVNULL,
         }))
         avail, name, count = rs.detect_gpu_capability()
