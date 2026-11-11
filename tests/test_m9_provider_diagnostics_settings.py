@@ -53,12 +53,12 @@ class TestOpenAICompatibleTestConnection:
 
     @pytest.mark.asyncio
     async def test_test_connection_resolves_gemini_base_url_model(self):
-        """Ensures Gemini OpenAI-compat endpoint infers gemini-2.0-flash, not gpt-4o-mini."""
+        """Ensures Gemini OpenAI-compat endpoint infers gemini-2.5-flash, not gpt-4o-mini."""
         adapter = OpenAICompatibleLLMAdapter(
             api_key="AIzaSyTest",
             base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         )
-        assert adapter._resolve_test_model(None) == "gemini-2.0-flash"
+        assert adapter._resolve_test_model(None) == PROVIDER_PRESETS["gemini"]["default_chat_model"]
 
     @pytest.mark.asyncio
     async def test_test_connection_http_400_xai_auth_error_no_fallthrough(self):

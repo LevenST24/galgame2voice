@@ -4,6 +4,7 @@ Maintains default configurations and model presets for 10+ major LLM and STT pro
 """
 
 from typing import Any
+from urllib.parse import urlparse
 
 from galgame2voice.adapters.base import BaseLLMAdapter, BaseSTTAdapter
 from galgame2voice.adapters.llm import (
@@ -213,6 +214,42 @@ def get_provider_preset(provider_id: str) -> dict[str, Any] | None:
     if not p:
         return None
     return _format_preset_dict(p)
+
+
+def _extract_url_hostname(raw_url: str | None) -> str | None:
+    if not raw_url:
+        return None
+    raw = str(raw_url).strip()
+    if not raw:
+        return None
+    host = urlparse(raw if "://" in raw else f"https://{raw}").hostname
+    return host.lower().rstrip(".") if host else None
+
+
+def resolve_preset_default_model_by_url(base_url: str | None) -> str | None:
+    """Resolves a built-in preset's default_chat_model from a base URL hostname."""
+    host = _extract_url_hostname(base_url)
+    if not host:
+        return None
+
+    candidates = [
+        (_extract_url_hostname(p["default_base_url"]), p["default_chat_model"])
+        for p in PROVIDER_PRESETS.values()
+        if p["id"] != "custom" and p.get("default_base_url") and p.get("default_chat_model")
+    ]
+
+    for preset_host, default_model in candidates:
+        if preset_host and (host == preset_host or host.endswith(f".{preset_host}")):
+            return default_model
+
+    for preset_host, default_model in candidates:
+        if not preset_host or "." not in preset_host:
+            continue
+        domain = ".".join(preset_host.rsplit(".", 2)[-2:])
+        if host == domain or host.endswith(f".{domain}"):
+            return default_model
+
+    return None
 
 
 # Derived from PROVIDER_PRESETS so provider metadata and adapter routing
