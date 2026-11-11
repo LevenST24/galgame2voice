@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import zipfile
 
 import pytest
+import yaml
 
 from galgame2voice.config import Settings
 from galgame2voice import runtime_paths
@@ -223,3 +224,151 @@ def test_smoke_browser_preserves_failed_render_diagnostics(tmp_path, monkeypatch
     run.assert_called_once()
     assert (tmp_path / "browser-rendered.html").read_bytes() == dom
     assert (tmp_path / "browser-errors.log").read_bytes() == b"render error"
+
+
+def test_smoke_startup_only_preserves_diagnostics_on_failure(tmp_path, monkeypatch):
+    archive = tmp_path / "portable.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("Galgame2Voice/Galgame2Voice.exe", b"fake exe")
+        bundle.writestr("Galgame2Voice/tools/ffmpeg.exe", b"fake ffmpeg")
+    archive.with_suffix(".zip.sha256").write_text(
+        hashlib.sha256(archive.read_bytes()).hexdigest(), encoding="utf-8"
+    )
+    scratch = tmp_path / "scratch"
+    marker = "startup diagnostic marker: missing runtime dependency\n"
+
+    def failing_run(command, **kwargs):
+        install = Path(command[0]).parent
+        (install / "logs").mkdir(parents=True, exist_ok=True)
+        (install / "logs" / "launcher_error.log").write_text(marker, encoding="utf-8")
+        return subprocess.CompletedProcess(command, 1, b"", b"dependency failure")
+
+    monkeypatch.setattr(smoke_windows_portable.subprocess, "run", failing_run)
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+
+    with pytest.raises(RuntimeError, match="Portable dependency check failed"):
+        smoke_windows_portable.smoke_test(archive, scratch, startup_only=True)
+
+    assert [entry.name for entry in scratch.iterdir()] == ["diagnostics"]
+    preserved = scratch / "diagnostics" / "launcher_error.log"
+    assert preserved.is_file()
+    assert marker in preserved.read_text(encoding="utf-8")
+
+
+def test_smoke_startup_only_stops_after_bounded_health_checks(tmp_path, monkeypatch, capsys):
+    archive = tmp_path / "portable.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("Galgame2Voice/Galgame2Voice.exe", b"fake exe")
+        bundle.writestr("Galgame2Voice/启动.bat", b"@echo off")
+        bundle.writestr("Galgame2Voice/tools/ffmpeg.exe", b"fake ffmpeg")
+    archive.with_suffix(".zip.sha256").write_text(
+        hashlib.sha256(archive.read_bytes()).hexdigest(), encoding="utf-8"
+    )
+    scratch = tmp_path / "scratch"
+    launched_ports: list[str] = []
+
+    def fake_run(command, **kwargs):
+        first = Path(command[0])
+        install = first.parent if first.name == "Galgame2Voice.exe" else None
+        if install and "--check-only" in command and (install / "tools" / "ffmpeg.disabled").exists():
+            (install / "logs").mkdir(parents=True, exist_ok=True)
+            (install / "logs" / "launcher_error.log").write_text("missing ffmpeg.exe", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 1, b"", b"")
+        if install and "--restore-database" in command:
+            return subprocess.CompletedProcess(command, 1, "程序仍在运行".encode("utf-8"), b"")
+        if install and "--port" in command and command[command.index("--port") + 1] == "1":
+            return subprocess.CompletedProcess(command, 0, launched_ports[-1].encode("ascii"), b"")
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    process = MagicMock()
+    process.poll.side_effect = lambda: None if not process.terminate.called else 0
+
+    def fake_popen(command, **kwargs):
+        install = Path(command[0]).parent
+        port = command[command.index("--port") + 1]
+        launched_ports.append(port)
+        (install / "data").mkdir(parents=True, exist_ok=True)
+        (install / "data" / "desktop_instance.json").write_text(f'{{"port": {port}}}', encoding="utf-8")
+        kwargs["stdout"].write(b"portable startup ok\n")
+        return process
+
+    class _FakeResponse(io.BytesIO):
+        def __init__(self, body: bytes, content_type: str = "application/json", status: int = 200):
+            super().__init__(body)
+            self.status = status
+            self.headers = {"Content-Type": content_type}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    class _FakeOpener:
+        def open(self, url, timeout=5):
+            target = url if isinstance(url, str) else url.full_url
+            if target.endswith("/api/health"):
+                return _FakeResponse(b'{"status":"ok"}')
+            if target.endswith("/"):
+                return _FakeResponse(b'<html><script src="/static/assets/app.js"></script></html>', "text/html")
+            if target.endswith("/static/assets/app.js"):
+                return _FakeResponse(b"console.log('portable bundle');" * 5, "application/javascript")
+            raise AssertionError(f"Unexpected post-startup request in startup_only mode: {target}")
+
+    monkeypatch.setattr(smoke_windows_portable.subprocess, "run", fake_run)
+    monkeypatch.setattr(smoke_windows_portable.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(smoke_windows_portable.urllib.request, "build_opener", lambda *_: _FakeOpener())
+    monkeypatch.setattr(
+        smoke_windows_portable,
+        "check_browser",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("browser check ran in startup_only mode")),
+    )
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(smoke_windows_portable.__file__), str(archive), "--scratch", str(scratch), "--startup-only"],
+    )
+
+    runpy.run_path(smoke_windows_portable.__file__, run_name="__main__")
+
+    process.terminate.assert_called_once()
+    process.wait.assert_called_once()
+    assert "Portable startup check passed" in capsys.readouterr().out
+    assert list(scratch.iterdir()) == []
+
+
+def test_portable_premerge_workflow_contract():
+    workflow_path = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "portable-premerge.yml"
+    raw = workflow_path.read_text(encoding="utf-8")
+    parsed = yaml.safe_load(raw)
+
+    triggers = parsed.get("on") or parsed.get(True)
+    assert isinstance(triggers, dict)
+    assert "workflow_dispatch" in triggers
+    pr_trigger = triggers.get("pull_request")
+    assert isinstance(pr_trigger, dict)
+    paths = pr_trigger.get("paths")
+    assert isinstance(paths, list) and paths
+    for expected_path in (
+        "scripts/build_windows_portable.py",
+        "scripts/verify_windows_portable.py",
+        "scripts/smoke_windows_portable.py",
+        "scripts/desktop_entry.py",
+        "scripts/run_server.py",
+        "galgame2voice/runtime_paths.py",
+        "galgame2voice/database/**",
+    ):
+        assert expected_path in paths
+
+    job = parsed["jobs"]["portable-startup-check"]
+    assert job["runs-on"] == "windows-latest"
+    assert job["timeout-minutes"] == 20
+
+    assert "scripts/build_windows_portable.py" in raw
+    assert "scripts/verify_windows_portable.py" in raw and "--skip-vite-dist" in raw
+    assert "scripts/smoke_windows_portable.py" in raw and "--startup-only" in raw
+    assert "softprops/action-gh-release" not in raw
+    assert ".local/portable-premerge-smoke/diagnostics" in raw

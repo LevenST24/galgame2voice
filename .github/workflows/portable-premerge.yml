@@ -1,0 +1,79 @@
+name: Portable Pre-merge
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/portable-premerge.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "scripts/build_windows_portable.py"
+      - "scripts/verify_windows_portable.py"
+      - "scripts/smoke_windows_portable.py"
+      - "scripts/package_release.py"
+      - "scripts/desktop_entry.py"
+      - "scripts/desktop_instance.py"
+      - "scripts/database_recovery.py"
+      - "scripts/launcher_address.py"
+      - "scripts/run_server.py"
+      - "galgame2voice/main.py"
+      - "galgame2voice/config.py"
+      - "galgame2voice/runtime_paths.py"
+      - "galgame2voice/utils/audio_converter.py"
+      - "galgame2voice/database/**"
+      - "docs/WINDOWS_PORTABLE.md"
+      - "docs/licenses/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portable-premerge-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable-startup-check:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install locked portable-build dependencies
+        shell: pwsh
+        run: uv sync --frozen --extra desktop --no-dev
+
+      - name: Build Windows portable ZIP
+        shell: pwsh
+        # build_windows_portable.py writes to dist/*-windows-x64.zip directly.
+        run: .venv/Scripts/python.exe scripts/build_windows_portable.py
+
+      - name: Verify and run bounded portable startup check
+        shell: pwsh
+        run: |
+          $archives = @(Get-ChildItem -LiteralPath dist -Filter '*-windows-x64.zip')
+          if ($archives.Count -ne 1) {
+            throw "Expected exactly 1 Windows portable ZIP in dist, found $($archives.Count)"
+          }
+          $archive = $archives[0]
+          .venv/Scripts/python.exe scripts/verify_windows_portable.py $archive.FullName --skip-vite-dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .venv/Scripts/python.exe scripts/smoke_windows_portable.py $archive.FullName --scratch .local/portable-premerge-smoke --startup-only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload portable startup diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-portable-premerge-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            .local/portable-premerge-smoke/diagnostics
+            build/portable/Galgame2Voice/warn-Galgame2Voice.txt
+            build/portable/work/Galgame2Voice/warn-Galgame2Voice.txt
