@@ -358,8 +358,8 @@ python -m pytest --cov=galgame2voice --cov=scripts --cov-branch `
 
 Lowest-coverage modules worth attention (with the audit's fragile-seam module
 included): `adapters/openai_compatible.py` 0% (pure re-export shim),
-`services/tts_cache.py` 0% (pure re-export shim), `scripts/apply_character_fixes.py`
-0%, `scripts/tools/character_packager.py` 14%, `adapters/stt/openai_stt.py` 31%,
+`services/tts_cache.py` 0% (pure re-export shim),
+`scripts/tools/character_packager.py` 14%, `adapters/stt/openai_stt.py` 31%,
 `scripts/run_server.py` 35%, `routers/characters.py` 36%, `security/crypto.py` 39%,
 `utils/audio_converter.py` 68%.
 
