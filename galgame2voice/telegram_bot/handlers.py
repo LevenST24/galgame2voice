@@ -57,18 +57,7 @@ from galgame2voice.utils.error_diagnostics import (
 from galgame2voice.telegram_bot.console_menus import (
     ADMIN_CALLBACK_ACTIONS,
     ADMIN_CALLBACK_PREFIXES,
-    build_affection_menu,
-    build_batch_menu,
-    build_history_menu,
-    build_interval_menu,
     build_main_console,
-    build_metrics_menu,
-    build_model_menu,
-    build_sampling_menu,
-    build_speed_menu,
-    build_split_menu,
-    build_temp_menu,
-    build_tts_menu,
     build_voice_menu,
     handle_callback_query,
     resolve_effective_user_id,
@@ -318,58 +307,6 @@ class TelegramBotHandlers:
         """Cancels all active chat turns across all sessions."""
         return self.turn_coordinator.cancel_all()
 
-    async def build_main_console(self, chat_id: int, user_id: int = 0) -> tuple[str, Any]:
-        """Constructs the rich text and inline keyboard for the Telegram Interactive Console."""
-        return await build_main_console(chat_id, user_id, db_path=self.db_path, session_key_fn=resolve_session_key)
-
-    async def build_voice_menu(self) -> tuple[str, Any]:
-        """Constructs rich sub-menu for switching voice profiles with 2-column layout and active character card."""
-        return await build_voice_menu(db_path=self.db_path)
-
-    async def build_model_menu(self) -> tuple[str, Any]:
-        """Constructs sub-menu for switching active LLM provider with API key safety indicators."""
-        return await build_model_menu(db_path=self.db_path)
-
-    async def build_tts_menu(self) -> tuple[str, Any]:
-        """Constructs sub-menu for advanced TTS parameters."""
-        return await build_tts_menu(db_path=self.db_path)
-
-    async def build_speed_menu(self) -> tuple[str, Any]:
-        """Constructs sub-menu for adjusting voice speed factor."""
-        return await build_speed_menu(db_path=self.db_path)
-
-    async def build_temp_menu(self) -> tuple[str, Any]:
-        """Constructs sub-menu for adjusting voice temperature."""
-        return await build_temp_menu(db_path=self.db_path)
-
-    async def build_split_menu(self) -> tuple[str, Any]:
-        """Constructs sub-menu for text split method."""
-        return await build_split_menu(db_path=self.db_path)
-
-    async def build_sampling_menu(self) -> tuple[str, Any]:
-        """Constructs sub-menu for Top-K and Top-P sampling parameters."""
-        return await build_sampling_menu(db_path=self.db_path)
-
-    async def build_batch_menu(self) -> tuple[str, Any]:
-        """Constructs sub-menu for batch size."""
-        return await build_batch_menu(db_path=self.db_path)
-
-    async def build_interval_menu(self) -> tuple[str, Any]:
-        """Constructs sub-menu for fragment interval."""
-        return await build_interval_menu(db_path=self.db_path)
-
-    async def build_history_menu(self) -> tuple[str, Any]:
-        """Constructs sub-menu for conversational memory history length."""
-        return await build_history_menu(db_path=self.db_path)
-
-    async def build_metrics_menu(self) -> tuple[str, Any]:
-        """Constructs sub-menu for performance metrics and TTS cache control."""
-        return await build_metrics_menu(db_path=self.db_path)
-
-    async def build_affection_menu(self, chat_id: int, user_id: int = 0) -> tuple[str, Any]:
-        """Constructs sub-menu for displaying affection details and emotion."""
-        return await build_affection_menu(chat_id, user_id, db_path=self.db_path, session_key_fn=resolve_session_key)
-
     async def handle_callback_query(self, update: Any, context: Any | None = None) -> None:
         """Handles inline button clicks in Telegram."""
         await handle_callback_query(self, update, context)
@@ -596,7 +533,7 @@ class TelegramBotHandlers:
         parts = raw_text.split(maxsplit=1)
         # If user just typed /character or /char with no argument -> render character selection menu
         if len(parts) < 2 or not parts[1].strip():
-            text, markup = await self.build_voice_menu()
+            text, markup = await build_voice_menu(db_path=self.db_path)
             await self._safe_send_message(update, context, text, reply_markup=markup)
             return text
 
@@ -614,7 +551,7 @@ class TelegramBotHandlers:
 
         if not matched_profile:
             reply = self._build_character_not_found_reply(query_str, profiles)
-            _, markup = await self.build_voice_menu()
+            _, markup = await build_voice_menu(db_path=self.db_path)
             await self._safe_send_message(update, context, reply, reply_markup=markup)
             return reply
 
@@ -716,7 +653,12 @@ class TelegramBotHandlers:
     async def handle_console(self, update: Any, context: Any | None = None) -> str:
         """Handler for /console, /menu, /settings command rendering native Inline Keyboard Console."""
         chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else 0
-        text, markup = await self.build_main_console(chat_id, resolve_effective_user_id(update))
+        text, markup = await build_main_console(
+            chat_id,
+            resolve_effective_user_id(update),
+            db_path=self.db_path,
+            session_key_fn=resolve_session_key,
+        )
         await self._safe_send_message(update, context, text, reply_markup=markup)
         return text
 

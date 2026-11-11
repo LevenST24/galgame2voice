@@ -835,7 +835,11 @@ class TestTelegramBotRealModules:
         assert "夏目" not in r_nick
 
         # Affection menu should also reference 常陆茉子
-        text_aff, markup_aff = await handlers.build_affection_menu(chat_id=2001, user_id=2001)
+        from galgame2voice.telegram_bot.console_menus import build_affection_menu, resolve_session_key
+
+        text_aff, markup_aff = await build_affection_menu(
+            2001, 2001, db_path=handlers.db_path, session_key_fn=resolve_session_key
+        )
         assert "常陆茉子" in text_aff
         # Check that quick character switch button exists in affection menu
         callbacks = [btn.callback_data for row in markup_aff.inline_keyboard for btn in row]
