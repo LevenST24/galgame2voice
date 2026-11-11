@@ -26,6 +26,7 @@ from galgame2voice.database.session import get_db, init_db
 from galgame2voice.routers import chat, config, health, voice, memory, affection, characters, metrics, system, backgrounds
 from galgame2voice.security.auth import require_auth
 from galgame2voice.security.rate_limit import RateLimitMiddleware
+from galgame2voice.services.engine_supervisor import DefaultEngineSupervisor, EngineSupervisor
 from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client, close_gpt_sovits_client
 from galgame2voice.services.telemetry_jobs import TelemetryJobs
 from galgame2voice.services.audio_cleaner import (
@@ -458,7 +459,7 @@ class StaticCacheControlMiddleware:
 _StaticCacheControlMiddleware = StaticCacheControlMiddleware
 
 
-def create_app() -> FastAPI:
+def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
     """Factory function creating configured FastAPI application instance."""
     settings = get_settings()
 
@@ -469,6 +470,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         docs_url="/docs" if settings.enable_docs else None,
         redoc_url="/redoc" if settings.enable_docs else None,
+    )
+    app.state.engine_supervisor = (
+        engine_supervisor if engine_supervisor is not None else DefaultEngineSupervisor()
     )
 
     # 1. Configure CORS Middleware
