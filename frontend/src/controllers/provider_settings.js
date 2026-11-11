@@ -552,8 +552,7 @@ export class ProviderSettingsController {
             (modelsCount > 0 ? ` (发现 ${modelsCount} 个可用模型)` : '');
         }
       } else {
-        const rawErr = data.error || data.message || '连接失败';
-        const diag = formatProviderDiagnostic(pid, rawErr, data.diagnostic);
+        const diag = formatProviderDiagnostic(data);
         showToast(`连通性测试未通过: ${diag.title}`, 'error');
         if (this.dom.gProviderTestResult) {
           this.dom.gProviderTestResult.className = 'test-result-box test-result-error';

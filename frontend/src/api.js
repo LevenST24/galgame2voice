@@ -22,8 +22,16 @@ export async function testProviderConnection(payload, { signal = null } = {}) {
     return await requestJson('/api/providers/test', options, { timeoutMs: 60000 });
   } catch (error) {
     if (!error.status) throw error;
-    return { success: false, message: error.message, error: error.message,
-      diagnostic: error.data?.diagnostic, latency_ms: 0 };
+    return {
+      success: false,
+      message: error.message,
+      error: error.data?.error || error.message,
+      error_code: error.data?.error_code || null,
+      error_title: error.data?.error_title || error.data?.error || null,
+      diagnostic: error.data?.diagnostic || null,
+      status_code: error.data?.status_code ?? error.status,
+      latency_ms: 0,
+    };
   }
 }
 
