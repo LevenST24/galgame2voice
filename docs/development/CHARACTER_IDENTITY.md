@@ -1,7 +1,7 @@
 # Character identity and profile reconciliation
 
 Character lookup affects portraits, emotion audio, system prompts, TTS voice
-resolution, Telegram character switching and the REST switch route. All these
+resolution and the REST switch route. All these
 consumers use `CharacterManager.get_character` and the matching rules in
 `services/character_identity.py`.
 

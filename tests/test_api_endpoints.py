@@ -430,7 +430,7 @@ class TestCoreMainAndHealthEndpoints:
             assert "database" in d_data
             assert "gpt_sovits" in d_data
             assert "storage" in d_data
-            assert "telegram" in d_data
+            assert "telegram" not in d_data
 
     @pytest.mark.asyncio
     async def test_root_fallback_and_static_mount(self):

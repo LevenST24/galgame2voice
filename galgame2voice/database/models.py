@@ -25,24 +25,11 @@ class SettingsBase(BaseModel):
     batch_size: int = Field(default=1, ge=1, le=16)
     text_split_method: str = "cut1"
     fragment_interval: float = Field(default=0.3, ge=0.0, le=5.0)
-    telegram_bot_username: str = "galgame2voice_bot"
-    telegram_proxy_host: str = "127.0.0.1"
-    telegram_proxy_port: int = Field(default=10809, ge=1, le=65535)
-    telegram_proxy_enabled: bool = False
-    telegram_enabled: bool = False  # Explicit toggle: False by default to prevent polling/terminal spam
-    telegram_admin_ids: str = ""  # Comma-separated Telegram user IDs allowed to run admin commands
     allow_private_llm_endpoints: bool = False  # Permit private/loopback LLM provider base URLs
     console_url: str = ""
     max_history_messages: int = Field(default=10, ge=1, le=100)
     inference_precision: str = "auto"  # "auto" (probe), "fp16" (half), "fp32" (single), or "cpu" (force CPU fp32)
     stt_engine: str | None = "browser"
-    telegram_chat_id: str | None = None
-
-    @model_validator(mode="after")
-    def sync_telegram_chat_id(self) -> "SettingsBase":
-        if self.telegram_chat_id is None:
-            self.telegram_chat_id = self.telegram_admin_ids
-        return self
 
 
 class SettingsUpdate(BaseModel):
@@ -60,14 +47,6 @@ class SettingsUpdate(BaseModel):
     batch_size: int | None = Field(default=None, ge=1, le=16)
     text_split_method: str | None = None
     fragment_interval: float | None = Field(default=None, ge=0.0, le=5.0)
-    telegram_enabled: bool | None = None
-    telegram_bot_token: str | None = None
-    telegram_bot_username: str | None = None
-    telegram_proxy_host: str | None = None
-    telegram_proxy_port: int | None = Field(default=None, ge=1, le=65535)
-    telegram_proxy_enabled: bool | None = None
-    telegram_admin_ids: str | None = None
-    telegram_chat_id: str | None = None
     allow_private_llm_endpoints: bool | None = None
     console_url: str | None = None
     max_history_messages: int | None = Field(default=None, ge=1, le=100)
@@ -75,18 +54,9 @@ class SettingsUpdate(BaseModel):
     stt_engine: str | None = None
     console_token: str | None = None
 
-    @model_validator(mode="after")
-    def sync_telegram_ids(self) -> "SettingsUpdate":
-        if self.telegram_admin_ids is None and self.telegram_chat_id is not None:
-            self.telegram_admin_ids = self.telegram_chat_id
-        elif self.telegram_chat_id is None and self.telegram_admin_ids is not None:
-            self.telegram_chat_id = self.telegram_admin_ids
-        return self
-
 
 class SettingsInDB(SettingsBase):
     id: int = 1
-    telegram_bot_token: str = ""
     console_token: str = ""
     created_at: str | None = None
     updated_at: str | None = None
@@ -94,10 +64,8 @@ class SettingsInDB(SettingsBase):
 
 
 class SettingsResponse(SettingsBase):
-    telegram_bot_token: str = ""  # Masked
     console_token: str = ""
     stt_engine: str | None = "browser"
-    telegram_chat_id: str | None = None
     updated_at: str | None = None
     model_config = ConfigDict(from_attributes=True)
 

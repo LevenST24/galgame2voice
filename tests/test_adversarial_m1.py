@@ -364,32 +364,6 @@ class TestSecretMaskingAndRetention:
             ui_view2 = await get_provider(conn, "cycle_provider", mask=True)
             assert ui_view2.api_key == "sk-****3210"
 
-    @pytest.mark.asyncio
-    async def test_telegram_bot_token_masking_round_trip(self, adversarial_db):
-        """Verifies settings telegram_bot_token masking and update retention."""
-        real_token = "987654321:ABCdefGHI-jklMNO_pqrSTU123456"
-        async with get_db(adversarial_db) as conn:
-            # Set token
-            await update_settings(conn, SettingsUpdate(telegram_bot_token=real_token))
-            raw = await get_settings_raw(conn)
-            assert raw.telegram_bot_token == real_token
-
-            # UI read
-            ui_settings = await get_settings(conn, mask=True)
-            assert is_masked_key(ui_settings.telegram_bot_token)
-            assert ui_settings.telegram_bot_token != real_token
-
-            # UI submit with masked token
-            await update_settings(conn, SettingsUpdate(
-                speed_factor=1.5,
-                telegram_bot_token=ui_settings.telegram_bot_token
-            ))
-
-            # Verify retained
-            raw2 = await get_settings_raw(conn)
-            assert raw2.telegram_bot_token == real_token
-            assert raw2.speed_factor == 1.5
-
 
 # ============================================================================
 # 4. Out-of-Bounds & Data Integrity Defense

@@ -285,32 +285,6 @@ class TestNetworkTimeoutsAndErrorRecovery:
                 assert data2["gpt_sovits"]["status"] == "reachable"
                 assert data2["gpt_sovits"]["error"] is None
 
-    @pytest.mark.asyncio
-    async def test_telegram_test_timeout_and_error_recovery(self):
-        """Stress-tests /api/telegram/test under connection timeout, proxy failure, and malformed responses."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-
-        orig_get = httpx.AsyncClient.get
-
-        async def tg_timeout(self_client, url, *args, **kwargs):
-            if "api.telegram.org" in str(url):
-                raise httpx.ReadTimeout("Telegram API connection timed out")
-            return await orig_get(self_client, url, *args, **kwargs)
-
-        with patch.object(httpx.AsyncClient, "get", tg_timeout):
-            async with AsyncClient(transport=transport, base_url="http://test") as client:
-                resp = await client.post("/api/telegram/test", json={
-                    "token": "123456789:ABCDefgh1234567890abcdef",
-                    "proxy_enabled": True,
-                    "proxy_host": "127.0.0.1",
-                    "proxy_port": 10809,
-                })
-                assert resp.status_code == 200
-                data = resp.json()
-                assert data["success"] is False
-                assert "ReadTimeout" in data["message"]
-
 
 # ============================================================================
 # 3. Adversarial Tests: Extreme & Conflicting Voice Profile Parameters

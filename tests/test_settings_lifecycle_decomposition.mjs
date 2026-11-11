@@ -3,16 +3,13 @@ import test from 'node:test';
 import {
   initGlobalSettings,
   openGlobalSettings,
-  testTelegram,
   handleRestartSovits,
   fetchSystemTelemetry,
   loadGlobalConfig,
   saveGlobalConfig,
-  updateTelegramFieldsVisibility,
 } from '../frontend/src/controllers/global_settings.js';
 import { saveConfirmedConfig } from '../frontend/src/controllers/config_recovery.js';
 import { waitForEngine } from '../frontend/src/controllers/engine_recovery.js';
-import { createTelegramSettingsController } from '../frontend/src/controllers/telegram_settings.js';
 import { createEngineSettingsController } from '../frontend/src/controllers/engine_settings.js';
 import { createTelemetrySettingsController } from '../frontend/src/controllers/telemetry_settings.js';
 import { initSettingsTabs } from '../frontend/src/settings_ui.js';
@@ -144,15 +141,7 @@ function createDom() {
     gSovitsDirectoryStatus: element('span'),
     gBrowseSovitsDirectory: element('button'),
     gSaveSovitsDirectory: element('button'),
-    gTgTest: element('button'),
     gTgSave: element('button'),
-    gTgEnabled: element('input', 'false'),
-    gTgChatId: element('input', '12345'),
-    gTgToken: element('input', 'test-token'),
-    gTgProxyEnabled: element('input', 'false'),
-    gTgProxyHost: element('input', '127.0.0.1'),
-    gTgProxyPort: element('input', '10809'),
-    gTgFieldsGroup: element('div'),
   };
 }
 
@@ -182,59 +171,6 @@ function fixture(t) {
 
   return { toasts };
 }
-
-test('Candidate 1: old Telegram test pending -> reinit -> new test pending -> resolve old response: old response cannot leak toast or clear new button busy state', async t => {
-  const { toasts } = fixture(t);
-  const dom1 = createDom();
-  const dom2 = createDom();
-
-  let finishFirstPost;
-  let finishSecondPost;
-  let postCount = 0;
-
-  globalThis.fetch = async (url, options = {}) => {
-    if (url === '/api/telegram/test' && options.method === 'POST') {
-      postCount++;
-      if (postCount === 1) {
-        return new Promise(resolve => {
-          finishFirstPost = () => resolve(response({ success: true, message: '旧测试成功' }));
-        });
-      }
-      return new Promise(resolve => {
-        finishSecondPost = () => resolve(response({ success: true, message: '新测试成功' }));
-      });
-    }
-    return response({});
-  };
-
-  initGlobalSettings(dom1);
-  const test1Promise = testTelegram();
-  await settle();
-
-  assert.equal(postCount, 1, 'First test POST sent');
-  assert.equal(dom1.gTgTest.disabled, true, 'First test button disabled while pending');
-
-  initGlobalSettings(dom2);
-  const test2Promise = testTelegram();
-  await settle();
-
-  assert.equal(postCount, 2, 'Second test POST sent');
-  assert.equal(dom2.gTgTest.disabled, true, 'Second test button disabled while pending');
-
-  finishFirstPost();
-  await test1Promise;
-  await settle();
-
-  assert.equal(dom2.gTgTest.disabled, true, 'Second test button must remain disabled while still pending');
-  assert.ok(!toasts.some(msg => msg.includes('旧测试成功')), 'Old test response must not leak toast');
-
-  finishSecondPost();
-  await test2Promise;
-  await settle();
-
-  assert.equal(dom2.gTgTest.disabled, false, 'Second test button re-enabled after its own completion');
-  assert.ok(toasts.some(msg => msg.includes('新测试成功')), 'New test shows its success toast');
-});
 
 test('Candidate 2: old restart POST pending -> reinit -> new explicit restart: old restart does not block new restart, nor does old progress write into new DOM', async t => {
   const { toasts } = fixture(t);
@@ -336,64 +272,6 @@ test('Candidate 3: reinit same controls does not stack coordinator or controller
   assert.equal(tabSelectCount, 1, 'Tab change callback triggered exactly once per click');
 });
 
-test('Telegram: editing form fields during test invalidates test and prevents toast/button pollution', async t => {
-  const { toasts } = fixture(t);
-  const dom = createDom();
-
-  let finishTest;
-  globalThis.fetch = async (url) => {
-    if (url === '/api/telegram/test') {
-      return new Promise(resolve => {
-        finishTest = () => resolve(response({ success: true, message: '迟到的成功提示' }));
-      });
-    }
-    return response({});
-  };
-
-  initGlobalSettings(dom);
-  const testPromise = testTelegram();
-  await settle();
-
-  assert.equal(dom.gTgTest.disabled, true);
-
-  // Edit token field while test is in flight
-  dom.gTgToken.value = 'new-token';
-  await dom.gTgToken.dispatch('input');
-  await settle();
-
-  // Resolve old test
-  finishTest();
-  await testPromise;
-  await settle();
-
-  assert.ok(!toasts.some(msg => msg.includes('迟到的成功提示')), 'Invalidated test must not show toast');
-});
-
-test('Telegram: validation blocks save and shows guidance when enabled without chat ID', async t => {
-  const { toasts } = fixture(t);
-  const dom = createDom();
-
-  globalThis.fetch = async (url) => {
-    if (url === '/api/config') {
-      return response({ status: 'ok', settings: { telegram_enabled: false } });
-    }
-    if (url === '/api/providers') return response({ providers: [], presets: [] });
-    return response({});
-  };
-
-  initGlobalSettings(dom);
-  await loadGlobalConfig();
-  await settle();
-
-  dom.gTgEnabled.checked = true;
-  dom.gTgChatId.value = '   ';
-
-  await saveGlobalConfig();
-  await settle();
-
-  assert.ok(toasts.some(msg => msg.includes('填写允许访问的用户ID')), 'Validation error toast shown');
-});
-
 test('Engine: precision change auto-saves with revision guard', async t => {
   const { toasts } = fixture(t);
   const dom = createDom();
@@ -493,49 +371,6 @@ test('initEngineDirectory: dispose cleans up input and button listeners', async 
   assert.equal(notifications, 0, 'No notification after dispose');
 });
 
-test('Telegram edit invalidation: editing input enables immediate retry and does not permanently lock button', async t => {
-  fixture(t);
-  const dom = createDom();
-  const releases = [];
-  globalThis.fetch = async (url) => {
-    if (url === '/api/telegram/test') {
-      return new Promise(resolve => releases.push(resolve));
-    }
-    return response({});
-  };
-
-  initGlobalSettings(dom);
-  const oldTask = testTelegram();
-  await settle();
-
-  assert.equal(releases.length, 1);
-  assert.equal(dom.gTgTest.disabled, true);
-
-  dom.gTgToken.value = 'synthetic-edited';
-  await dom.gTgToken.dispatch('input');
-  await settle();
-
-  assert.equal(dom.gTgTest.disabled, false, 'Button re-enabled after input edit invalidation');
-
-  releases[0](response({ success: true, message: 'old' }));
-  await oldTask;
-  await settle();
-
-  assert.equal(dom.gTgTest.disabled, false, 'Button remains enabled after old task settles');
-
-  const newTask = testTelegram();
-  await settle();
-
-  assert.equal(releases.length, 2, 'Second test request dispatched');
-  assert.equal(dom.gTgTest.disabled, true, 'Second test button busy');
-
-  releases[1](response({ success: true, message: 'new' }));
-  await newTask;
-  await settle();
-
-  assert.equal(dom.gTgTest.disabled, false, 'Second test button restored on success');
-});
-
 test('Engine restart queue: disposing unsent restart skips POST without poisoning subsequent config mutations', async t => {
   fixture(t);
   let releaseConfig;
@@ -632,51 +467,6 @@ test('Engine abort handling: aborting during progress cancels readiness wait imm
     { name: 'AbortError' },
     'Pre-aborted signal rejects immediately'
   );
-});
-
-test('Same-controls Telegram busy disposal/reinit: synchronous release on disposal enables retry; old completion does not unlock new pending test', async t => {
-  const { toasts } = fixture(t);
-  const releases = [];
-  globalThis.fetch = async (url) => {
-    if (url === '/api/telegram/test') {
-      return new Promise(resolve => releases.push(resolve));
-    }
-    return response({});
-  };
-
-  const dom = createDom();
-  initGlobalSettings(dom);
-
-  const oldTask = testTelegram();
-  await settle();
-  assert.equal(releases.length, 1, 'First Telegram test started');
-  assert.equal(dom.gTgTest.disabled, true, 'First test disables button');
-
-  // Reinit using the exact SAME dom controls
-  initGlobalSettings(dom);
-  assert.equal(dom.gTgTest.disabled, false, 'Disposing old controller synchronously restores button for new owner');
-
-  const newTask = testTelegram();
-  await settle();
-  assert.equal(releases.length, 2, 'Second test started on same controls');
-  assert.equal(dom.gTgTest.disabled, true, 'Second test re-disables button');
-
-  // Resolve old test
-  releases[0](response({ success: true, message: 'OLD test completed' }));
-  await oldTask;
-  await settle();
-
-  // Late old finally must not unlock new pending operation or leak toast
-  assert.equal(dom.gTgTest.disabled, true, 'Button remains disabled while new test is still pending');
-  assert.equal(toasts.length, 0, 'Old completion does not leak toast to current view');
-
-  // Resolve new test
-  releases[1](response({ success: true, message: 'NEW test completed' }));
-  await newTask;
-  await settle();
-
-  assert.equal(dom.gTgTest.disabled, false, 'Button re-enabled after new test completes');
-  assert.ok(toasts.some(m => m.includes('NEW test completed')), 'New test result delivered');
 });
 
 test('Same-controls Engine & Directory busy disposal/reinit: synchronous release leaves controls usable; old completion preserves new pending operation busy state', async t => {

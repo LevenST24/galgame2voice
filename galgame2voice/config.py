@@ -151,28 +151,6 @@ class Settings(BaseSettings):
         description="Interval between audio cleanup runs",
     )
 
-    # Telegram Bot Configuration
-    # Parsed from the environment for compatibility, but the running bot never consults these
-    # three fields: enabled flag, bot token and proxy are loaded from the SQLite settings row
-    # edited in the web console (telegram_bot/bot.py::TelegramBotManager.start). The Telegram
-    # values read straight from the environment are TELEGRAM_ADMIN_IDS and
-    # TELEGRAM_DROP_PENDING_UPDATES.
-    telegram_enabled: bool = Field(
-        default=False,
-        validation_alias=AliasChoices("GALGAME2VOICE_TELEGRAM_ENABLED", "TELEGRAM_ENABLED"),
-        description="Enable Telegram bot service",
-    )
-    telegram_token: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("GALGAME2VOICE_TELEGRAM_TOKEN", "TELEGRAM_TOKEN"),
-        description="Telegram Bot API token",
-    )
-    telegram_proxy: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("GALGAME2VOICE_TELEGRAM_PROXY", "TELEGRAM_PROXY"),
-        description="HTTP/SOCKS5 proxy URL for Telegram bot",
-    )
-
     # Pydantic Settings Config
     model_config = SettingsConfigDict(
         env_file=".env",

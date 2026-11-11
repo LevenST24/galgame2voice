@@ -35,7 +35,7 @@ Galgame2Voice is a local AI character-chat and TTS streaming application. Its
 tests exercise public behavior, persistence, cancellation, recovery and resource
 boundaries across four operational tiers, using isolated synthetic fixtures in
 ordinary CI. Timing results apply to the measured setup. Real character assets,
-GPU/model behavior, external Telegram delivery and prolonged operation require
+GPU/model behavior and prolonged operation require
 separate acceptance evidence; a passing suite does not establish those outcomes.
 
 ### Core Testing Tenets:
@@ -66,7 +66,7 @@ separate acceptance evidence; a passing suite does not establish those outcomes.
                                     |
 +-------------------------------------------------------------------------+
 |                    Tier 1: Feature Coverage (>=5/feature)               |
-|      (Happy-path contract compliance for F1-F9 functional domains)      |
+|      (Happy-path contract compliance for F1-F8 functional domains)      |
 +-------------------------------------------------------------------------+
 ```
 
@@ -86,7 +86,6 @@ Every functional domain is validated against its primary functional contracts:
 ### F2: Error Detail & Token Sanitization in Responses
 - `T1_ERR_01`: HTTP 4xx/5xx error responses contain zero unmasked API keys.
 - `T1_ERR_02`: SSE streaming `event: error` JSON payloads contain sanitized error messages.
-- `T1_ERR_03`: Telegram connection test endpoint masks tokens in failure messages.
 - `T1_ERR_04`: Provider connection test endpoint prevents token disclosure during HTTP timeouts.
 - `T1_ERR_05`: File browse/dialog endpoints sanitize underlying OS filesystem exceptions.
 
@@ -129,13 +128,6 @@ Every functional domain is validated against its primary functional contracts:
 - `T1_SSE_03`: Lookahead Japanese parser extracts complete sentences for TTS synthesis queue.
 - `T1_SSE_04`: Pipelined consumer generates audio chunks concurrently with token generation.
 - `T1_SSE_05`: Client cancellation safely terminates upstream generator without memory leaks.
-
-### F9: Telegram Bot Multi-User Isolation & Entity Safety
-- `T1_TG_01`: Markdown/HTML entity escaping prevents parsing crashes on special characters.
-- `T1_TG_02`: Multi-user sessions maintain isolated memory and affection states.
-- `T1_TG_03`: Per-user task interruption cancels ongoing generation when new prompt arrives.
-- `T1_TG_04`: Dynamic proxy routing supports SOCKS5/HTTP proxies with failover.
-- `T1_TG_05`: Hot-reloading Telegram credentials gracefully restarts polling task.
 
 ---
 
@@ -199,13 +191,6 @@ Tier 2 exposes the system to extreme inputs, edge values, resource constraints, 
 - `T8_SSE_04`: Pure ASCII text with no Japanese or Chinese characters.
 - `T8_SSE_05`: Immediate client abort after initial byte received.
 
-### F9: Telegram Bot Boundary Cases
-- `T9_TG_01`: Message containing raw unescaped HTML (`<script>`, `<b>` without closing tag).
-- `T9_TG_02`: Message containing unescaped MarkdownV2 special characters (`_`, `*`, `[`, `]`, `(`, `)`).
-- `T9_TG_03`: User sending rapid barrage of 20 messages in 1 second.
-- `T9_TG_04`: Telegram webhook receiving malformed update JSON.
-- `T9_TG_05`: Network disconnect during audio file voice note upload.
-
 ---
 
 ## 5. Tier 3: Cross-Feature Combinations (Pairwise Testing Matrix)
@@ -219,10 +204,8 @@ Pairwise testing validates subsystem boundaries where multiple features interact
 | `T3_PAIR_03` | F1 Log Masking | F2 Error Responses | Upstream API failure with secret key; verify both HTTP response body and log records mask all tokens without double-encoding. |
 | `T3_PAIR_04` | F7 Path Traversal | F5 TTS Cache | Malicious cache key containing `../../` attempted; verify sanitized into canonical SHA256 hex before filesystem stat. |
 | `T3_PAIR_05` | F3 System Telemetry | F6 Database WAL | System status requested simultaneously during a heavy database checkpoint operation; verify zero lock contention. |
-| `T3_PAIR_06` | F9 Telegram Bot | F4 Memory & Affection | Telegram user changes nicknames and triggers memory extraction; verify affection levels and nicknames update atomically in SQLite. |
 | `T3_PAIR_07` | F8 SSE Streaming | F5 TTS Cache | Real-time dialogue sentences hit pre-cached entries in memory; verify seamless stream synthesis interleaving. |
 | `T3_PAIR_08` | F7 SSRF Guard | F2 Error Responses | SSRF attempt to `http://169.254.169.254/` blocked; verify HTTP 400 detail explains restriction without leaking internal networking. |
-| `T3_PAIR_09` | F9 Telegram Bot | F1 Log Masking | Telegram bot polling fails with 401 Unauthorized; verify bot token in Telegram URL is masked in logger. |
 | `T3_PAIR_10` | F5 TTS Cache | F7 Path Traversal | Audio cleanup worker scans `audio/` directory; verify `audio/cache/` is strictly protected while invalid traversal files are rejected. |
 
 ---
@@ -251,15 +234,13 @@ Tier 4 simulates realistic, end-to-end user workflows and real production worklo
 - **Workflow**:
   1. LLM provider suddenly times out after 100ms.
   2. TTS backend returns 502 Bad Gateway.
-  3. Telegram Bot loses internet connection.
 - **Verification**: FastAPI emits structured fallback error events, log files record masked alerts, database transactions roll back cleanly, service remains 100% operational for subsequent requests.
 
 ### Scenario 4: Dynamic Configuration & Model Hot-Reloading
 - **Workflow**:
   1. Admin updates GPT-SoVITS endpoint and switches active voice profile via REST API.
-  2. Admin enables Telegram proxy and updates bot credentials.
-  3. Ongoing user chat sessions continue without interruption.
-- **Verification**: Active voice profile switches with automatic rollback on error; Telegram bot restarts polling automatically with new credentials.
+  2. Ongoing user chat sessions continue without interruption.
+- **Verification**: Active voice profile switches with automatic rollback on error.
 
 ### Scenario 5: Cache Saturation & Continuous Pruning Under Load
 - **Workflow**:

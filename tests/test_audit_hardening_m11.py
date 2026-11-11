@@ -17,7 +17,6 @@ from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 from galgame2voice.services.memory_service import MemoryService
-from telegram_test_support import TELEGRAM_TEST_ADMINS
 
 
 @pytest.fixture
@@ -166,59 +165,6 @@ class TestHealthRouterHardening:
             assert telemetry.status == "unreachable"
             assert "sk-1234567890abcdef" not in telemetry.error
             assert "REDACTED" in telemetry.error or "***" in telemetry.error or "api_key" in telemetry.error
-
-
-# ============================================================================
-# 5. Telegram Bot Hardening & Callback Query Bounds
-# ============================================================================
-
-@pytest.mark.asyncio
-class TestTelegramBotHardening:
-    async def test_safe_send_message_absorbs_drop(self):
-        from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
-        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, )
-        mock_update = MagicMock()
-        mock_update.message.reply_text = AsyncMock(side_effect=Exception("Network connection lost"))
-        # Should not raise exception
-        result = await handlers._safe_send_message(mock_update, None, "test message")
-        assert result is False
-
-    async def test_telegram_callback_boundary_checks(self):
-        from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
-        from telegram import Update, CallbackQuery, User
-
-        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, )
-        mock_update = MagicMock(spec=Update)
-        mock_query = MagicMock(spec=CallbackQuery)
-        mock_update.callback_query = mock_query
-        mock_update.effective_chat.id = 12345
-        mock_query.from_user = MagicMock(spec=User, id=12345, first_name="Test")
-        mock_query.answer = AsyncMock()
-        mock_query.edit_message_reply_markup = AsyncMock()
-
-        # Test speed out of bounds (> 3.0)
-        mock_query.data = "set_speed_99.9"
-        await handlers.handle_callback_query(mock_update, MagicMock())
-        mock_query.answer.assert_called_with("⚠️ 语速参数超出范围 (0.1~3.0)", show_alert=True)
-
-        # Test temperature out of bounds (> 2.0)
-        mock_query.data = "set_temp_5.0"
-        await handlers.handle_callback_query(mock_update, MagicMock())
-        mock_query.answer.assert_called_with("⚠️ 发音温度超出范围 (0.0~2.0)", show_alert=True)
-
-        # Test history out of bounds (> 100)
-        mock_query.data = "set_history_999"
-        await handlers.handle_callback_query(mock_update, MagicMock())
-        mock_query.answer.assert_called_with("⚠️ 记忆轮数超出范围 (1~100)", show_alert=True)
-
-    async def test_telegram_nickname_sanitization(self):
-        from galgame2voice.services.memory_service import MemoryService
-        dirty_nick = "Admin\u202e\u202d{Master}12345678901234567890"
-        clean = MemoryService.sanitize_fact_value(dirty_nick, max_len=20)
-        assert len(clean) <= 20
-        assert "\u202e" not in clean
-        assert "{" not in clean
-        assert "}" not in clean
 
 
 # ============================================================================

@@ -363,19 +363,14 @@ class TestApiKeyMaskingAndZeroLeakage:
 
     @pytest.mark.asyncio
     async def test_api_key_masked_in_config_endpoint(self, app_client):
-        """GET /api/config returns masked key for active_provider and telegram_bot_token."""
+        """GET /api/config returns masked key for active_provider."""
         raw_llm_key = "sk-live-llm-secret-key-11223344"
-        raw_tg_token = "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
 
         # Save provider with raw key and activate it
         await app_client.post("/api/providers", json={
             "id": "openai",
             "api_key": raw_llm_key,
             "is_active": True,
-        })
-        # Save Telegram bot token
-        await app_client.post("/api/config", json={
-            "settings": {"telegram_bot_token": raw_tg_token},
         })
 
         # GET /api/config
@@ -384,11 +379,9 @@ class TestApiKeyMaskingAndZeroLeakage:
         body = resp.text
 
         assert raw_llm_key not in body
-        assert raw_tg_token not in body
 
         data = resp.json()
         assert data["active_provider"]["api_key"].startswith("sk-****")
-        assert "****" in data["settings"]["telegram_bot_token"]
 
     @pytest.mark.asyncio
     async def test_error_responses_contain_no_raw_api_key(self, app_client):
@@ -961,45 +954,6 @@ class TestSettingsSchemaPersistence:
             settings = await crud.get_settings(conn)
             assert settings.stt_engine == "whisper"
 
-    def test_telegram_chat_id_and_admin_ids_bidirectional_sync(self):
-        """Verifies Pydantic model validator synchronizes telegram_chat_id and telegram_admin_ids."""
-        # telegram_chat_id provided -> populates telegram_admin_ids
-        up1 = SettingsUpdate(telegram_chat_id="123456789")
-        assert up1.telegram_admin_ids == "123456789"
-        assert up1.telegram_chat_id == "123456789"
-
-        # telegram_admin_ids provided -> populates telegram_chat_id
-        up2 = SettingsUpdate(telegram_admin_ids="987654321")
-        assert up2.telegram_chat_id == "987654321"
-        assert up2.telegram_admin_ids == "987654321"
-
-    @pytest.mark.asyncio
-    async def test_telegram_chat_id_persistence_in_config_endpoint(self, app_client, isolate_test_database):
-        """Tests that telegram_chat_id persists and maps cleanly in REST calls."""
-        # Submit telegram_chat_id
-        resp = await app_client.post("/api/config", json={
-            "settings": {"telegram_chat_id": "111222333,444555666"},
-        })
-        assert resp.status_code == 200
-
-        # Read back from GET /api/config
-        cfg = await app_client.get("/api/config")
-        assert cfg.status_code == 200
-        settings = cfg.json()["settings"]
-        assert settings["telegram_chat_id"] == "111222333,444555666"
-        assert settings["telegram_admin_ids"] == "111222333,444555666"
-
-        # Submit telegram_admin_ids
-        resp2 = await app_client.post("/api/config", json={
-            "settings": {"telegram_admin_ids": "777888999"},
-        })
-        assert resp2.status_code == 200
-
-        cfg2 = await app_client.get("/api/config")
-        settings2 = cfg2.json()["settings"]
-        assert settings2["telegram_chat_id"] == "777888999"
-        assert settings2["telegram_admin_ids"] == "777888999"
-
 
 # ============================================================================
 # 9. Provider Security & SSRF Boundaries
@@ -1120,13 +1074,6 @@ class TestProviderPresetSeedsAndFallback:
                     f"Provider '{preset_id}' chat_model is '{provider_map[preset_id].chat_model}', "
                     f"expected '{expected_model}'"
                 )
-
-        # 4. Telegram model menu lists all presets including siliconflow and moonshot
-        from galgame2voice.telegram_bot.console_menus import build_model_menu
-        text, markup = await build_model_menu(db_path=db_path)
-        button_data = [btn.callback_data for row in markup.inline_keyboard for btn in row]
-        assert "set_model_siliconflow" in button_data
-        assert "set_model_moonshot" in button_data
 
     @pytest.mark.asyncio
     async def test_legacy_db_seed_healing_and_user_customization_preserved(self, tmp_path):

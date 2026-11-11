@@ -248,8 +248,8 @@ def setup_logger(
             h.addFilter(masking_filter)
             h.setFormatter(formatter)
 
-    # Suppress chatty external loggers from flooding terminal output during polling
-    for noisy in ("httpx", "httpcore", "telegram", "telegram.ext"):
+    # Suppress chatty external loggers from flooding terminal output
+    for noisy in ("httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     logger = logging.getLogger("galgame2voice")

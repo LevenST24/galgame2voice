@@ -1,6 +1,6 @@
 """
 Audio conversion utilities wrapping ffmpeg asynchronously for galgame2voice.
-Converts OGG (Opus) to WAV (16kHz mono 16-bit PCM) for STT, and WAV to OGG for Telegram voice notes.
+Converts OGG (Opus) to WAV (16kHz mono 16-bit PCM) for STT, and WAV to OGG/Opus audio.
 Includes persistent executable discovery, caching, process cleanup, and format short-circuiting.
 """
 
@@ -316,7 +316,7 @@ async def convert_ogg_to_wav(
     timeout: float = 30.0,
 ) -> bytes:
     """
-    Converts OGG/Opus audio bytes from Telegram to 16kHz mono 16-bit PCM WAV bytes for STT.
+    Converts OGG/Opus audio bytes to 16kHz mono 16-bit PCM WAV bytes for STT.
     Raises ValueError if input bytes are invalid or corrupt.
     """
     if not ogg_bytes or len(ogg_bytes) < 12:
@@ -359,7 +359,7 @@ async def convert_wav_to_ogg(
     timeout: float = 30.0,
 ) -> bytes:
     """
-    Converts WAV audio bytes to OGG/Opus bytes for Telegram SendVoice.
+    Converts WAV audio bytes to OGG/Opus bytes.
     Raises ValueError if input bytes are invalid, corrupt, or empty.
     """
     if not wav_bytes:

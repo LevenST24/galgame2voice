@@ -179,46 +179,6 @@ class TestApiKeyMaskingEdgeCases:
             # Clean up
             await client.delete("/api/providers/deepseek_roundtrip_test")
 
-    @pytest.mark.asyncio
-    async def test_settings_telegram_token_clearing_vs_masking(self):
-        """
-        Test that submitting empty string clears the token,
-        while submitting masked token retains the token.
-        """
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            # Set token
-            secret_token = "123456789:ABCDefgh-AdversarialSecretToken99"
-            await client.post("/api/config", json={
-                "settings": {"telegram_bot_token": secret_token}
-            })
-
-            # Read config
-            cfg = (await client.get("/api/config")).json()["settings"]
-            masked = cfg["telegram_bot_token"]
-            assert masked == "123****en99"
-
-            # Update other settings while sending masked token -> retains secret
-            await client.post("/api/config", json={
-                "settings": {
-                    "telegram_bot_token": masked,
-                    "speed_factor": 1.25,
-                }
-            })
-            async with get_db() as conn:
-                raw_s = await crud.get_settings_raw(conn)
-                assert raw_s.telegram_bot_token == secret_token
-                assert raw_s.speed_factor == 1.25
-
-            # Update with explicit empty string -> clears token
-            await client.post("/api/config", json={
-                "settings": {"telegram_bot_token": ""}
-            })
-            async with get_db() as conn:
-                raw_s = await crud.get_settings_raw(conn)
-                assert raw_s.telegram_bot_token == ""
-
 
 # ============================================================================
 # 2. High Concurrency & Race Conditions Under Load
@@ -612,28 +572,6 @@ class TestConsoleRoutingAndDefensiveBoundaries:
 
             # Clean up
             await client.delete(f"/api/providers/{test_prov_id}")
-
-    @pytest.mark.asyncio
-    async def test_telegram_test_proxy_error_handling(self):
-        """
-        POST /api/telegram/test with enabled proxy pointing to invalid/unreachable host
-        should return a structured error response without unhandled exception.
-        """
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            with patch("httpx.AsyncClient.get", side_effect=httpx.ConnectError("Proxy connection failed")):
-                resp = await client.post("/api/telegram/test", json={
-                    "token": "123456789:ABCdefGhIJKLMNOPQRSTUVWXYZ-998877",
-                    "proxy_enabled": True,
-                    "proxy_host": "127.0.0.1",
-                    "proxy_port": 59999,
-                })
-                assert resp.status_code == 200
-                data = resp.json()
-                assert data["success"] is False
-                assert "message" in data
-                assert isinstance(data["latency_ms"], (int, float))
 
     @pytest.mark.asyncio
     async def test_system_status_deep_diagnostics(self):

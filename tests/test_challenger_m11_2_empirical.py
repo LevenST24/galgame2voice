@@ -392,63 +392,6 @@ class TestSettingsSchemaPersistenceChallenger:
         resp2 = await app_client.get("/api/config")
         assert resp2.json()["settings"]["stt_engine"] == "whisper"
 
-    @pytest.mark.asyncio
-    async def test_telegram_chat_id_and_admin_ids_interchangeability(self, app_client, isolate_test_database):
-        """Tests bidirectional interchangeability of telegram_chat_id and telegram_admin_ids."""
-        # 1. Write via telegram_chat_id
-        payload1 = {"settings": {"telegram_chat_id": "123456789"}}
-        r1 = await app_client.post("/api/config", json=payload1)
-        assert r1.status_code == 200
-
-        # Verify fresh DB read: both fields are synchronized
-        async with get_db(isolate_test_database) as conn:
-            s1 = await crud.get_settings(conn)
-            assert s1.telegram_chat_id == "123456789"
-            assert s1.telegram_admin_ids == "123456789"
-
-        # Verify GET /api/config returns both fields identically
-        c1 = await app_client.get("/api/config")
-        cfg1 = c1.json()["settings"]
-        assert cfg1["telegram_chat_id"] == "123456789"
-        assert cfg1["telegram_admin_ids"] == "123456789"
-
-        # 2. Write via telegram_admin_ids
-        payload2 = {"settings": {"telegram_admin_ids": "987654321,555666777"}}
-        r2 = await app_client.post("/api/config", json=payload2)
-        assert r2.status_code == 200
-
-        # Verify fresh DB read
-        async with get_db(isolate_test_database) as conn2:
-            s2 = await crud.get_settings(conn2)
-            assert s2.telegram_chat_id == "987654321,555666777"
-            assert s2.telegram_admin_ids == "987654321,555666777"
-
-        # Verify GET /api/config
-        c2 = await app_client.get("/api/config")
-        cfg2 = c2.json()["settings"]
-        assert cfg2["telegram_chat_id"] == "987654321,555666777"
-        assert cfg2["telegram_admin_ids"] == "987654321,555666777"
-
-    def test_pydantic_model_interchangeability_unit(self):
-        """Unit test verifying Pydantic models SettingsBase, SettingsUpdate, SettingsResponse handle both aliases."""
-        # SettingsBase initialized from telegram_admin_ids
-        b1 = SettingsBase(telegram_admin_ids="admin_123")
-        assert b1.telegram_chat_id == "admin_123"
-
-        # SettingsUpdate initialized from telegram_chat_id -> synchronizes telegram_admin_ids
-        u1 = SettingsUpdate(telegram_chat_id="chat_789")
-        assert u1.telegram_admin_ids == "chat_789"
-        assert u1.telegram_chat_id == "chat_789"
-
-        # SettingsUpdate initialized from telegram_admin_ids -> synchronizes telegram_chat_id
-        u2 = SettingsUpdate(telegram_admin_ids="admin_999")
-        assert u2.telegram_chat_id == "admin_999"
-        assert u2.telegram_admin_ids == "admin_999"
-
-        # SettingsResponse initialized from telegram_admin_ids -> synchronizes telegram_chat_id
-        r1 = SettingsResponse(telegram_admin_ids="resp_101")
-        assert r1.telegram_chat_id == "resp_101"
-
 
 # ============================================================================
 # Category 3: Adversarial Stress & Concurrency Validation

@@ -15,7 +15,6 @@ import io
 import os
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -28,9 +27,6 @@ from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.audio_converter import convert_ogg_to_wav, convert_wav_to_ogg
-from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
-from galgame2voice.telegram_bot.bot import TelegramBotManager
-from telegram_test_support import TELEGRAM_TEST_ADMINS
 
 
 # ============================================================================
@@ -201,49 +197,6 @@ async def test_utf8_bom_safe_reading_across_config_and_health(tmp_path):
     assert not read_path_str.startswith("\ufeff")
     assert Path(read_path_str) == target_path
     assert Path(read_path_str).exists()
-
-
-# ============================================================================
-# 5. Telegram Voice Message Size Guard
-# ============================================================================
-
-@pytest.mark.asyncio
-async def test_telegram_voice_size_guard():
-    """Verifies that voice notes larger than 15MB are rejected before download."""
-    handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, db_path=":memory:")
-
-    update = MagicMock()
-    update.effective_chat.id = 12345
-    voice = MagicMock()
-    voice.file_size = 16 * 1024 * 1024  # 16 MB > 15 MB
-    update.message.voice = voice
-
-    context = MagicMock()
-    context.bot.send_message = AsyncMock()
-
-    result = await handlers.handle_voice_message(update, context)
-    assert result is None
-    context.bot.send_message.assert_awaited_once()
-    call_args = context.bot.send_message.call_args[1]
-    assert "超过15MB" in call_args["text"]
-
-
-# ============================================================================
-# 6. Telegram Bot Error Boundary & Conflict Handling
-# ============================================================================
-
-@pytest.mark.asyncio
-async def test_telegram_bot_conflict_and_failure_shutdown(caplog):
-    """Verifies that Telegram conflict errors are logged and initialization failures shut down the app."""
-    mgr = TelegramBotManager(db_path=":memory:")
-
-    # Test error callback with Conflict
-    context = MagicMock()
-    context.error = RuntimeError("Conflict: terminated by other getUpdates request")
-
-    with caplog.at_level("ERROR"):
-        await mgr._on_telegram_error(None, context)
-    assert any("Telegram token conflict" in r.message for r in caplog.records)
 
 
 # ============================================================================

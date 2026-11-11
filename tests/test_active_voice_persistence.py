@@ -16,8 +16,6 @@ from galgame2voice.main import create_app
 from galgame2voice.routers import characters, voice
 from galgame2voice.services import voice_manager
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient
-from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
-from galgame2voice.telegram_bot import console_menus
 
 
 @pytest.fixture
@@ -189,33 +187,6 @@ async def test_runtime_only_switch_does_not_require_a_database_write(stack, monk
     assert await stack.manager.switch_profile(stack.new, persist=False) is True
     write.assert_not_awaited()
     assert await stored_id(stack.path) == stack.old.id
-
-
-async def test_telegram_character_switch_does_not_ignore_an_unconfirmed_write(stack, monkeypatch):
-    manager = SimpleNamespace(switch_active_profile=AsyncMock(return_value=True))
-    monkeypatch.setattr(voice_manager, "get_voice_manager", lambda: manager)
-    monkeypatch.setattr(crud, "set_active_voice_profile", AsyncMock(return_value=False))
-    error, note = await TelegramBotHandlers._switch_character_weights(SimpleNamespace(db_path=stack.path), stack.new.id)
-    assert error and "保存" in error
-    assert "离线" not in note
-
-
-async def test_telegram_console_does_not_announce_success_after_a_rejected_write(stack, monkeypatch):
-    manager = SimpleNamespace(switch_active_profile=AsyncMock(return_value=True))
-    monkeypatch.setattr(voice_manager, "get_voice_manager", lambda: manager)
-    monkeypatch.setattr(crud, "set_active_voice_profile", AsyncMock(return_value=False))
-    monkeypatch.setattr(console_menus, "_edit_menu_text", AsyncMock())
-    returned = AsyncMock()
-    monkeypatch.setattr(console_menus, "_return_to_main_console", returned)
-    monkeypatch.setattr(console_menus, "build_voice_menu", lambda **kwargs: "synthetic menu")
-    context = SimpleNamespace(
-        data=f"set_voice_{stack.new.id}", db_path=stack.path, query=SimpleNamespace(answer=AsyncMock())
-    )
-    await console_menus._handle_set_voice(context)
-    answer = context.query.answer.await_args
-    assert "保存" in answer.args[0] and "已切换" not in answer.args[0]
-    assert answer.kwargs["show_alert"] is True
-    returned.assert_not_awaited()
 
 
 async def test_delete_active_voice_profile_clears_settings_and_manager(stack, monkeypatch):
