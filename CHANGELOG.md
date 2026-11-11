@@ -17,6 +17,7 @@ All notable changes to galgame2voice are documented here. The format follows
 
 
 
+
 ### Fixed
 
 - 修复某一轮对话没有生成语音（如关闭语音或台词只有动作描写）时，设置中心「运行状态」的阶段耗时里「首音就绪」误显示为整轮耗时的问题；现在没有生成语音的轮次显示为「--」。
@@ -142,6 +143,8 @@ All notable changes to galgame2voice are documented here. The format follows
 ### Removed
 ### Removed
 - 移除 Telegram 机器人功能与设置中心里的「Telegram」页面；原有的 Telegram 历史对话与旧版聊天备份仍可在网页端正常查看、导出和导入。
+### Removed
+- 移除旧的同步聊天接口（POST /api/chat）和单独的语音合成接口（POST /api/voice/synthesize）；网页聊天仍使用流式接口，历史台词的语音文件已过期或不存在时，点播放不再自动重新合成，而是提示可到 LOG 里重新生成这一句的语音。
 
 ## [3.1.2] - 2026-11-04
 

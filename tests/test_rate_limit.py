@@ -69,7 +69,7 @@ class TestMiddleware:
                 statuses.append(message["status"])
 
         for i in range(35):
-            scope = {"type": "http", "path": "/api/chat", "client": ("9.9.9.9", 1)}
+            scope = {"type": "http", "path": "/api/chat/stream", "client": ("9.9.9.9", 1)}
             await mw(scope, receive, send)
 
         assert len(handled) == 30  # protected budget exhausted

@@ -21,7 +21,6 @@ _DEFAULT_IP_LIMIT = 120          # requests per window, per client IP
 _WINDOW_SECONDS = 60.0
 _PROTECTED_PREFIXES = (
     "/api/chat",
-    "/api/voice/synthesize",
 )
 # High-risk admin/config routes. Their expensive/dangerous operations are the
 # MUTATING ones (settings writes, provider activation, network tests, git

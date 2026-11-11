@@ -4,8 +4,8 @@ Covers:
 1. Dynamic parameter clamping helpers (clamp_dynamic_speed, clamp_dynamic_temperature)
 2. StreamingBilingualParser dynamic tts parameter extraction, safety clamping, and backward compatibility
 3. TtsService dynamic voice option sanitization and slider enforcement in fixed parameter mode
-4. ChatService stream_chat and chat_sync dynamic parameter resolution and tts_params event emission
-5. Chat router endpoints (/api/chat/stream, /api/chat) forwarding ai_adaptive_voice
+4. ChatService stream_chat dynamic parameter resolution and tts_params event emission
+5. Chat router endpoint (/api/chat/stream) forwarding ai_adaptive_voice
 """
 
 import asyncio
@@ -259,7 +259,7 @@ class TestTtsServiceSanitization:
 
 @pytest.mark.usefixtures("configured_voice")
 class TestChatServiceDynamicVoiceIntegration:
-    """Verifies ChatService stream_chat and chat_sync pipelines with dynamic voice settings."""
+    """Verifies ChatService stream_chat pipeline with dynamic voice settings."""
 
     @pytest.mark.asyncio
     async def test_stream_chat_dynamic_voice_enabled(self, temp_db_path, mock_gpt_sovits, tmp_path):
@@ -338,28 +338,6 @@ class TestChatServiceDynamicVoiceIntegration:
             assert opt.get("speed") == user_fixed_speed
             assert opt.get("temperature") == user_fixed_temp
 
-    @pytest.mark.asyncio
-    async def test_chat_sync_returns_tts_params(self, temp_db_path, mock_gpt_sovits, tmp_path):
-        client = GptSovitsClient(server=mock_gpt_sovits)
-        tts_service = TtsService(client=client, audio_dir=tmp_path)
-        chat_service = ChatService(tts_service=tts_service, db_path=temp_db_path)
-
-        adapter = MockDynamicLLMAdapter()
-        async def _mock_adapter(*args, **kwargs):
-            return (adapter, "mock-dynamic-model")
-        chat_service._get_active_llm_adapter = _mock_adapter
-
-        res = await chat_service.chat_sync(
-            prompt="你好呀",
-            session_id="sess-sync-dynamic",
-            ai_adaptive_voice=True,
-        )
-        assert "tts_params" in res
-        assert res["tts_params"]["speed"] == 1.15
-        assert res["tts_params"]["temperature"] == 0.90
-        assert res["tts_params"]["emotion"] == "shy"
-        assert res["tts_params"]["adaptive_enabled"] is True
-
 
 # ============================================================================
 # 5. FastAPI Chat Router API Tests
@@ -400,31 +378,6 @@ class TestChatRouterDynamicVoiceAPI:
             body = resp.text
             assert "event: done" in body
             assert '"adaptive_enabled": true' in body
-
-    @pytest.mark.asyncio
-    async def test_api_chat_sync_forwards_ai_adaptive_voice(self, temp_db_path, mock_gpt_sovits, tmp_path):
-        app = create_app()
-        client = GptSovitsClient(server=mock_gpt_sovits)
-        tts_service = TtsService(client=client, audio_dir=tmp_path)
-        chat_service = ChatService(tts_service=tts_service, db_path=temp_db_path)
-
-        adapter = MockDynamicLLMAdapter()
-        async def _mock_adapter(*args, **kwargs):
-            return (adapter, "mock-dynamic-model")
-        chat_service._get_active_llm_adapter = _mock_adapter
-        set_chat_service(chat_service)
-
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
-            resp = await c.post("/api/chat", json={
-                "prompt": "今天心情怎么样？",
-                "session_id": "api-sync-adaptive",
-                "ai_adaptive_voice": False,
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert "tts_params" in data
-            assert data["tts_params"]["adaptive_enabled"] is False
 
     def test_parser_extracts_string_numbers_and_negative_numbers(self):
         """Validates that quoted numeric strings and negative values are properly extracted and clamped."""
@@ -492,26 +445,3 @@ class TestChatRouterDynamicVoiceAPI:
             sys_msg = messages[0].content
             assert '"tts":' in sys_msg
             assert "0.5~1.5" in sys_msg
-
-    @pytest.mark.asyncio
-    async def test_voice_synthesize_api_accepts_ai_adaptive_voice(self, temp_db_path, mock_gpt_sovits, tmp_path, configured_voice):
-        """Verifies /api/voice/synthesize accepts ai_adaptive_voice in request body."""
-        from galgame2voice.services.voice_manager import get_voice_manager
-        vm = get_voice_manager()
-        try:
-            vm.client.server = mock_gpt_sovits
-            vm.tts_service.client.server = mock_gpt_sovits
-
-            app = create_app()
-            transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="http://test") as c:
-                resp = await c.post("/api/voice/synthesize", json={
-                    "text": "こんにちは",
-                    "speed": 1.2,
-                    "ai_adaptive_voice": True,
-                })
-                assert resp.status_code == 200, resp.text
-                assert resp.headers["content-type"] == "audio/wav"
-        finally:
-            vm.client.server = None
-            vm.tts_service.client.server = None

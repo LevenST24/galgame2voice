@@ -4,9 +4,8 @@ Covers:
  - galgame2voice.utils.text_splitter.split_japanese_sentences
  - galgame2voice.services.chat_service.StreamingBilingualParser
  - Fallback parsing for non-JSON/broken LLM outputs
- - ChatService stream_chat & chat_sync end-to-end pipelines
+ - ChatService stream_chat end-to-end pipeline
  - /api/chat/stream SSE endpoint (events: text, audio_chunk, done, error)
- - /api/chat endpoint
  - Static UI assets and Web Audio Player file serving
 """
 
@@ -172,7 +171,7 @@ class TestTextSplitterAndParserM4:
 # ============================================================================
 
 class TestChatServiceM4:
-    """Tests ChatService streaming and synchronous pipelines."""
+    """Tests the ChatService streaming pipeline."""
 
     @pytest.mark.asyncio
     async def test_chat_service_stream_chat(self, temp_db_path, mock_gpt_sovits, tmp_path, configured_voice):
@@ -206,27 +205,6 @@ class TestChatServiceM4:
         assert len(done_ev["data"]["chunks"]) >= 1
 
     @pytest.mark.asyncio
-    async def test_chat_service_chat_sync(self, temp_db_path, mock_gpt_sovits, tmp_path):
-        audio_dir = tmp_path / "audio_test_sync"
-        audio_dir.mkdir()
-
-        client = GptSovitsClient(server=mock_gpt_sovits)
-        tts_service = TtsService(client=client, audio_dir=audio_dir)
-        chat_service = ChatService(tts_service=tts_service, db_path=temp_db_path)
-
-        mock_adapter = MockStreamingLLMAdapter()
-        async def _mock_adapter(*args, **kwargs):
-            return (mock_adapter, "mock-chat")
-        chat_service._get_active_llm_adapter = _mock_adapter
-
-        result = await chat_service.chat_sync(prompt="早上好", session_id="test-sess-2")
-        assert "chinese" in result
-        assert "japanese" in result
-        assert "audio_url" in result
-        assert "audioUrl" in result
-        assert "早上好" in result["chinese"]
-
-    @pytest.mark.asyncio
     async def test_chat_service_cancellation(self, temp_db_path, mock_gpt_sovits, tmp_path):
         client = GptSovitsClient(server=mock_gpt_sovits)
         tts_service = TtsService(client=client, audio_dir=tmp_path)
@@ -252,7 +230,7 @@ class TestChatServiceM4:
 # ============================================================================
 
 class TestChatRouterEndpointsM4:
-    """Tests FastAPI router endpoints /api/chat/stream, /api/chat, and static assets."""
+    """Tests FastAPI router endpoint /api/chat/stream and static assets."""
 
     @pytest.mark.asyncio
     async def test_post_chat_stream_sse_endpoint(self, temp_db_path, mock_gpt_sovits, tmp_path):
@@ -280,37 +258,12 @@ class TestChatRouterEndpointsM4:
             assert "data: " in body
 
     @pytest.mark.asyncio
-    async def test_post_chat_sync_endpoint(self, temp_db_path, mock_gpt_sovits, tmp_path):
-        app = create_app()
-        client = GptSovitsClient(server=mock_gpt_sovits)
-        tts_service = TtsService(client=client, audio_dir=tmp_path)
-        chat_service = ChatService(tts_service=tts_service, db_path=temp_db_path)
-
-        mock_adapter = MockStreamingLLMAdapter()
-        async def _mock_adapter(*args, **kwargs):
-            return (mock_adapter, "mock-chat")
-        chat_service._get_active_llm_adapter = _mock_adapter
-        set_chat_service(chat_service)
-
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
-            resp = await c.post("/api/chat", json={"prompt": "今天怎么样？", "session_id": "sync-test"})
-            assert resp.status_code == 200
-            data = resp.json()
-            assert "chinese" in data
-            assert "japanese" in data
-            assert "audio_url" in data
-
-    @pytest.mark.asyncio
     async def test_chat_stream_empty_prompt_validation(self):
         app = create_app()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             resp = await c.post("/api/chat/stream", json={"prompt": "  "})
             assert resp.status_code == 422
-
-            resp2 = await c.post("/api/chat", json={"prompt": ""})
-            assert resp2.status_code == 422
 
     @pytest.mark.asyncio
     async def test_static_ui_files_served(self):
