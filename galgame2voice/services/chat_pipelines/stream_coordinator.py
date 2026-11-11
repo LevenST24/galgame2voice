@@ -21,7 +21,6 @@ from galgame2voice.adapters.base import (
 )
 from galgame2voice.database import crud
 from galgame2voice.database.commit_hooks import after_commit
-from galgame2voice.database.models import MessageCreate
 from galgame2voice.database.session import get_db, immediate_transaction
 from galgame2voice.services.affection_service import AffectionService
 from galgame2voice.services.emotion_classifier import classify_emotion, detect_emotion_cue
@@ -30,10 +29,6 @@ from galgame2voice.services.tts_scheduler import get_tts_scheduler
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.utils.audio_concat import concat_wav_files
 from galgame2voice.utils.error_diagnostics import (
-    CONTENT_FILTER_FINISH_REASONS,
-    EMPTY_REPLY_CONTENT_FILTERED,
-    EMPTY_REPLY_DEFAULT,
-    EMPTY_REPLY_STOPPED_ON_LENGTH,
     EmptyReplyError,
     chat_error_payload,
 )
@@ -44,15 +39,20 @@ from galgame2voice.utils.text_splitter import split_japanese_sentences
 from .acting_menu import get_recent_pose, sanitize_act
 from .line_builder import LineAligner
 from .llm_pipeline import LlmStreamPipeline
+from .stream_persist_policy import (
+    build_assistant_message_create,
+    build_completion_done_event,
+    decide_completion_policy,
+    decide_early_exit_policy,
+    decide_teardown_policy,
+    decide_turn_message_action,
+    plan_master_audio_url,
+)
 from .stream_snapshot import (
     build_early_done_event,
     build_final_tts_params,
     build_line_audio_event,
     clean_audio_chunks,
-    compute_completion_snapshot,
-    compute_disconnect_snapshot,
-    compute_early_exit_snapshot,
-    has_meaningful_text,
     new_line_audio_state,
     snapshot_lines_with_audio,
 )
@@ -103,11 +103,6 @@ class SseKeepAlive(dict):
         if isinstance(other, str) and other == ": keep-alive\n\n":
             return True
         return super().__eq__(other)
-
-
-def _has_meaningful_text(chinese: str | None, japanese: str | None) -> bool:
-    """Returns True if either Chinese or Japanese string contains non-whitespace text."""
-    return has_meaningful_text(chinese, japanese)
 
 
 class _StreamRun:
@@ -844,14 +839,9 @@ class StreamCoordinator:
             async with get_db(self.db_path) as conn:
                 async with immediate_transaction(conn):
                     await require_user_turn(conn, self.session_id, getattr(self.user_msg, "id", None))
-                    stored_message = await crud.add_message(conn, MessageCreate(
-                        session_id=self.session_id,
-                        role="assistant",
-                        content_chinese=partial_ch,
-                        content_japanese=partial_ja,
-                        lines=lines,
-                        audio_url="",
-                        latency_ms=int((time.perf_counter() - t_start) * 1000),
+                    stored_message = await crud.add_message(conn, build_assistant_message_create(
+                        session_id=self.session_id, content_chinese=partial_ch, content_japanese=partial_ja,
+                        lines=lines, audio_url="", latency_ms=int((time.perf_counter() - t_start) * 1000),
                         reply_to_message_id=getattr(self.user_msg, "id", None),
                     ))
                     after_commit(conn, lambda: self._mark_persisted(stored_message.id))
@@ -891,68 +881,53 @@ class StreamCoordinator:
         # Request stop immediately; teardown reaps both tasks before persistence.
         self._request_pipeline_stop(run)
 
-        early = compute_early_exit_snapshot(
+        policy = decide_early_exit_policy(
             announced_lines=run.announced_lines,
             line_audio_states=run.line_audio_states,
             partial_chinese=run.final_result.get("chinese") or run.parser.chinese_extracted,
             partial_japanese=run.final_result.get("japanese") or run.parser.japanese_extracted,
             cancel_flagged=is_cancelled,
             is_truncation=getattr(run, "truncation_error", None) is not None,
+            persisted_assistant=self.persisted_assistant,
+            has_user_message=self.user_msg is not None,
         )
-        snapshot_lines = early["snapshot_lines"]
-        run.persisted_lines = snapshot_lines or None
+        run.persisted_lines = policy["persisted_lines"]
 
-        if early["emit_truncated_done"]:
-            if not self.persisted_assistant and self.user_msg is not None and early["should_persist"]:
+        if policy["emit_truncated_done"]:
+            if policy["db_action"] == "persist_partial":
                 await self._persist_partial_message(
-                    early["partial_chinese"],
-                    early["partial_japanese"],
+                    policy["content_chinese"],
+                    policy["content_japanese"],
                     run.t_start,
-                    lines=snapshot_lines,
+                    lines=policy["lines"],
                 )
             yield build_early_done_event(
-                partial_chinese=early["partial_chinese"],
-                partial_japanese=early["partial_japanese"],
-                snapshot_lines=snapshot_lines,
+                partial_chinese=policy["content_chinese"],
+                partial_japanese=policy["content_japanese"],
+                snapshot_lines=policy["lines"],
                 reply_format=run.parser.line_scanner.format,
                 message_id=self.persisted_message_id,
             )
 
     async def _concat_audio_chunks(self, audio_chunks: list[dict[str, Any]]) -> str:
         """Concatenates chunk WAVs into a master WAV file in a worker thread."""
-        if not audio_chunks:
-            return ""
-        if len(audio_chunks) == 1:
-            return audio_chunks[0]["audio_url"]
+        plan = plan_master_audio_url(audio_chunks, self.tts_options)
+        if not plan["needs_concat"]:
+            return plan["audio_url"]
 
         try:
-            pause_candidate = None
-            if self.tts_options:
-                pause_candidate = self.tts_options.get("fragment_interval")
-                if pause_candidate is None:
-                    pause_candidate = self.tts_options.get("pause_duration")
-                if pause_candidate is None:
-                    pause_candidate = self.tts_options.get("sentence_pause")
-            if pause_candidate is not None:
-                try:
-                    pause_sec = float(pause_candidate)
-                except (ValueError, TypeError):
-                    pause_sec = 0.3
-            else:
-                pause_sec = 0.3
-            pause_sec = max(0.0, min(5.0, pause_sec))
             full_filename = f"full_{uuid.uuid4().hex[:12]}.wav"
             full_path = self.tts_service.audio_dir / full_filename
             ok = await asyncio.to_thread(
                 self._concat_wav,
-                [c.get("local_path", "") for c in audio_chunks],
+                plan["chunk_paths"],
                 full_path,
-                pause_sec,
+                plan["pause_seconds"],
             )
-            return f"/audio/{full_filename}" if ok else audio_chunks[0]["audio_url"]
+            return f"/audio/{full_filename}" if ok else plan["fallback_audio_url"]
         except Exception as cat_err:
             logger.warning("Failed to concatenate audio chunks: %s", cat_err)
-            return audio_chunks[0]["audio_url"]
+            return plan["fallback_audio_url"]
 
     @staticmethod
     def _clean_audio_chunks(
@@ -975,19 +950,16 @@ class StreamCoordinator:
         lines: list[dict[str, Any]] | None = None,
     ) -> bool:
         """Persists the assistant message to the database, or prunes orphaned user message if empty."""
-        has_meaningful_content = _has_meaningful_text(full_chinese, full_japanese)
-        if has_meaningful_content:
+        db_action, has_meaningful_content = decide_turn_message_action(
+            full_chinese=full_chinese, full_japanese=full_japanese,
+        )
+        if db_action == "persist_full":
             async with get_db(self.db_path) as conn:
                 async with immediate_transaction(conn):
                     await require_user_turn(conn, self.session_id, getattr(self.user_msg, "id", None))
-                    stored_message = await crud.add_message(conn, MessageCreate(
-                        session_id=self.session_id,
-                        role="assistant",
-                        content_chinese=full_chinese,
-                        content_japanese=full_japanese,
-                        lines=lines,
-                        audio_url=total_audio_url,
-                        latency_ms=total_latency,
+                    stored_message = await crud.add_message(conn, build_assistant_message_create(
+                        session_id=self.session_id, content_chinese=full_chinese, content_japanese=full_japanese,
+                        lines=lines, audio_url=total_audio_url, latency_ms=total_latency,
                         reply_to_message_id=getattr(self.user_msg, "id", None),
                     ))
                     after_commit(conn, lambda: self._mark_persisted(stored_message.id))
@@ -1028,39 +1000,29 @@ class StreamCoordinator:
         full_chinese = run.final_result.get("chinese") or parser.chinese_extracted
         full_japanese = run.final_result.get("japanese") or parser.japanese_extracted
         final_emotion = classify_emotion(full_chinese, full_japanese, parser.emotion_extracted)
+        lines_truncated = bool(getattr(parser, "lines_truncated", False))
 
-        completion = compute_completion_snapshot(
+        policy = decide_completion_policy(
             announced_lines=run.announced_lines,
             line_audio_states=run.line_audio_states,
             final_chinese=full_chinese,
             final_japanese=full_japanese,
-            lines_truncated=bool(getattr(parser, "lines_truncated", False)),
+            lines_truncated=lines_truncated,
+            cancel_flagged=bool(cancel_event and cancel_event.is_set()),
+            last_finish_reason=getattr(self.adapter, "last_finish_reason", None),
         )
-        final_lines = completion["final_lines"]
-        run.persisted_lines = final_lines
-        has_meaningful_content = completion["has_reply"]
+        final_lines = policy["final_lines"]
+        run.persisted_lines = policy["persisted_lines"]
 
-        if not has_meaningful_content and not bool(cancel_event and cancel_event.is_set()):
-            last_finish = getattr(self.adapter, "last_finish_reason", None)
-            if last_finish in CONTENT_FILTER_FINISH_REASONS:
-                text = EMPTY_REPLY_CONTENT_FILTERED
-                stopped_on_length = False
-            else:
-                stopped_on_length = bool(
-                    getattr(parser, "lines_truncated", False)
-                    or last_finish in ("length", "MAX_TOKENS", "max_tokens")
-                )
-                text = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
+        if policy["abort_empty_reply"]:
             await self._prune_orphaned_user_message()
             run.error_seen = True
-            yield {
-                "event": "error",
-                "data": chat_error_payload(EmptyReplyError(text, stopped_on_length=stopped_on_length)),
-            }
+            err = EmptyReplyError(policy["empty_error_text"], stopped_on_length=policy["stopped_on_length"])
+            yield {"event": "error", "data": chat_error_payload(err)}
             return
 
         # Concatenate chunks into a master WAV in a worker thread.
-        total_audio_url = await self._concat_audio_chunks(audio_chunks)
+        total_audio_url = await self._concat_audio_chunks(audio_chunks) if policy["concat_audio"] else ""
 
         total_latency = int((time.perf_counter() - t_start) * 1000)
         ttft_ms = run.ttft_ms if run.ttft_ms != 0.0 else float(total_latency)
@@ -1099,26 +1061,24 @@ class StreamCoordinator:
         final_tts_params = self._build_final_tts_params(parser, self.ai_adaptive_voice)
 
         # Emit final done event
-        yield {
-            "event": "done",
-            "data": {
-                "truncated": bool((cancel_event and cancel_event.is_set()) or not has_meaningful_content or parser.lines_truncated),
-                "chinese": full_chinese,
-                "japanese": full_japanese,
-                "lines": final_lines,
-                "reply_format": parser.line_scanner.format,
-                "emotion": final_emotion,
-                "affection": affection_res,
-                "metrics": metric_record,
-                "audio_url": total_audio_url,
-                "total_audio_url": total_audio_url,
-                "chunks": clean_chunks,
-                "latency_ms": total_latency,
-                "tts_params": final_tts_params,
-                **({"message_id": self.persisted_message_id} if self.persisted_message_id is not None else {}),
-                "telemetry": run.profiler.to_dict(),
-            }
-        }
+        yield build_completion_done_event(
+            full_chinese=full_chinese,
+            full_japanese=full_japanese,
+            final_lines=final_lines,
+            reply_format=parser.line_scanner.format,
+            final_emotion=final_emotion,
+            affection=affection_res,
+            metrics=metric_record,
+            total_audio_url=total_audio_url,
+            chunks=clean_chunks,
+            latency_ms=total_latency,
+            tts_params=final_tts_params,
+            persisted_message_id=self.persisted_message_id,
+            telemetry=run.profiler.to_dict(),
+            cancel_flagged=bool(cancel_event and cancel_event.is_set()),
+            has_meaningful_content=has_meaningful_content,
+            lines_truncated=lines_truncated,
+        )
 
     async def _teardown(self, run: _StreamRun) -> None:
         """Finally-block teardown: cancels scheduled generation, reaps background tasks, ensures DB persistence."""
@@ -1157,26 +1117,28 @@ class StreamCoordinator:
 
         # If the stream exited abruptly (e.g. client disconnect / GeneratorExit)
         # without having persisted the assistant message:
-        if not self.persisted_assistant and self.user_msg is not None:
-            partial_ch = run.final_result.get("chinese") or run.parser.chinese_extracted
-            partial_ja = run.final_result.get("japanese") or run.parser.japanese_extracted
-            disconnect_snap = compute_disconnect_snapshot(
-                announced_lines=run.announced_lines,
-                line_audio_states=run.line_audio_states,
-                partial_chinese=partial_ch,
-                partial_japanese=partial_ja,
-                message_persisted=self.persisted_assistant,
-                persisted_lines=getattr(run, "persisted_lines", None),
+        final_result = getattr(run, "final_result", None) or {}
+        parser = getattr(run, "parser", None)
+        partial_ch = final_result.get("chinese") or getattr(parser, "chinese_extracted", "")
+        partial_ja = final_result.get("japanese") or getattr(parser, "japanese_extracted", "")
+        teardown_policy = decide_teardown_policy(
+            announced_lines=getattr(run, "announced_lines", ()),
+            line_audio_states=getattr(run, "line_audio_states", {}),
+            partial_chinese=partial_ch,
+            partial_japanese=partial_ja,
+            persisted_assistant=self.persisted_assistant,
+            has_user_message=self.user_msg is not None,
+            persisted_lines=getattr(run, "persisted_lines", None),
+        )
+        if teardown_policy["db_action"] == "persist_partial":
+            await self._persist_partial_message(
+                teardown_policy["content_chinese"],
+                teardown_policy["content_japanese"],
+                run.t_start,
+                lines=teardown_policy["lines"],
             )
-            if disconnect_snap["should_persist"]:
-                await self._persist_partial_message(
-                    partial_ch,
-                    partial_ja,
-                    run.t_start,
-                    lines=disconnect_snap["snapshot_lines"],
-                )
-            else:
-                await self._prune_orphaned_user_message()
+        elif teardown_policy["db_action"] == "prune_user":
+            await self._prune_orphaned_user_message()
 
         run.profiler.print_waterfall()
 
