@@ -1,16 +1,53 @@
+// @ts-check
 // 会话状态管理 + localStorage 持久化（含会话级设置与全局设置）
 import { normalizeSnapshot, portableSnapshot } from './session_data.js';
+
+/**
+ * @typedef {import('./session_data.js').DialogueLine} DialogueLine
+ * @typedef {import('./session_data.js').ChatMessage} ChatMessage
+ * @typedef {import('./session_data.js').SessionSettings} SessionSettings
+ * @typedef {import('./session_data.js').GlobalSettings} GlobalSettings
+ * @typedef {import('./session_data.js').ChatSession} ChatSession
+ * @typedef {import('./session_data.js').PortableChatSnapshot} PortableChatSnapshot
+ */
+
+/**
+ * @typedef {object} StorageStatus
+ * @property {boolean} ok
+ * @property {string} message
+ * @property {boolean} damaged
+ */
+
+/**
+ * @typedef {object} AppState
+ * @property {ChatSession[]} sessions
+ * @property {string | null} activeId
+ * @property {GlobalSettings} global
+ */
+
 const STORAGE_KEY = 'gal2voice.chat.v1';
 const BACKUP_KEY = `${STORAGE_KEY}.backup`;
 const LEGACY_KEYS = ['inkwell.chat.v2', 'inkwell.chat.v1'];
+/** @type {Set<(status: StorageStatus) => void>} */
 const listeners = new Set();
+/** @type {string | null} */
 let damagedRaw = null;
+/** @type {string | null} */
 let lastStoredRaw = null;
 let skipBackupOnce = false;
 let storageStatus = { ok: true, message: '' };
 
+/** @returns {StorageStatus} */
 export function getStorageStatus() { return { ...storageStatus, damaged: damagedRaw !== null }; }
+/**
+ * @param {(status: StorageStatus) => void} listener
+ * @returns {() => boolean}
+ */
 export function onStorageStatus(listener) { listeners.add(listener); return () => listeners.delete(listener); }
+/**
+ * @param {boolean} ok
+ * @param {string} [message]
+ */
 function reportStorage(ok, message = '') {
   if (storageStatus.ok === ok && storageStatus.message === message) return;
   storageStatus = { ok, message };
@@ -19,9 +56,12 @@ function reportStorage(ok, message = '') {
   }
 }
 
+/** @returns {string | null} */
 export function getDamagedSessionData() { return damagedRaw; }
+/** @returns {PortableChatSnapshot} */
 const snapshot = () => ({ sessions: state.sessions, activeId: state.activeId, global: state.global });
 
+/** @type {SessionSettings} */
 export const DEFAULT_SESSION_SETTINGS = {
   systemPrompt: '',
   voiceProfileId: null,
@@ -55,11 +95,13 @@ export const DEFAULT_SESSION_SETTINGS = {
 
 // A browser that already saved voiceMode keeps its choice; only new browsers
 // start with voice on, since the ADV stage is built around voiced lines.
+/** @type {GlobalSettings} */
 export const DEFAULT_GLOBAL = {
   voiceMode: true,
   ttsPreset: '',
 };
 
+/** @type {AppState} */
 export const state = {
   sessions: [],
   activeId: null,
@@ -79,6 +121,11 @@ export const LEGACY_GREETINGS = [
   '你好，我是 **Gal2Voice**。\n\n支持语音输入与朗读回复：点输入框旁的麦克风说话会自动转成文字，点顶栏喇叭可以朗读我的回复。右上角`会话设置`可绑定角色音色并配置人设与采样参数，侧边栏底部齿轮可切换对话模型。\n\n每个会话的上下文互相独立，切换回来时记录原样保留。',
 ];
 
+/**
+ * @template {ChatSession | null | undefined} T
+ * @param {T} session
+ * @returns {T}
+ */
 export function refreshLegacyGreeting(session) {
   if (!session || !Array.isArray(session.messages) || session.messages.length === 0) return session;
   const firstAssistant = session.messages.find((m) => m && m.role === 'assistant');
@@ -88,6 +135,10 @@ export function refreshLegacyGreeting(session) {
   return session;
 }
 
+/**
+ * @param {string} [prefix]
+ * @returns {string}
+ */
 export function uid(prefix = 'id') {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -95,6 +146,7 @@ export function uid(prefix = 'id') {
 const now = () => Date.now();
 
 // 只表示另一网页写过 gal2voice.chat.v1。原记录损坏或这次写入失败都不是这个情况。
+/** @returns {boolean} */
 export function storageChangedByAnotherPage() {
   try {
     return localStorage.getItem(STORAGE_KEY) !== lastStoredRaw;
@@ -103,6 +155,7 @@ export function storageChangedByAnotherPage() {
   }
 }
 
+/** @returns {boolean} */
 export function saveState() {
   if (damagedRaw !== null) {
     reportStorage(false, '原会话记录无法读取，已保留原内容。请在「设置中心 → 备份与更新」导出原始记录，再恢复本地保存。');
@@ -128,6 +181,7 @@ export function saveState() {
           .filter((s) => s && s.id !== state.activeId && Array.isArray(s.messages) && s.messages.length > 0 &&
             !s.messages.some((m) => m && m.role === 'user' && m.failed))
           .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
+        /** @type {Array<{ session: ChatSession, messages: ChatMessage[], lastLine: string | undefined }>} */
         const evicted = [];
         let saved = false;
         for (const s of inactive) {
@@ -175,11 +229,16 @@ export function saveState() {
   }
 }
 
+/**
+ * @param {Omit<ChatSession, 'settings'> & { settings?: Partial<SessionSettings> }} session
+ * @returns {ChatSession}
+ */
 function ensureSettings(session) {
   session.settings = { ...DEFAULT_SESSION_SETTINGS, ...(session.settings || {}) };
-  return session;
+  return /** @type {ChatSession} */ (session);
 }
 
+/** @returns {ChatSession} */
 export function makeStarterSession() {
   const s = ensureSettings({
     id: uid('s'),
@@ -194,6 +253,7 @@ export function makeStarterSession() {
   return s;
 }
 
+/** @returns {void} */
 export function loadState() {
   state.sessions = [];
   state.activeId = null;
@@ -225,6 +285,7 @@ export function loadState() {
   saveState();
 }
 
+/** @returns {string} */
 export function exportSessionData() {
   return JSON.stringify({ format: 'galgame2voice.chat', version: 1, exportedAt: new Date().toISOString(),
     ...portableSnapshot(normalizeSnapshot(snapshot(), DEFAULT_SESSION_SETTINGS, DEFAULT_GLOBAL)) }, null, 2);
@@ -233,6 +294,10 @@ export function exportSessionData() {
 // Ids come from the raw text of the chosen file (before parsing fills in missing times) plus the
 // session's position, so retrying the same file sends the same ids and the server's "session
 // exists" check (409) stops a second copy. A different file never reuses an id.
+/**
+ * @param {string} text
+ * @returns {string}
+ */
 function importFileKey(text) {
   let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
   for (let i = 0; i < text.length; i++) {
@@ -245,6 +310,10 @@ function importFileKey(text) {
   return [h2, h1].map(h => (h >>> 0).toString(16).padStart(8, '0')).join('');
 }
 
+/**
+ * @param {string} raw
+ * @returns {PortableChatSnapshot}
+ */
 export function prepareSessionImport(raw) {
   let parsed;
   try { parsed = JSON.parse(raw); } catch { throw new Error('无法读取 JSON，请选择之前导出的聊天备份文件。'); }
@@ -263,6 +332,10 @@ export function prepareSessionImport(raw) {
   return incoming;
 }
 
+/**
+ * @param {PortableChatSnapshot} incoming
+ * @returns {{ count: number, saved: boolean }}
+ */
 export function applySessionImport(incoming) {
   state.sessions.unshift(...incoming.sessions);
   state.activeId = incoming.sessions[0].id;
@@ -270,6 +343,7 @@ export function applySessionImport(incoming) {
   return { count: incoming.sessions.length, saved };
 }
 
+/** @returns {boolean} */
 export function resumeLocalSaving() {
   if (damagedRaw !== null) {
     try {
@@ -283,6 +357,10 @@ export function resumeLocalSaving() {
   return saveState();
 }
 
+/**
+ * @param {string} [title]
+ * @returns {ChatSession}
+ */
 export function createSession(title = '新对话') {
   const s = ensureSettings({
     id: uid('s'),
@@ -297,6 +375,10 @@ export function createSession(title = '新对话') {
   return s;
 }
 
+/**
+ * @param {string} id
+ * @returns {void}
+ */
 export function deleteSession(id) {
   state.sessions = state.sessions.filter((s) => s.id !== id);
   if (state.activeId === id) state.activeId = state.sessions[0]?.id ?? null;
@@ -304,6 +386,7 @@ export function deleteSession(id) {
   saveState();
 }
 
+/** @returns {ChatSession | null} */
 export function getActive() {
   if (!state.sessions.length) makeStarterSession();
   let s = state.sessions.find((sess) => sess.id === state.activeId);
@@ -314,16 +397,28 @@ export function getActive() {
   return refreshLegacyGreeting(s);
 }
 
+/**
+ * @param {string | null | undefined} id
+ * @returns {ChatSession | null}
+ */
 export function getSession(id) {
   const s = state.sessions.find((s) => s.id === id) ?? null;
   return refreshLegacyGreeting(s);
 }
 
+/**
+ * @param {Partial<GlobalSettings>} patch
+ * @returns {void}
+ */
 export function saveGlobal(patch) {
   state.global = { ...state.global, ...patch };
   saveState();
 }
 
+/**
+ * @param {ChatSession | null | undefined} session
+ * @returns {boolean}
+ */
 export function autoTitle(session) {
   if (!session || (session.title && session.title !== '新对话' && session.title !== '开始 · Gal2Voice 使用指南')) return false;
   const firstUser = session.messages.find((m) => m.role === 'user');
@@ -334,6 +429,12 @@ export function autoTitle(session) {
   return true;
 }
 
+/**
+ * @param {ChatMessage['role']} role
+ * @param {string} content
+ * @param {string | null} [sessionId]
+ * @returns {ChatMessage | null}
+ */
 export function addMessage(role, content, sessionId = state.activeId) {
   const s = getSession(sessionId);
   if (!s) return null;
