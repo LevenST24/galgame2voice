@@ -1,5 +1,6 @@
 """Requested identities cannot silently become another character or provider."""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -109,19 +110,13 @@ async def test_existing_provider_can_be_selected_without_changing_the_global_act
 
 
 @pytest.mark.parametrize("kind", ["voice", "provider"])
-@pytest.mark.parametrize("streaming", [False, True])
-async def test_rejected_selection_does_not_generate_or_process_memory(selected, kind, streaming):
+async def test_rejected_selection_does_not_generate_or_process_memory(selected, kind):
     options = {"voice_profile_id": 99999} if kind == "voice" else {"provider_id": "synthetic-missing"}
     expected = "VOICE_PROFILE_NOT_FOUND" if kind == "voice" else "PROVIDER_NOT_FOUND"
-    if streaming:
-        events = [event async for event in selected.service.stream_chat("Synthetic question", session_id="rejected", **options)]
-        assert [event["event"] for event in events] == ["error"]
-        assert events[0]["data"]["error_code"] == expected
-        assert events[0]["data"]["status_code"] == 404
-    else:
-        with pytest.raises(ValueError) as error:
-            await selected.service.chat_sync("Synthetic question", session_id="rejected", **options)
-        assert getattr(error.value, "error_code", None) == expected
+    events = [event async for event in selected.service.stream_chat("Synthetic question", session_id="rejected", **options)]
+    assert [event["event"] for event in events] == ["error"]
+    assert events[0]["data"]["error_code"] == expected
+    assert events[0]["data"]["status_code"] == 404
     await selected.service.aclose()
     selected.factory.assert_not_called()
     selected.service._extract_memory_safe.assert_not_awaited()
@@ -135,12 +130,21 @@ async def test_rejected_selection_does_not_generate_or_process_memory(selected, 
     ({"provider_id": "synthetic-missing"}, "PROVIDER_NOT_FOUND"),
     ({"character_name": "Synthetic missing"}, "VOICE_PROFILE_NOT_FOUND"),
 ])
-async def test_sync_http_errors_explain_the_relevant_settings_page(selected, monkeypatch, body, code):
+async def test_stream_http_errors_explain_the_relevant_settings_page(selected, monkeypatch, body, code):
     monkeypatch.setattr(chat, "get_chat_service", lambda: selected.service)
     app = FastAPI()
     app.include_router(chat.router)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
-        response = await client.post("/api/chat", json={"prompt": "synthetic", "session_id": "http-rejected", **body})
-    assert response.status_code == 404, response.text
-    assert response.json()["detail"]["error_code"] == code
+        response = await client.post("/api/chat/stream", json={"prompt": "synthetic", "session_id": "http-rejected", **body})
+    assert response.status_code == 200, response.text
+    error_payloads = [
+        json.loads(line.split("data:", 1)[1].strip())
+        for block in response.text.split("\n\n")
+        if "event: error" in block
+        for line in block.splitlines()
+        if line.startswith("data:")
+    ]
+    assert len(error_payloads) == 1, response.text
+    assert error_payloads[0]["status_code"] == 404
+    assert error_payloads[0]["error_code"] == code
     selected.factory.assert_not_called()

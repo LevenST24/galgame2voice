@@ -33,7 +33,7 @@ def line(act):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["sync", "stream"])
+@pytest.mark.parametrize("mode", ["stream"])
 @pytest.mark.parametrize("case", ["within_reply", "across_turns", "no_stored_pose", "unavailable_stored_pose"])
 async def test_reply_carries_pose(tmp_path, monkeypatch, mode, case):
     database = tmp_path / "pose.db"
@@ -54,7 +54,6 @@ async def test_reply_carries_pose(tmp_path, monkeypatch, mode, case):
                 else [{}, {"face": "a-only"}])
     raw = json.dumps({"lines": [line(act) for act in acts]}, ensure_ascii=False)
     module = importlib.import_module({
-        "sync": "galgame2voice.services.chat_service",
         "stream": "galgame2voice.services.chat_pipelines.stream_coordinator",
     }[mode])
     lookup = AsyncMock(wraps=get_recent_pose)
@@ -88,14 +87,10 @@ async def test_reply_carries_pose(tmp_path, monkeypatch, mode, case):
     context = BuiltContext([], menu=MENU)
     monkeypatch.setattr("galgame2voice.services.chat_service.build_chat_context", AsyncMock(return_value=context))
     try:
-        if mode == "sync":
-            result = await service.chat_sync("问题", session_id=session_id, reply_format="lines")
-            assert [item["act"] for item in result["lines"]] == expected
-        else:
-            events = [event async for event in service.stream_chat("问题", session_id=session_id, reply_format="lines")]
-            assert events[-1]["event"] == "done"
-            result = events[-1]["data"]
-            assert [event["data"]["act"] for event in events if event["event"] == "line"] == expected
+        events = [event async for event in service.stream_chat("问题", session_id=session_id, reply_format="lines")]
+        assert events[-1]["event"] == "done"
+        result = events[-1]["data"]
+        assert [event["data"]["act"] for event in events if event["event"] == "line"] == expected
 
         lookup.assert_awaited_once()
         # Also check the explicit None contract: fallback alone already worked before R11.

@@ -12,8 +12,8 @@ Comprehensive Tier 5 Test Matrix:
    - Early client disconnect & cancellation resilience under load
    - Adversarial bilingual chunk fuzzing (1-char tokens, markdown fences, unescaped unicode, malformed JSON, plain-text fallback)
    - SSE formatter error and cancellation handling
-3. Concurrent Web API + Telegram Bot Load Interleaving:
-   - Simultaneous burst: Web SSE streams + Telegram text chat + Telegram voice note STT
+3. Concurrent Web SSE Streaming + Direct TTS Load Interleaving:
+   - Simultaneous burst: Web SSE streams + direct TTS synthesis requests
    - Shared VoiceManager inference mutex contention under simultaneous Web and Telegram TTS
    - End-to-end Telegram voice note STT-to-TTS pipeline under error conditions
    - Session namespace isolation across web, telegram, and api channels
@@ -300,8 +300,9 @@ class TestFullLifecycleCrossModuleE2E:
 
         with patch("galgame2voice.services.chat_service.get_llm_adapter", return_value=mock_adapter):
             # Turn 1 with default profile
-            res1 = await chat_service.chat_sync("Hello 1", session_id="switch_session")
-            assert res1["chinese"] == "我是第一位角色。"
+            events1 = [e async for e in chat_service.stream_chat("Hello 1", session_id="switch_session")]
+            done1 = next(e for e in events1 if e["event"] == "done")
+            assert done1["data"]["chinese"] == "我是第一位角色。"
             assert m7_mock_gpt.current_gpt_weights != "weights/ayase.ckpt"
 
             # Switch to Ayase mid-dialogue
@@ -311,8 +312,9 @@ class TestFullLifecycleCrossModuleE2E:
 
             # Turn 2 with Ayase active
             mock_adapter.custom_tokens = ['{"chinese": "我是绫濑！", "japanese": "あやせですよ！"}']
-            res2 = await chat_service.chat_sync("Hello 2", session_id="switch_session")
-            assert res2["chinese"] == "我是绫濑！"
+            events2 = [e async for e in chat_service.stream_chat("Hello 2", session_id="switch_session")]
+            done2 = next(e for e in events2 if e["event"] == "done")
+            assert done2["data"]["chinese"] == "我是绫濑！"
 
         # Verify Session Manager has both turns intact (2 turns = 4 messages)
         history = await chat_service.session_manager.get_history("switch_session")
@@ -442,8 +444,9 @@ class TestMultiTurnSseStreamingStress:
             '{"chinese": "正常测试", "japanese": "正常テスト"}'
         ])
         with patch("galgame2voice.services.chat_service.get_llm_adapter", return_value=normal_adapter):
-            res = await chat_service.chat_sync("Normal after cancel", session_id="post_cancel_session")
-            assert res["chinese"] == "正常测试"
+            events = [e async for e in chat_service.stream_chat("Normal after cancel", session_id="post_cancel_session")]
+            done = next(e for e in events if e["event"] == "done")
+            assert done["data"]["chinese"] == "正常测试"
 
     def test_adversarial_bilingual_chunk_fuzzing(self):
         """
@@ -543,13 +546,69 @@ class TestMultiTurnSseStreamingStress:
 
 
 # ============================================================================
-# 3. Concurrent Load & Namespace Isolation Tests
+# 3. Concurrent Web SSE Streaming + Direct TTS Load Interleaving Tests
 # ============================================================================
 
-class TestConcurrentWebAndTelegramLoad:
+class TestConcurrentWebAndDirectTtsLoad:
     """
-    Stress tests for shared backend resources and channel namespace isolation.
+    Stress tests combining concurrent Web Chat SSE streaming with direct TTS
+    synthesis sharing the same backend resources.
     """
+
+    @pytest.mark.asyncio
+    async def test_simultaneous_web_sse_and_direct_tts_load(self, m7_db_path, m7_mock_gpt):
+        """
+        Interleaved concurrent load:
+        - 5 Web SSE streaming clients
+        - 5 direct TtsService.synthesize requests
+        All sharing the same SQLite DB, GptSovitsClient, and VoiceManager.
+        """
+        voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
+        tts_service = voice_manager.tts_service
+        chat_service = ChatService(tts_service=tts_service, db_path=m7_db_path)
+
+        mock_adapter = CustomMockLLMAdapter(provider_config={}, custom_tokens=[
+            '{"chinese": "并发测试通过！", "japanese": "並行テスト完了！"}'
+        ])
+
+        # 1. Web Client Task
+        async def web_client_task(i: int):
+            events = []
+            async for event in chat_service.stream_chat(
+                prompt=f"Web user {i}",
+                session_id=f"web_load_{i}",
+            ):
+                events.append(event)
+            return ("web", i, len(events))
+
+        # 2. Direct TTS synthesis task sharing the same backend resources
+        async def direct_tts_task(i: int):
+            audio_bytes = await tts_service.synthesize(
+                text=f"並行合成テスト{i}番です。",
+                options={"speed": 1.0, "top_k": 15},
+            )
+            return ("direct_tts", i, len(audio_bytes))
+
+        # Launch concurrent tasks
+        with patch("galgame2voice.services.chat_service.get_llm_adapter", return_value=mock_adapter):
+            tasks = []
+            for i in range(5):
+                tasks.append(web_client_task(i))
+                tasks.append(direct_tts_task(i))
+
+            results = await asyncio.gather(*tasks)
+
+        assert len(results) == 10
+        web_results = [r for r in results if r[0] == "web"]
+        tts_results = [r for r in results if r[0] == "direct_tts"]
+
+        assert len(web_results) == 5
+        assert len(tts_results) == 5
+
+        for _, _, count in web_results:
+            assert count >= 2  # At least text + done
+        for _, _, byte_len in tts_results:
+            assert byte_len > 100
 
     @pytest.mark.asyncio
     async def test_shared_voice_manager_tts_lock_contention(self, m7_db_path, m7_mock_gpt):
@@ -560,7 +619,7 @@ class TestConcurrentWebAndTelegramLoad:
         voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
 
         async def synth_task(idx: int):
-            return await voice_manager.synthesize(
+            return await voice_manager.tts_service.synthesize(
                 text=f"同時合成テスト{idx}番です。",
                 options={"speed": 1.0, "top_k": 15}
             )

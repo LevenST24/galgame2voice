@@ -24,7 +24,7 @@ from galgame2voice.adapters.llm.openai_adapter import OpenAICompatibleLLMAdapter
 from galgame2voice.adapters.registry import get_llm_adapter, list_provider_presets
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
-from galgame2voice.database.session import get_db, init_db
+from galgame2voice.database.session import get_db
 from galgame2voice.main import create_app
 from galgame2voice.services.gpt_sovits_client import (
     GptSovitsClient,
@@ -365,37 +365,6 @@ class TestVoiceProfileExtremeParameters:
         assert resolved["speed"] == TTS_PRESETS["balanced"]["speed"]
         assert resolved["top_k"] == TTS_PRESETS["balanced"]["top_k"]
         assert resolved["temperature"] == TTS_PRESETS["balanced"]["temperature"]
-
-    @pytest.mark.asyncio
-    async def test_synthesize_endpoint_with_extreme_parameters(self, configured_voice):
-        """Verifies /api/voice/synthesize accepts and forwards extreme parameters correctly."""
-        await init_db()
-        app = create_app()
-        transport = ASGITransport(app=app)
-
-        with patch("galgame2voice.services.voice_manager.VoiceManager.synthesize", new_callable=AsyncMock) as mock_synth:
-            mock_synth.return_value = b"RIFFmockwavdata"
-            async with AsyncClient(transport=transport, base_url="http://test") as client:
-                resp = await client.post("/api/voice/synthesize", json={
-                    "text": "こんにちは、テストです。",
-                    "speed": 0.1,
-                    "temperature": 2.0,
-                    "top_k": 100,
-                    "top_p": 0.05,
-                    "preset": "low_latency",
-                })
-                assert resp.status_code == 200
-                assert resp.content == b"RIFFmockwavdata"
-
-                # Verify passed options to synthesize
-                assert mock_synth.called
-                called_args, called_kwargs = mock_synth.call_args
-                passed_options = called_kwargs.get("options", {})
-                assert passed_options["speed"] == 0.1
-                assert passed_options["temperature"] == 2.0
-                assert passed_options["top_k"] == 100
-                assert passed_options["top_p"] == 0.05
-                assert passed_options["preset"] == "low_latency"
 
     def test_japanese_parentheses_cleaning_extreme_cases(self):
         """Stress-tests Japanese stage direction cleaner against deeply nested and corrupt brackets."""

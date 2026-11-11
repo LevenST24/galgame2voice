@@ -143,7 +143,7 @@ class TestTier1FeatureCoverage:
         app = create_app()
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/api/chat", json={"prompt": "   ", "session_id": "test_s"})
+            resp = await client.post("/api/chat/stream", json={"prompt": "   ", "session_id": "test_s"})
             assert resp.status_code == 422
 
     # --- F3: System Diagnostics & Health Telemetry ---

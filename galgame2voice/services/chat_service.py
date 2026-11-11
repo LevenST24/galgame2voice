@@ -27,7 +27,6 @@ from anyio import CancelScope
 from galgame2voice.adapters.base import ChatMessage, BaseLLMAdapter, configured_reasoning_effort
 from galgame2voice.adapters.registry import get_llm_adapter, get_provider_preset
 from galgame2voice.database import crud
-from galgame2voice.database.commit_hooks import after_commit
 from galgame2voice.database.models import MessageCreate
 from galgame2voice.database.session import get_database_path, get_db, immediate_transaction
 from galgame2voice.services.tts_service import TtsService
@@ -42,11 +41,6 @@ from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.sse import format_sse_frame
 from galgame2voice.utils.text_splitter import split_japanese_sentences
 from galgame2voice.utils.error_diagnostics import (
-    CONTENT_FILTER_FINISH_REASONS,
-    EMPTY_REPLY_CONTENT_FILTERED,
-    EMPTY_REPLY_DEFAULT,
-    EMPTY_REPLY_STOPPED_ON_LENGTH,
-    EmptyReplyError,
     ConfigurationSelectionError,
     chat_error_payload,
 )
@@ -70,11 +64,9 @@ from galgame2voice.services.chat_pipelines import (
     StreamCoordinator,
     SseKeepAlive,
 )
-from galgame2voice.services.chat_pipelines.acting_menu import get_recent_pose, sanitize_act
 from galgame2voice.services.chat_pipelines.context_builder import build_chat_context
-from galgame2voice.services.chat_pipelines.line_builder import build_lines
-from galgame2voice.services.chat_pipelines.turn_persistence import TurnUnavailableError, require_user_turn
-from galgame2voice.services.chat_pipelines.turn_ownership import serialize_stream_turn, serialize_sync_turn
+from galgame2voice.services.chat_pipelines.turn_persistence import TurnUnavailableError
+from galgame2voice.services.chat_pipelines.turn_ownership import serialize_stream_turn
 from galgame2voice.utils.audio_concat import concat_wav_files
 
 logger = logging.getLogger("galgame2voice.services.chat_service")
@@ -186,49 +178,6 @@ class ChatService:
             reply_format=reply_format,
         )
         return adapter, model_name, actual_provider_id, messages
-
-    @staticmethod
-    def _format_sync_response(
-        session_id: str,
-        chinese: str,
-        japanese: str,
-        emotion: str,
-        affection_res: dict[str, Any],
-        metric_record: Any,
-        audio_url: str,
-        latency_ms: int,
-        parser: Any,
-        adaptive_enabled: bool,
-        lines: list[dict[str, Any]] | None = None,
-        truncated: bool = False,
-    ) -> dict[str, Any]:
-        """Formats standard response dictionary for chat_sync."""
-        final_tts_params = {
-            "speed": parser.tts_speed,
-            "temperature": parser.tts_temperature,
-            "emotion": parser.tts_emotion,
-            "adaptive_enabled": bool(adaptive_enabled),
-        } if (parser.tts_speed is not None or parser.tts_temperature is not None or parser.tts_emotion is not None) else None
-
-        return {
-            "session_id": session_id,
-            "chinese": chinese,
-            "japanese": japanese,
-            "lines": lines,
-            "emotion": emotion,
-            "affection": affection_res,
-            "metrics": metric_record,
-            "audio_url": audio_url,
-            "audioUrl": audio_url,
-            "latency_ms": latency_ms,
-            "tts_params": final_tts_params,
-            "truncated": truncated,
-        }
-
-    @staticmethod
-    def _affection_fallback(emotion: str) -> dict[str, Any]:
-        """Neutral affection payload used when the affection update fails."""
-        return AffectionService.get_fallback_payload(emotion)
 
     async def _get_active_llm_adapter(self, conn: aiosqlite.Connection | None = None, provider_id: str | None = None) -> tuple[BaseLLMAdapter, str, str]:
         """
@@ -417,7 +366,7 @@ class ChatService:
         profile_id = active_prof.id if active_prof else None
         return sess_obj, user_msg, active_prof, user_id, profile_id
 
-    async def _prune_orphaned_user_message(self, user_msg_id: int | None, context_label: str = "") -> None:
+    async def _prune_orphaned_user_message(self, user_msg_id: int | None) -> None:
         """Prunes orphaned user message when downstream processing fails before assistant reply persistence."""
         if not user_msg_id:
             return
@@ -426,91 +375,7 @@ class ChatService:
                 async with immediate_transaction(conn):
                     await crud.delete_message(conn, user_msg_id)
         except Exception as prune_err:
-            logger.warning(
-                "Failed to prune orphaned user message %s%s: %s",
-                user_msg_id,
-                f" in {context_label}" if context_label else "",
-                prune_err,
-            )
-
-    async def _execute_sync_llm(
-        self,
-        adapter: BaseLLMAdapter,
-        messages: list[ChatMessage],
-        model_name: str,
-        temperature: float | None = None,
-        top_p: float | None = None,
-        max_tokens: int | None = None,
-        frequency_penalty: float | None = None,
-        presence_penalty: float | None = None,
-        reasoning_effort: str | None = None,
-    ) -> tuple[str, float]:
-        """Invokes LLM chat non-streaming and returns (completion_text, ttft_ms)."""
-        t_llm_start = time.perf_counter()
-        chat_kwargs: dict[str, Any] = {"model": model_name}
-        if temperature is not None:
-            chat_kwargs["temperature"] = temperature
-        if top_p is not None:
-            chat_kwargs["top_p"] = top_p
-        if max_tokens is not None:
-            chat_kwargs["max_tokens"] = max_tokens
-        if frequency_penalty is not None:
-            chat_kwargs["frequency_penalty"] = frequency_penalty
-        if presence_penalty is not None:
-            chat_kwargs["presence_penalty"] = presence_penalty
-        if reasoning_effort is None:
-            reasoning_effort = configured_reasoning_effort(adapter)
-        if reasoning_effort is not None:
-            chat_kwargs["reasoning_effort"] = reasoning_effort
-        llm_response = await adapter.chat(messages, **chat_kwargs)
-        ttft_ms = (time.perf_counter() - t_llm_start) * 1000.0
-        return llm_response.content, ttft_ms
-
-    async def _synthesize_sync_audio(
-        self,
-        japanese: str,
-        parser: StreamingBilingualParser,
-        tts_options: dict[str, Any] | None,
-        ai_adaptive_voice: bool,
-        active_prof: Any | None,
-    ) -> tuple[str, float, int, int]:
-        """Synthesizes complete audio for sync chat response."""
-        audio_url = ""
-        tts_first_chunk_ms = 0.0
-        tts_cached_chunks = 0
-        tts_generated_chunks = 0
-        if japanese.strip():
-            try:
-                t_tts_start = time.perf_counter()
-                sync_opts = parser.get_dynamic_tts_options(
-                    base_options=tts_options,
-                    adaptive_enabled=bool(ai_adaptive_voice),
-                    sentence_text=japanese,
-                )
-                if active_prof:
-                    sync_opts.setdefault("voice_profile_id", active_prof.id)
-                    sync_opts.setdefault("character_name", active_prof.name)
-                user_split_method = (
-                    (tts_options or {}).get("text_split_method")
-                    or (tts_options or {}).get("cut_option")
-                    or (tts_options or {}).get("how_to_cut")
-                )
-                if not user_split_method:
-                    sync_opts["text_split_method"] = "cut0" if len(japanese.strip()) <= 80 else "cut2"
-                audio_url, _, _ = await self.tts_service.synthesize_to_file(
-                    japanese,
-                    options=sync_opts,
-                    filename_prefix="voice",
-                )
-                tts_first_chunk_ms = (time.perf_counter() - t_tts_start) * 1000.0
-                if "/audio/cache/" in str(audio_url):
-                    tts_cached_chunks = 1
-                else:
-                    tts_generated_chunks = 1
-            except Exception as e:
-                profile_name = getattr(active_prof, "name", "unknown") if active_prof else "unknown"
-                logger.warning("TTS synthesis in chat_sync failed for profile '%s': %s", profile_name, e)
-        return audio_url, tts_first_chunk_ms, tts_cached_chunks, tts_generated_chunks
+            logger.warning("Failed to prune orphaned user message %s: %s", user_msg_id, prune_err)
 
     @serialize_stream_turn
     async def stream_chat(
@@ -712,217 +577,6 @@ class ChatService:
         ):
             yield format_sse_frame(event)
 
-    @serialize_sync_turn
-    async def chat_sync(
-        self,
-        prompt: str,
-        session_id: str = "default",
-        character_name: str | None = None,
-        provider_id: str | None = None,
-        tts_options: dict[str, Any] | None = None,
-        system_prompt: str | None = None,
-        temperature: float | None = None,
-        max_context: int | None = None,
-        top_p: float | None = None,
-        max_tokens: int | None = None,
-        frequency_penalty: float | None = None,
-        presence_penalty: float | None = None,
-        reasoning_effort: str | None = None,
-        ai_adaptive_voice: bool | None = None,
-        voice_profile_id: int | None = None,
-        reply_format: str = "old",
-        outfit: str | None = None,
-        _require_existing_session: bool = False,
-    ) -> dict[str, Any]:
-        """
-        Synchronous non-streaming bilingual completion and TTS synthesis.
-        """
-        adaptive_enabled = self._resolve_ai_adaptive_voice(ai_adaptive_voice, tts_options)
-
-        t_start = time.perf_counter()
-        user_msg = None
-        persisted_assistant = False
-
-        def mark_assistant_persisted() -> None:
-            nonlocal persisted_assistant
-            persisted_assistant = True
-
-        try:
-            async with get_db(self.db_path) as conn:
-                async with immediate_transaction(conn):
-                    (
-                        sess_obj,
-                        user_msg,
-                        active_prof,
-                        user_id,
-                        profile_id,
-                    ) = await self._init_turn_session_and_message(
-                        conn, session_id, prompt, voice_profile_id, tts_options, character_name,
-                        _require_existing_session,
-                    )
-                    await crud.get_or_create_character_affection(
-                        conn, user_id=user_id, character_id=profile_id or 1
-                    )
-
-                (
-                    adapter,
-                    model_name,
-                    actual_provider_id,
-                    messages,
-                ) = await self._resolve_adapter_and_messages(
-                    conn=conn,
-                    session_id=session_id,
-                    prompt=prompt,
-                    character_name=character_name,
-                    provider_id=provider_id,
-                    system_prompt=system_prompt,
-                    max_context=max_context,
-                    active_prof=active_prof,
-                    session=sess_obj,
-                    outfit=outfit,
-                    reply_format=reply_format,
-                )
-                # Configuration rejection must not process the prompt elsewhere.
-                self._spawn_background(
-                    self._extract_memory_safe(user_id, profile_id, prompt, user_msg.id)
-                )
-
-            current_pose = await get_recent_pose(self.db_path, session_id)
-            raw_text, ttft_ms = await self._execute_sync_llm(
-                reasoning_effort=reasoning_effort if reasoning_effort is not None else configured_reasoning_effort(adapter),
-                adapter=adapter,
-                messages=messages,
-                model_name=model_name,
-                temperature=temperature,
-                top_p=top_p,
-                max_tokens=max_tokens,
-                frequency_penalty=frequency_penalty,
-                presence_penalty=presence_penalty,
-            )
-
-            # Parse bilingual response
-            chinese, japanese, parser = StreamingBilingualParser.parse_full_text(raw_text)
-
-            has_content = bool(
-                chinese.strip()
-                or japanese.strip()
-                or (parser.line_scanner.format == "lines" and bool(parser.line_scanner.lines))
-            )
-            if not has_content:
-                last_finish = getattr(adapter, "last_finish_reason", None)
-                if last_finish in CONTENT_FILTER_FINISH_REASONS:
-                    msg = EMPTY_REPLY_CONTENT_FILTERED
-                    stopped_on_length = False
-                else:
-                    stopped_on_length = bool(
-                        getattr(parser, "lines_truncated", False)
-                        or last_finish in ("length", "MAX_TOKENS", "max_tokens")
-                    )
-                    msg = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
-                raise EmptyReplyError(msg, stopped_on_length=stopped_on_length)
-
-            final_emotion = classify_emotion(chinese, japanese, parser.emotion_extracted)
-            lines = (parser.normalized_lines(with_audio=True) if parser.line_scanner.format == "lines"
-                     else build_lines(chinese, japanese, final_emotion, with_audio=True))
-
-            # Sanitize each line's act against acting_menu
-            menu = getattr(messages, "menu", None)
-            char_label = character_name or (active_prof.name if active_prof else None) or "Character"
-            if lines:
-                for line in lines:
-                    line["act"] = sanitize_act(
-                        line.get("act"),
-                        menu=menu,
-                        line_index=line.get("index", 0),
-                        character=char_label,
-                        current_pose=current_pose,
-                    )
-                    if "pose" in line["act"]:
-                        current_pose = line["act"]["pose"]
-
-            # Synthesize full audio
-            audio_url, tts_first_chunk_ms, tts_cached_chunks, tts_generated_chunks = await self._synthesize_sync_audio(
-                japanese=japanese,
-                parser=parser,
-                tts_options=tts_options,
-                ai_adaptive_voice=adaptive_enabled,
-                active_prof=active_prof,
-            )
-
-            latency_ms = int((time.perf_counter() - t_start) * 1000)
-
-            # Token and Latency Telemetry
-            metric_record = await self.metrics_collector.record_chat_turn(
-                session_id=session_id,
-                channel="web",
-                provider_id=actual_provider_id,
-                model_name=model_name,
-                messages=messages,
-                chinese=chinese,
-                japanese=japanese,
-                ttft_ms=ttft_ms,
-                tts_first_chunk_ms=tts_first_chunk_ms,
-                total_latency_ms=float(latency_ms),
-                tts_cached_chunks=tts_cached_chunks,
-                tts_generated_chunks=tts_generated_chunks,
-            )
-
-            # Save assistant message to DB; an empty reply withdraws the user's message instead
-            if chinese.strip() or japanese.strip():
-                async with get_db(self.db_path) as conn:
-                    async with immediate_transaction(conn):
-                        await require_user_turn(conn, session_id, getattr(user_msg, "id", None))
-                        await crud.add_message(conn, MessageCreate(
-                            session_id=session_id,
-                            role="assistant",
-                            content_chinese=chinese,
-                            content_japanese=japanese,
-                            lines=lines,
-                            audio_url=audio_url,
-                            latency_ms=latency_ms,
-                            reply_to_message_id=getattr(user_msg, "id", None),
-                        ))
-                        after_commit(conn, mark_assistant_persisted)
-
-            # Only a saved turn earns affection: a withdrawn one can be sent again.
-            if persisted_assistant:
-                try:
-                    affection_res = await self.affection_service.handle_turn_affection(
-                        user_id=user_id,
-                        character_id=profile_id,
-                        user_text=prompt,
-                        assistant_text=chinese,
-                        explicit_emotion=final_emotion,
-                    )
-                    final_emotion = affection_res.get("emotion", final_emotion)
-                except Exception as aff_err:
-                    logger.warning("Affection update in chat_sync failed: %s", aff_err)
-                    affection_res = self._affection_fallback(final_emotion)
-            else:
-                affection_res = self._affection_fallback(final_emotion)
-
-            is_truncated = bool(
-                getattr(parser, "lines_truncated", False)
-                or getattr(adapter, "last_finish_reason", None) in ("length", "MAX_TOKENS", "max_tokens", *CONTENT_FILTER_FINISH_REASONS)
-            )
-
-            return self._format_sync_response(
-                session_id=session_id,
-                chinese=chinese,
-                japanese=japanese,
-                emotion=final_emotion,
-                affection_res=affection_res,
-                metric_record=metric_record,
-                audio_url=audio_url,
-                latency_ms=latency_ms,
-                parser=parser,
-                adaptive_enabled=adaptive_enabled,
-                lines=lines,
-                truncated=is_truncated,
-            )
-        finally:
-            if not persisted_assistant and user_msg is not None:
-                await self._prune_orphaned_user_message(getattr(user_msg, "id", None), context_label="chat_sync")
 
 
 __all__ = [

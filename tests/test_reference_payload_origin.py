@@ -204,41 +204,6 @@ def test_build_tts_payload_without_reference_audio_raises_chinese_guidance(optio
 
 
 @pytest.mark.asyncio
-async def test_ensure_voice_profile_available_without_profiles_raises_chinese_guidance(isolate_test_database):
-    from fastapi import HTTPException
-    from galgame2voice.database.session import init_db
-    from galgame2voice.routers.voice import _ensure_voice_profile_available
-    from galgame2voice.services.voice_manager import VoiceManager
-
-    await init_db()
-    manager = VoiceManager(GptSovitsClient(server=None), db_path=isolate_test_database)
-    with pytest.raises(HTTPException) as exc_info:
-        await _ensure_voice_profile_available(manager, {})
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.detail == "尚未安装角色包或配置音色，请在「设置中心 → 角色与会话」导入角色包或创建自定义音色后重试。"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("stream", [False, True])
-async def test_synthesize_endpoint_empty_voice_profiles_returns_chinese_guidance(monkeypatch, isolate_test_database, stream):
-    from fastapi import FastAPI
-    from galgame2voice.database.session import init_db
-    from galgame2voice.routers.voice import router as voice_router
-    from galgame2voice.services.voice_manager import VoiceManager
-
-    await init_db()
-    manager = VoiceManager(GptSovitsClient(server=None), db_path=isolate_test_database)
-    monkeypatch.setattr("galgame2voice.routers.voice.get_voice_manager", lambda: manager)
-    app = FastAPI()
-    app.include_router(voice_router)
-
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post("/api/voice/synthesize", json={"text": "你好", "stream": stream})
-    assert response.status_code == 400
-    assert response.json()["detail"] == "尚未安装角色包或配置音色，请在「设置中心 → 角色与会话」导入角色包或创建自定义音色后重试。"
-
-
-@pytest.mark.asyncio
 async def test_tts_stream_pipeline_chunk_synthesis_without_voice_returns_chinese_guidance(isolate_test_database):
     import re
     from galgame2voice.services.tts_service import TtsService

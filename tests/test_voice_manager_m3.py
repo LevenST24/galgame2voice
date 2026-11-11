@@ -356,24 +356,8 @@ class TestVoiceRouterEndpointsM3:
             assert switch_resp.json()["status"] == "switched"
             assert mock_gpt_sovits.current_gpt_weights == sample_voice_profile["gpt_weights_path"]
 
-            # 5. Synthesize Audio via API
-            synth_resp = await client.post("/api/voice/synthesize", json={
-                "text": "（微笑みながら）先生、おはようございます！",
-                "preset": "high_quality"
-            })
-            assert synth_resp.status_code == 200
-            assert synth_resp.headers["content-type"] == "audio/wav"
-            assert synth_resp.content.startswith(b"RIFF")
 
-            # 5b. Synthesize again to verify cache hit
-            synth_resp_2 = await client.post("/api/voice/synthesize", json={
-                "text": "（微笑みながら）先生、おはようございます！",
-                "preset": "high_quality"
-            })
-            assert synth_resp_2.status_code == 200
-            assert synth_resp_2.content == synth_resp.content
-
-            # 6. Delete Profile
+            # 5. Delete Profile
             del_resp = await client.delete(f"/api/voice/profiles/{profile_id}")
             assert del_resp.status_code == 200
             assert del_resp.json()["status"] == "deleted"
@@ -387,10 +371,6 @@ class TestVoiceRouterEndpointsM3:
         transport = ASGITransport(app=app)
 
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            # Empty text after cleaning
-            resp = await client.post("/api/voice/synthesize", json={"text": "（笑）（ため息）"})
-            assert resp.status_code == 422
-
             # Switch nonexistent profile
             resp_switch = await client.post("/api/voice/switch", json={"profile_id": 99999})
             assert resp_switch.status_code == 404

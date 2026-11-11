@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test, beforeEach, afterEach } from 'node:test';
-import { playAiVoice, playUserVoice, playSingleAudio, synthesizeAiVoice, stopCurrentVoice, getCurrentVoice, initAudioPlayerUi, toggleVoiceMode } from '../frontend/src/controllers/audio_player_ui.js';
+import { playAiVoice, playUserVoice, playSingleAudio, stopCurrentVoice, getCurrentVoice, initAudioPlayerUi, toggleVoiceMode } from '../frontend/src/controllers/audio_player_ui.js';
 import { streamAudioController } from '../frontend/src/audio_player.js';
 import { state, loadState } from '../frontend/src/store.js';
 import { clearMemAudioCache } from '../frontend/src/cache.js';
@@ -11,14 +11,14 @@ const blob = () => new Blob(['audio']);
 const control = () => ({ loading: false, playing: false, setLoading(v) { this.loading = v; }, setPlaying(v) { this.playing = v; }, setProgress() {} });
 const message = id => ({ id, role: 'assistant', japanese: 'こんにちは', audioUrls: [`/${id}.wav`] });
 const originals = { playChunks: streamAudioController.playChunks, interrupt: streamAudioController.interrupt };
-let played, synthesized;
+let played;
 beforeEach(() => {
   globalThis.document = { getElementById: () => null };
   globalThis.window = {};
   globalThis.localStorage = { getItem: () => null, setItem() {} };
-  played = []; synthesized = [];
+  played = [];
   streamAudioController.playChunks = async (chunks, ctl, id) => { played.push({ id, chunks }); };
-  globalThis.fetch = async (url, options) => { if (url.includes('synthesize')) synthesized.push(JSON.parse(options.body)); return new Response(blob()); };
+  globalThis.fetch = async () => new Response(blob());
   globalThis.Audio = class { async play() {} pause() {} };
   state.sessions = [{ id: 'first', settings: { voiceProfileId: 1 }, messages: [] }, { id: 'second', settings: { voiceProfileId: 2 }, messages: [] }];
   state.activeId = 'first';
@@ -58,41 +58,33 @@ test('transient network failures preserve URLs and never trigger synthesis', asy
   await playAiVoice(msg, control());
   assert.deepEqual(msg.audioUrls, ['/offline.wav']); assert.equal(requests, 1);
 });
-test('confirmed missing audio regenerates once, using the initiating voice', async () => {
-  globalThis.fetch = async (url, options) => {
-    if (url === '/expired.wav') return new Response('', { status: 404 });
-    synthesized.push(JSON.parse(options.body)); return new Response(blob());
-  };
-  const msg = message('expired'); await playAiVoice(msg, control());
-  assert.equal(synthesized.length, 1); assert.equal(synthesized[0].voice_profile_id, 1);
-  assert.deepEqual(msg.audioUrls, ['msg_expired']);
-});
-test('a deleted selected voice directs the user to session settings', async () => {
+const MISSING_AUDIO_GUIDANCE = '该条历史语音文件已过期或不存在，可在历史台词（LOG）中重新生成单句语音。';
+const captureToasts = () => {
   const toasts = [];
   const root = { querySelectorAll: () => [], appendChild: el => toasts.push(el) };
   globalThis.document = {
     getElementById: id => id === 'toastRoot' ? root : null,
     createElement: () => ({ dataset: {}, children: [], append(...children) { this.children.push(...children); },
-      addEventListener(_event, callback) { this.click = callback; }, remove() {}, classList: { add() {} } }),
+      addEventListener() {}, remove() {}, classList: { add() {} } }),
   };
-  let opened = false;
-  initAudioPlayerUi({}, { onOpenSessionSettings: () => { opened = true; }, onOpenEngineStatus: () => assert.fail('wrong action') });
-  globalThis.fetch = async () => Response.json({ detail: '所选音色已不存在，请在角色与会话中重新选择音色。' }, { status: 422 });
-  await synthesizeAiVoice({ id: 'missing', role: 'assistant', japanese: 'こんにちは' }, control());
-  const toast = toasts[0];
-  clearTimeout(toast._timer);
-  assert.match(toast.dataset.msg, /音色已不存在.*角色与会话/);
-  assert.doesNotMatch(toast.dataset.msg, /GPT-SoVITS/);
-  assert.equal(toast.children[1].textContent, '角色与会话');
-  toast.children[1].click({ stopPropagation() {} });
-  assert.equal(opened, true);
+  return toasts;
+};
+test('expired history audio shows regeneration guidance instead of synthesizing', async () => {
+  const toasts = captureToasts(); const requested = [];
+  globalThis.fetch = async url => { requested.push(url); return new Response('', { status: 404 }); };
+  const msg = message('expired'); const ctl = control(); ctl.setPlaying(true);
+  await playAiVoice(msg, ctl);
+  assert.deepEqual(requested, ['/expired.wav']); assert.deepEqual(msg.audioUrls, ['/expired.wav']);
+  assert.equal(ctl.playing, false); assert.equal(ctl.loading, false);
+  clearTimeout(toasts[0]._timer); assert.equal(toasts[0].dataset.msg, MISSING_AUDIO_GUIDANCE);
 });
-test('translation completing after cancellation cannot synthesize with the next character', async () => {
-  const gate = deferred(); initAudioPlayerUi({}, { resolveJapanese: () => gate.promise });
-  const pending = synthesizeAiVoice({ id: 'translate', role: 'assistant' }, control());
-  await tick(); stopCurrentVoice(); state.activeId = 'second';
-  gate.resolve('こんにちは'); await pending;
-  assert.equal(synthesized.length, 0); assert.equal(getCurrentVoice(), null);
+test('a message without stored audio shows regeneration guidance and makes no request', async () => {
+  const toasts = captureToasts(); let requests = 0;
+  globalThis.fetch = async () => { requests++; return new Response(blob()); };
+  const ctl = control(); ctl.setPlaying(true);
+  await playAiVoice({ id: 'no_urls', role: 'assistant', japanese: 'こんにちは', audioUrls: [] }, ctl);
+  assert.equal(requests, 0); assert.equal(ctl.playing, false);
+  clearTimeout(toasts[0]._timer); assert.equal(toasts[0].dataset.msg, MISSING_AUDIO_GUIDANCE);
 });
 test('cancelled user-recording cache reads cannot steal playback', async () => {
   const gate = deferred(); window.caches = globalThis.caches = { open: () => gate.promise };
