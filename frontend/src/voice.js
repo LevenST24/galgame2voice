@@ -1,4 +1,4 @@
-// 语音能力：麦克风录音（MediaRecorder）+ 语音转写（SpeechRecognition）+ 语音回复播放（SpeechSynthesis）
+// 语音能力：麦克风录音（MediaRecorder）+ 语音转写（SpeechRecognition）+ 音频内存缓存（BoundedAudioStore）
 let recog = null;
 let listening = false;
 let listenGen = 0;
@@ -183,10 +183,6 @@ function cleanupRecorder() {
   recorder = null;
 }
 
-/* ---------- AI 语音回复（浏览器 TTS 备用方案，可反复播放） ---------- */
-let currentUtter = null;
-let currentSession = null; // 会话令牌：stopSpeaking 后旧的 onend 不再续播
-
 /** 去掉 markdown 标记的纯文本（用于 TTS 合成与时长估算） */
 export function plainSpeechText(text) {
   return String(text)
@@ -195,94 +191,6 @@ export function plainSpeechText(text) {
     .replace(/[#*>|]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function plainForSpeech(text) {
-  return plainSpeechText(text).slice(0, 1200);
-}
-
-/** 估算语音条展示时长（秒） */
-export function estimateDuration(text) {
-  const n = plainForSpeech(text).replace(/\s/g, '').length;
-  return Math.min(300, Math.max(1, Math.round(n / 4)));
-}
-
-/**
- * 朗读文本；同一时间只允许一段语音
- * @returns {boolean} 是否成功启动
- */
-export function speakText(text, { onEnd } = {}) {
-  if (!('speechSynthesis' in window)) return false;
-  const plain = plainForSpeech(text);
-  if (!plain) return false;
-  window.speechSynthesis.cancel();
-  // 分句成 ≤100 字的块排队播放，规避 Chrome 长文本约 15 秒截断的已知问题
-  const parts = plain.match(/[^。！？；!?;\n]+[。！？；!?;\n]?/g) || [plain];
-  const queue = [];
-  let buf = '';
-  for (const p of parts) {
-    if ((buf + p).length > 100 && buf) {
-      queue.push(buf);
-      buf = p;
-    } else {
-      buf += p;
-    }
-  }
-  if (buf) queue.push(buf);
-
-  const session = {
-    paused: false,
-    idx: 0,
-    speakNext: null,
-  };
-  currentSession = session;
-  const speakNext = () => {
-    if (currentSession !== session || session.paused) return; // 已被打断或暂停
-    if (session.idx >= queue.length) {
-      currentUtter = null;
-      if (typeof onEnd === 'function') onEnd();
-      return;
-    }
-    const u = new SpeechSynthesisUtterance(queue[session.idx++]);
-    u.lang = 'zh-CN';
-    u.rate = 1.05;
-    const zh = window.speechSynthesis.getVoices().find((v) => v.lang && v.lang.startsWith('zh'));
-    if (zh) u.voice = zh;
-    u.onend = speakNext;
-    u.onerror = speakNext;
-    currentUtter = u;
-    window.speechSynthesis.speak(u);
-  };
-  session.speakNext = speakNext;
-  speakNext();
-  return true;
-}
-
-export function pauseSpeaking() {
-  if (currentSession) {
-    currentSession.paused = true;
-    if (currentSession.idx > 0) {
-      currentSession.idx--; // 续播时从该句重新朗读
-    }
-  }
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
-  currentUtter = null;
-}
-
-export function resumeSpeaking() {
-  if (currentSession && currentSession.paused) {
-    currentSession.paused = false;
-    currentSession.speakNext();
-  }
-}
-
-export function stopSpeaking() {
-  if (currentSession) {
-    currentSession.paused = true;
-  }
-  currentSession = null;
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
-  currentUtter = null;
 }
 
 /** 最大内存音频条目数（严格限制，防止长时间多轮对话产生 Blob URL 内存泄漏） */
