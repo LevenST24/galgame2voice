@@ -21,9 +21,7 @@ from galgame2voice.utils import hardware
 
 @pytest.fixture
 def no_native_vram(monkeypatch):
-    def unavailable(*args, **kwargs):
-        raise FileNotFoundError("synthetic missing nvidia-smi")
-    monkeypatch.setattr(hardware.subprocess, "check_output", unavailable)
+    monkeypatch.setattr(hardware, "_exec_command_output", lambda *args, **kwargs: None)
 
 
 @pytest.mark.parametrize("initializing", [False, True])
@@ -47,7 +45,7 @@ def test_vram_probe_never_initializes_or_waits_for_torch(monkeypatch, no_native_
 
 
 def test_native_vram_snapshot_remains_preferred(monkeypatch):
-    monkeypatch.setattr(hardware.subprocess, "check_output", lambda *args, **kwargs: "8192,2048\n")
+    monkeypatch.setattr(hardware, "_exec_command_output", lambda *args, **kwargs: "8192,2048\n")
     monkeypatch.delitem(sys.modules, "torch", raising=False)
     assert hardware.get_gpu_vram_status() == (8.0, 2.0)
     assert "torch" not in sys.modules
