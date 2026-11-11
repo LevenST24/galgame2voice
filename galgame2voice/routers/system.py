@@ -60,15 +60,15 @@ def _is_allowed_remote(url: str) -> bool:
     return any(normalized == allowed.rstrip("/") for allowed in _get_allowed_remotes())
 
 
-def _verify_remote_url_allowed(project_root: Path) -> str | None:
-    """Returns an error message if `origin` is not an allowed update source, else None."""
-    rc, remote_url, err = _run_git_cmd(["remote", "get-url", "origin"], cwd=project_root)
+def _verify_remote_url_allowed(project_root: Path, remote_name: str = "origin") -> str | None:
+    """Returns an error message if `remote_name` is not an allowed update source, else None."""
+    rc, remote_url, err = _run_git_cmd(["remote", "get-url", remote_name], cwd=project_root)
     if rc != 0 or not remote_url:
-        return f"无法读取 git remote origin 地址: {err or 'remote 不存在'}"
+        return f"无法读取 git remote {remote_name} 地址: {err or 'remote 不存在'}"
     if not _is_allowed_remote(remote_url):
-        logger.warning("Blocked one-click update from untrusted remote: %s", remote_url)
+        logger.warning("Blocked one-click update from untrusted remote %s: %s", remote_name, remote_url)
         return (
-            f"安全拦截: 当前 git remote origin 不在允许的更新源白名单内 ({remote_url})。"
+            f"安全拦截: 当前 git remote {remote_name} 不在允许的更新源白名单内 ({remote_url})。"
             "如需更换更新源, 请设置 GALGAME2VOICE_UPDATE_ALLOWED_REMOTES 环境变量。"
         )
     return None
@@ -244,10 +244,7 @@ def _get_remote_and_branch(project_root: Path) -> tuple[str, str]:
         parts = upstream.split("/", 1)
         return parts[0], parts[1]
 
-    # Verify if 'origin' is a valid remote
-    rc, remotes, _ = _run_git_cmd(["remote"], cwd=project_root)
-    remote_name = "origin" if (rc == 0 and "origin" in remotes.split()) else "origin"
-    return remote_name, "main"
+    return "origin", "main"
 
 
 def _inspect_local_git_repo(project_root: Path) -> tuple[str, str, str | None, str | None, str] | None:
@@ -285,10 +282,18 @@ def _query_remote_git_status(
     """Fetches remote tracking ref and queries (remote_short, has_update, behind_count, commits_log, error)."""
     remote_name, remote_branch = _get_remote_and_branch(project_root)
 
-    # Supply-chain guard: never fetch from an untrusted remote
-    if remote_name == "origin" and not _is_allowed_remote(remote_url):
-        logger.warning("Blocked remote update check from untrusted remote: %s", remote_url)
-        return cur_short, False, 0, [], "安全拦截: git remote origin 不在允许的更新源白名单内，已跳过远端检查。"
+    # Supply-chain guard: never fetch from an untrusted remote. The branch may
+    # track a remote other than origin, so check the one that is fetched.
+    if remote_name != "origin":
+        rc, remote_url, _ = _run_git_cmd(["remote", "get-url", remote_name], cwd=project_root)
+        if rc != 0:
+            remote_url = ""
+    if not _is_allowed_remote(remote_url):
+        logger.warning("Blocked remote update check from untrusted remote %s: %s", remote_name, remote_url)
+        return (
+            cur_short, False, 0, [],
+            f"安全拦截: git remote {remote_name} 不在允许的更新源白名单内，已跳过远端检查。",
+        )
 
     refspec = f"+refs/heads/{remote_branch}:refs/remotes/{remote_name}/{remote_branch}"
     fetch_rc, fetch_out, fetch_err = _run_git_cmd(
@@ -488,7 +493,8 @@ def _verify_update_preflight(project_root: Path) -> tuple[str | None, SystemUpda
         msg = "更新失败: 当前项目目录不是有效 Git 仓库。"
         return None, _make_update_failure_response(msg, version="unknown", error=msg)
 
-    remote_err = _verify_remote_url_allowed(project_root)
+    remote_name, _ = _get_remote_and_branch(project_root)
+    remote_err = _verify_remote_url_allowed(project_root, remote_name)
     if remote_err:
         return None, _make_update_failure_response(remote_err, version="unknown", error=remote_err)
 
