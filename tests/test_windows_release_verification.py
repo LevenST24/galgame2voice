@@ -13,7 +13,7 @@ def release(tmp_path):
     files = {name: b"fixture" for name in (
         "Galgame2Voice.exe", "启动.bat", "数据恢复.bat", "tools/ffmpeg.exe", "LICENSE", "_internal/python312.dll",
     )}
-    files.update({f"{folder}/.keep": b"" for folder in ("data", "audio", "logs", "characters")})
+    files.update({f"{folder}/.keep": b"" for folder in ("data", "audio", "logs", "characters", "backgrounds")})
     for relative in ("index.html", "assets/app.js", "assets/app.css"):
         content = relative.encode()
         deployed = tmp_path / "galgame2voice/static" / relative
@@ -108,7 +108,7 @@ def test_verifies_static_assets_without_vite_dist_when_opted_out(tmp_path):
         "使用说明.md": guide.read_bytes(),
         "galgame2voice/static/index.html": (static / "index.html").read_bytes(),
         "galgame2voice/static/assets/app.js": (static / "assets" / "app.js").read_bytes(),
-        **{f"{folder}/.keep": b"" for folder in ("data", "audio", "logs", "characters")},
+        **{f"{folder}/.keep": b"" for folder in ("data", "audio", "logs", "characters", "backgrounds")},
     }
 
     def build_zip(filename: str, overrides: dict[str, bytes] | None = None):

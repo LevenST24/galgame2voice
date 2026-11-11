@@ -368,7 +368,7 @@ def smoke_test(
         # Exercise the documented update: new extraction plus user folders and .env.
         # Both release and engine move together, so their relative hint stays valid.
         (install / ".env").write_text("# personal settings smoke marker\n", encoding="utf-8")
-        for name in ("audio", "characters"):
+        for name in ("audio", "characters", "backgrounds"):
             (install / name / "user-note.txt").write_text("retained user file", encoding="utf-8")
         updated_root = root / "updated release 中文 !"
         updated_root.mkdir()
@@ -377,7 +377,7 @@ def smoke_test(
                 (updated_root / entry.filename).resolve().relative_to(updated_root.resolve())
             bundle.extractall(updated_root)
         updated = updated_root / "Galgame2Voice"
-        for name in ("data", "audio", "characters"):
+        for name in ("data", "audio", "characters", "backgrounds"):
             shutil.copytree(install / name, updated / name, dirs_exist_ok=True)
         shutil.copy2(install / ".env", updated / ".env")
         moved_engine = updated_root / engine.name
@@ -411,7 +411,7 @@ def smoke_test(
                     moved_weight = moved_engine / "GPT_weights" / "smoke.ckpt"
                     if str(moved_weight) not in {item["path"] for item in json.load(response)["gpt_weights"]}:
                         raise RuntimeError("Updated release could not find the relocated model")
-                for name in ("audio", "characters"):
+                for name in ("audio", "characters", "backgrounds"):
                     if (updated / name / "user-note.txt").read_text(encoding="utf-8") != "retained user file":
                         raise RuntimeError(f"Updated release lost the user's {name} files")
                 if (updated / ".env").read_bytes() != (install / ".env").read_bytes():

@@ -15,6 +15,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from scripts.package_release import read_project_version  # noqa: E402
 
+PORTABLE_EMPTY_RUNTIME_DIRS = ("data", "audio", "logs", "characters", "backgrounds")
+
 
 def copy_runtime_licenses(destination: Path) -> None:
     """Carry the licenses supplied by the build environment alongside binaries."""
@@ -46,7 +48,7 @@ def assemble_portable_files(folder: Path, ffmpeg_binary: Path) -> None:
     for name in ("LICENSE", "SECURITY.md", ".env.example"):
         shutil.copy2(PROJECT_ROOT / name, folder / name)
     shutil.copy2(PROJECT_ROOT / "docs" / "WINDOWS_PORTABLE.md", folder / "使用说明.md")
-    for name in ("data", "audio", "logs", "characters", "tools"):
+    for name in (*PORTABLE_EMPTY_RUNTIME_DIRS, "tools"):
         (folder / name).mkdir(exist_ok=True)
     shutil.copy2(ffmpeg_binary, folder / "tools" / "ffmpeg.exe")
     (folder / "启动.bat").write_text(
@@ -59,6 +61,18 @@ def assemble_portable_files(folder: Path, ffmpeg_binary: Path) -> None:
         '"%~dp0Galgame2Voice.exe" --restore-database\npause\n',
         encoding="utf-8", newline="\r\n",
     )
+
+
+def write_zip(folder: Path, archive: Path) -> None:
+    """Package staged portable files and empty runtime directory markers into a ZIP."""
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+        for root, directories, filenames in os.walk(folder):
+            directories.sort()
+            for filename in sorted(filenames):
+                source = Path(root) / filename
+                bundle.write(source, Path("Galgame2Voice") / source.relative_to(folder))
+        for name in PORTABLE_EMPTY_RUNTIME_DIRS:
+            bundle.writestr(f"Galgame2Voice/{name}/.keep", "")
 
 
 def build_portable() -> Path:
@@ -109,14 +123,7 @@ def build_portable() -> Path:
     output = PROJECT_ROOT / "dist"
     output.mkdir(exist_ok=True)
     archive = output / f"galgame2voice-v{read_project_version()}-windows-x64.zip"
-    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
-        for root, directories, filenames in os.walk(folder):
-            directories.sort()
-            for filename in sorted(filenames):
-                source = Path(root) / filename
-                bundle.write(source, Path("Galgame2Voice") / source.relative_to(folder))
-        for name in ("data", "audio", "logs", "characters"):
-            bundle.writestr(f"Galgame2Voice/{name}/.keep", "")
+    write_zip(folder, archive)
     with archive.open("rb") as handle:
         digest = hashlib.sha256()
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):

@@ -31,7 +31,7 @@ def make_portable(root: Path, *, duplicate: bool) -> Path:
     }
     if duplicate:
         files["_internal/imageio_ffmpeg/binaries/ffmpeg-win64.exe"] = files["tools/ffmpeg.exe"]
-    files.update({f"{folder}/.keep": b"" for folder in ("data", "audio", "logs", "characters")})
+    files.update({f"{folder}/.keep": b"" for folder in ("data", "audio", "logs", "characters", "backgrounds")})
     archive = root / "portable.zip"
     with zipfile.ZipFile(archive, "w") as bundle:
         for name, content in files.items():
