@@ -13,15 +13,26 @@ jobs:
   build-release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: "3.12"
 
       - name: Install dependencies
         run: uv sync --frozen --extra dev
+
+      - name: Verify release version consistency
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            uv run python scripts/verify_release_version.py --release-tag "$REF_NAME"
+          else
+            uv run python scripts/verify_release_version.py
+          fi
 
       - name: Use the locked FFmpeg for audio tests
         # Same as CI's test-linux job: the audio tests need a real ffmpeg.
@@ -42,7 +53,7 @@ jobs:
         run: uv run pytest -q tests/test_sovits_endpoint.py
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
 
@@ -50,13 +61,14 @@ jobs:
         working-directory: frontend
         run: |
           npm ci --ignore-scripts
+          npm test
           npm run deploy
 
       - name: Build release ZIP
         run: uv run python scripts/package_release.py
 
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: galgame2voice-release
           path: |
@@ -72,6 +84,17 @@ jobs:
           python-version: "3.12"
       - name: Install locked portable-build dependencies
         run: uv sync --frozen --extra desktop --no-dev
+      - name: Verify release version consistency
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if ($env:REF_TYPE -eq 'tag') {
+            uv run --frozen --extra desktop --no-dev python scripts/verify_release_version.py --release-tag "$env:REF_NAME"
+          } else {
+            uv run --frozen --extra desktop --no-dev python scripts/verify_release_version.py
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run portable smoke transport tests
         run: |
           uv run --frozen --extra desktop --no-dev python tests/test_smoke_windows_http.py
