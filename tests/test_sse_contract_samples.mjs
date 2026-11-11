@@ -542,3 +542,132 @@ test('edge_cases contract: missing_fields, id_conflict, out_of_order, duplicate,
     assert.equal(mysteryAttempts, unknown_turn_reply_status.expected.attempts);
   }
 });
+
+function createRawByteStreamFetch(byteChunks) {
+  return async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const chunk of byteChunks) {
+          controller.enqueue(chunk);
+        }
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  };
+}
+
+test('SSE parser: omits event header after named event resets to default text frame', async () => {
+  const encoder = new TextEncoder();
+
+  const rawStandardFrames = [
+    'event: audio_chunk\ndata: {"index":0,"sentence":"おはよう。","audio_url":"/audio/0.wav"}\n\n',
+    'data: {"delta_chinese":"早安。"}\n\n',
+    'event: done\ndata: {"chinese":"早安。","japanese":"おはよう。","session_id":"sess_m1"}\n\n',
+  ].join('');
+
+  const eventsA = [];
+  const audioCallsA = [];
+  const textChunksA = [];
+  const endA = await new Promise((resolve) => {
+    streamChat({
+      prompt: '早安',
+      sessionId: 'sess_m1',
+      fetch: createRawByteStreamFetch([encoder.encode(rawStandardFrames)]),
+      onEvent: (type, payload) => eventsA.push({ type, payload }),
+      onAudio: (url, idx, sentence) => audioCallsA.push({ url, idx, sentence }),
+      onChunk: (acc, delta) => {
+        if (delta) textChunksA.push({ acc, delta });
+      },
+      onEnd: (acc, meta) => resolve({ acc, meta }),
+    });
+  });
+
+  assert.equal(eventsA.filter((e) => e.type === 'audio_chunk').length, 1);
+  assert.equal(audioCallsA.length, 1);
+  assert.equal(audioCallsA[0].sentence, 'おはよう。');
+  assert.deepEqual(textChunksA, [{ acc: '早安。', delta: '早安。' }]);
+  assert.equal(endA.acc, '早安。');
+  assert.equal(endA.meta.error, null);
+
+  // Also verify immediate post-dispatch reset before any blank line and empty-boundary reset
+  const rawImmediateAndEmptyReset = [
+    'event: audio_chunk\ndata: {"index":0,"sentence":"おはよう。","audio_url":"/audio/0.wav"}\n',
+    'data: {"delta_chinese":"早安。"}\n\n',
+    'event: unhandled_ping\n\n',
+    'data: {"delta_chinese":"再会。"}\n\n',
+    'event: done\ndata: {"chinese":"早安。再会。","japanese":"おはよう。","session_id":"sess_m1_b"}\n\n',
+  ].join('');
+
+  const eventsB = [];
+  const textDeltasB = [];
+  const endB = await new Promise((resolve) => {
+    streamChat({
+      prompt: '早安',
+      sessionId: 'sess_m1_b',
+      fetch: createRawByteStreamFetch([encoder.encode(rawImmediateAndEmptyReset)]),
+      onEvent: (type, payload) => eventsB.push({ type, payload }),
+      onChunk: (_acc, delta) => {
+        if (delta) textDeltasB.push(delta);
+      },
+      onEnd: (acc, meta) => resolve({ acc, meta }),
+    });
+  });
+
+  assert.equal(eventsB.filter((e) => e.type === 'audio_chunk').length, 1, 'audio_chunk must fire only once');
+  assert.deepEqual(textDeltasB, ['早安。', '再会。']);
+  assert.equal(endB.acc, '早安。再会。');
+  assert.equal(endB.meta.error, null);
+});
+
+test('SSE parser: tolerates variable colon whitespace, CRLF line endings, and split byte chunks', async () => {
+  const rawCrlfStream = [
+    'event:audio_chunk\r\n',
+    'data:{"index":0,"line":0,"sentence":"甲。","audio_url":"/audio/0.wav"}\r\n\r\n',
+    'event:   line\r\n',
+    'data:   {"index":0,"zh":"甲乙","ja":"甲。乙。","emotion":"happy"}\r\n\r\n',
+    'data:{"delta_chinese":"甲"}\r\n\r\n',
+    'data:   {"delta_chinese":"乙"}\r\n\r\n',
+    'event: done\r\n',
+    'data: {"chinese":"甲乙","japanese":"甲。乙。","session_id":"sess_m1_crlf"}\r\n\r\n',
+  ].join('');
+
+  const fullBytes = new TextEncoder().encode(rawCrlfStream);
+  const splitChunks = [];
+  for (let offset = 0; offset < fullBytes.length; offset += 7) {
+    splitChunks.push(fullBytes.subarray(offset, offset + 7));
+  }
+
+  const events = [];
+  const audioCalls = [];
+  const textDeltas = [];
+  const end = await new Promise((resolve) => {
+    streamChat({
+      prompt: '测试CRLF与分片',
+      sessionId: 'sess_m1_crlf',
+      fetch: createRawByteStreamFetch(splitChunks),
+      onEvent: (type, payload) => events.push({ type, payload }),
+      onAudio: (url, idx, sentence) => audioCalls.push({ url, idx, sentence }),
+      onChunk: (_acc, delta) => {
+        if (delta) textDeltas.push(delta);
+      },
+      onEnd: (acc, meta) => resolve({ acc, meta }),
+    });
+  });
+
+  assert.equal(events.length, 2);
+  assert.equal(events[0].type, 'audio_chunk');
+  assert.equal(events[0].payload.sentence, '甲。');
+  assert.equal(events[1].type, 'line');
+  assert.equal(events[1].payload.zh, '甲乙');
+  assert.equal(events[1].payload.emotion, 'happy');
+  assert.deepEqual(audioCalls, [{ url: '/audio/0.wav', idx: 0, sentence: '甲。' }]);
+  assert.deepEqual(textDeltas, ['甲', '乙']);
+  assert.equal(end.acc, '甲乙');
+  assert.equal(end.meta.japanese, '甲。乙。');
+  assert.equal(end.meta.error, null);
+  assert.equal(end.meta.cancelled, false);
+});
