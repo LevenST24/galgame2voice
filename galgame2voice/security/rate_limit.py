@@ -22,8 +22,6 @@ _WINDOW_SECONDS = 60.0
 _PROTECTED_PREFIXES = (
     "/api/chat",
     "/api/voice/synthesize",
-    "/api/memory",
-    "/api/affection",
 )
 # High-risk admin/config routes. Their expensive/dangerous operations are the
 # MUTATING ones (settings writes, provider activation, network tests, git
