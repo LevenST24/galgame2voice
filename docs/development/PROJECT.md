@@ -144,7 +144,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 - `galgame2voice/services/`: Core business logic (`chat_service.py`, `character_manager.py`, `voice_manager.py`, `audio_cleaner.py`, `dynamic_batcher.py`, `tts_cache_manager.py`, `memory_service.py`, `gpt_sovits_client.py`, `session_manager.py`).
 - `galgame2voice/database/`: SQLite engine, schema version migrations, and CRUD operations (`session.py`, `migrations.py`, `crud.py`, `models.py`).
 - `galgame2voice/telegram_bot/`: Telegram bot client and command/chat handlers (`bot.py`, `handlers.py`).
-- `scripts/`: Launcher, packaging, and maintenance scripts (`run_server.py`, `package_release.py`, `apply_character_fixes.py`).
+- `scripts/`: Launcher, packaging, and maintenance scripts (`run_server.py`, `package_release.py`).
 - `scripts/tools/`: Diagnostic and verification utilities (`audit_character_emotions.py`).
 - `tests/`: Automated test suite (50+ test files, 1500+ tests).
 - `galgame2voice/security/`: Console token auth dependency, at-rest credential encryption, sliding-window rate limiter and LLM base-URL SSRF guard (`auth.py`, `crypto.py`, `rate_limit.py`, `url_guard.py`).

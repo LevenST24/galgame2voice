@@ -641,7 +641,7 @@ When lines mode is on, `_format_assistant_turn` replays stored lines in the new
 `{"tts":{...},"lines":[...]}` format; strip server indexes/audio from model context.
 Convert old history temporarily through P2a normalization; do not rewrite its DB rows.
 Strip the known old format template at runtime, then append the new contract.
-Cover character-manifest prompts, database prompts, and `apply_character_fixes.py`.
+Cover character-manifest prompts and database prompts.
 Local `system_prompt.txt` updates are a separate backed-up migration, never implicit.
 With lines mode off, retain old prompting and history behavior.
 
