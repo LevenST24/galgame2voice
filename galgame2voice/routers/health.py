@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from galgame2voice import __version__
 from galgame2voice.services.engine_recovery import engine_failure_message
+from galgame2voice.services.engine_supervisor import get_engine_supervisor
 from galgame2voice.services.telemetry_jobs import TelemetryJobs, default_telemetry_jobs
 from galgame2voice.services.sovits_installation import find_engine_python
 from galgame2voice.config import get_settings
@@ -682,33 +683,33 @@ def _restarting_endpoint(endpoint: SovitsEndpoint) -> bool:
 
 
 @router.get("/api/system/engine-status", dependencies=[Depends(require_auth)])
-async def engine_status_endpoint() -> dict[str, Any]:
+async def engine_status_endpoint(request: Request = None) -> dict[str, Any]:  # type: ignore[assignment]
+    supervisor = get_engine_supervisor(request)
     try:
-        endpoint = await resolve_effective_sovits_endpoint()
+        endpoint = await supervisor.resolve_endpoint()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="语音引擎服务地址无效。请在「语音服务」检查并保存服务地址。") from exc
-    if _restarting_endpoint(endpoint):
+    if supervisor.is_restarting(endpoint):
         return _engine_state(endpoint, "starting", "引擎正在重启，请等待当前操作完成。")
-    from scripts import run_server
-    before_launch = run_server.get_managed_engine_launch(endpoint)
-    telemetry = await _probe_gpt_sovits(endpoint.base_url)
-    if _restarting_endpoint(endpoint):
+    before_launch = supervisor.get_managed_launch(endpoint)
+    reachable = await supervisor.probe_endpoint(endpoint.base_url)
+    if supervisor.is_restarting(endpoint):
         return _engine_state(endpoint, "starting", "引擎正在重启，请等待当前操作完成。")
-    launch = run_server.get_managed_engine_launch(endpoint)
+    launch = supervisor.get_managed_launch(endpoint)
     if launch is not before_launch:
         return _engine_state(endpoint, "checking", "引擎进程已变更，正在重新核对服务状态。请稍候，无需再次重启。")
-    if telemetry.status == "reachable":
+    if reachable:
         return _engine_state(endpoint, "ready", "语音引擎已就绪。可在“角色与会话”中选择音色。")
     if launch is not None and launch.process.poll() is not None:
-        message = await asyncio.to_thread(engine_failure_message, get_settings().project_root / "logs" / "gpt_sovits.log")
-        if _restarting_endpoint(endpoint):
+        message = await asyncio.to_thread(engine_failure_message, supervisor.engine_log_path())
+        if supervisor.is_restarting(endpoint):
             return _engine_state(endpoint, "starting", "引擎正在重启，请等待当前操作完成。")
-        if launch is not run_server.get_managed_engine_launch(endpoint):
+        if launch is not supervisor.get_managed_launch(endpoint):
             return _engine_state(endpoint, "checking", "引擎进程已变更，正在重新核对服务状态。请稍候，无需再次重启。")
         return _engine_state(endpoint, "failed", message)
     if launch is not None:
         started_at = launch.started_at
-        if started_at is not None and run_server.time.monotonic() - started_at >= 180:
+        if started_at is not None and supervisor.monotonic() - started_at >= 180:
             return _engine_state(endpoint, "loading_slow",
                                  "引擎加载时间较长，尚未确认就绪。无需反复重启；请点击「刷新状态」稍后检查，若持续没有进展，可提供 logs/gpt_sovits.log 排查。文字聊天可继续使用。")
         return _engine_state(endpoint, "starting", "引擎正在加载模型，请稍候；文字聊天可继续使用。")
