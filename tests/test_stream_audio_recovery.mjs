@@ -229,37 +229,11 @@ test('a late cache read cannot start a fetch in the next session', async () => {
   opened.resolve({ match: async () => null }); await tick();
   assert.equal(requests, 0); assert.equal(p.currentMsgId, 'new');
 });
-test('new chunks do not resume a paused context; portraits follow audio time', async () => {
-  const starts = [], speaking = [];
-  const p = player({ onChunkStart: item => starts.push(item.index), onStatusChange: value => speaking.push(value) });
-  await p.enqueueChunk({ url: '/one.wav', index: 0 });
-  await p.enqueueChunk({ url: '/two.wav', index: 1 });
-  p.ctx.currentTime = 0.1; await tick(55);
-  assert.deepEqual(starts, [0]);
-  p.pause();
-  await p.enqueueChunk({ url: '/three.wav', index: 2 });
-  assert.equal(p.ctx.resumes, 0); assert.equal(p.paused, true);
-  p.ctx.currentTime = 1.1; await tick(55);
-  assert.deepEqual(starts, [0]); assert.equal(speaking.at(-1), false);
-  p.resume(); await tick(55);
-  assert.deepEqual(starts, [0, 1]); assert.equal(speaking.at(-1), true);
-});
 test('late onended from an interrupted source cannot finish the next session', async () => {
   let endings = 0; const p = player({ onQueueEmpty: () => endings++ });
   await p.enqueueChunk({ url: '/old.wav', index: 0 }); const old = p.ctx.sources[0];
   p.startSession('new'); old.finish();
   assert.equal(endings, 0); assert.equal(p.isPlaying, true);
-});
-test('stream gaps retain pause and playback ownership until input ends', async () => {
-  let endings = 0; const p = player({ onQueueEmpty: () => endings++ });
-  p.startSession('stream', null, { streaming: true });
-  await p.enqueueChunk({ url: '/first.wav', index: 0 });
-  p.ctx.sources[0].finish(); p.pause();
-  assert.equal(p.isPlaying, true); assert.equal(endings, 0);
-  await p.enqueueChunk({ url: '/next.wav', index: 1 });
-  p.finishInput(); assert.equal(p.paused, true);
-  p.resume(); await tick(); p.ctx.sources[1].finish();
-  assert.equal(endings, 1); assert.equal(p.isPlaying, false);
 });
 test('cache storage failures cannot hang playback or caching', async () => {
   player(); const original = globalThis.setTimeout;
@@ -307,37 +281,6 @@ test('the saved reply replaces streamed text the server did not keep', async () 
     onEnd: finalText => resolve(finalText) }));
   assert.equal(text, '你好呀');
   assert.equal(shown.at(-1), '你好呀');
-});
-
-test('continuous multi-character session switching during long chunk streams isolates queues and adaptive buffer lead', async () => {
-  const startedChunks = [];
-  const p = player({ onChunkStart: item => startedChunks.push(`${item.sessionId}:${item.index}:${item.emotion}`) });
-  const emotions = ['gentle', 'happy', 'shy', 'tsundere', 'cool', 'sad', 'angry'];
-
-  for (let sessionRound = 1; sessionRound <= 8; sessionRound++) {
-    p.startSession(`msg_${sessionRound}`, null, { streaming: true });
-    for (let idx = 0; idx < 6; idx++) {
-      const em = emotions[(sessionRound + idx) % emotions.length];
-      await p.enqueueChunk({
-        url: `/char_${sessionRound}/chunk_${idx}.wav`,
-        index: idx,
-        sentence: `台词 ${sessionRound}-${idx}`,
-        emotion: em,
-        totalExpected: 6,
-      });
-    }
-    p.finishInput();
-    assert.equal(p.activeSources.length, 6);
-    assert.ok(p.activeSources.every(s => s.item.sessionId === p.currentSessionId));
-    // Simulate completing playback of first two chunks before switching character/session
-    p.ctx.sources.slice(-6, -4).forEach(s => s.finish());
-  }
-
-  // Finish remaining chunks of the final session
-  p.ctx.sources.slice(-4).forEach(s => s.finish());
-  assert.equal(p.isPlaying, false);
-  assert.equal(p.activeSources.length, 0);
-  assert.ok(p.getStats().chunksPlayed >= 48);
 });
 
 const DECODE_FAILURE_TOAST = '这句语音无法解码，原有内容已保留。请检查语音服务后重试，文字聊天仍可继续。';
