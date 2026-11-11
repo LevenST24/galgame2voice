@@ -1,4 +1,56 @@
+// @ts-check
 import { requestJson } from '../request.js';
+
+/**
+ * @typedef {import('../request.js').RequestTimeoutOptions} RequestTimeoutOptions
+ */
+
+/**
+ * @typedef {'ready' | 'pending' | 'unavailable' | 'gone' | 'ambiguous'} TurnReplyProtocolStatus
+ */
+
+/**
+ * @typedef {object} TurnReplyReadyPayload
+ * @property {'ready'} status
+ * @property {string} session_id
+ * @property {number} user_message_id
+ * @property {number} message_id
+ */
+
+/**
+ * @typedef {object} TurnReplyNonReadyPayload
+ * @property {'pending' | 'unavailable' | 'gone' | 'ambiguous'} status
+ * @property {string} session_id
+ * @property {number} user_message_id
+ * @property {number} [message_id]
+ */
+
+/**
+ * @typedef {TurnReplyReadyPayload | TurnReplyNonReadyPayload} TurnReplyServerPayload
+ */
+
+/**
+ * @typedef {{ status: 'ready', messageId: number, data: TurnReplyReadyPayload & Record<string, any> }} TurnReplyReadyResult
+ * @typedef {{ status: 'unavailable' | 'gone' | 'ambiguous' | 'aborted', reason?: string }} TurnReplyFailureOutcome
+ * @typedef {TurnReplyReadyResult | TurnReplyFailureOutcome} TurnReplyReconcileOutcome
+ */
+
+/**
+ * @typedef {(url: string | URL, options?: RequestInit, timeoutOptions?: RequestTimeoutOptions) => Promise<any>} TurnReplyRequestFn
+ */
+
+/**
+ * @typedef {object} ResolveTurnReplyIdentityParams
+ * @property {string} sessionId
+ * @property {number} userMessageId
+ * @property {AbortSignal | null} [signal]
+ * @property {(() => void) | null} [checkCurrent] 每次响应与写回前的所有权核验钩子
+ * @property {TurnReplyRequestFn} [request]
+ * @property {number} [totalBudgetMs]
+ * @property {number} [maxAttempts]
+ * @property {number} [singleTimeoutMs]
+ * @property {number} [delayMs]
+ */
 
 const DEFAULT_TOTAL_BUDGET_MS = 10000;
 const DEFAULT_MAX_ATTEMPTS = 3;
@@ -9,17 +61,8 @@ const DEFAULT_DELAY_MS = 300;
  * 具有时限与退避的有界中断回复身份查询
  * 按固定协议处理 ready/pending/unavailable/gone/ambiguous
  *
- * @param {object} params
- * @param {string} params.sessionId
- * @param {number} params.userMessageId
- * @param {AbortSignal} [params.signal]
- * @param {Function} [params.checkCurrent] 每次响应与写回前的所有权核验钩子
- * @param {Function} [params.request]
- * @param {number} [params.totalBudgetMs]
- * @param {number} [params.maxAttempts]
- * @param {number} [params.singleTimeoutMs]
- * @param {number} [params.delayMs]
- * @returns {Promise<{ status: 'ready', messageId: number, data: object }>}
+ * @param {ResolveTurnReplyIdentityParams} params
+ * @returns {Promise<TurnReplyReadyResult>}
  */
 export async function resolveTurnReplyIdentity({
   sessionId,
@@ -43,6 +86,7 @@ export async function resolveTurnReplyIdentity({
 
   const deadline = performance.now() + totalBudgetMs;
   let attempt = 0;
+  /** @type {'pending' | 'unavailable' | 'timeout' | null} */
   let lastStatus = null;
 
   while (attempt < maxAttempts) {
@@ -58,6 +102,7 @@ export async function resolveTurnReplyIdentity({
     });
     const url = `/api/chat/turn-reply?${query.toString()}`;
 
+    /** @type {any} */
     let data;
     try {
       data = await request(url, { method: 'GET', signal }, { timeoutMs: requestTimeoutMs });
@@ -115,7 +160,8 @@ export async function resolveTurnReplyIdentity({
     if (sleepBudget <= 0) break;
     const sleepMs = Math.min(delayMs, sleepBudget);
 
-    await new Promise((resolve, reject) => {
+    await /** @type {Promise<void>} */ (new Promise((resolve, reject) => {
+      /** @type {ReturnType<typeof setTimeout> | undefined} */
       let t;
       const onAbort = () => {
         clearTimeout(t);
@@ -127,7 +173,7 @@ export async function resolveTurnReplyIdentity({
       }, sleepMs);
       if (signal?.aborted) onAbort();
       else signal?.addEventListener('abort', onAbort, { once: true });
-    });
+    }));
   }
 
   if (signal?.aborted) throw new DOMException('操作已取消', 'AbortError');
