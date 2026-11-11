@@ -153,14 +153,6 @@ function createDom() {
     gTgProxyHost: element('input', '127.0.0.1'),
     gTgProxyPort: element('input', '10809'),
     gTgFieldsGroup: element('div'),
-    gParamSpeed: element('input', '1.0'),
-    gParamSpeedVal: element('span'),
-    gParamTopK: element('input', '15'),
-    gParamTopKVal: element('span'),
-    gParamTopP: element('input', '1.0'),
-    gParamTopPVal: element('span'),
-    gParamTemp: element('input', '1.0'),
-    gParamTempVal: element('span'),
   };
 }
 

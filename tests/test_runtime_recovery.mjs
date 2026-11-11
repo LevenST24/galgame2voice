@@ -443,46 +443,47 @@ for (const known of [true, false]) {
   assert.equal(count, 1); passed++;
 }
 {
-  const dom = { gParamSpeed: element('1'), gTgSave: element(), gStatus: element() };
+  const dom = { gAudioRetention: element('30'), gTgSave: element(), gStatus: element() };
   initGlobalSettings(dom);
-  globalThis.fetch = async () => response(cfg(1));
+  globalThis.fetch = async () => response({ status: 'ok', settings: { audio_retention_minutes: 30 } });
   await loadGlobalConfig();
-  dom.gParamSpeed.value = '1.8'; dom.gParamSpeed.change();
+  dom.gAudioRetention.value = '45'; dom.gAudioRetention.change();
   await loadGlobalConfig();
-  assert.equal(dom.gParamSpeed.value, '1.8'); passed++;
+  assert.equal(dom.gAudioRetention.value, '45'); passed++;
   globalThis.fetch = async () => response({ detail: [{ msg: 'invalid' }] }, 422);
   await saveGlobalConfig();
   assert.equal(dom.gTgSave.disabled, false);
-  assert.equal(dom.gParamSpeed.value, '1.8'); passed++;
+  assert.equal(dom.gAudioRetention.value, '45'); passed++;
 }
 {
-  const dom = { gParamSpeed: element('1') };
+  const dom = { gAudioRetention: element('30') };
   initGlobalSettings(dom);
   let complete;
   globalThis.fetch = () => new Promise(resolve => { complete = resolve; });
   const pending = loadGlobalConfig();
-  dom.gParamSpeed.value = '1.7'; dom.gParamSpeed.change();
-  complete(response(cfg(1))); await pending;
-  assert.equal(dom.gParamSpeed.value, '1.7'); passed++;
+  dom.gAudioRetention.value = '60'; dom.gAudioRetention.change();
+  complete(response({ status: 'ok', settings: { audio_retention_minutes: 30 } })); await pending;
+  assert.equal(dom.gAudioRetention.value, '60'); passed++;
 }
 {
-  const dom = { gParamSpeed: element('1.8'), gTgSave: element() };
+  const dom = { gAudioRetention: element('45'), gTgSave: element() };
   initGlobalSettings(dom);
   let complete;
   globalThis.fetch = async (_url, options) => options.method === 'POST'
-    ? new Promise(resolve => { complete = resolve; }) : response(cfg(1.8));
+    ? new Promise(resolve => { complete = resolve; })
+    : response({ status: 'ok', settings: { audio_retention_minutes: 45 } });
   await loadGlobalConfig();
   const pending = saveGlobalConfig();
-  dom.gParamSpeed.value = '1.9'; dom.gParamSpeed.change();
+  dom.gAudioRetention.value = '60'; dom.gAudioRetention.change();
   complete(response({ status: 'ok' })); await pending;
   await loadGlobalConfig();
-  assert.equal(dom.gParamSpeed.value, '1.9');
+  assert.equal(dom.gAudioRetention.value, '60');
   assert.equal(dom.gTgSave.disabled, false); passed++;
 }
 {
   // The config never loaded (backend restarting): saving would overwrite every setting with
   // the form's defaults, stopping Telegram and resetting the engine URL and precision.
-  const dom = { gParamSpeed: element('1'), gTgEnabled: element(), gTgSave: element() };
+  const dom = { gAudioRetention: element('30'), gTgEnabled: element(), gTgSave: element() };
   initGlobalSettings(dom);
   const posts = [];
   globalThis.fetch = async (_url, options = {}) => {
@@ -490,21 +491,21 @@ for (const known of [true, false]) {
     return response({ detail: '后端正在重启' }, 503);
   };
   await loadGlobalConfig();
-  dom.gParamSpeed.value = '1.2'; dom.gParamSpeed.change();
+  dom.gAudioRetention.value = '60'; dom.gAudioRetention.change();
   await saveGlobalConfig();
   assert.deepEqual(posts, []); passed++;
 }
 {
   // An edit made while the first load is in flight keeps the server's values in every other field.
-  const dom = { gParamSpeed: element('1'), gTgEnabled: element(), gParamSovitsUrl: element(''), gTgSave: element() };
+  const dom = { gAudioRetention: element('30'), gTgEnabled: element(), gParamSovitsUrl: element(''), gTgSave: element() };
   initGlobalSettings(dom);
   let complete;
   globalThis.fetch = () => new Promise(resolve => { complete = resolve; });
   const pending = loadGlobalConfig();
-  dom.gParamSpeed.value = '1.3'; dom.gParamSpeed.change();
-  complete(response({ status: 'ok', settings: { speed_factor: 1, telegram_enabled: true, gpt_sovits_url: 'http://10.0.0.5:9880' } }));
+  dom.gAudioRetention.value = '90'; dom.gAudioRetention.change();
+  complete(response({ status: 'ok', settings: { audio_retention_minutes: 30, telegram_enabled: true, gpt_sovits_url: 'http://10.0.0.5:9880' } }));
   await pending;
-  assert.equal(dom.gParamSpeed.value, '1.3');
+  assert.equal(dom.gAudioRetention.value, '90');
   assert.equal(dom.gTgEnabled.checked, true);
   assert.equal(dom.gParamSovitsUrl.value, 'http://10.0.0.5:9880');
   const posts = [];
@@ -513,7 +514,7 @@ for (const known of [true, false]) {
     return response({ status: 'ok', settings: {} });
   };
   await saveGlobalConfig();
-  assert.equal(posts[0].speed_factor, 1.3);
+  assert.equal(posts[0].audio_retention_minutes, 90);
   assert.equal(posts[0].telegram_enabled, true);
   assert.equal(posts[0].gpt_sovits_url, 'http://10.0.0.5:9880'); passed++;
 }
@@ -685,12 +686,6 @@ for (const allowed of [true, false]) {
   const dom = {
     gParamSovitsUrl: control('input', 'http://127.0.0.1:9880'),
     gPrecision: control('select', 'auto'),
-    gParamSliceMethod: control('select', 'cut5'),
-    gParamSpeed: control('input', '1'),
-    gParamTopK: control('input', '15'),
-    gParamTopP: control('input', '1'),
-    gParamTemp: control('input', '1'),
-    gParamFragmentInterval: control('input', '0.3'),
     gAudioRetention: control('input', '30'),
     gTgEnabled: control('input', '', false),
     gTgToken: control('input', ''),
@@ -703,14 +698,14 @@ for (const allowed of [true, false]) {
     gDefaultSystemPrompt: control('textarea', ''),
     gTgSave: control('button', ''),
   };
-  const persisted = (speed) => ({
+  const persisted = (retention) => ({
     active_provider_id: 'deepseek',
     active_voice_profile_id: null,
     gpt_sovits_url: 'http://127.0.0.1:9880',
     audio_output_dir: 'audio',
-    audio_retention_minutes: 30,
+    audio_retention_minutes: retention,
     audio_cleanup_interval_sec: 600,
-    speed_factor: speed,
+    speed_factor: 1,
     temperature: 1,
     top_k: 15,
     top_p: 1,
@@ -754,14 +749,14 @@ for (const allowed of [true, false]) {
             throw new TypeError('Failed to fetch');
           }
           configGets += 1;
-          const speed = configGets === 1 ? 1 : configGets === 2 ? 1.8 : 1;
-          return response({ status: 'ok', settings: persisted(speed), active_provider: null });
+          const retention = configGets === 1 ? 30 : configGets === 2 ? 45 : 30;
+          return response({ status: 'ok', settings: persisted(retention), active_provider: null });
         }
         return response({});
       };
       await loadGlobalConfig();
-      dom.gParamSpeed.value = '1.8';
-      dom.gParamSpeed.dispatchEvent({ type: 'input' });
+      dom.gAudioRetention.value = '45';
+      dom.gAudioRetention.dispatchEvent({ type: 'input' });
       await saveGlobalConfig();
       await tick();
       const messages = [...toastRoot.children].map(node => node.textContent);
@@ -771,12 +766,12 @@ for (const allowed of [true, false]) {
       assert.ok(messages.includes('全局配置已保存'), detail);
       assert.equal(messages.some(message => message.includes('保存失败')), false, detail);
       assert.equal(messages.some(message => message.includes('尚未保存')), false, detail);
-      assert.equal(Number(dom.gParamSpeed.value), 1, detail);
+      assert.equal(Number(dom.gAudioRetention.value), 30, detail);
       assert.equal(dom.gTgSave.disabled, false, detail);
       assert.equal(Object.hasOwn(posts[0], 'memory_enabled'), false, detail);
       assert.equal(Object.hasOwn(posts[0], 'user_nickname'), false, detail);
       assert.equal(Object.hasOwn(posts[0], 'system_prompt'), false, detail);
-      assert.equal(posts[0].speed_factor, 1.8, detail);
+      assert.equal(posts[0].audio_retention_minutes, 45, detail);
       passed++;
     }
   } finally {
@@ -801,12 +796,6 @@ for (const allowed of [true, false]) {
     const dom = {
       gParamSovitsUrl: control('input', 'http://127.0.0.1:9880'),
       gPrecision: control('select', 'auto'),
-      gParamSliceMethod: control('select', 'cut5'),
-      gParamSpeed: control('input', '1'),
-      gParamTopK: control('input', '15'),
-      gParamTopP: control('input', '1'),
-      gParamTemp: control('input', '1'),
-      gParamFragmentInterval: control('input', '0.3'),
       gAudioRetention: control('input', '30'),
       gTgEnabled: control('input', '', false),
       gTgToken: control('input', ''),
