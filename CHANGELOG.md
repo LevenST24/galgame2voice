@@ -14,9 +14,12 @@ All notable changes to galgame2voice are documented here. The format follows
 
 
 
+
 ### Fixed
 
 - 修复旧 Telegram 连通性测试在途时重新打开设置或发起新测试后，旧响应结束时错误提前解锁新测试按钮并弹出旧提示的问题，以及测试进行中编辑输入框会导致测试按钮永久锁死的问题；现在 Telegram 测试拥有独立的代数守卫与 AbortController，草稿变更或重新初始化立即作废旧测试且不泄露提示或干扰新状态，编辑输入框会即时重置忙碌态以允许再次重试。
+### Removed
+- 移除网页界面与 Telegram 均未使用的好感度、长期记忆和性能指标独立接口；对话中的长期记忆提取与好感度演进，以及设置中心的语音缓存统计与清理功能保持不变。
 ### Removed
 - 移除两个页面和内置脚本都不会用到的接口：GET /api/providers/presets 与 GET /api/providers/{id}/models；模型提供商的预设列表仍随 GET /api/providers 一并返回。
 ### Removed

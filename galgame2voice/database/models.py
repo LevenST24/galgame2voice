@@ -404,48 +404,6 @@ class CacheStatsResponse(BaseModel):
     estimated_saved_seconds: float = 0.0
 
 
-class MetricsOverviewResponse(BaseModel):
-    total_requests: int = 0
-    total_prompt_tokens: int = 0
-    total_completion_tokens: int = 0
-    total_tokens: int = 0
-    estimated_cost_usd: float = 0.0
-    estimated_cost_cny: float = 0.0
-    avg_ttft_ms: float = 0.0
-    avg_tts_first_chunk_ms: float = 0.0
-    avg_total_latency_ms: float = 0.0
-    cache_stats: CacheStatsResponse = Field(default_factory=CacheStatsResponse)
-    tts_speed: dict[str, Any] | None = None
-
-
-class ProviderMetricItem(BaseModel):
-    provider_id: str
-    name: str
-    request_count: int = 0
-    total_tokens: int = 0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    estimated_cost_usd: float = 0.0
-    percentage: float = 0.0
-
-
-class ProvidersMetricsResponse(BaseModel):
-    providers: list[ProviderMetricItem] = Field(default_factory=list)
-
-
-class LatencyTrendItem(BaseModel):
-    timestamp: str
-    ttft_ms: float
-    tts_first_chunk_ms: float
-    total_latency_ms: float
-    model_name: str = ""
-    provider_id: str = ""
-
-
-class LatencyTrendResponse(BaseModel):
-    trend: list[LatencyTrendItem] = Field(default_factory=list)
-
-
 # ==================== Memory & Affection Models ====================
 
 class UserMemoryBase(BaseModel):

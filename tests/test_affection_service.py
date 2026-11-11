@@ -2,7 +2,7 @@
 Unit and integration tests for Dynamic Affection State Machine & Easter Eggs (AffectionService).
 Covers 5-tier level transitions, scoring rules (+1 base, +2 compliments, +3 character keywords),
 daily points cap, 7 emotion taxonomy classifiers, Galgame easter egg triggers,
-milestone line unlocks, and dialogue gallery queries.
+and milestone line unlocks.
 """
 
 import pytest
@@ -165,35 +165,3 @@ class TestAffectionTurnHandlingAndDailyCap:
         )
         assert res_capped["points_earned"] == 0
         assert res_capped["score"] == 15
-
-
-class TestDialogueGallery:
-    @pytest.mark.asyncio
-    async def test_get_dialogue_gallery_unlock_states(self, affection_service, isolate_test_database):
-        user_id = "u_gallery"
-        char_id = 1
-
-        # Initial state: Only Lv.1 milestone is unlocked
-        gallery1 = await affection_service.get_dialogue_gallery(user_id=user_id, character_id=char_id)
-        assert len(gallery1) == len(AffectionService.MILESTONES) + len(AffectionService.EASTER_EGGS)
-
-        lv1_item = next(d for d in gallery1 if d["id"] == "milestone_lv1")
-        assert lv1_item["is_unlocked"] is True
-
-        lv5_item = next(d for d in gallery1 if d["id"] == "milestone_lv5")
-        assert lv5_item["is_unlocked"] is False
-
-        zaozi_item = next(d for d in gallery1 if d["id"] == "easter_egg_zaozi")
-        assert zaozi_item["is_unlocked"] is False
-
-        # Trigger easter egg
-        await affection_service.handle_turn_affection(
-            user_id=user_id,
-            character_id=char_id,
-            user_text="枣子姐！",
-            assistant_text="……",
-        )
-
-        gallery2 = await affection_service.get_dialogue_gallery(user_id=user_id, character_id=char_id)
-        zaozi_item_after = next(d for d in gallery2 if d["id"] == "easter_egg_zaozi")
-        assert zaozi_item_after["is_unlocked"] is True

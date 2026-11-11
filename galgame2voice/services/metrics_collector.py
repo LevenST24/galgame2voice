@@ -15,7 +15,6 @@ from itertools import repeat
 
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path
-from galgame2voice.services.tts_cache_manager import get_tts_cache_manager
 
 logger = logging.getLogger("galgame2voice.services.metrics_collector")
 
@@ -277,73 +276,6 @@ class MetricsCollector:
             tts_cached_chunks=tts_cached_chunks,
             tts_generated_chunks=tts_generated_chunks,
         )
-
-    async def get_overview(self) -> dict[str, Any]:
-        """
-        Retrieves global token telemetry aggregated overview combined with TTS cache stats.
-        """
-        try:
-            async with get_db(self.db_path) as conn:
-                db_overview = await crud.get_metrics_overview(conn)
-        except Exception as exc:
-            logger.warning("Could not read db metrics overview: %s", exc)
-            db_overview = {
-                "total_requests": 0, "total_prompt_tokens": 0, "total_completion_tokens": 0,
-                "total_tokens": 0, "estimated_cost_usd": 0.0, "estimated_cost_cny": 0.0,
-                "avg_ttft_ms": 0.0, "avg_tts_first_chunk_ms": 0.0, "avg_total_latency_ms": 0.0,
-            }
-
-        # Retrieve TTS cache stats
-        cache_manager = get_tts_cache_manager(db_path=self.db_path)
-        cache_stats = await cache_manager.get_stats()
-
-        overview = dict(db_overview)
-        overview["cache_stats"] = cache_stats
-
-        # Retrieve real-time TTS speed and dynamic batch scheduler telemetry
-        try:
-            from galgame2voice.services.dynamic_batcher import get_speed_tracker
-            overview["tts_speed"] = get_speed_tracker().get_telemetry()
-        except Exception as exc:
-            logger.debug("Could not read TTS speed telemetry: %s", exc)
-            overview["tts_speed"] = None
-
-        return overview
-
-    async def get_providers(self) -> list[dict[str, Any]]:
-        """Retrieves breakdown of token usage and costs by provider."""
-        try:
-            async with get_db(self.db_path) as conn:
-                return await crud.get_provider_metrics_breakdown(conn)
-        except Exception as exc:
-            logger.warning("Could not read provider metrics breakdown: %s", exc)
-            return []
-
-    async def get_latency_trend(self, limit: int = 30) -> list[dict[str, Any]]:
-        """
-        Retrieves recent latency measurements from in-memory ring buffer or database.
-        """
-        if len(self.ring_buffer) >= min(5, limit):
-            # Return from ring buffer
-            recent = list(self.ring_buffer)[-limit:]
-            return [
-                {
-                    "timestamp": r["timestamp"],
-                    "ttft_ms": r["ttft_ms"],
-                    "tts_first_chunk_ms": r["tts_first_chunk_ms"],
-                    "total_latency_ms": r["total_latency_ms"],
-                    "model_name": r["model_name"],
-                    "provider_id": r["provider_id"],
-                }
-                for r in recent
-            ]
-
-        try:
-            async with get_db(self.db_path) as conn:
-                return await crud.get_recent_latency_trends(conn, limit=limit)
-        except Exception as exc:
-            logger.warning("Could not read latency trends from DB: %s", exc)
-            return []
 
 
 # Singleton accessor

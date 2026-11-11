@@ -2,7 +2,6 @@
 Audit Hardening M11 Test Suite.
 Verifies:
 1. Voice router boundary checks, profile_id constraints, and sanitized error handling.
-2. Memory router input validation, character_id >= 1, fact value sanitization, and 422/404 handling.
 3. Characters router (/api/characters) list, detail, and switch endpoints with 404 precedence and affection integration.
 4. Health router URL scheme validation and error sanitization.
 5. Telegram bot network drop safety, callback query boundary validation, and nickname sanitization.
@@ -97,63 +96,6 @@ class TestVoiceRouterHardening:
             "sovits_weights_path": "a.pth",
         })
         assert res.status_code == 422
-
-
-# ============================================================================
-# 2. Memory Router Hardening & Boundary Validation
-# ============================================================================
-
-@pytest.mark.asyncio
-class TestMemoryRouterHardening:
-    async def test_memory_id_bounds(self, client):
-        res = await client.put("/api/memory/0", json={"fact_value": "new"})
-        assert res.status_code == 422
-        assert "positive integer" in res.json()["detail"]
-
-        res = await client.delete("/api/memory/-1")
-        assert res.status_code == 422
-
-    async def test_memory_empty_user_id_returns_422(self, client):
-        res = await client.get("/api/memory?user_id=   ")
-        assert res.status_code == 422
-        assert "user_id cannot be empty" in res.json()["detail"]
-
-        res = await client.delete("/api/memory?user_id=   ")
-        assert res.status_code == 422
-
-    async def test_memory_character_id_bounds(self, client):
-        res = await client.post("/api/memory", json={
-            "user_id": "test_user",
-            "character_id": 0,
-            "fact_key": "fav_color",
-            "fact_value": "blue",
-        })
-        assert res.status_code == 422
-
-    async def test_memory_fact_value_sanitized_on_create_and_update(self, client):
-        # Inject bidi override and curly braces
-        dirty_val = "secret\u202e\u202d{injection}value"
-        res = await client.post("/api/memory", json={
-            "user_id": "sanitize_test_user",
-            "character_id": 1,
-            "fact_key": "test_key",
-            "fact_value": dirty_val,
-        })
-        assert res.status_code == 201
-        created = res.json()
-        assert "\u202e" not in created["fact_value"]
-        assert "{" not in created["fact_value"]
-        assert "}" not in created["fact_value"]
-        assert "injection" in created["fact_value"]
-
-        # Update test
-        res_up = await client.put(f"/api/memory/{created['id']}", json={
-            "fact_value": "new\u200b{payload}"
-        })
-        assert res_up.status_code == 200
-        assert "{" not in res_up.json()["fact_value"]
-        assert "}" not in res_up.json()["fact_value"]
-        assert "payload" in res_up.json()["fact_value"]
 
 
 # ============================================================================

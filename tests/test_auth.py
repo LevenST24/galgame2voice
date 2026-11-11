@@ -75,12 +75,12 @@ class TestConsoleTokenAuth:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_chat_memory_affection_metrics_protected(self, app_client):
+    async def test_protected_api_routes(self, app_client):
         for method, path, kwargs in [
             ("post", "/api/chat", {"json": {"prompt": "hi"}}),
-            ("get", "/api/memory", {}),
-            ("get", "/api/affection", {}),
-            ("get", "/api/metrics/overview", {}),
+            ("get", "/api/cache/stats", {}),
+            ("get", "/api/chat/sessions", {}),
+            ("get", "/api/characters", {}),
             ("post", "/api/cache/clear", {}),
             ("get", "/api/chat/history", {}),
             ("delete", "/api/chat/history", {}),

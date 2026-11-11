@@ -669,24 +669,18 @@ class TestTokenPricingAndConcurrentTelemetry:
         assert len(collector.ring_buffer) == 50
 
         # Verify SQLite persistent aggregations
-        overview = await collector.get_overview()
+        async with get_db(db_path) as conn:
+            overview = await crud.get_metrics_overview(conn)
+            cur = await conn.execute(
+                "SELECT provider_id, COUNT(*) FROM token_usage_metrics GROUP BY provider_id"
+            )
+            p_counts = dict(await cur.fetchall())
         assert overview["total_requests"] == num_tasks
         assert overview["total_prompt_tokens"] == num_tasks * prompt_per_task
         assert overview["total_completion_tokens"] == num_tasks * comp_per_task
         assert overview["total_tokens"] == num_tasks * (prompt_per_task + comp_per_task)
         assert overview["estimated_cost_usd"] > 0.0
-
-        # Verify provider breakdown
-        providers = await collector.get_providers()
-        assert len(providers) == 2
-        p_dict = {p["provider_id"]: p for p in providers}
-        assert "deepseek" in p_dict and "openai" in p_dict
-        assert p_dict["deepseek"]["request_count"] == num_tasks // 2
-        assert p_dict["openai"]["request_count"] == num_tasks // 2
-
-        # Verify latency trends
-        trends = await collector.get_latency_trend(limit=50)
-        assert len(trends) == 50
+        assert p_counts == {"deepseek": num_tasks // 2, "openai": num_tasks // 2}
 
 
 # ============================================================================
@@ -694,7 +688,7 @@ class TestTokenPricingAndConcurrentTelemetry:
 # ============================================================================
 
 class TestMetricsAndCacheApiAdversarial:
-    """Tests FastAPI endpoints under edge parameters."""
+    """Tests FastAPI cache endpoints under isolated state."""
 
     @pytest.fixture(autouse=True)
     def setup_isolated_env(self, tmp_path):
@@ -711,17 +705,6 @@ class TestMetricsAndCacheApiAdversarial:
         yield
         tc_mod._tts_cache_manager_instance = None
         mc_mod._metrics_collector_instance = None
-
-    def test_latency_trend_query_limits(self):
-        """Tests /api/metrics/latency-trend query parameter validation (ge=1, le=200)."""
-        r_valid = self.client.get("/api/metrics/latency-trend?limit=50")
-        assert r_valid.status_code == 200
-
-        r_zero = self.client.get("/api/metrics/latency-trend?limit=0")
-        assert r_zero.status_code == 422
-
-        r_huge = self.client.get("/api/metrics/latency-trend?limit=500")
-        assert r_huge.status_code == 422
 
     def test_cache_clear_and_stats_cycle(self):
         """Tests /api/cache/stats and /api/cache/clear lifecycle via HTTP."""

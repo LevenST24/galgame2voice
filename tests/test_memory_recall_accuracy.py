@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 import sqlite3
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 
 from galgame2voice.database import crud
 from galgame2voice.database.models import CharacterAffectionUpdate, UserMemoryCreate, UserMemoryResponse
@@ -138,21 +137,3 @@ async def test_level_up_follows_the_score_not_a_manually_written_level(memory_se
         updated, gained, level_up = await crud.increment_affection(conn, "u1", 1, 5)
         assert gained == 5 and updated.affection_score == 80
         assert level_up is True  # 75 -> 80 reaches Lv.5
-
-
-async def test_memory_api_rejects_values_that_sanitize_to_nothing(memory_service):
-    from galgame2voice.main import create_app
-
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
-        created = await client.post(
-            "/api/memory", json={"user_id": "u1", "character_id": 1, "fact_key": "k", "fact_value": "ok"}
-        )
-        assert created.status_code == 201
-
-        res = await client.post(
-            "/api/memory", json={"user_id": "u1", "character_id": 1, "fact_key": "k2", "fact_value": "[]"}
-        )
-        assert res.status_code == 422
-
-        res = await client.put(f"/api/memory/{created.json()['id']}", json={"fact_value": "<>"})
-        assert res.status_code == 422

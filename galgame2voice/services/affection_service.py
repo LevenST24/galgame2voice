@@ -383,52 +383,6 @@ class AffectionService:
             "custom_nickname": updated.custom_nickname,
         }
 
-    async def get_dialogue_gallery(
-        self,
-        user_id: str = "default_user",
-        character_id: int = 1,
-    ) -> list[dict[str, Any]]:
-        """
-        Returns full list of milestone and easter egg dialogues with unlock status.
-        """
-        u_id, char_id = self._normalize_user_and_character_ids(user_id, character_id)
-
-        async with get_db(self.db_path) as conn:
-            aff = await crud.get_or_create_character_affection(conn, u_id, char_id)
-
-        unlocked_set = set(aff.unlocked_dialogues)
-        gallery: list[dict[str, Any]] = []
-
-        # 1. Add Milestones
-        for m_id, m in self.MILESTONES.items():
-            is_unlocked = m_id in unlocked_set or aff.affection_level >= m["level"]
-            gallery.append({
-                "id": m["id"],
-                "type": "milestone",
-                "title": f"Lv.{m['level']} 阶段台词 - {m['title']}",
-                "chinese": m["chinese"],
-                "japanese": m["japanese"],
-                "emotion": m["emotion"],
-                "is_unlocked": is_unlocked,
-                "unlock_condition": f"好感度达到 Lv.{m['level']}",
-            })
-
-        # 2. Add Easter Eggs
-        for e_id, e in self.EASTER_EGGS.items():
-            is_unlocked = e_id in unlocked_set
-            gallery.append({
-                "id": e["id"],
-                "type": "easter_egg",
-                "title": f"隐藏彩蛋 - {e['title']}",
-                "chinese": e["chinese"],
-                "japanese": e["japanese"],
-                "emotion": e["emotion"],
-                "is_unlocked": is_unlocked,
-                "unlock_condition": f"触发关键词: {', '.join(e['triggers'])} (需好感度 Lv.{e['min_level']}+)",
-            })
-
-        return gallery
-
 
 # Module-level aliases for convenience and backwards-compatibility
 EASTER_EGG_TRIGGERS = AffectionService.EASTER_EGGS

@@ -5,7 +5,6 @@ Streaming Adaptive Prosody, WAV Byte-Rate Extraction, and TTS Speed Telemetry.
 
 import struct
 import pytest
-from httpx import AsyncClient, ASGITransport
 
 from galgame2voice.utils.japanese_phonetics import (
     clean_japanese_parentheses,
@@ -21,7 +20,6 @@ from galgame2voice.services.emotion_classifier import (
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
 from galgame2voice.services.gpt_sovits_client import extract_wav_duration
 from galgame2voice.services.dynamic_batcher import get_speed_tracker, reset_speed_tracker
-from galgame2voice.main import app
 
 
 # ============================================================================
@@ -240,39 +238,19 @@ def test_extract_wav_duration_invalid_payload_fallback():
 
 
 # ============================================================================
-# 4. Telemetry Endpoints Integration Tests
+# 4. TTS Speed Tracker Telemetry Tests
 # ============================================================================
 
-@pytest.mark.asyncio
-async def test_tts_speed_metrics_endpoint():
-    """Validates /api/metrics/tts-speed returns real-time RTF and batch telemetry."""
+def test_tts_speed_tracker_telemetry():
+    """Validates TtsSpeedTracker returns real-time RTF and batch telemetry."""
     reset_speed_tracker()
     tracker = get_speed_tracker()
     tracker.record(char_count=20, elapsed_s=0.5, audio_dur_s=2.0)
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        resp = await ac.get("/api/metrics/tts-speed")
-        assert resp.status_code == 200
-        data = resp.json()
-
-        assert "status" in data
-        assert "avg_rtf" in data
-        assert "chars_per_sec" in data
-        assert "dynamic_batch_size" in data
-        assert data["sample_count"] >= 1
-        assert data["avg_rtf"] == 0.25  # 0.5s / 2.0s = 0.25 RTF
-
-
-@pytest.mark.asyncio
-async def test_metrics_overview_includes_tts_speed():
-    """Validates /api/metrics/overview exposes tts_speed telemetry."""
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        resp = await ac.get("/api/metrics/overview")
-        assert resp.status_code == 200
-        data = resp.json()
-
-        assert "tts_speed" in data
-        assert data["tts_speed"] is not None
-        assert "dynamic_batch_size" in data["tts_speed"]
+    data = tracker.get_telemetry()
+    assert "status" in data
+    assert "avg_rtf" in data
+    assert "chars_per_sec" in data
+    assert "dynamic_batch_size" in data
+    assert data["sample_count"] >= 1
+    assert data["avg_rtf"] == 0.25  # 0.5s / 2.0s = 0.25 RTF

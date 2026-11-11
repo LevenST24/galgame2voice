@@ -65,8 +65,6 @@ from galgame2voice.database.crud_modules.settings_cache import (
     delete_tts_cache_entry,
     get_metrics_overview,
     get_oldest_tts_cache_entries,
-    get_provider_metrics_breakdown,
-    get_recent_latency_trends,
     get_settings,
     get_settings_raw,
     get_tts_cache_entry,
@@ -200,8 +198,6 @@ __all__ = [
     "clean_tts_cache_lru",
     "insert_token_metric",
     "get_metrics_overview",
-    "get_provider_metrics_breakdown",
-    "get_recent_latency_trends",
     # Module logger
     "logger",
 ]
