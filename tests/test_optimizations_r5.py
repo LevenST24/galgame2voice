@@ -8,6 +8,7 @@ Verifies:
 """
 
 import asyncio
+import wave
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,7 +16,8 @@ import pytest
 
 from galgame2voice.routers.chat import sse_event_formatter
 from galgame2voice.routers.system import _apply_update_sync
-from galgame2voice.services.character_manager import _AUDIO_PROBE_CACHE, get_character_manager
+from galgame2voice.services import character_manager, character_package
+from galgame2voice.services.character_manager import CharacterManager
 from galgame2voice.services.chat_service import SseKeepAlive
 
 
@@ -46,18 +48,36 @@ class TestSseKeepAliveFormatting:
 class TestCharacterAudioProbeCache:
     """Verifies that _AUDIO_PROBE_CACHE memoizes file hash and duration."""
 
-    def test_audio_probe_caching_performance(self):
-        mgr = get_character_manager()
-        mgr.discover_characters()
+    def test_audio_probe_caching_performance(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(character_package, "_AUDIO_PROBE_CACHE", {})
+        monkeypatch.setattr(character_manager, "_AUDIO_PROBE_CACHE", character_package._AUDIO_PROBE_CACHE)
+        audio = tmp_path / "ref.wav"
+        with wave.open(str(audio), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(32000)
+            w.writeframes(b"\x01\x00" * 32000 * 4)
 
-        # The cache should now be populated with reference audio records
-        initial_cache_len = len(_AUDIO_PROBE_CACHE)
-        assert initial_cache_len > 0, "Expected _AUDIO_PROBE_CACHE to contain discovered audio entries"
+        first = CharacterManager._probe_audio_file(audio, audio)
+        assert first[0] is not None and first[2] is None
+        assert len(character_package._AUDIO_PROBE_CACHE) == 1
 
-        # Re-discovery should hit cache without re-probing
+        # An unchanged file is served from the cache without re-probing.
         with patch("galgame2voice.services.tts_service.TtsService.get_audio_duration") as mock_probe:
-            mgr.discover_characters()
+            assert CharacterManager._probe_audio_file(audio, audio) == first
             mock_probe.assert_not_called()
+
+        # A changed file (new size) is probed again.
+        with wave.open(str(audio), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(32000)
+            w.writeframes(b"\x02\x00" * 32000 * 5)
+        with patch("galgame2voice.services.tts_service.TtsService.get_audio_duration", return_value=5.0) as mock_probe:
+            second = CharacterManager._probe_audio_file(audio, audio)
+            mock_probe.assert_called_once()
+        assert second[0] != first[0]
+        assert second[1] == 5.0
 
 
 class TestSystemUpdateGitClean:
