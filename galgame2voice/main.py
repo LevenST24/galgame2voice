@@ -227,29 +227,6 @@ async def _init_gpt_sovits_client(settings) -> None:
         )
 
 
-def _start_telegram_bg(settings) -> asyncio.Task | None:
-    """Starts Telegram Bot polling in a background task if enabled in DB."""
-    try:
-        from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
-        tg_manager = get_telegram_bot_manager(db_path=settings.db_path)
-
-        async def _run():
-            try:
-                async with get_db(settings.db_path) as conn:
-                    db_settings = await crud.get_settings_raw(conn)
-                if not getattr(db_settings, "telegram_enabled", False):
-                    return
-                tg_started = await tg_manager.start()
-                if tg_started:
-                    logger.info("Telegram Bot background polling started successfully.")
-            except Exception as exc:
-                logger.warning("Telegram Bot auto-start on boot skipped or failed: %s", exc)
-
-        return asyncio.create_task(_run())
-    except Exception:
-        return None
-
-
 async def _drain_active_services() -> None:
     """Drains background tasks from ChatService, SessionManager, and caches before WAL checkpoint."""
     try:
@@ -292,26 +269,13 @@ async def _drain_active_services() -> None:
         logger.debug("Error draining background tasks on shutdown: %s", exc)
 
 
-async def _shutdown_services(settings, cleanup_task: asyncio.Task, tg_startup_task: asyncio.Task | None) -> None:
+async def _shutdown_services(settings, cleanup_task: asyncio.Task) -> None:
     """Gracefully drains background tasks, closes connections, and checkpoints SQLite WAL."""
     cleanup_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:
         pass
-
-    # Stop Telegram Bot
-    if tg_startup_task and not tg_startup_task.done():
-        tg_startup_task.cancel()
-        try:
-            await tg_startup_task
-        except asyncio.CancelledError:
-            pass
-    try:
-        from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
-        await get_telegram_bot_manager().stop()
-    except Exception as exc:
-        logger.debug("Error stopping Telegram Bot: %s", exc)
 
     # Cancel synthesis before closing its HTTP pool or draining cache writers.
     try:
@@ -366,7 +330,6 @@ async def lifespan(app: FastAPI):
             interval_seconds=settings.audio_cleanup_interval_seconds,
         )
     )
-    tg_startup_task = _start_telegram_bg(settings)
 
     logger.info(
         "Service startup complete. Listening on http://%s:%d",
@@ -381,7 +344,7 @@ async def lifespan(app: FastAPI):
         try:
             await app.state.telemetry_jobs.aclose()
         finally:
-            await _shutdown_services(settings, cleanup_task, tg_startup_task)
+            await _shutdown_services(settings, cleanup_task)
 
 
 class AudioStaticFiles(StaticFiles):

@@ -17,7 +17,6 @@ from galgame2voice.services.chat_pipelines.context_builder import BuiltContext
 from galgame2voice.services.chat_pipelines.text_pipeline import TextSegmentationPipeline
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
-from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from tests.test_stream_reply_lines import assert_lifecycle, coordinator_factory  # noqa: F401
 
 
@@ -344,41 +343,6 @@ async def test_service_forwards_format_and_persists_aggregate(tmp_path, monkeypa
         async with get_db(database) as conn:
             saved = (await crud.get_recent_messages(conn, "service"))[-1]
         assert (saved.content_chinese, saved.content_japanese, saved.lines) == (zh, ja, result["lines"])
-    finally:
-        await service.aclose()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("lines", [LINES, [{"zh": "", "ja": "日本語だけ。"}]])
-async def test_telegram_old_prompt_understands_lines_aggregate(tmp_path, monkeypatch, lines):
-    database = tmp_path / "telegram.db"
-    await init_db(database)
-    service = ChatService(db_path=database)
-    service._get_active_llm_adapter = AsyncMock(return_value=(
-        SimpleNamespace(chat=AsyncMock(return_value=SimpleNamespace(content=reply(lines)))), "test", "custom",
-    ))
-    service.memory_service.process_user_message = AsyncMock()
-    service.prepare_messages = AsyncMock(return_value=[])
-    service.affection_service.handle_turn_affection = AsyncMock()
-    handlers = TelegramBotHandlers(chat_service=service, db_path=str(database))
-    bot = SimpleNamespace(send_message=AsyncMock(), send_chat_action=AsyncMock())
-    voice = []
-
-    def capture_voice(chat_id, bot, japanese, *args, **kwargs):
-        voice.append(japanese)
-        return asyncio.create_task(asyncio.sleep(0))
-
-    monkeypatch.setattr(handlers, "_spawn_background_voice_task", capture_voice)
-    try:
-        await (await handlers.process_text_chat(4242, "问题", bot))
-        zh, ja = "".join(x["zh"] for x in lines), "".join(x["ja"] for x in lines)
-        assert bot.send_message.call_args.kwargs["text"] == (zh or ja)
-        assert voice == [ja]
-        assert service.prepare_messages.call_args.kwargs["reply_format"] == "old"
-        async with get_db(database) as conn:
-            saved = (await crud.get_recent_messages(conn, "tg_4242"))[-1]
-        assert (saved.content_chinese, saved.content_japanese) == (zh or ja, ja)
-        assert [x["ja"] for x in saved.lines] == [x["ja"] for x in lines]
     finally:
         await service.aclose()
 

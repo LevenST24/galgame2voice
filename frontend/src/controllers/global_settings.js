@@ -1,4 +1,4 @@
-// Global Settings Controller: Coordinator & compatibility facade for Providers, Telemetry, Engine, Telegram
+// Global Settings Controller: Coordinator & compatibility facade for Providers, Telemetry, Engine
 import {
   requestJson,
 } from '../api.js';
@@ -14,9 +14,6 @@ import {
 import {
   createEngineSettingsController,
 } from './engine_settings.js';
-import {
-  createTelegramSettingsController,
-} from './telegram_settings.js';
 import { initSettingsTabs } from '../settings_ui.js';
 
 const $ = (id) => (typeof document !== 'undefined' ? document.getElementById?.(id) : null);
@@ -26,7 +23,6 @@ let _callbacks = {};
 let providerController = null;
 let telemetryController = null;
 let engineController = null;
-let telegramController = null;
 let engineDirectory = null;
 let tabsCleanup = null;
 let coordinatorCleanups = [];
@@ -43,8 +39,7 @@ let privateEndpointSaved = false;
 let privateEndpointSaving = false;
 let precisionSavedRevision = 0;
 let gpuAvailable = true;
-const CONFIG_FIELDS = ['gParamSovitsUrl', 'gPrecision', 'gAudioRetention', 'gTgEnabled',
-  'gTgToken', 'gTgChatId', 'gTgProxyHost', 'gTgProxyPort', 'gTgProxyEnabled'];
+const CONFIG_FIELDS = ['gParamSovitsUrl', 'gPrecision', 'gAudioRetention'];
 
 function _bindCoordinator(element, type, handler) {
   if (!element || typeof element.addEventListener !== 'function') return;
@@ -94,14 +89,6 @@ export function handleActivateProvider() {
   return providerController ? providerController.handleActivateProvider() : Promise.resolve(false);
 }
 
-export function updateTelegramFieldsVisibility() {
-  return telegramController?.updateTelegramFieldsVisibility();
-}
-
-export function testTelegram() {
-  return telegramController ? telegramController.testTelegram() : Promise.resolve();
-}
-
 export function handleRestartSovits(precision) {
   return engineController ? engineController.handleRestartSovits(precision) : Promise.resolve();
 }
@@ -129,7 +116,6 @@ export function initGlobalSettings(dom, callbacks = {}) {
   // 1. Release previous controllers and coordinator listeners
   telemetryController?.dispose();
   engineController?.dispose();
-  telegramController?.dispose();
   providerController?.dispose();
   engineDirectory?.dispose?.();
   if (typeof tabsCleanup === 'function') {
@@ -177,7 +163,6 @@ export function initGlobalSettings(dom, callbacks = {}) {
     },
     onTelemetryHidden: () => {
       providerController?.invalidateActiveProviderTest();
-      telegramController?.invalidateActiveTelegramTest();
     },
   });
 
@@ -194,11 +179,6 @@ export function initGlobalSettings(dom, callbacks = {}) {
       precisionSavedRevision += 1;
       if (_dom.gPrecision?.value === value) dirtyConfigFields.delete('gPrecision');
     },
-  });
-
-  telegramController = createTelegramSettingsController(_dom, {
-    showToast,
-    updateSaveButtons,
   });
 
   updateSaveButtons();
@@ -249,7 +229,7 @@ export function initGlobalSettings(dom, callbacks = {}) {
     });
   }
 
-  // Telegram save footer button
+  // Global save footer button
   if (_dom.gTgSave) {
     _bindCoordinator(_dom.gTgSave, 'click', saveGlobalConfig);
   }
@@ -302,7 +282,6 @@ export function initGlobalSettings(dom, callbacks = {}) {
 export function openGlobalSettings(tabName = null) {
   providerController?.invalidateActiveProviderTest();
   providerController?.resetTestResultBox();
-  telegramController?.invalidateActiveTelegramTest();
   if (_callbacks.openModal) _callbacks.openModal(_dom.globalModal);
   if (typeof tabName === 'string' && tabName && _dom.gTabs) {
     const tabBtn = _dom.gTabs.querySelector(`[data-gtab="${tabName}"]`);
@@ -418,9 +397,6 @@ export async function loadGlobalConfig() {
     fill('gAudioRetention', (el) => { el.value = s.audio_retention_minutes || 30; });
     if (targetDom.gDashRetentionVal) targetDom.gDashRetentionVal.textContent = `保留时长：${s.audio_retention_minutes || 30} 分钟`;
 
-    // Telegram
-    telegramController?.fillTelegramConfig(s, dirtyConfigFields);
-
     configLoaded = true;
   } catch (e) {
     if (coordinatorRevision !== settingsCoordinatorRevision || targetDom !== _dom || load !== configLoad) return;
@@ -434,12 +410,6 @@ export async function saveGlobalConfig() {
   if (!configLoaded) {
     showToast('还没有读取到当前配置，保存会用默认值覆盖已有设置。正在重新读取，请稍后再保存。', 'error');
     loadGlobalConfig();
-    return;
-  }
-  const tgValidation = telegramController?.validateTelegram() || { valid: true };
-  if (!tgValidation.valid) {
-    showToast(tgValidation.message, 'error');
-    updateSaveButtons();
     return;
   }
 
@@ -458,12 +428,10 @@ export async function saveGlobalConfig() {
     }
     const saveModel = targetProviderController?.isProviderDirty() ?? false;
     const savedRevision = configRevision;
-    const tgPayload = telegramController?.getTelegramPayload() || {};
     const payload = {
       gpt_sovits_url: _dom.gParamSovitsUrl ? _dom.gParamSovitsUrl.value.trim() || 'http://127.0.0.1:9880' : undefined,
       inference_precision: _dom.gPrecision ? _dom.gPrecision.value : undefined,
       audio_retention_minutes: _dom.gAudioRetention ? Math.max(1, Number(_dom.gAudioRetention.value) || 30) : 30,
-      ...tgPayload,
     };
 
     // Start the provider save now so it captures this click's model draft, but

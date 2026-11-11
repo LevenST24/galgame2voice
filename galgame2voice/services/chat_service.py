@@ -275,8 +275,8 @@ class ChatService:
     ) -> tuple[BaseLLMAdapter, str, str]:
         """Public interface for getting the active LLM adapter.
 
-        Returns (adapter, chat_model, provider_id). External callers (e.g. the
-        Telegram bot) should use this instead of the private _get_active_llm_adapter.
+        Returns (adapter, chat_model, provider_id). External callers should use
+        this instead of the private _get_active_llm_adapter.
         """
         return await self._get_active_llm_adapter(conn=conn, provider_id=provider_id)
 
@@ -327,8 +327,7 @@ class ChatService:
     ) -> list[ChatMessage]:
         """Public interface for preparing chat messages.
 
-        External callers (e.g. the Telegram bot) should use this instead of the
-        private _prepare_messages.
+        External callers should use this instead of the private _prepare_messages.
         """
         return await self._prepare_messages(
             conn, session_id, user_prompt, character_name,

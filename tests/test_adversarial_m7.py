@@ -61,7 +61,6 @@ from galgame2voice.services.session_manager import SessionManager, SessionTurn
 from galgame2voice.services.tts_service import TtsService
 from galgame2voice.services.voice_manager import GptSovitsClient, VoiceManager
 from galgame2voice.services.gpt_sovits_client import clean_japanese_parentheses
-from galgame2voice.telegram_bot import TelegramBotHandlers, validate_bot_token
 from galgame2voice.utils.logger import MaskingFilter
 from tests.conftest import MockGptSovitsServer, MockLLMServer, DATABASE_SCHEMA_SQL, mask_secret
 
@@ -544,85 +543,13 @@ class TestMultiTurnSseStreamingStress:
 
 
 # ============================================================================
-# 3. Concurrent Web API + Telegram Bot Load Interleaving Tests
+# 3. Concurrent Load & Namespace Isolation Tests
 # ============================================================================
 
 class TestConcurrentWebAndTelegramLoad:
     """
-    Stress tests combining concurrent Web Chat SSE streaming with Telegram Bot
-    text and voice note processing sharing the same backend resources.
+    Stress tests for shared backend resources and channel namespace isolation.
     """
-
-    @pytest.mark.asyncio
-    async def test_simultaneous_web_sse_and_telegram_bot_load(self, m7_db_path, m7_mock_gpt):
-        """
-        Interleaved concurrent load:
-        - 5 Web SSE streaming clients
-        - 5 Telegram text chat requests
-        - 5 Telegram voice note requests (simulated STT + Chat + TTS)
-        All sharing the same SQLite DB, GptSovitsClient, and VoiceManager.
-        """
-        voice_manager = VoiceManager(gpt_sovits_client_or_server=m7_mock_gpt, db_path=m7_db_path)
-        tts_service = voice_manager.tts_service
-        chat_service = ChatService(tts_service=tts_service, db_path=m7_db_path)
-
-        mock_adapter = CustomMockLLMAdapter(provider_config={}, custom_tokens=[
-            '{"chinese": "并发测试通过！", "japanese": "並行テスト完了！"}'
-        ])
-
-        # 1. Web Client Task
-        async def web_client_task(i: int):
-            events = []
-            async for event in chat_service.stream_chat(
-                prompt=f"Web user {i}",
-                session_id=f"web_load_{i}",
-            ):
-                events.append(event)
-            return ("web", i, len(events))
-
-        # 2. Telegram Text Task
-        async def telegram_text_task(i: int):
-            res = await chat_service.chat_sync(
-                prompt=f"Telegram user text {i}",
-                session_id=f"tg_text_{i}",
-            )
-            return ("tg_text", i, res["chinese"])
-
-        # 3. Telegram Voice Task (STT -> Chat -> TTS)
-        async def telegram_voice_task(i: int):
-            # Simulated STT step
-            transcribed_text = f"Telegram voice transcription {i}"
-            res = await chat_service.chat_sync(
-                prompt=transcribed_text,
-                session_id=f"tg_voice_{i}",
-            )
-            return ("tg_voice", i, res["audio_url"])
-
-        # Launch all 15 tasks concurrently
-        with patch("galgame2voice.services.chat_service.get_llm_adapter", return_value=mock_adapter):
-            tasks = []
-            for i in range(5):
-                tasks.append(web_client_task(i))
-                tasks.append(telegram_text_task(i))
-                tasks.append(telegram_voice_task(i))
-
-            results = await asyncio.gather(*tasks)
-
-        assert len(results) == 15
-        web_results = [r for r in results if r[0] == "web"]
-        tg_text_results = [r for r in results if r[0] == "tg_text"]
-        tg_voice_results = [r for r in results if r[0] == "tg_voice"]
-
-        assert len(web_results) == 5
-        assert len(tg_text_results) == 5
-        assert len(tg_voice_results) == 5
-
-        for _, _, count in web_results:
-            assert count >= 2  # At least text + done
-        for _, _, ch in tg_text_results:
-            assert ch == "并发测试通过！"
-        for _, _, audio_url in tg_voice_results:
-            assert audio_url.startswith("/audio/")
 
     @pytest.mark.asyncio
     async def test_shared_voice_manager_tts_lock_contention(self, m7_db_path, m7_mock_gpt):
@@ -963,11 +890,3 @@ class TestOriginalRequestAcceptanceCriteria:
         assert "(" not in cleaned
         assert ")" not in cleaned
         assert cleaned == "こんにちは！今日も一日、頑張りましょう！"
-
-    def test_ac_telegram_bot_token_validation_and_commands(self):
-        """
-        AC: Telegram bot token validation and command handling.
-        """
-        assert validate_bot_token("123456789:ABCdefGhIJKlmnoPQRstuvwxYZ123456") is True
-        assert validate_bot_token("invalid_token") is False
-        assert validate_bot_token("") is False

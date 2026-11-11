@@ -432,7 +432,7 @@ class TestErrorDiagnosticsEngine:
 # ============================================================================
 
 class TestSettingsSchemaAndAliases:
-    """Verifies stt_engine schema & persistence, and telegram_chat_id alias."""
+    """Verifies stt_engine schema & persistence."""
 
     def test_settings_models_stt_engine_defaults(self):
         base = SettingsBase()
@@ -440,43 +440,24 @@ class TestSettingsSchemaAndAliases:
         resp = SettingsResponse()
         assert resp.stt_engine == "browser"
 
-    def test_telegram_chat_id_alias_sync_in_models(self):
-        # SettingsBase initializes telegram_chat_id from telegram_admin_ids
-        base = SettingsBase(telegram_admin_ids="112233")
-        assert base.telegram_chat_id == "112233"
-
-        # SettingsUpdate synchronizes telegram_chat_id -> telegram_admin_ids
-        update = SettingsUpdate(telegram_chat_id="998877")
-        assert update.telegram_admin_ids == "998877"
-
-        # SettingsResponse carries telegram_chat_id
-        resp = SettingsResponse(telegram_admin_ids="556677")
-        assert resp.telegram_chat_id == "556677"
-
     @pytest.mark.asyncio
-    async def test_stt_engine_and_telegram_chat_id_persistence(self):
-        """Tests that stt_engine and telegram_chat_id persist accurately in SQLite settings."""
+    async def test_stt_engine_persistence(self):
+        """Tests that stt_engine persists accurately in SQLite settings."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
 
         try:
             await init_db(db_path)
             async with get_db(db_path) as conn:
-                # Update with stt_engine and telegram_chat_id
                 updates = SettingsUpdate(
                     stt_engine="sensevoice",
-                    telegram_chat_id="123456789,987654321",
                 )
                 updated = await crud.update_settings(conn, updates)
                 assert updated.stt_engine == "sensevoice"
-                assert updated.telegram_chat_id == "123456789,987654321"
-                assert updated.telegram_admin_ids == "123456789,987654321"
 
                 # Read back from DB
                 settings = await crud.get_settings(conn)
                 assert settings.stt_engine == "sensevoice"
-                assert settings.telegram_chat_id == "123456789,987654321"
-                assert settings.telegram_admin_ids == "123456789,987654321"
         finally:
             if os.path.exists(db_path):
                 os.remove(db_path)
