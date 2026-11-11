@@ -78,6 +78,7 @@ class TestHardwareUtilities:
         assert name == "GeForce GTX 1080"
         assert count == 1
 
+    @pytest.mark.real_hardware_probe
     def test_linux_proc_meminfo_parsing(self, monkeypatch, tmp_path):
         import galgame2voice.utils.hardware as hw
         meminfo_file = tmp_path / "meminfo"
@@ -104,6 +105,7 @@ class TestHardwareUtilities:
         assert total == 15.62
         assert avail == 7.81
 
+    @pytest.mark.real_hardware_probe
     def test_linux_proc_meminfo_fallback_buffers_cached(self, monkeypatch, tmp_path):
         import galgame2voice.utils.hardware as hw
         meminfo_file = tmp_path / "meminfo_old"
@@ -131,6 +133,7 @@ class TestHardwareUtilities:
         # (2000000 + 1000000 + 3000000) / (1024 * 1024) = 5.72
         assert avail == 5.72
 
+    @pytest.mark.real_hardware_probe
     def test_macos_sysctl_memory_parsing(self, monkeypatch):
         import galgame2voice.utils.hardware as hw
         monkeypatch.setattr(hw.sys, "platform", "darwin")
@@ -167,6 +170,7 @@ class TestRunServerReExports:
         assert "avail_ram_gb" in diag
         assert "has_nvidia" in diag
 
+    @pytest.mark.real_hardware_probe
     def test_run_server_detect_gpu_capability_respects_subprocess_monkeypatch(self, monkeypatch):
         import io
         import subprocess as real_sub
