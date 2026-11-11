@@ -39,17 +39,6 @@ _GEMINI_UNSUPPORTED_PARAMS = frozenset({
     "logprobs", "top_logprobs", "n", "seed", "user",
 })
 
-# Default test models mapped by base URL substrings
-_URL_DEFAULT_MODELS: tuple[tuple[str, str], ...] = (
-    ("x.ai", "grok-3"),
-    ("googleapis.com", "gemini-2.0-flash"),
-    ("deepseek.com", "deepseek-chat"),
-    ("bigmodel.cn", "glm-4-flash"),
-    ("aliyuncs.com", "qwen-plus"),
-    ("siliconflow.cn", "deepseek-ai/DeepSeek-V3"),
-    ("anthropic.com", "claude-3-5-sonnet-20241022"),
-)
-
 _AUTH_ERROR_KEYWORDS: tuple[str, ...] = (
     "api key",
     "apikey",
@@ -95,8 +84,9 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         """Resolves the test model: arg, then configured default, then provider preset/domain map, then gpt-4o-mini."""
         if model and str(model).strip():
             return str(model).strip()
-        if getattr(self, "default_model", None) and str(self.default_model).strip():
-            return str(self.default_model).strip()
+        default_model = str(getattr(self, "default_model", "") or "").strip()
+        if default_model and default_model != "gpt-4o-mini":
+            return default_model
         chat_model = self.extra_config.get("chat_model") or self.extra_config.get("model")
         if chat_model and str(chat_model).strip():
             return str(chat_model).strip()
@@ -109,11 +99,8 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                     return str(preset["default_chat_model"]).strip()
             except Exception as exc:
                 logger.debug("Failed getting provider preset for default model: %s", exc)
-        burl = (self.base_url or "").lower()
-        for domain_pattern, default_m in _URL_DEFAULT_MODELS:
-            if domain_pattern in burl:
-                return default_m
-        return "gpt-4o-mini"
+        from galgame2voice.adapters.registry import resolve_preset_default_model_by_url
+        return resolve_preset_default_model_by_url(self.base_url) or "gpt-4o-mini"
 
     def _get_headers(self) -> dict[str, str]:
         """Constructs request headers including bearer auth and custom extra headers."""
