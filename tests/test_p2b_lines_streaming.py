@@ -298,13 +298,12 @@ async def test_bounded_queues_preserve_chunk_then_terminal_order(coordinator_fac
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["sync", "stream"])
 @pytest.mark.parametrize("reply_format", ["old", "lines"])
 @pytest.mark.parametrize(("lines", "acts"), [
     (LINES, [line["act"] for line in LINES]),
     (DIRTY_LINES, [{"motion": "nod"}, {"face": "smile"}]),
 ], ids=["valid", "dirty"])
-async def test_service_forwards_format_and_persists_aggregate(tmp_path, monkeypatch, mode, reply_format, lines, acts):
+async def test_service_forwards_format_and_persists_aggregate(tmp_path, monkeypatch, reply_format, lines, acts):
     database = tmp_path / "service.db"
     await init_db(database)
 
@@ -329,13 +328,10 @@ async def test_service_forwards_format_and_persists_aggregate(tmp_path, monkeypa
 
     monkeypatch.setattr(service_module, "StreamCoordinator", capture)
     try:
-        if mode == "sync":
-            result = await service.chat_sync("问题", session_id="service", reply_format=reply_format)
-        else:
-            events = await _collect(service.stream_chat("问题", session_id="service", reply_format=reply_format))
-            result = events[-1]["data"]
-            assert coordinators[0]["reply_format"] == reply_format
-            assert [event["data"]["act"] for event in events if event["event"] == "line"] == acts
+        events = await _collect(service.stream_chat("问题", session_id="service", reply_format=reply_format))
+        result = events[-1]["data"]
+        assert coordinators[0]["reply_format"] == reply_format
+        assert [event["data"]["act"] for event in events if event["event"] == "line"] == acts
         assert context.call_args.kwargs["reply_format"] == reply_format
         zh, ja = "".join(line["zh"] for line in lines), "".join(line["ja"] for line in lines)
         assert (result["chinese"], result["japanese"]) == (zh, ja)

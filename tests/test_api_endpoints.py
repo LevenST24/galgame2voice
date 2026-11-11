@@ -50,11 +50,6 @@ class ProviderTestRequest(BaseModel):
     base_url: Optional[str] = None
     model: str
 
-class ChatRequest(BaseModel):
-    prompt: str = Field(..., min_length=1)
-    session_id: str = "default"
-    character_name: Optional[str] = None
-
 
 def create_test_api_app(db_path: str, gpt_sovits: MockGptSovitsServer, llm_server: MockLLMServer) -> FastAPI:
     """Builds a test FastAPI application adhering to PROJECT.md API contracts."""
@@ -177,19 +172,6 @@ def create_test_api_app(db_path: str, gpt_sovits: MockGptSovitsServer, llm_serve
             return {"success": False, "message": "Cannot reach base URL endpoint"}
         return {"success": True, "message": f"Successfully connected to {req.provider_type} model {req.model}", "latency_ms": 45.2}
 
-    @api_router.post("/chat")
-    async def chat_sync(req: ChatRequest):
-        if not req.prompt.strip():
-            raise HTTPException(status_code=422, detail="Prompt cannot be empty")
-        
-        bilingual_resp = json.loads(llm_server.generate_bilingual_json())
-        return {
-            "session_id": req.session_id,
-            "chinese": bilingual_resp["chinese"],
-            "japanese": bilingual_resp["japanese"],
-            "audio_url": "/audio/test_speech.wav"
-        }
-
     @app.get("/audio/{filename}")
     async def serve_audio(filename: str):
         if ".." in filename or "/" in filename or "\\" in filename:
@@ -304,18 +286,6 @@ class TestApiEndpointsTier1:
             assert data["success"] is True
             assert "latency_ms" in data
 
-    @pytest.mark.asyncio
-    async def test_chat_sync_endpoint(self, temp_db_path, mock_gpt_sovits, mock_llm_server):
-        app = create_test_api_app(temp_db_path, mock_gpt_sovits, mock_llm_server)
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/api/chat", json={"prompt": "早上好！", "session_id": "sess-1"})
-            assert resp.status_code == 200
-            data = resp.json()
-            assert "chinese" in data
-            assert "japanese" in data
-            assert "audio_url" in data
-
 
 # ============================================================================
 # Tier 2: Validation, Boundary, CORS, Security & Error Handling
@@ -395,7 +365,7 @@ class TestApiEndpointsTier2:
                 "Access-Control-Request-Method": "POST",
                 "Access-Control-Request-Headers": "Content-Type"
             }
-            resp = await client.options("/api/chat", headers=headers)
+            resp = await client.options("/api/providers/test", headers=headers)
             assert resp.status_code == 200
             assert resp.headers.get("access-control-allow-origin") in ("*", "http://localhost:3000")
 

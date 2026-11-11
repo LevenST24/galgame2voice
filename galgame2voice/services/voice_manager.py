@@ -430,16 +430,6 @@ class VoiceManager:
             opts["voice_profile_id"] = legacy_id
         return opts
 
-    async def synthesize(
-        self,
-        text: str,
-        options: dict[str, Any] | None = None,
-        use_cache: bool = True,
-    ) -> bytes:
-        """Synthesizes text into complete audio bytes using active weights, persistent cache and inference mutex."""
-        opts = await self._resolve_active_options(options)
-        return await self.tts_service.synthesize(text, options=opts, use_cache=use_cache)
-
     async def stream_tts(
         self,
         text: str,

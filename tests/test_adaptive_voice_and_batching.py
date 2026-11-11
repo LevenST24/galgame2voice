@@ -18,7 +18,7 @@ Covers:
    - Batch size resolution under streaming, single-slice, constrained, and GPU-fast regimes
    - Explicit user override respect
 5. Character package schema support for per-emotion custom voice_params.
-6. TTS Service and API synthesis endpoint integration.
+6. TTS Service integration and prosody option enrichment.
 """
 
 import asyncio
@@ -68,7 +68,6 @@ from galgame2voice.services.character_manager import (
 )
 from galgame2voice.services.gpt_sovits_client import GptSovitsClient, resolve_tts_options
 from galgame2voice.services.tts_service import TtsService
-from galgame2voice.routers.voice import SynthesizeRequest
 from galgame2voice.main import create_app
 from tests.conftest import MockGptSovitsServer
 
@@ -439,28 +438,11 @@ class TestCharacterPackageCustomVoiceParams:
 
 
 # ============================================================================
-# 6. End-to-End Voice Synthesize API Prosody Forwarding
+# 6. Prosody Option Enrichment
 # ============================================================================
 
-class TestVoiceSynthesizeAPIProsodyForwarding:
-    """Verifies that the FastAPI synthesize request DTO and endpoint accept fragment_interval, batch_size, emotion."""
-
-    def test_synthesize_request_schema(self):
-        req = SynthesizeRequest(
-            text="テストです。",
-            speed=1.05,
-            top_k=20,
-            temperature=0.85,
-            top_p=0.92,
-            fragment_interval=0.35,
-            batch_size=2,
-            emotion="happy",
-            ai_adaptive_voice=True,
-        )
-        assert req.fragment_interval == 0.35
-        assert req.batch_size == 2
-        assert req.emotion == "happy"
-        assert req.ai_adaptive_voice is True
+class TestProsodyOptionEnrichment:
+    """Verifies that resolve_tts_options applies archetype defaults and clamps prosody values."""
 
     @pytest.mark.asyncio
     async def test_resolve_tts_options_full_prosody_enrichment(self):

@@ -29,34 +29,29 @@ async def client(isolate_test_database):
 class TestInputValidation:
     @pytest.mark.asyncio
     async def test_prompt_over_limit_returns_422(self, client):
-        resp = await client.post("/api/chat", json={"prompt": "a" * 4001})
+        resp = await client.post("/api/chat/stream", json={"prompt": "a" * 4001})
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
     async def test_oversized_session_id_returns_422(self, client):
-        resp = await client.post("/api/chat", json={"prompt": "hi", "session_id": "s" * 200})
+        resp = await client.post("/api/chat/stream", json={"prompt": "hi", "session_id": "s" * 200})
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
     async def test_invalid_tts_speed_returns_422(self, client):
-        resp = await client.post("/api/chat", json={"prompt": "hi", "tts_options": {"speed": -5}})
+        resp = await client.post("/api/chat/stream", json={"prompt": "hi", "tts_options": {"speed": -5}})
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
     async def test_invalid_tts_top_k_returns_422(self, client):
-        resp = await client.post("/api/chat", json={"prompt": "hi", "tts_options": {"top_k": 9999}})
+        resp = await client.post("/api/chat/stream", json={"prompt": "hi", "tts_options": {"top_k": 9999}})
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_oversized_tts_text_returns_422(self, client):
-        resp = await client.post("/api/voice/synthesize", json={"text": "あ" * 2001})
-        assert resp.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_null_byte_in_options_rejected(self, client):
+    async def test_null_byte_in_tts_options_rejected(self, client):
         resp = await client.post(
-            "/api/voice/synthesize",
-            json={"text": "テスト", "options": {"ref_audio_path": "C:\\x\x00.wav"}},
+            "/api/chat/stream",
+            json={"prompt": "hi", "tts_options": {"ref_audio_path": "C:\\x\x00.wav"}},
         )
         assert resp.status_code == 422
 

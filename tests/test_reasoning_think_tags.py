@@ -1,5 +1,4 @@
 import pytest
-from unittest.mock import AsyncMock
 
 from galgame2voice.services.chat_pipelines.line_scanner import LineScanner
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
@@ -9,9 +8,7 @@ from galgame2voice.utils.japanese_phonetics import (
     normalize_japanese_for_tts,
     strip_reasoning_tags,
 )
-from galgame2voice.utils.error_diagnostics import (
-    EMPTY_REPLY_STOPPED_ON_LENGTH,
-)
+
 
 
 def test_line_scanner_ignores_draft_json_in_think_block():
@@ -193,23 +190,6 @@ def test_is_vocal_sentence_with_think_tags():
     assert TtsStreamPipeline.is_vocal_sentence("<think>思考中</think>こんにちは") is True
 
 
-@pytest.mark.asyncio
-async def test_chat_service_sync_unclosed_think_tag_stopped_on_length(tmp_path):
-    from galgame2voice.database.session import init_db
-    from galgame2voice.services.chat_service import ChatService, EmptyReplyError
-
-    db_path = tmp_path / "test_chat.db"
-    await init_db(db_path)
-    service = ChatService(db_path=db_path)
-
-    raw_truncated = "<think>还在思考中，token不足截断了..."
-    service._execute_sync_llm = AsyncMock(return_value=(raw_truncated, 50.0))
-
-    with pytest.raises(EmptyReplyError) as exc_info:
-        await service.chat_sync("测试输入", session_id="test_session")
-
-    assert exc_info.value.stopped_on_length is True
-    assert str(exc_info.value) == EMPTY_REPLY_STOPPED_ON_LENGTH
 
 
 def test_various_think_tags_case_and_attributes():

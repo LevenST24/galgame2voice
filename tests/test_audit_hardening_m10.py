@@ -3,11 +3,10 @@ Audit Hardening M10 Test Suite.
 Verifies:
 1. Outer transaction rollback atomicity across nested CRUD writes.
 2. High-concurrency 50-worker SQLite async stress test.
-3. chat_sync failure cleanup: pruning orphaned user messages when LLM fails.
-4. SSE stream disconnect with whitespace-only tokens pruning orphaned user messages.
-5. TtsCacheManager concurrent get() with _throttle_touch thread and dict safety.
-6. Generator cleanup (stream_gen.aclose()) on aborted/cancelled streaming pipeline.
-7. Anthropic adapter client_override stream error chunk detection.
+3. SSE stream disconnect with whitespace-only tokens pruning orphaned user messages.
+4. TtsCacheManager concurrent get() with _throttle_touch thread and dict safety.
+5. Generator cleanup (stream_gen.aclose()) on aborted/cancelled streaming pipeline.
+6. Anthropic adapter client_override stream error chunk detection.
 """
 
 import asyncio
@@ -126,34 +125,7 @@ class TestHighConcurrencySQLite:
 
 
 # ============================================================================
-# 3. chat_sync Failure Cleanup: Orphaned User Message Pruning
-# ============================================================================
-
-class TestChatSyncFailurePruning:
-    """Verifies chat_sync deletes the orphaned user message if downstream fails."""
-
-    async def test_chat_sync_prunes_user_msg_on_llm_exception(self, tmp_path):
-        db_file = tmp_path / "chat_sync_fail.db"
-        await init_db(str(db_file))
-
-        service = ChatService(db_path=str(db_file))
-
-        # Mock adapter to raise an exception
-        mock_adapter = AsyncMock()
-        mock_adapter.chat.side_effect = RuntimeError("LLM service unavailable")
-
-        with patch.object(service, "_get_active_llm_adapter", return_value=(mock_adapter, "mock-model", "mock-prov")):
-            with pytest.raises(RuntimeError, match="LLM service unavailable"):
-                await service.chat_sync(prompt="Hello there", session_id="sync_session")
-
-        # The user message should have been pruned from DB
-        async with get_db(str(db_file)) as conn:
-            messages = await crud.get_recent_messages(conn, "sync_session", limit=10)
-            assert len(messages) == 0, f"Expected 0 messages after failure, found {len(messages)}"
-
-
-# ============================================================================
-# 4. SSE Stream Disconnect with Whitespace-Only Tokens Prunes User Turn
+# 3. SSE Stream Disconnect with Whitespace-Only Tokens Prunes User Turn
 # ============================================================================
 
 class TestWhitespaceOnlyDisconnectPruning:
@@ -189,7 +161,7 @@ class TestWhitespaceOnlyDisconnectPruning:
 
 
 # ============================================================================
-# 5. TtsCacheManager Concurrent get() & _throttle_touch Safety
+# 4. TtsCacheManager Concurrent get() & _throttle_touch Safety
 # ============================================================================
 
 class TestTtsCacheManagerConcurrentSafety:
@@ -228,7 +200,7 @@ class TestTtsCacheManagerConcurrentSafety:
 
 
 # ============================================================================
-# 6. Generator aclose() on Aborted Stream Pipeline
+# 5. Generator aclose() on Aborted Stream Pipeline
 # ============================================================================
 
 class TestStreamGeneratorAclose:
@@ -269,7 +241,7 @@ class TestStreamGeneratorAclose:
 
 
 # ============================================================================
-# 7. Anthropic Stream Error Chunk Detection
+# 6. Anthropic Stream Error Chunk Detection
 # ============================================================================
 
 class TestAnthropicStreamErrorHandling:

@@ -1,7 +1,7 @@
 """
-Voice Profile and TTS Synthesis Router for galgame2voice.
-Provides REST endpoints for listing, creating, updating, deleting voice profiles,
-switching active character models with auto-rollback, and synthesizing audio.
+Voice Profile Router for galgame2voice.
+Provides REST endpoints for listing, creating, updating, deleting voice profiles
+and switching active character models with auto-rollback.
 """
 
 import asyncio
@@ -13,10 +13,8 @@ import re
 import time
 from typing import Any
 import aiosqlite
-from fastapi import APIRouter, HTTPException, status, Response, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
-from starlette.requests import ClientDisconnect
 
 from galgame2voice.config import get_settings
 from galgame2voice.database import crud
@@ -24,10 +22,6 @@ from galgame2voice.database.session import get_db
 from galgame2voice.database.models import (
     VoiceProfileCreate,
     VoiceProfileUpdate,
-)
-from galgame2voice.services.gpt_sovits_client import (
-    normalize_japanese_for_tts,
-    validate_user_tts_options,
 )
 from galgame2voice.routers.common import (
     persist_active_voice_profile_or_raise,
@@ -38,12 +32,9 @@ from galgame2voice.services.character_manager import get_character_manager, get_
 from galgame2voice.services.voice_manager import VoiceManager, get_voice_manager
 from galgame2voice.routers.line_audio import router as line_audio_router
 from galgame2voice.utils.logger import sanitize_error_detail
-from galgame2voice.utils.async_tasks import await_protected, cancel_and_drain
 from galgame2voice.utils.path_guard import (
     PathTraversalError,
     discover_gpt_sovits_roots,
-    safe_resolve_audio_path,
-    get_authorized_roots,
     to_project_relative_path,
     validate_voice_profile_paths,
 )
@@ -81,25 +72,6 @@ class VoiceSwitchRequest(BaseModel):
     id: int | None = Field(default=None, ge=1)
     name: str | None = Field(default=None, max_length=100)
     force: bool = False
-
-
-class SynthesizeRequest(BaseModel):
-    """Payload for standalone voice synthesis requests."""
-    text: str = Field(..., min_length=1, max_length=2000)
-    voice_profile_id: int | None = Field(default=None, ge=1)
-    options: dict[str, Any] | None = None
-    speed: float | None = Field(default=None, ge=0.1, le=3.0)
-    top_k: int | None = Field(default=None, ge=1, le=100)
-    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
-    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
-    text_language: str | None = Field(default=None, max_length=32)
-    cut_option: str | None = Field(default=None, max_length=64)
-    preset: str | None = Field(default=None, max_length=64)
-    fragment_interval: float | None = Field(default=None, ge=0.0, le=5.0)
-    batch_size: int | None = Field(default=None, ge=1, le=16)
-    emotion: str | None = Field(default=None, max_length=64)
-    stream: bool = False
-    ai_adaptive_voice: bool | None = Field(default=None, description="Whether AI-driven dynamic voice inference is enabled")
 
 
 # ============================================================================
@@ -384,160 +356,6 @@ async def switch_voice(req: VoiceSwitchRequest) -> dict[str, Any]:
             "profile": profile.name,
             "profile_id": profile.id,
         }
-
-
-# ============================================================================
-# 3. Speech Synthesis Endpoints
-# ============================================================================
-
-def _collect_synthesize_options(req: SynthesizeRequest) -> dict[str, Any]:
-    """Collects and merges top-level request fields into options dictionary."""
-    options: dict[str, Any] = dict(req.options or {})
-    for field in (
-        "voice_profile_id", "speed", "top_k", "temperature", "top_p",
-        "text_language", "cut_option", "preset", "fragment_interval",
-        "batch_size", "emotion", "ai_adaptive_voice",
-    ):
-        val = getattr(req, field, None)
-        if val is not None:
-            options[field] = val
-    return options
-
-
-def _validate_synthesize_ref_audio(options: dict[str, Any]) -> None:
-    """Validates a reference audio path against the same roots as profile creation."""
-    ref_audio = options.get("ref_audio_path") or options.get("refer_audio_path")
-    if ref_audio:
-        try:
-            safe_resolve_audio_path(
-                ref_audio,
-                allowed_roots=get_authorized_roots(include_sovits=True),
-            )
-        except PathTraversalError as pte:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid reference audio path: {pte}",
-            ) from pte
-
-
-async def _ensure_voice_profile_available(manager: Any, options: dict[str, Any]) -> None:
-    """Rejects synthesis when no reference audio is supplied and no profile or character package exists."""
-    if not options.get("ref_audio_path") and not options.get("refer_audio_path"):
-        async with get_db() as conn:
-            profiles = await crud.list_voice_profiles(conn)
-            has_server_audio = bool(
-                getattr(manager.client, "server", None)
-                and getattr(manager.client.server, "current_refer_audio", None)
-            )
-            if not profiles and not manager.client.current_refer_audio and not has_server_audio:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="尚未安装角色包或配置音色，请在「设置中心 → 角色与会话」导入角色包或创建自定义音色后重试。",
-                )
-
-
-async def _stream_with_first_chunk(stream: Any, first: bytes | None):
-    """Deliver the prefetched chunk and close the owned stream on every exit."""
-    try:
-        if first is not None:
-            yield first
-        async for chunk in stream:
-            yield chunk
-    finally:
-        await stream.aclose()
-
-
-async def _prefetch_connected(stream: Any, request: Request) -> bytes | None:
-    async def watch_disconnect():
-        while (await request.receive())["type"] != "http.disconnect":
-            pass
-
-    first = asyncio.create_task(anext(stream, None))
-    watcher = asyncio.create_task(watch_disconnect())
-    try:
-        done, _ = await asyncio.wait((first, watcher), return_when=asyncio.FIRST_COMPLETED)
-        if watcher in done:
-            await watcher
-            raise HTTPException(499, "连接已关闭，语音生成已取消。")
-        return await first
-    finally:
-        await cancel_and_drain((first, watcher))
-
-
-class _OwnedAudioStreamResponse(StreamingResponse):
-    def __init__(self, stream: Any, first: bytes | None):
-        self._owned_stream = stream
-        super().__init__(_stream_with_first_chunk(stream, first), media_type="audio/wav")
-
-    async def __call__(self, scope, receive, send):
-        sender = asyncio.create_task(self.stream_response(send))
-        watcher = asyncio.create_task(self.listen_for_disconnect(receive))
-        try:
-            done, _ = await asyncio.wait((sender, watcher), return_when=asyncio.FIRST_COMPLETED)
-            if sender in done:
-                try:
-                    await sender
-                except OSError as exc:
-                    raise ClientDisconnect() from exc
-            else:
-                await watcher
-        finally:
-            async def close_owned():
-                try:
-                    await self.body_iterator.aclose()
-                finally:
-                    await self._owned_stream.aclose()
-
-            try:
-                await cancel_and_drain((sender, watcher))
-            finally:
-                await await_protected(close_owned())
-
-
-@router.post(
-    "/synthesize",
-    summary="Synthesize Text to Speech",
-    description="Synthesizes text into WAV audio using active voice profile and specified parameters.",
-)
-async def synthesize_speech(req: SynthesizeRequest, request: Request) -> Response:
-    cleaned_text = normalize_japanese_for_tts(req.text)
-    if not cleaned_text:
-        raise HTTPException(
-            status_code=422,
-            detail="Text is empty after cleaning stage directions",
-        )
-
-    options = _collect_synthesize_options(req)
-    try:
-        validate_user_tts_options(options)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    _validate_synthesize_ref_audio(options)
-    manager = get_voice_manager()
-    await _ensure_voice_profile_available(manager, options)
-
-    try:
-        if req.stream:
-            stream = manager.stream_tts(cleaned_text, options=options)
-            try:
-                # Resolve the selected voice before committing an HTTP 200.
-                first = await _prefetch_connected(stream, request)
-            except BaseException:
-                await await_protected(stream.aclose())
-                raise
-            return _OwnedAudioStreamResponse(stream, first)
-        else:
-            audio_bytes = await manager.synthesize(cleaned_text, options=options)
-            return Response(content=audio_bytes, media_type="audio/wav")
-
-    except HTTPException:
-        raise
-    except ValueError as val_err:
-        raise HTTPException(status_code=422, detail=sanitize_error_detail(val_err)) from val_err
-    except Exception as exc:
-        logger.error("Synthesis error: %s", exc, exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error_detail(exc)) from exc
 
 
 # Tk interpreters and their finalizers must stay on one owning thread.

@@ -3,6 +3,7 @@ Integration tests for chat-driven long-term memory extraction and character affe
 """
 
 import asyncio
+import json
 
 import pytest
 from httpx import AsyncClient, ASGITransport
@@ -29,20 +30,17 @@ async def client(app):
 
 @pytest.mark.asyncio
 class TestChatServiceMemoryAffectionIntegration:
-    async def test_chat_sync_affection_and_fact_recording(self, client, isolate_test_database, monkeypatch):
-        from galgame2voice.adapters.base import LLMResponse
+    async def test_chat_stream_affection_and_fact_recording(self, client, isolate_test_database, monkeypatch):
         from galgame2voice.routers.chat import get_chat_service
         from galgame2voice.services.chat_service import ChatService
         from galgame2voice.services.memory_service import MemoryService
 
-        class MockSyncAdapter:
-            async def chat(self, messages, model=None, **kwargs):
-                return LLMResponse(
-                    content='{"chinese": "你好昂晴，我是四季夏目。请多关照！", "japanese": "こんにちは、昂晴。四季ナツメです。"}'
-                )
+        class MockStreamAdapter:
+            async def stream_chat(self, messages, model=None, **kwargs):
+                yield '{"chinese": "你好昂晴，我是四季夏目。请多关照！", "japanese": "こんにちは、昂晴。四季ナツメです。"}'
 
         async def _mock_get_adapter(self_cs, conn=None, provider_id=None):
-            return MockSyncAdapter(), "mock-model"
+            return MockStreamAdapter(), "mock-model"
 
         monkeypatch.setattr(ChatService, "_get_active_llm_adapter", _mock_get_adapter)
 
@@ -57,12 +55,20 @@ class TestChatServiceMemoryAffectionIntegration:
         monkeypatch.setattr(MemoryService, "process_user_message", _slow_extract)
 
         # 1. First chat turn: user declares name
-        res1 = await client.post("/api/chat", json={
+        res1 = await client.post("/api/chat/stream", json={
             "prompt": "你好呀，我叫昂晴。",
             "session_id": "sess_aff_test",
         })
         assert res1.status_code == 200
-        data1 = res1.json()
+        done_payloads = [
+            json.loads(line.split("data:", 1)[1].strip())
+            for block in res1.text.split("\n\n")
+            if "event: done" in block
+            for line in block.splitlines()
+            if line.startswith("data:")
+        ]
+        assert done_payloads, res1.text
+        data1 = done_payloads[-1]
         assert data1["chinese"] == "你好昂晴，我是四季夏目。请多关照！"
         assert "affection" in data1
         assert data1["affection"]["score"] >= 1
