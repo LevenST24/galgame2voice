@@ -27,8 +27,9 @@ test('LOG replays legacy assistant audio and failed player recordings through th
   let voice = true;
   const log = createBacklog(root, { getSession: () => session, getSettings: () => DEFAULT_SESSION_SETTINGS,
     getCharacter: () => ({ name: '角色' }), voiceEnabled: () => voice, wallNow: () => now,
-    stopOtherVoice: () => calls.push('stop'), audio: { stopLine() {} },
-    playLegacyVoice: msg => calls.push(msg.id), playUserVoice: msg => calls.push(msg.id),
+    stopOtherVoice: () => calls.push('stop'),
+    audio: { stopLine() {}, playLine: async (_idx, _chunks, opts) => { calls.push(opts.msgId); return 'ended'; } },
+    playUserVoice: msg => calls.push(msg.id),
   });
   t.after(() => log.destroy());
   log.element.querySelector('.adv-log-replay-btn').click(); assert.equal(calls.at(-1), 'a');
@@ -50,7 +51,6 @@ test('LOG provides explicit repair action for legacy assistant message when audi
     getCharacter: () => ({ name: '角色' }),
     voiceEnabled: () => true,
     wallNow: () => now,
-    playLegacyVoice: () => {},
     getRecoveryVoice: () => ({ id: 1, name: '当前音色' }),
     regenerateLineAudio: async () => {},
   });
@@ -755,7 +755,7 @@ test(`Part 3 #1: real controller/player, audio ${status}, done ${fullyRevealed ?
 
   const audioPlayer = {
     isPlaying: false, currentMsgId: null, paused: false,
-    startSession() {}, enqueueChunk() {}, finishInput() {}, attachControl() {},
+    startSession() {}, enqueueChunk() {},
     pause() {}, resume() {}, interrupt() {},
   };
 
@@ -1566,7 +1566,7 @@ test('LOG legacy repaired line playback outcomes: retryable network and timeout 
     const canonical = { index: 0, zh: message.content, ja: message.japanese, emotion: 'neutral', act: {}, audio };
     const log = createBacklog(root, {
       getSession: () => session, getSettings: () => ({ voiceEnabled: true }), voiceEnabled: () => true,
-      getRecoveryVoice: () => ({ id: 7, name: '当前音色' }), playLegacyVoice() {},
+      getRecoveryVoice: () => ({ id: 7, name: '当前音色' }),
       audio: { stopLine() {}, async playLine() { return outcome; } },
       regenerateLineAudio: async () => { message.lines = [canonical]; return { line: canonical, audio, persisted: true, saved: true }; },
     });

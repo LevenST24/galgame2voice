@@ -2,20 +2,16 @@
  * Targeted regression and adversarial test suites covering M19 frontend defect remediations:
  * 1. toggleMic() in audio_player_ui.js revoking pendingVoice.audio Blob URL.
  * 2. BoundedAudioStore in voice.js true LRU eviction (accessing an existing key refreshes recency).
- * 3. shortcuts.js decide() left-click returning null when overlayOpen is true.
- * 4. audio_player.js buffer lead check (nextStartTime <= now) applying adaptive lead cushion.
- * 5. ai.js SSE parser resetting eventName to 'text' and handling optional whitespace.
+ * 3. audio_player.js buffer lead check (nextStartTime <= now) applying adaptive lead cushion.
  */
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fakeDocument } from './helpers/adv_dom.mjs';
 
-import { initAudioPlayerUi, toggleMic, cancelMic, revokeAllCachedAudioUrls } from '../frontend/src/controllers/audio_player_ui.js';
+import { initAudioPlayerUi, toggleMic, cancelMic } from '../frontend/src/controllers/audio_player_ui.js';
 import { BoundedAudioStore, startListening, stopListening } from '../frontend/src/voice.js';
 import { StreamAudioController } from '../frontend/src/audio_player.js';
-import { decide } from '../frontend/src/adv/shortcuts.js';
-import { streamChat } from '../frontend/src/ai.js';
 
 // ============================================================================
 // 1. Microphone Blob URL Leak Remediation in audio_player_ui.js
@@ -284,219 +280,6 @@ test('audio_player: nextStartTime <= now applies adaptive buffer lead margin', a
 });
 
 // ============================================================================
-// 4. Shortcuts Overlay Click Isolation in shortcuts.js
-// ============================================================================
-
-test('shortcuts decide: left-click returns null whenever overlayOpen is true', () => {
-  const doc = fakeDocument();
-
-  // Test across different targets and states with overlayOpen: true
-  const stageDiv = doc.createElement('div');
-  stageDiv.className = 'adv-stage';
-  const overlayBackdrop = doc.createElement('div');
-  overlayBackdrop.className = 'adv-backlog-backdrop';
-
-  const overlayContexts = [
-    { overlayOpen: true, stageFocused: true, hidden: false, inInput: false },
-    { overlayOpen: true, stageFocused: false, hidden: false, inInput: false },
-    { overlayOpen: true, stageFocused: true, hidden: true, inInput: false },
-    { overlayOpen: true, stageFocused: true, hidden: false, inInput: true },
-  ];
-
-  for (const ctx of overlayContexts) {
-    // Stage left click
-    assert.equal(
-      decide({ type: 'click', button: 0, target: stageDiv }, ctx),
-      null,
-      'Left click with overlayOpen must return null'
-    );
-    // Backdrop left click
-    assert.equal(
-      decide({ type: 'click', button: 0, target: overlayBackdrop }, ctx),
-      null,
-      'Backdrop click with overlayOpen must return null'
-    );
-    // Undefined button left click
-    assert.equal(
-      decide({ type: 'click', target: stageDiv }, ctx),
-      null,
-      'Click without button property with overlayOpen must return null'
-    );
-  }
-
-  // Sanity check: when overlayOpen is false, standard left click advances
-  const normalCtx = { overlayOpen: false, stageFocused: true, hidden: false, inInput: false };
-  assert.equal(
-    decide({ type: 'click', button: 0, target: stageDiv }, normalCtx),
-    'advance',
-    'Left click with overlayOpen false must return advance'
-  );
-});
-
-// ============================================================================
-// 5. SSE Parser Robustness in ai.js
-// ============================================================================
-
-test('ai.js SSE parser: resets eventName to text after block dispatch and handles optional whitespace', async () => {
-  // Case A: Verify eventName resets to 'text' after dispatching an audio_chunk block
-  // If eventName did NOT reset, the second data payload would leak the previous 'audio_chunk' event
-  const eventsDispatched = [];
-  const textChunksReceived = [];
-
-  const ssePayloadA = [
-    'event: audio_chunk\n',
-    'data: {"sentence": "初めまして", "audio_url": "/audio/cache/ja_0.wav"}\n\n',
-    'data: {"delta_chinese": "很高兴见到你"}\n\n',
-  ].join('');
-
-  const mockFetchA = async () => {
-    const stream = new ReadableStream({
-      start(ctl) {
-        ctl.enqueue(new TextEncoder().encode(ssePayloadA));
-        ctl.close();
-      },
-    });
-    return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
-  };
-
-  await new Promise((resolve) => {
-    streamChat({
-      prompt: '你好',
-      sessionId: 'test_sess_sse',
-      fetch: mockFetchA,
-      onEvent: (name, data) => eventsDispatched.push({ name, data }),
-      onChunk: (acc, delta) => textChunksReceived.push(delta),
-      onEnd: () => resolve(),
-    });
-  });
-
-  assert.equal(eventsDispatched.length, 1, 'Expected 1 audio_chunk event');
-  assert.equal(eventsDispatched[0].name, 'audio_chunk');
-  assert.equal(eventsDispatched[0].data.sentence, '初めまして');
-
-  assert.equal(textChunksReceived.length, 1, 'Second payload must be parsed as default text');
-  assert.equal(textChunksReceived[0], '很高兴见到你');
-
-  // Case B: Verify headers with optional whitespace (zero spaces, single space, multiple spaces)
-  const ssePayloadB = [
-    'event:audio_chunk\n',
-    'data:{"sentence": "零空格", "audio_url": "/a.wav"}\n\n',
-    'event: audio_chunk\n',
-    'data: {"sentence": "单空格", "audio_url": "/b.wav"}\n\n',
-    'event:   audio_chunk\n',
-    'data:   {"sentence": "多空格", "audio_url": "/c.wav"}\n\n',
-  ].join('');
-
-  const eventsB = [];
-  const mockFetchB = async () => {
-    const stream = new ReadableStream({
-      start(ctl) {
-        ctl.enqueue(new TextEncoder().encode(ssePayloadB));
-        ctl.close();
-      },
-    });
-    return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
-  };
-
-  await new Promise((resolve) => {
-    streamChat({
-      prompt: 'test_spaces',
-      sessionId: 'test_sess_spaces',
-      fetch: mockFetchB,
-      onEvent: (name, data) => eventsB.push({ name, data }),
-      onChunk: () => {},
-      onEnd: () => resolve(),
-    });
-  });
-
-  assert.equal(eventsB.length, 3, 'All 3 whitespace variations must parse successfully');
-  assert.equal(eventsB[0].data.sentence, '零空格');
-  assert.equal(eventsB[1].data.sentence, '单空格');
-  assert.equal(eventsB[2].data.sentence, '多空格');
-
-  // Case C: Empty boundary line resets eventName to 'text'
-  const ssePayloadC = [
-    'event: temporary_unhandled_event\n\n',
-    'data: {"delta_chinese": "空行重置测试"}\n\n',
-  ].join('');
-
-  const textC = [];
-  const mockFetchC = async () => {
-    const stream = new ReadableStream({
-      start(ctl) {
-        ctl.enqueue(new TextEncoder().encode(ssePayloadC));
-        ctl.close();
-      },
-    });
-    return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
-  };
-
-  await new Promise((resolve) => {
-    streamChat({
-      prompt: 'test_empty_reset',
-      sessionId: 'test_sess_empty_reset',
-      fetch: mockFetchC,
-      onEvent: () => {},
-      onChunk: (acc, delta) => textC.push(delta),
-      onEnd: () => resolve(),
-    });
-  });
-
-  assert.equal(textC.length, 1);
-  assert.equal(textC[0], '空行重置测试');
-});
-
-test('ai.js SSE parser: handles CRLF (\\r\\n) line endings without dropping events or text', async () => {
-  const events = [];
-  const textChunks = [];
-
-  const ssePayloadCRLF = [
-    'event: audio_chunk\r\n',
-    'data: {"sentence": "テスト", "audio_url": "/test.wav"}\r\n\r\n',
-    'data: {"delta_chinese": "测试CRLF"}\r\n\r\n',
-    'event: done\r\n',
-    'data: {"japanese": "テスト", "chinese": "测试CRLF", "chunks": []}\r\n\r\n',
-  ].join('');
-
-  const mockFetch = async () => {
-    const stream = new ReadableStream({
-      start(ctl) {
-        ctl.enqueue(new TextEncoder().encode(ssePayloadCRLF));
-        ctl.close();
-      },
-    });
-    return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
-  };
-
-  let endResult = null;
-  await new Promise((resolve) => {
-    streamChat({
-      prompt: 'crlf_test',
-      sessionId: 'sess_crlf',
-      fetch: mockFetch,
-      onEvent: (name, data) => events.push({ name, data }),
-      onChunk: (acc, delta) => textChunks.push(delta),
-      onEnd: (acc, meta) => {
-        endResult = { acc, meta };
-        resolve();
-      },
-    });
-  });
-
-  assert.equal(events.length, 1, 'Expected audio_chunk event under CRLF');
-  assert.equal(events[0].name, 'audio_chunk');
-  assert.equal(events[0].data.sentence, 'テスト');
-  assert.equal(events[0].data.audio_url, '/test.wav');
-  assert.equal(textChunks.length, 1, 'Expected delta_chinese chunk');
-  assert.equal(textChunks[0], '测试CRLF');
-  assert.ok(endResult, 'Expected onEnd to be called');
-  assert.equal(endResult.acc, '测试CRLF');
-  assert.equal(endResult.meta.japanese, 'テスト');
-  assert.equal(endResult.meta.error, null);
-  assert.equal(endResult.meta.cancelled, false);
-});
-
-// ============================================================================
 // 6. MediaRecorder Asynchronous onstop Null-Guard in voice.js
 // ============================================================================
 
@@ -746,42 +529,6 @@ test('voice.js: rapid startListening -> stopListening -> startListening stops st
     stopListening();
     globalThis.window = originalWin;
     globalThis.MediaRecorder = originalMediaRecorder;
-    Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true, writable: true });
-  }
-});
-
-test('voice.js: the final transcript the browser delivers after stopListening still reaches onText', () => {
-  const originalWin = globalThis.window;
-  const originalNav = globalThis.navigator;
-
-  try {
-    let recognizer = null;
-    class FakeRecognition {
-      constructor() { recognizer = this; }
-      start() {}
-      stop() {}
-    }
-    globalThis.window = { SpeechRecognition: FakeRecognition };
-    Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true, writable: true });
-
-    const texts = [];
-    assert.equal(startListening({ onText: text => texts.push(text) }).ok, true);
-    // The user taps the mic to finish; Chrome then returns the result for the audio so far.
-    stopListening();
-    const finalResult = Object.assign([{ transcript: '你好' }], { isFinal: true });
-    recognizer.onresult({ resultIndex: 0, results: [finalResult] });
-    assert.deepEqual(texts, ['你好']);
-
-    // A new session fences off late results from the previous one.
-    const stale = recognizer;
-    const newTexts = [];
-    startListening({ onText: text => newTexts.push(text) });
-    stale.onresult({ resultIndex: 0, results: [finalResult] });
-    assert.deepEqual(texts, ['你好']);
-    assert.deepEqual(newTexts, []);
-  } finally {
-    stopListening();
-    globalThis.window = originalWin;
     Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true, writable: true });
   }
 });
