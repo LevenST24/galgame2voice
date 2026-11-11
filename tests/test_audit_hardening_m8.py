@@ -44,6 +44,8 @@ from telegram_test_support import TELEGRAM_TEST_ADMINS
 class TestSseStreamingBackpressureAndDisconnect:
     """Tests SSE streaming pipeline cancellation, backpressure, and disconnect handling."""
 
+    # Asserts tight sub-second wall-clock bound around a 0.1s cancellation timer; sensitive to multi-worker jitter.
+    @pytest.mark.serial
     @pytest.mark.wall_clock
     @pytest.mark.asyncio
     async def test_put_with_cancel_aborts_promptly_when_cancelled(self):

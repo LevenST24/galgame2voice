@@ -314,7 +314,8 @@ def test_server_cli_fp16_flag():
     assert args_fp16.fp16 is True
 
 
-def test_build_gpt_sovits_env_fp32_default(tmp_path):
+def test_build_gpt_sovits_env_fp32_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(rs, "PROJECT_ROOT", tmp_path)
     sovits_dir = tmp_path / "mock_sovits"
     sovits_dir.mkdir()
 
@@ -455,8 +456,9 @@ def test_legacy_path_resolution_backward_compatibility():
     assert res_ref.is_file()
 
 
-def test_build_gpt_sovits_env_default_argument(tmp_path):
+def test_build_gpt_sovits_env_default_argument(tmp_path, monkeypatch):
     """Verifies that build_gpt_sovits_env defaults to FP32 without explicit arguments."""
+    monkeypatch.setattr(rs, "PROJECT_ROOT", tmp_path)
     env = rs.build_gpt_sovits_env(tmp_path)
     assert env["is_half"] == "False"
 

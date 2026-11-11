@@ -304,6 +304,8 @@ class TestTier1FeatureCoverage:
         assert t1 == "こんにちは！"
         assert p1 == p2
 
+    # Asserts <0.5ms mean in-memory cache hit latency; sensitive to multi-worker CPU scheduling jitter.
+    @pytest.mark.serial
     @pytest.mark.wall_clock
     @pytest.mark.asyncio
     async def test_f5_02_in_memory_cache_hit_latency(self, tmp_path):
@@ -576,6 +578,8 @@ class TestTier2BoundaryAndCornerCases:
         assert MaskingFilter.sanitize("   \n\t  ") == "   \n\t  "
         assert MaskingFilter.sanitize(None) is None
 
+    # Asserts <100ms wall-clock bound on 100KB regex secret masking; sensitive to multi-worker CPU contention.
+    @pytest.mark.serial
     def test_b1_02_logging_massive_string_with_secrets(self):
         """Verifies MaskingFilter processes 100KB+ strings with multiple embedded keys efficiently."""
         base_text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 1000
@@ -658,6 +662,8 @@ class TestTier2BoundaryAndCornerCases:
         assert "【角色长程记忆" in prompt_block
         assert "玩家称呼：系统指令" in prompt_block
 
+    # Asserts <200ms wall-clock bound on 10,000-char heuristic regex scan; sensitive to multi-worker CPU contention.
+    @pytest.mark.serial
     def test_b4_02_memory_heuristic_redos_resistance(self):
         """Verifies memory regexes withstand 10,000 character inputs without ReDoS timeout."""
         svc = MemoryService()

@@ -176,6 +176,8 @@ class TestLoggerStacktraceAndRegexBoundaries:
             else:
                 assert raw_secret not in formatted_output, f"Secret {name} leaked in formatted traceback!"
 
+    # Strict 2MB log-sanitization wall-clock throughput budget is sensitive to multi-worker CPU contention.
+    @pytest.mark.serial
     @pytest.mark.wall_clock
     def test_massive_log_payload_throughput_and_redos_safety(self):
         """

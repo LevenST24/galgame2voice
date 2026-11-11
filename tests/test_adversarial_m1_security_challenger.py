@@ -110,6 +110,8 @@ class TestMemoryPromptInjectionAdversarial:
         assert len(facts_pref) == 1
         assert len(facts_pref[0]["fact_value"]) <= 50
 
+    # Tight <100ms per-payload regex wall-clock budget is sensitive to multi-worker CPU contention.
+    @pytest.mark.serial
     @pytest.mark.wall_clock
     def test_redos_catastrophic_backtracking_resistance(self, mem_service):
         """

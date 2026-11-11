@@ -466,6 +466,8 @@ Traceback (most recent call last):
         assert filter_obj.filter(rec_tuple) is True
         assert "sk-secrettoken-99998888" not in str(rec_tuple.args)
 
+    # Tight wall-clock budget on 150KB MaskingFilter regex pass is sensitive to multi-worker CPU contention.
+    @pytest.mark.serial
     @pytest.mark.wall_clock
     def test_redos_and_massive_payload_stress(self):
         """

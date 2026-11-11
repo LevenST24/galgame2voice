@@ -120,6 +120,8 @@ class TestTtsCacheCanonicalHashing:
 class TestTtsCacheLifecycleAndPerformance:
     """Validates cache store, retrieve, sub-50ms latency, and file corruption resilience."""
 
+    # Asserts sub-50ms single-shot cache hit wall-clock latency; sensitive to multi-worker disk/CPU contention.
+    @pytest.mark.serial
     @pytest.mark.wall_clock
     @pytest.mark.asyncio
     async def test_cache_hit_and_miss_lifecycle(self, tmp_path):

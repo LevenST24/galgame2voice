@@ -68,6 +68,7 @@ _CAPABILITY_MARKER_DESCRIPTIONS = (
     "requires_writable_temp_dir: needs a private temp directory the process can write into",
     "requires_process_termination: needs permission to terminate a child process it started",
     "wall_clock: asserts an absolute wall-clock budget, so it is skipped under coverage instrumentation",
+    "serial: runs sequentially outside pytest-xdist workers when host resources or timing budgets cannot be shared",
 )
 
 _PROBE_SUBPROCESS_TIMEOUT_SECONDS = 60.0

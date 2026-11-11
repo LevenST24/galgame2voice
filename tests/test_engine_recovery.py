@@ -24,6 +24,7 @@ from scripts import run_server
 def engine(tmp_path, monkeypatch):
     root = tmp_path
     monkeypatch.setattr(get_settings(), "project_root", root)
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", root)
     (root / "data").mkdir()
     directory = root / "engine"
     directory.mkdir()

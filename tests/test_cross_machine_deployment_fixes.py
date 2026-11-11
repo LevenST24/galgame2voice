@@ -260,8 +260,9 @@ async def test_database_auto_healing_legacy_and_missing_paths(tmp_path, monkeypa
 # 4. Process-Isolated Precision & Pre-Flight Diagnostics
 # ============================================================================
 
-def test_gpt_sovits_process_isolation_env(tmp_path):
+def test_gpt_sovits_process_isolation_env(tmp_path, monkeypatch):
     """Verifies that GPT-SoVITS runtime environment sets is_half explicitly (no GPU-name matching)."""
+    monkeypatch.setattr("scripts.run_server.PROJECT_ROOT", tmp_path)
     sovits_dir = tmp_path / "mock_sovits"
     sovits_dir.mkdir()
 

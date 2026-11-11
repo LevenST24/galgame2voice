@@ -441,6 +441,8 @@ class TestR2FrontendAudioPlayerStaticIntegrity:
 class TestR2InterruptAndCancellationTiming:
     """Verifies cancellation signal halts active generation and releases locks promptly."""
 
+    # Asserts tight wall-clock cancellation latency on active stream_chat; sensitive to multi-worker CPU contention.
+    @pytest.mark.serial
     @pytest.mark.wall_clock
     @pytest.mark.asyncio
     async def test_r2_stream_chat_cancellation_ends_the_stream_promptly(self, temp_db_path, mock_gpt_sovits):
