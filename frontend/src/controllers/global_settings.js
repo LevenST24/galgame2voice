@@ -2,7 +2,6 @@
 import {
   requestJson,
 } from '../api.js';
-import { state, saveGlobal } from '../store.js';
 import { showToast } from '../ui.js';
 import { initEngineDirectory } from './engine_directory.js';
 import { runSettingsMutation, saveConfirmedConfig } from './config_recovery.js';
@@ -44,8 +43,7 @@ let privateEndpointSaved = false;
 let privateEndpointSaving = false;
 let precisionSavedRevision = 0;
 let gpuAvailable = true;
-const CONFIG_FIELDS = ['gParamSovitsUrl', 'gPrecision', 'gParamSliceMethod', 'gParamSpeed', 'gParamTopK',
-  'gParamTopP', 'gParamTemp', 'gParamFragmentInterval', 'gAudioRetention', 'gTgEnabled',
+const CONFIG_FIELDS = ['gParamSovitsUrl', 'gPrecision', 'gAudioRetention', 'gTgEnabled',
   'gTgToken', 'gTgChatId', 'gTgProxyHost', 'gTgProxyPort', 'gTgProxyEnabled'];
 
 function _bindCoordinator(element, type, handler) {
@@ -251,28 +249,6 @@ export function initGlobalSettings(dom, callbacks = {}) {
     });
   }
 
-  // Sliders numeric display linkage
-  if (_dom.gParamSpeed) {
-    _bindCoordinator(_dom.gParamSpeed, 'input', (e) => {
-      if (_dom.gParamSpeedVal) _dom.gParamSpeedVal.textContent = e.target.value;
-    });
-  }
-  if (_dom.gParamTopK) {
-    _bindCoordinator(_dom.gParamTopK, 'input', (e) => {
-      if (_dom.gParamTopKVal) _dom.gParamTopKVal.textContent = e.target.value;
-    });
-  }
-  if (_dom.gParamTopP) {
-    _bindCoordinator(_dom.gParamTopP, 'input', (e) => {
-      if (_dom.gParamTopPVal) _dom.gParamTopPVal.textContent = e.target.value;
-    });
-  }
-  if (_dom.gParamTemp) {
-    _bindCoordinator(_dom.gParamTemp, 'input', (e) => {
-      if (_dom.gParamTempVal) _dom.gParamTempVal.textContent = e.target.value;
-    });
-  }
-
   // Telegram save footer button
   if (_dom.gTgSave) {
     _bindCoordinator(_dom.gTgSave, 'click', saveGlobalConfig);
@@ -340,9 +316,6 @@ export function openGlobalSettings(tabName = null) {
   else if (typeof document !== 'undefined' && !document.hidden) telemetryController?.fetchSystemTelemetry();
   if (_callbacks.loadSystemVersionInfo) {
     _callbacks.loadSystemVersionInfo(false).catch(() => {});
-  }
-  if (_dom.gPreset) {
-    _dom.gPreset.value = state.global.ttsPreset || '';
   }
 }
 
@@ -442,26 +415,6 @@ export async function loadGlobalConfig() {
     if (precisionRevision === precisionSavedRevision) {
       fill('gPrecision', (el) => { el.value = s.inference_precision || 'auto'; });
     }
-    fill('gParamSliceMethod', (el) => { el.value = s.text_split_method || 'cut5'; });
-    fill('gParamSpeed', (el) => {
-      el.value = s.speed_factor !== undefined ? s.speed_factor : 1.0;
-      if (targetDom.gParamSpeedVal) targetDom.gParamSpeedVal.textContent = el.value;
-    });
-    fill('gParamTopK', (el) => {
-      el.value = s.top_k || 15;
-      if (targetDom.gParamTopKVal) targetDom.gParamTopKVal.textContent = el.value;
-    });
-    fill('gParamTopP', (el) => {
-      el.value = s.top_p !== undefined ? s.top_p : 1.0;
-      if (targetDom.gParamTopPVal) targetDom.gParamTopPVal.textContent = el.value;
-    });
-    fill('gParamTemp', (el) => {
-      el.value = s.temperature !== undefined ? s.temperature : 1.0;
-      if (targetDom.gParamTempVal) targetDom.gParamTempVal.textContent = el.value;
-    });
-    fill('gParamFragmentInterval', (el) => {
-      el.value = s.fragment_interval !== undefined ? s.fragment_interval : 0.3;
-    });
     fill('gAudioRetention', (el) => { el.value = s.audio_retention_minutes || 30; });
     if (targetDom.gDashRetentionVal) targetDom.gDashRetentionVal.textContent = `保留时长：${s.audio_retention_minutes || 30} 分钟`;
 
@@ -509,12 +462,6 @@ export async function saveGlobalConfig() {
     const payload = {
       gpt_sovits_url: _dom.gParamSovitsUrl ? _dom.gParamSovitsUrl.value.trim() || 'http://127.0.0.1:9880' : undefined,
       inference_precision: _dom.gPrecision ? _dom.gPrecision.value : undefined,
-      text_split_method: _dom.gParamSliceMethod ? _dom.gParamSliceMethod.value : undefined,
-      speed_factor: _dom.gParamSpeed ? Number(_dom.gParamSpeed.value) : undefined,
-      top_k: _dom.gParamTopK ? Number(_dom.gParamTopK.value) : undefined,
-      top_p: _dom.gParamTopP ? Number(_dom.gParamTopP.value) : undefined,
-      temperature: _dom.gParamTemp ? Number(_dom.gParamTemp.value) : undefined,
-      fragment_interval: _dom.gParamFragmentInterval ? Number(_dom.gParamFragmentInterval.value) || 0.3 : undefined,
       audio_retention_minutes: _dom.gAudioRetention ? Math.max(1, Number(_dom.gAudioRetention.value) || 30) : 30,
       ...tgPayload,
     };
@@ -538,10 +485,6 @@ export async function saveGlobalConfig() {
     if (savedRevision === configRevision) {
       configDirty = false;
       dirtyConfigFields.clear();
-    }
-
-    if (_dom.gPreset) {
-      saveGlobal({ ttsPreset: _dom.gPreset.value });
     }
 
     const currentProviderDirty = targetProviderController?.isProviderDirty() ?? false;
