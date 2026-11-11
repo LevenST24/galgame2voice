@@ -986,8 +986,8 @@ async def test_persona_save_character_scan_does_not_block_other_requests(
             release_scan.set()
 
             save_response = await asyncio.wait_for(save_task, timeout=10.0)
-            detail = await client.get(f"/api/characters/{ann['id']}")
-            assert detail.status_code == 200, detail.text
+            profiles_after = await client.get("/api/voice/profiles")
+            assert profiles_after.status_code == 200, profiles_after.text
 
         assert events == ["scan-start", "light-request-done", "scan-end"]
         assert released_while_scanning == [True]
@@ -1003,7 +1003,7 @@ async def test_persona_save_character_scan_does_not_block_other_requests(
         }
         on_disk = json.loads((ann_folder / "manifest.json").read_text(encoding="utf-8"))["system_prompt"]
         assert on_disk == updated_prompt
-        assert detail.json()["system_prompt"] == updated_prompt
+        assert _profile_named(profiles_after.json(), "Ann")["system_prompt"] == updated_prompt
         mgr_pkg = characters.get_character_manager().get_character("Ann")
         assert mgr_pkg is not None and mgr_pkg.system_prompt == updated_prompt
     finally:

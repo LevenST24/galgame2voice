@@ -252,3 +252,21 @@ def test_get_character_work_skips_unknown_and_invalid_packages(tmp_path, monkeyp
 ])
 def test_clean_character_work_only_accepts_pack_ids(raw, expected):
     assert clean_character_work(raw) == expected
+
+
+@pytest.mark.asyncio
+async def test_character_detail_route_removed_while_portrait_route_intact(tmp_path, monkeypatch):
+    """GET /api/characters/{id} is removed while sibling portrait routes remain reachable."""
+    pkg = _fake_package(tmp_path, "立绘保留角色", "cafe_stella")
+    _patch_manager(monkeypatch, [pkg])
+    monkeypatch.setattr(characters_router, "load_portrait_manifest", lambda folder: {"costumes": []})
+    profile = await _make_profile("立绘保留角色", "portrait_intact")
+
+    async with await _client() as client:
+        detail_res = await client.get(f"/api/characters/{profile.id}")
+        assert detail_res.status_code == 404
+
+        portrait_res = await client.get(f"/api/characters/{profile.id}/portrait")
+        assert portrait_res.status_code == 200
+        assert portrait_res.json()["enabled"] is True
+        assert portrait_res.json()["character_name"] == "立绘保留角色"

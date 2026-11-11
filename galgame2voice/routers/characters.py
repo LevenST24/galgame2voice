@@ -247,60 +247,6 @@ async def rescan_character_packages(request: Request) -> dict[str, Any]:
 
 
 @router.get(
-    "/{character_id}",
-    summary="Get Character Details",
-    description="Returns details of a specific character profile including affection state.",
-)
-async def get_character_detail(
-    character_id: int,
-    user_id: str = Query(default="default_user", min_length=1, max_length=128, description="User ID"),
-) -> dict[str, Any]:
-    if character_id < 1:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="character_id must be a positive integer >= 1",
-        )
-
-    clean_user = validate_user_id(user_id)
-
-    async with get_db() as conn:
-        try:
-            prof = await _get_voice_profile_or_404(conn, character_id)
-
-            active_profile = await crud.get_active_voice_profile(conn)
-            active_id = active_profile.id if active_profile else 1
-            affection = await crud.get_or_create_character_affection(
-                conn, user_id=clean_user, character_id=prof.id
-            )
-
-            return {
-                "id": prof.id,
-                "name": prof.name,
-                "description": prof.description,
-                "work": get_character_work(prof.name),
-                "is_active": (prof.id == active_id),
-                "is_default": prof.is_default,
-                "gpt_weights_path": prof.gpt_weights_path,
-                "sovits_weights_path": prof.sovits_weights_path,
-                "ref_audio_path": prof.ref_audio_path,
-                "prompt_text": prof.prompt_text,
-                "prompt_lang": prof.prompt_lang,
-                "text_lang": prof.text_lang,
-                "system_prompt": prof.system_prompt,
-                "affection": affection.model_dump() if affection else None,
-                "portrait": _resolve_character_portrait(prof.name, prof.id),
-            }
-        except HTTPException:
-            raise
-        except Exception as exc:
-            safe_err = sanitize_error_detail(exc)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to get character: {safe_err}",
-            ) from exc
-
-
-@router.get(
     "/{character_id}/portrait",
     summary="Get Character Standing CG Portrait Manifest",
     description="Returns available standing CG sprites, outfits, emotions and coordinates.",

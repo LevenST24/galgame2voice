@@ -2,7 +2,7 @@
 Audit Hardening M11 Test Suite.
 Verifies:
 1. Voice router boundary checks, profile_id constraints, and sanitized error handling.
-3. Characters router (/api/characters) list, detail, and switch endpoints with 404 precedence and affection integration.
+3. Characters router (/api/characters) list and switch endpoints with 404 precedence and affection integration.
 4. Health router URL scheme validation and error sanitization.
 5. Telegram bot network drop safety, callback query boundary validation, and nickname sanitization.
 6. Memory RAG empty key stem fix, prompt injection defense, and extreme length clamping.
@@ -116,23 +116,6 @@ class TestCharactersRouter:
         assert char1["name"] == "default_char"
         assert char1["affection"] is not None
         assert char1["affection"]["affection_score"] == 0
-
-    async def test_get_character_detail(self, client):
-        res = await client.get("/api/characters/1?user_id=char_test_user")
-        assert res.status_code == 200
-        data = res.json()
-        assert data["id"] == 1
-        assert data["name"] == "default_char"
-        assert data["gpt_weights_path"] == "default.ckpt"
-        assert data["affection"] is not None
-
-        # 404 for non-existent character
-        res404 = await client.get("/api/characters/9999")
-        assert res404.status_code == 404
-
-        # 422 for invalid character_id
-        res422 = await client.get("/api/characters/0")
-        assert res422.status_code == 422
 
     async def test_character_switch_404_precedence_and_switch(self, client):
         # 404 precedence

@@ -6,7 +6,6 @@ const post = (body) => ({
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
 });
 export const fetchProviders = () => requestJson('/api/providers');
-export const fetchProvider = (id) => requestJson(`/api/providers/${encodeURIComponent(id)}`);
 export const saveProvider = (payload) => requestJson('/api/providers', post(payload));
 export const activateProvider = (id) => requestJson(`/api/providers/${encodeURIComponent(id)}/activate`, { method: 'POST' });
 export const fetchConfig = () => requestJson('/api/config');
