@@ -140,7 +140,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 
 ## Code Layout
 - `galgame2voice/utils/`: Security masking, logging formatters, and hardware utilities (`logger.py`, `path_guard.py`, `error_diagnostics.py`, `hardware.py`).
-- `galgame2voice/routers/`: FastAPI endpoints (`chat.py`, `config.py`, `health.py`, `characters.py`, `voice.py`, `memory.py`, `affection.py`, `providers.py`, `metrics.py`, `system.py`, `common.py`). There is no `audio.py` or `memories.py`: audio files are served by the `AudioStaticFiles` mount declared in `galgame2voice/main.py`, and `providers.py` is mounted inside `config.py` (`router.include_router(providers_router)`).
+- `galgame2voice/routers/`: FastAPI endpoints (`chat.py`, `config.py`, `health.py`, `characters.py`, `voice.py`, `providers.py`, `metrics.py` (TTS cache stats and clear routes), `system.py`, `common.py`). There is no `audio.py` or `memories.py`: audio files are served by the `AudioStaticFiles` mount declared in `galgame2voice/main.py`, and `providers.py` is mounted inside `config.py` (`router.include_router(providers_router)`).
 - `galgame2voice/services/`: Core business logic (`chat_service.py`, `character_manager.py`, `voice_manager.py`, `audio_cleaner.py`, `dynamic_batcher.py`, `tts_cache_manager.py`, `memory_service.py`, `gpt_sovits_client.py`, `session_manager.py`).
 - `galgame2voice/database/`: SQLite engine, schema version migrations, and CRUD operations (`session.py`, `migrations.py`, `crud.py`, `models.py`).
 - `galgame2voice/telegram_bot/`: Telegram bot client and command/chat handlers (`bot.py`, `handlers.py`).

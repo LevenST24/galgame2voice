@@ -390,17 +390,19 @@ class TestMetricsCollectorAndTelemetry:
             tts_generated_chunks=0,
         )
 
-        overview = await collector.get_overview()
+        async with get_db(db_p) as conn:
+            overview = await crud.get_metrics_overview(conn)
+            cur = await conn.execute("SELECT * FROM token_usage_metrics ORDER BY id ASC")
+            rows = await cur.fetchall()
         assert overview["total_requests"] == 2
         assert overview["total_prompt_tokens"] == 3000
         assert overview["total_completion_tokens"] == 1300
         assert overview["total_tokens"] == 4300
         assert overview["avg_ttft_ms"] == 300.0
 
-        providers = await collector.get_providers()
-        assert len(providers) == 2
-        p_ids = {p["provider_id"] for p in providers}
-        assert "deepseek" in p_ids and "openai" in p_ids
+        assert len(rows) == 2
+        p_ids = {r["provider_id"] for r in rows}
+        assert p_ids == {"deepseek", "openai"}
 
 
 # ============================================================================
@@ -408,7 +410,7 @@ class TestMetricsCollectorAndTelemetry:
 # ============================================================================
 
 class TestMetricsAndCacheRestEndpoints:
-    """Tests FastAPI router endpoints for metrics, latency trends, and cache operations."""
+    """Tests FastAPI router endpoints for TTS persistent cache operations."""
 
     @pytest.fixture(autouse=True)
     def setup_app_state(self, tmp_path):
@@ -428,31 +430,6 @@ class TestMetricsAndCacheRestEndpoints:
         yield
         tc_mod._tts_cache_manager_instance = None
         mc_mod._metrics_collector_instance = None
-
-    def test_get_metrics_overview_api(self):
-        resp = self.client.get("/api/metrics/overview")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "total_requests" in data
-        assert "total_tokens" in data
-        assert "estimated_cost_usd" in data
-        assert "estimated_cost_cny" in data
-        assert "avg_ttft_ms" in data
-        assert "cache_stats" in data
-
-    def test_get_metrics_providers_api(self):
-        resp = self.client.get("/api/metrics/providers")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "providers" in data
-        assert isinstance(data["providers"], list)
-
-    def test_get_latency_trend_api(self):
-        resp = self.client.get("/api/metrics/latency-trend?limit=15")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "trend" in data
-        assert isinstance(data["trend"], list)
 
     def test_get_cache_stats_api(self):
         resp = self.client.get("/api/cache/stats")
@@ -518,9 +495,15 @@ class TestChatServiceTelemetryIntegration:
         assert metrics["estimated_cost_usd"] >= 0
 
         # Verify persisted to SQLite
-        overview = await metrics_col.get_overview()
+        async with get_db(db_p) as conn:
+            overview = await crud.get_metrics_overview(conn)
+            cur = await conn.execute("SELECT * FROM token_usage_metrics")
+            rows = await cur.fetchall()
         assert overview["total_requests"] >= 1
         assert overview["total_tokens"] > 0
+        assert len(rows) >= 1
+        assert rows[0]["session_id"] == "test_stream_sess"
+        assert rows[0]["model_name"] == "deepseek-chat"
 
     @pytest.mark.asyncio
     async def test_chat_sync_telemetry_recording(self, tmp_path):

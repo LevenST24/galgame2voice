@@ -11,7 +11,7 @@ Coverage:
    - All 5 tier transitions (0, 19->20, 39->40, 59->60, 79->80, 100)
    - Daily cap enforcement and midnight rollover
    - Easter egg triggers with min_level gate checks
-   - Gallery unlock queries and reset operations
+   - Affection updates and reset operations
 """
 
 import asyncio
@@ -398,8 +398,8 @@ class TestAffectionStateMachineAdversarial:
         assert egg3_lv3["id"] == "easter_egg_drunk"
 
     @pytest.mark.asyncio
-    async def test_dialogue_gallery_and_reset(self, aff_svc, temp_db_path):
-        """Tests full gallery list retrieval and reset operations."""
+    async def test_affection_update_and_reset(self, temp_db_path):
+        """Tests affection state updates and reset operations."""
         async with get_db(temp_db_path) as conn:
             # Set to Lv.3 with custom nickname
             await crud.update_character_affection(
@@ -410,11 +410,6 @@ class TestAffectionStateMachineAdversarial:
                     unlocked_dialogues=["milestone_lv1", "milestone_lv2", "milestone_lv3", "easter_egg_zaozi"]
                 )
             )
-
-        gallery = await aff_svc.get_dialogue_gallery(user_id="u_gal", character_id=1)
-        assert len(gallery) >= 9  # 5 milestones + 4 easter eggs
-        unlocked_items = [g for g in gallery if g["is_unlocked"]]
-        assert len(unlocked_items) >= 4
 
         # Reset affection
         async with get_db(temp_db_path) as conn:

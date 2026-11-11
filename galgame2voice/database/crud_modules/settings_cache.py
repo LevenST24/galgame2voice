@@ -41,23 +41,9 @@ __all__ = [
     "clean_tts_cache_lru",
     "insert_token_metric",
     "get_metrics_overview",
-    "get_provider_metrics_breakdown",
-    "get_recent_latency_trends",
 ]
 
 USD_TO_CNY_RATE: float = 7.20
-
-PROVIDER_DISPLAY_NAMES: dict[str, str] = {
-    "deepseek": "DeepSeek",
-    "openai": "OpenAI",
-    "gemini": "Google Gemini",
-    "anthropic": "Anthropic Claude",
-    "qwen": "通义千问 (Qwen)",
-    "glm": "智谱 GLM",
-    "xai": "xAI (Grok)",
-    "siliconflow": "SiliconFlow",
-    "custom": "自定义模型",
-}
 
 
 async def get_settings_raw(conn: aiosqlite.Connection) -> SettingsInDB:
@@ -462,77 +448,3 @@ async def get_metrics_overview(conn: aiosqlite.Connection) -> dict[str, Any]:
         "avg_tts_first_chunk_ms": round(float(row["avg_tts_first_chunk_ms"] or 0.0), 1),
         "avg_total_latency_ms": round(float(row["avg_total_latency_ms"] or 0.0), 1),
     }
-
-
-async def get_provider_metrics_breakdown(conn: aiosqlite.Connection) -> list[dict[str, Any]]:
-    """Calculates token usage and cost breakdown grouped by provider."""
-    conn.row_factory = aiosqlite.Row
-    cur_tot = await conn.execute("SELECT COALESCE(SUM(total_tokens), 0) as grand_total FROM token_usage_metrics;")
-    row_tot = await cur_tot.fetchone()
-    grand_total = row_tot["grand_total"] if row_tot and row_tot["grand_total"] > 0 else 1
-
-    cursor = await conn.execute("""
-        SELECT
-            provider_id,
-            COUNT(*) as request_count,
-            COALESCE(SUM(total_tokens), 0) as total_tokens,
-            COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
-            COALESCE(SUM(completion_tokens), 0) as completion_tokens,
-            COALESCE(SUM(estimated_cost), 0.0) as estimated_cost_usd
-        FROM token_usage_metrics
-        GROUP BY provider_id
-        ORDER BY total_tokens DESC;
-    """)
-    rows = await cursor.fetchall()
-    results = []
-
-    for r in rows:
-        pid = r["provider_id"]
-        t_tokens = r["total_tokens"] or 0
-        pct = round((t_tokens / grand_total) * 100.0, 1)
-        results.append({
-            "provider_id": pid,
-            "name": PROVIDER_DISPLAY_NAMES.get(pid, pid.capitalize()),
-            "request_count": r["request_count"] or 0,
-            "total_tokens": t_tokens,
-            "prompt_tokens": r["prompt_tokens"] or 0,
-            "completion_tokens": r["completion_tokens"] or 0,
-            "estimated_cost_usd": round(float(r["estimated_cost_usd"] or 0.0), 6),
-            "percentage": pct
-        })
-    return results
-
-
-async def get_recent_latency_trends(conn: aiosqlite.Connection, limit: int = 30) -> list[dict[str, Any]]:
-    """Retrieves recent chronological latency measurements."""
-    conn.row_factory = aiosqlite.Row
-    try:
-        safe_limit = max(1, min(int(limit), 200))
-    except (TypeError, ValueError):
-        safe_limit = 30
-    cursor = await conn.execute("""
-        SELECT * FROM (
-            SELECT
-                timestamp,
-                ttft_ms,
-                tts_first_chunk_ms,
-                total_latency_ms,
-                model_name,
-                provider_id
-            FROM token_usage_metrics
-            ORDER BY id DESC
-            LIMIT ?
-        ) ORDER BY timestamp ASC;
-    """, (safe_limit,))
-    rows = await cursor.fetchall()
-    return [
-        {
-            "timestamp": r["timestamp"],
-            "ttft_ms": round(float(r["ttft_ms"] or 0.0), 1),
-            "tts_first_chunk_ms": round(float(r["tts_first_chunk_ms"] or 0.0), 1),
-            "total_latency_ms": round(float(r["total_latency_ms"] or 0.0), 1),
-            "model_name": r["model_name"] or "",
-            "provider_id": r["provider_id"] or "",
-        }
-        for r in rows
-    ]
