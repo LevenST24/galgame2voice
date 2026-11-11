@@ -15,6 +15,7 @@ All notable changes to galgame2voice are documented here. The format follows
 
 ### Fixed
 
+- 修复某一轮对话没有生成语音（如关闭语音或台词只有动作描写）时，设置中心「运行状态」的阶段耗时里「首音就绪」误显示为整轮耗时的问题；现在没有生成语音的轮次显示为「--」。
 - 修复旧 Telegram 连通性测试在途时重新打开设置或发起新测试后，旧响应结束时错误提前解锁新测试按钮并弹出旧提示的问题，以及测试进行中编辑输入框会导致测试按钮永久锁死的问题；现在 Telegram 测试拥有独立的代数守卫与 AbortController，草稿变更或重新初始化立即作废旧测试且不泄露提示或干扰新状态，编辑输入框会即时重置忙碌态以允许再次重试。
 ### Removed
 - 移除早期遗留、已无实际调用方的 HTTP 接口：GET/POST /ai/chat、POST /api/chat/japanese、GET /status、GET /api/voice/fs-browse 与 GET /api/voice/presets；如有自己的脚本在调用，对话请改用 POST /api/chat，服务存活检查请改用 GET /api/health。
