@@ -293,7 +293,7 @@ async def _migration_v1_base_schema(conn: aiosqlite.Connection) -> None:
     count = count_row[0] if count_row else 0
     if count == 0:
         for p_id, preset in PROVIDER_PRESETS.items():
-            is_active = 1 if p_id == "gemini" else 0
+            is_active = 1 if p_id == "deepseek" else 0
             await conn.execute(
                 """
                 INSERT OR IGNORE INTO providers (
