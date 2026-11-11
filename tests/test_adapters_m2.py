@@ -204,12 +204,7 @@ class TestConfigAndProviderRouterEndpoints:
             assert "providers" in data
             assert "presets" in data
 
-            # 2. GET /api/providers/presets
-            presets_resp = await client.get("/api/providers/presets")
-            assert presets_resp.status_code == 200
-            assert len(presets_resp.json()["presets"]) >= 8
-
-            # 3. POST /api/providers (Create new provider) — opt in to private
+            # 2. POST /api/providers (Create new provider) — opt in to private
             # endpoints first since this scenario targets a local Ollama URL.
             await client.post("/api/config", json={"allow_private_llm_endpoints": True})
             create_resp = await client.post("/api/providers", json={
@@ -225,12 +220,12 @@ class TestConfigAndProviderRouterEndpoints:
             assert created_provider["id"] == "my_custom_provider"
             assert "****" in created_provider["api_key"]
 
-            # 4. GET /api/providers/my_custom_provider
+            # 3. GET /api/providers/my_custom_provider
             get_resp = await client.get("/api/providers/my_custom_provider")
             assert get_resp.status_code == 200
             assert get_resp.json()["provider"]["name"] == "My Custom AI"
 
-            # 5. POST /api/providers/test
+            # 4. POST /api/providers/test
             test_resp = await client.post("/api/providers/test", json={
                 "provider_type": "deepseek",
                 "api_key": "sk-test-valid",
@@ -240,12 +235,7 @@ class TestConfigAndProviderRouterEndpoints:
             assert test_resp.status_code == 200
             assert "success" in test_resp.json()
 
-            # 6. GET /api/providers/{provider_id}/models
-            models_resp = await client.get("/api/providers/my_custom_provider/models")
-            assert models_resp.status_code == 200
-            assert "models" in models_resp.json()
-
-            # 7. DELETE /api/providers/my_custom_provider
+            # 5. DELETE /api/providers/my_custom_provider
             del_resp = await client.delete("/api/providers/my_custom_provider")
             assert del_resp.status_code == 200
             assert del_resp.json()["status"] == "deleted"

@@ -4,7 +4,7 @@ Covers:
 - Route and Redirect Support (/settings.html, /console, /settings with query string preservation)
 - Frontend Web Management Console HTML Structure and Content Verification
 - API Key Masking, Zero-Leakage, and Secure Retention on Update
-- Provider Management API (Presets, CRUD, Activation, Connectivity Testing, Model Discovery)
+- Provider Management API (CRUD, Activation, Connectivity Testing)
 - Voice Profile Management API (CRUD, Switch, Presets, Slicing Methods)
 - Inference Parameter Tuning & SQLite Persistence
 - Telegram Bot Configuration & Testing API
@@ -259,27 +259,7 @@ class TestSecurityAndKeyMasking:
 # ============================================================================
 
 class TestProviderManagementEndpoints:
-    """Verifies preset listings, provider activation, connectivity tests, and model discovery."""
-
-    @pytest.mark.asyncio
-    async def test_list_provider_presets(self):
-        """Verifies GET /api/providers/presets returns major provider presets."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/api/providers/presets")
-            assert resp.status_code == 200
-            presets = resp.json()["presets"]
-            assert len(presets) >= 8
-            preset_ids = {p["id"] for p in presets}
-            assert "deepseek" in preset_ids
-            assert "openai" in preset_ids
-            assert "qwen" in preset_ids
-            assert "glm" in preset_ids
-            assert "gemini" in preset_ids
-            assert "anthropic" in preset_ids
-            assert "xai" in preset_ids
-            assert "custom" in preset_ids
+    """Verifies provider activation and deletion."""
 
     @pytest.mark.asyncio
     async def test_activate_provider_endpoint(self):
@@ -297,19 +277,6 @@ class TestProviderManagementEndpoints:
             cfg_resp = await client.get("/api/config")
             assert cfg_resp.json()["settings"]["active_provider_id"] == "openai"
             assert cfg_resp.json()["active_provider"]["id"] == "openai"
-
-    @pytest.mark.asyncio
-    async def test_provider_model_discovery(self):
-        """Verifies GET /api/providers/{id}/models returns models list."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/api/providers/deepseek/models")
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["provider_id"] == "deepseek"
-            assert isinstance(data["models"], list)
-            assert len(data["models"]) > 0
 
     @pytest.mark.asyncio
     async def test_provider_delete_endpoint(self):

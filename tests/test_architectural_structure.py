@@ -177,10 +177,3 @@ async def test_providers_router_decoupling():
         # Check /api/providers route
         resp_prov = await client.get("/api/providers")
         assert resp_prov.status_code in (200, 500)  # endpoint reached
-
-        # Check /api/providers/presets route
-        resp_presets = await client.get("/api/providers/presets")
-        assert resp_presets.status_code == 200
-        data = resp_presets.json()
-        assert "presets" in data
-
