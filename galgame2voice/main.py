@@ -512,7 +512,7 @@ def create_app(*, engine_supervisor: EngineSupervisor | None = None) -> FastAPI:
 
     # 2. Register API Routers (every router except health gets console token auth as a
     # router-level dependency; health declares it per-route for /api/system/*, leaving
-    # /api/health and /status unauthenticated)
+    # /api/health unauthenticated)
     auth_deps = [Depends(require_auth)]
     app.include_router(health.router)
     app.include_router(characters.media_router)

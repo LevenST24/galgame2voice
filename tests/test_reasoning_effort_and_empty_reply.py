@@ -698,10 +698,8 @@ async def test_all_request_builders_forward_only_configured_effort(tmp_path, eff
     database = tmp_path / "builders.db"
     await init_db(database)
     service = ChatService(db_path=str(database))
-    service._get_active_llm_adapter = AsyncMock(return_value=(adapter, "test", "custom"))
     try:
         await service._execute_sync_llm(adapter=adapter, messages=[], model_name="test")
-        assert await service.resolve_message_japanese("中文", session_id="translation") == "翻訳"
         captured.extend(call.kwargs for call in adapter.chat.call_args_list)
         for kwargs in captured:
             if effort is None:

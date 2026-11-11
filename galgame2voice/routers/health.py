@@ -1,6 +1,6 @@
 """
 Health check and system diagnostic router for galgame2voice.
-Provides /api/health, /status, and /api/system/status endpoints.
+Provides /api/health and /api/system/status endpoints.
 
 All filesystem scans run in worker threads and are cached with a TTL so the
 frontend's on-demand status requests never block the event loop.
@@ -99,14 +99,6 @@ class HealthResponse(BaseModel):
     app: str = Field(default="galgame2voice", json_schema_extra={"example": "galgame2voice"})
     version: str = Field(default=__version__, json_schema_extra={"example": __version__})
     uptime_seconds: float = Field(..., json_schema_extra={"example": 120.5})
-
-
-class LegacyStatusResponse(BaseModel):
-    """Legacy endpoint compatibility response."""
-    status: str = Field(default="ok", json_schema_extra={"example": "ok"})
-    app: str = Field(default="galgame2voice", json_schema_extra={"example": "galgame2voice"})
-    version: str = Field(default=__version__, json_schema_extra={"example": __version__})
-    gpt_sovits: str = Field(default="reachable", json_schema_extra={"example": "reachable"})
 
 
 class AppTelemetry(BaseModel):
@@ -321,27 +313,6 @@ async def health_check(request: Request) -> HealthResponse:
         app=settings.app_name,
         version=settings.app_version,
         uptime_seconds=uptime,
-    )
-
-
-@router.get("/status", response_model=LegacyStatusResponse, summary="Legacy Status Endpoint")
-async def legacy_status(request: Request) -> LegacyStatusResponse:
-    """
-    Legacy compatibility endpoint.
-    Performs quick reachability probe to GPT-SoVITS.
-    """
-    settings = get_settings()
-    sovits_endpoint = await _resolve_sovits_endpoint_best_effort()
-    probe = await _probe_gpt_sovits(
-        sovits_endpoint.base_url if sovits_endpoint else await get_effective_sovits_url()
-    )
-    if sovits_endpoint is not None:
-        probe.source = sovits_endpoint.source
-    return LegacyStatusResponse(
-        status="ok",
-        app=settings.app_name,
-        version=settings.app_version,
-        gpt_sovits=probe.status,
     )
 
 

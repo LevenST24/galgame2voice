@@ -2,7 +2,7 @@
 Adversarial Empirical Verification Suite for Milestone 1 (M1 Challenger 2).
 Covers:
 1. Stale PID recovery, PID corruption, and process lookup safety.
-2. Non-standard HTTP methods & fuzzing on /api/health and /status.
+2. Non-standard HTTP methods & fuzzing on /api/health and /api/system/status.
 3. CORS header validation under various origins and credentials modes.
 4. Process termination simulation & graceful lifespan shutdown.
 """
@@ -48,10 +48,6 @@ class TestFastApiAdversarialEndpoints:
                 res = await client.request(method, "/api/health")
                 assert res.status_code == 405, f"Expected 405 for {method} /api/health, got {res.status_code}"
                 assert "detail" in res.json()
-
-            for method in ["POST", "PUT", "DELETE", "PATCH"]:
-                res = await client.request(method, "/status")
-                assert res.status_code == 405, f"Expected 405 for {method} /status, got {res.status_code}"
 
             for method in ["POST", "PUT", "DELETE", "PATCH"]:
                 res = await client.request(method, "/api/system/status")

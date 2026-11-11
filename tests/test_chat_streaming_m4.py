@@ -6,7 +6,7 @@ Covers:
  - Fallback parsing for non-JSON/broken LLM outputs
  - ChatService stream_chat & chat_sync end-to-end pipelines
  - /api/chat/stream SSE endpoint (events: text, audio_chunk, done, error)
- - /api/chat and /ai/chat (GET/POST) endpoints
+ - /api/chat endpoint
  - Static UI assets and Web Audio Player file serving
 """
 
@@ -252,7 +252,7 @@ class TestChatServiceM4:
 # ============================================================================
 
 class TestChatRouterEndpointsM4:
-    """Tests FastAPI router endpoints /api/chat/stream, /api/chat, /ai/chat, and static assets."""
+    """Tests FastAPI router endpoints /api/chat/stream, /api/chat, and static assets."""
 
     @pytest.mark.asyncio
     async def test_post_chat_stream_sse_endpoint(self, temp_db_path, mock_gpt_sovits, tmp_path):
@@ -300,27 +300,6 @@ class TestChatRouterEndpointsM4:
             assert "chinese" in data
             assert "japanese" in data
             assert "audio_url" in data
-
-    @pytest.mark.asyncio
-    async def test_get_ai_chat_legacy_endpoint(self, temp_db_path, mock_gpt_sovits, tmp_path):
-        app = create_app()
-        client = GptSovitsClient(server=mock_gpt_sovits)
-        tts_service = TtsService(client=client, audio_dir=tmp_path)
-        chat_service = ChatService(tts_service=tts_service, db_path=temp_db_path)
-
-        mock_adapter = MockStreamingLLMAdapter()
-        async def _mock_adapter(*args, **kwargs):
-            return (mock_adapter, "mock-chat")
-        chat_service._get_active_llm_adapter = _mock_adapter
-        set_chat_service(chat_service)
-
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
-            resp = await c.get("/ai/chat?prompt=LegacyPrompt&session_id=legacy-test")
-            assert resp.status_code == 200
-            data = resp.json()
-            assert "chinese" in data
-            assert "audioUrl" in data
 
     @pytest.mark.asyncio
     async def test_chat_stream_empty_prompt_validation(self):

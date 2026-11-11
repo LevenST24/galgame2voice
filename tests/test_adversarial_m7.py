@@ -848,9 +848,9 @@ class TestOriginalRequestAcceptanceCriteria:
         assert "setup_windows_job_object" in content_launcher
 
     @pytest.mark.asyncio
-    async def test_ac_health_and_status_endpoints(self, m7_db_path, m7_mock_gpt):
+    async def test_ac_health_endpoint(self, m7_db_path, m7_mock_gpt):
         """
-        AC: Health check endpoint (/api/health or /status) responds with status of galgame2voice and GPT-SoVITS backend.
+        AC: Health check endpoint (/api/health) responds with status of galgame2voice.
         """
         app = create_app()
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
@@ -860,12 +860,6 @@ class TestOriginalRequestAcceptanceCriteria:
             data_health = resp_health.json()
             assert data_health["status"] in ("healthy", "degraded", "running", "ok")
             assert "gpt_sovits" in data_health or "backend" in data_health or "app" in data_health
-
-            # Check /status
-            resp_status = await client.get("/status")
-            assert resp_status.status_code == 200
-            data_status = resp_status.json()
-            assert "app" in data_status or "galgame2voice" in data_status or "status" in data_status
 
     @pytest.mark.asyncio
     async def test_ac_unified_config_and_security(self, m7_db_path):

@@ -117,7 +117,7 @@ async def test_multi_drive_and_nested_gpt_sovits_discovery_and_guard(tmp_path, m
     with single-level and nested GPT-SoVITS/GPT-SoVITS directory structure,
     as well as hint file configurations.
     Verifies that discover_gpt_sovits_roots, get_authorized_roots,
-    validate_voice_profile_paths, _fs_browse_sync, and POST /api/voice/profiles
+    validate_voice_profile_paths, and POST /api/voice/profiles
     consistently authorize the scanned weights and reference audio, while
     unauthorized external paths remain strictly rejected.
     """
@@ -125,7 +125,7 @@ async def test_multi_drive_and_nested_gpt_sovits_discovery_and_guard(tmp_path, m
     from httpx import ASGITransport, AsyncClient
     from galgame2voice.database.session import init_db
     from galgame2voice.main import create_app
-    from galgame2voice.routers.voice import _fs_browse_sync, _scan_models_sync
+    from galgame2voice.routers.voice import _scan_models_sync
     from galgame2voice.utils.path_guard import (
         discover_gpt_sovits_roots,
         get_authorized_roots,
@@ -243,15 +243,6 @@ async def test_multi_drive_and_nested_gpt_sovits_discovery_and_guard(tmp_path, m
         ref_audio_path=str(pn_wav),
     )
 
-    # _fs_browse_sync must allow browsing discovered directories
-    browse_d = _fs_browse_sync(str(d_drive_nested), "all")
-    assert "error" not in browse_d or not browse_d.get("error")
-    assert any(f["name"] == "model_d.ckpt" for f in browse_d["files"])
-
-    browse_ps = _fs_browse_sync(str(p_parent_single), "all")
-    assert "error" not in browse_ps or not browse_ps.get("error")
-    assert any(f["name"] == "model_ps.ckpt" for f in browse_ps["files"])
-
     # API verification: POST /api/voice/profiles creates profile using scanned multi-drive paths
     app = create_app()
     transport = ASGITransport(app=app)
@@ -280,10 +271,6 @@ async def test_multi_drive_and_nested_gpt_sovits_discovery_and_guard(tmp_path, m
             sovits_weights_path=str(d_pth),
         )
 
-    rejected_browse = _fs_browse_sync(str(unauthorized), "all")
-    assert "error" in rejected_browse
-    assert "超出已授权" in rejected_browse["error"]
-
 
 @pytest.mark.asyncio
 async def test_sovits_dir_hint_priority_and_coexistence_with_env_var(tmp_path, monkeypatch):
@@ -293,12 +280,12 @@ async def test_sovits_dir_hint_priority_and_coexistence_with_env_var(tmp_path, m
     1. get_effective_sovits_dir() prioritizes sovits_dir.txt over GPT_SOVITS_DIR,
        and falls back to GPT_SOVITS_DIR when sovits_dir.txt is absent or invalid.
     2. discover_gpt_sovits_roots() and get_authorized_roots() include BOTH
-       directories so models in either directory can be scanned, browsed, and used.
+       directories so models in either directory can be scanned and used.
     3. When an explicit project_root differing from settings.project_root is passed,
        p_root / "data" / "sovits_dir.txt" takes precedence over settings.data_dir.
     """
     from galgame2voice.database.session import init_db
-    from galgame2voice.routers.voice import _fs_browse_sync, _scan_models_sync
+    from galgame2voice.routers.voice import _scan_models_sync
     from galgame2voice.utils.path_guard import (
         discover_gpt_sovits_roots,
         get_authorized_roots,
@@ -354,7 +341,7 @@ async def test_sovits_dir_hint_priority_and_coexistence_with_env_var(tmp_path, m
     assert str(hint_ckpt) in scanned_gpt_paths
     assert str(env_ckpt) in scanned_gpt_paths
 
-    # Both directories pass path guard validation and directory browsing
+    # Both directories pass path guard validation
     validate_voice_profile_paths(
         gpt_weights_path=str(hint_ckpt),
         sovits_weights_path=str(hint_pth),
@@ -365,10 +352,6 @@ async def test_sovits_dir_hint_priority_and_coexistence_with_env_var(tmp_path, m
         sovits_weights_path=str(env_pth),
         ref_audio_path=str(env_wav),
     )
-
-    browse_hint = _fs_browse_sync(str(hint_engine), "all")
-    assert "error" not in browse_hint or not browse_hint.get("error")
-    assert any(f["name"] == "model_hint.ckpt" for f in browse_hint["files"])
 
     # 3. Explicit project_root differing from settings.project_root prioritizes its own data/sovits_dir.txt
     other_root = tmp_path / "other_project"

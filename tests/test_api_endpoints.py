@@ -409,7 +409,7 @@ class TestCoreMainAndHealthEndpoints:
 
     @pytest.mark.asyncio
     async def test_main_app_health_endpoints(self):
-        """Verifies GET /api/health and GET /status on the real galgame2voice app instance."""
+        """Verifies GET /api/health and GET /api/system/status on the real galgame2voice app instance."""
         app = create_app()
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -420,13 +420,6 @@ class TestCoreMainAndHealthEndpoints:
             assert data["status"] == "ok"
             assert data["app"] == "galgame2voice"
             assert "uptime_seconds" in data
-
-            # Legacy status
-            status_resp = await client.get("/status")
-            assert status_resp.status_code == 200
-            s_data = status_resp.json()
-            assert s_data["status"] == "ok"
-            assert "gpt_sovits" in s_data
 
             # Full telemetry diagnostic
             diag_resp = await client.get("/api/system/status")

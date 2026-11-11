@@ -92,7 +92,6 @@ Every functional domain is validated against its primary functional contracts:
 
 ### F3: System Diagnostics & Health Telemetry
 - `T1_HLT_01`: `GET /api/health` returns HTTP 200 with accurate uptime and version.
-- `T1_HLT_02`: `GET /status` returns valid GPT-SoVITS reachability status.
 - `T1_HLT_03`: `GET /api/system/status` returns normalized database relative path.
 - `T1_HLT_04`: Storage telemetry accurately computes cached audio directory file count and MB.
 - `T1_HLT_05`: System status gathers parallel telemetry without blocking the async event loop.
@@ -121,7 +120,6 @@ Every functional domain is validated against its primary functional contracts:
 ### F7: Path Traversal & Audio File Security
 - `T1_SEC_01`: Rejects `../` path traversal attempts in static audio endpoints.
 - `T1_SEC_02`: Rejects absolute path escapes and URL encoded `%2e%2e%2f` sequences.
-- `T1_SEC_03`: `fs-browse` endpoint restricts access and filters by the per-`file_type` whitelists in `_FS_BROWSE_EXTS` (`gpt` → `.ckpt`, `sovits` → `.pth`, `audio` → `.wav`/`.ogg`/`.mp3`/`.flac`/`.m4a`).
 - `T1_SEC_04`: SSRF protection blocks private/loopback IP requests for external LLM base URLs.
 - `T1_SEC_05`: Temporary cache write names isolate pid and timestamp to avoid collisions.
 

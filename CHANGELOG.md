@@ -11,9 +11,13 @@ All notable changes to galgame2voice are documented here. The format follows
 - 完成全局设置控制器业务职责与生命周期解耦（T04 收口）：将遥测轮询与硬件卡片渲染、GPT-SoVITS 引擎精度/重启/缓存清理，以及 Telegram 开关/可见性/验证与测试逻辑分别抽离至独立的 `TelemetrySettingsController`（`telemetry_settings.js`）、`EngineSettingsController`（`engine_settings.js`）与 `TelegramSettingsController`（`telegram_settings.js`）；`global_settings.js` 保持公共兼容门面与配置草稿协调；每个控制器实例独立拥有 AbortController、代数守卫、定时器与事件解绑；`initGlobalSettings` 在重新初始化时显式释放旧控制器与旧监听器，消除了旧请求回写新 DOM、覆盖忙碌状态、旧重启阻塞新操作或重复绑定导致多次调用的缺陷。
 - 拆分设置控制器第一阶段（Phase 1，PR294）：将大模型提供商表单、参数草稿与读取状态、模型与密钥展示、连通性测试及保存启用逻辑从 `global_settings.js` 抽离至实例拥有的 `ProviderSettingsController`（`provider_settings.js`），保持原有页脚保存预约顺序、版本守卫与草稿隔离语义。
 
+
+
 ### Fixed
 
 - 修复旧 Telegram 连通性测试在途时重新打开设置或发起新测试后，旧响应结束时错误提前解锁新测试按钮并弹出旧提示的问题，以及测试进行中编辑输入框会导致测试按钮永久锁死的问题；现在 Telegram 测试拥有独立的代数守卫与 AbortController，草稿变更或重新初始化立即作废旧测试且不泄露提示或干扰新状态，编辑输入框会即时重置忙碌态以允许再次重试。
+### Removed
+- 移除早期遗留、已无实际调用方的 HTTP 接口：GET/POST /ai/chat、POST /api/chat/japanese、GET /status、GET /api/voice/fs-browse 与 GET /api/voice/presets；如有自己的脚本在调用，对话请改用 POST /api/chat，服务存活检查请改用 GET /api/health。
 - 修复在系统繁忙或命令响应过慢的 Windows 设备上，打开设置中心查看运行状态、检测计算方式或切换音色检查显存时显卡检测超时后仍一直卡住不返回的问题；现在检测超时会在数秒内结束并跳过，不再卡住状态刷新与音色切换。
 - 修复全新安装首次启动时，默认生效的模型服务商（Google Gemini）与全局设置记录的默认服务商（DeepSeek）不一致的问题；现在全新启动时两处默认服务商统一为 DeepSeek，已有配置不受影响。
 - 修复解压 Windows 便携包后缺少 `backgrounds/` 背景目录，导致按说明放入自定义背景或升级迁移时找不到对应文件夹的问题；现在便携包解压后自带空的 `backgrounds/` 目录。

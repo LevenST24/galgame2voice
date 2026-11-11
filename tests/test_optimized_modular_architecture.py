@@ -341,34 +341,3 @@ class TestArchitecturalHardeningAndEdgeCases:
             # Combined 0.1s + 0.2s = 0.3s (4800 frames), skipping the 24k chunk
             assert w.getnframes() == int(16000 * 0.3)
 
-    @pytest.mark.asyncio
-    async def test_resolve_message_japanese_llm_fallback(self, tmp_path, monkeypatch):
-        """Verifies ChatService.resolve_message_japanese LLM translation fallback works with ChatMessage and LLMResponse."""
-        from unittest.mock import AsyncMock
-        from galgame2voice.adapters.base import BaseLLMAdapter, LLMResponse
-
-        db_file = tmp_path / "test_fallback.db"
-        await init_db(db_file)
-        service = ChatService(db_path=db_file)
-
-        mock_adapter = AsyncMock(spec=BaseLLMAdapter)
-        mock_adapter.chat.return_value = LLMResponse(
-            content="「こんにちは、指揮官様！」",
-            usage={"total_tokens": 10},
-        )
-
-        async def _mock_get_adapter(conn=None, provider_id=None):
-            return mock_adapter, "gpt-4o-mini", "mock"
-
-        monkeypatch.setattr(service, "_get_active_llm_adapter", _mock_get_adapter)
-
-        # Call with a message not present in DB
-        ja = await service.resolve_message_japanese("你好呀，指挥官！")
-        assert ja == "こんにちは、指揮官様！"
-        assert mock_adapter.chat.called
-        # Verify ChatMessage was passed
-        called_args = mock_adapter.chat.call_args[0][0]
-        assert len(called_args) == 1
-        assert getattr(called_args[0], "role", "") == "user"
-        assert "你好呀，指挥官！" in getattr(called_args[0], "content", "")
-

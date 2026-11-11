@@ -67,40 +67,6 @@ def test_container_entrypoint_uses_same_binding_settings(monkeypatch):
         main._init_logging_and_safety(get_settings())
 
 
-def test_directory_browser_rejects_outside_roots_and_hides_parent(tmp_path, monkeypatch):
-    from galgame2voice.routers.voice import _fs_browse_sync
-    root = tmp_path / "project"
-    root.mkdir()
-    outside = tmp_path / "private"
-    outside.mkdir()
-    (outside / "should-not-list.ckpt").write_text("private")
-    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(root))
-    monkeypatch.setenv("DATA_DIR_NAME", "data")
-    get_settings.cache_clear()
-    rejected = _fs_browse_sync(str(outside), "all")
-    assert rejected["files"] == rejected["directories"] == []
-    assert "error" in rejected
-    allowed = _fs_browse_sync(str(root), "all")
-    assert allowed["parent_path"] is None
-    assert str(outside) not in allowed["drives"]
-
-
-def test_directory_browser_supports_declared_external_engine(tmp_path, monkeypatch):
-    from galgame2voice.routers.voice import _fs_browse_sync
-    root = tmp_path / "project"
-    root.mkdir()
-    engine = tmp_path / "external-engine"
-    engine.mkdir()
-    (engine / "voice.ckpt").write_text("model")
-    (engine / ".private.ckpt").write_text("hidden")
-    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(root))
-    monkeypatch.setenv("GPT_SOVITS_DIR", str(engine))
-    get_settings.cache_clear()
-    result = _fs_browse_sync(str(engine), "gpt")
-    assert [item["name"] for item in result["files"]] == ["voice.ckpt"]
-    assert result["parent_path"] is None
-
-
 def test_runtime_singletons_use_isolated_paths(tmp_path):
     from galgame2voice.database.session import get_database_path
     from galgame2voice.services.tts_cache_manager import get_tts_cache_manager
