@@ -26,6 +26,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_TEMP = tempfile.gettempdir()
 BROWSER_TIMEOUT_SECONDS = 40
+BROWSER_LAUNCH_STALL_RETRIES = 3
 _SERVERS_BY_PORT = weakref.WeakValueDictionary()
 
 
@@ -67,8 +68,11 @@ def _describe_hang(exc, command, seconds, requests=()):
 def run_layout_browser(command, reset=None):
     """Runs Chrome once more after a hang or a blank virtual-time dump.
 
+    A Chrome that requested nothing from the server in the whole timeout has not reached the
+    page yet, so it is started again up to BROWSER_LAUNCH_STALL_RETRIES more times.
+
     A test whose server keeps state between requests (posted results, events the page sets)
-    passes `reset` to clear it, so the second run does not start from what the first one left.
+    passes `reset` to clear it, so the next run does not start from what the last one left.
     """
     port = next((int(m[1]) for item in reversed(command) if (m := re.match(r"^https?://127\.0\.0\.1:(\d+)(?:/|$)", str(item)))), None)
     server = _SERVERS_BY_PORT.get(port)
@@ -124,28 +128,38 @@ def run_layout_browser(command, reset=None):
                 stderr_path.read_bytes(),
             )
 
-    def relaunch():
+    stall_retries = 0
+    retried = False
+    while True:
+        started = time.monotonic()
+        try:
+            result = launch()
+        except subprocess.TimeoutExpired as exc:
+            # Windows CI sometimes keeps Chrome running for the whole 40 s, even past the 20 s
+            # image hold in test_stream_progress_browser. The cause is not known: report what
+            # Chrome had produced, then start it again. A Chrome that requested nothing at all
+            # had not reached the page, so it gets more tries than one that hung on the page.
+            requests = list(server.requests) if server is not None else ()
+            if server is not None and not requests:
+                if stall_retries == BROWSER_LAUNCH_STALL_RETRIES:
+                    raise
+                stall_retries += 1
+            elif retried:
+                raise
+            else:
+                retried = True
+            warnings.warn(_describe_hang(exc, command, time.monotonic() - started, requests), stacklevel=2)
+        else:
+            # Under load the virtual-time budget can run out while Chrome is still on about:blank:
+            # CI's blank screenshots are about 6 KB, the size of an about:blank capture, and the
+            # dump has no result node. Retry such a dump once with a fresh profile.
+            blank = (result.returncode == 0 and any(item.startswith("--virtual-time-budget=") for item in command)
+                     and not re.search(rb'<pre id="[^"]*result"', result.stdout))
+            if retried or not blank:
+                return result
+            retried = True
         if reset:
             reset()
-        return launch()
-
-    started = time.monotonic()
-    try:
-        result = launch()
-    except subprocess.TimeoutExpired as exc:
-        # Windows CI sometimes keeps Chrome running for the whole 40 s, even past the 20 s
-        # image hold in test_stream_progress_browser. The cause is not known: report what
-        # Chrome had produced, then start it once more.
-        requests = list(server.requests) if server is not None else ()
-        warnings.warn(_describe_hang(exc, command, time.monotonic() - started, requests), stacklevel=2)
-        return relaunch()
-    # Under load the virtual-time budget can run out while Chrome is still on about:blank:
-    # CI's blank screenshots are about 6 KB, the size of an about:blank capture, and the
-    # dump has no result node. Retry such a dump once with a fresh profile.
-    if (result.returncode == 0 and any(item.startswith("--virtual-time-budget=") for item in command)
-            and not re.search(rb'<pre id="[^"]*result"', result.stdout)):
-        result = relaunch()
-    return result
 
 
 PAGE = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
@@ -328,11 +342,62 @@ def test_run_layout_browser_reports_and_retries_a_hung_chrome_once(tmp_path, mon
     assert steps == ["launch", "reset", "launch"]
     assert server.requests == []
 
-    # A second hang is not retried again.
-    outcomes[:] = [subprocess.TimeoutExpired(command, 40), subprocess.TimeoutExpired(command, 40)]
+    # With no server to ask, a hang is not a launch stall: a second one is not retried again.
+    untracked = ["chrome", "--dump-dom", f"--screenshot={screenshot}", "http://127.0.0.1:9/"]
+    outcomes[:] = [subprocess.TimeoutExpired(untracked, 40), subprocess.TimeoutExpired(untracked, 40)]
     with pytest.warns(UserWarning, match=r"requests: \(none\)"), pytest.raises(subprocess.TimeoutExpired):
-        run_layout_browser(command)
+        run_layout_browser(untracked)
     assert outcomes == []
+
+
+# A "stall" times out before Chrome requested anything, a "hang" after it requested the page.
+@pytest.mark.parametrize("outcomes,succeeds", [
+    ("stall stall stall ok", True),
+    ("stall stall stall stall", False),
+    ("hang ok", True),
+    ("hang hang", False),
+    ("stall hang ok", True),
+    ("stall hang hang", False),
+])
+def test_run_layout_browser_retries_a_launch_stall_more_often_than_a_hang(monkeypatch, request, outcomes, succeeds):
+    server = make_layout_server(partial(LayoutHandler, page=b""))
+    request.addfinalizer(server.server_close)
+    command = ["chrome", "--dump-dom", f"http://127.0.0.1:{server.server_port}/"]
+    script = outcomes.split()
+    launches = len(script)
+    steps = []
+
+    class FakePopen:
+        pid = 99999999
+        returncode = 0
+
+        def __init__(self, launched, *, stdout, **kwargs):
+            steps.append("launch")
+            self.launched = launched
+            self.outcome = script.pop(0)
+            if self.outcome != "stall":
+                server.requests.append("GET /")
+            if self.outcome == "ok":
+                stdout.write(RESULT_DUMP)
+
+        def wait(self, timeout=None):
+            if timeout is not None and self.outcome != "ok":
+                raise subprocess.TimeoutExpired(self.launched, timeout)
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: None)
+    with pytest.warns(UserWarning, match="Chrome was still running"):
+        if succeeds:
+            assert run_layout_browser(command, reset=lambda: steps.append("reset")).stdout == RESULT_DUMP
+        else:
+            with pytest.raises(subprocess.TimeoutExpired):
+                run_layout_browser(command, reset=lambda: steps.append("reset"))
+    assert script == []
+    assert steps == ["launch"] + ["reset", "launch"] * (launches - 1)
 
 
 def _pid_alive(pid):
