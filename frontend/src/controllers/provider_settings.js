@@ -9,6 +9,36 @@ import { saveConfirmedProvider, activateConfirmedProvider } from './provider_rec
 
 export const PROVIDER_FIELDS = ['gApiKey', 'gBaseUrl', 'gChatModel', 'gChatModelSelect', 'gReasoningEffort', 'gCustomName'];
 
+function isLoopbackOrPrivateIpv4(host) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return false;
+  const octets = m.slice(1).map(Number);
+  if (octets.some((n) => n > 255)) return false;
+  const [a, b] = octets;
+  return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+}
+
+function isLoopbackOrPrivateBaseUrl(rawUrl) {
+  if (!rawUrl) return false;
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch (_) { return false; }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase().replace(/\.+$/, '');
+  if (!hostname) return false;
+  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) return true;
+  if (isLoopbackOrPrivateIpv4(hostname) || hostname === '::1' || hostname === '::') return true;
+  if (/^fe[89ab][0-9a-f]:/.test(hostname) || /^(?:fc|fd)[0-9a-f]{0,2}:/.test(hostname)) return true;
+  if (hostname.startsWith('::ffff:')) {
+    const hex = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(hostname.slice(7));
+    if (hex) {
+      const hi = parseInt(hex[1], 16), lo = parseInt(hex[2], 16);
+      return isLoopbackOrPrivateIpv4(`${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`);
+    }
+  }
+  return false;
+}
+
 export class ProviderSettingsController {
   constructor(dom = {}, coordinator = {}) {
     this.dom = dom || {};
@@ -53,6 +83,11 @@ export class ProviderSettingsController {
     if (this.dom.gChatModelSelect) this._bind(this.dom.gChatModelSelect, 'change', () => this.onChatModelSelectChange());
     if (this.dom.gProviderTest) this._bind(this.dom.gProviderTest, 'click', () => this.handleProviderTest());
     if (this.dom.gProviderActivate) this._bind(this.dom.gProviderActivate, 'click', () => this.handleActivateProvider());
+    if (this.dom.gAllowPrivateEndpoints) {
+      this._bind(this.dom.gAllowPrivateEndpoints, 'change', () => {
+        if (this.dom.gAllowPrivateEndpoints.checked) this.resetTestResultBox();
+      });
+    }
     for (const field of PROVIDER_FIELDS) {
       for (const event of ['input', 'change']) {
         if (this.dom[field]) {
@@ -119,6 +154,21 @@ export class ProviderSettingsController {
       this.dom.gProviderTestResult.className = 'test-result-box hidden';
       if (this.dom.gTestResultBody) this.dom.gTestResultBody.textContent = '';
     }
+  }
+
+  _promptEnablePrivateEndpoints() {
+    if (this.dom.gProviderTestResult) this.dom.gProviderTestResult.className = 'test-result-box test-result-error';
+    if (this.dom.gTestResultTitle) this.dom.gTestResultTitle.textContent = '尚未开启本机 / 局域网连接权限';
+    if (this.dom.gTestResultLatency) this.dom.gTestResultLatency.textContent = '未发送';
+    if (this.dom.gTestResultBody) {
+      this.dom.gTestResultBody.textContent =
+        '当前填写的是本机或局域网地址。请先勾选本页「允许连接本机或局域网的模型服务」开关，再测试连通性或保存。';
+    }
+    if (this.dom.gPrivateEndpointsStatus) {
+      this.dom.gPrivateEndpointsStatus.textContent = '请先勾选此项以连接本机或局域网模型服务';
+    }
+    this.dom.gAllowPrivateEndpoints.scrollIntoView({ block: 'nearest' });
+    this.dom.gAllowPrivateEndpoints.focus();
   }
 
   isProviderTestCurrent(revision, snapshot) {
@@ -432,13 +482,24 @@ export class ProviderSettingsController {
     if (this.coordinator.isConnectionPreferencePending && this.coordinator.isConnectionPreferencePending()) return;
 
     this.invalidateActiveProviderTest();
+    const rawPid = this.dom.gProvider.value;
+    const pid = rawPid === '__custom__' ? 'custom' : rawPid;
+    const baseUrl = this.dom.gBaseUrl ? this.dom.gBaseUrl.value.trim() : '';
+    if (
+      pid === 'custom' &&
+      this.dom.gAllowPrivateEndpoints &&
+      !this.dom.gAllowPrivateEndpoints.checked &&
+      isLoopbackOrPrivateBaseUrl(baseUrl)
+    ) {
+      this._promptEnablePrivateEndpoints();
+      showToast('请先勾选「允许连接本机或局域网的模型服务」后再测试连接', 'warning');
+      return;
+    }
+
     const revision = ++this.providerTestRevision;
     const controller = new AbortController();
     this.providerTestController = controller;
 
-    const rawPid = this.dom.gProvider.value;
-    const pid = rawPid === '__custom__' ? 'custom' : rawPid;
-    const baseUrl = this.dom.gBaseUrl ? this.dom.gBaseUrl.value.trim() : '';
     const chatModel = this.dom.gChatModel ? this.dom.gChatModel.value.trim() : '';
     const apiKey = this.dom.gApiKey ? this.dom.gApiKey.value.trim() : '';
     const reasoningEffort = this.dom.gReasoningEffort ? this.dom.gReasoningEffort.value : '';
@@ -558,6 +619,16 @@ export class ProviderSettingsController {
       }
       if (!chatModel) {
         throw new Error('请填写或选择模型名称');
+      }
+      if (
+        isCustom &&
+        this.dom.gAllowPrivateEndpoints &&
+        !this.dom.gAllowPrivateEndpoints.checked &&
+        isLoopbackOrPrivateBaseUrl(baseUrl)
+      ) {
+        this._promptEnablePrivateEndpoints();
+        showToast(`请先勾选「允许连接本机或局域网的模型服务」后再保存启用${fromFooter ? '；其他设置也还没有保存' : ''}`, 'warning');
+        return false;
       }
 
       const stored = this.cachedProviders.find((p) => p.id === pid);
