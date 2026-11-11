@@ -17,64 +17,41 @@ const { needsModelSettings } = await import('../frontend/src/ui.js');
 const { mountAdv } = await import('../frontend/src/adv/adv_app.js');
 const { DEFAULT_SESSION_SETTINGS } = await import('../frontend/src/store.js');
 
-test('provider transport diagnostics show the connection problem in the title', () => {
-  const guide = '无法与模型服务建立连接。请检查网络、代理和服务地址。';
-  const result = formatProviderDiagnostic('gemini', '网络连接失败 (Connection Failed)', guide);
-  assert.equal(result.title, '网络连接失败');
-  assert.equal(result.guidance, guide);
+test('formatProviderDiagnostic passes through backend structured error_title and diagnostic', () => {
+  const structured = formatProviderDiagnostic({
+    success: false,
+    error_code: 'QUOTA_EXCEEDED',
+    error_title: '账户可用余额不足 (402 Payment Required)',
+    diagnostic: '当前提供商账户可用余额或额度已耗尽（402 Payment Required）。请前往对应模型服务商控制台充值或检查账单。',
+    status_code: 402,
+    error: '账户可用余额不足 (402 Payment Required)',
+    message: 'Provider test returned HTTP 402 (req_28401)',
+  });
+  assert.deepEqual(structured, {
+    title: '账户可用余额不足 (402 Payment Required)',
+    guidance: '当前提供商账户可用余额或额度已耗尽（402 Payment Required）。请前往对应模型服务商控制台充值或检查账单。',
+  });
+
+  const legacyFields = formatProviderDiagnostic({
+    success: false,
+    error: 'OpenAI API Key 身份验证失败 (401 Unauthorized)',
+    message: '身份验证失败。请检查输入的 sk- 密钥是否完整无误。',
+  });
+  assert.deepEqual(legacyFields, {
+    title: 'OpenAI API Key 身份验证失败 (401 Unauthorized)',
+    guidance: '身份验证失败。请检查输入的 sk- 密钥是否完整无误。',
+  });
 });
 
-test('provider DNS diagnostics do not collapse into a generic diagnostic heading', () => {
-  const result = formatProviderDiagnostic('gemini', '服务器域名解析失败 (DNS Error)', '请检查服务地址或 DNS 设置。');
-  assert.equal(result.title, '服务器域名解析失败');
-});
-
-test('provider overload and endpoint 404 diagnostics show specific titles', () => {
-  const overload = formatProviderDiagnostic('openai', 'API returned status 503', '模型服务当前过载或暂时繁忙，请稍后重试。通常无需修改配置。');
-  assert.equal(overload.title, '服务暂时繁忙 (503/529)');
-  assert.ok(overload.guidance.includes('稍后重试'));
-
-  const endpoint404 = formatProviderDiagnostic('custom', 'API returned status 404: <html>Not Found</html>', '提供商未找到请求的接口路径。请检查 Base URL 地址配置。');
-  assert.equal(endpoint404.title, '接口地址未找到 (HTTP 404)');
-
-  const model404 = formatProviderDiagnostic('openai', 'The model does not exist', '提供商无法识别填写的模型名称。');
-  assert.equal(model404.title, '模型名称不存在 (HTTP 404)');
-});
-
-// 以下 error / diagnostic 文案取自后端 format_provider_error() 的真实输出：
-// 连接测试失败时后端总会带上诊断，所以这里走的是有诊断的分支。
-const GENERIC_PROVIDER_GUIDE = '请检查 Base URL 地址、API Key 凭据以及模型名称配置是否正确。';
-
-test('provider test diagnosis does not read auth keywords from the generic backend guidance', () => {
-  const gemini400 = formatProviderDiagnostic('gemini',
-    '提供商调用异常: Error code: 400 - [{"error": {"code": 400, "message": "Invalid JSON payload received. Unknown name \\"foo\\": Cannot find field.", "status": "INVALID_ARGUMENT"}}]',
-    GENERIC_PROVIDER_GUIDE);
-  assert.equal(gemini400.title, '连通性诊断提示');
-  assert.equal(gemini400.guidance, GENERIC_PROVIDER_GUIDE);
-
-  const xai400 = formatProviderDiagnostic('xai',
-    '提供商调用异常: Error code: 400 - {"code": "Client specified an invalid argument", "error": "This model\'s maximum prompt length is 131072 but the request contains 140000 tokens."}',
-    GENERIC_PROVIDER_GUIDE);
-  assert.equal(xai400.title, '连通性诊断提示');
-});
-
-test('provider test diagnosis matches 402 only as a whole status code', () => {
-  const server500 = formatProviderDiagnostic('openai',
-    '提供商调用异常: Error code: 500 - {"error": {"message": "The server had an error while processing your request. request_id=req_840215", "type": "server_error"}}',
-    GENERIC_PROVIDER_GUIDE);
-  assert.equal(server500.title, '连通性诊断提示');
-});
-
-test('provider test diagnosis still recognises genuine auth, balance and rate-limit failures', () => {
-  const key = formatProviderDiagnostic('openai', 'OpenAI API Key 身份验证失败 (401 Unauthorized)',
-    '身份验证失败。请检查输入的 sk- 密钥是否完整无误，或在 OpenAI 控制台 (https://platform.openai.com/api-keys) 重新创建 Secret Key。');
-  assert.equal(key.title, 'API Key 凭据鉴权未通过');
-  const balance = formatProviderDiagnostic('deepseek', '账户可用余额不足 (402 Payment Required)',
-    '当前提供商账户可用余额或额度已耗尽（402 Payment Required）。请前往对应模型服务商控制台充值或检查账单。');
-  assert.equal(balance.title, '账户余额或额度不足 (HTTP 402)');
-  const limited = formatProviderDiagnostic('openai', 'OpenAI 请求频率超限 (429 Rate Limit)',
-    '请求速率超出了当前账户层级的 RPM/TPM 限制。请稍候重试，或在会话设置中减小单次生成的 max_tokens。');
-  assert.equal(limited.title, '请求受限或额度不足 (429)');
+test('formatProviderDiagnostic falls back safely when structured fields are missing', () => {
+  assert.deepEqual(formatProviderDiagnostic({ success: false }), {
+    title: '连通性测试未通过',
+    guidance: '连接失败，请检查网络或参数配置。',
+  });
+  assert.deepEqual(formatProviderDiagnostic(), {
+    title: '连通性测试未通过',
+    guidance: '连接失败，请检查网络或参数配置。',
+  });
 });
 
 function setup(t, options = {}) {
@@ -136,19 +113,6 @@ test('BUILTIN_PRESETS gemini defaults reasoning_effort to low', () => {
   assert.equal(gemini.default_reasoning_effort, 'low');
 });
 
-test('formatProviderDiagnostic intercepts 400 parameter errors before API key error', () => {
-  const thinkingErr = formatProviderDiagnostic('gemini', 'HTTP 400: Thinking level MINIMAL is not supported for this model');
-  assert.equal(thinkingErr.title, '模型参数不受支持 (HTTP 400)');
-  assert.ok(thinkingErr.guidance.includes('思考强度'));
-
-  const effortErr = formatProviderDiagnostic('openai', "HTTP 400: Invalid parameter: 'reasoning_effort'");
-  assert.equal(effortErr.title, '模型参数不受支持 (HTTP 400)');
-  assert.ok(effortErr.guidance.includes('思考强度'));
-
-  const keyErr = formatProviderDiagnostic('gemini', 'HTTP 400: API key not valid. Please pass a valid API key.');
-  assert.equal(keyErr.title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
-});
-
 test('BUILTIN_PRESETS includes correct default_base_url for gemini and anthropic, and includes moonshot', () => {
   const gemini = BUILTIN_PRESETS.find(p => p.id === 'gemini');
   assert.ok(gemini, 'Gemini preset must exist');
@@ -163,93 +127,6 @@ test('BUILTIN_PRESETS includes correct default_base_url for gemini and anthropic
   assert.equal(moonshot.default_base_url, 'https://api.moonshot.cn/v1');
   assert.equal(moonshot.default_chat_model, 'moonshot-v1-32k');
   assert.deepEqual(moonshot.preset_models, ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k']);
-});
-
-test('formatProviderDiagnostic distinguishes non-auth HTTP 400 from genuine auth failures for xAI and Gemini', () => {
-  // 1. xAI 400 with non-key error (e.g. context length) should not report API key error
-  const xaiContext = formatProviderDiagnostic('xai', 'HTTP 400: maximum context length exceeded');
-  assert.notEqual(xaiContext.title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
-  assert.equal(xaiContext.title, '对话上下文超出长度限制 (HTTP 400)');
-
-  // 2. Gemini 400 with non-key error (e.g. invalid temperature) should not report API key error
-  const geminiParam = formatProviderDiagnostic('gemini', 'HTTP 400: invalid temperature value');
-  assert.notEqual(geminiParam.title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
-
-  // 2.5 Non-context-length 400 timeout like "context deadline exceeded" should not be treated as context length exceeded
-  const deadlineExceeded = formatProviderDiagnostic('custom', 'HTTP 400: context deadline exceeded');
-  assert.notEqual(deadlineExceeded.title, '对话上下文超出长度限制 (HTTP 400)');
-
-  // 3. Genuine 400 auth errors still report API key error
-  const xaiKey = formatProviderDiagnostic('xai', 'HTTP 400: Incorrect API key provided');
-  assert.equal(xaiKey.title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
-  assert.ok(xaiKey.guidance.includes('xAI (Grok) 密钥认证失败'));
-
-  const geminiKey = formatProviderDiagnostic('gemini', 'HTTP 400: API key not valid');
-  assert.equal(geminiKey.title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
-  assert.ok(geminiKey.guidance.includes('Google Gemini 认证失败'));
-});
-
-test('formatProviderDiagnostic handles HTTP 402 insufficient balance and moonshot diagnostics', () => {
-  const balance = formatProviderDiagnostic('deepseek', 'HTTP 402: Insufficient Balance');
-  assert.equal(balance.title, '账户余额或额度不足 (HTTP 402)');
-  assert.ok(balance.guidance.includes('余额'));
-
-  const moonshotAuth = formatProviderDiagnostic('moonshot', 'HTTP 401: Unauthorized');
-  assert.equal(moonshotAuth.title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
-  assert.ok(moonshotAuth.guidance.includes('https://platform.moonshot.cn'));
-
-  const moonshotBalance = formatProviderDiagnostic('moonshot', 'HTTP 402: Insufficient Balance');
-  assert.equal(moonshotBalance.title, '账户余额或额度不足 (HTTP 402)');
-  assert.ok(moonshotBalance.guidance.includes('余额'));
-
-  const moonshotRate = formatProviderDiagnostic('moonshot', 'HTTP 429: Too Many Requests');
-  assert.equal(moonshotRate.title, '请求受限或账户额度耗尽 (HTTP 429)');
-  assert.ok(moonshotRate.guidance.includes('https://platform.moonshot.cn'));
-  assert.ok(moonshotRate.guidance.includes('速率超限') || moonshotRate.guidance.includes('配额'));
-
-  // 429 quota exhaustion (e.g. OpenAI insufficient_quota) must be 429, not HTTP 402
-  const openai429 = formatProviderDiagnostic('openai', 'HTTP 429 Too Many Requests: insufficient_quota');
-  assert.equal(openai429.title, '请求受限或账户额度耗尽 (HTTP 429)');
-  assert.ok(openai429.guidance.includes('HTTP 429'));
-});
-
-test('formatProviderDiagnostic with backendDiagnostic mentioning API Key does not misclassify as auth error', () => {
-  const overloadWithKeyText = formatProviderDiagnostic(
-    'openai',
-    'HTTP 503 Service Unavailable',
-    '模型服务当前过载或暂时繁忙，请稍后重试。通常无需修改 API Key。'
-  );
-  assert.equal(overloadWithKeyText.title, '服务暂时繁忙 (503/529)');
-
-  const contextWithKeyText = formatProviderDiagnostic(
-    'xai',
-    'HTTP 400: context_length_exceeded',
-    '对话上下文超出长度限制，请新建对话。通常无需修改 API Key。'
-  );
-  assert.equal(contextWithKeyText.title, '对话上下文超出长度限制 (HTTP 400)');
-
-  // Negation with Chinese 密钥 in backendDiagnostic must not trigger 'API Key 凭据鉴权未通过'
-  const chineseKeyNegation = formatProviderDiagnostic(
-    'gemini',
-    'Connection reset',
-    '网络连接波动中断，无需修改密钥'
-  );
-  assert.notEqual(chineseKeyNegation.title, 'API Key 凭据鉴权未通过');
-
-  // Raw 400 error mentioning '无需修改 API Key' must not be classified as auth failure
-  const raw400Negation = formatProviderDiagnostic(
-    'gemini',
-    'HTTP 400: 连接中断，无需修改 API Key'
-  );
-  assert.notEqual(raw400Negation.title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
-
-  // Context length in various natural Chinese phrasing
-  const zhContext = formatProviderDiagnostic(
-    'openai',
-    'Error',
-    '单次对话超出上下文长度限制'
-  );
-  assert.equal(zhContext.title, '对话上下文超出长度限制 (HTTP 400)');
 });
 
 test('needsModelSettings considers empty_reply a model setting issue', () => {
@@ -771,24 +648,4 @@ test('save-and-activate button keeps its busy label and clears edits for footer 
   assert.ok(h.messages().some(msg => msg.startsWith('已成功保存并启用')));
   await h.save();
   assert.equal(h.writes().length, 1);
-});
-
-test('formatProviderDiagnostic matches HTTP status codes only as whole numbers', () => {
-  const rate = 'HTTP 429: Rate limit reached for gpt-4o in organization org-abc on tokens per min (TPM): Limit 30000, Used 28401, Requested 2100. Please try again in 1.002s.';
-  const rateTitle = '请求受限或账户额度耗尽 (HTTP 429)';
-  assert.equal(formatProviderDiagnostic('openai', rate).title, rateTitle);
-
-  const busyLookalike = formatProviderDiagnostic('openai', rate.replace('28401', '25031'), '请求过于频繁，请稍后再试。');
-  assert.equal(busyLookalike.title, '请求受限或额度不足 (429)');
-
-  const requestId = 'HTTP 500: Internal server error (request id: req_840401a7c2)';
-  assert.notEqual(formatProviderDiagnostic('openai', requestId).title, 'API Key 凭据无效或未授权 (HTTP 400/401)');
-  assert.notEqual(formatProviderDiagnostic('openai', requestId, '服务端内部错误，请稍后重试。').title, 'API Key 凭据鉴权未通过');
-
-  const authTitle = 'API Key 凭据无效或未授权 (HTTP 400/401)';
-  assert.equal(formatProviderDiagnostic('openai', 'HTTP 401: Unauthorized').title, authTitle);
-  assert.equal(formatProviderDiagnostic('openai', 'Error code: 403 - forbidden').title, '访问受限或地区限制 (HTTP 403)');
-  assert.equal(formatProviderDiagnostic('openai', 'status_code=404').title, '接口地址未找到 (HTTP 404)');
-  assert.equal(formatProviderDiagnostic('openai', 'HTTP 503 Service Unavailable').title, '服务暂时繁忙 (HTTP 503/529)');
-  assert.equal(formatProviderDiagnostic('openai', '错误码529').title, '服务暂时繁忙 (HTTP 503/529)');
 });

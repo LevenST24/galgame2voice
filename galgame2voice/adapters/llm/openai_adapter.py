@@ -476,14 +476,17 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
     @staticmethod
     def _diagnose_failure(
         provider_id: str | None,
-        status_code: int,
+        status_code: int | None,
         raw_error: Exception | str,
+        *,
+        api_key_configured: bool | None = None,
     ) -> tuple[dict[str, Any], str]:
         from galgame2voice.utils.error_diagnostics import format_provider_error
         diag = format_provider_error(
             provider_id=provider_id,
             status_code=status_code,
             raw_error=raw_error,
+            api_key_configured=api_key_configured,
         )
         return diag, diag.get("diagnostic", "")
 
@@ -512,25 +515,46 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                 latency_ms=latency_ms,
             )
 
-        diag, diag_guide = self._diagnose_failure(provider_id, chat_resp.status_code, chat_text)
+        diag, diag_guide = self._diagnose_failure(
+            provider_id,
+            chat_resp.status_code,
+            chat_text,
+            api_key_configured=bool(self.api_key),
+        )
         return TestResult(
             success=False,
             message=f"Provider test returned HTTP {chat_resp.status_code}: {diag_guide or chat_text[:200]}",
             latency_ms=latency_ms,
+            error_code=diag.get("error_code"),
             error=diag.get("error", f"HTTP {chat_resp.status_code}"),
             diagnostic=diag_guide,
-            status_code=chat_resp.status_code,
+            status_code=diag.get("status_code") if diag.get("status_code") is not None else chat_resp.status_code,
         )
 
     async def test_connection(self, model: str | None = None) -> TestResult:
         """
         Tests connectivity and validates API credentials against the provider.
         """
+        provider_id = (
+            self.extra_config.get("provider_id")
+            or self.extra_config.get("provider_type")
+            or getattr(self, "provider_id", None)
+        )
         if not self.api_key:
+            diag, diag_guide = self._diagnose_failure(
+                provider_id,
+                None,
+                "Authentication failed: API key is not configured",
+                api_key_configured=False,
+            )
             return TestResult(
                 success=False,
                 message="Authentication failed: Invalid API key",
                 latency_ms=None,
+                error_code=diag.get("error_code"),
+                error=diag.get("error"),
+                diagnostic=diag_guide,
+                status_code=diag.get("status_code"),
             )
 
         if self.mock_server:
@@ -553,11 +577,6 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
         from galgame2voice.security.url_guard import assert_llm_url_safe
         await assert_llm_url_safe(url, allow_private=bool(self.extra_config.get("allow_private", False)))
         headers = self._get_headers()
-        provider_id = (
-            self.extra_config.get("provider_id")
-            or self.extra_config.get("provider_type")
-            or getattr(self, "provider_id", None)
-        )
 
         async with create_async_client(timeout=10.0) as client:
             try:
@@ -587,28 +606,39 @@ class OpenAICompatibleLLMAdapter(BaseLLMAdapter):
                         models=models if models else None,
                     )
                 elif is_auth_error:
-                    diag, diag_guide = self._diagnose_failure(provider_id, resp.status_code, resp_text)
+                    diag, diag_guide = self._diagnose_failure(
+                        provider_id,
+                        resp.status_code,
+                        resp_text,
+                        api_key_configured=bool(self.api_key),
+                    )
                     return TestResult(
                         success=False,
                         message=f"Authentication failed ({resp.status_code}): {diag_guide or 'Invalid credentials'}",
                         latency_ms=latency_ms,
+                        error_code=diag.get("error_code"),
                         error=diag.get("error", "Authentication failed"),
                         diagnostic=diag_guide,
-                        status_code=resp.status_code,
+                        status_code=diag.get("status_code") if diag.get("status_code") is not None else resp.status_code,
                     )
                 else:
                     return await self._probe_chat_fallback(client, test_model, headers, provider_id, t0)
             except Exception as exc:
                 latency_ms = round((time.perf_counter() - t0) * 1000, 2)
-                status_code_num = 504 if "timeout" in type(exc).__name__.lower() else 502
-                diag, diag_guide = self._diagnose_failure(provider_id, status_code_num, exc)
+                diag, diag_guide = self._diagnose_failure(
+                    provider_id,
+                    getattr(exc, "status_code", None),
+                    exc,
+                    api_key_configured=bool(self.api_key),
+                )
                 return TestResult(
                     success=False,
                     message=f"Connection error: {type(exc).__name__} - {sanitize_error_detail(exc)}",
                     latency_ms=latency_ms,
+                    error_code=diag.get("error_code"),
                     error=diag.get("error", type(exc).__name__),
                     diagnostic=diag_guide,
-                    status_code=status_code_num,
+                    status_code=diag.get("status_code"),
                 )
 
     async def list_models(self) -> list[str]:

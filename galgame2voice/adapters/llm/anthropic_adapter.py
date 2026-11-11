@@ -430,11 +430,23 @@ class AnthropicAdapter(BaseLLMAdapter):
 
     async def test_connection(self, model: str | None = None) -> TestResult:
         """Tests Anthropic API credentials with a minimal prompt."""
+        from galgame2voice.utils.error_diagnostics import format_provider_error
+
         if not self.api_key:
+            diag = format_provider_error(
+                provider_id="anthropic",
+                status_code=None,
+                raw_error="Authentication failed: API key is not configured",
+                api_key_configured=False,
+            )
             return TestResult(
                 success=False,
                 message="Authentication failed: Invalid API key",
                 latency_ms=None,
+                error_code=diag.get("error_code"),
+                error=diag.get("error"),
+                diagnostic=diag.get("diagnostic"),
+                status_code=diag.get("status_code"),
             )
         t0 = time.time()
         try:
@@ -452,8 +464,19 @@ class AnthropicAdapter(BaseLLMAdapter):
             )
         except Exception as exc:
             latency = (time.time() - t0) * 1000
+            exc_status = getattr(exc, "status_code", None)
+            diag = format_provider_error(
+                provider_id="anthropic",
+                status_code=exc_status,
+                raw_error=exc,
+                api_key_configured=bool(self.api_key),
+            )
             return TestResult(
                 success=False,
                 message=f"Anthropic connection failed: {sanitize_error_detail(exc)}",
                 latency_ms=latency,
+                error_code=diag.get("error_code"),
+                error=diag.get("error"),
+                diagnostic=diag.get("diagnostic"),
+                status_code=diag.get("status_code"),
             )

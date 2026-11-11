@@ -372,6 +372,7 @@ class TestResult(BaseModel):
     message: str = Field(..., description="Informative status message or error details")
     latency_ms: float | None = Field(default=None, description="Round-trip latency in milliseconds")
     models: list[str] | None = Field(default=None, description="Discovered available models")
+    error_code: str | None = Field(default=None, description="Structured error classification code")
     error: str | None = Field(default=None, description="Error classification")
     diagnostic: str | None = Field(default=None, description="User-friendly Chinese troubleshooting guidance")
     status_code: int | None = Field(default=None, description="HTTP status code from probe")

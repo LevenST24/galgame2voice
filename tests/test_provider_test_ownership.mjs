@@ -399,7 +399,14 @@ test('normal current test success renders result box, latency, and success toast
 test('normal current test failure renders error title, guidance, and error toast', async t => {
   globalThis.fetch = async url => {
     if (url.includes('/api/providers/test')) {
-      return response({ success: false, error: '401 invalid api key', diagnostic: '请前往控制台检查' });
+      return response({
+        success: false,
+        error_code: 'OPENAI_AUTH_FAILED',
+        error_title: 'OpenAI API Key 身份验证失败 (401 Unauthorized)',
+        error: 'OpenAI API Key 身份验证失败 (401 Unauthorized)',
+        diagnostic: '请前往控制台检查',
+        status_code: 401,
+      });
     }
     if (url === '/api/providers') {
       return response({

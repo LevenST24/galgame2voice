@@ -80,8 +80,11 @@ class ProviderTestResponse(BaseModel):
     message: str
     latency_ms: float | None = None
     models: list[str] | None = None
-    error: str | None = None
+    error_code: str | None = None
+    error_title: str | None = None
     diagnostic: str | None = None
+    status_code: int | None = None
+    error: str | None = None
 
 
 class TelegramTestRequest(BaseModel):
@@ -467,19 +470,28 @@ async def test_provider(req: ProviderTestRequest):
     try:
         result = await adapter.test_connection(model=model)
         if not result.success:
-            diag_info = format_provider_error(
-                provider_id=provider_id,
-                status_code=getattr(result, "status_code", None),
-                raw_error=result.error or result.message,
-                api_key_configured=bool(str(getattr(adapter, "api_key", "") or "").strip()),
-            )
+            diag_info: dict[str, Any] = {}
+            if not (result.error_code and result.error and result.diagnostic):
+                diag_info = format_provider_error(
+                    provider_id=provider_id,
+                    status_code=result.status_code,
+                    raw_error=result.error or result.message,
+                    api_key_configured=bool(str(getattr(adapter, "api_key", "") or "").strip()),
+                )
+            error_code = result.error_code or diag_info.get("error_code")
+            error_title = (result.error if result.error_code else None) or diag_info.get("error") or "连通性测试未通过"
+            diagnostic = result.diagnostic or diag_info.get("diagnostic") or result.message
+            status_code = result.status_code if result.status_code is not None else diag_info.get("status_code")
             return ProviderTestResponse(
                 success=False,
                 message=result.message,
                 latency_ms=result.latency_ms,
                 models=result.models,
-                error=result.error or diag_info.get("error") or result.message,
-                diagnostic=result.diagnostic or diag_info.get("diagnostic"),
+                error_code=error_code,
+                error_title=error_title,
+                diagnostic=diagnostic,
+                status_code=status_code,
+                error=error_title,
             )
         return ProviderTestResponse(
             success=result.success,
@@ -492,16 +504,21 @@ async def test_provider(req: ProviderTestRequest):
         safe_msg = sanitize_error_detail(exc)
         diag_info = format_provider_error(
             provider_id=provider_id,
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT if "timeout" in type(exc).__name__.lower() else status.HTTP_502_BAD_GATEWAY,
-            raw_error=f"{type(exc).__name__}: {safe_msg}",
+            status_code=getattr(exc, "status_code", None),
+            raw_error=exc,
+            api_key_configured=bool(str(getattr(adapter, "api_key", "") or "").strip()),
         )
+        error_title = diag_info.get("error") or "连通性测试未通过"
         return ProviderTestResponse(
             success=False,
             message=f"连接测试异常: {safe_msg}",
             latency_ms=0.0,
             models=[],
-            error=diag_info.get("error") or safe_msg,
-            diagnostic=diag_info.get("diagnostic"),
+            error_code=diag_info.get("error_code"),
+            error_title=error_title,
+            diagnostic=diag_info.get("diagnostic") or safe_msg,
+            status_code=diag_info.get("status_code"),
+            error=error_title,
         )
 
 
