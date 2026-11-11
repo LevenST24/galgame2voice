@@ -276,7 +276,9 @@ class TestProcessTerminationAndPortReleaseWindows:
         Spawn uvicorn in a subprocess on an ephemeral port, verify health response,
         terminate the process, and verify the port is immediately re-bindable without WSAEADDRINUSE.
         """
-        test_port = 19288
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            test_port = reservation.getsockname()[1]
         cmd = [
             sys.executable,
             "-m",

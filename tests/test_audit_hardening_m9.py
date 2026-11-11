@@ -164,6 +164,8 @@ class TestChatStreamingDisconnectAndPruning:
             count = (await cur.fetchone())[0]
             assert count == 0
 
+    # Asserts <100ms stream cancellation wall-clock latency; sensitive to multi-worker CPU/SQLite contention.
+    @pytest.mark.serial
     @pytest.mark.wall_clock
     async def test_cancel_event_immediate_responsiveness(self, tmp_path):
         """Cancellation event should break the stream in <100ms without 1.0s timeout lag."""

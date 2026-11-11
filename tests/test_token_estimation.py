@@ -51,6 +51,8 @@ def test_mixed_boundaries_and_whitespace_preserve_rounding():
         assert MetricsCollector.estimate_tokens(text) == previous_estimate(text)
 
 
+# Compares relative wall-clock timings over 360K-520K chars; interleaved CPU contention skews sample ratios.
+@pytest.mark.serial
 @pytest.mark.wall_clock
 @pytest.mark.parametrize(('fragment', 'repeats'), [
     pytest.param('中a ', 120000, id='mixed-alternating'),

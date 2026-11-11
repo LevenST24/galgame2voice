@@ -192,6 +192,8 @@ class TestAdversarialAgileChunking:
         assert res_term[0] == "はい！"
         assert res_term[1] == "先生、おはようございます。"
 
+    # Asserts <150ms/<300ms wall-clock bounds on 30K-51K char chunking; sensitive to multi-worker CPU contention.
+    @pytest.mark.serial
     @pytest.mark.wall_clock
     def test_chunking_huge_paragraph_no_catastrophic_backtracking(self):
         """
@@ -257,6 +259,8 @@ class TestAdversarialAgileChunking:
 class TestRapidInterruptStress:
     """Stress tests stream_chat under 50+ rapid cancellations across varying lifecycles."""
 
+    # Asserts <30ms mean stream-cancel latency over 50 turns; sensitive to multi-worker event-loop scheduling jitter.
+    @pytest.mark.serial
     @pytest.mark.wall_clock
     @pytest.mark.asyncio
     async def test_rapid_50_interrupt_signals_during_streaming(self, temp_db_path, mock_gpt_sovits):
@@ -433,6 +437,8 @@ class TestLongDialogueMemoryStress:
 class TestConcurrentCancellationStorm:
     """Stress tests concurrent cancellations firing simultaneously across multiple sessions."""
 
+    # Asserts tight wall-clock cancellation bound across 4 concurrent streams; sensitive to multi-worker CPU jitter.
+    @pytest.mark.serial
     @pytest.mark.wall_clock
     @pytest.mark.asyncio
     async def test_concurrent_streams_simultaneous_cancellation(self, temp_db_path, mock_gpt_sovits):

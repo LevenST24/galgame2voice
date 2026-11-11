@@ -64,13 +64,27 @@ jobs:
       # carries coverage; the 3.10 leg stays at full speed.
       - name: Run test suite
         if: matrix.python-version != '3.12'
-        run: uv run pytest -q
+        shell: pwsh
+        run: |
+          uv run pytest -q -n auto --dist loadfile -m "not serial"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv run pytest -q -m serial --basetemp=.local/cache/pytest-basetemp-serial
+          if ($LASTEXITCODE -notin @(0, 5)) { exit $LASTEXITCODE }
         env:
           GALGAME2VOICE_RATE_LIMIT_DISABLED: "1"
 
       - name: Run test suite with coverage
         if: matrix.python-version == '3.12'
-        run: uv run pytest -q --cov=galgame2voice --cov-report=term --cov-report=xml
+        shell: pwsh
+        run: |
+          uv run pytest -q -n auto --dist loadfile -m "not serial" --cov=galgame2voice --cov-report=
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv run pytest -q -m serial --basetemp=.local/cache/pytest-basetemp-serial --cov=galgame2voice --cov-append --cov-report=
+          if ($LASTEXITCODE -notin @(0, 5)) { exit $LASTEXITCODE }
+          uv run coverage report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv run coverage xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         env:
           GALGAME2VOICE_RATE_LIMIT_DISABLED: "1"
 
@@ -107,7 +121,13 @@ jobs:
           echo "FFMPEG_PATH=$ffmpeg" >> "$GITHUB_ENV"
 
       - name: Run test suite
-        run: uv run pytest -q
+        run: |
+          uv run pytest -q -n auto --dist loadfile -m "not serial"
+          rc=0
+          uv run pytest -q -m serial --basetemp=.local/cache/pytest-basetemp-serial || rc=$?
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 5 ]; then
+            exit "$rc"
+          fi
         env:
           GALGAME2VOICE_RATE_LIMIT_DISABLED: '1'
 

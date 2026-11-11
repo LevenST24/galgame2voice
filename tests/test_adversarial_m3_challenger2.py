@@ -86,6 +86,8 @@ class MockGptSovitsForAdversarial:
 class TestTtsCacheHitLatencyBenchmark:
     """Rigorous empirical latency benchmark for 100 consecutive cache hits."""
 
+    # Asserts <5ms disk I/O and <50ms P95 cache hit latency; sensitive to multi-worker disk/CPU contention.
+    @pytest.mark.serial
     @pytest.mark.wall_clock
     @pytest.mark.asyncio
     async def test_100_consecutive_cache_hits_latency(self, tmp_path):
@@ -167,6 +169,8 @@ class TestTtsCacheHitLatencyBenchmark:
         assert stats["total_hits"] >= 100
         assert stats["hit_rate_percent"] >= 99.0
 
+    # Asserts <50ms mean SQLite/disk cache get() latency across 100 calls; sensitive to multi-worker I/O contention.
+    @pytest.mark.serial
     @pytest.mark.asyncio
     async def test_direct_manager_get_latency_distribution(self, tmp_path):
         """Tests 100 consecutive direct calls to TtsCacheManager.get()."""

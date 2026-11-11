@@ -392,6 +392,8 @@ class TestSessionManagerAdversarial:
             assert retrieved.content_chinese == original
             assert retrieved.content_japanese == original
 
+    # Micro-benchmark wall-clock budget for estimate_tokens is sensitive to multi-worker CPU contention.
+    @pytest.mark.serial
     @pytest.mark.wall_clock
     def test_token_estimation_speed_and_invariants(self, m6_temp_db):
         """Benchmark and invariant tests for estimate_tokens."""

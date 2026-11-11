@@ -79,6 +79,7 @@ async def test_rejected_restart_preserves_confirmed_models(owned_engine, monkeyp
 @pytest.fixture
 def owned_engine(tmp_path, monkeypatch):
     monkeypatch.setattr(get_settings(), "project_root", tmp_path)
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
     (tmp_path / "data").mkdir()
     directory = tmp_path / "engine"
     directory.mkdir()

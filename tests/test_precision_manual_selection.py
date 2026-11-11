@@ -106,6 +106,8 @@ class TestPrecisionCLI:
     def test_spawn_sovits_process_cpu_logs_cpu_not_fp32(self, tmp_path, monkeypatch, capsys):
         fake_engine = tmp_path / "dummy_sovits"
         fake_engine.mkdir()
+        (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(rs, "PROJECT_ROOT", tmp_path)
         monkeypatch.setattr(rs, "find_engine_python", lambda s: Path(sys.executable))
         monkeypatch.setattr(rs, "prepare_engine_entrypoint", lambda s, b: tmp_path / "dummy_entry.py")
         monkeypatch.setattr(rs, "write_sovits_yaml_config", lambda *args, **kwargs: None)
@@ -128,7 +130,7 @@ class TestPrecisionCLI:
             rs._SPAWNED_SOVITS_PROC = None
             rs._SPAWNED_SOVITS_LAUNCH = None
             rs._SPAWNED_SOVITS_STARTED_AT = None
-            (rs.PROJECT_ROOT / "gptsovits.pid").unlink(missing_ok=True)
+            (tmp_path / "gptsovits.pid").unlink(missing_ok=True)
 
     def test_sync_runtime_precision_override_helper(self):
         from galgame2voice.utils.precision import sync_runtime_precision_override
@@ -162,7 +164,8 @@ class TestPrecisionCLI:
 @pytest.mark.asyncio
 class TestPrecisionAPI:
     @pytest.fixture(autouse=True)
-    def clean_precision_env(self):
+    def clean_precision_env(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rs, "PROJECT_ROOT", tmp_path)
         os.environ.pop("GPT_SOVITS_PRECISION", None)
         os.environ.pop("GPT_SOVITS_DEVICE", None)
         rs._SPAWNED_SOVITS_PROC = None
