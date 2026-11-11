@@ -1,15 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { initAudioPlayerUi, toggleMic, cancelMic, finalizeVoice } from '../frontend/src/controllers/audio_player_ui.js';
+import { startListening, stopListening } from '../frontend/src/voice.js';
 import { fakeDocument } from './helpers/adv_dom.mjs';
 
-function setup(t) {
+function setup(t, { syncEndOnStop = true } = {}) {
   const recognizers = [], sent = [];
   globalThis.document = fakeDocument();
   class SpeechRecognition {
-    constructor() { recognizers.push(this); }
+    constructor() { this.stopped = false; recognizers.push(this); }
     start() {}
-    stop() { this.onend?.(); }
+    stop() {
+      this.stopped = true;
+      if (syncEndOnStop) this.onend?.();
+    }
   }
   globalThis.window = { SpeechRecognition };
   // Node 20 has no global navigator; one without mediaDevices keeps the recorder off on every version.
@@ -43,4 +47,49 @@ test('cancelling an ADV mic owner rejects its late transcription after a session
   assert.equal(h.input.value, '新会话'); assert.deepEqual(h.sent, []);
   h.result(h.recognizers[1], '当前转写', true); finalizeVoice();
   assert.deepEqual(h.sent, [['新会话 当前转写', undefined]]);
+});
+
+test('final SpeechRecognition onresult delivered asynchronously after stopListening reaches onText and ADV draft', t => {
+  const h = setup(t, { syncEndOnStop: false });
+  const directTexts = [];
+  assert.equal(startListening({ onText: text => directTexts.push(text) }).ok, true);
+  const directRecognizer = h.recognizers[0];
+  stopListening();
+  assert.equal(directRecognizer.stopped, true);
+  h.result(directRecognizer, '尾帧最终句', true);
+  directRecognizer.onend?.();
+  assert.deepEqual(directTexts, ['尾帧最终句']);
+
+  toggleMic();
+  assert.equal(h.mic.getAttribute('aria-pressed'), 'true');
+  const uiRecognizer = h.recognizers[1];
+  toggleMic();
+  assert.equal(h.mic.getAttribute('aria-pressed'), 'false');
+  assert.equal(uiRecognizer.stopped, true);
+  h.result(uiRecognizer, '尾帧最终句', true);
+  uiRecognizer.onend?.();
+  assert.equal(h.input.value, '原稿 尾帧最终句');
+  finalizeVoice();
+  assert.deepEqual(h.sent, [['原稿 尾帧最终句', undefined]]);
+});
+
+test('starting a new listening round fences off late onresult from the previous stopped recognizer', t => {
+  const h = setup(t, { syncEndOnStop: false });
+  const round1Texts = [], round2Texts = [];
+  assert.equal(startListening({ onText: text => round1Texts.push(text) }).ok, true);
+  const firstRecognizer = h.recognizers[0];
+  stopListening();
+
+  assert.equal(startListening({ onText: text => round2Texts.push(text) }).ok, true);
+  const secondRecognizer = h.recognizers[1];
+  h.result(firstRecognizer, '过期旧句', true);
+  firstRecognizer.onend?.();
+  assert.deepEqual(round1Texts, []);
+  assert.deepEqual(round2Texts, []);
+
+  h.result(secondRecognizer, '本轮新句', true);
+  stopListening();
+  secondRecognizer.onend?.();
+  assert.deepEqual(round1Texts, []);
+  assert.deepEqual(round2Texts, ['本轮新句']);
 });
