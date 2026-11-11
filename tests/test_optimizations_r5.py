@@ -63,7 +63,7 @@ class TestCharacterAudioProbeCache:
 class TestSystemUpdateGitClean:
     """Verifies that git clean -fd is executed for static build artifacts."""
 
-    def test_apply_update_executes_git_clean_on_static(self):
+    def test_apply_update_executes_git_clean_on_static(self, tmp_path):
         executed_cmds = []
 
         def fake_run_git(args, cwd, timeout=30.0, env_overrides=None):
@@ -95,7 +95,7 @@ class TestSystemUpdateGitClean:
             return 0, "", ""
 
         with patch("galgame2voice.routers.system._run_git_cmd", side_effect=fake_run_git):
-            res, _ = _apply_update_sync(Path("C:/dummy_project"), force_rebuild_frontend=False)
+            res, _ = _apply_update_sync(tmp_path, force_rebuild_frontend=False)
             assert res.success is True
             # Verify clean -fd was called for galgame2voice/static
             assert any(cmd[:3] == ["clean", "-fd", "--"] and "galgame2voice/static" in cmd for cmd in executed_cmds)

@@ -429,11 +429,15 @@ def _is_known_build_artifact(status_code: str, path: str) -> bool:
     return False
 
 
-def _create_pre_update_backup(project_root: Path, modified_files: list[str]) -> Path | None:
-    """Zips the listed modified/untracked files and directories into data/backups before git operations; a failed
-    backup logs a warning and returns None, allowing callers to abort destructive actions."""
+def _create_pre_update_backup(
+    project_root: Path,
+    modified_files: list[str],
+    data_dir: Path | None = None,
+) -> Path | None:
+    """Zips the listed modified/untracked files and directories into the data directory's backups folder before
+    git operations; a failed backup logs a warning and returns None, allowing callers to abort destructive actions."""
     try:
-        backup_dir = project_root / "data" / "backups"
+        backup_dir = _resolve_data_dir(project_root, data_dir) / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_zip = backup_dir / f"pre_update_backup_{ts}.zip"
@@ -508,6 +512,7 @@ def _handle_uncommitted_modifications(
     before_short: str,
     stash_changes: bool,
     discard_local_changes: bool,
+    data_dir: Path | None = None,
 ) -> SystemUpdateResponse | None:
     """Inspects porcelain status and safely handles local uncommitted modifications."""
     _, status_out, _ = _run_git_cmd(["status", "--porcelain", "-uall"], cwd=project_root)
@@ -525,7 +530,7 @@ def _handle_uncommitted_modifications(
         modified_items.append((status_code, target))
         modified_files.append(target)
 
-    backup_zip_path = _create_pre_update_backup(project_root, modified_files)
+    backup_zip_path = _create_pre_update_backup(project_root, modified_files, data_dir)
 
     only_known_build_artifacts = bool(modified_items) and all(
         _is_known_build_artifact(code, path) for code, path in modified_items
@@ -757,7 +762,7 @@ def _apply_update_sync(
         return preflight_err, []
 
     err_resp = _handle_uncommitted_modifications(
-        project_root, before_short, stash_changes, discard_local_changes
+        project_root, before_short, stash_changes, discard_local_changes, data_dir
     )
     if err_resp:
         return err_resp, []
