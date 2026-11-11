@@ -48,6 +48,12 @@ def pytest_configure(config):
     )
     for line in _CAPABILITY_MARKER_DESCRIPTIONS:
         config.addinivalue_line("markers", line)
+    config.addinivalue_line(
+        "markers",
+        "real_hardware_probe: keeps the real probe functions in galgame2voice.utils.hardware "
+        "(subprocess runner, host memory, cgroup reader) instead of the suite-wide stubs; "
+        "the test either fakes the OS beneath them itself or really reads the host",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -705,6 +711,45 @@ def forbid_unmarked_real_ffmpeg(request, monkeypatch):
         )
 
     monkeypatch.setattr("galgame2voice.utils.audio_converter.find_ffmpeg", _forbidden)
+
+
+SYNTHETIC_HOST_MEMORY_GB = (16.0, 12.0)
+
+
+@pytest.fixture(autouse=True)
+def stub_real_hardware_probes(request, monkeypatch):
+    """Unit tests must not read the real host's GPU, memory or cgroup limits.
+
+    Every hardware reading in ``galgame2voice.utils.hardware`` bottoms out in three
+    host reads: ``_exec_command_output`` (nvidia-smi, lspci, the Windows GPU query,
+    sysctl), ``_detect_host_memory_status`` (Win32 API, /proc/meminfo, psutil) and
+    ``get_cgroup_memory_available_gb`` on the default /sys/fs/cgroup root. Left real,
+    ``get_gpu_vram_status()`` spawns nvidia-smi with a 2 s budget on every voice
+    switch or status read, and the memory guard compares against whatever the
+    runner happens to have free, so results depend on the machine.
+
+    These three are stubbed at the bottom, so tests that patch a higher layer
+    (``get_gpu_vram_status``, ``_detect_nvidia_smi_gpus``) or set
+    ``GALGAME2VOICE_CGROUP_ROOT`` keep working unchanged: the host reports no GPU
+    tool output, a fixed ample amount of memory, and no cgroup quota unless the
+    test points the cgroup root at its own files. Tests that exercise the real
+    probes declare ``real_hardware_probe`` and are exempt.
+    """
+    if request.node.get_closest_marker("real_hardware_probe"):
+        return
+
+    from galgame2voice.utils import hardware
+
+    real_cgroup_available = hardware.get_cgroup_memory_available_gb
+
+    def cgroup_available(cgroup_root=None):
+        if cgroup_root is None and not os.getenv("GALGAME2VOICE_CGROUP_ROOT"):
+            return None
+        return real_cgroup_available(cgroup_root)
+
+    monkeypatch.setattr(hardware, "_exec_command_output", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hardware, "_detect_host_memory_status", lambda: SYNTHETIC_HOST_MEMORY_GB)
+    monkeypatch.setattr(hardware, "get_cgroup_memory_available_gb", cgroup_available)
 
 
 @pytest.fixture(autouse=True)
