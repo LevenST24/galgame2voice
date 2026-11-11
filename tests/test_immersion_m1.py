@@ -239,29 +239,6 @@ class TestChatServiceSSEEmotion:
         assert "japanese" in done_data
         assert "audio_url" in done_data
 
-    @pytest.mark.asyncio
-    async def test_chat_sync_returns_emotion(self, temp_db_path, monkeypatch):
-        class MockSyncLLMAdapter:
-            async def chat(self, messages, model=None):
-                class Resp:
-                    content = '{"emotion": "happy", "chinese": "太开心啦！", "japanese": "わーい！"}'
-                return Resp()
-
-        class MockTts:
-            async def synthesize_to_file(self, text, options=None, filename_prefix="voice"):
-                return "/audio/voice_sync.wav", "/tmp/voice_sync.wav", 100
-
-        chat_service = ChatService(tts_service=MockTts(), db_path=temp_db_path)
-        monkeypatch.setattr(chat_service, "_get_active_llm_adapter", lambda conn=None, provider_id=None: (
-            asyncio.sleep(0, result=(MockSyncLLMAdapter(), "mock-model"))
-        ))
-
-        res = await chat_service.chat_sync(prompt="今天开心吗？", session_id="test_sync_emo")
-        assert res["emotion"] == "happy"
-        assert res["chinese"] == "太开心啦！"
-        assert res["japanese"] == "わーい！"
-        assert res["audio_url"] == "/audio/voice_sync.wav"
-
 
 # ============================================================================
 # 5. Frontend Immersion State Machine Simulation Tests (Python Mock Contract)

@@ -77,7 +77,7 @@ class TestConsoleTokenAuth:
     @pytest.mark.asyncio
     async def test_protected_api_routes(self, app_client):
         for method, path, kwargs in [
-            ("post", "/api/chat", {"json": {"prompt": "hi"}}),
+            ("post", "/api/chat/stream", {"json": {"prompt": "hi"}}),
             ("get", "/api/cache/stats", {}),
             ("get", "/api/chat/sessions", {}),
             ("get", "/api/characters", {}),

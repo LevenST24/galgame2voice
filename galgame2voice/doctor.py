@@ -5,7 +5,7 @@ Why this exists
 ---------------
 The README happy path is short, but the real runtime contract spans the Python
 interpreter, four writable directories, a SQLite file, ffmpeg, an optional
-GPT-SoVITS server, an optional LLM/STT provider and an optional Telegram bot.
+GPT-SoVITS server, and an optional LLM/STT provider.
 When one of those is missing or misconfigured the first symptom is usually a
 stack trace deep inside a chat request — the most expensive place to learn about
 it. ``doctor`` reports the same facts up front and puts the fix next to each
@@ -318,52 +318,6 @@ def check_providers(providers: Optional[List[Any]]) -> List[Check]:
     return [Check("LLM providers", OK, f"{len(configured)} configured: {', '.join(str(c) for c in configured)}")]
 
 
-def _parse_admin_ids(raw: str) -> List[str]:
-    return [item.strip() for item in (raw or "").split(",") if item.strip()]
-
-
-def check_telegram(
-    settings: Settings,
-    db_enabled: Optional[bool],
-    admin_ids: str = "",
-    db_token: Optional[str] = None,
-) -> List[Check]:
-    enabled = bool(db_enabled) if db_enabled is not None else bool(settings.telegram_enabled)
-    if not enabled:
-        return [Check("Telegram", SKIP, "disabled")]
-
-    findings: List[Check] = []
-    token = (db_token or "").strip() or (settings.telegram_token or "").strip()
-    if not token:
-        findings.append(
-            Check(
-                "Telegram",
-                FAIL,
-                "enabled but no bot token configured",
-                "Set GALGAME2VOICE_TELEGRAM_TOKEN or store the token in the console.",
-            )
-        )
-    else:
-        findings.append(Check("Telegram", OK, "bot token configured"))
-
-    # Whitelist lives in the console/DB, with TELEGRAM_ADMIN_IDS as an override.
-    effective_admins = _parse_admin_ids(admin_ids) or _parse_admin_ids(
-        os.getenv("TELEGRAM_ADMIN_IDS", "") or os.getenv("GALGAME2VOICE_TELEGRAM_ADMIN_IDS", "")
-    )
-    if not effective_admins:
-        findings.append(
-            Check(
-                "Telegram admins",
-                WARN,
-                "whitelist is empty; every user is rejected (fail-closed)",
-                "Set the admin user id in the console or via TELEGRAM_ADMIN_IDS.",
-            )
-        )
-    else:
-        findings.append(Check("Telegram admins", OK, f"{len(effective_admins)} allowed user id(s)"))
-    return findings
-
-
 async def check_gpt_sovits(base_url: str, *, offline: bool = False) -> List[Check]:
     target = (base_url or "").strip().rstrip("/")
     if offline:
@@ -421,15 +375,14 @@ async def check_gpt_sovits(base_url: str, *, offline: bool = False) -> List[Chec
 
 async def _load_database_state(
     settings: Settings,
-) -> Tuple[Optional[bool], Optional[List[Any]], str, Optional[str], Optional[str]]:
-    """Reads telegram_enabled, providers, admin whitelist, telegram_bot_token,
-    and gpt_sovits_url from the DB.
+) -> Tuple[Optional[List[Any]], Optional[str]]:
+    """Reads providers and gpt_sovits_url from the DB.
 
     Returns None for DB-derived fields when the database is unavailable.
     """
     db_path = get_database_path()
     if not await asyncio.to_thread(Path(db_path).exists):
-        return None, None, "", None, None
+        return None, None
     try:
         from galgame2voice.database import crud
         from galgame2voice.database.session import get_db
@@ -437,29 +390,16 @@ async def _load_database_state(
         async with get_db(db_path) as connection:
             row = await crud.get_settings_raw(connection)
             providers = await crud.list_providers(connection)
-        tg_token = (row.telegram_bot_token or "").strip() or None
         db_sovits_url = (row.gpt_sovits_url or "").strip() or None
-        return (
-            bool(getattr(row, "telegram_enabled", False)),
-            list(providers),
-            str(getattr(row, "telegram_admin_ids", "") or ""),
-            tg_token,
-            db_sovits_url,
-        )
+        return list(providers), db_sovits_url
     except Exception:
-        return None, None, "", None, None
+        return None, None
 
 
 async def collect_checks(settings: Optional[Settings] = None, *, offline: bool = False) -> List[Check]:
     """Runs every check and returns the findings in report order."""
     settings = settings or get_settings()
-    (
-        telegram_enabled,
-        providers,
-        admin_ids,
-        telegram_bot_token,
-        db_sovits_url,
-    ) = await _load_database_state(settings)
+    providers, db_sovits_url = await _load_database_state(settings)
 
     effective_sovits_url = resolve_sovits_url(
         db_url=db_sovits_url,
@@ -475,7 +415,6 @@ async def collect_checks(settings: Optional[Settings] = None, *, offline: bool =
     checks.extend(check_proxy_environment())
     checks.extend(check_characters(settings))
     checks.extend(check_providers(providers))
-    checks.extend(check_telegram(settings, telegram_enabled, admin_ids, db_token=telegram_bot_token))
     checks.extend(await check_gpt_sovits(effective_sovits_url, offline=offline))
     return checks
 

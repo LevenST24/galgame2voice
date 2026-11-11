@@ -44,15 +44,6 @@ Please report vulnerabilities privately through GitHub's private vulnerability r
 - 保存或测试服务商配置时会检查地址；OpenAI 兼容和 Anthropic 适配器在发起相应请求及自动重试前会清除该主机的 DNS 缓存并再次检查。检查不会把解析结果绑定到实际连接；检查与连接之间仍有 DNS 重绑定的时间窗口，不能视为完整防护。
 - 本机 DNS 查询失败时，预检允许后续连接处理错误；使用系统代理时，也可能由代理解析目标域名。因此，本机预检不能保证代理最终连接的地址符合上述限制。只配置可信的服务地址，并在需要隔离时使用网络层访问控制。
 
-## Telegram 机器人
-
-- **管理员白名单**：`settings.telegram_admin_ids`（逗号分隔）或环境变量 `TELEGRAM_ADMIN_IDS`。
-  机器人的全部功能（文字与语音对话、所有斜杠指令、控制台按钮）仅限白名单用户使用；
-  **白名单为空时任何人都无法使用（fail-closed）**，启动日志会给出警告。被拒绝的用户会收到
-  包含其 Telegram 用户 ID 的提示，便于机器人主人把自己加入白名单。
-- **群聊隔离**：群聊会话键为 `tg_{chat_id}_{user_id}`，每个成员拥有独立的对话历史、
-  长期记忆、昵称与好感度；私聊保持旧键 `tg_{chat_id}` 以兼容既有历史。
-
 ## 输入防护
 
 - 提示词上限 4000 字符，会话 ID 上限 128 字符，TTS 文本上限 2000 字符。
@@ -63,7 +54,7 @@ Please report vulnerabilities privately through GitHub's private vulnerability r
 
 ## 数据与凭据
 
-- **API Key、Telegram Token、控制台 Token 在写入 SQLite（`data/galgame2voice.db`）前已加密**：
+- **API Key、控制台 Token 在写入 SQLite（`data/galgame2voice.db`）前已加密**：
   Windows 使用 DPAPI（`dpapi:` 前缀），其他平台使用 `cryptography` 的 AES-GCM（`enc:` 前缀），
   密钥来自 `GALGAME2VOICE_SECRET_KEY`（或 `GALGAME2VOICE_MASTER_KEY`）环境变量，缺省时使用
   `data/.master_key`（0600 权限）。读写分别经 `security/crypto.py` 的 `encrypt_secret()` /

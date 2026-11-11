@@ -1004,7 +1004,7 @@ _global_gpt_sovits_client: GptSovitsClient | None = None
 def get_gpt_sovits_client() -> GptSovitsClient:
     """
     Returns the application-wide singleton GptSovitsClient.
-    All services (TtsService, VoiceManager, Telegram, routers) MUST share this
+    All services (TtsService, VoiceManager, routers) MUST share this
     instance so the inference mutex actually serializes GPU access globally.
 
     The singleton no longer makes endpoint decisions: it starts at the

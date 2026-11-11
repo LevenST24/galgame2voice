@@ -1,9 +1,111 @@
+// @ts-check
 // Strictly validate portable chat data before changing the current sessions.
+
+/**
+ * @typedef {object} LineAudioSpec
+ * @property {'ready' | 'skipped' | 'failed' | 'pending' | string} status
+ * @property {Array<Record<string, any>>} chunks
+ * @property {number} [generated_at]
+ * @property {number} [voice_profile_id]
+ * @property {string} [voice_name]
+ */
+
+/**
+ * @typedef {object} DialogueLine
+ * @property {number} index
+ * @property {string} zh
+ * @property {string} ja
+ * @property {string} emotion
+ * @property {Record<string, any>} act
+ * @property {LineAudioSpec} audio
+ */
+
+/**
+ * @typedef {object} ChatMessage
+ * @property {string} id
+ * @property {'assistant' | 'user' | 'system' | string} role
+ * @property {string} content
+ * @property {number} ts
+ * @property {string} [japanese]
+ * @property {boolean} [noVoice]
+ * @property {boolean} [failed]
+ * @property {DialogueLine[]} [lines]
+ * @property {number} [serverUserMessageId]
+ * @property {number} [serverMessageId]
+ * @property {boolean} [turnConflict]
+ * @property {string[]} [audioUrls]
+ */
+
+/**
+ * @typedef {object} SessionSettings
+ * @property {string} systemPrompt
+ * @property {number | null} voiceProfileId
+ * @property {number} temperature
+ * @property {number} topP
+ * @property {number} maxTokens
+ * @property {number} freqPenalty
+ * @property {number} presPenalty
+ * @property {number} maxContext
+ * @property {boolean} aiAdaptiveVoice
+ * @property {'lines' | 'legacy' | string} advReplyFormat
+ * @property {number} ttsSpeed
+ * @property {number} ttsTopK
+ * @property {number} ttsTopP
+ * @property {number} ttsTemperature
+ * @property {string} advPlayerName
+ * @property {'zh' | 'ja' | string} advPrimaryLanguage
+ * @property {'zh' | 'ja' | 'none' | string} advSubtitleLanguage
+ * @property {number} advWindowOpacity
+ * @property {number} advTextIntervalMs
+ * @property {boolean} advInterruptVoice
+ * @property {number} advAutoBaseMs
+ * @property {number} advAutoPerCharMs
+ * @property {'normal' | 'voice-priority' | string} advAutoMode
+ * @property {string} advOutfit
+ * @property {string} advBackground
+ * @property {'auto' | 'day' | 'evening' | 'night' | string} advBgTime
+ * @property {boolean} advBlink
+ * @property {boolean} advLipSync
+ */
+
+/**
+ * @typedef {object} GlobalSettings
+ * @property {boolean} voiceMode
+ * @property {string} ttsPreset
+ */
+
+/**
+ * @typedef {object} ChatSession
+ * @property {string} id
+ * @property {string} title
+ * @property {ChatMessage[]} messages
+ * @property {number} createdAt
+ * @property {number} updatedAt
+ * @property {SessionSettings} settings
+ * @property {string} [lastLine]
+ * @property {number} [unconfirmedSettingsVersion]
+ */
+
+/**
+ * @typedef {object} PortableChatSnapshot
+ * @property {ChatSession[]} sessions
+ * @property {string | null} activeId
+ * @property {GlobalSettings} global
+ */
+
+/** @param {any} value @returns {value is Record<string, any>} */
 const record = (value) => value && typeof value === 'object' && !Array.isArray(value);
+/** @param {any} value @returns {value is string} */
 const validId = (value) => typeof value === 'string' && value.length > 0 && value.length <= 200;
+/** @param {any} value @returns {number} */
 const timestamp = (value) => Number.isFinite(value) && value >= 0 ? value : Date.now();
 
 // SQLite CURRENT_TIMESTAMP is UTC even though it has no explicit zone suffix.
+/**
+ * @param {any} value
+ * @param {number} [fallback]
+ * @returns {number}
+ */
 export function serverTimestamp(value, fallback = Date.now()) {
   if (typeof value !== 'string' || !value) return fallback;
   const iso = value.replace(' ', 'T');
@@ -11,9 +113,16 @@ export function serverTimestamp(value, fallback = Date.now()) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+/**
+ * @template {Record<string, any>} T
+ * @param {any} value
+ * @param {T} defaults
+ * @returns {T}
+ */
 export function pickSettings(value, defaults) {
+  /** @type {Record<string, any>} */
   const result = { ...defaults };
-  if (!record(value)) return result;
+  if (!record(value)) return /** @type {T} */ (result);
   for (const key of Object.keys(defaults)) {
     const candidate = value[key];
     if (key.startsWith('adv')) {
@@ -29,17 +138,25 @@ export function pickSettings(value, defaults) {
       result.advPrimaryLanguage === result.advSubtitleLanguage) {
     result.advSubtitleLanguage = result.advPrimaryLanguage === 'zh' ? 'ja' : 'zh';
   }
-  return result;
+  return /** @type {T} */ (result);
 }
 
 // advReplyFormat 'legacy' is the explicit opt-out. 'old' was the stored default
 // before per-line replies became the default, so it now falls back to 'lines'.
+/** @type {Record<string, string[]>} */
 const advEnums = {
   advPrimaryLanguage: ['zh', 'ja'], advSubtitleLanguage: ['zh', 'ja', 'none'],
   advAutoMode: ['normal', 'voice-priority'], advReplyFormat: ['lines', 'legacy'],
   advBgTime: ['auto', 'day', 'evening', 'night'],
 };
+/** @type {Record<string, number>} */
 const advRanges = { advWindowOpacity: 100, advTextIntervalMs: 100, advAutoBaseMs: 6000, advAutoPerCharMs: 200 };
+
+/**
+ * @param {string} key
+ * @param {any} value
+ * @returns {boolean}
+ */
 export function validAdvSetting(key, value) {
   if (key === 'advInterruptVoice' || key === 'advBlink' || key === 'advLipSync') return typeof value === 'boolean';
   if (advEnums[key]) return advEnums[key].includes(value);
@@ -62,8 +179,13 @@ export function validAdvSetting(key, value) {
   return false;
 }
 
+/**
+ * @param {any} lines
+ * @returns {DialogueLine[] | undefined}
+ */
 export function normalizeLines(lines) {
   if (!Array.isArray(lines)) return undefined;
+  /** @type {DialogueLine[]} */
   const result = [];
   // Stored and final lines are settled: audio still 'pending' never arrived.
   const KNOWN_STATUSES = new Set(['ready', 'skipped', 'failed']);
@@ -77,6 +199,7 @@ export function normalizeLines(lines) {
       ? { ...item.act }
       : {};
 
+    /** @type {LineAudioSpec} */
     let audio = { status: 'skipped', chunks: [] };
     if (item.audio && typeof item.audio === 'object' && !Array.isArray(item.audio)) {
       const raw = item.audio.status;
@@ -102,9 +225,16 @@ export function normalizeLines(lines) {
   return result;
 }
 
+/**
+ * @param {any} data
+ * @param {SessionSettings} sessionDefaults
+ * @param {GlobalSettings} globalDefaults
+ * @returns {PortableChatSnapshot}
+ */
 export function normalizeSnapshot(data, sessionDefaults, globalDefaults) {
   if (!record(data) || !Array.isArray(data.sessions)) throw new Error('文件中没有有效的聊天记录。');
   const ids = new Set();
+  /** @type {ChatSession[]} */
   const sessions = data.sessions.map((session) => {
     if (!record(session) || !validId(session.id) || ids.has(session.id) ||
         typeof session.title !== 'string' || !Array.isArray(session.messages)) {
@@ -112,6 +242,7 @@ export function normalizeSnapshot(data, sessionDefaults, globalDefaults) {
     }
     ids.add(session.id);
     const messageIds = new Set();
+    /** @type {ChatMessage[]} */
     const messages = session.messages.map((message) => {
       if (!record(message) || !validId(message.id) || messageIds.has(message.id) ||
           !['assistant', 'user', 'system'].includes(message.role) || typeof message.content !== 'string') {
@@ -119,16 +250,16 @@ export function normalizeSnapshot(data, sessionDefaults, globalDefaults) {
       }
       messageIds.add(message.id);
       // JSON is inert data. Preserve voice metadata for existing local playback.
-      const normalizedMsg = { ...message, ts: timestamp(message.ts) };
+      const normalizedMsg = /** @type {ChatMessage} */ ({ ...message, ts: timestamp(message.ts) });
       if (Array.isArray(message.lines)) {
         normalizedMsg.lines = normalizeLines(message.lines);
       } else {
         delete normalizedMsg.lines;
       }
-      if (!Number.isSafeInteger(normalizedMsg.serverUserMessageId) || normalizedMsg.serverUserMessageId <= 0) {
+      if (!Number.isSafeInteger(normalizedMsg.serverUserMessageId) || /** @type {number} */ (normalizedMsg.serverUserMessageId) <= 0) {
         delete normalizedMsg.serverUserMessageId;
       }
-      if (!Number.isSafeInteger(normalizedMsg.serverMessageId) || normalizedMsg.serverMessageId <= 0) {
+      if (!Number.isSafeInteger(normalizedMsg.serverMessageId) || /** @type {number} */ (normalizedMsg.serverMessageId) <= 0) {
         delete normalizedMsg.serverMessageId;
       }
       if (normalizedMsg.turnConflict !== true) {
@@ -136,6 +267,7 @@ export function normalizeSnapshot(data, sessionDefaults, globalDefaults) {
       }
       return normalizedMsg;
     });
+    /** @type {ChatSession} */
     const normalizedSession = {
       id: session.id, title: session.title, messages,
       createdAt: timestamp(session.createdAt), updatedAt: timestamp(session.updatedAt),
@@ -156,6 +288,10 @@ export function normalizeSnapshot(data, sessionDefaults, globalDefaults) {
   };
 }
 
+/**
+ * @param {PortableChatSnapshot} snapshot
+ * @returns {PortableChatSnapshot}
+ */
 export function portableSnapshot(snapshot) {
   return {
     ...snapshot,
@@ -166,6 +302,7 @@ export function portableSnapshot(snapshot) {
       return {
         ...rest,
         messages: session.messages.map(message => {
+          /** @type {ChatMessage} */
           const result = { id: message.id, role: message.role, content: message.content, ts: message.ts };
           if (typeof message.japanese === 'string') result.japanese = message.japanese;
           if (message.noVoice) result.noVoice = true;

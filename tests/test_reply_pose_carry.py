@@ -14,7 +14,6 @@ from galgame2voice.database.session import get_db, init_db
 from galgame2voice.services.chat_pipelines.acting_menu import get_recent_pose, sanitize_act
 from galgame2voice.services.chat_pipelines.context_builder import BuiltContext
 from galgame2voice.services.chat_service import ChatService
-from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 
 
 MENU = {
@@ -34,12 +33,12 @@ def line(act):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["sync", "stream", "telegram"])
+@pytest.mark.parametrize("mode", ["stream"])
 @pytest.mark.parametrize("case", ["within_reply", "across_turns", "no_stored_pose", "unavailable_stored_pose"])
 async def test_reply_carries_pose(tmp_path, monkeypatch, mode, case):
     database = tmp_path / "pose.db"
     await init_db(database)
-    session_id = "tg_4242" if mode == "telegram" else "pose"
+    session_id = "pose"
     stored_pose = {"across_turns": "b", "unavailable_stored_pose": "retired"}.get(case)
     if stored_pose:
         async with get_db(database) as conn:
@@ -55,9 +54,7 @@ async def test_reply_carries_pose(tmp_path, monkeypatch, mode, case):
                 else [{}, {"face": "a-only"}])
     raw = json.dumps({"lines": [line(act) for act in acts]}, ensure_ascii=False)
     module = importlib.import_module({
-        "sync": "galgame2voice.services.chat_service",
         "stream": "galgame2voice.services.chat_pipelines.stream_coordinator",
-        "telegram": "galgame2voice.telegram_bot.handlers",
     }[mode])
     lookup = AsyncMock(wraps=get_recent_pose)
     sanitize = Mock(wraps=sanitize_act)
@@ -90,23 +87,10 @@ async def test_reply_carries_pose(tmp_path, monkeypatch, mode, case):
     context = BuiltContext([], menu=MENU)
     monkeypatch.setattr("galgame2voice.services.chat_service.build_chat_context", AsyncMock(return_value=context))
     try:
-        if mode == "telegram":
-            service.prepare_messages = AsyncMock(return_value=context)
-            service.memory_service.process_user_message = AsyncMock()
-            service.affection_service.handle_turn_affection = AsyncMock()
-            handlers = TelegramBotHandlers(chat_service=service, db_path=str(database))
-            monkeypatch.setattr(handlers, "_spawn_background_voice_task", lambda *a, **k: asyncio.create_task(asyncio.sleep(0)))
-            bot = SimpleNamespace(send_message=AsyncMock(), send_chat_action=AsyncMock())
-            await (await handlers.process_text_chat(4242, "问题", bot))
-            assert bot.send_message.call_args.kwargs["text"] == "你好。你好。"
-        elif mode == "sync":
-            result = await service.chat_sync("问题", session_id=session_id, reply_format="lines")
-            assert [item["act"] for item in result["lines"]] == expected
-        else:
-            events = [event async for event in service.stream_chat("问题", session_id=session_id, reply_format="lines")]
-            assert events[-1]["event"] == "done"
-            result = events[-1]["data"]
-            assert [event["data"]["act"] for event in events if event["event"] == "line"] == expected
+        events = [event async for event in service.stream_chat("问题", session_id=session_id, reply_format="lines")]
+        assert events[-1]["event"] == "done"
+        result = events[-1]["data"]
+        assert [event["data"]["act"] for event in events if event["event"] == "line"] == expected
 
         lookup.assert_awaited_once()
         # Also check the explicit None contract: fallback alone already worked before R11.
@@ -116,8 +100,7 @@ async def test_reply_carries_pose(tmp_path, monkeypatch, mode, case):
         async with get_db(database) as conn:
             saved = (await crud.get_recent_messages(conn, session_id))[-1]
         assert [item["act"] for item in saved.lines] == expected
-        if mode != "telegram":
-            assert saved.lines == result["lines"]
+        assert saved.lines == result["lines"]
     finally:
         await service.aclose()
 

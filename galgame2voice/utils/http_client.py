@@ -15,7 +15,7 @@ mount pattern ``all://*[::1]`` and then fails with::
 
     httpx.InvalidURL: Invalid port: ':1]'
 
-Left alone, a cosmetic environment quirk takes down every LLM, STT, Telegram
+Left alone, a cosmetic environment quirk takes down every LLM, STT,
 and provider-test HTTP call at once. So client construction degrades gracefully
 here: when the ambient proxy configuration cannot be parsed, the caller's
 explicit arguments are kept and the client is retried with environment proxies

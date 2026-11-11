@@ -1,7 +1,7 @@
 """
 Chat Router for galgame2voice.
 Provides real-time SSE streaming endpoint (/api/chat/stream) and
-backward-compatible synchronous chat endpoint (/api/chat).
+session history management endpoints.
 """
 
 import asyncio
@@ -27,7 +27,6 @@ from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, get_database_path, immediate_transaction
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.sse import format_sse_frame
-from galgame2voice.utils.error_diagnostics import ConfigurationSelectionError, EmptyReplyError, chat_error_payload
 from galgame2voice.utils.async_tasks import await_protected, cancel_and_drain
 
 logger = logging.getLogger("galgame2voice.routers.chat")
@@ -43,7 +42,7 @@ _explicit_chat_service: ChatService | None = None
 
 
 def get_chat_service() -> ChatService:
-    """Returns this module's cached ChatService instance (not app-wide: the Telegram bot builds its own)."""
+    """Returns this module's cached ChatService instance."""
     global _chat_service, _explicit_chat_service
     if _explicit_chat_service is not None:
         return _explicit_chat_service
@@ -54,7 +53,7 @@ def get_chat_service() -> ChatService:
 
 
 def set_chat_service(service: ChatService | None) -> None:
-    """Overrides the instance returned by get_chat_service (e.g. in tests); the Telegram bot keeps its own."""
+    """Overrides the instance returned by get_chat_service (e.g. in tests)."""
     global _explicit_chat_service
     _explicit_chat_service = service
 
@@ -64,7 +63,7 @@ def set_chat_service(service: ChatService | None) -> None:
 # ============================================================================
 
 class ChatRequest(BaseModel):
-    """Request payload for initiating streaming or synchronous chat generation."""
+    """Request payload for initiating a streaming chat turn."""
 
     reply_format: Literal["old", "lines"] = "old"
     prompt: str = Field(..., min_length=1, max_length=PROMPT_MAX_LENGTH, description="User prompt text")
@@ -260,64 +259,6 @@ async def chat_stream_endpoint(req: ChatRequest, request: Request) -> StreamingR
             "X-G2V-Voice-Job-Timeout-Ms": str(round(TTS_JOB_TIMEOUT_SECONDS * 1000)),
         },
     )
-
-
-# ============================================================================
-# Synchronous Non-Streaming Endpoints
-# ============================================================================
-
-@router.post("/api/chat", summary="Synchronous chat completion")
-async def chat_sync_endpoint(req: ChatRequest) -> dict[str, Any]:
-    """
-    Non-streaming synchronous chat completion returning bilingual text and audio URL.
-    """
-    _validate_chat_request(req)
-
-    tts_opts = _resolve_request_tts_options(req)
-
-    service = get_chat_service()
-    try:
-        return await service.chat_sync(
-            prompt=req.prompt.strip(),
-            session_id=req.session_id,
-            character_name=req.character_name,
-            voice_profile_id=req.voice_profile_id,
-            provider_id=req.provider_id,
-            tts_options=tts_opts,
-            system_prompt=req.system_prompt,
-            temperature=req.temperature,
-            max_context=req.max_context,
-            top_p=req.top_p,
-            max_tokens=req.max_tokens,
-            frequency_penalty=req.frequency_penalty,
-            presence_penalty=req.presence_penalty,
-            ai_adaptive_voice=req.ai_adaptive_voice,
-            reply_format=req.reply_format,
-            outfit=req.outfit,
-        )
-    except HTTPException:
-        raise
-    except ConfigurationSelectionError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=chat_error_payload(exc)) from exc
-    except EmptyReplyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"error": str(exc), "error_code": "empty_reply", "kind": "empty_reply", "message": str(exc)},
-        ) from exc
-    except Exception as exc:
-        logger.error(
-            "Error in synchronous chat completion (session_id=%s, character=%s, provider=%s): %s",
-            req.session_id,
-            req.character_name,
-            req.provider_id,
-            exc,
-            exc_info=True,
-        )
-        safe_err = sanitize_error_detail(exc)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=safe_err or "Chat completion encountered an internal error",
-        ) from exc
 
 
 # ============================================================================

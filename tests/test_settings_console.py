@@ -95,28 +95,6 @@ class TestSecurityAndKeyMasking:
         assert is_masked_key("sk-plain-secret-key-123") is False
 
     @pytest.mark.asyncio
-    async def test_get_config_masks_telegram_token(self):
-        """Verifies GET /api/config returns masked telegram token."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            # Update with plaintext secret token
-            await client.post("/api/config", json={
-                "settings": {
-                    "telegram_bot_token": "987654321:AAHkjlmnopqrstuvwxyz12345"
-                }
-            })
-
-            # Retrieve config and verify masking
-            resp = await client.get("/api/config")
-            assert resp.status_code == 200
-            data = resp.json()
-            token = data["settings"]["telegram_bot_token"]
-            assert token.startswith("987****")
-            assert "AAHkjl" not in token
-            assert "****" in token
-
-    @pytest.mark.asyncio
     async def test_provider_api_key_masked_on_retrieval(self):
         """Verifies GET /api/providers and GET /api/providers/{id} return masked keys."""
         app = create_app()
@@ -227,31 +205,6 @@ class TestSecurityAndKeyMasking:
             async with get_db() as conn:
                 raw_prov = await crud.get_provider_raw(conn, "change_key_prov")
                 assert raw_prov.api_key == "sk-newsecretkey2222"
-
-    @pytest.mark.asyncio
-    async def test_telegram_masked_token_submission_retains_secret(self):
-        """Verifies submitting masked Telegram token preserves raw token in settings table."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            # 1. Set secret token
-            await client.post("/api/config", json={
-                "settings": {"telegram_bot_token": "123456789:ABCDefgh-1234567890abcdef"}
-            })
-
-            # 2. Update with masked token
-            await client.post("/api/config", json={
-                "settings": {
-                    "telegram_bot_token": "123****cdef",
-                    "telegram_bot_username": "new_bot_name"
-                }
-            })
-
-            # 3. Verify raw in DB
-            async with get_db() as conn:
-                raw_settings = await crud.get_settings_raw(conn)
-                assert raw_settings.telegram_bot_token == "123456789:ABCDefgh-1234567890abcdef"
-                assert raw_settings.telegram_bot_username == "new_bot_name"
 
 
 # ============================================================================
@@ -384,26 +337,11 @@ class TestVoiceAndInferenceTuning:
 
 
 # ============================================================================
-# 5. Telegram Testing & Diagnostics Tests
+# 5. System Diagnostics Tests
 # ============================================================================
 
-class TestTelegramAndSystemDiagnostics:
-    """Verifies Telegram test endpoint and comprehensive diagnostic telemetry."""
-
-    @pytest.mark.asyncio
-    async def test_telegram_test_without_token(self):
-        """Verifies POST /api/telegram/test returns error when no token is provided or stored."""
-        app = create_app()
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            # Clear token in DB
-            await client.post("/api/config", json={"settings": {"telegram_bot_token": ""}})
-
-            resp = await client.post("/api/telegram/test", json={"token": ""})
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "未配置" in data["message"]
+class TestSystemDiagnostics:
+    """Verifies comprehensive diagnostic telemetry."""
 
     @pytest.mark.asyncio
     async def test_system_status_diagnostics_endpoint(self):
@@ -421,7 +359,6 @@ class TestTelegramAndSystemDiagnostics:
             assert data["database"]["wal_mode"] is True
             assert "gpt_sovits" in data
             assert "storage" in data
-            assert "telegram" in data
 
 
 # ============================================================================

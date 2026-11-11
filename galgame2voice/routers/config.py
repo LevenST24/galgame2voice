@@ -17,7 +17,6 @@ from galgame2voice.security.url_guard import validate_local_service_url
 from galgame2voice.routers.providers import (
     ProviderTestRequest,
     ProviderTestResponse,
-    TelegramTestRequest,
     _allow_private_endpoints,
     _enforce_llm_url_guard,
     activate_provider,
@@ -28,7 +27,6 @@ from galgame2voice.routers.providers import (
     router as providers_router,
     test_provider,
     test_provider_connectivity,
-    test_telegram_bot,
     update_provider,
 )
 from galgame2voice.utils.logger import sanitize_error_detail
@@ -44,7 +42,6 @@ __all__ = [
     "ConfigPayload",
     "ProviderTestRequest",
     "ProviderTestResponse",
-    "TelegramTestRequest",
     "_allow_private_endpoints",
     "_enforce_llm_url_guard",
     "providers_router",
@@ -56,7 +53,6 @@ __all__ = [
     "activate_provider",
     "test_provider",
     "test_provider_connectivity",
-    "test_telegram_bot",
 ]
 
 
@@ -91,17 +87,6 @@ async def get_config() -> dict[str, Any]:
             "active_provider": active_provider.model_dump() if active_provider else None,
         }
 
-
-TELEGRAM_CONFIG_KEYS = frozenset({
-    "telegram_enabled",
-    "telegram_bot_token",
-    "telegram_bot_username",
-    "telegram_proxy_enabled",
-    "telegram_proxy_host",
-    "telegram_proxy_port",
-    "telegram_admin_ids",
-    "telegram_chat_id",
-})
 
 _PRECISION_CONFIG_MAP: dict[str, tuple[bool, str]] = {
     "cpu": (False, "cpu"),
@@ -212,23 +197,6 @@ async def _apply_sovits_url_update(new_sovits_url: str | None) -> dict[str, Any]
     return {"base_url": target_url, "source": source}
 
 
-async def _reload_telegram_if_needed(sanitized_updates: dict[str, Any], updated_settings: Any) -> None:
-    """Hot-reloads Telegram Bot service when Telegram credentials/proxy/enabled/admin state changes."""
-    if not any(k in sanitized_updates for k in TELEGRAM_CONFIG_KEYS):
-        return
-    try:
-        from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
-        tg_manager = get_telegram_bot_manager()
-        await tg_manager.stop()
-        if getattr(updated_settings, "telegram_enabled", False):
-            await tg_manager.start()
-            logger.info("Telegram Bot service hot-reloaded with new configuration.")
-        else:
-            logger.info("Telegram Bot service is disabled.")
-    except Exception as exc:
-        logger.warning("Failed to hot-reload Telegram Bot: %s", exc)
-
-
 def _sync_precision_cache(new_precision: str | None, previous_precision: str | None = None) -> None:
     """Save next-start preferences without modifying the running engine or its files."""
     if not new_precision:
@@ -306,7 +274,6 @@ async def update_config(payload: ConfigPayload | SettingsUpdate | dict[str, Any]
             updated_settings = await crud.get_settings(conn, mask=True)
 
     effective_sovits = await _apply_sovits_url_update(sanitized_updates.get("gpt_sovits_url"))
-    await _reload_telegram_if_needed(sanitized_updates, updated_settings)
     _sync_precision_cache(
         sanitized_updates.get("inference_precision"),
         previous_precision=previous_precision,

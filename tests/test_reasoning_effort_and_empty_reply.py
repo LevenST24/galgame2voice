@@ -8,7 +8,6 @@ Covers:
 - Stream coordinator yielding error event with kind empty_reply and pruning DB on empty reply.
 - Length truncation explanation vs default explanation.
 - Client cancellation before content remaining cancelled rather than empty_reply.
-- Synchronous chat and Telegram bot explaining instead of returning empty text.
 - Diagnostic mapping for HTTP 400 parameter errors without masking as API key failure.
 """
 
@@ -36,7 +35,6 @@ from galgame2voice.main import create_app
 from galgame2voice.services.chat_pipelines.llm_pipeline import LlmStreamPipeline
 from galgame2voice.services.chat_pipelines.stream_coordinator import StreamCoordinator
 from galgame2voice.services.chat_service import ChatService
-from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from galgame2voice.utils.error_diagnostics import (
     CONTENT_FILTER_FINISH_REASONS,
     EMPTY_REPLY_CONTENT_FILTERED,
@@ -367,45 +365,6 @@ async def test_llm_pipeline_and_coordinator_forward_reasoning_effort():
 
 
 @pytest.mark.asyncio
-async def test_chat_sync_forwards_reasoning_effort(tmp_path):
-    """Verifies ChatService.chat_sync forwards reasoning_effort when set and omits when None."""
-    db_file = tmp_path / "sync_kwargs.db"
-    await init_db(db_file)
-
-    service = ChatService(db_path=str(db_file))
-    captured_kwargs = {}
-
-    async def mock_chat(messages, **kwargs):
-        captured_kwargs.update(kwargs)
-        return SimpleNamespace(content='{"chinese": "你好", "japanese": "こんにちは"}')
-
-    adapter = SimpleNamespace(
-        chat=AsyncMock(side_effect=mock_chat),
-        stream_chat=AsyncMock(),
-        reasoning_effort="high",
-    )
-    service._get_active_llm_adapter = AsyncMock(return_value=(adapter, "test_model", "custom"))
-    service._synthesize_sync_audio = AsyncMock(return_value=("/audio/test.wav", 10.0, 0, 1))
-
-    # Resolves from adapter when not explicitly passed
-    await service.chat_sync("hi", session_id="sync_kw_1")
-    assert captured_kwargs.get("reasoning_effort") == "high"
-
-    # Explicitly passed overrides
-    captured_kwargs.clear()
-    await service.chat_sync("hi", session_id="sync_kw_2", reasoning_effort="none")
-    assert captured_kwargs.get("reasoning_effort") == "none"
-
-    # When adapter and call have None, omitted from chat kwargs
-    adapter.reasoning_effort = None
-    captured_kwargs.clear()
-    await service.chat_sync("hi", session_id="sync_kw_3")
-    assert "reasoning_effort" not in captured_kwargs
-
-    await service.aclose()
-
-
-@pytest.mark.asyncio
 async def test_streaming_empty_reply_default(tmp_path):
     """Verifies that an empty reply emits an error event with kind empty_reply and prunes user message."""
     db_file = tmp_path / "stream_empty_default.db"
@@ -545,105 +504,6 @@ async def test_streaming_cancellation_stays_cancelled(tmp_path):
     assert not any(e["event"] == "error" for e in events)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("finish_reason", [None, "length"])
-async def test_chat_sync_empty_reply_raises_and_prunes(tmp_path, finish_reason):
-    """Verifies ChatService.chat_sync raises EmptyReplyError and prunes the user message."""
-    db_file = tmp_path / "sync_empty.db"
-    await init_db(db_file)
-
-    service = ChatService(db_path=str(db_file))
-    mock_adapter_tuple = (
-        SimpleNamespace(
-            chat=AsyncMock(return_value=SimpleNamespace(content="")),
-            stream_chat=AsyncMock(),
-            last_finish_reason=finish_reason,
-        ),
-        "test_model",
-        "custom",
-    )
-    service.get_active_llm_adapter = AsyncMock(return_value=mock_adapter_tuple)
-    service._get_active_llm_adapter = service.get_active_llm_adapter
-
-    with pytest.raises(EmptyReplyError) as exc_info:
-        await service.chat_sync("问题", session_id="sync_sess")
-
-    assert str(exc_info.value) == (EMPTY_REPLY_STOPPED_ON_LENGTH if finish_reason else EMPTY_REPLY_DEFAULT)
-
-    # Verify user message was pruned
-    async with get_db(str(db_file)) as conn:
-        msgs = await crud.get_recent_messages(conn, "sync_sess")
-        assert len(msgs) == 0
-
-    await service.aclose()
-
-
-@pytest.mark.asyncio
-async def test_api_chat_sync_endpoint_empty_reply_returns_502():
-    """Verifies POST /api/chat returns HTTP 502 with kind empty_reply on empty reply."""
-    app = create_app()
-    service = AsyncMock()
-    service.chat_sync.side_effect = EmptyReplyError(EMPTY_REPLY_DEFAULT)
-
-    from galgame2voice.routers.chat import set_chat_service
-    set_chat_service(service)
-    try:
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/api/chat", json={"prompt": "hi", "session_id": "test_sync_empty"})
-            assert resp.status_code == 502
-            data = resp.json()
-            detail = data.get("detail", {})
-            assert detail.get("kind") == "empty_reply"
-            assert detail.get("error_code") == "empty_reply"
-            assert EMPTY_REPLY_DEFAULT in detail.get("error", "")
-    finally:
-        set_chat_service(None)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("finish_reason", [None, "length"])
-@pytest.mark.parametrize("effort", [None, "low"])
-async def test_telegram_empty_reply_explains(tmp_path, monkeypatch, finish_reason, effort):
-    """Verifies Telegram bot handlers explain with user guidance instead of sending empty text."""
-    db_file = tmp_path / "tg_empty.db"
-    await init_db(db_file)
-
-    service = ChatService(db_path=str(db_file))
-    mock_adapter_tuple = (
-        SimpleNamespace(
-            chat=AsyncMock(return_value=SimpleNamespace(content="")),
-            stream_chat=AsyncMock(),
-            last_finish_reason=finish_reason,
-            reasoning_effort=effort,
-        ),
-        "test_model",
-        "custom",
-    )
-    service.get_active_llm_adapter = AsyncMock(return_value=mock_adapter_tuple)
-    service._get_active_llm_adapter = service.get_active_llm_adapter
-    service.memory_service.process_user_message = AsyncMock()
-    service.prepare_messages = AsyncMock(return_value=[])
-    service.affection_service.handle_turn_affection = AsyncMock()
-
-    handlers = TelegramBotHandlers(chat_service=service, db_path=str(db_file))
-    bot = SimpleNamespace(send_message=AsyncMock(), send_chat_action=AsyncMock())
-    monkeypatch.setattr(handlers, "_spawn_background_voice_task", lambda *args, **kwargs: None)
-
-    task = await handlers.process_text_chat(777, "测试问题", bot)
-    if task:
-        await task
-
-    assert bot.send_message.called
-    sent_text = bot.send_message.call_args.kwargs["text"]
-    assert (EMPTY_REPLY_STOPPED_ON_LENGTH if finish_reason else EMPTY_REPLY_DEFAULT) in sent_text
-    kwargs = mock_adapter_tuple[0].chat.call_args.kwargs
-    assert kwargs.get("reasoning_effort") == effort
-    assert ("reasoning_effort" in kwargs) == (effort is not None)
-
-    await service.aclose()
-
-
 def test_diagnose_llm_error_unsupported_parameter():
     """Verifies HTTP 400 parameter errors diagnose as PARAMETER_NOT_SUPPORTED and don't mask as auth errors."""
     # Gemini thinking level error
@@ -699,7 +559,6 @@ async def test_all_request_builders_forward_only_configured_effort(tmp_path, eff
     await init_db(database)
     service = ChatService(db_path=str(database))
     try:
-        await service._execute_sync_llm(adapter=adapter, messages=[], model_name="test")
         captured.extend(call.kwargs for call in adapter.chat.call_args_list)
         for kwargs in captured:
             if effort is None:
@@ -813,7 +672,6 @@ def test_configured_reasoning_effort_forwards_only_known_levels():
     assert configured_reasoning_effort(SimpleNamespace()) is None
     for level in ("none", "low", "medium", "high"):
         assert configured_reasoning_effort(SimpleNamespace(reasoning_effort=level)) == level
-
 
 
 @pytest.mark.parametrize("finish_reason", list(CONTENT_FILTER_FINISH_REASONS))
@@ -959,207 +817,6 @@ async def test_streaming_empty_reply_content_filtered(tmp_path, finish_reason):
         assert len(remaining) == 0
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("finish_reason", ["content_filter", "SAFETY"])
-async def test_chat_sync_empty_reply_content_filtered(tmp_path, finish_reason):
-    """Verifies ChatService.chat_sync raises EmptyReplyError with EMPTY_REPLY_CONTENT_FILTERED."""
-    db_file = tmp_path / f"sync_empty_cf_{finish_reason}.db"
-    await init_db(db_file)
-
-    service = ChatService(db_path=str(db_file))
-    mock_adapter_tuple = (
-        SimpleNamespace(
-            chat=AsyncMock(return_value=SimpleNamespace(content="")),
-            stream_chat=AsyncMock(),
-            last_finish_reason=finish_reason,
-        ),
-        "test_model",
-        "custom",
-    )
-    service.get_active_llm_adapter = AsyncMock(return_value=mock_adapter_tuple)
-    service._get_active_llm_adapter = service.get_active_llm_adapter
-
-    with pytest.raises(EmptyReplyError) as exc_info:
-        await service.chat_sync("问题", session_id="sync_sess_cf")
-
-    assert str(exc_info.value) == EMPTY_REPLY_CONTENT_FILTERED
-    assert exc_info.value.stopped_on_length is False
-
-    async with get_db(str(db_file)) as conn:
-        msgs = await crud.get_recent_messages(conn, "sync_sess_cf")
-        assert len(msgs) == 0
-
-    await service.aclose()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("finish_reason", ["content_filter", "SAFETY"])
-async def test_telegram_empty_reply_content_filtered(tmp_path, monkeypatch, finish_reason):
-    """Verifies Telegram bot handlers explain content filter on empty reply."""
-    db_file = tmp_path / f"tg_empty_cf_{finish_reason}.db"
-    await init_db(db_file)
-
-    service = ChatService(db_path=str(db_file))
-    mock_adapter_tuple = (
-        SimpleNamespace(
-            chat=AsyncMock(return_value=SimpleNamespace(content="")),
-            stream_chat=AsyncMock(),
-            last_finish_reason=finish_reason,
-        ),
-        "test_model",
-        "custom",
-    )
-    service.get_active_llm_adapter = AsyncMock(return_value=mock_adapter_tuple)
-    service._get_active_llm_adapter = service.get_active_llm_adapter
-    service.memory_service.process_user_message = AsyncMock()
-    service.prepare_messages = AsyncMock(return_value=[])
-    service.affection_service.handle_turn_affection = AsyncMock()
-
-    handlers = TelegramBotHandlers(chat_service=service, db_path=str(db_file))
-    bot = SimpleNamespace(send_message=AsyncMock(), send_chat_action=AsyncMock())
-    monkeypatch.setattr(handlers, "_spawn_background_voice_task", lambda *args, **kwargs: None)
-
-    task = await handlers.process_text_chat(888, "敏感问题", bot)
-    if task:
-        await task
-
-    assert bot.send_message.called
-    sent_text = bot.send_message.call_args.kwargs["text"]
-    assert EMPTY_REPLY_CONTENT_FILTERED in sent_text
-
-    await service.aclose()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("finish_reason", "expect_notice"),
-    [("content_filter", True), ("SAFETY", True), ("stop", False), (None, False)],
-)
-async def test_telegram_partial_reply_content_filtered_notice(tmp_path, monkeypatch, finish_reason, expect_notice):
-    """A partial reply cut by the content filter is followed by a notice; normal endings add nothing."""
-    db_file = tmp_path / f"tg_partial_cf_{finish_reason}.db"
-    await init_db(db_file)
-
-    service = ChatService(db_path=str(db_file))
-    raw_text = '{"lines": [{"zh": "你好呀，我想说", "ja": "こんにちは"}]}'
-    service.get_active_llm_adapter = AsyncMock(
-        return_value=(
-            SimpleNamespace(
-                chat=AsyncMock(return_value=SimpleNamespace(content=raw_text)),
-                stream_chat=AsyncMock(),
-                last_finish_reason=finish_reason,
-            ),
-            "test_model",
-            "custom",
-        )
-    )
-    service._get_active_llm_adapter = service.get_active_llm_adapter
-    service.memory_service.process_user_message = AsyncMock()
-    service.prepare_messages = AsyncMock(return_value=[])
-    service.affection_service.handle_turn_affection = AsyncMock(return_value={"emotion": "gentle"})
-
-    handlers = TelegramBotHandlers(chat_service=service, db_path=str(db_file))
-    bot = SimpleNamespace(send_message=AsyncMock(), send_chat_action=AsyncMock())
-    monkeypatch.setattr(handlers, "_spawn_background_voice_task", lambda *args, **kwargs: None)
-
-    task = await handlers.process_text_chat(889, "敏感问题", bot)
-    if task:
-        await task
-
-    sent = [call.kwargs["text"] for call in bot.send_message.call_args_list]
-    assert sent[0] == "你好呀，我想说"
-    if expect_notice:
-        assert sent[1:] == [STREAM_TRUNCATED_CONTENT_FILTERED]
-    else:
-        assert len(sent) == 1
-
-    await service.aclose()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("finish_reason", "expect_notice"),
-    [("length", True), ("MAX_TOKENS", True), ("max_tokens", True), ("stop", False), (None, False)],
-)
-async def test_telegram_partial_reply_length_notice(tmp_path, monkeypatch, finish_reason, expect_notice):
-    """A partial reply cut by the max length is followed by a notice; normal endings add nothing."""
-    db_file = tmp_path / f"tg_partial_len_{finish_reason}.db"
-    await init_db(db_file)
-
-    service = ChatService(db_path=str(db_file))
-    raw_text = '{"lines": [{"zh": "你好呀，我想说", "ja": "こんにちは"}]}'
-    service.get_active_llm_adapter = AsyncMock(
-        return_value=(
-            SimpleNamespace(
-                chat=AsyncMock(return_value=SimpleNamespace(content=raw_text)),
-                stream_chat=AsyncMock(),
-                last_finish_reason=finish_reason,
-            ),
-            "test_model",
-            "custom",
-        )
-    )
-    service._get_active_llm_adapter = service.get_active_llm_adapter
-    service.memory_service.process_user_message = AsyncMock()
-    service.prepare_messages = AsyncMock(return_value=[])
-    service.affection_service.handle_turn_affection = AsyncMock(return_value={"emotion": "gentle"})
-
-    handlers = TelegramBotHandlers(chat_service=service, db_path=str(db_file))
-    bot = SimpleNamespace(send_message=AsyncMock(), send_chat_action=AsyncMock())
-    monkeypatch.setattr(handlers, "_spawn_background_voice_task", lambda *args, **kwargs: None)
-
-    task = await handlers.process_text_chat(890, "长问题", bot)
-    if task:
-        await task
-
-    sent = [call.kwargs["text"] for call in bot.send_message.call_args_list]
-    assert sent[0] == "你好呀，我想说"
-    if expect_notice:
-        assert sent[1:] == [STREAM_TRUNCATED_ON_LENGTH]
-    else:
-        assert len(sent) == 1
-
-    await service.aclose()
-
-
-@pytest.mark.asyncio
-async def test_telegram_partial_reply_unclosed_json_ignores_lines_truncated(tmp_path, monkeypatch):
-    """Lines truncated due to unclosed JSON without a length finish reason must not trigger truncation notice."""
-    db_file = tmp_path / "tg_unclosed_len.db"
-    await init_db(db_file)
-
-    service = ChatService(db_path=str(db_file))
-    raw_unclosed = '{"lines": [{"zh": "半截文本", "ja": "途中"}], "unclosed'
-    adapter = SimpleNamespace(
-        chat=AsyncMock(return_value=SimpleNamespace(content=raw_unclosed)),
-        stream_chat=AsyncMock(),
-        last_finish_reason="stop",
-    )
-    service.get_active_llm_adapter = AsyncMock(return_value=(adapter, "test_model", "custom"))
-    service._get_active_llm_adapter = service.get_active_llm_adapter
-    service.memory_service.process_user_message = AsyncMock()
-    service.prepare_messages = AsyncMock(return_value=[])
-    service.affection_service.handle_turn_affection = AsyncMock(return_value={"emotion": "gentle"})
-
-    handlers = TelegramBotHandlers(chat_service=service, db_path=str(db_file))
-    bot = SimpleNamespace(send_message=AsyncMock(), send_chat_action=AsyncMock())
-    monkeypatch.setattr(handlers, "_spawn_background_voice_task", lambda *args, **kwargs: None)
-
-    # With finish_reason="stop", even if parser.lines_truncated is True, no notice should be sent
-    await handlers.process_text_chat(892, "残缺格式", bot)
-    sent = [call.kwargs["text"] for call in bot.send_message.call_args_list]
-    assert sent == ["半截文本"]
-
-    # When finish_reason is "length", the notice must be appended
-    bot.send_message.reset_mock()
-    adapter.last_finish_reason = "length"
-    await handlers.process_text_chat(892, "残缺且超长", bot)
-    sent_len = [call.kwargs["text"] for call in bot.send_message.call_args_list]
-    assert sent_len == ["半截文本", STREAM_TRUNCATED_ON_LENGTH]
-
-    await service.aclose()
-
-
 @pytest.mark.parametrize("finish_reason", ["length", "MAX_TOKENS", "max_tokens"])
 def test_stream_length_truncation_text_matches_constant(finish_reason):
     from galgame2voice.adapters.base import validate_stream_completion
@@ -1172,93 +829,3 @@ def test_stream_length_truncation_text_matches_constant(finish_reason):
     assert STREAM_TRUNCATED_ON_LENGTH == (
         "模型输出达到最大长度限制，回复未能完整生成。建议调大「最大生成长度」或降低「思考强度」。"
     )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("raw_text", "finish_reason", "expected_truncated"),
-    [
-        ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}]}', "stop", False),
-        ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}]}', "length", True),
-        ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}]}', "MAX_TOKENS", True),
-        ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}]}', "content_filter", True),
-        ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}]}', "SAFETY", True),
-        ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}]}', None, False),
-        ('{"lines": [{"zh": "你好呀", "ja": "こんにちは"}], "unclosed', "stop", True),
-    ],
-)
-async def test_chat_sync_truncated_flag(tmp_path, raw_text, finish_reason, expected_truncated):
-    """Verifies chat_sync return dict includes truncated: bool reflecting finish_reason and parser truncation."""
-    db_file = tmp_path / f"sync_trunc_{finish_reason}_{expected_truncated}.db"
-    await init_db(db_file)
-
-    service = ChatService(db_path=str(db_file))
-    mock_adapter_tuple = (
-        SimpleNamespace(
-            chat=AsyncMock(return_value=SimpleNamespace(content=raw_text)),
-            stream_chat=AsyncMock(),
-            last_finish_reason=finish_reason,
-        ),
-        "test_model",
-        "custom",
-    )
-    service.get_active_llm_adapter = AsyncMock(return_value=mock_adapter_tuple)
-    service._get_active_llm_adapter = service.get_active_llm_adapter
-    service.memory_service.process_user_message = AsyncMock()
-    service.prepare_messages = AsyncMock(return_value=[])
-    service.affection_service.handle_turn_affection = AsyncMock(return_value={"emotion": "gentle"})
-    service._synthesize_sync_audio = AsyncMock(return_value=("", 0.0, 0, 0))
-
-    result = await service.chat_sync("问题", session_id="sync_trunc_sess")
-    assert "truncated" in result
-    assert result["truncated"] is expected_truncated
-
-    await service.aclose()
-
-
-@pytest.mark.asyncio
-async def test_api_chat_sync_endpoint_content_filter_and_truncated_flag():
-    """Verifies POST /api/chat responds properly to empty reply content filter and truncated flag."""
-    from httpx import ASGITransport, AsyncClient
-    from galgame2voice.routers.chat import set_chat_service
-
-    app = create_app()
-    service = AsyncMock()
-
-    # 1. Empty reply due to content filter -> HTTP 502 with EMPTY_REPLY_CONTENT_FILTERED
-    service.chat_sync.side_effect = EmptyReplyError(EMPTY_REPLY_CONTENT_FILTERED, stopped_on_length=False)
-    set_chat_service(service)
-    try:
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/api/chat", json={"prompt": "敏感词", "session_id": "test_cf_api"})
-            assert resp.status_code == 502
-            data = resp.json()
-            detail = data.get("detail", {})
-            assert detail.get("kind") == "empty_reply"
-            assert detail.get("error_code") == "empty_reply"
-            assert detail.get("error") == EMPTY_REPLY_CONTENT_FILTERED
-
-        # 2. Sync response with truncated: True -> HTTP 200 with truncated: True
-        service.chat_sync.side_effect = None
-        service.chat_sync.return_value = {
-            "session_id": "test_cf_api",
-            "chinese": "截断回复",
-            "japanese": "中断",
-            "lines": [],
-            "emotion": "gentle",
-            "affection": {},
-            "metrics": {},
-            "audio_url": "",
-            "audioUrl": "",
-            "latency_ms": 100,
-            "tts_params": None,
-            "truncated": True,
-        }
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/api/chat", json={"prompt": "截断提示", "session_id": "test_cf_api"})
-            assert resp.status_code == 200
-            assert resp.json().get("truncated") is True
-    finally:
-        set_chat_service(None)
-

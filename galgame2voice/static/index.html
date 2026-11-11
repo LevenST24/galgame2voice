@@ -7,7 +7,7 @@
   <title>Gal2Voice · AI 多会话聊天</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236c7ce0'/%3E%3Cpath d='M16 5l6 8.2c.9 1.2.7 2.6-.3 3.6L16 27l-5.7-10.2c-1-1-1.2-2.4-.3-3.6L16 5z' fill='%23ffffff'/%3E%3C/svg%3E" />
 
-  <script type="module" crossorigin src="/static/assets/index-DLhaQ46p.js"></script>
+  <script type="module" crossorigin src="/static/assets/index-CJ06X6On.js"></script>
   <link rel="stylesheet" crossorigin href="/static/assets/index-Skqi1XQu.css">
 </head>
 <body>
@@ -130,7 +130,7 @@
     </aside>
   </div>
 
-  <!-- 全局设置中心（系统诊断 / 语音推理 / 大模型与STT / Telegram / 记忆与人设） -->
+  <!-- 全局设置中心（系统诊断 / 语音推理 / 大模型与STT / 记忆与人设） -->
   <div class="overlay hidden" id="globalModal">
     <div class="modal modal-lg" role="dialog" aria-modal="true" aria-label="设置中心">
       <header class="modal-head">
@@ -161,10 +161,6 @@
         <button type="button" class="modal-tab-btn" data-gtab="models">
           <svg class="icon"><use href="#i-sparkles"></use></svg>
           <span>对话模型</span>
-        </button>
-        <button type="button" class="modal-tab-btn" data-gtab="telegram">
-          <svg class="icon"><use href="#i-send"></use></svg>
-          <span>Telegram</span>
         </button>
         <button type="button" class="modal-tab-btn" data-gtab="memory">
           <svg class="icon"><use href="#i-quill"></use></svg>
@@ -467,38 +463,6 @@
             </div>
           </div>
 
-        </div>
-
-        <!-- 选项卡 4: Telegram 机器人 -->
-        <div class="gtab-panel hidden" id="gp-telegram">
-          <div class="settings-intro"><h3>Telegram</h3><p>通过机器人与角色聊天。关闭后不会运行后台轮询。</p></div>
-          <label class="check-line" style="font-weight: 600; font-size: 13.5px; margin-bottom: 12px; padding: 6px 8px; background: var(--bg-hover); border-radius: 6px; cursor: pointer;">
-            <input type="checkbox" id="gTgEnabled" /> 启用 Telegram 机器人
-          </label>
-          <div id="gTgFieldsGroup" style="opacity: 0.45; pointer-events: none; transition: opacity 0.2s ease;">
-            <div class="field">
-              <label>Bot Token</label>
-              <input id="gTgToken" type="password" placeholder="123456:ABC-DEF…" autocomplete="off" />
-            </div>
-            <div class="field">
-              <label>允许访问的用户 ID（必填，多个 ID 用逗号分隔）</label>
-              <input id="gTgChatId" placeholder="例如 123456789" autocomplete="off" />
-            </div>
-            <div class="field-row-2">
-              <div class="field">
-                <label>代理地址</label>
-                <input id="gTgProxyHost" placeholder="127.0.0.1" autocomplete="off" />
-              </div>
-              <div class="field">
-                <label>代理端口</label>
-                <input id="gTgProxyPort" type="number" min="1" max="65535" placeholder="10809" />
-              </div>
-            </div>
-            <label class="check-line"><input type="checkbox" id="gTgProxyEnabled" /> 启用代理连接 Telegram</label>
-            <div class="field" style="margin-top: 4px;">
-              <button type="button" class="btn ghost" id="gTgTest">测试 Telegram 连接</button>
-            </div>
-          </div>
         </div>
 
         <!-- 选项卡 5: 记忆与人设 -->

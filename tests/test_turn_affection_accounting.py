@@ -11,10 +11,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from galgame2voice.adapters.base import LLMResponse
-from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.services.chat_service import ChatService
-from galgame2voice.utils.error_diagnostics import EMPTY_REPLY_DEFAULT, EmptyReplyError, chat_error_payload
+from galgame2voice.utils.error_diagnostics import EmptyReplyError, chat_error_payload
 
 # Base turn (+1) plus a compliment (+2) when the turn counts.
 PROMPT = "你今天真可爱"
@@ -76,46 +75,4 @@ async def test_streamed_empty_reply_earns_no_affection(tmp_path):
     assert isinstance(user_msg_id, int) and user_msg_id > 0
     assert events[1:] == [{"event": "error", "data": chat_error_payload(EmptyReplyError())}]
     service.affection_service.handle_turn_affection.assert_not_awaited()
-    assert await _state(database) == ((0, 0), [])
-
-
-@pytest.mark.asyncio
-async def test_sync_reply_earns_affection(tmp_path):
-    database = tmp_path / "chat.db"
-    await init_db(database)
-    result = await _service(database, TEXT_REPLY).chat_sync(PROMPT, session_id="affection")
-    assert result["affection"]["points_earned"] == 3
-    assert await _state(database) == ((3, 3), ["user", "assistant"])
-
-
-@pytest.mark.asyncio
-async def test_sync_empty_reply_is_withdrawn_without_affection(tmp_path):
-    database = tmp_path / "chat.db"
-    await init_db(database)
-    service = _service(database, EMPTY_REPLY)
-    service.affection_service.handle_turn_affection = AsyncMock()
-    try:
-        with pytest.raises(EmptyReplyError) as caught:
-            await service.chat_sync(PROMPT, session_id="affection")
-        assert str(caught.value) == EMPTY_REPLY_DEFAULT
-        service.affection_service.handle_turn_affection.assert_not_awaited()
-    finally:
-        await service.aclose()
-    assert await _state(database) == ((0, 0), [])
-
-
-@pytest.mark.asyncio
-async def test_sync_reply_that_fails_to_save_earns_no_affection(tmp_path, monkeypatch):
-    database = tmp_path / "chat.db"
-    await init_db(database)
-    add_message = crud.add_message
-
-    async def failing_assistant_write(conn, message):
-        if message.role == "assistant":
-            raise RuntimeError("disk full")
-        return await add_message(conn, message)
-
-    monkeypatch.setattr(crud, "add_message", failing_assistant_write)
-    with pytest.raises(RuntimeError, match="disk full"):
-        await _service(database, TEXT_REPLY).chat_sync(PROMPT, session_id="affection")
     assert await _state(database) == ((0, 0), [])

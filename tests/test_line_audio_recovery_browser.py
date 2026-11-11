@@ -141,10 +141,6 @@ class LineRecoveryHandler(AudioRecoveryHandler):
             self.send_header("Content-Length", str(len(resp_bytes)))
             self.end_headers()
             self.wfile.write(resp_bytes)
-        elif parsed.path == "/api/voice/synthesize":
-            if "transient_synth_posts" in self.shared_requests:
-                self.shared_requests["transient_synth_posts"].append(self.path)
-            self.send_error(500, "Unexpected transient synthesize call")
         else:
             super().do_POST()
 
@@ -837,7 +833,6 @@ def test_legacy_log_reply_repair_in_chromium(tmp_path, width, height, mode):
         "missing_audio_gets": [],
         "repair_audio_gets": [],
         "regen_posts": [],
-        "transient_synth_posts": [],
     }
     server = make_layout_server(partial(
         LineRecoveryHandler,
@@ -888,7 +883,6 @@ def test_legacy_log_reply_repair_in_chromium(tmp_path, width, height, mode):
         assert shared_requests["regen_posts"][0]["line_index"] == 0
         assert shared_requests["regen_posts"][0]["message_id"] == 42
         assert shared_requests["regen_posts"][0]["text"] == "こんにちは。"
-        assert len(shared_requests["transient_synth_posts"]) == 0
         assert len(shared_requests["repair_audio_gets"]) >= 1
         assert result["historyTimestamp"] == result["originalTimestamp"] and result["saves"] == 1
         canonical = result["canonicalLine"]

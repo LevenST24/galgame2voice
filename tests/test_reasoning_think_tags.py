@@ -1,5 +1,4 @@
 import pytest
-from unittest.mock import AsyncMock
 
 from galgame2voice.services.chat_pipelines.line_scanner import LineScanner
 from galgame2voice.services.streaming_parser import StreamingBilingualParser
@@ -9,11 +8,7 @@ from galgame2voice.utils.japanese_phonetics import (
     normalize_japanese_for_tts,
     strip_reasoning_tags,
 )
-from galgame2voice.telegram_bot.handlers import _extract_vocal_japanese
-from galgame2voice.utils.error_diagnostics import (
-    EMPTY_REPLY_DEFAULT,
-    EMPTY_REPLY_STOPPED_ON_LENGTH,
-)
+
 
 
 def test_line_scanner_ignores_draft_json_in_think_block():
@@ -195,29 +190,6 @@ def test_is_vocal_sentence_with_think_tags():
     assert TtsStreamPipeline.is_vocal_sentence("<think>思考中</think>こんにちは") is True
 
 
-def test_telegram_extract_vocal_japanese_with_think_tags():
-    assert _extract_vocal_japanese("<think>思考中</think>") == ""
-    assert _extract_vocal_japanese("<think>思考中</think>こんにちは") == "こんにちは"
-    assert _extract_vocal_japanese("<think>未闭合") == ""
-
-
-@pytest.mark.asyncio
-async def test_chat_service_sync_unclosed_think_tag_stopped_on_length(tmp_path):
-    from galgame2voice.database.session import init_db
-    from galgame2voice.services.chat_service import ChatService, EmptyReplyError
-
-    db_path = tmp_path / "test_chat.db"
-    await init_db(db_path)
-    service = ChatService(db_path=db_path)
-
-    raw_truncated = "<think>还在思考中，token不足截断了..."
-    service._execute_sync_llm = AsyncMock(return_value=(raw_truncated, 50.0))
-
-    with pytest.raises(EmptyReplyError) as exc_info:
-        await service.chat_sync("测试输入", session_id="test_session")
-
-    assert exc_info.value.stopped_on_length is True
-    assert str(exc_info.value) == EMPTY_REPLY_STOPPED_ON_LENGTH
 
 
 def test_various_think_tags_case_and_attributes():
@@ -246,19 +218,6 @@ def test_single_language_fallback_with_think():
     assert "考え中" not in zh
     assert zh == "こんにちは！"
     assert ja == "こんにちは！"
-
-
-@pytest.mark.asyncio
-async def test_telegram_unclosed_think_tag_stopped_on_length():
-    raw_text = "<think>还在思考中，文字数制限で切れた..."
-    zh, ja, parser = StreamingBilingualParser.parse_full_text(raw_text)
-    display_clean = clean_japanese_parentheses(zh).strip()
-    display_chinese = display_clean if display_clean else strip_reasoning_tags(zh).strip()
-    assert not display_chinese.strip()
-    stopped_on_length = bool(getattr(parser, "lines_truncated", False))
-    assert stopped_on_length is True
-    msg = EMPTY_REPLY_STOPPED_ON_LENGTH if stopped_on_length else EMPTY_REPLY_DEFAULT
-    assert msg == EMPTY_REPLY_STOPPED_ON_LENGTH
 
 
 def test_closing_tag_with_whitespace_and_prose():
@@ -319,14 +278,12 @@ def test_unclosed_opening_tag_without_closing_angle_bracket():
         assert strip_reasoning_tags(tag) == ""
         assert normalize_japanese_for_tts(tag) == ""
         assert TtsStreamPipeline.is_vocal_sentence(tag) is False
-        assert _extract_vocal_japanese(tag) == ""
 
 
 def test_orphaned_closing_tag_handling():
     assert strip_reasoning_tags("</think>こんにちは") == "こんにちは"
     assert strip_reasoning_tags("</thought >おはよう") == "おはよう"
     assert normalize_japanese_for_tts("</think>こんにちは") == "こんにちは"
-    assert _extract_vocal_japanese("</think>こんにちは") == "こんにちは"
 
     zh, ja, parser = StreamingBilingualParser.parse_full_text("</think>你好【こんにちは】")
     assert zh == "你好"

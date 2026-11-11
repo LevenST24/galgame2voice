@@ -210,43 +210,6 @@ async def test_stream_chat_turn_started_and_interrupted_reply_link(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_chat_sync_reply_link(tmp_path):
-    """
-    Tests that synchronous chat also records reply_to_message_id link.
-    """
-    database = tmp_path / "sync_link.db"
-    await init_db(database)
-
-    service = ChatService(db_path=database)
-    service._get_active_llm_adapter = AsyncMock(return_value=(
-        SimpleNamespace(api_key="synthetic"), "test", "custom",
-    ))
-    service._execute_sync_llm = AsyncMock(return_value=(
-        json.dumps({"chinese": "同步回复", "japanese": "返事"}), 10,
-    ))
-    service._synthesize_sync_audio = AsyncMock(return_value=("", 0, 0, 0))
-    service._extract_memory_safe = AsyncMock()
-
-    try:
-        res = await service.chat_sync("你好呀", session_id="sync_sess")
-        assert res["chinese"] == "同步回复"
-
-        async with get_db(database) as conn:
-            rows = await (await conn.execute(
-                "SELECT id, role, reply_to_message_id FROM messages WHERE session_id='sync_sess' ORDER BY id"
-            )).fetchall()
-
-        assert len(rows) == 2
-        user_row = rows[0]
-        assistant_row = rows[1]
-        assert user_row["role"] == "user"
-        assert assistant_row["role"] == "assistant"
-        assert assistant_row["reply_to_message_id"] == user_row["id"]
-    finally:
-        await service.aclose()
-
-
-@pytest.mark.asyncio
 async def test_import_chat_does_not_populate_reply_to_link(tmp_path):
     """
     Tests protocol item 7:

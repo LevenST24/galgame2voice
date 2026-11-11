@@ -505,7 +505,6 @@ export function mountAdv(dom, deps) {
       loadOlderHistory: session => (deps.loadOlderHistory || deps.loadOlderSessionHistory)?.(session),
       playUserVoice: (msg, ctl) => (deps.playUserVoice || deps.playVoice)?.(msg, ctl),
       stopOtherVoice: () => deps.stopOtherVoice?.(),
-      playLegacyVoice: (msg, ctl) => deps.playLegacyVoice?.(msg, ctl),
       regenerateLineAudio,
       getRecoveryVoice: () => deps.getRecoveryVoice?.(),
       onChooseVoice: () => { closeLog(); deps.onSettings?.(); },

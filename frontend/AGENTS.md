@@ -55,12 +55,11 @@
 - `settings.js`：ADV 设置项校验与字段规范。
 
 ### 4. 控制器与弹窗 (`src/controllers/`)
-- `global_settings.js`：全局设置兼容门面与配置草稿协调器（`#globalModal`，包含运行状态、语音服务、对话模型、Telegram、角色与记忆、备份与更新 6 个 Tab）。
+- `global_settings.js`：全局设置兼容门面与配置草稿协调器（`#globalModal`，包含运行状态、语音服务、对话模型、角色与记忆、备份与更新 5 个服务 Tab）。
   协调各业务控制器实例的创建、销毁（`dispose()`）、页脚通用配置保存与窗口导航。
 - `provider_settings.js`：`ProviderSettingsController`，大模型提供商清单、参数草稿、API Key 脱敏/可见性、连通性测试及模型启用生命周期。
 - `telemetry_settings.js`：`TelemetrySettingsController`，运行状态与硬件遥测轮询（5秒周期），持有独立 AbortController，关闭/后台/新刷新时取消旧 GET；引擎卡独立更新，核对操作归属。详见 `docs/development/TELEMETRY.md`。
 - `engine_settings.js`：`EngineSettingsController`，GPT-SoVITS 推理精度自动保存/设备切换、引擎热重启（POST 结合 `waitForEngine` 轮询）及离线音频缓存清理。
-- `telegram_settings.js`：`TelegramSettingsController`，Telegram 机器人开关、字段可见性、用户 ID 校验、连接测试（独立 AbortController 与代数守卫）及载荷提取。
 - `voice_settings.js`：会话设置弹窗（`#sessionModal`，配置当前会话的角色人设、音色绑定、LLM 采样参数及 TTS 推理参数）。
   同一页面的音色切换串行执行，排队期间过时的会话选择直接跳过；列表目录与当前启用状态分别防止迟到响应覆盖。首页进入聊天会通过切换接口核验模型，已保存的音色 ID 仅作界面提示。
 - `audio_player_ui.js`：输入端麦克风录音控制与播放器 UI 状态协调。
@@ -113,11 +112,10 @@
    - 包含：角色人设编辑（保存后写回角色包）、角色音色选择与扫描、新建自定义音色、大模型采样参数（温度、Top P、惩罚项、最大长度、上下文条数）、回复格式（默认 lines 逐句）以及会话级 TTS 推理参数。
 3. **全局系统设置（Global Settings，`#globalModal`）**：
    - 入口：左上角工具栏「会话」抽屉底部的「全局设置」按钮、首页齿轮；首页状态胶囊的「去设置」分别打开「对话模型」/「语音服务」页；快捷菜单的模型状态点、CONFIG 面板的直达按钮，以及模型相关错误的「去设置」（文本框和 LOG 一样，按 `needsModelSettings` 判断）直接打开「对话模型」页。
-   - 包含角色与会话、聊天体验，以及以下 6 个服务标签页：
+   - 包含角色与会话、聊天体验，以及以下 5 个服务标签页：
      - **运行状态**（`gp-dashboard`）：GPT-SoVITS 连通性、计算精度切换与重启、硬件资源与缓存清空。
      - **语音服务**（`gp-inference`）：引擎地址、本机 SoVITS 目录选择、全局计算精度与缓存保留时长。
      - **对话模型**（`gp-models`）：全厂商模型卡片（API Key、Base URL、模型选择、思考强度、连通性测试与一键启用、允许私网 LLM 端点开关）。
-     - **Telegram**（`gp-telegram`）：机器人 Token、管理用户 ID、代理配置与连通性测试。
      - **角色与记忆**（`gp-memory`）：长期记忆说明。
      - **备份与更新**（`gp-update`）：完整聊天备份导出/导入与版本更新拉取。
 
