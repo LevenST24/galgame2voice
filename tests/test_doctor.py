@@ -386,58 +386,6 @@ def test_check_providers_warns_when_none_configured():
     assert "none configured" in check.detail
 
 
-def test_check_telegram_is_skipped_when_disabled():
-    (check,) = doctor.check_telegram(get_settings(), db_enabled=False)
-
-    assert check.status == doctor.SKIP
-
-
-def test_check_telegram_fails_when_enabled_without_token(monkeypatch):
-    settings = _settings_from_env(
-        monkeypatch, GALGAME2VOICE_TELEGRAM_ENABLED="1", GALGAME2VOICE_TELEGRAM_TOKEN=""
-    )
-
-    findings = doctor.check_telegram(settings, db_enabled=True, admin_ids="111")
-
-    assert any(check.status == doctor.FAIL for check in findings)
-
-
-def test_check_telegram_warns_when_the_admin_whitelist_is_empty(monkeypatch):
-    monkeypatch.delenv("TELEGRAM_ADMIN_IDS", raising=False)
-    monkeypatch.delenv("GALGAME2VOICE_TELEGRAM_ADMIN_IDS", raising=False)
-    settings = _settings_from_env(
-        monkeypatch, GALGAME2VOICE_TELEGRAM_ENABLED="1", GALGAME2VOICE_TELEGRAM_TOKEN="123456:token"
-    )
-
-    findings = doctor.check_telegram(settings, db_enabled=True, admin_ids="")
-
-    admin_check = next(check for check in findings if check.name == "Telegram admins")
-    assert admin_check.status == doctor.WARN
-    assert "fail-closed" in admin_check.detail
-
-
-def test_check_telegram_ok_with_token_and_admins(monkeypatch):
-    settings = _settings_from_env(
-        monkeypatch, GALGAME2VOICE_TELEGRAM_ENABLED="1", GALGAME2VOICE_TELEGRAM_TOKEN="123456:token"
-    )
-
-    findings = doctor.check_telegram(settings, db_enabled=True, admin_ids="111, 222")
-
-    assert all(check.status == doctor.OK for check in findings)
-
-
-def test_check_telegram_falls_back_to_the_env_whitelist(monkeypatch):
-    monkeypatch.setenv("TELEGRAM_ADMIN_IDS", "999")
-    settings = _settings_from_env(
-        monkeypatch, GALGAME2VOICE_TELEGRAM_ENABLED="1", GALGAME2VOICE_TELEGRAM_TOKEN="123456:token"
-    )
-
-    findings = doctor.check_telegram(settings, db_enabled=True, admin_ids="")
-
-    admin_check = next(check for check in findings if check.name == "Telegram admins")
-    assert admin_check.status == doctor.OK
-
-
 async def test_sovits_probe_is_skipped_in_offline_mode():
     (check,) = await doctor.check_gpt_sovits("http://127.0.0.1:9880", offline=True)
 
@@ -553,7 +501,6 @@ def _setup_doctor_test_db(
     tmp_path,
     monkeypatch,
     *,
-    tg_token: str = "123456:ABC-DEF",
     sovits_url: str = "http://127.0.0.1:19880",
 ):
     import sqlite3
@@ -588,14 +535,12 @@ def _setup_doctor_test_db(
             INSERT INTO settings (
                 id, active_provider_id, telegram_enabled,
                 telegram_bot_token, telegram_admin_ids, gpt_sovits_url
-            ) VALUES (1, 'deepseek', 1, ?, '987654321', ?);
+            ) VALUES (1, 'deepseek', 1, '123456:ABC-DEF', '987654321', ?);
             """,
-            (tg_token, sovits_url),
+            (sovits_url,),
         )
         conn.commit()
 
-    monkeypatch.delenv("GALGAME2VOICE_TELEGRAM_TOKEN", raising=False)
-    monkeypatch.delenv("TELEGRAM_TOKEN", raising=False)
     monkeypatch.delenv("GALGAME2VOICE_GPT_SOVITS_BASE_URL", raising=False)
     monkeypatch.delenv("GPT_SOVITS_BASE_URL", raising=False)
     monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
@@ -603,14 +548,6 @@ def _setup_doctor_test_db(
     monkeypatch.setenv("GALGAME_DB_PATH", str(db_path))
     get_settings.cache_clear()
     return get_settings()
-
-
-async def test_doctor_respects_db_saved_telegram_token(tmp_path, monkeypatch):
-    settings = _setup_doctor_test_db(tmp_path, monkeypatch)
-    checks = await doctor.collect_checks(settings, offline=True)
-    results = {c.name: c for c in checks}
-    assert results["Telegram"].status == doctor.OK
-    assert results["Telegram"].detail == "bot token configured"
 
 
 async def test_doctor_respects_db_saved_sovits_url(tmp_path, monkeypatch):

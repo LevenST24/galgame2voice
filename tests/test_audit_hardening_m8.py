@@ -32,9 +32,7 @@ from galgame2voice.routers.chat import (
 )
 from galgame2voice.services.chat_service import ChatService
 from galgame2voice.services.tts_cache_manager import TtsCacheManager
-from galgame2voice.telegram_bot.handlers import TelegramBotHandlers
 from tests.test_chat_streaming_m4 import MockStreamingLLMAdapter
-from telegram_test_support import TELEGRAM_TEST_ADMINS
 
 
 # ============================================================================
@@ -265,53 +263,3 @@ class TestDatabaseTimeoutsAndConcurrencySafety:
             assert (await cur1.fetchone())[0] == 0
             cur2 = await conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = 'dual_sess';")
             assert (await cur2.fetchone())[0] == 0
-
-
-# ============================================================================
-# 4. Memory Leak Prevention During Long-Running Sessions Tests
-# ============================================================================
-
-class TestMemoryLeakPrevention:
-    """Tests unregistration of finished background tasks in long-running services."""
-
-    @pytest.mark.asyncio
-    async def test_telegram_handlers_cleans_up_finished_task(self):
-        """Verify TelegramBotHandlers automatically pops completed tasks from user_tasks."""
-        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, )
-
-        async def quick_worker():
-            await asyncio.sleep(0.01)
-
-        task = asyncio.create_task(quick_worker())
-        handlers.user_tasks[999] = task
-
-        # Attach done callback as implemented in process_text_chat
-        def _cleanup(t, cid=999):
-            if handlers.user_tasks.get(cid) is t:
-                handlers.user_tasks.pop(cid, None)
-
-        task.add_done_callback(_cleanup)
-
-        # Wait for task to finish
-        await task
-        # Let callback execute
-        await asyncio.sleep(0.02)
-
-        # Must be pruned from dictionary
-        assert 999 not in handlers.user_tasks
-
-    @pytest.mark.asyncio
-    async def test_telegram_handlers_cancel_user_task_pops_immediately(self):
-        """Verify cancel_user_task immediately removes the entry from user_tasks."""
-        handlers = TelegramBotHandlers(admin_ids=TELEGRAM_TEST_ADMINS, )
-
-        async def slow_worker():
-            await asyncio.sleep(10.0)
-
-        task = asyncio.create_task(slow_worker())
-        handlers.user_tasks[888] = task
-
-        handlers.cancel_user_task(888)
-        assert 888 not in handlers.user_tasks
-        with pytest.raises(asyncio.CancelledError):
-            await task

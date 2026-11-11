@@ -43,7 +43,7 @@ async function writeConfirmedConfig(payload) {
   } catch (error) {
     // A lost response does not prove a failed write. Verify once through GET;
     // never resend the write or retrieve plaintext credentials to compare them.
-    if (!payload.telegram_bot_token && error.name !== 'AbortError'
+    if (error.name !== 'AbortError'
       && (error.code === 'REQUEST_TIMEOUT' || !error.status || error.status >= 500)) {
       const current = await requestJson('/api/config', { cache: 'no-store' }, { timeoutMs: 10000 }).catch(() => null);
       const entries = Object.entries(payload).filter(([, value]) => value !== undefined);

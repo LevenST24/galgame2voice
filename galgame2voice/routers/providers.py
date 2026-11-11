@@ -1,20 +1,17 @@
 """
 Provider and Connectivity Testing Router for galgame2voice.
-Provides REST endpoints for LLM/STT provider configurations,
-in-flight connectivity testing, and Telegram bot token verification.
+Provides REST endpoints for LLM/STT provider configurations
+and in-flight connectivity testing.
 """
 
 import asyncio
-import json
 import logging
 import sqlite3
-import time
 from typing import Any, Literal
 
 import aiosqlite
-import httpx
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from galgame2voice.adapters.registry import (
     get_llm_adapter,
@@ -26,15 +23,11 @@ from galgame2voice.database.crud import is_masked_key
 from galgame2voice.database.models import (
     ProviderCreate,
     ProviderUpdate,
-    SettingsInDB,
 )
 from galgame2voice.database.session import get_db
 from galgame2voice.security import url_guard
-from galgame2voice.telegram_bot.proxy import get_proxy_url
 from galgame2voice.utils.error_diagnostics import format_provider_error
-from galgame2voice.utils.http_client import create_async_client
 from galgame2voice.utils.logger import sanitize_error_detail
-from galgame2voice.utils.text_sanitize import sanitize_bot_token
 
 logger = logging.getLogger("galgame2voice.routers.providers")
 router = APIRouter(tags=["Providers & Testing"])
@@ -84,15 +77,6 @@ class ProviderTestResponse(BaseModel):
     diagnostic: str | None = None
     status_code: int | None = None
     error: str | None = None
-
-
-class TelegramTestRequest(BaseModel):
-    """Payload for real-time Telegram bot token connectivity testing."""
-    token: str | None = None
-    bot_token: str | None = None
-    proxy_enabled: bool | None = False
-    proxy_host: str | None = "127.0.0.1"
-    proxy_port: int | None = Field(default=10809, ge=1, le=65535)
 
 
 # ============================================================================
@@ -474,125 +458,3 @@ async def test_provider(req: ProviderTestRequest):
 
 
 test_provider_connectivity = test_provider
-
-
-# ============================================================================
-# Telegram Bot Testing Endpoints
-# ============================================================================
-
-def _map_telegram_response(resp: httpx.Response, latency: float) -> dict[str, Any]:
-    """Maps Telegram getMe HTTP response into test result payload."""
-    if resp.status_code == status.HTTP_200_OK:
-        try:
-            data = resp.json()
-        except (ValueError, json.JSONDecodeError):
-            return {
-                "success": False,
-                "message": "Telegram 响应格式无效（可能被代理或网关拦截）",
-                "latency_ms": latency,
-            }
-        if not isinstance(data, dict):
-            return {
-                "success": False,
-                "message": "Telegram 响应格式无效（可能被代理或网关拦截）",
-                "latency_ms": latency,
-            }
-        if data.get("ok"):
-            result_obj = data.get("result")
-            bot_user = result_obj.get("username", "") if isinstance(result_obj, dict) else ""
-            return {
-                "success": True,
-                "message": f"连接成功！Bot: @{bot_user}",
-                "latency_ms": latency,
-                "bot_info": result_obj,
-            }
-        else:
-            return {
-                "success": False,
-                "message": f"Telegram API 错误: {data.get('description', '未知错误')}",
-                "latency_ms": latency,
-            }
-    elif resp.status_code == status.HTTP_401_UNAUTHORIZED:
-        return {
-            "success": False,
-            "message": "Telegram 验证失败 (401 Unauthorized): Token 错误或已失效，请在 Telegram 中私聊 @BotFather 发送 /token 重新获取最新 Token",
-            "latency_ms": latency,
-        }
-    elif resp.status_code == status.HTTP_404_NOT_FOUND:
-        return {
-            "success": False,
-            "message": "Telegram 验证失败 (404 Not Found): 无效的 Bot Token 格式，请检查 Token 是否包含多余字符或从 @BotFather 完整复制",
-            "latency_ms": latency,
-        }
-    else:
-        data = {}
-        try:
-            data = resp.json()
-        except (ValueError, json.JSONDecodeError):
-            pass
-        err_desc = data.get("description") if isinstance(data, dict) else f"HTTP {resp.status_code}"
-        return {
-            "success": False,
-            "message": f"Telegram 验证失败 ({resp.status_code}): {err_desc}",
-            "latency_ms": latency,
-        }
-
-
-@router.post(
-    "/telegram/test",
-    summary="Test Telegram Bot Token & Connectivity",
-    description="Probes Telegram getMe API endpoint with configured token and optional proxy.",
-)
-async def test_telegram_bot(req: TelegramTestRequest):
-    token = (req.token or req.bot_token or "").strip()
-    if not token or "****" in token:
-        async with get_db() as conn:
-            stored_settings = await crud.get_settings_raw(conn)
-            token = stored_settings.telegram_bot_token or ""
-
-    token = sanitize_bot_token(token)
-
-    if not token:
-        return {"success": False, "message": "未配置 Telegram Bot Token"}
-
-    proxy_urls = []
-    if req.proxy_enabled:
-        # Build the proxy URL through the exact same code path the bot uses at
-        # runtime, so "test passes" implies "runtime works".
-        pseudo_settings = SettingsInDB(
-            id=1,
-            telegram_proxy_enabled=True,
-            telegram_proxy_host=req.proxy_host or "127.0.0.1",
-            telegram_proxy_port=req.proxy_port or 10809,
-        )
-        single = get_proxy_url(pseudo_settings)
-        proxy_urls = [single] if single else [None]
-    else:
-        proxy_urls = [None]
-
-    t0 = time.perf_counter()
-    last_err = None
-    for p_url in proxy_urls:
-        try:
-            async with create_async_client(proxy=p_url, timeout=6.0) as client:
-                resp = await client.get(f"https://api.telegram.org/bot{token}/getMe")
-                latency = round((time.perf_counter() - t0) * 1000, 2)
-                return _map_telegram_response(resp, latency)
-        except Exception as exc:
-            last_err = exc
-            continue
-
-    latency = round((time.perf_counter() - t0) * 1000, 2)
-    sanitized_err_msg = sanitize_error_detail(last_err)
-    if isinstance(last_err, httpx.ConnectError) or "10061" in sanitized_err_msg or "refused" in sanitized_err_msg.lower():
-        hint = "连接被拒绝。请检查代理端口是否填写正确（例如 v2rayN 常用 10808，Clash 常用 7890）且代理客户端处于运行状态。"
-        return {
-            "success": False,
-            "message": f"代理连接失败: {hint}",
-            "latency_ms": latency,
-        }
-    return {
-        "success": False,
-        "message": f"连接失败: {type(last_err).__name__} - {sanitized_err_msg}",
-        "latency_ms": latency,
-    }

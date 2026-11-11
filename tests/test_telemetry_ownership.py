@@ -24,12 +24,9 @@ def status_case(tmp_path, monkeypatch):
         return "http://127.0.0.1:1"
     async def probe(url):
         return health.GptSovitsTelemetry(status="reachable", base_url=url)
-    async def telegram(path):
-        return health.TelegramTelemetry(enabled=False, status="disabled")
     monkeypatch.setattr(health, "_resolve_sovits_endpoint_best_effort", endpoint)
     monkeypatch.setattr(health, "get_effective_sovits_url", target)
     monkeypatch.setattr(health, "_probe_gpt_sovits", probe)
-    monkeypatch.setattr(health, "_collect_telegram_telemetry", telegram)
     monkeypatch.setattr(health, "_get_process_memory_mb", lambda: 10)
     monkeypatch.setattr(health, "get_system_memory_status", lambda: (16, 8))
     monkeypatch.setattr(health, "read_sovits_directory", lambda root: None)
@@ -217,7 +214,6 @@ async def test_lifespan_closes_shared_telemetry_before_other_services(tmp_path, 
     monkeypatch.setattr(main, "_init_directories", lambda settings: None)
     monkeypatch.setattr(main, "_init_database_and_characters", AsyncMock())
     monkeypatch.setattr(main, "_init_gpt_sovits_client", AsyncMock())
-    monkeypatch.setattr(main, "_start_telegram_bg", lambda settings: None)
     started, closed = asyncio.Event(), asyncio.Event()
     async def blocked():
         started.set()
@@ -227,7 +223,7 @@ async def test_lifespan_closes_shared_telemetry_before_other_services(tmp_path, 
             closed.set()
     async def idle_cleanup(**kwargs):
         await asyncio.Event().wait()
-    async def shutdown(settings, cleanup, telegram):
+    async def shutdown(settings, cleanup):
         assert closed.is_set(), "executor shutdown started before telemetry ownership was released"
         cleanup.cancel()
         await asyncio.gather(cleanup, return_exceptions=True)

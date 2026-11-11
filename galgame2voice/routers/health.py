@@ -137,12 +137,6 @@ class StorageTelemetry(BaseModel):
     data_dir_size_mb: float
 
 
-class TelegramTelemetry(BaseModel):
-    """Telegram bot integration status."""
-    enabled: bool
-    status: str  # "disabled" | "standby" | "unconfigured" | "running"
-
-
 class HardwareTelemetry(BaseModel):
     """Host GPU and system memory diagnostic telemetry."""
     gpu_available: bool
@@ -165,7 +159,6 @@ class SystemStatusResponse(BaseModel):
     database: DatabaseTelemetry
     gpt_sovits: GptSovitsTelemetry
     storage: StorageTelemetry
-    telegram: TelegramTelemetry
     hardware: HardwareTelemetry
 
 
@@ -380,17 +373,6 @@ def _collect_hardware_telemetry_sync(
     )
 
 
-def _resolve_telegram_status(is_running: bool, is_enabled: bool, has_token: bool) -> str:
-    """Computes categorical telegram telemetry status string without nested conditionals."""
-    if is_running:
-        return "running"
-    if not is_enabled:
-        return "disabled"
-    if has_token:
-        return "standby"
-    return "unconfigured"
-
-
 def _resolve_rel_db_path(db_path: Path, project_root: Path, data_dir_name: str) -> str:
     """Returns normalized relative database path with safe fallback for out-of-tree test databases."""
     try:
@@ -402,27 +384,6 @@ def _resolve_rel_db_path(db_path: Path, project_root: Path, data_dir_name: str) 
         if folder.is_absolute() or ".." in folder.parts:
             folder = Path("data")
         return f"{folder.as_posix()}/{db_path.name}"
-
-
-async def _collect_telegram_telemetry(db_path: Path) -> TelegramTelemetry:
-    """Inspects telegram bot runtime manager and database configuration."""
-    tg_running = False
-    try:
-        from galgame2voice.telegram_bot.bot import get_telegram_bot_manager
-        tg_mgr = get_telegram_bot_manager(db_path=db_path)
-        tg_running = getattr(tg_mgr, "is_running", False)
-    except Exception:
-        tg_running = False
-
-    async with get_db(db_path) as conn:
-        db_s = await crud.get_settings_raw(conn)
-        has_token = bool(db_s.telegram_bot_token and db_s.telegram_bot_token.strip())
-        is_enabled = bool(getattr(db_s, "telegram_enabled", False))
-
-    return TelegramTelemetry(
-        enabled=is_enabled,
-        status=_resolve_telegram_status(tg_running, is_enabled, has_token),
-    )
 
 
 async def _collect_hardware_telemetry(endpoint: SovitsEndpoint | None, owner: TelemetryJobs) -> HardwareTelemetry:
@@ -520,9 +481,6 @@ async def _collect_system_status(request: Request, owner: TelemetryJobs) -> Syst
         memory_usage_mb=memory_mb,
     )
 
-    # 5. Telegram Status
-    tg_telemetry = await _collect_telegram_telemetry(settings.db_path)
-
     overall_status = "healthy" if gpt_probe.status == "reachable" else "degraded"
 
     return SystemStatusResponse(
@@ -532,7 +490,6 @@ async def _collect_system_status(request: Request, owner: TelemetryJobs) -> Syst
         database=db_telemetry,
         gpt_sovits=gpt_probe,
         storage=storage_telemetry,
-        telegram=tg_telemetry,
         hardware=hardware_telemetry,
     )
 

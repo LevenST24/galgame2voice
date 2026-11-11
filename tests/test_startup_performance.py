@@ -144,13 +144,12 @@ async def test_lifespan_drains_resources_when_serving_context_raises(monkeypatch
     monkeypatch.setattr(main_module, "_init_directories", MagicMock())
     monkeypatch.setattr(main_module, "_init_database_and_characters", AsyncMock())
     monkeypatch.setattr(main_module, "_init_gpt_sovits_client", AsyncMock())
-    monkeypatch.setattr(main_module, "_start_telegram_bg", lambda settings: None)
     async def cleanup_loop(**kwargs):
         await asyncio.Event().wait()
     monkeypatch.setattr(main_module, "_audio_cleanup_loop", cleanup_loop)
 
     cleanup_tasks = []
-    async def shutdown(settings, cleanup_task, telegram_task):
+    async def shutdown(settings, cleanup_task):
         cleanup_tasks.append(cleanup_task)
         cleanup_task.cancel()
         await asyncio.gather(cleanup_task, return_exceptions=True)

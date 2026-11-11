@@ -79,7 +79,6 @@ Galgame2Voice 是一个运行在你自己电脑上的角色对话程序。对话
 - 聊天记录保存在本机 SQLite 和浏览器中，可导出完整聊天备份并导入。
 - 数据库每天自动生成校验过的快照；便携版附带恢复工具 `数据恢复.bat`。
 - Windows 便携版自带 Python 和 FFmpeg，解压即用；也支持源码运行和 Docker。
-- 可选的 Telegram 机器人：在手机上和同一个角色聊天，并收到语音消息。
 
 ## 工作原理
 
@@ -111,7 +110,7 @@ flowchart LR
 
 ### 方式二：从源码运行
 
-需要 Python 3.10–3.12（CI 在 3.10 和 3.12 上测试），建议在虚拟环境中安装。只有修改网页时才需要 Node.js；只有 Telegram 语音消息需要系统中有 `ffmpeg`。
+需要 Python 3.10–3.12（CI 在 3.10 和 3.12 上测试），建议在虚拟环境中安装。只有修改网页时才需要 Node.js；OGG/Opus 音频转码需要系统中有 `ffmpeg`。
 
 ```bash
 git clone https://github.com/LevenST24/galgame2voice.git
@@ -147,12 +146,6 @@ docker compose up -d --build
    - Windows 建议使用 [GPT-SoVITS 官方整合包](https://github.com/RVC-Boss/GPT-SoVITS#windows)（自带运行环境）。本项目通过 HTTP API 对接，按 V2 Pro Plus 整合包开发；CI 不运行真实引擎，其它版本只要提供同样的 API 通常也能使用。
 3. **选择角色**：「角色与会话」 →「角色音色」，选择扫描到的角色包；或者选「＋ 新建自定义音色」，挑选 GPT 权重（`.ckpt`）、SoVITS 权重（`.pth`）和参考音频，点「创建并绑定」。最后点「保存」。
 4. **开始聊天**：在标题画面点「开始」。轮到你时在文本框里输入，`Enter` 发送，`Shift + Enter` 换行，也可以点文本框里的麦克风说话。左上角的「语音开关」决定是否自动播放语音。推进、LOG、快进等操作见上文「ADV 界面与手机使用」。
-
-### Telegram 机器人（可选）
-
-默认关闭。在设置中心 →「Telegram」中填写 Bot Token；需要代理时一并填写代理地址（如 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:10808`），保存后立即生效，无需重启。
-
-常用指令：`/character 名称` 切换角色，`/voice` 查看当前音色和参数，`/settings` 打开交互式设置面板，`/reset` 清空当前会话上下文（不删除长期记忆），`/help` 查看全部指令。
 
 ## 角色包
 
@@ -241,7 +234,7 @@ python -m galgame2voice.main doctor --offline  # 跳过对 GPT-SoVITS 的连通�
 python -m galgame2voice.main doctor --json     # 机器可读，方便贴进 issue
 ```
 
-检查内容包括 Python 版本、数据目录与数据库、ffmpeg、监听地址与鉴权组合、代理环境变量、角色包数量、已配置的模型服务、Telegram 设置和 GPT-SoVITS 连通性。没有 `FAIL` 时退出码为 0，否则为 1。
+检查内容包括 Python 版本、数据目录与数据库、ffmpeg、监听地址与鉴权组合、代理环境变量、角色包数量、已配置的模型服务和 GPT-SoVITS 连通性。没有 `FAIL` 时退出码为 0，否则为 1。
 
 ### 环境变量
 
@@ -261,10 +254,6 @@ python -m galgame2voice.main doctor --json     # 机器可读，方便贴进 iss
 | `GALGAME2VOICE_LOG_LEVEL` | ✓ | `INFO` | 日志级别 |
 | `GALGAME2VOICE_ENABLE_DOCS` | ✓ | `false` | 开放 `/docs` 接口文档 |
 | `GALGAME2VOICE_SKIP_MEM_CHECK` | | | 设为任意非空值即跳过切换角色前的内存检查（写 `0` 也会跳过） |
-| `TELEGRAM_ADMIN_IDS` | | | 追加 Telegram 管理员 ID，与网页中的设置合并 |
-| `TELEGRAM_DROP_PENDING_UPDATES` | | | 设为 `1` / `true` / `yes` 时，启动时丢弃积压的消息 |
-
-Telegram 的开关、Bot Token 和代理只在网页中设置；`TELEGRAM_ENABLED` 等同名环境变量不会生效。
 
 ## 常见问题
 

@@ -6,7 +6,6 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 - **Chat & Streaming Pipeline (`galgame2voice/services/chat_service.py`)**: `StreamingBilingualParser` for real-time Chinese token extraction and lookahead Japanese sentence segmentation; pipelined producer-consumer queue architecture with bounded buffers and coroutine lifecycle management.
 - **Two-Tier TTS Cache & Synthesis (`galgame2voice/services/tts_cache_manager.py`, `gpt_sovits_client.py`)**: Tier 1 in-memory LRU cache (`OrderedDict`) + Tier 2 atomic disk WAV cache + SQLite index; thread-safe inference lock with linear-increment transient-failure retries (synthesis: one retry after 0.8s; cache file replace: up to 5 attempts at 5ms×n; SQLite metadata write: up to 5 attempts at 20ms×n).
 - **Database Engine (`galgame2voice/database/`)**: SQLite WAL mode (`PRAGMA journal_mode=WAL`, `busy_timeout=5000`, `synchronous=NORMAL`) with `aiosqlite` and `BEGIN IMMEDIATE` transaction isolation.
-- **Telegram Bot (`galgame2voice/telegram_bot/`)**: Async polling bot with multi-user isolation, task interruption, safe entity formatting, and hot-reloadable configuration.
 - **Process & Lifecycle Management (`scripts/run_server.py`)**: On Windows, child processes are bound to a Job Object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) so the GPT-SoVITS engine, VRAM, and ports (8080/9880) are reclaimed when the launcher exits. On Linux/macOS there is no Job Object: the launcher falls back to psutil process-tree termination, `pkill`, and process-group `SIGKILL`, which is best-effort rather than a kernel-level guarantee.
 
 ---
@@ -103,7 +102,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
   4. `hf_[A-Za-z0-9]{34}` (HuggingFace token)
 
 ### Error Sanitization Contract
-- `sanitize_error_detail(exc: Union[Exception, str]) -> str`: Returns human-readable error description with all URL tokens, query parameters, API keys, and sensitive disk paths redacted. Used in `routers/config.py`, `routers/chat.py`, `services/chat_service.py`, `telegram_bot/handlers.py`.
+- `sanitize_error_detail(exc: Union[Exception, str]) -> str`: Returns human-readable error description with all URL tokens, query parameters, API keys, and sensitive disk paths redacted. Used in `routers/config.py`, `routers/chat.py`, and `services/chat_service.py`.
 
 ### Database Telemetry Contract
 - `GET /api/system/status`: `response["database"]["path"]` MUST return normalized relative path (e.g. `data/galgame2voice.db`), never absolute host path.
@@ -126,7 +125,7 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 - `chat_error_payload(exc, provider_id, api_key_configured) -> dict`: the SSE `error` event data for a failed reply: `{"error": "<中文原因>：<下一步>", "error_code": ..., "status_code": ...}`. Configuration problems are diagnosed before provider-specific ones: `API_KEY_MISSING` (no key, or an authentication failure while no key is configured) and `PRIVATE_ENDPOINT_BLOCKED` (the URL guard refused a loopback/LAN address). The console uses `error_code` to offer the model settings; only `*RATE_LIMIT` codes omit that shortcut.
 
 ### Settings Schema Contract
-- `SettingsBase`, `SettingsUpdate`, `SettingsResponse`: Contain `stt_engine: Optional[str] = "browser"` and `telegram_chat_id: Optional[str] = None` (aliased to `telegram_admin_ids`).
+- `SettingsBase`, `SettingsUpdate`, `SettingsResponse`: Contain `stt_engine: Optional[str] = "browser"`.
 - SQLite table `settings`: Contains `stt_engine` column with default `'browser'`.
 
 ### Emotion State Machine & Package Validation Contract
@@ -143,7 +142,6 @@ Galgame2Voice is an industrial-grade local AI Galgame companion and TTS voice st
 - `galgame2voice/routers/`: FastAPI endpoints (`chat.py`, `config.py`, `health.py`, `characters.py`, `voice.py`, `providers.py`, `metrics.py` (TTS cache stats and clear routes), `system.py`, `common.py`). There is no `audio.py` or `memories.py`: audio files are served by the `AudioStaticFiles` mount declared in `galgame2voice/main.py`, and `providers.py` is mounted inside `config.py` (`router.include_router(providers_router)`).
 - `galgame2voice/services/`: Core business logic (`chat_service.py`, `character_manager.py`, `voice_manager.py`, `audio_cleaner.py`, `dynamic_batcher.py`, `tts_cache_manager.py`, `memory_service.py`, `gpt_sovits_client.py`, `session_manager.py`).
 - `galgame2voice/database/`: SQLite engine, schema version migrations, and CRUD operations (`session.py`, `migrations.py`, `crud.py`, `models.py`).
-- `galgame2voice/telegram_bot/`: Telegram bot client and command/chat handlers (`bot.py`, `handlers.py`).
 - `scripts/`: Launcher, packaging, and maintenance scripts (`run_server.py`, `package_release.py`).
 - `scripts/tools/`: Diagnostic and verification utilities (`audit_character_emotions.py`).
 - `tests/`: Automated test suite (50+ test files, 1500+ tests).

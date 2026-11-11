@@ -594,35 +594,6 @@ class TestUrlGuardAndVoiceProfileHardening:
             assert defaults[0].id == p2.id
 
     @pytest.mark.asyncio
-    async def test_telegram_connectivity_survives_bracketed_ipv6_no_proxy(self, monkeypatch):
-        """TelegramBotManager.test_token and test_proxy_connectivity survive NO_PROXY='[::1]'."""
-        import httpx
-        from galgame2voice.telegram_bot.bot import TelegramBotManager
-        from galgame2voice.telegram_bot.proxy import test_proxy_connectivity
-
-        monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,[::1]")
-
-        class DummyResp:
-            status_code = 200
-
-            @staticmethod
-            def json():
-                return {"ok": True, "result": {"username": "galgame_test_bot"}}
-
-        async def fake_get(self, url, **kwargs):
-            return DummyResp()
-
-        monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
-
-        mgr = TelegramBotManager()
-        res = await mgr.test_token("123456789:ABCDEF1234567890abcdef")
-        assert res["success"] is True
-        assert "galgame_test_bot" in res["message"]
-
-        ok = await test_proxy_connectivity(None)
-        assert ok is True
-
-    @pytest.mark.asyncio
     async def test_assert_llm_url_safe_blocks_dns_rebinding_within_cache_ttl(self, monkeypatch):
         """assert_llm_url_safe must re-resolve DNS even if validate_llm_base_url cached a public IP <60s ago."""
         import socket
@@ -648,19 +619,4 @@ class TestUrlGuardAndVoiceProfileHardening:
         current_ip[0] = "127.0.0.1"
         with pytest.raises(PermissionError, match="SSRF/DNS-Rebinding"):
             await assert_llm_url_safe("https://rebind-live.org/v1/chat/completions", allow_private=False)
-
-    def test_map_telegram_response_handles_html_or_non_dict_200(self):
-        """_map_telegram_response must not raise on HTTP 200 HTML proxy page or JSON array."""
-        import httpx
-        from galgame2voice.routers.providers import _map_telegram_response
-
-        html_resp = httpx.Response(200, text="<html><body>Captive Portal</body></html>")
-        res1 = _map_telegram_response(html_resp, 12.5)
-        assert res1["success"] is False
-        assert "格式无效" in res1["message"]
-
-        list_resp = httpx.Response(200, json=["unexpected", "list"])
-        res2 = _map_telegram_response(list_resp, 10.0)
-        assert res2["success"] is False
-        assert "格式无效" in res2["message"]
 
