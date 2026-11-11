@@ -357,25 +357,13 @@ python -m pytest --cov=galgame2voice --cov=scripts --cov-branch `
 | Files 70–90% / ≥ 90% | 48 / 47 |
 
 Lowest-coverage modules worth attention (with the audit's fragile-seam module
-included): `adapters/openai_compatible.py` 0% (pure re-export shim),
-`services/tts_cache.py` 0% (pure re-export shim),
-`scripts/tools/character_packager.py` 14%, `adapters/stt/openai_stt.py` 31%,
+included): `scripts/tools/character_packager.py` 14%, `adapters/stt/openai_stt.py` 31%,
 `scripts/run_server.py` 35%, `routers/characters.py` 36%, `security/crypto.py` 39%,
 `utils/audio_converter.py` 68%.
 
 CI generates and uploads this report. There is deliberately **no
 `--cov-fail-under` gate yet**: the number above is the first real data point, and
-a gate is only meaningful once a short trend exists. The two 0% shim modules are
-now pinned by `tests/test_compat_shims.py`, so they cannot rot.
-
-### Compatibility shims are pinned, not deleted
-
-`adapters/openai_compatible.py`, `services/tts_cache.py`, `ChatResponse`,
-`ProviderTestResult`, `OpenAISTTAdapter`, `NATSUME_EMOTION_REFERENCES` and the
-private retry/cache aliases have no internal callers, but external code may
-import them. `tests/test_compat_shims.py` asserts each one still resolves to the
-canonical object, which turns "grep found no caller" into an explicit,
-reviewable list and makes a future removal a deliberate edit.
+a gate is only meaningful once a short trend exists.
 
 Run `python -m pytest -rs` to see skip reasons. A `skip` here means "this host
 cannot run it", never "this test is known broken" — use `xfail` for the latter.

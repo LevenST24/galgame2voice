@@ -281,7 +281,11 @@ class TestNicknameKey:
         assert whole_chat.custom_nickname != "小夏"
 
         # The affection menu and chat turns read the same per-member key.
-        text, _ = await handlers.build_affection_menu(GROUP_CHAT_ID, ADMIN_ID)
+        from galgame2voice.telegram_bot.console_menus import build_affection_menu, resolve_session_key
+
+        text, _ = await build_affection_menu(
+            GROUP_CHAT_ID, ADMIN_ID, db_path=handlers.db_path, session_key_fn=resolve_session_key
+        )
         assert "小夏" in text
 
 
