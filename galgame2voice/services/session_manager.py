@@ -326,6 +326,11 @@ class SessionManager:
         messages = [{"role": "system", "content": system_content}]
 
         for turn in history:
+            # Only user/assistant turns are dialogue. A "system" row can only
+            # come from an imported backup file; replaying it would promote
+            # untrusted file text to a system-level instruction.
+            if turn.role not in ("user", "assistant"):
+                continue
             if turn.role == "user":
                 content = turn.content_chinese or turn.raw_content or ""
             elif reply_format == "lines":
