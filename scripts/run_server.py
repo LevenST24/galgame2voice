@@ -24,6 +24,9 @@ PROJECT_ROOT = (
     Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
     else Path(__file__).resolve().parent.parent
 )
+# Captured before tests monkeypatch PROJECT_ROOT. A redirected settings root
+# wins over this default; otherwise the patched module global still applies.
+_DEFAULT_PROJECT_ROOT = PROJECT_ROOT
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 if __name__ == "__main__":
@@ -64,6 +67,7 @@ try:
         _launch_sovits_process,
         assign_process_to_job,
         build_gpt_sovits_env as _build_gpt_sovits_env,
+        get_engine_supervisor,
         get_managed_engine_launch,
         get_managed_engine_precision,
         is_port_in_use,
@@ -142,6 +146,20 @@ def setup_signal_handlers():
             pass
 
 
+def _resolve_project_root() -> Path:
+    """Prefer a redirected settings root, otherwise ``PROJECT_ROOT``.
+
+    When ``get_settings().project_root`` differs from the repository root
+    captured at import, that configured directory (``GALGAME2VOICE_PROJECT_ROOT``
+    or an explicit test redirect) owns runtime files. Tests that only
+    monkeypatch ``run_server.PROJECT_ROOT`` keep using that patched global.
+    """
+    configured = getattr(get_settings(), "project_root", None)
+    if configured is not None and Path(configured) != _DEFAULT_PROJECT_ROOT:
+        return Path(configured)
+    return Path(PROJECT_ROOT)
+
+
 def cleanup_subprocesses():
     """
     Explicitly stops spawned subprocesses and cleans runtime tracking files.
@@ -162,7 +180,8 @@ def cleanup_subprocesses():
         kernel32().CloseHandle(_WINDOWS_JOB_HANDLE)
         _WINDOWS_JOB_HANDLE = None
     # Another launcher may own these files. Preserve them while it is alive.
-    owner_file = PROJECT_ROOT / "galgame2voice.pid"
+    root = _resolve_project_root()
+    owner_file = root / "galgame2voice.pid"
     try:
         raw_pid = owner_file.read_text(encoding="utf-8").strip()
         if raw_pid.isdigit() and int(raw_pid) != os.getpid():
@@ -174,10 +193,10 @@ def cleanup_subprocesses():
     except (OSError, ImportError):
         return
     try:
-        (PROJECT_ROOT / "data" / "active_port.txt").unlink(missing_ok=True)
-        (PROJECT_ROOT / "galgame2voice.pid").unlink(missing_ok=True)
-        (PROJECT_ROOT / "gptsovits.pid").unlink(missing_ok=True)
-        (PROJECT_ROOT / "data" / "desktop_instance.json").unlink(missing_ok=True)
+        (root / "data" / "active_port.txt").unlink(missing_ok=True)
+        (root / "galgame2voice.pid").unlink(missing_ok=True)
+        get_engine_supervisor().clear_owned_process(project_root=root)
+        (root / "data" / "desktop_instance.json").unlink(missing_ok=True)
     except Exception:
         pass
 
@@ -352,7 +371,7 @@ def build_gpt_sovits_env(
     project_root: Path | None = None,
 ) -> dict[str, str]:
     """Constructs an isolated process environment for GPT-SoVITS."""
-    root = Path(project_root) if project_root is not None else PROJECT_ROOT
+    root = _resolve_project_root() if project_root is None else Path(project_root)
     return _build_gpt_sovits_env(sovits_dir, is_half=is_half, project_root=root)
 
 
@@ -489,7 +508,7 @@ def run_hardware_diagnostics() -> dict[str, Any]:
             else:
                 print(f"      [显存就绪] 显存容量: {vram_total:.1f} GB (当前空闲约 {vram_free:.1f} GB)")
 
-        cached = read_precision_cache(PROJECT_ROOT)
+        cached = read_precision_cache(_resolve_project_root())
         if cached and cached.get("device") == "cpu":
             print("      [推理模式] 已配置为 CPU 稳定模式推理 (免显存占用，利用大内存防爆显存)。")
         elif cached and cached.get("is_half") is False:
@@ -531,7 +550,7 @@ def _spawn_sovits_process(
     project_root: Path | None = None,
 ) -> subprocess.Popen:
     """Launches the GPT-SoVITS API daemon with the given precision and device, binding to launcher lifecycle."""
-    root = Path(project_root) if project_root is not None else PROJECT_ROOT
+    root = _resolve_project_root() if project_root is None else Path(project_root)
     proc, assigned = _launch_sovits_process(
         sovits_dir,
         host,
@@ -555,7 +574,7 @@ def _find_custom_voice_ref_audio(
     """
     Fallback when no character package is available: inspect SQLite voice_profiles.
     Prioritizes settings.active_voice_profile_id, then walks rows by is_default DESC, id ASC.
-    Resolves reference audio files against resolve_reference_audio_path and PROJECT_ROOT.
+    Resolves relative reference audio files against the configured project root.
     Returns (ref_audio_path, prompt_text, prompt_lang) or (None, default_text, default_lang).
     """
     conn = None
@@ -563,7 +582,6 @@ def _find_custom_voice_ref_audio(
     try:
         import sqlite3
         from galgame2voice.config import get_settings
-        from galgame2voice.utils.audio_spec import resolve_reference_audio_path
 
         settings = get_settings()
         db_path = getattr(settings, "db_path", None)
@@ -603,7 +621,7 @@ def _find_custom_voice_ref_audio(
             cur.execute("SELECT * FROM voice_profiles ORDER BY is_default DESC, id ASC;")
 
         candidates = cur.fetchall()
-        project_root = getattr(settings, "project_root", PROJECT_ROOT)
+        project_root = _resolve_project_root()
 
         for row in candidates:
             keys = row.keys()
@@ -615,30 +633,16 @@ def _find_custom_voice_ref_audio(
             if not raw_ref or not str(raw_ref).strip():
                 continue
 
-            raw_ref_str = str(raw_ref).strip()
+            p_ref = Path(str(raw_ref).strip())
+            candidate = p_ref if p_ref.is_absolute() else project_root / p_ref
             resolved_file: Path | None = None
-
             try:
-                resolved_str = resolve_reference_audio_path(raw_ref_str)
-                if resolved_str:
-                    candidate = Path(resolved_str)
-                    if candidate.is_file():
-                        resolved_file = candidate.resolve()
-            except Exception:
+                if candidate.is_file():
+                    resolved_file = candidate.resolve()
+            except OSError:
                 pass
 
-            if resolved_file is None:
-                p_ref = Path(raw_ref_str)
-                search_paths = [p_ref] if p_ref.is_absolute() else [project_root / p_ref, PROJECT_ROOT / p_ref]
-                for candidate in search_paths:
-                    try:
-                        if candidate.is_file():
-                            resolved_file = candidate.resolve()
-                            break
-                    except OSError:
-                        pass
-
-            if resolved_file is not None and resolved_file.is_file():
+            if resolved_file is not None:
                 raw_text = (
                     row["prompt_text"]
                     if "prompt_text" in keys and row["prompt_text"]
@@ -749,6 +753,8 @@ def calibrate_engine_precision(
     is_half: bool,
     probe_fn,
     restart_fn,
+    *,
+    project_root: Path | None = None,
 ) -> tuple[bool, bool]:
     """
     Evidence-based precision calibration: the engine proves which precision works
@@ -764,12 +770,13 @@ def calibrate_engine_precision(
 
     Returns (final_is_half, calibrated) where calibrated means a verified value was cached.
     """
+    root = _resolve_project_root() if project_root is None else Path(project_root)
     peak = probe_fn()
     if peak is None:
         print("      [精度校准] 探针未完成 (未配置参考音频或网络/超时)，跳过本次校准，沿用当前精度。")
         return is_half, False
     if peak > 0:
-        write_precision_cache(PROJECT_ROOT, str(sovits_dir), is_half)
+        write_precision_cache(root, str(sovits_dir), is_half)
         return is_half, True
 
     # Silence on FP16: restart with FP32 and verify.
@@ -781,7 +788,7 @@ def calibrate_engine_precision(
             return False, False
         peak_fp32 = probe_fn()
         if peak_fp32 is not None and peak_fp32 > 0:
-            write_precision_cache(PROJECT_ROOT, str(sovits_dir), False)
+            write_precision_cache(root, str(sovits_dir), False)
             print("      [OK] 精度校准完成: 此设备使用 FP32 单精度，语音输出正常。结果已缓存，下次启动直接生效。")
             return False, True
         print("      [WARN] FP32 探针仍为静音或未完成 —— 问题可能不在精度，请查看 logs/gpt_sovits.log。")
@@ -824,19 +831,18 @@ def _calibrate_precision_after_ready(
     if precision_source != "default" or device == "cpu":
         return  # an already-resolved precision (cli/env/db/cache/yaml) or CPU mode skips the probe
 
+    root = _resolve_project_root()
+
     def probe() -> float | None:
         return _probe_synth_peak(host, port)
 
     def restart(new_is_half: bool):
-        global _SPAWNED_SOVITS_PROC, _SPAWNED_SOVITS_LAUNCH, _SPAWNED_SOVITS_STARTED_AT
-        from galgame2voice.routers import health
         from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client
         from galgame2voice.services.sovits_endpoint import parse_sovits_endpoint
 
+        supervisor = get_engine_supervisor()
         target_url = parse_sovits_endpoint(f"http://{host}:{port}", source="runtime").base_url
-        health._engine_restart_lock.acquire()
-        try:
-            health._engine_restart_target = target_url
+        with supervisor.restart_guard(target_url):
             try:
                 get_gpt_sovits_client().invalidate_model_state()
             except Exception as exc:
@@ -856,21 +862,22 @@ def _calibrate_precision_after_ready(
                     port_released = True
                     break
             if old is not None:
-                _SPAWNED_SOVITS_PROC = None
-                _SPAWNED_SOVITS_LAUNCH = None
-                _SPAWNED_SOVITS_STARTED_AT = None
-                (PROJECT_ROOT / "gptsovits.pid").unlink(missing_ok=True)
+                supervisor.clear_owned_process(project_root=root)
             if not port_released:
                 print(f"      [WARN] 旧 GPT-SoVITS 进程未在 10 秒内释放端口 {port}，取消拉起新进程。")
                 return None
             try:
-                proc = _spawn_sovits_process(sovits_dir, host, port, new_is_half, device=device)
+                proc = supervisor.spawn_process(
+                    sovits_dir,
+                    host,
+                    port,
+                    new_is_half,
+                    device=device,
+                    project_root=root,
+                )
             except Exception as exc:
                 print(f"      [WARN] 引擎重启失败: {exc}")
                 return None
-        finally:
-            health._engine_restart_target = None
-            health._engine_restart_lock.release()
 
         if not _wait_for_sovits_port(proc, host, port):
             return None
@@ -880,9 +887,11 @@ def _calibrate_precision_after_ready(
 
     # Give the model a moment to finish loading weights after port bind.
     time.sleep(_PORT_READY_SETTLE_SECONDS)
-    _, calibrated = calibrate_engine_precision(sovits_dir, is_half, probe, restart)
+    _, calibrated = calibrate_engine_precision(
+        sovits_dir, is_half, probe, restart, project_root=root,
+    )
     if calibrated:
-        cached_half = read_precision_cache(PROJECT_ROOT)
+        cached_half = read_precision_cache(root)
         if cached_half is not None and cached_half.get("is_half") is False:
             print("      [精度校准] 此设备已记录为 FP32 模式 (FP16 半精度输出纯静音)。")
 
@@ -951,6 +960,7 @@ def ensure_gpt_sovits_running(
     # 5. Existing engine config: tts_infer.yaml
     # 6. Default fallback: CUDA FP16 if GPU present, else CPU
     prec_opt = (precision or "").lower()
+    root = _resolve_project_root()
     if cpu or prec_opt == "cpu":
         device = "cpu"
         is_half = False
@@ -968,7 +978,7 @@ def ensure_gpt_sovits_running(
         print("      [推理精度] 已指定 --fp32 单精度模式运行。")
     else:
         device, is_half, precision_source = resolve_initial_device_and_half(
-            PROJECT_ROOT, sovits_dir, db_path=get_settings().db_path,
+            root, sovits_dir, db_path=get_settings().db_path,
         )
         if device == "cpu":
             prec_str = "CPU 稳定模式"
@@ -985,7 +995,9 @@ def ensure_gpt_sovits_running(
         else:
             print("      [推理精度] 未指定固定精度，进入自动校准模式 (初始 FP16，就绪后验证发声)。")
     try:
-        proc = _spawn_sovits_process(sovits_dir, sovits_host, sovits_port, is_half, device=device)
+        proc = get_engine_supervisor().spawn_process(
+            sovits_dir, sovits_host, sovits_port, is_half, device=device, project_root=root,
+        )
 
         # Non-blocking parallel readiness monitor (engine logs written to gpt_sovits.log)
         print("      [..] GPT-SoVITS 正在后台加载模型 (伴侣服务先行启动)...")
@@ -1249,15 +1261,17 @@ def main(args: list[str] | None = None):
 
         # Synchronize active port and host across all aliases and clear Settings cache
         sync_runtime_address(host=bind_host, port=active_port)
+        runtime_root = _resolve_project_root()
         try:
-            (PROJECT_ROOT / "data" / "active_port.txt").write_text(str(active_port), encoding="utf-8")
-            (PROJECT_ROOT / "galgame2voice.pid").write_text(str(os.getpid()), encoding="utf-8")
+            (runtime_root / "data").mkdir(parents=True, exist_ok=True)
+            (runtime_root / "data" / "active_port.txt").write_text(str(active_port), encoding="utf-8")
+            (runtime_root / "galgame2voice.pid").write_text(str(os.getpid()), encoding="utf-8")
         except Exception:
             pass
 
         if getattr(sys, "frozen", False):
             from scripts.desktop_instance import write_instance_address
-            write_instance_address(PROJECT_ROOT, bind_host, active_port)
+            write_instance_address(runtime_root, bind_host, active_port)
 
         # Step 3: Auto Open Browser
         _, display_host = browser_hosts(bind_host)
