@@ -96,7 +96,7 @@ uv run --frozen --extra desktop python scripts/smoke_windows_portable.py dist/ga
 前端修改后应先在 `frontend` 目录执行 `npm ci` 和 `npm run deploy`。
 产物位于 `dist/galgame2voice-v<版本>-windows-x64.zip`，校验文件与其同目录。
 上面的冒烟验证会在中文、空格路径解压真实产物，隐藏系统 Python/FFmpeg，检查网页、文件选择器运行库、音频转换和凭据保存。
-便携版使用下载新版发布包的方式更新；网页内的 Git 更新适用于源码安装。
+便携版使用下载新版发布包的方式更新；设置中心的「检查更新」只提示 GitHub Releases 上是否有新的正式版本并给出下载页链接，不会改动本地文件。
 
 ## 维护者发布验收
 
