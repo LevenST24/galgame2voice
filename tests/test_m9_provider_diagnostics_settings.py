@@ -209,6 +209,7 @@ class TestErrorDiagnosticsEngine:
 
         diag429 = format_provider_error("openai", 429, "You exceeded your current quota, please check your plan and billing details.")
         assert diag429["error_code"] == "OPENAI_QUOTA_EXCEEDED"
+        assert "额度已耗尽" in diag429["error"]
         assert "充值" in diag429["diagnostic"] or "billing" in diag429["diagnostic"]
 
     def test_model_not_found_404(self):
@@ -224,6 +225,7 @@ class TestErrorDiagnosticsEngine:
         diag_refused = diagnose_llm_error(exc_or_msg=httpx.ConnectError("[WinError 10061] No connection could be made"), status_code=502)
         assert diag_refused.error_code == "CONNECTION_REFUSED"
         assert "被拒绝" in diag_refused.message
+        assert any(term in diag_refused.guidance for term in ("端口", "Base URL", "反向代理"))
 
     def test_http_402_insufficient_balance(self):
         """DeepSeek / Moonshot / SiliconFlow 402 Insufficient Balance must be diagnosed clearly without blaming API Key / Base URL."""
