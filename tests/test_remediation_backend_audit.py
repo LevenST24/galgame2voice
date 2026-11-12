@@ -317,6 +317,90 @@ class TestFFmpegDiscoveryBundledFallback:
         with pytest.raises(ValueError, match="Corrupted or unsupported|too short"):
             await convert_ogg_to_wav(b"\x00\x01\x02\x03CORRUPTED_NON_AUDIO_BYTES_PAYLOAD")
 
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_unset_path_still_discovers_binary(self, monkeypatch):
+        """Deleting PATH must not hide a discovered ffmpeg binary."""
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+        monkeypatch.delenv("PATH", raising=False)
+        reset_ffmpeg_cache()
+
+        discovered = find_ffmpeg()
+        assert discovered is not None, "Discovery failed under PATH=None"
+        assert Path(discovered).is_file()
+        assert is_ffmpeg_available() is True
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_garbage_path_still_discovers_binary(self, monkeypatch):
+        """A PATH of nonexistent directories must not hide a discovered ffmpeg binary."""
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+        monkeypatch.setenv("PATH", "/nonexistent/dir:/dev/null/notdir")
+        reset_ffmpeg_cache()
+
+        discovered = find_ffmpeg()
+        assert discovered is not None, "Discovery failed under PATH=/nonexistent/dir:/dev/null/notdir"
+        assert Path(discovered).is_file()
+        assert is_ffmpeg_available() is True
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_directory_and_nonexecutable_custom_paths(self, tmp_path):
+        """A directory is rejected. A non-executable file resolves to itself."""
+        reset_ffmpeg_cache()
+
+        sub_dir = tmp_path / "not_a_binary_dir"
+        sub_dir.mkdir()
+        assert find_ffmpeg(str(sub_dir)) is None
+
+        script = tmp_path / "fake_ffmpeg.sh"
+        script.write_text("#!/bin/sh\necho not ffmpeg")
+        script.chmod(0o644)
+        # shutil.which returns None for non-executable, then is_file() resolves the path.
+        assert find_ffmpeg(str(script)) == str(script.resolve())
+
+    @pytest.mark.requires_piped_subprocess
+    def test_find_ffmpeg_imageio_generic_exception_and_missing_path(self, monkeypatch):
+        """A generic imageio exception, or a path that is not a file, yields None."""
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.delenv("FFMPEG_BIN", raising=False)
+        monkeypatch.setattr(
+            "galgame2voice.utils.audio_converter._find_ffmpeg_in_python_env", lambda *a: None
+        )
+        monkeypatch.setattr(
+            "galgame2voice.utils.audio_converter._find_ffmpeg_in_project_dirs", lambda *a: None
+        )
+
+        reset_ffmpeg_cache()
+        with patch("imageio_ffmpeg.get_ffmpeg_exe", side_effect=Exception("Simulated DLL missing")):
+            assert find_ffmpeg() is None
+            assert is_ffmpeg_available() is False
+
+        reset_ffmpeg_cache()
+        with patch("imageio_ffmpeg.get_ffmpeg_exe", return_value="/nonexistent/ffmpeg/bin"):
+            assert find_ffmpeg() is None
+            assert is_ffmpeg_available() is False
+
+    @pytest.mark.requires_piped_subprocess
+    async def test_find_ffmpeg_concurrent_probes_with_cache_resets(self):
+        """Fifty overlapping probes, resetting the cache every tenth call, all succeed."""
+        results = []
+        errors = []
+
+        async def worker(idx: int):
+            try:
+                if idx % 10 == 0:
+                    reset_ffmpeg_cache()
+                res = await asyncio.to_thread(find_ffmpeg)
+                results.append(res)
+            except Exception as exc:
+                errors.append(exc)
+
+        await asyncio.gather(*(worker(i) for i in range(50)))
+        assert len(errors) == 0, f"Encountered errors during concurrent probes: {errors}"
+        assert len(results) == 50
+        assert all(r is not None for r in results)
+
 
 # ============================================================================
 # 2. Audio Cache-Control Immutable Header Preservation
@@ -373,6 +457,94 @@ class TestAudioCacheControlHeaders:
         resp = client.get("/audio/cache/../../secret.txt")
         assert resp.status_code in (403, 404)
         assert resp.headers.get("Cache-Control") != "public, max-age=31536000, immutable"
+
+    _CACHE_SAMPLE = b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00"
+    _IMMUTABLE = "public, max-age=31536000, immutable"
+    _PRIVATE = "private, max-age=0"
+    _NO_STORE = "no-cache, no-store, must-revalidate"
+
+    def _audio_client(self, *relative_paths: str) -> TestClient:
+        settings = get_settings()
+        for relative in relative_paths:
+            path = settings.audio_dir / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(self._CACHE_SAMPLE)
+        return TestClient(create_app())
+
+    def test_asgi_cache_audio_head_is_immutable(self):
+        """HEAD /audio/cache/*.wav stays immutable. A GET 200 check does not observe HEAD."""
+        client = self._audio_client("cache/tts_sample_valid.wav")
+        head_resp = client.head("/audio/cache/tts_sample_valid.wav")
+        assert head_resp.status_code == 200
+        assert head_resp.headers.get("Cache-Control") == self._IMMUTABLE
+
+    def test_asgi_cache_audio_partial_content_is_immutable(self):
+        """206 under /audio/cache/ keeps the immutable header and a Content-Range."""
+        client = self._audio_client("cache/tts_sample_valid.wav")
+        range_resp = client.get(
+            "/audio/cache/tts_sample_valid.wav", headers={"Range": "bytes=0-3"}
+        )
+        assert range_resp.status_code == 206
+        assert range_resp.headers.get("Cache-Control") == self._IMMUTABLE
+        assert "bytes 0-3/" in range_resp.headers.get("Content-Range", "")
+
+    def test_asgi_cache_audio_unsatisfiable_range_is_not_stored(self):
+        """416 is not a 404. It must be no-store, not the immutable cache value."""
+        client = self._audio_client("cache/tts_sample_valid.wav")
+        resp_416 = client.get(
+            "/audio/cache/tts_sample_valid.wav", headers={"Range": "bytes=9999-9999"}
+        )
+        assert resp_416.status_code == 416
+        assert resp_416.headers.get("Cache-Control") == self._NO_STORE
+
+    def test_asgi_cache_audio_post_is_not_immutable(self):
+        """POST is outside the GET/HEAD branch. A 404 no-store check does not cover 405."""
+        client = self._audio_client("cache/tts_sample_valid.wav")
+        resp_405 = client.post("/audio/cache/tts_sample_valid.wav")
+        assert resp_405.status_code == 405
+        assert "immutable" not in resp_405.headers.get("Cache-Control", "")
+
+    def test_asgi_misleading_cache_directory_is_private(self):
+        """cache_not_really shares a prefix with cache but is not the cache directory."""
+        client = self._audio_client("cache_not_really/misleading_cache.wav")
+        resp_fake = client.get("/audio/cache_not_really/misleading_cache.wav")
+        assert resp_fake.status_code == 200
+        assert resp_fake.headers.get("Cache-Control") == self._PRIVATE
+
+    def test_asgi_cache_uppercase_wav_extension_is_immutable(self):
+        """An uppercase .WAV name under /audio/cache/ is still immutable."""
+        client = self._audio_client("cache/tts_sample_upper.WAV")
+        resp_upper = client.get("/audio/cache/tts_sample_upper.WAV")
+        assert resp_upper.status_code == 200
+        assert resp_upper.headers.get("Cache-Control") == self._IMMUTABLE
+
+    def test_asgi_percent_encoded_cache_segment_is_immutable(self):
+        """Percent-encoded %63ache is the cache segment and stays immutable."""
+        client = self._audio_client("cache/tts_sample_valid.wav")
+        resp_enc = client.get("/audio/%63ache/tts_sample_valid.wav")
+        assert resp_enc.status_code == 200
+        assert resp_enc.headers.get("Cache-Control") == self._IMMUTABLE
+
+    def test_asgi_cache_parent_traversal_missing_file_is_not_stored(self):
+        """/audio/cache/../missing_traversal.wav is a 404 and must be no-store."""
+        client = self._audio_client("cache/tts_sample_valid.wav")
+        resp_inner = client.get("/audio/cache/../missing_traversal.wav")
+        assert resp_inner.status_code == 404
+        assert resp_inner.headers.get("Cache-Control") == self._NO_STORE
+
+    def test_asgi_percent_encoded_cache_traversal_is_not_immutable(self):
+        """Encoded .. leaving /audio/cache/ must not keep the immutable cache header."""
+        client = self._audio_client("cache/tts_sample_valid.wav", "user_private_recording.wav")
+        resp_pct_priv = client.get("/audio/cache/%2e%2e/user_private_recording.wav")
+        assert resp_pct_priv.headers.get("Cache-Control") != self._IMMUTABLE
+        if resp_pct_priv.status_code == 200:
+            assert resp_pct_priv.headers.get("Cache-Control") == self._PRIVATE
+
+    def test_asgi_static_assets_encoded_traversal_is_not_immutable(self):
+        """Encoded .. leaving /static/assets/ must not receive the immutable asset header."""
+        client = TestClient(create_app())
+        resp_pct_html = client.get("/static/assets/%2e%2e/index.html")
+        assert resp_pct_html.headers.get("Cache-Control") != self._IMMUTABLE
 
 
 # ============================================================================
@@ -513,6 +685,180 @@ class TestDeleteMessageTransactionIsolation:
         async with get_db(db_path) as conn:
             count = await crud.count_session_messages(conn, session_id)
             assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_concurrent_burst_deleting_same_message(self, tmp_path):
+        """Twenty tasks delete one message id. The row is gone and none of the tasks raise."""
+        db_path = str(tmp_path / "same_msg_race.db")
+        await init_db(db_path)
+
+        async with get_db(db_path) as conn:
+            await crud.get_or_create_session(conn, "race_session")
+            msg = await crud.add_message(
+                conn,
+                MessageCreate(session_id="race_session", role="user", content_chinese="race_target"),
+            )
+            msg_id = msg.id
+
+        async def worker():
+            async with get_db(db_path) as c:
+                await crud.delete_message(c, msg_id)
+
+        await asyncio.gather(*(worker() for _ in range(20)))
+
+        async with get_db(db_path) as conn:
+            assert await crud.count_session_messages(conn, "race_session") == 0
+
+    @pytest.mark.asyncio
+    async def test_deeply_nested_savepoints_and_partial_rollback(self, tmp_path):
+        """An inner failure restores only the inner deletes. The outer delete stays committed."""
+        db_path = str(tmp_path / "deep_nest.db")
+        await init_db(db_path)
+
+        async with get_db(db_path) as conn:
+            await crud.get_or_create_session(conn, "sess_nest")
+            created_ids = []
+            for i in range(8):
+                m = await crud.add_message(
+                    conn,
+                    MessageCreate(session_id="sess_nest", role="user", content_chinese=f"nest_msg_{i}"),
+                )
+                created_ids.append(m.id)
+
+            async def recursive_step(level: int):
+                if level == 8:
+                    await crud.delete_message(conn, created_ids[0])
+                    await crud.delete_message(conn, created_ids[1])
+                    raise RuntimeError("Innermost failure trigger")
+
+                async with immediate_transaction(conn):
+                    assert getattr(conn, "_imm_tx_depth", 0) == level + 1
+                    await recursive_step(level + 1)
+
+            async with immediate_transaction(conn):
+                await crud.delete_message(conn, created_ids[7])
+                try:
+                    await recursive_step(1)
+                except RuntimeError:
+                    pass
+
+            assert getattr(conn, "_imm_tx_depth", 0) == 0
+
+            msgs = await crud.get_recent_messages(conn, "sess_nest", limit=20)
+            remaining_ids = {m.id for m in msgs}
+            assert created_ids[7] not in remaining_ids
+            assert created_ids[0] in remaining_ids
+            assert created_ids[1] in remaining_ids
+            assert len(remaining_ids) == 7
+
+    @pytest.mark.asyncio
+    async def test_concurrent_connections_burst_load(self, tmp_path):
+        """Twenty workers each keep the odd messages. Integrity stays ok and 80 rows remain."""
+        db_path = str(tmp_path / "burst_load.db")
+        await init_db(db_path)
+
+        session_id = "sess_burst"
+
+        async def worker_burst(worker_idx: int):
+            async with get_db(db_path) as c:
+                for i in range(8):
+                    msg = await crud.add_message(
+                        c,
+                        MessageCreate(
+                            session_id=session_id,
+                            role="user",
+                            content_chinese=f"w{worker_idx}_m{i}",
+                        ),
+                    )
+                    if i % 2 == 0:
+                        await crud.delete_message(c, msg.id)
+
+        await asyncio.gather(*(worker_burst(i) for i in range(20)))
+
+        async with get_db(db_path) as conn:
+            count = await crud.count_session_messages(conn, session_id)
+            assert count == 80
+            cursor = await conn.execute("PRAGMA integrity_check;")
+            row = await cursor.fetchone()
+            assert row[0] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_task_cancellation_during_delete_message(self, tmp_path):
+        """Cancellation during begin, lock retry, and the body restores depth and the row."""
+        import sqlite3
+
+        db_path = str(tmp_path / "cancel_tx.db")
+        await init_db(db_path)
+
+        async with get_db(db_path) as conn:
+            await crud.get_or_create_session(conn, "sess_cancel")
+            msg = await crud.add_message(
+                conn,
+                MessageCreate(session_id="sess_cancel", role="user", content_chinese="cancel_me"),
+            )
+
+            async def cancel_at_begin():
+                async with immediate_transaction(conn):
+                    await crud.delete_message(conn, msg.id)
+                    await asyncio.sleep(5)
+
+            t0 = asyncio.create_task(cancel_at_begin())
+            await asyncio.sleep(0)
+            t0.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t0
+
+            assert getattr(conn, "_imm_tx_depth", 0) == 0
+            assert getattr(conn, "_imm_tx_lock_owner", None) is None
+            assert await crud.count_session_messages(conn, "sess_cancel") == 1
+
+            orig_execute = conn.execute
+            begin_started = asyncio.Event()
+
+            async def failing_begin_execute(sql, *args, **kwargs):
+                if str(sql).strip().upper().startswith("BEGIN IMMEDIATE"):
+                    begin_started.set()
+                    await asyncio.sleep(0.05)
+                    raise sqlite3.OperationalError("database is locked")
+                return await orig_execute(sql, *args, **kwargs)
+
+            conn.execute = failing_begin_execute
+            try:
+                async def cancel_on_locked_begin():
+                    async with immediate_transaction(conn):
+                        await crud.delete_message(conn, msg.id)
+
+                t_locked = asyncio.create_task(cancel_on_locked_begin())
+                await begin_started.wait()
+                t_locked.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await t_locked
+            finally:
+                conn.execute = orig_execute
+
+            assert getattr(conn, "_imm_tx_depth", 0) == 0
+            assert getattr(conn, "_imm_tx_lock_owner", None) is None
+
+            entered_body = asyncio.Event()
+
+            async def cancel_mid_body():
+                async with immediate_transaction(conn):
+                    await crud.delete_message(conn, msg.id)
+                    entered_body.set()
+                    await asyncio.sleep(5)
+
+            t = asyncio.create_task(cancel_mid_body())
+            await entered_body.wait()
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+
+            assert getattr(conn, "_imm_tx_depth", 0) == 0
+            assert getattr(conn, "_imm_tx_lock_owner", None) is None
+            assert await crud.count_session_messages(conn, "sess_cancel") == 1
+
+            await crud.delete_message(conn, msg.id)
+            assert await crud.count_session_messages(conn, "sess_cancel") == 0
 
 
 # ============================================================================
