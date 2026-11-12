@@ -4,9 +4,7 @@ Provides unified character profile query, active character switching, and affect
 """
 
 import asyncio
-import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -17,14 +15,15 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from galgame2voice.database import crud
-from galgame2voice.database.session import _run_uncancellable, get_db, immediate_transaction
-from galgame2voice.routers.common import persist_active_voice_profile_or_raise, switch_voice_profile_or_raise, validate_user_id
+from galgame2voice.database.session import get_db
+from galgame2voice.routers.common import validate_user_id
 from galgame2voice.security.media_urls import (
     get_media_signing_key,
     sign_media_url,
     verify_media_url_signature,
 )
 from galgame2voice.services.character_manager import get_character_manager, get_character_work
+from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
 from galgame2voice.schemas.character_manifest import clean_character_work
 from galgame2voice.services.portrait_manifest import (
     CANVAS_ID_RE,
@@ -38,10 +37,6 @@ logger = logging.getLogger("galgame2voice.routers.characters")
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 media_router = APIRouter(prefix="/api/media", tags=["media"])
-
-# 同一进程里所有保存人设请求共用这一把锁。后来的保存要等前一次
-# 写完 manifest、重新扫描并写完数据库之后才开始，避免磁盘和数据库各留一份。
-_persona_save_lock = asyncio.Lock()
 
 
 async def _get_voice_profile_or_404(conn: aiosqlite.Connection, character_id: int) -> Any:
@@ -217,27 +212,11 @@ async def rescan_character_packages(request: Request) -> dict[str, Any]:
         lock = getattr(request.app.state, "character_rescan_lock", None)
         if lock is None:
             lock = request.app.state.character_rescan_lock = asyncio.Lock()
-        async with lock:
-            char_mgr = get_character_manager()
-            discovered = await asyncio.to_thread(char_mgr.discover_characters)
-            async with get_db() as conn:
-                synced = await char_mgr.sync_with_db(conn)
-                profiles = await crud.list_voice_profiles(conn)
-                active = await crud.get_active_voice_profile(conn)
-            from galgame2voice.routers.voice import _scan_cache
-            generation = _scan_cache.get("generation", 0) + 1
-            _scan_cache.clear()
-            _scan_cache["generation"] = generation
-        return {
-            "status": "ok",
-            "discovered_count": len(discovered),
-            "synced_count": synced,
-            "total_profiles": len(profiles),
-            "active_profile_id": active.id if active else (profiles[0].id if profiles else None),
-            "characters": [p.name for p in discovered],
-            # Rejected folders and why, the same notice the voice list shows.
-            "catalog_warning": char_mgr.catalog_warning,
-        }
+        return await get_character_voice_catalog().rescan_packages(
+            lock=lock,
+            character_manager=get_character_manager(),
+            db_factory=get_db,
+        )
     except Exception as exc:
         safe_err = sanitize_error_detail(exc)
         raise HTTPException(
@@ -460,66 +439,6 @@ class SystemPromptUpdate(BaseModel):
     )
 
 
-def _restore_manifest(manifest_path: Path, original: bytes) -> None:
-    """Put manifest.json back to the bytes read before this save."""
-    tmp_path = manifest_path.with_name("manifest.json.tmp")
-    try:
-        tmp_path.write_bytes(original)
-        os.replace(tmp_path, manifest_path)
-    except OSError:
-        tmp_path.unlink(missing_ok=True)
-        raise
-
-
-async def _rollback_manifest_and_cache(
-    manifest_path: Path,
-    original: bytes,
-    mgr: Any,
-) -> bool:
-    """Put manifest.json back to the bytes read before this save and refresh cache.
-
-    Returns whether manifest.json was actually restored.
-    """
-    restored = True
-    try:
-        _restore_manifest(manifest_path, original)
-    except OSError as restore_exc:
-        # 回滚也写不进去（如磁盘已满）时不能顶掉调用方要抛出的原始错误
-        restored = False
-        logger.warning("回滚角色包 manifest.json 失败: %s", sanitize_error_detail(restore_exc))
-    _, exc, _ = await _run_uncancellable(asyncio.to_thread(mgr.discover_characters))
-    if exc is not None:
-        logger.warning("回滚角色包后刷新内存缓存失败: %s", exc)
-    return restored
-
-
-def _write_manifest_system_prompt(manifest_path: Path, text: str) -> None:
-    """Safely updates system_prompt in manifest.json using atomic temp file replacement."""
-    try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-    except Exception as exc:
-        safe_err = sanitize_error_detail(exc)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"无法解析角色 manifest.json: {safe_err}",
-        ) from exc
-
-    data["system_prompt"] = text
-    tmp_path = manifest_path.with_name("manifest.json.tmp")
-    try:
-        tmp_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        os.replace(tmp_path, manifest_path)
-    except OSError as exc:
-        tmp_path.unlink(missing_ok=True)
-        safe_err = sanitize_error_detail(exc)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"写入角色 manifest.json 失败: {safe_err}",
-        ) from exc
-
-
 @router.put(
     "/{character_id}/system-prompt",
     summary="Update Character System Prompt",
@@ -527,116 +446,20 @@ def _write_manifest_system_prompt(manifest_path: Path, text: str) -> None:
                 "to a character package, also writes that package's manifest.json.",
 )
 async def update_character_system_prompt(character_id: int, req: SystemPromptUpdate) -> dict[str, Any]:
-    text = req.system_prompt.strip()
-    if not text:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="人设提示词不能为空",
-        )
-
-    from galgame2voice.services.character_identity import (
-        DuplicateCharacterId,
-        owned_package_for_profile,
+    return await get_character_voice_catalog().update_persona(
+        character_id,
+        req.system_prompt,
+        update_profile_fn=crud.update_voice_profile,
+        character_manager=get_character_manager(),
+        db_factory=get_db,
     )
-
-    async with get_db() as conn:
-        prof = await _get_voice_profile_or_404(conn, character_id)
-        profiles = await crud.list_voice_profiles(conn)
-
-    mgr = get_character_manager()
-    pkg = owned_package_for_profile(prof, profiles, mgr)
-    manifest_path: Path | None = None
-    original_manifest: bytes | None = None
-
-    async with _persona_save_lock:
-        if pkg is not None:
-            manifest_path = pkg.folder / "manifest.json"
-            if not manifest_path.is_file():
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"角色包缺少 manifest.json: {manifest_path}",
-                )
-            original_manifest = manifest_path.read_bytes()
-            try:
-                _write_manifest_system_prompt(manifest_path, text)
-                # 内存里的角色包缓存也要刷新，否则本进程后续仍读到旧人设
-                await asyncio.to_thread(mgr.discover_characters)
-            except DuplicateCharacterId as exc:
-                await _rollback_manifest_and_cache(manifest_path, original_manifest, mgr)
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=str(exc),
-                ) from exc
-            except BaseException:
-                await _rollback_manifest_and_cache(manifest_path, original_manifest, mgr)
-                raise
-
-        try:
-            async with get_db() as conn:
-                async with immediate_transaction(conn):
-                    from galgame2voice.database.models import VoiceProfileUpdate
-
-                    updated = await crud.update_voice_profile(
-                        conn, character_id, VoiceProfileUpdate(system_prompt=text)
-                    )
-                    if updated is None:
-                        raise HTTPException(
-                            status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"Character with ID {character_id} not found",
-                        )
-        except BaseException as exc:
-            rollback_suffix = ""
-            if original_manifest is not None and manifest_path is not None:
-                restored = await _rollback_manifest_and_cache(manifest_path, original_manifest, mgr)
-                rollback_suffix = "，已回滚角色包修改" if restored else "，角色包文件未能回滚"
-            if not isinstance(exc, Exception):
-                raise
-            if isinstance(exc, HTTPException):
-                raise
-            safe_err = sanitize_error_detail(exc)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"人设保存到数据库失败{rollback_suffix}: {safe_err}",
-            ) from exc
-
-    logger.info("System prompt updated for character %s (%d chars)", prof.name, len(text))
-    return {
-        "character_id": character_id,
-        "name": prof.name,
-        "system_prompt": text,
-        "length": len(text),
-        "manifest_path": str(manifest_path) if manifest_path is not None else None,
-    }
 
 
 async def _resolve_profile_by_name(conn: aiosqlite.Connection, char_name: str) -> Any | None:
     """Use the same identity rules for switching as for package reconciliation."""
-    from galgame2voice.services.character_identity import (
-        AmbiguousProfileName,
-        resolve_profile_for_query,
+    return await get_character_voice_catalog().resolve_profile_by_name(
+        conn, char_name, character_manager=get_character_manager()
     )
-
-    cm = get_character_manager()
-
-    async def find_profile() -> tuple[Any | None, Any | None]:
-        profiles = await crud.list_voice_profiles(conn)
-        try:
-            matched, pkg, conflicting = resolve_profile_for_query(profiles, char_name, manager=cm)
-        except AmbiguousProfileName as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-
-        if conflicting:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"角色“{char_name}”匹配到多个角色包；请使用唯一的角色 ID。",
-            )
-        return matched, pkg
-
-    profile, pkg = await find_profile()
-    if profile is None and pkg is not None:
-        await cm.sync_with_db(conn)
-        profile, _ = await find_profile()
-    return profile
 
 
 async def _lookup_character_profile(
@@ -645,11 +468,9 @@ async def _lookup_character_profile(
     char_name: str | None,
 ) -> Any | None:
     """Resolves character profile by ID or name fallback."""
-    if char_id is not None:
-        return await crud.get_voice_profile(conn, char_id)
-    if char_name:
-        return await _resolve_profile_by_name(conn, char_name)
-    return None
+    return await get_character_voice_catalog().lookup_profile(
+        conn, char_id, char_name, character_manager=get_character_manager()
+    )
 
 
 @router.post(
@@ -658,54 +479,19 @@ async def _lookup_character_profile(
     description="Atomically switches the active character voice profile with memory safety and auto-rollback.",
 )
 async def switch_character(req: CharacterSwitchRequest) -> dict[str, Any]:
-    char_id = req.character_id
-    raw_name = req.character_name
-    char_name = raw_name.strip() if raw_name else None
-
-    if char_id is None and not char_name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Missing character_id or character_name in switch request",
-        )
-
-    if char_id is not None and char_id < 1:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="character_id must be a positive integer >= 1",
-        )
-
-    # 1. 404 Precedence: Resolve character entity first from database
-    ident = char_id if char_id is not None else char_name
-    async with get_db() as conn:
-        profile = await _lookup_character_profile(conn, char_id, char_name)
-        if not profile:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Character '{ident}' not found",
-            )
-
-    manager = get_voice_manager()
-
-    # 2. Concurrency & State Guard
-    async with manager.switch_lock:
-        async with get_db() as conn:
-            verified_profile = await crud.get_voice_profile(conn, profile.id)
-            if not verified_profile:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Character '{ident}' not found",
-                )
-            profile = verified_profile
-
-        is_already_active = await asyncio.to_thread(manager.is_active_profile, profile, force=req.force)
-
-        if is_already_active:
-            await persist_active_voice_profile_or_raise(profile.id)
-        else:
-            await switch_voice_profile_or_raise(manager, profile, force=req.force)
-
-        return {
-            "status": "switched",
-            "character": profile.name,
-            "character_id": profile.id,
-        }
+    profile = await get_character_voice_catalog().switch_active_profile(
+        profile_id=req.character_id,
+        profile_name=req.character_name,
+        force=req.force,
+        entity_label="Character",
+        id_field_name="character_id",
+        missing_detail="Missing character_id or character_name in switch request",
+        character_manager=get_character_manager(),
+        voice_manager=get_voice_manager(),
+        db_factory=get_db,
+    )
+    return {
+        "status": "switched",
+        "character": profile.name,
+        "character_id": profile.id,
+    }
