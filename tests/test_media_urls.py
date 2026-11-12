@@ -147,7 +147,11 @@ def test_character_pack(tmp_path, monkeypatch):
 async def setup_test_character_db(isolate_test_database, test_character_pack):
     """Inserts a matching voice profile in SQLite."""
     conn = sqlite3.connect(isolate_test_database)
-    conn.execute("INSERT OR IGNORE INTO settings (id, console_token) VALUES (1, ?);", (TEST_CONSOLE_TOKEN,))
+    conn.execute(
+        "INSERT INTO settings (id, console_token) VALUES (1, ?) "
+        "ON CONFLICT(id) DO UPDATE SET console_token = excluded.console_token;",
+        (TEST_CONSOLE_TOKEN,),
+    )
     conn.commit()
     conn.close()
 

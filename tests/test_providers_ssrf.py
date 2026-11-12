@@ -16,7 +16,10 @@ from galgame2voice.main import create_app
 @pytest.fixture
 async def client(isolate_test_database):
     conn = sqlite3.connect(isolate_test_database)
-    conn.execute("INSERT OR IGNORE INTO settings (id, console_token) VALUES (1, 'test_console_token');")
+    conn.execute(
+        "INSERT INTO settings (id, console_token) VALUES (1, 'test_console_token') "
+        "ON CONFLICT(id) DO UPDATE SET console_token = excluded.console_token;"
+    )
     conn.commit()
     conn.close()
     app = create_app()

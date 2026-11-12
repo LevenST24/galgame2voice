@@ -45,7 +45,7 @@ class TestConfigStoreTier1:
 
     @pytest.mark.asyncio
     async def test_schema_initialization(self, temp_db_path):
-        """Verifies database tables exist after schema init."""
+        """Verifies real migration tables exist after schema init and ghost tables do not."""
         async with aiosqlite.connect(temp_db_path) as db:
             async with db.execute("SELECT name FROM sqlite_master WHERE type='table';") as cursor:
                 rows = await cursor.fetchall()
@@ -53,35 +53,51 @@ class TestConfigStoreTier1:
                 assert "settings" in table_names
                 assert "voice_profiles" in table_names
                 assert "providers" in table_names
-                assert "session_messages" in table_names
+                assert "sessions" in table_names
+                assert "messages" in table_names
+                assert "tts_cache_entries" in table_names
+                assert "token_usage_metrics" in table_names
+                assert "session_messages" not in table_names
 
     @pytest.mark.asyncio
     async def test_settings_set_and_get(self, temp_db_path):
-        """Verifies setting key-value pairs and retrieving them."""
+        """Verifies updating singleton settings row (id = 1) and enforcing CHECK (id = 1)."""
         async with aiosqlite.connect(temp_db_path) as db:
-            await db.execute("INSERT OR REPLACE INTO settings (key, value, description) VALUES (?, ?, ?)",
-                             ("gpt_sovits_url", "http://127.0.0.1:9880", "GPT-SoVITS API URL"))
+            await db.execute(
+                "UPDATE settings SET gpt_sovits_url = ?, console_url = ? WHERE id = 1",
+                ("http://127.0.0.1:9880", "https://console.example.com"),
+            )
             await db.commit()
 
-            async with db.execute("SELECT value, description FROM settings WHERE key = ?", ("gpt_sovits_url",)) as cursor:
+            async with db.execute(
+                "SELECT gpt_sovits_url, console_url FROM settings WHERE id = 1"
+            ) as cursor:
                 row = await cursor.fetchone()
                 assert row is not None
                 assert row[0] == "http://127.0.0.1:9880"
-                assert row[1] == "GPT-SoVITS API URL"
+                assert row[1] == "https://console.example.com"
+
+            with pytest.raises(sqlite3.IntegrityError):
+                await db.execute(
+                    "INSERT INTO settings (id, gpt_sovits_url) VALUES (2, ?)",
+                    ("http://127.0.0.1:9881",),
+                )
+                await db.commit()
 
     @pytest.mark.asyncio
     async def test_settings_update_existing_key(self, temp_db_path):
-        """Verifies updating an existing configuration key overwrites its value."""
+        """Verifies updating an existing configuration column on settings (id = 1) overwrites its value."""
         async with aiosqlite.connect(temp_db_path) as db:
-            await db.execute("INSERT INTO settings (key, value) VALUES (?, ?)", ("audio_speed", "1.0"))
+            await db.execute("UPDATE settings SET speed_factor = ? WHERE id = 1", (1.0,))
             await db.commit()
 
-            await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", ("audio_speed", "1.2"))
+            await db.execute("UPDATE settings SET speed_factor = ? WHERE id = 1", (1.2,))
             await db.commit()
 
-            async with db.execute("SELECT value FROM settings WHERE key = ?", ("audio_speed",)) as cursor:
+            async with db.execute("SELECT speed_factor FROM settings WHERE id = 1") as cursor:
                 row = await cursor.fetchone()
-                assert row[0] == "1.2"
+                assert row is not None
+                assert row[0] == pytest.approx(1.2)
 
     @pytest.mark.asyncio
     async def test_voice_profile_crud(self, temp_db_path, sample_voice_profile):
@@ -89,33 +105,46 @@ class TestConfigStoreTier1:
         async with aiosqlite.connect(temp_db_path) as db:
             # Create
             cursor = await db.execute("""
-                INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, refer_audio_path, refer_text, refer_language, is_default)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO voice_profiles (
+                    name, gpt_weights_path, sovits_weights_path,
+                    ref_audio_path, prompt_text, prompt_lang, text_lang, is_default
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 sample_voice_profile["name"],
                 sample_voice_profile["gpt_weights_path"],
                 sample_voice_profile["sovits_weights_path"],
-                sample_voice_profile["refer_audio_path"],
-                sample_voice_profile["refer_text"],
-                sample_voice_profile["refer_language"],
-                sample_voice_profile["is_default"]
+                sample_voice_profile["ref_audio_path"],
+                sample_voice_profile["prompt_text"],
+                sample_voice_profile["prompt_lang"],
+                sample_voice_profile["text_lang"],
+                sample_voice_profile["is_default"],
             ))
             await db.commit()
             profile_id = cursor.lastrowid
             assert profile_id > 0
 
             # Read
-            async with db.execute("SELECT name, refer_text, is_default FROM voice_profiles WHERE id = ?", (profile_id,)) as cursor:
+            async with db.execute(
+                "SELECT name, prompt_text, is_default FROM voice_profiles WHERE id = ?",
+                (profile_id,),
+            ) as cursor:
                 row = await cursor.fetchone()
                 assert row[0] == "Arona"
                 assert row[1] == "先生、今日もよろしくお願いしますね！"
                 assert row[2] == 1
 
             # Update
-            await db.execute("UPDATE voice_profiles SET refer_text = ? WHERE id = ?", ("先生、お疲れ様です！", profile_id))
+            await db.execute(
+                "UPDATE voice_profiles SET prompt_text = ? WHERE id = ?",
+                ("先生、お疲れ様です！", profile_id),
+            )
             await db.commit()
 
-            async with db.execute("SELECT refer_text FROM voice_profiles WHERE id = ?", (profile_id,)) as cursor:
+            async with db.execute(
+                "SELECT prompt_text FROM voice_profiles WHERE id = ?",
+                (profile_id,),
+            ) as cursor:
                 row = await cursor.fetchone()
                 assert row[0] == "先生、お疲れ様です！"
 
@@ -132,42 +161,53 @@ class TestConfigStoreTier1:
         """Verifies creating, querying, and updating provider configs."""
         async with aiosqlite.connect(temp_db_path) as db:
             await db.execute("""
-                INSERT INTO providers (id, provider_type, api_key, base_url, model, is_active, extra_config)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO providers (
+                    id, name, api_base_url, api_key, chat_model, stt_model, is_active, custom_headers
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 sample_provider_config["id"],
-                sample_provider_config["provider_type"],
+                sample_provider_config["name"],
+                sample_provider_config["api_base_url"],
                 sample_provider_config["api_key"],
-                sample_provider_config["base_url"],
-                sample_provider_config["model"],
+                sample_provider_config["chat_model"],
+                sample_provider_config["stt_model"],
                 sample_provider_config["is_active"],
-                sample_provider_config["extra_config"]
+                sample_provider_config["custom_headers"],
             ))
             await db.commit()
 
-            async with db.execute("SELECT provider_type, model, is_active FROM providers WHERE id = ?", (sample_provider_config["id"],)) as cursor:
+            async with db.execute(
+                "SELECT name, chat_model, is_active FROM providers WHERE id = ?",
+                (sample_provider_config["id"],),
+            ) as cursor:
                 row = await cursor.fetchone()
                 assert row is not None
-                assert row[0] == "openai"
+                assert row[0] == "OpenAI Primary"
                 assert row[1] == "gpt-4o"
                 assert row[2] == 1
 
     @pytest.mark.asyncio
     async def test_session_messages_append_and_query(self, temp_db_path):
-        """Verifies appending multi-turn conversation messages and fetching them in order."""
+        """Verifies appending multi-turn conversation messages to sessions + messages and fetching them in order."""
         async with aiosqlite.connect(temp_db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
             session_id = "test-session-101"
+            await db.execute("INSERT INTO sessions (id) VALUES (?)", (session_id,))
             await db.execute("""
-                INSERT INTO session_messages (session_id, role, content_chinese, content_japanese, raw_content)
-                VALUES (?, ?, ?, ?, ?)
-            """, (session_id, "user", "你好", "こんにちは", "你好"))
+                INSERT INTO messages (session_id, role, content_chinese, content_japanese)
+                VALUES (?, ?, ?, ?)
+            """, (session_id, "user", "你好", "こんにちは"))
             await db.execute("""
-                INSERT INTO session_messages (session_id, role, content_chinese, content_japanese, raw_content)
-                VALUES (?, ?, ?, ?, ?)
-            """, (session_id, "assistant", "你好！很高兴见到你。", "こんにちは！お会いできて嬉しいです。", '{"chinese":"你好！很高兴见到你。","japanese":"こんにちは！お会いできて嬉しいです。"}'))
+                INSERT INTO messages (session_id, role, content_chinese, content_japanese)
+                VALUES (?, ?, ?, ?)
+            """, (session_id, "assistant", "你好！很高兴见到你。", "こんにちは！お会いできて嬉しいです。"))
             await db.commit()
 
-            async with db.execute("SELECT role, content_chinese, content_japanese FROM session_messages WHERE session_id = ? ORDER BY id ASC", (session_id,)) as cursor:
+            async with db.execute(
+                "SELECT role, content_chinese, content_japanese FROM messages WHERE session_id = ? ORDER BY id ASC",
+                (session_id,),
+            ) as cursor:
                 rows = await cursor.fetchall()
                 assert len(rows) == 2
                 assert rows[0][0] == "user"
@@ -188,8 +228,10 @@ class TestConfigStoreTier2:
         """Verifies API keys are masked when returned for display, but remain unmasked in storage."""
         raw_key = "sk-proj-998877665544332211aabbccddeeff"
         async with aiosqlite.connect(temp_db_path) as db:
-            await db.execute("INSERT INTO providers (id, provider_type, api_key, model) VALUES (?, ?, ?, ?)",
-                             ("openai_main", "openai", raw_key, "gpt-4o"))
+            await db.execute(
+                "INSERT INTO providers (id, name, api_base_url, api_key, chat_model) VALUES (?, ?, ?, ?, ?)",
+                ("openai_main", "OpenAI Main", "https://api.openai.com/v1", raw_key, "gpt-4o"),
+            )
             await db.commit()
 
             # Internal backend query (unmasked)
@@ -213,14 +255,17 @@ class TestConfigStoreTier2:
 
     @pytest.mark.asyncio
     async def test_sql_injection_resistance(self, temp_db_path):
-        """Verifies parameterized queries prevent SQL injection payloads in key, value, and profile names."""
+        """Verifies parameterized queries prevent SQL injection payloads in settings and profile names."""
         malicious_key = "'; DROP TABLE settings; --"
         malicious_value = "' OR '1'='1"
         malicious_profile_name = "Arona'); DELETE FROM voice_profiles; --"
 
         async with aiosqlite.connect(temp_db_path) as db:
-            # Parameterized insert into settings
-            await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (malicious_key, malicious_value))
+            # Parameterized update into settings singleton row
+            await db.execute(
+                "UPDATE settings SET console_url = ?, text_split_method = ? WHERE id = 1",
+                (malicious_key, malicious_value),
+            )
             await db.commit()
 
             # Verify settings table was NOT dropped
@@ -228,14 +273,15 @@ class TestConfigStoreTier2:
                 row = await cursor.fetchone()
                 assert row is not None
 
-            # Verify the exact malicious key was stored literally
-            async with db.execute("SELECT value FROM settings WHERE key = ?", (malicious_key,)) as cursor:
+            # Verify the exact malicious payloads were stored literally
+            async with db.execute("SELECT console_url, text_split_method FROM settings WHERE id = 1") as cursor:
                 row = await cursor.fetchone()
-                assert row[0] == malicious_value
+                assert row[0] == malicious_key
+                assert row[1] == malicious_value
 
             # Parameterized insert into voice_profiles
             await db.execute("""
-                INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, refer_audio_path, refer_text)
+                INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text)
                 VALUES (?, ?, ?, ?, ?)
             """, (malicious_profile_name, "w.ckpt", "w.pth", "r.wav", "text"))
             await db.commit()
@@ -250,14 +296,14 @@ class TestConfigStoreTier2:
         """Verifies inserting a voice profile with duplicate name raises sqlite3.IntegrityError."""
         async with aiosqlite.connect(temp_db_path) as db:
             await db.execute("""
-                INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, refer_audio_path, refer_text)
+                INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text)
                 VALUES (?, ?, ?, ?, ?)
             """, (sample_voice_profile["name"], "w.ckpt", "w.pth", "r.wav", "text"))
             await db.commit()
 
             with pytest.raises(sqlite3.IntegrityError):
                 await db.execute("""
-                    INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, refer_audio_path, refer_text)
+                    INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text)
                     VALUES (?, ?, ?, ?, ?)
                 """, (sample_voice_profile["name"], "w2.ckpt", "w2.pth", "r2.wav", "text2"))
                 await db.commit()
@@ -265,11 +311,21 @@ class TestConfigStoreTier2:
     @pytest.mark.asyncio
     async def test_concurrent_writes_wal_mode(self, temp_db_path):
         """Verifies database handles multiple concurrent async write operations without locking failure."""
+        async with aiosqlite.connect(temp_db_path) as setup_db:
+            await setup_db.execute("PRAGMA foreign_keys = ON;")
+            for worker_id in range(5):
+                await setup_db.execute(
+                    "INSERT INTO sessions (id) VALUES (?)",
+                    (f"session-worker-{worker_id}",),
+                )
+            await setup_db.commit()
+
         async def insert_worker(worker_id: int):
             async with aiosqlite.connect(temp_db_path, timeout=10.0) as db:
+                await db.execute("PRAGMA foreign_keys = ON;")
                 for i in range(10):
                     await db.execute(
-                        "INSERT INTO session_messages (session_id, role, content_chinese) VALUES (?, ?, ?)",
+                        "INSERT INTO messages (session_id, role, content_chinese) VALUES (?, ?, ?)",
                         (f"session-worker-{worker_id}", "user", f"message-{i}")
                     )
                     await db.commit()
@@ -279,7 +335,7 @@ class TestConfigStoreTier2:
         await asyncio.gather(*tasks)
 
         async with aiosqlite.connect(temp_db_path) as db:
-            async with db.execute("SELECT COUNT(*) FROM session_messages") as cursor:
+            async with db.execute("SELECT COUNT(*) FROM messages") as cursor:
                 row = await cursor.fetchone()
                 assert row[0] == 50
 
@@ -288,71 +344,87 @@ class TestConfigStoreTier2:
         """Verifies UTF-8 multilingual characters, Japanese kanji/kana, emojis, and control chars."""
         special_text = "日本語テスト：『こんにちは！』🤖✨🌸\n\t\\\"'特殊文字"
         async with aiosqlite.connect(temp_db_path) as db:
-            await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", ("character_prompt", special_text))
+            await db.execute(
+                "INSERT INTO sessions (id, custom_system_prompt) VALUES (?, ?)",
+                ("emoji-session", special_text),
+            )
             await db.commit()
 
-            async with db.execute("SELECT value FROM settings WHERE key = ?", ("character_prompt",)) as cursor:
+            async with db.execute(
+                "SELECT custom_system_prompt FROM sessions WHERE id = ?",
+                ("emoji-session",),
+            ) as cursor:
                 row = await cursor.fetchone()
                 assert row[0] == special_text
 
     @pytest.mark.asyncio
     async def test_json_extra_config_parsing(self, temp_db_path):
-        """Verifies extra_config JSON serialization and deserialization."""
-        config_data = {
-            "top_k": 15,
-            "top_p": 0.95,
-            "temperature": 0.85,
-            "custom_headers": {"X-Custom-Auth": "secret-token"}
-        }
+        """Verifies JSON serialization and deserialization on providers.custom_headers and sessions.settings_json."""
+        headers_data = {"X-Custom-Auth": "secret-token", "X-Client": "galgame2voice"}
+        session_settings = {"top_k": 15, "top_p": 0.95, "temperature": 0.85}
         async with aiosqlite.connect(temp_db_path) as db:
-            await db.execute("INSERT INTO providers (id, provider_type, api_key, model, extra_config) VALUES (?, ?, ?, ?, ?)",
-                             ("custom_p1", "custom", "key", "model-x", json.dumps(config_data)))
+            await db.execute(
+                "INSERT INTO providers (id, name, api_base_url, api_key, chat_model, custom_headers) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("custom_p1", "Custom P1", "https://api.example.com/v1", "key", "model-x", json.dumps(headers_data)),
+            )
+            await db.execute(
+                "INSERT INTO sessions (id, settings_json) VALUES (?, ?)",
+                ("json-session", json.dumps(session_settings)),
+            )
             await db.commit()
 
-            async with db.execute("SELECT extra_config FROM providers WHERE id = ?", ("custom_p1",)) as cursor:
+            async with db.execute("SELECT custom_headers FROM providers WHERE id = ?", ("custom_p1",)) as cursor:
                 row = await cursor.fetchone()
-                parsed = json.loads(row[0])
-                assert parsed["top_k"] == 15
-                assert parsed["custom_headers"]["X-Custom-Auth"] == "secret-token"
+                parsed_headers = json.loads(row[0])
+                assert parsed_headers["X-Custom-Auth"] == "secret-token"
+
+            async with db.execute("SELECT settings_json FROM sessions WHERE id = ?", ("json-session",)) as cursor:
+                row = await cursor.fetchone()
+                parsed_settings = json.loads(row[0])
+                assert parsed_settings["top_k"] == 15
 
     @pytest.mark.asyncio
     async def test_session_history_deletion_and_isolation(self, temp_db_path):
         """Verifies clearing messages for one session does not affect other sessions."""
         async with aiosqlite.connect(temp_db_path) as db:
-            await db.execute("INSERT INTO session_messages (session_id, role, content_chinese) VALUES (?, ?, ?)",
+            await db.execute("PRAGMA foreign_keys = ON;")
+            await db.execute("INSERT INTO sessions (id) VALUES (?)", ("session-A",))
+            await db.execute("INSERT INTO sessions (id) VALUES (?)", ("session-B",))
+            await db.execute("INSERT INTO messages (session_id, role, content_chinese) VALUES (?, ?, ?)",
                              ("session-A", "user", "msg A1"))
-            await db.execute("INSERT INTO session_messages (session_id, role, content_chinese) VALUES (?, ?, ?)",
+            await db.execute("INSERT INTO messages (session_id, role, content_chinese) VALUES (?, ?, ?)",
                              ("session-B", "user", "msg B1"))
             await db.commit()
 
-            # Delete session-A only
-            await db.execute("DELETE FROM session_messages WHERE session_id = ?", ("session-A",))
+            # Delete session-A messages only
+            await db.execute("DELETE FROM messages WHERE session_id = ?", ("session-A",))
             await db.commit()
 
             # Check session-A is empty
-            async with db.execute("SELECT COUNT(*) FROM session_messages WHERE session_id = ?", ("session-A",)) as cursor:
+            async with db.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", ("session-A",)) as cursor:
                 row = await cursor.fetchone()
                 assert row[0] == 0
 
             # Check session-B is intact
-            async with db.execute("SELECT COUNT(*) FROM session_messages WHERE session_id = ?", ("session-B",)) as cursor:
+            async with db.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", ("session-B",)) as cursor:
                 row = await cursor.fetchone()
                 assert row[0] == 1
 
     @pytest.mark.parametrize("key_name,default_val", [
         ("gpt_sovits_url", "http://127.0.0.1:9880"),
-        ("audio_speed", "1.0"),
-        ("top_k", "15"),
-        ("temperature", "0.8"),
-        ("chat_history_limit", "20"),
-        ("streaming_mode", "true"),
+        ("speed_factor", 1.25),
+        ("top_k", 20),
+        ("temperature", 0.8),
+        ("max_history_messages", 20),
+        ("stt_engine", "provider"),
     ])
     @pytest.mark.asyncio
     async def test_all_setting_keys_persistence(self, temp_db_path, key_name, default_val):
         async with aiosqlite.connect(temp_db_path) as db:
-            await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key_name, default_val))
+            await db.execute(f"UPDATE settings SET {key_name} = ? WHERE id = 1", (default_val,))
             await db.commit()
-            async with db.execute("SELECT value FROM settings WHERE key = ?", (key_name,)) as cursor:
+            async with db.execute(f"SELECT {key_name} FROM settings WHERE id = 1") as cursor:
                 row = await cursor.fetchone()
                 assert row[0] == default_val
 
@@ -360,11 +432,16 @@ class TestConfigStoreTier2:
     @pytest.mark.asyncio
     async def test_session_channel_tagging(self, temp_db_path, channel):
         async with aiosqlite.connect(temp_db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
             sess_id = f"{channel}-session-1"
-            await db.execute("INSERT INTO session_messages (session_id, role, content_chinese) VALUES (?, ?, ?)",
+            await db.execute("INSERT INTO sessions (id, channel) VALUES (?, ?)", (sess_id, channel))
+            await db.execute("INSERT INTO messages (session_id, role, content_chinese) VALUES (?, ?, ?)",
                              (sess_id, "user", f"Hello via {channel}"))
             await db.commit()
-            async with db.execute("SELECT COUNT(*) FROM session_messages WHERE session_id = ?", (sess_id,)) as cursor:
+            async with db.execute("SELECT channel FROM sessions WHERE id = ?", (sess_id,)) as cursor:
+                sess_row = await cursor.fetchone()
+                assert sess_row[0] == channel
+            async with db.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (sess_id,)) as cursor:
                 row = await cursor.fetchone()
                 assert row[0] == 1
 
