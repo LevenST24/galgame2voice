@@ -3,19 +3,17 @@ Unit and Regression Tests for System-Wide Optimizations (R5).
 Verifies:
 1. SSE keep-alive formatting as W3C comment frames (: keep-alive\\n\\n).
 2. CharacterManager _AUDIO_PROBE_CACHE hits and zero re-probing on unchanged files.
-3. System update static asset cleanup via git clean -fd.
-4. Frontend CSS decoupling and clean index.html.
+3. Frontend CSS decoupling and clean index.html.
 """
 
 import asyncio
 import wave
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from galgame2voice.routers.chat import sse_event_formatter
-from galgame2voice.routers.system import _apply_update_sync
 from galgame2voice.services import character_manager, character_package
 from galgame2voice.services.character_manager import CharacterManager
 from galgame2voice.services.chat_service import SseKeepAlive
@@ -78,47 +76,6 @@ class TestCharacterAudioProbeCache:
             mock_probe.assert_called_once()
         assert second[0] != first[0]
         assert second[1] == 5.0
-
-
-class TestSystemUpdateGitClean:
-    """Verifies that git clean -fd is executed for static build artifacts."""
-
-    def test_apply_update_executes_git_clean_on_static(self):
-        executed_cmds = []
-
-        def fake_run_git(args, cwd, timeout=30.0, env_overrides=None):
-            # Supply-chain guard: the update endpoint checks the origin remote
-            # against an allowlist before fetching/pulling.
-            if args[0] == "remote" and len(args) > 1 and args[1] == "get-url":
-                return 0, "https://github.com/LevenST24/galgame2voice.git", ""
-            executed_cmds.append(list(args))
-            if args == ["rev-parse", "--is-inside-work-tree"]:
-                return 0, "true", ""
-            if args == ["rev-parse", "--abbrev-ref", "HEAD"]:
-                return 0, "main", ""
-            if args[:2] == ["status", "--porcelain"]:
-                return 0, " M galgame2voice/static/assets/index-test.css", ""
-            if args[:2] == ["checkout", "HEAD"]:
-                return 0, "", ""
-            if args[:2] == ["clean", "-fd"]:
-                return 0, "", ""
-            if args == ["rev-parse", "HEAD"]:
-                return 0, "1234567890abcdef1234567890abcdef12345678", ""
-            if args == ["rev-parse", "--short", "HEAD"]:
-                return 0, "1234567", ""
-            if args == ["rev-parse", "--abbrev-ref", "@{u}"]:
-                return 0, "origin/main", ""
-            if args[:2] == ["pull", "origin"]:
-                return 0, "Already up to date.", ""
-            if args[:2] == ["diff", "--name-only"]:
-                return 0, "", ""
-            return 0, "", ""
-
-        with patch("galgame2voice.routers.system._run_git_cmd", side_effect=fake_run_git):
-            res, _ = _apply_update_sync(Path("C:/dummy_project"), force_rebuild_frontend=False)
-            assert res.success is True
-            # Verify clean -fd was called for galgame2voice/static
-            assert any(cmd[:3] == ["clean", "-fd", "--"] and "galgame2voice/static" in cmd for cmd in executed_cmds)
 
 
 class TestFrontendCssDecoupling:

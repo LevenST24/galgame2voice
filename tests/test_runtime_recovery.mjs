@@ -6,8 +6,7 @@ import { waitForEngine } from '../frontend/src/controllers/engine_recovery.js';
 import { saveConfirmedConfig } from '../frontend/src/controllers/config_recovery.js';
 import { ensureSessionVoice, initVoiceSettings } from '../frontend/src/controllers/voice_settings.js';
 import { initGlobalSettings, loadGlobalConfig, saveGlobalConfig, handleRestartSovits, fetchSystemTelemetry, savePrivateEndpointPreference, handleProviderTest, handleActivateProvider } from '../frontend/src/controllers/global_settings.js';
-import { renderSystemVersionUI, initUpdateManager, loadSystemVersionInfo, handleCheckUpdate, handleApplyUpdate } from '../frontend/src/controllers/update_manager.js';
-import { formatUpdateStatus } from '../frontend/src/settings.js';
+import { initUpdateManager, loadSystemVersionInfo, handleCheckUpdate } from '../frontend/src/controllers/update_manager.js';
 
 let passed = 0;
 const response = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
@@ -643,29 +642,6 @@ for (const allowed of [true, false]) {
   assert.deepEqual(methods, ['POST', 'GET']); passed++;
 }
 {
-  const dom = Object.fromEntries(['gDashVersionCommit', 'gDashVersionBranch', 'gDashVersionBadge',
-    'gRemoteStatusTag', 'gBtnApplyUpdate', 'gBtnApplyUpdateText', 'gBtnCheckUpdate', 'gBtnCheckUpdateText',
-    'gUpdateNoticeBox', 'gUpdateNoticeTitle', 'gUpdateNoticeDesc', 'gUpdateNoticeIcon'].map(name => {
-    const el = element(); el.classList = { add() {}, remove() {} }; return [name, el];
-  }));
-  initUpdateManager(dom);
-  const portable = { current_version: '2.1.0', current_branch: 'portable', has_update: false,
-    error: 'Windows 便携版请下载新版完整发布包更新' };
-  assert.equal(formatUpdateStatus(portable).canUpdate, false);
-  renderSystemVersionUI(portable);
-  assert.equal(dom.gBtnApplyUpdate.disabled, true);
-  assert.equal(dom.gRemoteStatusTag.textContent, 'Windows 便携版');
-  assert.equal(dom.gDashVersionBadge.textContent, '便携版');
-  assert.match(dom.gUpdateNoticeDesc.textContent, /data、audio、characters/); passed++;
-  let requests = 0;
-  globalThis.fetch = async () => { requests++; throw new Error('portable must not invoke Git updates'); };
-  await handleCheckUpdate(); await handleApplyUpdate();
-  assert.equal(requests, 0); passed++;
-  renderSystemVersionUI({ current_branch: 'main', current_version: 'abc', has_update: true, behind_count: 2 });
-  assert.equal(dom.gBtnApplyUpdate.disabled, false);
-  assert.match(dom.gBtnApplyUpdateText.textContent, /2 个新提交/); passed++;
-}
-{
   // Retired memory, nickname, and persona controls used to ride along on every global save.
   // GET /api/config returns SettingsResponse and never contains those keys, so a lost POST
   // could not confirm. saveGlobalConfig must ignore them, accept the readback, and clear the draft.
@@ -956,17 +932,13 @@ for (const allowed of [true, false]) {
     gUpdateNoticeTitle: doc.createElement('div'),
     gUpdateNoticeDesc: doc.createElement('div'),
     gUpdateNoticeIcon: doc.createElement('span'),
-    gCommitsLogContainer: doc.createElement('div'),
-    gCommitsLogList: doc.createElement('ul'),
     gBtnCheckUpdate: doc.createElement('button'),
     gBtnCheckUpdateText: doc.createElement('span'),
-    gBtnApplyUpdate: doc.createElement('button'),
-    gBtnApplyUpdateText: doc.createElement('span'),
+    gReleaseDownloadLink: doc.createElement('a'),
   };
   dom.gUpdateNoticeBox.classList.add('hidden');
-  dom.gCommitsLogContainer.classList.add('hidden');
-  dom.gBtnCheckUpdateText.textContent = '检查更新';
-  dom.gBtnApplyUpdateText.textContent = '一键拉取并更新';
+  dom.gBtnCheckUpdateText.textContent = '检查新版本';
+  dom.gReleaseDownloadLink.href = 'https://github.com/LevenST24/galgame2voice/releases';
   initUpdateManager(dom);
   const previousDocument = globalThis.document;
   globalThis.document = doc;
@@ -977,44 +949,36 @@ for (const allowed of [true, false]) {
   try {
     globalThis.fetch = async (url) => String(url).includes('check_remote=true')
       ? response({
-        current_version: '1111111',
-        latest_version: '3333333',
-        current_branch: 'main',
+        current_version: '3.1.2',
+        latest_version: '3.2.0',
+        current_branch: 'source',
+        release_url: 'https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0',
         has_update: true,
-        behind_count: 2,
-        build_pending: false,
         error: null,
-        commits_log: ['3333333 feat: update (2026-11-05)'],
       })
       : response({
-        current_version: '1111111',
-        latest_version: '1111111',
-        current_branch: 'main',
+        current_version: '3.1.2',
+        latest_version: null,
+        current_branch: 'source',
+        release_url: 'https://github.com/LevenST24/galgame2voice/releases',
         has_update: false,
-        behind_count: 0,
-        build_pending: false,
         error: null,
-        commits_log: [],
       });
     await handleCheckUpdate();
-    assert.equal(dom.gDashVersionBadge.textContent, '有更新 (2)');
-    assert.equal(dom.gBtnApplyUpdate.className, 'btn primary');
-    assert.match(dom.gBtnApplyUpdateText.textContent, /2 个新提交/);
+    assert.equal(dom.gDashVersionBadge.textContent, '发现新版本 v3.2.0');
+    assert.equal(dom.gReleaseDownloadLink.href, 'https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0');
     await loadSystemVersionInfo(false);
-    assert.equal(dom.gDashVersionBadge.textContent, '有更新 (2)');
-    assert.equal(dom.gRemoteStatusTag.textContent, '落后 2 个提交');
-    assert.equal(dom.gBtnApplyUpdate.className, 'btn primary');
-    assert.match(dom.gBtnApplyUpdateText.textContent, /2 个新提交/);
+    assert.equal(dom.gDashVersionBadge.textContent, '发现新版本 v3.2.0');
+    assert.equal(dom.gRemoteStatusTag.textContent, '发现新版本 v3.2.0');
+    assert.equal(dom.gReleaseDownloadLink.href, 'https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0');
 
     globalThis.fetch = async () => response({
-      current_version: '3333333',
-      latest_version: '3333333',
-      current_branch: 'main',
+      current_version: '3.2.0',
+      latest_version: '3.2.0',
+      current_branch: 'source',
+      release_url: 'https://github.com/LevenST24/galgame2voice/releases/tag/v3.2.0',
       has_update: false,
-      behind_count: 0,
-      build_pending: false,
       error: null,
-      commits_log: [],
     });
     await handleCheckUpdate();
     assert.equal(dom.gUpdateNoticeBox.classList.contains('hidden'), false);

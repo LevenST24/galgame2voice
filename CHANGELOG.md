@@ -149,6 +149,7 @@ All notable changes to galgame2voice are documented here. The format follows
 - 移除 Telegram 机器人功能与设置中心里的「Telegram」页面；原有的 Telegram 历史对话与旧版聊天备份仍可在网页端正常查看、导出和导入。
 ### Removed
 - 移除旧的同步聊天接口（POST /api/chat）和单独的语音合成接口（POST /api/voice/synthesize）；网页聊天仍使用流式接口，历史台词的语音文件已过期或不存在时，点播放不再自动重新合成，而是提示可到 LOG 里重新生成这一句的语音。
+- 在设置中心「备份与更新」页检查或执行更新时，原来会在网页内直接拉取并覆盖本地文件，现在只提示 GitHub Releases 上是否有新的正式版本并给出下载页链接，不再在应用内改动本地文件。
 
 ## [3.1.2] - 2026-11-04
 

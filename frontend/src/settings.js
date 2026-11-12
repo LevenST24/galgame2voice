@@ -125,136 +125,66 @@ export const BUILTIN_PRESETS = [
 ];
 
 /**
- * 格式化系统更新检查状态
- * @param {Object} data 后端返回的 SystemVersionResponse 数据
+ * 格式化系统版本与 GitHub Releases 检查状态
+ * @param {Object|null} data 后端返回的 SystemVersionResponse 数据
  * @returns {{
- *   badgeClass: string,
- *   badgeText: string,
+ *   tagText: string,
+ *   tagClass: string,
+ *   boxClass: string,
  *   title: string,
- *   desc: string,
- *   canUpdate: boolean,
- *   hasUpdate: boolean
+ *   desc: string
  * }}
  */
 export function formatUpdateStatus(data) {
   if (!data) {
     return {
-      badgeClass: 'badge-pill-gray',
-      badgeText: '状态未知',
-      title: '版本信息未获取',
-      desc: '请点击“检查更新”以获取最新状态。',
-      canUpdate: true,
-      hasUpdate: false,
-    };
-  }
-
-  if (data.current_branch === 'portable') {
-    return {
-      badgeClass: 'badge-pill-gray', badgeText: 'Windows 便携版',
-      title: '通过新版便携包更新',
-      desc: '关闭程序，将新版完整发布包解压到新目录，再复制旧目录的 data、audio、characters 与 backgrounds（若存在）；如有个人 .env 也应复制。详细步骤见程序文件夹中的「使用说明.md」。',
-      canUpdate: false, hasUpdate: false,
+      tagText: '未检查',
+      tagClass: 'badge-pill-gray',
+      boxClass: 'update-notice-box',
+      title: '尚未检查新版本',
+      desc: '点击「检查新版本」查询 GitHub Releases 最新正式版。',
     };
   }
 
   if (data.error) {
     return {
-      badgeClass: 'badge-pill-yellow',
-      badgeText: '检查受阻',
-      title: '无法获取远程更新',
-      desc: data.error,
-      canUpdate: true,
-      hasUpdate: false,
+      tagText: '检查受阻',
+      tagClass: 'badge-pill-yellow',
+      boxClass: 'update-notice-box is-warning',
+      title: '暂时无法获取最新版本信息',
+      desc: `${data.error} 可直接点击「前往下载页」查看发布包。`,
     };
   }
 
-  if (data.build_pending && data.has_update && data.behind_count > 0) {
+  if (data.has_update && data.latest_version) {
+    const desc = data.current_branch === 'portable'
+      ? `当前版本为 v${data.current_version}。请点击「前往下载页」下载新版便携包；解压到新文件夹后，将旧目录中的 data、audio、characters、backgrounds（及个人 .env）复制过去即可保留全部数据。`
+      : `当前版本为 v${data.current_version}。请点击「前往下载页」查看更新说明并下载新版发布包，或在终端使用 git pull 手动更新源码。`;
     return {
-      badgeClass: 'badge-pill-indigo',
-      badgeText: `待补构建 (落后 ${data.behind_count})`,
-      title: `发现新版本可用且存在待补建产物 (落后 ${data.behind_count} 个提交)`,
-      desc: `远程最新版本为 ${data.latest_version}，本地存在未完成的前端静态构建。点击下方按钮即可拉取并重新部署。`,
-      canUpdate: true,
-      hasUpdate: true,
+      tagText: `发现新版本 v${data.latest_version}`,
+      tagClass: 'badge-pill-indigo',
+      boxClass: 'update-notice-box is-update',
+      title: `发现新版本 v${data.latest_version}`,
+      desc,
     };
   }
 
-  if (data.build_pending) {
+  if (!data.has_update && data.latest_version) {
     return {
-      badgeClass: 'badge-pill-yellow',
-      badgeText: '待补部署',
-      title: '更新未完成：前端静态产物待构建',
-      desc: '上次更新已拉取最新代码，但前端静态产物本地构建未成功。请确保 Node.js 与 npm 环境正常后点击下方重试构建。',
-      canUpdate: true,
-      hasUpdate: false,
-    };
-  }
-
-  if (data.has_update && data.behind_count > 0) {
-    return {
-      badgeClass: 'badge-pill-indigo',
-      badgeText: `落后 ${data.behind_count} 个提交`,
-      title: `发现新版本可用 (落后 ${data.behind_count} 个提交)`,
-      desc: `远程最新版本为 ${data.latest_version}，本地当前版本为 ${data.current_version}。点击下方“一键拉取并更新”即可自动拉取最新代码并部署产物。`,
-      canUpdate: true,
-      hasUpdate: true,
+      tagText: '已是最新',
+      tagClass: 'badge-pill-green',
+      boxClass: 'update-notice-box is-latest',
+      title: '当前已是最新版本',
+      desc: `当前版本 v${data.current_version} 已是最新正式版（远端最新 v${data.latest_version}）。`,
     };
   }
 
   return {
-    badgeClass: 'badge-pill-green',
-    badgeText: '已是最新',
-    title: '当前已是最新版本',
-    desc: `本地版本 (${data.current_version}) 与远程 origin/${data.current_branch || 'main'} 保持同步，可随时重新拉取或重新构建。`,
-    canUpdate: true,
-    hasUpdate: false,
+    tagText: data.current_branch === 'portable' ? '便携版' : '本地版本',
+    tagClass: 'badge-pill-gray',
+    boxClass: 'update-notice-box',
+    title: `当前版本 v${data.current_version}`,
+    desc: '点击「检查新版本」查询是否有新发布的版本，或点击「前往下载页」浏览历史发布包。',
   };
-}
-
-/**
- * 渲染更新提交日志列表
- * @param {HTMLElement} listEl
- * @param {Array<string>} commitsLog
- */
-export function renderCommitsLog(listEl, commitsLog) {
-  if (!listEl) return;
-  listEl.innerHTML = '';
-  if (!Array.isArray(commitsLog) || commitsLog.length === 0) {
-    const li = document.createElement('li');
-    li.className = 'commits-log-empty';
-    li.textContent = '暂无新提交记录';
-    listEl.appendChild(li);
-    return;
-  }
-
-  commitsLog.forEach((entry) => {
-    const li = document.createElement('li');
-    li.className = 'commits-log-item';
-    
-    // 支持 "hash message (date)" 格式分割高亮
-    const match = typeof entry === 'string' ? entry.match(/^([a-f0-9]+)\s+(.+?)(?:\s+\((.*?)\))?$/) : null;
-    if (match) {
-      const hashSpan = document.createElement('span');
-      hashSpan.className = 'commit-hash';
-      hashSpan.textContent = match[1];
-
-      const msgSpan = document.createElement('span');
-      msgSpan.className = 'commit-msg';
-      msgSpan.textContent = match[2];
-
-      li.appendChild(hashSpan);
-      li.appendChild(msgSpan);
-
-      if (match[3]) {
-        const dateSpan = document.createElement('span');
-        dateSpan.className = 'commit-date';
-        dateSpan.textContent = match[3];
-        li.appendChild(dateSpan);
-      }
-    } else {
-      li.textContent = String(entry);
-    }
-    listEl.appendChild(li);
-  });
 }
 
