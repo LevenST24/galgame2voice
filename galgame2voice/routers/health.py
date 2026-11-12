@@ -12,6 +12,7 @@ import os
 import sys
 import time
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -598,6 +599,18 @@ def _resolve_sovits_directory(project_root: Path) -> Path:
 
 _engine_restart_lock = threading.Lock()
 _engine_restart_target: str | None = None
+
+
+@contextmanager
+def engine_restart_guard(target_url: str):
+    """Hold the restart lock and publish ``target_url`` until the block exits."""
+    global _engine_restart_target
+    with _engine_restart_lock:
+        _engine_restart_target = target_url
+        try:
+            yield
+        finally:
+            _engine_restart_target = None
 
 
 def _engine_state(endpoint: SovitsEndpoint, state: str, message: str) -> dict[str, Any]:

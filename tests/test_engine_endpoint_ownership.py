@@ -1,7 +1,9 @@
 """Status and restart operations must refer to the configured engine endpoint."""
 
+import ast
 import asyncio
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -603,17 +605,156 @@ async def test_restart_local_engine_uses_settings_project_root_for_pid_cache_and
     assert not (launcher_root / "logs" / "gpt_sovits.log").exists()
 
 
-def test_galgame2voice_package_has_no_reverse_imports_from_scripts_run_server():
-    from pathlib import Path
-    import re
+def test_find_custom_voice_ref_audio_does_not_fallback_to_launcher_project_root(tmp_path, monkeypatch):
+    import sqlite3
 
+    launcher_root = tmp_path / "launcher"
+    custom_root = tmp_path / "custom_root"
+    (launcher_root / "audio").mkdir(parents=True)
+    (custom_root / "data").mkdir(parents=True)
+    ghost = launcher_root / "audio" / "ghost_ref.wav"
+    ghost.write_bytes(b"not-a-real-wav")
+
+    db_file = custom_root / "data" / "galgame2voice.db"
+    conn = sqlite3.connect(db_file)
+    try:
+        conn.execute(
+            "CREATE TABLE settings (id INTEGER PRIMARY KEY, active_voice_profile_id INTEGER)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE voice_profiles (
+                id INTEGER PRIMARY KEY,
+                ref_audio_path TEXT,
+                prompt_text TEXT,
+                prompt_lang TEXT,
+                is_default INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO settings (id, active_voice_profile_id) VALUES (1, 1)"
+        )
+        conn.execute(
+            """
+            INSERT INTO voice_profiles (id, ref_audio_path, prompt_text, prompt_lang, is_default)
+            VALUES (1, 'audio/ghost_ref.wav', 'テスト', 'ja', 0)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    from galgame2voice.utils import audio_spec
+
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", launcher_root)
+    monkeypatch.setattr(audio_spec, "_PROJECT_ROOT", launcher_root)
+    monkeypatch.chdir(launcher_root)
+    settings = get_settings()
+    # The autouse fixture points DATA_DIR_NAME at an absolute scratch directory.
+    # Pin the data folder name so db_path stays under the configured project root.
+    monkeypatch.setattr(settings, "project_root", custom_root)
+    monkeypatch.setattr(settings, "data_dir_name", "data")
+    assert settings.db_path == db_file
+
+    ref_file, _, _ = run_server._find_custom_voice_ref_audio()
+    assert ref_file is None
+
+    custom_audio = custom_root / "audio" / "ghost_ref.wav"
+    custom_audio.parent.mkdir(parents=True)
+    custom_audio.write_bytes(b"not-a-real-wav")
+    ref_file, _, _ = run_server._find_custom_voice_ref_audio()
+    assert ref_file == custom_audio.resolve()
+
+
+def test_calibrate_and_cleanup_use_configured_project_root_and_clear_supervisor_launch(tmp_path, monkeypatch):
+    launcher_root = tmp_path / "launcher"
+    custom_root = tmp_path / "custom_root"
+    launcher_root.mkdir()
+    custom_root.mkdir()
+    (launcher_root / "gptsovits.pid").write_text("1111", encoding="utf-8")
+    (custom_root / "gptsovits.pid").write_text("2222", encoding="utf-8")
+
+    monkeypatch.setattr(get_settings(), "project_root", custom_root)
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", launcher_root)
+    monkeypatch.setattr(run_server, "_WINDOWS_JOB_HANDLE", None)
+
+    sovits_dir = tmp_path / "engine"
+    run_server.calibrate_engine_precision(sovits_dir, True, lambda: 0.25, lambda _: None)
+    assert (custom_root / "data" / "precision.json").is_file()
+    assert not (launcher_root / "data" / "precision.json").exists()
+
+    proc = MagicMock()
+    proc.poll.return_value = 0
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_LAUNCH", object())
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 123.0)
+    run_server.cleanup_subprocesses()
+    assert run_server._SPAWNED_SOVITS_LAUNCH is None
+    assert run_server._SPAWNED_SOVITS_STARTED_AT is None
+    assert not (custom_root / "gptsovits.pid").exists()
+    assert (launcher_root / "gptsovits.pid").read_text(encoding="utf-8") == "1111"
+
+
+def _is_scripts_module(name: str) -> bool:
+    return name == "scripts" or name.startswith("scripts.")
+
+
+def _dynamic_scripts_import(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    is_import_module = (
+        isinstance(func, ast.Name) and func.id in {"__import__", "import_module"}
+    ) or (
+        isinstance(func, ast.Attribute)
+        and func.attr == "import_module"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "importlib"
+    )
+    if not is_import_module:
+        return False
+    candidates = list(node.args[:1]) + [kw.value for kw in node.keywords if kw.arg == "name"]
+    return any(
+        isinstance(arg, ast.Constant) and isinstance(arg.value, str) and _is_scripts_module(arg.value)
+        for arg in candidates
+    )
+
+
+def _scripts_reverse_import_lines(source: str) -> list[int]:
+    tree = ast.parse(source)
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(_is_scripts_module(alias.name) for alias in node.names):
+                lines.append(node.lineno)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module and _is_scripts_module(node.module):
+                lines.append(node.lineno)
+        elif _dynamic_scripts_import(node):
+            lines.append(node.lineno)
+    return lines
+
+
+def test_galgame2voice_package_has_no_reverse_imports_from_scripts():
     package_root = Path(__file__).resolve().parents[1] / "galgame2voice"
-    pattern = re.compile(r"\b(?:from|import)\s+scripts\b|scripts\.run_server")
     offenders: list[str] = []
     for py_file in sorted(package_root.rglob("*.py")):
-        text = py_file.read_text(encoding="utf-8")
-        if pattern.search(text):
-            offenders.append(str(py_file.relative_to(package_root.parent)))
-    assert offenders == [], f"galgame2voice must not import from scripts.run_server: {offenders}"
+        source = py_file.read_text(encoding="utf-8")
+        for line in _scripts_reverse_import_lines(source):
+            relative = py_file.relative_to(package_root.parent)
+            offenders.append(f"{relative}:{line}")
+    assert offenders == [], f"galgame2voice must not import scripts: {offenders}"
+
+
+def test_scripts_import_guard_rejects_static_and_dynamic_imports():
+    assert _scripts_reverse_import_lines("import scripts.run_server\n") == [1]
+    assert _scripts_reverse_import_lines("from scripts.run_server import foo\n") == [1]
+    assert _scripts_reverse_import_lines("import scripts\n") == [1]
+    assert _scripts_reverse_import_lines('import importlib\nimportlib.import_module("scripts.foo")\n') == [2]
+    assert _scripts_reverse_import_lines('import importlib\nimportlib.import_module("scripts")\n') == [2]
+    assert _scripts_reverse_import_lines('__import__("scripts.run_server")\n') == [1]
+    benign = 'note = """\nimport scripts.run_server\n"""\n'
+    assert _scripts_reverse_import_lines(benign) == []
 
 
