@@ -32,9 +32,13 @@ async def coordinator_factory(tmp_path, mock_llm_server, mock_gpt_sovits):
 
     tts = SimpleNamespace(audio_dir=tmp_path, synthesize_to_file=AsyncMock(side_effect=synthesize))
 
-    def create(*, zh="第一句。第二句。第三句。", ja="一番です。二番です。三番です。", tokens=None, **kwargs):
+    def create(*, zh="第一句。第二句。第三句。", ja="一番です。二番です。三番です。", lines=None, tokens=None, **kwargs):
         async def default_tokens(*args, **options):
-            raw = json.dumps({"tts": {"emotion": "gentle"}, "chinese": zh, "japanese": ja}, ensure_ascii=False)
+            built = lines if lines is not None else [
+                {"zh": item["zh"], "ja": item["ja"], "emotion": item["emotion"], "act": item["act"]}
+                for item in build_lines(zh, ja, "gentle")
+            ]
+            raw = json.dumps({"tts": {"emotion": "gentle"}, "lines": built}, ensure_ascii=False)
             for event in mock_llm_server.generate_streaming_chunks(raw):
                 if event.startswith("data: [DONE]"):
                     break
@@ -143,46 +147,20 @@ async def test_nonvocal_and_trailing_lines(coordinator_factory, zh, ja, statuses
 
 
 @pytest.mark.asyncio
-async def test_early_comma_audio_belongs_to_same_line_and_waits_for_remaining_tts(coordinator_factory):
-    release = asyncio.Event()
-
-    async def tokens(*args, **kwargs):
-        yield '{"chinese":"你好，今天一起出去吧。再见。","japanese":"こんにちは、'
-        await release.wait()
-        yield '今日は一緒に出かけましょう。さようなら。"}'
-
-    coordinator, _, _ = coordinator_factory(tokens=tokens)
-    stream = coordinator.stream()
-    events = []
-    try:
-        while True:
-            event = await asyncio.wait_for(stream.__anext__(), 2)
-            events.append(event)
-            if event["event"] == "audio_chunk":
-                break
-        assert events[-1]["data"]["line"] == 0
-        assert not any(e["event"] in {"line", "line_audio"} for e in events)
-        release.set()
-        events.extend([event async for event in stream])
-        lines, audio = assert_lifecycle(events)
-        assert lines[0]["ja"] == "こんにちは、今日は一緒に出かけましょう。"
-        assert len(audio[0]["chunks"]) == 2
-    finally:
-        release.set()
-        await stream.aclose()
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("ending", ["cancel", "error"])
 async def test_cancel_or_fatal_error_is_terminal(coordinator_factory, ending):
     cancel, release = asyncio.Event(), asyncio.Event()
 
     async def tokens(*args, **kwargs):
-        yield '{"tts":{"emotion":"gentle"},"chinese":"第一句。第二句。第三句。","japanese":"一番です。二番です。'
+        yield (
+            '{"tts":{"emotion":"gentle"},"lines":['
+            '{"zh":"第一句。","ja":"一番です。","emotion":"gentle"},'
+            '{"zh":"第二句。","ja":"二番です。","emotion":"gentle"},'
+        )
         await release.wait()
         if ending == "error":
             raise RuntimeError("synthetic provider disconnect")
-        yield '三番です。"}'
+        yield '{"zh":"第三句。","ja":"三番です。","emotion":"gentle"}]}'
 
     coordinator, _, database = coordinator_factory(tokens=tokens, cancel_event=cancel)
     stream = coordinator.stream()
@@ -217,9 +195,15 @@ async def test_first_line_is_published_before_provider_eof(coordinator_factory):
     release = asyncio.Event()
 
     async def tokens(*args, **kwargs):
-        yield '{"tts":{"emotion":"gentle"},"chinese":"第一句。第二句。第三句。","japanese":"一番です。二番です。'
+        yield (
+            '{"tts":{"emotion":"gentle"},"lines":['
+            '{"zh":"第一句。","ja":"一番です。","emotion":"gentle"},'
+        )
         await release.wait()
-        yield '三番です。"}'
+        yield (
+            '{"zh":"第二句。","ja":"二番です。","emotion":"gentle"},'
+            '{"zh":"第三句。","ja":"三番です。","emotion":"gentle"}]}'
+        )
 
     coordinator, _, _ = coordinator_factory(tokens=tokens)
     stream = coordinator.stream()
@@ -310,57 +294,6 @@ async def test_disconnect_with_full_event_queue_reaps_tasks_and_persists(coordin
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("timing", ["settled", "in_flight"])
-@pytest.mark.parametrize("chinese", [None, "A!B!"])
-async def test_japanese_first_chunks_settle_after_late_attribution(coordinator_factory, monkeypatch, timing, chinese):
-    release, started = asyncio.Event(), asyncio.Event()
-
-    async def tokens(*args, **kwargs):
-        yield '{"japanese":"one!失敗!"'
-        await release.wait()
-        yield '}' if chinese is None else ',"chinese":"A!B!"}'
-
-    coordinator, _, _ = coordinator_factory(tokens=tokens)
-    run = coordinator._init_stream_run()
-    monkeypatch.setattr(coordinator, "_init_stream_run", lambda: run)
-    original = run.tts_pipe.synthesize_chunk
-
-    async def synthesize(**kwargs):
-        started.set()
-        if timing == "in_flight":
-            await release.wait()
-            # Force attribution to happen while this synthesis is suspended.
-            await asyncio.wait_for(run.producer_task, 2)
-        return await original(**kwargs)
-
-    monkeypatch.setattr(run.tts_pipe, "synthesize_chunk", synthesize)
-    stream = coordinator.stream()
-    pending = asyncio.create_task(collect_stream(stream))
-    try:
-        await asyncio.wait_for(started.wait(), 2)
-        if timing == "settled":
-            await asyncio.wait_for(run.tts_queue.join(), 2)
-        release.set()
-        events = await asyncio.wait_for(pending, 3)
-        audio = [e["data"] for e in events if e["event"] == "line_audio"]
-        assert [item["line"] for item in audio] == [0, 1]
-        assert [item["status"] for item in audio] == ["ready", "failed"]
-        chunk = next(e["data"] for e in events if e["event"] == "audio_chunk")
-        assert audio[0]["chunks"] == [{
-            "index": chunk["index"], "line": 0, "audio_url": chunk["audio_url"], "sentence": chunk["sentence"],
-        }]
-        assert "synthetic TTS failure" in audio[1]["error"]
-        assert events[-1]["data"]["lines"][0]["audio"]["chunks"] == audio[0]["chunks"]
-        assert all(state["pending"] == 0 for state in run.line_audio_states.values())
-    finally:
-        release.set()
-        if not pending.done():
-            pending.cancel()
-        await asyncio.wait_for(asyncio.gather(pending, return_exceptions=True), 2)
-        await asyncio.wait_for(stream.aclose(), 2)
-
-
-@pytest.mark.asyncio
 async def test_overlapping_line_audio_emitters_do_not_skip_backpressured_line(coordinator_factory, monkeypatch):
     coordinator, _, _ = coordinator_factory()
     run = coordinator._init_stream_run()
@@ -419,9 +352,9 @@ async def test_backpressure_keeps_chunk_before_terminal_line_audio(coordinator_f
     blocked, release = asyncio.Event(), asyncio.Event()
 
     async def tokens(*args, **kwargs):
-        yield '{"tts":{"emotion":"gentle"},"chinese":"A!B!","japanese":"one!'
+        yield '{"tts":{"emotion":"gentle"},"lines":[{"zh":"A!","ja":"one!","emotion":"gentle"},'
         await blocked.wait()
-        yield 'two!"}'
+        yield '{"zh":"B!","ja":"two!","emotion":"gentle"}]}'
 
     coordinator, _, _ = coordinator_factory(tokens=tokens)
     run = coordinator._init_stream_run()
@@ -429,7 +362,7 @@ async def test_backpressure_keeps_chunk_before_terminal_line_audio(coordinator_f
     original = coordinator._put_with_cancel
 
     async def backpressure(queue, item, *args, **kwargs):
-        if isinstance(item, dict) and item["event"] == "audio_chunk" and item["data"]["index"] == 0:
+        if isinstance(item, dict) and item.get("event") == "audio_chunk" and item["data"]["index"] == 0:
             blocked.set()
             await release.wait()
         return await original(queue, item, *args, **kwargs)
@@ -450,39 +383,6 @@ async def test_backpressure_keeps_chunk_before_terminal_line_audio(coordinator_f
             collecting.cancel()
         await asyncio.wait_for(asyncio.gather(collecting, return_exceptions=True), 2)
         await asyncio.wait_for(stream.aclose(), 2)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("token_mode", ["whole", "characters"])
-async def test_real_parser_preserves_newline_chunk_boundaries(coordinator_factory, token_mode):
-    ja = "one\n  two"
-    raw = json.dumps({"tts": {"emotion": "gentle"}, "chinese": "A!B!", "japanese": ja})
-
-    async def tokens(*args, **kwargs):
-        for token in ([raw] if token_mode == "whole" else raw):
-            yield token
-            await asyncio.sleep(0)
-
-    coordinator, _, _ = coordinator_factory(tokens=tokens)
-    events = await asyncio.wait_for(collect_stream(coordinator), 3)
-    lines, audio = assert_lifecycle(events)
-    assert [line["ja"] for line in lines] == ["one", "two"]
-    assert [item["status"] for item in audio] == ["ready", "ready"]
-    assert [[chunk["sentence"] for chunk in item["chunks"]] for item in audio] == [["one"], ["two"]]
-    with pytest.raises(ValueError, match="offset"):
-        coordinator._find_containing_sentence_idx(ja, "onetwo", 0)
-
-
-@pytest.mark.asyncio
-async def test_unplaceable_chunk_keeps_the_turn_alive(coordinator_factory):
-    coordinator, _, _ = coordinator_factory()
-    run = coordinator._init_stream_run()
-    run.parser.japanese_extracted = "一番です。"
-
-    await coordinator._queue_sentences(run, ["一番です。", "消えた文。"])
-
-    assert [run.tts_queue.get_nowait() for _ in range(2)] == [("一番です。", 0), ("消えた文。", 0)]
-    assert run.chunk_s_map == {0: 0, 1: 0}
 
 
 @pytest.mark.asyncio
@@ -548,87 +448,3 @@ async def test_interrupted_snapshot_equals_delivered_line_prefix(coordinator_fac
     finally:
         synthesis_release.set()
         await asyncio.wait_for(stream.aclose(), 2)
-
-
-@pytest.mark.asyncio
-async def test_stream_matches_offline_when_late_cue_changes_reply_emotion(coordinator_factory):
-    release = asyncio.Event()
-
-    async def tokens(*args, **kwargs):
-        yield '{"chinese":"A!B!","japanese":"one!two!'
-        await release.wait()
-        yield '悲しい!"}'
-
-    coordinator, _, _ = coordinator_factory(tokens=tokens)
-    stream = coordinator.stream()
-    events = []
-    try:
-        while not any(e["event"] == "audio_chunk" for e in events):
-            events.append(await asyncio.wait_for(anext(stream), 2))
-        assert not any(e["event"] == "line" for e in events)
-        release.set()
-        events.extend(await asyncio.wait_for(collect_stream(stream), 3))
-        lines, _ = assert_lifecycle(events)
-        offline = build_lines("A!B!", "one!two!悲しい!", "sad")
-        assert lines == offline
-        assert lines[0]["emotion"] == "sad"
-    finally:
-        release.set()
-        await asyncio.wait_for(stream.aclose(), 2)
-
-
-@pytest.mark.asyncio
-async def test_overlong_fallback_unit_preserves_lifecycle_and_persisted_lines(coordinator_factory):
-    coordinator, _, database = coordinator_factory(
-        zh="长句。早安。",
-        ja=f"{'あ' * 10005}。おはよう。",
-    )
-    events = [event async for event in coordinator]
-    lines, audio = assert_lifecycle(events)
-    assert [(line["zh"], line["ja"]) for line in lines] == [
-        ("长句。", "あ" * 10000),
-        ("", "あ" * 5 + "。"),
-        ("早安。", "おはよう。"),
-    ]
-    assert [item["status"] for item in audio] == ["ready", "skipped", "ready"]
-    assert audio[2]["chunks"][0]["sentence"] == "おはよう。"
-    assert audio[2]["chunks"][0]["line"] == 2
-    async with get_db(database) as conn:
-        history = await crud.get_recent_messages(conn, "lines")
-        assert history[-1].lines == events[-1]["data"]["lines"]
-
-
-@pytest.mark.asyncio
-async def test_overlong_tail_sentences_keep_their_audio_on_the_line_holding_them(coordinator_factory):
-    sentence = "あ" * 3000 + "。"
-    coordinator, _, database = coordinator_factory(zh="总结。", ja=sentence * 4)
-    events = [event async for event in coordinator]
-    lines, audio = assert_lifecycle(events)
-    assert [(line["zh"], line["ja"]) for line in lines] == [("总结。", sentence * 3), ("", sentence)]
-    assert [item["status"] for item in audio] == ["ready", "ready"]
-    assert [chunk["sentence"] for chunk in audio[0]["chunks"]] == [sentence] * 3
-    assert [chunk["sentence"] for chunk in audio[1]["chunks"]] == [sentence]
-    assert audio[1]["chunks"][0]["line"] == 1
-    async with get_db(database) as conn:
-        history = await crud.get_recent_messages(conn, "lines")
-        assert history[-1].lines == events[-1]["data"]["lines"]
-
-
-@pytest.mark.asyncio
-async def test_overlong_chinese_sentence_keeps_following_translation_aligned(coordinator_factory):
-    coordinator, _, database = coordinator_factory(
-        zh=f"{'哈' * 10005}。早安。",
-        ja=f"{'あ' * 10005}。おはよう。",
-    )
-    events = [event async for event in coordinator]
-    lines, audio = assert_lifecycle(events)
-    assert [(line["zh"], line["ja"]) for line in lines] == [
-        ("哈" * 10000, "あ" * 10000),
-        ("哈" * 5 + "。", "あ" * 5 + "。"),
-        ("早安。", "おはよう。"),
-    ]
-    assert [item["status"] for item in audio] == ["ready", "skipped", "ready"]
-    assert audio[2]["chunks"][0]["sentence"] == "おはよう。"
-    async with get_db(database) as conn:
-        history = await crud.get_recent_messages(conn, "lines")
-        assert history[-1].lines == events[-1]["data"]["lines"]

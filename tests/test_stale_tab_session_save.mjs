@@ -60,7 +60,7 @@ function jsonResponse(body, status = 200) {
 
 const SESSION_CONTROLS = [
   'sSystem', 'sVoice', 'sTemp', 'sTopP', 'sFreq', 'sPres', 'sMaxTokens', 'sCtx',
-  'sAiAdaptiveVoice', 'sAdvReplyFormat', 'sTtsSpeed', 'sTtsTopK', 'sTtsTopP', 'sTtsTemp', 'sSave',
+  'sAiAdaptiveVoice', 'sTtsSpeed', 'sTtsTopK', 'sTtsTopP', 'sTtsTemp', 'sSave',
 ];
 
 function installSessionControls(doc) {
@@ -74,7 +74,7 @@ function installSessionControls(doc) {
   doc.body.appendChild(modal);
   controls.sessionModal = modal;
   for (const id of SESSION_CONTROLS) {
-    const tag = id === 'sSave' ? 'button' : (id === 'sVoice' || id === 'sAdvReplyFormat' || id === 'sAiAdaptiveVoice' ? 'select' : 'input');
+    const tag = id === 'sSave' ? 'button' : (id === 'sVoice' || id === 'sAiAdaptiveVoice' ? 'select' : 'input');
     const el = doc.createElement(tag);
     el.id = id;
     doc.body.appendChild(el);

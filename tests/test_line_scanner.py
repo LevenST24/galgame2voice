@@ -443,7 +443,7 @@ def test_fixture_legacy_format() -> None:
     scanner = LineScanner()
     lines = scanner.feed(FIXTURES["legacy_format"])
     result = scanner.finish()
-    assert result.format == "legacy"
+    assert result.format == "unknown"
     assert lines == []
     assert result.lines == []
     assert result.tts == {"speed": 1.0, "temp": 0.95, "emotion": "gentle"}

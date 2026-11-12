@@ -172,8 +172,9 @@ class TestSessionManagerEmotion:
         )
         assert turn.emotion == "tsundere"
 
-        # Check default template contains emotion schema
-        assert '"emotion": "gentle|shy|happy|tsundere|cool|sad|angry"' in sm.DEFAULT_SYSTEM_TEMPLATE
+        # Default template stays format-agnostic because render_lines_contract supplies the schema
+        assert "{character_name}" in sm.DEFAULT_SYSTEM_TEMPLATE
+        assert '"chinese"' not in sm.DEFAULT_SYSTEM_TEMPLATE
 
     def test_format_llm_messages_with_emotion(self, temp_db_path):
         sm = SessionManager(temp_db_path)
@@ -188,10 +189,11 @@ class TestSessionManagerEmotion:
         ]
         msgs = sm.format_llm_messages("四季夏目", history, "真的吗？")
         assert len(msgs) == 4
-        # Assistant message should be serialized JSON containing emotion
+        # Assistant message should be serialized per-line JSON containing emotion
         assistant_json = json.loads(msgs[2]["content"])
-        assert assistant_json["emotion"] == "tsundere"
-        assert assistant_json["chinese"] == "才、才没有喜欢你呢！"
+        assert assistant_json["tts"]["emotion"] == "tsundere"
+        assert assistant_json["lines"][0]["emotion"] == "tsundere"
+        assert assistant_json["lines"][0]["zh"] == "才、才没有喜欢你呢！"
 
 
 # ============================================================================

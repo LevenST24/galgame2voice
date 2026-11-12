@@ -41,24 +41,6 @@ def _render_system_template(tpl: str, character_name: str) -> str:
     return tpl
 
 
-def _format_assistant_turn(turn: SessionTurn) -> str:
-    """Formats an assistant session turn as raw_content or bilingual JSON string."""
-    if turn.raw_content:
-        return turn.raw_content
-    data_dict = {
-        "tts": {
-            "speed": 1.0,
-            "temp": 1.0,
-            "emotion": getattr(turn, "emotion", "gentle") or "gentle",
-        },
-        "chinese": turn.content_chinese,
-        "japanese": turn.content_japanese,
-    }
-    if getattr(turn, "emotion", None):
-        data_dict["emotion"] = turn.emotion
-    return json.dumps(data_dict, ensure_ascii=False)
-
-
 def _is_duplicate_user_prompt(last_msg: dict[str, str] | None, prompt: str) -> bool:
     """Checks whether the prompt matches the immediately preceding user message."""
     if not last_msg or last_msg.get("role") != "user":
@@ -73,11 +55,7 @@ class SessionManager:
     Supports dual SQLite schema (messages and session_messages) for maximum test and runtime compatibility.
     """
 
-    DEFAULT_SYSTEM_TEMPLATE = (
-        "你是一个Galgame二次元伴侣角色【{character_name}】。\n"
-        "请始终输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad|angry），不要包含 Markdown 标记或多余文字：\n"
-        "{{\"tts\": {{\"speed\": 1.05, \"temp\": 0.95, \"emotion\": \"gentle\"}}, \"chinese\": \"给玩家看的中文内容\", \"japanese\": \"对应的口语化日语音频台词\", \"emotion\": \"gentle|shy|happy|tsundere|cool|sad|angry\"}}"
-    )
+    DEFAULT_SYSTEM_TEMPLATE = "你是一个Galgame二次元伴侣角色【{character_name}】。"
 
     def __init__(
         self,
@@ -308,12 +286,11 @@ class SessionManager:
         new_user_prompt: str | None = None,
         system_template: str | None = None,
         memory_prompt_block: str | None = None,
-        reply_format: str = "old",
+        reply_format: str = "lines",
     ) -> list[dict[str, str]]:
         """
         Constructs system prompt and formatted OpenAI-compatible message list.
-        User messages are formatted as plain text; assistant messages as bilingual JSON.
-        In lines mode assistant turns replay per-line JSON instead.
+        User messages are formatted as plain text; assistant messages replay per-line JSON.
         Appends new_user_prompt unless it duplicates the immediately preceding message.
         Injects optional long-term memory & affection context block into system prompt.
         """
@@ -331,9 +308,7 @@ class SessionManager:
             # untrusted file text to a system-level instruction.
             if turn.role not in ("user", "assistant"):
                 continue
-            if turn.role == "user":
-                content = turn.content_chinese or turn.raw_content or ""
-            elif reply_format == "lines":
+            if turn.role == "assistant":
                 content = format_lines_turn(
                     turn.lines,
                     chinese=turn.content_chinese,
@@ -342,7 +317,7 @@ class SessionManager:
                     tts=None,
                 )
             else:
-                content = _format_assistant_turn(turn)
+                content = turn.content_chinese or turn.raw_content or ""
             messages.append({"role": turn.role, "content": content})
 
         # Append new_user_prompt only if it is not already the last message in history
@@ -363,7 +338,7 @@ class SessionManager:
         max_tokens: int = 8000,
         memory_prompt_block: str | None = None,
         conn: aiosqlite.Connection | None = None,
-        reply_format: str = "old",
+        reply_format: str = "lines",
     ) -> list[ChatMessage]:
         """High-level helper returning List[ChatMessage] for BaseLLMAdapter."""
         history = await self.get_history(
@@ -375,7 +350,7 @@ class SessionManager:
             new_user_prompt=user_prompt,
             system_template=custom_system_prompt,
             memory_prompt_block=memory_prompt_block,
-            reply_format=reply_format,
+            reply_format="lines",
         )
         return [ChatMessage(role=m["role"], content=m["content"]) for m in dict_msgs]
 

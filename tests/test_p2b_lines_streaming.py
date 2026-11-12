@@ -165,7 +165,6 @@ async def test_line_jobs_emotions_skips_errors_and_persistence(coordinator_facto
     assert tts.synthesize_to_file.call_args_list[0].kwargs["options"]["emotion"] == "shy"
     assert all("line" in e["data"] for e in events if e["event"] in {"audio_chunk", "audio_chunk_error"})
     assert all("line" in chunk for chunk in events[-1]["data"]["chunks"])
-    assert not run.aligner.has_chinese
     async with get_db(database) as conn:
         saved = (await crud.get_recent_messages(conn, "lines"))[-1]
     assert saved.lines == events[-1]["data"]["lines"]
@@ -267,7 +266,8 @@ async def test_disconnect_under_lines_backpressure(coordinator_factory, monkeypa
 
 
 def test_request_format_defaults_and_validation():
-    assert ChatRequest(prompt="hi").reply_format == "old"
+    assert ChatRequest(prompt="hi").reply_format == "lines"
+    assert ChatRequest(prompt="hi", reply_format="old").reply_format == "old"
     assert ChatRequest(prompt="hi", reply_format="lines").reply_format == "lines"
     with pytest.raises(ValidationError):
         ChatRequest(prompt="hi", reply_format="invalid")
@@ -330,9 +330,9 @@ async def test_service_forwards_format_and_persists_aggregate(tmp_path, monkeypa
     try:
         events = await _collect(service.stream_chat("问题", session_id="service", reply_format=reply_format))
         result = events[-1]["data"]
-        assert coordinators[0]["reply_format"] == reply_format
+        assert coordinators[0]["reply_format"] == "lines"
         assert [event["data"]["act"] for event in events if event["event"] == "line"] == acts
-        assert context.call_args.kwargs["reply_format"] == reply_format
+        assert context.call_args.kwargs["reply_format"] == "lines"
         zh, ja = "".join(line["zh"] for line in lines), "".join(line["ja"] for line in lines)
         assert (result["chinese"], result["japanese"]) == (zh, ja)
         assert [x["act"] for x in result["lines"]] == acts
@@ -356,12 +356,228 @@ def test_lines_tts_defaults_clamps_and_user_overrides():
     assert parser.tts_speed < 999 and parser.tts_temperature > -999
 
 
-@pytest.mark.asyncio
-async def test_done_reports_a_legacy_reply_format(coordinator_factory):
-    async def tokens(*args, **kwargs):
-        yield '{"tts":{"emotion":"gentle"},"chinese":"你好。","japanese":"こんにちは。"}'
+def _parse_sse_frames(raw: str) -> list[dict]:
+    frames = []
+    for block in raw.split("\n\n"):
+        block = block.strip()
+        if not block or block.startswith(":"):
+            continue
+        ev_type = "message"
+        data_lines = []
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                ev_type = line[len("event:"):].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[len("data:"):].strip())
+        if data_lines:
+            frames.append({"event": ev_type, "data": json.loads("\n".join(data_lines))})
+    return frames
 
-    coordinator, _, _ = coordinator_factory(tokens=tokens)
-    events = [e async for e in coordinator]
-    assert events[-1]["event"] == "done"
-    assert events[-1]["data"]["reply_format"] == "legacy"
+
+@pytest.mark.asyncio
+async def test_explicit_old_reply_format_uses_lines_contract_and_parser_without_422(tmp_path, monkeypatch):
+    from httpx import ASGITransport, AsyncClient
+    from galgame2voice import config
+    from galgame2voice.main import create_app
+    from galgame2voice.routers.chat import set_chat_service
+
+    db_file = tmp_path / "explicit-old.db"
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db_file))
+    await init_db(db_file)
+
+    captured_messages: list[list] = []
+
+    async def stream_tokens(messages, *args, **kwargs):
+        captured_messages.append(list(messages))
+        yield reply(LINES)
+
+    wav_path = audio_dir / "line.wav"
+    wav_path.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
+    tts = SimpleNamespace(
+        audio_dir=audio_dir,
+        synthesize_to_file=AsyncMock(return_value=("/audio/line.wav", wav_path, {})),
+    )
+    service = ChatService(db_path=db_file, tts_service=tts)
+    service._get_active_llm_adapter = AsyncMock(
+        return_value=(SimpleNamespace(stream_chat=stream_tokens, api_key="sk-test"), "mock-model", "deepseek")
+    )
+    service._extract_memory_safe = AsyncMock()
+    # Keep the data directory the database was seeded in. Without DPAPI (Linux, macOS) the seeded console token is
+    # encrypted with the master key file in that directory, and decrypting it elsewhere raises MasterKeyError.
+    data_dir = config.get_settings().data_dir
+    monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(audio_dir=audio_dir, data_dir=data_dir))
+    app = create_app()
+    set_chat_service(service)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/chat/stream", json={
+                "prompt": "旧标签页发来的请求",
+                "session_id": "s_old_tab",
+                "reply_format": "old",
+            })
+            assert resp.status_code == 200, resp.text
+            events = _parse_sse_frames(resp.text)
+            assert len(captured_messages) == 1
+            sys_prompt = captured_messages[0][0].content
+            assert '"lines":' in sys_prompt
+            assert '"chinese":' not in sys_prompt
+            line_events = [e["data"] for e in events if e["event"] == "line"]
+            assert [item["zh"] for item in line_events] == [item["zh"] for item in LINES]
+            done = next(e["data"] for e in events if e["event"] == "done")
+            assert done["reply_format"] == "lines"
+            assert [item["zh"] for item in done["lines"]] == [item["zh"] for item in LINES]
+
+            # Second turn with explicit "old" also replays assistant history in lines JSON
+            resp2 = await client.post("/api/chat/stream", json={
+                "prompt": "第二轮请求",
+                "session_id": "s_old_tab",
+                "reply_format": "old",
+            })
+            assert resp2.status_code == 200, resp2.text
+            assistant_ctx = [m for m in captured_messages[1] if m.role == "assistant"]
+            assert len(assistant_ctx) == 1
+            replayed = json.loads(assistant_ctx[0].content)
+            assert "lines" in replayed and "chinese" not in replayed
+    finally:
+        set_chat_service(None)
+        await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_historical_legacy_message_displays_replays_and_regenerates_audio(tmp_path, monkeypatch):
+    import io
+    import wave
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from galgame2voice.config import get_settings
+    from galgame2voice.database.models import MessageCreate, VoiceProfileCreate
+    from galgame2voice.routers import chat as chat_router
+    from galgame2voice.routers.voice import router as voice_router
+    from galgame2voice.services.tts_cache_manager import TtsCacheManager
+    from galgame2voice.services.tts_scheduler import TtsScheduler
+    from galgame2voice.services.tts_service import TtsService
+    from galgame2voice.services.voice_manager import get_voice_manager
+
+    def make_pcm_wav(amplitude: int = 120) -> bytes:
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(8000)
+            wf.writeframes(amplitude.to_bytes(2, "little", signed=True) * 8000)
+        return buf.getvalue()
+
+    monkeypatch.setenv("GALGAME2VOICE_PROJECT_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    db_file = tmp_path / "legacy-history.db"
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    ref_wav = tmp_path / "ref.wav"
+    ref_wav.write_bytes(make_pcm_wav(100))
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db_file))
+    await init_db(db_file)
+
+    async with get_db(db_file) as conn:
+        profile = await crud.create_voice_profile(conn, VoiceProfileCreate(
+            name="历史角色",
+            gpt_weights_path="models/m.ckpt",
+            sovits_weights_path="models/m.pth",
+            ref_audio_path=str(ref_wav),
+            prompt_text="テスト",
+            prompt_lang="ja",
+            text_lang="ja",
+            is_default=True,
+        ))
+        await crud.set_active_voice_profile(conn, profile.id)
+        await crud.add_message(conn, MessageCreate(
+            session_id="s_legacy_hist",
+            role="user",
+            content_chinese="以前的问候",
+        ))
+        legacy_msg = await crud.add_message(conn, MessageCreate(
+            session_id="s_legacy_hist",
+            role="assistant",
+            content_chinese="旧版第一句。旧版第二句。",
+            content_japanese="旧版の一文目。旧版の二文目。",
+            audio_url="/audio/legacy-whole.wav",
+            lines=None,
+        ))
+
+    captured_messages: list[list] = []
+
+    async def stream_tokens(messages, *args, **kwargs):
+        captured_messages.append(list(messages))
+        yield reply(LINES)
+
+    engine = SimpleNamespace(
+        current_refer_audio=None,
+        current_gpt_weights=None,
+        current_sovits_weights=None,
+        synthesize=AsyncMock(return_value=make_pcm_wav(180)),
+    )
+    scheduler = TtsScheduler()
+    monkeypatch.setattr("galgame2voice.services.tts_service.get_tts_scheduler", lambda: scheduler)
+    cache = TtsCacheManager(cache_dir=audio_dir / "cache", db_path=str(db_file))
+    tts_service = TtsService(client=engine, audio_dir=audio_dir, cache_manager=cache, db_path=str(db_file))
+    service = ChatService(db_path=db_file, tts_service=tts_service)
+    service._get_active_llm_adapter = AsyncMock(
+        return_value=(SimpleNamespace(stream_chat=stream_tokens, api_key="sk-test"), "mock-model", "deepseek")
+    )
+    service._extract_memory_safe = AsyncMock()
+
+    app = FastAPI()
+    app.include_router(chat_router.router)
+    app.include_router(voice_router)
+    chat_router.set_chat_service(service)
+    app.dependency_overrides[get_voice_manager] = lambda: SimpleNamespace(tts_service=tts_service)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # 1. History API returns the legacy message with lines=None and original whole-text + audio_url
+            hist_resp = await client.get("/api/chat/history", params={"session_id": "s_legacy_hist"})
+            assert hist_resp.status_code == 200, hist_resp.text
+            hist_msgs = hist_resp.json()["messages"]
+            legacy_out = next(m for m in hist_msgs if m["id"] == legacy_msg.id)
+            assert legacy_out["lines"] is None
+            assert legacy_out["content_chinese"] == "旧版第一句。旧版第二句。"
+            assert legacy_out["content_japanese"] == "旧版の一文目。旧版の二文目。"
+            assert legacy_out["audio_url"] == "/audio/legacy-whole.wav"
+
+            # 2. Default /api/chat/stream (no reply_format) replays legacy turn in lines format without rewriting DB row
+            stream_resp = await client.post("/api/chat/stream", json={
+                "prompt": "继续聊天",
+                "session_id": "s_legacy_hist",
+            })
+            assert stream_resp.status_code == 200, stream_resp.text
+            assistant_ctx = [m for m in captured_messages[0] if m.role == "assistant"]
+            assert len(assistant_ctx) == 1
+            replayed = json.loads(assistant_ctx[0].content)
+            assert [item["zh"] for item in replayed["lines"]] == ["旧版第一句。", "旧版第二句。"]
+            assert [item["ja"] for item in replayed["lines"]] == ["旧版の一文目。", "旧版の二文目。"]
+
+            async with get_db(db_file) as conn:
+                row_still_null = await (
+                    await conn.execute("SELECT lines_json FROM messages WHERE id=?", (legacy_msg.id,))
+                ).fetchone()
+                assert row_still_null["lines_json"] is None
+
+            # 3. Line audio regeneration on line 0 of the historical legacy message still works
+            regen_resp = await client.post("/api/voice/regenerate-line", json={
+                "session_id": "s_legacy_hist",
+                "message_id": legacy_msg.id,
+                "line_index": 0,
+                "text": "旧版の一文目。旧版の二文目。",
+                "voice_profile_id": profile.id,
+            })
+            assert regen_resp.status_code == 200, regen_resp.text
+            regen_data = regen_resp.json()
+            assert regen_data["persisted"] is True
+            assert regen_data["audio"]["status"] == "ready"
+            assert regen_data["audio"]["chunks"][0]["audio_url"].startswith("/audio/repair_")
+    finally:
+        chat_router.set_chat_service(None)
+        await service.aclose()
+        await scheduler.aclose()
+        await cache.aclose()
+        get_settings.cache_clear()

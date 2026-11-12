@@ -47,7 +47,6 @@
  * @property {number} presPenalty
  * @property {number} maxContext
  * @property {boolean} aiAdaptiveVoice
- * @property {'lines' | 'legacy' | string} advReplyFormat
  * @property {number} ttsSpeed
  * @property {number} ttsTopK
  * @property {number} ttsTopP
@@ -141,12 +140,10 @@ export function pickSettings(value, defaults) {
   return /** @type {T} */ (result);
 }
 
-// advReplyFormat 'legacy' is the explicit opt-out. 'old' was the stored default
-// before per-line replies became the default, so it now falls back to 'lines'.
 /** @type {Record<string, string[]>} */
 const advEnums = {
   advPrimaryLanguage: ['zh', 'ja'], advSubtitleLanguage: ['zh', 'ja', 'none'],
-  advAutoMode: ['normal', 'voice-priority'], advReplyFormat: ['lines', 'legacy'],
+  advAutoMode: ['normal', 'voice-priority'],
   advBgTime: ['auto', 'day', 'evening', 'night'],
 };
 /** @type {Record<string, number>} */

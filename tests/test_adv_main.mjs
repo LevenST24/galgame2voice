@@ -2073,7 +2073,6 @@ test('startup sync unconfirmed version is preserved and newer settings kept if e
     sCtx: doc.createElement('input'),
     sMaxTokens: doc.createElement('input'),
     sAiAdaptiveVoice: doc.createElement('select'),
-    sAdvReplyFormat: doc.createElement('select'),
     sTtsSpeed: doc.createElement('input'),
     sTtsTopK: doc.createElement('input'),
     sTtsTopP: doc.createElement('input'),

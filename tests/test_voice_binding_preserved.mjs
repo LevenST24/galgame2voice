@@ -37,7 +37,7 @@ for (const profiles of [[{ id: 1, name: '其他角色' }], []]) {
     const session = { id: 's', title: 'S', settings: { ...DEFAULT_SESSION_SETTINGS, voiceProfileId: 99 }, messages: [] };
     state.sessions = [session]; state.activeId = session.id;
     const fields = { sVoice: '', sSystem: '', sSave: '', sTemp: '.7', sTopP: '1', sMaxTokens: '1024',
-      sFreq: '0', sPres: '0', sCtx: '20', sAiAdaptiveVoice: 'true', sAdvReplyFormat: 'lines',
+      sFreq: '0', sPres: '0', sCtx: '20', sAiAdaptiveVoice: 'true',
       sTtsSpeed: '1', sTtsTopK: '15', sTtsTopP: '1', sTtsTemp: '1' };
     const dom = Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, element(value)]));
     dom.sVoice = select();

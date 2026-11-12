@@ -263,7 +263,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _http_json("POST", f"{base_url}/api/providers/openai/activate", {})
             pid = _http_json("GET", f"{base_url}/api/characters")["characters"][0]["id"]
             _http_json("POST", f"{base_url}/api/characters/switch", {"character_id": pid, "force": True})
-            _http_json("POST", f"{base_url}/api/chat/sessions", {"id": "s_visual_capture", "title": "视觉采集会话", "voice_profile_id": pid, "settings": {"voiceProfileId": pid, "advReplyFormat": "lines", "advAutoMode": "normal"}})
+            _http_json("POST", f"{base_url}/api/chat/sessions", {"id": "s_visual_capture", "title": "视觉采集会话", "voice_profile_id": pid, "settings": {"voiceProfileId": pid, "advAutoMode": "normal"}})
             with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/list", timeout=5) as res:
                 ws_url = next(t["webSocketDebuggerUrl"] for t in json.load(res) if t.get("type") == "page")
             client = make_cdp_client(ws_url)

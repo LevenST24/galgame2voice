@@ -90,7 +90,7 @@ def build_assistant_message_create(
     return MessageCreate(
         session_id=session_id, role="assistant",
         content_chinese=content_chinese or "", content_japanese=content_japanese or "",
-        lines=lines, audio_url=audio_url, latency_ms=latency_ms,
+        lines=lines or None, audio_url=audio_url, latency_ms=latency_ms,
         reply_to_message_id=reply_to_message_id,
     )
 
@@ -158,7 +158,7 @@ def decide_completion_policy(
         return {
             "abort_empty_reply": True, "db_action": "prune_user",
             "content_chinese": final_chinese or "", "content_japanese": final_japanese or "",
-            "final_lines": final_lines, "persisted_lines": final_lines,
+            "final_lines": final_lines, "persisted_lines": final_lines or None,
             "concat_audio": False, "record_metrics": False, "settle_affection": False,
             "empty_error_text": error_text, "stopped_on_length": stopped_on_length,
         }
@@ -169,7 +169,7 @@ def decide_completion_policy(
     return {
         "abort_empty_reply": False, "db_action": db_action,
         "content_chinese": final_chinese or "", "content_japanese": final_japanese or "",
-        "final_lines": final_lines, "persisted_lines": final_lines,
+        "final_lines": final_lines, "persisted_lines": final_lines or None,
         "concat_audio": True, "record_metrics": True, "settle_affection": has_meaningful_content,
         "empty_error_text": None, "stopped_on_length": False,
     }
@@ -180,7 +180,7 @@ def build_completion_done_event(
     full_chinese: str,
     full_japanese: str,
     final_lines: list[dict[str, Any]],
-    reply_format: str,
+    reply_format: str = "lines",
     final_emotion: str,
     affection: Mapping[str, Any],
     metrics: Any,
