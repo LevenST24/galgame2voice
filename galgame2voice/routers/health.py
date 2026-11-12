@@ -345,8 +345,7 @@ def _collect_hardware_telemetry_sync(
         # A failed native inventory does not prove CPU-only hardware. Explicit
         # env/DB/cache/YAML choices still have a known next launch mode.
         next_prec = None
-    from scripts import run_server
-    active_prec = run_server.get_managed_engine_precision(endpoint)
+    active_prec = get_engine_supervisor().get_managed_precision(endpoint)
 
     cfg_prec = read_db_precision(project_root, db_path=settings.db_path) or "auto"
     env_prec = os.environ.get("GPT_SOVITS_PRECISION", "").strip().lower()
@@ -711,11 +710,11 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
     if getattr(sys, "frozen", False) and await asyncio.to_thread(find_engine_python, sovits_dir) is None:
         raise HTTPException(status_code=400, detail="所选引擎缺少自己的运行环境。请使用包含 runtime 的完整集成包，重新选择文件夹后启动。")
 
-    from scripts import run_server
-    owned = run_server._SPAWNED_SOVITS_PROC
+    supervisor = get_engine_supervisor()
+    owned = supervisor.get_owned_process()
     live_owned = owned is not None and owned.poll() is None
-    owns_endpoint = live_owned and run_server.get_managed_engine_launch(endpoint) is not None
-    if not owns_endpoint and await asyncio.to_thread(run_server.is_port_in_use, endpoint.port, endpoint.host):
+    owns_endpoint = live_owned and supervisor.get_managed_launch(endpoint) is not None
+    if not owns_endpoint and await asyncio.to_thread(supervisor.is_port_in_use, endpoint.port, endpoint.host):
         raise HTTPException(status_code=409, detail="语音引擎已在其他窗口运行，可直接使用。若需重启，请先关闭该引擎窗口，再在「运行状态」点击「重启 SoVITS 引擎」。")
     # Determine precision and device target only after validation and ownership checks.
     req_prec = str(payload.precision).strip().lower() if (payload and payload.precision) else None
@@ -726,27 +725,22 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
     client = get_gpt_sovits_client()
     client_endpoint = parse_sovits_endpoint(client.base_url, source="runtime")
     if (client_endpoint.base_url == endpoint.base_url
-            or live_owned and run_server.get_managed_engine_launch(client_endpoint) is not None):
+            or live_owned and supervisor.get_managed_launch(client_endpoint) is not None):
         # Validate first, then invalidate before terminating or launching a
         # process. A failed spawn cannot restore the stopped engine's models.
         client.invalidate_model_state()
 
     if owned is not None:
         if live_owned:
-            await asyncio.to_thread(run_server.terminate_process_tree, owned.pid)
+            await asyncio.to_thread(supervisor.terminate_process_tree, owned.pid)
             await asyncio.to_thread(owned.wait, timeout=3)
-        run_server._SPAWNED_SOVITS_PROC = None
-        run_server._SPAWNED_SOVITS_LAUNCH = None
-        run_server._SPAWNED_SOVITS_STARTED_AT = None
-        (run_server.PROJECT_ROOT / "gptsovits.pid").unlink(missing_ok=True)
+        supervisor.clear_owned_process(project_root=settings.project_root)
 
     # Bounded wait for the old process to release the port (replaces the old
     # fixed sleep): poll up to ~5s at 0.25s intervals, off the event loop.
-    from scripts.run_server import is_port_in_use
-
     port_released = False
     for _ in range(20):
-        if not await asyncio.to_thread(is_port_in_use, endpoint.port, endpoint.host):
+        if not await asyncio.to_thread(supervisor.is_port_in_use, endpoint.port, endpoint.host):
             port_released = True
             break
         await asyncio.sleep(0.25)
@@ -764,8 +758,15 @@ async def _restart_local_engine(endpoint: SovitsEndpoint, payload: RestartSovits
         )
 
     try:
-        from scripts.run_server import _spawn_sovits_process
-        proc = await asyncio.to_thread(_spawn_sovits_process, sovits_dir, endpoint.host, endpoint.port, is_half, device=device)
+        proc = await asyncio.to_thread(
+            supervisor.spawn_process,
+            sovits_dir,
+            endpoint.host,
+            endpoint.port,
+            is_half,
+            device=device,
+            project_root=settings.project_root,
+        )
         await asyncio.sleep(0.1)
         if proc.poll() is not None:
             message = await asyncio.to_thread(engine_failure_message, settings.project_root / "logs" / "gpt_sovits.log")

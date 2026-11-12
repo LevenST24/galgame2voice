@@ -495,3 +495,125 @@ def test_is_matching_managed_host_rejects_empty_or_none():
     assert run_server._is_matching_managed_host(None, "127.0.0.1") is False
     assert run_server._is_matching_managed_host("   ", "   ") is False
 
+
+@pytest.mark.asyncio
+async def test_saving_remote_sovits_url_unlinks_pid_under_settings_project_root_not_launcher_root(
+    tmp_path, monkeypatch
+):
+    from galgame2voice.routers import config as config_router
+
+    monkeypatch.delenv("GALGAME2VOICE_GPT_SOVITS_BASE_URL", raising=False)
+    monkeypatch.delenv("GPT_SOVITS_BASE_URL", raising=False)
+
+    launcher_root = tmp_path / "launcher"
+    custom_root = tmp_path / "custom_project_root"
+    launcher_root.mkdir()
+    custom_root.mkdir()
+    (launcher_root / "gptsovits.pid").write_text("4321", encoding="utf-8")
+    (custom_root / "gptsovits.pid").write_text("1234", encoding="utf-8")
+
+    monkeypatch.setattr(get_settings(), "project_root", custom_root)
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", launcher_root)
+
+    proc = MagicMock(pid=1234)
+    proc.poll.return_value = None
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", proc)
+    monkeypatch.setattr(
+        run_server,
+        "_SPAWNED_SOVITS_LAUNCH",
+        EngineLaunch(proc, "127.0.0.1", 9880, "cpu", False, started_at=1.0),
+    )
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
+    monkeypatch.setattr(health, "_engine_restart_lock", threading.Lock())
+
+    def terminate(pid, timeout=2.0):
+        assert pid == 1234
+        proc.poll.return_value = 0
+
+    monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
+
+    result = await config_router._apply_sovits_url_update("http://192.168.1.50:9880")
+    assert result == {"base_url": "http://192.168.1.50:9880", "source": "db"}
+    assert not (custom_root / "gptsovits.pid").exists()
+    assert (launcher_root / "gptsovits.pid").exists()
+
+
+@pytest.mark.asyncio
+async def test_restart_local_engine_uses_settings_project_root_for_pid_cache_and_logs(
+    tmp_path, monkeypatch
+):
+    import sys
+
+    launcher_root = tmp_path / "launcher"
+    custom_root = tmp_path / "custom_project_root"
+    launcher_root.mkdir()
+    (custom_root / "data").mkdir(parents=True)
+
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    (engine_dir / "api_v2.py").write_text("# synthetic entrypoint, never executed", encoding="utf-8")
+    (custom_root / "data" / "sovits_dir.txt").write_text(str(engine_dir), encoding="utf-8")
+
+    (launcher_root / "gptsovits.pid").write_text("9999", encoding="utf-8")
+    (custom_root / "gptsovits.pid").write_text("1234", encoding="utf-8")
+
+    monkeypatch.setattr(get_settings(), "project_root", custom_root)
+    monkeypatch.setattr(run_server, "PROJECT_ROOT", launcher_root)
+
+    endpoint = parse_sovits_endpoint("http://127.0.0.1:19230", source="db")
+    old_proc = MagicMock(pid=1234)
+    old_proc.poll.return_value = None
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_PROC", old_proc)
+    monkeypatch.setattr(
+        run_server,
+        "_SPAWNED_SOVITS_LAUNCH",
+        EngineLaunch(old_proc, endpoint.host, endpoint.port, "cpu", False),
+    )
+    monkeypatch.setattr(run_server, "_SPAWNED_SOVITS_STARTED_AT", 1.0)
+    monkeypatch.setattr(health, "_engine_restart_lock", threading.Lock())
+    monkeypatch.setattr(health, "_engine_restart_target", None, raising=False)
+    monkeypatch.setattr(health, "resolve_effective_sovits_endpoint", AsyncMock(return_value=endpoint))
+    monkeypatch.setattr(health, "_apply_sovits_precision_config", AsyncMock(return_value=("cpu", False, "test")))
+    monkeypatch.setattr(run_server, "is_port_in_use", lambda *args: False)
+
+    def terminate(pid, timeout=2.0):
+        assert pid == 1234
+        old_proc.poll.return_value = 0
+
+    monkeypatch.setattr(run_server, "terminate_process_tree", terminate)
+    monkeypatch.setattr(run_server, "find_engine_python", lambda _: tmp_path / "python.exe")
+    monkeypatch.setattr(run_server, "write_sovits_yaml_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_server, "setup_windows_job_object", lambda: None)
+    monkeypatch.setattr(run_server, "assign_process_to_job", lambda _: False)
+
+    new_proc = MagicMock(pid=5678)
+    new_proc.poll.return_value = None
+    monkeypatch.setattr(run_server.subprocess, "Popen", MagicMock(return_value=new_proc))
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+
+    result = await health.restart_sovits_endpoint(None)
+    assert result["status"] == "starting"
+    assert result["pid"] == 5678
+    assert (custom_root / "gptsovits.pid").read_text(encoding="utf-8") == "5678"
+    assert (custom_root / "data" / "engine_cache" / "numba").is_dir()
+    assert (custom_root / "data" / "engine_cache" / "temp").is_dir()
+    assert (custom_root / "logs" / "gpt_sovits.log").is_file()
+    assert (launcher_root / "gptsovits.pid").read_text(encoding="utf-8") == "9999"
+    assert not (launcher_root / "data" / "engine_cache").exists()
+    assert not (launcher_root / "logs" / "gpt_sovits.log").exists()
+
+
+def test_galgame2voice_package_has_no_reverse_imports_from_scripts_run_server():
+    from pathlib import Path
+    import re
+
+    package_root = Path(__file__).resolve().parents[1] / "galgame2voice"
+    pattern = re.compile(r"\b(?:from|import)\s+scripts\b|scripts\.run_server")
+    offenders: list[str] = []
+    for py_file in sorted(package_root.rglob("*.py")):
+        text = py_file.read_text(encoding="utf-8")
+        if pattern.search(text):
+            offenders.append(str(py_file.relative_to(package_root.parent)))
+    assert offenders == [], f"galgame2voice must not import from scripts.run_server: {offenders}"
+
+

@@ -137,60 +137,15 @@ async def _apply_sovits_url_update(new_sovits_url: str | None) -> dict[str, Any]
 
     if endpoint is not None and not endpoint.is_local:
         try:
-            from galgame2voice.routers import health
-            from galgame2voice.services.gpt_sovits_client import get_gpt_sovits_client
-            from scripts import run_server
+            from galgame2voice.config import get_settings
+            from galgame2voice.services.engine_supervisor import get_engine_supervisor
 
-            def _stop_owned_local_engine() -> None:
-                # Shared threading.Lock with restart and precision calibration.
-                # Wait on this worker thread. Restart holds the lock across awaits
-                # on the event loop and releases it only after that loop continues.
-                health._engine_restart_lock.acquire()
-                try:
-                    # A later save may have switched the endpoint while this one waited.
-                    # The client holds the latest applied URL, so only that save decides.
-                    if get_gpt_sovits_client().base_url != str(target_url).strip().rstrip("/"):
-                        return
-                    proc = run_server._SPAWNED_SOVITS_PROC
-                    if proc is None:
-                        return
-                    if proc.poll() is None:
-                        pid = getattr(proc, "pid", None)
-                        if pid:
-                            logger.info(
-                                "Effective GPT-SoVITS endpoint is remote (%s); stopping owned local engine (PID %s) to free resources",
-                                target_url,
-                                pid,
-                            )
-                            try:
-                                run_server.terminate_process_tree(pid)
-                                if hasattr(proc, "wait"):
-                                    proc.wait(timeout=3)
-                            except Exception as stop_exc:
-                                logger.warning(
-                                    "Failed while terminating owned local GPT-SoVITS process (PID %s): %s",
-                                    pid,
-                                    stop_exc,
-                                )
-                    # Spawn assigns _SPAWNED_SOVITS_PROC directly. Clear ownership
-                    # only when it still names this process and the process has exited.
-                    if run_server._SPAWNED_SOVITS_PROC is proc and proc.poll() is not None:
-                        run_server._SPAWNED_SOVITS_PROC = None
-                        run_server._SPAWNED_SOVITS_LAUNCH = None
-                        run_server._SPAWNED_SOVITS_STARTED_AT = None
-                        try:
-                            (run_server.PROJECT_ROOT / "gptsovits.pid").unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                    elif proc.poll() is None:
-                        logger.warning(
-                            "Owned local GPT-SoVITS process (PID %s) is still running after termination attempt; retaining management references",
-                            getattr(proc, "pid", None),
-                        )
-                finally:
-                    health._engine_restart_lock.release()
-
-            await asyncio.to_thread(_stop_owned_local_engine)
+            supervisor = get_engine_supervisor()
+            await asyncio.to_thread(
+                supervisor.stop_owned_local_engine_for_remote,
+                target_url,
+                project_root=get_settings().project_root,
+            )
         except Exception as exc:
             logger.warning("Failed to clean up owned local GPT-SoVITS process state: %s", exc)
 
