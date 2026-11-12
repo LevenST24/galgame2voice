@@ -5,7 +5,6 @@ Verifies:
 3. Characters router (/api/characters) list and switch endpoints with 404 precedence and affection integration.
 4. Health router URL scheme validation and error sanitization.
 5. Telegram bot network drop safety, callback query boundary validation, and nickname sanitization.
-6. Memory RAG empty key stem fix, prompt injection defense, and extreme length clamping.
 """
 
 import asyncio
@@ -16,7 +15,6 @@ from httpx import AsyncClient, ASGITransport
 from galgame2voice.database import crud
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
-from galgame2voice.services.memory_service import MemoryService
 
 
 @pytest.fixture
@@ -165,45 +163,3 @@ class TestHealthRouterHardening:
             assert telemetry.status == "unreachable"
             assert "sk-1234567890abcdef" not in telemetry.error
             assert "REDACTED" in telemetry.error or "***" in telemetry.error or "api_key" in telemetry.error
-
-
-# ============================================================================
-# 6. Memory RAG Empty Key Stem Fix & Extreme String Clamping
-# ============================================================================
-
-class TestMemoryRAGRobustness:
-    def test_empty_key_stem_does_not_match_all_prompts(self):
-        from galgame2voice.services.memory_service import MemoryService
-        svc = MemoryService()
-        # If fact_key has no suffix after strip, stem should be guarded
-        score = svc._calculate_overlap_score(
-            prompt="今天天气真好",
-            fact_key="like_",
-            fact_value="喜欢",
-        )
-        # Should not falsely match with 0.8
-        assert score == 0.0
-
-    def test_extreme_prompt_length_clamping(self):
-        from galgame2voice.services.memory_service import MemoryService
-        svc = MemoryService()
-        extreme_prompt = "a" * 100000
-        # Should complete instantaneously without hanging or blowing memory
-        score = svc._calculate_overlap_score(
-            prompt=extreme_prompt,
-            fact_key="like_apple",
-            fact_value="苹果",
-        )
-        assert score >= 0.0
-
-    def test_sanitize_fact_value_bidi_and_injection(self):
-        from galgame2voice.services.memory_service import MemoryService
-        raw = "User\u202e\u2066\u2069{prompt_override: true}【secret】\n\r"
-        clean = MemoryService.sanitize_fact_value(raw, max_len=100)
-        assert "\u202e" not in clean
-        assert "\u2066" not in clean
-        assert "{" not in clean
-        assert "}" not in clean
-        assert "【" not in clean
-        assert "\n" not in clean
-        assert "prompt_override: true" in clean

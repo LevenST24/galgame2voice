@@ -8,6 +8,7 @@ and milestone line unlocks.
 import pytest
 import aiosqlite
 from galgame2voice.database import crud
+from galgame2voice.database.models import CharacterAffectionUpdate
 from galgame2voice.database.session import get_db
 from galgame2voice.services.affection_service import AffectionService
 
@@ -71,6 +72,26 @@ class TestEmotionClassification:
         assert affection_service.classify_emotion("……无聊。请不要浪费彼此的时间。", "くだらない…") == "cool"
         assert affection_service.classify_emotion("今天的天气预报说是晴天。", "今日は晴れです。") == "normal"
 
+    @pytest.mark.asyncio
+    async def test_explicit_emotion_normalization(self, affection_service):
+        res = await affection_service.handle_turn_affection(
+            user_id="u_emo_norm",
+            character_id=1,
+            user_text="你好",
+            assistant_text="你好啊",
+            explicit_emotion="  Happy  ",
+        )
+        assert res["emotion"] == "happy"
+
+        res2 = await affection_service.handle_turn_affection(
+            user_id="u_emo_norm",
+            character_id=1,
+            user_text="你好",
+            assistant_text="你好啊",
+            explicit_emotion="傲娇 ",
+        )
+        assert res2["emotion"] == "tsundere"
+
 
 class TestEasterEggTriggers:
     def test_match_easter_egg_triggers(self, affection_service):
@@ -101,6 +122,10 @@ class TestEasterEggTriggers:
 
         # Normal text -> None
         assert affection_service.check_easter_egg("早安，吃早餐了吗？") is None
+
+        # Level gates: 发卡姬 needs Lv.2, 喝醉 needs Lv.3.
+        assert affection_service.check_easter_egg("你以前是被叫做发卡姬吗？", current_level=1) is None
+        assert affection_service.check_easter_egg("你是不是喝醉了？", current_level=2) is None
 
 
 class TestAffectionTurnHandlingAndDailyCap:
@@ -165,3 +190,114 @@ class TestAffectionTurnHandlingAndDailyCap:
         )
         assert res_capped["points_earned"] == 0
         assert res_capped["score"] == 15
+
+    @pytest.mark.asyncio
+    async def test_all_five_level_up_transitions(self, isolate_test_database):
+        async with get_db(isolate_test_database) as conn:
+            await crud.update_character_affection(
+                conn, user_id="u_tier", character_id=1,
+                updates=CharacterAffectionUpdate(affection_score=19),
+            )
+            aff, _gain, level_up = await crud.increment_affection(
+                conn, user_id="u_tier", character_id=1, delta_points=1, daily_limit=100,
+            )
+            assert aff.affection_score == 20
+            assert aff.affection_level == 2
+            assert level_up is True
+
+            await crud.update_character_affection(
+                conn, user_id="u_tier", character_id=1,
+                updates=CharacterAffectionUpdate(affection_score=39),
+            )
+            aff, _gain, level_up = await crud.increment_affection(
+                conn, user_id="u_tier", character_id=1, delta_points=1, daily_limit=100,
+            )
+            assert aff.affection_score == 40
+            assert aff.affection_level == 3
+            assert level_up is True
+
+            await crud.update_character_affection(
+                conn, user_id="u_tier", character_id=1,
+                updates=CharacterAffectionUpdate(affection_score=59),
+            )
+            aff, _gain, level_up = await crud.increment_affection(
+                conn, user_id="u_tier", character_id=1, delta_points=1, daily_limit=100,
+            )
+            assert aff.affection_score == 60
+            assert aff.affection_level == 4
+            assert level_up is True
+
+            await crud.update_character_affection(
+                conn, user_id="u_tier", character_id=1,
+                updates=CharacterAffectionUpdate(affection_score=79),
+            )
+            aff, _gain, level_up = await crud.increment_affection(
+                conn, user_id="u_tier", character_id=1, delta_points=1, daily_limit=100,
+            )
+            assert aff.affection_score == 80
+            assert aff.affection_level == 5
+            assert level_up is True
+
+    @pytest.mark.asyncio
+    async def test_score_max_cap_at_100(self, isolate_test_database):
+        async with get_db(isolate_test_database) as conn:
+            await crud.update_character_affection(
+                conn, user_id="u_cap", character_id=1,
+                updates=CharacterAffectionUpdate(affection_score=98),
+            )
+            aff, gain, _level_up = await crud.increment_affection(
+                conn, user_id="u_cap", character_id=1, delta_points=10, daily_limit=100,
+            )
+            assert aff.affection_score == 100
+            assert gain == 10
+            assert aff.affection_level == 5
+
+    @pytest.mark.asyncio
+    async def test_daily_cap_and_midnight_rollover(self, isolate_test_database):
+        async with get_db(isolate_test_database) as conn:
+            day1 = "2026-08-23"
+            aff1, gain1, _ = await crud.increment_affection(
+                conn, user_id="u_daily", character_id=1, delta_points=10, daily_limit=15, today_date_str=day1,
+            )
+            assert gain1 == 10
+            assert aff1.daily_points_earned == 10
+
+            aff2, gain2, _ = await crud.increment_affection(
+                conn, user_id="u_daily", character_id=1, delta_points=10, daily_limit=15, today_date_str=day1,
+            )
+            assert gain2 == 5
+            assert aff2.daily_points_earned == 15
+            assert aff2.affection_score == 15
+
+            aff3, gain3, _ = await crud.increment_affection(
+                conn, user_id="u_daily", character_id=1, delta_points=3, daily_limit=15, today_date_str=day1,
+            )
+            assert gain3 == 0
+            assert aff3.daily_points_earned == 15
+            assert aff3.affection_score == 15
+
+            day2 = "2026-08-24"
+            aff4, gain4, _ = await crud.increment_affection(
+                conn, user_id="u_daily", character_id=1, delta_points=8, daily_limit=15, today_date_str=day2,
+            )
+            assert gain4 == 8
+            assert aff4.daily_points_earned == 8
+            assert aff4.affection_score == 23
+            assert aff4.affection_level == 2
+
+    @pytest.mark.asyncio
+    async def test_affection_update_and_reset(self, isolate_test_database):
+        async with get_db(isolate_test_database) as conn:
+            await crud.update_character_affection(
+                conn, user_id="u_gal", character_id=1,
+                updates=CharacterAffectionUpdate(
+                    affection_score=45,
+                    custom_nickname="昂晴亲",
+                    unlocked_dialogues=["milestone_lv1", "milestone_lv2", "milestone_lv3", "easter_egg_zaozi"],
+                ),
+            )
+            reset_res = await crud.reset_character_affection(conn, user_id="u_gal", character_id=1)
+            assert reset_res.affection_score == 0
+            assert reset_res.affection_level == 1
+            assert reset_res.unlocked_dialogues == []
+            assert reset_res.custom_nickname is None
