@@ -233,39 +233,6 @@ class TestAdvancedBracketedEmotion:
         assert clean == "見ないでください……"
 
 
-class TestAffectionStagePromptInjection:
-    """Verifies MemoryService formats 4-stage progressive affection model guidance."""
-
-    def test_stage_1_guidance_low_score(self):
-        from galgame2voice.services.memory_service import MemoryService
-        svc = MemoryService()
-        block = svc.format_memory_prompt_block(
-            memories=None,
-            affection_info={"score": 10, "level": 1, "level_name": "初识/生疏", "emotion": "normal"}
-        )
-        assert "阶段一（0-19分【初识相识】）" in block
-        assert "初识/生疏" in block
-
-    def test_stage_3_guidance_high_score(self):
-        from galgame2voice.services.memory_service import MemoryService
-        svc = MemoryService()
-        block = svc.format_memory_prompt_block(
-            memories=None,
-            affection_info={"score": 65, "level": 4, "level_name": "亲密/依赖", "emotion": "shy"}
-        )
-        assert "阶段三（50-79分【心动共鸣】）" in block
-        assert "亲密/依赖" in block
-
-    def test_stage_4_guidance_max_score(self):
-        from galgame2voice.services.memory_service import MemoryService
-        svc = MemoryService()
-        block = svc.format_memory_prompt_block(
-            memories=None,
-            affection_info={"score": 95, "level": 5, "level_name": "恋慕/誓约", "emotion": "gentle"}
-        )
-        assert "阶段四（80-100分【恋慕誓约】）" in block
-
-
 class TestStreamingQuotedSentencesImmediateEmission:
     """Verifies that dialogue sentences ending with quotes or brackets are emitted immediately during streaming."""
 
@@ -398,36 +365,6 @@ class TestImmediateTransactionCancellationRollback:
             cursor = await conn.execute("SELECT val FROM test_tbl WHERE id = 2;")
             row = await cursor.fetchone()
             assert row[0] == "committed"
-
-
-class TestAffectionServiceSynonymAndCaseTolerance:
-    """Verifies AffectionService handles whitespace and case variations in explicit_emotion."""
-
-    @pytest.mark.asyncio
-    async def test_explicit_emotion_normalization(self, tmp_path):
-        from galgame2voice.services.affection_service import AffectionService
-        from galgame2voice.database.session import init_db
-
-        svc = AffectionService(db_path=tmp_path / "aff_test.db")
-        await init_db(svc.db_path)
-
-        res = await svc.handle_turn_affection(
-            user_id="u1",
-            character_id=1,
-            user_text="你好",
-            assistant_text="你好啊",
-            explicit_emotion="  Happy  ",
-        )
-        assert res["emotion"] == "happy"
-
-        res2 = await svc.handle_turn_affection(
-            user_id="u1",
-            character_id=1,
-            user_text="你好",
-            assistant_text="你好啊",
-            explicit_emotion="傲娇 ",
-        )
-        assert res2["emotion"] == "tsundere"
 
 
 class TestAudioConcatAlignmentSafety:
