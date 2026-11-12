@@ -37,6 +37,7 @@ def _unretrieved_reports(loop) -> list:
 async def test_voice_manager_logs_background_failure(caplog):
     manager = VoiceManager.__new__(VoiceManager)
     manager._bg_tasks = set()
+    manager._warmup_tasks = {}
 
     with caplog.at_level(logging.WARNING, logger="galgame2voice.services.voice_manager"):
         task = manager._spawn_background(_boom("warmup exploded"))
@@ -54,6 +55,7 @@ async def test_voice_manager_background_failure_is_not_deferred_to_gc():
 
     manager = VoiceManager.__new__(VoiceManager)
     manager._bg_tasks = set()
+    manager._warmup_tasks = {}
     manager._spawn_background(_boom("dropped silently"))
     await _settle()
     manager._bg_tasks.clear()
