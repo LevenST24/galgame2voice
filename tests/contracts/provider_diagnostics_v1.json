@@ -1,0 +1,212 @@
+{
+  "schema_version": "provider_diagnostics_v1",
+  "samples": [
+    {
+      "id": "auth_invalid_key_401",
+      "kind": "upstream_http",
+      "provider_id": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "upstream_status": 401,
+      "upstream_body": "{\"error\":{\"message\":\"Incorrect API key provided\",\"code\":\"invalid_api_key\"}}",
+      "expected": {
+        "provider_test_http_status": 200,
+        "diagnostic_code": "AUTH_INVALID_KEY",
+        "legacy_error_code": "OPENAI_AUTH_FAILED",
+        "retryable": false,
+        "summary_zh": "OpenAI API Key 身份验证失败 (401 Unauthorized)",
+        "action_zh": "身份验证失败。请检查输入的 sk- 密钥是否完整无误，或在 OpenAI 控制台 (https://platform.openai.com/api-keys) 重新创建 Secret Key。"
+      }
+    },
+    {
+      "id": "auth_forbidden_403",
+      "kind": "upstream_http",
+      "provider_id": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "upstream_status": 403,
+      "upstream_body": "{\"error\":{\"message\":\"Access forbidden\"}}",
+      "expected": {
+        "provider_test_http_status": 200,
+        "diagnostic_code": "AUTH_FORBIDDEN",
+        "legacy_error_code": "FORBIDDEN",
+        "retryable": false,
+        "summary_zh": "访问权限受限 (403 Forbidden)",
+        "action_zh": "当前账户无权访问该资源或受到网络地区策略限制。请检查网络代理环境及提供商控制台权限设置。"
+      }
+    },
+    {
+      "id": "endpoint_not_found_404",
+      "kind": "upstream_http",
+      "provider_id": "custom",
+      "base_url": "https://relay.example.com",
+      "upstream_status": 404,
+      "upstream_body": "<html><body>404 Not Found</body></html>",
+      "expected": {
+        "provider_test_http_status": 200,
+        "diagnostic_code": "ENDPOINT_NOT_FOUND",
+        "legacy_error_code": "ENDPOINT_NOT_FOUND",
+        "retryable": false,
+        "summary_zh": "接口地址未找到 (404 Not Found)",
+        "action_zh": "提供商未找到请求的接口路径。请检查 Base URL 地址配置（特别是路径部分，例如是否缺少或多写了 /v1 等后缀）。"
+      }
+    },
+    {
+      "id": "model_not_found_404",
+      "kind": "upstream_http",
+      "provider_id": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "upstream_status": 404,
+      "upstream_body": "{\"error\":{\"code\":\"model_not_found\",\"message\":\"The model `gpt-nonexistent` does not exist\"}}",
+      "expected": {
+        "provider_test_http_status": 200,
+        "diagnostic_code": "MODEL_NOT_FOUND",
+        "legacy_error_code": "MODEL_NOT_FOUND",
+        "retryable": false,
+        "summary_zh": "指定的模型名称不存在 (404 Model Not Found)",
+        "action_zh": "提供商无法识别填写的模型名称。请从官方推荐预设列表下拉选择（如 xAI 选 grok-3 / grok-3-mini，DeepSeek 选 deepseek-chat），或核对自定义模型拼写无误。"
+      }
+    },
+    {
+      "id": "rate_limit_429",
+      "kind": "upstream_http",
+      "provider_id": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "upstream_status": 429,
+      "upstream_body": "{\"error\":{\"message\":\"Rate limit reached for requests per minute\"}}",
+      "expected": {
+        "provider_test_http_status": 200,
+        "diagnostic_code": "RATE_LIMIT",
+        "legacy_error_code": "RATE_LIMIT",
+        "retryable": true,
+        "summary_zh": "请求频率超限 (429 Rate Limit)",
+        "action_zh": "请求速率超出了当前账户的频率限制。请稍候片刻重试，或调小每次对话的 max_tokens。"
+      }
+    },
+    {
+      "id": "quota_exceeded_429",
+      "kind": "upstream_http",
+      "provider_id": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "upstream_status": 429,
+      "upstream_body": "{\"error\":{\"message\":\"Insufficient quota or balance\"}}",
+      "expected": {
+        "provider_test_http_status": 200,
+        "diagnostic_code": "QUOTA_EXCEEDED",
+        "legacy_error_code": "QUOTA_EXCEEDED",
+        "retryable": false,
+        "summary_zh": "账户额度已耗尽 (429 Insufficient Quota)",
+        "action_zh": "当前账户可用额度已用尽或免费额度已过期。请登录提供商开发者控制台检查账单与充值余额。"
+      }
+    },
+    {
+      "id": "bad_gateway_502",
+      "kind": "upstream_http",
+      "provider_id": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "upstream_status": 502,
+      "upstream_body": "<html><head><title>502 Bad Gateway</title></head><body>502 Bad Gateway</body></html>",
+      "expected": {
+        "provider_test_http_status": 200,
+        "diagnostic_code": "BAD_GATEWAY",
+        "legacy_error_code": "BAD_GATEWAY",
+        "retryable": true,
+        "summary_zh": "网关连接异常 (502 Bad Gateway)",
+        "action_zh": "上游网关或反向代理暂时无法连接源站服务器（502 Bad Gateway）。服务可能暂时不可用或正在维护，建议稍后重试或检查反向代理服务状态。"
+      }
+    },
+    {
+      "id": "server_overloaded_503",
+      "kind": "upstream_http",
+      "provider_id": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "upstream_status": 503,
+      "upstream_body": "{\"error\":{\"message\":\"The server is overloaded. Please try again later.\"}}",
+      "expected": {
+        "provider_test_http_status": 200,
+        "diagnostic_code": "SERVER_OVERLOADED",
+        "legacy_error_code": "SERVER_OVERLOADED",
+        "retryable": true,
+        "summary_zh": "服务暂时繁忙 (503 Service Unavailable)",
+        "action_zh": "模型服务当前过载或暂时繁忙，请稍后重试。通常无需修改配置。"
+      }
+    },
+    {
+      "id": "network_timeout_with_api_key_mention",
+      "kind": "transport_timeout",
+      "provider_id": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "exception_message": "Connection timed out while verifying API Key header",
+      "expected": {
+        "provider_test_http_status": 200,
+        "diagnostic_code": "NETWORK_TIMEOUT",
+        "legacy_error_code": "NETWORK_TIMEOUT",
+        "retryable": true,
+        "summary_zh": "网络连接超时 (Request Timeout)",
+        "action_zh": "连接提供商服务器超时。海外模型服务（如 Google / OpenAI / xAI）在国内网络直连通常受阻，请确保本地代理客户端（如 Clash / v2rayN）正在运行，或配置支持该服务的中转反向代理 Base URL。"
+      }
+    },
+    {
+      "id": "private_endpoint_blocked_400",
+      "kind": "preflight_private_endpoint",
+      "provider_id": "custom",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "expected": {
+        "provider_test_http_status": 400,
+        "diagnostic_code": "PRIVATE_ENDPOINT_BLOCKED",
+        "legacy_error_code": "PRIVATE_ENDPOINT_BLOCKED",
+        "retryable": false,
+        "summary_zh": "私网或本机模型地址未启用",
+        "action_zh": "如确需连接本机或局域网模型服务（如 Ollama、vLLM、LM Studio），请在设置中开启「允许私网 LLM 端点」后重试；否则请改用公网 HTTPS 接口地址。"
+      }
+    },
+    {
+      "id": "credential_host_mismatch_400",
+      "kind": "preflight_credential_mismatch",
+      "provider_id": "openai",
+      "stored_base_url": "https://api.openai.com/v1",
+      "test_base_url": "https://api.example.com/v1",
+      "expected": {
+        "provider_test_http_status": 400,
+        "diagnostic_code": "CREDENTIAL_HOST_MISMATCH",
+        "legacy_error_code": "CREDENTIAL_HOST_MISMATCH",
+        "retryable": false,
+        "summary_zh": "已保存密钥不能直接发往新的接口地址",
+        "action_zh": "更换接口地址（Base URL）测试时，请重新输入完整的 API Key，避免将原服务商密钥泄露到新地址。"
+      }
+    },
+    {
+      "id": "chat_empty_reply",
+      "kind": "chat_empty_reply",
+      "stopped_on_length": false,
+      "expected": {
+        "diagnostic_code": "EMPTY_REPLY",
+        "legacy_error_code": "empty_reply",
+        "retryable": true,
+        "summary_zh": "模型本次未返回任何可见回复",
+        "action_zh": "可以直接重新发送重试，或切换其他模型试试。"
+      }
+    },
+    {
+      "id": "chat_empty_reply_length_limit",
+      "kind": "chat_empty_reply",
+      "stopped_on_length": true,
+      "expected": {
+        "diagnostic_code": "EMPTY_REPLY_LENGTH_LIMIT",
+        "legacy_error_code": "empty_reply",
+        "retryable": false,
+        "summary_zh": "模型生成长度耗尽，未能输出回复",
+        "action_zh": "请在模型设置中调低「思考强度」，或在会话设置中调大「最大生成长度」后重试。"
+      }
+    },
+    {
+      "id": "chat_stream_incomplete",
+      "kind": "chat_stream_incomplete",
+      "expected": {
+        "diagnostic_code": "STREAM_INCOMPLETE",
+        "legacy_error_code": "stream_incomplete",
+        "retryable": true,
+        "summary_zh": "上游模型连接意外中断，回复未完整结束",
+        "action_zh": "无需修改配置，可直接重新发送尝试重试。"
+      }
+    }
+  ]
+}
