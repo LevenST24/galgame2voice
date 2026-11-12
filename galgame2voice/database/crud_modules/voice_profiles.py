@@ -2,6 +2,7 @@
 Voice profile CRUD operations for SQLite persistence in galgame2voice.
 """
 
+import json
 import logging
 import sqlite3
 from typing import Any
@@ -206,14 +207,57 @@ async def set_active_voice_profile(conn: aiosqlite.Connection, profile_id: int) 
             return False
 
 
+def _matches_profile_id(raw: Any, profile_id: int) -> bool:
+    """Checks whether a JSON voiceProfileId value refers to profile_id."""
+    if isinstance(raw, bool):
+        return False
+    if isinstance(raw, int):
+        return raw == profile_id
+    if isinstance(raw, str) and raw.strip().isdigit():
+        return int(raw.strip()) == profile_id
+    return False
+
+
 async def delete_voice_profile(conn: aiosqlite.Connection, profile_id: int) -> bool:
-    """Deletes a voice profile record by its ID."""
+    """Deletes a voice profile record and atomically unbinds sessions and active settings."""
     async with immediate_transaction(conn):
         cursor = await conn.execute("DELETE FROM voice_profiles WHERE id = ?;", (profile_id,))
-        if cursor.rowcount:
-            await conn.execute(
-                "UPDATE settings SET active_voice_profile_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE active_voice_profile_id = ?;",
-                (profile_id,),
-            )
-            await invalidate_profiles_after_commit(conn)
-    return cursor.rowcount > 0
+        if not cursor.rowcount:
+            return False
+
+        await conn.execute(
+            "UPDATE sessions SET voice_profile_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE voice_profile_id = ?;",
+            (profile_id,),
+        )
+
+        try:
+            rows = await (
+                await conn.execute(
+                    "SELECT id, settings_json FROM sessions WHERE settings_json IS NOT NULL AND settings_json != '';"
+                )
+            ).fetchall()
+        except (sqlite3.OperationalError, aiosqlite.OperationalError) as exc:
+            if "no such column" not in str(exc).lower():
+                raise
+            rows = []
+
+        for sess_id, raw_json in rows:
+            if not isinstance(raw_json, str):
+                continue
+            try:
+                data = json.loads(raw_json)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(data, dict) and _matches_profile_id(data.get("voiceProfileId"), profile_id):
+                data["voiceProfileId"] = None
+                await conn.execute(
+                    "UPDATE sessions SET settings_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+                    (json.dumps(data, ensure_ascii=False), sess_id),
+                )
+
+        await conn.execute(
+            "UPDATE settings SET active_voice_profile_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE active_voice_profile_id = ?;",
+            (profile_id,),
+        )
+        await invalidate_profiles_after_commit(conn)
+    return True

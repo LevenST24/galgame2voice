@@ -90,7 +90,39 @@ class VoiceManager:
         self._switch_lock = asyncio.Lock()
         self._switching_profile_id: int | None = None
         self._bg_tasks: set[asyncio.Task] = set()
+        self._warmup_tasks: dict[int, set[asyncio.Task[Any]]] = {}
         self.last_switch_error: str | None = None
+
+    def _register_warmup_task(self, profile_id: int | None, task: Any) -> None:
+        """Associates an in-flight warm-up Task with profile_id for targeted cancellation."""
+        if profile_id is None or not isinstance(task, asyncio.Task) or task.done():
+            return
+        for existing_id in list(self._warmup_tasks):
+            if existing_id != profile_id:
+                other = self._warmup_tasks[existing_id]
+                other.discard(task)
+                if not other:
+                    self._warmup_tasks.pop(existing_id, None)
+        bucket = self._warmup_tasks.setdefault(profile_id, set())
+        if task in bucket:
+            return
+        bucket.add(task)
+
+        def _cleanup(done_task: asyncio.Task[Any]) -> None:
+            for existing_id in list(self._warmup_tasks):
+                tasks = self._warmup_tasks[existing_id]
+                tasks.discard(done_task)
+                if not tasks:
+                    self._warmup_tasks.pop(existing_id, None)
+
+        task.add_done_callback(_cleanup)
+
+    def cancel_warmup(self, profile_id: int) -> None:
+        """Cancels all queued or in-flight warm-up tasks targeting profile_id."""
+        tasks = list(self._warmup_tasks.pop(profile_id, ()))
+        for task in tasks:
+            if not task.done():
+                task.cancel()
 
     def _spawn_background(self, coro: Any) -> asyncio.Task:
         """Spawns and retains a strong reference to a background task, preventing GC mid-execution.
@@ -121,6 +153,7 @@ class VoiceManager:
     async def aclose(self) -> None:
         """Gracefully drains and cancels pending background warmup tasks upon service shutdown."""
         await drain_background_tasks(self._bg_tasks, timeout=3.0)
+        self._warmup_tasks.clear()
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -247,14 +280,24 @@ class VoiceManager:
         """Apply the shared VRAM policy with this manager's hardware probes."""
         VoiceResourceGuard(gpu_status=get_gpu_vram_status, release=release_system_memory).check_vram(min_free_vram_gb)
 
-    async def warmup_current_profile(self) -> bool:
+    async def warmup_current_profile(self, profile_id: int | None = None) -> bool:
         """Warm the current selection in the low-priority worker, after engine ACK."""
         profile = None
+        current_task = asyncio.current_task()
+        self._register_warmup_task(profile_id, current_task)
         try:
+            if profile_id is not None and self.active_profile is None:
+                if await self.get_profile(profile_id) is None:
+                    logger.debug("Warm-up skipped: target profile %d was deleted.", profile_id)
+                    return False
+
             profile = self.active_profile or await self.get_active_profile()
             if not profile:
                 logger.debug("Warm-up skipped: no active voice profile found.")
                 return False
+
+            initial_target_id = profile_id if profile_id is not None else _stored_profile_id(profile)
+            self._register_warmup_task(initial_target_id, current_task)
 
             # Check engine reachability before attempting switch to avoid connection error tracebacks
             try:
@@ -268,17 +311,65 @@ class VoiceManager:
 
             async def prepare_and_probe():
                 nonlocal profile
-                # Queueing and the health check may outlive a manual switch.
-                # Select only after taking its lock; never replay a stale target.
+                # Queueing and the health check may outlive a manual switch or profile deletion.
+                # Select only after taking switch_lock; never resurrect a deleted profile.
                 async with self.switch_lock:
+                    if (
+                        initial_target_id is not None
+                        and self.active_profile is None
+                        and await self.get_profile(initial_target_id) is None
+                    ):
+                        logger.debug(
+                            "Warm-up skipped under lock: target profile %d was deleted.",
+                            initial_target_id,
+                        )
+                        return False
+
                     profile = self.active_profile or await self.get_active_profile()
                     if not profile:
                         return False
+
+                    pid = _stored_profile_id(profile)
+                    if pid is not None:
+                        self._register_warmup_task(pid, current_task)
+                        verified = await self.get_profile(pid)
+                        if verified is None:
+                            if self._resolve_profile_field(self.active_profile, "id") == pid:
+                                self.active_profile = None
+                            return False
+                        profile = verified
+
                     if not await asyncio.to_thread(self.is_active_profile, profile):
                         await asyncio.to_thread(self._check_switch_memory_guard, False)
-                    if not await self.client.switch_voice_profile(profile, force=False):
-                        logger.debug("Warm-up model load failed for '%s'.", getattr(profile, "name", "unknown"))
+
+                    previous = self.client.active_profile
+                    try:
+                        if pid is not None:
+                            self._switching_profile_id = pid
+                        switched = await self.client.switch_voice_profile(profile, force=False)
+                        if switched and pid is not None:
+                            async def verify_after_load() -> bool:
+                                if await self.get_profile(pid) is None:
+                                    await self._restore_loaded_profile(previous, pid)
+                                    return False
+                                return True
+
+                            if not await await_protected(verify_after_load()):
+                                logger.debug(
+                                    "Warm-up aborted after load: profile %d was deleted.", pid
+                                )
+                                return False
+                    finally:
+                        if pid is not None and self._switching_profile_id == pid:
+                            self._switching_profile_id = None
+
+                    if not switched:
+                        logger.debug(
+                            "Warm-up model load failed for '%s'.",
+                            getattr(profile, "name", "unknown"),
+                        )
                         return False
+
                     opts = await self._resolve_active_options({
                         "voice_profile_id": getattr(profile, "id", None),
                         "ref_audio_path": getattr(profile, "ref_audio_path", ""),
@@ -286,8 +377,16 @@ class VoiceManager:
                         "prompt_lang": getattr(profile, "prompt_lang", "ja"),
                         "text_lang": getattr(profile, "text_lang", "ja"),
                     })
-                    await asyncio.wait_for(self.client.synthesize(WARMUP_PROBE_TEXT, options=opts), timeout=15.0)
-                logger.info("GPT-SoVITS prompt audio cache warm-up succeeded for profile '%s'.", getattr(profile, "name", "unknown"))
+                    await asyncio.wait_for(
+                        self.client.synthesize(WARMUP_PROBE_TEXT, options=opts), timeout=15.0
+                    )
+                    if pid is not None and await self.get_profile(pid) is None:
+                        await await_protected(self._restore_loaded_profile(previous, pid))
+                        return False
+                logger.info(
+                    "GPT-SoVITS prompt audio cache warm-up succeeded for profile '%s'.",
+                    getattr(profile, "name", "unknown"),
+                )
                 return True
 
             from galgame2voice.services.tts_scheduler import get_tts_scheduler, TtsPriority
@@ -403,7 +502,10 @@ class VoiceManager:
 
         # Trigger non-blocking background warm-up of newly activated voice profile
         try:
-            self._spawn_background(self.warmup_current_profile())
+            warmup_task = self._spawn_background(
+                self.warmup_current_profile(profile_id=tracked_id)
+            )
+            self._register_warmup_task(tracked_id, warmup_task)
         except Exception as warmup_err:
             logger.debug("Could not schedule warm-up task on profile switch: %s", warmup_err)
 
@@ -411,11 +513,13 @@ class VoiceManager:
 
     async def _restore_loaded_profile(self, previous: Any, removed_id: int) -> None:
         """Put the engine back on the voice it had before a removed profile was loaded."""
-        previous_id = getattr(previous, "id", None)
+        previous_id = self._resolve_profile_field(previous, "id")
         if previous is not None and previous_id != removed_id:
-            if await self.client.switch_voice_profile(previous, force=True):
-                return
-        if getattr(self.client.active_profile, "id", None) == removed_id:
+            prev_stored_id = _stored_profile_id(previous)
+            if prev_stored_id is None or await self.get_profile(prev_stored_id) is not None:
+                if await self.client.switch_voice_profile(previous, force=True):
+                    return
+        if self._resolve_profile_field(self.client.active_profile, "id") == removed_id:
             self.client.active_profile = None
 
     # ========================================================================
@@ -466,26 +570,35 @@ class VoiceManager:
             return await crud.get_active_voice_profile(conn)
 
     async def create_profile(self, profile: VoiceProfileCreate) -> VoiceProfileResponse:
-        """Creates a new voice profile in database."""
-        async with get_db(self.db_path) as conn:
-            res = await crud.create_voice_profile(conn, profile)
-        return res
+        """Creates a new voice profile in database via CharacterVoiceCatalog."""
+        from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
+
+        return await get_character_voice_catalog().create_profile(
+            profile,
+            db_factory=lambda: get_db(self.db_path),
+        )
 
     async def update_profile(
         self, profile_id: int, updates: VoiceProfileUpdate
     ) -> VoiceProfileResponse | None:
-        """Updates an existing voice profile in database."""
-        async with get_db(self.db_path) as conn:
-            res = await crud.update_voice_profile(conn, profile_id, updates)
-        return res
+        """Updates an existing voice profile in database via CharacterVoiceCatalog."""
+        from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
+
+        return await get_character_voice_catalog().update_profile(
+            profile_id,
+            updates,
+            db_factory=lambda: get_db(self.db_path),
+        )
 
     async def delete_profile(self, profile_id: int) -> bool:
-        """Deletes a voice profile from database."""
-        async with get_db(self.db_path) as conn:
-            res = await crud.delete_voice_profile(conn, profile_id)
-        if res and self._resolve_profile_field(self.active_profile, "id") == profile_id:
-            self.active_profile = None
-        return res
+        """Cancels warm-up and deletes a voice profile via CharacterVoiceCatalog."""
+        from galgame2voice.services.character_voice_catalog import get_character_voice_catalog
+
+        return await get_character_voice_catalog().delete_profile(
+            profile_id,
+            voice_manager=self,
+            db_factory=lambda: get_db(self.db_path),
+        )
 
 
 # ============================================================================

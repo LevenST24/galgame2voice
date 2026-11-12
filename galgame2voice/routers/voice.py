@@ -12,7 +12,6 @@ from pathlib import Path
 import re
 import time
 from typing import Any
-import aiosqlite
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -23,20 +22,18 @@ from galgame2voice.database.models import (
     VoiceProfileCreate,
     VoiceProfileUpdate,
 )
-from galgame2voice.routers.common import (
-    persist_active_voice_profile_or_raise,
-    switch_voice_profile_or_raise,
-    validate_positive_profile_id,
-)
+from galgame2voice.routers.common import validate_positive_profile_id
 from galgame2voice.services.character_manager import get_character_manager, get_character_work
-from galgame2voice.services.voice_manager import VoiceManager, get_voice_manager
+from galgame2voice.services.character_voice_catalog import (
+    VoiceProfileBusyError,
+    get_character_voice_catalog,
+)
+from galgame2voice.services.voice_manager import get_voice_manager
 from galgame2voice.routers.line_audio import router as line_audio_router
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.path_guard import (
-    PathTraversalError,
     discover_gpt_sovits_roots,
     to_project_relative_path,
-    validate_voice_profile_paths,
 )
 
 logger = logging.getLogger("galgame2voice.routers.voice")
@@ -109,34 +106,6 @@ async def create_voice_profile(req: VoiceProfileCreateRequest) -> dict[str, Any]
     prompt_l = req.refer_language or req.prompt_lang or "ja"
     text_l = req.text_lang or "ja"
 
-    if not req.name.strip():
-        raise HTTPException(
-            status_code=422,
-            detail="音色名称不能为空",
-        )
-    if not req.gpt_weights_path.strip():
-        raise HTTPException(
-            status_code=422,
-            detail="GPT 权重路径不能为空",
-        )
-    if not req.sovits_weights_path.strip():
-        raise HTTPException(
-            status_code=422,
-            detail="SoVITS 权重路径不能为空",
-        )
-
-    try:
-        validate_voice_profile_paths(
-            gpt_weights_path=req.gpt_weights_path.strip(),
-            sovits_weights_path=req.sovits_weights_path.strip(),
-            ref_audio_path=ref_audio.strip() if ref_audio else None,
-        )
-    except PathTraversalError as pte:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid file path: {pte}",
-        ) from pte
-
     profile_dto = VoiceProfileCreate(
         name=req.name.strip(),
         description=req.description or "",
@@ -150,18 +119,23 @@ async def create_voice_profile(req: VoiceProfileCreateRequest) -> dict[str, Any]
         is_default=req.is_default,
     )
 
-    async with get_db() as conn:
-        try:
-            created = await crud.create_voice_profile(conn, profile_dto)
-            return {
-                "id": created.id,
-                "name": created.name,
-                "status": "created",
-                "profile": created.model_dump(),
-            }
-        except Exception as exc:
-            logger.error("Failed to create voice profile '%s': %s", req.name, exc)
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=sanitize_error_detail(exc)) from exc
+    try:
+        created = await get_character_voice_catalog().create_profile(
+            profile_dto,
+            validate_paths=True,
+            db_factory=get_db,
+        )
+        return {
+            "id": created.id,
+            "name": created.name,
+            "status": "created",
+            "profile": created.model_dump(),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to create voice profile '%s': %s", req.name, exc)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=sanitize_error_detail(exc)) from exc
 
 
 @router.get(
@@ -188,54 +162,26 @@ async def get_voice_profile(profile_id: int) -> dict[str, Any]:
 )
 async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate) -> dict[str, Any]:
     validate_positive_profile_id(profile_id)
-
-    # Blank text is not a request to clear the field; saving it would erase the profile.
-    if req.name is not None and not req.name.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="音色名称不能为空",
-        )
-    if req.gpt_weights_path is not None and not req.gpt_weights_path.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="GPT 权重路径不能为空",
-        )
-    if req.sovits_weights_path is not None and not req.sovits_weights_path.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="SoVITS 权重路径不能为空",
-        )
-
     try:
-        validate_voice_profile_paths(
-            gpt_weights_path=req.gpt_weights_path.strip() if req.gpt_weights_path else None,
-            sovits_weights_path=req.sovits_weights_path.strip() if req.sovits_weights_path else None,
-            ref_audio_path=req.ref_audio_path.strip() if req.ref_audio_path else None,
+        updated = await get_character_voice_catalog().update_profile(
+            profile_id,
+            req,
+            validate_paths=True,
+            db_factory=get_db,
         )
-    except PathTraversalError as pte:
+        if not updated:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Voice profile ID {profile_id} not found",
+            )
+        return {"status": "updated", "profile": updated.model_dump()}
+    except HTTPException:
+        raise
+    except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid file path: {pte}",
-        ) from pte
-    if req.ref_audio_path:
-        req.ref_audio_path = to_project_relative_path(req.ref_audio_path)
-
-    async with get_db() as conn:
-        try:
-            updated = await crud.update_voice_profile(conn, profile_id, req)
-            if not updated:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Voice profile ID {profile_id} not found",
-                )
-            return {"status": "updated", "profile": updated.model_dump()}
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=sanitize_error_detail(exc),
-            ) from exc
+            detail=sanitize_error_detail(exc),
+        ) from exc
 
 
 @router.delete(
@@ -245,32 +191,30 @@ async def update_voice_profile(profile_id: int, req: VoiceProfileUpdate) -> dict
 )
 async def delete_voice_profile(profile_id: int) -> dict[str, Any]:
     validate_positive_profile_id(profile_id)
-    # Refuse only the voice whose weights are loading. Do not take switch_lock:
-    # that wait would last as long as the model load.
-    if get_voice_manager().switching_profile_id == profile_id:
+    try:
+        success = await get_character_voice_catalog().delete_profile(
+            profile_id,
+            voice_manager=get_voice_manager(),
+            db_factory=get_db,
+        )
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Voice profile ID {profile_id} not found",
+            )
+        return {"status": "deleted", "profile_id": profile_id}
+    except VoiceProfileBusyError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="这个音色正在加载，请稍后再删除",
-        )
-    async with get_db() as conn:
-        try:
-            success = await crud.delete_voice_profile(conn, profile_id)
-            if not success:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Voice profile ID {profile_id} not found",
-                )
-            manager = get_voice_manager()
-            if VoiceManager._resolve_profile_field(manager.active_profile, "id") == profile_id:
-                manager.active_profile = None
-            return {"status": "deleted", "profile_id": profile_id}
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=sanitize_error_detail(exc),
-            ) from exc
+            detail=str(exc),
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=sanitize_error_detail(exc),
+        ) from exc
 
 
 # ============================================================================
@@ -279,22 +223,14 @@ async def delete_voice_profile(profile_id: int) -> dict[str, Any]:
 
 
 async def _lookup_voice_profile(
-    conn: aiosqlite.Connection,
+    conn: Any,
     profile_id: int | None,
     profile_name: str | None,
 ) -> Any | None:
-    """Looks up voice profile by ID or name (including list scan fallback)."""
-    if profile_id is not None:
-        return await crud.get_voice_profile(conn, profile_id)
-    if profile_name:
-        profile = await crud.get_voice_profile_by_name(conn, profile_name)
-        if profile:
-            return profile
-        profiles = await crud.list_voice_profiles(conn)
-        for p in profiles:
-            if p.name == profile_name:
-                return p
-    return None
+    """Looks up voice profile by ID or unified character/profile name rules."""
+    return await get_character_voice_catalog().lookup_profile(
+        conn, profile_id, profile_name, character_manager=get_character_manager()
+    )
 
 
 @router.post(
@@ -303,59 +239,22 @@ async def _lookup_voice_profile(
     description="Atomically switches GPT-SoVITS weights to selected profile with automatic rollback.",
 )
 async def switch_voice(req: VoiceSwitchRequest) -> dict[str, Any]:
-    profile_id = req.profile_id if req.profile_id is not None else req.id
-    raw_name = req.profile_name or req.name
-    profile_name = raw_name.strip() if raw_name else None
-
-    if profile_id is None and not profile_name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Missing profile_id or profile_name in switch request",
-        )
-
-    if profile_id is not None:
-        validate_positive_profile_id(profile_id, field_name="profile_id")
-
-    # 1. 404 Precedence: Resolve voice profile entity first from database
-    async with get_db() as conn:
-        profile = await _lookup_voice_profile(conn, profile_id, profile_name)
-        if not profile:
-            identifier = profile_id if profile_id is not None else profile_name
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Voice profile '{identifier}' not found",
-            )
-
-    manager = get_voice_manager()
-
-    # 2. Concurrency & State Guard:
-    # Acquire manager.switch_lock to serialize memory checking, model loading, and persistence.
-    # This prevents concurrent requests from racing through memory checks or corrupting active profile states.
-    async with manager.switch_lock:
-        # Re-verify profile still exists in SQLite under the lock (TOCTOU guard against concurrent deletion)
-        async with get_db() as conn:
-            verified_profile = await crud.get_voice_profile(conn, profile.id)
-            if not verified_profile:
-                identifier = profile_id if profile_id is not None else profile_name
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Voice profile '{identifier}' not found",
-                )
-            profile = verified_profile
-
-        # A saved default is not proof that the engine has loaded its models.
-        is_already_active = await asyncio.to_thread(manager.is_active_profile, profile, force=req.force)
-
-        if is_already_active:
-            await persist_active_voice_profile_or_raise(profile.id)
-        else:
-            await switch_voice_profile_or_raise(manager, profile, force=req.force)
-
-        return {
-            "status": "switched",
-            "profile": profile.name,
-            "profile_id": profile.id,
-        }
+    profile = await get_character_voice_catalog().switch_active_profile(
+        profile_id=req.profile_id if req.profile_id is not None else req.id,
+        profile_name=req.profile_name or req.name,
+        force=req.force,
+        entity_label="Voice profile",
+        id_field_name="profile_id",
+        missing_detail="Missing profile_id or profile_name in switch request",
+        character_manager=get_character_manager(),
+        voice_manager=get_voice_manager(),
+        db_factory=get_db,
+    )
+    return {
+        "status": "switched",
+        "profile": profile.name,
+        "profile_id": profile.id,
+    }
 
 
 # Tk interpreters and their finalizers must stay on one owning thread.

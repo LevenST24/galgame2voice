@@ -1084,7 +1084,8 @@ async def test_update_persona_db_failure_restores_manifest_and_cache(ann_package
 
     assert response.status_code == 500, response.text
     body = response.json()
-    assert "人设保存到数据库失败，已回滚角色包修改" in body["detail"]
+    assert "人设保存到数据库失败" in body["detail"]
+    assert "已回滚角色包修改" not in body["detail"]
     assert "database is locked" in body["detail"]
 
     # 1. Disk manifest.json must be restored to original
@@ -1198,9 +1199,9 @@ async def test_update_persona_db_failure_then_rollback_failure_does_not_claim_ro
     assert response.status_code == 500, response.text
     detail = response.json()["detail"]
     assert "人设保存到数据库失败" in detail
-    assert "角色包文件未能回滚" in detail
     assert "已回滚角色包修改" not in detail
-    assert json.loads(manifest_path.read_text(encoding="utf-8"))["system_prompt"] == new_prompt
+    assert "角色包文件未能回滚" not in detail
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["system_prompt"] == original_prompt
 
 
 @pytest.mark.asyncio
