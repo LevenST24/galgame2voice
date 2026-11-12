@@ -218,6 +218,50 @@ def resolve_env_precision(environ: Mapping[str, str] | None = None) -> str | Non
     return None
 
 
+def sync_runtime_precision(
+    *,
+    fp16: bool = False,
+    fp32: bool = False,
+    cpu: bool = False,
+    precision: str | None = None,
+    environ: MutableMapping[str, str] | None = None,
+) -> str | None:
+    """Synchronize CLI precision flags across runtime environment variables.
+
+    Priority matches ensure_gpt_sovits_running:
+    1. --cpu / --precision cpu -> "cpu"
+    2. --fp16 / --precision fp16 -> "fp16"
+    3. --fp32 / --precision fp32 -> "fp32"
+    4. --precision auto -> "auto"
+    If no precision option was specified, environ is left untouched and None is returned.
+    When mode is "cpu", GPT_SOVITS_DEVICE="cpu" is also set.
+    When mode is "fp16", "fp32", or "auto", any leftover GPT_SOVITS_DEVICE="cpu" is removed.
+    """
+    prec_opt = (precision or "").strip().lower()
+    mode: str | None = None
+    if cpu or prec_opt == "cpu":
+        mode = "cpu"
+    elif fp16 or prec_opt == "fp16":
+        mode = "fp16"
+    elif fp32 or prec_opt == "fp32":
+        mode = "fp32"
+    elif prec_opt == "auto":
+        mode = "auto"
+
+    if mode is None:
+        return None
+
+    target_env = environ if environ is not None else os.environ
+    target_env[_PRECISION_ENV_VAR] = mode
+    if mode == "cpu":
+        target_env["GPT_SOVITS_DEVICE"] = "cpu"
+    else:
+        for k in list(target_env.keys()):
+            if k.lower() == "gpt_sovits_device" and str(target_env[k]).strip().lower() == "cpu":
+                target_env.pop(k, None)
+    return mode
+
+
 def sync_runtime_precision_override(
     target_precision: str | None,
     environ: MutableMapping[str, str] | None = None,
@@ -238,7 +282,6 @@ def sync_runtime_precision_override(
                 env.pop(k, None)
     elif prec in ("cpu", "fp16", "half", "fp32", "float32"):
         norm_prec = "cpu" if prec == "cpu" else ("fp16" if prec in ("fp16", "half") else "fp32")
-        from scripts.run_server import sync_runtime_precision
         sync_runtime_precision(precision=norm_prec, environ=env)
 
 

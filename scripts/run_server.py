@@ -16,9 +16,8 @@ import argparse
 import importlib
 import json
 import shlex
-import tempfile
 from pathlib import Path
-from typing import Any, MutableMapping
+from typing import Any
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = (
@@ -46,20 +45,32 @@ def _print_python_recovery_command(arguments: list[str]) -> None:
 # E402: these imports must follow the sys.path bootstrap above, otherwise the
 # script cannot find the package when it is executed directly from a checkout.
 try:
-    from galgame2voice.utils.precision import (  # noqa: E402
+    from galgame2voice.utils.precision import (  # noqa: E402, F401
         read_precision_cache,
         write_precision_cache,
         write_sovits_yaml_config,
         resolve_initial_device_and_half,
+        sync_runtime_precision,
     )
     from galgame2voice.utils.hardware import get_gpu_vram_status  # noqa: E402
-    from galgame2voice.services.sovits_installation import (  # noqa: E402
+    from galgame2voice.services.sovits_installation import (  # noqa: E402, F401
         find_engine_python,
         read_sovits_directory,
         write_sovits_directory_hint,
     )
-    from galgame2voice.services.engine_runtime import EngineLaunch, prepare_engine_entrypoint  # noqa: E402
-    from galgame2voice.services.engine_recovery import ENGINE_LOG_START  # noqa: E402
+    from galgame2voice.services.engine_runtime import EngineLaunch, prepare_engine_entrypoint  # noqa: E402, F401
+    from galgame2voice.services.engine_supervisor import (  # noqa: E402, F401
+        _is_matching_managed_host,
+        _launch_sovits_process,
+        assign_process_to_job,
+        build_gpt_sovits_env as _build_gpt_sovits_env,
+        get_managed_engine_launch,
+        get_managed_engine_precision,
+        is_port_in_use,
+        register_runtime_host,
+        setup_windows_job_object as _setup_windows_job_object,
+        terminate_process_tree,
+    )
     from galgame2voice.config import get_settings  # noqa: E402
     from galgame2voice.utils.windows_runtime import kernel32  # noqa: E402
     from scripts.launcher_address import browser_hosts  # noqa: E402
@@ -95,220 +106,12 @@ _SPAWNED_SOVITS_PROC = None
 _SPAWNED_SOVITS_STARTED_AT: float | None = None
 _SPAWNED_SOVITS_LAUNCH: EngineLaunch | None = None
 _WINDOWS_JOB_HANDLE = None
-_IPV4_LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
-
-
-def _normalize_host(host: Any) -> str:
-    h = str(host or "").strip().lower()
-    if h.startswith("[") and h.endswith("]"):
-        h = h[1:-1].strip()
-    return h
-
-
-def _is_matching_managed_host(endpoint_host: Any, launch_host: Any) -> bool:
-    ep_h = _normalize_host(endpoint_host)
-    l_h = _normalize_host(launch_host)
-    if not ep_h or not l_h:
-        return False
-    if ep_h == l_h:
-        return True
-    if {ep_h, l_h} <= _IPV4_LOOPBACK_HOSTS:
-        return True
-    if l_h == "0.0.0.0" and ep_h in _IPV4_LOOPBACK_HOSTS:
-        return True
-    return False
-
-
-def get_managed_engine_launch(endpoint: Any) -> EngineLaunch | None:
-    """Match a launch to its owned process and endpoint, including an exited process."""
-    launch = _SPAWNED_SOVITS_LAUNCH
-    if (endpoint is None or not endpoint.is_local or launch is None
-            or launch.process is not _SPAWNED_SOVITS_PROC
-            or endpoint.port != launch.port
-            or not _is_matching_managed_host(endpoint.host, launch.host)):
-        return None
-    return launch
-
-
-def get_managed_engine_precision(endpoint: Any) -> str | None:
-    """Return launch precision only for the live owned process at this endpoint."""
-    launch = get_managed_engine_launch(endpoint)
-    if launch is None or launch.process.poll() is not None:
-        return None
-    return "CPU" if launch.device == "cpu" else "FP16" if launch.is_half else "FP32"
+register_runtime_host(sys.modules[__name__])
 
 
 def setup_windows_job_object():
-    """
-    Creates a Windows Job Object configured with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
-    Any child process assigned to this job object will be automatically and atomically
-    terminated by the Windows kernel when the parent process exits (even on window close X,
-    Ctrl+C, taskkill, or power off).
-    """
-    global _WINDOWS_JOB_HANDLE
-    if sys.platform != "win32":
-        return None
-    if _WINDOWS_JOB_HANDLE:
-        return _WINDOWS_JOB_HANDLE
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
-        JobObjectExtendedLimitInformation = 9
-
-        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
-                ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
-                ("LimitFlags", wintypes.DWORD),
-                ("MinimumWorkingSetSize", ctypes.c_size_t),
-                ("MaximumWorkingSetSize", ctypes.c_size_t),
-                ("ActiveProcessLimit", wintypes.DWORD),
-                ("Affinity", ctypes.c_size_t),
-                ("PriorityClass", wintypes.DWORD),
-                ("SchedulingClass", wintypes.DWORD),
-            ]
-
-        class IO_COUNTERS(ctypes.Structure):
-            _fields_ = [
-                ("ReadOperationCount", ctypes.c_ulonglong),
-                ("WriteOperationCount", ctypes.c_ulonglong),
-                ("OtherOperationCount", ctypes.c_ulonglong),
-                ("ReadTransferCount", ctypes.c_ulonglong),
-                ("WriteTransferCount", ctypes.c_ulonglong),
-                ("OtherTransferCount", ctypes.c_ulonglong),
-            ]
-
-        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
-                ("IoInfo", IO_COUNTERS),
-                ("ProcessMemoryLimit", ctypes.c_size_t),
-                ("JobMemoryLimit", ctypes.c_size_t),
-                ("PeakProcessMemoryLimit", ctypes.c_size_t),
-                ("PeakJobMemoryLimit", ctypes.c_size_t),
-            ]
-
-        api = kernel32()
-        h_job = api.CreateJobObjectW(None, None)
-        if not h_job:
-            return None
-
-        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-
-        res = api.SetInformationJobObject(
-            h_job,
-            JobObjectExtendedLimitInformation,
-            ctypes.byref(info),
-            ctypes.sizeof(info),
-        )
-        if not res:
-            api.CloseHandle(h_job)
-            return None
-
-        _WINDOWS_JOB_HANDLE = h_job
-        return h_job
-    except Exception:
-        return None
-
-
-def assign_process_to_job(proc):
-    """Assigns a spawned child process to the Windows Job Object."""
-    if sys.platform != "win32" or not _WINDOWS_JOB_HANDLE:
-        return False
-    try:
-        if hasattr(proc, "_handle") and proc._handle:
-            return bool(kernel32().AssignProcessToJobObject(_WINDOWS_JOB_HANDLE, int(proc._handle)))
-    except Exception:
-        pass
-    return False
-
-
-def terminate_process_tree(pid: int, timeout: float = 2.0):
-    """
-    Robustly terminates a process and all of its recursive child processes.
-    Uses psutil if available, with Windows taskkill /F /T /PID fallback,
-    and POSIX process group / pkill / SIGKILL fallback.
-    """
-    if not pid or pid <= 1 or pid == os.getpid():
-        return
-
-    # 1. Cross-platform tree kill via psutil
-    psutil_success = False
-    still_alive = False
-    try:
-        import psutil
-        try:
-            parent = psutil.Process(pid)
-            children = parent.children(recursive=True)
-            for child in children:
-                try:
-                    child.terminate()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-            parent.terminate()
-
-            gone, alive = psutil.wait_procs(children + [parent], timeout=timeout)
-            for p in alive:
-                try:
-                    p.kill()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-            if alive:
-                _, still_alive_procs = psutil.wait_procs(alive, timeout=0.5)
-                if still_alive_procs:
-                    still_alive = True
-            psutil_success = not still_alive
-        except psutil.NoSuchProcess:
-            psutil_success = True
-        except (psutil.AccessDenied, Exception):
-            psutil_success = False
-    except Exception:
-        psutil_success = False
-
-    # 2. OS-level fallback if psutil failed or process subtree is still running
-    if not psutil_success or still_alive:
-        if sys.platform == "win32":
-            try:
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(pid)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=3.0,
-                    check=False,
-                )
-            except Exception:
-                pass
-        else:
-            # 3. POSIX fallback: pkill children, kill process group, and send SIGKILL
-            try:
-                subprocess.run(
-                    ["pkill", "-TERM", "-P", str(pid)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=1.0,
-                    check=False,
-                )
-            except Exception:
-                pass
-
-            try:
-                pgid = os.getpgid(pid)
-                if pgid != os.getpgrp() and pgid > 1:
-                    os.killpg(pgid, signal.SIGTERM)
-                    time.sleep(0.1)
-                    os.killpg(pgid, signal.SIGKILL)
-            except Exception:
-                pass
-
-            try:
-                os.kill(pid, signal.SIGTERM)
-                time.sleep(0.1)
-                os.kill(pid, signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                pass
+    """Creates a Windows Job Object configured with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE."""
+    return _setup_windows_job_object()
 
 
 def setup_signal_handlers():
@@ -377,29 +180,6 @@ def cleanup_subprocesses():
         (PROJECT_ROOT / "data" / "desktop_instance.json").unlink(missing_ok=True)
     except Exception:
         pass
-
-
-def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
-    """Checks if a TCP port is open and listening across IPv4 and IPv6."""
-    try:
-        infos = socket.getaddrinfo(
-            host,
-            port,
-            family=socket.AF_UNSPEC,
-            type=socket.SOCK_STREAM,
-        )
-    except (socket.gaierror, OSError):
-        return False
-
-    for family, socktype, proto, _, sockaddr in infos:
-        try:
-            with socket.socket(family, socktype, proto) as s:
-                s.settimeout(0.5)
-                if s.connect_ex(sockaddr) == 0:
-                    return True
-        except OSError:
-            continue
-    return False
 
 
 def get_sovits_host_port() -> tuple[str, int]:
@@ -565,43 +345,15 @@ def get_system_memory_status() -> tuple[float | None, float | None]:
     return hw.get_system_memory_status()
 
 
-def build_gpt_sovits_env(sovits_dir: Path, is_half: bool = False) -> dict[str, str]:
-    """
-    Constructs an isolated process environment for GPT-SoVITS.
-    Precision comes exclusively from the calibration store / explicit argument —
-    no GPU model name matching. env['is_half'] is enforced without mutating
-    third-party files on disk. Defaults to False (FP32) for universal compatibility.
-    """
-    env = os.environ.copy()
-    env["is_half"] = "True" if is_half else "False"
-
-    runtime_scripts = (sovits_dir / "runtime" / "Scripts") if sys.platform == "win32" else (sovits_dir / "runtime" / "bin")
-    env["PATH"] = os.pathsep.join([str(sovits_dir / "runtime"), str(runtime_scripts), env.get("PATH", "")])
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["no_proxy"] = "localhost, 127.0.0.1, ::1"
-    env["NO_PROXY"] = "localhost, 127.0.0.1, ::1"
-    env["all_proxy"] = ""
-    env["ALL_PROXY"] = ""
-
-    # Numba otherwise probes __pycache__ inside the engine's bundled libraries.
-    # On read-only Windows installs Python 3.9 can retry those temporary-file
-    # writes for a very long time, before GPT-SoVITS has printed any progress.
-    cache_dir = PROJECT_ROOT / "data" / "engine_cache" / "numba"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryFile(dir=cache_dir):
-        pass
-    env["NUMBA_CACHE_DIR"] = str(cache_dir)
-
-    # Native dependencies also create temporary files during import. An existing
-    # engine/TEMP directory is not proof that the engine can write there.
-    sovits_temp = cache_dir.parent / "temp"
-    sovits_temp.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryFile(dir=sovits_temp):
-        pass
-    for name in ("TEMP", "TMP", "TMPDIR"):
-        env[name] = str(sovits_temp)
-
-    return env
+def build_gpt_sovits_env(
+    sovits_dir: Path,
+    is_half: bool = False,
+    *,
+    project_root: Path | None = None,
+) -> dict[str, str]:
+    """Constructs an isolated process environment for GPT-SoVITS."""
+    root = Path(project_root) if project_root is not None else PROJECT_ROOT
+    return _build_gpt_sovits_env(sovits_dir, is_half=is_half, project_root=root)
 
 
 def check_python_environment() -> bool:
@@ -775,78 +527,20 @@ def _spawn_sovits_process(
     port: int,
     is_half: bool,
     device: str = "cuda",
+    *,
+    project_root: Path | None = None,
 ) -> subprocess.Popen:
     """Launches the GPT-SoVITS API daemon with the given precision and device, binding to launcher lifecycle."""
-    python_exe = find_engine_python(sovits_dir)
-    if python_exe is None:
-        if getattr(sys, "frozen", False):
-            raise RuntimeError("GPT-SoVITS 目录缺少 runtime/python.exe。请选择包含运行环境的完整引擎包，或连接已启动的引擎。")
-        print("      [提示] 该 GPT-SoVITS 集成包缺少内置 runtime/python 解释器；")
-        print("             将改用当前 Python 启动引擎，若报缺少 GPT-SoVITS 依赖，")
-        print("             请下载官方完整集成包 (含 runtime 目录) 或手动安装其 requirements。")
-        python_exe = Path(sys.executable)
-
-    runtime_dir = PROJECT_ROOT / "data" / "engine_cache"
-    entrypoint = prepare_engine_entrypoint(sovits_dir, runtime_dir / "bootstrap")
-    synced_yaml = write_sovits_yaml_config(
-        sovits_dir, is_half, device=device, output_path=runtime_dir / "tts_infer.yaml",
+    root = Path(project_root) if project_root is not None else PROJECT_ROOT
+    proc, assigned = _launch_sovits_process(
+        sovits_dir,
+        host,
+        port,
+        is_half,
+        device=device,
+        project_root=root,
+        warn_missing_runtime=True,
     )
-    config_arg = "GPT_SoVITS/configs/tts_infer.yaml"
-    if synced_yaml:
-        try:
-            config_arg = str(synced_yaml.relative_to(sovits_dir))
-        except ValueError:
-            config_arg = str(synced_yaml)
-
-    cmd = [
-        str(python_exe),
-        "-I",
-        "-u",
-        str(entrypoint),
-        "-a", host,
-        "-p", str(port),
-        "-c", config_arg,
-    ]
-
-    log_file = PROJECT_ROOT / "logs" / "gpt_sovits.log"
-    # 简单轮转：超过 10MB 归档为 .old（引擎日志为 append 模式，无内置轮转）
-    try:
-        if log_file.exists() and log_file.stat().st_size > 10 * 1024 * 1024:
-            old_file = log_file.with_suffix(".old.log")
-            if old_file.exists():
-                old_file.unlink()
-            log_file.rename(old_file)
-    except OSError:
-        pass
-    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-    env = build_gpt_sovits_env(sovits_dir, is_half=is_half)
-    log_fp = open(log_file, "a", encoding="utf-8")
-    log_fp.write(f"\n{ENGINE_LOG_START}\n")
-    log_fp.flush()
-    extra_popen_kwargs = {}
-    if sys.platform != "win32":
-        extra_popen_kwargs["start_new_session"] = True
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(sovits_dir),
-            env=env,
-            creationflags=flags,
-            stdout=log_fp,
-            stderr=log_fp,
-            stdin=subprocess.DEVNULL,
-            **extra_popen_kwargs,
-        )
-    finally:
-        log_fp.close()
-    global _SPAWNED_SOVITS_PROC, _SPAWNED_SOVITS_STARTED_AT, _SPAWNED_SOVITS_LAUNCH
-    _SPAWNED_SOVITS_PROC = proc
-    _SPAWNED_SOVITS_STARTED_AT = time.monotonic()
-    _SPAWNED_SOVITS_LAUNCH = EngineLaunch(proc, host, port, device, is_half, _SPAWNED_SOVITS_STARTED_AT)
-    if sys.platform == "win32" and not _WINDOWS_JOB_HANDLE:
-        setup_windows_job_object()
-    assigned = assign_process_to_job(proc)
-    (PROJECT_ROOT / "gptsovits.pid").write_text(str(proc.pid), encoding="utf-8")
     prec_label = "CPU" if str(device).lower() == "cpu" else ("FP16" if is_half else "FP32")
     print(f"      [OK] 已在后台启动 GPT-SoVITS (PID: {proc.pid}, {prec_label})")
     if sys.platform == "win32" and not assigned:
@@ -1411,50 +1105,6 @@ def sync_runtime_address(*, host: str | None = None, port: int | None = None) ->
         get_settings.cache_clear()
     except Exception:
         pass
-
-
-def sync_runtime_precision(
-    *,
-    fp16: bool = False,
-    fp32: bool = False,
-    cpu: bool = False,
-    precision: str | None = None,
-    environ: MutableMapping[str, str] | None = None,
-) -> str | None:
-    """Synchronize CLI precision flags across runtime environment variables.
-
-    Priority matches ensure_gpt_sovits_running:
-    1. --cpu / --precision cpu -> "cpu"
-    2. --fp16 / --precision fp16 -> "fp16"
-    3. --fp32 / --precision fp32 -> "fp32"
-    4. --precision auto -> "auto"
-    If no precision option was specified, environ is left untouched and None is returned.
-    When mode is "cpu", GPT_SOVITS_DEVICE="cpu" is also set.
-    When mode is "fp16", "fp32", or "auto", any leftover GPT_SOVITS_DEVICE="cpu" is removed.
-    """
-    prec_opt = (precision or "").strip().lower()
-    mode: str | None = None
-    if cpu or prec_opt == "cpu":
-        mode = "cpu"
-    elif fp16 or prec_opt == "fp16":
-        mode = "fp16"
-    elif fp32 or prec_opt == "fp32":
-        mode = "fp32"
-    elif prec_opt == "auto":
-        mode = "auto"
-
-    if mode is None:
-        return None
-
-    target_env = environ if environ is not None else os.environ
-    target_env["GPT_SOVITS_PRECISION"] = mode
-    if mode == "cpu":
-        target_env["GPT_SOVITS_DEVICE"] = "cpu"
-    else:
-        for k in list(target_env.keys()):
-            if k.lower() == "gpt_sovits_device" and str(target_env[k]).strip().lower() == "cpu":
-                target_env.pop(k, None)
-    return mode
 
 
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
