@@ -21,11 +21,10 @@ class VoiceProfileModel(BaseModel):
     name: str
     gpt_weights_path: str
     sovits_weights_path: str
-    refer_audio_path: str
-    refer_text: str
-    refer_language: str = "ja"
-    prompt_language: str = "ja"
-    text_language: str = "ja"
+    ref_audio_path: str
+    prompt_text: str
+    prompt_lang: str = "ja"
+    text_lang: str = "ja"
 
 
 def clean_japanese_parentheses(text: str) -> str:
@@ -75,9 +74,9 @@ class VoiceManager:
 
                 # Step 3: Set Refer Audio
                 r3 = await self.server.handle_request("POST", "/set_refer_audio", {
-                    "refer_audio_path": target.refer_audio_path,
-                    "refer_text": target.refer_text,
-                    "refer_language": target.refer_language
+                    "refer_audio_path": target.ref_audio_path,
+                    "refer_text": target.prompt_text,
+                    "refer_language": target.prompt_lang
                 })
                 if r3.status_code != 200:
                     # Rollback Step 2 & Step 1
@@ -128,7 +127,7 @@ class TestVoiceManagerTier1:
         assert manager.active_profile.name == "Arona"
         assert mock_gpt_sovits.current_gpt_weights == profile.gpt_weights_path
         assert mock_gpt_sovits.current_sovits_weights == profile.sovits_weights_path
-        assert mock_gpt_sovits.current_refer_audio == profile.refer_audio_path
+        assert mock_gpt_sovits.current_refer_audio == profile.ref_audio_path
 
     def test_clean_japanese_parentheses_basic(self):
         """Verifies removal of fullwidth and halfwidth brackets containing cues."""
@@ -170,8 +169,8 @@ class TestVoiceManagerTier2:
             name="ProfileA",
             gpt_weights_path="weights/a.ckpt",
             sovits_weights_path="weights/a.pth",
-            refer_audio_path="ref/a.wav",
-            refer_text="テキストA"
+            ref_audio_path="ref/a.wav",
+            prompt_text="テキストA"
         )
         await manager.switch_profile(profile_a)
         assert mock_gpt_sovits.current_gpt_weights == "weights/a.ckpt"
@@ -181,8 +180,8 @@ class TestVoiceManagerTier2:
             name="ProfileB",
             gpt_weights_path="weights/b.ckpt",
             sovits_weights_path="weights/b.pth",
-            refer_audio_path="ref/b.wav",
-            refer_text="テキストB"
+            ref_audio_path="ref/b.wav",
+            prompt_text="テキストB"
         )
         mock_gpt_sovits.fail_on_step("set_sovits_weights")
 
@@ -201,8 +200,8 @@ class TestVoiceManagerTier2:
             name="ProfileA",
             gpt_weights_path="weights/a.ckpt",
             sovits_weights_path="weights/a.pth",
-            refer_audio_path="ref/a.wav",
-            refer_text="テキストA"
+            ref_audio_path="ref/a.wav",
+            prompt_text="テキストA"
         )
         await manager.switch_profile(profile_a)
 
@@ -211,8 +210,8 @@ class TestVoiceManagerTier2:
             name="ProfileB",
             gpt_weights_path="weights/b.ckpt",
             sovits_weights_path="weights/b.pth",
-            refer_audio_path="ref/b.wav",
-            refer_text="テキストB"
+            ref_audio_path="ref/b.wav",
+            prompt_text="テキストB"
         )
         mock_gpt_sovits.fail_on_step("set_refer_audio")
 
@@ -228,8 +227,8 @@ class TestVoiceManagerTier2:
         manager = VoiceManager(mock_gpt_sovits)
         mock_gpt_sovits.simulate_latency_s = 0.05
 
-        p1 = VoiceProfileModel(name="P1", gpt_weights_path="w1.ckpt", sovits_weights_path="w1.pth", refer_audio_path="r1.wav", refer_text="t1")
-        p2 = VoiceProfileModel(name="P2", gpt_weights_path="w2.ckpt", sovits_weights_path="w2.pth", refer_audio_path="r2.wav", refer_text="t2")
+        p1 = VoiceProfileModel(name="P1", gpt_weights_path="w1.ckpt", sovits_weights_path="w1.pth", ref_audio_path="r1.wav", prompt_text="t1")
+        p2 = VoiceProfileModel(name="P2", gpt_weights_path="w2.ckpt", sovits_weights_path="w2.pth", ref_audio_path="r2.wav", prompt_text="t2")
 
         # Launch concurrent switches
         t1 = asyncio.create_task(manager.switch_profile(p1))
@@ -301,9 +300,9 @@ class TestVoiceManagerTier2:
     async def test_multi_profile_sequential_switching_cycle(self, mock_gpt_sovits):
         """Verifies cyclic switching across multiple profiles (A -> B -> C -> A)."""
         manager = VoiceManager(mock_gpt_sovits)
-        p_a = VoiceProfileModel(name="A", gpt_weights_path="a.ckpt", sovits_weights_path="a.pth", refer_audio_path="a.wav", refer_text="a")
-        p_b = VoiceProfileModel(name="B", gpt_weights_path="b.ckpt", sovits_weights_path="b.pth", refer_audio_path="b.wav", refer_text="b")
-        p_c = VoiceProfileModel(name="C", gpt_weights_path="c.ckpt", sovits_weights_path="c.pth", refer_audio_path="c.wav", refer_text="c")
+        p_a = VoiceProfileModel(name="A", gpt_weights_path="a.ckpt", sovits_weights_path="a.pth", ref_audio_path="a.wav", prompt_text="a")
+        p_b = VoiceProfileModel(name="B", gpt_weights_path="b.ckpt", sovits_weights_path="b.pth", ref_audio_path="b.wav", prompt_text="b")
+        p_c = VoiceProfileModel(name="C", gpt_weights_path="c.ckpt", sovits_weights_path="c.pth", ref_audio_path="c.wav", prompt_text="c")
 
         assert await manager.switch_profile(p_a) is True
         assert manager.active_profile.name == "A"

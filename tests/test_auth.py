@@ -30,7 +30,11 @@ def auth_enabled(monkeypatch):
 async def app_client(auth_enabled, isolate_test_database):
     import sqlite3
     conn = sqlite3.connect(isolate_test_database)
-    conn.execute("INSERT OR IGNORE INTO settings (id, console_token) VALUES (1, ?);", (TEST_TOKEN,))
+    conn.execute(
+        "INSERT INTO settings (id, console_token) VALUES (1, ?) "
+        "ON CONFLICT(id) DO UPDATE SET console_token = excluded.console_token;",
+        (TEST_TOKEN,),
+    )
     conn.commit()
     conn.close()
 
@@ -100,7 +104,11 @@ class TestTokenSources:
     async def test_env_token_overrides_db(self, auth_enabled, isolate_test_database, monkeypatch):
         import sqlite3
         conn = sqlite3.connect(isolate_test_database)
-        conn.execute("INSERT OR IGNORE INTO settings (id, console_token) VALUES (1, ?);", (TEST_TOKEN,))
+        conn.execute(
+            "INSERT INTO settings (id, console_token) VALUES (1, ?) "
+            "ON CONFLICT(id) DO UPDATE SET console_token = excluded.console_token;",
+            (TEST_TOKEN,),
+        )
         conn.commit()
         conn.close()
 

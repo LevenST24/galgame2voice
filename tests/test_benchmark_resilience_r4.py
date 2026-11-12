@@ -744,12 +744,19 @@ class TestR4SqliteWalConcurrency:
         num_readers = 15
         writes_per_task = 4
 
+        async with get_db(temp_db_path) as conn:
+            async with immediate_transaction(conn):
+                await conn.executemany(
+                    "INSERT OR IGNORE INTO sessions (id) VALUES (?);",
+                    [(f"wal_worker_{w}",) for w in range(num_writers)],
+                )
+
         async def writer(writer_id: int):
             for step in range(writes_per_task):
                 async with get_db(temp_db_path) as conn:
                     async with immediate_transaction(conn):
                         await conn.execute(
-                            "INSERT INTO session_messages (session_id, role, content_chinese, content_japanese) "
+                            "INSERT INTO messages (session_id, role, content_chinese, content_japanese) "
                             "VALUES (?, ?, ?, ?);",
                             (f"wal_worker_{writer_id}", "user", f"W_{writer_id}_S_{step}", f"日文_{writer_id}_{step}")
                         )
@@ -760,10 +767,10 @@ class TestR4SqliteWalConcurrency:
             seen_counts = []
             for _ in range(writes_per_task):
                 async with get_db(temp_db_path) as conn:
-                    row = await (await conn.execute("SELECT count(*) FROM session_messages;")).fetchone()
+                    row = await (await conn.execute("SELECT count(*) FROM messages;")).fetchone()
                     seen_counts.append(row[0])
                     # Query recent rows
-                    rows = await (await conn.execute("SELECT * FROM session_messages ORDER BY id DESC LIMIT 5;")).fetchall()
+                    rows = await (await conn.execute("SELECT * FROM messages ORDER BY id DESC LIMIT 5;")).fetchall()
                     assert isinstance(rows, list)
                 await asyncio.sleep(0.001)
             return seen_counts
@@ -776,5 +783,5 @@ class TestR4SqliteWalConcurrency:
 
         # Verify exact final count of written records
         async with get_db(temp_db_path) as conn:
-            final_count = (await (await conn.execute("SELECT count(*) FROM session_messages;")).fetchone())[0]
+            final_count = (await (await conn.execute("SELECT count(*) FROM messages;")).fetchone())[0]
             assert final_count == num_writers * writes_per_task

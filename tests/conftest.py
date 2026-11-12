@@ -4,6 +4,7 @@ Includes Mock GPT-SoVITS Server, Mock LLM/STT Providers, In-Memory SQLite DB, an
 """
 
 import asyncio
+import atexit
 import json
 import os
 from pathlib import Path
@@ -465,168 +466,73 @@ class MockLLMServer:
 
 
 # ============================================================================
-# 3. In-Memory / Temporary SQLite Database Fixtures & Schema Helper
+# 3. Temporary SQLite Database Fixtures & Real Migration Template Helper
 # ============================================================================
 
-DATABASE_SCHEMA_SQL = """
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
+_MIGRATED_TEMPLATE_DIR: Optional[Path] = None
+_TEMPLATE_SIDECAR_FILES = (".master_key", ".console_token")
 
-CREATE TABLE IF NOT EXISTS settings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    key TEXT UNIQUE DEFAULT NULL,
-    value TEXT DEFAULT NULL,
-    description TEXT DEFAULT '',
-    active_provider_id TEXT NOT NULL DEFAULT 'gemini',
-    active_voice_profile_id INTEGER DEFAULT 1,
-    gpt_sovits_url TEXT NOT NULL DEFAULT 'http://127.0.0.1:9880',
-    audio_output_dir TEXT NOT NULL DEFAULT 'audio',
-    audio_retention_minutes INTEGER NOT NULL DEFAULT 30,
-    audio_cleanup_interval_sec INTEGER NOT NULL DEFAULT 600,
-    speed_factor REAL NOT NULL DEFAULT 1.0,
-    temperature REAL NOT NULL DEFAULT 1.0,
-    top_k INTEGER NOT NULL DEFAULT 15,
-    top_p REAL NOT NULL DEFAULT 1.0,
-    seed INTEGER NOT NULL DEFAULT -1,
-    batch_size INTEGER NOT NULL DEFAULT 1,
-    text_split_method TEXT NOT NULL DEFAULT 'cut1',
-    fragment_interval REAL NOT NULL DEFAULT 0.3,
-    telegram_bot_token TEXT NOT NULL DEFAULT '',
-    telegram_bot_username TEXT NOT NULL DEFAULT 'natsume_siki_bot',
-    telegram_proxy_host TEXT NOT NULL DEFAULT '127.0.0.1',
-    telegram_proxy_port INTEGER NOT NULL DEFAULT 10809,
-    telegram_proxy_enabled INTEGER NOT NULL DEFAULT 0,
-    telegram_enabled INTEGER NOT NULL DEFAULT 0,
-    telegram_admin_ids TEXT NOT NULL DEFAULT '',
-    allow_private_llm_endpoints INTEGER NOT NULL DEFAULT 0,
-    console_token TEXT NOT NULL DEFAULT 'test_console_token',
-    console_url TEXT NOT NULL DEFAULT '',
-    max_history_messages INTEGER NOT NULL DEFAULT 10,
-    inference_precision TEXT NOT NULL DEFAULT 'auto',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
 
-CREATE TABLE IF NOT EXISTS providers (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL DEFAULT '',
-    provider_type TEXT NOT NULL DEFAULT '',
-    api_base_url TEXT NOT NULL DEFAULT '',
-    base_url TEXT NOT NULL DEFAULT '',
-    api_key TEXT NOT NULL DEFAULT '',
-    chat_model TEXT NOT NULL DEFAULT '',
-    model TEXT NOT NULL DEFAULT '',
-    stt_model TEXT NOT NULL DEFAULT '',
-    is_active INTEGER NOT NULL DEFAULT 0,
-    custom_headers TEXT NOT NULL DEFAULT '{}',
-    extra_config TEXT NOT NULL DEFAULT '{}',
-    reasoning_effort TEXT DEFAULT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_providers_is_active ON providers(is_active);
+def _ensure_migrated_template_dir() -> Path:
+    """Lazily builds one real migrated SQLite template directory per pytest process."""
+    global _MIGRATED_TEMPLATE_DIR
+    if (
+        _MIGRATED_TEMPLATE_DIR is not None
+        and (_MIGRATED_TEMPLATE_DIR / "galgame2voice.db").is_file()
+    ):
+        return _MIGRATED_TEMPLATE_DIR
 
-CREATE TABLE IF NOT EXISTS voice_profiles (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    description TEXT NOT NULL DEFAULT '',
-    gpt_weights_path TEXT NOT NULL,
-    sovits_weights_path TEXT NOT NULL,
-    ref_audio_path TEXT NOT NULL DEFAULT '',
-    refer_audio_path TEXT NOT NULL DEFAULT '',
-    prompt_text TEXT NOT NULL DEFAULT '',
-    refer_text TEXT NOT NULL DEFAULT '',
-    prompt_lang TEXT NOT NULL DEFAULT 'ja',
-    refer_language TEXT NOT NULL DEFAULT 'ja',
-    text_lang TEXT NOT NULL DEFAULT 'ja',
-    prompt_language TEXT NOT NULL DEFAULT 'ja',
-    text_language TEXT NOT NULL DEFAULT 'ja',
-    system_prompt TEXT NOT NULL DEFAULT '',
-    is_default INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_voice_profiles_is_default ON voice_profiles(is_default);
+    from galgame2voice.config import get_settings
+    from galgame2voice.database.session import init_db
 
-CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,
-    channel TEXT NOT NULL DEFAULT 'web',
-    user_id TEXT NOT NULL DEFAULT '',
-    voice_profile_id INTEGER REFERENCES voice_profiles(id) ON DELETE SET NULL,
-    custom_system_prompt TEXT DEFAULT NULL,
-    token_budget INTEGER NOT NULL DEFAULT 4096,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions(channel);
-CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);
-CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_voice_profile ON sessions(voice_profile_id);
+    cache_root = Path(__file__).resolve().parent.parent / ".local" / "cache" / "migrated-db-templates"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    template_data_dir = Path(
+        tempfile.mkdtemp(prefix=f"tpl_{os.getpid()}_", dir=str(cache_root))
+    )
+    atexit.register(shutil.rmtree, str(template_data_dir), True)
 
-CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    role TEXT NOT NULL,
-    content_chinese TEXT NOT NULL,
-    content_japanese TEXT NOT NULL DEFAULT '',
-    audio_url TEXT NOT NULL DEFAULT '',
-    latency_ms INTEGER NOT NULL DEFAULT 0,
-    lines_json TEXT DEFAULT NULL,
-    reply_to_message_id INTEGER DEFAULT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
-CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
-CREATE INDEX IF NOT EXISTS idx_messages_session_created ON messages(session_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_messages_session_reply_to ON messages(session_id, reply_to_message_id);
+    template_db_path = template_data_dir / "galgame2voice.db"
+    env_keys = ("DATA_DIR_NAME", "GALGAME2VOICE_DB_PATH", "GALGAME_DB_PATH")
+    saved_env = {k: os.environ.get(k) for k in env_keys}
+    errors: List[BaseException] = []
 
-CREATE TABLE IF NOT EXISTS session_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    role TEXT NOT NULL,
-    content_chinese TEXT,
-    content_japanese TEXT,
-    raw_content TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_session_id ON session_messages(session_id);
+    def _init_worker() -> None:
+        try:
+            asyncio.run(init_db(str(template_db_path)))
+        except BaseException as exc:
+            errors.append(exc)
 
-CREATE TABLE IF NOT EXISTS user_memories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL DEFAULT 'default_user',
-    character_id INTEGER DEFAULT 1,
-    category TEXT NOT NULL DEFAULT 'preference',
-    fact_key TEXT NOT NULL,
-    fact_value TEXT NOT NULL,
-    confidence REAL NOT NULL DEFAULT 1.0,
-    source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
-    recall_count INTEGER NOT NULL DEFAULT 0,
-    last_recalled_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_user_memories_user_cat ON user_memories(user_id, category);
-CREATE INDEX IF NOT EXISTS idx_user_memories_char_key ON user_memories(character_id, fact_key);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_user_memories_key ON user_memories(user_id, character_id, fact_key);
+    try:
+        os.environ["DATA_DIR_NAME"] = str(template_data_dir)
+        os.environ["GALGAME2VOICE_DB_PATH"] = str(template_db_path)
+        os.environ["GALGAME_DB_PATH"] = str(template_db_path)
+        get_settings.cache_clear()
+        worker = threading.Thread(target=_init_worker, daemon=True)
+        worker.start()
+        worker.join()
+        if errors:
+            raise errors[0]
+    finally:
+        for k, old_val in saved_env.items():
+            if old_val is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old_val
+        get_settings.cache_clear()
 
-CREATE TABLE IF NOT EXISTS character_affection (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL DEFAULT 'default_user',
-    character_id INTEGER NOT NULL DEFAULT 1,
-    affection_score INTEGER NOT NULL DEFAULT 0,
-    affection_level INTEGER NOT NULL DEFAULT 1,
-    current_emotion TEXT NOT NULL DEFAULT 'normal',
-    interaction_count INTEGER NOT NULL DEFAULT 0,
-    daily_points_earned INTEGER NOT NULL DEFAULT 0,
-    last_interaction_date TEXT NOT NULL DEFAULT '',
-    unlocked_dialogues TEXT NOT NULL DEFAULT '[]',
-    custom_nickname TEXT DEFAULT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(user_id, character_id)
-);
-CREATE INDEX IF NOT EXISTS idx_affection_user_char ON character_affection(user_id, character_id);
-"""
+    conn = sqlite3.connect(str(template_db_path))
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        conn.commit()
+    finally:
+        conn.close()
+
+    for suffix in ("-wal", "-shm"):
+        Path(f"{template_db_path}{suffix}").unlink(missing_ok=True)
+
+    _MIGRATED_TEMPLATE_DIR = template_data_dir
+    return template_data_dir
 
 
 @pytest.fixture
@@ -755,6 +661,7 @@ def stub_real_hardware_probes(request, monkeypatch):
 @pytest.fixture(autouse=True)
 def isolate_test_database(monkeypatch, tmp_path):
     """Ensures every test runs against an isolated temporary SQLite database."""
+    template_dir = _ensure_migrated_template_dir()
     # The test suite drives the app through raw ASGI clients without console
     # tokens; dedicated auth tests re-enable authentication themselves.
     monkeypatch.setenv("GALGAME2VOICE_AUTH_DISABLED", "1")
@@ -769,11 +676,12 @@ def isolate_test_database(monkeypatch, tmp_path):
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     # Match Settings.db_path as well as the legacy DB environment override.
     path = str(test_data_dir / "galgame2voice.db")
-    conn = sqlite3.connect(path)
-    conn.executescript(DATABASE_SCHEMA_SQL)
-    conn.commit()
-    conn.close()
-    
+    shutil.copy2(template_dir / "galgame2voice.db", path)
+    for sidecar_name in _TEMPLATE_SIDECAR_FILES:
+        src_sidecar = template_dir / sidecar_name
+        if src_sidecar.is_file():
+            shutil.copy2(src_sidecar, test_data_dir / sidecar_name)
+
     monkeypatch.setenv("GALGAME2VOICE_DB_PATH", path)
     monkeypatch.setenv("GALGAME_DB_PATH", path)
     from galgame2voice.config import get_settings
@@ -782,11 +690,12 @@ def isolate_test_database(monkeypatch, tmp_path):
     set_chat_service(None)
     yield path
     set_chat_service(None)
-    if os.path.exists(path):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    for db_file in (path, f"{path}-wal", f"{path}-shm"):
+        if os.path.exists(db_file):
+            try:
+                os.remove(db_file)
+            except OSError:
+                pass
 
 
 @pytest.fixture(autouse=True)
@@ -902,22 +811,20 @@ def require_character_assets_guard(request):
 
 @pytest.fixture
 def temp_db_path():
-    """Creates a temporary sqlite database file initialized with the full schema."""
+    """Creates a temporary sqlite database file initialized via real schema migrations."""
+    template_dir = _ensure_migrated_template_dir()
     fd, path = tempfile.mkstemp(suffix=".db", prefix="test_galgame2voice_")
     os.close(fd)
-    
-    conn = sqlite3.connect(path)
-    conn.executescript(DATABASE_SCHEMA_SQL)
-    conn.commit()
-    conn.close()
+    shutil.copy2(template_dir / "galgame2voice.db", path)
 
     yield path
 
-    if os.path.exists(path):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    for db_file in (path, f"{path}-wal", f"{path}-shm"):
+        if os.path.exists(db_file):
+            try:
+                os.remove(db_file)
+            except OSError:
+                pass
 
 
 @pytest.fixture
@@ -926,12 +833,11 @@ def sample_voice_profile():
         "name": "Arona",
         "gpt_weights_path": "weights/arona-e15.ckpt",
         "sovits_weights_path": "weights/arona_e24_s1200.pth",
-        "refer_audio_path": "ref/arona_greeting.wav",
-        "refer_text": "先生、今日もよろしくお願いしますね！",
-        "refer_language": "ja",
-        "prompt_language": "ja",
-        "text_language": "ja",
-        "is_default": 1
+        "ref_audio_path": "ref/arona_greeting.wav",
+        "prompt_text": "先生、今日もよろしくお願いしますね！",
+        "prompt_lang": "ja",
+        "text_lang": "ja",
+        "is_default": 1,
     }
 
 
@@ -939,12 +845,13 @@ def sample_voice_profile():
 def sample_provider_config():
     return {
         "id": "openai_primary",
-        "provider_type": "openai",
+        "name": "OpenAI Primary",
+        "api_base_url": "https://api.openai.com/v1",
         "api_key": "sk-1234567890abcdef1234567890abcdef",
-        "base_url": "https://api.openai.com/v1",
-        "model": "gpt-4o",
+        "chat_model": "gpt-4o",
+        "stt_model": "whisper-1",
         "is_active": 1,
-        "extra_config": json.dumps({"temperature": 0.8, "max_tokens": 1024})
+        "custom_headers": json.dumps({"X-Title": "galgame2voice"}),
     }
 
 
