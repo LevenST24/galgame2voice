@@ -444,6 +444,18 @@ def test_message_create_turn_action_and_completion_done_event_builders():
     assert msg.latency_ms == 320
     assert msg.reply_to_message_id == 7
     assert msg.lines is not None and msg.lines[0]["zh"] == "你好。"
+    assert (
+        build_assistant_message_create(
+            session_id="sess_1",
+            content_chinese="纯文本兜底",
+            content_japanese=None,
+            lines=[],
+            audio_url="",
+            latency_ms=10,
+            reply_to_message_id=7,
+        ).lines
+        is None
+    )
 
     done_no_id = build_completion_done_event(
         full_chinese="你好。",
@@ -473,7 +485,7 @@ def test_message_create_turn_action_and_completion_done_event_builders():
         full_chinese="你好。",
         full_japanese="こんにちは。",
         final_lines=lines,
-        reply_format="old",
+        reply_format="lines",
         final_emotion="gentle",
         affection={"score": 55},
         metrics={},

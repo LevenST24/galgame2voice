@@ -22,18 +22,6 @@ from galgame2voice.services.portrait_manifest import load_portrait_manifest
 
 logger = logging.getLogger(__name__)
 
-# The streaming parser and the Japanese voice rely on this reply shape. Personas typed by
-# hand (a new custom voice, an edited or third-party package prompt) rarely repeat it,
-# and without it the model answers in plain Chinese that the voice then reads aloud.
-BILINGUAL_OUTPUT_CONTRACT = (
-    "【输出格式】请始终只输出如下 JSON，不要包含 Markdown 标记或多余文字。"
-    "在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5, temp 温度: 0.60~1.20, "
-    "emotion 情绪: gentle|shy|happy|tsundere|cool|sad|angry）；japanese 是与 chinese 意思一致、"
-    "适合配音朗读的口语化日语：\n"
-    '{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, '
-    '"chinese": "给玩家看的中文内容", "japanese": "对应的口语化日语音频台词"}'
-)
-
 
 class BuiltContext(list):
     """Message history list carrying the resolved turn acting menu."""
@@ -41,34 +29,6 @@ class BuiltContext(list):
     def __init__(self, messages: list[ChatMessage] | None = None, menu: dict | None = None):
         super().__init__(messages or [])
         self.menu: dict | None = menu
-
-
-def ensure_bilingual_output_format(prompt: str) -> str:
-    """Appends the bilingual JSON reply contract when a persona prompt does not define one."""
-    if not prompt or ('"chinese"' in prompt and '"japanese"' in prompt):
-        return prompt
-    return f"{prompt.rstrip()}\n\n{BILINGUAL_OUTPUT_CONTRACT}"
-
-
-def upgrade_legacy_system_prompt(prompt: str) -> str:
-    """
-    Upgrades legacy prompt formats that lack dynamic TTS parameters.
-    Ensures modern JSON output instructions include speed, temperature, and emotion.
-    """
-    if not prompt:
-        return prompt
-
-    if '"tts":' not in prompt and '{"chinese":' in prompt:
-        prompt = prompt.replace(
-            '{"chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}',
-            '{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, "chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}'
-        )
-        if "动态决定语音推理参数" not in prompt:
-            prompt = prompt.replace(
-                "你必须严格输出如下 JSON 格式",
-                "你必须严格输出如下 JSON 格式，在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5 请大胆调节！激动时可设为1.3以上，低落时设为0.7以下, temp 温度: 0.60~1.20, emotion 情绪: gentle|shy|happy|tsundere|cool|sad|angry）"
-            )
-    return prompt
 
 
 async def _resolve_context_voice_profile(
@@ -148,7 +108,7 @@ async def build_chat_context(
     max_history_override: int | None = None,
     active_profile: Any | None = None,
     session: Any | None = None,
-    reply_format: str = "old",
+    reply_format: str = "lines",
     outfit: str | None = None,
 ) -> BuiltContext:
     """
@@ -180,12 +140,9 @@ async def build_chat_context(
     char_name = character_name or (active_profile.name if active_profile else "Character")
 
     menu = _build_acting_menu(char_name, outfit)
-    if reply_format == "lines":
-        system_prompt = strip_old_format_block(system_prompt)
-        contract = render_lines_contract(menu)
-        system_prompt = f"{system_prompt.rstrip()}\n\n{contract}" if system_prompt.strip() else contract
-    else:
-        system_prompt = ensure_bilingual_output_format(upgrade_legacy_system_prompt(system_prompt))
+    system_prompt = strip_old_format_block(system_prompt)
+    contract = render_lines_contract(menu)
+    system_prompt = f"{system_prompt.rstrip()}\n\n{contract}" if system_prompt.strip() else contract
 
     settings_raw = await crud.get_settings_raw(conn)
     max_history = max_history_override or settings_raw.max_history_messages
@@ -209,6 +166,6 @@ async def build_chat_context(
         max_messages=max_history,
         memory_prompt_block=memory_block,
         conn=conn,
-        reply_format=reply_format,
+        reply_format="lines",
     )
     return BuiltContext(raw_messages, menu=menu)

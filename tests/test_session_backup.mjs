@@ -133,24 +133,36 @@ for (const invalid of ['{broken', 'null', '{"format":"other"}', JSON.stringify({
 }
 {
   const session = (id, advReplyFormat) => ({ id, title: id, createdAt: 1, updatedAt: 2,
-    settings: { temperature: 0.7, ...(advReplyFormat === undefined ? {} : { advReplyFormat }) },
-    messages: [{ id: `m_${id}`, role: 'user', content: '台词', ts: 1 }] });
-  // 'old' was the stored default before per-line replies became the default; only 'legacy' opts out.
-  storage({ sessions: [session('s_legacy', 'legacy'), session('s_old', 'old'), session('s_invalid', 'bogus'),
-    session('s_missing')], activeId: 's_legacy', global: {} });
+    settings: { temperature: 0.75, advPlayerName: '旅人', ...(advReplyFormat === undefined ? {} : { advReplyFormat }) },
+    messages: [
+      { id: `m_${id}`, role: 'user', content: '台词', ts: 1 },
+      { id: `m_legacy_${id}`, role: 'assistant', content: '旧整段中文', japanese: '旧版の日本語。', ts: 2 },
+    ] });
+  // Retired advReplyFormat ('legacy' | 'old' | 'lines' | bogus) must be silently ignored on read and import.
+  storage({ sessions: [session('s_legacy', 'legacy'), session('s_old', 'old'), session('s_lines', 'lines'),
+    session('s_invalid', 'bogus'), session('s_missing')], activeId: 's_legacy', global: {} });
   loadState();
-  const expected = ['legacy', 'lines', 'lines', 'lines'];
-  assert.deepEqual(state.sessions.map(s => s.settings.advReplyFormat), expected);
-  state.activeId = 's_invalid';
-  assert.equal(state.sessions.find(s => s.id === 's_invalid').settings.advReplyFormat, 'lines');
-  assert.equal(state.sessions.find(s => s.id === 's_legacy').settings.advReplyFormat, 'legacy');
-  state.activeId = 's_legacy';
+  assert.ok(!('advReplyFormat' in state.sessions[0].settings));
+  assert.deepEqual(state.sessions.map(s => 'advReplyFormat' in s.settings), [false, false, false, false, false]);
+  assert.deepEqual(state.sessions.map(s => s.settings.temperature), [0.75, 0.75, 0.75, 0.75, 0.75]);
+  assert.deepEqual(state.sessions.map(s => s.settings.advPlayerName), ['旅人', '旅人', '旅人', '旅人', '旅人']);
+  assert.equal(state.sessions[0].messages[1].japanese, '旧版の日本語。');
+  assert.equal(state.sessions[0].messages[1].lines, undefined);
   const exported = JSON.parse(exportSessionData());
   assert.equal(exported.activeId, 's_legacy');
-  assert.deepEqual(exported.sessions.map(s => s.settings.advReplyFormat), expected);
-  state.activeId = 's_invalid';
-  const incoming = prepareSessionImport(JSON.stringify(exported));
-  assert.deepEqual(incoming.sessions.map(s => s.settings.advReplyFormat), expected);
+  assert.deepEqual(exported.sessions.map(s => 'advReplyFormat' in s.settings), [false, false, false, false, false]);
+  const rawLegacyBackup = JSON.stringify({
+    ...exported,
+    sessions: exported.sessions.map((s, idx) => ({
+      ...s,
+      settings: { ...s.settings, advReplyFormat: ['legacy', 'old', 'lines', 'bogus', undefined][idx] },
+    })),
+  });
+  const incoming = prepareSessionImport(rawLegacyBackup);
+  assert.deepEqual(incoming.sessions.map(s => 'advReplyFormat' in s.settings), [false, false, false, false, false]);
+  assert.deepEqual(incoming.sessions.map(s => s.settings.advPlayerName), ['旅人', '旅人', '旅人', '旅人', '旅人']);
+  assert.equal(incoming.sessions[0].messages[1].content, '旧整段中文');
+  assert.equal(incoming.sessions[0].messages[1].lines, undefined);
   assert.notEqual(incoming.sessions[0].id, 's_legacy'); passed++;
 }
 

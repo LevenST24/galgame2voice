@@ -227,9 +227,9 @@ const backup = sessions => ({ format: 'galgame2voice.chat', version: 1, sessions
       onChunk() {}, onEnd: () => resolve(), fetch: globalThis.fetch,
     }));
   }
-  // Only the explicit opt-out asks the server for the old whole-reply format.
+  // All sessions request per-line replies even if stale advReplyFormat values remain on settings.
   assert.deepEqual(bodies.map(body => [body.session_id, body.reply_format, body.outfit]), [
-    ['s_legacy', 'old', undefined], ['s_old', 'lines', undefined],
+    ['s_legacy', 'lines', undefined], ['s_old', 'lines', undefined],
     ['s_lines', 'lines', 'casual'], ['s_unset', 'lines', undefined],
   ]); passed++;
 }

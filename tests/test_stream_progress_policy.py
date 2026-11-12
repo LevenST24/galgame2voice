@@ -97,9 +97,12 @@ async def test_worker_announces_voice_work_before_waiting_for_inference(tmp_path
         return "/audio/synthetic.wav", tmp_path / "synthetic.wav", 32
     coordinator = coordinator_for(tmp_path, synthesize)
     run = coordinator._init_stream_run()
-    run.chunk_s_map[0] = 0
+    line = {"index": 0, "zh": "你好。", "ja": "こんにちは。", "emotion": "gentle", "act": {}}
+    run.lines.append(line)
+    run.chunk_line_map[0] = 0
     run.chunk_results[0] = {"settled": False, "chunk": None, "error": None}
-    await run.tts_queue.put(("こんにちは。", 0))
+    coordinator._line_audio_state(run, 0).update(sealed=True, pending=1)
+    await run.tts_queue.put(line)
     await run.tts_queue.put(None)
     task = asyncio.create_task(coordinator._tts_worker(run))
     try:

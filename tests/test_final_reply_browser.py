@@ -96,7 +96,7 @@ def test_completed_reply_reaches_the_stage_once(tmp_path, width, height, mode):
     assert data["completeReplyVisible"] is True
     assert data["requestCalls"] == 1
     assert data["playCalls"] == (2 if mode == "terminal-lines" else 0 if mode == "japanese-only" else 1)
-    assert data["replyFormat"] == ("old" if mode == "legacy" else "lines")
+    assert data["replyFormat"] == "lines"
 
 
 @pytest.mark.requires_piped_subprocess

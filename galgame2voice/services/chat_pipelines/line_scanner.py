@@ -57,7 +57,7 @@ class ScannedLine:
 
 @dataclass
 class ScanResult:
-    format: str  # 'unknown' | 'lines' | 'legacy'
+    format: str  # 'unknown' | 'lines'
     tts: dict[str, Any] | None
     lines: list[ScannedLine]
     truncated: bool
@@ -532,9 +532,6 @@ class LineScanner:
                     self._current_key = key
                     if key == "lines":
                         self.format = "lines"
-                    elif key in ("chinese", "japanese"):
-                        if self.format == "unknown":
-                            self.format = "legacy"
                     self._waiting_colon = True
                 else:
                     self._key_chars.append(c)
