@@ -13,7 +13,6 @@ import {
 } from '../voice.js';
 import {
   getCachedAudioBlob,
-  loadAudioBlob,
 } from '../cache.js';
 import { streamAudioController } from '../audio_player.js';
 import { showToast } from '../ui.js';
@@ -57,15 +56,6 @@ export function setCurrentVoice(v) {
 export function initAudioPlayerUi(dom, callbacks = {}) {
   _dom = dom;
   _callbacks = callbacks;
-
-  streamAudioController.onQueueEmpty = () => {
-    if (currentVoice?.msgId === streamAudioController.currentMsgId) {
-      try {
-        currentVoice.setPlaying(false);
-      } catch (_) {}
-      currentVoice = null;
-    }
-  };
 
   streamAudioController.onError = (error) => {
     const isBrowserBlock = Boolean(error.message?.includes('浏览器'));
@@ -234,74 +224,6 @@ function beginPlaybackLoad(msg, ctl) {
   };
 }
 
-function streamVoiceHandle(msg, ctl) {
-  return {
-    msgId: msg.id,
-    get paused() { return streamAudioController.paused; },
-    pause() { streamAudioController.pause(); },
-    resume() { streamAudioController.resume(); },
-    setPlaying: ctl?.setPlaying,
-    setProgress: ctl?.setProgress,
-    stop() { streamAudioController.interrupt(40); },
-  };
-}
-
-function reportMissingHistoryAudio(ctl) {
-  ctl?.setPlaying?.(false);
-  showToast('该条历史语音文件已过期或不存在，可在历史台词（LOG）中重新生成单句语音。', 'info');
-}
-
-export async function playAiVoice(msg, ctl) {
-  if (pendingPreparation?.msgId === msg.id) { stopCurrentVoice(); return; }
-  if (currentVoice?.msgId === msg.id) {
-    if (currentVoice.paused) currentVoice.resume();
-    else currentVoice.pause();
-    return;
-  }
-  const request = beginPlaybackLoad(msg, ctl);
-  try {
-    const fullCacheKey = `msg_${msg.id}`;
-    const chunks = (msg.audioChunks || []).filter(c => c?.url).map(c => ({ ...c }));
-    const cached = chunks.length ? null : await getCachedAudioBlob(fullCacheKey);
-    if (!request.current()) return;
-    if (cached?.size) {
-      currentVoice = streamVoiceHandle(msg, ctl);
-      streamAudioController.startSession(msg.id, ctl);
-      await streamAudioController.enqueueChunk({ url: fullCacheKey, index: 0, ctl, blob: cached, totalExpected: 1 });
-      return;
-    }
-    if (!chunks.length) {
-      chunks.push(...(msg.audioUrls || []).filter(Boolean).map(url => ({ url })));
-    }
-    if (!chunks.length) {
-      reportMissingHistoryAudio(ctl);
-      return;
-    }
-    try {
-      // Reuse the downloaded body instead of probing and fetching it twice.
-      chunks[0].blob = await loadAudioBlob(chunks[0].url, { signal: request.signal });
-    } catch (error) {
-      if (!request.current()) return;
-      // A timeout or an offline service does not prove cached URLs have expired.
-      if (error.status !== 404 && error.status !== 410) throw error;
-      reportMissingHistoryAudio(ctl);
-      return;
-    }
-    if (!request.current()) return;
-    currentVoice = streamVoiceHandle(msg, ctl);
-    await streamAudioController.playChunks(chunks, ctl, msg.id);
-  } catch (error) {
-    if (!request.current() || error.name === 'AbortError') return;
-    ctl?.setPlaying?.(false);
-    showToast('语音暂时无法加载，原有音频记录已保留。请稍后在 LOG 里点「语音」重试，或打开「运行状态」检查服务。', 'info', _callbacks.onOpenEngineStatus ? {
-      actionLabel: '检查运行状态',
-      onAction: () => _callbacks.onOpenEngineStatus(),
-    } : null);
-  } finally {
-    request.finish();
-  }
-}
-
 export async function playUserVoice(msg, ctl) {
   if (pendingPreparation?.msgId === msg.id) { stopCurrentVoice(); return; }
   if (currentVoice?.msgId === msg.id) {
@@ -333,8 +255,7 @@ export async function playUserVoice(msg, ctl) {
 }
 
 export function playVoice(msg, ctl) {
-  if (msg.role === 'user') playUserVoice(msg, ctl);
-  else playAiVoice(msg, ctl);
+  if (msg?.role === 'user') return playUserVoice(msg, ctl);
 }
 
 export function updateVoiceModeUI() {

@@ -24,7 +24,7 @@ const until=async check=>{
 };
 try{
   const wav=new Blob([Uint8Array.from(atob(__WAV__),c=>c.charCodeAt(0))],{type:'audio/wav'});
-  player.startSession('native-clock');await player.ctx.resume();
+  player.ensureContext();await player.ctx.resume();
   player.currentBufferLeadSec=0.3;
   const pending=player.playLine(0,[{blob:wav}],{onStart:()=>starts.push(player.ctx.currentTime)});
   await until(()=>player._linePlayState?.activeSources.length===1);
@@ -42,7 +42,7 @@ try{
     result.outcome=await pending;
   }else{
     if(mode==='stop')player.stopLine({fadeMs:0});
-    else player.startSession('replacement');
+    else player.interrupt(0);
     result.outcome=await pending;
     await player.ctx.resume();await wait(400);
     result.cancelledStarts=starts.length;

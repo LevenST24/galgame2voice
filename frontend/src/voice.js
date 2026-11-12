@@ -183,16 +183,6 @@ function cleanupRecorder() {
   recorder = null;
 }
 
-/** 去掉 markdown 标记的纯文本（用于 TTS 合成与时长估算） */
-export function plainSpeechText(text) {
-  return String(text)
-    .replace(/`([^`\n]+)`/g, '$1')
-    .replace(/\*\*([^*\n]+)\*\*/g, '$1')
-    .replace(/[#*>|]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 /** 最大内存音频条目数（严格限制，防止长时间多轮对话产生 Blob URL 内存泄漏） */
 export const MAX_AUDIO_STORE_ENTRIES = 30;
 
@@ -263,10 +253,3 @@ export class BoundedAudioStore extends Map {
 
 /** 语音消息的内存暂存（严格受控 LRU 30 项上限） */
 export const audioStore = new BoundedAudioStore();
-
-/**
- * 辅助存储方法：设置录音并自动受控于 LRU 队列
- */
-export function setAudioStore(msgId, rec) {
-  audioStore.set(msgId, rec);
-}

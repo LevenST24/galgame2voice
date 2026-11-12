@@ -40,7 +40,7 @@ globalThis.fetch=async (url,options={})=>{
 };
 const wait=()=>new Promise(resolve=>setTimeout(resolve,20));
 const until=async check=>{for(let i=0;i<150;i++){if(check())return;await wait();}throw new Error('Condition did not finish');};
-const player=new StreamAudioController({fetchTimeoutMs:3000});player.startSession('browser-repair');
+const player=new StreamAudioController({fetchTimeoutMs:3000});
 let log;
 try {
   const stage=createStage(document.getElementById('fixture-root'));
@@ -234,7 +234,6 @@ const until = async check => {
 };
 
 const player = new StreamAudioController({ fetchTimeoutMs: 5000 });
-player.startSession('tab-sync-player-' + tab);
 const playOutcomes = [];
 const originalPlayLine = player.playLine.bind(player);
 player.playLine = async (...args) => {
@@ -675,7 +674,6 @@ const until = async check => {
 };
 
 const player = new StreamAudioController({ fetchTimeoutMs: 3000 });
-player.startSession('browser-legacy-repair');
 
 const outcomes = [];
 const origPlayLine = player.playLine.bind(player);

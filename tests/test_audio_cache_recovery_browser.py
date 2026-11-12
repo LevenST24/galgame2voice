@@ -38,7 +38,7 @@ try {
   globalThis.fetch=async (url,options={})=>{
     calls.push({url,method:options.method||'GET',cache:options.cache});return new Response(good);
   };
-  const player=new StreamAudioController({fetchTimeoutMs:5000});player.startSession('native-cache-recovery');
+  const player=new StreamAudioController({fetchTimeoutMs:5000});player.ensureContext();
   const context=player.ctx,decode=context.decodeAudioData.bind(context);
   context.decodeAudioData=async data=>{
     try{

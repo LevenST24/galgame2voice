@@ -212,14 +212,16 @@ test('audio_player: nextStartTime <= now applies adaptive buffer lead margin', a
         };
       }
       createBufferSource() {
+        const ctx = this;
         return {
           buffer: null,
           connect() {},
           disconnect() {},
-          start() {},
+          start(time) { ctx.starts.push(time); },
           stop() {},
         };
       }
+      async decodeAudioData() { return { duration: 1 }; }
       async resume() { this.state = 'running'; }
       async close() { this.state = 'closed'; }
     }
@@ -231,44 +233,42 @@ test('audio_player: nextStartTime <= now applies adaptive buffer lead margin', a
     const controller = new StreamAudioController();
     controller.ensureContext();
     assert.ok(controller.ctx);
+    controller.ctx.starts = [];
 
     const leadMargin = controller.currentBufferLeadSec; // typically 0.02s
     assert.ok(leadMargin > 0);
 
-    // Provide a queue entry so _scheduleNext passes the if (!this.queue.length) guard
-    controller.queue = [{ status: 'fetching' }];
+    const playAt = async (nextStartTime) => {
+      controller.ctx.starts = [];
+      controller.ctx.currentTime = 5.0;
+      controller.nextStartTime = nextStartTime;
+      const pending = controller.playLine(0, [{ blob: new Blob(['tone']) }]);
+      for (let i = 0; i < 20 && controller.ctx.starts.length === 0; i++) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      const startedAt = controller.ctx.starts[0];
+      controller.stopLine({ fadeMs: 0 });
+      await pending;
+      return startedAt;
+    };
 
-    // Case A: Boundary condition nextStartTime === now (both 5.0)
-    // Under the old '<' check, 5.0 < 5.0 was false, omitting the lead margin.
-    // Under '<=', 5.0 <= 5.0 is true, setting nextStartTime = 5.0 + leadMargin.
-    controller.ctx.currentTime = 5.0;
-    controller.nextStartTime = 5.0;
-    controller._scheduleNext();
+    // Case A: nextStartTime === now. The '<=' check must add the lead.
     assert.equal(
-      controller.nextStartTime,
+      await playAt(5.0),
       5.0 + leadMargin,
       'When nextStartTime === now, buffer lead margin must be scheduled'
     );
 
-    // Case B: Boundary condition nextStartTime < now (e.g. 4.9 < 5.0)
-    controller.queue = [{ status: 'fetching' }];
-    controller.ctx.currentTime = 5.0;
-    controller.nextStartTime = 4.9;
-    controller._scheduleNext();
+    // Case B: nextStartTime is already behind the audio clock.
     assert.equal(
-      controller.nextStartTime,
-      5.0 + controller.currentBufferLeadSec,
+      await playAt(4.9),
+      5.0 + leadMargin,
       'When nextStartTime < now, buffer lead margin must be scheduled'
     );
 
-    // Case C: nextStartTime is ahead in the future (e.g. 6.0 > 5.0)
-    // Buffer lead must NOT override future scheduled chunks
-    controller.queue = [{ status: 'fetching' }];
-    controller.ctx.currentTime = 5.0;
-    controller.nextStartTime = 6.0;
-    controller._scheduleNext();
+    // Case C: a future schedule must stay where it is.
     assert.equal(
-      controller.nextStartTime,
+      await playAt(6.0),
       6.0,
       'When nextStartTime > now, future scheduled time must be preserved'
     );

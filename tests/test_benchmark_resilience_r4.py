@@ -418,7 +418,7 @@ class TestR2FrontendAudioPlayerStaticIntegrity:
 
         # 2. Sample-accurate timeline scheduling
         assert "source.start(startTime)" in code
-        assert "this.nextStartTime = startTime + duration - (fadeDur / 2)" in code
+        assert "self.nextStartTime = startTime + duration - (fadeDur / 2)" in code
 
         # 3. 12ms micro-fade envelope (attack & decay)
         assert "this.crossFadeMs = options.crossFadeMs || 0.012" in code
@@ -427,9 +427,9 @@ class TestR2FrontendAudioPlayerStaticIntegrity:
 
         # 4. 40ms smooth linear interrupt fade-out
         assert "interrupt(fadeMs = 40)" in code
-        assert "linearRampToValueAtTime(0.0001, now + fadeSec)" in code
-        assert "this.abortController.abort()" in code
-        assert "this.queue = []" in code
+        assert "linearRampToValueAtTime(0.0001, now + fadeMs / 1000)" in code
+        assert "abortController.abort()" in code
+        assert "lineState.queue = []" in code
         assert "source.stop()" in code
 
 
