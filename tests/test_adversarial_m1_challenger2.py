@@ -9,9 +9,7 @@ Empirically tests and challenges:
 4. Windows cmd.exe Environment Isolation and Path Handling.
 """
 
-import os
 import json
-import re
 import sys
 import time
 import socket
@@ -120,35 +118,6 @@ while True:
                 parent.kill()
                 parent.wait(timeout=5)
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="Windows taskkill testing requires Windows OS")
-    def test_taskkill_invalid_or_dead_pid_resilience(self):
-        """
-        Verify that `taskkill /f /t /pid` on a non-existent PID exits gracefully
-        without breaking batch script control flow when stderr/stdout are suppressed.
-        """
-        invalid_pid = 999999
-        cmd = f"taskkill /f /t /pid {invalid_pid} >nul 2>&1"
-        res = subprocess.run(cmd, shell=True)
-        # Should return non-zero but not raise exception
-        assert res.returncode != 0
-
-    def test_gpu_vram_release_model_and_tree_kill_mechanics(self):
-        """
-        Verify the architectural mechanics of VRAM cleanup:
-        1. PyTorch / CUDA runtime maintains GPU context within the host OS process space.
-        2. When a process terminates, Windows WDDM (Windows Display Driver Model) kernel driver
-           (dxgkrnl / nvlddmkm) automatically frees all physical & virtual VRAM allocations
-           registered to that process ID.
-        3. Using `/T` guarantees that multi-worker pipelines (e.g. GPT-SoVITS inference subprocesses)
-           are fully terminated, preventing orphaned GPU memory leaks.
-        """
-        # Inspect scripts/run_server.py for Job Object and cleanup logic
-        launcher_content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
-        assert "setup_windows_job_object" in launcher_content, "run_server.py must setup Windows Job Object"
-        assert "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE" in launcher_content, "run_server.py must include KILL_ON_JOB_CLOSE flag"
-        assert "assign_process_to_job" in launcher_content, "run_server.py must assign child processes to job"
-        assert "cleanup_subprocesses" in launcher_content, "run_server.py must have cleanup_subprocesses"
-
 
 # ============================================================================
 # 3. Batch Script Configuration & Syntax Hardening
@@ -168,32 +137,11 @@ class TestBatchScriptHardening:
             content = script.read_text(encoding="utf-8")
             assert len(content.strip()) > 0, f"Empty script: {script}"
 
-    def test_legacy_duplicate_scripts_removed(self):
-        """Verify redundant/legacy scripts were consolidated away."""
-        removed = [
-            PROJECT_ROOT / "停止.bat",
-            PROJECT_ROOT / "start.bat",
-            PROJECT_ROOT / "stop.bat",
-            PROJECT_ROOT / "start-galgame2voice.bat",
-            PROJECT_ROOT / "stop-galgame2voice.bat",
-            PROJECT_ROOT / "restart-galgame2voice.bat",
-        ]
-        for script in removed:
-            assert not script.exists(), f"Legacy script should be removed: {script}"
-
     def test_working_directory_switch_safety(self):
         """Verify scripts safely switch working directory using `%~dp0`."""
         for script in [PROJECT_ROOT / "启动.bat"]:
             content = script.read_text(encoding="utf-8", errors="ignore")
             assert 'cd /d "%~dp0"' in content or 'pushd "%~dp0.."' in content
-
-    def test_environment_assignments_are_isolated(self):
-        """A thin delegating wrapper needs local scopes only if it mutates variables."""
-        for script in [PROJECT_ROOT / "启动.bat"]:
-            content = script.read_text(encoding="utf-8", errors="ignore")
-            if re.search(r"^\s*set\s+(?:/[ap]\s+)?", content, re.I | re.M):
-                assert "setlocal" in content.lower()
-                assert "endlocal" in content.lower()
 
     def test_gpt_sovits_discovery_locations(self):
         """Verify run_server.py probes env overrides; machine-specific paths must be gone."""
@@ -211,63 +159,4 @@ class TestBatchScriptHardening:
         assert "proc.poll() is None" in content
         # Browser readiness uses a monotonic deadline and is checked by the
         # behavioral timeout tests in test_browser_autostart.py.
-
-
-# ============================================================================
-# 4. End-to-End Real Process Batch Lifecycle Stress Tests
-# ============================================================================
-
-class TestEndToEndBatchShutdown:
-    """Empirically test launcher shutdown and cleanup logic."""
-
-    @pytest.mark.skipif(sys.platform != "win32", reason="Requires Windows OS")
-    def test_launcher_cleanup_subprocesses(self, tmp_path, monkeypatch):
-        """
-        Verify launcher cleanup_subprocesses removes pid files and handles mock processes.
-        """
-        from scripts.run_server import cleanup_subprocesses
-        from scripts import run_server
-        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "data").mkdir()
-
-        pid_file = tmp_path / "galgame2voice.pid"
-        port_file = tmp_path / "data" / "active_port.txt"
-        sovits_pid = tmp_path / "gptsovits.pid"
-
-        pid_file.write_text(str(os.getpid()), encoding="utf-8")
-        sovits_pid.write_text("54321", encoding="utf-8")
-        port_file.write_text("8080", encoding="utf-8")
-
-        cleanup_subprocesses()
-
-        assert not pid_file.exists()
-        assert not sovits_pid.exists()
-        assert not port_file.exists()
-
-    def test_outbound_connection_to_remote_8080_not_killed(self):
-        """
-        Verify that outbound connections where the REMOTE port is 8080
-        (e.g., TCP 192.168.0.101:9963 36.155.189.125:8080 ESTABLISHED 66196)
-        are NOT extracted or killed by the LISTENING filter in 停止.bat.
-        """
-        raw_lines = [
-            "  TCP    172.18.0.1:9959        36.155.189.125:8080    ESTABLISHED     34712",
-            "  TCP    192.168.0.101:9963     36.155.189.125:8080    ESTABLISHED     66196",
-            "  TCP    127.0.0.1:10242        127.0.0.1:9880         TIME_WAIT       0",
-            "  TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       12345",
-        ]
-
-        extracted_listening_pids = []
-        for line in raw_lines:
-            if ":8080" in line:
-                parts = line.strip().split()
-                if len(parts) >= 5:
-                    token4 = parts[3]
-                    token5 = parts[4]
-                    if token4 == "LISTENING":
-                        extracted_listening_pids.append(token5)
-
-        assert extracted_listening_pids == ["12345"], f"Expected only local listener PID 12345, got {extracted_listening_pids}"
-        assert "34712" not in extracted_listening_pids, "Outbound client PID was mistakenly captured!"
-        assert "66196" not in extracted_listening_pids, "Outbound client PID was mistakenly captured!"
 

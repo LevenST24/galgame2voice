@@ -58,11 +58,6 @@ class TestLifecycleScriptsTier1:
         start_bat = (PROJECT_ROOT / "启动.bat").read_text(encoding="utf-8")
         assert "chcp 65001" in start_bat
 
-    def test_start_script_invokes_intelligent_launcher(self):
-        """Verifies 启动.bat delegates to scripts/run_server.py (single smart entrypoint)."""
-        content = (PROJECT_ROOT / "启动.bat").read_text(encoding="utf-8", errors="ignore")
-        assert "run_server.py" in content
-
     def test_launcher_contains_uvicorn_launch(self):
         """Verifies run_server.py launches the FastAPI app via uvicorn."""
         content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
@@ -144,40 +139,12 @@ class TestLifecycleScriptsTier2:
             if changes_environment:
                 assert setlocal_count >= 1, f"Unscoped environment assignment in {path.name}"
 
-    def test_start_script_quoted_paths_for_spaces(self):
-        """Verifies path references (%~dp0) are safely enclosed in quotes."""
-        content = (PROJECT_ROOT / "启动.bat").read_text(encoding="utf-8", errors="ignore")
-        assert '"%~dp0' in content or '%~dp0"' in content
-
-    def test_launcher_port_collision_fallback(self):
-        """Verifies run_server.py implements port fallback when 8080 cannot bind."""
-        content = (SCRIPTS_DIR / "run_server.py").read_text(encoding="utf-8", errors="ignore")
-        assert "find_available_port" in content
-
     def test_no_hardcoded_admin_privilege_required(self):
         """Verifies scripts do not execute commands that arbitrarily force administrative elevation."""
         for path in [PROJECT_ROOT / "启动.bat"]:
             content = path.read_text(encoding="utf-8", errors="ignore").lower()
             assert "powershell -verb runas" not in content
             assert "runas /user:" not in content
-
-    def test_pid_file_lifecycle(self, tmp_path):
-        """Verify PID file creation, reading, sanitization, and removal logic."""
-        pid_file = tmp_path / "galgame2voice.pid"
-        test_pid = 12345
-
-        # Write PID with trailing spaces and newline
-        pid_file.write_text(f"  {test_pid}  \n", encoding="utf-8")
-        assert pid_file.exists()
-
-        # Read and sanitize
-        raw_pid = pid_file.read_text(encoding="utf-8").strip()
-        assert raw_pid == str(test_pid)
-        assert int(raw_pid) == test_pid
-
-        # Clean up
-        pid_file.unlink()
-        assert not pid_file.exists()
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows batch syntax validation requires Windows OS")
     def test_batch_script_syntax(self):

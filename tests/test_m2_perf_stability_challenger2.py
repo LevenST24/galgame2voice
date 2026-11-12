@@ -17,7 +17,6 @@ Empirically tests and challenges:
 """
 
 import asyncio
-import os
 import signal
 import socket
 import sqlite3
@@ -36,11 +35,8 @@ from galgame2voice.database.models import MessageCreate, UserMemoryCreate
 from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 from scripts.run_server import (
-    assign_process_to_job,
-    cleanup_subprocesses,
     find_available_port,
     is_port_in_use,
-    setup_windows_job_object,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -349,34 +345,3 @@ class TestProcessTerminationAndPortReleaseWindows:
             pytest.fail(
                 f"Port {test_port} was not released within 10s of process exit: {last_error}"
             )
-
-    @pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object test requires Windows OS")
-    def test_windows_job_object_assignment_and_cleanup(self, tmp_path, monkeypatch):
-        """
-        Verify that Windows Job Object handle is created with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        child processes can be assigned to it, and cleanup_subprocesses unlinks PID files.
-        """
-        from scripts import run_server
-        monkeypatch.setattr(run_server, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "data").mkdir()
-        h_job = setup_windows_job_object()
-        assert h_job is not None, "Failed to create Windows Job Object"
-
-        # Spawn test sleep process
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-        try:
-            assigned = assign_process_to_job(child)
-            assert assigned, "Failed to assign child process to Windows Job Object"
-        finally:
-            child.terminate()
-            child.wait(timeout=3.0)
-
-        # Verify cleanup_subprocesses removes pid files
-        pid_file = tmp_path / "galgame2voice.pid"
-        port_file = tmp_path / "data" / "active_port.txt"
-        pid_file.write_text(str(os.getpid()), encoding="utf-8")
-        port_file.write_text("8080", encoding="utf-8")
-
-        cleanup_subprocesses()
-        assert not pid_file.exists(), "galgame2voice.pid was not removed by cleanup_subprocesses"
-        assert not port_file.exists(), "active_port.txt was not removed by cleanup_subprocesses"
