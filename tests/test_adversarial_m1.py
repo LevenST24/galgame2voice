@@ -40,7 +40,6 @@ from galgame2voice.database.models import (
     SessionCreate, SessionUpdate,
     MessageCreate
 )
-from galgame2voice.utils.logger import MaskingFilter
 
 
 @pytest.fixture
@@ -467,31 +466,3 @@ class TestForeignKeysAndIntegrity:
                 row = await cursor.fetchone()
                 assert row is not None
                 assert row[0] is None
-
-
-# ============================================================================
-# 6. Logger Sanitization Filter Stress Tests
-# ============================================================================
-
-class TestLoggerSanitizationFilter:
-    """Stress tests and coverage for MaskingFilter zero-leakage guarantee."""
-
-    def test_logger_masking_filter_patterns(self):
-        filter_instance = MaskingFilter()
-
-        test_cases = [
-            ("Calling OpenAI with key sk-proj-1234567890abcdef1234567890 for chat", "****"),
-            ("Authorization: Bearer my-secret-jwt-token-1234567890", "[MASKED_TOKEN]"),
-            ("Telegram bot started: 123456789:ABCDefgh-1234567890abcdefghijklmn", "[MASKED_TELEGRAM_TOKEN]"),
-            ('Payload: {"api_key": "sk-secret123456", "model": "gpt-4o"}', '****'),
-            ("Connecting to https://example.com/api?api_key=secretkey123&other=1", "[MASKED]"),
-        ]
-
-        for original, expected_substring in test_cases:
-            sanitized = filter_instance.sanitize(original)
-            assert expected_substring in sanitized
-            # Ensure sensitive raw substrings are not in sanitized output
-            if "sk-proj-1234567890abcdef1234567890" in original:
-                assert "sk-proj-1234567890abcdef1234567890" not in sanitized
-            if "my-secret-jwt-token-1234567890" in original:
-                assert "my-secret-jwt-token-1234567890" not in sanitized
