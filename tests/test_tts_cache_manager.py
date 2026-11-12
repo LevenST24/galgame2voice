@@ -9,6 +9,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import patch
 import pytest
 import aiosqlite
 
@@ -254,4 +255,299 @@ async def test_get_stats_flushes_dirty_touches(temp_db_and_cache_dir):
     assert stats["db_hits"] == 2
     assert stats["memory_hits"] == 2
 
+    await mgr.aclose()
+
+
+@pytest.mark.asyncio
+async def test_memory_lru_access_order_evicts_cold_key(temp_db_and_cache_dir):
+    """Promoting a key keeps it when the in-memory entry cap evicts the cold one."""
+    db_path, cache_dir = temp_db_and_cache_dir
+    mgr = TtsCacheManager(cache_dir=cache_dir, db_path=db_path, max_mem_entries=3)
+    keys = []
+    payloads = []
+    for i in range(3):
+        text = f"entry_{i}"
+        data = b"DATA_" + bytes([i])
+        key, clean, params_hash = mgr.compute_cache_key(text)
+        await mgr.put(key, text, clean, 1, params_hash, data)
+        keys.append(key)
+        payloads.append(data)
+
+    await mgr.get(keys[0])
+    text4 = "entry_3"
+    data4 = b"DATA_3"
+    key4, clean4, params_hash4 = mgr.compute_cache_key(text4)
+    await mgr.put(key4, text4, clean4, 1, params_hash4, data4)
+
+    # Disk still holds every key, so get() would hide memory eviction.
+    for key in (*keys, key4):
+        (cache_dir / f"{key}.wav").unlink()
+
+    assert await mgr.get(keys[1]) is None
+    assert (await mgr.get(keys[0]))[0] == payloads[0]
+    assert (await mgr.get(keys[2]))[0] == payloads[2]
+    assert (await mgr.get(key4))[0] == data4
+    await mgr.aclose()
+
+
+@pytest.mark.asyncio
+async def test_memory_byte_budget_matches_cached_lengths(temp_db_and_cache_dir):
+    """A 1500-byte memory budget keeps the newest entries and a consistent counter."""
+    db_path, cache_dir = temp_db_and_cache_dir
+    mgr = TtsCacheManager(cache_dir=cache_dir, db_path=db_path, max_mem_entries=100)
+    mgr.max_mem_bytes = 1500
+    keys = []
+    payload = b"B" * 500
+    for i in range(5):
+        text = f"byte_item_{i}"
+        key, clean, params_hash = mgr.compute_cache_key(text)
+        await mgr.put(key, text, clean, 1, params_hash, payload)
+        keys.append(key)
+
+    for key in keys:
+        (cache_dir / f"{key}.wav").unlink()
+
+    assert await mgr.get(keys[0]) is None
+    assert await mgr.get(keys[1]) is None
+    assert (await mgr.get(keys[2]))[0] == payload
+    assert (await mgr.get(keys[3]))[0] == payload
+    assert (await mgr.get(keys[4]))[0] == payload
+    assert len(mgr._mem_cache) <= 3
+    assert mgr._mem_bytes_total <= 1500
+    # No public stats field reports the in-memory byte counter.
+    assert mgr._mem_bytes_total == sum(len(v) for v in mgr._mem_cache.values())
+    await mgr.aclose()
+
+
+@pytest.mark.asyncio
+async def test_zero_byte_disk_file_is_unlinked_and_counts_one_miss(temp_db_and_cache_dir):
+    """A 0-byte disk file is a miss, is removed, and can be replaced."""
+    db_path, cache_dir = temp_db_and_cache_dir
+    mgr = TtsCacheManager(cache_dir=cache_dir, db_path=db_path)
+    text = "zero_byte_sentence"
+    key, clean, params_hash = mgr.compute_cache_key(text)
+    await mgr.put(key, text, clean, 1, params_hash, b"ORIGINAL_VALID_AUDIO")
+    disk_file = cache_dir / f"{key}.wav"
+    disk_file.write_bytes(b"")
+    mgr._mem_cache_discard(key)
+
+    assert await mgr.get(key) is None
+    assert not disk_file.exists()
+    stats = await mgr.get_stats()
+    assert stats["total_misses"] == 1
+
+    await mgr.put(key, text, clean, 1, params_hash, b"RECOVERED_AUDIO")
+    recovered = await mgr.get(key)
+    assert recovered is not None
+    assert recovered[0] == b"RECOVERED_AUDIO"
+    assert recovered[1] == f"/audio/cache/{key}.wav"
+    assert recovered[2] == len(b"RECOVERED_AUDIO")
+    await mgr.aclose()
+
+
+@pytest.mark.asyncio
+async def test_unreadable_disk_cache_counts_one_miss(temp_db_and_cache_dir):
+    """OSError while reading a cache file is one miss and not a hit."""
+    db_path, cache_dir = temp_db_and_cache_dir
+    mgr = TtsCacheManager(cache_dir=cache_dir, db_path=db_path)
+    text = "unreadable_disk_sector"
+    key, clean, params_hash = mgr.compute_cache_key(text)
+    await mgr.put(key, text, clean, 1, params_hash, b"VALID_AUDIO")
+    mgr._mem_cache_discard(key)
+
+    with patch.object(Path, "read_bytes", side_effect=OSError("Disk read error")):
+        assert await mgr.get(key) is None
+    stats = await mgr.get_stats()
+    assert stats["total_misses"] == 1
+    await mgr.aclose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_distinct_keys_keep_counter_and_file_count(temp_db_and_cache_dir):
+    """Fifty writers of distinct keys keep every file and a consistent memory counter."""
+    db_path, cache_dir = temp_db_and_cache_dir
+    mgr = TtsCacheManager(cache_dir=cache_dir, db_path=db_path, max_mem_entries=128)
+
+    async def worker(worker_id: int):
+        for i in range(20):
+            text = f"task_{worker_id}_line_{i}"
+            key, clean, params_hash = mgr.compute_cache_key(text)
+            data = f"AUDIO_{worker_id}_{i}".encode("utf-8") * 50
+            await mgr.put(key, text, clean, 1, params_hash, data)
+            hit = await mgr.get(key)
+            assert hit is not None
+            assert hit[0] == data
+
+    await asyncio.gather(*[asyncio.create_task(worker(i)) for i in range(50)])
+    await mgr.aclose()
+
+    assert mgr._mem_bytes_total == sum(len(v) for v in mgr._mem_cache.values())
+    stats = await mgr.get_stats()
+    assert stats["total_files"] == 1000
+    assert stats["total_hits"] >= 1000
+    await mgr.aclose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_shared_key_overwrites_do_not_raise(temp_db_and_cache_dir):
+    """Fifty tasks overwriting five hot keys must not raise."""
+    db_path, cache_dir = temp_db_and_cache_dir
+    mgr = TtsCacheManager(cache_dir=cache_dir, db_path=db_path, max_mem_entries=64)
+
+    async def worker(worker_id: int):
+        for i in range(10):
+            shared_id = i % 5
+            text = f"hot_key_{shared_id}"
+            key, clean, params_hash = mgr.compute_cache_key(text)
+            data = f"WORKER_{worker_id}_HOT_{shared_id}".encode("utf-8") * 50
+            await mgr.put(key, text, clean, 1, params_hash, data)
+            assert await mgr.get(key) is not None
+
+    await asyncio.gather(*[asyncio.create_task(worker(i)) for i in range(50)])
+    await mgr.aclose()
+
+
+@pytest.mark.asyncio
+async def test_burst_put_and_prune_stays_within_entry_bound(temp_db_and_cache_dir):
+    """Concurrent puts against a tiny cache must not crash and must stay bounded."""
+    db_path, cache_dir = temp_db_and_cache_dir
+    mgr = TtsCacheManager(cache_dir=cache_dir, db_path=db_path, max_cache_mb=1, max_entries=5)
+
+    async def worker(idx: int):
+        text = f"Burst Test Audio Sentence {idx}"
+        key, clean, params_hash = mgr.compute_cache_key(text)
+        fake_wav = b"RIFF" + b"\x00" * 200000
+        await mgr.put(key, text, clean, 1, params_hash, fake_wav)
+        assert await mgr.get(key) is not None
+
+    await asyncio.gather(*[worker(i) for i in range(20)])
+    await mgr.aclose()
+    stats = await mgr.get_stats()
+    assert stats["total_files"] <= 10
+
+
+@pytest.mark.asyncio
+async def test_concurrent_get_throttle_mutation(temp_db_and_cache_dir):
+    """Concurrent get() must not raise while throttle bookkeeping walks its map."""
+    db_path, cache_dir = temp_db_and_cache_dir
+    manager = TtsCacheManager(cache_dir=cache_dir, db_path=db_path, max_mem_entries=32)
+    for i in range(10):
+        await manager.put(
+            cache_key=f"key_{i}",
+            text=f"text_{i}",
+            clean_text=f"text_{i}",
+            voice_profile_id=1,
+            params_hash="hash",
+            audio_bytes=b"RIFF....data....",
+        )
+
+    async def reader(idx: int):
+        for step in range(50):
+            await manager.get(f"key_{step % 150}")
+
+    await asyncio.gather(*[asyncio.create_task(reader(i)) for i in range(30)])
+    await manager.aclose()
+
+
+@pytest.mark.asyncio
+async def test_prune_one_call_drains_past_single_batch(temp_db_and_cache_dir):
+    """One prune() deletes more than the 200-row page when the entry cap requires it."""
+    db_path, cache_dir = temp_db_and_cache_dir
+    mgr = TtsCacheManager(cache_dir=cache_dir, db_path=db_path, max_entries=5000, max_cache_mb=1024)
+    async with get_db(db_path) as conn:
+        for i in range(250):
+            file_path = cache_dir / f"batch_{i}.wav"
+            payload = b"RIFF" + b"\x00" * 16
+            file_path.write_bytes(payload)
+            await crud.upsert_tts_cache_entry(
+                conn=conn,
+                cache_key=f"batch_{i}",
+                text=f"text_{i}",
+                clean_text=f"text_{i}",
+                voice_profile_id=1,
+                params_hash="h",
+                file_path=str(file_path),
+                file_size=len(payload),
+            )
+    await mgr.aclose()
+
+    pruned = await mgr.prune(max_entries=10, max_mb=1024)
+    stats = await mgr.get_stats()
+    assert pruned == 242
+    assert stats["total_files"] == 8
+    await mgr.aclose()
+
+
+@pytest.mark.asyncio
+async def test_prune_drops_rows_whose_cache_files_are_already_missing(temp_db_and_cache_dir):
+    """Rows whose cache file was removed outside prune are still deleted."""
+    db_path, cache_dir = temp_db_and_cache_dir
+    mgr = TtsCacheManager(cache_dir=cache_dir, db_path=db_path, max_entries=100)
+    keys = []
+    for i in range(15):
+        text = f"ファイル_{i}"
+        key, clean, params_hash = mgr.compute_cache_key(text)
+        await mgr.put(key, text, clean, 1, params_hash, b"RIFF" + bytes([i]))
+        keys.append(key)
+    for key in keys[:5]:
+        (cache_dir / f"{key}.wav").unlink()
+    await mgr.aclose()
+
+    async with get_db(db_path) as conn:
+        for key in keys[:5]:
+            await conn.execute(
+                "UPDATE tts_cache_entries SET last_accessed_at = datetime('now', '-1 day') WHERE cache_key = ?",
+                (key,),
+            )
+        await conn.commit()
+
+    pruned = await mgr.prune(max_entries=10)
+    stats = await mgr.get_stats()
+    assert pruned == 7
+    assert stats["total_files"] == 8
+    async with get_db(db_path) as conn:
+        for key in keys[:5]:
+            assert await crud.get_tts_cache_entry(conn, key) is None
+            assert await mgr.get(key) is None
+    await mgr.aclose()
+
+
+@pytest.mark.asyncio
+async def test_clear_concurrent_with_put_does_not_raise(temp_db_and_cache_dir):
+    """clear() overlapping put() finishes and still reports usable stats."""
+    db_path, cache_dir = temp_db_and_cache_dir
+    mgr = TtsCacheManager(cache_dir=cache_dir, db_path=db_path, max_cache_mb=10, max_entries=50)
+
+    async def put_task(i: int):
+        audio = b"RIFF" + b"\x00" * 200 + bytes([i % 256])
+        await mgr.put(f"key_{i}", f"text_{i}", f"clean_{i}", 1, f"hash_{i}", audio)
+
+    async def clear_task():
+        await asyncio.sleep(0.01)
+        return await mgr.clear()
+
+    await asyncio.gather(
+        *[put_task(i) for i in range(15)],
+        clear_task(),
+        clear_task(),
+    )
+    stats = await mgr.get_stats()
+    assert stats["total_files"] >= 0
+    assert stats["hit_rate_percent"] >= 0.0
+    await mgr.aclose()
+
+
+@pytest.mark.asyncio
+async def test_put_database_failure_does_not_leave_a_memory_hit(temp_db_and_cache_dir):
+    """A failed metadata write must not leave the audio readable from the cache."""
+    db_path, cache_dir = temp_db_and_cache_dir
+    mgr = TtsCacheManager(cache_dir=cache_dir, db_path=db_path)
+    bad_key = "fail_key_xyz"
+    with patch(
+        "galgame2voice.database.crud.upsert_tts_cache_entry",
+        side_effect=RuntimeError("Disk write simulated DB failure"),
+    ):
+        with pytest.raises(RuntimeError, match="Disk write simulated DB failure"):
+            await mgr.put(bad_key, "fail text", "fail", 1, "hash_bad", b"RIFF" + b"\x00" * 200)
+    assert await mgr.get(bad_key) is None
     await mgr.aclose()
