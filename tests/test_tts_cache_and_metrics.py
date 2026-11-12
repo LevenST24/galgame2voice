@@ -7,6 +7,7 @@ telemetry timers, and REST API endpoints.
 
 import asyncio
 import os
+import random
 import time
 import uuid
 import wave
@@ -84,6 +85,15 @@ class TestTtsCacheCanonicalHashing:
         assert k1 == k2, "Identical parameters in different dict order must produce identical cache keys"
         assert clean1 == clean2 == "こんにちは！"
         assert p1 == p2
+
+        for variant in (
+            "   こんにちは！   ",
+            "\t\nこんにちは！\n\r",
+            "  \t  こんにちは！  \t  ",
+        ):
+            key, clean, _ = mgr.compute_cache_key(variant, options=opts1)
+            assert clean == "こんにちは！"
+            assert key == k1
 
     def test_canonical_hash_sensitivity_to_text_and_params(self, tmp_path):
         db_p = tmp_path / "test.db"
@@ -215,6 +225,104 @@ class TestTtsCacheLifecycleAndPerformance:
         # Drain fire-and-forget DB-touch tasks before the loop closes.
         await mgr.aclose()
 
+    # Asserts <0.005ms (5us) mean in-memory get() latency; sensitive to multi-worker CPU contention.
+    @pytest.mark.serial
+    @pytest.mark.wall_clock
+    @pytest.mark.asyncio
+    async def test_in_memory_latency_benchmark_10k(self, tmp_path):
+        """
+        Empirically measures in-memory get() latency across 10,000 requests.
+        Verifies average latency is strictly < 0.05ms (target < 0.005ms).
+        """
+        db_path = tmp_path / "latency.db"
+        await init_db(db_path)
+        mgr = TtsCacheManager(cache_dir=tmp_path / "cache", db_path=str(db_path))
+
+        text = "先生、おはようございます！"
+        key, clean, params_hash = mgr.compute_cache_key(text)
+        sample_audio = b"RIFF" + b"\x00" * 4096  # 4KB synthetic audio
+        await mgr.put(key, text, clean, 1, params_hash, sample_audio)
+
+        # Warm up cache
+        for _ in range(100):
+            res = await mgr.get(key)
+            assert res is not None
+
+        latencies_ms = []
+        t_bench_start = time.perf_counter()
+        for _ in range(10000):
+            t0 = time.perf_counter()
+            await mgr.get(key)
+            latencies_ms.append((time.perf_counter() - t0) * 1000.0)
+
+        total_elapsed_ms = (time.perf_counter() - t_bench_start) * 1000.0
+        avg_latency_ms = sum(latencies_ms) / len(latencies_ms)
+        latencies_ms.sort()
+        p50_ms = latencies_ms[5000]
+        p95_ms = latencies_ms[9500]
+        p99_ms = latencies_ms[9900]
+        max_latency_ms = latencies_ms[-1]
+
+        print("\n[10k Single-Key Benchmark]")
+        print(f"  Total time for 10,000 gets: {total_elapsed_ms:.2f} ms")
+        print(f"  Average latency: {avg_latency_ms:.6f} ms ({avg_latency_ms * 1000.0:.2f} us)")
+        print(f"  p50 latency:     {p50_ms:.6f} ms")
+        print(f"  p95 latency:     {p95_ms:.6f} ms")
+        print(f"  p99 latency:     {p99_ms:.6f} ms")
+        print(f"  Max latency:     {max_latency_ms:.6f} ms")
+
+        # Contract requirements
+        assert avg_latency_ms < 0.05, f"Average latency {avg_latency_ms:.4f}ms exceeds 0.05ms threshold"
+        assert avg_latency_ms < 0.005, f"Average latency {avg_latency_ms:.4f}ms exceeds target 0.005ms"
+        await mgr.aclose()
+
+    # Asserts microsecond-scale multi-key get() latency; sensitive to multi-worker CPU contention.
+    @pytest.mark.serial
+    @pytest.mark.wall_clock
+    @pytest.mark.asyncio
+    async def test_in_memory_multi_key_latency_benchmark_10k(self, tmp_path):
+        """
+        Empirically measures in-memory get() latency across 10,000 requests
+        distributed randomly over 50 distinct cached items.
+        """
+        db_path = tmp_path / "multi_latency.db"
+        await init_db(db_path)
+        mgr = TtsCacheManager(cache_dir=tmp_path / "cache", db_path=str(db_path), max_mem_entries=100)
+
+        keys = []
+        for i in range(50):
+            txt = f"台詞テスト番号_{i}"
+            k, c, p = mgr.compute_cache_key(txt)
+            await mgr.put(k, txt, c, 1, p, b"WAV_DATA_" + bytes([i % 256]) * 1000)
+            keys.append(k)
+
+        # Warm up
+        for k in keys:
+            await mgr.get(k)
+
+        rng = random.Random(1337)
+        workload = [rng.choice(keys) for _ in range(10000)]
+
+        latencies_ms = []
+        t_bench_start = time.perf_counter()
+        for k in workload:
+            t0 = time.perf_counter()
+            await mgr.get(k)
+            latencies_ms.append((time.perf_counter() - t0) * 1000.0)
+
+        total_elapsed_ms = (time.perf_counter() - t_bench_start) * 1000.0
+        avg_latency_ms = sum(latencies_ms) / len(latencies_ms)
+
+        print("\n[10k Multi-Key (50 keys) Benchmark]")
+        print(f"  Total time for 10,000 gets: {total_elapsed_ms:.2f} ms")
+        print(f"  Average latency: {avg_latency_ms:.6f} ms ({avg_latency_ms * 1000.0:.2f} us)")
+
+        assert avg_latency_ms < 0.05, f"Average multi-key latency {avg_latency_ms:.4f}ms exceeds 0.05ms"
+        assert avg_latency_ms < 0.005, f"Average multi-key latency {avg_latency_ms:.4f}ms exceeds 0.005ms target"
+
+        # Drain the ~50 throttled DB-touch tasks before the loop closes.
+        await mgr.aclose()
+
 
 # ============================================================================
 # 3. LRU Pruning & Storage Isolation Tests
@@ -230,7 +338,9 @@ class TestTtsCacheLruPruningAndIsolation:
         cache_dir = tmp_path / "audio" / "cache"
         mgr = TtsCacheManager(cache_dir=cache_dir, db_path=str(db_p), max_entries=100, max_cache_mb=100)
 
-        # Store 10 distinct entries
+        # Store 10 distinct entries. Key 0 is old by insert order but touched
+        # again; keys 1-6 stay old; keys 7-9 are newest.
+        keys = []
         for i in range(10):
             audio = make_test_wav_bytes(duration_sec=0.1)
             key, clean, p_hash = mgr.compute_cache_key(f"台詞_{i}")
@@ -242,16 +352,60 @@ class TestTtsCacheLruPruningAndIsolation:
                 params_hash=p_hash,
                 audio_bytes=audio,
             )
+            keys.append(key)
 
+        await mgr.aclose()
         stats_init = await mgr.get_stats()
         assert stats_init["total_files"] == 10
 
-        # Force prune with limit 5 entries (targets 80% = 4 entries)
+        async with get_db(db_p) as conn:
+            for i, key in enumerate(keys):
+                stamp_sql = "datetime('now')" if i == 0 or i >= 7 else "datetime('now', '-100 seconds')"
+                await conn.execute(
+                    f"UPDATE tts_cache_entries SET last_accessed_at = {stamp_sql} WHERE cache_key = ?",
+                    (key,),
+                )
+            await conn.commit()
+
+        # Limit 5 targets 80% = 4. The six untouched old keys are removed;
+        # the recently touched old key stays with the three newest.
         pruned = await mgr.prune(max_entries=5)
         stats = await mgr.get_stats()
 
-        assert stats["total_files"] <= 5
+        assert pruned == 6
+        assert stats["total_files"] == 4
+        for key in keys[1:7]:
+            assert await mgr.get(key) is None
+            assert not (cache_dir / f"{key}.wav").exists()
+        for key in (keys[0], *keys[7:]):
+            hit = await mgr.get(key)
+            assert hit is not None and len(hit[0]) > 0
+            assert (cache_dir / f"{key}.wav").exists()
+        await mgr.aclose()
+
+    @pytest.mark.asyncio
+    async def test_lru_pruning_by_size_watermark(self, tmp_path):
+        """Size prune stops at 80% of max_mb."""
+        db_p = tmp_path / "lru_size.db"
+        await init_db(db_p)
+        cache_dir = tmp_path / "audio" / "cache"
+        mgr = TtsCacheManager(cache_dir=cache_dir, db_path=str(db_p), max_entries=10000, max_cache_mb=100)
+        chunk = b"B" * 100_000
+        for i in range(15):
+            text = f"ロング台詞_{i:03d}"
+            key, clean, p_hash = mgr.compute_cache_key(text)
+            await mgr.put(key, text, clean, 1, p_hash, chunk)
+        await mgr.aclose()
+
+        stats_pre = await mgr.get_stats()
+        assert stats_pre["total_size_bytes"] > 1024 * 1024
+
+        pruned = await mgr.prune(max_mb=1)
+        stats_post = await mgr.get_stats()
+        target_max_bytes = int(1 * 1024 * 1024 * 0.8)
         assert pruned > 0
+        assert stats_post["total_size_bytes"] <= target_max_bytes
+        await mgr.aclose()
 
     @pytest.mark.asyncio
     async def test_cache_clear_action(self, tmp_path):
@@ -261,20 +415,28 @@ class TestTtsCacheLruPruningAndIsolation:
         mgr = TtsCacheManager(cache_dir=cache_dir, db_path=str(db_p))
 
         # Put 3 items
+        saved_key = None
         for i in range(3):
             audio = make_test_wav_bytes(duration_sec=0.1)
             k, c, p = mgr.compute_cache_key(f"テキスト_{i}")
             await mgr.put(k, f"テキスト_{i}", c, 1, p, audio)
+            if saved_key is None:
+                saved_key = k
 
         stats_before = await mgr.get_stats()
         assert stats_before["total_files"] == 3
 
         deleted, freed_mb = await mgr.clear()
         assert deleted == 3
+        assert await mgr.get(saved_key) is None
 
         stats_after = await mgr.get_stats()
         assert stats_after["total_files"] == 0
         assert stats_after["total_size_mb"] == 0.0
+        # get_stats() has no memory-byte field. An empty cache whose counter
+        # was not reset is only visible on this private total.
+        assert mgr._mem_bytes_total == sum(len(v) for v in mgr._mem_cache.values()) == 0
+        await mgr.aclose()
 
     @pytest.mark.asyncio
     async def test_cleanup_loop_protects_audio_cache_directory(self, tmp_path):
@@ -331,6 +493,34 @@ class TestMetricsCollectorAndTelemetry:
         cost_usd, _ = collector.calculate_cost("gemini", "gemini-1.5-flash", 1_000_000, 0)
         assert round(cost_usd, 4) == 0.0750
 
+        # Unknown provider and unknown model use the documented fallback rates.
+        cost_usd, cost_cny = collector.calculate_cost("unknown_ai_provider", "super_model_v1", 1_000_000, 1_000_000)
+        assert cost_usd == 0.75
+        assert cost_cny == round(0.75 * 7.20, 4)
+        cost_usd, _ = collector.calculate_cost("openai", "gpt-future-99", 1_000_000, 1_000_000)
+        assert cost_usd == 0.75
+        cost_usd, _ = collector.calculate_cost("anthropic", "claude-future-x", 1_000_000, 1_000_000)
+        assert cost_usd == 18.0
+        cost_usd, _ = collector.calculate_cost("", "", 1_000_000, 1_000_000)
+        assert cost_usd == 0.75
+        cost_usd, _ = collector.calculate_cost(None, None, 1_000_000, 1_000_000)
+        assert cost_usd == 0.75
+
+        cost_usd, cost_cny = collector.calculate_cost("deepseek", "deepseek-chat", 1_000_000_000, 500_000_000)
+        assert cost_usd == 280.0
+        assert cost_cny == round(280.0 * 7.20, 4)
+        cost_usd, cost_cny = collector.calculate_cost("deepseek", "deepseek-chat", 0, 0)
+        assert cost_usd == 0.0
+        assert cost_cny == 0.0
+
+        # Negative and missing token counts must not produce a negative bill.
+        cost_usd, cost_cny = collector.calculate_cost("deepseek", "deepseek-chat", -50, -100)
+        assert cost_usd == 0.0
+        assert cost_cny == 0.0
+        cost_usd, cost_cny = collector.calculate_cost("deepseek", "deepseek-chat", None, None)
+        assert cost_usd == 0.0
+        assert cost_cny == 0.0
+
     def test_token_estimation_accuracy(self, tmp_path):
         collector = MetricsCollector(db_path=str(tmp_path / "m.db"))
 
@@ -345,6 +535,14 @@ class TestMetricsCollectorAndTelemetry:
         en_text = "Hello world, this is an automated performance benchmark test."
         tok_en = collector.estimate_tokens(en_text)
         assert 10 <= tok_en <= 25
+
+        assert collector.estimate_tokens(None) == 0
+        assert collector.estimate_tokens(12345) == 0
+        assert collector.estimate_tokens(["hello"]) == 0
+
+        code_text = "```python\nfor i in range(100):\n    print('Hello World')\n```"
+        assert 10 <= collector.estimate_tokens(code_text) <= 25
+        assert collector.estimate_tokens("二次元スマートボイス伴侶。" * 5000) > 50000
 
     def test_ring_buffer_fifo(self, tmp_path):
         collector = MetricsCollector(db_path=str(tmp_path / "m.db"), ring_buffer_size=10)
@@ -404,6 +602,77 @@ class TestMetricsCollectorAndTelemetry:
         p_ids = {r["provider_id"] for r in rows}
         assert p_ids == {"deepseek", "openai"}
 
+    @pytest.mark.asyncio
+    async def test_metrics_overview_empty_database_is_zero(self, tmp_path):
+        db_p = tmp_path / "empty_metrics.db"
+        await init_db(db_p)
+        async with get_db(db_p) as conn:
+            overview = await crud.get_metrics_overview(conn)
+        assert overview["total_requests"] == 0
+        assert overview["total_tokens"] == 0
+
+    @pytest.mark.asyncio
+    async def test_record_metric_rejects_negative_tokens_and_bad_latencies(self, tmp_path):
+        db_p = tmp_path / "defensive_metrics.db"
+        await init_db(db_p)
+        collector = MetricsCollector(db_path=str(db_p))
+        rec = await collector.record_metric(
+            session_id=None,
+            channel=None,
+            prompt_tokens=-5,
+            completion_tokens=-10,
+            ttft_ms="invalid",
+            tts_first_chunk_ms=None,
+            total_latency_ms="999.5",
+        )
+        assert rec["prompt_tokens"] == 0
+        assert rec["completion_tokens"] == 0
+        assert rec["ttft_ms"] == 0.0
+        assert rec["total_latency_ms"] == 999.5
+
+    @pytest.mark.asyncio
+    async def test_concurrent_telemetry_recording_exact_sums(self, tmp_path):
+        db_p = tmp_path / "concurrent_telemetry.db"
+        await init_db(db_p)
+        collector = MetricsCollector(db_path=str(db_p), ring_buffer_size=100)
+        num_tasks = 50
+        prompt_per_task = 1000
+        comp_per_task = 400
+
+        async def record_task(idx: int):
+            provider = "deepseek" if idx % 2 == 0 else "openai"
+            model = "deepseek-chat" if idx % 2 == 0 else "gpt-4o-mini"
+            return await collector.record_metric(
+                session_id=f"sess_{idx}",
+                channel="web",
+                provider_id=provider,
+                model_name=model,
+                prompt_tokens=prompt_per_task,
+                completion_tokens=comp_per_task,
+                ttft_ms=150.0 + idx,
+                tts_first_chunk_ms=200.0 + idx,
+                total_latency_ms=600.0 + idx,
+                tts_cached_chunks=1 if idx % 3 == 0 else 0,
+                tts_generated_chunks=2,
+            )
+
+        results = await asyncio.gather(*[record_task(i) for i in range(num_tasks)])
+        assert len(results) == num_tasks
+        assert len(collector.ring_buffer) == 50
+
+        async with get_db(db_p) as conn:
+            overview = await crud.get_metrics_overview(conn)
+            cur = await conn.execute(
+                "SELECT provider_id, COUNT(*) FROM token_usage_metrics GROUP BY provider_id"
+            )
+            provider_counts = dict(await cur.fetchall())
+        assert overview["total_requests"] == num_tasks
+        assert overview["total_prompt_tokens"] == num_tasks * prompt_per_task
+        assert overview["total_completion_tokens"] == num_tasks * comp_per_task
+        assert overview["total_tokens"] == num_tasks * (prompt_per_task + comp_per_task)
+        assert overview["estimated_cost_usd"] > 0.0
+        assert provider_counts == {"deepseek": num_tasks // 2, "openai": num_tasks // 2}
+
 
 # ============================================================================
 # 5. REST API Endpoints Verification
@@ -435,17 +704,17 @@ class TestMetricsAndCacheRestEndpoints:
         resp = self.client.get("/api/cache/stats")
         assert resp.status_code == 200
         data = resp.json()
-        assert "total_files" in data
+        assert data["total_files"] == 0
         assert "total_size_mb" in data
-        assert "hit_rate_percent" in data
+        assert data["hit_rate_percent"] == 0.0
 
     def test_post_cache_clear_api(self):
         resp = self.client.post("/api/cache/clear")
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "cleared"
-        assert "deleted_files" in data
-        assert "freed_mb" in data
+        assert data["deleted_files"] == 0
+        assert data["freed_mb"] == 0.0
 
 
 # ============================================================================
