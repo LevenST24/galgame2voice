@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test, afterEach } from 'node:test';
 import { StreamAudioController, streamAudioController } from '../frontend/src/audio_player.js';
-import { initAudioPlayerUi, playAiVoice } from '../frontend/src/controllers/audio_player_ui.js';
+import { initAudioPlayerUi } from '../frontend/src/controllers/audio_player_ui.js';
 import { createBacklog } from '../frontend/src/adv/backlog.js';
 import { clearMemAudioCache, loadAudioBlob, putCachedAudioBlob } from '../frontend/src/cache.js';
 import { streamChat } from '../frontend/src/ai.js';
@@ -27,7 +27,7 @@ function player(options = {}) {
   globalThis.window = { AudioContext: AudioContextMock };
   globalThis.fetch = async () => new Response(blob());
   const p = new StreamAudioController({ fetchTimeoutMs: 40, ...options });
-  players.push(p); p.startSession('message'); return p;
+  players.push(p); p.ensureContext(); return p;
 }
 afterEach(async () => {
   for (const p of players.splice(0)) await p.close();
@@ -96,7 +96,7 @@ test('interrupt cancels a line start notification that has not reached its sched
   assert.equal(starts, 0);
 });
 
-for (const action of ['stopLine', 'interrupt', 'startSession', 'close']) {
+for (const action of ['stopLine', 'interrupt', 'close']) {
   test(`${action} cancels line preparation before AudioContext resume completes`, async () => {
     const p = player({ fetchTimeoutMs: 500 });
     const context = p.ctx;
@@ -107,8 +107,7 @@ for (const action of ['stopLine', 'interrupt', 'startSession', 'close']) {
     globalThis.fetch = async url => { fetched.push(url); return new Response(blob()); };
     const pending = p.playLine(0, ['/old-unlock.wav']);
     await tick();
-    if (action === 'startSession') p.startSession('next-message');
-    else if (action === 'stopLine') p.stopLine({ fadeMs: 0 });
+    if (action === 'stopLine') p.stopLine({ fadeMs: 0 });
     else if (action === 'interrupt') p.interrupt(0);
     else await p.close();
     resumed.resolve(); await tick(5);
@@ -153,6 +152,24 @@ test('stopping a line releases its caller even when AudioContext resume never re
   assert.equal(p.ctx.sources.length, 0);
 });
 
+test('a later line still reports a decode error after an earlier line failed', async () => {
+  const errors = [];
+  const p = player({ onError: error => errors.push(error) });
+  p.ctx.decodeAudioData = async () => { throw new DOMException('Unable to decode audio data', 'EncodingError'); };
+  assert.equal(await p.playLine(0, ['/first-bad.wav']), 'failed');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].code, 'AUDIO_DECODE_FAILED');
+  assert.equal(await p.playLine(1, ['/second-bad.wav']), 'failed');
+  assert.equal(errors.length, 2);
+});
+test('one line reports a decode error only once', async () => {
+  const errors = [];
+  const p = player({ onError: error => errors.push(error) });
+  p.ctx.decodeAudioData = async () => { throw new DOMException('Unable to decode audio data', 'EncodingError'); };
+  assert.equal(await p.playLine(0, ['/bad-a.wav', '/bad-b.wav']), 'failed');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].code, 'AUDIO_DECODE_FAILED');
+});
 test('a refused line playback reports a browser recovery hint without fetching audio', async () => {
   const errors = [], fetched = [];
   const p = player({ onError: error => errors.push(error) }); p.ctx.state = 'suspended';
@@ -176,65 +193,6 @@ test('an unresolved line resume reaches its deadline and clears playback ownersh
   assert.equal(p.ctx.sources.length, 0);
 });
 
-for (const stage of ['headers', 'body', 'decode']) {
-  test(`a stalled ${stage} skips the failed head and plays the next chunk`, async () => {
-    const errors = [];
-    const p = player({ onError: error => errors.push(error) });
-    let signal;
-    if (stage === 'decode') {
-      let calls = 0; p.ctx.decodeAudioData = async () => ++calls === 1 ? new Promise(() => {}) : { duration: 1 };
-    } else {
-      globalThis.fetch = async (url, options) => {
-        if (url === '/bad.wav') {
-          signal = options.signal;
-          return stage === 'headers' ? new Promise(() => {}) : { ok: true, blob: () => new Promise(() => {}) };
-        }
-        return new Response(blob());
-      };
-    }
-    const failed = p.enqueueChunk({ url: '/bad.wav', index: 0 });
-    await tick();
-    await p.enqueueChunk({ url: '/good.wav', index: 1 });
-    assert.equal(p.activeSources.length, 0);
-    await failed;
-    assert.equal(p.activeSources.length, 1);
-    assert.equal(p.activeSources[0].item.index, 1);
-    assert.equal(errors.length, 1);
-    if (signal) assert.equal(signal.aborted, true);
-  });
-}
-test('repeated audio URLs play at each sentence position; duplicate events do not replay', async () => {
-  const p = player();
-  await p.enqueueChunk({ url: '/repeat.wav', index: 0 });
-  await p.enqueueChunk({ url: '/repeat.wav', index: 1 });
-  assert.equal(p.activeSources.length, 2);
-  await p.enqueueChunk({ url: '/repeat.wav', index: 1 });
-  p.ctx.sources.forEach(source => source.finish());
-  await p.enqueueChunk({ url: '/repeat.wav', index: 0 });
-  assert.equal(p.ctx.sources.length, 2);
-});
-test('interrupt cancels body reads and releases callers even if fetch ignores abort', async () => {
-  const p = player(); let signal;
-  globalThis.fetch = async (_url, options) => { signal = options.signal; return { ok: true, blob: () => new Promise(() => {}) }; };
-  const pending = p.enqueueChunk({ url: '/slow.wav', index: 0 });
-  await tick(); p.interrupt(0); await pending;
-  assert.equal(signal.aborted, true); assert.equal(p.queue.length, 0);
-});
-test('a late cache read cannot start a fetch in the next session', async () => {
-  const p = player(); const opened = deferred(); let requests = 0;
-  window.caches = globalThis.caches = { open: () => opened.promise };
-  globalThis.fetch = async () => { requests++; return new Response(blob()); };
-  const pending = p.enqueueChunk({ url: '/old.wav', index: 0 });
-  await tick(); p.startSession('new'); await pending;
-  opened.resolve({ match: async () => null }); await tick();
-  assert.equal(requests, 0); assert.equal(p.currentMsgId, 'new');
-});
-test('late onended from an interrupted source cannot finish the next session', async () => {
-  let endings = 0; const p = player({ onQueueEmpty: () => endings++ });
-  await p.enqueueChunk({ url: '/old.wav', index: 0 }); const old = p.ctx.sources[0];
-  p.startSession('new'); old.finish();
-  assert.equal(endings, 0); assert.equal(p.isPlaying, true);
-});
 test('cache storage failures cannot hang playback or caching', async () => {
   player(); const original = globalThis.setTimeout;
   globalThis.setTimeout = (fn, ms, ...args) => original(fn, ms === 1500 ? 10 : ms, ...args);
@@ -243,14 +201,6 @@ test('cache storage failures cannot hang playback or caching', async () => {
     assert.ok((await loadAudioBlob('/fallback.wav', { timeoutMs: 100 })).size > 0);
     await putCachedAudioBlob('recording', blob());
   } finally { globalThis.setTimeout = original; }
-});
-test('blocked autoplay becomes an actionable paused state and can resume', async () => {
-  const errors = []; const p = player({ onError: error => errors.push(error) });
-  p.ctx.state = 'suspended'; p.ctx.resume = async () => { throw new Error('gesture required'); };
-  await p.enqueueChunk({ url: '/autoplay.wav', index: 0 }); await tick();
-  assert.equal(p.paused, true); assert.match(errors[0].message, /LOG 里再点一次「语音」/);
-  p.ctx.resume = AudioContextMock.prototype.resume;
-  p.resume(); await tick(); assert.equal(p.activeSources.length, 1);
 });
 test('stream HTTP errors cannot hang forever while reading their error body', async () => {
   let signal;
@@ -284,7 +234,6 @@ test('the saved reply replaces streamed text the server did not keep', async () 
 });
 
 const DECODE_FAILURE_TOAST = '这句语音无法解码，原有内容已保留。请检查语音服务后重试，文字聊天仍可继续。';
-const OTHER_PLAYBACK_TOAST = '部分语音暂时无法播放，已跳过并保留文字。可稍后在 LOG 里再点「语音」重试；若反复失败，请打开「运行状态」检查服务。';
 
 function gainNode() {
   return {
@@ -317,7 +266,7 @@ function audioContextClass({ failDecode }) {
   };
 }
 
-test('decode failure shows its own notice while other playback errors keep the LOG retry notice', async () => {
+test('decode failure shows its own notice and does not offer a LOG retry', async () => {
   const previous = {
     window: globalThis.window,
     fetch: globalThis.fetch,
@@ -383,31 +332,11 @@ test('decode failure shows its own notice while other playback errors keep the L
     assert.equal(log.element.querySelector('.adv-log-audio-status').textContent, '语音已过期或不可用');
     assert.equal(decodeToast, DECODE_FAILURE_TOAST);
     assert.doesNotMatch(decodeToast, /再点「语音」重试/);
-
-    clearToasts();
-    await streamAudioController.close();
-    globalThis.window = { AudioContext: audioContextClass({ failDecode: false }) };
-    initAudioPlayerUi({}, {});
-    const message = {
-      id: 'm_other',
-      role: 'assistant',
-      audioUrls: ['/audio/ok.wav', '/audio/down.wav'],
-    };
-    await playAiVoice(message, { setLoading() {}, setPlaying() {}, setProgress() {} });
-    let otherToast = '';
-    const deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      otherToast = toastRoot.querySelector('.toast')?.dataset?.msg || '';
-      if (otherToast) break;
-      await tick(10);
-    }
-    assert.equal(otherToast, OTHER_PLAYBACK_TOAST);
-    assert.match(otherToast, /再点「语音」重试/);
+    assert.equal(toastRoot.querySelectorAll('.toast').length, 1);
   } finally {
     clearToasts();
     log.destroy();
     streamAudioController.onError = null;
-    streamAudioController.onQueueEmpty = null;
     await streamAudioController.close();
     clearMemAudioCache();
     globalThis.window = previous.window;

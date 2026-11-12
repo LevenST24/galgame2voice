@@ -755,7 +755,6 @@ test(`Part 3 #1: real controller/player, audio ${status}, done ${fullyRevealed ?
 
   const audioPlayer = {
     isPlaying: false, currentMsgId: null, paused: false,
-    startSession() {}, enqueueChunk() {},
     pause() {}, resume() {}, interrupt() {},
   };
 

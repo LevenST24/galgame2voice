@@ -168,8 +168,6 @@ const audioController = {
     return 'ended';
   },
   stopLine() {},
-  startSession() {},
-  enqueueChunk() {},
   interrupt() {},
 };
 

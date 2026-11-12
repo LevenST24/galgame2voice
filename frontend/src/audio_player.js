@@ -1,13 +1,11 @@
 /**
- * StreamAudioController — 现代 Web Audio API 流式音频控制器
+ * StreamAudioController — 单句 Web Audio 播放。
  *
- * 核心特性:
- * 1. AudioContext 惰性初始化与用户手势自动唤醒 (resume)。
- * 2. 采样级高精度排期调度 (currentTime + source.start(nextScheduledTime))，实现切片间零死寂缝隙 (Gapless)。
- * 3. 12ms 微渐变包络 (Micro-fade Gain Envelope: 12ms attack & decay)，消除 PCM 直流偏置切片衔接爆音。
- * 4. 40ms 平滑线性渐出打断 (40ms Linear Fade-Out Interrupt)，彻底杜绝硬截断爆音与跨会话串音。
- * 5. 健壮队列自愈：单切片网络/解码异常自动跳过并推进后续切片，杜绝队列死锁。
- * 6. 与 CacheStorage / memory blob 缓存无缝衔接，极速秒开。
+ * 1. AudioContext 惰性初始化。单句播放自己做有时限的 resume，不在这里空等。
+ * 2. 采样级排期（currentTime + source.start）。当前排期已经落到现在或更早时，首切片加上 currentBufferLeadSec。
+ * 3. 12ms 微渐变包络，减轻切片衔接爆音。
+ * 4. stopLine / interrupt 通过单句增益做平滑渐出。
+ * 5. 一句里坏掉的切片会被跳过，后面的切片继续排期。
  */
 
 import { loadAudioBuffer } from './cache.js';
@@ -31,26 +29,14 @@ export class StreamAudioController {
     this.masterGain = null;
     this.analyser = null;
 
-    /** @type {Array<{id: string, sessionId: number, index: number, url: string, sentence: string, audioBuffer: AudioBuffer|null, status: string, duration?: number}>} */
-    this.queue = [];
-    this.activeSources = [];
     this.nextStartTime = 0;
-    this.isPlaying = false;
     this.isPaused = false;
-    this.currentSessionId = 0;
-    this.currentMsgId = null;
-    this.abortController = null;
-    this._currentCtl = null;
-    this._progressTimer = null;
-    this._seenChunkIndexes = new Set();
     this._reportedError = false;
-    this._lastProgress = 0;
     this._linePlayState = null;
     this.supportsStartNotification = true;
 
     this.currentBufferLeadSec = 0.02;
 
-    this.onQueueEmpty = options.onQueueEmpty || null;
     this.onError = options.onError || null;
 
     this._onVisibilityChange = () => {
@@ -112,6 +98,10 @@ export class StreamAudioController {
     return this.isPaused || (this.ctx && this.ctx.state === 'suspended');
   }
 
+  get isPlaying() {
+    return Boolean(this._linePlayState && !this._linePlayState.settled);
+  }
+
   /**
    * 返回当前时域振幅均方根 (RMS)，用于驱动口型同步 (Lip Sync)。
    * 采样缓冲区复用，口型轮询每秒最多 30 次，不必每次分配。
@@ -145,9 +135,6 @@ export class StreamAudioController {
     if (this.ctx && this.ctx.state === 'running') {
       this.ctx.suspend().catch(() => {});
     }
-    if (this._currentCtl && this._currentCtl.setPlaying) {
-      this._currentCtl.setPlaying(false);
-    }
   }
 
   /**
@@ -155,134 +142,8 @@ export class StreamAudioController {
    */
   resume() {
     this.isPaused = false;
-    const sessionId = this.currentSessionId;
     if (this.ctx && this.ctx.state === 'suspended') {
-      withAudioDeadline(() => this.ctx.resume(), { signal: this.abortController?.signal, timeoutMs: 1500 }).then(() => {
-        if (sessionId !== this.currentSessionId || this.isPaused) return;
-        if (this._currentCtl && this._currentCtl.setPlaying) {
-          this._currentCtl.setPlaying(true);
-        }
-        this._scheduleNext();
-      }).catch(() => {
-        if (sessionId === this.currentSessionId && !this.isPaused) this._playbackBlocked();
-      });
-    } else {
-      if (this._currentCtl && this._currentCtl.setPlaying) {
-        this._currentCtl.setPlaying(true);
-      }
-      this._scheduleNext();
-    }
-  }
-
-  /**
-   * 开始一个新的流式/批量播放会话
-   * @param {string} msgId
-   * @param {Object} [ctl]
-   */
-  startSession(msgId, ctl = null) {
-    this.currentSessionId += 1; // 使旧 interrupt 的延迟回调失效，避免打断新会话开头
-    this.interrupt(0);
-    this.ensureContext();
-    const gainNode = this.masterGain;
-    if (gainNode && gainNode.gain && this.ctx) {
-      try {
-        gainNode.gain.cancelScheduledValues(this.ctx.currentTime);
-        gainNode.gain.setValueAtTime(1.0, this.ctx.currentTime);
-      } catch (_) {}
-    }
-    this.currentMsgId = msgId;
-    this._currentCtl = ctl;
-    this.isPaused = false;
-    this.isPlaying = true;
-    this.nextStartTime = 0;
-    this._lastProgress = 0;
-    if (ctl && ctl.setPlaying) ctl.setPlaying(true);
-    if (ctl && ctl.setProgress) ctl.setProgress(0);
-  }
-
-  /**
-   * 追加待播放切片（支持流式推送或静态批量列表）
-   * @param {Object} options
-   * @param {string} options.url - 音频切片 URL
-   * @param {number} options.index - 切片索引
-   * @param {string} [options.sentence] - 切片日文/中文文本
-   * @param {Object} [options.ctl] - UI 控制句柄 { setPlaying, setProgress }
-   * @param {Blob} [options.blob] - 本地预加载的 Blob（若有）
-   * @param {number} [options.totalExpected] - 预期总切片数（用于计算进度）
-   */
-  async enqueueChunk({ url, index, sentence = '', emotion = '', ctl = null, blob = null, totalExpected = 0 }) {
-    this.ensureContext();
-    if (ctl) this._currentCtl = ctl;
-
-    const sessionId = this.currentSessionId;
-    const item = {
-      id: `chunk_${sessionId}_${index}_${Date.now()}`,
-      sessionId,
-      index,
-      url,
-      sentence,
-      emotion,
-      audioBuffer: null,
-      status: 'fetching',
-      totalExpected: totalExpected || (index + 1),
-    };
-
-    // Two identical sentences can legitimately share a cached URL.
-    // Deduplicate events by their position, including already finished chunks.
-    if (this._seenChunkIndexes.has(index)) return;
-    this._seenChunkIndexes.add(index);
-
-    this.queue.push(item);
-
-    try {
-      const ctx = this.ctx;
-      if (!ctx) throw new Error('当前浏览器无法播放语音，请使用新版 Chrome 或 Edge。');
-      const audioBuffer = await loadAudioBuffer(buffer => ctx.decodeAudioData(buffer), {
-        url, blob, signal: this.abortController?.signal, timeoutMs: this.fetchTimeoutMs,
-      });
-      if (sessionId !== this.currentSessionId) return;
-
-      item.audioBuffer = audioBuffer;
-      item.duration = audioBuffer.duration;
-      item.status = 'ready';
-      this._scheduleNext();
-    } catch (err) {
-      if (err.name === 'AbortError' || sessionId !== this.currentSessionId) return;
-      console.warn('[StreamAudioController] 音频切片加载/解码失败，平滑跳过:', url, err);
-      // 容错降级：移出失败切片，排期后续就绪切片，避免死锁
-      const idx = this.queue.indexOf(item);
-      if (idx !== -1) this.queue.splice(idx, 1);
-      this._reportError(err);
-      this._scheduleNext();
-      this._maybeQueueEmpty();
-    }
-  }
-
-  /**
-   * 批量播放已有完整消息的分句切片列表
-   * @param {Array<string|{url:string,sentence?:string,emotion?:string}>} chunks
-   *   纯 URL 数组，或带句子/情绪元数据的对象数组（后者可让立绘逐句切换）
-   * @param {Object} [ctl] - UI 控制器
-   * @param {string} [msgId]
-   */
-  async playChunks(chunks, ctl = null, msgId = null) {
-    if (!chunks || chunks.length === 0) return;
-    this.startSession(msgId, ctl);
-    const sessionId = this.currentSessionId;
-    const total = chunks.length;
-    for (let i = 0; i < chunks.length; i++) {
-      if (sessionId !== this.currentSessionId) break;
-      const c = chunks[i];
-      const meta = typeof c === 'string' ? { url: c } : (c || {});
-      this.enqueueChunk({
-        url: meta.url,
-        index: i,
-        sentence: meta.sentence || '',
-        emotion: meta.emotion || '',
-        blob: meta.blob || null,
-        ctl,
-        totalExpected: total,
-      });
+      withAudioDeadline(() => this.ctx.resume(), { timeoutMs: 1500 }).catch(() => {});
     }
   }
 
@@ -297,6 +158,8 @@ export class StreamAudioController {
    * `'timeout'` 与 `'network'` 表示这次没有播出声音，且还不能确定文件已损坏或丢失。
    */
   async playLine(lineIndex, chunks, { msgId = null, onStart = null } = {}) {
+    // 上一句的解码错误不能把后面单句的提示一起吞掉。
+    this._reportedError = false;
     if (this._linePlayState) {
       this.stopLine({ fadeMs: 0 });
     }
@@ -529,241 +392,20 @@ export class StreamAudioController {
   }
 
   /**
-   * 调度器：在 Web Audio 时间线上精确排期已就绪切片
-   */
-  _scheduleNext() {
-    if (!this.ctx) return;
-    if (this.isPaused) return;
-    if (!this.queue.length) return;
-
-    if (this.ctx.state !== 'running') {
-      // Autoplay can remain blocked until a gesture: show a paused/retry state
-      // instead of polling resume() indefinitely in the background.
-      const sessionId = this.currentSessionId;
-      withAudioDeadline(() => this.ctx.resume(), { signal: this.abortController?.signal, timeoutMs: 1500 }).then(() => {
-        if (sessionId !== this.currentSessionId || this.isPaused) return;
-        if (this.ctx?.state === 'running') this._scheduleNext();
-        else this._playbackBlocked();
-      }).catch(() => {
-        if (sessionId === this.currentSessionId) this._playbackBlocked();
-      });
-      return;
-    }
-
-    const now = this.ctx.currentTime;
-    if (this.masterGain && this.masterGain.gain) {
-      try {
-        if (this.masterGain.gain.value < 0.5) {
-          this.masterGain.gain.cancelScheduledValues(now);
-          this.masterGain.gain.setValueAtTime(1.0, now);
-        }
-      } catch (_) {}
-    }
-    if (this.nextStartTime <= now) {
-      this.nextStartTime = now + this.currentBufferLeadSec;
-    }
-
-    while (this.queue.length > 0) {
-      const nextItem = this.queue[0];
-      if (nextItem.status !== 'ready' || !nextItem.audioBuffer) {
-        break; // 队头仍在下载或解码，等待后续 enqueueChunk 完成触发
-      }
-
-      this.queue.shift();
-      const buffer = nextItem.audioBuffer;
-      const startTime = this.nextStartTime;
-      const duration = buffer.duration;
-      // 保护超短切片 (<= 50ms)
-      const fadeDur = Math.min(this.crossFadeMs, duration / 4);
-
-      const source = this.ctx.createBufferSource();
-      source.buffer = buffer;
-
-      // 独立切片增益节点：负责 12ms 头尾微渐变 (Micro-fade)，彻底消除直流偏置阶跃爆音
-      const chunkGain = this.ctx.createGain();
-      chunkGain.gain.setValueAtTime(0.0001, startTime);
-      chunkGain.gain.linearRampToValueAtTime(1.0, startTime + fadeDur);
-
-      const fadeOutStart = Math.max(startTime + fadeDur, startTime + duration - fadeDur);
-      chunkGain.gain.setValueAtTime(1.0, fadeOutStart);
-      chunkGain.gain.linearRampToValueAtTime(0.0001, startTime + duration);
-
-      source.connect(chunkGain);
-      chunkGain.connect(this.masterGain);
-
-      source.start(startTime);
-      const entry = { source, chunkGain, item: nextItem, startTime, duration };
-      this.activeSources.push(entry);
-
-      this.isPlaying = true;
-      if (this._currentCtl && this._currentCtl.setPlaying) {
-        this._currentCtl.setPlaying(true);
-      }
-
-      // 采样级无缝步进：下一切片起始时刻精确衔接当前切片尾部减去交叉渐变量
-      this.nextStartTime = startTime + duration - (fadeDur / 2);
-
-      this._startProgressTimer();
-
-      source.onended = () => {
-        this.activeSources = this.activeSources.filter((s) => s.source !== source);
-        try {
-          source.disconnect();
-          chunkGain.disconnect();
-        } catch (_) {}
-
-        if (nextItem.sessionId === this.currentSessionId) {
-          this._maybeQueueEmpty();
-        }
-      };
-    }
-  }
-
-  /**
-   * 检查队列与活动源是否全部结束
-   */
-  _maybeQueueEmpty() {
-    if (this.activeSources.length === 0 && this.queue.length === 0) {
-      clearInterval(this._progressTimer);
-      this._progressTimer = null;
-      this.isPlaying = false;
-      this.isPaused = false;
-      this.nextStartTime = 0;
-      this._lastProgress = 1;
-      if (this._currentCtl) {
-        if (this._currentCtl.setPlaying) this._currentCtl.setPlaying(false);
-        if (this._currentCtl.setProgress) this._currentCtl.setProgress(1);
-      }
-      if (this.onQueueEmpty) this.onQueueEmpty();
-    }
-  }
-
-  /**
-   * 40ms 平滑线性渐出打断 (Smooth Interrupt)
-   * 立即中止网络拉取、停止活动源并渐出静音，杜绝瞬间截断造成的硬件爆破杂音
-   * @param {number} fadeMs 渐出毫秒数，默认 40ms
+   * 停掉当前单句播放并重置暂停、排期与错误状态。
+   * @param {number} [fadeMs=40]
    */
   interrupt(fadeMs = 40) {
-    if (this._linePlayState) {
-      this.stopLine({ fadeMs });
-    }
-    this.currentSessionId += 1;
-    this.currentMsgId = null;
-
-    if (this.abortController) {
-      try {
-        this.abortController.abort();
-      } catch (_) {}
-    }
-    this.abortController = new AbortController();
-    this.queue = [];
-    this._seenChunkIndexes.clear();
+    this.stopLine({ fadeMs });
+    this.isPaused = false;
     this._reportedError = false;
-    clearInterval(this._progressTimer);
-    this._progressTimer = null;
-
-    if (this.ctx && this.masterGain && this.activeSources.length > 0) {
-      if (fadeMs <= 0) {
-        // 瞬间完全打断，立即停止所有源并重置音量
-        const sourcesToStop = [...this.activeSources];
-        this.activeSources = [];
-        this.nextStartTime = 0;
-        this.isPlaying = false;
-        this.isPaused = false;
-        try {
-          this.masterGain.gain.cancelScheduledValues(this.ctx.currentTime);
-          this.masterGain.gain.setValueAtTime(1.0, this.ctx.currentTime);
-        } catch (_) {}
-        sourcesToStop.forEach(({ source, chunkGain }) => {
-          try {
-            source.stop();
-            source.disconnect();
-            chunkGain.disconnect();
-          } catch (_) {}
-        });
-      } else {
-        const now = this.ctx.currentTime;
-        const fadeSec = fadeMs / 1000;
-
-        try {
-          this.masterGain.gain.cancelScheduledValues(now);
-          this.masterGain.gain.setValueAtTime(this.masterGain.gain.value, now);
-          this.masterGain.gain.linearRampToValueAtTime(0.0001, now + fadeSec);
-        } catch (_) {}
-
-        const sourcesToStop = [...this.activeSources];
-        this.activeSources = [];
-        this.nextStartTime = 0;
-        this.isPlaying = false;
-        this.isPaused = false;
-
-        const sessionAtInterrupt = this.currentSessionId;
-        setTimeout(() => {
-          sourcesToStop.forEach(({ source, chunkGain }) => {
-            try {
-              source.stop();
-              source.disconnect();
-              chunkGain.disconnect();
-            } catch (_) {}
-          });
-          // 恢复 masterGain 为 1.0 备下次播放；
-          // 仅当期间没有新会话开始（startSession 会递增 currentSessionId）时才恢复，
-          // 否则新会话的增益已由 startSession 自行重置，此处再动会产生爆音
-          if (this.currentSessionId === sessionAtInterrupt && this.masterGain && this.ctx) {
-            try {
-              this.masterGain.gain.cancelScheduledValues(this.ctx.currentTime);
-              this.masterGain.gain.setValueAtTime(1.0, this.ctx.currentTime);
-            } catch (_) {}
-          }
-        }, fadeMs + 10);
-      }
-    } else {
-      this.activeSources = [];
-      this.nextStartTime = 0;
-      this.isPlaying = false;
-      this.isPaused = false;
-      if (this.masterGain && this.ctx) {
-        try {
-          this.masterGain.gain.cancelScheduledValues(this.ctx.currentTime);
-          this.masterGain.gain.setValueAtTime(1.0, this.ctx.currentTime);
-        } catch (_) {}
-      }
-    }
-
-    if (this._currentCtl && this._currentCtl.setPlaying) {
-      this._currentCtl.setPlaying(false);
-    }
-    this._currentCtl = null;
+    this.nextStartTime = 0;
   }
 
   _reportError(error) {
     if (this._reportedError) return;
     this._reportedError = true;
     this.onError?.(error);
-  }
-
-  _playbackBlocked() {
-    this.pause();
-    this._reportError(new Error('浏览器暂停了语音播放，请在 LOG 里再点一次「语音」。'));
-  }
-
-  _startProgressTimer() {
-    if (this._progressTimer) return;
-    this._progressTimer = setInterval(() => {
-      if (!this.ctx || this.isPaused || this.ctx.state !== 'running') return;
-      const now = this.ctx.currentTime;
-      const audible = this.activeSources.filter(entry =>
-        entry.item.sessionId === this.currentSessionId && entry.startTime <= now &&
-        now < entry.startTime + entry.duration);
-      for (const entry of audible) {
-        const { item, startTime, duration } = entry;
-        if (item.totalExpected > 0) {
-          const fraction = (item.index + Math.min(1, (now - startTime) / duration)) / item.totalExpected;
-          this._lastProgress = Math.min(1, fraction);
-          this._currentCtl?.setProgress?.(this._lastProgress);
-        }
-      }
-    }, 40);
   }
 
   /**
