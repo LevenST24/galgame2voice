@@ -44,7 +44,7 @@ python -m pytest tests/test_e2e_industrial_hardening.py --durations=10 -v
 | **R1.3** | 数据库连接与事务健壮性 (SQLite WAL & Burst Concurrency) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier3CrossFeatureCombinations` | `test_f6_01_database_wal_mode_enabled`<br>`test_f6_02_database_busy_timeout_setting`<br>`test_b6_01_database_burst_concurrency_stress`<br>`test_pair_02_tts_cache_and_database_wal_burst` | Covered |
 | **R2.1** | API 凭据与敏感信息绝对隔离 (Zero-Leakage Key Masking) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier3CrossFeatureCombinations` | `test_f1_01_masking_openai_api_key`<br>`test_f1_02_masking_google_gemini_api_key`<br>`test_f1_03_masking_bearer_tokens`<br>`test_f1_04_masking_telegram_bot_token`<br>`test_b1_02_logging_massive_string_with_secrets`<br>`test_b1_03_logging_multiple_concatenated_secrets`<br>`test_pair_03_log_masking_and_http_error_response` | Covered |
 | **R2.2** | 路径遍历与输入安全边界防护 (Path Traversal & SSRF Defense) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier3CrossFeatureCombinations` | `test_f7_01_reject_audio_path_traversal`<br>`test_f7_03_ssrf_url_guard_blocks_private_ranges`<br>`test_f7_04_ssrf_url_guard_allows_public_https`<br>`test_b7_01_path_traversal_windows_device_names`<br>`test_pair_04_path_traversal_and_tts_cache` | Covered |
-| **R2.3** | 防 Prompt 注入 (Injection Defense) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier3CrossFeatureCombinations` | `test_f4_01` ~ `test_f4_05`<br>`test_b4_01_memory_prompt_injection_delimiter_suppression`<br>`test_b4_02_memory_heuristic_redos_resistance`<br>`test_pair_01_memory_injection_and_bilingual_streaming` | Covered |
+| **R2.3** | 防 Prompt 注入 (Injection Defense) | `tests/test_memory_service.py`<br>`TestTier3CrossFeatureCombinations` | `TestHeuristicFactExtraction` / `TestMemoryRAGRetrieval`<br>`test_pair_01_memory_injection_and_bilingual_streaming` | Covered |
 | **R3.1** | 流式 SSE 与音频分发性能 (Streaming Bilingual Pipeline) | `TestTier1FeatureCoverage`<br>`TestTier4RealWorldApplicationScenarios` | `test_f8_01_streaming_bilingual_parser_incremental`<br>`test_scenario_02_high_concurrency_multi_tenant_streaming` | Covered |
 | **R3.2** | 双级 TTS 缓存亚毫秒级响应 (TTS Memory LRU Latency < 0.5ms，100 次查询平均) | `TestTier1FeatureCoverage`<br>`TestTier2BoundaryAndCornerCases`<br>`TestTier4RealWorldApplicationScenarios` | `test_f5_01_cache_key_computation_deterministic`<br>`test_f5_02_in_memory_cache_hit_latency`<br>`test_f5_03_atomic_file_persistence`<br>`test_b5_01_tts_cache_corrupted_zero_byte_recovery`<br>`test_scenario_04_cache_saturation_and_lru_pruning_lifecycle` | Covered |
 | **R3.3** | 优雅停机与进程资源释放 (Process Lifecycle & Isolation) | `TestTier2BoundaryAndCornerCases` | `test_b6_01_database_burst_concurrency_stress` | Covered |
@@ -54,20 +54,18 @@ python -m pytest tests/test_e2e_industrial_hardening.py --durations=10 -v
 
 ## 4. 4-Tier Test Breakdown
 
-### Tier 1: Feature Coverage (26 Tests)
+### Tier 1: Feature Coverage (27 Tests)
 - **Logging & Security Masking**: F1-01 to F1-05 (OpenAI, Gemini, HuggingFace, Telegram, LogRecord args).
 - **Error Response Sanitization**: F2-01, F2-02, F2-04, F2-05 (HTTP 4xx/5xx, SSE error event, Provider test, validation).
 - **System Telemetry**: F3-01, F3-03 to F3-05 (Health, database relative path, storage metrics, memory RSS).
-- **Memory Injection Defense**: F4-01 to F4-05 (Nickname, preferences, taboos, identity, prompt framing).
 - **TTS Cache Sub-Millisecond Layer**: F5-01 to F5-05 (Deterministic SHA256, memory hit latency, atomic write, stats, clear).
 - **Database SQLite WAL**: F6-01 to F6-05 (WAL mode, busy timeout, settings masking, provider upsert, message history).
 - **Path Traversal & SSRF Defense**: F7-01, F7-03, F7-04 (Static audio traversal, private IP blocking, public HTTPS allowance).
 - **SSE Stream Pipeline**: F8-01 (Incremental chunk parser, lookahead Japanese sentence extraction).
 
-### Tier 2: Boundary & Corner Cases (18 Tests)
+### Tier 2: Boundary & Corner Cases (12 Tests)
 - **Logging Extremes**: Empty strings, 100KB+ payloads, concatenated secrets, non-string objects.
 - **Error Propagation**: Chained exceptions with root cause, control chars and unicode emojis.
-- **Memory Extraction Edge Cases**: Injection delimiter framing, 10,000-char ReDoS resistance, mixed CJK & emoji.
 - **TTS Cache Recovery**: Zero-byte file recovery, memory byte cap eviction, extreme parameter normalization.
 - **Database Stress**: 30-thread concurrent burst writes, 4,000-char maximum payload strings.
 - **Security Boundaries**: Non-http schemes, empty hostnames, traversal attack vectors.
