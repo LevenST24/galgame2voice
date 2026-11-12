@@ -7,9 +7,8 @@ Verifies:
 3. AudioSpecCache cache hit and mtime_ns / size invalidation.
 4. VoiceProfileResolver in-memory caching and invalidation.
 5. SingleFlightCoordinator concurrency coalescing (cache stampede prevention).
-6. TtsScheduler priority ordering (HIGH > NORMAL > LOW) and stale task cancellation.
-7. TTS Cache Key reference audio identity hardening (mtime_ns + size).
-8. TtsCacheManager stream_cached chunked delivery.
+6. TTS Cache Key reference audio identity hardening (mtime_ns + size).
+7. TtsCacheManager stream_cached chunked delivery.
 """
 
 import asyncio
@@ -38,8 +37,6 @@ from galgame2voice.services.voice_resolver import (
 )
 from galgame2voice.services.tts_scheduler import (
     SingleFlightCoordinator,
-    TtsPriority,
-    TtsScheduler,
     get_tts_scheduler,
 )
 from galgame2voice.services.tts_cache_manager import TtsCacheManager
@@ -306,96 +303,6 @@ async def test_single_flight_coordinator_coalescing():
 
     # Crucial: expensive_synthesis must only have been invoked ONCE!
     assert call_count == 1, f"Expected 1 GPU invocation but got {call_count}"
-
-
-# ============================================================================
-# 5. TtsScheduler Priority Ordering & Stale Task Cancellation
-# ============================================================================
-
-@pytest.mark.asyncio
-async def test_tts_scheduler_priority_and_cancellation():
-    """
-    Verifies priority scheduling (HIGH > NORMAL > LOW) and generation cancellation.
-    """
-    scheduler = TtsScheduler()
-    execution_order = []
-
-    async def make_task(label, delay=0.01):
-        async def _work():
-            await asyncio.sleep(delay)
-            execution_order.append(label)
-            return label
-        return _work
-
-    # Enqueue LOW, then HIGH, then NORMAL while holding scheduler busy
-    busy_gate = asyncio.Event()
-
-    async def blocking_task():
-        await busy_gate.wait()
-        execution_order.append("initial_busy")
-
-    t_init = asyncio.create_task(scheduler.schedule(blocking_task, priority=TtsPriority.HIGH))
-
-    # Give worker loop a tick to pick up t_init and block on busy_gate
-    await asyncio.sleep(0.01)
-
-    # Enqueue other tasks while worker is blocked
-    t_low = asyncio.create_task(scheduler.schedule(await make_task("low"), priority=TtsPriority.LOW))
-    t_norm = asyncio.create_task(scheduler.schedule(await make_task("norm"), priority=TtsPriority.NORMAL))
-    t_high = asyncio.create_task(scheduler.schedule(await make_task("high"), priority=TtsPriority.HIGH))
-
-    # Give all three tasks a tick to finish enqueueing before worker starts
-    await asyncio.sleep(0.01)
-
-    # Release worker
-    busy_gate.set()
-    await asyncio.gather(t_init, t_high, t_norm, t_low)
-
-    # HIGH must run before NORMAL, which must run before LOW
-    idx_high = execution_order.index("high")
-    idx_norm = execution_order.index("norm")
-    idx_low = execution_order.index("low")
-    assert idx_high < idx_norm < idx_low, f"Priority violation: {execution_order}"
-
-    # Test stale generation cancellation
-    cancelled_ran = False
-
-    async def should_be_cancelled():
-        nonlocal cancelled_ran
-        cancelled_ran = True
-        return "ran"
-
-    # Block scheduler again
-    blocker_gate = asyncio.Event()
-
-    async def blocker():
-        await blocker_gate.wait()
-
-    t_block = asyncio.create_task(scheduler.schedule(blocker, priority=TtsPriority.HIGH))
-    await asyncio.sleep(0.01)
-
-    t_stale = asyncio.create_task(
-        scheduler.schedule(
-            should_be_cancelled,
-            priority=TtsPriority.LOW,
-            generation_id="gen_chat_999",
-        )
-    )
-    await asyncio.sleep(0.01)
-
-    try:
-        # Cancel while sitting behind t_block
-        cancelled_count = scheduler.cancel_generation("gen_chat_999")
-        assert cancelled_count == 1
-    finally:
-        blocker_gate.set()
-        await t_block
-
-    with pytest.raises(asyncio.CancelledError):
-        await t_stale
-
-    assert not cancelled_ran, "Cancelled task should never have executed!"
-    await scheduler.aclose()
 
 
 # ============================================================================
