@@ -54,7 +54,7 @@ afterEach(async () => {
 });
 function player(options = {}) {
   const result = new StreamAudioController({ fetchTimeoutMs: 500, ...options });
-  result.startSession('cache-recovery'); players.push(result); return result;
+  result.ensureContext(); players.push(result); return result;
 }
 async function prepareLine(p, item) {
   const source = deferred(); p.ctx.onSource = source.resolve;
@@ -63,36 +63,32 @@ async function prepareLine(p, item) {
   return { result };
 }
 
-for (const mode of ['line', 'stream']) {
-  for (const tier of ['memory', 'disk', 'provided-blob', 'legacy-disk']) {
-    test(`${mode} recovers one corrupt ${tier} copy without deleting a recording`, async () => {
-      const url = '/audio/cache/recover.wav';
-      const broken = audio('broken cached audio');
-      await putCachedAudioBlob(url, broken);
-      await putCachedAudioBlob('user_recording', audio('original microphone recording'));
-      if (tier === 'legacy-disk') {
-        const [request] = await storage.keys();
-        await storage.put(request, new Response(broken, { headers: { 'Content-Type': 'audio/wav', 'X-Cached-At': '1700000000000' } }));
-      }
-      if (tier === 'disk' || tier === 'legacy-disk') clearMemAudioCache();
-      const p = player();
-      const item = { url, ...(tier === 'provided-blob' ? { blob: broken } : {}) };
-      let pending;
-      if (mode === 'line') pending = (await prepareLine(p, item)).result;
-      else await p.enqueueChunk({ ...item, index: 0 });
-      assert.equal(p.ctx.sources.length, 1, 'a stale cached Blob prevented a fresh download from playing');
-      assert.deepEqual(p.ctx.decoded, ['broken cached audio', 'valid fresh audio']);
-      assert.equal(fetched.length, 1);
-      assert.equal(fetched[0].url, url);
-      assert.equal(fetched[0].options.cache, 'no-store');
-      assert.equal(fetched[0].options.method ?? 'GET', 'GET');
-      p.ctx.sources.forEach(source => source.finish());
-      if (pending) assert.equal(await pending, 'ended');
-      await tick(); clearMemAudioCache();
-      assert.equal(await (await getCachedAudioBlob(url)).text(), 'valid fresh audio');
-      assert.equal(await (await getCachedAudioBlob('user_recording')).text(), 'original microphone recording');
-    });
-  }
+for (const tier of ['memory', 'disk', 'provided-blob', 'legacy-disk']) {
+  test(`line recovers one corrupt ${tier} copy without deleting a recording`, async () => {
+    const url = '/audio/cache/recover.wav';
+    const broken = audio('broken cached audio');
+    await putCachedAudioBlob(url, broken);
+    await putCachedAudioBlob('user_recording', audio('original microphone recording'));
+    if (tier === 'legacy-disk') {
+      const [request] = await storage.keys();
+      await storage.put(request, new Response(broken, { headers: { 'Content-Type': 'audio/wav', 'X-Cached-At': '1700000000000' } }));
+    }
+    if (tier === 'disk' || tier === 'legacy-disk') clearMemAudioCache();
+    const p = player();
+    const item = { url, ...(tier === 'provided-blob' ? { blob: broken } : {}) };
+    const pending = (await prepareLine(p, item)).result;
+    assert.equal(p.ctx.sources.length, 1, 'a stale cached Blob prevented a fresh download from playing');
+    assert.deepEqual(p.ctx.decoded, ['broken cached audio', 'valid fresh audio']);
+    assert.equal(fetched.length, 1);
+    assert.equal(fetched[0].url, url);
+    assert.equal(fetched[0].options.cache, 'no-store');
+    assert.equal(fetched[0].options.method ?? 'GET', 'GET');
+    p.ctx.sources.forEach(source => source.finish());
+    assert.equal(await pending, 'ended');
+    await tick(); clearMemAudioCache();
+    assert.equal(await (await getCachedAudioBlob(url)).text(), 'valid fresh audio');
+    assert.equal(await (await getCachedAudioBlob('user_recording')).text(), 'original microphone recording');
+  });
 }
 
 test('a second decode failure stops recovery and discards only the broken URL', async () => {

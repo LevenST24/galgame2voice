@@ -18,8 +18,6 @@ function setupController({ voiceMode = false } = {}) {
   let sequence = 0, currentVoice = null, control = null;
   const audioPlayer = {
     isPlaying: false, currentMsgId: null, paused: false,
-    startSession(id, ctl, options) { this.currentMsgId = id; this.isPlaying = true; audio.push(['start', id, ctl, options]); },
-    enqueueChunk(chunk) { audio.push(['chunk', chunk]); },
     pause() { this.paused = true; }, resume() { this.paused = false; },
     interrupt(ms) { this.isPlaying = false; audio.push(['interrupt', ms]); },
   };

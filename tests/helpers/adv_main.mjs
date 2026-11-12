@@ -17,7 +17,7 @@ export function setup(t, options = {}) {
   for (const node of Object.values(dom)) doc.body.appendChild(node);
   const audio = { isPlaying: false, played: [], sequential: [], currentMsgId: null,
     playLine(index, chunks) { this.played.push({ index, chunks }); return Promise.resolve('ended'); },
-    stopLine() {}, startSession(...args) { this.sequential.push(args); }, enqueueChunk() {},
+    stopLine() {},
   };
   const noop = () => {};
   const stream = fakeChatStream(); let sequence = 0, deleting = false;
