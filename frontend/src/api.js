@@ -11,8 +11,6 @@ export const activateProvider = (id) => requestJson(`/api/providers/${encodeURIC
 export const fetchConfig = () => requestJson('/api/config');
 export const saveConfig = (payload) => requestJson('/api/config', post(payload));
 export const fetchSystemVersion = (checkRemote = true) => requestJson(`/api/system/version?check_remote=${checkRemote ? 'true' : 'false'}`, {}, { timeoutMs: 60000 });
-export const checkSystemUpdate = () => requestJson('/api/system/update/check', {}, { timeoutMs: 60000 });
-export const applySystemUpdate = (payload = {}) => requestJson('/api/system/update/apply', post(payload), { timeoutMs: 120000 });
 
 export async function testProviderConnection(payload, { signal = null } = {}) {
   try {

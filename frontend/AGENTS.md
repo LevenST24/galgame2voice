@@ -26,7 +26,7 @@
 - `src/session_data.js`：会话数据清洗与白名单校验，包括 `pickSettings`、`validAdvSetting`、`normalizeLines` 与快照序列化。
 - `src/auth.js`：控制台访问令牌鉴权拦截器（SessionStorage Key: `galgame_console_token`，自动注入 Bearer Token，处理 401 弹窗）。
 - `src/request.js`：带超时的 JSON 请求 `requestJson`，按 HTTP 状态和连接错误给出中文提示（`statusMessage`、`connectionMessage`）。
-- `src/api.js`：设置相关接口（模型厂商、全局配置、版本检查与更新）；写请求有时限，失败后不自动重发。
+- `src/api.js`：设置相关接口（模型厂商、全局配置、版本查询）；写请求有时限，失败后不自动重发。
 - `src/chat_backup.js`：完整聊天备份：导出数据库与浏览器里的记录（`exportCompleteChatBackup`），导入时合并去重（`mergeChatBackup`）。
 
 ### 2. 语音与音频
@@ -64,7 +64,7 @@
   同一页面的音色切换串行执行，排队期间过时的会话选择直接跳过；列表目录与当前启用状态分别防止迟到响应覆盖。首页进入聊天会通过切换接口核验模型，已保存的音色 ID 仅作界面提示。
 - `audio_player_ui.js`：输入端麦克风录音控制与播放器 UI 状态协调。
 - `session_backup.js`：完整聊天备份与浏览器本地快照的导出与导入。
-- `update_manager.js`：版本检查与在线更新管理。
+- `update_manager.js`：版本检查与新版本提示（只读，不在应用内执行更新）。
 - `engine_directory.js`：「语音服务」页里本机 GPT-SoVITS 安装目录的选择与保存（保存目录和启动引擎是两步）。
 - `engine_recovery.js`：`waitForEngine`，轮询 `/api/system/engine-status` 直到引擎就绪（默认最多 3 分钟，含单次读取和间隔）。短暂读取故障显示待确认并继续 GET，明确失败、鉴权拒绝和取消立即停止；不自动重发重启 POST。
 - `config_recovery.js`：`saveConfirmedConfig`，保存全局配置；响应丢失时用一次 GET 核对是否已经写入，不重发写请求。`runSettingsMutation` 按同一页面的操作顺序协调配置保存和重启，未确认的写入阻止当前排队的后续操作。
@@ -117,7 +117,7 @@
      - **语音服务**（`gp-inference`）：引擎地址、本机 SoVITS 目录选择、全局计算精度与缓存保留时长。
      - **对话模型**（`gp-models`）：全厂商模型卡片（API Key、Base URL、模型选择、思考强度、连通性测试与一键启用、允许私网 LLM 端点开关）。
      - **角色与记忆**（`gp-memory`）：长期记忆说明。
-     - **备份与更新**（`gp-update`）：完整聊天备份导出/导入与版本更新拉取。
+     - **备份与更新**（`gp-update`）：完整聊天备份导出/导入，以及 GitHub Releases 新版本提示与下载页入口。
 
 ---
 

@@ -23,11 +23,11 @@ _PROTECTED_PREFIXES = (
     "/api/chat",
 )
 # High-risk admin/config routes. Their expensive/dangerous operations are the
-# MUTATING ones (settings writes, provider activation, network tests, git
-# updates), so only those take the strict budget; plain GETs of /api/config and
-# /api/providers stay on the normal per-IP budget so the console cannot throttle
-# itself while polling.
-_ADMIN_STRICT_PREFIXES = ("/api/system/update", "/api/config", "/api/providers")
+# MUTATING ones (settings writes, provider activation, network tests), so only
+# those take the strict budget; plain GETs of /api/config and /api/providers
+# stay on the normal per-IP budget so the console cannot throttle itself while
+# polling.
+_ADMIN_STRICT_PREFIXES = ("/api/config", "/api/providers")
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _PROTECTED_LIMIT = 30            # stricter budget for LLM/TTS-spending and high-risk admin routes
 _MAX_TRACKED_IPS = 10000
