@@ -13,11 +13,9 @@ from galgame2voice.database.session import get_db, init_db
 from galgame2voice.main import create_app
 from galgame2voice.services.chat_pipelines.line_builder import (
     MAX_LINE_LENGTH,
-    LineAligner,
     build_lines,
     split_chinese_sentences,
 )
-from galgame2voice.services.chat_pipelines.stream_coordinator import StreamCoordinator
 from galgame2voice.services.session_manager import SessionManager
 from galgame2voice.utils.text_splitter import split_japanese_sentences
 
@@ -49,28 +47,6 @@ def test_chinese_quotes_newlines_and_prosody():
     ]
 
 
-def test_online_equals_offline_property():
-    cases = [
-        ("你好。再见！", "こんにちは。さようなら！"),
-        ("甲。乙。丙。丁。", "ああ。いい。"),
-        ("甲甲。乙乙。", "あ。い。う。え。"),
-        ("开头……——继续。\n「一！\n二？」结束！\n尾巴", "始まり。そして「引用。」終わり。"),
-        ("只剩中文。再一句。", ""),
-        ("", "一。二。三。"),
-        ("", ""),
-    ]
-    for zh, ja in cases:
-        offline = build_lines(zh, ja, "gentle")
-        aligner = LineAligner(default_emotion="gentle")
-        aligner.set_chinese(zh)
-        online_lines = []
-        for i in range(1, len(ja) + 1):
-            online_lines.extend(aligner.feed_japanese(ja[:i], final=(i == len(ja))))
-        if not ja:
-            online_lines.extend(aligner.feed_japanese("", final=True))
-        assert online_lines == offline
-
-
 def test_japanese_sentence_splitter_prefix_stability():
     text = "吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。何でも薄暗いじめじめした所でニャーニャー泣いていた事だけは記憶している。"
     prev_stable: list[str] = []
@@ -81,17 +57,6 @@ def test_japanese_sentence_splitter_prefix_stability():
             stable = curr[:-1]
             assert stable[:len(prev_stable)] == prev_stable
             prev_stable = stable
-
-
-def test_chunk_attribution_with_early_comma_and_whitespace():
-    ja = "こんにちは、先生、今日は晴れですね。\n\nさようなら。"
-    cursor = 0
-    s0, cursor = StreamCoordinator._find_containing_sentence_idx(ja, "こんにちは、", cursor)
-    assert s0 == 0
-    s1, cursor = StreamCoordinator._find_containing_sentence_idx(ja, "先生、今日は晴れですね。", cursor)
-    assert s1 == 0
-    s2, cursor = StreamCoordinator._find_containing_sentence_idx(ja, "さようなら。", cursor)
-    assert s2 == 1
 
 
 @pytest.mark.asyncio
@@ -241,7 +206,7 @@ def test_overlong_sentences_split_by_punct_comma_or_hard_limit():
     assert decode_lines(exact_lines) == exact_lines
 
 
-def test_overlong_tail_merge_and_online_offline_equivalence():
+def test_overlong_tail_merge():
     tail_ja = "".join(["あ" * 3000 + "。" for _ in range(4)])
     tail_lines = build_lines("总结。", tail_ja, "gentle", with_audio=True)
     assert [(line["zh"], line["ja"]) for line in tail_lines] == [
@@ -253,16 +218,8 @@ def test_overlong_tail_merge_and_online_offline_equivalence():
     zh = "长句。早安。"
     ja = f"{'あ' * 10005}。おはよう。"
     offline = build_lines(zh, ja, "gentle")
-    aligner = LineAligner(default_emotion="gentle")
-    aligner.set_chinese(zh)
-    online = []
-    pos = 0
-    while pos < len(ja):
-        pos = min(len(ja), pos + 97)
-        online.extend(aligner.feed_japanese(ja[:pos], final=(pos == len(ja))))
-    assert online == offline
-    assert online[-1]["index"] == 2
-    assert online[-1]["zh"] == "早安。" and online[-1]["ja"] == "おはよう。"
+    assert offline[-1]["index"] == 2
+    assert offline[-1]["zh"] == "早安。" and offline[-1]["ja"] == "おはよう。"
 
 
 def test_overlong_chinese_sentence_does_not_shift_translation_alignment():
@@ -277,22 +234,3 @@ def test_overlong_chinese_sentence_does_not_shift_translation_alignment():
     offline = build_lines(zh, ja, "gentle", with_audio=True)
     assert [(line["zh"], line["ja"]) for line in offline] == expected
     assert decode_lines(offline) == offline
-
-    aligner = LineAligner(default_emotion="gentle")
-    aligner.set_chinese(zh)
-    online = []
-    pos = 0
-    while pos < len(ja):
-        pos = min(len(ja), pos + 97)
-        online.extend(aligner.feed_japanese(ja[:pos], final=(pos == len(ja))))
-    assert [(line["zh"], line["ja"]) for line in online] == expected
-
-
-def test_tail_sentences_map_to_the_line_holding_their_start():
-    sentence = "あ" * 3000 + "。"
-    ja = sentence * 4
-    aligner = LineAligner(default_emotion="gentle")
-    aligner.set_chinese("总结。")
-    lines = aligner.feed_japanese(ja, final=True)
-    assert [line["ja"] for line in lines] == [sentence * 3, sentence]
-    assert [aligner.line_index_for_japanese_sentence(i, ja) for i in range(4)] == [0, 0, 0, 1]

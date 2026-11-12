@@ -34,10 +34,8 @@ from galgame2voice.utils.error_diagnostics import (
 )
 from galgame2voice.utils.logger import sanitize_error_detail
 from galgame2voice.utils.profiler import ChatTurnProfiler
-from galgame2voice.utils.text_splitter import split_japanese_sentences
 
 from .acting_menu import get_recent_pose, sanitize_act
-from .line_builder import LineAligner
 from .llm_pipeline import LlmStreamPipeline
 from .stream_persist_policy import (
     build_assistant_message_create,
@@ -140,16 +138,13 @@ class _StreamRun:
 
         self.final_result: dict[str, Any] = {}
         self.audio_chunks: list[dict[str, Any]] = []
-        self.aligner: LineAligner = LineAligner()
         self.lines: list[dict[str, Any]] = []
         self.current_pose: str | None = None
         self.announced_lines: list[dict[str, Any]] = []
         self.line_audio_states: dict[int, dict[str, Any]] = {}
         self.line_audio_lock = asyncio.Lock()
         self.next_line_audio_index: int = 0
-        self.ja_chunk_cursor: int = 0
         self.chunk_counter: int = 0
-        self.chunk_s_map: dict[int, int] = {}
         self.chunk_line_map: dict[int, int | None] = {}
         self.chunk_results: dict[int, dict[str, Any]] = {}
         self.persisted_lines: list[dict[str, Any]] | None = None
@@ -201,13 +196,13 @@ class StreamCoordinator:
         frequency_penalty: float | None = None,
         presence_penalty: float | None = None,
         t_start: float | None = None,
-        reply_format: str = "old",
+        reply_format: str = "lines",
         reasoning_effort: str | None = None,
         character_name: str | None = None,
         acting_menu: dict | None = None,
     ) -> None:
         self.adapter = adapter
-        self.reply_format = reply_format
+        self.reply_format = "lines"
         self.messages = messages
         self.model_name = model_name
         self.actual_provider_id = actual_provider_id
@@ -379,11 +374,7 @@ class StreamCoordinator:
                     if item is None:
                         break
                     line_item = item if isinstance(item, dict) else None
-                    if line_item is not None:
-                        sentence = line_item["ja"]
-                    else:
-                        sentence, s_idx = item
-                    self._attribute_chunk(run, chunk_index)
+                    sentence = line_item["ja"] if line_item is not None else item
 
                     if not tts_pipe.is_vocal_sentence(sentence):
                         logger.debug("Skipping non-vocal sentence chunk: '%s'", sentence)
@@ -421,8 +412,7 @@ class StreamCoordinator:
                     await self._put_with_cancel(event_queue, {
                         "event": "voice_job", "data": {"index": chunk_index, "status": "finished"},
                     }, cancel_event, run.shutdown_event)
-                    # Chinese may have completed while synthesis was awaiting.
-                    L = self._attribute_chunk(run, chunk_index)
+                    L = run.chunk_line_map.get(chunk_index)
                     if err_str:
                         await self._put_with_cancel(event_queue, {
                             "event": "audio_chunk_error",
@@ -478,22 +468,6 @@ class StreamCoordinator:
         finally:
             await self._put_with_cancel(event_queue, _SENTINEL, cancel_event, run.shutdown_event)
 
-    def _attribute_chunk(self, run: _StreamRun, chunk_index: int) -> int | None:
-        """Attach an independent chunk result once Chinese establishes its line."""
-        line = run.chunk_line_map.get(chunk_index)
-        if line is not None or not run.aligner.has_chinese:
-            return line
-        sentence_index = run.chunk_s_map[chunk_index]
-        line = run.aligner.line_index_for_japanese_sentence(sentence_index, run.parser.japanese_extracted)
-        run.chunk_line_map[chunk_index] = line
-        result = run.chunk_results[chunk_index]
-        state = self._line_audio_state(run, line)
-        if not result["settled"]:
-            state["pending"] += 1
-        else:
-            self._attach_chunk_result(run, chunk_index, line)
-        return line
-
     def _attach_chunk_result(self, run: _StreamRun, chunk_index: int, line: int) -> None:
         result = run.chunk_results[chunk_index]
         state = self._line_audio_state(run, line)
@@ -514,7 +488,7 @@ class StreamCoordinator:
         result.update(settled=True, chunk=chunk, error=error)
         line = run.chunk_line_map.get(chunk_index)
         if line is None:
-            return self._attribute_chunk(run, chunk_index)
+            return None
         self._line_audio_state(run, line)["pending"] -= 1
         self._attach_chunk_result(run, chunk_index, line)
         return line
@@ -564,58 +538,6 @@ class StreamCoordinator:
             run.event_queue, {"event": "line", "data": line}, run.cancel_event, run.shutdown_event,
         )
 
-    @staticmethod
-    def _find_containing_sentence_idx(japanese_text: str, chunk: str, cursor: int) -> tuple[int, int]:
-        strict_sentences = split_japanese_sentences(japanese_text, is_first_chunk=False)
-        if not strict_sentences:
-            raise ValueError("Cannot attribute a chunk without a Japanese sentence offset")
-        start_pos = japanese_text.find(chunk, cursor)
-        if start_pos == -1:
-            raise ValueError("TTS chunk has no matching Japanese text offset")
-        new_cursor = start_pos + len(chunk)
-
-        cur = 0
-        for idx, s in enumerate(strict_sentences):
-            pos = japanese_text.find(s, cur)
-            if pos == -1:
-                raise ValueError("Japanese sentence has no matching text offset")
-            s_end = pos + len(s)
-            if pos <= start_pos < s_end:
-                if new_cursor > s_end:
-                    raise ValueError("TTS chunk spans Japanese sentence offsets")
-                return idx, new_cursor
-            cur = s_end
-
-        raise ValueError("TTS chunk offset lies outside Japanese sentences")
-
-    async def _check_freeze_lines(self, run: _StreamRun, *, final: bool = False) -> None:
-        if run.parser.line_scanner.format == "lines":
-            await self._queue_lines(run)
-            return
-        if not run.aligner.has_chinese and (run.parser.chinese_complete or final):
-            run.aligner.set_chinese(run.parser.chinese_extracted)
-            for c_idx in run.chunk_results:
-                self._attribute_chunk(run, c_idx)
-
-        if not run.aligner.has_chinese:
-            return
-
-        # An evolving whole-reply inference is not a stable line fallback.
-        # Without declared/lead metadata, the aligner waits for final inference.
-        run.aligner.default_emotion = run.parser.emotion_extracted or None
-        is_final_step = final or (run.parser.japanese_complete and bool(run.aligner.default_emotion))
-        new_lines = run.aligner.feed_japanese(run.parser.japanese_extracted, final=is_final_step)
-        for line in new_lines:
-            await self._publish_line(run, line)
-
-        m = len(run.aligner.chinese_sentences or [])
-        for line in run.lines:
-            idx = line["index"]
-            if is_final_step or m == 0 or idx < run.aligner.non_tail_line_count:
-                self._line_audio_state(run, idx)["sealed"] = True
-
-        await self._try_emit_line_audio(run)
-
     async def _queue_lines(self, run: _StreamRun) -> None:
         """Publish completed lines before queueing one synthesis job per line."""
         for line in run.parser.normalized_lines(start_index=len(run.lines)):
@@ -636,37 +558,18 @@ class StreamCoordinator:
             }, run.cancel_event, run.shutdown_event):
                 return
 
-    async def _queue_sentences(self, run: _StreamRun, chunks: list[str], *, final: bool = False) -> None:
-        """Attribute sentence chunks with real offsets and feed TTS and line aligner."""
-        if run.parser.line_scanner.format == "lines":
-            await self._queue_lines(run)
-            return
-        japanese_text = run.parser.japanese_extracted
+    async def _queue_sentences(self, run: _StreamRun, chunks: list[str]) -> None:
+        """Queue fallback sentence chunks for TTS when no structured lines are scanned."""
         for chunk in chunks:
             if not chunk:
                 continue
             run.profiler.record_first_sentence()
-            try:
-                s_idx, run.ja_chunk_cursor = self._find_containing_sentence_idx(
-                    japanese_text, chunk, run.ja_chunk_cursor
-                )
-            except ValueError as exc:
-                # Finalize can rewrite the Japanese text (e.g. strip a bracketed
-                # emotion), moving offsets. Placement only decides which line
-                # owns the audio, so it must never fail the turn.
-                s_idx = run.chunk_s_map.get(run.chunk_counter - 1, 0)
-                logger.warning("TTS chunk kept on sentence %d: %s", s_idx, exc)
             c_idx = run.chunk_counter
             run.chunk_counter += 1
-            run.chunk_s_map[c_idx] = s_idx
             run.chunk_line_map[c_idx] = None
             run.chunk_results[c_idx] = {"settled": False, "chunk": None, "error": None}
-            self._attribute_chunk(run, c_idx)
-
-            if not await self._put_with_cancel(run.tts_queue, (chunk, s_idx), run.cancel_event, run.shutdown_event):
+            if not await self._put_with_cancel(run.tts_queue, chunk, run.cancel_event, run.shutdown_event):
                 return
-
-        await self._check_freeze_lines(run, final=final)
 
     def _snapshot_lines_with_audio(
         self,
@@ -719,10 +622,10 @@ class StreamCoordinator:
                     }, cancel_event, run.shutdown_event)
                     if not ok:
                         break
-                if completed_sentences:
+                if run.parser.line_scanner.format == "lines":
+                    await self._queue_lines(run)
+                elif completed_sentences:
                     await self._queue_sentences(run, completed_sentences)
-                else:
-                    await self._check_freeze_lines(run, final=False)
 
             full_ch, full_ja, rem_ch, rem_sentences, final_emo = text_pipe.finalize()
             run.final_result["chinese"] = full_ch
@@ -739,7 +642,10 @@ class StreamCoordinator:
                     }
                 }, cancel_event, run.shutdown_event)
             if not (cancel_event and cancel_event.is_set()):
-                await self._queue_sentences(run, rem_sentences, final=True)
+                if run.parser.line_scanner.format == "lines":
+                    await self._queue_lines(run)
+                else:
+                    await self._queue_sentences(run, rem_sentences)
         except Exception as exc:
             if getattr(exc, "is_truncation", False):
                 run.truncation_error = exc
@@ -899,7 +805,7 @@ class StreamCoordinator:
                     policy["content_chinese"],
                     policy["content_japanese"],
                     run.t_start,
-                    lines=policy["lines"],
+                    lines=policy["persisted_lines"],
                 )
             yield build_early_done_event(
                 partial_chinese=policy["content_chinese"],
@@ -1048,7 +954,7 @@ class StreamCoordinator:
             full_japanese=full_japanese,
             total_audio_url=total_audio_url,
             total_latency=total_latency,
-            lines=final_lines,
+            lines=policy["persisted_lines"],
         )
 
         clean_chunks = self._clean_audio_chunks(audio_chunks, include_line=parser.line_scanner.format == "lines")

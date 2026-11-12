@@ -157,7 +157,7 @@ class ChatService:
         max_context: int | None = None,
         active_prof: Any | None = None,
         session: Any | None = None,
-        reply_format: str = "old",
+        reply_format: str = "lines",
         outfit: str | None = None,
     ) -> tuple[BaseLLMAdapter, str, str, list[ChatMessage]]:
         """Resolves active LLM adapter, model name, provider ID, and prepared chat messages."""
@@ -175,7 +175,7 @@ class ChatService:
             active_profile=active_prof,
             session=session,
             outfit=outfit,
-            reply_format=reply_format,
+            reply_format="lines",
         )
         return adapter, model_name, actual_provider_id, messages
 
@@ -239,7 +239,7 @@ class ChatService:
         max_history_override: int | None = None,
         active_profile: Any | None = None,
         session: Any | None = None,
-        reply_format: str = "old",
+        reply_format: str = "lines",
         outfit: str | None = None,
     ) -> list[ChatMessage]:
         """
@@ -258,7 +258,7 @@ class ChatService:
             active_profile=active_profile,
             session=session,
             outfit=outfit,
-            reply_format=reply_format,
+            reply_format="lines",
         )
 
     async def prepare_messages(
@@ -271,7 +271,7 @@ class ChatService:
         max_history_override: int | None = None,
         active_profile: Any | None = None,
         session: Any | None = None,
-        reply_format: str = "old",
+        reply_format: str = "lines",
         outfit: str | None = None,
     ) -> list[ChatMessage]:
         """Public interface for preparing chat messages.
@@ -285,7 +285,7 @@ class ChatService:
             active_profile=active_profile,
             session=session,
             outfit=outfit,
-            reply_format=reply_format,
+            reply_format="lines",
         )
 
     def _concat_wav_files(
@@ -396,7 +396,7 @@ class ChatService:
         reasoning_effort: str | None = None,
         ai_adaptive_voice: bool | None = None,
         voice_profile_id: int | None = None,
-        reply_format: str = "old",
+        reply_format: str = "lines",
         outfit: str | None = None,
         _require_existing_session: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -463,7 +463,7 @@ class ChatService:
                     active_prof=active_prof,
                     session=sess_obj,
                     outfit=outfit,
-                    reply_format=reply_format,
+                    reply_format="lines",
                 )
                 self._spawn_background(_bg_affection_and_memory())
 
@@ -494,7 +494,7 @@ class ChatService:
                 presence_penalty=presence_penalty,
                 t_start=t_start,
                 reasoning_effort=reasoning_effort if reasoning_effort is not None else configured_reasoning_effort(adapter),
-                reply_format=reply_format,
+                reply_format="lines",
                 character_name=character_name or (active_prof.name if active_prof else None),
                 acting_menu=getattr(messages, "menu", None),
             )
@@ -547,7 +547,7 @@ class ChatService:
         reasoning_effort: str | None = None,
         ai_adaptive_voice: bool | None = None,
         voice_profile_id: int | None = None,
-        reply_format: str = "old",
+        reply_format: str = "lines",
         outfit: str | None = None,
     ) -> AsyncGenerator[str | dict[str, Any], None]:
         """
@@ -573,7 +573,7 @@ class ChatService:
             ai_adaptive_voice=ai_adaptive_voice,
             voice_profile_id=voice_profile_id,
             outfit=outfit,
-            reply_format=reply_format,
+            reply_format="lines",
         ):
             yield format_sse_frame(event)
 

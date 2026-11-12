@@ -12,6 +12,14 @@ from galgame2voice.services.chat_pipelines.line_scanner import EMOTIONS, FX, MOT
 OLD_FORMAT_HEADER = "【输出契约与情绪控制】"
 OLD_FORMAT_START = "重要：你必须严格输出如下 JSON 格式"
 OLD_FORMAT_END = '"japanese": "对应的口语化日文台词"}'
+_LEGACY_BILINGUAL_OUTPUT_CONTRACT = (
+    "【输出格式】请始终只输出如下 JSON，不要包含 Markdown 标记或多余文字。"
+    "在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5, temp 温度: 0.60~1.20, "
+    "emotion 情绪: gentle|shy|happy|tsundere|cool|sad|angry）；japanese 是与 chinese 意思一致、"
+    "适合配音朗读的口语化日语：\n"
+    '{"tts": {"speed": 1.05, "temp": 0.95, "emotion": "gentle"}, '
+    '"chinese": "给玩家看的中文内容", "japanese": "对应的口语化日语音频台词"}'
+)
 
 
 def render_lines_contract(menu: dict | None) -> str:
@@ -56,13 +64,10 @@ def strip_old_format_block(system_prompt: str) -> str:
     if not system_prompt:
         return system_prompt
 
-    # Imported lazily: context_builder imports this module at import time.
-    from galgame2voice.services.chat_pipelines.context_builder import BILINGUAL_OUTPUT_CONTRACT
-
     text = system_prompt
     changed = False
-    if BILINGUAL_OUTPUT_CONTRACT in text:
-        text = text.replace(BILINGUAL_OUTPUT_CONTRACT, "")
+    if _LEGACY_BILINGUAL_OUTPUT_CONTRACT in text:
+        text = text.replace(_LEGACY_BILINGUAL_OUTPUT_CONTRACT, "")
         changed = True
 
     while True:

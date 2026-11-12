@@ -78,11 +78,34 @@ def test_background_settings_reject_keys_that_are_not_one_work_slash_id(backgrou
     assert session.settings["advBgTime"] == "day"
 
 
-# "legacy" opts out of per-line replies; "old" is the earlier stored default that older pages still send.
-@pytest.mark.parametrize("value", ["lines", "legacy", "old"])
-def test_reply_format_values_survive_import(value):
-    session = ImportedSession(id="s_import_format", title="format", messages=[], settings={"advReplyFormat": value})
-    assert session.settings == {"advReplyFormat": value}
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_format", ["legacy", "old", "lines", "bogus"])
+async def test_old_export_with_removed_reply_format_imports_without_data_loss(tmp_path, monkeypatch, legacy_format):
+    assert "advReplyFormat" not in SESSION_SETTINGS
+    db = tmp_path / "legacy-reply-format.db"
+    monkeypatch.setenv("GALGAME2VOICE_DB_PATH", str(db))
+    await init_db(db)
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://test") as client:
+        response = await client.post("/api/chat/import", json={
+            "format": "galgame2voice.chat", "version": 1, "sessions": [{
+                "id": "s_import_old_reply_format", "title": "旧回复格式会话", "settings": {
+                    "advReplyFormat": legacy_format, "advPlayerName": "旅行者", "temperature": 0.7,
+                }, "messages": [
+                    {"role": "user", "content": "你好"},
+                    {"role": "assistant", "content": "旧版整段回复", "japanese": "旧版の回答。"},
+                ],
+            }],
+        })
+        assert response.status_code == 200, response.text
+        async with get_db(db) as conn:
+            row = await (await conn.execute("SELECT settings_json FROM sessions WHERE id='s_import_old_reply_format'")).fetchone()
+        assert "advReplyFormat" not in json.loads(row[0])
+        exported = (await client.get("/api/chat/export")).json()["sessions"][0]
+        assert "advReplyFormat" not in exported["settings"]
+        assert exported["settings"]["advPlayerName"] == "旅行者"
+        assert exported["settings"]["temperature"] == 0.7
+        assert exported["messages"][1]["content"] == "旧版整段回复"
+        assert exported["messages"][1]["japanese"] == "旧版の回答。"
 
 
 @pytest.mark.parametrize("key,value", INVALID_P3)

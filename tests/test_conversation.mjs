@@ -19,7 +19,7 @@ test('final reply: whole-reply format reaches the stage without changing stored 
   const events = presentationEvents(app);
   app.conversation.send('旧格式');
   const request = app.stream.requests[0];
-  assert.equal(request.reply_format, 'old');
+  assert.equal(request.reply_format, 'lines');
   await request.onEnd('终稿中文', { japanese: '最終の日本語。', total_audio_url: '/audio/whole.wav' });
   assert.deepEqual(events.map(event => event.type), ['line', 'line_audio', 'done']);
   assert.equal(events[0].line.zh, '终稿中文');

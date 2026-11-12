@@ -10,7 +10,6 @@ from galgame2voice.database.session import get_db, init_db
 from galgame2voice.services.chat_pipelines import context_builder
 from galgame2voice.services.chat_pipelines.acting_menu import build_acting_menu
 from galgame2voice.services.chat_pipelines.context_builder import (
-    BILINGUAL_OUTPUT_CONTRACT,
     build_chat_context,
 )
 from galgame2voice.services.chat_pipelines.line_scanner import EMOTIONS, FX, MOTIONS
@@ -39,11 +38,7 @@ SYNTHETIC_TEMPLATE_SECTION = (
     '"chinese": "显示给玩家的中文台词", "japanese": "对应的口语化日文台词"}'
 )
 
-# Fixed fixture captured from the pre-change code path (HEAD), not recomputed.
-HEAD_OLD_ASSISTANT = (
-    '{"tts": {"speed": 1.0, "temp": 1.0, "emotion": "shy"}, '
-    '"chinese": "早上好呀", "japanese": "おはようございます", "emotion": "shy"}'
-)
+# Fixed fixture captured from the legacy bilingual contract, not recomputed.
 HEAD_OLD_CONTRACT_ADDITION = (
     "【输出格式】请始终只输出如下 JSON，不要包含 Markdown 标记或多余文字。"
     "在最开头根据语境动态决定语音推理参数（speed 语速: 0.5~1.5, temp 温度: 0.60~1.20, "
@@ -117,9 +112,9 @@ class TestRenderLinesContract:
 
 class TestStripOldFormatBlock:
     def test_removes_the_bilingual_contract(self):
-        prompt = "你是测试角色。\n\n" + BILINGUAL_OUTPUT_CONTRACT
+        prompt = "你是测试角色。\n\n" + HEAD_OLD_CONTRACT_ADDITION
         assert strip_old_format_block(prompt) == "你是测试角色。"
-        assert strip_old_format_block(BILINGUAL_OUTPUT_CONTRACT) == ""
+        assert strip_old_format_block(HEAD_OLD_CONTRACT_ADDITION) == ""
 
     def test_removes_the_shared_template_section_but_keeps_persona_and_rules(self):
         prompt = (
@@ -214,8 +209,8 @@ class TestFormatLinesTurn:
         assert json.loads(raw)["tts"]["emotion"] == "shy"
 
 
-class TestOldModeIsUnchanged:
-    def test_format_llm_messages_matches_the_head_fixture(self, temp_db_path):
+class TestDefaultAndOldAliasUseLinesMode:
+    def test_format_llm_messages_uses_lines_turn_by_default_and_for_old_alias(self, temp_db_path):
         sm = SessionManager(temp_db_path)
         history = [
             SessionTurn(
@@ -228,7 +223,16 @@ class TestOldModeIsUnchanged:
 
         expected = [
             {"role": "system", "content": "你是测试角色。"},
-            {"role": "assistant", "content": HEAD_OLD_ASSISTANT},
+            {
+                "role": "assistant",
+                "content": format_lines_turn(
+                    None,
+                    chinese="早上好呀",
+                    japanese="おはようございます",
+                    emotion="shy",
+                    tts=None,
+                ),
+            },
         ]
 
         assert sm.format_llm_messages("测试角色", history, system_template="你是{character_name}。") == expected
@@ -237,25 +241,41 @@ class TestOldModeIsUnchanged:
         ) == expected
 
     @pytest.mark.asyncio
-    async def test_build_chat_context_matches_the_head_fixture(self, temp_db_path):
+    async def test_build_chat_context_uses_lines_contract_by_default_and_for_old_alias(self, temp_db_path):
         sm = SessionManager(temp_db_path)
-        profile = SimpleNamespace(id=1, name="测试角色", system_prompt="你是测试角色。")
+        profile = SimpleNamespace(
+            id=1,
+            name="测试角色",
+            system_prompt="你是测试角色。\n\n" + HEAD_OLD_CONTRACT_ADDITION,
+        )
         session = SimpleNamespace(user_id="user-1")
 
         async with get_db(temp_db_path) as conn:
-            messages = await build_chat_context(
+            default_messages = await build_chat_context(
                 conn=conn,
-                session_id="old-mode",
+                session_id="lines-default",
                 user_prompt="你好",
                 session_manager=sm,
                 memory_service=None,
                 active_profile=profile,
                 session=session,
             )
+            old_alias_messages = await build_chat_context(
+                conn=conn,
+                session_id="lines-old-alias",
+                user_prompt="你好",
+                session_manager=sm,
+                memory_service=None,
+                active_profile=profile,
+                session=session,
+                reply_format="old",
+            )
 
-        assert [message.role for message in messages] == ["system", "user"]
-        assert messages[0].content == "你是测试角色。\n\n" + HEAD_OLD_CONTRACT_ADDITION
-        assert messages[1].content == "你好"
+        expected_system = "你是测试角色。\n\n" + render_lines_contract(None)
+        for messages in (default_messages, old_alias_messages):
+            assert [message.role for message in messages] == ["system", "user"]
+            assert messages[0].content == expected_system
+            assert messages[1].content == "你好"
 
 
 class TestLinesModeWiring:

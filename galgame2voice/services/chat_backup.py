@@ -17,19 +17,16 @@ MAX_TEXT = 10_000_000
 SESSION_SETTINGS = frozenset({
     "systemPrompt", "voiceProfileId", "temperature", "topP", "maxTokens",
     "freqPenalty", "presPenalty", "maxContext", "aiAdaptiveVoice", "ttsSpeed",
-    "ttsTopK", "ttsTopP", "ttsTemperature", "advReplyFormat",
+    "ttsTopK", "ttsTopP", "ttsTemperature",
     "advPlayerName", "advPrimaryLanguage", "advSubtitleLanguage",
     "advWindowOpacity", "advTextIntervalMs", "advInterruptVoice", "advAutoBaseMs",
     "advAutoPerCharMs", "advAutoMode", "advOutfit", "advBlink", "advLipSync",
     "advBackground", "advBgTime",
 })
 
-# advReplyFormat: "legacy" is the browser's explicit opt-out of per-line replies.
-# "old" was the stored default before "lines" became the default; it stays valid
-# so older pages keep their settings, and current pages read it as "lines".
 _ADV_ENUMS = {
     "advPrimaryLanguage": {"zh", "ja"}, "advSubtitleLanguage": {"zh", "ja", "none"},
-    "advAutoMode": {"normal", "voice-priority"}, "advReplyFormat": {"old", "lines", "legacy"},
+    "advAutoMode": {"normal", "voice-priority"},
     "advBgTime": {"auto", "day", "evening", "night"},
 }
 _ADV_RANGES = {"advWindowOpacity": 100, "advTextIntervalMs": 100, "advAutoBaseMs": 6000, "advAutoPerCharMs": 200}
@@ -67,7 +64,11 @@ def _valid_adv_setting(key: str, value) -> bool:
 
 def validate_adv_settings(settings: dict) -> dict:
     """Drop invalid P3 values, preserving every unrelated key for the caller."""
-    result = {key: value for key, value in settings.items() if key != "advEnabled" and _valid_adv_setting(key, value)}
+    result = {
+        key: value
+        for key, value in settings.items()
+        if key not in {"advEnabled", "advReplyFormat"} and _valid_adv_setting(key, value)
+    }
     primary = result.get("advPrimaryLanguage", "zh")
     if result.get("advSubtitleLanguage", "ja") == primary:
         result.pop("advSubtitleLanguage", None)

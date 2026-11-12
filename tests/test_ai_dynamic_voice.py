@@ -444,4 +444,7 @@ class TestChatRouterDynamicVoiceAPI:
             )
             sys_msg = messages[0].content
             assert '"tts":' in sys_msg
-            assert "0.5~1.5" in sys_msg
+            assert '"speed":' in sys_msg
+            assert '"lines":' in sys_msg
+            assert '"chinese"' not in sys_msg
+            assert "要求：\n1. 角色口吻回复。" in sys_msg

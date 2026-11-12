@@ -548,10 +548,9 @@ P2a must prevent the controller from immediately autoplaying ADV's future lines.
 
 ### 5.2 P2b reply format and acting semantics
 
-The browser requests this format by default (`advReplyFormat='lines'`). A session set to
-`legacy` requests the old whole-reply format instead. A stored `old`, the default before
-this format became the default, reads as `lines`. API clients that omit `reply_format`
-still get `old`.
+All chat generation uses the per-line `lines` format (`reply_format='lines'` by default).
+For compatibility with stale browser tabs, an explicit `reply_format='old'` in the request
+body is accepted without HTTP 422 and silently treated as `lines`.
 The LLM's JSON has this shape; placeholder strings below are not dialogue examples.
 
 ```json
@@ -637,13 +636,13 @@ reference if absent, logging the fallback. Do not fail valid text for a missing 
 Preserve user TTS options/adaptive-voice precedence; face tags never select file paths.
 Reference emotion and synthesis options belong in cache identity to prevent wrong reuse.
 
-When lines mode is on, `_format_assistant_turn` replays stored lines in the new
-`{"tts":{...},"lines":[...]}` format; strip server indexes/audio from model context.
-Convert old history temporarily through P2a normalization; do not rewrite its DB rows.
-Strip the known old format template at runtime, then append the new contract.
+`format_lines_turn` replays stored lines in the `{"tts":{...},"lines":[...]}` format and
+strips server indexes/audio from model context.
+Convert old history (`lines_json IS NULL`) temporarily through `build_lines` normalization;
+do not rewrite its DB rows.
+Strip the known old format template at runtime, then append the per-line contract.
 Cover character-manifest prompts and database prompts.
 Local `system_prompt.txt` updates are a separate backed-up migration, never implicit.
-With lines mode off, retain old prompting and history behavior.
 
 Acceptance before default enablement: exercise the usual model with all 13 profiles
 for 20 turns each; report raw format compliance, valid acts before sanitization,
@@ -859,7 +858,7 @@ Keep existing `state.global.voiceMode` and TTS preset behavior; do not duplicate
 | --- | --- | --- |
 | P1 | None | Refactor only. |
 | P2a | None | Audio mode is selected by renderer, not persisted as another preference. |
-| P2b | `advReplyFormat` | `lines`; enum `lines`, `legacy`. A stored `old` reads as `lines`. |
+| P2b only | `advReplyFormat` (removed) | Ignored/dropped on session load and backup import; all generation uses `lines`. |
 | P3–P6 only | `advEnabled` (removed) | Ignored/dropped in P7; all sessions use ADV. |
 | P3 | `advPlayerName` | `Player`; nonempty string, maximum 40 graphemes. |
 | P3 | `advPrimaryLanguage` | `zh`; enum `zh`, `ja`. |

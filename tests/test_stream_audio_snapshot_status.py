@@ -90,7 +90,7 @@ async def coordinator_setup(tmp_path: Path):
             MessageCreate(session_id="snap_session", role="user", content_chinese="你好"),
         )
 
-    def make_coordinator(*, tokens_fn, synthesize_fn, cancel_event=None, reply_format="old"):
+    def make_coordinator(*, tokens_fn, synthesize_fn, cancel_event=None, reply_format="lines"):
         tts = SimpleNamespace(
             audio_dir=tmp_path,
             synthesize_to_file=AsyncMock(side_effect=synthesize_fn),
@@ -334,7 +334,12 @@ async def test_audio_with_error_is_failed_on_cancel(coordinator_setup):
 async def test_normal_completion_status_ready_and_skipped(coordinator_setup, tmp_path: Path):
     """Normal completion records ready for vocal lines and skipped for non-vocal lines."""
     async def tokens(*args, **kwargs):
-        yield '{"chinese": "第一句。沉默……", "japanese": "一番です。……", "tts": {"emotion": "gentle"}}\n'
+        yield (
+            '{"tts": {"emotion": "gentle"}, "lines": ['
+            '{"zh": "第一句。", "ja": "一番です。", "emotion": "gentle"}, '
+            '{"zh": "沉默……", "ja": "……", "emotion": "gentle"}'
+            "]}\n"
+        )
 
     async def synth_mock(sentence, **kwargs):
         wav_path = create_synthetic_wav(tmp_path, kwargs.get("filename_prefix", "chunk"))
@@ -344,7 +349,7 @@ async def test_normal_completion_status_ready_and_skipped(coordinator_setup, tmp
     coord, tts, database = make_coord(
         tokens_fn=tokens,
         synthesize_fn=synth_mock,
-        reply_format="old",
+        reply_format="lines",
     )
 
     stream = coord.stream()

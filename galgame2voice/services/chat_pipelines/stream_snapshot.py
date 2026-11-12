@@ -151,7 +151,7 @@ def build_early_done_event(
     partial_chinese: str | None,
     partial_japanese: str | None,
     snapshot_lines: Sequence[Mapping[str, Any]],
-    reply_format: str,
+    reply_format: str = "lines",
     message_id: int | None = None,
 ) -> dict[str, Any]:
     """Constructs the truncated done SSE event payload for early-terminated streams."""
