@@ -62,7 +62,7 @@ from galgame2voice.services.tts_service import TtsService
 from galgame2voice.services.voice_manager import GptSovitsClient, VoiceManager
 from galgame2voice.services.gpt_sovits_client import clean_japanese_parentheses
 from galgame2voice.utils.logger import MaskingFilter
-from tests.conftest import MockGptSovitsServer, MockLLMServer, DATABASE_SCHEMA_SQL, mask_secret
+from tests.conftest import MockGptSovitsServer, MockLLMServer, mask_secret
 
 
 # ============================================================================

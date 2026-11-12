@@ -149,7 +149,7 @@ class TestGptSovitsClientM3:
         assert success is True
         assert mock_gpt_sovits.current_gpt_weights == sample_voice_profile["gpt_weights_path"]
         assert mock_gpt_sovits.current_sovits_weights == sample_voice_profile["sovits_weights_path"]
-        assert mock_gpt_sovits.current_refer_audio == sample_voice_profile["refer_audio_path"]
+        assert mock_gpt_sovits.current_refer_audio == sample_voice_profile["ref_audio_path"]
 
     @pytest.mark.asyncio
     async def test_rollback_on_step2_sovits_failure(self, mock_gpt_sovits):
@@ -255,15 +255,15 @@ class TestVoiceManagerPersistenceM3:
         # Insert voice profile into database
         async with aiosqlite.connect(temp_db_path) as db:
             cursor = await db.execute("""
-                INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, refer_audio_path, refer_text, refer_language, is_default)
+                INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default)
                 VALUES (?, ?, ?, ?, ?, ?, 1);
             """, (
                 sample_voice_profile["name"],
                 sample_voice_profile["gpt_weights_path"],
                 sample_voice_profile["sovits_weights_path"],
-                sample_voice_profile["refer_audio_path"],
-                sample_voice_profile["refer_text"],
-                sample_voice_profile["refer_language"],
+                sample_voice_profile["ref_audio_path"],
+                sample_voice_profile["prompt_text"],
+                sample_voice_profile["prompt_lang"],
             ))
             profile_id = cursor.lastrowid
             await db.commit()
@@ -284,15 +284,15 @@ class TestVoiceManagerPersistenceM3:
 
         async with aiosqlite.connect(temp_db_path) as db:
             await db.execute("""
-                INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, refer_audio_path, refer_text, refer_language, is_default)
+                INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, prompt_lang, is_default)
                 VALUES (?, ?, ?, ?, ?, ?, 0);
             """, (
                 sample_voice_profile["name"],
                 sample_voice_profile["gpt_weights_path"],
                 sample_voice_profile["sovits_weights_path"],
-                sample_voice_profile["refer_audio_path"],
-                sample_voice_profile["refer_text"],
-                sample_voice_profile["refer_language"],
+                sample_voice_profile["ref_audio_path"],
+                sample_voice_profile["prompt_text"],
+                sample_voice_profile["prompt_lang"],
             ))
             await db.commit()
 

@@ -44,8 +44,8 @@ def app(isolate_test_database, tmp_path):
     import sqlite3
     conn = sqlite3.connect(isolate_test_database)
     conn.execute(
-        "INSERT OR IGNORE INTO voice_profiles (id, name, gpt_weights_path, sovits_weights_path, is_default) "
-        "VALUES (1, 'default_char', 'default.ckpt', 'default.pth', 1);"
+        "INSERT OR IGNORE INTO voice_profiles (id, name, gpt_weights_path, sovits_weights_path, ref_audio_path, prompt_text, is_default) "
+        "VALUES (1, 'default_char', 'default.ckpt', 'default.pth', 'default.wav', 'テスト', 1);"
     )
     conn.commit()
     conn.close()

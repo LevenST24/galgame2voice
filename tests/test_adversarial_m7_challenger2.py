@@ -34,7 +34,6 @@ from galgame2voice.services.voice_manager import (
     _MIN_FREE_VRAM_FLOOR_GB,
     _get_switch_min_free_vram_gb,
 )
-from tests.conftest import DATABASE_SCHEMA_SQL
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -207,13 +206,20 @@ class TestR4SqliteWalConcurrencyChallenger:
         writer_errors: List[str] = []
         reader_errors: List[str] = []
 
+        async with get_db(temp_db_path) as conn:
+            async with immediate_transaction(conn):
+                await conn.executemany(
+                    "INSERT OR IGNORE INTO sessions (id) VALUES (?);",
+                    [(f"sess_w_{wid}",) for wid in range(num_writers)],
+                )
+
         async def concurrent_writer(wid: int):
             try:
                 for step in range(writes_per_writer):
                     async with get_db(temp_db_path) as conn:
                         async with immediate_transaction(conn):
                             await conn.execute(
-                                "INSERT INTO session_messages (session_id, role, content_chinese, content_japanese) "
+                                "INSERT INTO messages (session_id, role, content_chinese, content_japanese) "
                                 "VALUES (?, ?, ?, ?);",
                                 (f"sess_w_{wid}", "user", f"cn_{wid}_{step}", f"jp_{wid}_{step}")
                             )
@@ -226,12 +232,12 @@ class TestR4SqliteWalConcurrencyChallenger:
             try:
                 for _ in range(writes_per_writer):
                     async with get_db(temp_db_path) as conn:
-                        c_row = await (await conn.execute("SELECT count(*) FROM session_messages;")).fetchone()
+                        c_row = await (await conn.execute("SELECT count(*) FROM messages;")).fetchone()
                         assert c_row is not None
                         assert c_row[0] >= 0
 
                         rows = await (await conn.execute(
-                            "SELECT * FROM session_messages ORDER BY id DESC LIMIT 10;"
+                            "SELECT * FROM messages ORDER BY id DESC LIMIT 10;"
                         )).fetchall()
                         assert isinstance(rows, list)
                     await asyncio.sleep(0.001)
@@ -246,13 +252,13 @@ class TestR4SqliteWalConcurrencyChallenger:
 
         # Final verification of total record count and data completeness
         async with get_db(temp_db_path) as conn:
-            final_count = (await (await conn.execute("SELECT count(*) FROM session_messages;")).fetchone())[0]
+            final_count = (await (await conn.execute("SELECT count(*) FROM messages;")).fetchone())[0]
             assert final_count == expected_total, f"Expected {expected_total} rows, got {final_count}"
 
             # Verify every writer has exactly writes_per_writer records
             for wid in range(num_writers):
                 w_count = (await (await conn.execute(
-                    "SELECT count(*) FROM session_messages WHERE session_id = ?;", (f"sess_w_{wid}",)
+                    "SELECT count(*) FROM messages WHERE session_id = ?;", (f"sess_w_{wid}",)
                 )).fetchone())[0]
                 assert w_count == writes_per_writer, f"Writer {wid} record count mismatch: {w_count}"
 
@@ -265,11 +271,18 @@ class TestR4SqliteWalConcurrencyChallenger:
         """
         success_writer_done = asyncio.Event()
 
+        async with get_db(temp_db_path) as conn:
+            async with immediate_transaction(conn):
+                await conn.executemany(
+                    "INSERT OR IGNORE INTO sessions (id) VALUES (?);",
+                    [("sess_rollback",), ("sess_parallel",)],
+                )
+
         async def failing_nested_writer():
             async with get_db(temp_db_path) as conn:
                 async with immediate_transaction(conn):
                     await conn.execute(
-                        "INSERT INTO session_messages (session_id, role, content_chinese, content_japanese) "
+                        "INSERT INTO messages (session_id, role, content_chinese, content_japanese) "
                         "VALUES (?, ?, ?, ?);",
                         ("sess_rollback", "system", "outer_committable", "outer_jp")
                     )
@@ -277,7 +290,7 @@ class TestR4SqliteWalConcurrencyChallenger:
                     try:
                         async with immediate_transaction(conn):
                             await conn.execute(
-                                "INSERT INTO session_messages (session_id, role, content_chinese, content_japanese) "
+                                "INSERT INTO messages (session_id, role, content_chinese, content_japanese) "
                                 "VALUES (?, ?, ?, ?);",
                                 ("sess_rollback", "system", "inner_doomed", "inner_jp")
                             )
@@ -289,7 +302,7 @@ class TestR4SqliteWalConcurrencyChallenger:
             async with get_db(temp_db_path) as conn:
                 async with immediate_transaction(conn):
                     await conn.execute(
-                        "INSERT INTO session_messages (session_id, role, content_chinese, content_japanese) "
+                        "INSERT INTO messages (session_id, role, content_chinese, content_japanese) "
                         "VALUES (?, ?, ?, ?);",
                         ("sess_parallel", "user", "parallel_ok", "parallel_jp")
                     )
@@ -298,7 +311,7 @@ class TestR4SqliteWalConcurrencyChallenger:
         await asyncio.gather(failing_nested_writer(), parallel_writer())
 
         async with get_db(temp_db_path) as conn:
-            all_rows = await (await conn.execute("SELECT content_chinese FROM session_messages;")).fetchall()
+            all_rows = await (await conn.execute("SELECT content_chinese FROM messages;")).fetchall()
             contents = [r[0] for r in all_rows]
 
             assert "parallel_ok" in contents, "Parallel writer must succeed"

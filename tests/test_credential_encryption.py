@@ -25,6 +25,7 @@ def fallback(monkeypatch):
     monkeypatch.delenv("GALGAME2VOICE_SECRET_KEY", raising=False)
     monkeypatch.delenv("GALGAME2VOICE_MASTER_KEY", raising=False)
     path = get_settings().data_dir / ".master_key"
+    path.unlink(missing_ok=True)
     return path
 
 

@@ -35,9 +35,10 @@ class VoiceProfileCreateRequest(BaseModel):
     name: str = Field(..., min_length=1)
     gpt_weights_path: str = Field(..., min_length=1)
     sovits_weights_path: str = Field(..., min_length=1)
-    refer_audio_path: str = Field(..., min_length=1)
-    refer_text: str = Field(..., min_length=1)
-    refer_language: str = "ja"
+    ref_audio_path: str = Field(..., min_length=1)
+    prompt_text: str = Field(..., min_length=1)
+    prompt_lang: str = "ja"
+    text_lang: str = "ja"
     is_default: bool = False
 
 class VoiceSwitchRequest(BaseModel):
@@ -91,24 +92,37 @@ def create_test_api_app(db_path: str, gpt_sovits: MockGptSovitsServer, llm_serve
     @api_router.get("/config")
     async def get_config():
         async with aiosqlite.connect(db_path) as db:
-            async with db.execute("SELECT key, value FROM settings") as cursor:
-                rows = await cursor.fetchall()
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM settings WHERE id = 1") as cursor:
+                row = await cursor.fetchone()
                 settings = {}
-                for k, v in rows:
-                    if k and ("key" in k.lower() or "token" in k.lower() or "secret" in k.lower()):
-                        settings[k] = mask_secret(v)
-                    elif k:
-                        settings[k] = v
+                if row is not None:
+                    for k in row.keys():
+                        v = row[k]
+                        if v is not None and ("key" in k.lower() or "token" in k.lower() or "secret" in k.lower()):
+                            settings[k] = mask_secret(str(v))
+                        else:
+                            settings[k] = v
                 return {"settings": settings}
 
     @api_router.post("/config")
     async def update_config(payload: ConfigUpdateRequest):
         async with aiosqlite.connect(db_path) as db:
+            async with db.execute("PRAGMA table_info(settings)") as cursor:
+                valid_cols = {
+                    row[1]
+                    for row in await cursor.fetchall()
+                    if row[1] not in ("id", "created_at", "updated_at")
+                }
+            updated = 0
             for k, v in payload.settings.items():
-                val_str = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
-                await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (k, val_str))
+                if k not in valid_cols:
+                    raise HTTPException(status_code=400, detail=f"Unknown setting column: {k}")
+                val = json.dumps(v) if isinstance(v, (dict, list)) else v
+                await db.execute(f"UPDATE settings SET {k} = ? WHERE id = 1", (val,))
+                updated += 1
             await db.commit()
-        return {"status": "success", "updated_count": len(payload.settings)}
+        return {"status": "success", "updated_count": updated}
 
     @api_router.get("/voice/profiles")
     async def list_voice_profiles():
@@ -123,9 +137,21 @@ def create_test_api_app(db_path: str, gpt_sovits: MockGptSovitsServer, llm_serve
         async with aiosqlite.connect(db_path) as db:
             try:
                 cursor = await db.execute("""
-                    INSERT INTO voice_profiles (name, gpt_weights_path, sovits_weights_path, refer_audio_path, refer_text, refer_language, is_default)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (req.name, req.gpt_weights_path, req.sovits_weights_path, req.refer_audio_path, req.refer_text, req.refer_language, int(req.is_default)))
+                    INSERT INTO voice_profiles (
+                        name, gpt_weights_path, sovits_weights_path,
+                        ref_audio_path, prompt_text, prompt_lang, text_lang, is_default
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    req.name,
+                    req.gpt_weights_path,
+                    req.sovits_weights_path,
+                    req.ref_audio_path,
+                    req.prompt_text,
+                    req.prompt_lang,
+                    req.text_lang,
+                    int(req.is_default),
+                ))
                 await db.commit()
                 return {"id": cursor.lastrowid, "name": req.name, "status": "created"}
             except Exception as e:
@@ -155,9 +181,9 @@ def create_test_api_app(db_path: str, gpt_sovits: MockGptSovitsServer, llm_serve
             if r2.status_code != 200:
                 raise HTTPException(status_code=502, detail="Failed to load SoVITS weights")
             r3 = await gpt_sovits.handle_request("POST", "/set_refer_audio", {
-                "refer_audio_path": profile["refer_audio_path"],
-                "refer_text": profile["refer_text"],
-                "refer_language": profile["refer_language"]
+                "refer_audio_path": profile["ref_audio_path"],
+                "refer_text": profile["prompt_text"],
+                "refer_language": profile["prompt_lang"],
             })
             if r3.status_code != 200:
                 raise HTTPException(status_code=502, detail="Failed to load refer audio")
@@ -222,9 +248,9 @@ class TestApiEndpointsTier1:
             # Set config
             post_resp = await client.post("/api/config", json={
                 "settings": {
-                    "llm_api_key": "sk-1234567890abcdef1234567890abcdef",
+                    "console_token": "sk-1234567890abcdef1234567890abcdef",
                     "temperature": 0.7,
-                    "gpt_sovits_port": 9880
+                    "gpt_sovits_url": "http://127.0.0.1:9880",
                 }
             })
             assert post_resp.status_code == 200
@@ -234,8 +260,9 @@ class TestApiEndpointsTier1:
             get_resp = await client.get("/api/config")
             assert get_resp.status_code == 200
             settings = get_resp.json()["settings"]
-            assert settings["temperature"] == "0.7"
-            assert settings["llm_api_key"] == "sk-****cdef"
+            assert settings["temperature"] == pytest.approx(0.7)
+            assert settings["gpt_sovits_url"] == "http://127.0.0.1:9880"
+            assert settings["console_token"] == "sk-****cdef"
 
     @pytest.mark.asyncio
     async def test_voice_profiles_create_and_list(self, temp_db_path, mock_gpt_sovits, mock_llm_server, sample_voice_profile):
