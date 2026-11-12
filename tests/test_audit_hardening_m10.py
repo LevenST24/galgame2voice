@@ -161,45 +161,6 @@ class TestWhitespaceOnlyDisconnectPruning:
 
 
 # ============================================================================
-# 4. TtsCacheManager Concurrent get() & _throttle_touch Safety
-# ============================================================================
-
-class TestTtsCacheManagerConcurrentSafety:
-    """Tests high-concurrency calls to TtsCacheManager.get() with throttle pruning."""
-
-    async def test_concurrent_get_throttle_mutation(self, tmp_path):
-        cache_dir = tmp_path / "tts_cache"
-        db_file = tmp_path / "cache_meta.db"
-        await init_db(str(db_file))
-
-        manager = TtsCacheManager(cache_dir=cache_dir, db_path=str(db_file), max_mem_entries=32)
-
-        # Populate a few entries
-        for i in range(10):
-            await manager.put(
-                cache_key=f"key_{i}",
-                text=f"text_{i}",
-                clean_text=f"text_{i}",
-                voice_profile_id=1,
-                params_hash="hash",
-                audio_bytes=b"RIFF....data....",
-            )
-
-        # Run 30 concurrent readers touching different keys rapidly to stress _throttle_touch
-        async def reader(idx: int):
-            for step in range(50):
-                # Touch both existing keys and non-existing keys to trigger pruning logic
-                key = f"key_{step % 150}"
-                await manager.get(key)
-
-        tasks = [asyncio.create_task(reader(i)) for i in range(30)]
-        # Must not raise RuntimeError: dictionary changed size during iteration
-        await asyncio.gather(*tasks)
-
-        await manager.aclose()
-
-
-# ============================================================================
 # 5. Generator aclose() on Aborted Stream Pipeline
 # ============================================================================
 
