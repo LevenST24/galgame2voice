@@ -481,6 +481,7 @@ class EngineSupervisor(Protocol):
     def terminate_process_tree(self, pid: int) -> None: ...
     def get_owned_process(self) -> Any | None: ...
     def clear_owned_process(self, *, project_root: Path | None = None) -> None: ...
+    def restart_guard(self, target_url: str): ...
     def spawn_process(
         self,
         sovits_dir: Path,
@@ -551,6 +552,12 @@ class DefaultEngineSupervisor:
         runtime_host._SPAWNED_SOVITS_STARTED_AT = None
         root = _resolve_project_root(project_root)
         (root / "gptsovits.pid").unlink(missing_ok=True)
+
+    def restart_guard(self, target_url: str):
+        """Coordinate the restart lock and the in-progress target URL."""
+        from galgame2voice.routers import health
+
+        return health.engine_restart_guard(target_url)
 
     def spawn_process(
         self,
