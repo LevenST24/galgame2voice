@@ -151,6 +151,8 @@ class TestCredentialMasking:
     async def test_active_provider_masks_custom_headers(self, client, isolate_test_database):
         import aiosqlite
         async with aiosqlite.connect(isolate_test_database) as conn:
+            # The real migrations seed an active default provider; /api/config returns the first active row.
+            await conn.execute("UPDATE providers SET is_active = 0;")
             await conn.execute(
                 "INSERT OR REPLACE INTO providers (id, name, api_base_url, api_key, chat_model, is_active, custom_headers) "
                 "VALUES ('p1', 'P1', 'https://api.deepseek.com', 'sk-live-secret-998877', 'm', 1, "
