@@ -404,7 +404,10 @@ async def test_explicit_old_reply_format_uses_lines_contract_and_parser_without_
         return_value=(SimpleNamespace(stream_chat=stream_tokens, api_key="sk-test"), "mock-model", "deepseek")
     )
     service._extract_memory_safe = AsyncMock()
-    monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(audio_dir=audio_dir, data_dir=tmp_path))
+    # Keep the data directory the database was seeded in. Without DPAPI (Linux, macOS) the seeded console token is
+    # encrypted with the master key file in that directory, and decrypting it elsewhere raises MasterKeyError.
+    data_dir = config.get_settings().data_dir
+    monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(audio_dir=audio_dir, data_dir=data_dir))
     app = create_app()
     set_chat_service(service)
     try:
