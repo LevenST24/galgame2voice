@@ -306,8 +306,6 @@
 #globalModal .update-meta-item { border: 1px solid var(--night-line); border-radius: 12px; background: rgba(255, 255, 255, .03); }
 #globalModal .update-meta-label { color: var(--night-text-3); }
 #globalModal .update-meta-val { color: #fff; }
-#globalModal .update-commit-msg-box { border: 1px solid var(--night-line); border-radius: 12px; background: rgba(0, 0, 0, .22); color: var(--night-text-2); }
-#globalModal .commit-msg-label { color: var(--night-text-3); }
 
 /* Chat experience page (the CONFIG editor embedded in the center): hairline rows, no boxes. */
 #globalModal .is-embedded .adv-config-group { padding: 0; background: transparent; border: 0; border-radius: 0; box-shadow: none; }

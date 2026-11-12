@@ -12,9 +12,11 @@ from unittest.mock import MagicMock
 import zipfile
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 import yaml
 
 from galgame2voice.config import Settings
+from galgame2voice.main import create_app
 from galgame2voice import runtime_paths
 from galgame2voice.routers import system
 from scripts import build_windows_portable, run_server, smoke_windows_portable
@@ -94,26 +96,20 @@ def test_launcher_can_open_first_setup_without_managing_engine():
     assert run_server.parse_args(["--no-engine", "--no-browser"]).no_engine
 
 
-def test_frozen_version_uses_release_version_without_inspecting_parent_git(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_frozen_version_uses_release_version_without_inspecting_parent_git(monkeypatch):
+    transport = ASGITransport(app=create_app())  # built before sys.frozen flips, so cached settings stay untouched
     monkeypatch.setattr(system.sys, "frozen", True, raising=False)
-    git = MagicMock()
-    monkeypatch.setattr(system, "_run_git_cmd", git)
-    response = system._check_version_sync(tmp_path, check_remote=True)
-    assert response.current_version == system.__version__
-    assert response.current_branch == "portable"
-    assert not response.has_update
-    git.assert_not_called()
-
-
-def test_frozen_update_never_mutates_git_even_when_forced(tmp_path, monkeypatch):
-    monkeypatch.setattr(system.sys, "frozen", True, raising=False)
-    git = MagicMock()
-    monkeypatch.setattr(system, "_run_git_cmd", git)
-    response, changed = system._apply_update_sync(tmp_path, True, True, True)
-    assert not response.success
-    assert "使用说明" in response.output
-    assert changed == []
-    git.assert_not_called()
+    spawn = MagicMock()
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/system/version?check_remote=false")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["current_version"] == system.__version__
+    assert data["current_branch"] == "portable"
+    assert not data["has_update"]
+    spawn.assert_not_called()
 
 
 def test_launcher_failure_writes_diagnostic_log(tmp_path, monkeypatch, capsys):

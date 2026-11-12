@@ -311,14 +311,15 @@ def smoke_test(
                     if json.load(response)["current_branch"] != "portable":
                         raise RuntimeError("Portable version detection used a source Git checkout")
                 update_request = urllib.request.Request(
-                    base_url + "/api/system/update/apply", method="POST",
-                    data=b'{"discard_local_changes":true}',
+                    base_url + "/api/system/update/apply", method="POST", data=b'{}',
                     headers={"Content-Type": "application/json", "Origin": base_url},
                 )
-                with opener.open(update_request, timeout=5) as response:
-                    result = json.load(response)
-                    if result["success"] or "使用说明" not in result["output"]:
-                        raise RuntimeError("Portable update did not direct users to the release ZIP")
+                try:
+                    opener.open(update_request, timeout=5)
+                    raise RuntimeError("The removed in-app update endpoint still answers")
+                except urllib.error.HTTPError as failure:
+                    if failure.code not in (404, 405):
+                        raise RuntimeError(f"Removed update endpoint answered {failure.code}") from failure
                 request = urllib.request.Request(
                     base_url + "/api/providers/deepseek", method="PUT",
                     data=json.dumps({"api_key": "portable-test-credential"}).encode(),
