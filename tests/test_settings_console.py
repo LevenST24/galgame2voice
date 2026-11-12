@@ -14,6 +14,7 @@ Covers:
 import json
 import logging
 import re
+import time
 import pytest
 import httpx
 from httpx import AsyncClient, ASGITransport
@@ -25,7 +26,7 @@ from galgame2voice.database.session import get_db, init_db
 from galgame2voice.database import crud
 from galgame2voice.database.crud import mask_api_key, is_masked_key
 from galgame2voice.database.models import SettingsUpdate, ProviderCreate, VoiceProfileCreate
-from galgame2voice.utils.logger import MaskingFilter
+from galgame2voice.utils.logger import MaskingFilter, MaskingFormatter, sanitize_error_detail
 
 
 # ============================================================================
@@ -75,6 +76,21 @@ class TestConsoleRoutesAndRedirects:
             assert resp.status_code == 307
             assert resp.headers["location"] == "/?settings=1"
 
+    @pytest.mark.asyncio
+    async def test_redirect_with_adversarial_query_strings(self):
+        """Redirect from /console and /settings should preserve special/adversarial query parameters."""
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=False) as client:
+            query = "token=%27%20OR%201=1--&script=%3Cscript%3Ealert(1)%3C/script%3E&name=%E5%A5%88%E9%A1%BB%E3%81%8D%E3%81%AE%E3%81%93"
+            resp = await client.get(f"/console?{query}")
+            assert resp.status_code == 307
+            assert resp.headers["location"] == f"/?settings=1&{query}"
+
+            resp2 = await client.get(f"/settings?{query}")
+            assert resp2.status_code == 307
+            assert resp2.headers["location"] == f"/?settings=1&{query}"
+
 
 # ============================================================================
 # 2. Key Masking & Security Retention Tests
@@ -90,9 +106,37 @@ class TestSecurityAndKeyMasking:
         assert mask_api_key("12345") == "********"
         assert mask_api_key("sk-1234567890abcdef") == "sk-****cdef"
         assert mask_api_key("1234567890:ABCdefGhI") == "123****fGhI"
+        assert mask_api_key("   ") == ""
+        assert mask_api_key("1") == "********"
+        assert mask_api_key("1234") == "********"
+        assert mask_api_key("12345678") == "********"
+        assert mask_api_key("sk-") == "********"
+        assert mask_api_key("sk-1234") == "********"
+        k9 = "sk-123456"
+        assert len(k9) == 9
+        assert mask_api_key(k9) == "sk-****3456"
+        g9 = "abcdefghi"
+        assert len(g9) == 9
+        assert mask_api_key(g9) == "abc****fghi"
+        assert mask_api_key("0123456789") == "012****6789"
+        special_key = "sk-!@#$%^&*()_+=-~`{}[]"
+        masked_sp = mask_api_key(special_key)
+        assert masked_sp.startswith("sk-****")
+        assert masked_sp.endswith("[]")
+        unicode_key = "sk-秘密のキーTokyoJapan2026"
+        masked_uni = mask_api_key(unicode_key)
+        assert masked_uni.startswith("sk-****")
+        assert masked_uni.endswith("2026")
+        emoji_key = "key_🔑🔒🛡️_secret_token_1234"
+        assert "****" in mask_api_key(emoji_key)
         assert is_masked_key("sk-****cdef") is True
         assert is_masked_key("123****GhI") is True
         assert is_masked_key("sk-plain-secret-key-123") is False
+        assert is_masked_key(None) is False
+        assert is_masked_key("") is False
+        assert is_masked_key("********") is True
+        assert is_masked_key("****") is True
+        assert is_masked_key("Bearer secret_token") is False
 
     @pytest.mark.asyncio
     async def test_provider_api_key_masked_on_retrieval(self):
@@ -405,6 +449,15 @@ class TestMaskingFilterLogSanitization:
         assert "secrettoken123" not in sanitized
         assert "api_key=[MASKED]" in sanitized
         assert "token=[MASKED]" in sanitized
+        extra_queries = [
+            ("https://api.provider.com/v1/chat?key=mysecretkey123&user=test", "mysecretkey123", "key=[MASKED]"),
+            ("https://api.provider.com/v1/chat?secret=shhhhhhh12345&mode=fast", "shhhhhhh12345", "secret=[MASKED]"),
+            ("https://api.provider.com/v1/chat?password=mypassword999&auth=1", "mypassword999", "password=[MASKED]"),
+        ]
+        for raw_url, secret, needle in extra_queries:
+            query_sanitized = MaskingFilter.sanitize(f"Requesting URL: {raw_url}")
+            assert secret not in query_sanitized
+            assert needle in query_sanitized
 
     def test_masking_filter_log_record_args_processing(self):
         """Verifies MaskingFilter properly filters LogRecord instance msg and arguments."""
@@ -420,6 +473,189 @@ class TestMaskingFilterLogSanitization:
         )
         filter_instance.filter(record)
         assert "sk-supersecret1234567890" not in str(record.args)
+
+    SECRET_CORPUS = {
+        "openai_std": "sk-1234567890abcdefghijklmnopqrstuvwxyzAB",
+        "openai_long": "sk-proj-1234567890abcdefghijklmnopqrstuvwxyz1234567890",
+        "google_gemini": "AIzaSyD_abcdefghijklmnopqrstuvwxyz12345",
+        "huggingface": "hf_abcdefghijklmnopqrstuvwxyz12345678",
+        "bearer_token": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.t-IDcSemACt8x4iTMCda8Yhe3iZaWbvV5XKSTbuAn0M",
+        "tg_url": "https://api.telegram.org/bot1234567890:AAH_abcdefghijklmnopqrstuvwxyz12345/getMe",
+        "tg_token_standalone": "1234567890:AAH_abcdefghijklmnopqrstuvwxyz12345",
+        "url_query_key": "https://api.example.com/v1?api_key=secret_query_key_99999&user=alice",
+        "url_query_token": "https://api.example.com/v1?token=secret_query_token_88888&user=bob",
+        "json_api_key": '"api_key": "sec_json_api_key_77777"',
+        "json_password": '"password": "MySuperSecretPassword123!"',
+        "unquoted_token": "Console token: sec_unquoted_token_66666",
+        "unquoted_api_key": "api_key=sec_unquoted_key_55555",
+        "unquoted_secret": "client_secret: sec_client_secret_44444",
+        "unquoted_auth_token": "auth_token: sec_auth_token_33333",
+    }
+
+    def test_masking_filter_gemini_and_huggingface_keys(self):
+        """AIzaSy and hf_ tokens are redacted, not only URL-query or Bearer wrappers."""
+        for name in ("google_gemini", "huggingface"):
+            raw_secret = self.SECRET_CORPUS[name]
+            sanitized = MaskingFilter.sanitize(raw_secret)
+            assert raw_secret not in sanitized, f"Secret leak for {name}: {raw_secret} found in {sanitized}"
+            assert ("****" in sanitized or "[MASKED" in sanitized), f"Masking marker missing for {name}: {sanitized}"
+
+    def test_masking_filter_telegram_url(self):
+        """Telegram bot tokens embedded in api.telegram.org URLs are redacted."""
+        raw_secret = self.SECRET_CORPUS["tg_url"]
+        sanitized = MaskingFilter.sanitize(raw_secret)
+        assert raw_secret not in sanitized, f"Secret leak for tg_url: {raw_secret} found in {sanitized}"
+        assert "1234567890:AAH_abcdefghijklmnopqrstuvwxyz12345" not in sanitized
+        assert ("****" in sanitized or "[MASKED" in sanitized)
+
+    def test_masking_filter_unquoted_token_edge_cases(self):
+        """Unquoted key/value assignments stay masked across delimiters."""
+        cases = [
+            ("token: 987654321_secret_token", "987654321_secret_token"),
+            ("api_key = abcdef12345678_sec", "abcdef12345678_sec"),
+            ("console_token: sec_console_token_9999", "sec_console_token_9999"),
+            ("auth_token: bearer_xyz_99887766", "bearer_xyz_99887766"),
+            ("client_secret: clnt_sec_1122334455", "clnt_sec_1122334455"),
+            ("Config: {api_key: secret_key_in_braces, user: alice}", "secret_key_in_braces"),
+            ("Status: password=my_plain_pass_123; role=admin", "my_plain_pass_123"),
+        ]
+        for text, secret in cases:
+            sanitized = MaskingFilter.sanitize(text)
+            assert secret not in sanitized, f"Failed to mask unquoted secret '{secret}' in '{text}'. Got: '{sanitized}'"
+
+    def test_masking_filter_dict_args(self):
+        """MaskingFilter.filter sanitizes dict log arguments."""
+        logger_filter = MaskingFilter()
+        record_dict = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="Config loaded",
+            args={"key": self.SECRET_CORPUS["google_gemini"], "val": "normal"},
+            exc_info=None,
+        )
+        assert logger_filter.filter(record_dict) is True
+        assert self.SECRET_CORPUS["google_gemini"] not in str(record_dict.args)
+
+    def test_sanitize_error_detail_null_and_diverse_types(self):
+        """sanitize_error_detail handles None, empty text, numbers, and custom objects."""
+        assert sanitize_error_detail(None) == ""
+        assert sanitize_error_detail("") == ""
+        assert sanitize_error_detail(12345) == "12345"
+
+        class CustomObj:
+            def __str__(self):
+                return f"CustomObj with api_key={TestMaskingFilterLogSanitization.SECRET_CORPUS['openai_std']}"
+
+        sanitized = sanitize_error_detail(CustomObj())
+        assert TestMaskingFilterLogSanitization.SECRET_CORPUS["openai_std"] not in sanitized
+        assert "api_key=****" in sanitized
+
+    def test_masking_formatter_nested_exception_chain(self):
+        """Secrets in a chained traceback stay out of format and formatException output."""
+        keys_list = list(self.SECRET_CORPUS.values())
+
+        def recursive_raise(depth: int):
+            if depth >= len(keys_list):
+                raise ValueError(f"Deepest exception: {keys_list[-1]}")
+            try:
+                recursive_raise(depth + 1)
+            except Exception as inner:
+                key = keys_list[depth]
+                raise RuntimeError(f"Level {depth} failed: {key}") from inner
+
+        try:
+            recursive_raise(0)
+        except Exception as exc:
+            captured_exc = exc
+
+        formatter = MaskingFormatter(fmt="%(asctime)s [%(levelname)s]: %(message)s")
+        record = logging.LogRecord(
+            name="test.deep_exc",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=100,
+            msg="Exception caught in pipeline",
+            args=(),
+            exc_info=(type(captured_exc), captured_exc, captured_exc.__traceback__),
+        )
+        formatted_output = formatter.format(record)
+        exception_output = formatter.formatException(record.exc_info)
+
+        for output in (formatted_output, exception_output):
+            for name, raw_secret in self.SECRET_CORPUS.items():
+                if name == "bearer_token":
+                    token_body = raw_secret.split()[1]
+                    assert token_body not in output, f"Bearer token body leaked in traceback: {token_body}"
+                elif name in ("json_api_key", "json_password"):
+                    val = raw_secret.split(":")[1].replace('"', "").strip()
+                    assert val not in output, f"JSON secret value leaked in traceback: {val}"
+                elif name.startswith("unquoted_"):
+                    val = raw_secret.split(":")[1].strip() if ":" in raw_secret else raw_secret.split("=")[1].strip()
+                    assert val not in output, f"Unquoted secret leaked in traceback: {val}"
+                elif name == "tg_url":
+                    assert "1234567890:AAH_abcdefghijklmnopqrstuvwxyz12345" not in output
+                else:
+                    assert raw_secret not in output, f"Secret {name} leaked in formatted traceback!"
+
+    # Strict 2MB log-sanitization wall-clock throughput budget is sensitive to multi-worker CPU contention.
+    @pytest.mark.serial
+    @pytest.mark.wall_clock
+    def test_massive_log_payload_throughput_and_redos_safety(self):
+        """
+        Tests 2MB massive log string containing 10,000 lines and embedded secrets
+        at the beginning, middle, and end.
+        Ensures linear execution time (ReDoS safe) and zero memory corruption.
+        """
+        lines = ["Normal application log line processing user request sequence ID #100234.\n"] * 10000
+        lines[0] = f"Start line with token: {self.SECRET_CORPUS['openai_std']}\n"
+        lines[5000] = f"Middle line with google key: {self.SECRET_CORPUS['google_gemini']}\n"
+        lines[9999] = f"End line with tg: {self.SECRET_CORPUS['tg_url']}\n"
+        payload = "".join(lines)
+
+        timings = []
+        sanitized = ""
+        for _ in range(3):
+            t0 = time.perf_counter()
+            sanitized = MaskingFilter.sanitize(payload)
+            timings.append(time.perf_counter() - t0)
+
+        best_elapsed = min(timings)
+        assert best_elapsed < 3.0, (
+            f"Sanitization of payload took too long: best={best_elapsed:.3f}s, "
+            f"runs={[f'{t:.3f}s' for t in timings]} (ReDoS risk)"
+        )
+        assert self.SECRET_CORPUS["openai_std"] not in sanitized
+        assert self.SECRET_CORPUS["google_gemini"] not in sanitized
+        assert "1234567890:AAH_abcdefghijklmnopqrstuvwxyz12345" not in sanitized
+
+    # Tight wall-clock budget on 150KB MaskingFilter regex pass is sensitive to multi-worker CPU contention.
+    @pytest.mark.serial
+    @pytest.mark.wall_clock
+    def test_redos_and_massive_payload_stress(self):
+        """
+        Verify MaskingFilter does not hang (ReDoS) or crash on a massive 150KB string
+        containing repeated patterns and multiple embedded secrets.
+        """
+        junk = "The quick brown fox jumps over the lazy dog. " * 2000
+        secrets = [
+            "sk-1234567890abcdef12345678",
+            "Bearer super_secret_token_1234567890",
+            '{"api_key": "sk-embedded-998877665544"}',
+            "https://api.test.com?api_key=sk-query-param-1234567890",
+        ]
+        massive_text = junk + "\n".join(secrets) + junk
+
+        t0 = time.perf_counter()
+        sanitized = MaskingFilter.sanitize(massive_text)
+        elapsed = time.perf_counter() - t0
+
+        assert elapsed < 0.5, f"Sanitization took too long: {elapsed:.3f}s"
+        assert "sk-1234567890abcdef12345678" not in sanitized
+        assert "super_secret_token_1234567890" not in sanitized
+        assert "sk-embedded-998877665544" not in sanitized
+        assert "sk-query-param-1234567890" not in sanitized
 
 
 # ============================================================================
